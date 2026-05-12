@@ -111,7 +111,7 @@ func TestModelCapabilities(t *testing.T) {
 					Capabilities: []string{"image", "vision"},
 				},
 			},
-			expectedCaps: []model.Capability{model.CapabilityImage, model.CapabilityVision},
+			expectedCaps: []model.Capability{model.CapabilityImage, model.CapabilityVision, model.CapabilityVideo},
 		},
 		{
 			name: "model with completion capability",
@@ -144,7 +144,7 @@ func TestModelCapabilities(t *testing.T) {
 				ModelPath: visionModelPath,
 				Template:  chatTemplate,
 			},
-			expectedCaps: []model.Capability{model.CapabilityCompletion, model.CapabilityVision},
+			expectedCaps: []model.Capability{model.CapabilityCompletion, model.CapabilityVision, model.CapabilityVideo},
 		},
 		{
 			name: "model with vision, tools, and insert capability",
@@ -152,7 +152,7 @@ func TestModelCapabilities(t *testing.T) {
 				ModelPath: visionModelPath,
 				Template:  toolsInsertTemplate,
 			},
-			expectedCaps: []model.Capability{model.CapabilityCompletion, model.CapabilityVision, model.CapabilityTools, model.CapabilityInsert},
+			expectedCaps: []model.Capability{model.CapabilityCompletion, model.CapabilityVision, model.CapabilityVideo, model.CapabilityTools, model.CapabilityInsert},
 		},
 		{
 			name: "model with embedding capability",
@@ -322,6 +322,24 @@ func TestModelCheckCapabilities(t *testing.T) {
 				Template:  chatTemplate,
 			},
 			checkCaps: []model.Capability{model.CapabilityEmbedding},
+		},
+		{
+			name: "model missing speech capability",
+			model: Model{
+				ModelPath: completionModelPath,
+				Template:  chatTemplate,
+			},
+			checkCaps:      []model.Capability{model.CapabilitySpeech},
+			expectedErrMsg: "does not support speech",
+		},
+		{
+			name: "model with speech capability in config",
+			model: Model{
+				Config: model.ConfigV2{
+					Capabilities: []string{"speech"},
+				},
+			},
+			checkCaps: []model.Capability{model.CapabilitySpeech},
 		},
 		{
 			name: "unknown capability",

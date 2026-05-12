@@ -14,20 +14,21 @@ func launcherTestState() *launch.LauncherState {
 		LastSelection: "run",
 		RunModel:      "qwen3:8b",
 		Integrations: map[string]launch.LauncherIntegrationState{
-			"claude": {
-				Name:         "claude",
-				DisplayName:  "Claude Code",
-				Description:  "Anthropic's coding tool with subagents",
-				Selectable:   true,
-				Changeable:   true,
-				CurrentModel: "glm-5:cloud",
-			},
-			"codex": {
-				Name:        "codex",
-				DisplayName: "Codex",
-				Description: "OpenAI's open-source coding agent",
+			"zoey": {
+				Name:        "zoey",
+				DisplayName: "Zoey",
+				Description: "Privacy-first, local-first AI agent framework (Rust)",
 				Selectable:  true,
-				Changeable:  true,
+				Changeable:  false,
+				Installed:   true,
+			},
+			"eliza": {
+				Name:        "eliza",
+				DisplayName: "elizaOS",
+				Description: "Autonomous agents for everyone",
+				Selectable:  true,
+				Changeable:  false,
+				Installed:   true,
 			},
 			"openclaw": {
 				Name:            "openclaw",
@@ -38,9 +39,17 @@ func launcherTestState() *launch.LauncherState {
 				AutoInstallable: true,
 			},
 			"opencode": {
-				Name:        "opencode",
-				DisplayName: "OpenCode",
-				Description: "Anomaly's open-source coding agent",
+				Name:         "opencode",
+				DisplayName:  "OpenCode",
+				Description:  "Anomaly's open-source coding agent",
+				Selectable:   true,
+				Changeable:   true,
+				CurrentModel: "glm-5:cloud",
+			},
+			"copilot": {
+				Name:        "copilot",
+				DisplayName: "Copilot CLI",
+				Description: "GitHub's AI coding agent for the terminal",
 				Selectable:  true,
 				Changeable:  true,
 			},
@@ -100,15 +109,15 @@ func compareStrings(got, want []string) string {
 func TestMenuRendersPinnedItemsAndMore(t *testing.T) {
 	menu := newModel(launcherTestState())
 	view := menu.View()
-	for _, want := range []string{"Chat with a model", "Launch OpenClaw", "Launch Claude Code", "Launch OpenCode", "More..."} {
+	for _, want := range []string{"Chat with a model", "Launch Zoey", "Launch elizaOS", "Launch Hermes Agent", "More..."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected menu view to contain %q\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Launch Codex") {
-		t.Fatalf("expected Codex to be under More, not pinned\n%s", view)
+	if strings.Contains(view, "Launch OpenCode") {
+		t.Fatalf("expected OpenCode to be under More, not pinned\n%s", view)
 	}
-	wantOrder := []string{"run", "openclaw", "claude", "opencode", "more"}
+	wantOrder := []string{"run", "zoey", "eliza", "hermes", "more"}
 	if diff := compareStrings(integrationSequence(menu.items), wantOrder); diff != "" {
 		t.Fatalf("unexpected pinned order: %s", diff)
 	}
@@ -116,20 +125,20 @@ func TestMenuRendersPinnedItemsAndMore(t *testing.T) {
 
 func TestMenuExpandsOthersFromLastSelection(t *testing.T) {
 	state := launcherTestState()
-	state.LastSelection = "codex"
+	state.LastSelection = "opencode"
 
 	menu := newModel(state)
 	if !menu.showOthers {
 		t.Fatal("expected others section to expand when last selection is in the overflow list")
 	}
 	view := menu.View()
-	if !strings.Contains(view, "Launch Codex") {
+	if !strings.Contains(view, "Launch OpenCode") {
 		t.Fatalf("expected expanded view to contain overflow integration\n%s", view)
 	}
 	if strings.Contains(view, "More...") {
 		t.Fatalf("expected expanded view to replace More... item\n%s", view)
 	}
-	wantOrder := []string{"run", "openclaw", "claude", "opencode", "hermes", "codex", "droid", "pi"}
+	wantOrder := []string{"run", "zoey", "eliza", "hermes", "opencode", "copilot", "droid", "pi", "openclaw"}
 	if diff := compareStrings(integrationSequence(menu.items), wantOrder); diff != "" {
 		t.Fatalf("unexpected expanded order: %s", diff)
 	}
@@ -156,28 +165,32 @@ func TestMenuRightOnRunSelectsChangeRun(t *testing.T) {
 }
 
 func TestMenuEnterOnIntegrationSelectsLaunch(t *testing.T) {
-	menu := newModel(launcherTestState())
-	menu.cursor = findMenuCursorByIntegration(menu.items, "claude")
+	state := launcherTestState()
+	state.LastSelection = "opencode"
+	menu := newModel(state)
+	menu.cursor = findMenuCursorByIntegration(menu.items, "opencode")
 	if menu.cursor == -1 {
-		t.Fatal("expected claude menu item")
+		t.Fatal("expected opencode menu item")
 	}
 	updated, _ := menu.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(model)
-	want := TUIAction{Kind: TUIActionLaunchIntegration, Integration: "claude"}
+	want := TUIAction{Kind: TUIActionLaunchIntegration, Integration: "opencode"}
 	if !got.selected || got.action != want {
 		t.Fatalf("expected enter on integration to launch, got selected=%v action=%v", got.selected, got.action)
 	}
 }
 
 func TestMenuRightOnIntegrationSelectsConfigure(t *testing.T) {
-	menu := newModel(launcherTestState())
-	menu.cursor = findMenuCursorByIntegration(menu.items, "claude")
+	state := launcherTestState()
+	state.LastSelection = "opencode"
+	menu := newModel(state)
+	menu.cursor = findMenuCursorByIntegration(menu.items, "opencode")
 	if menu.cursor == -1 {
-		t.Fatal("expected claude menu item")
+		t.Fatal("expected opencode menu item")
 	}
 	updated, _ := menu.Update(tea.KeyMsg{Type: tea.KeyRight})
 	got := updated.(model)
-	want := TUIAction{Kind: TUIActionLaunchIntegration, Integration: "claude", ForceConfigure: true}
+	want := TUIAction{Kind: TUIActionLaunchIntegration, Integration: "opencode", ForceConfigure: true}
 	if !got.selected || got.action != want {
 		t.Fatalf("expected right on integration to configure, got selected=%v action=%v", got.selected, got.action)
 	}
@@ -185,15 +198,16 @@ func TestMenuRightOnIntegrationSelectsConfigure(t *testing.T) {
 
 func TestMenuIgnoresDisabledActions(t *testing.T) {
 	state := launcherTestState()
-	claude := state.Integrations["claude"]
-	claude.Selectable = false
-	claude.Changeable = false
-	state.Integrations["claude"] = claude
+	state.LastSelection = "opencode"
+	opencode := state.Integrations["opencode"]
+	opencode.Selectable = false
+	opencode.Changeable = false
+	state.Integrations["opencode"] = opencode
 
 	menu := newModel(state)
-	menu.cursor = findMenuCursorByIntegration(menu.items, "claude")
+	menu.cursor = findMenuCursorByIntegration(menu.items, "opencode")
 	if menu.cursor == -1 {
-		t.Fatal("expected claude menu item")
+		t.Fatal("expected opencode menu item")
 	}
 
 	updatedEnter, _ := menu.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -208,15 +222,18 @@ func TestMenuIgnoresDisabledActions(t *testing.T) {
 }
 
 func TestMenuShowsCurrentModelSuffixes(t *testing.T) {
-	menu := newModel(launcherTestState())
+	state := launcherTestState()
+	state.LastSelection = "opencode"
+	menu := newModel(state)
+	menu.cursor = 0
 	runView := menu.View()
 	if !strings.Contains(runView, "(qwen3:8b)") {
 		t.Fatalf("expected run row to show current model suffix\n%s", runView)
 	}
 
-	menu.cursor = findMenuCursorByIntegration(menu.items, "claude")
+	menu.cursor = findMenuCursorByIntegration(menu.items, "opencode")
 	if menu.cursor == -1 {
-		t.Fatal("expected claude menu item")
+		t.Fatal("expected opencode menu item")
 	}
 	integrationView := menu.View()
 	if !strings.Contains(integrationView, "(glm-5:cloud)") {
@@ -226,24 +243,24 @@ func TestMenuShowsCurrentModelSuffixes(t *testing.T) {
 
 func TestMenuShowsInstallStatusAndHint(t *testing.T) {
 	state := launcherTestState()
-	codex := state.Integrations["codex"]
-	codex.Installed = false
-	codex.Selectable = false
-	codex.Changeable = false
-	codex.InstallHint = "Install from https://example.com/codex"
-	state.Integrations["codex"] = codex
+	pi := state.Integrations["pi"]
+	pi.Installed = false
+	pi.Selectable = false
+	pi.Changeable = false
+	pi.InstallHint = "Install from https://example.com/pi"
+	state.Integrations["pi"] = pi
 
-	state.LastSelection = "codex"
+	state.LastSelection = "pi"
 	menu := newModel(state)
-	menu.cursor = findMenuCursorByIntegration(menu.items, "codex")
+	menu.cursor = findMenuCursorByIntegration(menu.items, "pi")
 	if menu.cursor == -1 {
-		t.Fatal("expected codex menu item in overflow section")
+		t.Fatal("expected pi menu item in overflow section")
 	}
 	view := menu.View()
 	if !strings.Contains(view, "(not installed)") {
 		t.Fatalf("expected not-installed marker\n%s", view)
 	}
-	if !strings.Contains(view, codex.InstallHint) {
+	if !strings.Contains(view, pi.InstallHint) {
 		t.Fatalf("expected install hint in description\n%s", view)
 	}
 }

@@ -63,8 +63,24 @@ func TestCopyProxyResponseHeaders_StripsConnectionTokenHeaders(t *testing.T) {
 	}
 }
 
+func TestElizaUpstreamPath_OpenAIV1PrefixOnly(t *testing.T) {
+	orig := cloudProxyBaseURL
+	t.Cleanup(func() { cloudProxyBaseURL = orig })
+	cloudProxyBaseURL = defaultCloudProxyBaseURL
+
+	if got := elizaUpstreamPath("/v1chat"); got != "/v1chat" {
+		t.Fatalf("non-v1 path: got %q want unchanged", got)
+	}
+	if got := elizaUpstreamPath("/v1/chat/completions"); got != "/api/v1/chat/completions" {
+		t.Fatalf("v1 route: got %q", got)
+	}
+	if got := elizaUpstreamPath("/v1"); got != "/api/v1" {
+		t.Fatalf("exact /v1: got %q", got)
+	}
+}
+
 func TestResolveCloudProxyBaseURL_Default(t *testing.T) {
-	baseURL, signingHost, overridden, err := resolveCloudProxyBaseURL("", gin.ReleaseMode)
+	baseURL, overridden, err := resolveCloudProxyBaseURL("", gin.ReleaseMode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,13 +90,10 @@ func TestResolveCloudProxyBaseURL_Default(t *testing.T) {
 	if baseURL != defaultCloudProxyBaseURL {
 		t.Fatalf("expected default base URL %q, got %q", defaultCloudProxyBaseURL, baseURL)
 	}
-	if signingHost != defaultCloudProxySigningHost {
-		t.Fatalf("expected default signing host %q, got %q", defaultCloudProxySigningHost, signingHost)
-	}
 }
 
 func TestResolveCloudProxyBaseURL_ReleaseAllowsLoopback(t *testing.T) {
-	baseURL, signingHost, overridden, err := resolveCloudProxyBaseURL("http://localhost:8080", gin.ReleaseMode)
+	baseURL, overridden, err := resolveCloudProxyBaseURL("http://localhost:8080", gin.ReleaseMode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,20 +103,17 @@ func TestResolveCloudProxyBaseURL_ReleaseAllowsLoopback(t *testing.T) {
 	if baseURL != "http://localhost:8080" {
 		t.Fatalf("unexpected base URL: %q", baseURL)
 	}
-	if signingHost != "localhost" {
-		t.Fatalf("unexpected signing host: %q", signingHost)
-	}
 }
 
 func TestResolveCloudProxyBaseURL_ReleaseRejectsNonLoopback(t *testing.T) {
-	_, _, _, err := resolveCloudProxyBaseURL("https://example.com", gin.ReleaseMode)
+	_, _, err := resolveCloudProxyBaseURL("https://example.com", gin.ReleaseMode)
 	if err == nil {
 		t.Fatal("expected error for non-loopback override in release mode")
 	}
 }
 
 func TestResolveCloudProxyBaseURL_DevAllowsNonLoopbackHTTPS(t *testing.T) {
-	baseURL, signingHost, overridden, err := resolveCloudProxyBaseURL("https://example.com:8443", gin.DebugMode)
+	baseURL, overridden, err := resolveCloudProxyBaseURL("https://example.com:8443", gin.DebugMode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,13 +123,10 @@ func TestResolveCloudProxyBaseURL_DevAllowsNonLoopbackHTTPS(t *testing.T) {
 	if baseURL != "https://example.com:8443" {
 		t.Fatalf("unexpected base URL: %q", baseURL)
 	}
-	if signingHost != "example.com" {
-		t.Fatalf("unexpected signing host: %q", signingHost)
-	}
 }
 
 func TestResolveCloudProxyBaseURL_DevRejectsNonLoopbackHTTP(t *testing.T) {
-	_, _, _, err := resolveCloudProxyBaseURL("http://example.com", gin.DebugMode)
+	_, _, err := resolveCloudProxyBaseURL("http://example.com", gin.DebugMode)
 	if err == nil {
 		t.Fatal("expected error for non-loopback http override in dev mode")
 	}
@@ -187,13 +194,9 @@ func TestCloudPassthroughMiddleware_ZstdBody(t *testing.T) {
 	})
 	r.ServeHTTP(rec, req)
 
-	// The cloud passthrough middleware should detect the cloud model and
-	// proxy (abort), so the next handler should NOT be called.
-	// However, since there's no actual cloud server to proxy to, the
-	// middleware will attempt to proxy and fail. We just verify it didn't
-	// fall through to c.Next() due to failure to read the compressed body.
-	if nextCalled {
-		t.Fatal("expected cloud passthrough to detect cloud model from zstd body, but it fell through to next handler")
+	// Cloud models reach the handler; middleware only decompresses zstd.
+	if !nextCalled {
+		t.Fatal("expected handler after zstd decompress for cloud model body")
 	}
 }
 

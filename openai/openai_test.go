@@ -1,7 +1,9 @@
 package openai
 
 import (
+	"context"
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,20 +81,96 @@ func TestFromChatRequest_WithImage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(result.Messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(result.Messages))
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
 	}
 
 	if result.Messages[0].Content != "Hello" {
-		t.Errorf("expected first message content 'Hello', got %q", result.Messages[0].Content)
+		t.Errorf("expected message content 'Hello', got %q", result.Messages[0].Content)
 	}
 
-	if len(result.Messages[1].Images) != 1 {
-		t.Fatalf("expected 1 image, got %d", len(result.Messages[1].Images))
+	if len(result.Messages[0].Images) != 1 {
+		t.Fatalf("expected 1 image, got %d", len(result.Messages[0].Images))
 	}
 
-	if string(result.Messages[1].Images[0]) != string(imgData) {
+	if string(result.Messages[0].Images[0]) != string(imgData) {
 		t.Error("image data mismatch")
+	}
+}
+
+func TestFromChatRequest_WithVideoURL_MergeOrder(t *testing.T) {
+	imgData, _ := base64.StdEncoding.DecodeString(image)
+	vidBytes := []byte{0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70} // minimal ftyp-like prefix for parser
+	vidB64 := base64.StdEncoding.EncodeToString(vidBytes)
+
+	req := ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{"type": "text", "text": "look"},
+					map[string]any{
+						"type":      "image_url",
+						"image_url": map[string]any{"url": prefix + image},
+					},
+					map[string]any{
+						"type":      "video_url",
+						"video_url": map[string]any{"url": "data:video/mp4;base64," + vidB64},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Content != "look" {
+		t.Fatalf("content: got %q", result.Messages[0].Content)
+	}
+	if len(result.Messages[0].Images) != 1 || string(result.Messages[0].Images[0]) != string(imgData) {
+		t.Fatalf("expected one image before video expansion")
+	}
+	if len(result.Messages[0].Videos) != 1 || string(result.Messages[0].Videos[0]) != string(vidBytes) {
+		t.Fatalf("video payload mismatch")
+	}
+}
+
+func TestChatCompletionRequestHasVideoURL(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "m",
+		Messages: []Message{
+			{Role: "user", Content: []any{map[string]any{"type": "text", "text": "hi"}}},
+		},
+	}
+	if ChatCompletionRequestHasVideoURL(&req) {
+		t.Fatal("expected false")
+	}
+	req.Messages[0].Content = []any{map[string]any{"type": "video_url", "video_url": map[string]any{"url": "data:video/mp4;base64,AAAA"}}}
+	if !ChatCompletionRequestHasVideoURL(&req) {
+		t.Fatal("expected true")
+	}
+}
+
+func TestDecodeVideoURL_RejectsLoopback(t *testing.T) {
+	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
+	_, err := decodeVideoURL(context.Background(), "http://127.0.0.1:8080/v.mp4")
+	if err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("expected non-public error, got %v", err)
+	}
+}
+
+func TestDecodeVideoURL_HTTPRequiresOptIn(t *testing.T) {
+	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "")
+	_, err := decodeVideoURL(context.Background(), "http://example.com/clip.mp4")
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("expected https/opt-in error, got %v", err)
 	}
 }
 

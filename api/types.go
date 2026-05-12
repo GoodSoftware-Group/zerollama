@@ -56,6 +56,18 @@ func (e AuthorizationError) Error() string {
 // ImageData represents the raw binary data of an image file.
 type ImageData []byte
 
+// VideoData is a raw video container (e.g. MP4/WebM). Bytes are staged separately from Images
+// because the vision runner consumes raster frames, not containers—sampling runs in the server
+// before inference so limits and errors stay centralized (see docs/video-understanding.md).
+type VideoData []byte
+
+// VideoSpan records how many raster frames came from one original video blob after expansion.
+// When non-empty, Images are ordered as: any still images first, then frames for each Videos[] entry in order.
+// See docs/video-understanding.md and model/renderers/qwen3vl.go.
+type VideoSpan struct {
+	FrameCount int `json:"frame_count"`
+}
+
 // GenerateRequest describes a request sent by [Client.Generate]. While you
 // have to specify the Model and Prompt fields, all the other fields have
 // reasonable defaults for basic uses.
@@ -206,15 +218,22 @@ func (t Tool) String() string {
 }
 
 // Message is a single message in a chat sequence. The message contains the
-// role ("system", "user", or "assistant"), the content and an optional list
-// of images.
+// role ("system", "user", or "assistant"), the content and optional multimodal
+// payloads (images, raw video bytes).
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 	// Thinking contains the text that was inside thinking tags in the
 	// original model output when ChatRequest.Think is enabled.
-	Thinking   string      `json:"thinking,omitempty"`
-	Images     []ImageData `json:"images,omitempty"`
+	Thinking string      `json:"thinking,omitempty"`
+	Images   []ImageData `json:"images,omitempty"`
+	// Videos holds undecoded video blobs (e.g. OpenAI video_url or /api/chat).
+	// They are expanded to frames on Images before inference—see docs/video-understanding.md.
+	Videos []VideoData `json:"videos,omitempty"`
+	// VideoSpans is set when Videos were expanded: one entry per original blob, frame counts in order.
+	// Why: templates still receive a flat Images list; spans preserve provenance for renderers that
+	// must distinguish video-derived frames from unrelated stills (optional; see model/renderers).
+	VideoSpans []VideoSpan `json:"video_spans,omitempty"`
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 	ToolName   string      `json:"tool_name,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"`

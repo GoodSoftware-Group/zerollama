@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -747,51 +746,9 @@ func TestCreateAndShowRemoteModel(t *testing.T) {
 	}
 
 	w = createRequest(t, s.ShowHandler, api.ShowRequest{Model: "test"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("exected status code 200, actual %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status code 404 for remote-backed model, actual %d", w.Code)
 	}
-
-	var resp api.ShowResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatal(err)
-	}
-
-	expectedDetails := api.ModelDetails{
-		ParentModel:       "",
-		Format:            "",
-		Family:            "gptoss",
-		Families:          []string{"gptoss"},
-		ParameterSize:     "20.9B",
-		QuantizationLevel: "MXFP4",
-	}
-
-	if !reflect.DeepEqual(resp.Details, expectedDetails) {
-		t.Errorf("model details: expected %#v, actual %#v", expectedDetails, resp.Details)
-	}
-
-	expectedCaps := []model.Capability{
-		model.Capability("completion"),
-		model.Capability("tools"),
-		model.Capability("thinking"),
-	}
-
-	if !slices.Equal(resp.Capabilities, expectedCaps) {
-		t.Errorf("capabilities: expected %#v, actual %#v", expectedCaps, resp.Capabilities)
-	}
-
-	v, ok := resp.ModelInfo["gptoss.context_length"]
-	ctxlen := v.(float64)
-	if !ok || int(ctxlen) != 131072 {
-		t.Errorf("context len: expected %d, actual %d", 131072, int(ctxlen))
-	}
-
-	v, ok = resp.ModelInfo["gptoss.embedding_length"]
-	embedlen := v.(float64)
-	if !ok || int(embedlen) != 2880 {
-		t.Errorf("embed len: expected %d, actual %d", 2880, int(embedlen))
-	}
-
-	fmt.Printf("resp = %#v\n", resp)
 }
 
 func TestCreateFromCloudSourceSuffix(t *testing.T) {
@@ -813,21 +770,8 @@ func TestCreateFromCloudSourceSuffix(t *testing.T) {
 	}
 
 	w = createRequest(t, s.ShowHandler, api.ShowRequest{Model: "test-cloud-from-suffix"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status code 200, got %d", w.Code)
-	}
-
-	var resp api.ShowResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatal(err)
-	}
-
-	if resp.RemoteHost != "https://ollama.com:443" {
-		t.Fatalf("expected remote host https://ollama.com:443, got %q", resp.RemoteHost)
-	}
-
-	if resp.RemoteModel != "gpt-oss:20b" {
-		t.Fatalf("expected remote model gpt-oss:20b, got %q", resp.RemoteModel)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status code 404 for remote-backed model, got %d", w.Code)
 	}
 }
 

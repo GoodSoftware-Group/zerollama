@@ -559,8 +559,8 @@ func TestPiEdit(t *testing.T) {
 		modelsArray := ollama["models"].([]any)
 		modelEntry := modelsArray[0].(map[string]any)
 
-		if modelEntry["contextWindow"] != float64(202_752) {
-			t.Errorf("contextWindow = %v, want 202752", modelEntry["contextWindow"])
+		if _, ok := modelEntry["contextWindow"]; ok {
+			t.Errorf("unexpected contextWindow %v without cloud limit metadata", modelEntry["contextWindow"])
 		}
 		input, ok := modelEntry["input"].([]any)
 		if !ok || len(input) != 1 || input[0] != "text" {
@@ -1177,7 +1177,7 @@ func TestCreateConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("cloud model falls back to hardcoded context when show fails", func(t *testing.T) {
+	t.Run("cloud model does not use hardcoded context when show fails", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprintf(w, `{"error":"model not found"}`)
@@ -1189,12 +1189,12 @@ func TestCreateConfig(t *testing.T) {
 
 		cfg := createConfig(context.Background(), client, "kimi-k2.5:cloud")
 
-		if cfg["contextWindow"] != 262_144 {
-			t.Errorf("contextWindow = %v, want 262144", cfg["contextWindow"])
+		if _, ok := cfg["contextWindow"]; ok {
+			t.Errorf("contextWindow = %v, want unset", cfg["contextWindow"])
 		}
 	})
 
-	t.Run("cloud model falls back to hardcoded context when show omits model info", func(t *testing.T) {
+	t.Run("cloud model does not use hardcoded context when show omits model info", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/api/show" {
 				fmt.Fprintf(w, `{"capabilities":[],"model_info":{}}`)
@@ -1209,12 +1209,12 @@ func TestCreateConfig(t *testing.T) {
 
 		cfg := createConfig(context.Background(), client, "glm-5:cloud")
 
-		if cfg["contextWindow"] != 202_752 {
-			t.Errorf("contextWindow = %v, want 202752", cfg["contextWindow"])
+		if _, ok := cfg["contextWindow"]; ok {
+			t.Errorf("contextWindow = %v, want unset", cfg["contextWindow"])
 		}
 	})
 
-	t.Run("cloud model with dash suffix falls back to hardcoded context", func(t *testing.T) {
+	t.Run("cloud model with dash suffix does not use hardcoded context when show fails", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprintf(w, `{"error":"model not found"}`)
@@ -1226,8 +1226,8 @@ func TestCreateConfig(t *testing.T) {
 
 		cfg := createConfig(context.Background(), client, "gpt-oss:120b-cloud")
 
-		if cfg["contextWindow"] != 131_072 {
-			t.Errorf("contextWindow = %v, want 131072", cfg["contextWindow"])
+		if _, ok := cfg["contextWindow"]; ok {
+			t.Errorf("contextWindow = %v, want unset", cfg["contextWindow"])
 		}
 	})
 	t.Run("skips zero context length", func(t *testing.T) {

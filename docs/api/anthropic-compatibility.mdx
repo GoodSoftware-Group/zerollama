@@ -243,24 +243,24 @@ For coding use cases, models like `glm-4.7`, `minimax-m2.1`, and `qwen3-coder` a
 Download a model before use:
 
 ```shell
-ollama pull qwen3-coder
+zerollama pull qwen3-coder
 ```
 > Note: Qwen 3 coder is a 30B parameter model requiring at least 24GB of VRAM to run smoothly. More is required for longer context lengths. 
 
 ```shell
-ollama pull glm-4.7:cloud
+zerollama pull glm-4.7:cloud
 ```
 
 ### Quick setup
 
 ```shell
-ollama launch claude
+zerollama launch claude
 ```
 
 This will prompt you to select a model, configure Claude Code automatically, and launch it. To configure without launching:
 
 ```shell
-ollama launch claude --config
+zerollama launch claude --config
 ```
 
 ### Manual setup
@@ -351,7 +351,7 @@ Ollama supports both local and cloud models.
 Pull a local model before use:
 
 ```shell
-ollama pull qwen3-coder
+zerollama pull qwen3-coder
 ```
 
 Recommended local models:
@@ -367,10 +367,10 @@ Cloud models are available immediately without pulling:
 
 ### Default model names
 
-For tooling that relies on default Anthropic model names such as `claude-3-5-sonnet`, use `ollama cp` to copy an existing model name:
+For tooling that relies on default Anthropic model names such as `claude-3-5-sonnet`, use `zerollama cp` to copy an existing model name:
 
 ```shell
-ollama cp qwen3-coder claude-3-5-sonnet
+zerollama cp qwen3-coder claude-3-5-sonnet
 ```
 
 Afterwards, this new model name can be specified in the `model` field:

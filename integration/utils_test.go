@@ -417,7 +417,7 @@ var (
 
 func startServer(t *testing.T, ctx context.Context, ollamaHost string) error {
 	// Make sure the server has been built
-	CLIName, err := filepath.Abs("../ollama")
+	CLIName, err := filepath.Abs("../zerollama")
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}

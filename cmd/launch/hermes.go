@@ -198,7 +198,7 @@ func (h *Hermes) ensureInstalled() error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("Hermes is not installed and required dependencies are missing\n\nInstall the following first:\n  %s\n\nThen re-run:\n  ollama launch hermes", strings.Join(missing, "\n  "))
+		return fmt.Errorf("Hermes is not installed and required dependencies are missing\n\nInstall the following first:\n  %s\n\nThen re-run:\n  zerollama launch hermes", strings.Join(missing, "\n  "))
 	}
 
 	ok, err := ConfirmPrompt("Hermes is not installed. Install now?")
@@ -674,6 +674,6 @@ func hermesAttachedCommand(name string, args ...string) *exec.Cmd {
 
 func hermesWindowsHint() error {
 	return fmt.Errorf("Hermes on Windows requires WSL2. Install WSL with: wsl --install\n" +
-		"Then run 'ollama launch hermes' from inside your WSL shell.\n" +
+		"Then run 'zerollama launch hermes' from inside your WSL shell.\n" +
 		"Docs: https://hermes-agent.nousresearch.com/docs/getting-started/installation/")
 }

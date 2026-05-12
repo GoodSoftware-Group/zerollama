@@ -125,11 +125,11 @@ func TestRunInteractiveTUI_IntegrationActionsUseLaunchIntegration(t *testing.T) 
 	}{
 		{
 			name:   "enter launches integration",
-			action: tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "claude"},
+			action: tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "opencode"},
 		},
 		{
 			name:      "right forces configure",
-			action:    tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "claude", ForceConfigure: true},
+			action:    tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "opencode", ForceConfigure: true},
 			wantForce: true,
 		},
 	}
@@ -173,14 +173,14 @@ func TestRunInteractiveTUI_IntegrationActionsUseLaunchIntegration(t *testing.T) 
 				}
 			}
 
-			if gotReq.Name != "claude" {
+			if gotReq.Name != "opencode" {
 				t.Fatalf("expected integration name to be passed through, got %q", gotReq.Name)
 			}
 			if gotReq.ForceConfigure != tt.wantForce {
 				t.Fatalf("expected ForceConfigure=%v, got %v", tt.wantForce, gotReq.ForceConfigure)
 			}
-			if got := config.LastSelection(); got != "claude" {
-				t.Fatalf("expected last selection to be claude, got %q", got)
+			if got := config.LastSelection(); got != "opencode" {
+				t.Fatalf("expected last selection to be opencode, got %q", got)
 			}
 		})
 	}
@@ -231,7 +231,7 @@ func TestRunLauncherAction_VSCodeExitsTUILoop(t *testing.T) {
 	}
 
 	// Other integrations should continue the TUI loop (return true).
-	continueLoop, err = runLauncherAction(cmd, tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "claude"}, launcherDeps{
+	continueLoop, err = runLauncherAction(cmd, tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "opencode"}, launcherDeps{
 		resolveRunModel: unexpectedRunModelResolution(t),
 		launchIntegration: func(ctx context.Context, req launch.IntegrationLaunchRequest) error {
 			return nil
@@ -252,7 +252,7 @@ func TestRunLauncherAction_IntegrationContinuesAfterCancellation(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 
-	continueLoop, err := runLauncherAction(cmd, tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "claude"}, launcherDeps{
+	continueLoop, err := runLauncherAction(cmd, tui.TUIAction{Kind: tui.TUIActionLaunchIntegration, Integration: "opencode"}, launcherDeps{
 		buildState:      nil,
 		runMenu:         nil,
 		resolveRunModel: unexpectedRunModelResolution(t),

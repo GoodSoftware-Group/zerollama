@@ -33,13 +33,47 @@ type IntegrationInfo struct {
 	Description string
 }
 
-var launcherIntegrationOrder = []string{"openclaw", "claude", "opencode", "hermes", "codex", "copilot", "droid", "pi"}
+var launcherIntegrationOrder = []string{"zoey", "eliza", "hermes", "opencode", "copilot", "droid", "pi", "openclaw"}
 
 var integrationSpecs = []*IntegrationSpec{
+	{
+		Name:        "zoey",
+		Runner:      &Zoey{},
+		Description: "Privacy-first, local-first AI agent framework (Rust)",
+		Install: IntegrationInstallSpec{
+			CheckInstalled: func() bool {
+				_, ok := findZoey()
+				return ok
+			},
+			EnsureInstalled: func() error {
+				return ensureZoeyInstalled()
+			},
+			URL:     "https://github.com/Agent-Zoey/Zoey",
+			Command: []string{"cargo", "install", "--locked", "--git", "https://github.com/Agent-Zoey/Zoey", "zoey-cli"},
+		},
+	},
+	{
+		Name:        "eliza",
+		Runner:      &Eliza{},
+		Aliases:     []string{"elizaos"},
+		Description: "Autonomous agents for everyone",
+		Install: IntegrationInstallSpec{
+			CheckInstalled: func() bool {
+				_, ok := findElizaOS()
+				return ok
+			},
+			EnsureInstalled: func() error {
+				return ensureElizaInstalled()
+			},
+			URL:     "https://docs.elizaos.ai/installation",
+			Command: []string{"npm", "install", "-g", "@elizaos/cli@latest"},
+		},
+	},
 	{
 		Name:        "claude",
 		Runner:      &Claude{},
 		Description: "Anthropic's coding tool with subagents",
+		Hidden:      true,
 		Install: IntegrationInstallSpec{
 			CheckInstalled: func() bool {
 				_, err := (&Claude{}).findPath()
@@ -65,6 +99,7 @@ var integrationSpecs = []*IntegrationSpec{
 		Name:        "codex",
 		Runner:      &Codex{},
 		Description: "OpenAI's open-source coding agent",
+		Hidden:      true,
 		Install: IntegrationInstallSpec{
 			CheckInstalled: func() bool {
 				_, err := exec.LookPath("codex")

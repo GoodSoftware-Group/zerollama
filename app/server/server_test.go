@@ -299,6 +299,17 @@ time=2025-06-30T09:25:56.197-07:00 level=DEBUG source=ggml.go:155 msg="key not f
 			}},
 			expDefaultCtxLen: 0, // No default context line, should return 0
 		},
+		{
+			name: "compute_at_eof_only",
+			log: `time=2025-06-30T09:23:07.416-07:00 level=INFO source=types.go:130 msg="inference compute" id=0 library=metal variant="" compute="" driver=0.0 name="" total="96.0 GiB" available="96.0 GiB"
+`,
+			expComputes: []InferenceCompute{{
+				Library: "metal",
+				Driver:  "0.0",
+				VRAM:    "96.0 GiB",
+			}},
+			expDefaultCtxLen: 0,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

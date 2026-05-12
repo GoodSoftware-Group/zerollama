@@ -77,7 +77,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 
 	for cnt, msg := range msgs[currMsgIdx:] {
 		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(msg.Images) > 1 {
-			return "", nil, errors.New("this model only supports one image while more than one image requested")
+			return "", nil, errors.New("this model only supports one image; more than one was requested (including multiple frames sampled from video)")
 		}
 
 		var prefix string

@@ -130,33 +130,8 @@ func TestGenerateChatRemote(t *testing.T) {
 		w := createRequest(t, s.ChatHandler, api.ChatRequest{
 			Model: "test-cloud",
 		})
-		if w.Code != http.StatusOK {
-			t.Errorf("expected status 200, got %d", w.Code)
-		}
-
-		var actual api.ChatResponse
-		if err := json.NewDecoder(w.Body).Decode(&actual); err != nil {
-			t.Fatal(err)
-		}
-
-		if actual.Model != "test-cloud" {
-			t.Errorf("expected model test-cloud, got %s", actual.Model)
-		}
-
-		if actual.RemoteModel != "test" {
-			t.Errorf("expected remote model test, got %s", actual.RemoteModel)
-		}
-
-		if actual.RemoteHost != rs.URL {
-			t.Errorf("expected remote host '%s', got %s", rs.URL, actual.RemoteHost)
-		}
-
-		if !actual.Done {
-			t.Errorf("expected done true, got false")
-		}
-
-		if actual.DoneReason != "load" {
-			t.Errorf("expected done reason load, got %s", actual.DoneReason)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected status 403, got %d", w.Code)
 		}
 	})
 }

@@ -421,7 +421,7 @@ func ChatMiddleware() gin.HandlerFunc {
 
 		var b bytes.Buffer
 
-		chatReq, err := openai.FromChatRequest(req)
+		chatReq, err := openai.FromChatRequestWithContext(c.Request.Context(), req)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
@@ -679,10 +679,23 @@ func ImageEditsMiddleware() gin.HandlerFunc {
 	}
 }
 
+// CtxKeyTranscriptionResponseFormat is the gin context key for OpenAI transcription response_format.
+const CtxKeyTranscriptionResponseFormat = "ollama.transcription.response_format"
+
+// CtxKeyTranscriptionOriginalFilename is the uploaded multipart filename (for STT format detection).
+const CtxKeyTranscriptionOriginalFilename = "ollama.transcription.original_filename"
+
+// CtxKeyTranscriptionLanguage is the optional language hint from the multipart form ("language" field).
+const CtxKeyTranscriptionLanguage = "ollama.transcription.language"
+
+// CtxKeySpeechRequest holds a validated [openai.SpeechCreateRequest] for SpeechHandler.
+const CtxKeySpeechRequest = "ollama.speech.request"
+
 // TranscriptionWriter collects streamed chat responses and outputs a transcription response.
 type TranscriptionWriter struct {
 	BaseWriter
 	responseFormat string
+	language       string
 	text           strings.Builder
 }
 
@@ -702,20 +715,16 @@ func (w *TranscriptionWriter) Write(data []byte) (int, error) {
 	if chatResponse.Done {
 		text := strings.TrimSpace(w.text.String())
 
-		if w.responseFormat == "text" {
-			w.ResponseWriter.Header().Set("Content-Type", "text/plain")
-			_, err := w.ResponseWriter.Write([]byte(text))
-			if err != nil {
-				return 0, err
-			}
-			return len(data), nil
-		}
-
-		w.ResponseWriter.Header().Set("Content-Type", "application/json")
-		resp := openai.TranscriptionResponse{Text: text}
-		if err := json.NewEncoder(w.ResponseWriter).Encode(resp); err != nil {
+		ct, body, err := openai.TranscriptionResult(text, w.responseFormat, w.language)
+		if err != nil {
 			return 0, err
 		}
+		w.ResponseWriter.Header().Set("Content-Type", ct)
+		_, err = w.ResponseWriter.Write(body)
+		if err != nil {
+			return 0, err
+		}
+		return len(data), nil
 	}
 
 	return len(data), nil
@@ -737,7 +746,7 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		file, _, err := c.Request.FormFile("file")
+		file, header, err := c.Request.FormFile("file")
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "file is required: "+err.Error()))
 			return
@@ -779,12 +788,54 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 		c.Request.ContentLength = int64(b.Len())
 		c.Request.Header.Set("Content-Type", "application/json")
 
+		c.Set(CtxKeyTranscriptionResponseFormat, req.ResponseFormat)
+		c.Set(CtxKeyTranscriptionOriginalFilename, header.Filename)
+		c.Set(CtxKeyTranscriptionLanguage, req.Language)
+
 		w := &TranscriptionWriter{
 			BaseWriter:     BaseWriter{ResponseWriter: c.Writer},
 			responseFormat: req.ResponseFormat,
+			language:       req.Language,
 		}
 
 		c.Writer = w
 		c.Next()
 	}
+}
+
+// SpeechMiddleware validates OpenAI POST /v1/audio/speech JSON and stores the request on context.
+func SpeechMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req openai.SpeechCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if req.Model == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "model is required"))
+			return
+		}
+		if req.Input == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "input is required"))
+			return
+		}
+		if utf8RuneCount(req.Input) > 4096 {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "input exceeds 4096 characters"))
+			return
+		}
+		if req.Speed != nil && (*req.Speed < 0.25 || *req.Speed > 4.0) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "speed must be between 0.25 and 4.0"))
+			return
+		}
+		c.Set(CtxKeySpeechRequest, req)
+		c.Next()
+	}
+}
+
+func utf8RuneCount(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
 }

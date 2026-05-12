@@ -19,13 +19,13 @@ curl -fsSL https://opencode.ai/install | bash
 ### Quick setup
 
 ```bash
-ollama launch opencode
+zerollama launch opencode
 ```
 
 To configure without launching:
 
 ```shell
-ollama launch opencode --config
+zerollama launch opencode --config
 ```
 
-<Note>`ollama launch opencode` passes its configuration to OpenCode inline via the `OPENCODE_CONFIG_CONTENT` environment variable. OpenCode deep-merges its config sources on startup, so anything you declare in `~/.config/opencode/opencode.json` is still respected and available inside OpenCode. Models declared only in `opencode.json` won't appear in `ollama launch`'s model-selection menu.</Note>
+<Note>`zerollama launch opencode` passes its configuration to OpenCode inline via the `OPENCODE_CONFIG_CONTENT` environment variable. OpenCode deep-merges its config sources on startup, so anything you declare in `~/.config/opencode/opencode.json` is still respected and available inside OpenCode. Models declared only in `opencode.json` won't appear in `zerollama launch`'s model-selection menu.</Note>

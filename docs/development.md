@@ -11,6 +11,8 @@ Then build and run Ollama from the root directory of the repository:
 go run . serve
 ```
 
+The CLI binary is **`zerollama`**. A plain `go build` writes an executable named after this directory (`ollama`); use `go build -o zerollama .` if you want the on-disk name to match installs and integration tests.
+
 > [!NOTE]
 > Ollama includes native code compiled with CGO.  From time to time these data structures can change and CGO can get out of sync resulting in unexpected crashes.  You can force a full build of the native code by running `go clean -cache` first. 
 

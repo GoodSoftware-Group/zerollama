@@ -217,6 +217,12 @@ func fileDigestMap(path string) (map[string]string, error) {
 	return fl, nil
 }
 
+// FileDigestMap returns a map of absolute file paths to sha256 content digests for
+// a model file, directory, or other path understood by [Modelfile.CreateRequest].
+func FileDigestMap(path string) (map[string]string, error) {
+	return fileDigestMap(path)
+}
+
 func digestForFile(filename string) (string, error) {
 	filepath, err := filepath.EvalSymlinks(filename)
 	if err != nil {

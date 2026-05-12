@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -44,7 +43,6 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/internal/modelref"
-	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/parser"
 	"github.com/ollama/ollama/progress"
 	"github.com/ollama/ollama/readline"
@@ -320,7 +318,7 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 
 	if err := client.Create(cmd.Context(), req, fn); err != nil {
 		if strings.Contains(err.Error(), "path or Modelfile are required") {
-			return fmt.Errorf("the ollama server must be updated to use `ollama create` with this client")
+			return fmt.Errorf("the zerollama server must be updated to use `zerollama create` with this client")
 		}
 		return err
 	}
@@ -401,32 +399,8 @@ func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 
 	if info, err := client.Show(cmd.Context(), &api.ShowRequest{Model: opts.Model}); err != nil {
 		return err
-	} else if info.RemoteHost != "" || requestedCloud {
-		// Cloud model, no need to load/unload
-
-		isCloud := requestedCloud || strings.HasPrefix(info.RemoteHost, "https://ollama.com")
-
-		// Check if user is signed in for ollama.com cloud models
-		if isCloud {
-			if _, err := client.Whoami(cmd.Context()); err != nil {
-				return err
-			}
-		}
-
-		if opts.ShowConnect {
-			p.StopAndClear()
-			remoteModel := info.RemoteModel
-			if remoteModel == "" {
-				remoteModel = opts.Model
-			}
-			if isCloud {
-				fmt.Fprintf(os.Stderr, "Connecting to '%s' on 'ollama.com' ⚡\n", remoteModel)
-			} else {
-				fmt.Fprintf(os.Stderr, "Connecting to '%s' on '%s'\n", remoteModel, info.RemoteHost)
-			}
-		}
-
-		return nil
+	} else if info.RemoteHost != "" || requestedCloud || info.RemoteModel != "" {
+		return fmt.Errorf("cloud models are not supported")
 	}
 
 	req := &api.GenerateRequest{
@@ -505,50 +479,6 @@ func handleCloudAuthorizationError(err error) bool {
 		return true
 	}
 
-	return false
-}
-
-// TEMP(drifkin): To match legacy `ollama run some-model:cloud` behavior, we
-// best-effort pull cloud stub files for any explicit cloud source models.
-// Remove this once `/api/tags` is cloud-aware.
-func ensureCloudStub(ctx context.Context, client *api.Client, modelName string) {
-	if !modelref.HasExplicitCloudSource(modelName) {
-		return
-	}
-
-	normalizedName, _, err := modelref.NormalizePullName(modelName)
-	if err != nil {
-		slog.Warn("failed to normalize pull name", "model", modelName, "error", err, "normalizedName", normalizedName)
-		return
-	}
-
-	listResp, err := client.List(ctx)
-	if err != nil {
-		slog.Warn("failed to list models", "error", err)
-		return
-	}
-
-	if hasListedModelName(listResp.Models, modelName) || hasListedModelName(listResp.Models, normalizedName) {
-		return
-	}
-
-	logutil.Trace("pulling cloud stub", "model", modelName, "normalizedName", normalizedName)
-	err = client.Pull(ctx, &api.PullRequest{
-		Model: normalizedName,
-	}, func(api.ProgressResponse) error {
-		return nil
-	})
-	if err != nil {
-		slog.Warn("failed to pull cloud stub", "model", modelName, "error", err)
-	}
-}
-
-func hasListedModelName(models []api.ListModelResponse, name string) bool {
-	for _, m := range models {
-		if strings.EqualFold(m.Name, name) || strings.EqualFold(m.Model, name) {
-			return true
-		}
-	}
 	return false
 }
 
@@ -656,7 +586,7 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		var se api.StatusError
 		if errors.As(err, &se) && se.StatusCode == http.StatusNotFound {
 			if requestedCloud {
-				return nil, err
+				return nil, fmt.Errorf("cloud models are not supported")
 			}
 			if err := PullHandler(cmd, []string{name}); err != nil {
 				return nil, err
@@ -672,7 +602,9 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ensureCloudStub(cmd.Context(), client, name)
+	if requestedCloud || info.RemoteHost != "" || info.RemoteModel != "" {
+		return fmt.Errorf("cloud models are not supported")
+	}
 
 	opts.Think, err = inferThinkingOption(&info.Capabilities, &opts, thinkFlag.Changed)
 	if err != nil {
@@ -703,7 +635,7 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 	// If it's an embedding model, handle embedding generation
 	if isEmbeddingModel {
 		if opts.Prompt == "" {
-			return errors.New("embedding models require input text. Usage: ollama run " + name + " \"your text here\"")
+			return errors.New("embedding models require input text. Usage: zerollama run " + name + " \"your text here\"")
 		}
 
 		// Get embedding-specific flags
@@ -723,7 +655,7 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 	// Check if this is an image generation model
 	if slices.Contains(info.Capabilities, model.CapabilityImage) {
 		if opts.Prompt == "" && !interactive {
-			return errors.New("image generation models require a prompt. Usage: ollama run " + name + " \"your prompt here\"")
+			return errors.New("image generation models require a prompt. Usage: zerollama run " + name + " \"your prompt here\"")
 		}
 		return imagegen.RunCLI(cmd, name, opts.Prompt, interactive, opts.KeepAlive)
 	}
@@ -1911,7 +1843,7 @@ func versionHandler(cmd *cobra.Command, _ []string) {
 	}
 
 	if serverVersion != "" {
-		fmt.Printf("ollama version is %s\n", serverVersion)
+		fmt.Printf("zerollama version is %s\n", serverVersion)
 	}
 
 	if serverVersion != version.Version {
@@ -2085,7 +2017,7 @@ func NewCLI() *cobra.Command {
 	}
 
 	rootCmd := &cobra.Command{
-		Use:           "ollama",
+		Use:           "zerollama",
 		Short:         "Large language model runner",
 		SilenceUsage:  true,
 		SilenceErrors: true,

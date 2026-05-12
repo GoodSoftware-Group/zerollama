@@ -155,10 +155,10 @@ func TestClaudeModelEnvVars(t *testing.T) {
 		}
 	})
 
-	t.Run("sets auto compact window for known cloud models", func(t *testing.T) {
+	t.Run("does not set auto compact window without cloud limit metadata", func(t *testing.T) {
 		got := envMap(c.modelEnvVars("glm-5:cloud"))
-		if got["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "202752" {
-			t.Errorf("AUTO_COMPACT_WINDOW = %q, want 202752", got["CLAUDE_CODE_AUTO_COMPACT_WINDOW"])
+		if got["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "" {
+			t.Errorf("AUTO_COMPACT_WINDOW = %q, want empty", got["CLAUDE_CODE_AUTO_COMPACT_WINDOW"])
 		}
 	})
 

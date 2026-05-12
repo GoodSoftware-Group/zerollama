@@ -70,7 +70,7 @@ func main() {
 			}
 			switch arg {
 			case "serve":
-				fmt.Fprintln(os.Stderr, "serve command not supported, use ollama")
+				fmt.Fprintln(os.Stderr, "serve command not supported, use zerollama")
 				os.Exit(1)
 			case "version", "-v", "--version":
 				fmt.Println(version.Version)
@@ -187,7 +187,7 @@ func main() {
 	handleExistingInstance(startHidden)
 
 	// on macOS, offer the user to create a symlink
-	// from /usr/local/bin/ollama to the app bundle
+	// from /usr/local/bin/zerollama to the app bundle
 	installSymlink()
 
 	var ln net.Listener

@@ -519,3 +519,32 @@ I'll check.
 		})
 	}
 }
+
+func TestQwen3VLRenderer_videoSpansMatchFlatPlaceholders(t *testing.T) {
+	t.Parallel()
+	msgs := []api.Message{{
+		Role:    "user",
+		Content: "describe",
+		Images:  make([]api.ImageData, 3),
+		VideoSpans: []api.VideoSpan{
+			{FrameCount: 2},
+		},
+	}}
+	flat := []api.Message{{
+		Role:    "user",
+		Content: "describe",
+		Images:  make([]api.ImageData, 3),
+	}}
+	r := &Qwen3VLRenderer{isThinking: false, useImgTags: false}
+	outSpan, err := r.Render(msgs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outFlat, err := r.Render(flat, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outSpan != outFlat {
+		t.Fatalf("expected same vision token count with VideoSpans metadata\nspan:\n%s\nflat:\n%s", outSpan, outFlat)
+	}
+}

@@ -27,13 +27,13 @@ curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst \
 Start Ollama:
 
 ```shell
-ollama serve
+zerollama serve
 ```
 
 In another terminal, verify that Ollama is running:
 
 ```shell
-ollama -v
+zerollama -v
 ```
 
 ### AMD GPU install
@@ -71,7 +71,7 @@ Description=Ollama Service
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/ollama serve
+ExecStart=/usr/bin/zerollama serve
 User=ollama
 Group=ollama
 Restart=always

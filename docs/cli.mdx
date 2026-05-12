@@ -5,13 +5,13 @@ title: CLI Reference
 ### Run a model
 
 ```
-ollama run gemma3
+zerollama run gemma3
 ```
 
 ### Launch integrations
 
 ```
-ollama launch
+zerollama launch
 ```
 
 Configure and launch external applications to use Ollama models. This provides an interactive way to set up and start integrations with supported apps.
@@ -29,25 +29,25 @@ Configure and launch external applications to use Ollama models. This provides a
 Launch an integration interactively:
 
 ```
-ollama launch
+zerollama launch
 ```
 
 Launch a specific integration:
 
 ```
-ollama launch claude
+zerollama launch claude
 ```
 
 Launch with a specific model:
 
 ```
-ollama launch claude --model qwen3.5
+zerollama launch claude --model qwen3.5
 ```
 
 Configure without launching:
 
 ```
-ollama launch droid --config
+zerollama launch droid --config
 ```
 
 #### Multiline input
@@ -64,49 +64,49 @@ I'm a basic program that prints the famous "Hello, world!" message to the consol
 #### Multimodal models
 
 ```
-ollama run gemma3 "What's in this image? /Users/jmorgan/Desktop/smile.png"
+zerollama run gemma3 "What's in this image? /Users/jmorgan/Desktop/smile.png"
 ```
 
 ### Generate embeddings
 
 ```
-ollama run embeddinggemma "Hello world"
+zerollama run embeddinggemma "Hello world"
 ```
 
 Output is a JSON array:
 
 ```
-echo "Hello world" | ollama run nomic-embed-text
+echo "Hello world" | zerollama run nomic-embed-text
 ```
 
 ### Download a model
 
 ```
-ollama pull gemma3
+zerollama pull gemma3
 ```
 
 ### Remove a model
 
 ```
-ollama rm gemma3
+zerollama rm gemma3
 ```
 
 ### List models
 
 ```
-ollama ls
+zerollama ls
 ```
 
 ### Sign in to Ollama
 
 ```
-ollama signin
+zerollama signin
 ```
 
 ### Sign out of Ollama
 
 ```
-ollama signout
+zerollama signout
 ```
 
 ### Create a customized model
@@ -118,28 +118,28 @@ FROM gemma3
 SYSTEM """You are a happy cat."""
 ```
 
-Then run `ollama create`:
+Then run `zerollama create`:
 
 ```
-ollama create -f Modelfile
+zerollama create -f Modelfile
 ```
 
 ### List running models
 
 ```
-ollama ps
+zerollama ps
 ```
 
 ### Stop a running model
 
 ```
-ollama stop gemma3
+zerollama stop gemma3
 ```
 
 ### Start Ollama
 
 ```
-ollama serve
+zerollama serve
 ```
 
-To view a list of environment variables that can be set run `ollama serve --help`
+To view a list of environment variables that can be set run `zerollama serve --help`

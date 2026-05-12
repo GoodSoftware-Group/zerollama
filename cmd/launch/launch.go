@@ -15,6 +15,13 @@ import (
 	"golang.org/x/term"
 )
 
+// standaloneLauncher marks integrations that run an external CLI without Ollama
+// model selection (similar to ProjectLink, but executes a binary).
+type standaloneLauncher interface {
+	Runner
+	standaloneLaunch()
+}
+
 // LauncherState is the launch-owned snapshot used to render the root launcher menu.
 type LauncherState struct {
 	LastSelection  string
@@ -199,29 +206,28 @@ func LaunchCmd(checkServerHeartbeat func(cmd *cobra.Command, args []string) erro
 		Short: "Launch the Ollama menu or an integration",
 		Long: `Launch the Ollama interactive menu, or directly launch a specific integration.
 
-Without arguments, this is equivalent to running 'ollama' directly.
+Without arguments, this is equivalent to running 'zerollama' directly.
 Flags and extra arguments require an integration name.
 
 Supported integrations:
-  claude    Claude Code
   cline     Cline
-  codex     Codex
   copilot   Copilot CLI (aliases: copilot-cli)
   droid     Droid
+  eliza     elizaOS (aliases: elizaos)
   hermes    Hermes Agent
   opencode  OpenCode
   openclaw  OpenClaw (aliases: clawdbot, moltbot)
   pi        Pi
   vscode    VS Code (aliases: code)
+  zoey      Zoey
 
 Examples:
-  ollama launch
-  ollama launch claude
-  ollama launch claude --model <model>
-  ollama launch hermes
-  ollama launch droid --config (does not auto-launch)
-  ollama launch codex -- -p myprofile (pass extra args to integration)
-  ollama launch codex -- --sandbox workspace-write`,
+  zerollama launch
+  zerollama launch opencode
+  zerollama launch opencode --model <model>
+  zerollama launch hermes
+  zerollama launch droid --config (does not auto-launch)
+  zerollama launch pi -- --help (pass extra args to integration)`,
 		Args:    cobra.ArbitraryArgs,
 		PreRunE: checkServerHeartbeat,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -253,7 +259,7 @@ Examples:
 
 			if name == "" {
 				if cmd.Flags().Changed("model") || cmd.Flags().Changed("config") || cmd.Flags().Changed("yes") || len(passArgs) > 0 {
-					return fmt.Errorf("flags and extra args require an integration name, for example: 'ollama launch claude --model qwen3.5'")
+					return fmt.Errorf("flags and extra args require an integration name, for example: 'zerollama launch opencode --model qwen3.5'")
 				}
 				runTUI(cmd)
 				return nil
@@ -343,6 +349,27 @@ func LaunchIntegration(ctx context.Context, req IntegrationLaunchRequest) error 
 	}
 
 	policy := launchIntegrationPolicy(req)
+
+	if pl, ok := runner.(*ProjectLink); ok {
+		if req.ConfigureOnly {
+			return nil
+		}
+		if err := EnsureIntegrationInstalled(name, runner); err != nil {
+			return err
+		}
+		return pl.Run("", req.ExtraArgs)
+	}
+
+	if sl, ok := runner.(standaloneLauncher); ok {
+		if req.ConfigureOnly {
+			return nil
+		}
+		if err := EnsureIntegrationInstalled(name, runner); err != nil {
+			return err
+		}
+		return sl.Run("", req.ExtraArgs)
+	}
+
 	if policy.Confirm == LaunchConfirmAutoApprove && !isInteractiveSession() && req.ModelOverride == "" {
 		return fmt.Errorf("headless --yes launch for %s requires --model <model>", name)
 	}
@@ -372,7 +399,7 @@ func LaunchIntegration(ctx context.Context, req IntegrationLaunchRequest) error 
 }
 
 func launchIntegrationPolicy(req IntegrationLaunchRequest) LaunchPolicy {
-	// TUI does not set a policy, whereas ollama launch <app> does as it can
+	// TUI does not set a policy, whereas zerollama launch <app> does as it can
 	// have flags which change the behavior.
 	if req.Policy != nil {
 		return *req.Policy
@@ -418,6 +445,36 @@ func (c *launcherClient) buildLauncherIntegrationState(ctx context.Context, info
 	integration, err := integrationFor(info.Name)
 	if err != nil {
 		return LauncherIntegrationState{}, err
+	}
+	if _, ok := integration.spec.Runner.(*ProjectLink); ok {
+		return LauncherIntegrationState{
+			Name:            info.Name,
+			DisplayName:     info.DisplayName,
+			Description:     info.Description,
+			Installed:       true,
+			AutoInstallable: false,
+			Selectable:      true,
+			Changeable:      false,
+			CurrentModel:    "",
+			ModelUsable:     false,
+			InstallHint:     "",
+			Editor:          false,
+		}, nil
+	}
+	if _, ok := integration.spec.Runner.(standaloneLauncher); ok {
+		return LauncherIntegrationState{
+			Name:            info.Name,
+			DisplayName:     info.DisplayName,
+			Description:     info.Description,
+			Installed:       integration.installed,
+			AutoInstallable: integration.autoInstallable,
+			Selectable:      integration.installed || integration.autoInstallable,
+			Changeable:      false,
+			CurrentModel:    "",
+			ModelUsable:     false,
+			InstallHint:     integration.installHint,
+			Editor:          false,
+		}, nil
 	}
 	var currentModel string
 	var usable bool
@@ -600,7 +657,7 @@ func (c *launcherClient) launchManagedSingleIntegration(ctx context.Context, nam
 
 	if !managedIntegrationOnboarded(saved, managed) {
 		if !isInteractiveSession() && managedRequiresInteractiveOnboarding(managed) {
-			return fmt.Errorf("%s still needs interactive gateway setup; run 'ollama launch %s' in a terminal to finish onboarding", runner, name)
+			return fmt.Errorf("%s still needs interactive gateway setup; run 'zerollama launch %s' in a terminal to finish onboarding", runner, name)
 		}
 		if err := managed.Onboard(); err != nil {
 			return err

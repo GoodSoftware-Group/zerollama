@@ -52,7 +52,7 @@ The official [Ollama Docker image](https://hub.docker.com/r/ollama/ollama) `olla
 ## Get started
 
 ```
-ollama
+zerollama
 ```
 
 You'll be prompted to run a model or connect Ollama to your existing agents or applications such as `Claude Code`, `OpenClaw`, `OpenCode` , `Codex`, `Copilot`,  and more.
@@ -62,7 +62,7 @@ You'll be prompted to run a model or connect Ollama to your existing agents or a
 To launch a specific integration:
 
 ```
-ollama launch claude
+zerollama launch claude
 ```
 
 Supported integrations include [Claude Code](https://docs.ollama.com/integrations/claude-code), [Codex](https://docs.ollama.com/integrations/codex), [Copilot CLI](https://docs.ollama.com/integrations/copilot-cli), [Droid](https://docs.ollama.com/integrations/droid), and [OpenCode](https://docs.ollama.com/integrations/opencode).
@@ -72,7 +72,7 @@ Supported integrations include [Claude Code](https://docs.ollama.com/integration
 Use [OpenClaw](https://docs.ollama.com/integrations/openclaw) to turn Ollama into a personal AI assistant across WhatsApp, Telegram, Slack, Discord, and more:
 
 ```
-ollama launch openclaw
+zerollama launch openclaw
 ```
 
 ### Chat with a model
@@ -80,7 +80,7 @@ ollama launch openclaw
 Run and chat with [Gemma 3](https://ollama.com/library/gemma3):
 
 ```
-ollama run gemma3
+zerollama run gemma3
 ```
 
 See [ollama.com/library](https://ollama.com/library) for the full list.
@@ -149,6 +149,15 @@ console.log(response.message.content);
 - [Importing models](https://docs.ollama.com/import)
 - [Modelfile reference](https://docs.ollama.com/modelfile)
 - [Building from source](https://github.com/ollama/ollama/blob/main/docs/development.md)
+
+### In this repository
+
+- [Eliza Cloud / Zerollama remote inference](docs/eliza-cloud.md) — **why** Eliza is the default upstream (OpenAI/Anthropic APIs + API keys), **why** legacy Ed25519 signing is limited to `ollama.com`, path rewrites, catalog merge, and when responses are raw upstream JSON.
+- [Video understanding (VLM)](docs/video-understanding.md) — **why** OpenAI `video_url` merges into one message, **why** ffmpeg samples to frames, security (HTTPS, SSRF), native **fps/stride** sampling, context preflight, and optional SGLang proxy.
+- [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, and **OLLAMA_VIDEO_*** for native video.
+- [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
+- [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.
+- [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, video generation (not in scope yet), Option 2 milestones, **why** each phase exists (policy vs templates vs limits).
 
 ## Community Integrations
 

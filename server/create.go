@@ -164,6 +164,12 @@ func (s *Server) CreateHandler(c *gin.Context) {
 									if len(config.Capabilities) == 0 {
 										config.Capabilities = baseConfig.Capabilities
 									}
+									if len(config.ModalityBackends) == 0 {
+										config.ModalityBackends = baseConfig.ModalityBackends
+									}
+									if len(config.BackendPaths) == 0 {
+										config.BackendPaths = baseConfig.BackendPaths
+									}
 								}
 								cfgFile.Close()
 							}

@@ -62,10 +62,12 @@ bool firstTimeRun,startHidden; // Set in run before initialization
         [NSApp setApplicationIconImage:customIcon];
     }
 
+    NSString *appName = @"zerollama";
+
     // Create status item and menu
     NSMenu *menu = [[NSMenu alloc] init];
     NSMenuItem *openMenuItem =
-        [[NSMenuItem alloc] initWithTitle:@"Open Ollama"
+        [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Open %@", appName]
                                    action:@selector(openUI)
                             keyEquivalent:@""];
     [openMenuItem setTarget:self];
@@ -94,7 +96,7 @@ bool firstTimeRun,startHidden; // Set in run before initialization
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    [menu addItemWithTitle:@"Quit Ollama"
+    [menu addItemWithTitle:[NSString stringWithFormat:@"Quit %@", appName]
                     action:@selector(quit)
              keyEquivalent:@"q"];
 
@@ -110,8 +112,6 @@ bool firstTimeRun,startHidden; // Set in run before initialization
     [self showIcon];
 
     // Application menu
-    NSString *appName = @"Ollama";
-
     NSMenu *mainMenu = [[NSMenu alloc] init];
     NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:appName
                                                         action:nil
@@ -920,7 +920,7 @@ void launchApp(const char *appPath) {
 }
 
 int installSymlink(const char *cliPath) {
-    NSString *linkPath = @"/usr/local/bin/ollama";
+    NSString *linkPath = @"/usr/local/bin/zerollama";
     NSString *dirPath = @"/usr/local/bin";
     NSError *error = nil;
 
@@ -969,7 +969,7 @@ int installSymlink(const char *cliPath) {
     // Create the symlink using the same authorization
     const char *toolPath = "/bin/ln";
     const char *args[] = {"-s", "-F", [resPath UTF8String],
-                          "/usr/local/bin/ollama", NULL};
+                          "/usr/local/bin/zerollama", NULL};
     FILE *pipe = NULL;
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"

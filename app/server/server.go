@@ -27,7 +27,7 @@ const restartDelay = time.Second
 // Server is a managed ollama server process
 type Server struct {
 	store *store.Store
-	bin   string // resolved path to `ollama`
+	bin   string // resolved path to `zerollama`
 	log   io.WriteCloser
 	dev   bool // true if running with the dev flag
 }
@@ -47,7 +47,7 @@ type InferenceInfo struct {
 }
 
 func New(s *store.Store, devMode bool) *Server {
-	p := resolvePath("ollama")
+	p := resolvePath("zerollama")
 	return &Server{store: s, bin: p, dev: devMode}
 }
 
@@ -278,7 +278,6 @@ func openRotatingLog() (io.WriteCloser, error) {
 // Attempt to retrieve inference compute information from the server
 // log.  Set ctx to timeout to control how long to wait for the logs to appear
 func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
-	info := &InferenceInfo{}
 	computeMarker := regexp.MustCompile(`inference compute.*library=`)
 	defaultCtxMarker := regexp.MustCompile(`vram-based default context`)
 	defaultCtxRegex := regexp.MustCompile(`default_num_ctx=(\d+)`)
@@ -338,13 +337,13 @@ func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 			return nil, fmt.Errorf("timeout scanning server log for inference compute details")
 		default:
 		}
+		info := &InferenceInfo{}
 		file, err := os.Open(serverLogPath)
 		if err != nil {
 			slog.Debug("failed to open server log", "log", serverLogPath, "error", err)
 			time.Sleep(time.Second)
 			continue
 		}
-		defer file.Close()
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -373,13 +372,23 @@ func GetInferenceInfo(ctx context.Context) (*InferenceInfo, error) {
 						slog.Info("Matched default context length", "default_num_ctx", numCtx)
 					}
 				}
+				file.Close()
 				return info, nil
 			}
 			// If we've found compute info but hit a non-matching line, return what we have
 			// This handles older server versions that don't log the default context line
 			if len(info.Computes) > 0 {
+				file.Close()
 				return info, nil
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			slog.Debug("server log scan error", "error", err)
+		}
+		file.Close()
+		// Log ended after inference compute line(s) with no trailing line to trigger return above
+		if len(info.Computes) > 0 {
+			return info, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

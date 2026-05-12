@@ -35,13 +35,13 @@ winget install GitHub.Copilot
 ### Quick setup
 
 ```shell
-ollama launch copilot
+zerollama launch copilot
 ```
 
 ### Run directly with a model
 
 ```shell
-ollama launch copilot --model kimi-k2.5:cloud
+zerollama launch copilot --model kimi-k2.5:cloud
 ```
 
 ## Recommended Models
@@ -60,7 +60,7 @@ Cloud models are also available at [ollama.com/search?c=cloud](https://ollama.co
 Run Copilot CLI without interaction for use in Docker, CI/CD, or scripts:
 
 ```shell
-ollama launch copilot --model kimi-k2.5:cloud --yes -- -p "how does this repository work?"
+zerollama launch copilot --model kimi-k2.5:cloud --yes -- -p "how does this repository work?"
 ```
 
 The `--yes` flag auto-pulls the model, skips selectors, and requires `--model` to be specified. Arguments after `--` are passed directly to Copilot CLI.

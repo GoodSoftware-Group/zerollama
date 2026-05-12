@@ -1524,12 +1524,16 @@ func (s *Server) writeCloudStatus(w http.ResponseWriter) error {
 }
 
 func (s *Server) getInferenceCompute(w http.ResponseWriter, r *http.Request) error {
-	ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	info, err := server.GetInferenceInfo(ctx)
 	if err != nil {
-		s.log().Error("failed to get inference info", "error", err)
-		return fmt.Errorf("failed to get inference info: %w", err)
+		s.log().Warn("failed to get inference info", "error", err)
+		w.Header().Set("Content-Type", "application/json")
+		return json.NewEncoder(w).Encode(responses.InferenceComputeResponse{
+			InferenceComputes:    nil,
+			DefaultContextLength: 0,
+		})
 	}
 
 	inferenceComputes := make([]responses.InferenceCompute, len(info.Computes))
@@ -1567,6 +1571,12 @@ func (s *Server) modelUpstream(w http.ResponseWriter, r *http.Request) error {
 
 	if req.Model == "" {
 		return fmt.Errorf("model is required")
+	}
+
+	// Eliza Cloud models are not in the Ollama registry; treat as present for search-as-you-type.
+	if strings.HasSuffix(strings.TrimSpace(req.Model), ":cloud") {
+		w.Header().Set("Content-Type", "application/json")
+		return json.NewEncoder(w).Encode(responses.ModelUpstreamResponse{Stale: false})
 	}
 
 	digest, pushTime, err := s.checkModelUpstream(r.Context(), req.Model, 5*time.Second)

@@ -793,15 +793,15 @@ func TestShowCopilotUserAgentOverwritesExistingBasename(t *testing.T) {
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	var s Server
+	stream := false
 
+	_, digest := createBinFile(t, ggml.KV{
+		"general.architecture": "gptoss",
+		"general.basename":     "upstream-base-name",
+	}, nil)
 	w := createRequest(t, s.CreateHandler, api.CreateRequest{
-		Model:      "show-model",
-		From:       "bob",
-		RemoteHost: "https://ollama.com",
-		Info: map[string]any{
-			"model_family": "gptoss",
-			"base_name":    "upstream-base-name",
-		},
+		Name:   "show-model",
+		Files:  map[string]string{"model.gguf": digest},
 		Stream: &stream,
 	})
 	if w.Code != http.StatusOK {
@@ -854,12 +854,13 @@ func TestShowCopilotUserAgentSetsBasenameWhenModelInfoIsEmpty(t *testing.T) {
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	var s Server
+	stream := false
 
+	_, digest := createBinFile(t, ggml.KV{"general.architecture": "gptoss"}, nil)
 	w := createRequest(t, s.CreateHandler, api.CreateRequest{
-		Model:      "show-remote",
-		From:       "bob",
-		RemoteHost: "https://ollama.com",
-		Stream:     &stream,
+		Name:   "show-remote",
+		Files:  map[string]string{"model.gguf": digest},
+		Stream: &stream,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status code 200 creating model, actual %d", w.Code)
@@ -889,8 +890,8 @@ func TestShowCopilotUserAgentSetsBasenameWhenModelInfoIsEmpty(t *testing.T) {
 		t.Fatalf("expected general.basename to be %q, got %v", "show-remote", resp.ModelInfo["general.basename"])
 	}
 
-	if len(resp.ModelInfo) != 1 {
-		t.Fatalf("expected model_info to contain only general.basename, got %#v", resp.ModelInfo)
+	if resp.ModelInfo["general.architecture"] != "gptoss" {
+		t.Fatalf("expected general.architecture from weights, got %v", resp.ModelInfo["general.architecture"])
 	}
 }
 

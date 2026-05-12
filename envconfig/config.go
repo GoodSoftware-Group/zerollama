@@ -1,6 +1,7 @@
 package envconfig
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,6 +223,10 @@ var (
 	NoHistory = Bool("OLLAMA_NOHISTORY")
 	// NoPrune disables pruning of model blobs on startup.
 	NoPrune = Bool("OLLAMA_NOPRUNE")
+	// LMStudioImport enables reusing LM Studio GGUF caches under ~/.lmstudio/models (and
+	// optional OLLAMA_LMSTUDIO_MODELS paths) when pulling a model, when a match is found.
+	// Default is on; set OLLAMA_LMSTUDIO_IMPORT=false to disable.
+	LMStudioImport = BoolWithDefault("OLLAMA_LMSTUDIO_IMPORT")
 	// SchedSpread allows scheduling models across all GPUs.
 	SchedSpread = Bool("OLLAMA_SCHED_SPREAD")
 	// MultiUserCache optimizes prompt caching for multi-user scenarios
@@ -304,29 +309,44 @@ type EnvVar struct {
 
 func AsMap() map[string]EnvVar {
 	ret := map[string]EnvVar{
-		"OLLAMA_DEBUG":              {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
-		"OLLAMA_DEBUG_LOG_REQUESTS": {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
-		"OLLAMA_FLASH_ATTENTION":    {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
-		"OLLAMA_KV_CACHE_TYPE":      {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
-		"OLLAMA_GPU_OVERHEAD":       {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
-		"OLLAMA_HOST":               {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
-		"OLLAMA_KEEP_ALIVE":         {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
-		"OLLAMA_LLM_LIBRARY":        {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
-		"OLLAMA_LOAD_TIMEOUT":       {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
-		"OLLAMA_MAX_LOADED_MODELS":  {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
-		"OLLAMA_MAX_QUEUE":          {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
-		"OLLAMA_MODELS":             {"OLLAMA_MODELS", Models(), "The path to the models directory"},
-		"OLLAMA_NO_CLOUD":           {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
-		"OLLAMA_NOHISTORY":          {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
-		"OLLAMA_NOPRUNE":            {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
-		"OLLAMA_NUM_PARALLEL":       {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
-		"OLLAMA_ORIGINS":            {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
-		"OLLAMA_SCHED_SPREAD":       {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
-		"OLLAMA_MULTIUSER_CACHE":    {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
-		"OLLAMA_CONTEXT_LENGTH":     {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
-		"OLLAMA_EDITOR":             {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
-		"OLLAMA_NEW_ENGINE":         {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
-		"OLLAMA_REMOTES":            {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
+		"OLLAMA_DEBUG":                        {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
+		"OLLAMA_DEBUG_LOG_REQUESTS":           {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
+		"OLLAMA_FLASH_ATTENTION":              {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
+		"OLLAMA_KV_CACHE_TYPE":                {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
+		"OLLAMA_GPU_OVERHEAD":                 {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
+		"OLLAMA_HOST":                         {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
+		"OLLAMA_KEEP_ALIVE":                   {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
+		"OLLAMA_LLM_LIBRARY":                  {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
+		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio GGUF caches when pulling a matching model (default true)"},
+		"OLLAMA_LMSTUDIO_MODELS":              {"OLLAMA_LMSTUDIO_MODELS", Var("OLLAMA_LMSTUDIO_MODELS"), "Only scan these LM Studio model directories (comma-separated); unset uses default paths"},
+		"OLLAMA_LOAD_TIMEOUT":                 {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
+		"OLLAMA_MAX_LOADED_MODELS":            {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
+		"OLLAMA_MAX_QUEUE":                    {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
+		"OLLAMA_MODELS":                       {"OLLAMA_MODELS", Models(), "The path to the models directory"},
+		"OLLAMA_NO_CLOUD":                     {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
+		"OLLAMA_NOHISTORY":                    {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
+		"OLLAMA_NOPRUNE":                      {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
+		"OLLAMA_NUM_PARALLEL":                 {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
+		"OLLAMA_ORIGINS":                      {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
+		"OLLAMA_SCHED_SPREAD":                 {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
+		"OLLAMA_MULTIUSER_CACHE":              {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
+		"OLLAMA_CONTEXT_LENGTH":               {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
+		"OLLAMA_EDITOR":                       {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
+		"OLLAMA_NEW_ENGINE":                   {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
+		"OLLAMA_REMOTES":                      {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
+		"ELIZACLOUD_API_KEY":                  {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
+		"OLLAMA_SGLANG_URL":                   {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
+		"OLLAMA_FFMPEG":                       {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
+		"OLLAMA_VIDEO_MAX_FRAMES":             {"OLLAMA_VIDEO_MAX_FRAMES", VideoMaxFrames(), "Max frames sampled per video (default 32)"},
+		"OLLAMA_VIDEO_SAMPLE_MODE":            {"OLLAMA_VIDEO_SAMPLE_MODE", VideoSampleMode(), "Native sampling: fps (time-uniform) or stride (every Nth frame) (default fps)"},
+		"OLLAMA_VIDEO_STRIDE":                 {"OLLAMA_VIDEO_STRIDE", VideoStride(), "When OLLAMA_VIDEO_SAMPLE_MODE=stride, emit every Nth frame (default 30)"},
+		"OLLAMA_VIDEO_SAMPLE_FPS":             {"OLLAMA_VIDEO_SAMPLE_FPS", VideoSampleFPS(), "ffmpeg fps filter value for sampling (default 1)"},
+		"OLLAMA_VIDEO_MAX_BYTES":              {"OLLAMA_VIDEO_MAX_BYTES", VideoMaxBytes(), "Max video payload size in bytes (default 256MiB)"},
+		"OLLAMA_VIDEO_MAX_PER_MESSAGE":        {"OLLAMA_VIDEO_MAX_PER_MESSAGE", VideoMaxVideosPerMessage(), "Max video_url parts per message (default 1)"},
+		"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE": {"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE", VideoMaxImagesPerMessage(), "Max images after video expansion per message (default 64)"},
+		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":         {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
+		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":    {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
+		"OLLAMA_VIDEO_FETCH_TIMEOUT":          {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},
@@ -365,6 +385,135 @@ func Values() map[string]string {
 // Var returns an environment variable stripped of leading and trailing quotes or spaces
 func Var(key string) string {
 	return strings.Trim(strings.TrimSpace(os.Getenv(key)), "\"'")
+}
+
+// WhisperBin is the path to a whisper.cpp-compatible STT binary. Required when using
+// modality_backends.transcribe=whisper unless the binary is discoverable via PATH as "whisper".
+func WhisperBin() string {
+	return cmp.Or(Var("OLLAMA_WHISPER_BIN"), "whisper")
+}
+
+// WhisperModelPath is a default GGML model path when backend_paths.whisper_model is unset.
+func WhisperModelPath() string {
+	return Var("OLLAMA_WHISPER_MODEL")
+}
+
+// WhisperExtraArgs are extra CLI tokens appended to the whisper invocation (split on spaces).
+func WhisperExtraArgs() string {
+	return Var("OLLAMA_WHISPER_EXTRA_ARGS")
+}
+
+// PiperBin is the Piper TTS executable.
+func PiperBin() string {
+	return cmp.Or(Var("OLLAMA_PIPER_BIN"), "piper")
+}
+
+// ExternalImageBin is a user script or binary for modality_backends.image=external-image.
+func ExternalImageBin() string {
+	return Var("OLLAMA_EXTERNAL_IMAGE_BIN")
+}
+
+// ModalityWhisperTimeout bounds Whisper subprocess runtime (default 10m).
+func ModalityWhisperTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_WHISPER_TIMEOUT", 10*time.Minute)
+}
+
+// ModalityPiperTimeout bounds Piper subprocess runtime (default 5m).
+func ModalityPiperTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_PIPER_TIMEOUT", 5*time.Minute)
+}
+
+// ModalityExternalImageTimeout bounds external image hook runtime (default 10m).
+func ModalityExternalImageTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_EXTERNAL_IMAGE_TIMEOUT", 10*time.Minute)
+}
+
+func modalityTimeout(envKey string, defaultDur time.Duration) time.Duration {
+	if s := Var(envKey); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultDur
+}
+
+// SGLangURL is the base URL for optional SGLang HTTP proxy (e.g. http://127.0.0.1:30000).
+// Used when modality_backends.video_understanding=sglang.
+func SGLangURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("OLLAMA_SGLANG_URL")), "/")
+}
+
+// FFmpegBin is the ffmpeg executable used for native video frame sampling (default: ffmpeg on PATH).
+func FFmpegBin() string {
+	return cmp.Or(Var("OLLAMA_FFMPEG"), "ffmpeg")
+}
+
+// VideoMaxFrames caps frames sampled per video (default 32).
+func VideoMaxFrames() int {
+	return int(Uint64("OLLAMA_VIDEO_MAX_FRAMES", 32)())
+}
+
+// VideoSampleMode is "fps" or "stride" for native ffmpeg sampling (default fps).
+func VideoSampleMode() string {
+	s := strings.ToLower(strings.TrimSpace(Var("OLLAMA_VIDEO_SAMPLE_MODE")))
+	switch s {
+	case "", "fps":
+		return "fps"
+	case "stride":
+		return "stride"
+	default:
+		return "fps"
+	}
+}
+
+// VideoStride is N for stride mode: emit every Nth decoded frame (default 30).
+func VideoStride() int {
+	n := int(Uint64("OLLAMA_VIDEO_STRIDE", 30)())
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// VideoSampleFPS is the target frame rate for ffmpeg fps filter (default 1.0).
+func VideoSampleFPS() float64 {
+	if s := Var("OLLAMA_VIDEO_SAMPLE_FPS"); s != "" {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+			return f
+		}
+	}
+	return 1.0
+}
+
+// VideoMaxBytes limits downloaded or embedded video payload size (default 256 MiB).
+func VideoMaxBytes() int64 {
+	return int64(Uint64("OLLAMA_VIDEO_MAX_BYTES", 256<<20)())
+}
+
+// VideoMaxVideosPerMessage limits video_url parts per user message (default 1).
+func VideoMaxVideosPerMessage() int {
+	return int(Uint64("OLLAMA_VIDEO_MAX_PER_MESSAGE", 1)())
+}
+
+// VideoMaxImagesPerMessage caps total images after expanding videos (default 64).
+func VideoMaxImagesPerMessage() int {
+	return int(Uint64("OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE", 64)())
+}
+
+// VideoFFmpegTimeout bounds a single ffmpeg invocation (default 5m).
+func VideoFFmpegTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_VIDEO_FFMPEG_TIMEOUT", 5*time.Minute)
+}
+
+// VideoAllowInsecureHTTP allows video_url to use http:// for remote fetches (default false; prefer https).
+func VideoAllowInsecureHTTP() bool {
+	s := strings.ToLower(strings.TrimSpace(Var("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP")))
+	return s == "1" || s == "true" || s == "yes"
+}
+
+// VideoFetchTimeout bounds the entire remote GET for video_url (connect + response headers + body read, default 10m).
+func VideoFetchTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_VIDEO_FETCH_TIMEOUT", 10*time.Minute)
 }
 
 // serverConfigData holds the parsed fields from ~/.ollama/server.json.
@@ -413,6 +562,14 @@ func cachedServerConfig() serverConfigData {
 	serverCfgMu.RLock()
 	defer serverCfgMu.RUnlock()
 	return serverCfg
+}
+
+// ElizaCloudAPIKey returns the API key for Eliza Cloud. The server sends it as X-API-Key on
+// outbound proxied requests to non-ollama.com hosts because Eliza’s contract is API-key based
+// (unlike legacy ollama.com Ed25519 signing). Empty means no key is sent; the server may log once
+// when cloud features are enabled and the first such request is made.
+func ElizaCloudAPIKey() string {
+	return Var("ELIZACLOUD_API_KEY")
 }
 
 // ReloadServerConfig refreshes the cached ~/.ollama/server.json settings.

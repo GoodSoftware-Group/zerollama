@@ -2097,9 +2097,7 @@ func TestOpenclawModelConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("cloud model uses hardcoded limits", func(t *testing.T) {
-		// Use a model name that's in cloudModelLimits and make the server
-		// report it as a remote/cloud model
+	t.Run("cloud model without hardcoded limits omits token windows", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/api/show" {
 				fmt.Fprintf(w, `{"capabilities":[],"model_info":{},"remote_model":"minimax-m2.7"}`)
@@ -2117,11 +2115,11 @@ func TestOpenclawModelConfig(t *testing.T) {
 		if !isCloud {
 			t.Error("expected isCloud = true for cloud model")
 		}
-		if cfg["contextWindow"] != 204_800 {
-			t.Errorf("contextWindow = %v, want 204800", cfg["contextWindow"])
+		if _, ok := cfg["contextWindow"]; ok {
+			t.Error("expected no contextWindow without cloud limit metadata")
 		}
-		if cfg["maxTokens"] != 128_000 {
-			t.Errorf("maxTokens = %v, want 128000", cfg["maxTokens"])
+		if _, ok := cfg["maxTokens"]; ok {
+			t.Error("expected no maxTokens without cloud limit metadata")
 		}
 	})
 

@@ -16,7 +16,7 @@ For a list of supported models, see Ollama's [model library](https://ollama.com/
 Ollama's cloud models require an account on [ollama.com](https://ollama.com). To sign in or create an account, run:
 
 ```
-ollama signin
+zerollama signin
 ```
 
 <Tabs>
@@ -25,7 +25,7 @@ ollama signin
 To run a cloud model, open the terminal and run:
 
 ```
-ollama run gpt-oss:120b-cloud
+zerollama run gpt-oss:120b-cloud
 ```
 
   </Tab>
@@ -34,7 +34,7 @@ ollama run gpt-oss:120b-cloud
 First, pull a cloud model so it can be accessed:
 
 ```
-ollama pull gpt-oss:120b-cloud
+zerollama pull gpt-oss:120b-cloud
 ```
 
 Next, install [Ollama's Python library](https://github.com/ollama/ollama-python):
@@ -67,7 +67,7 @@ for part in client.chat('gpt-oss:120b-cloud', messages=messages, stream=True):
 First, pull a cloud model so it can be accessed:
 
 ```
-ollama pull gpt-oss:120b-cloud
+zerollama pull gpt-oss:120b-cloud
 ```
 
 Next, install [Ollama's JavaScript library](https://github.com/ollama/ollama-js):
@@ -100,7 +100,7 @@ for await (const part of response) {
 First, pull a cloud model so it can be accessed:
 
 ```
-ollama pull gpt-oss:120b-cloud
+zerollama pull gpt-oss:120b-cloud
 ```
 
 Run the following cURL command to run the command via Ollama's API:

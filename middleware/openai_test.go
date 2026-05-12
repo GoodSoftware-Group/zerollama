@@ -508,9 +508,6 @@ func TestChatMiddleware(t *testing.T) {
 					{
 						Role:    "user",
 						Content: "Hello",
-					},
-					{
-						Role: "user",
 						Images: []api.ImageData{
 							func() []byte {
 								img, _ := base64.StdEncoding.DecodeString(image)
@@ -1629,5 +1626,30 @@ func TestResponsesMiddlewareZstd(t *testing.T) {
 				t.Fatalf("expected single user message %q, got %+v", tt.wantMessage, capturedRequest.Messages)
 			}
 		})
+	}
+}
+
+func TestSpeechMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(SpeechMiddleware())
+	router.POST("/v1/audio/speech", func(c *gin.Context) {
+		v, ok := c.Get(CtxKeySpeechRequest)
+		if !ok {
+			t.Fatal("missing speech request on context")
+		}
+		req := v.(openai.SpeechCreateRequest)
+		if req.Model != "m" || req.Input != "hi" {
+			t.Fatalf("unexpected request: %+v", req)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"m","input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.Code, resp.Body.String())
 	}
 }

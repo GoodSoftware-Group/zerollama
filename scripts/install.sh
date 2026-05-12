@@ -76,11 +76,11 @@ if [ "$OS" = "Darwin" ]; then
     unzip -q "$TEMP_DIR/Ollama-darwin.zip" -d "$TEMP_DIR"
     mv "$TEMP_DIR/Ollama.app" "/Applications/"
 
-    if [ ! -L "/usr/local/bin/ollama" ] || [ "$(readlink "/usr/local/bin/ollama")" != "/Applications/Ollama.app/Contents/Resources/ollama" ]; then
-        status "Adding 'ollama' command to PATH (may require password)..."
+    if [ ! -L "/usr/local/bin/zerollama" ] || [ "$(readlink "/usr/local/bin/zerollama")" != "/Applications/Ollama.app/Contents/Resources/zerollama" ]; then
+        status "Adding 'zerollama' command to PATH (may require password)..."
         mkdir -p "/usr/local/bin" 2>/dev/null || sudo mkdir -p "/usr/local/bin"
-        ln -sf "/Applications/Ollama.app/Contents/Resources/ollama" "/usr/local/bin/ollama" 2>/dev/null || \
-            sudo ln -sf "/Applications/Ollama.app/Contents/Resources/ollama" "/usr/local/bin/ollama"
+        ln -sf "/Applications/Ollama.app/Contents/Resources/zerollama" "/usr/local/bin/zerollama" 2>/dev/null || \
+            sudo ln -sf "/Applications/Ollama.app/Contents/Resources/zerollama" "/usr/local/bin/zerollama"
     fi
 
     if [ -z "${OLLAMA_NO_START:-}" ]; then
@@ -88,7 +88,7 @@ if [ "$OS" = "Darwin" ]; then
         open -a Ollama --args hidden
     fi
 
-    status "Install complete. You can now run 'ollama'."
+    status "Install complete. You can now run 'zerollama'."
     exit 0
 fi
 
@@ -170,9 +170,9 @@ $SUDO install -o0 -g0 -m755 -d $BINDIR
 $SUDO install -o0 -g0 -m755 -d "$OLLAMA_INSTALL_DIR/lib/ollama"
 download_and_extract "https://ollama.com/download" "$OLLAMA_INSTALL_DIR" "ollama-linux-${ARCH}"
 
-if [ "$OLLAMA_INSTALL_DIR/bin/ollama" != "$BINDIR/ollama" ] ; then
-    status "Making ollama accessible in the PATH in $BINDIR"
-    $SUDO ln -sf "$OLLAMA_INSTALL_DIR/ollama" "$BINDIR/ollama"
+if [ "$OLLAMA_INSTALL_DIR/bin/zerollama" != "$BINDIR/zerollama" ] ; then
+    status "Making zerollama accessible in the PATH in $BINDIR"
+    $SUDO ln -sf "$OLLAMA_INSTALL_DIR/zerollama" "$BINDIR/zerollama"
 fi
 
 # Check for NVIDIA JetPack systems with additional downloads
@@ -188,7 +188,7 @@ fi
 
 install_success() {
     status 'The Ollama API is now available at 127.0.0.1:11434.'
-    status 'Install complete. Run "ollama" from the command line.'
+    status 'Install complete. Run "zerollama" from the command line.'
 }
 trap install_success EXIT
 
@@ -218,7 +218,7 @@ Description=Ollama Service
 After=network-online.target
 
 [Service]
-ExecStart=$BINDIR/ollama serve
+ExecStart=$BINDIR/zerollama serve
 User=ollama
 Group=ollama
 Restart=always

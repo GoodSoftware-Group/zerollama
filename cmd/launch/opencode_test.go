@@ -114,7 +114,7 @@ func TestOpenCodeEdit(t *testing.T) {
 		}
 	})
 
-	t.Run("cloud model has limits", func(t *testing.T) {
+	t.Run("cloud model has no hardcoded limits in this build", func(t *testing.T) {
 		setTestHome(t, t.TempDir())
 		o := &OpenCode{}
 		if err := o.Edit([]string{"glm-4.7:cloud"}); err != nil {
@@ -128,16 +128,8 @@ func TestOpenCodeEdit(t *testing.T) {
 		models, _ := ollama["models"].(map[string]any)
 		entry, _ := models["glm-4.7:cloud"].(map[string]any)
 
-		limit, ok := entry["limit"].(map[string]any)
-		if !ok {
-			t.Fatal("cloud model should have limit set")
-		}
-		expected := cloudModelLimits["glm-4.7"]
-		if limit["context"] != float64(expected.Context) {
-			t.Errorf("context = %v, want %d", limit["context"], expected.Context)
-		}
-		if limit["output"] != float64(expected.Output) {
-			t.Errorf("output = %v, want %d", limit["output"], expected.Output)
+		if entry["limit"] != nil {
+			t.Errorf("expected no limit block, got %v", entry["limit"])
 		}
 	})
 
@@ -204,21 +196,21 @@ func TestLookupCloudModelLimit(t *testing.T) {
 		wantOutput  int
 	}{
 		{"glm-4.7", false, 0, 0},
-		{"glm-4.7:cloud", true, 202_752, 131_072},
-		{"glm-5:cloud", true, 202_752, 131_072},
-		{"glm-5.1:cloud", true, 202_752, 131_072},
-		{"gemma4:31b-cloud", true, 262_144, 131_072},
-		{"gpt-oss:120b-cloud", true, 131_072, 131_072},
-		{"gpt-oss:20b-cloud", true, 131_072, 131_072},
+		{"glm-4.7:cloud", false, 0, 0},
+		{"glm-5:cloud", false, 0, 0},
+		{"glm-5.1:cloud", false, 0, 0},
+		{"gemma4:31b-cloud", false, 0, 0},
+		{"gpt-oss:120b-cloud", false, 0, 0},
+		{"gpt-oss:20b-cloud", false, 0, 0},
 		{"kimi-k2.5", false, 0, 0},
-		{"kimi-k2.5:cloud", true, 262_144, 262_144},
+		{"kimi-k2.5:cloud", false, 0, 0},
 		{"deepseek-v3.2", false, 0, 0},
-		{"deepseek-v3.2:cloud", true, 163_840, 65_536},
+		{"deepseek-v3.2:cloud", false, 0, 0},
 		{"qwen3.5", false, 0, 0},
-		{"qwen3.5:cloud", true, 262_144, 32_768},
+		{"qwen3.5:cloud", false, 0, 0},
 		{"qwen3-coder:480b", false, 0, 0},
-		{"qwen3-coder:480b:cloud", true, 262_144, 65_536},
-		{"qwen3-coder-next:cloud", true, 262_144, 32_768},
+		{"qwen3-coder:480b:cloud", false, 0, 0},
+		{"qwen3-coder-next:cloud", false, 0, 0},
 		{"llama3.2", false, 0, 0},
 		{"unknown-model:cloud", false, 0, 0},
 	}
@@ -275,14 +267,11 @@ func TestFindOpenCode(t *testing.T) {
 	})
 }
 
-// Verify that the BackfillsCloudModelLimitOnExistingEntry test from the old
-// file-based approach is covered by the new inline config approach.
+// Cloud token limit maps are empty in this build; entries still omit hardcoded limits.
 func TestOpenCodeEdit_CloudModelLimitStructure(t *testing.T) {
 	o := &OpenCode{}
 	tmpDir := t.TempDir()
 	setTestHome(t, tmpDir)
-
-	expected := cloudModelLimits["glm-4.7"]
 
 	if err := o.Edit([]string{"glm-4.7:cloud"}); err != nil {
 		t.Fatal(err)
@@ -295,15 +284,8 @@ func TestOpenCodeEdit_CloudModelLimitStructure(t *testing.T) {
 	models, _ := ollama["models"].(map[string]any)
 	entry, _ := models["glm-4.7:cloud"].(map[string]any)
 
-	limit, ok := entry["limit"].(map[string]any)
-	if !ok {
-		t.Fatal("cloud model limit was not set")
-	}
-	if limit["context"] != float64(expected.Context) {
-		t.Errorf("context = %v, want %d", limit["context"], expected.Context)
-	}
-	if limit["output"] != float64(expected.Output) {
-		t.Errorf("output = %v, want %d", limit["output"], expected.Output)
+	if _, ok := entry["limit"]; ok {
+		t.Fatal("expected no limit block when cloud limit metadata is disabled")
 	}
 }
 

@@ -56,12 +56,12 @@ func TestDoUpgrade(t *testing.T) {
 			Body: []byte("would be app binary"),
 		},
 		{
-			Name: "Ollama.app/Contents/Resources/ollama",
+			Name: "Ollama.app/Contents/Resources/zerollama",
 			Body: []byte("would be the cli"),
 		},
 		{
 			Name: "Ollama.app/Contents/Resources/dummy",
-			Body: []byte("./ollama"),
+			Body: []byte("./zerollama"),
 			Mode: os.ModeSymlink,
 		},
 	}); err != nil {
@@ -108,7 +108,7 @@ func TestDoUpgrade(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(BundlePath, "Contents", "MacOS", "Ollama")); err != nil {
 		t.Fatalf("missing new App")
 	}
-	if _, err := os.Stat(filepath.Join(BundlePath, "Contents", "Resources", "ollama")); err != nil {
+	if _, err := os.Stat(filepath.Join(BundlePath, "Contents", "Resources", "zerollama")); err != nil {
 		t.Fatalf("missing new cli")
 	}
 
@@ -141,7 +141,7 @@ func TestDoUpgrade(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(BundlePath, "Contents", "MacOS", "Ollama")); err != nil {
 		t.Fatalf("missing old App")
 	}
-	if _, err := os.Stat(filepath.Join(BundlePath, "Contents", "Resources", "ollama")); err != nil {
+	if _, err := os.Stat(filepath.Join(BundlePath, "Contents", "Resources", "zerollama")); err != nil {
 		t.Fatalf("missing old cli")
 	}
 }
@@ -170,12 +170,12 @@ func TestDoUpgradeAtStartup(t *testing.T) {
 			Body: []byte("would be app binary"),
 		},
 		{
-			Name: "Ollama.app/Contents/Resources/ollama",
+			Name: "Ollama.app/Contents/Resources/zerollama",
 			Body: []byte("would be the cli"),
 		},
 		{
 			Name: "Ollama.app/Contents/Resources/dummy",
-			Body: []byte("./ollama"),
+			Body: []byte("./zerollama"),
 			Mode: os.ModeSymlink,
 		},
 	}); err != nil {
@@ -208,7 +208,7 @@ func TestVerifyDownloadFailures(t *testing.T) {
 				Name: "Ollama.app/",
 				Body: []byte{},
 			}, {
-				Name: "Ollama.app/Resources/ollama",
+				Name: "Ollama.app/Resources/zerollama",
 				Body: []byte("cli payload here"),
 			}, {
 				Name: "Ollama.app/Contents/MacOS/Ollama",

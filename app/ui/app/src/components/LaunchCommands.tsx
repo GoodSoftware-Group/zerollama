@@ -4,43 +4,46 @@ import CopyButton from "@/components/CopyButton";
 interface LaunchCommand {
   id: string;
   name: string;
+  /** Terminal command (`zerollama launch …`) or a URL to copy for link rows. */
   command: string;
   description: string;
   icon: string;
   darkIcon?: string;
   iconClassName?: string;
   borderless?: boolean;
+  /** `link` = copy GitHub URL; default = copy `zerollama launch` command. */
+  launchKind?: "command" | "link";
 }
 
 const LAUNCH_COMMANDS: LaunchCommand[] = [
   {
-    id: "openclaw",
-    name: "OpenClaw",
-    command: "ollama launch openclaw",
-    description: "Personal AI with 100+ skills",
-    icon: "/launch-icons/openclaw.svg",
+    id: "zoey",
+    name: "Zoey",
+    command: "zerollama launch zoey",
+    description: "Privacy-first, local-first AI agent framework (Rust)",
+    icon: "/launch-icons/zoey.png",
+    iconClassName: "h-7 w-7 rounded-lg object-cover",
   },
   {
-    id: "claude",
-    name: "Claude",
-    command: "ollama launch claude",
-    description: "Anthropic's coding tool with subagents",
-    icon: "/launch-icons/claude.svg",
-    iconClassName: "h-7 w-7",
+    id: "eliza",
+    name: "elizaOS",
+    command: "zerollama launch eliza",
+    description: "Autonomous agents for everyone",
+    icon: "/launch-icons/elizaos.png",
+    iconClassName: "h-7 w-7 rounded-lg object-cover",
   },
   {
-    id: "codex",
-    name: "Codex",
-    command: "ollama launch codex",
-    description: "OpenAI's open-source coding agent",
-    icon: "/launch-icons/codex.svg",
-    darkIcon: "/launch-icons/codex-dark.svg",
-    iconClassName: "h-7 w-7",
+    id: "hermes-agent",
+    name: "Hermes",
+    command: "zerollama launch hermes",
+    description: "The agent that grows with you (Nous Research)",
+    icon: "/launch-icons/hermes.png",
+    iconClassName: "h-7 w-7 rounded-lg object-cover",
   },
   {
     id: "opencode",
     name: "OpenCode",
-    command: "ollama launch opencode",
+    command: "zerollama launch opencode",
     description: "Anomaly's open-source coding agent",
     icon: "/launch-icons/opencode.svg",
     iconClassName: "h-7 w-7 rounded",
@@ -48,18 +51,25 @@ const LAUNCH_COMMANDS: LaunchCommand[] = [
   {
     id: "droid",
     name: "Droid",
-    command: "ollama launch droid",
+    command: "zerollama launch droid",
     description: "Factory's coding agent across terminal and IDEs",
     icon: "/launch-icons/droid.svg",
   },
   {
     id: "pi",
     name: "Pi",
-    command: "ollama launch pi",
+    command: "zerollama launch pi",
     description: "Minimal AI agent toolkit with plugin support",
     icon: "/launch-icons/pi.svg",
     darkIcon: "/launch-icons/pi-dark.svg",
     iconClassName: "h-7 w-7",
+  },
+  {
+    id: "openclaw",
+    name: "OpenClaw",
+    command: "zerollama launch openclaw",
+    description: "Personal AI with 100+ skills",
+    icon: "/launch-icons/openclaw.svg",
   },
 ];
 
@@ -68,7 +78,7 @@ export default function LaunchCommands() {
   const { setSettings } = useSettings();
 
   const renderCommandCard = (item: LaunchCommand) => (
-    <div key={item.command} className="w-full text-left">
+    <div key={item.id} className="w-full text-left">
       <div className="flex items-start gap-4 sm:gap-5">
         <div
           aria-hidden="true"
@@ -98,7 +108,11 @@ export default function LaunchCommands() {
             <CopyButton
               content={item.command}
               size="md"
-              title="Copy command to clipboard"
+              title={
+                item.launchKind === "link"
+                  ? "Copy link to clipboard"
+                  : "Copy command to clipboard"
+              }
               className="text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-200/60 dark:hover:bg-neutral-700/70"
               onCopy={() => {
                 setSettings({ LastHomeView: item.id }).catch(() => { });

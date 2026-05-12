@@ -48,6 +48,8 @@ var (
 	errCapabilityEmbedding  = errors.New("embedding")
 	errCapabilityThinking   = errors.New("thinking")
 	errCapabilityImage      = errors.New("image generation")
+	errCapabilitySpeech     = errors.New("speech")
+	errCapabilityVideo      = errors.New("video")
 	errInsecureProtocol     = errors.New("insecure protocol http")
 )
 
@@ -98,6 +100,7 @@ func (m *Model) Capabilities() []model.Capability {
 			}
 			if f.KeyValue("vision.block_count").Valid() {
 				capabilities = append(capabilities, model.CapabilityVision)
+				capabilities = append(capabilities, model.CapabilityVideo)
 			}
 			if f.KeyValue("audio.block_count").Valid() {
 				capabilities = append(capabilities, model.CapabilityAudio)
@@ -115,6 +118,15 @@ func (m *Model) Capabilities() []model.Capability {
 			if !slices.Contains(capabilities, cap) {
 				capabilities = append(capabilities, cap)
 			}
+			if cap == model.CapabilityVision && !slices.Contains(capabilities, model.CapabilityVideo) {
+				capabilities = append(capabilities, model.CapabilityVideo)
+			}
+		}
+	}
+
+	if m.Config.ModalityBackends != nil {
+		if b := m.Config.ModalityBackends[model.ModalitySpeech]; b != "" && !slices.Contains(capabilities, model.CapabilitySpeech) {
+			capabilities = append(capabilities, model.CapabilitySpeech)
 		}
 	}
 
@@ -144,6 +156,9 @@ func (m *Model) Capabilities() []model.Capability {
 	// Check for vision capability in projector-based models
 	if len(m.ProjectorPaths) > 0 {
 		capabilities = append(capabilities, model.CapabilityVision)
+		if !slices.Contains(capabilities, model.CapabilityVideo) {
+			capabilities = append(capabilities, model.CapabilityVideo)
+		}
 	}
 
 	// Skip the thinking check if it's already set
@@ -163,7 +178,7 @@ func (m *Model) Capabilities() []model.Capability {
 	// until multimodal runtime pipeline lands. Remove when imageproc.go is wired up.
 	if m.Config.ModelFormat == "safetensors" && isGemma4Renderer(m.Config.Renderer) {
 		capabilities = slices.DeleteFunc(capabilities, func(c model.Capability) bool {
-			return c == model.CapabilityVision || c == "audio"
+			return c == model.CapabilityVision || c == model.CapabilityVideo || c == "audio"
 		})
 	}
 
@@ -186,6 +201,8 @@ func (m *Model) CheckCapabilities(want ...model.Capability) error {
 		model.CapabilityEmbedding:  errCapabilityEmbedding,
 		model.CapabilityThinking:   errCapabilityThinking,
 		model.CapabilityImage:      errCapabilityImage,
+		model.CapabilitySpeech:     errCapabilitySpeech,
+		model.CapabilityVideo:      errCapabilityVideo,
 	}
 
 	for _, cap := range want {
@@ -635,6 +652,14 @@ func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 			return err
 		}
 		fn(api.ProgressResponse{Status: "success"})
+		return nil
+	}
+
+	imported, err := tryImportFromLMStudio(ctx, n, deleteMap, fn)
+	if err != nil {
+		return err
+	}
+	if imported {
 		return nil
 	}
 

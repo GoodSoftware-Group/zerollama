@@ -316,10 +316,10 @@ function mlxCuda13 {
 
 function ollama {
     mkdir -Force -path "${script:DIST_DIR}\" | Out-Null
-    Write-Output "Building ollama CLI"
-    & go build -trimpath -ldflags "-s -w -X=github.com/ollama/ollama/version.Version=$script:VERSION -X=github.com/ollama/ollama/server.mode=release" .
+    Write-Output "Building zerollama CLI"
+    & go build -trimpath -o zerollama.exe -ldflags "-s -w -X=github.com/ollama/ollama/version.Version=$script:VERSION -X=github.com/ollama/ollama/server.mode=release" .
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
-    cp .\ollama.exe "${script:DIST_DIR}\"
+    cp .\zerollama.exe "${script:DIST_DIR}\"
 }
 
 function app {

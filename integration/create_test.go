@@ -98,7 +98,7 @@ func ollamaBin() string {
 	if bin := os.Getenv("OLLAMA_BIN"); bin != "" {
 		return bin
 	}
-	if abs, err := filepath.Abs("../ollama"); err == nil {
+	if abs, err := filepath.Abs("../zerollama"); err == nil {
 		if _, err := os.Stat(abs); err == nil {
 			return abs
 		}

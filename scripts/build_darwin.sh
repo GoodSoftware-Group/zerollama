@@ -113,7 +113,7 @@ _build_darwin() {
             MLX_CGO_CFLAGS="-O3 -mmacosx-version-min=14.0"
             MLX_CGO_LDFLAGS="-lc++ -framework Metal -framework Foundation -framework Accelerate -mmacosx-version-min=14.0"
         fi
-        GOOS=darwin GOARCH=$ARCH CGO_ENABLED=1 CGO_CFLAGS="$MLX_CGO_CFLAGS" CGO_LDFLAGS="$MLX_CGO_LDFLAGS" go build -o $INSTALL_PREFIX .
+        GOOS=darwin GOARCH=$ARCH CGO_ENABLED=1 CGO_CFLAGS="$MLX_CGO_CFLAGS" CGO_LDFLAGS="$MLX_CGO_LDFLAGS" go build -o "$INSTALL_PREFIX/zerollama" .
         # MLX libraries stay in lib/ollama/ (flat or variant subdirs).
         # The runtime discovery in dynamic.go searches lib/ollama/ relative
         # to the executable, including mlx_* subdirectories.
@@ -123,24 +123,24 @@ _build_darwin() {
 _sign_darwin() {
     status "Creating universal binary..."
     mkdir -p dist/darwin
-    lipo -create -output dist/darwin/ollama dist/darwin-*/ollama
-    chmod +x dist/darwin/ollama
+    lipo -create -output dist/darwin/zerollama dist/darwin-*/zerollama
+    chmod +x dist/darwin/zerollama
 
     if [ -n "$APPLE_IDENTITY" ]; then
-        for F in dist/darwin/ollama dist/darwin-*/lib/ollama/* dist/darwin-*/lib/ollama/mlx_metal_v*/*; do
+        for F in dist/darwin/zerollama dist/darwin-*/lib/ollama/* dist/darwin-*/lib/ollama/mlx_metal_v*/*; do
             [ -f "$F" ] && [ ! -L "$F" ] || continue
             codesign -f --timestamp -s "$APPLE_IDENTITY" --identifier ai.ollama.ollama --options=runtime "$F"
         done
 
         # create a temporary zip for notarization
         TEMP=$(mktemp -u).zip
-        ditto -c -k --keepParent dist/darwin/ollama "$TEMP"
+        ditto -c -k --keepParent dist/darwin/zerollama "$TEMP"
         xcrun notarytool submit "$TEMP" --wait --timeout 20m --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID
         rm -f "$TEMP"
     fi
 
     status "Creating universal tarball..."
-    tar -cf dist/ollama-darwin.tar --strip-components 2 dist/darwin/ollama
+    tar -cf dist/ollama-darwin.tar --strip-components 2 dist/darwin/zerollama
     tar -rf dist/ollama-darwin.tar --strip-components 4 dist/darwin-amd64/lib/
     tar -rf dist/ollama-darwin.tar --strip-components 4 dist/darwin-arm64/lib/
     gzip -9vc <dist/ollama-darwin.tar >dist/ollama-darwin.tgz
@@ -192,10 +192,10 @@ _build_macapp() {
     plutil -replace CFBundleShortVersionString -string "$VERSION" dist/Ollama.app/Contents/Info.plist
     plutil -replace CFBundleVersion -string "$VERSION" dist/Ollama.app/Contents/Info.plist
 
-    # Setup the ollama binaries
+    # Setup the zerollama CLI binary
     mkdir -p dist/Ollama.app/Contents/Resources
     if [ -d dist/darwin-amd64 ]; then
-        lipo -create -output dist/Ollama.app/Contents/Resources/ollama dist/darwin-amd64/ollama dist/darwin-arm64/ollama
+        lipo -create -output dist/Ollama.app/Contents/Resources/zerollama dist/darwin-amd64/zerollama dist/darwin-arm64/zerollama
 
         # Copy .so files from both architectures (names don't collide: arm64=libggml-cpu.so, amd64=libggml-cpu-*.so)
         cp dist/darwin-arm64/lib/ollama/*.so dist/Ollama.app/Contents/Resources/ 2>/dev/null || true
@@ -248,7 +248,7 @@ _build_macapp() {
             fi
         done
     else
-        cp -a dist/darwin/ollama dist/Ollama.app/Contents/Resources/ollama
+        cp -a dist/darwin/zerollama dist/Ollama.app/Contents/Resources/zerollama
         # arm64-only build: copy variant subdirs directly
         for VARIANT in dist/darwin-arm64/lib/ollama/mlx_metal_v*/; do
             [ -d "$VARIANT" ] || continue
@@ -264,11 +264,11 @@ _build_macapp() {
         done
         (cd dist/Ollama.app/Contents/Resources && ln -sf libggml-base.0.0.0.dylib libggml-base.0.dylib && ln -sf libggml-base.0.dylib libggml-base.dylib) 2>/dev/null || true
     fi
-    chmod a+x dist/Ollama.app/Contents/Resources/ollama
+    chmod a+x dist/Ollama.app/Contents/Resources/zerollama
 
     # Sign
     if [ -n "$APPLE_IDENTITY" ]; then
-        codesign -f --timestamp -s "$APPLE_IDENTITY" --identifier ai.ollama.ollama --options=runtime dist/Ollama.app/Contents/Resources/ollama
+        codesign -f --timestamp -s "$APPLE_IDENTITY" --identifier ai.ollama.ollama --options=runtime dist/Ollama.app/Contents/Resources/zerollama
         for lib in dist/Ollama.app/Contents/Resources/*.so dist/Ollama.app/Contents/Resources/*.dylib dist/Ollama.app/Contents/Resources/*.metallib dist/Ollama.app/Contents/Resources/mlx_metal_v*/*.dylib dist/Ollama.app/Contents/Resources/mlx_metal_v*/*.metallib dist/Ollama.app/Contents/Resources/mlx_metal_v*/*.so; do
             [ -f "$lib" ] || continue
             codesign -f --timestamp -s "$APPLE_IDENTITY" --identifier ai.ollama.ollama --options=runtime "$lib"
@@ -278,7 +278,7 @@ _build_macapp() {
 
     rm -f dist/Ollama-darwin.zip
     ditto -c -k --norsrc --keepParent dist/Ollama.app dist/Ollama-darwin.zip
-    (cd dist/Ollama.app/Contents/Resources/; tar -cf - ollama *.so *.dylib *.metallib mlx_metal_v*/ 2>/dev/null) | gzip -9vc > dist/ollama-darwin.tgz
+    (cd dist/Ollama.app/Contents/Resources/; tar -cf - zerollama *.so *.dylib *.metallib mlx_metal_v*/ 2>/dev/null) | gzip -9vc > dist/ollama-darwin.tgz
 
     # Notarize and Staple
     if [ -n "$APPLE_IDENTITY" ]; then

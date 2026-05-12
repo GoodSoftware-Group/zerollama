@@ -3,6 +3,7 @@ package openai
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -473,8 +474,16 @@ func ToModel(r api.ShowResponse, m string) Model {
 	}
 }
 
-// FromChatRequest converts a ChatCompletionRequest to api.ChatRequest
+// FromChatRequest converts a ChatCompletionRequest to api.ChatRequest.
+// Callers without a request scope use [context.Background] for remote video_url fetches;
+// HTTP middleware should use [FromChatRequestWithContext] so clients can cancel downloads.
 func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
+	return FromChatRequestWithContext(context.Background(), r)
+}
+
+// FromChatRequestWithContext converts a ChatCompletionRequest to api.ChatRequest.
+// Context is threaded to remote video_url GETs so disconnect aborts work; data: URIs ignore it.
+func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*api.ChatRequest, error) {
 	var messages []api.Message
 	for _, msg := range r.Messages {
 		toolName := ""
@@ -492,6 +501,9 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 			}
 			messages = append(messages, api.Message{Role: msg.Role, Content: content, Thinking: msg.Reasoning, ToolCalls: toolCalls, ToolName: toolName, ToolCallID: msg.ToolCallID})
 		case []any:
+			var textParts []string
+			var images []api.ImageData
+			var videos []api.VideoData
 			for _, c := range content {
 				data, ok := c.(map[string]any)
 				if !ok {
@@ -503,7 +515,7 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 					if !ok {
 						return nil, errors.New("invalid message format")
 					}
-					messages = append(messages, api.Message{Role: msg.Role, Content: text})
+					textParts = append(textParts, text)
 				case "image_url":
 					var url string
 					if urlMap, ok := data["image_url"].(map[string]any); ok {
@@ -521,7 +533,23 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 						return nil, err
 					}
 
-					messages = append(messages, api.Message{Role: msg.Role, Images: []api.ImageData{img}})
+					images = append(images, img)
+				case "video_url":
+					var videoURL string
+					if vmap, ok := data["video_url"].(map[string]any); ok {
+						if videoURL, ok = vmap["url"].(string); !ok {
+							return nil, errors.New("invalid message format")
+						}
+					} else {
+						if videoURL, ok = data["video_url"].(string); !ok {
+							return nil, errors.New("invalid message format")
+						}
+					}
+					vb, err := decodeVideoURL(ctx, videoURL)
+					if err != nil {
+						return nil, err
+					}
+					videos = append(videos, vb)
 				case "input_audio":
 					audioMap, ok := data["input_audio"].(map[string]any)
 					if !ok {
@@ -535,14 +563,19 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 					if err != nil {
 						return nil, fmt.Errorf("invalid input_audio base64 data: %w", err)
 					}
-					messages = append(messages, api.Message{Role: msg.Role, Images: []api.ImageData{audioBytes}})
+					images = append(images, audioBytes)
 				default:
 					return nil, errors.New("invalid message format")
 				}
 			}
-			// since we might have added multiple messages above, if we have tools
-			// calls we'll add them to the last message
-			if len(messages) > 0 && len(msg.ToolCalls) > 0 {
+			contentJoined := strings.Join(textParts, "\n")
+			messages = append(messages, api.Message{
+				Role:    msg.Role,
+				Content: contentJoined,
+				Images:  images,
+				Videos:  videos,
+			})
+			if len(msg.ToolCalls) > 0 {
 				toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
 				if err != nil {
 					return nil, err
@@ -838,9 +871,64 @@ func ToImageGenerationResponse(resp api.GenerateResponse) ImageGenerationRespons
 	}
 }
 
+// SpeechCreateRequest is an OpenAI-compatible POST /v1/audio/speech body.
+type SpeechCreateRequest struct {
+	Model          string   `json:"model"`
+	Input          string   `json:"input"`
+	Voice          string   `json:"voice,omitempty"`
+	ResponseFormat string   `json:"response_format,omitempty"` // mp3, opus, aac, flac, wav, pcm
+	Speed          *float64 `json:"speed,omitempty"`
+}
+
 // TranscriptionResponse is the response format for /v1/audio/transcriptions.
 type TranscriptionResponse struct {
 	Text string `json:"text"`
+}
+
+// TranscriptionVerboseResponse is a subset of the OpenAI verbose_json transcription shape.
+// Segment timestamps are omitted when the backend does not provide them.
+type TranscriptionVerboseResponse struct {
+	Task     string                 `json:"task"`
+	Language string                 `json:"language,omitempty"`
+	Duration float64                `json:"duration"`
+	Text     string                 `json:"text"`
+	Segments []TranscriptionSegment `json:"segments"`
+}
+
+// TranscriptionSegment mirrors OpenAI segment fields used by clients.
+type TranscriptionSegment struct {
+	ID    int     `json:"id"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
+}
+
+// TranscriptionResult builds JSON/text/verbose payloads for a transcription.
+func TranscriptionResult(text, responseFormat, language string) (contentType string, body []byte, err error) {
+	text = strings.TrimSpace(text)
+	switch responseFormat {
+	case "text":
+		return "text/plain", []byte(text), nil
+	case "verbose_json":
+		verbose := TranscriptionVerboseResponse{
+			Task:     "transcribe",
+			Language: language,
+			Duration: 0,
+			Text:     text,
+			Segments: []TranscriptionSegment{
+				{ID: 0, Start: 0, End: 0, Text: text},
+			},
+		}
+		b, err := json.Marshal(verbose)
+		return "application/json", b, err
+	default:
+		// json, srt, vtt — only json is fully supported; others fall back to simple JSON text field.
+		if responseFormat != "" && responseFormat != "json" {
+			slog.Debug("transcription response_format not fully implemented; returning json text field", "format", responseFormat)
+		}
+		b, err := json.Marshal(TranscriptionResponse{Text: text})
+		return "application/json", b, err
+	}
 }
 
 // TranscriptionRequest holds parsed fields from the multipart form.

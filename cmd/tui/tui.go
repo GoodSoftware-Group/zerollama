@@ -255,7 +255,7 @@ func (m model) View() string {
 		return ""
 	}
 
-	s := selectorTitleStyle.Render("Ollama "+versionStyle.Render(version.Version)) + "\n\n"
+	s := selectorTitleStyle.Render("Zerollama "+versionStyle.Render(version.Version)) + "\n\n"
 
 	for i, item := range m.items {
 		s += m.renderMenuItem(i, item)

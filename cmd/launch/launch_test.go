@@ -646,9 +646,6 @@ func TestBuildLauncherState_InstalledAndCloudDisabled(t *testing.T) {
 	if err := config.SetLastModel("glm-5:cloud"); err != nil {
 		t.Fatalf("failed to save last model: %v", err)
 	}
-	if err := config.SaveIntegration("claude", []string{"glm-5:cloud"}); err != nil {
-		t.Fatalf("failed to save claude config: %v", err)
-	}
 	if err := config.SaveIntegration("opencode", []string{"glm-5:cloud", "llama3.2"}); err != nil {
 		t.Fatalf("failed to save opencode config: %v", err)
 	}
@@ -674,14 +671,8 @@ func TestBuildLauncherState_InstalledAndCloudDisabled(t *testing.T) {
 	if !state.Integrations["opencode"].Installed {
 		t.Fatal("expected opencode to be marked installed")
 	}
-	if state.Integrations["claude"].Installed {
-		t.Fatal("expected claude to be marked not installed")
-	}
 	if state.RunModelUsable {
 		t.Fatal("expected saved cloud run model to be unusable when cloud is disabled")
-	}
-	if state.Integrations["claude"].ModelUsable {
-		t.Fatal("expected claude cloud config to be unusable when cloud is disabled")
 	}
 	if !state.Integrations["opencode"].ModelUsable {
 		t.Fatal("expected editor config with a remaining local model to stay usable")
@@ -746,8 +737,8 @@ func TestBuildLauncherState_ToleratesInventoryFailure(t *testing.T) {
 	if err := config.SetLastModel("llama3.2"); err != nil {
 		t.Fatalf("failed to seed last model: %v", err)
 	}
-	if err := config.SaveIntegration("claude", []string{"qwen3:8b"}); err != nil {
-		t.Fatalf("failed to seed claude config: %v", err)
+	if err := config.SaveIntegration("opencode", []string{"qwen3:8b"}); err != nil {
+		t.Fatalf("failed to seed opencode config: %v", err)
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -773,10 +764,10 @@ func TestBuildLauncherState_ToleratesInventoryFailure(t *testing.T) {
 	if !state.RunModelUsable {
 		t.Fatal("expected saved run model to remain usable via show fallback")
 	}
-	if state.Integrations["claude"].CurrentModel != "qwen3:8b" {
-		t.Fatalf("expected saved integration model to remain visible, got %q", state.Integrations["claude"].CurrentModel)
+	if state.Integrations["opencode"].CurrentModel != "qwen3:8b" {
+		t.Fatalf("expected saved integration model to remain visible, got %q", state.Integrations["opencode"].CurrentModel)
 	}
-	if !state.Integrations["claude"].ModelUsable {
+	if !state.Integrations["opencode"].ModelUsable {
 		t.Fatal("expected saved integration model to remain usable via show fallback")
 	}
 }
@@ -1174,7 +1165,7 @@ func TestLaunchIntegration_EditorForceConfigure_FloatsCheckedModelsInPicker(t *t
 	editor := &launcherEditorRunner{}
 	withIntegrationOverride(t, "droid", editor)
 
-	if err := config.SaveIntegration("droid", []string{"qwen3.5:cloud", "qwen3.5"}); err != nil {
+	if err := config.SaveIntegration("droid", []string{"qwen3.5", "llama3.2"}); err != nil {
 		t.Fatalf("failed to seed config: %v", err)
 	}
 
@@ -1185,20 +1176,16 @@ func TestLaunchIntegration_EditorForceConfigure_FloatsCheckedModelsInPicker(t *t
 			gotItems = append(gotItems, item.Name)
 		}
 		gotPreChecked = append([]string(nil), preChecked...)
-		return []string{"qwen3.5:cloud", "qwen3.5"}, nil
+		return []string{"qwen3.5", "llama3.2"}, nil
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			fmt.Fprint(w, `{"models":[{"name":"qwen3.5:cloud","remote_model":"qwen3.5"},{"name":"qwen3.5"}]}`)
+			fmt.Fprint(w, `{"models":[{"name":"qwen3.5"},{"name":"llama3.2"}]}`)
 		case "/api/show":
 			var req apiShowRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if req.Model == "qwen3.5:cloud" {
-				fmt.Fprint(w, `{"remote_model":"qwen3.5"}`)
-				return
-			}
 			fmt.Fprintf(w, `{"model":%q}`, req.Model)
 		case "/api/me":
 			fmt.Fprint(w, `{"name":"test-user"}`)
@@ -1219,13 +1206,13 @@ func TestLaunchIntegration_EditorForceConfigure_FloatsCheckedModelsInPicker(t *t
 	if len(gotItems) == 0 {
 		t.Fatal("expected multi selector to receive items")
 	}
-	if gotItems[0] != "qwen3.5:cloud" {
-		t.Fatalf("expected checked models floated to top with qwen3.5:cloud first, got %v", gotItems)
+	if gotItems[0] != "qwen3.5" {
+		t.Fatalf("expected checked models floated to top with qwen3.5 first, got %v", gotItems)
 	}
 	if len(gotPreChecked) < 2 {
 		t.Fatalf("expected prechecked models to be preserved, got %v", gotPreChecked)
 	}
-	if gotPreChecked[0] != "qwen3.5:cloud" {
+	if gotPreChecked[0] != "qwen3.5" {
 		t.Fatalf("expected saved default to remain first in prechecked, got %v", gotPreChecked)
 	}
 }

@@ -107,7 +107,7 @@ func reapServers() error {
 	currentPID := os.Getpid()
 
 	// Use wmic to find ollama processes
-	cmd := exec.Command("wmic", "process", "where", "name='ollama.exe'", "get", "ProcessId")
+	cmd := exec.Command("wmic", "process", "where", "name='zerollama.exe'", "get", "ProcessId")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.Output()
 	if err != nil {

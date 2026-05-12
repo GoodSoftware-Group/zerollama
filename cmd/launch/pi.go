@@ -14,6 +14,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/cmd/internal/fileutil"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/modelref"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -53,7 +54,7 @@ func (p *Pi) Run(model string, args []string) error {
 
 func ensureNpmInstalled() error {
 	if _, err := exec.LookPath("npm"); err != nil {
-		return fmt.Errorf("npm (Node.js) is required to launch pi\n\nInstall it first:\n  https://nodejs.org/\n\nThen re-run:\n  ollama launch pi")
+		return fmt.Errorf("npm (Node.js) is required to launch pi\n\nInstall it first:\n  https://nodejs.org/\n\nThen re-run:\n  zerollama launch pi")
 	}
 	return nil
 }
@@ -64,7 +65,7 @@ func ensurePiInstalled() (string, error) {
 	}
 
 	if _, err := exec.LookPath("npm"); err != nil {
-		return "", fmt.Errorf("pi is not installed and required dependencies are missing\n\nInstall the following first:\n  npm (Node.js): https://nodejs.org/\n\nThen re-run:\n  ollama launch pi")
+		return "", fmt.Errorf("pi is not installed and required dependencies are missing\n\nInstall the following first:\n  npm (Node.js): https://nodejs.org/\n\nThen re-run:\n  zerollama launch pi")
 	}
 
 	ok, err := ConfirmPrompt("Pi is not installed. Install with npm?")
@@ -247,6 +248,9 @@ func (p *Pi) Edit(models []string) error {
 						if _, ok := lookupCloudModelLimit(id); ok {
 							continue
 						}
+						if modelref.HasExplicitCloudSource(id) {
+							continue
+						}
 					}
 					newModels = append(newModels, m)
 					selectedSet[id] = false
@@ -321,7 +325,7 @@ func (p *Pi) Models() []string {
 	return result
 }
 
-// isPiOllamaModel reports whether a model config entry is managed by ollama launch
+// isPiOllamaModel reports whether a model config entry is managed by zerollama launch
 func isPiOllamaModel(cfg map[string]any) bool {
 	if v, ok := cfg["_launch"].(bool); ok && v {
 		return true

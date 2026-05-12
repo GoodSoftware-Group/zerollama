@@ -17,10 +17,7 @@ type Qwen3VLRenderer struct {
 func (r *Qwen3VLRenderer) renderContent(content api.Message, imageOffset int) (string, int) {
 	// This assumes all images are at the front of the message - same assumption as ollama/ollama/runner.go
 	var subSb strings.Builder
-	for range content.Images {
-		// TODO: (jmorganca): how to render this is different for different
-		// model backends, and so we should eventually parameterize this or
-		// only output a placeholder such as [img]
+	emitOne := func() {
 		if r.useImgTags {
 			subSb.WriteString(fmt.Sprintf("[img-%d]", imageOffset))
 			imageOffset++
@@ -28,7 +25,36 @@ func (r *Qwen3VLRenderer) renderContent(content api.Message, imageOffset int) (s
 			subSb.WriteString("<|vision_start|><|image_pad|><|vision_end|>")
 		}
 	}
-	// TODO: support videos
+	// When VideoSpans is set, Images are [still images..., frames from clip 0..., clip 1...].
+	// We emit the same vision tokens per frame as the flat path; spans only change grouping for future layouts.
+	if len(content.VideoSpans) > 0 {
+		videoFrames := 0
+		for _, sp := range content.VideoSpans {
+			videoFrames += sp.FrameCount
+		}
+		still := len(content.Images) - videoFrames
+		if still < 0 || still > len(content.Images) {
+			// Malformed metadata: fall back to flat image list.
+			for range content.Images {
+				emitOne()
+			}
+		} else {
+			for i := 0; i < still; i++ {
+				emitOne()
+			}
+			// One vision block per expanded video frame; ordering matches Images after stills then each clip.
+			for _, sp := range content.VideoSpans {
+				for range sp.FrameCount {
+					emitOne()
+				}
+			}
+		}
+	} else {
+		for range content.Images {
+			emitOne()
+		}
+	}
+	// Video is expanded to frames upstream; placeholders match the flat image list (grouped when VideoSpans is set).
 
 	subSb.WriteString(content.Content)
 	return subSb.String(), imageOffset

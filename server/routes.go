@@ -46,6 +46,7 @@ import (
 	"github.com/ollama/ollama/model/renderers"
 	"github.com/ollama/ollama/server/internal/client/ollama"
 	"github.com/ollama/ollama/server/internal/registry"
+	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
 	"github.com/ollama/ollama/tools"
@@ -64,6 +65,8 @@ const (
 	cloudErrWebSearchUnavailable          = "web search is unavailable"
 	cloudErrWebFetchUnavailable           = "web fetch is unavailable"
 	copilotChatUserAgentPrefix            = "GitHubCopilotChat/"
+	errCloudModelsNotSupported            = "cloud models are not supported"
+	errCloudUseOpenAICompat               = "use POST /v1/chat/completions or /v1/messages with a model id ending in :cloud (Eliza Cloud)"
 )
 
 func writeModelRefParseError(c *gin.Context, err error, fallbackStatus int, fallbackMessage string) {
@@ -214,10 +217,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	if modelRef.Source == modelSourceCloud {
-		// TODO(drifkin): evaluate an `/api/*` passthrough for cloud where the
-		// original body (modulo model name normalization) is sent to cloud.
-		req.Model = modelRef.Base
-		proxyCloudJSONRequest(c, req, cloudErrRemoteInferenceUnavailable)
+		c.JSON(http.StatusBadRequest, gin.H{"error": errCloudUseOpenAICompat})
 		return
 	}
 
@@ -255,97 +255,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	if m.Config.RemoteHost != "" && m.Config.RemoteModel != "" {
-		if disabled, _ := internalcloud.Status(); disabled {
-			c.JSON(http.StatusForbidden, gin.H{"error": internalcloud.DisabledError(cloudErrRemoteInferenceUnavailable)})
-			return
-		}
-
-		origModel := req.Model
-
-		remoteURL, err := url.Parse(m.Config.RemoteHost)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		if !slices.Contains(envconfig.Remotes(), remoteURL.Hostname()) {
-			slog.Info("remote model", "remotes", envconfig.Remotes(), "remoteURL", m.Config.RemoteHost, "hostname", remoteURL.Hostname())
-			c.JSON(http.StatusBadRequest, gin.H{"error": "this server cannot run this remote model"})
-			return
-		}
-
-		req.Model = m.Config.RemoteModel
-
-		if req.Template == "" && m.Template.String() != "" {
-			req.Template = m.Template.String()
-		}
-
-		if req.Options == nil {
-			req.Options = map[string]any{}
-		}
-
-		for k, v := range m.Options {
-			if _, ok := req.Options[k]; !ok {
-				req.Options[k] = v
-			}
-		}
-
-		// update the system prompt from the model if one isn't already specified
-		if req.System == "" && m.System != "" {
-			req.System = m.System
-		}
-
-		if len(m.Messages) > 0 {
-			slog.Warn("embedded messages in the model not supported with '/api/generate'; try '/api/chat' instead")
-		}
-
-		contentType := "application/x-ndjson"
-		if req.Stream != nil && !*req.Stream {
-			contentType = "application/json; charset=utf-8"
-		}
-		c.Header("Content-Type", contentType)
-
-		fn := func(resp api.GenerateResponse) error {
-			resp.Model = origModel
-			resp.RemoteModel = m.Config.RemoteModel
-			resp.RemoteHost = m.Config.RemoteHost
-
-			data, err := json.Marshal(resp)
-			if err != nil {
-				return err
-			}
-
-			if _, err = c.Writer.Write(append(data, '\n')); err != nil {
-				return err
-			}
-			c.Writer.Flush()
-			return nil
-		}
-
-		client := api.NewClient(remoteURL, http.DefaultClient)
-		err = client.Generate(c, &req, fn)
-		if err != nil {
-			var authError api.AuthorizationError
-			if errors.As(err, &authError) {
-				sURL, sErr := signinURL()
-				if sErr != nil {
-					slog.Error(sErr.Error())
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "error getting authorization details"})
-					return
-				}
-
-				c.JSON(authError.StatusCode, gin.H{"error": "unauthorized", "signin_url": sURL})
-				return
-			}
-			var apiError api.StatusError
-			if errors.As(err, &apiError) {
-				c.JSON(apiError.StatusCode, apiError)
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
+		c.JSON(http.StatusForbidden, gin.H{"error": errCloudModelsNotSupported})
 		return
 	}
 
@@ -1132,7 +1042,8 @@ func (s *Server) ShowHandler(c *gin.Context) {
 
 	if modelRef.Source == modelSourceCloud {
 		req.Model = modelRef.Base
-		proxyCloudJSONRequest(c, req, cloudErrRemoteModelDetailsUnavailable)
+		// Eliza GET /api/v1/models/... JSON is returned as-is (not api.ShowResponse).
+		proxyCloudElizaGET(c, ElizaModelDetailPath(modelRef.Base), cloudErrRemoteModelDetailsUnavailable)
 		return
 	}
 
@@ -1188,12 +1099,10 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		return nil, err
 	}
 
-	if m.Config.RemoteHost != "" {
-		if disabled, _ := internalcloud.Status(); disabled {
-			return nil, api.StatusError{
-				StatusCode:   http.StatusForbidden,
-				ErrorMessage: internalcloud.DisabledError(cloudErrRemoteModelDetailsUnavailable),
-			}
+	if m.Config.RemoteHost != "" && m.Config.RemoteModel != "" {
+		return nil, api.StatusError{
+			StatusCode:   http.StatusNotFound,
+			ErrorMessage: fmt.Sprintf("model '%s' not found", req.Model),
 		}
 	}
 
@@ -1424,6 +1333,10 @@ func (s *Server) ListHandler(c *gin.Context) {
 			}
 		}
 
+		if cf.RemoteModel != "" {
+			continue
+		}
+
 		// tag should never be masked
 		models = append(models, api.ListModelResponse{
 			Model:       n.DisplayShortest(),
@@ -1447,6 +1360,8 @@ func (s *Server) ListHandler(c *gin.Context) {
 		// most recently modified first
 		return cmp.Compare(j.ModifiedAt.Unix(), i.ModifiedAt.Unix())
 	})
+
+	models = mergeElizaCloudModels(c.Request.Context(), models)
 
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
 }
@@ -1643,6 +1558,28 @@ func allowedHostsMiddleware(addr net.Addr) gin.HandlerFunc {
 	}
 }
 
+// maybeProxyElizaV1ModelGet proxies GET /v1/models/:model to Eliza (raw upstream JSON, not OpenAI ToModel) for :cloud names.
+func (s *Server) maybeProxyElizaV1ModelGet() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method != http.MethodGet {
+			c.Next()
+			return
+		}
+		modelName := strings.TrimSpace(c.Param("model"))
+		if modelName == "" {
+			c.Next()
+			return
+		}
+		modelRef, err := parseAndValidateModelRef(modelName)
+		if err != nil || modelRef.Source != modelSourceCloud {
+			c.Next()
+			return
+		}
+		proxyCloudElizaGET(c, ElizaModelDetailPath(modelRef.Base), cloudErrRemoteModelDetailsUnavailable)
+		c.Abort()
+	}
+}
+
 func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowWildcard = true
@@ -1717,20 +1654,21 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
-	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.ChatMiddleware(), s.ChatHandler)...)
-	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
-	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
+	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
+	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
-	r.GET("/v1/models/:model", cloudModelPathPassthroughMiddleware(cloudErrRemoteModelDetailsUnavailable), middleware.RetrieveMiddleware(), s.ShowHandler)
-	r.POST("/v1/responses", s.withInferenceRequestLogging("/v1/responses", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.ResponsesMiddleware(), s.ChatHandler)...)
+	r.GET("/v1/models/:model", s.maybeProxyElizaV1ModelGet(), middleware.RetrieveMiddleware(), s.ShowHandler)
+	r.POST("/v1/responses", s.withInferenceRequestLogging("/v1/responses", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ResponsesMiddleware(), s.ChatHandler)...)
 	// OpenAI-compatible image generation endpoints
-	r.POST("/v1/images/generations", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.ImageGenerationsMiddleware(), s.GenerateHandler)
-	r.POST("/v1/images/edits", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.ImageEditsMiddleware(), s.GenerateHandler)
-	// OpenAI-compatible audio endpoint
-	r.POST("/v1/audio/transcriptions", middleware.TranscriptionMiddleware(), s.ChatHandler)
+	r.POST("/v1/images/generations", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ImageGenerationsMiddleware(), s.GenerateHandler)
+	r.POST("/v1/images/edits", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ImageEditsMiddleware(), s.GenerateHandler)
+	// OpenAI-compatible audio endpoints
+	r.POST("/v1/audio/transcriptions", middleware.TranscriptionMiddleware(), s.TranscriptionHandler)
+	r.POST("/v1/audio/speech", middleware.SpeechMiddleware(), s.SpeechHandler)
 
 	// Inference (Anthropic compatibility)
-	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
 
 	if rc != nil {
 		// wrap old with new
@@ -1979,7 +1917,22 @@ func (s *Server) webExperimentalProxyHandler(c *gin.Context, proxyPath, disabled
 }
 
 func (s *Server) WhoamiHandler(c *gin.Context) {
-	// todo allow other hosts
+	base, err := url.Parse(cloudProxyBaseURL)
+	if err != nil {
+		slog.Error(err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "URL parse error"})
+		return
+	}
+
+	if !strings.EqualFold(base.Hostname(), "ollama.com") {
+		c.JSON(http.StatusOK, gin.H{
+			"name":          "eliza-cloud",
+			"cloud_host":    strings.TrimSuffix(cloudProxyBaseURL, "/"),
+			"documentation": "Set ELIZACLOUD_API_KEY and use model names like {provider/model}:cloud; manage account at Eliza Cloud.",
+		})
+		return
+	}
+
 	u, err := url.Parse("https://ollama.com")
 	if err != nil {
 		slog.Error(err.Error())
@@ -2010,6 +1963,12 @@ func (s *Server) WhoamiHandler(c *gin.Context) {
 }
 
 func (s *Server) SignoutHandler(c *gin.Context) {
+	base, err := url.Parse(cloudProxyBaseURL)
+	if err == nil && !strings.EqualFold(base.Hostname(), "ollama.com") {
+		c.JSON(http.StatusOK, gin.H{"status": "Eliza Cloud sessions are managed in the Eliza Cloud dashboard; no local sign-out required."})
+		return
+	}
+
 	pubKey, err := auth.GetPublicKey()
 	if err != nil {
 		slog.Error("couldn't get public key", "error", err)
@@ -2122,12 +2081,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 
 	if modelRef.Source == modelSourceCloud {
-		req.Model = modelRef.Base
-		if c.GetBool(legacyCloudAnthropicKey) {
-			proxyCloudJSONRequestWithPath(c, req, "/api/chat", cloudErrRemoteInferenceUnavailable)
-			return
-		}
-		proxyCloudJSONRequest(c, req, cloudErrRemoteInferenceUnavailable)
+		c.JSON(http.StatusBadRequest, gin.H{"error": errCloudUseOpenAICompat})
 		return
 	}
 
@@ -2177,94 +2131,50 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 
 	if m.Config.RemoteHost != "" && m.Config.RemoteModel != "" {
-		if disabled, _ := internalcloud.Status(); disabled {
-			c.JSON(http.StatusForbidden, gin.H{"error": internalcloud.DisabledError(cloudErrRemoteInferenceUnavailable)})
+		c.JSON(http.StatusForbidden, gin.H{"error": errCloudModelsNotSupported})
+		return
+	}
+
+	// Native VLM: expand Videos before chatPrompt so the rendered prompt and llm.ImageData list match.
+	// ResolveVideoPolicy here (not inside modality) so one policy value crosses preflight + expand.
+	// Capability check first avoids loading the runner when the model cannot accept expanded frames.
+	hasVideo := false
+	for _, msg := range req.Messages {
+		if len(msg.Videos) > 0 {
+			hasVideo = true
+			break
+		}
+	}
+	if hasVideo {
+		if err := m.CheckCapabilities(model.CapabilityVision, model.CapabilityVideo); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+	}
 
-		origModel := req.Model
-
-		remoteURL, err := url.Parse(m.Config.RemoteHost)
+	policy := modality.ResolveVideoPolicy(m.Config)
+	if req.Options == nil {
+		req.Options = map[string]any{}
+	}
+	for k, v := range m.Options {
+		if _, ok := req.Options[k]; !ok {
+			req.Options[k] = v
+		}
+	}
+	if hasVideo {
+		opts, err := s.modelOptions(m, req.Options)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-
-		if !slices.Contains(envconfig.Remotes(), remoteURL.Hostname()) {
-			slog.Info("remote model", "remotes", envconfig.Remotes(), "remoteURL", m.Config.RemoteHost, "hostname", remoteURL.Hostname())
-			c.JSON(http.StatusBadRequest, gin.H{"error": "this server cannot run this remote model"})
+		if err := modality.PreflightVideoVisionBudget(policy, opts.NumCtx, &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+	}
 
-		req.Model = m.Config.RemoteModel
-		if req.Options == nil {
-			req.Options = map[string]any{}
-		}
-
-		var msgs []api.Message
-		if len(req.Messages) > 0 {
-			msgs = append(m.Messages, req.Messages...)
-			if req.Messages[0].Role != "system" && m.System != "" {
-				msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
-			}
-		}
-
-		msgs = filterThinkTags(msgs, m)
-		req.Messages = msgs
-
-		for k, v := range m.Options {
-			if _, ok := req.Options[k]; !ok {
-				req.Options[k] = v
-			}
-		}
-
-		contentType := "application/x-ndjson"
-		if req.Stream != nil && !*req.Stream {
-			contentType = "application/json; charset=utf-8"
-		}
-		c.Header("Content-Type", contentType)
-
-		fn := func(resp api.ChatResponse) error {
-			resp.Model = origModel
-			resp.RemoteModel = m.Config.RemoteModel
-			resp.RemoteHost = m.Config.RemoteHost
-
-			data, err := json.Marshal(resp)
-			if err != nil {
-				return err
-			}
-
-			if _, err = c.Writer.Write(append(data, '\n')); err != nil {
-				return err
-			}
-			c.Writer.Flush()
-			return nil
-		}
-
-		client := api.NewClient(remoteURL, http.DefaultClient)
-		err = client.Chat(c, &req, fn)
-		if err != nil {
-			var authError api.AuthorizationError
-			if errors.As(err, &authError) {
-				sURL, sErr := signinURL()
-				if sErr != nil {
-					slog.Error(sErr.Error())
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "error getting authorization details"})
-					return
-				}
-
-				c.JSON(authError.StatusCode, gin.H{"error": "unauthorized", "signin_url": sURL})
-				return
-			}
-			var apiError api.StatusError
-			if errors.As(err, &apiError) {
-				c.JSON(apiError.StatusCode, apiError)
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
+	if err := modality.ExpandVideosInChatRequest(c.Request.Context(), policy, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -2667,6 +2577,66 @@ func filterThinkTags(msgs []api.Message, m *Model) []api.Message {
 	return msgs
 }
 
+// handleExternalImageGenerate runs modality_backends.image=external-image via OLLAMA_EXTERNAL_IMAGE_BIN.
+func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateRequest, checkpointStart time.Time) {
+	if req.Prompt == "" {
+		c.JSON(http.StatusOK, api.GenerateResponse{
+			Model:      req.Model,
+			CreatedAt:  time.Now().UTC(),
+			Done:       true,
+			DoneReason: "load",
+		})
+		return
+	}
+	w, h := req.Width, req.Height
+	if w <= 0 {
+		w = 512
+	}
+	if h <= 0 {
+		h = 512
+	}
+	var seed int64
+	if s, ok := req.Options["seed"]; ok {
+		switch v := s.(type) {
+		case int:
+			seed = int64(v)
+		case int64:
+			seed = v
+		case float64:
+			seed = int64(v)
+		}
+	}
+	loadStart := time.Now()
+	pngData, err := modality.GenerateExternalImage(c.Request.Context(), req.Prompt, w, h, seed)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	b64 := base64.StdEncoding.EncodeToString(pngData)
+	isStreaming := req.Stream == nil || *req.Stream
+	contentType := "application/x-ndjson"
+	if !isStreaming {
+		contentType = "application/json; charset=utf-8"
+	}
+	c.Header("Content-Type", contentType)
+	res := api.GenerateResponse{
+		Model:      req.Model,
+		CreatedAt:  time.Now().UTC(),
+		Done:       true,
+		DoneReason: "stop",
+		Image:      b64,
+	}
+	res.Metrics.TotalDuration = time.Since(checkpointStart)
+	res.Metrics.LoadDuration = loadStart.Sub(checkpointStart)
+	if isStreaming {
+		data, _ := json.Marshal(res)
+		c.Writer.Write(append(data, '\n'))
+		c.Writer.Flush()
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
 // handleImageGenerate handles image generation requests within GenerateHandler.
 // This is called when the model has the Image capability.
 func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, modelName string, checkpointStart time.Time) {
@@ -2674,6 +2644,24 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 	const maxDimension int32 = 4096
 	if req.Width > maxDimension || req.Height > maxDimension {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("width and height must be <= %d", maxDimension)})
+		return
+	}
+
+	m, err := GetModel(modelName)
+	if err != nil {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", req.Model)})
+		case err.Error() == errtypes.InvalidModelNameErrMsg:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	if modality.BackendFor(m.Config, model.ModalityImage) == model.BackendExternalImage {
+		s.handleExternalImageGenerate(c, req, checkpointStart)
 		return
 	}
 

@@ -27,13 +27,13 @@ Change the slider in the Ollama app under settings to your desired context lengt
 ### CLI
 If editing the context length for Ollama is not possible, the context length can also be updated when serving Ollama.  
 ```
-OLLAMA_CONTEXT_LENGTH=64000 ollama serve
+OLLAMA_CONTEXT_LENGTH=64000 zerollama serve
 ```
 
 ### Check allocated context length and model offloading
-For best performance, use the maximum context length for a model, and avoid offloading the model to CPU. Verify the split under `PROCESSOR` using `ollama ps`.
+For best performance, use the maximum context length for a model, and avoid offloading the model to CPU. Verify the split under `PROCESSOR` using `zerollama ps`.
 ```
-ollama ps
+zerollama ps
 ```
 ```
 NAME             ID              SIZE      PROCESSOR    CONTEXT    UNTIL

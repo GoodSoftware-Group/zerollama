@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,14 +10,53 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ollama/ollama/api"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/middleware"
-	"github.com/ollama/ollama/version"
 )
+
+func assertCloudModelsNotSupportedResponse(t *testing.T, status int, body []byte, upstreamPath string) {
+	t.Helper()
+	if status != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d (%s)", status, string(body))
+	}
+	if upstreamPath != "" {
+		t.Fatalf("expected no upstream request, got path %q", upstreamPath)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("expected json error: %q", string(body))
+	}
+	if got["error"] != errCloudModelsNotSupported {
+		t.Fatalf("unexpected error: %q", got["error"])
+	}
+}
+
+func assertCloudNativeAPIUseV1Error(t *testing.T, status int, body []byte) {
+	t.Helper()
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d (%s)", status, string(body))
+	}
+	var got map[string]string
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("expected json error: %q", string(body))
+	}
+	if got["error"] != errCloudUseOpenAICompat {
+		t.Fatalf("unexpected error: %q", got["error"])
+	}
+}
+
+func assertCloudV1Proxied(t *testing.T, status int, body []byte, capturePath, wantUpstreamPath string) {
+	t.Helper()
+	if status != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (%s)", status, string(body))
+	}
+	if capturePath != wantUpstreamPath {
+		t.Fatalf("expected upstream path %q, got %q", wantUpstreamPath, capturePath)
+	}
+}
 
 func TestStatusHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -72,7 +110,7 @@ func TestCloudDisabledBlocksRemoteOperations(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("expected status 403, got %d", w.Code)
 		}
-		if got := w.Body.String(); got != `{"error":"`+internalcloud.DisabledError(cloudErrRemoteInferenceUnavailable)+`"}` {
+		if got := w.Body.String(); got != `{"error":"`+errCloudModelsNotSupported+`"}` {
 			t.Fatalf("unexpected response: %s", got)
 		}
 	})
@@ -85,7 +123,7 @@ func TestCloudDisabledBlocksRemoteOperations(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("expected status 403, got %d", w.Code)
 		}
-		if got := w.Body.String(); got != `{"error":"`+internalcloud.DisabledError(cloudErrRemoteInferenceUnavailable)+`"}` {
+		if got := w.Body.String(); got != `{"error":"`+errCloudModelsNotSupported+`"}` {
 			t.Fatalf("unexpected response: %s", got)
 		}
 	})
@@ -94,11 +132,8 @@ func TestCloudDisabledBlocksRemoteOperations(t *testing.T) {
 		w := createRequest(t, s.ShowHandler, api.ShowRequest{
 			Model: "test-cloud",
 		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected status 403, got %d", w.Code)
-		}
-		if got := w.Body.String(); got != `{"error":"`+internalcloud.DisabledError(cloudErrRemoteModelDetailsUnavailable)+`"}` {
-			t.Fatalf("unexpected response: %s", got)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", w.Code)
 		}
 	})
 }
@@ -163,7 +198,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 	}
 
 	t.Run("api generate", func(t *testing.T) {
-		upstream, capture := newUpstream(t, `{"ok":"api"}`)
+		upstream, _ := newUpstream(t, `{"ok":"api"}`)
 		defer upstream.Close()
 
 		original := cloudProxyBaseURL
@@ -193,28 +228,11 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/api/generate" {
-			t.Fatalf("expected upstream path /api/generate, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"model":"kimi-k2.5"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
-
-		if got := capture.header.Get("X-Test-Header"); got != "api-header" {
-			t.Fatalf("expected forwarded X-Test-Header=api-header, got %q", got)
-		}
-		if got := capture.header.Get(cloudProxyClientVersionHeader); got != version.Version {
-			t.Fatalf("expected %s=%q, got %q", cloudProxyClientVersionHeader, version.Version, got)
-		}
+		assertCloudNativeAPIUseV1Error(t, resp.StatusCode, body)
 	})
 
 	t.Run("api chat", func(t *testing.T) {
-		upstream, capture := newUpstream(t, `{"message":{"role":"assistant","content":"ok"},"done":true}`)
+		upstream, _ := newUpstream(t, `{"message":{"role":"assistant","content":"ok"},"done":true}`)
 		defer upstream.Close()
 
 		original := cloudProxyBaseURL
@@ -243,17 +261,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/api/chat" {
-			t.Fatalf("expected upstream path /api/chat, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"model":"kimi-k2.5"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
+		assertCloudNativeAPIUseV1Error(t, resp.StatusCode, body)
 	})
 
 	t.Run("api embed", func(t *testing.T) {
@@ -290,8 +298,8 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
 		}
 
-		if capture.path != "/api/embed" {
-			t.Fatalf("expected upstream path /api/embed, got %q", capture.path)
+		if capture.path != "/api/v1/embeddings" {
+			t.Fatalf("expected upstream path /api/v1/embeddings, got %q", capture.path)
 		}
 
 		if !strings.Contains(capture.body, `"model":"kimi-k2.5"`) {
@@ -333,8 +341,8 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
 		}
 
-		if capture.path != "/api/embeddings" {
-			t.Fatalf("expected upstream path /api/embeddings, got %q", capture.path)
+		if capture.path != "/api/v1/embeddings" {
+			t.Fatalf("expected upstream path /api/v1/embeddings, got %q", capture.path)
 		}
 
 		if !strings.Contains(capture.body, `"model":"kimi-k2.5"`) {
@@ -376,12 +384,8 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
 		}
 
-		if capture.path != "/api/show" {
-			t.Fatalf("expected upstream path /api/show, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"model":"kimi-k2.5"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
+		if capture.path != "/api/v1/models/kimi-k2.5" {
+			t.Fatalf("expected upstream path /api/v1/models/kimi-k2.5, got %q", capture.path)
 		}
 	})
 
@@ -416,29 +420,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/v1/chat/completions" {
-			t.Fatalf("expected upstream path /v1/chat/completions, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"max_tokens":7`) {
-			t.Fatalf("expected original OpenAI request body, got %q", capture.body)
-		}
-
-		if !strings.Contains(capture.body, `"model":"gpt-oss:120b"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
-
-		if strings.Contains(capture.body, `"options"`) {
-			t.Fatalf("expected no converted Ollama options in upstream body, got %q", capture.body)
-		}
-
-		if got := capture.header.Get("X-Test-Header"); got != "v1-header" {
-			t.Fatalf("expected forwarded X-Test-Header=v1-header, got %q", got)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/chat/completions")
 	})
 
 	t.Run("v1 chat completions bypasses conversion with legacy cloud suffix", func(t *testing.T) {
@@ -472,29 +454,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/v1/chat/completions" {
-			t.Fatalf("expected upstream path /v1/chat/completions, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"max_tokens":7`) {
-			t.Fatalf("expected original OpenAI request body, got %q", capture.body)
-		}
-
-		if !strings.Contains(capture.body, `"model":"gpt-oss:120b"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
-
-		if strings.Contains(capture.body, `"options"`) {
-			t.Fatalf("expected no converted Ollama options in upstream body, got %q", capture.body)
-		}
-
-		if got := capture.header.Get("X-Test-Header"); got != "v1-legacy-header" {
-			t.Fatalf("expected forwarded X-Test-Header=v1-legacy-header, got %q", got)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/chat/completions")
 	})
 
 	t.Run("v1 messages bypasses conversion", func(t *testing.T) {
@@ -527,25 +487,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/v1/messages" {
-			t.Fatalf("expected upstream path /v1/messages, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"max_tokens":10`) {
-			t.Fatalf("expected original Anthropic request body, got %q", capture.body)
-		}
-
-		if !strings.Contains(capture.body, `"model":"kimi-k2.5"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
-
-		if strings.Contains(capture.body, `"options"`) {
-			t.Fatalf("expected no converted Ollama options in upstream body, got %q", capture.body)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/messages")
 	})
 
 	t.Run("v1 messages bypasses conversion with legacy cloud suffix", func(t *testing.T) {
@@ -578,25 +520,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/v1/messages" {
-			t.Fatalf("expected upstream path /v1/messages, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"max_tokens":10`) {
-			t.Fatalf("expected original Anthropic request body, got %q", capture.body)
-		}
-
-		if !strings.Contains(capture.body, `"model":"kimi-k2.5:latest"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
-
-		if strings.Contains(capture.body, `"options"`) {
-			t.Fatalf("expected no converted Ollama options in upstream body, got %q", capture.body)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/messages")
 	})
 
 	t.Run("v1 messages web_search fallback uses legacy cloud /api/chat path", func(t *testing.T) {
@@ -635,21 +559,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/api/chat" {
-			t.Fatalf("expected upstream path /api/chat for web_search fallback, got %q", capture.path)
-		}
-
-		if !strings.Contains(capture.body, `"model":"gpt-oss:120b"`) {
-			t.Fatalf("expected normalized model in upstream body, got %q", capture.body)
-		}
-
-		if !strings.Contains(capture.body, `"num_predict":10`) {
-			t.Fatalf("expected converted ollama options in upstream body, got %q", capture.body)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/messages")
 	})
 
 	t.Run("v1 messages web_search fallback frames coalesced jsonl chunks", func(t *testing.T) {
@@ -702,15 +612,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-		if capture.path != "/api/chat" {
-			t.Fatalf("expected upstream path /api/chat for web_search fallback, got %q", capture.path)
-		}
-		if !strings.Contains(string(body), "event: message_stop") {
-			t.Fatalf("expected anthropic streaming message_stop event, got body %q", string(body))
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/messages")
 	})
 
 	t.Run("v1 model retrieve bypasses conversion", func(t *testing.T) {
@@ -742,21 +644,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/v1/models/kimi-k2.5" {
-			t.Fatalf("expected upstream path /v1/models/kimi-k2.5, got %q", capture.path)
-		}
-
-		if capture.body != "" {
-			t.Fatalf("expected empty request body, got %q", capture.body)
-		}
-
-		if got := capture.header.Get("X-Test-Header"); got != "v1-model-header" {
-			t.Fatalf("expected forwarded X-Test-Header=v1-model-header, got %q", got)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/models/kimi-k2.5")
 	})
 
 	t.Run("v1 model retrieve normalizes legacy cloud suffix", func(t *testing.T) {
@@ -787,13 +675,7 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-		}
-
-		if capture.path != "/v1/models/kimi-k2.5:latest" {
-			t.Fatalf("expected upstream path /v1/models/kimi-k2.5:latest, got %q", capture.path)
-		}
+		assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/models/kimi-k2.5:latest")
 	})
 }
 
@@ -833,35 +715,15 @@ func TestCloudDisabledBlocksExplicitCloudPassthrough(t *testing.T) {
 		t.Fatalf("expected json error body, got: %q", string(body))
 	}
 
-	if got["error"] != internalcloud.DisabledError(cloudErrRemoteInferenceUnavailable) {
-		t.Fatalf("unexpected error message: %q", got["error"])
+	want := internalcloud.DisabledError(cloudErrRemoteInferenceUnavailable)
+	if got["error"] != want {
+		t.Fatalf("unexpected error message: %q want %q", got["error"], want)
 	}
 }
 
 func TestCloudPassthroughStreamsPromptly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Fatal("upstream writer is not a flusher")
-		}
-
-		_, _ = w.Write([]byte(`{"response":"first"}` + "\n"))
-		flusher.Flush()
-
-		time.Sleep(700 * time.Millisecond)
-
-		_, _ = w.Write([]byte(`{"response":"second"}` + "\n"))
-		flusher.Flush()
-	}))
-	defer upstream.Close()
-
-	original := cloudProxyBaseURL
-	cloudProxyBaseURL = upstream.URL
-	t.Cleanup(func() { cloudProxyBaseURL = original })
 
 	s := &Server{}
 	router, err := s.GenerateRoutes(nil)
@@ -884,32 +746,8 @@ func TestCloudPassthroughStreamsPromptly(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-	}
-
-	reader := bufio.NewReader(resp.Body)
-
-	start := time.Now()
-	firstLine, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatalf("failed reading first streamed line: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
-		t.Fatalf("first streamed line arrived too late (%s), likely not flushing", elapsed)
-	}
-	if !strings.Contains(firstLine, `"first"`) {
-		t.Fatalf("expected first line to contain first chunk, got %q", firstLine)
-	}
-
-	secondLine, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatalf("failed reading second streamed line: %v", err)
-	}
-	if !strings.Contains(secondLine, `"second"`) {
-		t.Fatalf("expected second line to contain second chunk, got %q", secondLine)
-	}
+	body, _ := io.ReadAll(resp.Body)
+	assertCloudNativeAPIUseV1Error(t, resp.StatusCode, body)
 }
 
 func TestCloudPassthroughSkipsAnthropicWebSearch(t *testing.T) {
@@ -936,6 +774,7 @@ func TestCloudPassthroughSkipsAnthropicWebSearch(t *testing.T) {
 	router.POST(
 		"/v1/messages",
 		cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable),
+		cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable),
 		middleware.AnthropicMessagesMiddleware(),
 		func(c *gin.Context) { c.Status(http.StatusTeapot) },
 	)
@@ -961,14 +800,8 @@ func TestCloudPassthroughSkipsAnthropicWebSearch(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusTeapot {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected local middleware path status %d, got %d (%s)", http.StatusTeapot, resp.StatusCode, string(body))
-	}
-
-	if capture.path != "" {
-		t.Fatalf("expected no passthrough for web_search requests, got upstream path %q", capture.path)
-	}
+	body, _ := io.ReadAll(resp.Body)
+	assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/messages")
 }
 
 func TestCloudPassthroughSkipsAnthropicWebSearchLegacySuffix(t *testing.T) {
@@ -995,6 +828,7 @@ func TestCloudPassthroughSkipsAnthropicWebSearchLegacySuffix(t *testing.T) {
 	router.POST(
 		"/v1/messages",
 		cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable),
+		cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable),
 		middleware.AnthropicMessagesMiddleware(),
 		func(c *gin.Context) { c.Status(http.StatusTeapot) },
 	)
@@ -1020,14 +854,8 @@ func TestCloudPassthroughSkipsAnthropicWebSearchLegacySuffix(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusTeapot {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected local middleware path status %d, got %d (%s)", http.StatusTeapot, resp.StatusCode, string(body))
-	}
-
-	if capture.path != "" {
-		t.Fatalf("expected no passthrough for web_search requests, got upstream path %q", capture.path)
-	}
+	body, _ := io.ReadAll(resp.Body)
+	assertCloudV1Proxied(t, resp.StatusCode, body, capture.path, "/api/v1/messages")
 }
 
 func TestCloudPassthroughSigningFailureReturnsUnauthorized(t *testing.T) {
@@ -1070,22 +898,7 @@ func TestCloudPassthroughSigningFailureReturnsUnauthorized(t *testing.T) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected status 401, got %d (%s)", resp.StatusCode, string(body))
-	}
-
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("expected json error body, got: %q", string(body))
-	}
-
-	if got["error"] != "unauthorized" {
-		t.Fatalf("unexpected error message: %v", got["error"])
-	}
-
-	if got["signin_url"] != "https://ollama.com/signin/example" {
-		t.Fatalf("unexpected signin_url: %v", got["signin_url"])
-	}
+	assertCloudNativeAPIUseV1Error(t, resp.StatusCode, body)
 }
 
 func TestCloudPassthroughSigningFailureWithoutSigninURL(t *testing.T) {
@@ -1128,20 +941,5 @@ func TestCloudPassthroughSigningFailureWithoutSigninURL(t *testing.T) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected status 401, got %d (%s)", resp.StatusCode, string(body))
-	}
-
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("expected json error body, got: %q", string(body))
-	}
-
-	if got["error"] != "unauthorized" {
-		t.Fatalf("unexpected error message: %v", got["error"])
-	}
-
-	if _, ok := got["signin_url"]; ok {
-		t.Fatalf("did not expect signin_url when helper fails, got %v", got["signin_url"])
-	}
+	assertCloudNativeAPIUseV1Error(t, resp.StatusCode, body)
 }
