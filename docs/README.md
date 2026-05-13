@@ -25,6 +25,11 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 
+### GPU training (repo)
+
+* [GPU training integration](./gpu-training.md) — **why** Go fronts HTTP + TCP `:9500` while Python holds PyTorch; **why** gRPC over UDS; inference-first VRAM policy; env vars and troubleshooting.
+* [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — conversation summary and pointers for the next owner (not a substitute for `gpu-training.md`).
+
 ### Remote inference — Eliza Cloud (Zerollama)
 
 * [Eliza Cloud](./eliza-cloud.md) — **why** default upstream is Eliza (not legacy ollama.com), **why** path rewrites and `X-API-Key`, **why** catalog merge + cache, **why** raw JSON on some routes, **why** account stubs off ollama.com.
