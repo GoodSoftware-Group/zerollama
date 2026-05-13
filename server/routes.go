@@ -55,6 +55,7 @@ import (
 	"github.com/ollama/ollama/version"
 	imagegenmanifest "github.com/ollama/ollama/x/imagegen/manifest"
 	xserver "github.com/ollama/ollama/x/server"
+	"github.com/ollama/ollama/x/trainingworker"
 )
 
 const signinURLStr = "https://ollama.com/connect?name=%s&key=%s"
@@ -101,10 +102,11 @@ var useClient2 = experimentEnabled("client2")
 var mode string = gin.DebugMode
 
 type Server struct {
-	addr          net.Addr
-	sched         *Scheduler
-	defaultNumCtx int
-	requestLogger *inferenceRequestLogger
+	addr           net.Addr
+	sched          *Scheduler
+	defaultNumCtx  int
+	requestLogger  *inferenceRequestLogger
+	training       *trainingworker.Client
 }
 
 func init() {
@@ -1670,6 +1672,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// Inference (Anthropic compatibility)
 	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
 
+	s.registerTrainingRoutes(r)
+
 	if rc != nil {
 		// wrap old with new
 		rs := &registry.Local{
@@ -1733,17 +1737,43 @@ func Serve(ln net.Listener) error {
 		}
 	}
 
+	ctx, done := context.WithCancel(context.Background())
+	schedCtx, schedDone := context.WithCancel(ctx)
+	sched := InitScheduler(schedCtx)
+	s.sched = sched
+
+	// Optional GPU training sidecar: Go owns public TCP :9500 and /api/train; Python owns PyTorch.
+	// Default on (OLLAMA_TRAINING) so integrators see the feature; set false if python3 or deps are absent.
+	// Close order on signals: training subprocess before tearing down inference runners (see signal handler below).
+	if envconfig.TrainingEnabled(true) {
+		tw, terr := trainingworker.Start(ctx, sched)
+		if terr != nil {
+			slog.Warn("training worker not started", "error", terr)
+		} else {
+			s.training = tw
+			tcp := strings.TrimSpace(os.Getenv("OLLAMA_TRAINING_TCP"))
+			switch tcp {
+			case "", "1":
+				tcp = ":9500"
+			}
+			if tcp != "0" && tcp != "-" {
+				go func() {
+					if err := tw.ServePublicTCP(ctx, tcp); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Error("training public TCP stopped", "error", err)
+					}
+				}()
+			}
+		}
+	} else {
+		slog.Info("training disabled", "env", "OLLAMA_TRAINING=false")
+	}
+
 	h, err := s.GenerateRoutes(rc)
 	if err != nil {
 		return err
 	}
 
 	http.Handle("/", h)
-
-	ctx, done := context.WithCancel(context.Background())
-	schedCtx, schedDone := context.WithCancel(ctx)
-	sched := InitScheduler(schedCtx)
-	s.sched = sched
 
 	slog.Info(fmt.Sprintf("Listening on %s (version %s)", ln.Addr(), version.Version))
 	srvr := &http.Server{
@@ -1764,6 +1794,9 @@ func Serve(ln net.Listener) error {
 	go func() {
 		<-signals
 		srvr.Close()
+		if s.training != nil {
+			s.training.Close()
+		}
 		schedDone()
 		sched.unloadAllRunners()
 		done()
@@ -1801,6 +1834,9 @@ func Serve(ln net.Listener) error {
 	// If server is closed from the signal handler, wait for the ctx to be done
 	// otherwise error out quickly
 	if !errors.Is(err, http.ErrServerClosed) {
+		if s.training != nil {
+			s.training.Close()
+		}
 		return err
 	}
 	<-ctx.Done()

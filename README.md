@@ -158,6 +158,7 @@ console.log(response.message.content);
 - [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
 - [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.
 - [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, video generation (not in scope yet), Option 2 milestones, **why** each phase exists (policy vs templates vs limits).
+- [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500` and Python owns PyTorch; gRPC over Unix socket; inference-first VRAM on OOM; env vars (`OLLAMA_TRAINING`, `OLLAMA_TRAINING_TCP`, `OLLAMA_TRAINING_PYTHONPATH`).
 
 ## Community Integrations
 

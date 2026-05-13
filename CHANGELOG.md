@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **GPU training integration (Go + Python):** when `OLLAMA_TRAINING` is true (default), the Go daemon spawns `python3 -m trainingdaemon` on a **private Unix socket**, exposes **`/api/train/*`** over HTTP, and optionally **TCP `:9500`** (newline JSON, legacy-compatible). Internal IPC is **gRPC** (`proto/training.proto`). **Why:** one public process (Ollama), typed IPC, Python owns PyTorch/CUDA while Go owns ports, scheduler integration, and VRAM policy (inference-first OOM bridge: pause loads → evict runners → ack Python).
 - **Zerollama → Eliza Cloud (default remote inference):** default upstream `https://www.elizacloud.ai`, `ELIZACLOUD_API_KEY` sent as `X-API-Key` on `/api/v1/...`; **Ed25519 request signing only** when `OLLAMA_CLOUD_BASE_URL` targets `ollama.com` (legacy cloud). Client paths `/v1/*` are rewritten to Eliza `/api/v1/*`; `/api/embed` and `/api/embeddings` map to `/api/v1/embeddings`. **Why:** OpenAI/Anthropic-compatible APIs and API-key auth match how agents integrate; legacy signing stays opt-in for ollama.com users.
 - **Cloud model catalog merge:** `GET /api/v1/models` merged into local tag lists when cloud is enabled, with **singleflight** on fetch, **Cache-Control**–aware TTL (clamped), and dedupe by model name. **Why:** one combined list for operators; avoids stampedes and duplicate rows.
 
@@ -30,10 +31,14 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Documentation
 
+- **[gpu-training.md](docs/gpu-training.md)** — architecture (Go public / Python GPU), env vars, HTTP vs TCP vs gRPC, VRAM OOM bridge and **why** each exists; troubleshooting and code map.
+- **[x/trainingdaemon/README.md](x/trainingdaemon/README.md)** — **why** a sidecar process, dev venv, `PYTHONPATH`, pointer to full doc.
+- **[x/trainingworker/README.md](x/trainingworker/README.md)** — **why** this Go package is separate from `server/`.
+- **[ROADMAP.md](docs/ROADMAP.md)** — **GPU training (fine-tuning)** section; **why** the roadmap file exists; **Option 2** video phases; **[Zerollama remote cloud (Eliza)](docs/ROADMAP.md#zerollama-remote-cloud-eliza)** follow-ups and non-goals.
 - **[eliza-cloud.md](docs/eliza-cloud.md)** — **why** Eliza is the default upstream, **why** `X-API-Key` vs Ed25519 signing, path rewrites, catalog merge/cache, raw upstream JSON on some routes, account stubs off ollama.com.
-- **[ROADMAP.md](docs/ROADMAP.md)** — **why** the roadmap file exists; **Option 2** video phases; **[Zerollama remote cloud (Eliza)](docs/ROADMAP.md#zerollama-remote-cloud-eliza)** follow-ups and non-goals.
 - **[video-understanding.md](docs/video-understanding.md)** — **why** merged OpenAI messages, ffmpeg→PNG, **why** preflight scopes to messages with video, **why** `video_spans`, logging at Info.
 - **[multimodal-backends.md](docs/multimodal-backends.md)** — **why** env + manifest both apply to sampling.
 - **[video-parity.md](docs/video-parity.md)** — **why** a parity matrix and reference workloads.
-- **[README.md](README.md)** — in-repo doc links with short rationale (Eliza Cloud + video).
+- **[README.md](README.md)** — in-repo doc links with short rationale (Eliza Cloud + video + GPU training).
 - Code comments in **`server/cloud_proxy.go`** / **`server/eliza_catalog.go`** (remote proxy defaults, path rewrite, singleflight) and **`server/modality`** (video policy, preflight, ffmpeg, expansion) plus **`types/model` / `api`** types where relevant — **why** decisions, not only **what**.
+- Code comments in **`proto/training.proto`**, **`x/trainingworker/client.go`**, **`server/training_api.go`**, **`server/routes.go`**, **`server/sched.go`**, **`training.py`**, **`x/trainingdaemon/trainingdaemon/{server,gpu_session}.py`**, **`envconfig/config.go`** — GPU training integration rationale.

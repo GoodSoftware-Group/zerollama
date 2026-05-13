@@ -17,3 +17,6 @@ llama/vendor
 /ollama
 /zerollama
 integration/testdata/models/
+
+# Local protoc / codegen downloads (regenerate stubs in CI or dev machines as needed)
+.build/

@@ -241,6 +241,9 @@ var (
 	EnableVulkan = Bool("OLLAMA_VULKAN")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
+	// TrainingEnabled starts the Python training daemon and registers training APIs when true.
+	// Default true so the capability is discoverable; production without GPU stack sets OLLAMA_TRAINING=false.
+	TrainingEnabled = BoolWithDefault("OLLAMA_TRAINING")
 )
 
 func String(s string) func() string {
@@ -326,6 +329,9 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_NO_CLOUD":                     {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
 		"OLLAMA_NOHISTORY":                    {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
 		"OLLAMA_NOPRUNE":                      {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
+		"OLLAMA_TRAINING":                     {"OLLAMA_TRAINING", TrainingEnabled(true), "Enable GPU training worker (Python gRPC daemon, public TCP when configured) (default true)"},
+		"OLLAMA_TRAINING_TCP":                 {"OLLAMA_TRAINING_TCP", Var("OLLAMA_TRAINING_TCP"), "Public training TCP listen address; empty or 1 is :9500; 0 or - disables"},
+		"OLLAMA_TRAINING_PYTHONPATH":          {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Directory containing the trainingdaemon package (x/trainingdaemon); auto-detected when unset"},
 		"OLLAMA_NUM_PARALLEL":                 {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
 		"OLLAMA_ORIGINS":                      {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
 		"OLLAMA_SCHED_SPREAD":                 {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},

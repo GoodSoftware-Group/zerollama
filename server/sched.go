@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -56,6 +57,9 @@ type Scheduler struct {
 	getGpuFn        func(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo
 	getSystemInfoFn func() ml.SystemInfo
 	waitForRecovery time.Duration
+
+	// When true, GetRunner blocks until ResumeLoads (used when training needs VRAM).
+	loadsPaused atomic.Bool
 }
 
 // Default automatic value for number of models we allow per GPU
@@ -122,6 +126,15 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		sessionDuration: sessionDuration,
 		successCh:       make(chan *runnerRef, 1),
 		errCh:           make(chan error, 1),
+	}
+
+	for s.loadsPaused.Load() {
+		select {
+		case <-c.Done():
+			req.errCh <- c.Err()
+			return req.successCh, req.errCh
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 
 	key := schedulerModelKey(req.model)
@@ -903,12 +916,40 @@ func (s *Scheduler) unloadAllRunners() {
 		s.activeLoading = nil
 	}
 
-	for model, runner := range s.loaded {
+	models := make([]string, 0, len(s.loaded))
+	for model := range s.loaded {
+		models = append(models, model)
+	}
+	for _, model := range models {
+		runner := s.loaded[model]
+		if runner == nil {
+			continue
+		}
 		if runner.llama != nil {
 			slog.Debug("shutting down runner", "model", model)
 			runner.llama.Close()
 		}
+		delete(s.loaded, model)
 	}
+}
+
+// PauseNewLoads blocks new inference runner scheduling until [Scheduler.ResumeLoads].
+// Used when training hits CUDA OOM: we must not let a new chat load grab VRAM between eviction
+// and Python's retry. Why atomic bool + spin in GetRunner: minimal change vs redesigning the scheduler queue.
+func (s *Scheduler) PauseNewLoads() {
+	s.loadsPaused.Store(true)
+	slog.Debug("scheduler: paused new loads for training VRAM coordination")
+}
+
+// ResumeLoads allows inference scheduling after an eviction / training retry.
+func (s *Scheduler) ResumeLoads() {
+	s.loadsPaused.Store(false)
+	slog.Debug("scheduler: resumed new loads")
+}
+
+// UnloadAllRunners evicts all loaded inference models (exported for training worker).
+func (s *Scheduler) UnloadAllRunners() {
+	s.unloadAllRunners()
 }
 
 func (s *Scheduler) expireRunner(model *Model) {

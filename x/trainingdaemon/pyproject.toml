@@ -1,0 +1,21 @@
+[project]
+name = "ollama-trainingdaemon"
+version = "0.1.0"
+description = "Internal gRPC GPU training daemon for Ollama (spawned by the Go server)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "grpcio>=1.60.0",
+  "torch>=2.0.0",
+  "transformers>=4.36.0",
+  "datasets>=2.14.0",
+  "peft>=0.7.0",
+  "accelerate>=0.25.0",
+]
+
+[project.optional-dependencies]
+qlora = ["bitsandbytes>=0.41.0"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

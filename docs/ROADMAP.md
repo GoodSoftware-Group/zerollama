@@ -2,7 +2,7 @@
 
 This file tracks **directional** plans. It is not a commitment schedule.
 
-**Why this file exists:** Large features (video, remote cloud) touch **API compatibility**, **security**, and **optional upstreams**. A short roadmap keeps **intent** and **non-goals** visible so contributors do not assume every deployment wants the same tradeoffs.
+**Why this file exists:** Large features (video, remote cloud, GPU training) touch **API compatibility**, **security**, and **optional subprocesses / upstreams**. A short roadmap keeps **intent** and **non-goals** visible so contributors do not assume every deployment wants the same tradeoffs.
 
 ---
 
@@ -22,6 +22,29 @@ This file tracks **directional** plans. It is not a commitment schedule.
 - **Guaranteeing** bit-for-bit parity with every Eliza API revision — we proxy and merge where Zerollama needs; upstream drift is handled case by case.
 
 **Why a separate subsection from video:** Remote HTTP inference and local ffmpeg/video pipelines share almost no code paths; mixing them in one bullet list would blur ownership and testing strategy.
+
+---
+
+## GPU training (fine-tuning)
+
+**Shipped direction:** Go spawns a single Python **`trainingdaemon`** (gRPC on UDS), serves **`/api/train/*`** and legacy **TCP `:9500`** (newline JSON), and coordinates VRAM with the scheduler on CUDA OOM (pause new inference loads → unload runners → ack Python). Training logic stays in repo-root **`training.py`**, imported by the daemon—not a second public listener on 9500.
+
+**Why this track exists:** Fine-tuning stacks (Transformers, PEFT, bitsandbytes) are Python-native; Ollama’s control plane is Go. Splitting **public wire** (Go) from **GPU work** (Python) keeps one upgrade path for clients while avoiding a rewrite of every training primitive in another language.
+
+### Possible follow-ups
+
+- **Proactive VRAM:** Optional “training reservation” or explicit handoff before large loads (today: reactive OOM + `load_model` retry).
+- **Auth on `:9500` and `/api/train`:** Same reasons as main HTTP API—training can exfiltrate paths and burn GPU time.
+- **Structured progress over HTTP:** SSE or WebSocket for job progress without polling (TCP stream already maps to internal events).
+- **Rust or libtorch path:** Only if we need fewer Python processes or stricter ABI isolation—large effort; Python remains the pragmatic default.
+- **CI:** Optional pipeline with CPU-only smoke (imports, gRPC round-trip) vs full CUDA jobs behind labels.
+
+### Non-goals (for this track)
+
+- **Guaranteeing** mid-training automatic resume after OOM without checkpoints—unsafe for arbitrary `Trainer` loops; v1 notifies Go and may retry **model load** only.
+- **Replacing** `training.py` with an empty stub—the library is the reference implementation until a deliberate migration plan exists.
+
+**Why a separate subsection from video / Eliza:** Training touches **subprocess lifecycle**, **GPU memory shared with llama runners**, and **optional TCP**—different failure modes and operators than multimodal decode or remote HTTP.
 
 ---
 

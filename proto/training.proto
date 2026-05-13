@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+// Internal TrainingDaemon API between the Ollama Go process and the Python GPU sidecar.
+//
+// Why protobuf/gRPC (not JSON over TCP between processes):
+//   - Typed, evolvable RPCs and server-streamed events (progress, OOM) without ad-hoc framing.
+//   - Clear boundary: Go owns public HTTP/TCP; Python owns torch/CUDA.
+//
+// Why AckVRAMHeadroom exists:
+//   - Python registers a wait before signaling OOM so Go cannot ACK "too early" and lose the signal.
+//
+// This is not a public API for third-party clients; public surfaces are Go's /api/train/* and :9500.
+
+package ollama.training.v1;
+
+option go_package = "github.com/ollama/ollama/x/trainingworker/trainingpb";
+
+service TrainingDaemon {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc JobStatus(JobStatusRequest) returns (JobStatusResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  // Server streams job-scoped events (progress, completion, OOM). Filter by job_id if set.
+  rpc StreamEvents(StreamEventsRequest) returns (stream TrainingEvent);
+  rpc Unload(UnloadRequest) returns (UnloadResponse);
+  // After Go evicts inference runners, call this so Python can retry GPU allocation.
+  rpc AckVRAMHeadroom(AckVRAMHeadroomRequest) returns (AckVRAMHeadroomResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1; // "ok"
+  // JSON object: device, cuda_available, model_loaded, queue (legacy ping fields).
+  string extras_json = 2;
+}
+
+enum JobKind {
+  JOB_KIND_UNSPECIFIED = 0;
+  JOB_KIND_TRAIN = 1;
+  JOB_KIND_RUN_SCRIPT = 2;
+}
+
+message SubmitJobRequest {
+  JobKind kind = 1;
+  // JSON-encoded payload matching legacy training worker shapes (model paths, dataset, etc.).
+  string payload_json = 2;
+}
+
+message SubmitJobResponse {
+  string job_id = 1;
+}
+
+message JobStatusRequest {
+  string job_id = 1;
+}
+
+message JobStatusResponse {
+  JobInfo job = 1;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobResponse {
+  bool cancelled = 1;
+}
+
+message ListJobsRequest {}
+
+message ListJobsResponse {
+  repeated JobInfo jobs = 1;
+}
+
+message JobInfo {
+  string job_id = 1;
+  JobKind kind = 2;
+  string status = 3; // pending, running, completed, failed, cancelled
+  double progress = 4;
+  string progress_message = 5;
+  string result_json = 6; // set when completed
+  string error = 7;
+  string submitted_at = 8;
+  string started_at = 9;
+  string completed_at = 10;
+}
+
+message StreamEventsRequest {
+  // Empty = all jobs (use sparingly). Prefer filtering to one job.
+  string job_id = 1;
+}
+
+message TrainingEvent {
+  string job_id = 1;
+  oneof event {
+    ProgressEvent progress = 2;
+    JobCompletedEvent completed = 3;
+    JobFailedEvent failed = 4;
+    OOMEvent oom = 5;
+  }
+}
+
+message ProgressEvent {
+  double pct = 1;
+  string message = 2;
+}
+
+message JobCompletedEvent {
+  string result_json = 1;
+}
+
+message JobFailedEvent {
+  string error = 1;
+}
+
+message OOMEvent {
+  string message = 1;
+}
+
+message UnloadRequest {}
+
+message UnloadResponse {
+  string status = 1;
+}
+
+message AckVRAMHeadroomRequest {
+  string job_id = 1;
+}
+
+message AckVRAMHeadroomResponse {}
+
+message ShutdownRequest {}
+
+message ShutdownResponse {}

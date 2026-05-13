@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-Persistent Training Worker for ZoeyAI Enterprise
+GPU training worker logic (PyTorch / Transformers / PEFT).
 
-This worker runs as a long-lived process, accepting training jobs via Unix socket.
-Benefits:
-- Model and tokenizer loaded once, reused across iterations
-- PyTorch/Transformers stay in memory
-- GPU memory stays allocated (faster subsequent training)
-- Reduced startup overhead from ~30s to <1s per iteration
-- Job queue for handling multiple concurrent clients
+Why this file is a *library* today:
+  - Ollama's Go daemon is the only process that should listen on public ports for training
+    (HTTP /api/train/* and TCP :9500). That keeps auth, logging, and versioning in one place.
+  - The ``trainingdaemon`` Python package imports this module, serves gRPC on a private Unix
+    socket, and forwards progress/OOM events to Go.
 
-Protocol (JSON over Unix socket):
-- Each message is a JSON object followed by newline
-- Request: {"cmd": "train", "data": {...}} or {"cmd": "ping"} or {"cmd": "shutdown"}
-- Request: {"cmd": "run_script", "data": {"script_path": "/path/to/train_script.py", ...}}
-- Request: {"cmd": "submit_job", "data": {...}} - Queue a job, returns job_id
-- Request: {"cmd": "job_status", "job_id": "..."} - Get job status
-- Request: {"cmd": "list_jobs"} - List all jobs
-- Request: {"cmd": "cancel_job", "job_id": "..."} - Cancel a pending job
-- Response: {"status": "ok/error", "progress": 0-100, ...}
+What still lives here:
+  - Job queue, WorkerState, load/train/run_script paths, and optional idle GPU unload
+    (TRAINING_WORKER_IDLE_UNLOAD_SEC).
+
+Protocol notes:
+  - Historical deployments spoke JSON + newlines over TCP directly to a Python listener; that
+    wire format is now implemented in Go (``x/trainingworker``) for backward compatibility.
+  - Internal Go↔Python uses protobuf/gRPC (see proto/training.proto and docs/gpu-training.md).
+
+Environment:
+  - TRAINING_WORKER_IDLE_UNLOAD_SEC (default 300): after each train job, unload the cached
+    model from GPU if no new train job starts within this many seconds. Set to 0 to disable.
+    Why: reclaim VRAM between sparse training sessions without paying full reload every request.
 """
 
 import os
@@ -52,12 +54,34 @@ from transformers import (
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """True if exception indicates GPU OOM (PyTorch or driver message)."""
+    oom_cls = getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom_cls is not None and isinstance(exc, oom_cls):
+        return True
+    msg = str(exc).lower()
+    return "out of memory" in msg or "cuda out of memory" in msg
+
+
 # Optional: bitsandbytes for QLoRA
 try:
     import bitsandbytes as bnb
     HAS_BNB = True
 except ImportError:
     HAS_BNB = False
+
+
+def _parse_idle_unload_sec() -> int:
+    """Seconds after last train request completes before auto-unloading model; 0 = disabled."""
+    raw = os.environ.get("TRAINING_WORKER_IDLE_UNLOAD_SEC", "300")
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return 300
+
+
+IDLE_UNLOAD_SEC = _parse_idle_unload_sec()
 
 
 # ============================================================================
@@ -265,6 +289,9 @@ class WorkerState:
         self.current_job_id: Optional[str] = None  # Current job being processed
         self._clients: Dict[str, socket.socket] = {}  # Connected clients by ID
         self._clients_lock = threading.Lock()
+        self.training_active = False  # True while process_training_request holds the model for training
+        self._idle_unload_lock = threading.RLock()
+        self._idle_unload_timer: Optional[threading.Timer] = None
         
     def register_client(self, client_id: str, sock: socket.socket):
         """Register a connected client"""
@@ -290,8 +317,77 @@ class WorkerState:
                     sock.sendall((json.dumps(message) + "\n").encode())
                 except:
                     pass  # Client may have disconnected
-        
-    def load_model(self, model_name: str, use_lora: bool = True, use_qlora: bool = False):
+
+    def _prepare_vram_relief_wait(self) -> None:
+        """Create sync primitive before _notify_cuda_oom so Ack cannot be missed (subclasses)."""
+        pass
+
+    def _notify_cuda_oom(self, exc: BaseException, phase: str = "") -> None:
+        """Hook for coordinators (e.g. gRPC daemon) when CUDA OOM is detected."""
+        _ = (exc, phase)
+
+    def _wait_vram_relief_after_oom(self) -> None:
+        """Hook: block until external coordinator frees VRAM (e.g. Go evicts inference)."""
+        pass
+
+    def cancel_idle_unload_timer(self) -> None:
+        """Cancel any pending idle-unload timer (call before starting training)."""
+        with self._idle_unload_lock:
+            if self._idle_unload_timer is not None:
+                self._idle_unload_timer.cancel()
+                self._idle_unload_timer = None
+
+    def unload_model(self, reason: str = "manual") -> bool:
+        """Unload cached model from GPU. Cancels idle timer. Returns True if a model was unloaded."""
+        with self._idle_unload_lock:
+            if self._idle_unload_timer is not None:
+                self._idle_unload_timer.cancel()
+                self._idle_unload_timer = None
+            if self.model is None:
+                return False
+            del self.model
+            self.model = None
+            self.current_model_name = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"WORKER: Model unloaded ({reason})", flush=True)
+        return True
+
+    def schedule_idle_unload(self) -> None:
+        """After training finishes, schedule auto-unload if enabled and a model remains loaded."""
+        if IDLE_UNLOAD_SEC <= 0:
+            return
+
+        def fire() -> None:
+            unloaded = False
+            with self._idle_unload_lock:
+                self._idle_unload_timer = None
+                if self.training_active or self.model is None:
+                    return
+                del self.model
+                self.model = None
+                self.current_model_name = None
+                unloaded = True
+            if unloaded:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print(
+                    f"WORKER: Model unloaded (idle, {IDLE_UNLOAD_SEC}s since last train)",
+                    flush=True,
+                )
+
+        with self._idle_unload_lock:
+            if self._idle_unload_timer is not None:
+                self._idle_unload_timer.cancel()
+                self._idle_unload_timer = None
+            if self.model is None or self.training_active:
+                return
+            t = threading.Timer(IDLE_UNLOAD_SEC, fire)
+            t.daemon = True
+            self._idle_unload_timer = t
+            t.start()
+
+    def load_model(self, model_name: str, use_lora: bool = True, use_qlora: bool = False, _oom_retry: bool = False):
         """Load model and tokenizer (only if different from current)"""
         if self.current_model_name == model_name and self.model is not None:
             print(f"WORKER: Model {model_name} already loaded, reusing", flush=True)
@@ -357,6 +453,13 @@ class WorkerState:
         except Exception as e:
             print(f"WORKER ERROR: Failed to load model: {e}", flush=True)
             traceback.print_exc()
+            if _is_cuda_oom(e) and not _oom_retry:
+                self._prepare_vram_relief_wait()
+                self._notify_cuda_oom(e, "load_model")
+                self._wait_vram_relief_after_oom()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return self.load_model(model_name, use_lora, use_qlora, _oom_retry=True)
             return False
             
     def send_progress(self, progress: float, message: str = ""):
@@ -432,6 +535,10 @@ def job_processor():
                     
             except Exception as e:
                 traceback.print_exc()
+                if _is_cuda_oom(e):
+                    STATE._notify_cuda_oom(e, "job_processor")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 JOB_QUEUE.fail_job(job.id, str(e))
                 STATE.broadcast_to_job_owner(job, {
                     "type": "job_failed",
@@ -451,133 +558,147 @@ def job_processor():
 
 def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
     """Process a training request"""
+    STATE.cancel_idle_unload_timer()
+    STATE.training_active = True
     try:
-        # Extract parameters
-        model_name = request.get("model_name", "Qwen/Qwen2.5-0.5B-Instruct")
-        output_dir = request.get("output_dir", "/tmp/training_output")
-        training_data = request.get("training_data", [])  # List of {"prompt": ..., "response": ...}
-        num_epochs = request.get("num_epochs", 3)
-        batch_size = request.get("batch_size", 4)
-        learning_rate = request.get("learning_rate", 2e-4)
-        use_lora = request.get("use_lora", True)
-        use_qlora = request.get("use_qlora", False)
-        lora_rank = request.get("lora_rank", 16)
-        lora_alpha = request.get("lora_alpha", 32.0)
-        
-        # Ensure output directory exists
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        # Load model (reuses if same model)
-        STATE.send_progress(5.0, "Loading model...")
-        if not STATE.load_model(model_name, use_lora, use_qlora):
-            return {"status": "error", "error": "Failed to load model"}
-            
-        STATE.send_progress(20.0, "Preparing dataset...")
-        
-        # Prepare dataset
-        def format_sample(sample):
-            return f"### Instruction:\n{sample['prompt']}\n\n### Response:\n{sample['response']}"
-            
-        texts = [format_sample(s) for s in training_data]
-        
-        # Tokenize
-        def tokenize_fn(examples):
-            return STATE.tokenizer(
-                examples["text"],
-                truncation=True,
-                max_length=512,
-                padding="max_length",
+        try:
+            # Extract parameters
+            model_name = request.get("model_name", "Qwen/Qwen2.5-0.5B-Instruct")
+            output_dir = request.get("output_dir", "/tmp/training_output")
+            training_data = request.get("training_data", [])  # List of {"prompt": ..., "response": ...}
+            num_epochs = request.get("num_epochs", 3)
+            batch_size = request.get("batch_size", 4)
+            learning_rate = request.get("learning_rate", 2e-4)
+            use_lora = request.get("use_lora", True)
+            use_qlora = request.get("use_qlora", False)
+            lora_rank = request.get("lora_rank", 16)
+            lora_alpha = request.get("lora_alpha", 32.0)
+
+            # Ensure output directory exists
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            # Load model (reuses if same model)
+            STATE.send_progress(5.0, "Loading model...")
+            if not STATE.load_model(model_name, use_lora, use_qlora):
+                return {"status": "error", "error": "Failed to load model"}
+
+            STATE.send_progress(20.0, "Preparing dataset...")
+
+            # Prepare dataset
+            def format_sample(sample):
+                return f"### Instruction:\n{sample['prompt']}\n\n### Response:\n{sample['response']}"
+
+            texts = [format_sample(s) for s in training_data]
+
+            # Tokenize
+            def tokenize_fn(examples):
+                return STATE.tokenizer(
+                    examples["text"],
+                    truncation=True,
+                    max_length=512,
+                    padding="max_length",
+                )
+
+            dataset = Dataset.from_dict({"text": texts})
+            tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+
+            STATE.send_progress(30.0, "Starting training...")
+
+            # Training arguments
+            training_args = TrainingArguments(
+                output_dir=output_dir,
+                num_train_epochs=num_epochs,
+                per_device_train_batch_size=batch_size,
+                gradient_accumulation_steps=4,
+                learning_rate=learning_rate,
+                weight_decay=0.01,
+                warmup_ratio=0.1,
+                logging_steps=10,
+                save_strategy="epoch",
+                bf16=STATE.device == "cuda",
+                report_to="none",
+                optim="adamw_torch",
+                lr_scheduler_type="cosine",
+                max_grad_norm=0.3,
             )
-            
-        dataset = Dataset.from_dict({"text": texts})
-        tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
-        
-        STATE.send_progress(30.0, "Starting training...")
-        
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=num_epochs,
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=4,
-            learning_rate=learning_rate,
-            weight_decay=0.01,
-            warmup_ratio=0.1,
-            logging_steps=10,
-            save_strategy="epoch",
-            bf16=STATE.device == "cuda",
-            report_to="none",
-            optim="adamw_torch",
-            lr_scheduler_type="cosine",
-            max_grad_norm=0.3,
-        )
-        
-        # Custom callback for progress
-        class ProgressCallback:
-            def __init__(self, total_steps):
-                self.total_steps = total_steps
-                
-            def on_step_end(self, args, state, control, **kwargs):
-                if self.total_steps > 0:
-                    progress = 30.0 + (state.global_step / self.total_steps) * 60.0
-                    STATE.send_progress(progress, f"Training step {state.global_step}/{self.total_steps}")
-                    
-        # Calculate total steps
-        total_steps = (len(tokenized) // batch_size) * num_epochs
-        
-        # Data collator
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=STATE.tokenizer,
-            mlm=False,
-        )
-        
-        # Trainer
-        trainer = Trainer(
-            model=STATE.model,
-            args=training_args,
-            train_dataset=tokenized,
-            data_collator=data_collator,
-        )
-        
-        # Add progress callback
-        progress_cb = ProgressCallback(total_steps)
-        
-        # Override step callback
-        original_training_step = trainer.training_step
-        step_count = [0]
-        def training_step_with_progress(*args, **kwargs):
-            result = original_training_step(*args, **kwargs)
-            step_count[0] += 1
-            if total_steps > 0:
-                progress = 30.0 + (step_count[0] / total_steps) * 60.0
-                if step_count[0] % 5 == 0:  # Update every 5 steps
-                    STATE.send_progress(progress, f"Training step {step_count[0]}/{total_steps}")
-            return result
-        trainer.training_step = training_step_with_progress
-        
-        # Train
-        train_result = trainer.train()
-        
-        STATE.send_progress(90.0, "Saving model...")
-        
-        # Save the LoRA adapter
-        adapter_path = os.path.join(output_dir, "lora_adapter")
-        STATE.model.save_pretrained(adapter_path)
-        STATE.tokenizer.save_pretrained(adapter_path)
-        
-        STATE.send_progress(95.0, "Training complete")
-        
-        return {
-            "status": "ok",
-            "output_dir": output_dir,
-            "adapter_path": adapter_path,
-            "train_loss": train_result.training_loss,
-            "train_samples": len(training_data),
-        }
-        
-    except Exception as e:
-        traceback.print_exc()
-        return {"status": "error", "error": str(e)}
+
+            # Custom callback for progress
+            class ProgressCallback:
+                def __init__(self, total_steps):
+                    self.total_steps = total_steps
+
+                def on_step_end(self, args, state, control, **kwargs):
+                    if self.total_steps > 0:
+                        progress = 30.0 + (state.global_step / self.total_steps) * 60.0
+                        STATE.send_progress(progress, f"Training step {state.global_step}/{self.total_steps}")
+
+            # Calculate total steps
+            total_steps = (len(tokenized) // batch_size) * num_epochs
+
+            # Data collator
+            data_collator = DataCollatorForLanguageModeling(
+                tokenizer=STATE.tokenizer,
+                mlm=False,
+            )
+
+            # Trainer
+            trainer = Trainer(
+                model=STATE.model,
+                args=training_args,
+                train_dataset=tokenized,
+                data_collator=data_collator,
+            )
+
+            # Add progress callback
+            progress_cb = ProgressCallback(total_steps)
+
+            # Override step callback
+            original_training_step = trainer.training_step
+            step_count = [0]
+
+            def training_step_with_progress(*args, **kwargs):
+                result = original_training_step(*args, **kwargs)
+                step_count[0] += 1
+                if total_steps > 0:
+                    progress = 30.0 + (step_count[0] / total_steps) * 60.0
+                    if step_count[0] % 5 == 0:  # Update every 5 steps
+                        STATE.send_progress(progress, f"Training step {step_count[0]}/{total_steps}")
+                return result
+
+            trainer.training_step = training_step_with_progress
+
+            # Train
+            train_result = trainer.train()
+
+            STATE.send_progress(90.0, "Saving model...")
+
+            # Save the LoRA adapter
+            adapter_path = os.path.join(output_dir, "lora_adapter")
+            STATE.model.save_pretrained(adapter_path)
+            STATE.tokenizer.save_pretrained(adapter_path)
+
+            STATE.send_progress(95.0, "Training complete")
+
+            return {
+                "status": "ok",
+                "output_dir": output_dir,
+                "adapter_path": adapter_path,
+                "train_loss": train_result.training_loss,
+                "train_samples": len(training_data),
+            }
+
+        except Exception as e:
+            traceback.print_exc()
+            if _is_cuda_oom(e):
+                # Notify Go to free inference VRAM for next job, but do not wait
+                # — we are already failing this job and cannot resume the loop.
+                STATE._notify_cuda_oom(e, "train")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return {"status": "error", "error": str(e)}
+    finally:
+        STATE.training_active = False
+        STATE.schedule_idle_unload()
 
 
 def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -810,13 +931,12 @@ def handle_request(request: Dict[str, Any], client_id: Optional[str] = None) -> 
         return run_local_script(request.get("data", {}))
         
     elif cmd == "unload":
-        # Unload model to free memory
-        if STATE.model is not None:
-            del STATE.model
-            STATE.model = None
-            STATE.current_model_name = None
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-        return {"status": "ok", "message": "Model unloaded"}
+        # Unload model to free memory (also cancels idle-unload timer)
+        unloaded = STATE.unload_model(reason="manual")
+        return {
+            "status": "ok",
+            "message": "Model unloaded" if unloaded else "No model loaded",
+        }
         
     elif cmd == "shutdown":
         STATE.running = False
@@ -914,6 +1034,16 @@ def run_server(address: str):
     if torch.cuda.is_available():
         print(f"WORKER: GPU: {torch.cuda.get_device_name(0)}", flush=True)
         print(f"WORKER: GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB", flush=True)
+    if IDLE_UNLOAD_SEC > 0:
+        print(
+            f"WORKER: Idle GPU unload enabled: TRAINING_WORKER_IDLE_UNLOAD_SEC={IDLE_UNLOAD_SEC}",
+            flush=True,
+        )
+    else:
+        print(
+            "WORKER: Idle GPU unload disabled (TRAINING_WORKER_IDLE_UNLOAD_SEC is 0 or negative)",
+            flush=True,
+        )
     
     # Start job processor thread
     processor_thread = threading.Thread(target=job_processor, daemon=True)
