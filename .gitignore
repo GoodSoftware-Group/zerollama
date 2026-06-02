@@ -20,3 +20,5 @@ integration/testdata/models/
 
 # Local protoc / codegen downloads (regenerate stubs in CI or dev machines as needed)
 .build/
+runtime/runtime/kv/_kv_native*.so
+runtime/build/

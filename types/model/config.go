@@ -22,6 +22,23 @@ type VideoSampling struct {
 	MaxFrames int `json:"max_frames,omitempty"`
 }
 
+// VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
+type VideoGenerationConfig struct {
+	Runner       string `json:"runner,omitempty"`     // wan-cli; later diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`  // wan2.1-t2v-1.3b | wan2.2-ti2v-5b
+	VRAMTier     string `json:"vram_tier,omitempty"`  // 16g | 24g | 32g
+	Size         string `json:"size,omitempty"`       // 832x480
+	Frames       int    `json:"frames,omitempty"`
+	Steps        int    `json:"steps,omitempty"`
+	Precision    string `json:"precision,omitempty"` // bf16 | fp16 | fp8
+	Quant        string `json:"quant,omitempty"`     // none | gguf | fp8
+	BatchSize    int    `json:"batch_size,omitempty"`
+	OffloadModel bool   `json:"offload_model,omitempty"`
+	T5CPU        bool   `json:"t5_cpu,omitempty"`
+	VAETiling    bool   `json:"vae_tiling,omitempty"`
+	TimeoutSec   int    `json:"timeout_sec,omitempty"`
+}
+
 // ConfigV2 represents the configuration metadata for a model.
 type ConfigV2 struct {
 	ModelFormat   string   `json:"model_format"`
@@ -49,12 +66,16 @@ type ConfigV2 struct {
 
 	// ModalityBackends selects which subprocess or built-in driver handles each modality.
 	// Keys (see model.Modality* constants): "image", "speech" (TTS), "transcribe" (STT),
-	// "video_understanding" (VLM: "native" default, or "sglang" with OLLAMA_SGLANG_URL).
+	// "video_understanding" (VLM: "native" default, or "sglang" with OLLAMA_SGLANG_URL),
+	// "video_generation" (T2V: "wan" with scripts/wan_video_generate.py).
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
 	// BackendPaths passes filesystem paths to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
-	// Keys include "whisper_model", "piper_model" (and optionally "piper_config").
+	// Keys include "whisper_model", "piper_model", "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path".
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
+
+	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md).
+	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
 
 	// VideoSampling overrides native ffmpeg sampling for video_understanding=native (see docs/video-parity.md).
 	VideoSampling *VideoSampling `json:"video_sampling,omitempty"`

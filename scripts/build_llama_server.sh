@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Build llama-server from pinned llama.cpp (see runtime/LLAMA_CPP_PIN.md).
+# Why validate nvcc: CMAKE may find headers under cuda-12.8 while CUDACXX points at a
+# missing cuda-13/bin/nvcc. RTX 5080: CMAKE_CUDA_ARCHITECTURES=120-real (see docs/testing-smoke.md).
+set -euo pipefail
+
+ROOT="${LLAMA_CPP_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/llama.cpp}"
+BUILD="${ROOT}/build"
+
+if [[ ! -f "${ROOT}/CMakeLists.txt" ]]; then
+  echo "llama.cpp not found at ${ROOT}" >&2
+  exit 1
+fi
+
+echo "Building llama-server in ${ROOT} (CUDA=${GGML_CUDA:-ON})"
+if [[ "${GGML_CUDA:-ON}" == "ON" ]]; then
+  cuda_bins=()
+  if [[ -n "${CUDA_HOME:-}" ]]; then
+    cuda_bins+=("${CUDA_HOME}/bin")
+  fi
+  cuda_bins+=(
+    /usr/local/cuda/bin
+    /usr/local/cuda-13/bin
+    /usr/local/cuda-13.1/bin
+    /usr/local/cuda-12.8/bin
+    /usr/local/cuda-12/bin
+    /usr/local/cuda-12.3/bin
+  )
+  CUDACXX=""
+  for d in "${cuda_bins[@]}"; do
+    [[ -x "${d}/nvcc" ]] || continue
+    export PATH="${d}:${PATH}"
+    CUDACXX="${d}/nvcc"
+    export CUDACXX
+    export CUDA_HOME="${d%/bin}"
+    break
+  done
+  if [[ -z "${CUDACXX}" ]]; then
+    echo "nvcc not found; install the NVIDIA CUDA toolkit or set CUDA_HOME to a tree that contains bin/nvcc" >&2
+    echo "  tried: ${cuda_bins[*]}/nvcc" >&2
+    echo "  on this host, check: ls /usr/local/cuda*/bin/nvcc" >&2
+    exit 1
+  fi
+  echo "Using CUDACXX=${CUDACXX} (CUDA_HOME=${CUDA_HOME})"
+fi
+# Default sm_89 (RTX 4090). RTX 5080 (Blackwell): CMAKE_CUDA_ARCHITECTURES=120-real
+# needs a toolkit whose nvcc supports sm_120 (often CUDA 12.8+ or 13.x).
+CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
+
+rm -rf "${BUILD}"
+cmake -S "${ROOT}" -B "${BUILD}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_CUDA="${GGML_CUDA:-ON}" \
+  -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+  -DLLAMA_CURL=ON
+
+cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
+
+BIN="${BUILD}/bin/llama-server"
+if [[ -x "${BIN}" ]]; then
+  echo "OK: ${BIN}"
+  "${BIN}" --version 2>/dev/null || true
+else
+  echo "Build finished but ${BIN} missing" >&2
+  exit 1
+fi

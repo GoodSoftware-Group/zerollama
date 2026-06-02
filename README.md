@@ -154,11 +154,22 @@ console.log(response.message.content);
 
 - [Eliza Cloud / Zerollama remote inference](docs/eliza-cloud.md) — **why** Eliza is the default upstream (OpenAI/Anthropic APIs + API keys), **why** legacy Ed25519 signing is limited to `ollama.com`, path rewrites, catalog merge, and when responses are raw upstream JSON.
 - [Video understanding (VLM)](docs/video-understanding.md) — **why** OpenAI `video_url` merges into one message, **why** ffmpeg samples to frames, security (HTTPS, SSRF), native **fps/stride** sampling, context preflight, and optional SGLang proxy.
+- [Wan text-to-video (T2V)](docs/wan-t2v.md) — **why** async `/v1/videos` uses the training `run_script` queue (not GGUF chat), **why** checkpoints install separately, defer ids, and artifact paths.
 - [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, and **OLLAMA_VIDEO_*** for native video.
 - [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
 - [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.
-- [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, video generation (not in scope yet), Option 2 milestones, **why** each phase exists (policy vs templates vs limits).
-- [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500` and Python owns PyTorch; gRPC over Unix socket; inference-first VRAM on OOM; env vars (`OLLAMA_TRAINING`, `OLLAMA_TRAINING_TCP`, `OLLAMA_TRAINING_PYTHONPATH`).
+- [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, Wan T2V v1 + follow-ups, Option 2 milestones, **why** each phase exists (policy vs templates vs limits).
+- [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); single-GPU env checklist.
+- [Phase 11 runtime admission](docs/phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first; priority classes; enqueue before queue; tunable min-free and training reserve.
+- [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs.
+- [Phase 14 in-process llama](docs/phase14-inprocess-llama.md) — **why** loopback `llama-server` added latency, split VRAM, and blocked token-accurate tools truncation; three backends (`subprocess` default, `inprocess` ctypes GPU, `llama-cpp-python` wheel CPU-default); `POST /internal/tokenize` for Go render-chat; smoke scripts `phase14_serve_env.sh`, `phase14_backend_smoke.sh`, `phase14_both_backends.sh`.
+- [Phase 14 handoff](docs/handoff-phase14-inprocess-llama.md) — engineer handoff: architecture, code map, bugs fixed, 5080 sign-off commands.
+- [Phase 15 native KV](docs/phase15-native-kv.md) — C block pool (`ZEROLLAMA_RUNTIME_KV_NATIVE`); foundation for native decode/KV bind.
+- [Phase 12 tools + admission handoff](docs/handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), GPU code maps, smokes.
+- [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500`; embedded CPython; inference-first VRAM on OOM; defer queue env vars. Code map: [`x/trainingworker/pyembed/README.md`](x/trainingworker/pyembed/README.md).
+- [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
+- [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
+- [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
 
 ## Community Integrations
 

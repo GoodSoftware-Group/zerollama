@@ -20,6 +20,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
   - `speech`: `piper` for Piper TTS.
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
+  - `video_generation` (T2V): `wan` runs [Wan](../scripts/wan_video_generate.py) via the training job queue; capability `video_gen`. See [wan-t2v.md](./wan-t2v.md).
 - **`video_sampling`** (optional, native path only): per-model overrides for ffmpeg—`mode` (`fps` or `stride`), `fps`, `stride`, `max_frames`. Omitted fields use server env defaults (see below).
 - **`tokens_per_image`** (optional): vision-token budget **per raster frame** for **context preflight** only (default `768` until projector metadata is wired through).
 - **`backend_paths`**: map of string keys → filesystem paths for weights/config:
@@ -27,6 +28,8 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `piper_model`: Piper ONNX file.
   - `piper_config`: optional Piper JSON config.
   - `piper_voice_<name>`: optional per-voice ONNX (e.g. `piper_voice_alloy`); `<name>` is the OpenAI `voice` field with non-alphanumeric characters stripped. If set, it overrides `piper_model` for that request.
+  - `wan_repo`, `wan_ckpt_dir`: Wan upstream tree and checkpoint directory (weights installed outside Ollama blobs).
+  - `wan_gguf_path` (optional): GGUF weights when safetensors+offload OOM on 16 GB.
 
 Example (Piper TTS):
 
@@ -82,7 +85,7 @@ When `modality_backends.video_understanding` is `sglang` and `OLLAMA_SGLANG_URL`
 
 `POST /api/chat` accepts the same `videos` field on messages (raw bytes); expansion uses the native ffmpeg path.
 
-**Roadmap:** See [ROADMAP.md](./ROADMAP.md) (video generation and future work).
+**Text-to-video:** `POST /v1/videos` (async jobs) for models with `video_gen` and `video_generation: wan`. **Roadmap:** [ROADMAP.md](./ROADMAP.md), [wan-t2v.md](./wan-t2v.md).
 
 ### External image hook
 

@@ -5,17 +5,19 @@ GPU training worker logic (PyTorch / Transformers / PEFT).
 Why this file is a *library* today:
   - Ollama's Go daemon is the only process that should listen on public ports for training
     (HTTP /api/train/* and TCP :9500). That keeps auth, logging, and versioning in one place.
-  - The ``trainingdaemon`` Python package imports this module, serves gRPC on a private Unix
-    socket, and forwards progress/OOM events to Go.
+  - Go embeds CPython (``x/trainingworker/pyembed``) and imports this module in-process—no
+    separate training subprocess, gRPC, or Unix socket for control plane IPC.
 
 What still lives here:
   - Job queue, WorkerState, load/train/run_script paths, and optional idle GPU unload
     (TRAINING_WORKER_IDLE_UNLOAD_SEC).
+  - run_script for Wan T2V (scripts/wan_video_generate.py): same queue as train so only one
+    GPU-heavy subprocess runs; python_bin/WAN_VENV avoid running Wan inside embed CPython.
 
 Protocol notes:
   - Historical deployments spoke JSON + newlines over TCP directly to a Python listener; that
     wire format is now implemented in Go (``x/trainingworker``) for backward compatibility.
-  - Internal Go↔Python uses protobuf/gRPC (see proto/training.proto and docs/gpu-training.md).
+  - Internal Go↔Python uses the Python C API and a small bootstrap script; see docs/gpu-training.md.
 
 Environment:
   - TRAINING_WORKER_IDLE_UNLOAD_SEC (default 300): after each train job, unload the cached
@@ -112,7 +114,7 @@ class Job:
     client_id: Optional[str] = None  # Track which client submitted
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "id": self.id,
             "cmd": self.cmd,
             "status": self.status.value,
@@ -124,6 +126,13 @@ class Job:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
         }
+        # Surface model/size on run_script jobs so bootstrap → OpenAI GET /v1/videos can echo
+        # the client's model name without parsing env blobs in Go.
+        if self.cmd == "run_script":
+            for key in ("video_model", "video_size"):
+                if self.data.get(key):
+                    d[key] = self.data[key]
+        return d
 
 
 class JobQueue:
@@ -141,11 +150,16 @@ class JobQueue:
         """Submit a job to the queue, returns job_id"""
         with self._lock:
             job_id = str(uuid.uuid4())[:8]  # Short ID for readability
+            job_kwargs: Dict[str, Any] = {}
+            # Go stamps submitted_at at POST time so 202 created_at matches later polls.
+            if submitted_at := data.get("submitted_at"):
+                job_kwargs["submitted_at"] = str(submitted_at)
             job = Job(
                 id=job_id,
                 cmd=cmd,
                 data=data,
                 client_id=client_id,
+                **job_kwargs,
             )
             self._queue.append(job)
             self._jobs[job_id] = job
@@ -319,16 +333,23 @@ class WorkerState:
                     pass  # Client may have disconnected
 
     def _prepare_vram_relief_wait(self) -> None:
-        """Create sync primitive before _notify_cuda_oom so Ack cannot be missed (subclasses)."""
-        pass
+        """Register the sync primitive BEFORE firing the OOM notification.
+
+        Must be called before _notify_cuda_oom so that the ack from Go cannot
+        arrive (and be lost) before _wait_vram_relief_after_oom sets up its wait.
+        Subclasses store a threading.Event here; base class is a no-op.
+        """
 
     def _notify_cuda_oom(self, exc: BaseException, phase: str = "") -> None:
-        """Hook for coordinators (e.g. gRPC daemon) when CUDA OOM is detected."""
+        """Notify the external coordinator (Go) that a CUDA OOM occurred."""
         _ = (exc, phase)
 
     def _wait_vram_relief_after_oom(self) -> None:
-        """Hook: block until external coordinator frees VRAM (e.g. Go evicts inference)."""
-        pass
+        """Block until the external coordinator signals that VRAM has been freed.
+
+        Uses the event registered by _prepare_vram_relief_wait; must not re-create
+        the event here to avoid a lost-wakeup if the ack already arrived.
+        """
 
     def cancel_idle_unload_timer(self) -> None:
         """Cancel any pending idle-unload timer (call before starting training)."""
@@ -513,7 +534,17 @@ def job_processor():
                 if job.cmd == "train":
                     result = process_training_request(job.data)
                 elif job.cmd == "run_script":
-                    result = run_local_script(job.data)
+                    # Expand {job_id} here (not at submit): Python uuid is assigned at queue time.
+                    data = dict(job.data)
+                    if op := data.get("output_path"):
+                        data["output_path"] = str(op).replace("{job_id}", job.id)
+                    env = data.get("env")
+                    if isinstance(env, dict):
+                        env = dict(env)
+                        if wan_out := env.get("WAN_OUTPUT_PATH"):
+                            env["WAN_OUTPUT_PATH"] = str(wan_out).replace("{job_id}", job.id)
+                        data["env"] = env
+                    result = run_local_script(data)
                 else:
                     result = {"status": "error", "error": f"Unknown job command: {job.cmd}"}
                 
@@ -536,7 +567,11 @@ def job_processor():
             except Exception as e:
                 traceback.print_exc()
                 if _is_cuda_oom(e):
+                    # Same hook sequence as load_model: register wait → notify Go → wait for ack
+                    # so inference VRAM is actually freed before we fail the job and continue.
+                    STATE._prepare_vram_relief_wait()
                     STATE._notify_cuda_oom(e, "job_processor")
+                    STATE._wait_vram_relief_after_oom()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                 JOB_QUEUE.fail_job(job.id, str(e))
@@ -690,8 +725,11 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:
             traceback.print_exc()
             if _is_cuda_oom(e):
-                # Notify Go to free inference VRAM for next job, but do not wait
-                # — we are already failing this job and cannot resume the loop.
+                # Skip _prepare_vram_relief_wait/_wait_vram_relief_after_oom here:
+                # we are not retrying this job, so there is nothing to unblock.
+                # Go's ack will call Python's ack_vram_headroom(job_id), which
+                # does a no-op pop (nothing was registered), so no lost-wakeup risk.
+                # We still notify so Go frees inference VRAM for the *next* job.
                 STATE._notify_cuda_oom(e, "train")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -699,6 +737,46 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
     finally:
         STATE.training_active = False
         STATE.schedule_idle_unload()
+
+
+def _script_subprocess_env(python_bin: str, extra_env: Dict[str, Any]) -> Dict[str, str]:
+    """Build env for run_script child processes.
+
+    When python_bin is an external venv (Wan), do not inherit embed/training PYTHONPATH—
+    otherwise the child loads torch from venv-training instead of the Wan venv.
+    """
+    env = os.environ.copy()
+    env.update(extra_env)
+    if python_bin != sys.executable:
+        env.pop("PYTHONPATH", None)
+        env.pop("PYTHONHOME", None)
+        venv = str(extra_env.get("WAN_VENV", "")).strip()
+        if venv:
+            env["VIRTUAL_ENV"] = str(Path(venv).expanduser())
+        wan_repo = str(extra_env.get("WAN_REPO", "")).strip()
+        if wan_repo:
+            # generate.py imports `wan` from the repo tree (cwd is also set, but be explicit).
+            env["PYTHONPATH"] = str(Path(wan_repo).expanduser())
+    return env
+
+
+def _resolve_script_python(request: Dict[str, Any], extra_env: Dict[str, Any]) -> str:
+    """Pick the interpreter for run_script jobs (Wan venv when configured).
+
+    Why not sys.executable: embed CPython loads this module for control plane only; Wan needs
+    the venv from install_wan_video.sh (python_bin from Go or WAN_PYTHON/WAN_VENV in env).
+    """
+    if pb := request.get("python_bin"):
+        pb = str(pb).strip()
+        if pb:
+            return pb
+    if pb := str(extra_env.get("WAN_PYTHON", "")).strip():
+        return pb
+    if venv := str(extra_env.get("WAN_VENV", "")).strip():
+        candidate = Path(venv).expanduser() / "bin" / "python3"
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
 
 
 def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -735,76 +813,65 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
         
         STATE.send_progress(0.0, f"Starting script: {script_path.name}")
         
-        # Prepare environment (inherit current + add extras)
-        env = os.environ.copy()
-        env.update(extra_env)
-        
+        python_bin = _resolve_script_python(request, extra_env)
+        env = _script_subprocess_env(python_bin, extra_env)
+
         # Build command
-        cmd = [sys.executable, str(script_path)] + list(script_args)
+        cmd = [python_bin, str(script_path)] + list(script_args)
         
         print(f"WORKER: Executing script: {' '.join(cmd)}", flush=True)
         if working_dir:
             print(f"WORKER: Working directory: {working_dir}", flush=True)
         
-        # Start process
+        # Merge stderr into stdout so wrapper diagnostics (eprint) and child output
+        # are captured in one stream (matches wan_video_generate.py for generate.py).
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             cwd=working_dir,
             env=env,
             text=True,
             bufsize=1,  # Line buffered
         )
-        
+
         stdout_lines = []
-        stderr_lines = []
         last_progress = 0.0
         training_complete = False
-        
+
         # Monitor stdout for progress updates
         # Format expected: "PROGRESS:XX:message" where XX is 0-100
         progress_pattern = re.compile(r"PROGRESS:(\d+(?:\.\d+)?):?(.*)")
-        
+
         def read_output():
             nonlocal last_progress, training_complete
+            assert process.stdout is not None
             while True:
                 line = process.stdout.readline()
                 if not line:
                     break
-                    
+
                 line = line.rstrip()
                 stdout_lines.append(line)
-                print(f"SCRIPT: {line}", flush=True)
-                
-                # Parse progress updates
+                lower = line.lower()
+                if "error" in lower or "warning" in lower or "traceback" in lower:
+                    print(f"SCRIPT ERROR: {line}", flush=True)
+                else:
+                    print(f"SCRIPT: {line}", flush=True)
+
                 match = progress_pattern.match(line)
                 if match:
                     progress = float(match.group(1))
                     message = match.group(2).strip() if match.group(2) else ""
                     last_progress = progress
                     STATE.send_progress(progress, message)
-                    
+
                 if "TRAINING_COMPLETE" in line:
                     training_complete = True
-                    
-        def read_stderr():
-            while True:
-                line = process.stderr.readline()
-                if not line:
-                    break
-                line = line.rstrip()
-                stderr_lines.append(line)
-                # Only print warnings/errors to not spam logs
-                if "error" in line.lower() or "warning" in line.lower() or "traceback" in line.lower():
-                    print(f"SCRIPT ERROR: {line}", flush=True)
-        
-        # Start reader threads
+
         stdout_thread = threading.Thread(target=read_output, daemon=True)
-        stderr_thread = threading.Thread(target=read_stderr, daemon=True)
         stdout_thread.start()
-        stderr_thread.start()
-        
+
         # Wait for process with timeout
         try:
             return_code = process.wait(timeout=timeout_secs)
@@ -813,14 +880,14 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "status": "error",
                 "error": f"Script timed out after {timeout_secs} seconds",
-                "stdout": "\n".join(stdout_lines[-100:]),  # Last 100 lines
-                "stderr": "\n".join(stderr_lines[-100:]),
+                "stdout": "\n".join(stdout_lines[-100:]),
             }
-        
-        # Wait for reader threads
-        stdout_thread.join(timeout=5)
-        stderr_thread.join(timeout=5)
-        
+
+        # Process exited; stdout is at EOF so the reader thread should finish quickly.
+        stdout_thread.join(timeout=10)
+        if stdout_thread.is_alive():
+            print("WORKER: script stdout reader still running after process exit", flush=True)
+
         # Check result
         if return_code != 0:
             return {
@@ -828,19 +895,21 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
                 "error": f"Script exited with code {return_code}",
                 "return_code": return_code,
                 "stdout": "\n".join(stdout_lines),
-                "stderr": "\n".join(stderr_lines),
             }
-        
+
         STATE.send_progress(100.0, "Script completed successfully")
-        
-        return {
+
+        result = {
             "status": "ok",
             "return_code": 0,
             "training_complete": training_complete,
             "final_progress": last_progress,
             "stdout": "\n".join(stdout_lines),
-            "stderr": "\n".join(stderr_lines) if stderr_lines else None,
         }
+        output_path = request.get("output_path")
+        if output_path and os.path.exists(output_path):
+            result["output_path"] = output_path
+        return result
         
     except Exception as e:
         traceback.print_exc()

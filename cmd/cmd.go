@@ -54,6 +54,7 @@ import (
 	xcmd "github.com/ollama/ollama/x/cmd"
 	xcreateclient "github.com/ollama/ollama/x/create/client"
 	"github.com/ollama/ollama/x/imagegen"
+	"github.com/ollama/ollama/x/videogen"
 )
 
 func init() {
@@ -660,6 +661,16 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		return imagegen.RunCLI(cmd, name, opts.Prompt, interactive, opts.KeepAlive)
 	}
 
+	if slices.Contains(info.Capabilities, model.CapabilityVideoGen) {
+		if opts.Prompt == "" {
+			return errors.New("video generation models require a prompt. Usage: zerollama run " + name + " \"your prompt here\"")
+		}
+		if interactive {
+			return errors.New("interactive mode is not supported for video generation models")
+		}
+		return videogen.RunCLI(cmd, name, opts.Prompt, opts.KeepAlive)
+	}
+
 	// Check for experimental flag
 	isExperimental, _ := cmd.Flags().GetBool("experimental")
 	yoloMode, _ := cmd.Flags().GetBool("experimental-yolo")
@@ -869,15 +880,17 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 	var data [][]string
 
 	for _, m := range models.Models {
+		if m.RemoteModel != "" {
+			continue
+		}
 		if len(args) == 0 || strings.HasPrefix(strings.ToLower(m.Name), strings.ToLower(args[0])) {
-			var size string
-			if m.RemoteModel != "" {
-				size = "-"
-			} else {
-				size = format.HumanBytes(m.Size)
-			}
+			size := format.HumanBytes(m.Size)
 
-			data = append(data, []string{m.Name, m.Digest[:12], size, format.HumanTime(m.ModifiedAt, "Never")})
+			digest := m.Digest
+			if len(digest) > 12 {
+				digest = digest[:12]
+			}
+			data = append(data, []string{m.Name, digest, size, format.HumanTime(m.ModifiedAt, "Never")})
 		}
 	}
 
@@ -1072,10 +1085,7 @@ func showInfo(resp *api.ShowResponse, verbose bool, w io.Writer) error {
 	}
 
 	tableRender("Model", func() (rows [][]string) {
-		if resp.RemoteHost != "" {
-			rows = append(rows, []string{"", "Remote model", resp.RemoteModel})
-			rows = append(rows, []string{"", "Remote URL", resp.RemoteHost})
-		}
+
 
 		if resp.ModelInfo != nil {
 			arch, _ := resp.ModelInfo["general.architecture"].(string)
@@ -1590,6 +1600,8 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 
 	if err := client.Chat(cancelCtx, req, fn); err != nil {
 		if errors.Is(err, context.Canceled) {
+			p.StopAndClear()
+			fmt.Fprintln(os.Stderr, "request canceled (server busy or timed out waiting for the model)")
 			return nil, nil
 		}
 
@@ -1722,6 +1734,8 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 
 	if err := client.Generate(ctx, &request, fn); err != nil {
 		if errors.Is(err, context.Canceled) {
+			p.StopAndClear()
+			fmt.Fprintln(os.Stderr, "request canceled (server busy or timed out waiting for the model)")
 			return nil
 		}
 		return err
@@ -2138,6 +2152,7 @@ func NewCLI() *cobra.Command {
 	signinCmd := &cobra.Command{
 		Use:     "signin",
 		Short:   "Sign in to ollama.com",
+		Hidden:  true,
 		Args:    cobra.ExactArgs(0),
 		PreRunE: checkServerHeartbeat,
 		RunE:    SigninHandler,
@@ -2155,6 +2170,7 @@ func NewCLI() *cobra.Command {
 	signoutCmd := &cobra.Command{
 		Use:     "signout",
 		Short:   "Sign out from ollama.com",
+		Hidden:  true,
 		Args:    cobra.ExactArgs(0),
 		PreRunE: checkServerHeartbeat,
 		RunE:    SignoutHandler,

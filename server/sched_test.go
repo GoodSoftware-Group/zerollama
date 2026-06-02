@@ -19,6 +19,21 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Why default no-cloud in tests: dev boxes with ELIZACLOUD_API_KEY merge live catalog
+	// into ListHandler and break tests that expect a small, deterministic model count.
+	if os.Getenv("OLLAMA_NO_CLOUD") == "" {
+		_ = os.Setenv("OLLAMA_NO_CLOUD", "true")
+	}
+	// Why unset runtime env: operator shells often export ZEROLLAMA_RUNTIME_URL for smokes;
+	// sched tests use synthetic GGUFs and expect ggml load unless they opt into runtime.
+	for _, k := range []string{
+		"ZEROLLAMA_RUNTIME_URL",
+		"ZEROLLAMA_RUNTIME",
+		"OLLAMA_RUNTIME_ALL",
+		"ZEROLLAMA_RUNTIME_EMBED",
+	} {
+		_ = os.Unsetenv(k)
+	}
 	os.Setenv("OLLAMA_DEBUG", "1")
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
@@ -205,13 +220,13 @@ func TestSchedRequestsSameModelSameRequest(t *testing.T) {
 
 	s.newServerFn = a.newServer
 	slog.Info("a")
-	s.pendingReqCh <- a.req
-	require.Len(t, s.pendingReqCh, 1)
+	require.True(t, s.pending.Push(a.req))
+	require.Equal(t, 1, s.pending.Len())
 	s.Run(ctx)
 	select {
 	case resp := <-a.req.successCh:
 		require.Equal(t, resp.llama, a.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, a.req.errCh)
 	case err := <-a.req.errCh:
 		t.Fatal(err.Error())
@@ -222,11 +237,11 @@ func TestSchedRequestsSameModelSameRequest(t *testing.T) {
 	// Same runner as first request due to not needing a reload
 	s.newServerFn = b.newServer
 	slog.Info("b")
-	s.pendingReqCh <- b.req
+	require.True(t, s.pending.Push(b.req))
 	select {
 	case resp := <-b.req.successCh:
 		require.Equal(t, resp.llama, a.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, b.req.errCh)
 	case err := <-b.req.errCh:
 		t.Fatal(err.Error())
@@ -249,13 +264,13 @@ func TestSchedRequestsSimpleReloadSameModel(t *testing.T) {
 
 	s.newServerFn = a.newServer
 	slog.Info("a")
-	s.pendingReqCh <- a.req
-	require.Len(t, s.pendingReqCh, 1)
+	require.True(t, s.pending.Push(a.req))
+	require.Equal(t, 1, s.pending.Len())
 	s.Run(ctx)
 	select {
 	case resp := <-a.req.successCh:
 		require.Equal(t, resp.llama, a.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, a.req.errCh)
 	case err := <-a.req.errCh:
 		t.Fatal(err.Error())
@@ -267,7 +282,7 @@ func TestSchedRequestsSimpleReloadSameModel(t *testing.T) {
 	s.newServerFn = b.newServer
 	b.req.model.AdapterPaths = []string{"new"}
 	slog.Info("b")
-	s.pendingReqCh <- b.req
+	require.True(t, s.pending.Push(b.req))
 	// finish first two requests, so model can reload
 	time.Sleep(1 * time.Millisecond)
 	a.ctxDone()
@@ -283,7 +298,7 @@ func TestSchedRequestsSimpleReloadSameModel(t *testing.T) {
 	select {
 	case resp := <-b.req.successCh:
 		require.Equal(t, resp.llama, b.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, b.req.errCh)
 	case err := <-b.req.errCh:
 		t.Fatal(err.Error())
@@ -313,12 +328,12 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 
 	s.newServerFn = a.newServer
 	slog.Info("Loading A")
-	s.pendingReqCh <- a.req
+	require.True(t, s.pending.Push(a.req))
 	s.Run(ctx)
 	select {
 	case resp := <-a.req.successCh:
 		require.Equal(t, resp.llama, a.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, a.req.errCh)
 	case err := <-a.req.errCh:
 		t.Fatal(err.Error())
@@ -332,11 +347,11 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	t.Setenv("OLLAMA_MAX_LOADED_MODELS", "0")
 	s.newServerFn = b.newServer
 	slog.Info("Loading B")
-	s.pendingReqCh <- b.req
+	require.True(t, s.pending.Push(b.req))
 	select {
 	case resp := <-b.req.successCh:
 		require.Equal(t, resp.llama, b.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, b.req.errCh)
 	case err := <-b.req.errCh:
 		t.Fatal(err.Error())
@@ -350,11 +365,11 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	// This is a CPU load with NumGPU = 0 so it should load
 	s.newServerFn = c.newServer
 	slog.Info("Loading C")
-	s.pendingReqCh <- c.req
+	require.True(t, s.pending.Push(c.req))
 	select {
 	case resp := <-c.req.successCh:
 		require.Equal(t, resp.llama, c.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, c.req.errCh)
 	case err := <-c.req.errCh:
 		t.Fatal(err.Error())
@@ -374,7 +389,7 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	s.loadedMu.Unlock()
 	a.ctxDone() // Won't help since this one isn't big enough to make room
 	time.Sleep(2 * time.Millisecond)
-	s.pendingReqCh <- d.req
+	require.True(t, s.pending.Push(d.req))
 	// finish prior request, so new model can load
 	time.Sleep(6 * time.Millisecond)
 	s.loadedMu.Lock()
@@ -393,7 +408,7 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	select {
 	case resp := <-d.req.successCh:
 		require.Equal(t, resp.llama, d.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, d.req.errCh)
 	case <-ctx.Done():
 		t.Fatal("timeout")
@@ -431,10 +446,10 @@ func TestSchedGetRunner(t *testing.T) {
 	s.newServerFn = a.newServer
 	slog.Info("a")
 	successCh1a, errCh1a := s.GetRunner(a.ctx, a.req.model, a.req.opts, a.req.sessionDuration)
-	require.Len(t, s.pendingReqCh, 1)
+	require.Equal(t, 1, s.pending.Len())
 	slog.Info("b")
 	successCh1b, errCh1b := s.GetRunner(b.ctx, b.req.model, b.req.opts, b.req.sessionDuration)
-	require.Len(t, s.pendingReqCh, 1)
+	require.Equal(t, 1, s.pending.Len())
 	require.Empty(t, successCh1b)
 	require.Len(t, errCh1b, 1)
 	err := <-errCh1b
@@ -443,7 +458,7 @@ func TestSchedGetRunner(t *testing.T) {
 	select {
 	case resp := <-successCh1a:
 		require.Equal(t, resp.llama, a.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, errCh1a)
 	case err := <-errCh1a:
 		t.Fatal(err.Error())
@@ -496,7 +511,7 @@ func TestSchedGetRunnerUsesDigestKeyWhenModelPathEmpty(t *testing.T) {
 
 	require.Empty(t, successCh)
 	require.Empty(t, errCh)
-	require.Len(t, s.pendingReqCh, 1)
+	require.Equal(t, 1, s.pending.Len())
 }
 
 func TestSchedGetRunnerReusesSameDigestWhenModelPathEmpty(t *testing.T) {
@@ -532,7 +547,7 @@ func TestSchedGetRunnerReusesSameDigestWhenModelPathEmpty(t *testing.T) {
 	}
 
 	require.Empty(t, errCh)
-	require.Empty(t, s.pendingReqCh)
+	require.Zero(t, s.pending.Len())
 }
 
 func TestSchedExpireRunner(t *testing.T) {
@@ -612,12 +627,12 @@ func TestSchedPrematureExpired(t *testing.T) {
 	s.getSystemInfoFn = getSystemInfoFn
 	s.newServerFn = scenario1a.newServer
 	successCh1a, errCh1a := s.GetRunner(scenario1a.ctx, scenario1a.req.model, scenario1a.req.opts, scenario1a.req.sessionDuration)
-	require.Len(t, s.pendingReqCh, 1)
+	require.Equal(t, 1, s.pending.Len())
 	s.Run(ctx)
 	select {
 	case resp := <-successCh1a:
 		require.Equal(t, resp.llama, scenario1a.srv)
-		require.Empty(t, s.pendingReqCh)
+		require.Zero(t, s.pending.Len())
 		require.Empty(t, errCh1a)
 		s.loadedMu.Lock()
 		require.Len(t, s.loaded, 1)
@@ -825,13 +840,13 @@ func TestSchedAlreadyCanceled(t *testing.T) {
 	s := InitScheduler(ctx)
 	s.waitForRecovery = 10 * time.Millisecond
 	slog.Info("scenario1a")
-	s.pendingReqCh <- scenario1a.req
-	require.Len(t, s.pendingReqCh, 1)
+	require.True(t, s.pending.Push(scenario1a.req))
+	require.Equal(t, 1, s.pending.Len())
 	s.Run(ctx)
 	time.Sleep(5 * time.Millisecond)
-	require.Empty(t, s.pendingReqCh)
-	require.Empty(t, scenario1a.req.errCh)
+	require.Zero(t, s.pending.Len())
 	require.Empty(t, scenario1a.req.successCh)
+	require.ErrorIs(t, <-scenario1a.req.errCh, context.Canceled)
 }
 
 type mockLlm struct {
@@ -995,4 +1010,193 @@ func TestImageGenSchedulerCoexistence(t *testing.T) {
 	// Free memory should be reduced by both models
 	expectedFree := uint64(24*format.GigaByte) - uint64(8*format.GigaByte) - uint64(4*format.GigaByte)
 	require.Equal(t, expectedFree, gpus[0].FreeMemory)
+}
+
+// TestSchedPopPreferringLoadedModel runs queued work for a loaded model before the FIFO head.
+func TestSchedPopPreferringLoadedModel(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 2*time.Second)
+	defer done()
+	t.Setenv("OLLAMA_MAX_LOADED_MODELS", "1")
+
+	s := InitScheduler(ctx)
+	s.waitForRecovery = 10 * time.Millisecond
+	s.getGpuFn = getGpuFn
+	s.getSystemInfoFn = getSystemInfoFn
+
+	a := newScenarioRequest(t, ctx, "prefer-model-a", 10, &api.Duration{Duration: 0}, nil)
+	b := newScenarioRequest(t, ctx, "prefer-model-b", 11, &api.Duration{Duration: 0}, nil)
+	a2 := newScenarioRequest(t, ctx, "prefer-model-a2", 10, &api.Duration{Duration: 0}, nil)
+	a2.req.model = a.req.model
+
+	s.newServerFn = a.newServer
+	require.True(t, s.pending.Push(a.req))
+	s.Run(ctx)
+	select {
+	case resp := <-a.req.successCh:
+		require.Equal(t, a.srv, resp.llama)
+	case err := <-a.req.errCh:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal("timeout loading model A")
+	}
+
+	// Head is B but A2 should dequeue first via PopPreferringKeys.
+	s.newServerFn = b.newServer
+	require.True(t, s.pending.Push(b.req))
+	require.True(t, s.pending.Push(a2.req))
+
+	a2Done := make(chan *runnerRef, 1)
+	go func() {
+		select {
+		case resp := <-a2.req.successCh:
+			a2Done <- resp
+		case <-a2.req.errCh:
+			a2Done <- nil
+		case <-ctx.Done():
+			a2Done <- nil
+		}
+	}()
+
+	select {
+	case resp := <-a2Done:
+		require.NotNil(t, resp)
+		require.Equal(t, a.srv, resp.llama)
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for prefer-loaded request")
+	}
+
+	a.ctxDone()
+	b.ctxDone()
+	a2.ctxDone()
+}
+
+// TestSchedDrainSameModelBeforeEvict ensures queued same-model work runs before eviction.
+func TestSchedDrainSameModelBeforeEvict(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 2*time.Second)
+	defer done()
+	t.Setenv("OLLAMA_MAX_LOADED_MODELS", "1")
+
+	s := InitScheduler(ctx)
+	s.waitForRecovery = 10 * time.Millisecond
+	s.getGpuFn = getGpuFn
+	s.getSystemInfoFn = getSystemInfoFn
+
+	a := newScenarioRequest(t, ctx, "drain-model-a", 10, &api.Duration{Duration: 0}, nil)
+	b := newScenarioRequest(t, ctx, "drain-model-b", 11, &api.Duration{Duration: 0}, nil)
+	a2 := newScenarioRequest(t, ctx, "drain-model-a2", 10, &api.Duration{Duration: 0}, nil)
+	a2.req.model = a.req.model
+
+	s.newServerFn = a.newServer
+	require.True(t, s.pending.Push(a.req))
+	s.Run(ctx)
+	select {
+	case resp := <-a.req.successCh:
+		require.Equal(t, a.srv, resp.llama)
+	case err := <-a.req.errCh:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal("timeout loading model A")
+	}
+
+	s.newServerFn = b.newServer
+	require.True(t, s.pending.Push(b.req))
+	require.True(t, s.pending.Push(a2.req))
+	require.Equal(t, 2, s.pending.Len())
+
+	a2Done := make(chan *runnerRef, 1)
+	go func() {
+		select {
+		case resp := <-a2.req.successCh:
+			a2Done <- resp
+		case err := <-a2.req.errCh:
+			t.Error(err)
+			a2Done <- nil
+		case <-ctx.Done():
+			a2Done <- nil
+		}
+	}()
+
+	select {
+	case resp := <-a2Done:
+		require.NotNil(t, resp)
+		require.Equal(t, a.srv, resp.llama)
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for drained same-model request")
+	}
+
+	a.ctxDone()
+	b.ctxDone()
+	a2.ctxDone()
+}
+
+func TestSchedulerInferenceBacklog(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := InitScheduler(ctx)
+	if s.InferenceBusy() {
+		t.Fatal("expected idle scheduler")
+	}
+	s.pending.Push(&LlmRequest{ctx: ctx, model: &Model{ModelPath: "/tmp/m"}})
+	pending, active, loaded := s.InferenceBacklog()
+	if pending != 1 || active != 0 || loaded != 0 {
+		t.Fatalf("pending=%d active=%d loaded=%d", pending, active, loaded)
+	}
+	if !s.InferenceBusy() {
+		t.Fatal("expected busy with pending request")
+	}
+}
+
+func TestSchedulerInferenceBacklogLoadedRunners(t *testing.T) {
+	t.Setenv("ZEROLLAMA_TRAINING_WAIT_GGML_LOADED", "1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := InitScheduler(ctx)
+	s.loadedMu.Lock()
+	s.loaded["m"] = &runnerRef{modelKey: "m"}
+	s.loadedMu.Unlock()
+	_, _, loaded := s.InferenceBacklog()
+	if loaded != 1 {
+		t.Fatalf("loaded=%d want 1", loaded)
+	}
+	if !s.InferenceBusy() {
+		t.Fatal("expected busy with resident ggml runner")
+	}
+}
+
+func TestPendingFailIfCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := &LlmRequest{
+		ctx:   ctx,
+		errCh: make(chan error, 1),
+	}
+	require.True(t, req.failIfCanceled())
+	require.ErrorIs(t, <-req.errCh, context.Canceled)
+}
+
+func TestSchedPendingPopNextSkipsCanceled(t *testing.T) {
+	ctx := t.Context()
+	s := InitScheduler(ctx)
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	stale := &LlmRequest{
+		ctx:       canceledCtx,
+		model:     &Model{ModelPath: "/stale"},
+		errCh:     make(chan error, 1),
+		successCh: make(chan *runnerRef, 1),
+	}
+	live := &LlmRequest{
+		ctx:       ctx,
+		model:     &Model{ModelPath: "/live"},
+		errCh:     make(chan error, 1),
+		successCh: make(chan *runnerRef, 1),
+	}
+	require.True(t, s.pending.Push(stale))
+	require.True(t, s.pending.Push(live))
+
+	got := s.pendingPopNext()
+	require.Same(t, live, got)
+	require.Equal(t, 0, s.pending.Len())
+	require.ErrorIs(t, <-stale.errCh, context.Canceled)
 }

@@ -784,6 +784,11 @@ func (s *ollamaServer) Load(ctx context.Context, systemInfo ml.SystemInfo, gpus 
 
 nextOperation:
 	for operation := LoadOperationFit; operation < LoadOperationCommit; operation++ {
+		slog.Info("llm_load: ollama-engine layout phase",
+			"model_path", s.modelPath,
+			"operation", operation,
+			"gpu_layers", gpuLayers.Sum(),
+		)
 	nextLoad:
 		for {
 			s.loadRequest.GPULayers = gpuLayers
@@ -1202,6 +1207,16 @@ func (s *llmServer) waitUntilRunnerLaunched(ctx context.Context) error {
 // and parameters
 func (s *llmServer) initModel(ctx context.Context, req LoadRequest, operation LoadOperation) (*LoadResponse, error) {
 	req.Operation = operation
+	opStart := time.Now()
+
+	slog.Debug("llm_load: initModel request",
+		"model_path", s.modelPath,
+		"port", s.port,
+		"operation", operation,
+		"kv_size", req.KvSize,
+		"parallel", req.Parallel,
+		"gpu_layers", len(req.GPULayers),
+	)
 
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -1235,6 +1250,13 @@ func (s *llmServer) initModel(ctx context.Context, req LoadRequest, operation Lo
 	if err := json.Unmarshal(body, &llmResp); err != nil {
 		return nil, fmt.Errorf("load unmarshal encode response: %w", err)
 	}
+
+	slog.Debug("llm_load: initModel response",
+		"model_path", s.modelPath,
+		"operation", operation,
+		"success", llmResp.Success,
+		"elapsed", time.Since(opStart),
+	)
 
 	return &llmResp, nil
 }
@@ -1360,17 +1382,37 @@ func (s *llmServer) Ping(ctx context.Context) error {
 func (s *llmServer) WaitUntilRunning(ctx context.Context) error {
 	stallDuration := envconfig.LoadTimeout()    // If no progress happens
 	stallTimer := time.Now().Add(stallDuration) // give up if we stall
+	waitStart := time.Now()
+	pollCount := 0
 
-	slog.Info("waiting for llama runner to start responding")
+	slog.Info("llm_load: waiting for runner to become ready",
+		"model_path", s.modelPath,
+		"port", s.port,
+		"pid", s.Pid(),
+		"stall_timeout", stallDuration,
+	)
 	var lastStatus ServerStatus = -1
 	fullyLoaded := false
+	var lastProgress float32 = -1
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Warn("client connection closed before server finished loading, aborting load")
+			slog.Warn("llm_load: client canceled before runner ready",
+				"model_path", s.modelPath,
+				"port", s.port,
+				"elapsed", time.Since(waitStart),
+				"polls", pollCount,
+				"progress", s.loadProgress,
+				"err", ctx.Err(),
+			)
 			return fmt.Errorf("timed out waiting for llama runner to start: %w", ctx.Err())
 		case <-s.done:
+			slog.Error("llm_load: runner subprocess exited while waiting",
+				"model_path", s.modelPath,
+				"elapsed", time.Since(waitStart),
+				"done_err", s.doneErr,
+			)
 			return fmt.Errorf("llama runner process has terminated: %w", s.doneErr)
 		default:
 		}
@@ -1380,6 +1422,15 @@ func (s *llmServer) WaitUntilRunning(ctx context.Context) error {
 			if s.status != nil && s.status.LastErrMsg != "" {
 				msg = s.status.LastErrMsg
 			}
+			slog.Error("llm_load: stall timeout waiting for runner ready",
+				"model_path", s.modelPath,
+				"port", s.port,
+				"elapsed", time.Since(waitStart),
+				"polls", pollCount,
+				"progress", s.loadProgress,
+				"last_status", lastStatus,
+				"runner_msg", msg,
+			)
 			return fmt.Errorf("timed out waiting for llama runner to start - progress %0.2f - %s", s.loadProgress, msg)
 		}
 		if s.cmd.ProcessState != nil {
@@ -1389,28 +1440,67 @@ func (s *llmServer) WaitUntilRunning(ctx context.Context) error {
 			}
 			return fmt.Errorf("llama runner process no longer running: %d %s", s.cmd.ProcessState.ExitCode(), msg)
 		}
-		ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-		defer cancel()
+		pollCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		priorProgress := s.loadProgress
-		status, _ := s.getServerStatus(ctx)
+		status, statusErr := s.getServerStatus(pollCtx)
+		cancel()
+		pollCount++
 		if lastStatus != status && status != ServerStatusReady {
-			// Only log on status changes
-			slog.Info("waiting for server to become available", "status", status)
+			slog.Info("llm_load: runner status changed",
+				"model_path", s.modelPath,
+				"status", status,
+				"progress", s.loadProgress,
+				"poll", pollCount,
+				"elapsed", time.Since(waitStart),
+			)
+		}
+		if statusErr != nil && pollCount%20 == 0 {
+			slog.Debug("llm_load: health poll error",
+				"model_path", s.modelPath,
+				"status", status,
+				"error", statusErr,
+				"poll", pollCount,
+			)
 		}
 		switch status {
 		case ServerStatusReady:
-			slog.Info(fmt.Sprintf("llama runner started in %0.2f seconds", time.Since(s.loadStart).Seconds()))
+			slog.Info("llm_load: runner ready",
+				"model_path", s.modelPath,
+				"port", s.port,
+				"since_spawn", time.Since(s.loadStart),
+				"wait_elapsed", time.Since(waitStart),
+				"polls", pollCount,
+			)
 			return nil
 		default:
 			lastStatus = status
 			// Reset the timer as long as we're making forward progress on the load
 			if priorProgress != s.loadProgress {
-				slog.Debug(fmt.Sprintf("model load progress %0.2f", s.loadProgress))
+				if s.loadProgress != lastProgress {
+					slog.Debug("llm_load: weight load progress",
+						"model_path", s.modelPath,
+						"progress", s.loadProgress,
+						"status", status,
+						"elapsed", time.Since(waitStart),
+					)
+					lastProgress = s.loadProgress
+				}
 				stallTimer = time.Now().Add(stallDuration)
 			} else if !fullyLoaded && int(s.loadProgress*100.0) >= 100 {
-				slog.Debug("model load completed, waiting for server to become available", "status", status)
+				slog.Debug("llm_load: weights at 100%, waiting for ready status",
+					"model_path", s.modelPath,
+					"status", status,
+				)
 				stallTimer = time.Now().Add(stallDuration)
 				fullyLoaded = true
+			} else if pollCount%40 == 0 {
+				slog.Debug("llm_load: still waiting",
+					"model_path", s.modelPath,
+					"status", status,
+					"progress", s.loadProgress,
+					"stall_remaining", time.Until(stallTimer).Round(time.Second),
+					"poll", pollCount,
+				)
 			}
 			time.Sleep(time.Millisecond * 250)
 			continue
@@ -1597,6 +1687,11 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 	if err != nil {
 		return err
 	} else if status != ServerStatusReady {
+		slog.Warn("llm_infer: runner not ready for completion",
+			"model_path", s.modelPath,
+			"port", s.port,
+			"status", status,
+		)
 		return fmt.Errorf("unexpected server status: %s", status)
 	}
 
@@ -1609,7 +1704,16 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 		return fmt.Errorf("failed to marshal data: %v", err)
 	}
 
+	slog.Debug("llm_infer: starting completion",
+		"model_path", s.modelPath,
+		"port", s.port,
+		"prompt_bytes", buffer.Len(),
+		"num_predict", req.Options.NumPredict,
+		"num_ctx", req.Options.NumCtx,
+	)
+
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/completion", s.port)
+	completionStart := time.Now()
 	serverReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, buffer)
 	if err != nil {
 		return fmt.Errorf("error creating POST request: %v", err)
@@ -1685,6 +1789,12 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 			}
 
 			if c.Done {
+				slog.Debug("llm_infer: completion stream done",
+					"model_path", s.modelPath,
+					"elapsed", time.Since(completionStart),
+					"eval_count", c.EvalCount,
+					"prompt_eval_count", c.PromptEvalCount,
+				)
 				fn(c)
 				return nil
 			}
@@ -1848,7 +1958,11 @@ func (s *llmServer) Close() error {
 		// if ProcessState is already populated, Wait already completed, no need to wait again
 		if s.cmd.ProcessState == nil {
 			slog.Debug("waiting for llama server to exit", "pid", s.Pid())
-			<-s.done
+			select {
+			case <-s.done:
+			case <-time.After(5 * time.Second):
+				slog.Warn("llm server exit wait timed out after kill", "pid", s.Pid())
+			}
 		}
 
 		slog.Debug("llama server stopped", "pid", s.Pid())
@@ -1858,7 +1972,8 @@ func (s *llmServer) Close() error {
 }
 
 func (s *llamaServer) GetDeviceInfos(ctx context.Context) []ml.DeviceInfo {
-	slog.Debug("llamarunner free vram reporting not supported")
+	// Legacy ggml runner has no /info endpoint; VRAM refresh uses scheduler estimates
+	// after unload (see waitForVRAMRecovery).
 	return nil
 }
 

@@ -1,17 +1,18 @@
-// Training HTTP API (/api/train/*): thin handlers over the trainingworker gRPC client when the
-// Python sidecar started successfully. Why here: same Gin router and auth story as the rest of Ollama;
-// why not call Python from every handler directly: one client, shared lifecycle with Serve().
+// Training HTTP API (/api/train/*): thin handlers over the embedded Python training worker.
+//
+// Why handlers live in server/ and not in x/trainingworker: same Gin auth/middleware and
+// lifecycle as the rest of the API; trainingworker stays CGO + wire protocol without importing gin.
 package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/ollama/ollama/x/trainingworker/trainingpb"
+	"github.com/ollama/ollama/x/trainingworker"
 )
 
 func (s *Server) registerTrainingRoutes(r *gin.Engine) {
@@ -29,56 +30,85 @@ func (s *Server) registerTrainingRoutes(r *gin.Engine) {
 
 func (s *Server) trainHTTPSubmitJob(c *gin.Context) {
 	var req struct {
-		Kind    string          `json:"kind"`
-		Payload json.RawMessage `json:"payload"`
+		Kind        string          `json:"kind"`
+		Payload     json.RawMessage `json:"payload"`
+		Priority    string          `json:"priority"`
+		QueueOnBusy *bool           `json:"queue_on_busy"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	kind := trainingpb.JobKind_JOB_KIND_TRAIN
+	kind := "train"
 	if strings.EqualFold(req.Kind, "run_script") {
-		kind = trainingpb.JobKind_JOB_KIND_RUN_SCRIPT
+		kind = "run_script"
 	}
-	payload := string(req.Payload)
-	if payload == "" || payload == "null" {
-		payload = "{}"
+	payload := req.Payload
+	if len(payload) == 0 || string(payload) == "null" {
+		payload = []byte("{}")
 	}
-	out, err := s.training.GRPC().SubmitJob(c.Request.Context(), &trainingpb.SubmitJobRequest{
-		Kind:        kind,
-		PayloadJson: payload,
+	res, err := s.submitTrainingJob(c.Request.Context(), kind, payload, TrainingSubmitOptions{
+		Priority:    parseTrainingPriority(req.Priority),
+		QueueOnBusy: req.QueueOnBusy,
 	})
 	if err != nil {
+		if TrainingSubmitMisconfigured(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+		if TrainingSubmitConflict(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.Contains(err.Error(), "defer queue full") {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusAccepted, gin.H{"job_id": out.JobId})
+	out := gin.H{"job_id": res.JobID}
+	if res.Queued {
+		out["queued"] = true
+		out["state"] = "waiting_for_inference_idle"
+	}
+	c.JSON(http.StatusAccepted, out)
 }
 
 func (s *Server) trainHTTPListJobs(c *gin.Context) {
-	out, err := s.training.GRPC().ListJobs(c.Request.Context(), &trainingpb.ListJobsRequest{})
+	b, err := s.training.ListTrainingJobsJSON(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	b, err := protojson.Marshal(out)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	if merged, merr := s.mergeDeferredJobsListJSON(b); merr == nil {
+		b = merged
 	}
 	c.Data(http.StatusOK, "application/json", b)
 }
 
 func (s *Server) trainHTTPJobStatus(c *gin.Context) {
 	id := c.Param("id")
-	out, err := s.training.GRPC().JobStatus(c.Request.Context(), &trainingpb.JobStatusRequest{JobId: id})
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if isDeferredTrainingJobID(id) {
+		b, err := s.deferredTrainingJobStatusJSON(c.Request.Context(), id)
+		if err != nil {
+			if errors.Is(err, trainingworker.ErrJobNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			} else {
+				c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			}
+			return
+		}
+		c.Data(http.StatusOK, "application/json", b)
 		return
 	}
-	b, err := protojson.Marshal(out)
+	b, err := s.training.JobTrainingStatusJSON(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if errors.Is(err, trainingworker.ErrJobNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 	c.Data(http.StatusOK, "application/json", b)
@@ -86,17 +116,25 @@ func (s *Server) trainHTTPJobStatus(c *gin.Context) {
 
 func (s *Server) trainHTTPCancelJob(c *gin.Context) {
 	id := c.Param("id")
-	out, err := s.training.GRPC().CancelJob(c.Request.Context(), &trainingpb.CancelJobRequest{JobId: id})
+	if isDeferredTrainingJobID(id) {
+		ok, err := s.cancelDeferredTrainingJob(id)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"cancelled": ok})
+		return
+	}
+	ok, err := s.training.CancelTrainingJob(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"cancelled": out.Cancelled})
+	c.JSON(http.StatusOK, gin.H{"cancelled": ok})
 }
 
 func (s *Server) trainHTTPUnload(c *gin.Context) {
-	_, err := s.training.GRPC().Unload(c.Request.Context(), &trainingpb.UnloadRequest{})
-	if err != nil {
+	if err := s.training.UnloadTrainingModel(c.Request.Context()); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
@@ -104,14 +142,22 @@ func (s *Server) trainHTTPUnload(c *gin.Context) {
 }
 
 func (s *Server) trainHTTPHealth(c *gin.Context) {
-	out, err := s.training.GRPC().Health(c.Request.Context(), &trainingpb.HealthRequest{})
+	raw, err := s.training.TrainingHealthJSON(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	var extras any
-	if out.ExtrasJson != "" {
-		_ = json.Unmarshal([]byte(out.ExtrasJson), &extras)
+	var h struct {
+		Status     string `json:"status"`
+		ExtrasJSON string `json:"extrasJson"`
 	}
-	c.JSON(http.StatusOK, gin.H{"status": out.Status, "extras": extras})
+	if err := json.Unmarshal(raw, &h); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var extras any
+	if h.ExtrasJSON != "" {
+		_ = json.Unmarshal([]byte(h.ExtrasJSON), &extras)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": h.Status, "extras": extras})
 }

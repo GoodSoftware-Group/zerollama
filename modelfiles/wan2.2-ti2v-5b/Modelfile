@@ -1,0 +1,2 @@
+# Config-only Wan2.2 TI2V 5B preset (16g defaults).
+# Register with: ../../scripts/register_wan_models.sh wan2.2-ti2v-5b modelfiles/wan2.2-ti2v-5b/config.json

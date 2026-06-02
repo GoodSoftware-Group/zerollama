@@ -691,6 +691,9 @@ const CtxKeyTranscriptionLanguage = "ollama.transcription.language"
 // CtxKeySpeechRequest holds a validated [openai.SpeechCreateRequest] for SpeechHandler.
 const CtxKeySpeechRequest = "ollama.speech.request"
 
+// CtxKeyVideoCreateRequest holds a validated [openai.VideoCreateRequest] for VideoCreateHandler.
+const CtxKeyVideoCreateRequest = "ollama.video.create.request"
+
 // TranscriptionWriter collects streamed chat responses and outputs a transcription response.
 type TranscriptionWriter struct {
 	BaseWriter
@@ -828,6 +831,27 @@ func SpeechMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Set(CtxKeySpeechRequest, req)
+		c.Next()
+	}
+}
+
+// VideoCreateMiddleware validates OpenAI POST /v1/videos JSON and stores the request on context.
+func VideoCreateMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req openai.VideoCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if req.Model == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "model is required"))
+			return
+		}
+		if strings.TrimSpace(req.Prompt) == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "prompt is required"))
+			return
+		}
+		c.Set(CtxKeyVideoCreateRequest, req)
 		c.Next()
 	}
 }

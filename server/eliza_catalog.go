@@ -45,6 +45,18 @@ func elizaCloudBaseURLParsed() (*url.URL, error) {
 	return url.Parse(cloudProxyBaseURL)
 }
 
+// elizaCloudDisplayName is the name shown in /api/tags for an Eliza upstream model id.
+// When the id already contains a tag (e.g. driaforall/tiny-agent-a:3B), use the legacy
+// "-cloud" suffix so list names are not confused with an extra ":cloud" segment.
+func elizaCloudDisplayName(id string) string {
+	lastSlash := strings.LastIndex(id, "/")
+	lastColon := strings.LastIndex(id, ":")
+	if lastColon > lastSlash {
+		return id + "-cloud"
+	}
+	return id + ":cloud"
+}
+
 // mergeElizaCloudModels appends remote Eliza models to local listings when cloud is enabled.
 // Local rows win on duplicate model names (case-insensitive) so a user-defined :cloud tag does not
 // appear twice if Eliza also returns the same id.
@@ -158,7 +170,7 @@ func fetchElizaModelListFromNetwork(ctx context.Context) ([]api.ListModelRespons
 		if id == "" {
 			continue
 		}
-		display := id + ":cloud"
+		display := elizaCloudDisplayName(id)
 		out = append(out, api.ListModelResponse{
 			Name:        display,
 			Model:       display,

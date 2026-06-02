@@ -1,0 +1,16 @@
+# Python deps for embedded GPU training (training.py via libpython3.10).
+# Install into the SAME interpreter zerollama links (usually /usr/bin/python3):
+#
+#   deactivate   # do not use the runtime-only venv for this check
+#   /usr/bin/python3 -m pip install -r requirements-training.txt \
+#     --extra-index-url https://download.pytorch.org/whl/cu128
+#
+# Adjust cu128 → cu124/cu121 for your CUDA stack. CPU-only hosts: omit the extra index.
+# Verify: /usr/bin/python3 -c "import torch, transformers, datasets, peft; print(torch.__version__)"
+
+torch>=2.5
+transformers>=4.40
+datasets>=2.18
+peft>=0.10
+accelerate>=0.28
+bitsandbytes>=0.43

@@ -115,4 +115,4 @@ See **[video-parity.md](./video-parity.md)** for reference workloads and a nativ
 ## Related documentation
 
 - [multimodal-backends.md](./multimodal-backends.md) — env vars and `modality_backends` keys.
-- [ROADMAP.md](./ROADMAP.md) — **Option 2:** in-tree milestones to narrow parity with external stacks **without** SGLang; video generation; hardening.
+- [ROADMAP.md](./ROADMAP.md) — **Option 2:** in-tree milestones to narrow parity with external stacks **without** SGLang; [Wan T2V](./wan-t2v.md) (generation) vs this doc (understanding); hardening.

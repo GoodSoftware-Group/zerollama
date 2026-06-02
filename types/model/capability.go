@@ -13,6 +13,7 @@ const (
 	CapabilityEmbedding = Capability("embedding")
 	CapabilityThinking  = Capability("thinking")
 	CapabilityImage     = Capability("image")
+	CapabilityVideoGen  = Capability("video_gen") // text-to-video generation (distinct from VLM video)
 	CapabilityAudio     = Capability("audio")
 	CapabilitySpeech    = Capability("speech") // text-to-speech
 )

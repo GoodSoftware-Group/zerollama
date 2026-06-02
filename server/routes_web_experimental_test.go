@@ -40,6 +40,7 @@ func newWebExperimentalUpstream(t *testing.T, responseBody string) (*httptest.Se
 }
 
 func TestExperimentalWebEndpointsPassthrough(t *testing.T) {
+	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 
@@ -232,6 +233,7 @@ func TestExperimentalWebEndpointsCloudDisabled(t *testing.T) {
 }
 
 func TestExperimentalWebEndpointSigningFailureReturnsUnauthorized(t *testing.T) {
+	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 
@@ -286,6 +288,7 @@ func TestExperimentalWebEndpointSigningFailureReturnsUnauthorized(t *testing.T) 
 }
 
 func TestExperimentalWebEndpointSigningFailureWithoutSigninURL(t *testing.T) {
+	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 

@@ -58,7 +58,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 				}
 			}
 
-			if ctxLen <= opts.NumCtx {
+			if ctxLen <= chatPromptTokenBudget(opts) {
 				currMsgIdx = i
 				break
 			}

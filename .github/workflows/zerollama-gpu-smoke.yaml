@@ -1,0 +1,58 @@
+# Optional GPU smoke (self-hosted runner with NVIDIA GPU + zerollama serve).
+# Not run on every PR — workflow_dispatch only.
+#
+# Prerequisites on the runner:
+#   - Labels: self-hosted, gpu
+#   - zerollama serve already listening on :8080 / :8081
+#   - Repo variables: GPU_SMOKE_LLAMA_MODEL, GPU_SMOKE_LLAMA_SERVER_BIN, GPU_SMOKE_GGUF, GPU_SMOKE_PROXY_MODEL
+#   - For run_clamp: serve started with ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto
+name: zerollama-gpu-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tools:
+        description: 'RUN_E2E_TOOLS=1'
+        type: boolean
+        default: true
+      run_legacy:
+        description: 'RUN_E2E_LEGACY=1'
+        type: boolean
+        default: false
+      run_clamp:
+        description: 'Requires serve with VRAM_CLAMP_NUM_CTX=auto'
+        type: boolean
+        default: false
+
+jobs:
+  gpu-smoke:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Phase 12 preflight
+        run: ./scripts/phase12_golden_ci.sh
+
+      - name: GPU smoke (coordination + runtime + proxy)
+        env:
+          OLLAMA_HOST: http://127.0.0.1:8080
+          ZEROLLAMA_RUNTIME_URL: http://127.0.0.1:8081
+          LLAMA_MODEL: ${{ vars.GPU_SMOKE_LLAMA_MODEL }}
+          LLAMA_SERVER_BIN: ${{ vars.GPU_SMOKE_LLAMA_SERVER_BIN }}
+          RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
+          RUN_E2E_PROXY_MODEL: ${{ vars.GPU_SMOKE_PROXY_MODEL }}
+          RUN_E2E_TOOLS: ${{ inputs.run_tools == true && '1' || '0' }}
+          RUN_E2E_LEGACY: ${{ inputs.run_legacy == true && '1' || '0' }}
+          RUN_E2E_PHASE13_SNAPSHOT: '1'
+        run: ./scripts/gpu_smoke_all.sh
+
+      - name: VRAM clamp smoke
+        if: inputs.run_clamp
+        env:
+          OLLAMA_HOST: http://127.0.0.1:8080
+          ZEROLLAMA_RUNTIME_URL: http://127.0.0.1:8081
+          LLAMA_MODEL: ${{ vars.GPU_SMOKE_LLAMA_MODEL }}
+          LLAMA_SERVER_BIN: ${{ vars.GPU_SMOKE_LLAMA_SERVER_BIN }}
+          RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
+        run: ./scripts/gpu_clamp_smoke.sh

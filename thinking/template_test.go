@@ -128,3 +128,11 @@ For each function call, return a json object with function name and arguments wi
 		}
 	}
 }
+
+func TestTagsForModelQwen35Default(t *testing.T) {
+	tmpl := template.Must(template.New("test").Parse(`{{ .Prompt }}`))
+	opening, closing := TagsForModel("qwen35", tmpl)
+	if opening != "<think>" || closing != "</think>" {
+		t.Fatalf("got (%q,%q)", opening, closing)
+	}
+}

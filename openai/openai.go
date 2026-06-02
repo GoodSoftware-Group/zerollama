@@ -1008,3 +1008,136 @@ func FromImageEditRequest(r ImageEditRequest) (api.GenerateRequest, error) {
 
 	return req, nil
 }
+
+// VideoCreateRequest is the JSON body for POST /v1/videos (subset of OpenAI Videos API).
+// We use options.frames/steps instead of OpenAI "seconds" because Wan is frame-based.
+type VideoCreateRequest struct {
+	Model   string         `json:"model"`
+	Prompt  string         `json:"prompt"`
+	Size    string         `json:"size,omitempty"`
+	Seconds string         `json:"seconds,omitempty"` // accepted for compatibility; frames come from options
+	Seed    *int64         `json:"seed,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
+}
+
+// Video is an OpenAI-compatible async video job descriptor.
+// IDs may be Python job ids or defer-* placeholders; polling must use the id from POST 202.
+type Video struct {
+	ID        string      `json:"id"`
+	Object    string      `json:"object"`
+	CreatedAt int64       `json:"created_at"`
+	Status    string      `json:"status"`
+	Model     string      `json:"model,omitempty"`
+	Progress  float64     `json:"progress,omitempty"`
+	Size      string      `json:"size,omitempty"`
+	Error     *VideoError `json:"error,omitempty"`
+}
+
+// VideoError mirrors OpenAI error objects on failed video jobs.
+type VideoError struct {
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
+}
+
+// VideoFromSubmit builds the initial 202 response for a newly submitted video job.
+// When queued=true the job was deferred (inference was busy); status is "pending"
+// to signal the client it is waiting behind inference.  Otherwise status is "queued"
+// meaning it entered the Python training job queue and will start when a GPU slot is free.
+func VideoFromSubmit(jobID, modelName, size string, queued bool, createdAt int64) Video {
+	status := "queued"
+	if queued {
+		status = "pending"
+	}
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	return Video{
+		ID:        jobID,
+		Object:    "video",
+		CreatedAt: createdAt,
+		Status:    status,
+		Model:     modelName,
+		Progress:  0,
+		Size:      size,
+	}
+}
+
+// VideoFromTrainingJob maps embedded training job JSON to an OpenAI Video.
+// The job object uses the bootstrap wire shape: jobId, status, progress,
+// progressMessage, resultJson (JSON-encoded string), error, submittedAt,
+// videoModel, videoSize.
+func VideoFromTrainingJob(jobJSON json.RawMessage) (Video, error) {
+	var job struct {
+		JobID           string  `json:"jobId"`
+		Status          string  `json:"status"`
+		Progress        float64 `json:"progress"`
+		ProgressMessage string  `json:"progressMessage"`
+		Error           string  `json:"error"`
+		SubmittedAt     string  `json:"submittedAt"`
+		VideoModel      string  `json:"videoModel"`
+		VideoSize       string  `json:"videoSize"`
+	}
+	if err := json.Unmarshal(jobJSON, &job); err != nil {
+		return Video{}, err
+	}
+	v := Video{
+		ID:        job.JobID,
+		Object:    "video",
+		CreatedAt: videoJobCreatedAt(job.SubmittedAt),
+		Status:    mapTrainingStatusToVideo(job.Status),
+		Progress:  job.Progress,
+		Model:     job.VideoModel,
+		Size:      job.VideoSize,
+	}
+	switch job.Status {
+	case "failed":
+		if job.Error != "" {
+			v.Error = &VideoError{Message: job.Error, Code: "video_generation_failed"}
+		}
+	case "cancelled":
+		if job.Error != "" {
+			v.Error = &VideoError{Message: job.Error, Code: "video_generation_cancelled"}
+		}
+	}
+	return v, nil
+}
+
+func videoJobCreatedAt(submittedAt string) int64 {
+	submittedAt = strings.TrimSpace(submittedAt)
+	if submittedAt == "" {
+		return time.Now().Unix()
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05",
+	} {
+		if t, err := time.Parse(layout, submittedAt); err == nil {
+			return t.Unix()
+		}
+	}
+	return time.Now().Unix()
+}
+
+// mapTrainingStatusToVideo bridges internal training/defer states to OpenAI vocabulary.
+// "promoted" → queued: defer job entered Python queue but has not started generate.py yet.
+// cancelled is not failed—clients may retry or inspect cancel reason separately.
+func mapTrainingStatusToVideo(trainingStatus string) string {
+	switch trainingStatus {
+	case "pending":
+		return "pending"
+	case "promoted":
+		return "queued"
+	case "running":
+		return "in_progress"
+	case "completed":
+		return "completed"
+	case "failed":
+		return "failed"
+	case "cancelled":
+		return "cancelled"
+	default:
+		return "queued"
+	}
+}

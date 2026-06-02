@@ -67,15 +67,47 @@ func getCPUMem() (memInfo, error) {
 }
 
 func getCPUMemByCgroups(mem memInfo) memInfo {
-	total, err := getUint64ValueFromFile("/sys/fs/cgroup/memory.max")
-	if err == nil {
-		mem.TotalMemory = total
-	}
-	used, err := getUint64ValueFromFile("/sys/fs/cgroup/memory.current")
-	if err == nil {
-		mem.FreeMemory = mem.TotalMemory - used
+	limit, hasLimit := readCgroupMemoryMax()
+	return applyCgroupMemoryLimit(mem, limit, hasLimit)
+}
+
+// applyCgroupMemoryLimit adjusts memInfo for cgroup v2 memory.max.
+// MemAvailable from /proc/meminfo is the admission signal; memory.current
+// must not be subtracted from limit (reclaimable file cache inflates current).
+func applyCgroupMemoryLimit(mem memInfo, limit uint64, hasLimit bool) memInfo {
+	if hasLimit {
+		mem.TotalMemory = limit
 	}
 	return mem
+}
+
+// readCgroupMemoryMax returns a cgroup v2 memory.max byte limit. unlimited ("max") => hasLimit false.
+func readCgroupMemoryMax() (limit uint64, hasLimit bool) {
+	line, err := readFirstLine("/sys/fs/cgroup/memory.max")
+	if err != nil {
+		return 0, false
+	}
+	if line == "max" {
+		return 0, false
+	}
+	limit, err = strconv.ParseUint(line, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return limit, true
+}
+
+func readFirstLine(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	if !s.Scan() {
+		return "", errors.New("empty file content")
+	}
+	return strings.TrimSpace(s.Text()), nil
 }
 
 func getUint64ValueFromFile(path string) (uint64, error) {
@@ -125,6 +157,10 @@ func overwriteThreadCountByLinuxCgroups(cpus []CPU) []CPU {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if sl := strings.Split(line, " "); len(sl) == 2 {
+			if sl[0] == "max" {
+				// unlimited CPU quota — keep host thread count
+				return cpus
+			}
 			allowdUs, err := strconv.ParseInt(sl[0], 10, 64)
 			if err != nil {
 				slog.Warn("failed to parse CPU allowed micro secs", "error", err)

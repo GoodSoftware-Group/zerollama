@@ -1,6 +1,7 @@
 package thinking
 
 import (
+	"slices"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -115,6 +116,20 @@ func InferTags(t *template.Template) (string, string) {
 	templateVisit(t.Root, enterFn, exitFn)
 
 	return openingTag, closingTag
+}
+
+// TagsForModel returns thinking delimiter tags from the chat template, with known
+// model-family defaults when InferTags finds none (e.g. qwen35 models created with
+// a passthrough `{{ .Prompt }}` template).
+func TagsForModel(modelFamily string, t *template.Template) (opening, closing string) {
+	opening, closing = InferTags(t)
+	if opening != "" && closing != "" {
+		return opening, closing
+	}
+	if slices.Contains([]string{"qwen35", "qwen35moe"}, modelFamily) {
+		return "<think>", "</think>"
+	}
+	return "", ""
 }
 
 // checks to see if the given field name is present in the pipeline of the given range node

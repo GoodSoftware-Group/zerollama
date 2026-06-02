@@ -50,6 +50,7 @@ var (
 	errCapabilityImage      = errors.New("image generation")
 	errCapabilitySpeech     = errors.New("speech")
 	errCapabilityVideo      = errors.New("video")
+	errCapabilityVideoGen   = errors.New("video generation")
 	errInsecureProtocol     = errors.New("insecure protocol http")
 )
 
@@ -128,6 +129,9 @@ func (m *Model) Capabilities() []model.Capability {
 		if b := m.Config.ModalityBackends[model.ModalitySpeech]; b != "" && !slices.Contains(capabilities, model.CapabilitySpeech) {
 			capabilities = append(capabilities, model.CapabilitySpeech)
 		}
+		if b := m.Config.ModalityBackends[model.ModalityVideoGeneration]; b != "" && !slices.Contains(capabilities, model.CapabilityVideoGen) {
+			capabilities = append(capabilities, model.CapabilityVideoGen)
+		}
 	}
 
 	if len(capabilities) == 0 {
@@ -170,7 +174,8 @@ func (m *Model) Capabilities() []model.Capability {
 	openingTag, closingTag := thinking.InferTags(m.Template.Template)
 	hasTags := openingTag != "" && closingTag != ""
 	isGptoss := slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily)
-	if hasTags || isGptoss || (builtinParser != nil && builtinParser.HasThinkingSupport()) {
+	isQwen35 := slices.Contains([]string{"qwen35", "qwen35moe"}, m.Config.ModelFamily)
+	if hasTags || isGptoss || isQwen35 || (builtinParser != nil && builtinParser.HasThinkingSupport()) {
 		capabilities = append(capabilities, model.CapabilityThinking)
 	}
 
@@ -203,6 +208,7 @@ func (m *Model) CheckCapabilities(want ...model.Capability) error {
 		model.CapabilityImage:      errCapabilityImage,
 		model.CapabilitySpeech:     errCapabilitySpeech,
 		model.CapabilityVideo:      errCapabilityVideo,
+		model.CapabilityVideoGen:   errCapabilityVideoGen,
 	}
 
 	for _, cap := range want {

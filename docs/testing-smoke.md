@@ -1,0 +1,248 @@
+# Inference smoke testing
+
+Operator checklist for validating **local inference** on a GPU host (e.g. RTX 5080/4090). **Why this doc exists:** Zerollama runs **two** local inference stacks today—the embedded **Python runtime** (`llama-server` subprocess on loopback `:8081`) and the **legacy ggml runner** (`zerollama runner` on the main HTTP port). They share one GPU but do not coordinate VRAM automatically; smoke tests prove each path works and document how to switch between them without mystery 503/404/OOM errors.
+
+---
+
+## What you are proving
+
+| Layer | Command / artifact | Why it matters |
+|-------|-------------------|----------------|
+| Go unit tests | `go test ./server/... ./envconfig/...` | Handlers, cloud catalog merge, runtime proxy logic—no GPU, deterministic CI. **Why `OLLAMA_NO_CLOUD` in `TestMain`:** machines with `ELIZACLOUD_API_KEY` merge hundreds of cloud models and break list/tags tests that expect a small fixture set. |
+| Runtime health | `GET :8081/health` | Sidecar is up; check `llama_model`, `inference_state`, `vram_budget`, `autoconfig`. |
+| VRAM pre-flight | `./scripts/runtime_vram_estimate.sh <gguf>` | **Why:** same as `/internal/vram-estimate` — budget before load ([phase13-runtime-vram.md](./phase13-runtime-vram.md)). |
+| Runtime generate | `POST :8081/api/generate` or `RUN_E2E_GPU=1` script | Python → `llama-server` → GGUF (`LLAMA_MODEL`). |
+| Runtime chat | `POST :8081/api/chat` or `RUN_E2E_GPU=1` script | Plain chat; tools use Go `render-chat` when model has a parser (generic JSON path otherwise). |
+| Runtime v1 chat | `POST :8081/v1/chat/completions` or `RUN_E2E_GPU=1` script | Phase 13 `prepare_v1_chat` + optional `vram_num_ctx` when clamp on. |
+| Go proxy | `RUN_E2E_PROXY=1` script | `/api/generate`, `/api/chat`, `/v1/chat/completions` via `:8080` (manifest `options.gguf`). |
+| Legacy runner | `POST :8080/api/generate` with a **pulled** model name | Manifest-backed models (e.g. `llama3:latest`) via ggml—what most users expect from `ollama run`. |
+
+**Smoke complete** when health + `RUN_E2E_GPU=1` + `RUN_E2E_PROXY=1` + at least one legacy model request succeed.
+
+**One-shot wrapper** (coordination + GPU + proxy, including stream paths):
+
+```bash
+./scripts/gpu_smoke_all.sh
+./scripts/gpu_health_report.sh   # post-load calibration / autotune hints
+```
+
+| Script | Role |
+|--------|------|
+| `gpu_smoke_all.sh` | Coordination + `RUN_E2E_GPU=1` + `RUN_E2E_PROXY=1` + health report |
+| `gpu_health_report.sh` | `/health` tuning summary (Python `runtime.gpu_health_report`) |
+| `runtime_vram_estimate.sh` | Pre-load VRAM budget for a GGUF + `num_ctx` |
+| `e2e_coordination_smoke.sh` | Go↔runtime mirror fields only |
+| `serve_gpu_example.sh` | Example env for 5080-class single-GPU serve |
+| `check_gpu_scripts.sh` | `bash -n` GPU scripts + import `runtime.gpu_health_report` (no GPU) |
+| `phase12_golden_ci.sh` | `check_gpu_scripts` + `go test -run Golden` + tools meta pytest (no GPU); also run in CI |
+| `gpu_phase13_snapshot.sh` | JSON snapshot of `/health` + optional `/internal/vram-estimate` for 5080 calibration |
+| `gpu_clamp_smoke.sh` | `RUN_E2E_VRAM_CLAMP=1` runtime generate (serve must set `VRAM_CLAMP_NUM_CTX=auto\|1`) |
+| `phase12_capture_tool_transcript.sh` | Capture real tools-chat output for Harmony/parser golden updates (GPU) |
+| `gpu_5080_session.sh` | `RUN_E2E_PREFLIGHT=1` + `gpu_smoke_all` + Phase 13 snapshot + recommendations (**official 16GB gate** — see [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md)) |
+| `e2e_training_ops_smoke.sh` | `GET /api/train/status` + jobs; optional TCP ping (no train job submit) |
+| `repro_shared_interpreter_health_hang.sh` | Training + embedded runtime on `19180`/`19181`; 5× `/health` must not hang |
+| `phase14_backend_smoke.sh` | Phase 14: one backend on running serve (`RUN_E2E_PHASE14=1`, `/internal/tokenize`, render-chat). **Rebuild + restart serve** — [phase14-inprocess-llama.md](./phase14-inprocess-llama.md) |
+| `phase14_both_backends.sh` | Phase 14: restarts serve for `inprocess` then `llama-cpp-python` (embed-safe; wheel CPU ~10 min). `RUN_E2E_PROXY_MODEL` for render-chat |
+| `phase14_serve_env.sh` | Source before `zerollama serve` — **why:** unset `ZEROLLAMA_RUNTIME_URL` so Go embeds `:8081` (exporting URL forces external sidecar mode) |
+| `phase15_kv_native_ci.sh` | Build C `BlockPool` + KV pytest bundle + `phase15_health_smoke.sh` (no GPU); [phase15-native-kv.md](./phase15-native-kv.md) |
+| `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_native_stats`, …) via `InferenceEngine` only |
+| `gpu_harmony_capture.sh` | Optional real-weight harmony capture — **needs ~40+ GiB host RAM** for `gpt-oss:20b` MXFP4 on runtime path; **not** required on 5080 (~19 GiB); CI uses Go golden |
+
+CI (`.github/workflows/zerollama-regression.yaml`): Phase 12 is covered by `go test ./server/...` (Golden tests) and runtime pytest (`test_go_render_chat.py`), plus `check_gpu_scripts.sh`. Optional self-hosted: `.github/workflows/zerollama-gpu-smoke.yaml` (`workflow_dispatch`; repo vars `GPU_SMOKE_*`, serve must be up).
+
+On a GPU host: `RUN_E2E_PREFLIGHT=1 ./scripts/gpu_smoke_all.sh` or `./scripts/phase12_golden_ci.sh` (all parts).
+
+**Phase 12 golden (no GPU):** `go test ./server/... -run Golden` or `./scripts/phase12_golden_ci.sh go`; Python: `./scripts/phase12_golden_ci.sh py` (needs `pip install -e runtime/.[serve]`).
+
+Optional tools smoke (runtime `/api/chat` with tools — must return HTTP 200 and `done`; 501 means vision/think/logprobs routed to legacy):
+
+```bash
+RUN_E2E_GPU=1 RUN_E2E_TOOLS=1 ./scripts/e2e_runtime_smoke.sh
+```
+
+Asserts assistant `content` or `tool_calls` on `/api/chat` and `/v1/chat/completions` (does not golden-match a specific tool invocation).
+
+With proxy smoke (`RUN_E2E_PROXY=1`), the same tools checks run on `:8080` when `RUN_E2E_TOOLS=1` and `RUN_E2E_GPU=1`.
+
+```bash
+RUN_E2E_GPU=1 RUN_E2E_PROXY=1 RUN_E2E_TOOLS=1 ./scripts/e2e_runtime_smoke.sh
+# or:
+RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh
+```
+
+**5080 full stack** (runtime + proxy + optional legacy ggml + tools on a pulled parser model):
+
+```bash
+CGO_ENABLED=1 go build -o zerollama .
+export LLAMA_MODEL LLAMA_SERVER_BIN
+RUN_E2E_PREFLIGHT=1 \
+RUN_E2E_TOOLS=1 \
+RUN_E2E_PROXY_MODEL=your-local-tag \
+RUN_E2E_LEGACY=1 RUN_E2E_LEGACY_MODEL=your-local-tag \
+./scripts/gpu_smoke_all.sh
+```
+
+`gpu_smoke_all` calls `POST :8081/internal/inference/resume` when training handoff or pause blocks loads (after coordination, before proxy/tools, and before health report). Legacy ggml runs **after** runtime/proxy steps (`RUN_E2E_LEGACY_ONLY=1`). `RUN_E2E_LEGACY_MODEL` defaults to `RUN_E2E_PROXY_MODEL` or `llama3.2:3B`. Smokes pass `num_ctx` via `RUN_E2E_NUM_CTX` (default `4096`).
+
+---
+
+## Prerequisites
+
+**Go build** (embed + training need CGO):
+
+```bash
+cd ~/zerollama
+export CGO_ENABLED=1
+go build -o zerollama .
+```
+
+**Python runtime** (embedded or sidecar):
+
+```bash
+cd runtime && pip install -e ".[serve]"
+```
+
+**`llama-server`** built for **your** GPU arch. **Why:** a 4090 build (`sm_89`) on a 5080 (`sm_120`) loads the wrong CUDA kernels; CMake must find a real `nvcc` (not a missing `cuda-13` path).
+
+```bash
+# RTX 5080 (Blackwell) example — use the toolkit that has bin/nvcc
+export CUDA_HOME=/usr/local/cuda-12.8   # adjust after: ls /usr/local/cuda*/bin/nvcc
+export CUDACXX="$CUDA_HOME/bin/nvcc"
+export PATH="$CUDA_HOME/bin:$PATH"
+
+cd ~/zerollama
+CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build_llama_server.sh
+export LLAMA_SERVER_BIN=~/llama.cpp/build/bin/llama-server
+```
+
+**Model on 16GB VRAM:** prefer **quantized** GGUF (Q4/IQ). **Why:** FP16 weights for multi‑billion‑parameter models often exceed 15GB once KV cache is reserved.
+
+**Single-GPU config** (avoid dual-4090 tensor split on one card):
+
+```bash
+export ZEROLLAMA_RUNTIME_CONFIG=~/zerollama/runtime/configs/single_gpu.yaml
+# or: ZEROLLAMA_DEVICE_COUNT=1 ZEROLLAMA_TENSOR_PARALLEL=1
+```
+
+---
+
+## Start the daemon
+
+```bash
+export LLAMA_MODEL=/absolute/path/to/model.gguf
+export LLAMA_SERVER_BIN=/absolute/path/to/llama-server
+export OLLAMA_TRAINING=false          # unless torch deps installed
+export OLLAMA_HOST=http://127.0.0.1:8080   # if not default 11434
+
+./zerollama serve
+```
+
+**Why `LLAMA_MODEL` / `LLAMA_SERVER_BIN` on the serve process:** the embedded runtime reads env at **startup**, not from the shell that runs the smoke script later.
+
+---
+
+## Scripted smoke
+
+```bash
+cd ~/zerollama
+
+# Health only (no GPU generate)
+./scripts/e2e_runtime_smoke.sh
+
+# Direct runtime (:8081)
+export LLAMA_MODEL LLAMA_SERVER_BIN
+RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh
+
+# When LLAMA_MODEL is too large for free VRAM (VRAM pre-check 502), pass a smaller GGUF:
+export RUN_E2E_GGUF=/path/to/small.q8_0.gguf
+RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh
+
+# VRAM estimate only (no generate) — loopback :8081
+./scripts/runtime_vram_estimate.sh /path/to/model.gguf --num-ctx 8192
+
+# Via Go proxy (:8080) — needs zerollama serve running
+export OLLAMA_HOST=http://127.0.0.1:8080
+RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
+
+# Proxy + small GGUF (uses model smoke + X-Zerollama-Runtime, or override on pulled name via options):
+export RUN_E2E_GGUF=/path/to/small.q8_0.gguf
+RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
+# Or a pulled tag (manifest gguf; RUN_E2E_GGUF overrides options.gguf when set):
+# RUN_E2E_PROXY_MODEL=llama3.2:3B RUN_E2E_GGUF=... RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
+
+# Optional: verify Phase 13 clamp is enabled on the running daemon:
+# ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto RUN_E2E_GPU=1 RUN_E2E_VRAM_CLAMP=1 ./scripts/e2e_runtime_smoke.sh
+```
+
+**Proxy without `X-Zerollama-Runtime`:** use a **pulled** local model that is runtime-default eligible (Phase 12) or has `modality_backends.inference: zerollama-runtime`; Go sends `options.gguf` from the manifest (Phase 9). The header is for ad-hoc names (e.g. `smoke`) or **`RUN_E2E_PHASE14=1`** (forces runtime for Phase 14 sign-off). **`RUN_E2E_GGUF`** sets `options.gguf` on the proxied request (same as direct `:8081` smoke). **`OLLAMA_RUNTIME_ALL=1`** proxies every local tag without the header.
+
+**Why the script still calls `/internal/inference/resume`:** belt-and-suspenders if an older daemon is running; with Phase 8 the Go broker resumes runtime inference before proxying and evicts runners before legacy loads.
+
+**Training ops (no job submit):** with `OLLAMA_TRAINING=true` and `zerollama serve` running:
+
+```bash
+OLLAMA_HOST=http://127.0.0.1:8080 ./scripts/e2e_training_ops_smoke.sh
+# Optional legacy TCP listener (default :9500):
+RUN_E2E_TRAINING_TCP=1 OLLAMA_TRAINING_TCP=:9500 ./scripts/e2e_training_ops_smoke.sh
+```
+
+Repro ports (`19180` / `:19650`): see `scripts/repro_shared_interpreter_health_hang.sh`.
+
+**Go↔runtime coordination mirror** (embedded or sidecar runtime):
+
+```bash
+ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh
+```
+
+---
+
+## GPU sharing (runtime ↔ legacy)
+
+Both stacks use the same GPU. **Phase 8 (Go `server/vram`):** before a ggml runner load, the daemon calls `training-handoff` on the embedded runtime; before runtime proxy requests, it unloads all ggml runners and calls `inference/resume`. Training job submit does both proactively. **No public unload API** — smokes use the same contract as operators (`keep_alive:0`), not `pkill`.
+
+**Why API unload first (`smoke_unload_ggml_runners`):** A **503** from Go (training busy, admission) can occur **before** the broker runs, leaving a stale ggml runner loaded. Unload via `/api/ps` + empty `generate` matches production and avoids false `pgrep` matches on shell lines. See [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
+
+**Smoke VRAM prep (`smoke_prepare_vram_for_runtime`):** optional API unload, then one `X-Zerollama-Runtime` proxy generate triggers the broker. On **503** with a runner still loaded: retry unload, resume, broker once. `gpu_smoke_all` runs legacy **after** runtime via `RUN_E2E_LEGACY_ONLY=1` — do not pass `RUN_E2E_LEGACY=1` together with `RUN_E2E_GPU=1` on a single `e2e_runtime_smoke.sh` (e2e errors with a hint).
+
+Manual hooks (debugging only):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8081/internal/training-handoff
+curl -sS -X POST http://127.0.0.1:8081/internal/inference/resume
+```
+
+**Unload one legacy model:**
+
+```bash
+curl -sS "$OLLAMA_HOST/api/generate" -H 'Content-Type: application/json' \
+  -d '{"model":"llama3:latest","prompt":"","keep_alive":0}'
+```
+
+GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD_MODEL`) before the runtime broker when `smoke_ggml_runner_running` sees a ggml child (`/zerollama runner --`). Waits up to `SMOKE_UNLOAD_MAX_WAIT` seconds (default 30). On Go **503** with a runner still loaded, `smoke_prepare_vram_for_runtime` retries unload then the broker once.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---------|----------------|------------|
+| `502` GPU memory on `RUN_E2E_GPU=1` | VRAM pre-check: `LLAMA_MODEL` too large for free VRAM | Use a smaller quant, or `RUN_E2E_GGUF=/path/to/small.gguf` in the smoke script |
+| `422` / `Field required` on `query.req` | Old FastAPI app without `Body()` fix | Restart `zerollama`; health should show `server_revision: fastapi-body-v3` |
+| `503 inference paused for training` | Stale runtime state / Go training gate | `POST :8081/internal/inference/resume`; smokes call this automatically; proxy may 503 before broker evicts ggml |
+| `502` could not admit (KV pool) | Stale handoff, ggml holding VRAM, or huge `num_ctx` | Resume + `smoke_prepare_vram`; use `RUN_E2E_GGUF` small quant; `RUN_E2E_NUM_CTX=4096` |
+| `502` host memory on large pull | Runtime `check_gguf_host_budget` (e.g. gpt-oss:20b MXFP4 ~44 GiB mmap) | Use smaller quant/GGUF, more host RAM, or legacy ggml path; `gpu_harmony_capture` needs RAM not just VRAM |
+| `404 model 'smoke' not found` on proxy | Legacy handler, no runtime proxy | `X-Zerollama-Runtime: 1`, `OLLAMA_RUNTIME_ALL=1`, or runtime-default model |
+| `truncate_mode=heuristic` on Phase 14 render-chat | Stale serve or embed without runtime URL | Rebuild `zerollama`; use `phase14_serve_env.sh` (embed); needs current Go + `/internal/tokenize` |
+| ggml `runner terminated` during Phase 14 proxy | Pulled tag hit legacy path | `RUN_E2E_PHASE14=1` adds header; or `OLLAMA_RUNTIME_ALL=1` on serve |
+| `llama-server exited` / CUDA OOM | Model too large, wrong arch, tensor split on 1 GPU | Quantized GGUF, `single_gpu.yaml`, rebuild `120-real` |
+| Legacy `runner terminated` | GPU held by runtime | Retry (broker should hand off); or manual `training-handoff` |
+| Empty JSON from `curl -sf` | HTTP error hidden | Use smoke script or `curl -w '%{http_code}'` |
+
+---
+
+## Related docs
+
+- [runtime-embed.md](./runtime-embed.md) — single-process embed
+- [runtime/docs/OPERATIONS.md](../runtime/docs/OPERATIONS.md) — day-two ops
+- [python-migration.md](./python-migration.md) — phased migration
+- [gpu-training.md](./gpu-training.md) — training vs inference VRAM policy

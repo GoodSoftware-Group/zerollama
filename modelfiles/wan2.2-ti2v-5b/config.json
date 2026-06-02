@@ -1,0 +1,26 @@
+{
+  "capabilities": ["video_gen"],
+  "modality_backends": { "video_generation": "wan" },
+  "video_generation": {
+    "runner": "wan-cli",
+    "profile": "wan2.2-ti2v-5b",
+    "vram_tier": "16g",
+    "size": "832x480",
+    "frames": 49,
+    "steps": 25,
+    "precision": "bf16",
+    "quant": "none",
+    "offload_model": true,
+    "t5_cpu": true,
+    "vae_tiling": true,
+    "timeout_sec": 3600
+  },
+  "backend_paths": {
+    "wan_repo": "~/.zerollama/third_party/wan/Wan2.2",
+    "wan_ckpt_dir": "~/.zerollama/third_party/wan/Wan2.2-TI2V-5B",
+    "wan_venv": "~/.zerollama/third_party/wan/venv"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

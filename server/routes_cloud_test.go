@@ -58,6 +58,13 @@ func assertCloudV1Proxied(t *testing.T, status int, body []byte, capturePath, wa
 	}
 }
 
+// enableCloudForTest overrides TestMain's default OLLAMA_NO_CLOUD=true so passthrough
+// tests can reach mocked upstream handlers.
+func enableCloudForTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
+}
+
 func TestStatusHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
@@ -172,6 +179,7 @@ func TestDeleteHandlerNormalizesExplicitSourceSuffixes(t *testing.T) {
 }
 
 func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
+	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 
@@ -751,6 +759,7 @@ func TestCloudPassthroughStreamsPromptly(t *testing.T) {
 }
 
 func TestCloudPassthroughSkipsAnthropicWebSearch(t *testing.T) {
+	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 
@@ -805,6 +814,7 @@ func TestCloudPassthroughSkipsAnthropicWebSearch(t *testing.T) {
 }
 
 func TestCloudPassthroughSkipsAnthropicWebSearchLegacySuffix(t *testing.T) {
+	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 

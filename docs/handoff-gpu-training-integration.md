@@ -2,7 +2,18 @@
 
 **Audience:** Another engineer with access to this repo who did not participate in the design and implementation thread.
 
-**Purpose:** Capture **intent**, **decisions**, and **where to look next** so you can operate, extend, or review the work without replaying the full conversation.
+**Purpose:** Capture **intent**, **decisions**, and **where to look next** for embedded GPU training and how it interacts with **Phase 11 runtime admission** on shared VRAM.
+
+**Status (May 2026):**
+
+| Item | State | Evidence |
+|------|--------|----------|
+| **Embedded CPython** | **Shipped** | `x/trainingworker/pyembed`; `trainingdaemon` + gRPC removed |
+| **HTTP `/api/train/*`** | **Shipped** | `server/training_api.go` |
+| **TCP `:9500`** | **Shipped** | `OLLAMA_TRAINING_TCP` in `x/trainingworker/client.go` |
+| **OOM bridge** | **Shipped** | Go pause loads → unload runners → `AckVRAMHeadroom` |
+| **Shared-interpreter `/health`** | **Mitigated** | `ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`; repro script PASS (5× `/health`) |
+| **CI** | **Green** | `go test ./x/trainingworker/...`; `e2e_training_ops_smoke.sh` in `check_gpu_scripts.sh` |
 
 ---
 
@@ -13,79 +24,105 @@ We needed **GPU fine-tuning / training** integrated into the Ollama daemon witho
 - A second public server that clients had to discover separately, or  
 - Python binding the same TCP port as external training clients.
 
-**Decision:** **Go** is the only process that listens on the **public** training surfaces (HTTP and, by default, **TCP `:9500`**). **One Python process** (`trainingdaemon`) owns PyTorch/CUDA, listens only on a **private Unix domain socket**, and talks to Go via **gRPC + Protobuf** (`proto/training.proto`). Repo-root **`training.py`** remains the core training logic, imported as a library—not a standalone network server when Go is in charge.
+**Decision:** **Go** is the only process that listens on the **public** training surfaces (HTTP and, by default, **TCP `:9500`**). **CPython is embedded** in the Go process (CGO, `x/trainingworker/pyembed`), loads repo-root **`training.py`**, and uses the Python C API + a small bootstrap script for OOM/ack coordination—**no** separate `python3` training subprocess, **no** gRPC, **no** UDS control plane.
 
-**Why gRPC internally:** Strong typing, streaming (progress, OOM), and a clear evolution path compared to newline-delimited JSON between processes.
+**Why embed instead of a sidecar:** Fewer moving parts at runtime (`grpcio` not required for control plane), one binary to ship (plus `libpython3` on the host), same VRAM story with a direct C callback from Python into Go.
 
-**Why inference-first VRAM on OOM (v1):** Single-GPU setups contend for VRAM. When training signals CUDA OOM, Go **pauses new inference loads**, **unloads inference runners**, then **acks** Python so `load_model` can retry once. Mid-training-loop OOM still fails the job (no fake checkpoint resume); we only notify Go so the next job sees a cleaner GPU—**why:** safe default.
+**Why inference-first VRAM on OOM (v1):** Single-GPU setups contend for VRAM. When training signals CUDA OOM, Go **pauses new inference loads**, **unloads inference runners**, then **acks** Python so `load_model` can retry once. Mid-training-loop OOM still fails the job (no fake checkpoint resume).
+
+---
+
+## Interaction with Phase 11 (runtime admission)
+
+Training and the Python runtime share one card. Phase 11 does **not** merge training and chat into one FIFO; it coordinates VRAM and queue pressure:
+
+| Mechanism | Owner | Why |
+|-----------|--------|-----|
+| VRAM broker (Phase 8) | Go `server/vram` | Unload ggml + `training-handoff` on runtime before training submit |
+| `POST /internal/training-gpu-busy` | Go `training_policy.go` → runtime | Python holds **2 GiB** reserve (`TRAINING_VRAM_RESERVE_BYTES`) while training occupies GPU |
+| T6 defer queue + idle-wait | Go | Training submit rejected or deferred while inference busy |
+| Inference-first (LOW only) | Python | Batch runtime work waits when defer/ggml mirrors busy; **normal chat not blocked** |
+
+**Why `training-gpu-busy` is separate from `go-coordination`:** reserve must be authoritative when training holds CUDA; mirror `training_gpu_blocked` is for `/health` visibility only.
+
+**Operator env (training):** see [gpu-training.md](./gpu-training.md).  
+**Operator env (runtime admission):** only `INFERENCE_POLICY` + `CHECK_GPU_VRAM` — [phase11-runtime-admission.md](./phase11-runtime-admission.md).
+
+When **embedded runtime + training** share one CPython (`ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`), `/health` uses `nvidia-smi` for VRAM probe (GIL-friendly). See [bugs/shared-interpreter-health-hang.md](./bugs/shared-interpreter-health-hang.md).
 
 ---
 
 ## Conversation arc (compressed)
 
-1. Started from “something on port 9500 like `training.py`” and language choices (Go/Rust/Python for GPU).  
-2. Converged on **Python for training**, **Go for all public I/O** and scheduler integration.  
-3. Internal wire format deliberately **not** the legacy JSON protocol—**Protobuf/gRPC over UDS**.  
-4. **`OLLAMA_TRAINING`** defaults to **on** so the feature is visible; operators without the Python stack set `OLLAMA_TRAINING=false`.  
-5. Follow-up work identified in review: double progress emit (fixed), TCP deadlines vs long sync jobs (fixed), pointless OOM wait on failed paths (fixed), graceful gRPC `stop` on shutdown, map cleanup after eviction, `defer ResumeLoads` in the OOM bridge.
+1. “Training on :9500” → Python for training, Go for public I/O.  
+2. Embedded CPython instead of gRPC daemon.  
+3. `OLLAMA_TRAINING` default on; `OLLAMA_TRAINING=false` when no torch stack.  
+4. OOM bridge hardening (lost wakeup, shutdown, `ResumeLoads`).  
+5. Phase 11 parallel track: opinionated runtime admission (no `ADMISSION_*` env sprawl).
 
 ---
 
-## What to read first (technical)
+## What to read first
 
 | Doc | Role |
 |-----|------|
-| [gpu-training.md](./gpu-training.md) | Architecture, env vars, APIs, OOM bridge, troubleshooting, code map. |
-| [ROADMAP.md § GPU training](./ROADMAP.md#gpu-training-fine-tuning) | Directional follow-ups and **non-goals**. |
-| [CHANGELOG.md](../CHANGELOG.md) (Unreleased) | User-facing summary when this ships in a release. |
-| [x/trainingdaemon/README.md](../x/trainingdaemon/README.md) | Python venv / `PYTHONPATH` for local dev. |
-| [x/trainingworker/README.md](../x/trainingworker/README.md) | Why the Go bridge is a separate package. |
+| [gpu-training.md](./gpu-training.md) | Architecture, env vars, APIs, OOM bridge, troubleshooting |
+| [phase11-runtime-admission.md](./phase11-runtime-admission.md) | Runtime VRAM + inference-first (shared GPU) |
+| [scheduling-vram-policy.md](./scheduling-vram-policy.md) | Broker + T6 defer + full env tables |
+| [pyembed/README.md](../x/trainingworker/pyembed/README.md) | CGO embed WHY |
+| [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md) | Phase 12 tools + expanded Phase 11 handoff |
+| [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md) | In-process forward + same Python process as training |
+| [CHANGELOG.md](../CHANGELOG.md) | Unreleased |
 
 ---
 
-## Code map (quick)
+## Code map
 
 | Layer | Path |
 |--------|------|
-| Proto | `proto/training.proto` |
-| Go: spawn, gRPC, TCP :9500 | `x/trainingworker/client.go` |
-| Go: generated stubs | `x/trainingworker/trainingpb/` |
+| Go: embed, TCP :9500 | `x/trainingworker/client.go` |
+| Go: CGO shim + bootstrap | `x/trainingworker/pyembed/` |
 | Go: HTTP `/api/train/*` | `server/training_api.go` |
-| Go: wiring in `Serve()` | `server/routes.go` (training start, signal order, `ServePublicTCP` goroutine) |
-| Go: scheduler hooks | `server/sched.go` — `PauseNewLoads`, `ResumeLoads`, `UnloadAllRunners`, `GetRunner` pause loop |
-| Env | `envconfig/config.go` — `OLLAMA_TRAINING`, `OLLAMA_TRAINING_TCP`, `OLLAMA_TRAINING_PYTHONPATH` |
-| Python: gRPC server | `x/trainingdaemon/trainingdaemon/server.py` |
-| Python: bridge to `training.py` | `x/trainingdaemon/trainingdaemon/gpu_session.py` |
-| Training logic | `training.py` |
+| Go: training GPU policy | `server/training_policy.go` → `/internal/training-gpu-busy` |
+| Go: VRAM broker | `server/vram/broker.go` |
+| Go: wiring | `server/routes.go` |
+| Go: scheduler hooks | `server/sched.go` |
+| Env | `envconfig/config.go` |
+| Training logic | `training.py` (repo root) |
+| Runtime reserve consumer | `runtime/runtime/gpu/admission.py`, `engine.py` |
 
 ---
 
-## How to sanity-check locally
+## How to sanity-check
 
-1. `python3` on `PATH`, deps installed per `x/trainingdaemon/pyproject.toml` (torch, grpcio, transformers, …).  
-2. From repo: run the main server with training enabled (default). If the daemon is not found next to the binary, set **`OLLAMA_TRAINING_PYTHONPATH`** to the absolute path of `x/trainingdaemon` (the directory that **contains** the `trainingdaemon` package folder).  
-3. **`GET /api/train/status`** (or `POST /api/train/jobs` with a minimal payload) if HTTP is up; **`echo '{"cmd":"ping"}' \| nc … 9500`** style checks for TCP (exact client left to you).  
-4. Set **`OLLAMA_TRAINING=false`** to confirm training routes and subprocess stay off.
+1. **`python3-dev`** + **`pkg-config python3-embed`** for Go build. Training deps: `requirements-training.txt` / [gpu-training.md](./gpu-training.md).  
+2. Start server with `OLLAMA_TRAINING=true` (default). Set `OLLAMA_TRAINING_PYTHONPATH` or `~/zerollama` layout. See [scripts/serve_gpu_example.sh](../scripts/serve_gpu_example.sh).  
+3. `OLLAMA_HOST=http://127.0.0.1:8080 ./scripts/e2e_training_ops_smoke.sh` — `GET /api/train/status` + jobs list; optional `RUN_E2E_TRAINING_TCP=1`.  
+4. **Shared embed:** `./scripts/repro_shared_interpreter_health_hang.sh` — 5× `/health` must not hang (non-prod ports `19180`/`19181`).  
+5. `ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh` — mirrors + `go_training_gpu_busy` on `/health`.  
+6. **5080 session + training ops:** `RUN_E2E_TRAINING_OPS=1 ./scripts/gpu_5080_session.sh` (serve must have `OLLAMA_TRAINING=true`).  
+7. `OLLAMA_TRAINING=false` — training routes off.
 
 ---
 
 ## Known gaps / watch list
 
-- **`go test ./server`:** `TestList` has been observed failing in some environments (model count mismatch—likely environment / fixture pollution, not training-specific). Confirm on CI before assuming training broke it.  
-- **Auth:** Public TCP and `/api/train/*` are not authenticated in v1; roadmap calls out adding policy when you harden deployments.  
-- **`training.py` global `STATE`:** The daemon replaces `training.STATE` with a `BridgeState` subclass; it works because names resolve at call time—**fragile** if someone caches `STATE` by value; a later refactor can thread state explicitly.
+- **Auth:** `/api/train/*` and TCP `:9500` not authenticated in v1.  
+- **`training.py` global `STATE`:** fragile if cached by value; refactor later.  
+- **Go sched tests:** occasional flaky timeout in some envs — not training-specific.  
+- **Reserve tuning:** 2 GiB default may be wrong for 12 GB vs 24 GB cards — measure, edit `admission.py`.
 
 ---
 
-## Suggested next steps for the next owner
+## Suggested next steps
 
-1. Read [gpu-training.md](./gpu-training.md) end-to-end.  
-2. Run one **async** job (`POST /api/train/jobs`) and one **legacy TCP** `ping` / `submit_job` if you care about backward compatibility.  
-3. Decide whether to land remaining repo changes in one PR or split (proto + Go + Python + docs).  
-4. If you add CI: start with **import/grpc smoke** (no full CUDA train in default PR path).
+1. Read [gpu-training.md](./gpu-training.md) + [phase11-runtime-admission.md](./phase11-runtime-admission.md).  
+2. Run `e2e_training_ops_smoke.sh` and coordination smoke on GPU host.  
+3. One real training job + concurrent `POST /api/chat` — confirm reserve and defer behavior.  
+4. Tune `TRAINING_VRAM_RESERVE_BYTES` on target hardware (no new env var).
 
 ---
 
 ## This document
 
-Added so a teammate can pick up **context and rationale** without the chat log. For protocol details and **why** each knob exists, prefer [gpu-training.md](./gpu-training.md).
+Context for teammates without the chat log. Protocol and knobs: [gpu-training.md](./gpu-training.md). Runtime admission: [phase11-runtime-admission.md](./phase11-runtime-admission.md).

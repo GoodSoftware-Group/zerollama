@@ -1,0 +1,15 @@
+# Dual RTX 4090 topology (Phase 3). Env vars override at launch.
+device_count: 2
+tensor_parallel: 2
+split_mode: tensor
+# Equal weight/KV split across both GPUs (llama-server -ts)
+tensor_split: [1, 1]
+main_gpu: 0
+llama_parallel_slots: 4
+kv:
+  block_size: 16
+  num_blocks_per_device: 8192
+speculative:
+  # one plugin active per model: ngram | draft-simple | draft-eagle3 | dflash
+  method: none
+  # draft_model: /path/to/draft.gguf

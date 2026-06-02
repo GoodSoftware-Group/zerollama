@@ -548,6 +548,40 @@ func TestRoutes(t *testing.T) {
 	}
 }
 
+func TestGetModelInfo_VideoGenConfigOnly(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	cfgData, err := json.Marshal(model.ConfigV2{
+		Capabilities:     []string{string(model.CapabilityVideoGen)},
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendWan},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:  "wan2.1-t2v-1.3b",
+			VRAMTier: "16g",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal config: %v", err)
+	}
+
+	configLayer, err := manifest.NewLayer(bytes.NewReader(cfgData), "application/vnd.docker.container.image.v1+json")
+	if err != nil {
+		t.Fatalf("failed to create config layer: %v", err)
+	}
+
+	name := model.ParseName("wan2.1-t2v:1.3b")
+	if err := manifest.WriteManifest(name, configLayer, nil); err != nil {
+		t.Fatalf("failed to write manifest: %v", err)
+	}
+
+	resp, err := GetModelInfo(api.ShowRequest{Model: name.String()})
+	if err != nil {
+		t.Fatalf("GetModelInfo() error = %v", err)
+	}
+	if !slices.Contains(resp.Capabilities, model.CapabilityVideoGen) {
+		t.Fatalf("Capabilities = %v, want video_gen", resp.Capabilities)
+	}
+}
+
 func TestGetModelInfo_SafetensorsUsesStoredFileType(t *testing.T) {
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 

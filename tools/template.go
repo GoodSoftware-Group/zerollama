@@ -9,6 +9,11 @@ import (
 	"text/template/parse"
 )
 
+// TemplateToolTag returns the delimiter used before tool-call JSON in model output.
+func TemplateToolTag(tmpl *template.Template) string {
+	return parseTag(tmpl)
+}
+
 // parseTag finds the tool calling tag from a Go template
 // often <tool_call> [TOOL_CALL] or similar by finding the
 // first text node after .ToolCalls and returning the content

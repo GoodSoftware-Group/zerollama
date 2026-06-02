@@ -1,0 +1,29 @@
+# Single-GPU hosts (e.g. RTX 5080 16GB). Env vars override at launch.
+# Why not dual_4090.yaml: tensor split (-sm tensor -ts 1,1) needs multiple GPUs and
+# fails model fitting on one card; use a quantized GGUF so weights + KV fit in VRAM.
+#
+# Optional operator env (see docs/phase11-runtime-admission.md, runtime/docs/OPERATIONS.md):
+#   ZEROLLAMA_AUTO_CONFIG=1              — pick this file when one GPU visible
+#   ZEROLLAMA_RUNTIME_VRAM_MIN_FREE=1GiB
+#   ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE=2GiB
+#   ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto  — lower num_ctx to /health suggestion (YAML default off)
+#   vram: block below — applied when env unset (see vram_yaml_defaults.py)
+device_count: 1
+tensor_parallel: 1
+split_mode: layer
+main_gpu: 0
+llama_parallel_slots: 1
+kv:
+  block_size: 16
+  num_blocks_per_device: 2048
+speculative:
+  method: none
+# Phase 11/13 defaults for 16GB cards (env wins over these).
+# WHY in YAML: autoconfig selects this file on one GPU; vram_yaml_defaults.py applies
+# unset ZEROLLAMA_RUNTIME_* at runtime start. clamp_num_ctx "0" = off (why: silent ctx cut).
+vram:
+  min_free: 1GiB
+  training_reserve: 2GiB
+  estimate_factor_autotune: auto
+  probe_calibrate: auto
+  clamp_num_ctx: "0"

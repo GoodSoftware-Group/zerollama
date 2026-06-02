@@ -1,0 +1,15 @@
+# Dual RTX 4090 + n-gram speculative (no draft model). Env overrides apply.
+device_count: 2
+tensor_parallel: 2
+split_mode: tensor
+tensor_split: [1, 1]
+llama_parallel_slots: 4
+kv:
+  block_size: 16
+  num_blocks_per_device: 8192
+speculative:
+  method: ngram
+  ngram:
+    size_n: 12
+    size_m: 48
+    min_hits: 1

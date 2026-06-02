@@ -4,6 +4,7 @@ Install prerequisites:
 
 - [Go](https://go.dev/doc/install)
 - C/C++ Compiler e.g. Clang on macOS, [TDM-GCC](https://github.com/jmeubank/tdm-gcc/releases/latest) (Windows amd64) or [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Windows arm64), GCC/Clang on Linux.
+- **Linux:** `python3-dev` (or `python3-devel`) and `pkg-config` — required so CGO can link **embedded CPython** for GPU training (`pkg-config python3-embed`, used by `x/trainingworker/pyembed`). Example: `sudo apt install python3-dev pkg-config`. **Why:** the Go binary embeds the interpreter for `training.py`; without headers and `libpython3`, the link step fails early instead of shipping a binary that cannot load PyTorch at runtime.
 
 Then build and run Ollama from the root directory of the repository:
 
@@ -12,6 +13,10 @@ go run . serve
 ```
 
 The CLI binary is **`zerollama`**. A plain `go build` writes an executable named after this directory (`ollama`); use `go build -o zerollama .` if you want the on-disk name to match installs and integration tests.
+
+**GPU inference smoke** (runtime + legacy runner, VRAM handoff): see [testing-smoke.md](./testing-smoke.md). **Why separate from `go test`:** unit tests do not run `llama-server` on your GPU or prove the two local inference stacks can share one card safely.
+
+**Architecture (directional):** Zerollama aggregates **many inference callers** and **optional training jobs** into **queued work** sharing one or few GPUs; the roadmap spells out today’s split schedulers vs a future **unified policy** (priorities, idle training). See [ROADMAP.md](./ROADMAP.md#product-model-queues-stakeholders-and-gpu-time).
 
 > [!NOTE]
 > Ollama includes native code compiled with CGO.  From time to time these data structures can change and CGO can get out of sync resulting in unexpected crashes.  You can force a full build of the native code by running `go clean -cache` first. 
@@ -99,6 +104,7 @@ Windows ARM does not support additional acceleration libraries at this time.  Do
 Install prerequisites:
 
 - [CMake](https://cmake.org/download/) or `sudo apt install cmake` or `sudo dnf install cmake`
+- `python3-dev` and `pkg-config` (for embedded training; CGO + `python3-embed`)
 - (Optional) AMD GPU support
     - [ROCm](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html)
 - (Optional) NVIDIA GPU support

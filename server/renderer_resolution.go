@@ -19,7 +19,13 @@ const (
 )
 
 func resolveRendererName(m *Model) string {
-	if m == nil || m.Config.Renderer == "" {
+	if m == nil {
+		return ""
+	}
+	if name := defaultRendererForFamily(m); name != "" && m.Config.Renderer == "" {
+		return name
+	}
+	if m.Config.Renderer == "" {
 		return ""
 	}
 
@@ -28,6 +34,20 @@ func resolveRendererName(m *Model) string {
 		return resolveGemma4Renderer(m)
 	default:
 		return m.Config.Renderer
+	}
+}
+
+// defaultRendererForFamily picks a chat renderer when the modelfile omits one
+// (e.g. eliza-1:9b created with TEMPLATE {{ .Prompt }} only).
+func defaultRendererForFamily(m *Model) string {
+	if m == nil {
+		return ""
+	}
+	switch m.Config.ModelFamily {
+	case "qwen35", "qwen35moe":
+		return "qwen3.5"
+	default:
+		return ""
 	}
 }
 

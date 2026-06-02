@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -55,6 +56,7 @@ import (
 	"github.com/ollama/ollama/version"
 	imagegenmanifest "github.com/ollama/ollama/x/imagegen/manifest"
 	xserver "github.com/ollama/ollama/x/server"
+	"github.com/ollama/ollama/x/runtimeworker"
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
@@ -107,6 +109,14 @@ type Server struct {
 	defaultNumCtx  int
 	requestLogger  *inferenceRequestLogger
 	training       *trainingworker.Client
+	trainingDefer  *trainingDeferQueue
+	runtimeEmbed   *runtimeworker.Client
+
+	trainingVRAMMu      sync.Mutex
+	trainingVRAMBlocked bool
+
+	runtimeFifoMu     sync.RWMutex
+	runtimeFifoOldest uint64
 }
 
 func init() {
@@ -174,12 +184,36 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		return nil, nil, nil, err
 	}
 
+	schedStart := time.Now()
+	slog.Debug("scheduleRunner: waiting for runner",
+		"model", name,
+		"num_ctx", opts.NumCtx,
+		"keep_alive", schedKeepAliveDesc(keepAlive),
+	)
 	runnerCh, errCh := s.sched.GetRunner(ctx, model, opts, keepAlive)
 	var runner *runnerRef
 	select {
 	case runner = <-runnerCh:
+		slog.Info("scheduleRunner: runner acquired",
+			"model", name,
+			"elapsed", time.Since(schedStart),
+			"pid", runner.pid,
+			"loading", runner.loading,
+		)
 	case err = <-errCh:
+		slog.Warn("scheduleRunner: failed",
+			"model", name,
+			"elapsed", time.Since(schedStart),
+			"error", err,
+		)
 		return nil, nil, nil, err
+	case <-ctx.Done():
+		slog.Warn("scheduleRunner: client canceled while waiting",
+			"model", name,
+			"elapsed", time.Since(schedStart),
+			"err", ctx.Err(),
+		)
+		return nil, nil, nil, ctx.Err()
 	}
 
 	return runner.llama, model, &opts, nil
@@ -444,7 +478,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	var thinkingState *thinking.Parser
 	if builtinParser == nil {
-		openingTag, closingTag := thinking.InferTags(m.Template.Template)
+		openingTag, closingTag := thinking.TagsForModel(m.Config.ModelFamily, m.Template.Template)
 		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
 			thinkingState = &thinking.Parser{
 				OpeningTag: openingTag,
@@ -936,29 +970,17 @@ func (s *Server) PushHandler(c *gin.Context) {
 	streamResponse(c, ch)
 }
 
-// getExistingName searches the models directory for the longest prefix match of
-// the input name and returns the input name with all existing parts replaced
-// with each part found. If no parts are found, the input name is returned as
-// is.
+// getExistingName returns the on-disk manifest name for n (case-insensitive).
+// It does not borrow tag/model parts from unrelated manifests.
 func getExistingName(n model.Name) (model.Name, error) {
 	var zero model.Name
 	existing, err := manifest.Manifests(true)
 	if err != nil {
 		return zero, err
 	}
-	var set model.Name // tracks parts already canonicalized
 	for e := range existing {
-		if set.Host == "" && strings.EqualFold(e.Host, n.Host) {
-			n.Host = e.Host
-		}
-		if set.Namespace == "" && strings.EqualFold(e.Namespace, n.Namespace) {
-			n.Namespace = e.Namespace
-		}
-		if set.Model == "" && strings.EqualFold(e.Model, n.Model) {
-			n.Model = e.Model
-		}
-		if set.Tag == "" && strings.EqualFold(e.Tag, n.Tag) {
-			n.Tag = e.Tag
+		if e.EqualFold(n) {
+			return e, nil
 		}
 	}
 	return n, nil
@@ -1244,6 +1266,11 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 				resp.Tensors = tensors
 			}
 		}
+		return resp, nil
+	}
+
+	// Config-only video_gen manifests (Wan T2V) have no GGUF path; skip getModelData.
+	if slices.Contains(m.Capabilities(), model.CapabilityVideoGen) {
 		return resp, nil
 	}
 
@@ -1623,6 +1650,13 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.HEAD("/api/version", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"version": version.Version}) })
 	r.GET("/api/version", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"version": version.Version}) })
 	r.GET("/api/status", s.StatusHandler)
+	internal := r.Group("/internal", internalLoopbackOnly())
+	internal.POST("/cross-queue-seq", s.CrossQueueSeqHandler)
+	internal.POST("/render-chat", s.RenderChatHandler)
+	internal.POST("/parse-tool-output", s.ParseToolOutputHandler)
+	internal.POST("/parse-tool-output/session", s.OpenToolParseSessionHandler)
+	internal.POST("/parse-tool-output/chunk", s.ToolParseSessionChunkHandler)
+	internal.POST("/parse-tool-output/close", s.CloseToolParseSessionHandler)
 
 	// Local model cache management (new implementation is at end of function)
 	r.POST("/api/pull", s.PullHandler)
@@ -1648,15 +1682,15 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 
 	// Inference
 	r.GET("/api/ps", s.PsHandler)
-	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.GenerateHandler)...)
-	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.ChatHandler)...)
+	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.runtimeGenerateProxy(), s.GenerateHandler)...)
+	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
 
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
-	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
 	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
@@ -1668,6 +1702,10 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// OpenAI-compatible audio endpoints
 	r.POST("/v1/audio/transcriptions", middleware.TranscriptionMiddleware(), s.TranscriptionHandler)
 	r.POST("/v1/audio/speech", middleware.SpeechMiddleware(), s.SpeechHandler)
+	// OpenAI-compatible async text-to-video (local Wan via training run_script queue)
+	r.POST("/v1/videos", middleware.VideoCreateMiddleware(), s.VideoCreateHandler)
+	r.GET("/v1/videos/:id", s.VideoGetHandler)
+	r.GET("/v1/videos/:id/content", s.VideoContentHandler)
 
 	// Inference (Anthropic compatibility)
 	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
@@ -1724,6 +1762,7 @@ func Serve(ln net.Listener) error {
 	}
 
 	s := &Server{addr: ln.Addr()}
+	ensureLoopbackGoURLEnv()
 	if err := s.initRequestLogging(); err != nil {
 		return err
 	}
@@ -1741,16 +1780,27 @@ func Serve(ln net.Listener) error {
 	schedCtx, schedDone := context.WithCancel(ctx)
 	sched := InitScheduler(schedCtx)
 	s.sched = sched
+	sched.fifoYield = s.schedYieldToRuntimeFifo
 
-	// Optional GPU training sidecar: Go owns public TCP :9500 and /api/train; Python owns PyTorch.
-	// Default on (OLLAMA_TRAINING) so integrators see the feature; set false if python3 or deps are absent.
-	// Close order on signals: training subprocess before tearing down inference runners (see signal handler below).
+	// Optional GPU training: Go owns public TCP :9500 and /api/train; embedded CPython runs training.py.
+	// Default on (OLLAMA_TRAINING) so integrators see the feature; set false if libpython / torch deps are absent.
+	// Close order on signals: training worker (stops Python job thread) before tearing down inference runners.
 	if envconfig.TrainingEnabled(true) {
 		tw, terr := trainingworker.Start(ctx, sched)
 		if terr != nil {
 			slog.Warn("training worker not started", "error", terr)
 		} else {
 			s.training = tw
+			s.trainingDefer = newTrainingDeferQueue(s)
+			tw.SetInferenceSubmitGuard(s.checkTrainingSubmitAllowed)
+			tw.SetSubmitHandler(s.handleTrainingSubmitRequest)
+			tw.SetDeferredJobStatusFn(s.deferredTrainingJobStatusJSON)
+			tw.SetDeferredJobCancelFn(s.cancelDeferredTrainingJob)
+			tw.SetDeferredListMergeFn(s.mergeDeferredJobsListJSON)
+			go s.trainingDefer.start(ctx)
+			if envconfig.BlockInferenceDuringTraining() {
+				go s.runTrainingGPUPolicyMonitor(ctx)
+			}
 			tcp := strings.TrimSpace(os.Getenv("OLLAMA_TRAINING_TCP"))
 			switch tcp {
 			case "", "1":
@@ -1766,6 +1816,49 @@ func Serve(ln net.Listener) error {
 		}
 	} else {
 		slog.Info("training disabled", "env", "OLLAMA_TRAINING=false")
+	}
+
+	if strings.TrimSpace(effectiveRuntimeURL()) != "" {
+		startCoordPusher := s.training == nil || !envconfig.BlockInferenceDuringTraining()
+		if startCoordPusher {
+			go s.runRuntimeCoordinationPusher(ctx)
+		}
+	}
+
+	if envconfig.RuntimeEmbedEnabled() {
+		rw, rerr := runtimeworker.Start(ctx, "")
+		if rerr != nil {
+			slog.Warn("embedded runtime not started", "error", rerr)
+		} else {
+			s.runtimeEmbed = rw
+			sharedPy := s.training != nil
+			if sharedPy {
+				// Runtime VRAM probes use nvidia-smi (GIL-releasing) instead of pynvml.
+				_ = os.Setenv("ZEROLLAMA_RUNTIME_SHARED_PYTHON", "1")
+			}
+			attrs := []any{
+				"url", runtimeworker.BaseURL(),
+				"shared_interpreter", sharedPy,
+			}
+			if m := strings.TrimSpace(os.Getenv("LLAMA_MODEL")); m != "" {
+				attrs = append(attrs, "gguf", m)
+			}
+			slog.Info("embedded python runtime (in-process)", attrs...)
+		}
+	}
+
+	if runtimeProxyConfigured() {
+		mode := "external sidecar"
+		if runtimeworker.BaseURL() != "" {
+			mode = "embedded"
+		}
+		if envconfig.RuntimeDefaultOn() {
+			slog.Info(
+				"python runtime proxy enabled",
+				"url", effectiveRuntimeURL(),
+				"mode", mode,
+			)
+		}
 	}
 
 	h, err := s.GenerateRoutes(rc)
@@ -1789,17 +1882,56 @@ func Serve(ln net.Listener) error {
 	}
 
 	// listen for a ctrl+c and stop any loaded llm
-	signals := make(chan os.Signal, 1)
+	signals := make(chan os.Signal, 8)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-signals
-		srvr.Close()
+		slog.Info("shutting down server (Ctrl+C again to force quit)")
+		// Second signal must work immediately — do not register after slow teardown.
+		go func() {
+			<-signals
+			slog.Warn("forced exit on second shutdown signal")
+			os.Exit(1)
+		}()
+
+		sched.ResumeLoads()
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := srvr.Shutdown(shutCtx); err != nil {
+			slog.Warn("HTTP shutdown timed out, forcing close", "error", err)
+			_ = srvr.Close()
+		}
+		shutCancel()
+
 		if s.training != nil {
-			s.training.Close()
+			done := make(chan struct{})
+			go func() {
+				s.training.Close()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				slog.Warn("training close timed out during shutdown")
+			}
 		}
 		schedDone()
-		sched.unloadAllRunners()
+
+		unloadDone := make(chan struct{})
+		go func() {
+			sched.unloadAllRunners()
+			close(unloadDone)
+		}()
+		select {
+		case <-unloadDone:
+		case <-time.After(3 * time.Second):
+			slog.Warn("runner unload timed out during shutdown")
+		}
+		if s.runtimeEmbed != nil {
+			s.runtimeEmbed.Close()
+		}
 		done()
+		// Embedded CPython/uvicorn pthreads prevent a clean return from main.
+		os.Exit(0)
 	}()
 
 	s.sched.Run(schedCtx)
@@ -2311,7 +2443,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 
 	var thinkingState *thinking.Parser
-	openingTag, closingTag := thinking.InferTags(m.Template.Template)
+	openingTag, closingTag := thinking.TagsForModel(m.Config.ModelFamily, m.Template.Template)
 	if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
 		thinkingState = &thinking.Parser{
 			OpeningTag: openingTag,
@@ -2472,6 +2604,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					}
 				}
 
+				if r.Done && usesQwenStyleChat(m) {
+					res.Message.Content = stripChatControlTokens(res.Message.Content)
+				}
+
 				ch <- res
 			})
 			if err != nil {
@@ -2583,34 +2719,6 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}
-}
-
-func filterThinkTags(msgs []api.Message, m *Model) []api.Message {
-	if m.Config.ModelFamily == "qwen3" || model.ParseName(m.Name).Model == "deepseek-r1" {
-		finalUserIndex := -1
-		for i, msg := range msgs {
-			if msg.Role == "user" {
-				finalUserIndex = i
-			}
-		}
-
-		for i, msg := range msgs {
-			if msg.Role == "assistant" && i < finalUserIndex {
-				// TODO(drifkin): this is from before we added proper thinking support.
-				// However, even if thinking is not enabled (and therefore we shouldn't
-				// change the user output), we should probably perform this filtering
-				// for all thinking models (not just qwen3 & deepseek-r1) since it tends
-				// to save tokens and improve quality.
-				thinkingState := &thinking.Parser{
-					OpeningTag: "<think>",
-					ClosingTag: "</think>",
-				}
-				_, content := thinkingState.AddContent(msg.Content)
-				msgs[i].Content = content
-			}
-		}
-	}
-	return msgs
 }
 
 // handleExternalImageGenerate runs modality_backends.image=external-image via OLLAMA_EXTERNAL_IMAGE_BIN.

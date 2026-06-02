@@ -241,7 +241,7 @@ var (
 	EnableVulkan = Bool("OLLAMA_VULKAN")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
-	// TrainingEnabled starts the Python training daemon and registers training APIs when true.
+	// TrainingEnabled starts embedded GPU training (CGO + training.py) and registers training APIs when true.
 	// Default true so the capability is discoverable; production without GPU stack sets OLLAMA_TRAINING=false.
 	TrainingEnabled = BoolWithDefault("OLLAMA_TRAINING")
 )
@@ -329,9 +329,10 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_NO_CLOUD":                     {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
 		"OLLAMA_NOHISTORY":                    {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
 		"OLLAMA_NOPRUNE":                      {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
-		"OLLAMA_TRAINING":                     {"OLLAMA_TRAINING", TrainingEnabled(true), "Enable GPU training worker (Python gRPC daemon, public TCP when configured) (default true)"},
+		"OLLAMA_TRAINING":                     {"OLLAMA_TRAINING", TrainingEnabled(true), "Enable GPU training (embedded CPython + training.py; HTTP /api/train and optional TCP) (default true)"},
 		"OLLAMA_TRAINING_TCP":                 {"OLLAMA_TRAINING_TCP", Var("OLLAMA_TRAINING_TCP"), "Public training TCP listen address; empty or 1 is :9500; 0 or - disables"},
-		"OLLAMA_TRAINING_PYTHONPATH":          {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Directory containing the trainingdaemon package (x/trainingdaemon); auto-detected when unset"},
+		"OLLAMA_TRAINING_PYTHONPATH":          {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Repository root containing training.py; must exist if set (no silent fallback). When unset: walk cwd, then $HOME/zerollama or $HOME/ollama"},
+		"ZEROLLAMA_REPO":                      {"ZEROLLAMA_REPO", Var("ZEROLLAMA_REPO"), "Alias for repo root (training.py and runtime/); same rules as OLLAMA_TRAINING_PYTHONPATH"},
 		"OLLAMA_NUM_PARALLEL":                 {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
 		"OLLAMA_ORIGINS":                      {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
 		"OLLAMA_SCHED_SPREAD":                 {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
@@ -342,6 +343,14 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_REMOTES":                      {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 		"ELIZACLOUD_API_KEY":                  {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
 		"OLLAMA_SGLANG_URL":                   {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
+		"ZEROLLAMA_RUNTIME_URL":               {"ZEROLLAMA_RUNTIME_URL", RuntimeURL(), "Base URL for Python GGUF runtime sidecar (PagedAttention)"},
+		"ZEROLLAMA_RUNTIME_EMBED":             {"ZEROLLAMA_RUNTIME_EMBED", RuntimeEmbedDisplay(), "Embed runtime in-process (CGO); default on if URL unset"},
+		"ZEROLLAMA_RUNTIME_EMBED_PORT":        {"ZEROLLAMA_RUNTIME_EMBED_PORT", Var("ZEROLLAMA_RUNTIME_EMBED_PORT"), "Loopback port for embedded runtime HTTP (default 8081)"},
+		"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY": {"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", ggmlPauseWhenRuntimeBusyDisplay(), "Pause new ggml loads when Python runtime queue is deep (auto when runtime configured)"},
+		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
+		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy: 1/on (default when URL set), 0/off, unset=on if URL set"},
+		"ZEROLLAMA_LEGACY_RUNNER":             {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
+		"OLLAMA_RUNTIME_ALL":                  {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
 		"OLLAMA_FFMPEG":                       {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
 		"OLLAMA_VIDEO_MAX_FRAMES":             {"OLLAMA_VIDEO_MAX_FRAMES", VideoMaxFrames(), "Max frames sampled per video (default 32)"},
 		"OLLAMA_VIDEO_SAMPLE_MODE":            {"OLLAMA_VIDEO_SAMPLE_MODE", VideoSampleMode(), "Native sampling: fps (time-uniform) or stride (every Nth frame) (default fps)"},
@@ -447,6 +456,290 @@ func modalityTimeout(envKey string, defaultDur time.Duration) time.Duration {
 // Used when modality_backends.video_understanding=sglang.
 func SGLangURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("OLLAMA_SGLANG_URL")), "/")
+}
+
+// RuntimeURL is the base URL for the zerollama Python inference sidecar (e.g. http://127.0.0.1:8081).
+// Used when modality_backends.inference=zerollama-runtime or OLLAMA_RUNTIME_ALL=1.
+func RuntimeURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_URL")), "/")
+}
+
+// RuntimeProxyAll forwards all local /api/generate requests to RuntimeURL when set.
+func RuntimeProxyAll() bool {
+	return Var("OLLAMA_RUNTIME_ALL") == "1"
+}
+
+// RuntimeDefault is true when ZEROLLAMA_RUNTIME is explicitly enabled (1/true).
+func RuntimeDefault() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// RuntimeDefaultOn enables the Python runtime for local non-streaming generate/chat
+// when RuntimeURL is set. Unset ZEROLLAMA_RUNTIME defaults to on; set 0/false to disable.
+func RuntimeDefaultOn() bool {
+	if RuntimeURL() == "" {
+		return false
+	}
+	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return true
+}
+
+// LegacyRunnerForced keeps the ggml runner for models tagged zerollama-runtime.
+func LegacyRunnerForced() bool {
+	return Var("ZEROLLAMA_LEGACY_RUNNER") == "1"
+}
+
+func runtimeEnvDisplay() string {
+	if RuntimeURL() == "" {
+		return Var("ZEROLLAMA_RUNTIME")
+	}
+	if RuntimeDefaultOn() {
+		return "on (default)"
+	}
+	return "off"
+}
+
+// RuntimeEmbedEnabled starts inference runtime inside the zerollama process (CGO).
+// Default: on when ZEROLLAMA_RUNTIME_URL is unset; set 0 to use an external sidecar only.
+func RuntimeEmbedEnabled() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_EMBED"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	if strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_URL")) != "" {
+		return false
+	}
+	return true
+}
+
+func RuntimeEmbedDisplay() string {
+	if RuntimeEmbedEnabled() {
+		return "on"
+	}
+	return "off"
+}
+
+// Training allowed window: ZEROLLAMA_TRAINING_ALLOWED_WINDOW=22:00-06:00 (optional),
+// ZEROLLAMA_TRAINING_WINDOW_TZ (IANA name or "local"). Why: batch fine-tune on a shared
+// GPU without a unified FIFO — night-window policy is the first SLO hook.
+
+// Training submit policy (T6): idle-wait, defer queue, and priority interact with
+// server/inference_workload.go and server/training_defer_queue.go. See
+// docs/scheduling-vram-policy.md for rationale — inference and training are not one
+// FIFO because PyTorch epochs are not safely preemptible from Go.
+
+// TrainingWaitInferenceIdle rejects new training job submit while ggml inference is busy.
+func TrainingWaitInferenceIdle() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_WAIT_INFERENCE_IDLE"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// TrainingWaitGgmlLoaded treats resident ggml runners as busy when idle-wait is on.
+func TrainingWaitGgmlLoaded() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_WAIT_GGML_LOADED"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return TrainingWaitInferenceIdle()
+}
+
+// TrainingWaitFailClosed rejects training submit when runtime /health cannot be read (idle-wait on).
+func TrainingWaitFailClosed() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_WAIT_FAIL_CLOSED"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return TrainingWaitInferenceIdle()
+}
+
+// TrainingQueueOnBusy enqueues training submit instead of HTTP 409 when policy rejects.
+// Inference backlog defer requires ZEROLLAMA_TRAINING_WAIT_INFERENCE_IDLE=1; outside-window
+// defer works with ZEROLLAMA_TRAINING_ALLOWED_WINDOW alone.
+func TrainingQueueOnBusy() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_ON_BUSY"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// TrainingQueuePollInterval returns how often the deferred training queue is polled.
+func TrainingQueuePollInterval() time.Duration {
+	raw := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_POLL_SECS"))
+	if raw == "" {
+		return 5 * time.Second
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 5 * time.Second
+	}
+	return time.Duration(n) * time.Second
+}
+
+// TrainingQueueMaxDepth caps deferred jobs waiting for inference idle (0 = unlimited).
+func TrainingQueueMaxDepth() int {
+	raw := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_MAX"))
+	if raw == "" {
+		return 32
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 32
+	}
+	return n
+}
+
+// TrainingQueueTombstoneTTL is how long terminal defer-* records stay queryable (0 = keep forever).
+func TrainingQueueTombstoneTTL() time.Duration {
+	raw := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_TOMBSTONE_SECS"))
+	if raw == "" {
+		return 24 * time.Hour
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 24 * time.Hour
+	}
+	if n == 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
+}
+
+// TrainingQueueRetryMax is how many times a deferred job may retry promotion after error (0 = no retries).
+func TrainingQueueRetryMax() int {
+	raw := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_RETRY_MAX"))
+	if raw == "" {
+		return 3
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 3
+	}
+	return n
+}
+
+// TrainingQueueRetryInterval is the minimum wait before a failed defer job is promoted again.
+func TrainingQueueRetryInterval() time.Duration {
+	raw := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_RETRY_SECS"))
+	if raw == "" {
+		return 30 * time.Second
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 30 * time.Second
+	}
+	return time.Duration(n) * time.Second
+}
+
+// TrainingQueueListAll includes terminal defer jobs in GET /api/train/jobs merge (default: waiting only).
+func TrainingQueueListAll() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_LIST_ALL"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// BlockInferenceDuringTraining rejects runtime proxy requests while training holds the GPU.
+func BlockInferenceDuringTraining() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	return true
+}
+
+// WanVideoTimeoutSec overrides manifest video_generation.timeout_sec when > 0.
+func WanVideoTimeoutSec() int {
+	raw := strings.TrimSpace(Var("ZEROLLAMA_WAN_VIDEO_TIMEOUT"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
+// RuntimeConfigured reports whether a Python runtime is in use (external URL or embedded).
+func RuntimeConfigured() bool {
+	return RuntimeURL() != "" || RuntimeEmbedEnabled()
+}
+
+func ggmlPauseWhenRuntimeBusyDisplay() string {
+	v := strings.TrimSpace(Var("ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return "off"
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return "on"
+	}
+	if RuntimeConfigured() {
+		return "auto (on)"
+	}
+	return "auto (off)"
+}
+
+// GgmlPauseWhenRuntimeBusy pauses new ggml loads while the Python runtime queue is deep.
+// Default auto: on when a runtime is configured (URL or embedded sidecar).
+func GgmlPauseWhenRuntimeBusy() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return RuntimeConfigured()
+}
+
+// GgmlPauseRuntimeMinBacklog is waiting+running threshold to pause ggml (default 4).
+func GgmlPauseRuntimeMinBacklog() int {
+	v := strings.TrimSpace(Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"))
+	if v == "" {
+		return 4
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 4
+	}
+	return n
+}
+
+// BlockInferenceFailClosed treats training health probe failures as GPU-busy when blocking is enabled.
+func BlockInferenceFailClosed() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_BLOCK_INFERENCE_FAIL_CLOSED"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return BlockInferenceDuringTraining()
+}
+
+// RuntimeEmbedPort is the loopback port for in-process runtime HTTP.
+func RuntimeEmbedPort() int {
+	p := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_EMBED_PORT"))
+	if p == "" {
+		return 8081
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n <= 0 {
+		return 8081
+	}
+	return n
 }
 
 // FFmpegBin is the ffmpeg executable used for native video frame sampling (default: ffmpeg on PATH).
