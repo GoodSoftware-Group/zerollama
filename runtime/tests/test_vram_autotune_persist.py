@@ -111,6 +111,20 @@ def test_invalid_persist_file_ignored(monkeypatch, tmp_path):
     assert load_persisted_autotune() is None
 
 
+def test_model_in_persist_catalog(monkeypatch, tmp_path):
+    _reset_autotune(monkeypatch, tmp_path)
+    model = tmp_path / "a.gguf"
+    model.write_bytes(b"a")
+    other = tmp_path / "b.gguf"
+    other.write_bytes(b"b")
+    from runtime.vram_autotune_persist import model_in_persist_catalog
+
+    assert not model_in_persist_catalog(model)
+    save_persisted_autotune(1.1, model=model)
+    assert model_in_persist_catalog(model)
+    assert not model_in_persist_catalog(other)
+
+
 def test_persist_catalog(monkeypatch, tmp_path):
     _reset_autotune(monkeypatch, tmp_path)
     m_a = tmp_path / "a.gguf"

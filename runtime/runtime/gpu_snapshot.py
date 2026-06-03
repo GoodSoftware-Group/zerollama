@@ -58,17 +58,13 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
             lines.append(f"#   {name}: factor {float(factor):g}{suffix}")
         if gguf:
             try:
-                from runtime.vram_autotune_persist import model_autotune_key
+                from runtime.vram_autotune_persist import model_in_persist_catalog
 
-                probe_key = model_autotune_key(gguf)
-                if not any(
-                    isinstance(row, dict) and row.get("model") == probe_key
-                    for row in catalog
-                ):
+                if not model_in_persist_catalog(gguf):
                     lines.append(
                         f"# probe GGUF not in catalog — run one probed load for {Path(gguf).name!r}"
                     )
-            except OSError:
+            except (OSError, ValueError):
                 pass
         if persisted is not None:
             lines.append(
@@ -152,7 +148,6 @@ def main() -> None:
         help="snapshot JSON (default: GPU_PHASE13_SNAPSHOT_OUT or stdin)",
     )
     args = parser.parse_args()
-    raw = ""
     if args.file is not None:
         snap = load_snapshot(args.file)
     else:

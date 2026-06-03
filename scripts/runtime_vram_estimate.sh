@@ -91,6 +91,9 @@ if req is not None:
     print("required_per_gpu:", fmt_b(req))
 if est.get("estimate_factor_effective") is not None:
     print("estimate_factor_effective:", est.get("estimate_factor_effective"))
+src = est.get("estimate_factor_source")
+if src:
+    print("estimate_factor_source:", src)
 kv = est.get("kv_cache_bytes")
 if kv is not None:
     print("kv_cache:", fmt_b(kv))

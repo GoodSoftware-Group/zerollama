@@ -65,7 +65,7 @@ VRAM_PROBE_CALIBRATE (optional) → vram_calibration + autotune persist
 
 | Surface | Role |
 |---------|------|
-| `vram_estimate` | Bytes breakdown for loaded or probed GGUF (`kv_cache_bytes`, `estimate_factor_effective`, …). |
+| `vram_estimate` | Bytes breakdown for loaded or probed GGUF (`kv_cache_bytes`, `estimate_factor_effective`, `estimate_factor_source`: `env` / `session` / `catalog`, …). |
 | `vram_budget` | `fits`, `fits_with_margin`, `suggested_max_num_ctx`, `num_ctx_over_budget`. |
 | `vram_calibration` | Last load: `suggested_estimate_factor` ≈ observed/raw. |
 | `vram_autotune` | Per-model persist status; `persist.catalog[]` lists calibrated GGUFs (`model`, `basename`, `estimate_factor`, `last`). |

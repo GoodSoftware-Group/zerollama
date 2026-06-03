@@ -6,6 +6,7 @@ from runtime.gpu_vram import (
     set_session_vram_estimate_factor,
     vram_estimate_autotune_enabled,
     vram_estimate_autotune_status,
+    vram_estimate_factor_source,
 )
 from runtime.go_coordination import cross_queue_pressure_score, update_go_coordination
 from runtime.vram_calibration import record_vram_load_sample
@@ -40,6 +41,29 @@ def test_autotune_status_requires_calibrate(monkeypatch, tmp_path):
     st = vram_estimate_autotune_status()
     assert st["enabled"] is False
     assert st["probe_calibrate_required"] is False
+
+
+def test_autotune_factor_source_session_and_catalog(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR", "1.0")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE", "1")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST", "1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    other = tmp_path / "other.gguf"
+    other.write_bytes(b"y")
+
+    assert vram_estimate_factor_source(gguf=model) == "env"
+
+    from runtime.vram_autotune_persist import save_persisted_autotune
+
+    save_persisted_autotune(1.2, model=model)
+    assert vram_estimate_factor_source(gguf=model) == "catalog"
+    assert vram_estimate_factor_source(gguf=other) == "env"
+
+    set_session_vram_estimate_factor(1.25, model=model)
+    assert vram_estimate_factor_source(gguf=model) == "session"
+    set_session_vram_estimate_factor(None)
 
 
 def test_record_sets_session_autotune(monkeypatch, tmp_path):

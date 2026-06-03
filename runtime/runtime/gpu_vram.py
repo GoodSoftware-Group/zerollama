@@ -610,6 +610,36 @@ def effective_vram_estimate_factor(*, gguf: Path | str | None = None) -> float:
     return _vram_estimate_factor()
 
 
+def vram_estimate_factor_source(*, gguf: Path | str | None = None) -> str:
+    """Where ``estimate_factor_effective`` came from: env, session, or catalog."""
+    if not vram_estimate_autotune_enabled():
+        return "env"
+    if gguf is not None:
+        try:
+            key = _model_autotune_key(gguf)
+        except OSError:
+            key = str(gguf)
+        with _autotune_lock:
+            if (
+                _session_autotune_factor is not None
+                and _session_autotune_model == key
+            ):
+                return "session"
+        from runtime.vram_autotune_persist import load_persisted_autotune
+
+        if load_persisted_autotune(gguf) is not None:
+            return "catalog"
+        return "env"
+    with _autotune_lock:
+        if _session_autotune_factor is not None:
+            return "session"
+    from runtime.vram_autotune_persist import load_persisted_autotune
+
+    if load_persisted_autotune(None) is not None:
+        return "catalog"
+    return "env"
+
+
 def vram_estimate_autotune_status() -> dict[str, Any]:
     """/health summary: autotune needs PROBE_CALIBRATE + at least one load."""
     from runtime.vram_autotune_persist import persist_status
@@ -886,6 +916,7 @@ def describe_vram_estimate(
         "weight_block_layout": _vram_weight_block_layout_enabled(),
         "estimate_factor_env": _vram_estimate_factor(),
         "estimate_factor_effective": effective_vram_estimate_factor(gguf=gguf),
+        "estimate_factor_source": vram_estimate_factor_source(gguf=gguf),
         "estimate_factor_autotune": session_vram_estimate_factor(model=gguf),
         "sliding_window": hints.get("sliding_window"),
         "sliding_window_per_layer": (

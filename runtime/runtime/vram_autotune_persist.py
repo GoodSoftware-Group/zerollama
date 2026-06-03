@@ -225,6 +225,23 @@ def clear_persisted_autotune(model: str | Path | None = None) -> None:
     export_factor_catalog()
 
 
+def model_in_persist_catalog(model: str | Path) -> bool:
+    """True when ``model`` has a persisted autotune entry."""
+    if not vram_autotune_persist_enabled():
+        return False
+    try:
+        key = model_autotune_key(model)
+    except OSError:
+        return False
+    state = _read_state()
+    if state is None:
+        return False
+    models: dict[str, Any] = state.get("models") or {}
+    if not isinstance(models, dict):
+        return False
+    return _factor_from_entry(models.get(key)) is not None
+
+
 def persist_catalog(*, max_entries: int = 64) -> list[dict[str, Any]]:
     """Persisted per-GGUF factors for /health (loopback ops)."""
     if not vram_autotune_persist_enabled():
