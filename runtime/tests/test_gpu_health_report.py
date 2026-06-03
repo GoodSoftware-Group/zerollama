@@ -68,9 +68,9 @@ def test_format_gpu_health_includes_calibration_and_autotune_fields():
     assert "vram_autotune.persist.last_model:" in out
     assert "vram_autotune.persist.catalog_count: 2" in out
     assert "vram_estimate.estimate_factor_source: catalog" in out
+    assert "export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR=1.15" not in out
+    assert "per-GGUF autotune active" in out
     assert "vram_autotune.persist.catalog: m.gguf factor=1.15 (last)" in out
-    assert "probe_required_bytes" not in out
-    assert "ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR=1.15" in out
 
 
 def test_format_gpu_health_warns_when_factor_out_of_range():

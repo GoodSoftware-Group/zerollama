@@ -42,6 +42,14 @@ def model_autotune_key(model: str | Path) -> str:
     return str(Path(model).expanduser().resolve())
 
 
+def try_model_autotune_key(model: str | Path) -> str | None:
+    """Like ``model_autotune_key`` but returns None when the path cannot be resolved."""
+    try:
+        return model_autotune_key(model)
+    except (OSError, ValueError):
+        return None
+
+
 def _invalidate_cache() -> None:
     global _state_cache, _state_cache_mtime
     _state_cache = None
@@ -130,7 +138,9 @@ def load_persisted_autotune(model: str | Path | None = None) -> float | None:
         return None
     models: dict[str, Any] = state.get("models") or {}
     if model is not None:
-        key = model_autotune_key(model)
+        key = try_model_autotune_key(model)
+        if key is None:
+            return None
         return _factor_from_entry(models.get(key))
     last = state.get("last_model")
     if isinstance(last, str):
@@ -229,9 +239,8 @@ def model_in_persist_catalog(model: str | Path) -> bool:
     """True when ``model`` has a persisted autotune entry."""
     if not vram_autotune_persist_enabled():
         return False
-    try:
-        key = model_autotune_key(model)
-    except OSError:
+    key = try_model_autotune_key(model)
+    if key is None:
         return False
     state = _read_state()
     if state is None:
@@ -242,16 +251,19 @@ def model_in_persist_catalog(model: str | Path) -> bool:
     return _factor_from_entry(models.get(key)) is not None
 
 
-def persist_catalog(*, max_entries: int = 64) -> list[dict[str, Any]]:
-    """Persisted per-GGUF factors for /health (loopback ops)."""
+def persist_catalog(*, max_entries: int = 64) -> tuple[list[dict[str, Any]], bool]:
+    """Persisted per-GGUF factors for /health (loopback ops).
+
+    Returns ``(rows, truncated)``.
+    """
     if not vram_autotune_persist_enabled():
-        return []
+        return [], False
     state = _read_state()
     if state is None:
-        return []
+        return [], False
     models: dict[str, Any] = state.get("models") or {}
     if not isinstance(models, dict) or not models:
-        return []
+        return [], False
     last = state.get("last_model")
     rows: list[dict[str, Any]] = []
     for key in sorted(models.keys()):
@@ -270,8 +282,8 @@ def persist_catalog(*, max_entries: int = 64) -> list[dict[str, Any]]:
         rows.append(row)
     cap = max(1, int(max_entries))
     if len(rows) > cap:
-        return rows[:cap]
-    return rows
+        return rows[:cap], True
+    return rows, False
 
 
 def persist_status(
@@ -286,14 +298,17 @@ def persist_status(
     persisted = session_factor
     if persisted is None and isinstance(last, str):
         persisted = _factor_from_entry(models.get(last))
+    catalog, catalog_truncated = persist_catalog()
+    model_count = len(models) if isinstance(models, dict) else 0
     return {
         "enabled": vram_autotune_persist_enabled(),
         "path": str(path),
         "file_exists": path.is_file(),
-        "model_count": len(models) if isinstance(models, dict) else 0,
+        "model_count": model_count,
         "last_model": last,
         "session_model": session_model,
         "session_factor": session_factor,
         "persisted_factor": persisted,
-        "catalog": persist_catalog(),
+        "catalog": catalog,
+        "catalog_truncated": catalog_truncated or model_count > len(catalog),
     }

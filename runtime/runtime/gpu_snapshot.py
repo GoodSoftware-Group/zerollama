@@ -57,15 +57,12 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
             suffix = " (last)" if row.get("last") else ""
             lines.append(f"#   {name}: factor {float(factor):g}{suffix}")
         if gguf:
-            try:
-                from runtime.vram_autotune_persist import model_in_persist_catalog
+            from runtime.vram_autotune_persist import model_in_persist_catalog
 
-                if not model_in_persist_catalog(gguf):
-                    lines.append(
-                        f"# probe GGUF not in catalog — run one probed load for {Path(gguf).name!r}"
-                    )
-            except (OSError, ValueError):
-                pass
+            if not model_in_persist_catalog(gguf):
+                lines.append(
+                    f"# probe GGUF not in catalog — run one probed load for {Path(gguf).name!r}"
+                )
         if persisted is not None:
             lines.append(
                 "# per-GGUF persist wins; no global ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR needed"

@@ -557,12 +557,22 @@ def _model_autotune_key(model: str | Path) -> str:
     return model_autotune_key(model)
 
 
+def _try_model_autotune_key(model: str | Path) -> str | None:
+    from runtime.vram_autotune_persist import try_model_autotune_key
+
+    return try_model_autotune_key(model)
+
+
 def session_vram_estimate_factor(*, model: str | Path | None = None) -> float | None:
     """In-process factor for model (or last calibrated model in session)."""
     with _autotune_lock:
         if model is not None:
-            key = _model_autotune_key(model)
-            if _session_autotune_model == key and _session_autotune_factor is not None:
+            key = _try_model_autotune_key(model)
+            if (
+                key is not None
+                and _session_autotune_model == key
+                and _session_autotune_factor is not None
+            ):
                 return _session_autotune_factor
         elif _session_autotune_factor is not None:
             return _session_autotune_factor
@@ -593,7 +603,7 @@ def set_session_vram_estimate_factor(
                 return
             _session_autotune_factor = max(0.1, min(3.0, float(factor)))
             _session_autotune_model = (
-                _model_autotune_key(model) if model is not None else None
+                _try_model_autotune_key(model) if model is not None else None
             )
             from runtime.vram_autotune_persist import save_persisted_autotune
 
@@ -615,20 +625,18 @@ def vram_estimate_factor_source(*, gguf: Path | str | None = None) -> str:
     if not vram_estimate_autotune_enabled():
         return "env"
     if gguf is not None:
-        try:
-            key = _model_autotune_key(gguf)
-        except OSError:
-            key = str(gguf)
-        with _autotune_lock:
-            if (
-                _session_autotune_factor is not None
-                and _session_autotune_model == key
-            ):
-                return "session"
-        from runtime.vram_autotune_persist import load_persisted_autotune
+        key = _try_model_autotune_key(gguf)
+        if key is not None:
+            with _autotune_lock:
+                if (
+                    _session_autotune_factor is not None
+                    and _session_autotune_model == key
+                ):
+                    return "session"
+            from runtime.vram_autotune_persist import load_persisted_autotune
 
-        if load_persisted_autotune(gguf) is not None:
-            return "catalog"
+            if load_persisted_autotune(gguf) is not None:
+                return "catalog"
         return "env"
     with _autotune_lock:
         if _session_autotune_factor is not None:

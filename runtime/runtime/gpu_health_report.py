@@ -52,6 +52,8 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
                 lines.append(f"vram_calibration.{k}: {cal.get(k)}")
 
     at = h.get("vram_autotune") or {}
+    autotune_persist = at.get("persist") or {}
+    autotune_catalog = autotune_persist.get("catalog") or []
     if at:
         lines.append(f"vram_autotune.enabled: {at.get('enabled')}")
         lines.append(
@@ -64,17 +66,20 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
             lines.append(
                 f"vram_autotune.probe_calibrate_required: {at.get('probe_calibrate_required')}"
             )
-        persist = at.get("persist") or {}
-        if persist.get("last_model"):
-            lines.append(f"vram_autotune.persist.last_model: {persist.get('last_model')}")
-        if persist.get("persisted_factor") is not None:
+        if autotune_persist.get("last_model"):
             lines.append(
-                f"vram_autotune.persist.persisted_factor: {persist.get('persisted_factor')}"
+                f"vram_autotune.persist.last_model: {autotune_persist.get('last_model')}"
             )
-        catalog = persist.get("catalog") or []
-        if catalog:
-            lines.append(f"vram_autotune.persist.catalog_count: {len(catalog)}")
-            for row in catalog[:5]:
+        if autotune_persist.get("persisted_factor") is not None:
+            lines.append(
+                "vram_autotune.persist.persisted_factor: "
+                f"{autotune_persist.get('persisted_factor')}"
+            )
+        if autotune_persist.get("catalog_truncated"):
+            lines.append("vram_autotune.persist.catalog_truncated: true")
+        if autotune_catalog:
+            lines.append(f"vram_autotune.persist.catalog_count: {len(autotune_catalog)}")
+            for row in autotune_catalog[:5]:
                 if not isinstance(row, dict):
                     continue
                 name = row.get("basename") or row.get("model")
@@ -106,7 +111,13 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
     lines.append("")
     lines.append("Suggested next steps:")
     suggest = cal.get("suggested_estimate_factor")
-    if suggest is not None:
+    factor_source = ve.get("estimate_factor_source")
+    skip_global_factor_export = bool(at.get("enabled")) and (
+        bool(autotune_catalog)
+        or factor_source in ("catalog", "session")
+        or autotune_persist.get("persisted_factor") is not None
+    )
+    if suggest is not None and not skip_global_factor_export:
         try:
             sf = float(suggest)
             if 0.1 <= sf <= 3.0:
@@ -118,6 +129,10 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
         except (TypeError, ValueError):
             lines.append(f"  # suggested_estimate_factor={suggest!r} (not a number)")
         lines.append("  # or rely on VRAM_ESTIMATE_FACTOR_AUTOTUNE=auto persist")
+    elif suggest is not None and skip_global_factor_export:
+        lines.append(
+            "  # per-GGUF autotune active; no global VRAM_ESTIMATE_FACTOR export needed"
+        )
     eff = at.get("effective_factor")
     if eff is not None and at.get("enabled"):
         lines.append(f"  # effective autotune factor now: {eff}")

@@ -136,14 +136,52 @@ def test_persist_catalog(monkeypatch, tmp_path):
 
     from runtime.vram_autotune_persist import persist_catalog, persist_status
 
-    catalog = persist_catalog()
+    catalog, truncated = persist_catalog()
     assert len(catalog) == 2
+    assert truncated is False
     assert {row["basename"] for row in catalog} == {"a.gguf", "b.gguf"}
     assert sum(1 for row in catalog if row.get("last")) == 1
 
     st = persist_status()
     assert len(st["catalog"]) == 2
     assert st["model_count"] == 2
+
+
+def test_persist_catalog_truncated(monkeypatch, tmp_path):
+    _reset_autotune(monkeypatch, tmp_path)
+    for i in range(70):
+        p = tmp_path / f"m{i}.gguf"
+        p.write_bytes(b"x")
+        save_persisted_autotune(1.0 + i * 0.01, model=p)
+    from runtime.vram_autotune_persist import persist_catalog, persist_status
+
+    catalog, truncated = persist_catalog(max_entries=64)
+    assert len(catalog) == 64
+    assert truncated is True
+    st = persist_status()
+    assert st["catalog_truncated"] is True
+
+
+def test_try_model_autotune_key_returns_none_on_resolve_error(monkeypatch):
+    from runtime.vram_autotune_persist import try_model_autotune_key
+    import runtime.vram_autotune_persist as mod
+
+    def _boom(_model):
+        raise OSError("resolve failed")
+
+    monkeypatch.setattr(mod, "model_autotune_key", _boom)
+    assert try_model_autotune_key("/any/model.gguf") is None
+
+
+def test_factor_source_env_when_path_unresolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE", "1")
+    import runtime.gpu_vram as gv
+
+    monkeypatch.setattr(gv, "_try_model_autotune_key", lambda _m: None)
+    from runtime.gpu_vram import vram_estimate_factor_source
+
+    assert vram_estimate_factor_source(gguf="/any/model.gguf") == "env"
 
 
 def test_future_version_ignored(monkeypatch, tmp_path):
