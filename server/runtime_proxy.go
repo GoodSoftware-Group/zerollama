@@ -138,7 +138,7 @@ func forwardRuntimeGenerate(
 	modelName string,
 	prompt string,
 	options map[string]any,
-) (string, int, error) {
+) ([]byte, int, error) {
 	payload, _ := json.Marshal(map[string]any{
 		"model":   modelName,
 		"prompt":  prompt,
@@ -153,47 +153,21 @@ func forwardRuntimeGenerate(
 		bytes.NewReader(payload),
 	)
 	if err != nil {
-		return "", http.StatusInternalServerError, err
+		return nil, http.StatusInternalServerError, err
 	}
 	outReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := runtimeProxyClient.Do(outReq)
 	if err != nil {
-		return "", http.StatusBadGateway, err
+		return nil, http.StatusBadGateway, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", http.StatusBadGateway, err
+		return nil, http.StatusBadGateway, err
 	}
-	if resp.StatusCode >= 300 {
-		return string(respBody), resp.StatusCode, nil
-	}
-	return parseRuntimeGenerateBody(respBody), http.StatusOK, nil
-}
-
-func parseRuntimeGenerateBody(respBody []byte) string {
-	var ollamaResp struct {
-		Response string `json:"response"`
-	}
-	if err := json.Unmarshal(respBody, &ollamaResp); err == nil && ollamaResp.Response != "" {
-		return ollamaResp.Response
-	}
-	var comp runtimeCompletionResp
-	if err := json.Unmarshal(respBody, &comp); err == nil && comp.Content != "" {
-		return comp.Content
-	}
-	var generic map[string]any
-	if json.Unmarshal(respBody, &generic) == nil {
-		if v, ok := generic["content"].(string); ok {
-			return v
-		}
-		if v, ok := generic["response"].(string); ok {
-			return v
-		}
-	}
-	return ""
+	return respBody, resp.StatusCode, nil
 }
 
 func chatMessagesToPrompt(messages []api.Message) string {

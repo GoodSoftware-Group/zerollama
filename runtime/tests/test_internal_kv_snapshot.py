@@ -26,4 +26,6 @@ def test_internal_kv_snapshot_loopback(cfg_root):
     assert "kv_scheduler" in body
     assert "kv_bind" in body
     assert "kv_forward_plans" in body
+    assert "kv_page_bind" in body
+    assert body["kv_page_bind"]["status"] == "not_implemented"
     assert isinstance(body["kv_forward_plans"], list)

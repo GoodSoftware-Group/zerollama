@@ -19,15 +19,6 @@ var runtimeProxyClient = func() *http.Client {
 	return &http.Client{Transport: t}
 }()
 
-type runtimeCompletionReq struct {
-	Prompt    string `json:"prompt"`
-	NPredict  int    `json:"n_predict"`
-}
-
-type runtimeCompletionResp struct {
-	Content string `json:"content"`
-}
-
 // runtimeGenerateProxy forwards /api/generate to the Python runtime when resolveRuntimeProxy is true.
 // Pulled models send options.gguf from the manifest; X-Zerollama-Runtime: 1 still opts in without a library entry.
 func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
@@ -92,24 +83,17 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			return
 		}
 
-		text, status, err := forwardRuntimeGenerate(c, req.Model, req.Prompt, rtOpts)
+		respBody, status, err := forwardRuntimeGenerate(c, req.Model, req.Prompt, rtOpts)
 		if err != nil {
 			writeRuntimeProxyError(c, err)
 			return
 		}
 		if status >= 300 {
-			c.Data(status, "application/json", []byte(text))
+			c.Data(status, "application/json", respBody)
 			c.Abort()
 			return
 		}
-
-		c.JSON(http.StatusOK, api.GenerateResponse{
-			Model:      req.Model,
-			CreatedAt:  time.Now().UTC(),
-			Response:   text,
-			Done:       true,
-			DoneReason: "stop",
-		})
+		c.Data(http.StatusOK, "application/json", respBody)
 		c.Abort()
 	}
 }

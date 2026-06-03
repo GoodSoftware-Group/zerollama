@@ -193,9 +193,143 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.processPending(ctx)
 	}()
 
+	go s.processFinishedRequests(ctx)
+	go s.processExpiredRunners(ctx)
+}
+
+// scheduleExpiredRunner queues an unload without blocking the completion loop.
+func (s *Scheduler) scheduleExpiredRunner(runner *runnerRef) {
 	go func() {
-		s.processCompleted(ctx)
+		s.expiredCh <- runner
 	}()
+}
+
+func (s *Scheduler) processFinishedRequest(finished *LlmRequest) {
+	finishedKey := schedulerModelKey(finished.model)
+	s.loadedMu.Lock()
+	runner := s.loaded[finishedKey]
+	s.loadedMu.Unlock()
+	if runner == nil {
+		slog.Error("finished request signal received after model unloaded", "modelPath", finishedKey)
+		return
+	}
+	runner.refMu.Lock()
+	runner.refCount--
+	if runner.refCount <= 0 {
+		if runner.sessionDuration <= 0 {
+			slog.Debug("runner with zero duration has gone idle, expiring to unload", "runner", runner)
+			if runner.expireTimer != nil {
+				runner.expireTimer.Stop()
+				runner.expireTimer = nil
+			}
+			s.scheduleExpiredRunner(runner)
+		} else if runner.expireTimer == nil {
+			slog.Debug("runner with non-zero duration has gone idle, adding timer", "runner", runner, "duration", runner.sessionDuration)
+			runner.expireTimer = time.AfterFunc(runner.sessionDuration, func() {
+				slog.Debug("timer expired, expiring to unload", "runner", runner)
+				runner.refMu.Lock()
+				defer runner.refMu.Unlock()
+				if runner.expireTimer != nil {
+					runner.expireTimer.Stop()
+					runner.expireTimer = nil
+				}
+				s.scheduleExpiredRunner(runner)
+			})
+			runner.expiresAt = time.Now().Add(runner.sessionDuration)
+		} else {
+			slog.Debug("runner with non-zero duration has gone idle, resetting timer", "runner", runner, "duration", runner.sessionDuration)
+			runner.expireTimer.Reset(runner.sessionDuration)
+			runner.expiresAt = time.Now().Add(runner.sessionDuration)
+		}
+	}
+	slog.Debug("after processing request finished event", "runner", runner, "refCount", runner.refCount)
+	runner.refMu.Unlock()
+}
+
+func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
+	schedLogDebug("expiredCh: unload requested", nil, schedRunnerAttrs(runner)...)
+	runner.refMu.Lock()
+	refCount := runner.refCount
+	if refCount > 0 {
+		runner.refMu.Unlock()
+		schedLogDebug("expiredCh: victim still referenced, will retry", nil, schedRunnerAttrs(runner)...)
+		go func(r *runnerRef) {
+			time.Sleep(10 * time.Millisecond)
+			s.scheduleExpiredRunner(r)
+		}(runner)
+		return
+	}
+
+	s.loadedMu.Lock()
+	slog.Debug("got lock to unload expired event", "runner", runner)
+	runnerToUnload := s.loaded[runner.modelKey]
+	if runnerToUnload == nil {
+		s.loadedMu.Unlock()
+		runner.refMu.Unlock()
+		slog.Debug("duplicate expired event, ignoring", "runner", runner)
+		return
+	}
+	if runner.pid != runnerToUnload.pid {
+		slog.Debug("orphaned runner shutting down", "orphan", runner, "loaded", runnerToUnload)
+		runner.unload()
+		s.loadedMu.Unlock()
+		runner.refMu.Unlock()
+		return
+	}
+
+	slog.Debug("starting background wait for VRAM recovery", "runner", runner)
+	runnersSnapshot := make([]ml.FilteredRunnerDiscovery, 0, len(s.loaded))
+	for _, r := range s.loaded {
+		runnersSnapshot = append(runnersSnapshot, r)
+	}
+	finished := s.waitForVRAMRecovery(runner, runnersSnapshot)
+	runner.unload()
+	delete(s.loaded, runner.modelKey)
+	s.loadedMu.Unlock()
+	runner.refMu.Unlock()
+	go func() {
+		<-finished
+		schedLogDebug("runner unloaded, signaling scheduler", nil, schedRunnerAttrs(runner)...)
+		s.unloadedCh <- struct{}{}
+	}()
+}
+
+func (s *Scheduler) processFinishedRequests(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Debug("shutting down scheduler finished loop")
+			return
+		case finished := <-s.finishedReqCh:
+			s.processFinishedRequest(finished)
+		}
+	}
+}
+
+func (s *Scheduler) processExpiredRunners(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Debug("shutting down scheduler expired loop")
+			return
+		case runner := <-s.expiredCh:
+			s.processExpiredRunner(runner)
+		}
+	}
+}
+
+// processCompleted drives finished/expired handling synchronously (tests only).
+func (s *Scheduler) processCompleted(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case finished := <-s.finishedReqCh:
+			s.processFinishedRequest(finished)
+		case runner := <-s.expiredCh:
+			s.processExpiredRunner(runner)
+		}
+	}
 }
 
 func (s *Scheduler) processPending(ctx context.Context) {
@@ -387,111 +521,6 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 		}
 	}
 	s.notifyPendingIfQueued()
-}
-
-func (s *Scheduler) processCompleted(ctx context.Context) {
-	// Process completed requests, expired timers, and unloading models
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Debug("shutting down scheduler completed loop")
-			return
-		case finished := <-s.finishedReqCh:
-			finishedKey := schedulerModelKey(finished.model)
-			s.loadedMu.Lock()
-			runner := s.loaded[finishedKey]
-			s.loadedMu.Unlock()
-			if runner == nil {
-				slog.Error("finished request signal received after model unloaded", "modelPath", finishedKey)
-				continue
-			}
-			runner.refMu.Lock()
-			runner.refCount--
-			if runner.refCount <= 0 {
-				if runner.sessionDuration <= 0 {
-					slog.Debug("runner with zero duration has gone idle, expiring to unload", "runner", runner)
-					if runner.expireTimer != nil {
-						runner.expireTimer.Stop()
-						runner.expireTimer = nil
-					}
-					s.expiredCh <- runner
-				} else if runner.expireTimer == nil {
-					slog.Debug("runner with non-zero duration has gone idle, adding timer", "runner", runner, "duration", runner.sessionDuration)
-					runner.expireTimer = time.AfterFunc(runner.sessionDuration, func() {
-						slog.Debug("timer expired, expiring to unload", "runner", runner)
-						runner.refMu.Lock()
-						defer runner.refMu.Unlock()
-						if runner.expireTimer != nil {
-							runner.expireTimer.Stop()
-							runner.expireTimer = nil
-						}
-						s.expiredCh <- runner
-					})
-					runner.expiresAt = time.Now().Add(runner.sessionDuration)
-				} else {
-					slog.Debug("runner with non-zero duration has gone idle, resetting timer", "runner", runner, "duration", runner.sessionDuration)
-					runner.expireTimer.Reset(runner.sessionDuration)
-					runner.expiresAt = time.Now().Add(runner.sessionDuration)
-				}
-			}
-			slog.Debug("after processing request finished event", "runner", runner, "refCount", runner.refCount)
-			runner.refMu.Unlock()
-		case runner := <-s.expiredCh:
-			schedLogDebug("expiredCh: unload requested", nil, schedRunnerAttrs(runner)...)
-			runner.refMu.Lock()
-			if runner.refCount > 0 {
-				schedLogDebug("expiredCh: victim still referenced, will retry", nil, schedRunnerAttrs(runner)...)
-				go func(runner *runnerRef) {
-					// We can't unload yet, but want to as soon as the current request completes
-					// So queue up another expired event
-					time.Sleep(10 * time.Millisecond)
-					s.expiredCh <- runner
-				}(runner)
-				runner.refMu.Unlock()
-				continue
-			}
-
-			s.loadedMu.Lock()
-			slog.Debug("got lock to unload expired event", "runner", runner)
-			runnerToUnload := s.loaded[runner.modelKey]
-			if runnerToUnload == nil {
-				// If runnerToUnload is nil, we already processed an event and
-				// unloaded it. This double unload can happen if the initial
-				// request is canceled and we're trying to load another model
-				// that requires this one to be evicted, or the settings change
-				// and require a reload
-				s.loadedMu.Unlock()
-				runner.refMu.Unlock()
-				slog.Debug("duplicate expired event, ignoring", "runner", runner)
-			} else if runner.pid != runnerToUnload.pid {
-				// If the pids do not match, we likely had multiple load
-				// failures for the same model in quick succession due to
-				// request context canceled and are draining the queue of
-				// events. Ensure the orphaned runner is properly shut down, but
-				// do not delete the mismatched loaded runner, or wait for VRAM
-				// convergence.
-				slog.Debug("orphaned runner shutting down", "orphan", runner, "loaded", runnerToUnload)
-				runner.unload()
-				s.loadedMu.Unlock()
-				runner.refMu.Unlock()
-			} else {
-				slog.Debug("starting background wait for VRAM recovery", "runner", runner)
-				runnersSnapshot := make([]ml.FilteredRunnerDiscovery, 0, len(s.loaded))
-				for _, r := range s.loaded {
-					runnersSnapshot = append(runnersSnapshot, r)
-				}
-				finished := s.waitForVRAMRecovery(runner, runnersSnapshot)
-				runner.unload()
-				delete(s.loaded, runner.modelKey)
-				s.loadedMu.Unlock()
-				slog.Debug("runner terminated and removed from list, blocking for VRAM recovery", "runner", runner)
-				<-finished
-				runner.refMu.Unlock()
-				schedLogDebug("runner unloaded, signaling scheduler", nil, schedRunnerAttrs(runner)...)
-				s.unloadedCh <- struct{}{}
-			}
-		}
-	}
 }
 
 // pendingPopNext returns the next pending request, preferring models already loaded.
@@ -766,7 +795,7 @@ iGPUScan:
 		if err = llama.WaitUntilRunning(req.ctx); err != nil {
 			schedLogWarn("WaitUntilRunning failed", req, "error", err, "wait_elapsed", time.Since(waitStart), "total_elapsed", time.Since(loadStart))
 			req.errCh <- err
-			s.expiredCh <- runner
+			s.scheduleExpiredRunner(runner)
 			return
 		}
 		schedLogInfo("model ready", req,
@@ -1247,7 +1276,7 @@ func (s *Scheduler) expireRunner(model *Model) {
 		}
 		runner.sessionDuration = 0
 		if runner.refCount <= 0 {
-			s.expiredCh <- runner
+			s.scheduleExpiredRunner(runner)
 		}
 		runner.refMu.Unlock()
 	}

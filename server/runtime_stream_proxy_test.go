@@ -22,7 +22,7 @@ func TestRuntimeGenerateStreamProxy(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		_, _ = w.Write([]byte(`{"model":"m","response":"a","done":false}` + "\n"))
-		_, _ = w.Write([]byte(`{"model":"m","response":"","done":true,"done_reason":"stop"}` + "\n"))
+		_, _ = w.Write([]byte(`{"model":"m","response":"","done":true,"done_reason":"stop","kv_decode_steps":99}` + "\n"))
 	}))
 	defer rt.Close()
 
@@ -50,15 +50,20 @@ func TestRuntimeGenerateStreamProxy(t *testing.T) {
 	}
 	sc := bufio.NewScanner(w.Body)
 	var lines int
+	var last map[string]any
 	for sc.Scan() {
 		var m map[string]any
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			t.Fatal(err)
 		}
+		last = m
 		lines++
 	}
 	if lines != 2 {
 		t.Fatalf("expected 2 ndjson lines, got %d", lines)
+	}
+	if last["kv_decode_steps"] != float64(99) {
+		t.Fatalf("final chunk kv_decode_steps %v", last["kv_decode_steps"])
 	}
 }
 

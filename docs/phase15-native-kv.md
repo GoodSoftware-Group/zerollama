@@ -145,6 +145,7 @@ Phase 14 **inprocess** per-request `llama_context` remains default when `llama_p
 | `kv_decode_steps` | Cumulative in-process decode count or `{active: false, reason}` |
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | List of forward-plan objects (waiting + running) |
+| `kv_page_bind` | v8 tensor/page bind readiness (`available`, `status`, `reason`) |
 
 `kv_bind.physical_bind_level` is `seq_position` whenever in-process weights are loaded (not only multi-seq). `kv_physical` may include a `note` when `llama_parallel_slots==1` (no shared ctx for live positions).
 
@@ -183,6 +184,8 @@ Loopback-only (same middleware as `/internal/vram-estimate`). Returns:
 
 ```bash
 curl -s http://127.0.0.1:8081/internal/kv-snapshot | python3 -m json.tool
+# or via Go daemon (embedded/sidecar runtime):
+curl -s http://127.0.0.1:8080/internal/kv-snapshot | python3 -m json.tool
 ```
 
 ---

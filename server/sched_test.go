@@ -646,13 +646,26 @@ func TestSchedPrematureExpired(t *testing.T) {
 	}
 	time.Sleep(scenario1a.req.sessionDuration.Duration)
 	scenario1a.ctxDone()
+	require.Eventually(t, func() bool {
+		key := schedulerModelKey(scenario1a.req.model)
+		s.loadedMu.Lock()
+		runner := s.loaded[key]
+		s.loadedMu.Unlock()
+		if runner == nil {
+			return true
+		}
+		runner.refMu.Lock()
+		rc := runner.refCount
+		runner.refMu.Unlock()
+		return rc == 0
+	}, 200*time.Millisecond, 5*time.Millisecond, "refCount should drop after ctx cancel")
 	time.Sleep(20 * time.Millisecond)
-	require.LessOrEqual(t, len(s.finishedReqCh), 1)
-	time.Sleep(10 * time.Millisecond)
 	require.Empty(t, s.finishedReqCh)
-	s.loadedMu.Lock()
-	require.Empty(t, s.loaded)
-	s.loadedMu.Unlock()
+	require.Eventually(t, func() bool {
+		s.loadedMu.Lock()
+		defer s.loadedMu.Unlock()
+		return len(s.loaded) == 0
+	}, 300*time.Millisecond, 5*time.Millisecond, "runner should unload after keep_alive")
 
 	// also shouldn't happen in real life
 	s.finishedReqCh <- scenario1a.req

@@ -1657,6 +1657,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	internal.POST("/parse-tool-output/session", s.OpenToolParseSessionHandler)
 	internal.POST("/parse-tool-output/chunk", s.ToolParseSessionChunkHandler)
 	internal.POST("/parse-tool-output/close", s.CloseToolParseSessionHandler)
+	internal.GET("/kv-snapshot", s.RuntimeKVSnapshotHandler)
 
 	// Local model cache management (new implementation is at end of function)
 	r.POST("/api/pull", s.PullHandler)
@@ -1778,6 +1779,12 @@ func Serve(ln net.Listener) error {
 
 	ctx, done := context.WithCancel(context.Background())
 	schedCtx, schedDone := context.WithCancel(ctx)
+	defer func() {
+		// Cancel both contexts on early return (e.g. GenerateRoutes error).
+		// On the normal serve path the signal handler calls done/schedDone explicitly.
+		schedDone()
+		done()
+	}()
 	sched := InitScheduler(schedCtx)
 	s.sched = sched
 	sched.fifoYield = s.schedYieldToRuntimeFifo

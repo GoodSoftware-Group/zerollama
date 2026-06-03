@@ -756,6 +756,7 @@ class InferenceEngine:
             "kv_decode_steps": self._kv_decode_steps_health(),
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
+            "kv_page_bind": self._kv_page_bind_health(),
             "kv_scheduler": kv_scheduler_snapshot(
                 self.scheduler,
                 self.pools,
@@ -1028,6 +1029,12 @@ class InferenceEngine:
             reqs, block_size=self.config.block_size
         )
 
+    def _kv_page_bind_health(self) -> dict[str, Any]:
+        from runtime.kv.backend import native_available
+        from runtime.kv.page_bind import page_bind_health
+
+        return page_bind_health(native_ext_available=native_available())
+
     def kv_snapshot(self) -> dict[str, Any]:
         """KV-focused subset for ``/internal/kv-snapshot`` (loopback debug)."""
         return {
@@ -1040,6 +1047,7 @@ class InferenceEngine:
             "kv_decode_steps": self._kv_decode_steps_health(),
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
+            "kv_page_bind": self._kv_page_bind_health(),
         }
 
     def _kv_decode_steps_before(self) -> int | None:

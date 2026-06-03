@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +21,7 @@ func TestRuntimeChatProxyStream(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"hi"},"done":false}` + "\n"))
-		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":""},"done":true}` + "\n"))
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":""},"done":true,"kv_decode_steps":12}` + "\n"))
 	}))
 	defer rt.Close()
 
@@ -42,7 +44,19 @@ func TestRuntimeChatProxyStream(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"done":true`) {
-		t.Fatalf("body %q", w.Body.String())
+	sc := bufio.NewScanner(w.Body)
+	var last map[string]any
+	for sc.Scan() {
+		var m map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		last = m
+	}
+	if last == nil || last["done"] != true {
+		t.Fatalf("missing final chunk: %v", last)
+	}
+	if last["kv_decode_steps"] != float64(12) {
+		t.Fatalf("final chunk kv_decode_steps %v", last["kv_decode_steps"])
 	}
 }

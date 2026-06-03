@@ -48,6 +48,7 @@
 | Scheduler admit | `runtime/runtime/scheduler/loop.py` |
 | Engine / health / snapshot | `runtime/runtime/engine.py` (`kv_snapshot`, `_kv_forward_plans_health`) |
 | HTTP | `runtime/runtime/server/app.py` (`GET /internal/kv-snapshot`) |
+| Go loopback proxy | `server/runtime_kv_snapshot.go`, `internal/runtimeclient/kv_snapshot.go` (`GET :8080/internal/kv-snapshot`) |
 | In-process forward | `runtime/runtime/worker/libllama_ctypes.py`, `llama_inprocess.py` |
 | Slot count | `runtime/runtime/llama_args.py` (`resolve_parallel_slots`) |
 
@@ -76,6 +77,7 @@
 | `kv_decode_steps` | Cumulative in-process decode steps or `{active: false, reason}` |
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | Waiting + running: logical page table per request |
+| `kv_page_bind` | v8 tensor bind status (`not_implemented` until llama API exists) |
 
 ---
 
@@ -95,7 +97,8 @@
 
 ```text
 kv, kv_bind, kv_scheduler, kv_physical, kv_physical_recent,
-kv_scheduler_tick, kv_decode_steps, kv_native_stats, kv_forward_plans
+kv_scheduler_tick, kv_decode_steps, kv_native_stats, kv_forward_plans,
+kv_page_bind
 ```
 
 **Smokes:**
@@ -160,17 +163,18 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 3. **Wheel backend** — no `kv_slot`; accounting-only.
 4. **Single-seq in-process** — no live `llama_pos_*` on `/health` (post-decode checks still run).
 5. **Native decode** — `decode_step` counts `llama_decode` calls; generation still in libllama, not C batching.
-6. **Go proxy** — does not forward runtime `kv_decode_steps` on generate/chat yet.
+6. **Tensor/page bind** — `kv_page_bind.status=not_implemented`; logical `kv_forward_plans` only.
+
+**Done (May 2026):** Go `:8080` proxy passthrough for runtime extension fields (`kv_decode_steps`, `vram_num_ctx`, …) on `/api/generate` and `/api/chat` (non-stream raw JSON; stream NDJSON passthrough).
 
 ---
 
 ## Suggested next work (v8+)
 
-1. **Tensor/page bind** — needs llama.cpp internal API or server contract.
+1. **Tensor/page bind** — implement when llama.cpp exposes stable paged KV handles; flip `kv_page_bind.available`.
 2. **Native decode batch** in C/Rust wired to `scheduler_tick` + `kv_forward_plans` page tables.
 3. **Subprocess** — extend llama-server slot API if upstream adds KV page export.
-4. **Optional:** persistent single-seq ctx for live `/health` positions on 5080 default config.
-5. **Go proxy:** forward `kv_decode_steps` when runtime returns it on `/api/generate` and `/api/chat`.
+4. **Optional:** multi-seq shared ctx (`llama_parallel_slots>1`) for live `/health` positions on 5080.
 
 ---
 
