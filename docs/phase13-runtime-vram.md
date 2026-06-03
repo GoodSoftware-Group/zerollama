@@ -68,7 +68,7 @@ VRAM_PROBE_CALIBRATE (optional) → vram_calibration + autotune persist
 | `vram_estimate` | Bytes breakdown for loaded or probed GGUF (`kv_cache_bytes`, `estimate_factor_effective`, `estimate_factor_source`: `env` / `session` / `catalog`, …). |
 | `vram_budget` | `fits`, `fits_with_margin`, `suggested_max_num_ctx`, `num_ctx_over_budget`. |
 | `vram_calibration` | Last load: `suggested_estimate_factor` ≈ observed/raw. |
-| `vram_autotune` | Per-model persist status; `persist.catalog[]` lists calibrated GGUFs (`model`, `basename`, `estimate_factor`, `last`). |
+| `vram_autotune` | Per-model persist status; `persist.catalog[]` lists calibrated GGUFs (`model`, `basename`, `estimate_factor`, `last`); `persist.catalog_truncated` when capped at 64 entries. |
 | `autoconfig` | Which YAML was chosen (`single_gpu` / `dual_4090` / `custom`). |
 | `vram_num_ctx_policy` | Whether clamp is enabled and env value. |
 | `POST /internal/vram-estimate` | Loopback-only; same math as `/health` without load. |

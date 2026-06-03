@@ -44,9 +44,18 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
     persist = va.get("persist") or {}
     persisted = persist.get("persisted_factor")
     catalog = persist.get("catalog") or []
+    ve = snap.get("vram_estimate") or {}
+    factor_source = ve.get("estimate_factor_source")
+    skip_global_factor_export = autotune_on and (
+        bool(catalog)
+        or factor_source in ("catalog", "session")
+        or persisted is not None
+    )
 
     if autotune_on and catalog:
         lines.append(f"# autotune catalog: {len(catalog)} GGUF(s) calibrated")
+        if persist.get("catalog_truncated"):
+            lines.append("# WARN: autotune catalog truncated on /health (see catalog_truncated)")
         for row in catalog[:8]:
             if not isinstance(row, dict):
                 continue
@@ -81,7 +90,7 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
             lines.append(
                 "# run one load per production GGUF to seed vram_autotune.json"
             )
-    elif suggest is not None:
+    elif suggest is not None and not skip_global_factor_export:
         try:
             sf = float(suggest)
             if 0.1 <= sf <= 3.0:
@@ -95,6 +104,13 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
                 )
         except (TypeError, ValueError):
             pass
+    elif suggest is not None and skip_global_factor_export:
+        lines.append(
+            "  # per-GGUF autotune active; no global VRAM_ESTIMATE_FACTOR export needed"
+        )
+
+    if factor_source:
+        lines.append(f"# vram_estimate.estimate_factor_source={factor_source}")
 
     smax = vb.get("suggested_max_num_ctx") or veb.get("suggested_max_num_ctx")
     if smax:

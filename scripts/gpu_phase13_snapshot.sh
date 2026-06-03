@@ -84,15 +84,31 @@ out = {
         "vram_training_reserve_configured": ad.get("vram_training_reserve_configured"),
     },
 }
+he = health.get("vram_estimate") or {}
+ve_out: dict = {}
+if he.get("estimate_factor_source"):
+    ve_out["estimate_factor_source"] = he.get("estimate_factor_source")
+if he.get("estimate_factor_effective") is not None:
+    ve_out["estimate_factor_effective"] = he.get("estimate_factor_effective")
 if est:
     ve = est.get("vram_estimate") or {}
     eb = est.get("vram_budget") or {}
-    out["vram_estimate"] = {
-        "required_per_gpu_bytes": ve.get("required_per_gpu_bytes"),
-        "estimate_factor_effective": ve.get("estimate_factor_effective"),
-        "estimate_factor_source": ve.get("estimate_factor_source"),
-        "num_ctx": ve.get("num_ctx"),
+    if ve.get("required_per_gpu_bytes") is not None:
+        ve_out["required_per_gpu_bytes"] = ve.get("required_per_gpu_bytes")
+    if ve.get("estimate_factor_effective") is not None:
+        ve_out["estimate_factor_effective"] = ve.get("estimate_factor_effective")
+    if ve.get("estimate_factor_source"):
+        ve_out["estimate_factor_source"] = ve.get("estimate_factor_source")
+    if ve.get("num_ctx") is not None:
+        ve_out["num_ctx"] = ve.get("num_ctx")
+    out["vram_estimate_budget"] = {
+        "fits_with_margin": eb.get("fits_with_margin"),
+        "suggested_max_num_ctx": eb.get("suggested_max_num_ctx"),
     }
+if ve_out:
+    out["vram_estimate"] = ve_out
+if est and "vram_estimate_budget" not in out:
+    eb = est.get("vram_budget") or {}
     out["vram_estimate_budget"] = {
         "fits_with_margin": eb.get("fits_with_margin"),
         "suggested_max_num_ctx": eb.get("suggested_max_num_ctx"),

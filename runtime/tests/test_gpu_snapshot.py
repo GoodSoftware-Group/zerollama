@@ -64,6 +64,22 @@ def test_recommend_warns_when_probe_gguf_not_in_catalog(tmp_path):
     assert "other.gguf" in text
 
 
+def test_recommend_warns_catalog_truncated():
+    snap = dict(_SNAPSHOT_5080)
+    snap["vram_autotune"] = dict(snap["vram_autotune"])
+    snap["vram_autotune"]["persist"] = dict(snap["vram_autotune"]["persist"])
+    snap["vram_autotune"]["persist"]["catalog_truncated"] = True
+    text = "\n".join(recommend_from_snapshot(snap))
+    assert "catalog truncated" in text
+
+
+def test_recommend_shows_estimate_factor_source():
+    snap = dict(_SNAPSHOT_5080)
+    snap["vram_estimate"] = {"estimate_factor_source": "catalog"}
+    text = "\n".join(recommend_from_snapshot(snap))
+    assert "estimate_factor_source=catalog" in text
+
+
 def test_recommend_export_when_no_autotune():
     snap = dict(_SNAPSHOT_5080)
     snap["vram_autotune"] = {"enabled": False}
