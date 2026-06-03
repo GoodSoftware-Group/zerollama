@@ -125,7 +125,7 @@ RUN_E2E_VRAM_CLAMP=1 ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto ./scripts/e2e_run
 | Estimates are heuristic | Exact KV when metadata complete; else conservative floors. Use probe calibrate + autotune on real weights. |
 | Binary search assumes monotone VRAM vs `num_ctx` | True for KV scaling; rare odd manifests may mis-suggest. |
 | Render truncation (Phase 12) | Go `/internal/render-chat` is heuristic (`num_predict` reserve when set); not tokenizer-exact — separate polish item. |
-| Phase 14 not started | In-process llama removes subprocess HTTP and improves accounting; Phase 13 is the subprocess-era policy layer. |
+| Phase 14 in-process | Subprocess remains default; ctypes `inprocess` improves KV accounting (Phase 15) when enabled via env or YAML. |
 
 ---
 

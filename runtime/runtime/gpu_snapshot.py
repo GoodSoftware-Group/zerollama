@@ -41,9 +41,40 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
     autotune_on = bool(va.get("enabled"))
     eff = va.get("effective_factor")
     suggest = vc.get("suggested_estimate_factor")
-    persisted = (va.get("persist") or {}).get("persisted_factor")
+    persist = va.get("persist") or {}
+    persisted = persist.get("persisted_factor")
+    catalog = persist.get("catalog") or []
 
-    if autotune_on and eff is not None:
+    if autotune_on and catalog:
+        lines.append(f"# autotune catalog: {len(catalog)} GGUF(s) calibrated")
+        for row in catalog[:8]:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("basename") or row.get("model")
+            factor = row.get("estimate_factor")
+            if name is None or factor is None:
+                continue
+            suffix = " (last)" if row.get("last") else ""
+            lines.append(f"#   {name}: factor {float(factor):g}{suffix}")
+        if gguf:
+            try:
+                from runtime.vram_autotune_persist import model_autotune_key
+
+                probe_key = model_autotune_key(gguf)
+                if not any(
+                    isinstance(row, dict) and row.get("model") == probe_key
+                    for row in catalog
+                ):
+                    lines.append(
+                        f"# probe GGUF not in catalog — run one probed load for {Path(gguf).name!r}"
+                    )
+            except OSError:
+                pass
+        if persisted is not None:
+            lines.append(
+                "# per-GGUF persist wins; no global ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR needed"
+            )
+    elif autotune_on and eff is not None:
         model = va.get("session_model") or vc.get("model") or gguf
         if model:
             lines.append(f"# autotune active for {model!r} (factor {eff:g})")

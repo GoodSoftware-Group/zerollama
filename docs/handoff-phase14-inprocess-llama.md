@@ -9,7 +9,7 @@
 | Item | State | Evidence |
 |------|--------|----------|
 | **ROADMAP Phase 14** | **Partial** | Subprocess still default |
-| **ROADMAP Phase 15** | **Partial (v0–v7)** | Native KV pool, bind, forward plans — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
+| **ROADMAP Phase 15** | **Partial (v0–v8 ops)** | Native KV pool, bind, forward plans — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
 | **ctypes `inprocess` (GPU)** | **Shipped** | `phase14_backend_smoke.sh` PASS on 5080-class host |
 | **`llama-cpp-python` (CPU default)** | **Shipped** | `phase14_both_backends.sh` PASS (~10 min); GPU opt-in via env |
 | **Render `truncate_mode=tokenize`** | **Shipped** | Go `/internal/render-chat` + Python `/internal/tokenize` |
