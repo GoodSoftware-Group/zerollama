@@ -61,6 +61,19 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
             lines.append(
                 f"vram_autotune.persist.persisted_factor: {persist.get('persisted_factor')}"
             )
+        catalog = persist.get("catalog") or []
+        if catalog:
+            lines.append(f"vram_autotune.persist.catalog_count: {len(catalog)}")
+            for row in catalog[:5]:
+                if not isinstance(row, dict):
+                    continue
+                name = row.get("basename") or row.get("model")
+                factor = row.get("estimate_factor")
+                last = row.get("last")
+                suffix = " (last)" if last else ""
+                lines.append(
+                    f"vram_autotune.persist.catalog: {name} factor={factor}{suffix}"
+                )
 
     policy = h.get("vram_num_ctx_policy") or {}
     if policy:

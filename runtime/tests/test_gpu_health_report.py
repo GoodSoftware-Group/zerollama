@@ -28,7 +28,24 @@ SAMPLE_HEALTH = {
         "effective_factor": 1.15,
         "env_factor": 1.0,
         "probe_calibrate_required": False,
-        "persist": {"last_model": "m.gguf", "persisted_factor": 1.15},
+        "persist": {
+            "last_model": "m.gguf",
+            "persisted_factor": 1.15,
+            "catalog": [
+                {
+                    "model": "/models/m.gguf",
+                    "basename": "m.gguf",
+                    "estimate_factor": 1.15,
+                    "last": True,
+                },
+                {
+                    "model": "/models/draft.gguf",
+                    "basename": "draft.gguf",
+                    "estimate_factor": 1.05,
+                    "last": False,
+                },
+            ],
+        },
     },
     "vram_num_ctx_policy": {"env": "0", "clamp_enabled": False},
     "admission": {
@@ -45,6 +62,8 @@ def test_format_gpu_health_includes_calibration_and_autotune_fields():
     assert "vram_autotune.session_model:" in out
     assert "vram_autotune.effective_factor: 1.15" in out
     assert "vram_autotune.persist.last_model:" in out
+    assert "vram_autotune.persist.catalog_count: 2" in out
+    assert "vram_autotune.persist.catalog: m.gguf factor=1.15 (last)" in out
     assert "probe_required_bytes" not in out
     assert "ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR=1.15" in out
 

@@ -111,6 +111,27 @@ def test_invalid_persist_file_ignored(monkeypatch, tmp_path):
     assert load_persisted_autotune() is None
 
 
+def test_persist_catalog(monkeypatch, tmp_path):
+    _reset_autotune(monkeypatch, tmp_path)
+    m_a = tmp_path / "a.gguf"
+    m_b = tmp_path / "b.gguf"
+    m_a.write_bytes(b"a")
+    m_b.write_bytes(b"b")
+    save_persisted_autotune(1.1, model=m_a)
+    save_persisted_autotune(1.9, model=m_b)
+
+    from runtime.vram_autotune_persist import persist_catalog, persist_status
+
+    catalog = persist_catalog()
+    assert len(catalog) == 2
+    assert {row["basename"] for row in catalog} == {"a.gguf", "b.gguf"}
+    assert sum(1 for row in catalog if row.get("last")) == 1
+
+    st = persist_status()
+    assert len(st["catalog"]) == 2
+    assert st["model_count"] == 2
+
+
 def test_future_version_ignored(monkeypatch, tmp_path):
     _reset_autotune(monkeypatch, tmp_path)
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST", "1")

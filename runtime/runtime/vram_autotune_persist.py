@@ -225,6 +225,38 @@ def clear_persisted_autotune(model: str | Path | None = None) -> None:
     export_factor_catalog()
 
 
+def persist_catalog(*, max_entries: int = 64) -> list[dict[str, Any]]:
+    """Persisted per-GGUF factors for /health (loopback ops)."""
+    if not vram_autotune_persist_enabled():
+        return []
+    state = _read_state()
+    if state is None:
+        return []
+    models: dict[str, Any] = state.get("models") or {}
+    if not isinstance(models, dict) or not models:
+        return []
+    last = state.get("last_model")
+    rows: list[dict[str, Any]] = []
+    for key in sorted(models.keys()):
+        raw = models.get(key)
+        factor = _factor_from_entry(raw)
+        if factor is None:
+            continue
+        row: dict[str, Any] = {
+            "model": key,
+            "basename": Path(key).name,
+            "estimate_factor": factor,
+            "last": isinstance(last, str) and key == last,
+        }
+        if isinstance(raw, dict) and isinstance(raw.get("updated_at"), (int, float)):
+            row["updated_at"] = raw["updated_at"]
+        rows.append(row)
+    cap = max(1, int(max_entries))
+    if len(rows) > cap:
+        return rows[:cap]
+    return rows
+
+
 def persist_status(
     *,
     session_factor: float | None = None,
@@ -246,4 +278,5 @@ def persist_status(
         "session_model": session_model,
         "session_factor": session_factor,
         "persisted_factor": persisted,
+        "catalog": persist_catalog(),
     }
