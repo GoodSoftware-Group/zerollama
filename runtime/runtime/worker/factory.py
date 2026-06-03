@@ -86,14 +86,18 @@ def create_llama_worker(
 ) -> LlamaForwardWorker:
     backend = kind or resolve_llama_backend(config)
     if backend == LlamaBackendKind.INPROCESS:
-        from runtime.llama_args import resolve_parallel_slots
+        from runtime.kv.live_physical import effective_parallel_slots
 
         llama_args: list[str] = []
         default_slots = 1
         if config is not None:
             default_slots = max(1, int(getattr(config, "llama_parallel_slots", 1) or 1))
             llama_args = list(getattr(config, "llama_server_args", lambda: [])())
-        parallel_slots = resolve_parallel_slots(llama_args, default=default_slots)
+        parallel_slots = effective_parallel_slots(
+            llama_args,
+            default=default_slots,
+            backend=LlamaBackendKind.INPROCESS.value,
+        )
         kv_pool_token_cap: int | None = None
         if config is not None:
             nb = int(getattr(config, "num_blocks", 0) or 0)

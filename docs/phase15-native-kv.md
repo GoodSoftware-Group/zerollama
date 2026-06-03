@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (May 2026) — **v0–v7** shipped (see slices below). Default block allocator remains **Python**; C pool is opt-in. **Not done:** PA block ids → llama tensor KV pages; batched decode in C.
+**Status:** Partial (May 2026) — **v0–v8 ops** shipped (see slices below). Default block allocator remains **Python**; C pool is opt-in. **Not done:** PA block ids → llama tensor KV pages; batched decode in C.
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
@@ -8,7 +8,7 @@
 
 ---
 
-## Slice index (v0–v7)
+## Slice index (v0–v8 ops)
 
 | Slice | Summary |
 |-------|---------|
@@ -20,6 +20,7 @@
 | **v5** | `kv_scheduler_tick` `{value, source}`, `kv_physical_recent` (mismatches only), expanded CI |
 | **v6** | Native `decode_step(n)`; `/health` + per-response `kv_decode_steps` (in-process only) |
 | **v7** | `kv_forward_plans`, `kv_native_stats` (`kv_stats()`), `GET /internal/kv-snapshot`, `phase15_health_smoke.sh` |
+| **v8 ops** | `kv_page_bind` readiness; Go loopback `/internal/kv-snapshot`; opt-in `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL` for live seq positions |
 
 ---
 
@@ -67,7 +68,7 @@
 | Piece | Notes |
 |-------|--------|
 | `runtime/runtime/kv/physical.py` | Post-decode: llama cells used vs PA pages reserved |
-| `/health` `kv_physical` | In-process: PA reserve per running request; **live** `llama_pos_*` only when `llama_parallel_slots>1`. Single-seq still runs post-decode checks each completion. |
+| `/health` `kv_physical` | In-process: PA reserve per running request; **live** `llama_pos_*` when `llama_parallel_slots>1` or `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL=1` (bumps effective `-np` to 2). Single-seq default still runs post-decode checks each completion. |
 | `/health` `kv_native_scheduler_tick` | Legacy int: last admission tick when native ext built |
 | Native `scheduler_tick()` | `runtime.kv._kv_native.scheduler_tick()` |
 | Env | `ZEROLLAMA_RUNTIME_KV_PHYSICAL_STRICT=1` — fail on PA/llama mismatch (in-process) |
@@ -97,7 +98,15 @@
 | `kv_forward_plans` | `/health` — waiting + running requests: logical page table (see schema below) |
 | `kv_native_stats` | Read-only `{scheduler_tick, decode_steps}` via `kv_stats()` (no increment) |
 | `GET /internal/kv-snapshot` | Loopback-only KV subset (`engine.kv_snapshot()`) |
-| `phase15_health_smoke.sh` | Asserts v7 `/health` keys without GPU or llama-server |
+| `phase15_health_smoke.sh` | Asserts v7+ `/health` KV keys without GPU or llama-server |
+
+### v8 ops — readiness + loopback proxy
+
+| Piece | Notes |
+|-------|--------|
+| `kv_page_bind` | `/health` + snapshot: `status=not_implemented` until llama tensor API exists |
+| `kv_live_physical` | Opt-in env bumps in-process effective `-np` to 2 when YAML defaults to 1 |
+| Go loopback | `GET :8080/internal/kv-snapshot` proxies Python runtime snapshot |
 
 **Still not shipped:** PA `block_ids` → llama **tensor** KV pages; batched decode **in** C (hook counts steps only).
 
@@ -115,13 +124,13 @@ On **subprocess**, `kv_token_budget` is not sent to llama-server: PA reserve is 
 ## Architecture
 
 ```text
-Today (v0–v7):
+Today (v0–v8 ops):
   SchedulerLoop → PA block ids + kv_slot → llama seq/slot
   In-process → post-decode seq_pos vs PA reserve; scheduler_tick + decode_step hooks
   kv_forward_plans → logical page table export (not tensor bind)
-  PA block ids are NOT mapped to llama tensor KV pages
+  kv_page_bind → readiness only; PA block ids are NOT mapped to llama tensor KV pages
 
-Target (v8+):
+Target (v8 implementation — blocked on llama.cpp):
   Native batched decode in C/Rust + block table → llama KV pages (API TBD)
   Python → config, admission, /health only
 ```
@@ -146,6 +155,7 @@ Phase 14 **inprocess** per-request `llama_context` remains default when `llama_p
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | List of forward-plan objects (waiting + running) |
 | `kv_page_bind` | v8 tensor/page bind readiness (`available`, `status`, `reason`) |
+| `kv_live_physical` | Opt-in bump to multi-seq in-process ctx (`ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL`) |
 
 `kv_bind.physical_bind_level` is `seq_position` whenever in-process weights are loaded (not only multi-seq). `kv_physical` may include a `note` when `llama_parallel_slots==1` (no shared ctx for live positions).
 
@@ -197,6 +207,7 @@ curl -s http://127.0.0.1:8080/internal/kv-snapshot | python3 -m json.tool
 | `ZEROLLAMA_RUNTIME_KV_NATIVE` | off | Use C `BlockPool` when extension is installed |
 | `ZEROLLAMA_RUNTIME_KV_PHYSICAL_STRICT` | off | In-process: error if llama seq cells exceed PA reserve after decode |
 | `ZEROLLAMA_RUNTIME_KV_DECODE_HOOK` | on | Count decode steps on in-process ctypes path; set `0` to disable |
+| `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL` | off | In-process: bump effective `-np` to 2 when defaults use 1 for live `kv_physical` (explicit `-np` wins) |
 | `llama_parallel_slots` / `-np` | yaml / argv | Slot allocator + in-process `n_seq_max` (**argv wins**) |
 | (build) | — | `cd runtime && python3 setup.py build_ext --inplace` |
 

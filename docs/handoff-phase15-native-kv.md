@@ -2,7 +2,7 @@
 
 **Audience:** Engineers continuing runtime KV / scheduler work without this thread.
 
-**Status (May 2026):** **Partial (v0–v7)** — PA block pool (Python + opt-in C), scheduler accounting, `kv_slot`→llama seq/slot, logical + seq-position bind, admission `scheduler_tick`, in-process `decode_step` hook, forward-plan export + `/internal/kv-snapshot`. **Not done:** tensor KV page map; batched decode in C.
+**Status (May 2026):** **Partial (v0–v8 ops)** — PA block pool (Python + opt-in C), scheduler accounting, `kv_slot`→llama seq/slot, logical + seq-position bind, admission `scheduler_tick`, in-process `decode_step` hook, forward-plan export + `/internal/kv-snapshot`, Go loopback proxy, `kv_page_bind` readiness + opt-in live physical health. **Not done:** tensor KV page map; batched decode in C.
 
 | Slice | Shipped |
 |-------|---------|
@@ -14,6 +14,7 @@
 | v5 | Python tick fallback; `kv_scheduler_tick`, `kv_physical_recent` (mismatches only) |
 | v6 | Native `decode_step`; `/health` + API `kv_decode_steps`; `ZEROLLAMA_RUNTIME_KV_DECODE_HOOK` |
 | v7 | `kv_forward_plans`, `kv_native_stats` (`kv_stats()`), `GET /internal/kv-snapshot`, `phase15_health_smoke.sh` |
+| v8 ops | `kv_page_bind` readiness on `/health` + snapshot; Go `:8080` loopback proxy; opt-in `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL` |
 
 **Prerequisite:** Phase 14 in-process forward for seq-position checks — [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md).
 
@@ -44,7 +45,8 @@
 | Tick counter | `runtime/runtime/kv/native_tick.py` |
 | Decode hook | `runtime/runtime/kv/native_decode.py` |
 | Forward plan | `runtime/runtime/kv/forward_plan.py` |
-| Native stats reader | `runtime/runtime/kv/native_stats.py` |
+| Page bind readiness | `runtime/runtime/kv/page_bind.py` |
+| Live physical opt-in | `runtime/runtime/kv/live_physical.py` |
 | Scheduler admit | `runtime/runtime/scheduler/loop.py` |
 | Engine / health / snapshot | `runtime/runtime/engine.py` (`kv_snapshot`, `_kv_forward_plans_health`) |
 | HTTP | `runtime/runtime/server/app.py` (`GET /internal/kv-snapshot`) |
@@ -78,6 +80,7 @@
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | Waiting + running: logical page table per request |
 | `kv_page_bind` | v8 tensor bind status (`not_implemented` until llama API exists) |
+| `kv_live_physical` | Opt-in in-process multi-seq for live `kv_physical` (`applied`, `effective`, `reason`) |
 
 ---
 
@@ -97,8 +100,7 @@
 
 ```text
 kv, kv_bind, kv_scheduler, kv_physical, kv_physical_recent,
-kv_scheduler_tick, kv_decode_steps, kv_native_stats, kv_forward_plans,
-kv_page_bind
+kv_scheduler_tick, kv_decode_steps, kv_native_stats, kv_forward_plans, kv_page_bind, kv_live_physical
 ```
 
 **Smokes:**
@@ -132,6 +134,7 @@ Subprocess and wheel paths: hook inactive; field omitted or `/health` shows `act
 | `ZEROLLAMA_RUNTIME_KV_NATIVE=1` | C block pool (needs `build_ext --inplace`) |
 | `ZEROLLAMA_RUNTIME_KV_PHYSICAL_STRICT=1` | In-process: fail if llama cells > PA reserve after decode |
 | `ZEROLLAMA_RUNTIME_KV_DECODE_HOOK=0` | Disable decode-step counter on ctypes path |
+| `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL=1` | In-process: bump effective `-np` to 2 when defaults use 1 (live `kv_physical`; explicit `-np` wins) |
 | `llama_parallel_slots` / `-np` | Slot allocator + in-process `n_seq_max` (argv wins) |
 
 ---
@@ -161,7 +164,7 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 1. **PA `block_ids` ≠ llama tensor pages** — bookkeeping + seq/slot only.
 2. **Subprocess** — PA reserve does not cap llama-server internal KV.
 3. **Wheel backend** — no `kv_slot`; accounting-only.
-4. **Single-seq in-process** — no live `llama_pos_*` on `/health` (post-decode checks still run).
+4. **Single-seq in-process** — no live `llama_pos_*` on `/health` unless `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL=1` (bumps effective `-np` to 2; post-decode checks always run).
 5. **Native decode** — `decode_step` counts `llama_decode` calls; generation still in libllama, not C batching.
 6. **Tensor/page bind** — `kv_page_bind.status=not_implemented`; logical `kv_forward_plans` only.
 
@@ -169,12 +172,11 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 
 ---
 
-## Suggested next work (v8+)
+## Suggested next work (blocked on llama.cpp)
 
 1. **Tensor/page bind** — implement when llama.cpp exposes stable paged KV handles; flip `kv_page_bind.available`.
 2. **Native decode batch** in C/Rust wired to `scheduler_tick` + `kv_forward_plans` page tables.
 3. **Subprocess** — extend llama-server slot API if upstream adds KV page export.
-4. **Optional:** multi-seq shared ctx (`llama_parallel_slots>1`) for live `/health` positions on 5080.
 
 ---
 

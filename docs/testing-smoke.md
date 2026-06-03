@@ -45,7 +45,7 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `phase14_both_backends.sh` | Phase 14: restarts serve for `inprocess` then `llama-cpp-python` (embed-safe; wheel CPU ~10 min). `RUN_E2E_PROXY_MODEL` for render-chat |
 | `phase14_serve_env.sh` | Source before `zerollama serve` — **why:** unset `ZEROLLAMA_RUNTIME_URL` so Go embeds `:8081` (exporting URL forces external sidecar mode) |
 | `phase15_kv_native_ci.sh` | Build C `BlockPool` + KV pytest bundle + `phase15_health_smoke.sh` (no GPU); [phase15-native-kv.md](./phase15-native-kv.md) |
-| `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_native_stats`, …) via `InferenceEngine` only |
+| `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_page_bind`, `kv_live_physical`, …) via `InferenceEngine` only |
 | `gpu_harmony_capture.sh` | Optional real-weight harmony capture — **needs ~40+ GiB host RAM** for `gpt-oss:20b` MXFP4 on runtime path; **not** required on 5080 (~19 GiB); CI uses Go golden |
 
 CI (`.github/workflows/zerollama-regression.yaml`): Phase 12 is covered by `go test ./server/...` (Golden tests) and runtime pytest (`test_go_render_chat.py`), plus `check_gpu_scripts.sh`. Optional self-hosted: `.github/workflows/zerollama-gpu-smoke.yaml` (`workflow_dispatch`; repo vars `GPU_SMOKE_*`, serve must be up).

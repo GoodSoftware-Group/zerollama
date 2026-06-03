@@ -435,9 +435,14 @@ def _resolve_parallel_slots(
     *,
     default: int = 1,
 ) -> int:
-    from runtime.llama_args import resolve_parallel_slots
+    from runtime.kv.live_physical import effective_parallel_slots
+    from runtime.worker.factory import resolve_llama_backend
 
-    return resolve_parallel_slots(llama_args, default=default)
+    return effective_parallel_slots(
+        llama_args,
+        default=default,
+        backend=resolve_llama_backend().value,
+    )
 
 
 def vram_ctx_scale(

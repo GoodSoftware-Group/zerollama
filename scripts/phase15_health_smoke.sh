@@ -29,6 +29,7 @@ for key in (
     "kv_bind",
     "kv_forward_plans",
     "kv_page_bind",
+    "kv_live_physical",
     "kv_native_stats",
     "kv_decode_steps",
     "kv_scheduler_tick",

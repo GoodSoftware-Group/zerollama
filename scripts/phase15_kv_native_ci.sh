@@ -19,6 +19,8 @@ PYTHONPATH=. python3 -m pytest \
   tests/test_kv_native_decode.py \
   tests/test_kv_forward_plan.py \
   tests/test_kv_native_stats.py \
+  tests/test_kv_page_bind.py \
+  tests/test_kv_live_physical.py \
   tests/test_internal_kv_snapshot.py \
   tests/test_resolve_parallel_slots.py \
   -q

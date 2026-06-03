@@ -230,11 +230,21 @@ class InferenceEngine:
 
     def _effective_llama_parallel_slots(self) -> int:
         """Match ``SlotAllocator`` / in-process ``n_seq_max`` to llama ``-np`` (argv over YAML)."""
-        from runtime.llama_args import resolve_parallel_slots
+        from runtime.kv.live_physical import effective_parallel_slots
 
-        return resolve_parallel_slots(
+        return effective_parallel_slots(
             self.config.llama_server_args(),
             default=self.config.llama_parallel_slots,
+            backend=self._health_llama_backend(),
+        )
+
+    def _kv_live_physical_health(self) -> dict[str, Any]:
+        from runtime.kv.live_physical import kv_live_physical_health
+
+        return kv_live_physical_health(
+            self.config.llama_server_args(),
+            default=self.config.llama_parallel_slots,
+            backend=self._health_llama_backend(),
         )
 
     def _health_inprocess_n_seq_max(self) -> int | None:
@@ -757,6 +767,7 @@ class InferenceEngine:
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
             "kv_page_bind": self._kv_page_bind_health(),
+            "kv_live_physical": self._kv_live_physical_health(),
             "kv_scheduler": kv_scheduler_snapshot(
                 self.scheduler,
                 self.pools,
@@ -1048,6 +1059,7 @@ class InferenceEngine:
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
             "kv_page_bind": self._kv_page_bind_health(),
+            "kv_live_physical": self._kv_live_physical_health(),
         }
 
     def _kv_decode_steps_before(self) -> int | None:

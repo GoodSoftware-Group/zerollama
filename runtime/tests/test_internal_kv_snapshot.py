@@ -28,4 +28,6 @@ def test_internal_kv_snapshot_loopback(cfg_root):
     assert "kv_forward_plans" in body
     assert "kv_page_bind" in body
     assert body["kv_page_bind"]["status"] == "not_implemented"
+    assert "kv_live_physical" in body
+    assert body["kv_live_physical"]["enabled"] is False
     assert isinstance(body["kv_forward_plans"], list)
