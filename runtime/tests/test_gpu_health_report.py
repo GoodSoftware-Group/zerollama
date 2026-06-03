@@ -12,6 +12,10 @@ SAMPLE_HEALTH = {
         "fits_with_margin": True,
         "suggested_max_num_ctx": 8192,
     },
+    "vram_estimate": {
+        "estimate_factor_effective": 1.15,
+        "estimate_factor_source": "catalog",
+    },
     "vram_calibration": {
         "model": "/models/m.gguf",
         "suggested_estimate_factor": 1.15,
@@ -63,6 +67,7 @@ def test_format_gpu_health_includes_calibration_and_autotune_fields():
     assert "vram_autotune.effective_factor: 1.15" in out
     assert "vram_autotune.persist.last_model:" in out
     assert "vram_autotune.persist.catalog_count: 2" in out
+    assert "vram_estimate.estimate_factor_source: catalog" in out
     assert "vram_autotune.persist.catalog: m.gguf factor=1.15 (last)" in out
     assert "probe_required_bytes" not in out
     assert "ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR=1.15" in out

@@ -27,6 +27,16 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
         if k in vb:
             lines.append(f"vram_budget.{k}: {vb.get(k)}")
 
+    ve = h.get("vram_estimate") or {}
+    if ve.get("estimate_factor_source"):
+        lines.append(
+            f"vram_estimate.estimate_factor_source: {ve.get('estimate_factor_source')}"
+        )
+    if ve.get("estimate_factor_effective") is not None:
+        lines.append(
+            f"vram_estimate.estimate_factor_effective: {ve.get('estimate_factor_effective')}"
+        )
+
     cal = h.get("vram_calibration") or {}
     if cal:
         if cal.get("model"):

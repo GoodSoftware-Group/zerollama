@@ -48,6 +48,11 @@ def test_internal_vram_estimate_loopback(cfg_root, tmp_path: Path):
     body = r.json()
     assert body["vram_estimate"]["gguf"] == str(gguf.resolve())
     assert body["vram_estimate"]["num_ctx"] == 4096
+    assert body["vram_estimate"].get("estimate_factor_source") in (
+        "env",
+        "session",
+        "catalog",
+    )
 
 
 def test_internal_vram_estimate_rejects_missing(tmp_path: Path):

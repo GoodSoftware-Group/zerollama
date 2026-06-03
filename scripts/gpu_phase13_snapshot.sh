@@ -90,6 +90,7 @@ if est:
     out["vram_estimate"] = {
         "required_per_gpu_bytes": ve.get("required_per_gpu_bytes"),
         "estimate_factor_effective": ve.get("estimate_factor_effective"),
+        "estimate_factor_source": ve.get("estimate_factor_source"),
         "num_ctx": ve.get("num_ctx"),
     }
     out["vram_estimate_budget"] = {
