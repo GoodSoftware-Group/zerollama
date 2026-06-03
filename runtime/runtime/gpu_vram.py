@@ -434,14 +434,18 @@ def _resolve_parallel_slots(
     llama_args: list[str] | None,
     *,
     default: int = 1,
+    llama_backend: str | None = None,
 ) -> int:
     from runtime.kv.live_physical import effective_parallel_slots
     from runtime.worker.factory import resolve_llama_backend
 
+    backend = llama_backend
+    if backend is None:
+        backend = resolve_llama_backend().value
     return effective_parallel_slots(
         llama_args,
         default=default,
-        backend=resolve_llama_backend().value,
+        backend=backend,
     )
 
 
@@ -669,6 +673,7 @@ def estimate_gguf_vram_bytes(
     options: dict | None = None,
     llama_args: list[str] | None = None,
     parallel_slots_default: int = 1,
+    llama_backend: str | None = None,
     n_gpu_layers_default: int = -1,
     draft_gguf: Path | None = None,
     draft_n_gpu_layers: int = -1,
@@ -689,7 +694,9 @@ def estimate_gguf_vram_bytes(
         else n_gpu_layers_default
     )
     parallel_slots = _resolve_parallel_slots(
-        llama_args, default=parallel_slots_default
+        llama_args,
+        default=parallel_slots_default,
+        llama_backend=llama_backend,
     )
     base, _weight_path = _weight_bytes_for_vram(
         gguf,
@@ -785,6 +792,7 @@ def describe_vram_estimate(
     tensor_parallel: int = 1,
     llama_args: list[str] | None = None,
     parallel_slots_default: int = 1,
+    llama_backend: str | None = None,
     n_gpu_layers_default: int = -1,
     draft_gguf: Path | None = None,
     draft_n_gpu_layers: int = -1,
@@ -809,7 +817,11 @@ def describe_vram_estimate(
         if ctx and ctx > 0
         else None
     )
-    slots = _resolve_parallel_slots(llama_args, default=parallel_slots_default)
+    slots = _resolve_parallel_slots(
+        llama_args,
+        default=parallel_slots_default,
+        llama_backend=llama_backend,
+    )
     if kv_b is not None and slots > 1:
         kv_b *= slots
     exact = _vram_kv_exact_enabled() and kv_b is not None
@@ -848,6 +860,7 @@ def describe_vram_estimate(
             options=options,
             llama_args=llama_args,
             parallel_slots_default=parallel_slots_default,
+            llama_backend=llama_backend,
             n_gpu_layers_default=n_gpu_layers_default,
             draft_gguf=draft_gguf,
             draft_n_gpu_layers=draft_n_gpu_layers,
@@ -1057,6 +1070,7 @@ def check_gguf_vram_budget(
     options: dict | None = None,
     llama_args: list[str] | None = None,
     parallel_slots_default: int = 1,
+    llama_backend: str | None = None,
     n_gpu_layers_default: int = -1,
     draft_gguf: Path | None = None,
     draft_n_gpu_layers: int = -1,
@@ -1100,6 +1114,7 @@ def check_gguf_vram_budget(
             options=options,
             llama_args=llama_args,
             parallel_slots_default=parallel_slots_default,
+            llama_backend=llama_backend,
             n_gpu_layers_default=n_gpu_layers_default,
             draft_gguf=draft_gguf,
             draft_n_gpu_layers=draft_n_gpu_layers,
@@ -1132,6 +1147,7 @@ def check_gguf_vram_budget(
                 tensor_parallel=tensor_parallel,
                 llama_args=llama_args,
                 parallel_slots_default=parallel_slots_default,
+                llama_backend=llama_backend,
                 n_gpu_layers_default=n_gpu_layers_default,
                 draft_gguf=draft_gguf,
                 draft_n_gpu_layers=draft_n_gpu_layers,
@@ -1159,6 +1175,7 @@ def check_gguf_vram_budget(
                 tensor_parallel=tensor_parallel,
                 llama_args=llama_args,
                 parallel_slots_default=parallel_slots_default,
+                llama_backend=llama_backend,
                 n_gpu_layers_default=n_gpu_layers_default,
                 draft_gguf=draft_gguf,
                 draft_n_gpu_layers=draft_n_gpu_layers,

@@ -319,6 +319,7 @@ class InferenceEngine:
         kw: dict[str, Any] = {
             "llama_args": self.config.llama_server_args(),
             "parallel_slots_default": self.config.llama_parallel_slots,
+            "llama_backend": self._health_llama_backend(),
             "n_gpu_layers_default": -1,
         }
         spec = self.config.speculative

@@ -57,6 +57,17 @@ def test_kv_live_physical_health_applied(monkeypatch):
     assert h["effective"] == 2
 
 
+def test_vram_resolve_parallel_slots_yaml_inprocess_backend(monkeypatch):
+    """VRAM estimates honor explicit backend, not env-only detection."""
+    from runtime.gpu_vram import _resolve_parallel_slots
+
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL", "1")
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", raising=False)
+    args = ["-sm", "layer", "-mg", "0", "-np", "1"]
+    assert _resolve_parallel_slots(args, default=1, llama_backend="subprocess") == 1
+    assert _resolve_parallel_slots(args, default=1, llama_backend="inprocess") == 2
+
+
 def test_engine_health_includes_kv_live_physical(monkeypatch, cfg_root):
     from runtime.config import RuntimeConfig
     from runtime.engine import InferenceEngine

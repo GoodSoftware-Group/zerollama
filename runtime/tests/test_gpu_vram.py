@@ -439,6 +439,43 @@ def test_resolve_vram_num_ctx_from_llama_c(monkeypatch, tmp_path: Path):
         )
 
 
+def test_estimate_vram_live_physical_yaml_inprocess_backend(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL", "1")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_KV_EXACT", "1")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_KV_FACTOR", "1.0")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_SCRATCH_FACTOR", "1.0")
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", raising=False)
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"x")
+    from runtime.gguf_estimate import GgufArchHints
+
+    arch = GgufArchHints(
+        scalar={"block_count": 32, "head_count_kv": 8, "key_length": 128}
+    )
+    args = ["-sm", "layer", "-mg", "0", "-np", "1"]
+    with patch("runtime.host_memory.estimate_gguf_ram_bytes", return_value=100):
+        with patch("runtime.gguf_estimate.gguf_arch_hints", return_value=arch):
+            with patch(
+                "runtime.gguf_estimate.estimate_kv_cache_bytes",
+                return_value=1000,
+            ):
+                one = estimate_gguf_vram_bytes(
+                    gguf,
+                    llama_args=args,
+                    parallel_slots_default=1,
+                    llama_backend="subprocess",
+                )
+                two = estimate_gguf_vram_bytes(
+                    gguf,
+                    llama_args=args,
+                    parallel_slots_default=1,
+                    llama_backend="inprocess",
+                )
+    assert two > one
+    assert one == 100 + 1000
+    assert two == 100 + 2000
+
+
 def test_estimate_vram_parallel_slots(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_KV_EXACT", "1")
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_KV_FACTOR", "1.0")
