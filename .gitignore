@@ -18,6 +18,10 @@ llama/vendor
 /zerollama
 integration/testdata/models/
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Local protoc / codegen downloads (regenerate stubs in CI or dev machines as needed)
 .build/
 runtime/runtime/kv/_kv_native*.so
