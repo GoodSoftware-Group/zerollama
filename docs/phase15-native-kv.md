@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (May 2026) — **v0–v8 ops** shipped (see slices below). Default block allocator remains **Python**; C pool is opt-in. **Not done:** PA block ids → llama tensor KV pages; batched decode in C.
+**Status:** Partial (Jun 2026) — **v0–v8 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in. GPU sign-off: `./scripts/phase15_inprocess_signoff.sh`. **Not done:** PA block ids → llama tensor KV pages; batched decode in C.
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
@@ -20,7 +20,7 @@
 | **v5** | `kv_scheduler_tick` `{value, source}`, `kv_physical_recent` (mismatches only), expanded CI |
 | **v6** | Native `decode_step(n)`; `/health` + per-response `kv_decode_steps` (in-process only) |
 | **v7** | `kv_forward_plans`, `kv_native_stats` (`kv_stats()`), `GET /internal/kv-snapshot`, `phase15_health_smoke.sh` |
-| **v8 ops** | `kv_page_bind` readiness; Go loopback `/internal/kv-snapshot`; opt-in `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL` for live seq positions |
+| **v8 ops** | `kv_page_bind` readiness; Go loopback `/internal/kv-snapshot`; opt-in `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL`; GPU smokes `phase15_inprocess_signoff.sh` |
 
 ---
 
@@ -231,6 +231,11 @@ export ZEROLLAMA_RUNTIME_KV_NATIVE=1
 ./zerollama serve
 curl -s http://127.0.0.1:8081/health | python3 -c "import json,sys; h=json.load(sys.stdin); print(h.get('kv'), len(h.get('kv_forward_plans',[])))"
 curl -s http://127.0.0.1:8081/internal/kv-snapshot | python3 -m json.tool | head
+
+# GPU in-process (needs LLAMA_CPP_LIB + small GGUF):
+export LLAMA_MODEL=/path/to/small.q8_0.gguf
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+./scripts/phase15_inprocess_signoff.sh
 ```
 
 ---
@@ -241,6 +246,9 @@ curl -s http://127.0.0.1:8081/internal/kv-snapshot | python3 -m json.tool | head
 |--------|------|
 | `scripts/phase15_kv_native_ci.sh` | `build_ext --inplace` + KV pytest + `phase15_health_smoke.sh` |
 | `scripts/phase15_health_smoke.sh` | Engine `/health` KV key assertions (no GPU) |
+| `scripts/phase15_inprocess_signoff.sh` | GPU: KV decode hook + multi-seq (self-contained; needs `LLAMA_CPP_LIB`) |
+| `scripts/phase15_inprocess_kv_smoke.sh` | GPU: single-seq decode hook only |
+| `scripts/phase15_inprocess_multiseq_smoke.sh` | GPU: `llama_parallel_slots: 2` |
 | `.github/workflows/zerollama-regression.yaml` | Runtime pytest; native tests **skip** if `.so` missing |
 
 Optional self-hosted: run `phase15_kv_native_ci.sh` after building the extension on the runner.

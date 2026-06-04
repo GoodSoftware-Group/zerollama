@@ -10,12 +10,12 @@
 4. **Phase 14** — in-process llama forward + render tokenize (see dedicated handoff).
 5. **5080 operator gate** — repeatable GPU session, API ggml unload, snapshot + recommendations.
 
-**Status (May 2026):**
+**Status (Jun 2026):**
 
 | Phase | ROADMAP | Tests / smoke |
 |-------|---------|----------------|
 | **12** tools path | **Done** | Go Golden (`phase12_golden_ci.sh`); runtime pytest tools meta. **Harmony real weights:** CI synthetic only — not required on 5080 (~19 GiB host RAM). |
-| **11** admission | **Partial** — logic + YAML `vram:` defaults on `single_gpu.yaml` | **408+** runtime pytest; `e2e_coordination_smoke.sh`; 5080 session: gates active, admission fits at smoke load |
+| **11** admission | **Partial** — logic + YAML `vram:` defaults on `single_gpu.yaml` | **410+** runtime pytest; `e2e_coordination_smoke.sh`; 5080 session: gates active, admission fits at smoke load |
 | **13** VRAM estimates | **Partial** | autotune, clamp default **off** in YAML, `gpu_snapshot`, `vram_yaml_defaults`; [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | **14** in-process llama | **Done** | `phase14_5080_signoff.sh` PASS. [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md) |
 | **5080 gate** | **Shipped (ops)** | `./scripts/gpu_5080_session.sh` PASS on RTX 5080-class host; [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
@@ -454,7 +454,7 @@ python3 -m runtime.gpu_snapshot /tmp/5080-session.json   # from runtime/ with PY
 2. Phase 11: if chat+training together exhaust VRAM, measure and set backlog env overrides (`ZEROLLAMA_RUNTIME_BACKLOG_BATCH_MIN`, …) — idle 5080 session does not replace that.
 3. Phase 13: enable `VRAM_CLAMP_NUM_CTX=auto` on serve only if automatic `num_ctx` lowering is acceptable; watch API `vram_num_ctx`.
 4. **Phase 14** — maintain inprocess smoke on llama.cpp bumps; see [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md).
-5. **Phase 15** — native KV **Partial (v0–v7)** — bind, tick/decode hooks, forward plans; next: tensor page bind — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md).
+5. **Phase 15** — native KV **Partial (v0–v8 ops)** — bind, tick/decode hooks, forward plans, GPU `phase15_inprocess_signoff.sh`; next: tensor page bind — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md).
 
 **Non-goals:** Vision/logprobs/think on runtime; public `/api/runtime/unload`; RadixAttention v1; **mandatory** `gpt-oss:20b` harmony capture on 5080-class host RAM.
 

@@ -76,6 +76,13 @@ RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
 ./scripts/phase15_inprocess_signoff.sh
 ```
 
+Individual smokes (optional):
+
+```bash
+./scripts/phase15_inprocess_kv_smoke.sh
+./scripts/phase15_inprocess_multiseq_smoke.sh   # num_ctx must fit PA block pool (4096 in smoke)
+```
+
 ---
 
 ## VRAM prep: why API unload before the broker

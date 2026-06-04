@@ -171,7 +171,7 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 5. **Native decode** — `decode_step` counts `llama_decode` calls; generation still in libllama, not C batching.
 6. **Tensor/page bind** — `kv_page_bind.status=not_implemented`; logical `kv_forward_plans` only.
 
-**Done (May 2026):** Go `:8080` proxy passthrough for runtime extension fields (`kv_decode_steps`, `vram_num_ctx`, …) on `/api/generate` and `/api/chat` (non-stream raw JSON; stream NDJSON passthrough).
+**Done (Jun 2026):** Go `:8080` proxy passthrough for runtime extension fields (`kv_decode_steps`, `vram_num_ctx`, …) on `/api/generate` and `/api/chat` (non-stream raw JSON; stream NDJSON passthrough).
 
 ---
 

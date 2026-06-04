@@ -33,7 +33,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Phase 13 runtime VRAM estimates](./phase13-runtime-vram.md) — **why** GGUF VRAM heuristics, `suggested_max_num_ctx`, opt-in clamp, autotune, autoconfig, operator CLI.
 * [Phase 14 in-process llama](./phase14-inprocess-llama.md) — **why** subprocess HTTP was replaced for forward; three backends; render tokenize; sampling parity; 5080 sign-off scripts.
 * [Phase 14 handoff](./handoff-phase14-inprocess-llama.md) — architecture, code map, smoke footguns, bugs fixed during bring-up.
-* [Phase 15 native KV](./phase15-native-kv.md) — PA/C block pool, scheduler KV bind, seq-position track, forward plans (v0–v7 partial).
+* [Phase 15 native KV](./phase15-native-kv.md) — PA/C block pool, scheduler KV bind, seq-position track, forward plans (v0–v8 ops partial).
 * [Phase 15 handoff](./handoff-phase15-native-kv.md) — code map, `/health` fields, gaps, v8+ next steps.
 * [GPU training integration](./gpu-training.md) — **why** Go fronts HTTP + TCP `:9500` while Python holds PyTorch; embedded CPython; inference-first VRAM policy; OOM ordering; env vars and troubleshooting.
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
