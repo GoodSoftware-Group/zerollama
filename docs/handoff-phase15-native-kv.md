@@ -2,7 +2,7 @@
 
 **Audience:** Engineers continuing runtime KV / scheduler work without this thread.
 
-**Status (May 2026):** **Partial (v0–v8 ops)** — PA block pool (Python + opt-in C), scheduler accounting, `kv_slot`→llama seq/slot, logical + seq-position bind, admission `scheduler_tick`, in-process `decode_step` hook, forward-plan export + `/internal/kv-snapshot`, Go loopback proxy, `kv_page_bind` readiness + opt-in live physical health. **Not done:** tensor KV page map; batched decode in C.
+**Status (Jun 2026):** **Partial (v0–v8 ops)** — Phase 14 prerequisite **Done**. PA block pool (Python + opt-in C), scheduler accounting, `kv_slot`→llama seq/slot, logical + seq-position bind, admission `scheduler_tick`, in-process `decode_step` hook, forward-plan export + `/internal/kv-snapshot`, Go loopback proxy, `kv_page_bind` readiness + opt-in live physical health. **Not done:** tensor KV page map; batched decode in C.
 
 | Slice | Shipped |
 |-------|---------|
@@ -108,6 +108,9 @@ kv_scheduler_tick, kv_decode_steps, kv_native_stats, kv_forward_plans, kv_page_b
 ```bash
 ./scripts/phase15_health_smoke.sh    # engine.health() key checks
 ./scripts/phase15_kv_native_ci.sh    # build_ext + KV pytest + health smoke
+./scripts/phase15_inprocess_signoff.sh  # GPU: KV decode hook + multi-seq (needs LLAMA_CPP_LIB)
+./scripts/phase15_inprocess_kv_smoke.sh # GPU: self-contained single-seq decode hook
+./scripts/phase15_inprocess_multiseq_smoke.sh  # GPU: llama_parallel_slots=2
 ```
 
 ---

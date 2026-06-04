@@ -49,7 +49,8 @@ cd /root/zerollama && ./scripts/gpu_5080_session.sh
 | `python -m runtime.gpu_snapshot` | Human-readable env hints from that JSON (autotune persist, harmony skip). |
 | `phase14_backend_smoke.sh` (optional) | When `RUN_E2E_PHASE14=1` — serve must already use the target backend. With `RUN_E2E_INPROCESS=1` alone, runs `phase14_inprocess_smoke.sh` (env provenance). |
 | `phase14_5080_signoff.sh` (optional) | When `RUN_E2E_PHASE14_SIGNOFF=1` — both backends + YAML config + Phase 15 multi-seq (`LLAMA_CPP_LIB` required). |
-| `phase15_inprocess_multiseq_smoke.sh` (optional) | When `RUN_E2E_PHASE15=1` — temp YAML `llama_parallel_slots: 2` + inprocess (`LLAMA_CPP_LIB` required). |
+| `phase15_inprocess_signoff.sh` (optional) | When `RUN_E2E_PHASE15=1` — KV decode hook + multi-seq (`LLAMA_CPP_LIB` required). |
+| `phase15_inprocess_multiseq_smoke.sh` (optional) | Multi-seq only (included in signoff). |
 
 **Pass criteria:** `PASS: gpu_5080_session` and snapshot file written. Smoke GGUF calibration (e.g. ~1.20× for OuteTTS Q8) is **smoke evidence only** until you run the same flow on your **production** GGUF (e.g. supernova fp16).
 
@@ -66,11 +67,13 @@ export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh
 ```
 
-**Phase 15 multi-seq only** (KV decode hook + `llama_parallel_slots: 2`):
+**Phase 15 in-process sign-off** (KV decode hook + multi-seq; self-contained restarts):
 
 ```bash
 export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
+# or standalone:
+./scripts/phase15_inprocess_signoff.sh
 ```
 
 ---
@@ -223,7 +226,16 @@ export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 ./scripts/phase14_5080_signoff.sh
 ```
 
-Phase 15 KV hook (optional, after inprocess serve):
+**Phase 15 in-process sign-off** (KV decode hook + multi-seq; self-contained restarts):
+
+```bash
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
+# or standalone:
+./scripts/phase15_inprocess_signoff.sh
+```
+
+Phase 15 individual smokes (optional):
 
 ```bash
 ./scripts/phase15_inprocess_kv_smoke.sh

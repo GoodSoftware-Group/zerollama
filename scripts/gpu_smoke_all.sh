@@ -15,7 +15,7 @@
 #   RUN_E2E_PHASE13_SNAPSHOT=1  # write gpu_phase13_snapshot JSON after smokes
 #   RUN_E2E_PHASE14=1         # phase14_backend_smoke (serve must match backend)
 #   RUN_E2E_PHASE14_SIGNOFF=1 # phase14_5080_signoff (needs LLAMA_CPP_LIB; self-contained restarts)
-#   RUN_E2E_PHASE15=1         # phase15_inprocess_multiseq_smoke (needs LLAMA_CPP_LIB)
+#   RUN_E2E_PHASE15=1         # phase15_inprocess_signoff (needs LLAMA_CPP_LIB)
 #   RUN_E2E_LLAMA_BACKEND_SOURCE=config|env|default  # optional provenance assert
 #   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1  # wheel GPU offload (with RUN_E2E_LLAMA_CPP_PYTHON=1)
 #   GPU_PHASE13_SNAPSHOT_OUT=/tmp/phase13-post-smoke.json
@@ -100,8 +100,8 @@ elif [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then
     echo "RUN_E2E_PHASE15=1 requires LLAMA_CPP_LIB (ctypes libllama.so)" >&2
     exit 1
   fi
-  echo "== Phase 15 in-process multi-seq smoke =="
-  "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
+  echo "== Phase 15 in-process GPU sign-off =="
+  "${ROOT}/scripts/phase15_inprocess_signoff.sh"
 elif [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
   echo "== Phase 14 backend smoke =="
   if [[ "${RUN_E2E_INPROCESS:-0}" == "1" && -z "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" ]]; then

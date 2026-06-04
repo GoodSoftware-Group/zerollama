@@ -30,6 +30,7 @@ scripts=(
   phase14_serve_env.sh
   phase15_inprocess_kv_smoke.sh
   phase15_inprocess_multiseq_smoke.sh
+  phase15_inprocess_signoff.sh
   e2e_training_ops_smoke.sh
   repro_shared_interpreter_health_hang.sh
   phase15_kv_native_ci.sh
@@ -86,7 +87,9 @@ grep -q 'RUN_E2E_PHASE14_SIGNOFF' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q '_saved_phase14_signoff' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'phase14_5080_signoff.sh' "${ROOT}/scripts/gpu_smoke_all.sh"
-grep -q 'phase15_inprocess_multiseq_smoke.sh' "${ROOT}/scripts/gpu_smoke_all.sh"
+grep -q 'phase15_inprocess_signoff.sh' "${ROOT}/scripts/gpu_smoke_all.sh"
+grep -q 'phase15_inprocess_kv_smoke.sh' "${ROOT}/scripts/phase15_inprocess_signoff.sh"
+grep -q 'phase15_inprocess_multiseq_smoke.sh' "${ROOT}/scripts/phase15_inprocess_signoff.sh"
 grep -q 'RUN_E2E_PHASE14' "${ROOT}/scripts/gpu_smoke_all.sh"
 grep -q 'llama_cpp_wheel_health' "${ROOT}/runtime/runtime/worker/llama_cpp_python.py"
 grep -q 'llama_cpp' "${ROOT}/scripts/gpu_phase13_snapshot.sh"
@@ -101,7 +104,7 @@ grep -q 'phase14_yaml_config_full_smoke.sh' "${ROOT}/scripts/phase14_5080_signof
 grep -q 'phase15_inprocess_multiseq_smoke.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
 grep -q 'phase14_both_backends.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
 grep -q 'phase15_inprocess_kv_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
-grep -q 'RUN_E2E_INPROCESS=1' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
+grep -q 'phase14_inprocess_smoke.sh' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
 grep -q 'llama_parallel_slots: 2' "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
 grep -q 'kv_inprocess_n_seq_max' "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
 grep -q 'ZEROLLAMA_RUNTIME_CONFIG' "${ROOT}/scripts/phase14_yaml_config_full_smoke.sh"
