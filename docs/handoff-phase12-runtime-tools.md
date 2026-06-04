@@ -18,9 +18,10 @@
 | **11** admission | **Partial** — logic + YAML `vram:` defaults on `single_gpu.yaml` | **410+** runtime pytest; `e2e_coordination_smoke.sh`; 5080 session: gates active, admission fits at smoke load |
 | **13** VRAM estimates | **Partial** | autotune, clamp default **off** in YAML, `gpu_snapshot`, `vram_yaml_defaults`; [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | **14** in-process llama | **Done** | `phase14_5080_signoff.sh` PASS. [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md) |
+| **15** native KV | **Partial (v0–v8 ops)** | `phase15_kv_native_ci.sh` (CPU); `phase15_inprocess_signoff.sh` (GPU). [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
 | **5080 gate** | **Shipped (ops)** | `./scripts/gpu_5080_session.sh` PASS on RTX 5080-class host; [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
 
-Run **Go tests on the target host** (`go test ./server/... ./x/trainingworker/...`). **Single-GPU acceptance:** `./scripts/gpu_5080_session.sh` after rebuild/restart with smoke GGUF + `LLAMA_SERVER_BIN`.
+Run **Go tests on the target host** (`go test ./server/... ./x/runtimeworker/... ./x/trainingworker/...`). **Single-GPU acceptance:** `./scripts/gpu_5080_session.sh` after rebuild/restart with smoke GGUF + `LLAMA_SERVER_BIN`.
 
 ---
 

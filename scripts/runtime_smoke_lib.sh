@@ -213,6 +213,36 @@ smoke_runtime_require_phase14_endpoints() {
   return 0
 }
 
+# Phase 15 v7/v8: assert KV export keys on /health and GET /internal/kv-snapshot.
+smoke_runtime_assert_kv_snapshot() {
+  local runtime_url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
+  runtime_url="${runtime_url%/}"
+  local health_json
+  health_json=$(curl -sf "${runtime_url}/health")
+  python3 -c "
+import json, sys
+h = json.loads(sys.argv[1])
+pb = h.get('kv_page_bind') or {}
+assert pb.get('status') == 'not_implemented' and pb.get('available') is False, pb
+bind = h.get('kv_bind') or {}
+assert bind.get('physical_pages_bound') is False, bind
+assert isinstance(h.get('kv_forward_plans'), list)
+kd = h.get('kv_decode_steps') or {}
+if kd.get('active') is True:
+    assert int(kd.get('value') or 0) >= 0
+print('kv /health ok: page_bind=', pb.get('status'))
+" "$health_json"
+  curl -sf "${runtime_url}/internal/kv-snapshot" -o /tmp/zerollama-kv-snapshot.json
+  python3 -c "
+import json
+b = json.load(open('/tmp/zerollama-kv-snapshot.json'))
+for key in ('kv_forward_plans', 'kv_page_bind', 'kv_decode_steps', 'kv_bind'):
+    assert key in b, sorted(b.keys())
+assert b['kv_page_bind']['status'] == 'not_implemented'
+print('kv-snapshot ok')
+"
+}
+
 # In-process backends do not need LLAMA_SERVER_BIN on the serve process.
 smoke_runtime_needs_server_bin() {
   local backend="$1"

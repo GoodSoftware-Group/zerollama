@@ -120,23 +120,9 @@ h = json.loads(sys.argv[1])
 assert h.get('kv_inprocess_n_seq_max') == 2, h.get('kv_inprocess_n_seq_max')
 kd = h.get('kv_decode_steps') or {}
 assert kd.get('active') is True, kd
-pb = h.get('kv_page_bind') or {}
-assert pb.get('status') == 'not_implemented' and pb.get('available') is False, pb
-bind = h.get('kv_bind') or {}
-assert bind.get('physical_pages_bound') is False, bind
-assert isinstance(h.get('kv_forward_plans'), list)
-print('post-generate kv_decode_steps:', kd.get('value'))
-print('kv_page_bind:', pb.get('status'))
+print('post-generate kv_decode_steps:', kd.get('value'), 'n_seq_max=2')
 " "$post_health"
 
-curl -sf "${RUNTIME_URL}/internal/kv-snapshot" -o /tmp/phase15-ms-kv.json
-python3 -c "
-import json
-b = json.load(open('/tmp/phase15-ms-kv.json'))
-for key in ('kv_forward_plans', 'kv_page_bind', 'kv_decode_steps', 'kv_bind'):
-    assert key in b, sorted(b.keys())
-assert b['kv_page_bind']['status'] == 'not_implemented'
-print('kv-snapshot ok, keys=', len(b))
-"
+smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 
 echo "PASS: phase15_inprocess_multiseq_smoke"

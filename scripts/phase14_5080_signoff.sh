@@ -4,7 +4,7 @@
 # Runs, in order:
 #   1. phase14_both_backends.sh       — inprocess (ctypes GPU) + wheel CPU
 #   2. phase14_yaml_config_full_smoke — YAML llama_backend (temp config, no repo edit)
-#   3. phase15_inprocess_multiseq_smoke — shared ctx llama_parallel_slots=2
+#   3. phase15_inprocess_signoff.sh   — KV decode hook + multi-seq + kv-snapshot
 #
 # Skips wheel GPU (known abort on cu124 wheels); use inprocess for production GPU.
 #
@@ -42,8 +42,8 @@ echo "== [2/3] YAML config (temp single_gpu, llama_backend_source=config) =="
 "${ROOT}/scripts/phase14_yaml_config_full_smoke.sh"
 
 echo ""
-echo "== [3/3] Phase 15 in-process multi-seq (llama_parallel_slots=2) =="
-"${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
+echo "== [3/3] Phase 15 in-process GPU sign-off =="
+"${ROOT}/scripts/phase15_inprocess_signoff.sh"
 
 echo ""
 echo "PASS: phase14_5080_signoff"

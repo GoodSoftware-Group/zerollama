@@ -169,7 +169,7 @@ See also [ROADMAP Phase 14 exit criteria](../ROADMAP.md#phase-14--exit-criteria-
 | `scripts/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate). |
 | `scripts/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after ctypes smoke passes. |
 | `scripts/phase14_both_backends.sh` | Restarts serve per backend; embed-safe; clears stale `RUN_E2E_*` env. **Why:** backend is fixed at process start — cannot flip in-process → wheel without restart. |
-| `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 multi-seq (self-contained restarts). |
+| `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 sign-off |
 | `scripts/phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq (self-contained restarts). |
 | `scripts/phase15_inprocess_kv_smoke.sh` | Self-contained inprocess serve + `kv_decode_steps` on generate and `/health`. |
 | `scripts/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; asserts `kv_inprocess_n_seq_max` + generate. |

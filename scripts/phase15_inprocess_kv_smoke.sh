@@ -83,4 +83,6 @@ env -u ZEROLLAMA_RUNTIME_URL -u RUN_E2E_LLAMA_CPP_PYTHON \
   LLAMA_MODEL="${LLAMA_MODEL}" \
   "${ROOT}/scripts/phase14_inprocess_smoke.sh"
 
+smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
+
 echo "PASS: phase15_inprocess_kv_smoke"
