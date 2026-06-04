@@ -46,8 +46,14 @@ _start_serve() {
   (cd "${ROOT}" && env -u ZEROLLAMA_RUNTIME_URL ./zerollama serve >> /tmp/zerollama-phase14-serve.log 2>&1) &
   for _ in $(seq 1 45); do
     if curl -sf -m 3 "${RUNTIME_HEALTH_URL}/health" -o /tmp/phase14-health.json 2>/dev/null; then
-      got=$(python3 -c "import json; print(json.load(open('/tmp/phase14-health.json')).get('llama_backend') or '')" 2>/dev/null || true)
-      if [[ "$got" == "$backend" ]]; then
+      read -r got got_src < <(
+        python3 -c "
+import json
+h = json.load(open('/tmp/phase14-health.json'))
+print((h.get('llama_backend') or ''), (h.get('llama_backend_source') or ''))
+"
+      )
+      if [[ "$got" == "$backend" && "$got_src" == "env" ]]; then
         return 0
       fi
     fi
@@ -59,22 +65,24 @@ _start_serve() {
 }
 
 _run_smoke() {
-  local flag="$1"
-  shift
-  # Unset URL and the other backend flag (operator shell may export RUN_E2E_INPROCESS=1).
+  local script="$1"
+  # Unset URL and backend flags (operator shell may export stale RUN_E2E_*).
   # shellcheck disable=SC2086
   env -u ZEROLLAMA_RUNTIME_URL -u RUN_E2E_INPROCESS -u RUN_E2E_LLAMA_CPP_PYTHON \
-    RUN_E2E_GPU=1 RUN_E2E_PHASE14=1 "${flag}=1" \
     LLAMA_MODEL="${LLAMA_MODEL}" \
-    "${ROOT}/scripts/phase14_backend_smoke.sh"
+    "${ROOT}/scripts/${script}"
 }
 
 _ran=0
 
 if [[ "${RUN_E2E_SKIP_INPROCESS:-0}" != "1" ]]; then
+  if [[ -z "${LLAMA_CPP_LIB:-}" ]]; then
+    echo "error: LLAMA_CPP_LIB required for inprocess backend" >&2
+    exit 1
+  fi
   echo "== Phase 14 inprocess =="
   _start_serve inprocess
-  _run_smoke RUN_E2E_INPROCESS
+  _run_smoke phase14_inprocess_smoke.sh
   _ran=$((_ran + 1))
 fi
 
@@ -84,7 +92,7 @@ if [[ "${RUN_E2E_SKIP_LLAMA_CPP_PYTHON:-0}" != "1" ]]; then
   else
     echo "== Phase 14 llama-cpp-python =="
     _start_serve llama-cpp-python
-    _run_smoke RUN_E2E_LLAMA_CPP_PYTHON
+    _run_smoke phase14_wheel_cpu_smoke.sh
     _ran=$((_ran + 1))
   fi
 fi

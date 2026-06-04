@@ -1,6 +1,6 @@
 # Phase 14 — in-process llama forward
 
-**Status:** Partial (May 2026). Subprocess `llama-server` remains the default; opt in with env. In-process forward + libllama tokenize for Go render-chat shipped. **5080 sign-off:** `inprocess` GPU via `phase14_backend_smoke.sh`; both backends via `phase14_both_backends.sh` (wheel uses CPU unless `ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS` set).
+**Status:** **Done** (Jun 2026 on 5080 dev host). Subprocess `llama-server` remains the packaged default; opt in with env or YAML `llama_backend`. In-process forward + libllama tokenize for Go render-chat shipped. **One-shot sign-off:** `./scripts/phase14_5080_signoff.sh` (both backends, YAML config, Phase 15 multi-seq).
 
 **Upgrade serve first:** Phase 14 needs a **current** `zerollama serve` (rebuild from this repo). Stale runtimes return HTTP 404 on `/internal/tokenize` and omit `llama_backend` in `/health`; `phase14_backend_smoke.sh` fails fast on that.
 
@@ -57,7 +57,7 @@ Phase 14 moves **only forward + vocab tokenize** into the Python process. Go sti
 | **`inprocess`** | `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess` | **5080 GPU sign-off** — same pinned `libllama.so` as `LLAMA_SERVER_BIN`, no loopback HTTP. |
 | **`llama-cpp-python`** | `…=llama-cpp-python` | Hosts without a local build; pip wheel only. **CPU default** on many wheels (see below). |
 
-Selection: `runtime/runtime/worker/factory.py` → `create_llama_worker()`. Env wins over `RuntimeConfig.llama_backend`.
+Selection: `runtime/runtime/worker/factory.py` → `create_llama_worker()`. Env wins over `RuntimeConfig.llama_backend` (loaded from YAML in `runtime/config.py`; invalid values fail at load via `canonical_llama_backend()`).
 
 ---
 
@@ -85,6 +85,8 @@ Admission (Phase 11), VRAM estimates (Phase 13), and Go render/parse (Phase 12) 
 
 ## Enable on serve
 
+**Env (operator override):**
+
 ```bash
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 export LLAMA_MODEL=/path/to/model.gguf
@@ -92,11 +94,22 @@ export LLAMA_MODEL=/path/to/model.gguf
 zerollama serve
 ```
 
+**YAML (packaged default, e.g. autoconfig `single_gpu.yaml`):**
+
+```yaml
+# runtime/configs/single_gpu.yaml (after phase14_backend_smoke on 5080)
+llama_backend: inprocess
+```
+
+`ZEROLLAMA_RUNTIME_LLAMA_BACKEND` still wins when set. Leave the line commented in the shipped file until GPU smoke passes on your card.
+
 `GET :8081/health` when weights are loaded:
 
 | Field | In-process / wheel | Subprocess |
 |-------|-------------------|------------|
 | `llama_backend` | `"inprocess"` or `"llama-cpp-python"` | `"subprocess"` |
+| `llama_backend_source` | `"env"`, `"config"`, or `"default"` | same |
+| `llama_cpp` | wheel only: `gpu_mode`, `n_gpu_layers`, `loaded`, `env_n_gpu_layers` | absent |
 | `llama_server` | `false` (no child process) | `true` |
 | `llama_model` | path to loaded GGUF | same |
 | `inference_state` | `"running"` | same |
@@ -142,11 +155,23 @@ Implementation: `runtime/runtime/worker/sampler_options.py` — single mapping f
 
 ## Smoke scripts (why each exists)
 
+See also [ROADMAP Phase 14 exit criteria](../ROADMAP.md#phase-14--exit-criteria-done).
+
 | Script | Why |
 |--------|-----|
 | `scripts/phase14_serve_env.sh` | Unsets `ZEROLLAMA_RUNTIME_URL` so Go **embeds** Python; sets `ZEROLLAMA_RUNTIME_EMBED=on`. **Why:** exporting URL in the shell is the #1 reason `:8081` never listens during smokes. |
 | `scripts/phase14_backend_smoke.sh` | One backend against **already running** serve; `RUN_E2E_PHASE14=1`; strict `/health` + `/internal/tokenize` preflight. **Why:** catch stale binaries before a 20‑minute GPU run. |
+| `scripts/phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off (`RUN_E2E_INPROCESS=1`, `llama_backend_source=env`). |
+| `scripts/phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers `RUN_E2E_*` flags from `/health` (`inprocess` or `llama-cpp-python`, rejects `subprocess`). |
+| `scripts/phase14_yaml_config_full_smoke.sh` | Self-contained optional #6: temp YAML + serve restart + yaml config smoke (no repo edit). |
+| `scripts/phase14_subprocess_default_smoke.sh` | Same but requires `llama_backend_source=default` (packaged subprocess on autoconfig). |
+| `scripts/phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_backend_source=env`). |
+| `scripts/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate). |
+| `scripts/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after ctypes smoke passes. |
 | `scripts/phase14_both_backends.sh` | Restarts serve per backend; embed-safe; clears stale `RUN_E2E_*` env. **Why:** backend is fixed at process start — cannot flip in-process → wheel without restart. |
+| `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 multi-seq (self-contained restarts). |
+| `scripts/phase15_inprocess_kv_smoke.sh` | Inprocess + `kv_decode_steps` on generate and `/health` (Phase 15 v6 hook). |
+| `scripts/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; asserts `kv_inprocess_n_seq_max` + generate. |
 | `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh` | Sends `X-Zerollama-Runtime: 1` on Go proxy steps. **Why:** sign-off must hit runtime + `truncate_mode=tokenize`, not accidental ggml for pulled tags. **Smoke-only** — not production default-on. |
 
 **5080 checklist:** [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#phase-14-sign-off-in-process-llama).
@@ -157,11 +182,12 @@ Implementation: `runtime/runtime/worker/sampler_options.py` — single mapping f
 
 | Path | Role |
 |------|------|
-| `runtime/runtime/worker/libllama_ctypes.py` | ctypes bind to pinned `libllama.so`; stream `finally` frees ctx after chunks consumed |
+| `runtime/runtime/worker/libllama_ctypes.py` | ctypes bind to pinned `libllama.so`; heap batches with explicit `pos[]` (no `llama_batch_get_one` UAF); stream `finally` frees ctx after chunks consumed |
 | `runtime/runtime/worker/llama_inprocess.py` | `LlamaInprocessWorker` (ctypes) |
 | `runtime/runtime/worker/llama_cpp_python.py` | `LlamaCppPythonWorker` (pip wheel); CPU-default GPU layers |
 | `runtime/runtime/worker/sampler_options.py` | Ollama options → sampler chain / HTTP / wheel kwargs |
-| `runtime/runtime/worker/factory.py` | `create_llama_worker()` |
+| `runtime/runtime/worker/factory.py` | `create_llama_worker()`; `canonical_llama_backend()`; `llama_backend_source()` |
+| `runtime/runtime/config.py` | YAML `llama_backend` + `llama_backend_from_file` |
 | `runtime/runtime/worker/llama_server.py` | Subprocess backend (default) |
 | `runtime/runtime/engine.py` | `LlamaForwardWorker` protocol; vocab cache; `/health` `llama_backend` |
 | `POST /internal/tokenize` | Vocab-only tokenize for Go render |

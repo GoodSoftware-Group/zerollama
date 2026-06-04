@@ -66,9 +66,12 @@ export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 export LLAMA_CPP_LIB=/path/to/llama.cpp/build/bin/libllama.so
 # wheel: export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=llama-cpp-python
 # wheel GPU (if stable): export ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS=99
+# YAML: uncomment llama_backend: inprocess in runtime/configs/single_gpu.yaml (env wins)
 ```
 
-Sign-off: `../scripts/phase14_backend_smoke.sh` or `../scripts/phase14_both_backends.sh` — see [../docs/phase14-inprocess-llama.md](../docs/phase14-inprocess-llama.md).
+`/health` reports `llama_backend_source`: `env` (override set), `config` (explicit YAML key), or `default` (packaged subprocess).
+
+Sign-off: `../scripts/phase14_inprocess_smoke.sh` (5080 GPU), `../scripts/phase14_wheel_cpu_smoke.sh` (wheel CPU), `../scripts/phase14_yaml_config_smoke.sh`, or `../scripts/phase14_both_backends.sh` — see [../docs/phase14-inprocess-llama.md](../docs/phase14-inprocess-llama.md).
 
 ## Sidecar server (Phase 1–3)
 

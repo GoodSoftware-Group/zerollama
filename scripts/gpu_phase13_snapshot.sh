@@ -60,6 +60,8 @@ out = {
     "num_ctx_probe": int(os.environ.get("SNAPSHOT_NUM_CTX", "0") or 0),
     "inference_state": health.get("inference_state"),
     "llama_server": health.get("llama_server"),
+    "llama_backend": health.get("llama_backend"),
+    "llama_backend_source": health.get("llama_backend_source"),
     "autoconfig": health.get("autoconfig"),
     "vram_budget": {
         "admission_fits": vb.get("admission_fits"),
@@ -107,6 +109,9 @@ if est:
     }
 if ve_out:
     out["vram_estimate"] = ve_out
+lcp = health.get("llama_cpp")
+if lcp:
+    out["llama_cpp"] = lcp
 if est and "vram_estimate_budget" not in out:
     eb = est.get("vram_budget") or {}
     out["vram_estimate_budget"] = {

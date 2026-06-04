@@ -61,6 +61,7 @@ SAMPLE_HEALTH = {
 
 def test_format_gpu_health_includes_calibration_and_autotune_fields():
     out = format_gpu_health_tuning_report(SAMPLE_HEALTH)
+    assert "llama_backend:" not in out  # omitted when absent from payload
     assert "vram_calibration.observed_bytes:" in out
     assert "vram_calibration.suggested_estimate_factor: 1.15" in out
     assert "vram_autotune.session_model:" in out
@@ -71,6 +72,49 @@ def test_format_gpu_health_includes_calibration_and_autotune_fields():
     assert "export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR=1.15" not in out
     assert "per-GGUF autotune active" in out
     assert "vram_autotune.persist.catalog: m.gguf factor=1.15 (last)" in out
+
+
+def test_format_gpu_health_includes_llama_backend_fields():
+    h = dict(SAMPLE_HEALTH)
+    h["llama_backend"] = "inprocess"
+    h["llama_backend_source"] = "config"
+    out = format_gpu_health_tuning_report(h)
+    assert "llama_backend: inprocess" in out
+    assert "llama_backend_source: config" in out
+    assert "llama_backend=inprocess from /cfg/single_gpu.yaml" in out
+
+
+def test_format_gpu_health_includes_default_backend_source():
+    h = dict(SAMPLE_HEALTH)
+    h["llama_backend"] = "subprocess"
+    h["llama_backend_source"] = "default"
+    out = format_gpu_health_tuning_report(h)
+    assert "llama_backend_source: default" in out
+    assert "no llama_backend key" in out
+    assert "from /cfg/single_gpu.yaml" not in out
+
+
+def test_format_gpu_health_default_source_shows_autoconfig_path():
+    h = dict(SAMPLE_HEALTH)
+    h["llama_backend"] = "subprocess"
+    h["llama_backend_source"] = "default"
+    h["autoconfig"] = {"pick": "single_gpu", "config_path": "/cfg/single_gpu.yaml"}
+    out = format_gpu_health_tuning_report(h)
+    assert "subprocess default via /cfg/single_gpu.yaml" in out
+
+
+def test_format_gpu_health_llama_cpp_wheel_cpu():
+    h = dict(SAMPLE_HEALTH)
+    h["llama_backend"] = "llama-cpp-python"
+    h["llama_cpp"] = {
+        "gpu_mode": "cpu",
+        "n_gpu_layers": 0,
+        "loaded": False,
+        "env_n_gpu_layers": None,
+    }
+    out = format_gpu_health_tuning_report(h)
+    assert "llama_cpp.gpu_mode: cpu" in out
+    assert "ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS" in out
 
 
 def test_format_gpu_health_warns_when_factor_out_of_range():

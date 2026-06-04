@@ -47,8 +47,31 @@ cd /root/zerollama && ./scripts/gpu_5080_session.sh
 | `gpu_smoke_all.sh` | Coordination mirror, VRAM prep, runtime + proxy e2e, health report. |
 | `gpu_phase13_snapshot.sh` | JSON artifact for before/after tuning (`/tmp/5080-session.json`). |
 | `python -m runtime.gpu_snapshot` | Human-readable env hints from that JSON (autotune persist, harmony skip). |
+| `phase14_backend_smoke.sh` (optional) | When `RUN_E2E_PHASE14=1` — serve must already use the target backend. With `RUN_E2E_INPROCESS=1` alone, runs `phase14_inprocess_smoke.sh` (env provenance). |
+| `phase14_5080_signoff.sh` (optional) | When `RUN_E2E_PHASE14_SIGNOFF=1` — both backends + YAML config + Phase 15 multi-seq (`LLAMA_CPP_LIB` required). |
+| `phase15_inprocess_multiseq_smoke.sh` (optional) | When `RUN_E2E_PHASE15=1` — temp YAML `llama_parallel_slots: 2` + inprocess (`LLAMA_CPP_LIB` required). |
 
 **Pass criteria:** `PASS: gpu_5080_session` and snapshot file written. Smoke GGUF calibration (e.g. ~1.20× for OuteTTS Q8) is **smoke evidence only** until you run the same flow on your **production** GGUF (e.g. supernova fp16).
+
+**Optional Phase 14 in one session** (after ctypes smoke passes on serve):
+
+```bash
+RUN_E2E_PHASE14=1 RUN_E2E_INPROCESS=1 ./scripts/gpu_5080_session.sh
+```
+
+**Full Phase 14/15 sign-off** (self-contained serve restarts; ~15–20 min):
+
+```bash
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh
+```
+
+**Phase 15 multi-seq only** (KV decode hook + `llama_parallel_slots: 2`):
+
+```bash
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
+```
 
 ---
 
@@ -131,7 +154,7 @@ Applied at runtime start by `vram_yaml_defaults.py` (before optional `VRAM_APPLY
 
 ## Phase 14 sign-off (in-process llama)
 
-**Why separate from `gpu_5080_session`:** Phase 14 validates ctypes `libllama.so` in the embedded runtime (no loopback `llama-server`). Use a **small Q8 GGUF** on the card you ship.
+**Why often run separately:** Phase 14 validates ctypes `libllama.so` in the embedded runtime (no loopback `llama-server`). Serve must be restarted with `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess` (or YAML). You can fold it into `gpu_5080_session.sh` with `RUN_E2E_PHASE14=1` once serve is on that backend. Use a **small Q8 GGUF** on the card you ship.
 
 ### Checklist (5080)
 
@@ -151,10 +174,72 @@ export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 ```bash
 export LLAMA_MODEL=/path/to/same.gguf
 export RUN_E2E_PROXY_MODEL=<pulled-local-tag>   # for /internal/render-chat
-RUN_E2E_INPROCESS=1 ./scripts/phase14_backend_smoke.sh
+./scripts/phase14_inprocess_smoke.sh
 ```
 
-**Pass:** `PASS: phase14_backend_smoke`, `/health` shows `llama_backend=inprocess`, `llama_server=false`, render-chat `truncate_mode=tokenize`.
+**Pass:** `PASS: phase14_backend_smoke`, `/health` shows `llama_backend=inprocess`, `llama_backend_source=env`, `llama_server=false`, render-chat `truncate_mode=tokenize`.
+
+Equivalent manual flags: `RUN_E2E_INPROCESS=1 ./scripts/phase14_backend_smoke.sh`.
+
+### Optional: inprocess via YAML (no env override)
+
+After ctypes GPU smoke passes with env, you can pack the default into autoconfig:
+
+1. Uncomment `llama_backend: inprocess` in `runtime/configs/single_gpu.yaml`.
+2. Restart serve **without** `ZEROLLAMA_RUNTIME_LLAMA_BACKEND`.
+3. Confirm provenance:
+
+```bash
+RUN_E2E_LLAMA_BACKEND_SOURCE=config ./scripts/phase14_yaml_config_smoke.sh
+```
+
+`/health` should show `llama_backend_source=config`. Invalid YAML values fail at config load with a clear error (`canonical_llama_backend`).
+
+Enable YAML in one step after env-based inprocess smoke passes:
+
+```bash
+./scripts/phase14_enable_yaml_inprocess.sh
+# restart serve without ZEROLLAMA_RUNTIME_LLAMA_BACKEND
+RUN_E2E_LLAMA_BACKEND_SOURCE=config ./scripts/phase14_yaml_config_smoke.sh
+```
+
+### Optional: wheel CPU sign-off
+
+After inprocess passes, or standalone if you only need the pip wheel path:
+
+```bash
+# serve: ZEROLLAMA_RUNTIME_LLAMA_BACKEND=llama-cpp-python
+export LLAMA_MODEL=/path/to/same.gguf
+./scripts/phase14_wheel_cpu_smoke.sh
+```
+
+Or run both backends with restarts: `./scripts/phase14_both_backends.sh`.
+
+**One-shot 5080 gate** (both backends + YAML config + Phase 15 multi-seq; self-contained serve restarts):
+
+```bash
+export LLAMA_MODEL=/path/to/small.q8_0.gguf
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+./scripts/phase14_5080_signoff.sh
+```
+
+Phase 15 KV hook (optional, after inprocess serve):
+
+```bash
+./scripts/phase15_inprocess_kv_smoke.sh
+./scripts/phase15_inprocess_multiseq_smoke.sh   # needs num_ctx within PA budget
+```
+
+### Optional: wheel GPU smoke
+
+After CPU wheel smoke passes (`phase14_both_backends`), optional GPU offload on hosts where the pip wheel is stable:
+
+```bash
+# serve: ZEROLLAMA_RUNTIME_LLAMA_BACKEND=llama-cpp-python
+#         ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS=99
+export LLAMA_MODEL=/path/to/same.gguf
+./scripts/phase14_wheel_gpu_smoke.sh
+```
 
 ### Optional: both in-process backends
 

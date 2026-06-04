@@ -38,14 +38,24 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `gpu_phase13_snapshot.sh` | JSON snapshot of `/health` + optional `/internal/vram-estimate` for 5080 calibration |
 | `gpu_clamp_smoke.sh` | `RUN_E2E_VRAM_CLAMP=1` runtime generate (serve must set `VRAM_CLAMP_NUM_CTX=auto\|1`) |
 | `phase12_capture_tool_transcript.sh` | Capture real tools-chat output for Harmony/parser golden updates (GPU) |
-| `gpu_5080_session.sh` | `RUN_E2E_PREFLIGHT=1` + `gpu_smoke_all` + Phase 13 snapshot + recommendations (**official 16GB gate** — see [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md)) |
+| `gpu_5080_session.sh` | `RUN_E2E_PREFLIGHT=1` + `gpu_smoke_all` + Phase 13 snapshot + recommendations; optional `RUN_E2E_PHASE14=1` (serve must match backend), `RUN_E2E_PHASE14_SIGNOFF=1` (full gate via `phase14_5080_signoff.sh`), or `RUN_E2E_PHASE15=1` (multi-seq; both need `LLAMA_CPP_LIB`) — **official 16GB gate** — see [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
 | `e2e_training_ops_smoke.sh` | `GET /api/train/status` + jobs; optional TCP ping (no train job submit) |
 | `repro_shared_interpreter_health_hang.sh` | Training + embedded runtime on `19180`/`19181`; 5× `/health` must not hang |
-| `phase14_backend_smoke.sh` | Phase 14: one backend on running serve (`RUN_E2E_PHASE14=1`, `/internal/tokenize`, render-chat). **Rebuild + restart serve** — [phase14-inprocess-llama.md](./phase14-inprocess-llama.md) |
-| `phase14_both_backends.sh` | Phase 14: restarts serve for `inprocess` then `llama-cpp-python` (embed-safe; wheel CPU ~10 min). `RUN_E2E_PROXY_MODEL` for render-chat |
+| `phase14_backend_smoke.sh` | Phase 14: one backend on running serve (`RUN_E2E_PHASE14=1`, `/internal/tokenize`, render-chat). Preflight prints `llama_backend` + `llama_backend_source`. **Rebuild + restart serve** — [phase14-inprocess-llama.md](./phase14-inprocess-llama.md) |
+| `phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off: `RUN_E2E_INPROCESS=1` + `llama_backend_source=env` (ROADMAP exit #3) |
+| `phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers backend flags from `/health` (YAML key, no env override) |
+| `phase14_subprocess_default_smoke.sh` | Backend smoke with `llama_backend_source=default` (packaged subprocess; no env override, no YAML `llama_backend` key) |
+| `phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_cpp.gpu_mode=cpu` after generate) |
+| `phase14_wheel_gpu_smoke.sh` | Optional wheel GPU offload smoke (`llama_cpp.gpu_mode=gpu` after generate) |
+| `phase14_enable_yaml_inprocess.sh` | Enable `llama_backend: inprocess` in `single_gpu.yaml` after ctypes sign-off |
+| `phase14_both_backends.sh` | Phase 14: restarts serve for `inprocess` then `llama-cpp-python` (embed-safe; wheel CPU ~10 min). Sets `RUN_E2E_LLAMA_BACKEND_SOURCE=env` per backend |
+| `phase14_5080_signoff.sh` | One-shot 5080 gate: `phase14_both_backends` + YAML config full + Phase 15 multi-seq (self-contained restarts) |
+| `phase14_yaml_config_full_smoke.sh` | Temp YAML with `llama_backend: inprocess`; asserts `llama_backend_source=config` without editing repo YAML |
 | `phase14_serve_env.sh` | Source before `zerollama serve` — **why:** unset `ZEROLLAMA_RUNTIME_URL` so Go embeds `:8081` (exporting URL forces external sidecar mode) |
 | `phase15_kv_native_ci.sh` | Build C `BlockPool` + KV pytest bundle + `phase15_health_smoke.sh` (no GPU); [phase15-native-kv.md](./phase15-native-kv.md) |
 | `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_page_bind`, `kv_live_physical`, …) via `InferenceEngine` only |
+| `phase15_inprocess_kv_smoke.sh` | Phase 14 inprocess serve + asserts `kv_decode_steps` on generate and post-generate `/health` (GPU host) |
+| `phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2` + inprocess; asserts `kv_inprocess_n_seq_max` and generate |
 | `gpu_harmony_capture.sh` | Optional real-weight harmony capture — **needs ~40+ GiB host RAM** for `gpt-oss:20b` MXFP4 on runtime path; **not** required on 5080 (~19 GiB); CI uses Go golden |
 
 CI (`.github/workflows/zerollama-regression.yaml`): Phase 12 is covered by `go test ./server/...` (Golden tests) and runtime pytest (`test_go_render_chat.py`), plus `check_gpu_scripts.sh`. Optional self-hosted: `.github/workflows/zerollama-gpu-smoke.yaml` (`workflow_dispatch`; repo vars `GPU_SMOKE_*`, serve must be up).
@@ -233,6 +243,11 @@ GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD
 | `502` host memory on large pull | Runtime `check_gguf_host_budget` (e.g. gpt-oss:20b MXFP4 ~44 GiB mmap) | Use smaller quant/GGUF, more host RAM, or legacy ggml path; `gpu_harmony_capture` needs RAM not just VRAM |
 | `404 model 'smoke' not found` on proxy | Legacy handler, no runtime proxy | `X-Zerollama-Runtime: 1`, `OLLAMA_RUNTIME_ALL=1`, or runtime-default model |
 | `truncate_mode=heuristic` on Phase 14 render-chat | Stale serve or embed without runtime URL | Rebuild `zerollama`; use `phase14_serve_env.sh` (embed); needs current Go + `/internal/tokenize` |
+| `/health missing llama_backend_source` | Stale serve binary | Rebuild `zerollama` from current tree; restart serve |
+| `RUN_E2E_LLAMA_BACKEND_SOURCE=config` fails | Env still set on serve | Unset `ZEROLLAMA_RUNTIME_LLAMA_BACKEND`; uncomment `llama_backend` in YAML; restart serve |
+| `llama_backend_source=default` on subprocess serve | Expected when autoconfig YAML has no `llama_backend` key | Set env or uncomment YAML key; use `RUN_E2E_LLAMA_BACKEND_SOURCE=default` only to assert packaged default |
+| `address already in use` on `:8081` / embed warns then stale `/health` | Previous `zerollama serve` or `zerollama-runtime` sidecar still listening | `ss -tlnp \| grep 8081`; `pkill -f 'zerollama serve'`; unset `ZEROLLAMA_RUNTIME_URL`; use `scripts/serve_gpu_example.sh` or `phase14_serve_env.sh` |
+| `embedded runtime not started` (port in use) | Go preflight blocked embed (fixed vs silent stale attach) | Free `:8081` before `./serve.sh`; only one embed listener per host |
 | ggml `runner terminated` during Phase 14 proxy | Pulled tag hit legacy path | `RUN_E2E_PHASE14=1` adds header; or `OLLAMA_RUNTIME_ALL=1` on serve |
 | `llama-server exited` / CUDA OOM | Model too large, wrong arch, tensor split on 1 GPU | Quantized GGUF, `single_gpu.yaml`, rebuild `120-real` |
 | Legacy `runner terminated` | GPU held by runtime | Retry (broker should hand off); or manual `training-handoff` |

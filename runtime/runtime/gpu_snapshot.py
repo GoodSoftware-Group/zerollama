@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from runtime.vram_recommendations import skip_global_vram_factor_export
+
 
 def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
     """Actionable env hints from ``gpu_phase13_snapshot.sh`` / session JSON."""
@@ -31,6 +33,49 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
             "# autoconfig: single_gpu.yaml (16GB-class); env overrides YAML vram: defaults"
         )
 
+    backend = snap.get("llama_backend")
+    backend_src = snap.get("llama_backend_source")
+    if backend or backend_src:
+        detail = []
+        if backend:
+            detail.append(f"llama_backend={backend}")
+        if backend_src:
+            detail.append(f"llama_backend_source={backend_src}")
+        lines.append(f"# Phase 14 forward: {', '.join(detail)}")
+        if ac.get("pick") == "single_gpu" and backend == "subprocess":
+            lines.append(
+                "# optional: after RUN_E2E_INPROCESS=1 phase14_backend_smoke passes, run "
+                "phase14_enable_yaml_inprocess.sh then phase14_yaml_config_smoke.sh"
+            )
+        if backend == "subprocess" and backend_src == "default":
+            cfg_path = ac.get("config_path")
+            if cfg_path:
+                lines.append(
+                    f"# subprocess default via {cfg_path} (no llama_backend key in YAML)"
+                )
+            else:
+                lines.append(
+                    "# subprocess packaged default (autoconfig YAML has no llama_backend key)"
+                )
+        if backend == "inprocess" and backend_src == "config":
+            cfg_path = ac.get("config_path") or "runtime config YAML"
+            lines.append(f"# inprocess from {cfg_path}")
+        elif backend == "inprocess" and backend_src == "env":
+            lines.append(
+                "# inprocess from ZEROLLAMA_RUNTIME_LLAMA_BACKEND (env wins over YAML)"
+            )
+        elif backend == "llama-cpp-python":
+            lcp = snap.get("llama_cpp") or {}
+            mode = lcp.get("gpu_mode")
+            if mode == "cpu":
+                lines.append(
+                    "# llama-cpp-python on CPU (default); GPU via ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS "
+                    "only after wheel stability check"
+                )
+            elif mode == "gpu":
+                ngl = lcp.get("n_gpu_layers")
+                lines.append(f"# llama-cpp-python GPU offload (n_gpu_layers={ngl})")
+
     vb_fits = vb.get("fits_with_margin")
     veb_fits = veb.get("fits_with_margin")
     if vb_fits is False or veb_fits is False:
@@ -46,10 +91,11 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
     catalog = persist.get("catalog") or []
     ve = snap.get("vram_estimate") or {}
     factor_source = ve.get("estimate_factor_source")
-    skip_global_factor_export = autotune_on and (
-        bool(catalog)
-        or factor_source in ("catalog", "session")
-        or persisted is not None
+    skip_global_factor_export = skip_global_vram_factor_export(
+        autotune_enabled=autotune_on,
+        catalog=catalog,
+        factor_source=factor_source,
+        persisted_factor=persisted,
     )
 
     if autotune_on and catalog:
@@ -106,7 +152,7 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
             pass
     elif suggest is not None and skip_global_factor_export:
         lines.append(
-            "  # per-GGUF autotune active; no global VRAM_ESTIMATE_FACTOR export needed"
+            "# per-GGUF autotune active; no global VRAM_ESTIMATE_FACTOR export needed"
         )
 
     if factor_source:

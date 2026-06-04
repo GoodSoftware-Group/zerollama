@@ -198,7 +198,7 @@ Only choose B/C when Phase 4–6 are stable.
 10. [x] Phase 8 — Go VRAM broker (automatic eviction; no public unload API)  
 11. [x] Phase 9 — manifest → runtime model paths (`options.gguf` from Go proxy)  
 12. [x] Phase 10 — CI (`zerollama-regression.yaml`: `go test` + runtime pytest + `check_gpu_scripts.sh`; optional `zerollama-gpu-smoke.yaml`)  
-13. [ ] Phase 11+ — VRAM / admission policy in Python (partial); optional **idle-time training** policy (roadmap **T6**); Phase 14 in-process forward (partial); Phase 15 native KV  
+13. [ ] Phase 11+ — VRAM / admission policy in Python (partial); optional **idle-time training** policy (roadmap **T6**); Phase 14 in-process forward (**Done**); Phase 15 native KV (partial)
 
 ---
 

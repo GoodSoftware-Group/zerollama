@@ -11,6 +11,7 @@ from runtime.worker.factory import LlamaBackendKind, create_llama_worker, resolv
 from runtime.worker.llama_cpp_python import (
     LlamaCppPythonWorker,
     llama_cpp_n_gpu_layers,
+    llama_cpp_wheel_health,
 )
 
 
@@ -28,6 +29,26 @@ def test_llama_cpp_n_gpu_layers_env(monkeypatch: pytest.MonkeyPatch):
 def test_llama_cpp_n_gpu_layers_env_negative_uses_cpu(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS", "-1")
     assert llama_cpp_n_gpu_layers(-1, None) == 0
+
+
+def test_llama_cpp_wheel_health_cpu_default(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS", raising=False)
+    h = llama_cpp_wheel_health(None)
+    assert h["gpu_mode"] == "cpu"
+    assert h["n_gpu_layers"] == 0
+    assert h["loaded"] is False
+    assert h["env_n_gpu_layers"] is None
+
+
+def test_llama_cpp_wheel_health_env_and_loaded(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS", "24")
+    worker = LlamaCppPythonWorker(model=Path("/tmp/x.gguf"))
+    worker._loaded_n_gpu_layers = 24
+    h = llama_cpp_wheel_health(worker)
+    assert h["gpu_mode"] == "gpu"
+    assert h["n_gpu_layers"] == 24
+    assert h["loaded"] is True
+    assert h["env_n_gpu_layers"] == "24"
 
 
 def test_llama_cpp_python_backend_parse(monkeypatch: pytest.MonkeyPatch):

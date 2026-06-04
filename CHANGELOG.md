@@ -83,6 +83,11 @@ Full design: [docs/phase14-inprocess-llama.md](docs/phase14-inprocess-llama.md).
 - **Phase 14 lib path:** auto-detect `libllama.so` via zerollama repo root (`parents[3]`), not `/` + wrong sibling.
 - **Phase 14 load parity:** apply `-mg` / `-sm` / `-ts` from `llama_server_args()`; reject speculative/draft on in-process backend.
 - **Phase 14 backend config:** `resolve_llama_backend()` uses `RuntimeConfig.llama_backend` when env unset.
+- **Phase 14 YAML `llama_backend`:** autoconfig files (e.g. `single_gpu.yaml`) load `llama_backend`; env still wins; invalid values fail at load (`canonical_llama_backend`). `/health` `llama_backend_source`: `env` | `config` (explicit YAML key) | `default` (packaged subprocess). **`llama_cpp`** on wheel backend reports `gpu_mode` / `n_gpu_layers` for operator GPU offload visibility.
+- **Embed port conflict:** Go embed preflight refuses busy loopback `:8081` and matches `/health` `embed_boot` to this process (no silent attach to stale runtime). **Why:** `address already in use` while Go logged embed success on cudallama-style restarts.
+- **Phase 14 in-process decode:** ctypes path uses heap `llama_batch_init` batches with explicit `pos[]` (fixes `llama_batch_get_one` UAF and uninitialized positions). **Why:** inprocess generate returned 502 `llama_decode failed` on multi-token prompts.
+- **Phase 14 YAML smoke:** `phase14_yaml_config_smoke.sh` infers `RUN_E2E_*` backend flags from `/health` when `llama_backend_source=config` (rejects subprocess).
+- **Phase 14 status:** ROADMAP exit criteria 3–4 signed off on 5080 dev host (`phase14_inprocess_smoke`, `phase14_wheel_cpu_smoke`).
 
 - **Phase 13 VRAM audit:** IQ2_XS (`GGML_TYPE_IQ2_XS`) block size corrected to 74 bytes (was 138 — over-estimated weights). `VRAM_ESTIMATE_FACTOR` applies once on the outer estimate (speculative draft no longer scaled twice). Calibration uses fresh probe reads and precomputed estimates; multi-GPU `scope_warning` on `/health`. **Why:** audit found false rejections on IQ2_XS models and inflated draft VRAM.
 - **Phase 11 dequeue fairness:** scheduler no longer stalls **`priority: normal`** when inference-first metrics are on (only **`low`** at queue head waits). **Why:** enqueue already allowed normal chat under defer/ggml/backlog; dequeue had been blocking all non-high work.
@@ -92,7 +97,12 @@ Full design: [docs/phase14-inprocess-llama.md](docs/phase14-inprocess-llama.md).
 
 ### Added
 
-- **Phase 14 smoke:** `phase14_backend_smoke.sh` and `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh` (`/internal/tokenize`, sampling, render-chat); subprocess-only `LLAMA_SERVER_BIN` requirement relaxed for in-process backends. Phase 14 render-chat asserts `truncate_mode=tokenize`; backend-aware `LLAMA_MODEL` error hints. Strict preflight fails on stale serve (missing `llama_backend`, `/internal/tokenize` 404).
+- **Phase 14 5080 session:** `RUN_E2E_PHASE14_SIGNOFF=1` and `RUN_E2E_PHASE15=1` in `gpu_5080_session.sh` / `gpu_smoke_all.sh` (sign-off needs `LLAMA_CPP_LIB`).
+- **Phase 14 5080 sign-off:** `phase14_5080_signoff.sh` — one-shot gate (`both_backends` + YAML config full + Phase 15 multi-seq). ROADMAP Phase 14 marked **Done**; subprocess remains packaged default.
+- **Phase 14 smoke:** `phase14_backend_smoke.sh` and `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh`; sign-off wrappers `phase14_inprocess_smoke.sh`, `phase14_wheel_cpu_smoke.sh`; provenance via `phase14_yaml_config_smoke.sh`, `phase14_subprocess_default_smoke.sh`; optional `phase14_wheel_gpu_smoke.sh` and `phase14_enable_yaml_inprocess.sh`; optional `RUN_E2E_PHASE14=1` in `gpu_smoke_all.sh` / `gpu_5080_session.sh`.
+- **Phase 15 inprocess KV smoke:** `phase15_inprocess_kv_smoke.sh` — Phase 14 inprocess serve + asserts `kv_decode_steps` on generate and `/health` (v6 decode hook).
+- **Phase 15 multi-seq smoke:** `phase15_inprocess_multiseq_smoke.sh` — temp YAML with `llama_parallel_slots: 2` + inprocess shared context.
+- **Phase 14 YAML full smoke:** `phase14_yaml_config_full_smoke.sh` — optional #6 without editing packaged `single_gpu.yaml`.
 - **Phase 14 render tokenize:** `llama-cpp-python` backend uses wheel `vocab_only` for `/internal/tokenize` (no `libllama.so`); subprocess can fall back to wheel vocab when ctypes lib is missing.
 - **Phase 14 llama-cpp-python backend:** `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=llama-cpp-python` uses the pip wheel (no `libllama.so` build); tokenize via loaded model when GGUF matches.
 - **Phase 14 sampling:** `options.temperature`, `top_k`, `top_p`, penalties, and `seed` forwarded to subprocess `llama-server` and in-process libllama sampler chains; no sampling keys → greedy in-process default. `temperature: 0` sends `temperature: 0` on subprocess; render-chat tokenize falls back to heuristic only when runtime is unreachable (not on HTTP/model errors).

@@ -479,8 +479,14 @@ def _batch_from_tokens(
     seq_id: int,
     n_seq_max: int,
     logits_last: bool,
+    pos_start: int = 0,
 ) -> LlamaBatch:
-    """Build a heap batch with an explicit sequence id (Phase 15 in-process KV)."""
+    """Build a heap batch with explicit seq_id and positions.
+
+    ``llama_batch_get_one`` stores a pointer to caller-owned token memory (UAF).
+    ``llama_batch_init`` allocates ``pos[]`` but leaves it uninitialized; llama.cpp
+    only auto-fills positions when ``batch.pos`` is NULL, so we set ``pos_start + i``.
+    """
     n = len(tokens)
     if n == 0:
         raise LlamaServerError("empty token batch")
@@ -488,6 +494,7 @@ def _batch_from_tokens(
     batch.n_tokens = n
     for i, tok in enumerate(tokens):
         batch.token[i] = LLAMA_TOKEN(int(tok))
+        batch.pos[i] = pos_start + i
         batch.n_seq_id[i] = 1
         batch.seq_id[i][0] = ctypes.c_int32(seq_id)
         batch.logits[i] = 1 if (not logits_last or i == n - 1) else 0
@@ -807,22 +814,22 @@ def _decode_stream(
 
     n_prompt = len(prompt_tokens)
     limit = max(0, n_predict)
-    use_seq_batch = n_seq_max > 1
 
-    def _make_batch(tokens: list[int], *, logits_last: bool) -> LlamaBatch:
-        if use_seq_batch:
-            return _batch_from_tokens(
-                lib,
-                tokens,
-                seq_id=seq_id,
-                n_seq_max=n_seq_max,
-                logits_last=logits_last,
-            )
-        arr = (LLAMA_TOKEN * len(tokens))(*tokens)
-        return lib.llama_batch_get_one(arr, len(tokens))
+    def _make_batch(
+        tokens: list[int], *, logits_last: bool, pos_start: int
+    ) -> LlamaBatch:
+        # Heap batch only: llama_batch_get_one keeps a pointer to caller memory.
+        return _batch_from_tokens(
+            lib,
+            tokens,
+            seq_id=seq_id,
+            n_seq_max=n_seq_max,
+            logits_last=logits_last,
+            pos_start=pos_start,
+        )
 
-    batch = _make_batch(prompt_tokens, logits_last=False)
-    batch_owned = use_seq_batch
+    batch = _make_batch(prompt_tokens, logits_last=False, pos_start=0)
+    batch_owned = True
 
     if lib.llama_model_has_encoder(model):
         if lib.llama_encode(ctx, batch) != 0:
@@ -835,8 +842,8 @@ def _decode_stream(
             start = lib.llama_vocab_bos(vocab)
         if batch_owned:
             lib.llama_batch_free(batch)
-        batch = _make_batch([int(start)], logits_last=True)
-        batch_owned = use_seq_batch
+        batch = _make_batch([int(start)], logits_last=True, pos_start=0)
+        batch_owned = True
 
     n_pos = 0
 
@@ -857,8 +864,8 @@ def _decode_stream(
             yield _emit_piece(piece, stop=False)
             if batch_owned:
                 lib.llama_batch_free(batch)
-            batch = _make_batch([new_id], logits_last=True)
-            batch_owned = use_seq_batch
+            batch = _make_batch([new_id], logits_last=True, pos_start=n_pos)
+            batch_owned = True
         yield _emit_piece("", stop=True)
     finally:
         if batch_owned:

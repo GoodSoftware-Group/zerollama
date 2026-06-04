@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from runtime.vram_recommendations import skip_global_vram_factor_export
+
 
 def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
     """Return human-readable Phase 11–13 tuning lines for a /health payload."""
@@ -12,10 +14,44 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
     lines.append(f"status: {h.get('status')}")
     lines.append(f"llama_server: {h.get('llama_server')}")
     lines.append(f"inference_state: {h.get('inference_state')}")
-
+    if h.get("llama_backend"):
+        lines.append(f"llama_backend: {h.get('llama_backend')}")
     ac = h.get("autoconfig") or {}
+    if h.get("llama_backend_source"):
+        lines.append(f"llama_backend_source: {h.get('llama_backend_source')}")
+        if h.get("llama_backend_source") == "default" and h.get("llama_backend") == "subprocess":
+            cfg_path = ac.get("config_path")
+            if cfg_path:
+                lines.append(
+                    f"# subprocess default via {cfg_path} (no llama_backend key in YAML)"
+                )
+            else:
+                lines.append(
+                    "# subprocess packaged default (no llama_backend key in autoconfig YAML)"
+                )
+
     if ac:
         lines.append(f"autoconfig: {ac.get('pick')} {ac.get('config_path')}")
+        if (
+            h.get("llama_backend_source") == "config"
+            and h.get("llama_backend")
+            and ac.get("config_path")
+        ):
+            lines.append(
+                f"# llama_backend={h.get('llama_backend')} from {ac.get('config_path')}"
+            )
+
+    lcp = h.get("llama_cpp") or {}
+    if lcp and h.get("llama_backend") == "llama-cpp-python":
+        lines.append(f"llama_cpp.gpu_mode: {lcp.get('gpu_mode')}")
+        lines.append(f"llama_cpp.n_gpu_layers: {lcp.get('n_gpu_layers')}")
+        if lcp.get("env_n_gpu_layers"):
+            lines.append(f"llama_cpp.env_n_gpu_layers: {lcp.get('env_n_gpu_layers')}")
+        if lcp.get("gpu_mode") == "cpu" and not lcp.get("env_n_gpu_layers"):
+            lines.append(
+                "# wheel on CPU by default; set ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS after "
+                "ctypes inprocess smoke passes on this host"
+            )
 
     vb = h.get("vram_budget") or {}
     for k in (
@@ -112,10 +148,11 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
     lines.append("Suggested next steps:")
     suggest = cal.get("suggested_estimate_factor")
     factor_source = ve.get("estimate_factor_source")
-    skip_global_factor_export = bool(at.get("enabled")) and (
-        bool(autotune_catalog)
-        or factor_source in ("catalog", "session")
-        or autotune_persist.get("persisted_factor") is not None
+    skip_global_factor_export = skip_global_vram_factor_export(
+        autotune_enabled=bool(at.get("enabled")),
+        catalog=autotune_catalog,
+        factor_source=factor_source,
+        persisted_factor=autotune_persist.get("persisted_factor"),
     )
     if suggest is not None and not skip_global_factor_export:
         try:

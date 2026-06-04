@@ -22,6 +22,7 @@ def test_load_dual_4090_yaml(monkeypatch):
     assert cfg.num_blocks == 8192
     assert cfg.block_size == 16
     assert cfg.active_kv_pools() == 2
+    assert cfg.llama_backend == "subprocess"
     args = cfg.llama_server_args()
     assert "-sm" in args and "tensor" in args
     ts_idx = args.index("-ts")

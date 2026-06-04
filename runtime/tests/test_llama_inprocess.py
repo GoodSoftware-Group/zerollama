@@ -10,8 +10,10 @@ import pytest
 from runtime.config import RuntimeConfig
 from runtime.worker.factory import (
     LlamaBackendKind,
+    canonical_llama_backend,
     create_llama_worker,
     llama_backend_from_env,
+    llama_backend_source,
     resolve_llama_backend,
 )
 from runtime.worker.libllama_ctypes import (
@@ -46,6 +48,76 @@ def test_resolve_llama_backend_config_fallback(monkeypatch: pytest.MonkeyPatch):
         llama_backend="inprocess",
     )
     assert resolve_llama_backend(cfg) == LlamaBackendKind.INPROCESS
+
+
+def test_llama_backend_source_env_vs_config(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", raising=False)
+    cfg = RuntimeConfig(
+        host="127.0.0.1",
+        port=8081,
+        llama_cpp_root=Path("/tmp"),
+        llama_server_bin=None,
+        llama_model=None,
+        num_blocks=8,
+        block_size=16,
+        device_count=1,
+        llama_backend="inprocess",
+        llama_backend_from_file=True,
+    )
+    assert llama_backend_source(cfg) == "config"
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", "subprocess")
+    assert llama_backend_source(cfg) == "env"
+
+
+def test_llama_backend_source_default_without_yaml_key(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", raising=False)
+    cfg = RuntimeConfig(
+        host="127.0.0.1",
+        port=8081,
+        llama_cpp_root=Path("/tmp"),
+        llama_server_bin=None,
+        llama_model=None,
+        num_blocks=8,
+        block_size=16,
+        device_count=1,
+    )
+    assert llama_backend_source(cfg) == "default"
+
+
+def test_canonical_llama_backend_aliases():
+    assert canonical_llama_backend("libllama") == "inprocess"
+    assert canonical_llama_backend("llama-server") == "subprocess"
+    assert canonical_llama_backend(None) == "subprocess"
+
+
+def test_canonical_llama_backend_rejects_unknown():
+    with pytest.raises(ValueError, match="unknown llama backend"):
+        canonical_llama_backend("bogus")
+
+
+def test_batch_from_tokens_sets_pos():
+    from runtime.worker.libllama_ctypes import _batch_from_tokens, get_lib
+
+    try:
+        lib = get_lib(cpp_root=Path("/root/llama.cpp"))
+    except Exception:
+        pytest.skip("libllama unavailable")
+    batch = _batch_from_tokens(
+        lib,
+        [10, 20, 30],
+        seq_id=0,
+        n_seq_max=1,
+        logits_last=True,
+        pos_start=7,
+    )
+    try:
+        assert batch.n_tokens == 3
+        assert int(batch.pos[0]) == 7
+        assert int(batch.pos[1]) == 8
+        assert int(batch.pos[2]) == 9
+        assert int(batch.token[0]) == 10
+    finally:
+        lib.llama_batch_free(batch)
 
 
 def test_ctypes_struct_sizes():

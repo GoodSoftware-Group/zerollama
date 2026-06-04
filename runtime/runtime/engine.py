@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -34,6 +35,7 @@ from runtime.worker.factory import (
     LlamaBackendKind,
     LlamaForwardWorker,
     create_llama_worker,
+    llama_backend_source,
     resolve_llama_backend,
 )
 from runtime.worker.llama_server import LlamaServerError
@@ -227,6 +229,18 @@ class InferenceEngine:
         except LlamaServerError:
             raw = str(self.config.llama_backend or "subprocess").strip().lower()
             return raw or "subprocess"
+
+    def _health_llama_cpp(self) -> dict[str, Any] | None:
+        if self._resolved_llama_backend() != LlamaBackendKind.LLAMA_CPP_PYTHON:
+            return None
+        from runtime.worker.llama_cpp_python import llama_cpp_wheel_health
+
+        worker = (
+            self._server
+            if self._server is not None and self._server.is_running()
+            else None
+        )
+        return llama_cpp_wheel_health(worker)
 
     def _effective_llama_parallel_slots(self) -> int:
         """Match ``SlotAllocator`` / in-process ``n_seq_max`` to llama ``-np`` (argv over YAML)."""
@@ -737,7 +751,9 @@ class InferenceEngine:
 
         from runtime.autoconfig import autoconfig_health
 
-        return {
+        llama_cpp_health = self._health_llama_cpp()
+        embed_boot = os.environ.get("ZEROLLAMA_RUNTIME_EMBED_BOOT", "").strip()
+        body: dict[str, Any] = {
             "status": "ok",
             "autoconfig": autoconfig_health(main_gpu=self.config.main_gpu),
             "inference_state": self.coordinator.state.value,
@@ -792,6 +808,7 @@ class InferenceEngine:
             ],
             "llama_server": self._server is not None and self._server.is_running(),
             "llama_backend": self._health_llama_backend(),
+            "llama_backend_source": llama_backend_source(self.config),
             "kv_inprocess_n_seq_max": self._health_inprocess_n_seq_max(),
             "loaded_vram_num_ctx": self._loaded_vram_num_ctx,
             "llama_model": str(self.config.llama_model)
@@ -802,6 +819,11 @@ class InferenceEngine:
             "speculative_method": self.config.speculative.method,
             "llama_spec_type": self.config.speculative.method,
         }
+        if embed_boot:
+            body["embed_boot"] = embed_boot
+        if llama_cpp_health is not None:
+            body["llama_cpp"] = llama_cpp_health
+        return body
 
     def training_handoff(self) -> InferenceState:
         self.coordinator.training_handoff()

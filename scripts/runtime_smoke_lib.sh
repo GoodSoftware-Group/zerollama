@@ -42,6 +42,131 @@ print(b)
 " "$1" "$strict"
 }
 
+# Phase 14: env vs YAML/config provenance from /health (strict fails when field missing).
+smoke_runtime_llama_backend_source() {
+  local strict="${2:-}"
+  python3 -c "
+import json, sys
+strict = sys.argv[2] == 'strict'
+src = (json.loads(sys.argv[1]).get('llama_backend_source') or '').strip()
+if not src:
+    msg = (
+        '/health missing llama_backend_source — rebuild zerollama and restart serve '
+        '(current tree includes Phase 14 runtime)'
+    )
+    if strict:
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+    print('warn: ' + msg, file=sys.stderr)
+    src = 'unknown'
+print(src)
+" "$1" "$strict"
+}
+
+# Optional: assert /health llama_backend_source matches (config | env | default).
+smoke_runtime_assert_llama_backend_source() {
+  local health="$1"
+  local want="${2:-}"
+  [[ -n "$want" ]] || return 0
+  local got
+  got=$(smoke_runtime_llama_backend_source "$health" strict)
+  if [[ "$got" != "$want" ]]; then
+    echo "RUN_E2E_LLAMA_BACKEND_SOURCE=${want} but /health llama_backend_source=${got}" >&2
+    return 1
+  fi
+  return 0
+}
+
+# When llama_backend comes from YAML (source=config), infer RUN_E2E_* backend flags from /health
+# unless the caller already set RUN_E2E_INPROCESS or RUN_E2E_LLAMA_CPP_PYTHON.
+smoke_runtime_apply_backend_flags_from_health() {
+  local health="$1"
+  local backend
+  backend=$(smoke_runtime_llama_backend "$health" strict)
+  if [[ "${RUN_E2E_INPROCESS:-0}" == "1" || "${RUN_E2E_LLAMA_CPP_PYTHON:-0}" == "1" ]]; then
+    return 0
+  fi
+  case "$backend" in
+    inprocess)
+      export RUN_E2E_INPROCESS=1
+      echo "yaml config smoke: llama_backend=inprocess (from /health)"
+      ;;
+    llama-cpp-python)
+      export RUN_E2E_LLAMA_CPP_PYTHON=1
+      echo "yaml config smoke: llama_backend=llama-cpp-python (from /health)"
+      ;;
+    subprocess)
+      echo "llama_backend_source=config but /health llama_backend=subprocess" >&2
+      echo "  Uncomment llama_backend: inprocess (or llama-cpp-python) in runtime YAML and restart serve without ZEROLLAMA_RUNTIME_LLAMA_BACKEND." >&2
+      return 1
+      ;;
+    *)
+      echo "yaml config smoke: unsupported llama_backend=${backend}" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Parse /health llama_cpp.gpu_mode (cpu | gpu); empty when absent.
+smoke_runtime_llama_cpp_gpu_mode() {
+  local strict="${2:-}"
+  python3 -c "
+import json, sys
+strict = sys.argv[2] == 'strict'
+h = json.loads(sys.argv[1])
+lcp = h.get('llama_cpp') or {}
+mode = (lcp.get('gpu_mode') or '').strip()
+if not mode:
+    if h.get('llama_backend') == 'llama-cpp-python':
+        msg = '/health missing llama_cpp.gpu_mode for llama-cpp-python backend — rebuild serve'
+        if strict:
+            print(msg, file=sys.stderr)
+            sys.exit(1)
+        print('warn: ' + msg, file=sys.stderr)
+        mode = 'unknown'
+print(mode)
+" "$1" "$strict"
+}
+
+# Assert wheel GPU offload (RUN_E2E_LLAMA_CPP_PYTHON_GPU=1); use post-generate /health.
+smoke_runtime_assert_llama_cpp_gpu() {
+  local health="$1"
+  local want="${2:-gpu}"
+  local mode ngl loaded
+  read -r mode ngl loaded < <(
+    python3 -c "
+import json, sys
+lcp = json.loads(sys.argv[1]).get('llama_cpp') or {}
+print(
+    (lcp.get('gpu_mode') or ''),
+    lcp.get('n_gpu_layers', ''),
+    '1' if lcp.get('loaded') else '0',
+)
+" "$health"
+  )
+  if [[ "$mode" != "$want" ]]; then
+    echo "expected llama_cpp.gpu_mode=${want} but got ${mode:-<missing>} (n_gpu_layers=${ngl}, loaded=${loaded})" >&2
+    if [[ "$want" == "gpu" && -z "${ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS:-}" ]]; then
+      echo "  Set ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS on serve before wheel GPU smoke." >&2
+    fi
+    return 1
+  fi
+  if [[ "$want" == "gpu" ]]; then
+    if [[ "${ngl:-0}" -le 0 ]]; then
+      echo "llama_cpp.gpu_mode=gpu but n_gpu_layers=${ngl}" >&2
+      return 1
+    fi
+    if [[ "$loaded" != "1" ]]; then
+      echo "llama_cpp.gpu_mode=gpu but loaded=false (refetch /health after generate)" >&2
+      return 1
+    fi
+  elif [[ "$want" == "cpu" && "$loaded" != "1" ]]; then
+    echo "llama_cpp.gpu_mode=cpu but loaded=false (refetch /health after generate)" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Ensure :8081 is reachable (embedded or sidecar) before Phase 14 smokes.
 smoke_runtime_require_listening() {
   local runtime_url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
@@ -101,7 +226,7 @@ smoke_llama_model_config_hint() {
   if smoke_runtime_needs_server_bin "$backend"; then
     hint="${hint} Subprocess backend also needs LLAMA_SERVER_BIN."
   else
-    hint="${hint} In-process backends use ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess|llama-cpp-python (no llama-server binary)."
+    hint="${hint} In-process backends use ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess|llama-cpp-python or llama_backend: inprocess in runtime YAML (no llama-server binary)."
   fi
   printf '%s' "$hint"
 }
@@ -253,4 +378,13 @@ except urllib.error.HTTPError as e:
     echo "warn: broker probe non-200; runtime smokes may fail with 502/503" >&2
   fi
   runtime_resume_if_needed
+  local runtime_url="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
+  if ! runtime_fetch_health "$runtime_url" >/dev/null 2>&1; then
+    echo "error: runtime not listening after broker probe (${runtime_url})" >&2
+    if [[ "${RUN_E2E_LLAMA_CPP_PYTHON_GPU:-0}" == "1" ]]; then
+      echo "  Wheel GPU offload may abort embedded Python (known: free(): invalid pointer on some cu124 wheels)." >&2
+      echo "  Production GPU on 5080: use ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess + LLAMA_CPP_LIB." >&2
+    fi
+    return 1
+  fi
 }

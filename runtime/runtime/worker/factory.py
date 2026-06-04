@@ -53,6 +53,20 @@ def _parse_backend_name(raw: str) -> LlamaBackendKind:
     )
 
 
+def canonical_llama_backend(
+    raw: str | None,
+    *,
+    default: str = LlamaBackendKind.SUBPROCESS.value,
+) -> str:
+    """Validate YAML/env strings and return canonical backend name."""
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return _parse_backend_name(str(raw).strip().lower()).value
+    except LlamaServerError as e:
+        raise ValueError(str(e)) from e
+
+
 def llama_backend_from_env() -> LlamaBackendKind:
     raw = os.environ.get("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", "").strip().lower()
     if raw:
@@ -69,6 +83,15 @@ def resolve_llama_backend(config: object | None = None) -> LlamaBackendKind:
     if cfg_raw:
         return _parse_backend_name(cfg_raw)
     return LlamaBackendKind.SUBPROCESS
+
+
+def llama_backend_source(config: object | None = None) -> str:
+    """Where the effective backend is configured: ``env``, ``config`` (YAML key), or ``default``."""
+    if os.environ.get("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", "").strip():
+        return "env"
+    if config is not None and getattr(config, "llama_backend_from_file", False):
+        return "config"
+    return "default"
 
 
 def create_llama_worker(

@@ -9,6 +9,7 @@
 #   source ./scripts/phase14_serve_env.sh
 #   export LLAMA_MODEL=/path/to/small.q8_0.gguf
 #   export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess   # or llama-cpp-python
+#   # or uncomment llama_backend: inprocess in runtime/configs/single_gpu.yaml
 #   # subprocess (default) still needs LLAMA_SERVER_BIN on serve
 #
 #   ./scripts/phase14_backend_smoke.sh
@@ -18,6 +19,10 @@
 #   RUN_E2E_PROXY_MODEL=pulled-tag  — required for Go /internal/render-chat (truncate_mode=tokenize)
 #   RUN_E2E_INPROCESS=1  — fail if /health llama_backend != inprocess
 #   RUN_E2E_LLAMA_CPP_PYTHON=1 — fail if backend != llama-cpp-python
+#   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1 — after generate, assert /health llama_cpp.gpu_mode=gpu
+#   RUN_E2E_LLAMA_BACKEND_SOURCE=config|env|default — assert /health provenance (YAML vs env)
+#   When source=config, RUN_E2E_INPROCESS / RUN_E2E_LLAMA_CPP_PYTHON are inferred from /health
+#   unless already set (rejects subprocess — YAML key must be present).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,7 +47,26 @@ echo "== Phase 14 preflight (current runtime binary) =="
 smoke_runtime_require_listening "$RUNTIME_URL"
 _health=$(runtime_fetch_health "$RUNTIME_URL")
 _backend=$(smoke_runtime_llama_backend "$_health" strict)
+_backend_source=$(smoke_runtime_llama_backend_source "$_health" strict)
 echo "llama_backend=${_backend}"
+echo "llama_backend_source=${_backend_source}"
+smoke_runtime_assert_llama_backend_source "$_health" "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}"
+if [[ "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" == "config" ]]; then
+  smoke_runtime_apply_backend_flags_from_health "$_health"
+fi
+if [[ "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" == "default" && "$_backend" != "subprocess" ]]; then
+  echo "RUN_E2E_LLAMA_BACKEND_SOURCE=default but /health llama_backend=${_backend} (expected subprocess)" >&2
+  exit 1
+fi
+if [[ "${RUN_E2E_LLAMA_CPP_PYTHON_GPU:-0}" == "1" ]]; then
+  _wheel_ngl=$(python3 -c "import json,sys; print((json.loads(sys.argv[1]).get('llama_cpp') or {}).get('env_n_gpu_layers') or '')" "$_health")
+  if [[ -z "$_wheel_ngl" ]]; then
+    echo "RUN_E2E_LLAMA_CPP_PYTHON_GPU=1 but /health llama_cpp.env_n_gpu_layers unset" >&2
+    echo "  Set ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS on serve and restart." >&2
+    exit 1
+  fi
+  echo "llama_cpp.env_n_gpu_layers=${_wheel_ngl}"
+fi
 _gguf_pf="${RUN_E2E_GGUF:-${LLAMA_MODEL:-}}"
 if [[ -z "$_gguf_pf" ]]; then
   _gguf_pf=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('llama_model') or '')" "$_health")
@@ -64,6 +88,8 @@ else
 fi
 [[ "${RUN_E2E_INPROCESS:-0}" == "1" ]] && e2e_env+=(RUN_E2E_INPROCESS=1)
 [[ "${RUN_E2E_LLAMA_CPP_PYTHON:-0}" == "1" ]] && e2e_env+=(RUN_E2E_LLAMA_CPP_PYTHON=1)
+[[ "${RUN_E2E_LLAMA_CPP_PYTHON_GPU:-0}" == "1" ]] && e2e_env+=(RUN_E2E_LLAMA_CPP_PYTHON_GPU=1)
+[[ -n "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" ]] && e2e_env+=(RUN_E2E_LLAMA_BACKEND_SOURCE="${RUN_E2E_LLAMA_BACKEND_SOURCE}")
 # shellcheck disable=SC2086
 env "${e2e_env[@]}" "${ROOT}/scripts/e2e_runtime_smoke.sh"
 

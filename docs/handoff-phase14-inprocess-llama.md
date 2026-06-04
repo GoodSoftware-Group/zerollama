@@ -4,17 +4,18 @@
 
 **Purpose:** Capture **why** Phase 14 exists, **what shipped**, **code locations**, **operator knobs**, **smokes**, and **known gaps** for in-process GGUF forward and Go render tokenize.
 
-**Status (May 2026):**
+**Status (Jun 2026):**
 
 | Item | State | Evidence |
 |------|--------|----------|
-| **ROADMAP Phase 14** | **Partial** | Subprocess still default |
+| **ROADMAP Phase 14** | **Done** | ctypes GPU + wheel CPU smokes; `phase14_5080_signoff.sh` |
 | **ROADMAP Phase 15** | **Partial (v0–v8 ops)** | Native KV pool, bind, forward plans — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
-| **ctypes `inprocess` (GPU)** | **Shipped** | `phase14_backend_smoke.sh` PASS on 5080-class host |
-| **`llama-cpp-python` (CPU default)** | **Shipped** | `phase14_both_backends.sh` PASS (~10 min); GPU opt-in via env |
+| **ctypes `inprocess` (GPU)** | **Shipped** | `phase14_inprocess_smoke.sh` PASS on 5080-class host |
+| **`llama-cpp-python` (CPU default)** | **Shipped** | `phase14_both_backends.sh` PASS (~10 min); GPU opt-in via env (**wheel GPU aborts on 5080**) |
 | **Render `truncate_mode=tokenize`** | **Shipped** | Go `/internal/render-chat` + Python `/internal/tokenize` |
 | **Sampling parity** | **Shipped** | `sampler_options.py`; subprocess + in-process + wheel |
-| **CI** | **Green** | `go test ./server/...`; runtime pytest 322+; `phase12_golden_ci.sh` |
+| **Heap-batch decode fix** | **Shipped** | `libllama_ctypes.py` `_batch_from_tokens`; `test_batch_from_tokens_sets_pos` |
+| **CI** | **Green** | `go test ./server/...`; runtime pytest 410+; `check_gpu_scripts.sh`; `phase12_golden_ci.sh` |
 
 **Prerequisite:** Rebuild `zerollama` from this repo before smokes. Stale serve omits `llama_backend` in `/health` and returns 404 on `/internal/tokenize`.
 
@@ -30,7 +31,7 @@
 | [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md) | Tools render/parse (Phase 12); truncation now uses Phase 14 tokenize |
 | [scheduling-vram-policy.md](./scheduling-vram-policy.md) | VRAM broker unchanged; in-process `stop()` hooks same as subprocess |
 | [CHANGELOG.md](../CHANGELOG.md) | Unreleased Phase 14 summary + fixes |
-| [ROADMAP.md](./ROADMAP.md) | Phase 15 next (native KV) |
+| [ROADMAP.md](./ROADMAP.md) | Phase 14 **Done**; Phase 15 native KV in progress |
 
 ---
 
@@ -68,7 +69,7 @@ Client → Go :8080 → Python :8081 → libllama (ctypes or wheel) in same proc
 | **`inprocess`** | `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess` | **5080 GPU sign-off** — pinned `libllama.so` |
 | **`llama-cpp-python`** | `…=llama-cpp-python` | Dev/CI without local build; **CPU default** |
 
-**Selection:** `runtime/runtime/worker/factory.py` → `create_llama_worker()`. Env wins over YAML `llama_backend`.
+**Selection:** `runtime/runtime/worker/factory.py` → `create_llama_worker()`. Env wins over YAML `llama_backend` (loaded in `runtime/config.py` `_from_mapping`).
 
 **Why wheel defaults to CPU:** On tested cu124 wheels, `n_gpu_layers >= 1` can abort on `create_completion` (`free(): invalid pointer`) while ctypes GPU works. See `llama_cpp_n_gpu_layers()` in `llama_cpp_python.py`.
 
@@ -148,6 +149,8 @@ POST /internal/render-chat (Go)
 | Field | In-process / wheel | Subprocess |
 |-------|-------------------|------------|
 | `llama_backend` | `inprocess` / `llama-cpp-python` | `subprocess` |
+| `llama_backend_source` | `env`, `config` (explicit YAML key), or `default` | same |
+| `llama_cpp` | wheel only: `gpu_mode`, `n_gpu_layers`, `loaded`, `env_n_gpu_layers` | key absent |
 | `llama_server` | `false` | `true` |
 | `llama_model` | loaded GGUF path | same |
 
@@ -161,8 +164,43 @@ POST /internal/render-chat (Go)
 |--------|-----|
 | `scripts/phase14_serve_env.sh` | Unsets `ZEROLLAMA_RUNTIME_URL`; enables embed — **#1 smoke footgun** |
 | `scripts/phase14_backend_smoke.sh` | One backend on running serve; preflight `llama_backend` + `/internal/tokenize` 404 |
+| `scripts/phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off (`RUN_E2E_INPROCESS=1`, `llama_backend_source=env`) |
+| `scripts/phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers `inprocess` or `llama-cpp-python` from `/health` |
+| `scripts/phase14_subprocess_default_smoke.sh` | Backend smoke with `llama_backend_source=default` (packaged subprocess default) |
+| `scripts/phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_backend_source=env`) |
+| `scripts/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate) |
+| `scripts/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after env smoke passes |
 | `scripts/phase14_both_backends.sh` | Restart serve per backend; `env -u` URL and stale `RUN_E2E_*`; fails if zero backends ran |
+| `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 multi-seq |
+| `scripts/phase14_yaml_config_full_smoke.sh` | Temp YAML `llama_backend: inprocess` without editing repo `single_gpu.yaml` |
+| `scripts/phase15_inprocess_kv_smoke.sh` | Inprocess serve + `kv_decode_steps` on generate and `/health` |
+| `scripts/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; self-contained serve restart |
 | `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh` | Forces `X-Zerollama-Runtime` on Go proxy — **sign-off only** |
+| `RUN_E2E_LLAMA_BACKEND_SOURCE=config\|env\|default` | Assert `/health` provenance (YAML key vs env override vs packaged default) after serve restart |
+
+### Quick start — inprocess via YAML (5080 GPU)
+
+```bash
+# Terminal A — uncomment llama_backend: inprocess in runtime/configs/single_gpu.yaml first
+source ./scripts/phase14_serve_env.sh
+export LLAMA_MODEL=/path/to/small.q8_0.gguf
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+# omit ZEROLLAMA_RUNTIME_LLAMA_BACKEND when testing YAML default
+./zerollama serve
+
+# Terminal B
+export LLAMA_MODEL=/path/to/same.gguf
+export RUN_E2E_PROXY_MODEL=<pulled-local-tag>
+./scripts/phase14_yaml_config_smoke.sh
+```
+
+Or enable YAML in one step after env inprocess smoke passes:
+
+```bash
+./scripts/phase14_enable_yaml_inprocess.sh
+# restart serve without ZEROLLAMA_RUNTIME_LLAMA_BACKEND
+./scripts/phase14_yaml_config_smoke.sh
+```
 
 ### Quick start — inprocess (5080 GPU)
 
@@ -177,7 +215,7 @@ export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 # Terminal B
 export LLAMA_MODEL=/path/to/same.gguf
 export RUN_E2E_PROXY_MODEL=<pulled-local-tag>
-RUN_E2E_INPROCESS=1 ./scripts/phase14_backend_smoke.sh
+./scripts/phase14_inprocess_smoke.sh
 ```
 
 **Pass:** `PASS: phase14_backend_smoke`, `render-chat truncate_mode: tokenize`.
@@ -198,7 +236,9 @@ export LLAMA_MODEL=... RUN_E2E_PROXY_MODEL=...
 
 | Path | Role |
 |------|------|
-| `runtime/worker/factory.py` | Backend selection |
+| `runtime/worker/factory.py` | Backend selection; `canonical_llama_backend()`; `llama_backend_source()` |
+| `runtime/config.py` | YAML `llama_backend` + `llama_backend_from_file` |
+| `runtime/vram_recommendations.py` | Shared Phase 13 skip-global-factor rules (health + snapshot) |
 | `runtime/worker/libllama_ctypes.py` | ctypes bind; sampler chain; stream `finally` UAF fix |
 | `runtime/worker/llama_inprocess.py` | In-process worker |
 | `runtime/worker/llama_cpp_python.py` | Wheel worker; CPU-default GPU layers |

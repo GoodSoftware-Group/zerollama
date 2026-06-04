@@ -13,6 +13,11 @@
 #   RUN_E2E_LEGACY=1 RUN_E2E_LEGACY_MODEL=llama3.2:3B  # defaults to RUN_E2E_PROXY_MODEL or llama3.2:3B
 #   RUN_E2E_PREFLIGHT=1  # run ./scripts/phase12_golden_ci.sh before GPU steps
 #   RUN_E2E_PHASE13_SNAPSHOT=1  # write gpu_phase13_snapshot JSON after smokes
+#   RUN_E2E_PHASE14=1         # phase14_backend_smoke (serve must match backend)
+#   RUN_E2E_PHASE14_SIGNOFF=1 # phase14_5080_signoff (needs LLAMA_CPP_LIB; self-contained restarts)
+#   RUN_E2E_PHASE15=1         # phase15_inprocess_multiseq_smoke (needs LLAMA_CPP_LIB)
+#   RUN_E2E_LLAMA_BACKEND_SOURCE=config|env|default  # optional provenance assert
+#   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1  # wheel GPU offload (with RUN_E2E_LLAMA_CPP_PYTHON=1)
 #   GPU_PHASE13_SNAPSHOT_OUT=/tmp/phase13-post-smoke.json
 #   RUN_E2E_TRAINING_OPS=1     # GET /api/train/* (+ optional RUN_E2E_TRAINING_TCP=1)
 #
@@ -81,6 +86,37 @@ if [[ "${RUN_E2E_PHASE13_SNAPSHOT:-0}" == "1" ]]; then
     snap_args=(--gguf "${LLAMA_MODEL}" --num-ctx "${RUN_E2E_NUM_CTX:-4096}")
   fi
   GPU_PHASE13_SNAPSHOT_OUT="$snap_out" "${ROOT}/scripts/gpu_phase13_snapshot.sh" "${snap_args[@]}"
+fi
+
+if [[ "${RUN_E2E_PHASE14_SIGNOFF:-0}" == "1" ]]; then
+  if [[ -z "${LLAMA_CPP_LIB:-}" ]]; then
+    echo "RUN_E2E_PHASE14_SIGNOFF=1 requires LLAMA_CPP_LIB (ctypes libllama.so)" >&2
+    exit 1
+  fi
+  echo "== Phase 14/15 5080 sign-off (self-contained) =="
+  "${ROOT}/scripts/phase14_5080_signoff.sh"
+elif [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then
+  if [[ -z "${LLAMA_CPP_LIB:-}" ]]; then
+    echo "RUN_E2E_PHASE15=1 requires LLAMA_CPP_LIB (ctypes libllama.so)" >&2
+    exit 1
+  fi
+  echo "== Phase 15 in-process multi-seq smoke =="
+  "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
+elif [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
+  echo "== Phase 14 backend smoke =="
+  if [[ "${RUN_E2E_INPROCESS:-0}" == "1" && -z "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" ]]; then
+    "${ROOT}/scripts/phase14_inprocess_smoke.sh"
+  elif [[ "${RUN_E2E_LLAMA_CPP_PYTHON:-0}" == "1" && "${RUN_E2E_LLAMA_CPP_PYTHON_GPU:-0}" != "1" && -z "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" ]]; then
+    "${ROOT}/scripts/phase14_wheel_cpu_smoke.sh"
+  else
+    phase14_env=()
+    [[ "${RUN_E2E_INPROCESS:-0}" == "1" ]] && phase14_env+=(RUN_E2E_INPROCESS=1)
+    [[ "${RUN_E2E_LLAMA_CPP_PYTHON:-0}" == "1" ]] && phase14_env+=(RUN_E2E_LLAMA_CPP_PYTHON=1)
+    [[ "${RUN_E2E_LLAMA_CPP_PYTHON_GPU:-0}" == "1" ]] && phase14_env+=(RUN_E2E_LLAMA_CPP_PYTHON_GPU=1)
+    [[ -n "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}" ]] && phase14_env+=(RUN_E2E_LLAMA_BACKEND_SOURCE="${RUN_E2E_LLAMA_BACKEND_SOURCE}")
+    # shellcheck disable=SC2086
+    env "${phase14_env[@]}" "${ROOT}/scripts/phase14_backend_smoke.sh"
+  fi
 fi
 
 echo "PASS: gpu_smoke_all"

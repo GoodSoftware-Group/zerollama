@@ -44,6 +44,16 @@ if [[ -z "$ZEROLLAMA_BIN" ]]; then
   exit 1
 fi
 
+# Embedded runtime binds 127.0.0.1:8081 (or ZEROLLAMA_RUNTIME_EMBED_PORT). Stop stale listeners.
+EMBED_PORT="${ZEROLLAMA_RUNTIME_EMBED_PORT:-8081}"
+if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":${EMBED_PORT} "; then
+  echo "WARN: :${EMBED_PORT} in use — stopping stale zerollama serve (not systemd ollama)" >&2
+  pkill -f 'zerollama serve' 2>/dev/null || true
+  sleep 1
+fi
+unset ZEROLLAMA_RUNTIME_URL
+export ZEROLLAMA_RUNTIME_EMBED="${ZEROLLAMA_RUNTIME_EMBED:-on}"
+
 # After serve + one load: ./scripts/gpu_health_report.sh
 # Preflight (no GPU): ./scripts/phase12_golden_ci.sh
 # Calibration JSON: GPU_PHASE13_SNAPSHOT_OUT=5080.json ./scripts/gpu_phase13_snapshot.sh --gguf "$LLAMA_MODEL"

@@ -19,6 +19,16 @@ def _default_config_path() -> Path:
     return Path(__file__).resolve().parents[1] / "configs" / "dual_4090.yaml"
 
 
+_DEFAULT_LLAMA_BACKEND = "subprocess"
+
+
+def _normalize_llama_backend(raw: str | None) -> str:
+    """Canonical backend string for RuntimeConfig."""
+    from runtime.worker.factory import canonical_llama_backend
+
+    return canonical_llama_backend(raw, default=_DEFAULT_LLAMA_BACKEND)
+
+
 @dataclass
 class RuntimeConfig:
     host: str
@@ -37,7 +47,8 @@ class RuntimeConfig:
     draft_model: Path | None = None
     speculative: SpeculativeConfig = field(default_factory=SpeculativeConfig)
     llama_parallel_slots: int = 4
-    llama_backend: str = "subprocess"
+    llama_backend: str = _DEFAULT_LLAMA_BACKEND
+    llama_backend_from_file: bool = False
     llama_cpp_lib: Path | None = None
 
     def active_kv_pools(self) -> int:
@@ -80,12 +91,10 @@ class RuntimeConfig:
     def from_env(cls) -> RuntimeConfig:
         cfg_path = os.environ.get("ZEROLLAMA_RUNTIME_CONFIG", "").strip()
         if cfg_path:
-            base = cls.from_file(Path(cfg_path))
-        else:
-            from runtime.autoconfig import resolve_default_config_path
+            return cls.from_file(Path(cfg_path))
+        from runtime.autoconfig import resolve_default_config_path
 
-            base = cls.from_file(resolve_default_config_path())
-        return base._apply_env_overrides()
+        return cls.from_file(resolve_default_config_path())
 
     @classmethod
     def from_file(cls, path: Path) -> RuntimeConfig:
@@ -107,7 +116,7 @@ class RuntimeConfig:
             block_size=int(os.environ.get("ZEROLLAMA_KV_BLOCK_SIZE", "16")),
             device_count=int(os.environ.get("ZEROLLAMA_DEVICE_COUNT", "1")),
             tensor_parallel=int(os.environ.get("ZEROLLAMA_TENSOR_PARALLEL", "1")),
-        )
+        )._apply_env_overrides()
 
     @classmethod
     def _from_mapping(cls, data: dict[str, Any]) -> RuntimeConfig:
@@ -129,6 +138,9 @@ class RuntimeConfig:
         spec_cfg = SpeculativeConfig.from_mapping(spec)
         if draft is not None:
             spec_cfg.draft_model = draft
+
+        backend_raw = data.get("llama_backend")
+        backend_from_file = backend_raw is not None and str(backend_raw).strip() != ""
 
         return cls(
             host=str(data.get("host", "127.0.0.1")),
@@ -152,6 +164,8 @@ class RuntimeConfig:
             draft_model=spec_cfg.draft_model or draft,
             speculative=spec_cfg,
             llama_parallel_slots=int(data.get("llama_parallel_slots", 4)),
+            llama_backend=_normalize_llama_backend(backend_raw),
+            llama_backend_from_file=backend_from_file,
         )
 
     def _apply_env_overrides(self) -> RuntimeConfig:
@@ -169,7 +183,7 @@ class RuntimeConfig:
         if v := os.environ.get("ZEROLLAMA_TENSOR_PARALLEL"):
             self.tensor_parallel = int(v)
         if v := os.environ.get("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", "").strip():
-            self.llama_backend = v
+            self.llama_backend = _normalize_llama_backend(v)
         lib_env = os.environ.get("LLAMA_CPP_LIB", "").strip()
         if lib_env:
             self.llama_cpp_lib = Path(lib_env)

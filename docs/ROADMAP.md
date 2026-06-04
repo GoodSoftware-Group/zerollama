@@ -51,7 +51,7 @@ Phases **0–7** are **done** (sidecar, embed, Go proxy, spec decode plugins). W
 | **11** | **VRAM + admission policy in Python** | Python | **Partial** — inference-first + VRAM checks; **low** throttling; min-free + training reserve via env or `single_gpu.yaml` `vram:` block. Backpressure thresholds overridable (`ZEROLLAMA_RUNTIME_BACKLOG_BATCH_MIN`, …). **5080:** `gpu_5080_session.sh` PASS; defaults unchanged (gates active, admission fits). |
 | **12** | **Runtime default for text local models** | Go + Python | **Done** (tools path) — default-on; streaming proxies; tools via Go render + stateful `parse-tool-output` sessions. Render ctx aligned with load via `resolve_num_ctx_for_request`. v1 proxy injects manifest `options.gguf`. CI goldens: `./scripts/phase12_golden_ci.sh`. **Harmony real-weight:** CI synthetic only; `gpt-oss:20b` needs ~40+ GiB host RAM on runtime path (not required on 5080). |
 | **13** | **Single-GPU + host autoconfig** | Python | **Partial** — estimates, autotune catalog + `estimate_factor_source`, `suggested_max_num_ctx`, clamp default **off** in YAML; `python -m runtime.gpu_snapshot` after session JSON; `vram:` defaults in `single_gpu.yaml`. **5080 gate:** [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md). Doc: [phase13-runtime-vram.md](./phase13-runtime-vram.md). |
-| **14** | **In-process llama forward** | Python → C/Rust | **Partial** — ctypes `inprocess` (GPU) + `llama-cpp-python` wheel (CPU default; GPU via `ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS`), render tokenize, sampling; subprocess default. **5080:** `phase14_backend_smoke.sh` PASS (`inprocess`); `phase14_both_backends.sh` PASS (wheel CPU, ~10 min). Doc: [phase14-inprocess-llama.md](./phase14-inprocess-llama.md), handoff: [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md). **Next:** wheel GPU stability; optional `llama_backend: inprocess` in YAML on 5080. |
+| **14** | **In-process llama forward** | Python → C/Rust | **Done** — see [exit criteria](#phase-14--exit-criteria-done). Shipped: ctypes `inprocess`, wheel (CPU default), tokenize, sampling, YAML `llama_backend`, `llama_backend_source`, `llama_cpp` `/health`, heap-batch decode fix. Smokes: `phase14_inprocess_smoke`, `phase14_5080_signoff`, optional `phase14_wheel_gpu_smoke` (failed on 5080). Doc: [phase14-inprocess-llama.md](./phase14-inprocess-llama.md). |
 | **15** | **Native scheduler + KV** | C/Rust | **Partial (v0–v8 ops)** — C pool + tick/decode hooks; logical bind + forward plans; Go loopback KV snapshot; scheduler/proxy fixes; `kv_page_bind` readiness + opt-in live physical health. **Blocked:** tensor page bind + batched decode in C (llama.cpp API). Docs: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md). |
 | **16** | **Thin edge daemon** | Rust or minimal Go | Pull/registry/cloud only; all local generate/chat through native runtime. **Why:** complete “Go gone” for inference control plane. |
 
@@ -59,9 +59,22 @@ Phases **0–7** are **done** (sidecar, embed, Go proxy, spec decode plugins). W
 
 **Non-goals (this ladder):** RadixAttention v1; required vLLM/SGLang servers; rewriting training in C++ (`llama-finetune` WIP); bit-for-bit SGLang parity.
 
+### Phase 14 — exit criteria (Done)
+
+| # | Criterion | Owner |
+|---|-----------|--------|
+| 1 | Three backends, sampling, `/internal/tokenize`, Go render `truncate_mode=tokenize` | **Done** (code) |
+| 2 | YAML `llama_backend` + `/health` `llama_backend_source` + provenance smokes | **Done** (code) |
+| 3 | **5080 ctypes GPU:** `phase14_inprocess_smoke.sh` (or `RUN_E2E_INPROCESS=1 phase14_backend_smoke`) | **Done** (5080 dev host) |
+| 4 | **Wheel CPU:** `phase14_wheel_cpu_smoke.sh` (or `phase14_both_backends.sh`) | **Done** (5080 dev host) |
+| 5 | **Wheel GPU (optional):** `phase14_wheel_gpu_smoke.sh` after `ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS` on serve | **Failed** on 5080 dev host (`free(): invalid pointer`); use inprocess for GPU |
+| 6 | **Packaged default (optional):** `phase14_enable_yaml_inprocess.sh` or `phase14_yaml_config_full_smoke.sh` | **Done** (5080 dev host, temp YAML) |
+
+Mark **Done** when 1–2 and **3–4** pass on ship hardware. **5** failed on 5080 dev host (wheel GPU); **6** optional YAML packaged default — use `phase14_yaml_config_full_smoke.sh` without editing repo YAML. Subprocess stays the repo default until operators opt in. **One-shot:** `./scripts/phase14_5080_signoff.sh`. See [phase14-inprocess-llama.md](./phase14-inprocess-llama.md).
+
 ### Phase 8 — shipped
 
-See `server/vram/broker.go` and `server/runtime_manifest.go`. Next: **Phase 11** (admission hardening) and **Phase 14** (in-process llama forward).
+See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-process forward is **Done**; next: **Phase 11** admission tuning and **Phase 15** native KV tensor bind.
 
 ---
 

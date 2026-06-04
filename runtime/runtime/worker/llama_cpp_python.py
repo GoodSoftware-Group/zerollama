@@ -52,6 +52,28 @@ def llama_cpp_n_gpu_layers(n_gpu_layers: int, hints_n_gpu_layers: int | None) ->
     return max(0, n_gpu_layers)
 
 
+def llama_cpp_wheel_health(
+    worker: Any | None = None,
+    *,
+    default_n_gpu_layers: int = -1,
+) -> dict[str, Any]:
+    """Operator-facing wheel GPU offload state for ``/health``."""
+    env_raw = os.environ.get("ZEROLLAMA_LLAMA_CPP_N_GPU_LAYERS", "").strip()
+    loaded_layers = (
+        getattr(worker, "_loaded_n_gpu_layers", None) if worker is not None else None
+    )
+    if loaded_layers is not None:
+        effective = int(loaded_layers)
+    else:
+        effective = llama_cpp_n_gpu_layers(default_n_gpu_layers, None)
+    return {
+        "n_gpu_layers": effective,
+        "loaded": loaded_layers is not None,
+        "gpu_mode": "gpu" if effective > 0 else "cpu",
+        "env_n_gpu_layers": env_raw or None,
+    }
+
+
 def _import_llama():
     try:
         from llama_cpp import Llama
@@ -146,6 +168,7 @@ class LlamaCppPythonWorker:
     port: int = 8082
     _llama: Any = field(default=None, repr=False)
     _n_ctx: int | None = field(default=None, repr=False)
+    _loaded_n_gpu_layers: int | None = field(default=None, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     @property
@@ -181,6 +204,7 @@ class LlamaCppPythonWorker:
             )
             self._llama = Llama(**kwargs)
             self._n_ctx = int(kwargs["n_ctx"])
+            self._loaded_n_gpu_layers = int(kwargs["n_gpu_layers"])
             if kwargs["n_gpu_layers"] == 0 and (
                 hints.n_gpu_layers is None and self.n_gpu_layers < 0
             ):
@@ -203,6 +227,7 @@ class LlamaCppPythonWorker:
             llama = self._llama
             self._llama = None
             self._n_ctx = None
+            self._loaded_n_gpu_layers = None
             if llama is not None:
                 try:
                     llama.close()

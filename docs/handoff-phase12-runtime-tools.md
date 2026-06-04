@@ -15,9 +15,9 @@
 | Phase | ROADMAP | Tests / smoke |
 |-------|---------|----------------|
 | **12** tools path | **Done** | Go Golden (`phase12_golden_ci.sh`); runtime pytest tools meta. **Harmony real weights:** CI synthetic only — not required on 5080 (~19 GiB host RAM). |
-| **11** admission | **Partial** — logic + YAML `vram:` defaults on `single_gpu.yaml` | **322+** runtime pytest; `e2e_coordination_smoke.sh`; 5080 session: gates active, admission fits at smoke load |
+| **11** admission | **Partial** — logic + YAML `vram:` defaults on `single_gpu.yaml` | **408+** runtime pytest; `e2e_coordination_smoke.sh`; 5080 session: gates active, admission fits at smoke load |
 | **13** VRAM estimates | **Partial** | autotune, clamp default **off** in YAML, `gpu_snapshot`, `vram_yaml_defaults`; [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
-| **14** in-process llama | **Partial** | `phase14_backend_smoke.sh` PASS (inprocess GPU); `phase14_both_backends.sh` PASS (wheel CPU). [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md) |
+| **14** in-process llama | **Done** | `phase14_5080_signoff.sh` PASS. [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md) |
 | **5080 gate** | **Shipped (ops)** | `./scripts/gpu_5080_session.sh` PASS on RTX 5080-class host; [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
 
 Run **Go tests on the target host** (`go test ./server/... ./x/trainingworker/...`). **Single-GPU acceptance:** `./scripts/gpu_5080_session.sh` after rebuild/restart with smoke GGUF + `LLAMA_SERVER_BIN`.

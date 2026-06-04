@@ -56,3 +56,19 @@ cd runtime && pip install -e ".[serve]"
 Both use the same GPU. **Target:** a **Go-owned VRAM broker** evicts the other stack before each load—no operator `unload`/`resume` API. **Today (interim):** internal hooks only; see [testing-smoke.md](./testing-smoke.md) if you must free VRAM manually before the broker ships.
 
 Single-GPU hosts: prefer `runtime/configs/single_gpu.yaml` over `dual_4090.yaml`. **Why:** tensor split (`-sm tensor -ts 1,1`) requires multiple GPUs.
+
+## Port conflicts (`address already in use` on :8081)
+
+Embed starts uvicorn on loopback **8081** (or `ZEROLLAMA_RUNTIME_EMBED_PORT`). If another `zerollama serve` or `zerollama-runtime serve` already holds the port:
+
+1. uvicorn logs `ERROR: [Errno 98] ... address already in use`
+2. **Current zerollama:** Go refuses embed when the port is busy **or** `/health` on `:8081` lacks matching `embed_boot` (avoids attaching to a stale runtime).
+
+**Fix:** stop the stale process before starting serve:
+
+```bash
+ss -tlnp | grep ':8081'
+pkill -f 'zerollama serve'    # or kill the sidecar PID
+```
+
+`scripts/serve_gpu_example.sh` and `scripts/phase14_serve_env.sh` warn (and the example script may `pkill` stale zerollama). **`systemctl stop ollama` does not stop zerollama** — common footgun on cudallama-style `~/bin/serve.sh` wrappers.

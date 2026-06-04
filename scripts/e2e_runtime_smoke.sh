@@ -18,6 +18,8 @@
 #   Why header on proxy: sign-off must exercise runtime + tokenize render, not accidental
 #   ggml for pulled model names that are not runtime-default eligible.
 # RUN_E2E_INPROCESS=1 / RUN_E2E_LLAMA_CPP_PYTHON=1: assert /health llama_backend matches (serve env).
+# RUN_E2E_LLAMA_CPP_PYTHON_GPU=1: after GPU generate, assert /health llama_cpp.gpu_mode=gpu (wheel only).
+# RUN_E2E_INPROCESS=1: assert /health llama_backend=inprocess; after generate assert kv_decode_steps active.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -101,10 +103,15 @@ _phase14_strict=""
 [[ "${RUN_E2E_PHASE14:-0}" == "1" ]] && _phase14_strict=strict
 llama_backend=$(smoke_runtime_llama_backend "$health_json" "$_phase14_strict")
 echo "llama_backend=${llama_backend}"
+if [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
+  llama_backend_source=$(smoke_runtime_llama_backend_source "$health_json" "$_phase14_strict")
+  echo "llama_backend_source=${llama_backend_source}"
+  smoke_runtime_assert_llama_backend_source "$health_json" "${RUN_E2E_LLAMA_BACKEND_SOURCE:-}"
+fi
 
 if [[ "${RUN_E2E_INPROCESS:-0}" == "1" ]]; then
   if [[ "$llama_backend" != "inprocess" ]]; then
-    echo "RUN_E2E_INPROCESS=1 but /health llama_backend=${llama_backend} (set ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess on serve)" >&2
+    echo "RUN_E2E_INPROCESS=1 but /health llama_backend=${llama_backend} (set ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess or llama_backend: inprocess in runtime YAML on serve)" >&2
     exit 1
   fi
 fi
@@ -156,8 +163,12 @@ if [[ "${RUN_E2E_GPU:-0}" == "1" ]]; then
     exit 1
   fi
   if smoke_runtime_needs_server_bin "$llama_backend" && [[ -z "${LLAMA_SERVER_BIN:-}" ]]; then
-    echo "RUN_E2E_GPU=1 requires LLAMA_SERVER_BIN for subprocess backend (llama_backend=${llama_backend})" >&2
-    exit 1
+    if [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
+      echo "warn: LLAMA_SERVER_BIN unset in smoke shell (subprocess uses serve config; set if you want local parity)" >&2
+    else
+      echo "RUN_E2E_GPU=1 requires LLAMA_SERVER_BIN for subprocess backend (llama_backend=${llama_backend})" >&2
+      exit 1
+    fi
   fi
   llama_model_hint=$(smoke_llama_model_config_hint "$llama_backend")
   python3 -c "
@@ -220,6 +231,16 @@ if bud.get('fits_with_margin') is not None:
   gen_payload=$(python3 -c "import json,sys; print(json.dumps({'model':'smoke','prompt':'Say exactly: pong','stream':False,'options':json.loads(sys.argv[1])}))" "$gen_opts")
   gen_json=$(curl_runtime POST /api/generate "$gen_payload")
   python3 -c "import sys,json; d=json.loads(sys.argv[1]); assert d.get('done') and d.get('response'), d" "$gen_json"
+  if [[ "${RUN_E2E_INPROCESS:-0}" == "1" ]]; then
+    python3 -c "
+import json, os, sys
+d = json.loads(sys.argv[1])
+steps = d.get('kv_decode_steps')
+assert steps is not None, f'inprocess generate missing kv_decode_steps: {d!r}'
+assert int(steps) > 0, f'expected kv_decode_steps > 0, got {steps!r}'
+print('kv_decode_steps (generate):', steps)
+" "$gen_json"
+  fi
 
   echo "== runtime /api/chat (non-stream, no tools) =="
   chat_payload=$(python3 -c "import json,sys; print(json.dumps({
@@ -431,7 +452,31 @@ if os.environ.get('RUN_E2E_VRAM_CLAMP', '').strip() == '1':
     assert policy.get('clamp_enabled') is True, (
         'RUN_E2E_VRAM_CLAMP=1 requires ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto or 1 on serve'
     )
+if os.environ.get('RUN_E2E_LLAMA_CPP_PYTHON_GPU', '').strip() == '1':
+    lcp = h.get('llama_cpp') or {}
+    mode = lcp.get('gpu_mode')
+    assert mode == 'gpu', f'RUN_E2E_LLAMA_CPP_PYTHON_GPU=1 expected gpu_mode=gpu, got {mode!r} llama_cpp={lcp!r}'
+    assert lcp.get('loaded') is True, f'wheel GPU smoke expected loaded model, llama_cpp={lcp!r}'
+    assert int(lcp.get('n_gpu_layers') or 0) > 0, lcp
+    print('llama_cpp.gpu_mode: gpu (n_gpu_layers=%s)' % lcp.get('n_gpu_layers'))
+elif os.environ.get('RUN_E2E_LLAMA_CPP_PYTHON', '').strip() == '1':
+    lcp = h.get('llama_cpp') or {}
+    if lcp:
+        mode = lcp.get('gpu_mode')
+        assert mode == 'cpu', f'wheel CPU smoke expected gpu_mode=cpu, got {mode!r} llama_cpp={lcp!r}'
+        assert lcp.get('loaded') is True, f'wheel CPU smoke expected loaded model, llama_cpp={lcp!r}'
+        print('llama_cpp.gpu_mode: cpu')
+if os.environ.get('RUN_E2E_INPROCESS', '').strip() == '1':
+    kd = h.get('kv_decode_steps') or {}
+    assert kd.get('active') is True, f'inprocess /health kv_decode_steps inactive: {kd!r}'
+    assert int(kd.get('value') or 0) > 0, kd
+    print('kv_decode_steps (health):', kd.get('value'), 'source=', kd.get('source'))
 " "$post_health"
+  if [[ "${RUN_E2E_LLAMA_CPP_PYTHON_GPU:-0}" == "1" ]]; then
+    smoke_runtime_assert_llama_cpp_gpu "$post_health" gpu
+  elif [[ "${RUN_E2E_LLAMA_CPP_PYTHON:-0}" == "1" ]]; then
+    smoke_runtime_assert_llama_cpp_gpu "$post_health" cpu
+  fi
 
   if [[ "${RUN_E2E_VRAM_CLAMP:-0}" == "1" ]]; then
     echo "== runtime clamp behavior (high num_ctx request) =="

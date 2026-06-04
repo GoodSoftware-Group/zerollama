@@ -13,7 +13,7 @@ tensor_parallel: 1
 split_mode: layer
 main_gpu: 0
 llama_parallel_slots: 1
-# llama_backend: inprocess  # Phase 14 ctypes GPU path; default subprocess (see docs/phase14-inprocess-llama.md)
+# llama_backend: inprocess  # Phase 14 ctypes GPU; after RUN_E2E_INPROCESS=1 phase14_backend_smoke, enable_yaml_inprocess + yaml_config smoke
 kv:
   block_size: 16
   num_blocks_per_device: 2048

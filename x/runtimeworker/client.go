@@ -4,8 +4,12 @@ package runtimeworker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +29,38 @@ var (
 // Client tracks embedded runtime lifecycle (uvicorn runs on a daemon thread).
 type Client struct{}
 
+func checkLoopbackPortFree(port int) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf(
+			"loopback %s already in use (stop stale zerollama serve or zerollama-runtime sidecar before embed): %w",
+			addr,
+			err,
+		)
+	}
+	_ = ln.Close()
+	return nil
+}
+
+func newEmbedBootToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func healthEmbedBoot(body []byte) string {
+	var h struct {
+		EmbedBoot string `json:"embed_boot"`
+	}
+	if json.Unmarshal(body, &h) != nil {
+		return ""
+	}
+	return strings.TrimSpace(h.EmbedBoot)
+}
+
 // Start launches embedded Python runtime HTTP on 127.0.0.1:port.
 // Shares CPython with training when training already called Py_Initialize.
 func Start(ctx context.Context, repoRoot string) (*Client, error) {
@@ -43,6 +79,11 @@ func Start(ctx context.Context, repoRoot string) (*Client, error) {
 	}
 
 	port := envconfig.RuntimeEmbedPort()
+	if err := checkLoopbackPortFree(port); err != nil {
+		return nil, err
+	}
+	boot := newEmbedBootToken()
+	_ = os.Setenv("ZEROLLAMA_RUNTIME_EMBED_BOOT", boot)
 	runtimeParent := repoRoot + "/runtime"
 	if err := pyembed.EmbedStart(repoRoot, runtimeParent, port); err != nil {
 		return nil, err
@@ -57,7 +98,7 @@ func Start(ctx context.Context, repoRoot string) (*Client, error) {
 			if err == nil {
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
-				if resp.StatusCode == 200 {
+				if resp.StatusCode == 200 && healthEmbedBoot(body) == boot {
 					mu.Lock()
 					baseURL = url
 					mu.Unlock()
@@ -72,7 +113,11 @@ func Start(ctx context.Context, repoRoot string) (*Client, error) {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	return nil, fmt.Errorf("embedded runtime not healthy at %s within 120s", url)
+	return nil, fmt.Errorf(
+		"embedded runtime not healthy at %s within 120s (port conflict or stale listener on :%d? stop other zerollama/runtime processes)",
+		url,
+		port,
+	)
 }
 
 // BaseURL returns the loopback URL for the in-process runtime, or "" if not embedded.
