@@ -9,6 +9,7 @@ on:
       - 'runtime/**'
       - 'scripts/**'
       - 'x/trainingworker/**'
+      - 'x/runtimeworker/**'
       - '.github/workflows/zerollama-regression.yaml'
   push:
     branches:
@@ -19,6 +20,7 @@ on:
       - 'runtime/**'
       - 'scripts/**'
       - 'x/trainingworker/**'
+      - 'x/runtimeworker/**'
       - '.github/workflows/zerollama-regression.yaml'
 
 concurrency:
@@ -40,7 +42,7 @@ jobs:
         env:
           CGO_ENABLED: '1'
           OLLAMA_NO_CLOUD: 'true'
-        run: go test -count=1 ./server/... ./envconfig/... ./x/trainingworker/...
+        run: go test -count=1 ./server/... ./envconfig/... ./x/trainingworker/... ./x/runtimeworker/...
 
   runtime-pytest:
     runs-on: ubuntu-latest

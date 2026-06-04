@@ -52,7 +52,7 @@ Phases **0–7** are **done** (sidecar, embed, Go proxy, spec decode plugins). W
 | **12** | **Runtime default for text local models** | Go + Python | **Done** (tools path) — default-on; streaming proxies; tools via Go render + stateful `parse-tool-output` sessions. Render ctx aligned with load via `resolve_num_ctx_for_request`. v1 proxy injects manifest `options.gguf`. CI goldens: `./scripts/phase12_golden_ci.sh`. **Harmony real-weight:** CI synthetic only; `gpt-oss:20b` needs ~40+ GiB host RAM on runtime path (not required on 5080). |
 | **13** | **Single-GPU + host autoconfig** | Python | **Partial** — estimates, autotune catalog + `estimate_factor_source`, `suggested_max_num_ctx`, clamp default **off** in YAML; `python -m runtime.gpu_snapshot` after session JSON; `vram:` defaults in `single_gpu.yaml`. **5080 gate:** [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md). Doc: [phase13-runtime-vram.md](./phase13-runtime-vram.md). |
 | **14** | **In-process llama forward** | Python → C/Rust | **Done** — see [exit criteria](#phase-14--exit-criteria-done). Shipped: ctypes `inprocess`, wheel (CPU default), tokenize, sampling, YAML `llama_backend`, `llama_backend_source`, `llama_cpp` `/health`, heap-batch decode fix. Smokes: `phase14_inprocess_smoke`, `phase14_5080_signoff`, optional `phase14_wheel_gpu_smoke` (failed on 5080). Doc: [phase14-inprocess-llama.md](./phase14-inprocess-llama.md). |
-| **15** | **Native scheduler + KV** | C/Rust | **Partial (v0–v8 ops)** — C pool + tick/decode hooks; logical bind + forward plans; Go loopback KV snapshot; scheduler/proxy fixes; `kv_page_bind` readiness + opt-in live physical health. **Blocked:** tensor page bind + batched decode in C (llama.cpp API). Docs: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md). |
+| **15** | **Native scheduler + KV** | C/Rust | **Partial (v0–v8 ops)** — see [exit criteria](#phase-15--exit-criteria-partial). C pool + tick/decode hooks; logical bind + forward plans; Go KV snapshot; GPU `phase15_inprocess_signoff`. **Blocked:** tensor page bind + batched decode in C. Docs: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md). |
 | **16** | **Thin edge daemon** | Rust or minimal Go | Pull/registry/cloud only; all local generate/chat through native runtime. **Why:** complete “Go gone” for inference control plane. |
 
 **Deprioritized:** public `POST /api/runtime/unload` or `/resume` — automatic eviction only ([Phase 8](#local-inference--actionable-phases) → [Phase 11](#local-inference--actionable-phases)).
@@ -71,6 +71,19 @@ Phases **0–7** are **done** (sidecar, embed, Go proxy, spec decode plugins). W
 | 6 | **Packaged default (optional):** `phase14_enable_yaml_inprocess.sh` or `phase14_yaml_config_full_smoke.sh` | **Done** (5080 dev host, temp YAML) |
 
 Mark **Done** when 1–2 and **3–4** pass on ship hardware. **5** failed on 5080 dev host (wheel GPU); **6** optional YAML packaged default — use `phase14_yaml_config_full_smoke.sh` without editing repo YAML. Subprocess stays the repo default until operators opt in. **One-shot:** `./scripts/phase14_5080_signoff.sh`. See [phase14-inprocess-llama.md](./phase14-inprocess-llama.md).
+
+### Phase 15 — exit criteria (Partial)
+
+| # | Criterion | Owner |
+|---|-----------|--------|
+| 1 | C block pool + Python facade; `phase15_kv_native_ci.sh` | **Done** (code) |
+| 2 | Logical bind, forward plans, `/internal/kv-snapshot`, Go loopback proxy | **Done** (code) |
+| 3 | In-process decode hook (`kv_decode_steps`) + multi-seq (`llama_parallel_slots`>1) | **Done** (code) |
+| 4 | **5080 GPU:** `phase15_inprocess_signoff.sh` (KV hook + multi-seq + `kv_page_bind` snapshot) | **Done** (5080 dev host, operator smokes) |
+| 5 | **Tensor page bind** — PA `block_ids` → llama KV tensor pages | **Blocked** (llama.cpp API) |
+| 6 | **Native decode batch** in C wired to `kv_forward_plans` | **Blocked** (llama.cpp API) |
+
+Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** blocked on upstream llama.cpp. CPU gate: `./scripts/phase15_kv_native_ci.sh`. GPU gate: `./scripts/phase15_inprocess_signoff.sh`. See [phase15-native-kv.md](./phase15-native-kv.md).
 
 ### Phase 8 — shipped
 

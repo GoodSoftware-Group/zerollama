@@ -4,6 +4,8 @@
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
+See also [ROADMAP Phase 15 exit criteria](../ROADMAP.md#phase-15--exit-criteria-partial).
+
 **Why:** Phase 14 moved **forward** in-process; Phase 15 moves **KV bookkeeping** (and eventually decode) off the interpreter so continuous batching does not fight the GIL under `ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`.
 
 ---

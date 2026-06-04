@@ -102,6 +102,8 @@ Full design: [docs/phase14-inprocess-llama.md](docs/phase14-inprocess-llama.md).
 - **Phase 14 smoke:** `phase14_backend_smoke.sh` and `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh`; sign-off wrappers `phase14_inprocess_smoke.sh`, `phase14_wheel_cpu_smoke.sh`; provenance via `phase14_yaml_config_smoke.sh`, `phase14_subprocess_default_smoke.sh`; optional `phase14_wheel_gpu_smoke.sh` and `phase14_enable_yaml_inprocess.sh`; optional `RUN_E2E_PHASE14=1` in `gpu_smoke_all.sh` / `gpu_5080_session.sh`.
 - **Phase 15 inprocess KV smoke:** `phase15_inprocess_kv_smoke.sh` — self-contained inprocess serve + asserts `kv_decode_steps` on generate and `/health` (v6 decode hook).
 - **Phase 15 in-process sign-off:** `phase15_inprocess_signoff.sh` — self-contained KV decode hook + multi-seq smokes; `phase15_inprocess_kv_smoke.sh` now starts its own serve.
+- **Phase 15 GPU smoke:** multiseq smoke asserts `kv_page_bind`, `kv_bind`, and `GET /internal/kv-snapshot` on live inprocess serve.
+- **CI:** regression workflow runs `go test ./x/runtimeworker/...` (embed `:8081` preflight tests).
 - **Phase 14 YAML full smoke:** `phase14_yaml_config_full_smoke.sh` — optional #6 without editing packaged `single_gpu.yaml`.
 - **Phase 14 render tokenize:** `llama-cpp-python` backend uses wheel `vocab_only` for `/internal/tokenize` (no `libllama.so`); subprocess can fall back to wheel vocab when ctypes lib is missing.
 - **Phase 14 llama-cpp-python backend:** `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=llama-cpp-python` uses the pip wheel (no `libllama.so` build); tokenize via loaded model when GGUF matches.
