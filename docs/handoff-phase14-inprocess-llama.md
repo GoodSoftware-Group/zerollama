@@ -173,7 +173,7 @@ POST /internal/render-chat (Go)
 | `scripts/phase14_both_backends.sh` | Restart serve per backend; `env -u` URL and stale `RUN_E2E_*`; fails if zero backends ran |
 | `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 multi-seq |
 | `scripts/phase14_yaml_config_full_smoke.sh` | Temp YAML `llama_backend: inprocess` without editing repo `single_gpu.yaml` |
-| `scripts/phase15_inprocess_kv_smoke.sh` | Inprocess serve + `kv_decode_steps` on generate and `/health` |
+| `scripts/phase15_inprocess_kv_smoke.sh` | Self-contained inprocess serve + `kv_decode_steps` on generate and `/health` |
 | `scripts/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; self-contained serve restart |
 | `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh` | Forces `X-Zerollama-Runtime` on Go proxy — **sign-off only** |
 | `RUN_E2E_LLAMA_BACKEND_SOURCE=config\|env\|default` | Assert `/health` provenance (YAML key vs env override vs packaged default) after serve restart |

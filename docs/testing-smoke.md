@@ -55,7 +55,7 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `phase15_kv_native_ci.sh` | Build C `BlockPool` + KV pytest bundle + `phase15_health_smoke.sh` (no GPU); [phase15-native-kv.md](./phase15-native-kv.md) |
 | `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_page_bind`, `kv_live_physical`, …) via `InferenceEngine` only |
 | `phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq (self-contained restarts). |
-| `phase15_inprocess_kv_smoke.sh` | Phase 14 inprocess serve + asserts `kv_decode_steps` on generate and post-generate `/health` (GPU host) |
+| `phase15_inprocess_kv_smoke.sh` | Self-contained: starts inprocess serve, asserts `kv_decode_steps` on generate and post-generate `/health` (GPU host) |
 | `phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2` + inprocess; asserts `kv_inprocess_n_seq_max` and generate |
 | `gpu_harmony_capture.sh` | Optional real-weight harmony capture — **needs ~40+ GiB host RAM** for `gpt-oss:20b` MXFP4 on runtime path; **not** required on 5080 (~19 GiB); CI uses Go golden |
 

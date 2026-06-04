@@ -226,22 +226,6 @@ export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 ./scripts/phase14_5080_signoff.sh
 ```
 
-**Phase 15 in-process sign-off** (KV decode hook + multi-seq; self-contained restarts):
-
-```bash
-export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
-RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
-# or standalone:
-./scripts/phase15_inprocess_signoff.sh
-```
-
-Phase 15 individual smokes (optional):
-
-```bash
-./scripts/phase15_inprocess_kv_smoke.sh
-./scripts/phase15_inprocess_multiseq_smoke.sh   # needs num_ctx within PA budget
-```
-
 ### Optional: wheel GPU smoke
 
 After CPU wheel smoke passes (`phase14_both_backends`), optional GPU offload on hosts where the pip wheel is stable:
