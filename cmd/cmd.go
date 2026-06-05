@@ -945,7 +945,11 @@ func ListRunningHandler(cmd *cobra.Command, args []string) error {
 				until = format.HumanTime(m.ExpiresAt, "Never")
 			}
 			ctxStr := strconv.Itoa(m.ContextLength)
-			data = append(data, []string{m.Name, m.Digest[:12], format.HumanBytes(m.Size), procStr, ctxStr, until})
+			digest := m.Digest
+			if len(digest) > 12 {
+				digest = digest[:12]
+			}
+			data = append(data, []string{m.Name, digest, format.HumanBytes(m.Size), procStr, ctxStr, until})
 		}
 	}
 
