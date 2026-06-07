@@ -1,14 +1,15 @@
-"""NVIDIA GPU free VRAM probe and heuristic headroom checks before llama-server start.
+"""GPU free memory probe and heuristic headroom checks before llama-server start.
 
-Why this module exists: CUDA OOM after subprocess start is slow and opaque; we fail
-early with actionable errors using free-memory probes plus coarse KV/layer scaling.
+Why this module exists: OOM after load is slow and opaque; we fail early with actionable
+errors using free-memory probes plus coarse KV/layer scaling.
 
 Why heuristics (not exact llama.cpp math): tensor layouts and mmap behavior vary;
 margins and factors are operator-tunable via ZEROLLAMA_RUNTIME_VRAM_* env vars.
 
-Why NVML before nvidia-smi: fewer subprocess spawns; optional nvidia-ml-py via
-pip install -e 'runtime/.[gpu]'. Unified-memory fallback matches ggml on iGPU hosts
-where NVML reports NOT_SUPPORTED.
+Probe backends:
+  - NVML / nvidia-smi on discrete NVIDIA GPUs
+  - host-unified when NVML reports NOT_SUPPORTED (Linux iGPU)
+  - metal-unified on macOS (vm_stat available bytes — Apple Silicon unified memory)
 """
 
 from __future__ import annotations
@@ -145,13 +146,22 @@ def _is_nvml_not_supported(exc: BaseException) -> bool:
 
 
 def _host_unified_free_vram_bytes() -> int | None:
-    """Linux fallback when NVML reports no dedicated framebuffer (unified memory GPUs)."""
-    from runtime.host_memory import read_linux_host_memory
+    """Fallback when NVML has no dedicated framebuffer (Linux iGPU / unified)."""
+    from runtime.host_memory import read_host_memory
 
-    mem = read_linux_host_memory()
+    mem = read_host_memory()
     if mem is None or mem.available_bytes <= 0:
         return None
     return mem.available_bytes
+
+
+def _metal_unified_free_vram_bytes() -> int | None:
+    """Apple Silicon: treat reclaimable host RAM as inference budget (no NVML framebuffer)."""
+    if sys.platform != "darwin":
+        return None
+    if not _nvml_unified_fallback_enabled():
+        return None
+    return _host_unified_free_vram_bytes()
 
 
 def _reset_nvml() -> None:
@@ -268,6 +278,10 @@ def _query_free_vram_bytes(device_index: int) -> tuple[int | None, str | None]:
     if val is not None:
         _active_vram_probe = "nvidia-smi"
         return val, "nvidia-smi"
+    val = _metal_unified_free_vram_bytes()
+    if val is not None:
+        _active_vram_probe = "metal-unified"
+        return val, "metal-unified"
     return None, None
 
 
@@ -819,7 +833,11 @@ def gpu_vram_check_enabled() -> bool:
         return nvml_available()
     if mode == "smi":
         return nvidia_smi_available()
-    return nvml_available() or nvidia_smi_available()
+    if nvml_available() or nvidia_smi_available():
+        return True
+    if sys.platform == "darwin" and _metal_unified_free_vram_bytes() is not None:
+        return True
+    return False
 
 
 def describe_vram_estimate(

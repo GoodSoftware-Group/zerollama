@@ -116,7 +116,26 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 
 **Direction:** GGUF-first **`runtime/`** with PagedAttention block pools; not HTTP to vLLM/SGLang. **Embed:** [runtime-embed.md](./runtime-embed.md). **Spec decode:** [runtime/docs/SPECULATIVE.md](../runtime/docs/SPECULATIVE.md). **Smoke validated:** [testing-smoke.md](./testing-smoke.md) on RTX 5080-class hosts. **Operator ladder (WHY):** [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) — one session script proves Phase 10–13 on 16 GB; harmony real-weight is **not** required (CI Go golden + host-RAM limits for `gpt-oss:20b`).
 
-**Still on ggml runner:** vision, logprobs, think, MLX, and models without `zerollama-runtime` backend. **Tools** on runtime-routed text models use Go render/parse (Phase 12 — done). Handoff: [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md).
+**Still on ggml runner:** vision, logprobs, think, MLX safetensors, and models without `zerollama-runtime` backend. **Tools** on runtime-routed text models use Go render/parse (Phase 12 — done). Handoff: [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md).
+
+---
+
+## Apple Silicon & Metal track
+
+**Why a separate track:** CUDA Phase 11/13 work (`single_gpu.yaml`, `nvidia-smi`, `gpu_5080_session.sh`) does not apply to unified memory. Mac users need **Metal ggml** (default), **runtime admission** that probes `vm_stat`, and clear **MLX vs GGUF** routing—not a copy of the 5080 playbook.
+
+**Guide:** [apple-silicon-metal.md](./apple-silicon-metal.md)
+
+| Milestone | Goal | Owner | Exit criteria |
+|-----------|------|--------|----------------|
+| **M1** | **Unified memory admission** | Python | **Shipped (audit)** — `metal-unified` probe; `read_host_memory()` on darwin (load + `/health`); `apple_silicon.yaml` autoconfig; `check_gguf_host_budget` no longer Linux-only; `vm.swapusage` parser fixed. |
+| **M2** | **Operator smoke + docs** | Repo | **Shipped** — `macos_metal_smoke.sh`; guide + ROADMAP; pytest for darwin probe + snapshot hints; `check_gpu_scripts` greps. |
+| **M3** | **Runtime Metal parity** | Python | **Started** — `gpu_metal_session.sh` (smoke + Phase 13 snapshot + optional Phase 14); `apple_silicon.yaml` vram defaults tested. **Needs Mac:** inprocess Metal sign-off. |
+| **M4** | **MLX policy** | Go + docs | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md); `IsMLX()` excluded from runtime default **and** explicit Modelfile backend; Go tests. |
+
+**Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
+
+**Not goals:** Replacing ggml Metal with MLX for all GGUF; NVML on Mac; duplicating `gpu_5080_session` on Darwin.
 
 ---
 

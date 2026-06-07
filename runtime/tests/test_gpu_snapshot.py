@@ -94,6 +94,17 @@ def test_format_includes_harmony_skip_hint():
     assert "single_gpu.yaml" in out
 
 
+def test_recommend_apple_silicon_autoconfig():
+    snap = dict(_SNAPSHOT_5080)
+    snap["autoconfig"] = {
+        "pick": "apple_silicon",
+        "config_path": "/cfg/apple_silicon.yaml",
+    }
+    text = "\n".join(recommend_from_snapshot(snap))
+    assert "apple_silicon.yaml" in text
+    assert "apple-silicon-metal.md" in text
+
+
 def test_warn_when_either_budget_fits_false():
     snap = dict(_SNAPSHOT_5080)
     snap["vram_budget"] = {"fits_with_margin": True}

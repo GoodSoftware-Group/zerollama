@@ -78,6 +78,40 @@ func TestModelEligibleForRuntimeDefault(t *testing.T) {
 	if !modelUsesRuntimeInference(tools) {
 		t.Fatal("default-on should route tools-capable models to runtime")
 	}
+
+	mlx := &Model{
+		ModelPath: "/tmp/mlx-model",
+		Config: model.ConfigV2{
+			ModelFormat:  "safetensors",
+			Capabilities: []string{string(model.CapabilityCompletion)},
+		},
+	}
+	if modelEligibleForRuntimeDefault(mlx) {
+		t.Fatal("MLX (safetensors) must not be runtime-default eligible")
+	}
+	if modelUsesRuntimeInference(mlx) {
+		t.Fatal("MLX must not use runtime inference via default-on")
+	}
+	if deferInferenceToRuntime(mlx) {
+		t.Fatal("MLX must not defer ggml load to runtime")
+	}
+
+	mlxExplicitRuntime := &Model{
+		ModelPath: "/tmp/mlx-explicit.gguf",
+		Config: model.ConfigV2{
+			ModelFormat:  "safetensors",
+			Capabilities: []string{string(model.CapabilityCompletion)},
+			ModalityBackends: map[string]string{
+				model.ModalityInference: model.BackendZerollamaRuntime,
+			},
+		},
+	}
+	if modelEligibleForRuntimeDefault(mlxExplicitRuntime) {
+		t.Fatal("MLX with explicit runtime backend must still fail eligible check (IsMLX guard)")
+	}
+	if modelUsesRuntimeInference(mlxExplicitRuntime) {
+		t.Fatal("MLX must not use runtime even with mistaken zerollama-runtime Modelfile")
+	}
 }
 
 func TestDeferInferenceToRuntimeWithToolsBackend(t *testing.T) {

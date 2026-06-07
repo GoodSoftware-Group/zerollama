@@ -55,3 +55,23 @@ def test_apply_skips_existing_env(monkeypatch: pytest.MonkeyPatch, yaml_config: 
     result = apply_vram_defaults_from_config(yaml_config, force=True)
     assert "ZEROLLAMA_RUNTIME_VRAM_MIN_FREE" in result["skipped"]
     assert os.environ["ZEROLLAMA_RUNTIME_VRAM_MIN_FREE"] == "512MiB"
+
+
+def test_apply_apple_silicon_repo_defaults(monkeypatch: pytest.MonkeyPatch):
+    configs = Path(__file__).resolve().parents[1] / "configs" / "apple_silicon.yaml"
+    assert configs.is_file()
+    for key in (
+        "ZEROLLAMA_RUNTIME_VRAM_MIN_FREE",
+        "ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    import runtime.vram_yaml_defaults as mod
+
+    mod._APPLIED = False
+    mod._APPLY_RESULT = None
+    result = apply_vram_defaults_from_config(configs, force=True)
+    assert "ZEROLLAMA_RUNTIME_VRAM_MIN_FREE" in result["applied"]
+    assert os.environ["ZEROLLAMA_RUNTIME_VRAM_MIN_FREE"] == "512MiB"
+    assert os.environ["ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE"] == "1GiB"
+    for key in result["applied"]:
+        os.environ.pop(key, None)

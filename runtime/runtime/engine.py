@@ -26,7 +26,7 @@ from runtime.gpu_vram import (
     nvidia_free_vram_by_device,
     vram_budget_health,
 )
-from runtime.host_memory import check_gguf_host_budget, format_bytes, read_linux_host_memory
+from runtime.host_memory import check_gguf_host_budget, format_bytes, read_host_memory
 from runtime.kv.accounting import kv_scheduler_snapshot
 from runtime.kv.block_pool import create_block_pool, kv_backend_health
 from runtime.scheduler.loop import SchedulerLoop
@@ -693,7 +693,7 @@ class InferenceEngine:
     def _health_body(self) -> dict[str, Any]:
         waiting = len(self.scheduler.waiting)
         running = len(self.scheduler.running)
-        mem = read_linux_host_memory()
+        mem = read_host_memory()
         host_mem: dict[str, Any] | None = None
         if mem is not None:
             host_mem = {

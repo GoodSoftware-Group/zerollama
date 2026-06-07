@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -115,9 +116,15 @@ def autoconfig_health(*, main_gpu: int = 0) -> dict[str, object]:
     name = path.name
     if name == "single_gpu.yaml":
         pick = "single_gpu"
+    elif name == "apple_silicon.yaml":
+        pick = "apple_silicon"
     elif name == "dual_4090.yaml":
         pick = "dual_4090"
     total = detect_gpu_total_vram_bytes(main_gpu)
+    if total is None and sys.platform == "darwin":
+        from runtime.host_memory import darwin_total_memory_bytes
+
+        total = darwin_total_memory_bytes()
     out: dict[str, object] = {
         "enabled": auto_config_enabled(),
         "config_path": str(path),
@@ -135,16 +142,22 @@ def autoconfig_health(*, main_gpu: int = 0) -> dict[str, object]:
 def resolve_default_config_path() -> Path:
     """Default YAML when ZEROLLAMA_RUNTIME_CONFIG is unset."""
     configs = _configs_dir()
+    apple = configs / "apple_silicon.yaml"
     single = configs / "single_gpu.yaml"
     dual = configs / "dual_4090.yaml"
 
     if auto_config_enabled():
+        # Why darwin first: no nvidia-smi; single_gpu.yaml targets discrete 16GB CUDA hosts.
+        if sys.platform == "darwin" and apple.is_file():
+            return apple
         n = detect_visible_gpu_count()
         if n is not None and n <= 1 and single.is_file():
             return single
         if n is not None and n >= 2 and dual.is_file():
             return dual
 
+    if apple.is_file() and sys.platform == "darwin":
+        return apple
     if dual.is_file():
         return dual
     if single.is_file():

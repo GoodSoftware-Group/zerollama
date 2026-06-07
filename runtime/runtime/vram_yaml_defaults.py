@@ -1,8 +1,8 @@
 """Apply optional ``vram:`` block from runtime YAML when env is unset (Phase 13).
 
-WHY: ``autoconfig`` already picks ``single_gpu.yaml`` on one GPU. Operators should not have
-to duplicate min-free, training-reserve, and autotune env in every systemd unit when the
-same defaults belong in-repo. Env always wins when set — production overrides stay explicit.
+WHY: ``autoconfig`` picks ``single_gpu.yaml`` (one NVIDIA GPU) or ``apple_silicon.yaml``
+(darwin). Operators should not duplicate min-free, training-reserve, and autotune env in
+every systemd unit when the same defaults belong in-repo. Env always wins when set.
 Applied before ``apply_exported_vram_env`` so exported factor files remain opt-in.
 """
 

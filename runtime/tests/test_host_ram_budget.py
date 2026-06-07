@@ -16,7 +16,7 @@ def test_host_ram_budget_snapshot(monkeypatch, tmp_path: Path):
             return self.available_bytes + self.swap_free_bytes
 
     monkeypatch.setattr(
-        "runtime.host_memory.read_linux_host_memory", lambda: Mem()
+        "runtime.host_memory.read_host_memory", lambda: Mem()
     )
     monkeypatch.setattr(
         "runtime.host_memory.estimate_gguf_ram_bytes", lambda _p: 5000

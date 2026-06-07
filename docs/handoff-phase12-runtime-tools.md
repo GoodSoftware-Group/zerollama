@@ -33,6 +33,7 @@ Run **Go tests on the target host** (`go test ./server/... ./x/runtimeworker/...
 | [scheduling-vram-policy.md](./scheduling-vram-policy.md) | Full Go+Python stack (broker, T6 defer, Phase 13 estimate envs) |
 | [phase13-runtime-vram.md](./phase13-runtime-vram.md) | Phase 13 WHY: suggest, clamp, autotune, operator CLI, 5080 workflow |
 | [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) | Single-GPU gate: session script, API unload, snapshot, harmony/host-RAM limits |
+| [apple-silicon-metal.md](./apple-silicon-metal.md) | Mac: Metal ggml default, runtime metal-unified probe, MLX optional, `macos_metal_smoke.sh` (host budget + swap parser audit fixes) |
 | [runtime/docs/OPERATIONS.md](../runtime/docs/OPERATIONS.md) | `/health` fields, serve options |
 | [testing-smoke.md](./testing-smoke.md) | GPU e2e for runtime + ggml |
 | [CHANGELOG.md](../CHANGELOG.md) | Unreleased Phase 11/12/13 + GPU smoke entries |

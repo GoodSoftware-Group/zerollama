@@ -1,0 +1,29 @@
+# Apple Silicon (Metal unified memory). Autoconfig picks this on darwin when unset.
+# Why separate from single_gpu.yaml: no NVML framebuffer; admission uses metal-unified
+# probe (vm_stat). Lower headroom defaults than discrete 16GB CUDA — RAM is shared with OS.
+#
+# GGUF text: ggml Metal runner (default) or runtime + llama-server (Metal build).
+# Safetensors: optional MLX engine (build MLX component) — not this YAML alone.
+#
+# Optional env (see docs/apple-silicon-metal.md):
+#   ZEROLLAMA_AUTO_CONFIG=1
+#   ZEROLLAMA_RUNTIME_VRAM_PROBE=auto   # metal-unified on macOS when no NVIDIA
+device_count: 1
+tensor_parallel: 1
+split_mode: layer
+main_gpu: 0
+llama_parallel_slots: 1
+kv:
+  block_size: 16
+  num_blocks_per_device: 2048
+speculative:
+  method: none
+# Phase 11/13 — env wins when set (see vram_yaml_defaults.py).
+vram:
+  min_free: 512MiB
+  training_reserve: 1GiB
+  estimate_factor_autotune: auto
+  probe_calibrate: auto
+  clamp_num_ctx: "0"
+# Phase 14: enable after macos_metal_smoke / inprocess validation on your Mac:
+# llama_backend: inprocess

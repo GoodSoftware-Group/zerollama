@@ -17,7 +17,7 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from wan_memory_hooks import apply_memory_hooks  # noqa: E402
-from wan_torch_compat import apply_torch_workarounds  # noqa: E402
+from wan_torch_compat import apply_torch_workarounds, sanitize_ld_library_path_for_pytorch  # noqa: E402
 
 
 def _normalize_vae_cpu_env() -> None:
@@ -27,6 +27,7 @@ def _normalize_vae_cpu_env() -> None:
 
 
 def main() -> int:
+    sanitize_ld_library_path_for_pytorch()
     _normalize_vae_cpu_env()
     print("PROGRESS:6.0:checking GPU compatibility", flush=True)
     status = apply_torch_workarounds()

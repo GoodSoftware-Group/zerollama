@@ -125,6 +125,14 @@ def wan_subprocess_env() -> dict[str, str]:
     return env
 
 
+def prepare_wan_subprocess_env(python_bin: str) -> dict[str, str]:
+    """Build env for wan_generate_entry; sanitize LD so torch uses bundled cuDNN."""
+    env = wan_subprocess_env()
+    from wan_torch_compat import sanitize_ld_library_path_for_pytorch
+
+    return sanitize_ld_library_path_for_pytorch(env, python=python_bin)
+
+
 def main() -> int:
     profile = os.environ.get("WAN_PROFILE", "")
     repo = os.environ.get("WAN_REPO", "")
@@ -169,7 +177,7 @@ def main() -> int:
     progress(0, "starting Wan generation")
 
     eprint(f"using python: {python_bin}")
-    sub_env = wan_subprocess_env()
+    sub_env = prepare_wan_subprocess_env(python_bin)
     eprint(f"WAN_FORCE_SDPA={sub_env.get('WAN_FORCE_SDPA', '')}")
     eprint(f"WAN_VAE_CPU={sub_env.get('WAN_VAE_CPU', '')}")
     cmd = [

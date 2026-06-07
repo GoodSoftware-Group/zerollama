@@ -67,6 +67,7 @@ func modelEligibleForRuntimeDefault(m *Model) bool {
 		return false
 	}
 	if m.ModelPath == "" || m.IsMLX() {
+		// MLX (safetensors) uses mlxrunner/imagegen — not the Python GGUF runtime.
 		return false
 	}
 	backend := modelInferenceBackend(m)
@@ -84,6 +85,9 @@ func modelEligibleForRuntimeDefault(m *Model) bool {
 // routes text inference to the Python runtime sidecar.
 func modelUsesRuntimeInference(m *Model) bool {
 	if m == nil {
+		return false
+	}
+	if m.IsMLX() {
 		return false
 	}
 	if modelInferenceBackend(m) == model.BackendZerollamaRuntime {

@@ -17,7 +17,7 @@ def test_check_gguf_host_budget_rejects_huge_file(monkeypatch, tmp_path: Path):
     gguf = tmp_path / "huge.gguf"
     gguf.write_bytes(b"\0" * 100)
     monkeypatch.setattr(
-        "runtime.host_memory.read_linux_host_memory",
+        "runtime.host_memory.read_host_memory",
         lambda: type(
             "M",
             (),
@@ -32,8 +32,8 @@ def test_check_gguf_host_budget_rejects_huge_file(monkeypatch, tmp_path: Path):
         check_gguf_host_budget(gguf, margin=1.0)
 
 
-def test_check_gguf_host_budget_skips_non_linux(monkeypatch, tmp_path: Path):
+def test_check_gguf_host_budget_skips_when_no_mem(monkeypatch, tmp_path: Path):
     gguf = tmp_path / "m.gguf"
     gguf.write_bytes(b"\0" * 1024)
-    monkeypatch.setattr("runtime.host_memory.read_linux_host_memory", lambda: None)
+    monkeypatch.setattr("runtime.host_memory.read_host_memory", lambda: None)
     check_gguf_host_budget(gguf)

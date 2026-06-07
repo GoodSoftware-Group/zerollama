@@ -32,8 +32,16 @@ export OLLAMA_TRAINING_TCP="${OLLAMA_TRAINING_TCP:-:9500}"
 export GGML_CUDA_USE_GRAPHS="${GGML_CUDA_USE_GRAPHS:-0}"
 export GGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS:-1}"
 
-# CUDA libs — adjust for your install.
+# CUDA libs for ggml cuda_v12 — adjust for your install.
+# /usr/hostlibs may expose libcudnn older than PyTorch in the Wan venv; keep hostlibs for
+# ggml. Wan run_script subprocesses sanitize LD (prepend venv torch/lib, drop hostlibs).
+# See docs/wan-t2v.md troubleshooting: "cuDNN version incompatibility".
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/hostlibs:/usr/local/cuda-12.6/targets/x86_64-linux/lib}"
+
+# Wan T2V on 16g / SM120 (5080 class); unset to use manifest-only defaults.
+export ZEROLLAMA_WAN_FORCE_SDPA="${ZEROLLAMA_WAN_FORCE_SDPA:-1}"
+export ZEROLLAMA_WAN_VAE_CPU="${ZEROLLAMA_WAN_VAE_CPU:-1}"
+export ZEROLLAMA_WAN_UNLOAD_T5="${ZEROLLAMA_WAN_UNLOAD_T5:-1}"
 
 ZEROLLAMA_BIN="${ZEROLLAMA_BIN:-/usr/bin/zerollama}"
 if [[ ! -x "$ZEROLLAMA_BIN" ]]; then

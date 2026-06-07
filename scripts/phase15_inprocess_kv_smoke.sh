@@ -79,9 +79,14 @@ if [[ "${backend:-}" != "inprocess" || "${backend_src:-}" != "env" ]]; then
   exit 1
 fi
 
-env -u ZEROLLAMA_RUNTIME_URL -u RUN_E2E_LLAMA_CPP_PYTHON \
-  LLAMA_MODEL="${LLAMA_MODEL}" \
-  "${ROOT}/scripts/phase14_inprocess_smoke.sh"
+# Call via subshell (not exec) so KV snapshot assertion runs after.
+(
+  export RUN_E2E_INPROCESS=1
+  export RUN_E2E_LLAMA_BACKEND_SOURCE=env
+  env -u ZEROLLAMA_RUNTIME_URL -u RUN_E2E_LLAMA_CPP_PYTHON \
+    LLAMA_MODEL="${LLAMA_MODEL}" \
+    "${ROOT}/scripts/phase14_backend_smoke.sh"
+)
 
 smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 

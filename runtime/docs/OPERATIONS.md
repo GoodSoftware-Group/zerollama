@@ -69,9 +69,9 @@ When `OLLAMA_TRAINING` and `ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING` are on (d
 
 | Field | Shape | Meaning |
 |-------|--------|---------|
-| `gpu_memory` | `[{ "device": 0, "free": "12.3 GiB", "probe": "nvml" }, ...]` | Per-GPU free VRAM for devices in the active config. `probe: host-unified` when NVML has no framebuffer and Linux host RAM is used. |
+| `gpu_memory` | `[{ "device": 0, "free": "12.3 GiB", "probe": "nvml" }, ...]` | Per-GPU free VRAM for devices in the active config. `probe: host-unified` (Linux iGPU) or **`metal-unified`** (macOS vm_stat). |
 | `vram_probe_mode` | string | Configured probe (`auto`, `nvml`, `smi`; shared embed may remap `auto` → `smi`). |
-| `vram_probe_effective` | string | Operational probe: `nvml`, `nvidia-smi`, `host-unified`, or **`skipped`** (shared embed, no `nvidia-smi`). |
+| `vram_probe_effective` | string | Operational probe: `nvml`, `nvidia-smi`, `host-unified`, **`metal-unified`**, or **`skipped`** (shared embed, no `nvidia-smi`). |
 | `shared_interpreter` | bool | `true` when training + runtime share one embedded CPython. |
 | VRAM pre-check env | — | `VRAM_ESTIMATE_FACTOR`, `VRAM_ESTIMATE_FACTOR_AUTOTUNE=auto`, `VRAM_AUTOTUNE_PERSIST=auto`, `VRAM_ESTIMATE_FACTOR_EXPORT=auto`, `VRAM_APPLY_EXPORTED_ENV=1` (startup: load `vram_estimate_factor.env` when `VRAM_ESTIMATE_FACTOR` unset), `VRAM_APPLY_EXPORTED_ENV_PATH` (override file path), `STATE_DIR` (default `~/.cache/zerollama`), `VRAM_PROBE_CALIBRATE=auto`, `VRAM_CLAMP_NUM_CTX=0` (default off; `1` or `auto` with `CHECK_GPU_VRAM=1` lowers request ctx to suggestion at enqueue), `VRAM_SUGGEST_CTX_MAX`, `VRAM_WEIGHT_*`, `VRAM_KV_BLOCK_LAYOUT=1` (IQ/TQ KV types use ggml block sizes; legacy Q4/Q8 stay ≥2 bytes/elem), `VRAM_KV_*`, `CHECK_GPU_VRAM`. **Autotune:** per-model factors in `vram_autotune.json`; **export:** `vram_estimate_factor.env` (last load) and `vram_autotune_factors.env` (catalog). |
 | `vram_autotune` | object | `enabled`, factors, `persist` (incl. `catalog[]`, `catalog_truncated`), `export`, `apply_exported_env` (startup apply status). Autotune persist wins per GGUF over applied env. `pending_first_calibration`. |

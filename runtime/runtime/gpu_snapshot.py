@@ -32,6 +32,10 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
         lines.append(
             "# autoconfig: single_gpu.yaml (16GB-class); env overrides YAML vram: defaults"
         )
+    elif ac.get("pick") == "apple_silicon":
+        lines.append(
+            "# autoconfig: apple_silicon.yaml (Metal unified memory); see docs/apple-silicon-metal.md"
+        )
 
     backend = snap.get("llama_backend")
     backend_src = snap.get("llama_backend_source")

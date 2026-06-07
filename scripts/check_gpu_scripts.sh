@@ -17,6 +17,8 @@ scripts=(
   phase12_capture_tool_transcript.sh
   gpu_5080_session.sh
   gpu_harmony_capture.sh
+  macos_metal_smoke.sh
+  gpu_metal_session.sh
   phase14_backend_smoke.sh
   phase14_inprocess_smoke.sh
   phase14_wheel_cpu_smoke.sh
@@ -59,6 +61,15 @@ grep -q 'smoke_ggml_runner_running' "${ROOT}/scripts/runtime_smoke_lib.sh"
 grep -q 'recommend_from_snapshot' "${ROOT}/runtime/runtime/gpu_snapshot.py"
 grep -q 'apply_vram_defaults_from_config' "${ROOT}/runtime/runtime/vram_yaml_defaults.py"
 grep -q 'runtime.gpu_snapshot' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'metal-unified' "${ROOT}/runtime/runtime/gpu_vram.py"
+grep -q 'apple_silicon.yaml' "${ROOT}/runtime/runtime/autoconfig.py"
+grep -q 'read_host_memory()' "${ROOT}/runtime/runtime/host_memory.py"
+grep -q 'test_host_memory_darwin.py' "${ROOT}/scripts/macos_metal_smoke.sh"
+grep -q 'vm.swapusage' "${ROOT}/runtime/runtime/host_memory.py"
+grep -q 'apple_silicon' "${ROOT}/runtime/runtime/gpu_snapshot.py"
+grep -q 'gpu_metal_session' "${ROOT}/docs/apple-silicon-metal.md"
+grep -q 'IsMLX()' "${ROOT}/docs/mlx-routing-policy.md"
+grep -q 'modelUsesRuntimeInference' "${ROOT}/server/runtime_inference_routing.go"
 grep -q 'RUN_E2E_LEGACY=1 with RUN_E2E_GPU' "${ROOT}/scripts/e2e_runtime_smoke.sh"
 grep -q 'RUN_E2E_VRAM_CLAMP' "${ROOT}/scripts/gpu_clamp_smoke.sh"
 grep -q 'phase12_capture_tool_transcript' "${ROOT}/scripts/phase12_capture_tool_transcript.sh" || grep -q 'X-Zerollama-Runtime' "${ROOT}/scripts/phase12_capture_tool_transcript.sh"
@@ -104,7 +115,7 @@ grep -q 'phase14_yaml_config_full_smoke.sh' "${ROOT}/scripts/phase14_5080_signof
 grep -q 'phase15_inprocess_signoff.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
 grep -q 'phase14_both_backends.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
 grep -q 'phase15_inprocess_kv_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
-grep -q 'phase14_inprocess_smoke.sh' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
+grep -q 'phase14_backend_smoke.sh' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
 grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/runtime_smoke_lib.sh"
 grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
 grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"

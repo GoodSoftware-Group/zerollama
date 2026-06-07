@@ -24,7 +24,9 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 ## macOS (Apple Silicon)
 
-macOS Apple Silicon supports Metal which is built-in to the Ollama binary. No additional steps are required.
+macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** models — no CUDA steps required. For **runtime admission** on unified memory (Phase 11/13), autoconfig picks `apple_silicon.yaml` and probes via `metal-unified`. See [apple-silicon-metal.md](./apple-silicon-metal.md) and `./scripts/macos_metal_smoke.sh`.
+
+Optional **MLX engine** for safetensors models: see [MLX Engine](#mlx-engine-optional) below.
 
 ## macOS (Intel)
 

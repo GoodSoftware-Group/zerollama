@@ -1,8 +1,14 @@
-"""Host RAM availability (Linux /proc/meminfo) for pre-load checks."""
+"""Host RAM availability for pre-load checks (Linux /proc/meminfo, macOS vm_stat).
+
+Why macOS: Apple Silicon uses unified memory — there is no NVML framebuffer. Runtime
+admission and host budget checks must read available RAM the same way ggml treats Metal.
+"""
 
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +45,80 @@ def read_linux_host_memory() -> HostMemory | None:
     )
 
 
+_VM_STAT_RE = re.compile(r"^Pages\s+([^:]+):\s+([\d.]+)")
+
+
+def read_darwin_host_memory() -> HostMemory | None:
+    """Approximate free+reclaimable memory from vm_stat (Metal unified-memory hosts)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        pagesize = int(
+            subprocess.check_output(
+                ["sysctl", "-n", "hw.pagesize"], text=True, timeout=5
+            ).strip()
+        )
+        vm_text = subprocess.check_output(["vm_stat"], text=True, timeout=5)
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+    counts: dict[str, int] = {}
+    for line in vm_text.splitlines():
+        m = _VM_STAT_RE.match(line.strip())
+        if not m:
+            continue
+        key = m.group(1).strip().lower().replace(" ", "_")
+        raw = m.group(2).replace(".", "")
+        try:
+            counts[key] = int(raw)
+        except ValueError:
+            continue
+    # free + inactive + speculative ≈ pressure-available (same heuristic as many macOS tools)
+    pages = (
+        counts.get("free", 0)
+        + counts.get("inactive", 0)
+        + counts.get("speculative", 0)
+    )
+    if pages <= 0:
+        return None
+    swap_free = 0
+    try:
+        # macOS format: "vm.swapusage: total = 2048.00M  used = 512.00M  free = 1536.00M"
+        # Use sysctl without -n to get the key-value line, then parse "free = <value><unit>"
+        swap_text = subprocess.check_output(["sysctl", "vm.swapusage"], text=True, timeout=5)
+        m_swap = re.search(r"free\s*=\s*([\d.]+)([KMGT]?)i?B?", swap_text, re.IGNORECASE)
+        if m_swap:
+            num = float(m_swap.group(1))
+            unit = m_swap.group(2).upper()
+            mult = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}.get(unit, 1)
+            swap_free = int(num * mult)
+    except (subprocess.SubprocessError, ValueError, OSError, AttributeError):
+        swap_free = 0
+    return HostMemory(available_bytes=pages * pagesize, swap_free_bytes=swap_free)
+
+
+def read_host_memory() -> HostMemory | None:
+    """Platform host memory snapshot, or None when unavailable."""
+    if sys.platform == "linux":
+        return read_linux_host_memory()
+    if sys.platform == "darwin":
+        return read_darwin_host_memory()
+    return None
+
+
+def darwin_total_memory_bytes() -> int | None:
+    """Unified memory pool size (hw.memsize) for autoconfig /health on Apple Silicon."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        return int(
+            subprocess.check_output(
+                ["sysctl", "-n", "hw.memsize"], text=True, timeout=5
+            ).strip()
+        )
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+
+
 def format_bytes(n: int) -> str:
     f = float(n)
     for i, unit in enumerate(("B", "KiB", "MiB", "GiB", "TiB")):
@@ -70,7 +150,7 @@ def host_ram_budget_snapshot(
     """Host RAM fit for mmap/weights (for /health and /internal/vram-estimate)."""
     if margin is None:
         margin = host_ram_margin()
-    mem = read_linux_host_memory()
+    mem = read_host_memory()
     if mem is None:
         return None
     required = int(estimate_gguf_ram_bytes(gguf) * margin)
@@ -91,7 +171,7 @@ def check_gguf_host_budget(gguf: Path, *, margin: float | None = None) -> None:
 
     if margin is None:
         margin = host_ram_margin()
-    mem = read_linux_host_memory()
+    mem = read_host_memory()
     if mem is None:
         return
     required = int(estimate_gguf_ram_bytes(gguf) * margin)

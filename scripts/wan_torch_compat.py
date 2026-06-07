@@ -21,6 +21,67 @@ PROBE_VERSION = 1
 DEFAULT_PROBE_REL = ".zerollama/third_party/wan/.wan_torch_probe.json"
 
 
+def torch_bundled_lib_dir(*, python: str | None = None) -> Path | None:
+    """Locate site-packages/torch/lib without importing torch."""
+    py = Path(python or sys.executable).resolve()
+    venv_root = py.parent.parent if py.name.startswith("python") else py.parent
+    for candidate in sorted(venv_root.glob("lib/python*/site-packages/torch/lib")):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _path_may_shadow_cudnn(entry: str) -> bool:
+    p = entry.strip()
+    if not p:
+        return False
+    if "hostlibs" in p:
+        return True
+    if "cudnn" in Path(p).name.lower():
+        return True
+    try:
+        d = Path(p)
+        if d.is_dir() and any(d.glob("libcudnn.so*")):
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def sanitize_ld_library_path_for_pytorch(
+    env: dict[str, str] | None = None,
+    *,
+    python: str | None = None,
+) -> dict[str, str]:
+    """Prepend torch/lib and drop LD entries that shadow bundled cuDNN.
+
+    Why: zerollama serve sets LD_LIBRARY_PATH for ggml (often /usr/hostlibs with
+    older libcudnn). PyTorch wheels ship a matching cuDNN; shadowing raises
+    RuntimeError before the SM120 conv probe can run.
+    """
+    target = env if env is not None else os.environ
+    torch_lib = torch_bundled_lib_dir(python=python)
+    if torch_lib is None:
+        return target
+    prefix = str(torch_lib)
+    raw = target.get("LD_LIBRARY_PATH", "")
+    parts = [p for p in raw.split(":") if p and p != prefix]
+    filtered = [p for p in parts if not _path_may_shadow_cudnn(p)]
+    target["LD_LIBRARY_PATH"] = ":".join([prefix, *filtered]) if filtered else prefix
+    return target
+
+
+def safe_cudnn_version() -> int | None:
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return torch.backends.cudnn.version()
+    except RuntimeError:
+        return None
+
+
 def probe_cache_path() -> Path:
     env = os.environ.get("WAN_TORCH_PROBE_CACHE", "").strip()
     if env:
@@ -47,13 +108,14 @@ print("ok")
 def run_cudnn_conv_probe(python: str | None = None) -> dict[str, Any]:
     """Run isolated subprocess conv test; return probe record."""
     py = python or sys.executable
+    sanitize_ld_library_path_for_pytorch(python=py)
     import torch
 
     record: dict[str, Any] = {
         "probe_version": PROBE_VERSION,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
-        "cudnn": torch.backends.cudnn.version() if torch.cuda.is_available() else None,
+        "cudnn": safe_cudnn_version(),
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "compute_capability": list(torch.cuda.get_device_capability(0))
         if torch.cuda.is_available()
@@ -72,11 +134,14 @@ def run_cudnn_conv_probe(python: str | None = None) -> dict[str, Any]:
         return record
 
     try:
+        probe_env = os.environ.copy()
+        sanitize_ld_library_path_for_pytorch(probe_env, python=py)
         proc = subprocess.run(
             [py, "-c", _probe_script()],
             capture_output=True,
             text=True,
             timeout=60,
+            env=probe_env,
         )
     except subprocess.TimeoutExpired:
         record["cudnn_conv_ok"] = False
@@ -110,8 +175,8 @@ def load_probe_cache(path: Path | None = None) -> dict[str, Any] | None:
 
     if data.get("torch") != torch.__version__:
         return None
-    cudnn = torch.backends.cudnn.version() if torch.cuda.is_available() else None
-    if data.get("cudnn") != cudnn:
+    cudnn = safe_cudnn_version()
+    if cudnn is None or data.get("cudnn") != cudnn:
         return None
     return data
 
@@ -149,6 +214,7 @@ def should_disable_cudnn(
 
 def apply_torch_workarounds(*, python: str | None = None) -> dict[str, Any]:
     """Apply SM120 workarounds in the current process. Returns status dict."""
+    sanitize_ld_library_path_for_pytorch(python=python)
     import torch
 
     status: dict[str, Any] = {
@@ -165,6 +231,7 @@ def apply_torch_workarounds(*, python: str | None = None) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     python = sys.executable
+    sanitize_ld_library_path_for_pytorch(python=python)
     cache = probe_cache_path()
     if args and args[0] == "--print-cache":
         data = load_probe_cache(cache)
