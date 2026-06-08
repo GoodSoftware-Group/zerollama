@@ -12,6 +12,7 @@ scripts=(
   serve_gpu_example.sh
   phase12_golden_ci.sh
   runtime_smoke_lib.sh
+  runtime_uv_venv.sh
   gpu_phase13_snapshot.sh
   gpu_clamp_smoke.sh
   phase12_capture_tool_transcript.sh
@@ -19,6 +20,11 @@ scripts=(
   gpu_harmony_capture.sh
   macos_metal_smoke.sh
   gpu_metal_session.sh
+  m3_metal_signoff.sh
+  metal_signoff.sh
+  serve_mac_runtime.sh
+  phase15_metal_signoff.sh
+  macos_runtime_serve_lib.sh
   phase14_backend_smoke.sh
   phase14_inprocess_smoke.sh
   phase14_wheel_cpu_smoke.sh
@@ -65,6 +71,22 @@ grep -q 'metal-unified' "${ROOT}/runtime/runtime/gpu_vram.py"
 grep -q 'apple_silicon.yaml' "${ROOT}/runtime/runtime/autoconfig.py"
 grep -q 'read_host_memory()' "${ROOT}/runtime/runtime/host_memory.py"
 grep -q 'test_host_memory_darwin.py' "${ROOT}/scripts/macos_metal_smoke.sh"
+grep -q 'runtime_uv_venv.sh' "${ROOT}/scripts/macos_metal_smoke.sh"
+grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'phase14_yaml_config_smoke.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/serve_mac_runtime.sh"
+grep -q 'macos_runtime_start_sidecar' "${ROOT}/scripts/serve_mac_runtime.sh"
+grep -q 'phase15_metal_signoff.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'smoke_m3_resolve_signoff_model' "${ROOT}/scripts/runtime_smoke_lib.sh"
+grep -q 'smoke_m3_resolve_signoff_model' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'PHASE15_SKIP_BOOT' "${ROOT}/scripts/phase15_metal_signoff.sh"
+grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/serve_mac_runtime.sh"
+grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu_metal_session.sh"
+grep -q 'METAL_SELF_START' "${ROOT}/scripts/gpu_metal_session.sh"
+grep -q 'RUN_E2E_PHASE15=1' "${ROOT}/scripts/metal_signoff.sh"
+grep -q 'test_m3_model_picker.py' "${ROOT}/scripts/macos_metal_smoke.sh"
+grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"
+grep -q 'llama_backend: inprocess' "${ROOT}/runtime/configs/apple_silicon.yaml"
 grep -q 'vm.swapusage' "${ROOT}/runtime/runtime/host_memory.py"
 grep -q 'apple_silicon' "${ROOT}/runtime/runtime/gpu_snapshot.py"
 grep -q 'gpu_metal_session' "${ROOT}/docs/apple-silicon-metal.md"

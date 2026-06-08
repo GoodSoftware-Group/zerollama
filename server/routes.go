@@ -1391,6 +1391,7 @@ func (s *Server) ListHandler(c *gin.Context) {
 	})
 
 	models = mergeElizaCloudModels(c.Request.Context(), models)
+	models = mergeLMStudioModels(models)
 
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
 }

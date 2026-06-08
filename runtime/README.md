@@ -21,22 +21,23 @@ See [docs/OPERATIONS.md](./docs/OPERATIONS.md).
 
 ## Install (dev)
 
-Create the venv **on the machine where you run tests** (do not copy `.venv` from another host or path — scripts embed the absolute Python path).
+Requires [uv](https://docs.astral.sh/uv/). Create the venv **on the machine where you run tests** (do not copy `.venv` from another host — scripts embed absolute paths).
 
 ```bash
+./scripts/runtime_uv_venv.sh
+# or manually:
 cd runtime
-rm -rf .venv
-python3 -m venv .venv
+uv venv .venv --python 3.11
+uv pip install -e ".[dev,serve]"
 source .venv/bin/activate
-python -m pip install -U pip setuptools wheel
-pip install -e ".[dev,serve]"
 ```
 
-If editable install fails on an old pip/setuptools, use a regular install: `pip install ".[dev,serve]"`.
+**Note:** Go **embedded** runtime still uses system `libpython3` (see `docs/gpu-training.md`). The uv venv is for **sidecar** runtime (`serve_with_runtime.sh`, smokes, M3 sign-off).
 
 ## Tests (Phase 0 — no GPU)
 
 ```bash
+./scripts/runtime_uv_venv.sh
 cd runtime
 source .venv/bin/activate
 pytest

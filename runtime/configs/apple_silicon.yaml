@@ -25,5 +25,5 @@ vram:
   estimate_factor_autotune: auto
   probe_calibrate: auto
   clamp_num_ctx: "0"
-# Phase 14: enable after macos_metal_smoke / inprocess validation on your Mac:
-# llama_backend: inprocess
+# Phase 14 inprocess on Metal (M3 sign-off). Override: ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess
+llama_backend: inprocess

@@ -22,7 +22,15 @@ fi
 
 echo "== Phase 12 preflight (no GPU) =="
 "${ROOT}/scripts/phase12_golden_ci.sh" go
-(cd "${ROOT}/runtime" && PYTHONPATH=. python3 -m pytest tests/test_host_memory_darwin.py tests/test_metal_unified_probe.py tests/test_vram_yaml_defaults.py::test_apply_apple_silicon_repo_defaults -q)
+# shellcheck source=scripts/runtime_uv_venv.sh
+source "${ROOT}/scripts/runtime_uv_venv.sh"
+runtime_uv_venv
+(cd "${ROOT}/runtime" && PYTHONPATH=. "${RUNTIME_UV_PYTHON}" -m pytest \
+  tests/test_host_memory_darwin.py \
+  tests/test_metal_unified_probe.py \
+  tests/test_m3_model_picker.py \
+  tests/test_autoconfig.py::test_apple_silicon_yaml_inprocess_backend \
+  tests/test_vram_yaml_defaults.py::test_apply_apple_silicon_repo_defaults -q)
 
 echo "== coordination smoke =="
 "${ROOT}/scripts/e2e_coordination_smoke.sh"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Iterator
@@ -127,25 +128,28 @@ def resolve_libllama_path(explicit: Path | None = None, cpp_root: Path | None = 
             # runtime/runtime/worker -> zerollama repo root is parents[3]; llama.cpp is sibling.
             repo = Path(__file__).resolve().parents[3]
             root = repo.parent / "llama.cpp"
+    suffix = ".dylib" if sys.platform == "darwin" else ".so"
     for candidate in (
+        root / "build" / "bin" / f"libllama{suffix}",
+        root / "build" / "lib" / f"libllama{suffix}",
+        # Linux layout fallback when probing a non-darwin host path.
         root / "build" / "bin" / "libllama.so",
         root / "build" / "lib" / "libllama.so",
     ):
         if candidate.is_file():
             return candidate.resolve()
     raise LlamaServerError(
-        f"libllama.so not found under {root}; set LLAMA_CPP_LIB or build llama.cpp"
+        f"libllama{suffix} not found under {root}; set LLAMA_CPP_LIB or build llama.cpp"
     )
 
 
 def _prepend_ld_library_path(libdir: Path) -> None:
-    cur = os.environ.get("LD_LIBRARY_PATH", "")
+    key = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+    cur = os.environ.get(key, "")
     prefix = str(libdir)
     if cur.startswith(prefix + ":") or cur == prefix:
         return
-    os.environ["LD_LIBRARY_PATH"] = (
-        f"{prefix}:{cur}" if cur else prefix
-    )
+    os.environ[key] = f"{prefix}:{cur}" if cur else prefix
 
 
 def get_lib(

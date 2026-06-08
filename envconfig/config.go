@@ -223,9 +223,9 @@ var (
 	NoHistory = Bool("OLLAMA_NOHISTORY")
 	// NoPrune disables pruning of model blobs on startup.
 	NoPrune = Bool("OLLAMA_NOPRUNE")
-	// LMStudioImport enables reusing LM Studio GGUF caches under ~/.lmstudio/models (and
-	// optional OLLAMA_LMSTUDIO_MODELS paths) when pulling a model, when a match is found.
-	// Default is on; set OLLAMA_LMSTUDIO_IMPORT=false to disable.
+	// LMStudioImport enables reusing LM Studio caches under ~/.lmstudio/models (and
+	// optional OLLAMA_LMSTUDIO_MODELS paths) when pulling a model, and listing them
+	// in /api/tags. Supports GGUF and safetensors layouts. Default is on.
 	LMStudioImport = BoolWithDefault("OLLAMA_LMSTUDIO_IMPORT")
 	// SchedSpread allows scheduling models across all GPUs.
 	SchedSpread = Bool("OLLAMA_SCHED_SPREAD")
@@ -320,7 +320,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_HOST":                         {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
 		"OLLAMA_KEEP_ALIVE":                   {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
 		"OLLAMA_LLM_LIBRARY":                  {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
-		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio GGUF caches when pulling a matching model (default true)"},
+		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches (GGUF/safetensors) for pull and list (default true)"},
 		"OLLAMA_LMSTUDIO_MODELS":              {"OLLAMA_LMSTUDIO_MODELS", Var("OLLAMA_LMSTUDIO_MODELS"), "Only scan these LM Studio model directories (comma-separated); unset uses default paths"},
 		"OLLAMA_LOAD_TIMEOUT":                 {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
 		"OLLAMA_MAX_LOADED_MODELS":            {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},

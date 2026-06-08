@@ -32,9 +32,10 @@ done
 health_json=$(curl -sf -m 30 "${RUNTIME_URL%/}/health")
 estimate_json=""
 if [[ -n "$GGUF" ]]; then
+  _estimate_body=$(python3 -c 'import json,sys; print(json.dumps({"gguf":sys.argv[1],"num_ctx":int(sys.argv[2])}))' "$GGUF" "$NUM_CTX")
   estimate_json=$(curl -sf -m 120 -X POST "${RUNTIME_URL%/}/internal/vram-estimate" \
     -H 'Content-Type: application/json' \
-    -d "$(python3 -c "import json,sys; print(json.dumps({'gguf':sys.argv[1],'num_ctx':int(sys.argv[2])}))" "$GGUF" "$NUM_CTX")")
+    -d "${_estimate_body}")
 fi
 
 export HEALTH_JSON="$health_json" ESTIMATE_JSON="$estimate_json" SNAPSHOT_GGUF="$GGUF" SNAPSHOT_NUM_CTX="$NUM_CTX"

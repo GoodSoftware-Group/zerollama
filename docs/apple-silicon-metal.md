@@ -112,31 +112,52 @@ zerollama run llama3.2:3b
 
 Uses **Metal ggml** — no `LLAMA_SERVER_BIN` required for this path.
 
-### Runtime + tools (embedded sidecar)
+### Runtime + tools (sidecar — recommended on Mac)
 
 ```bash
-export ZEROLLAMA_RUNTIME_EMBED=1
-# Metal-capable llama-server on PATH or:
-export LLAMA_SERVER_BIN=/path/to/llama-server
-zerollama serve
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+export LLAMA_MODEL=/path/to/text-only.gguf   # avoid vision/embed families for inprocess pin
+./scripts/serve_mac_runtime.sh
 ```
+
+Uses **uv** `runtime/.venv`, sidecar on `:8081`, Go proxy on `:8080`. `apple_silicon.yaml` sets **`llama_backend: inprocess`** when autoconfig picks darwin.
 
 Check `/health` on `:8081`:
 
 - `autoconfig.pick`: `apple_silicon`
+- `llama_backend`: `inprocess`, `llama_backend_source`: `config`
 - `vram_probe_effective`: `metal-unified` (when checks on)
+
+**Embed sidecar** (Linux or Mac with Python 3.10+ system libpython only):
+
+```bash
+export ZEROLLAMA_RUNTIME_EMBED=1
+export LLAMA_SERVER_BIN=/path/to/llama-server
+zerollama serve
+```
 
 ### Smoke (no NVIDIA required)
 
 ```bash
 ./scripts/phase12_golden_ci.sh          # CI parity (no GPU)
 ./scripts/macos_metal_smoke.sh          # coordination + /health metal fields
-./scripts/gpu_metal_session.sh          # smoke + Phase 13 snapshot (+ optional Phase 14)
+./scripts/m3_metal_signoff.sh           # M3 gate: Phase 13 snapshot + Phase 14 inprocess Metal
+./scripts/metal_signoff.sh              # Full gate: M3 + Phase 15 (recommended one-shot)
+./scripts/phase15_metal_signoff.sh      # Phase 15 KV hook + multi-seq only (sidecar)
+./scripts/gpu_metal_session.sh          # macos_metal_smoke + snapshot (+ optional Phase 14/15)
+# Self-contained session (starts sidecar + Go):
+# METAL_SELF_START=1 RUN_E2E_PHASE14=1 RUN_E2E_PHASE15=1 ./scripts/gpu_metal_session.sh
+# Prerequisite for Phase 14 inprocess:
+#   LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh   # builds libllama.dylib + llama-server (Metal)
 # Optional full infer (needs serve + small GGUF + Metal llama-server):
 # LLAMA_MODEL=... LLAMA_SERVER_BIN=... RUN_E2E_GPU=1 ./scripts/gpu_metal_session.sh
-# Phase 14 inprocess on Metal (needs LLAMA_CPP_LIB):
-# RUN_E2E_PHASE14=1 RUN_E2E_INPROCESS=1 LLAMA_CPP_LIB=... ./scripts/gpu_metal_session.sh
+# Phase 14 inprocess on Metal (apple_silicon.yaml default on darwin):
+# RUN_E2E_PHASE14=1 LLAMA_MODEL=... ./scripts/gpu_metal_session.sh
 ```
+
+**Full sign-off (recommended):** `./scripts/metal_signoff.sh` — M3 + Phase 15 in one command.
+
+**M3 only:** `./scripts/m3_metal_signoff.sh` ensures `runtime/.venv` via **uv**, starts sidecar runtime + Go proxy, runs coordination + snapshot + **`phase14_yaml_config_smoke.sh`** (inprocess from `apple_silicon.yaml`). Default model: smallest local **text** GGUF (skips embed/vision models). Override with `M3_LLAMA_MODEL=/path/to/model.gguf`. Add Phase 15: `RUN_E2E_PHASE15=1 ./scripts/m3_metal_signoff.sh`.
 
 **Routing policy (GGUF vs runtime vs MLX):** [mlx-routing-policy.md](./mlx-routing-policy.md)
 
@@ -150,10 +171,9 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 |-----------|--------|
 | **M1** Unified probe + `apple_silicon.yaml` autoconfig + host budget on Darwin | **Shipped** |
 | **M2** `macos_metal_smoke.sh` + docs + pytest/CI greps | **Shipped** |
-| **M3** Phase 14 inprocess on Metal + session autotune | **Started** — `gpu_metal_session.sh` |
+| **M3** Phase 14 inprocess on Metal + session autotune | **Shipped** — `./scripts/m3_metal_signoff.sh` |
 | **M4** MLX vs runtime policy doc + routing guards | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md) |
-
----
+| **M5** Phase 15 KV + multi-seq on Metal | **Shipped** — `./scripts/metal_signoff.sh` |
 
 ## Troubleshooting
 
@@ -164,6 +184,10 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | Runtime 502 host memory on big model | Unified pool too small for MXFP4 mmap | Smaller quant; same as Linux — host RAM not VRAM |
 | Tools 501 on Mac | Model not runtime-routed | Manifest backend or `ZEROLLAMA_RUNTIME=1`; ggml path for vision/think |
 | MLX model won't load | MLX engine not built | `cmake --install build --component MLX` |
+| Embed runtime fails on Mac | System Python 3.9, no torch | Use `./scripts/serve_mac_runtime.sh` (uv sidecar) |
+| `zerollama serve` aborts (Python3.framework) | Embed-linked repo binary | Use sidecar (`serve_mac_runtime.sh`) or set `ZEROLLAMA_BIN` to a working install |
+| Phase 14 inprocess load error | Vision model on pinned llama.cpp | Use text-only GGUF (e.g. Qwen text, not gemma3 vision) |
+| `llama_backend_source: env` on Mac | `ZEROLLAMA_RUNTIME_LLAMA_BACKEND` set | Unset env; rely on `apple_silicon.yaml` |
 
 ---
 

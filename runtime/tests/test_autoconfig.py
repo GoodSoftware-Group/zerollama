@@ -40,6 +40,18 @@ def test_load_single_gpu_yaml():
     assert llama_backend_source(cfg) == "default"
 
 
+def test_apple_silicon_yaml_inprocess_backend():
+    path = Path(__file__).resolve().parents[1] / "configs" / "apple_silicon.yaml"
+    from runtime.config import RuntimeConfig
+    from runtime.worker.factory import LlamaBackendKind, llama_backend_source, resolve_llama_backend
+
+    cfg = RuntimeConfig.from_file(path)
+    assert cfg.llama_backend == "inprocess"
+    assert cfg.llama_backend_from_file is True
+    assert llama_backend_source(cfg) == "config"
+    assert resolve_llama_backend(cfg) == LlamaBackendKind.INPROCESS
+
+
 def test_load_llama_backend_from_yaml(tmp_path):
     from runtime.config import RuntimeConfig
     from runtime.worker.factory import LlamaBackendKind, resolve_llama_backend

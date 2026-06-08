@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
@@ -14,9 +16,9 @@ import (
 	typesmodel "github.com/ollama/ollama/types/model"
 )
 
-// tryImportFromLMStudio registers the model from a matching LM Studio GGUF
-// directory when present, avoiding a registry blob download. It returns true if
-// the model was created locally.
+// tryImportFromLMStudio registers the model from a matching LM Studio cache
+// directory (GGUF or safetensors) when present, avoiding a registry blob
+// download. It returns true if the model was created locally.
 func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map[string]struct{}, fn func(api.ProgressResponse)) (bool, error) {
 	if !envconfig.LMStudioImport(true) {
 		return false, nil
@@ -28,7 +30,7 @@ func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map
 	default:
 	}
 
-	dir, ok := lmstudio.MatchDir(n)
+	dir, weightFile, ok := lmstudio.MatchSelection(n)
 	if !ok {
 		return false, nil
 	}
@@ -40,6 +42,9 @@ func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map
 	if err != nil {
 		slog.Debug("lm studio import skipped", "dir", dir, "reason", err)
 		return false, nil
+	}
+	if weightFile != "" {
+		files = filterLMStudioImportFiles(files, weightFile)
 	}
 
 	if err := stageFilesToBlobs(files); err != nil {
@@ -93,4 +98,22 @@ func createFromLMStudioFiles(name typesmodel.Name, files map[string]string, fn f
 	}
 
 	return createModel(r, name, baseLayers, config, fn)
+}
+
+func filterLMStudioImportFiles(files map[string]string, weightFile string) map[string]string {
+	out := make(map[string]string, len(files))
+	for path, digest := range files {
+		base := strings.ToLower(filepath.Base(path))
+		switch {
+		case base == strings.ToLower(weightFile):
+			out[path] = digest
+		case strings.HasPrefix(base, "mmproj"):
+			out[path] = digest
+		case strings.HasSuffix(base, ".json"), base == "tokenizer.model":
+			out[path] = digest
+		case strings.Contains(path, string(filepath.Separator)) && strings.HasSuffix(base, ".json"):
+			out[path] = digest
+		}
+	}
+	return out
 }

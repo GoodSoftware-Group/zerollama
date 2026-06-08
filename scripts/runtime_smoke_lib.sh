@@ -13,6 +13,164 @@ smoke_ggml_runner_running() {
   pgrep -f '/zerollama runner --' >/dev/null 2>&1
 }
 
+# Parse host from http(s)://host[:port][/...] (default 127.0.0.1).
+runtime_url_host() {
+  local url="${1%/}"
+  local default_host="${2:-127.0.0.1}"
+  url="${url#*://}"
+  url="${url%%/*}"
+  if [[ "$url" == *:* ]]; then
+    echo "${url%%:*}"
+  else
+    echo "${url:-$default_host}"
+  fi
+}
+
+# Parse port from http(s)://host[:port][/...] (default second arg).
+runtime_url_port() {
+  local url="${1%/}"
+  local default_port="${2:-8081}"
+  url="${url#*://}"
+  url="${url%%/*}"
+  if [[ "$url" == *:* ]]; then
+    echo "${url##*:}"
+  else
+    echo "$default_port"
+  fi
+}
+
+# Resolve zerollama binary: ZEROLLAMA_BIN, repo root, then PATH (must pass serve --help).
+smoke_resolve_zerollama_bin() {
+  local root="${1:-.}"
+  local candidates=() bin path_bin seen=""
+  if [[ -n "${ZEROLLAMA_BIN:-}" ]]; then
+    candidates+=("${ZEROLLAMA_BIN}")
+  fi
+  if [[ -x "${root}/zerollama" ]]; then
+    candidates+=("${root}/zerollama")
+  fi
+  path_bin="$(command -v zerollama 2>/dev/null || true)"
+  if [[ -n "$path_bin" ]]; then
+    candidates+=("$path_bin")
+  fi
+  for bin in "${candidates[@]}"; do
+    [[ "$seen" == *"|${bin}|"* ]] && continue
+    seen="${seen}|${bin}|"
+    if [[ -x "$bin" ]] && "$bin" serve --help >/dev/null 2>&1; then
+      echo "$bin"
+      return 0
+    fi
+  done
+  echo "zerollama binary not found or failed serve --help; rebuild from repo or set ZEROLLAMA_BIN" >&2
+  if [[ -x "${root}/zerollama" ]]; then
+    echo "hint: on Mac, embed-linked builds need system Python 3.10+; sidecar mode avoids embed at runtime" >&2
+  fi
+  return 1
+}
+
+# Map local GGUF blob to pulled model tag (render-chat smoke), or empty.
+smoke_m3_proxy_tag_for_gguf() {
+  local gguf="$1"
+  python3 -c "
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1]).resolve()
+root = Path.home() / '.ollama/models'
+for mf in sorted(root.glob('manifests/registry.ollama.ai/library/*/latest')):
+    try:
+        m = json.loads(mf.read_text())
+        for layer in m.get('layers', []):
+            if layer.get('mediaType') != 'application/vnd.ollama.image.model':
+                continue
+            d = layer['digest'].replace('sha256:', 'sha256-')
+            if (root / 'blobs' / d).resolve() == p:
+                print(mf.parent.name)
+                sys.exit(0)
+    except Exception:
+        pass
+" "$gguf" 2>/dev/null || true
+}
+
+# Pick smallest local text GGUF for Darwin sign-off (skip embed + vision/multimodal).
+# Prints two lines: blob path, model tag (may be empty).
+smoke_m3_pick_text_gguf() {
+  python3 <<'PY'
+import json
+from pathlib import Path
+
+root = Path.home() / ".ollama/models/manifests/registry.ollama.ai/library"
+best = None
+for mf in sorted(root.rglob("latest")):
+    try:
+        m = json.loads(mf.read_text())
+        if any("projector" in (layer.get("mediaType") or "") for layer in m.get("layers", [])):
+            continue
+        cfg_path = Path.home() / ".ollama/models/blobs" / m["config"]["digest"].replace("sha256:", "sha256-")
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {}
+        fam = (cfg.get("model_family") or "").lower()
+        if fam in ("nomic-bert", "bert", "embed"):
+            continue
+        if "gemma" in fam and cfg.get("model_type") not in (None, "", "llama"):
+            continue
+        for layer in m.get("layers", []):
+            if layer.get("mediaType") != "application/vnd.ollama.image.model":
+                continue
+            d = layer["digest"].replace("sha256:", "sha256-")
+            path = Path.home() / ".ollama/models/blobs" / d
+            size = int(layer.get("size") or 0)
+            if not path.is_file():
+                continue
+            if best is None or size < best[0]:
+                best = (size, str(path), mf.parent.name)
+            break
+    except Exception:
+        pass
+if best:
+    print(best[1])
+    print(best[2])
+PY
+}
+
+# Resolve sign-off GGUF + optional proxy tag. Uses M3_LLAMA_MODEL only (not stale LLAMA_MODEL).
+# Sets LLAMA_MODEL, RUN_E2E_GGUF; exports RUN_E2E_PROXY_MODEL when tag found.
+smoke_m3_resolve_signoff_model() {
+  local model="${M3_LLAMA_MODEL:-}"
+  local tag=""
+  if [[ -z "$model" ]]; then
+    local pick
+    pick="$(smoke_m3_pick_text_gguf)"
+    model="$(echo "$pick" | sed -n '1p')"
+    tag="$(echo "$pick" | sed -n '2p')"
+  fi
+  if [[ -z "$model" || ! -f "$model" ]]; then
+    echo "Set M3_LLAMA_MODEL to a local text GGUF blob path" >&2
+    return 1
+  fi
+  export LLAMA_MODEL="$model" RUN_E2E_GGUF="$model"
+  if [[ -z "${RUN_E2E_PROXY_MODEL:-}" ]]; then
+    tag="${tag:-$(smoke_m3_proxy_tag_for_gguf "$model")}"
+    if [[ -n "$tag" ]]; then
+      export RUN_E2E_PROXY_MODEL="${tag}:latest"
+    else
+      echo "warn: could not resolve pulled tag for ${model}; render-chat tokenize check skipped" >&2
+    fi
+  fi
+}
+
+# M3 gate: sidecar must report inprocess from apple_silicon.yaml (not env/default).
+smoke_runtime_assert_m3_inprocess_config() {
+  local runtime_url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
+  local health backend source
+  health="$(runtime_fetch_health "$runtime_url")"
+  backend="$(smoke_runtime_llama_backend "$health" strict)"
+  source="$(smoke_runtime_llama_backend_source "$health" strict)"
+  if [[ "$backend" != "inprocess" || "$source" != "config" ]]; then
+    echo "M3 expects llama_backend=inprocess llama_backend_source=config; got backend=${backend} source=${source}" >&2
+    echo "  Unset ZEROLLAMA_RUNTIME_LLAMA_BACKEND and restart runtime (apple_silicon.yaml)." >&2
+    return 1
+  fi
+}
+
 runtime_fetch_health() {
   local url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
   local timeout="${2:-30}"
@@ -303,7 +461,10 @@ smoke_unload_ggml_runners() {
     return 0
   fi
   local models
-  mapfile -t _unload_models < <(
+  _unload_models=()
+  while IFS= read -r _line; do
+    [[ -n "$_line" ]] && _unload_models+=("$_line")
+  done < <(
     curl -sf -m 10 "${ollama_url}/api/ps" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)

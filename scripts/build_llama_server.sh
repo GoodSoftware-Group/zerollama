@@ -2,6 +2,7 @@
 # Build llama-server from pinned llama.cpp (see runtime/LLAMA_CPP_PIN.md).
 # Why validate nvcc: CMAKE may find headers under cuda-12.8 while CUDACXX points at a
 # missing cuda-13/bin/nvcc. RTX 5080: CMAKE_CUDA_ARCHITECTURES=120-real (see docs/testing-smoke.md).
+# macOS (M3): GGML_METAL=ON, GGML_CUDA=OFF — produces libllama.dylib + llama-server.
 set -euo pipefail
 
 ROOT="${LLAMA_CPP_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/llama.cpp}"
@@ -10,6 +11,28 @@ BUILD="${ROOT}/build"
 if [[ ! -f "${ROOT}/CMakeLists.txt" ]]; then
   echo "llama.cpp not found at ${ROOT}" >&2
   exit 1
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "Building llama-server in ${ROOT} (Metal)"
+  rm -rf "${BUILD}"
+  cmake -S "${ROOT}" -B "${BUILD}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_METAL=ON \
+    -DGGML_CUDA=OFF \
+    -DLLAMA_CURL=ON
+  cmake --build "${BUILD}" --target llama llama-server -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+  BIN="${BUILD}/bin/llama-server"
+  LIB="${BUILD}/bin/libllama.dylib"
+  if [[ -x "${BIN}" && -f "${LIB}" ]]; then
+    echo "OK: ${BIN}"
+    echo "OK: ${LIB}"
+    "${BIN}" --version 2>/dev/null || true
+  else
+    echo "Build finished but ${BIN} or ${LIB} missing" >&2
+    exit 1
+  fi
+  exit 0
 fi
 
 echo "Building llama-server in ${ROOT} (CUDA=${GGML_CUDA:-ON})"

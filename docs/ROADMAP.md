@@ -130,8 +130,9 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 |-----------|------|--------|----------------|
 | **M1** | **Unified memory admission** | Python | **Shipped (audit)** — `metal-unified` probe; `read_host_memory()` on darwin (load + `/health`); `apple_silicon.yaml` autoconfig; `check_gguf_host_budget` no longer Linux-only; `vm.swapusage` parser fixed. |
 | **M2** | **Operator smoke + docs** | Repo | **Shipped** — `macos_metal_smoke.sh`; guide + ROADMAP; pytest for darwin probe + snapshot hints; `check_gpu_scripts` greps. |
-| **M3** | **Runtime Metal parity** | Python | **Started** — `gpu_metal_session.sh` (smoke + Phase 13 snapshot + optional Phase 14); `apple_silicon.yaml` vram defaults tested. **Needs Mac:** inprocess Metal sign-off. |
+| **M3** | **Runtime Metal parity** | Python | **Shipped** — `m3_metal_signoff.sh` / `gpu_metal_session.sh`; Phase 13 snapshot + Phase 14 inprocess on Metal (M4 Max sign-off, Jun 2026). `apple_silicon.yaml` sets **`llama_backend: inprocess`**; M3 validates `llama_backend_source=config`. Use a **text-only** GGUF with pinned llama.cpp (not vision gemma3 on old pin). Mac serve: `./scripts/serve_mac_runtime.sh`. Optional Phase 15: `RUN_E2E_PHASE15=1 ./scripts/m3_metal_signoff.sh` or `./scripts/phase15_metal_signoff.sh`. |
 | **M4** | **MLX policy** | Go + docs | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md); `IsMLX()` excluded from runtime default **and** explicit Modelfile backend; Go tests. |
+| **M5** | **Phase 15 Metal KV sign-off** | Python | **Shipped** — `phase15_metal_signoff.sh` / `metal_signoff.sh` (M3 + Phase 15); sidecar multiseq + KV snapshot on Metal. |
 
 **Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
 

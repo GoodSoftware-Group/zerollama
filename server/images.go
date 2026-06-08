@@ -639,6 +639,14 @@ func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 		return errInsecureProtocol
 	}
 
+	imported, err := tryImportFromLMStudio(ctx, n, deleteMap, fn)
+	if err != nil {
+		return err
+	}
+	if imported {
+		return nil
+	}
+
 	fn(api.ProgressResponse{Status: "pulling manifest"})
 
 	mf, manifestData, err := pullModelManifest(ctx, n, regOpts)
@@ -658,14 +666,6 @@ func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 			return err
 		}
 		fn(api.ProgressResponse{Status: "success"})
-		return nil
-	}
-
-	imported, err := tryImportFromLMStudio(ctx, n, deleteMap, fn)
-	if err != nil {
-		return err
-	}
-	if imported {
 		return nil
 	}
 

@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (Jun 2026) — **v0–v8 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in. GPU sign-off: `./scripts/phase15_inprocess_signoff.sh`. **Not done:** PA block ids → llama tensor KV pages; batched decode in C.
+**Status:** Partial (Jun 2026) — **v0–v8 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in. GPU sign-off: `./scripts/phase15_inprocess_signoff.sh` (Linux embed). **Mac Metal:** `./scripts/phase15_metal_signoff.sh` (uv sidecar). **Not done:** PA block ids → llama tensor KV pages; batched decode in C.
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 

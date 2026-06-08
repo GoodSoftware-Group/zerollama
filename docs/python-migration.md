@@ -35,7 +35,7 @@ Go remains valuable for **distribution and API compatibility** until the Python 
 |------|--------|
 | Add `runtime/` Python package skeleton | `runtime/__init__.py`, `scheduler/`, `kv/`, `worker/`, `server/` stubs |
 | Pin **llama.cpp** | Single submodule or path (e.g. `../llama.cpp`); document commit; align with Ollama v0.30 / `llama-server` direction when rebasing |
-| Document env matrix | CUDA, Python 3.11+, `python3-dev` for existing embed; optional `uv`/`venv` for runtime |
+| Document env matrix | CUDA, Python 3.11+, `python3-dev` for existing embed; **uv** + `runtime/.venv` for sidecar runtime |
 | Define **GPU mutex** contract | Python API: `pause_inference()`, `unload_all()`, `resume_inference()` — mirror today’s `PauseNewLoads` / `UnloadAllRunners` / `ResumeLoads` |
 | CI smoke | Import `runtime`; CPU-only tests for block allocator math (no GPU required) |
 

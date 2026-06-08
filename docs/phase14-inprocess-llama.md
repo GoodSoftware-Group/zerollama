@@ -1,6 +1,6 @@
 # Phase 14 — in-process llama forward
 
-**Status:** **Done** (Jun 2026 on 5080 dev host). Subprocess `llama-server` remains the packaged default; opt in with env or YAML `llama_backend`. In-process forward + libllama tokenize for Go render-chat shipped. **One-shot sign-off:** `./scripts/phase14_5080_signoff.sh` (both backends, YAML config, Phase 15 multi-seq).
+**Status:** **Done** (Jun 2026 on 5080 dev host; **Mac Metal** via `./scripts/m3_metal_signoff.sh`). Subprocess `llama-server` remains the packaged default on Linux; **darwin autoconfig** sets `llama_backend: inprocess` in `apple_silicon.yaml`. Opt in elsewhere with env or YAML. In-process forward + libllama tokenize for Go render-chat shipped. **One-shot sign-off:** `./scripts/phase14_5080_signoff.sh` (5080, both backends, YAML config, Phase 15 multi-seq); **Mac:** `./scripts/m3_metal_signoff.sh` (sidecar + yaml config smoke).
 
 **Upgrade serve first:** Phase 14 needs a **current** `zerollama serve` (rebuild from this repo). Stale runtimes return HTTP 404 on `/internal/tokenize` and omit `llama_backend` in `/health`; `phase14_backend_smoke.sh` fails fast on that.
 
@@ -12,6 +12,17 @@ export LLAMA_MODEL=/path/to/model.gguf
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 ./zerollama serve
 ```
+
+**Mac (recommended):** sidecar + uv venv — embed needs system Python 3.10+ with torch; macOS often ships 3.9.
+
+```bash
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+export LLAMA_MODEL=/path/to/text-only.gguf
+./scripts/serve_mac_runtime.sh
+# apple_silicon.yaml sets llama_backend: inprocess; do not set ZEROLLAMA_RUNTIME_LLAMA_BACKEND
+```
+
+Sign-off: `./scripts/m3_metal_signoff.sh` (Phase 13 snapshot + `phase14_yaml_config_smoke.sh`).
 
 ---
 

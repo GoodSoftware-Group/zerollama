@@ -1,5 +1,5 @@
-// Package lmstudio discovers GGUF models installed by LM Studio under the
-// default user directory layout (~/.lmstudio/models/...).
+// Package lmstudio discovers models installed by LM Studio under the default
+// user directory layout (~/.lmstudio/models/...).
 package lmstudio
 
 import (
@@ -9,12 +9,30 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/types/model"
 )
 
-var shardName = regexp.MustCompile(`(?i)-\d{5}-of-\d{5}\.gguf$`)
+var (
+	ggufShardName = regexp.MustCompile(`(?i)-\d{5}-of-\d{5}\.gguf$`)
+	stShardName   = regexp.MustCompile(`(?i)-\d{5}-of-\d{5}\.safetensors$`)
+	quantTag      = regexp.MustCompile(`(?i)(q\d+_[kmgs0-9]+|q\d+|fp16|bf16|f16|mxfp4|[0-9]+bit)`)
+)
+
+const remoteHost = "lmstudio"
+
+// Entry describes one LM Studio model directory.
+type Entry struct {
+	Dir        string
+	Root       string
+	Name       string
+	Format     string
+	Size       int64
+	Modified   time.Time
+	WeightFile string // non-empty when the entry is one quant variant in a multi-GGUF dir
+}
 
 // Roots returns directories to scan for LM Studio models. If
 // OLLAMA_LMSTUDIO_MODELS is set, only those roots are used (comma- or
@@ -64,11 +82,175 @@ func Roots() []string {
 	return out
 }
 
+// List returns LM Studio model directories under [Roots].
+func List() []Entry {
+	var out []Entry
+	for _, root := range Roots() {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil || rel == "." {
+				return nil
+			}
+			if len(strings.Split(rel, string(filepath.Separator))) < 2 {
+				return nil
+			}
+			out = append(out, listEntriesForDir(root, path)...)
+			return nil
+		})
+	}
+	return out
+}
+
+func listEntriesForDir(root, path string) []Entry {
+	format, weights, ok := dirWeightFiles(path)
+	if !ok {
+		return nil
+	}
+
+	size, modified := dirStats(path)
+	if format == "gguf" && len(weights) > 1 && !allGGUFShards(weights) {
+		var out []Entry
+		for _, w := range weights {
+			name := suggestedNameForWeight(root, path, filepath.Base(w))
+			if name == "" {
+				continue
+			}
+			out = append(out, Entry{
+				Dir:        path,
+				Root:       root,
+				Name:       name,
+				Format:     format,
+				Size:       fileSize(w),
+				Modified:   modified,
+				WeightFile: filepath.Base(w),
+			})
+		}
+		return out
+	}
+
+	name := SuggestedName(root, path)
+	if name == "" {
+		return nil
+	}
+	return []Entry{{
+		Dir:      path,
+		Root:     root,
+		Name:     name,
+		Format:   format,
+		Size:     size,
+		Modified: modified,
+	}}
+}
+
+// RemoteHost is the ListModelResponse remote_host value for LM Studio entries.
+func RemoteHost() string {
+	return remoteHost
+}
+
+// SuggestedName returns a stable pull/run name for a model directory.
+func SuggestedName(root, dir string) string {
+	format, weights, ok := dirWeightFiles(dir)
+	if !ok {
+		return ""
+	}
+	if format == "gguf" && len(weights) == 1 {
+		return suggestedNameForWeight(root, dir, filepath.Base(weights[0]))
+	}
+	return suggestedNameForWeight(root, dir, "")
+}
+
+func suggestedNameForWeight(root, dir, weightBase string) string {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) < 2 {
+		return ""
+	}
+
+	publisher := strings.ToLower(parts[0])
+	folder := parts[1]
+	base := folder
+	for _, suffix := range []string{
+		"-GGUF", "-gguf",
+		"-MLX-8bit", "-mlx-8bit",
+		"-Q8-mlx", "-q8-mlx",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			base = strings.TrimSuffix(base, suffix)
+			break
+		}
+	}
+	base = strings.ToLower(base)
+
+	tag := "latest"
+	if weightBase != "" {
+		if q := quantTag.FindString(weightBase); q != "" {
+			tag = strings.ToLower(q)
+		}
+	} else if q := detectQuantTag(dir); q != "" {
+		tag = q
+	}
+
+	return publisher + "/" + base + ":" + tag
+}
+
+// MatchSelection returns the LM Studio directory and optional single GGUF weight
+// basename to import for the requested model name.
+func MatchSelection(n model.Name) (dir string, weightFile string, ok bool) {
+	if !n.IsValid() {
+		return "", "", false
+	}
+
+	want := strings.ToLower(strings.TrimSpace(n.DisplayShortest()))
+	var exactMatches []Entry
+	for _, e := range List() {
+		if strings.EqualFold(e.Name, want) {
+			exactMatches = append(exactMatches, e)
+		}
+	}
+	if len(exactMatches) == 1 {
+		return exactMatches[0].Dir, exactMatches[0].WeightFile, true
+	}
+	if len(exactMatches) > 1 {
+		return "", "", false
+	}
+
+	dir, ok = matchFuzzyDir(n)
+	if !ok {
+		return "", "", false
+	}
+
+	format, weights, ok := dirWeightFiles(dir)
+	if !ok || format != "gguf" || len(weights) <= 1 || allGGUFShards(weights) {
+		return dir, "", true
+	}
+
+	tag := strings.ToLower(strings.TrimSpace(n.Tag))
+	for _, tok := range tagTokens(tag) {
+		for _, w := range weights {
+			base := strings.ToLower(filepath.Base(w))
+			if strings.Contains(base, tok) {
+				return dir, filepath.Base(w), true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // MatchDir returns a model directory under LM Studio roots whose name and tag
 // heuristically match the requested Ollama model. The second return is false if
-// no unambiguous usable directory was found (including sharded multi-file GGUF
-// layouts, which are not auto-imported).
+// no unambiguous usable directory was found.
 func MatchDir(n model.Name) (string, bool) {
+	dir, _, ok := MatchSelection(n)
+	return dir, ok
+}
+
+func matchFuzzyDir(n model.Name) (string, bool) {
 	if !n.IsValid() {
 		return "", false
 	}
@@ -86,11 +268,10 @@ func MatchDir(n model.Name) (string, bool) {
 			if err != nil || rel == "." {
 				return nil
 			}
-			// Expect at least publisher/model-name (two components under root).
 			if len(strings.Split(rel, string(filepath.Separator))) < 2 {
 				return nil
 			}
-			if !dirLooksLikeLMStudioModel(path) {
+			if _, ok := dirModelFormat(path); !ok {
 				return nil
 			}
 			score := scorePath(path, n)
@@ -112,36 +293,171 @@ func MatchDir(n model.Name) (string, bool) {
 	if bestPath == "" || tie || bestScore < 2 {
 		return "", false
 	}
+
+	format, weights, ok := dirWeightFiles(bestPath)
+	if ok && format == "gguf" && len(weights) > 1 && !allGGUFShards(weights) {
+		tag := strings.ToLower(strings.TrimSpace(n.Tag))
+		if tag == "" || tag == "latest" {
+			return "", false
+		}
+		matched := false
+		for _, tok := range tagTokens(tag) {
+			for _, w := range weights {
+				if strings.Contains(strings.ToLower(filepath.Base(w)), tok) {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			return "", false
+		}
+	}
+
 	return bestPath, true
 }
 
+func dirModelFormat(dir string) (string, bool) {
+	format, _, ok := dirWeightFiles(dir)
+	return format, ok
+}
+
+func dirWeightFiles(dir string) (format string, weights []string, ok bool) {
+	if weights, ok = ggufWeightFiles(dir); ok {
+		return "gguf", weights, true
+	}
+	if weights, ok = safetensorsWeightFiles(dir); ok {
+		return "safetensors", weights, true
+	}
+	return "", nil, false
+}
+
 func dirLooksLikeLMStudioModel(dir string) bool {
+	_, ok := dirModelFormat(dir)
+	return ok
+}
+
+func ggufWeightFiles(dir string) ([]string, bool) {
 	ggufs, err := filepath.Glob(filepath.Join(dir, "*.gguf"))
 	if err != nil || len(ggufs) == 0 {
-		return false
+		return nil, false
 	}
 
-	var nonProj []string
+	var weights []string
 	for _, g := range ggufs {
 		base := strings.ToLower(filepath.Base(g))
 		if strings.HasPrefix(base, "mmproj") {
 			continue
 		}
-		nonProj = append(nonProj, g)
+		weights = append(weights, g)
 	}
-	if len(nonProj) == 0 {
+	if len(weights) == 0 {
+		return nil, false
+	}
+	if len(weights) == 1 || allGGUFShards(weights) {
+		return weights, true
+	}
+	// Multiple quant variants in one directory (e.g. Q4_K_M and Q8_0).
+	return weights, true
+}
+
+func allGGUFShards(weights []string) bool {
+	if len(weights) <= 1 {
 		return false
 	}
-	if len(nonProj) == 1 {
-		return true
-	}
-	// Multiple weight files: only allow if not a multi-part shard layout.
-	for _, p := range nonProj {
-		if !shardName.MatchString(filepath.Base(p)) {
+	for _, p := range weights {
+		if !ggufShardName.MatchString(filepath.Base(p)) {
 			return false
 		}
 	}
-	return false
+	return true
+}
+
+func safetensorsWeightFiles(dir string) ([]string, bool) {
+	st, err := filepath.Glob(filepath.Join(dir, "model*.safetensors"))
+	if err != nil || len(st) == 0 {
+		if st, err = filepath.Glob(filepath.Join(dir, "consolidated*.safetensors")); err != nil || len(st) == 0 {
+			return nil, false
+		}
+	}
+
+	var weights []string
+	for _, p := range st {
+		base := strings.ToLower(filepath.Base(p))
+		if base == "model.safetensors.index.json" {
+			continue
+		}
+		weights = append(weights, p)
+	}
+	if len(weights) == 0 {
+		return nil, false
+	}
+	if len(weights) == 1 {
+		return weights, true
+	}
+	for _, p := range weights {
+		if !stShardName.MatchString(filepath.Base(p)) {
+			return nil, false
+		}
+	}
+	return weights, true
+}
+
+func dirHasGGUFWeights(dir string) bool {
+	_, ok := ggufWeightFiles(dir)
+	return ok
+}
+
+func dirHasSafetensorsWeights(dir string) bool {
+	_, ok := safetensorsWeightFiles(dir)
+	return ok
+}
+
+func fileSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+func detectQuantTag(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".gguf") &&
+			!strings.HasSuffix(strings.ToLower(name), ".safetensors") {
+			continue
+		}
+		if m := quantTag.FindString(name); m != "" {
+			return strings.ToLower(m)
+		}
+	}
+	return ""
+}
+
+func dirStats(dir string) (size int64, modified time.Time) {
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		size += info.Size()
+		if info.ModTime().After(modified) {
+			modified = info.ModTime()
+		}
+		return nil
+	})
+	return size, modified
 }
 
 func scorePath(path string, n model.Name) int {
