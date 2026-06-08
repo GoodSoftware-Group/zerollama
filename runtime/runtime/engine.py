@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 import uuid
@@ -77,6 +78,7 @@ class InferenceEngine:
 
     def __init__(self, config: RuntimeConfig | None = None) -> None:
         self.config = config or RuntimeConfig.from_env()
+        self._llama_backend_override: LlamaBackendKind | None = None
         if self.config.llama_model and self.config.llama_model.is_file():
             InferenceEngine._log.info(
                 "runtime configured for model %s (gguf=%s)",
@@ -209,7 +211,63 @@ class InferenceEngine:
             return session.tokenize_text(text, add_special=add_special)
 
     def _resolved_llama_backend(self) -> LlamaBackendKind:
+        if self._llama_backend_override is not None:
+            return self._llama_backend_override
         return resolve_llama_backend(self.config)
+
+    def _requested_llama_backend(self) -> LlamaBackendKind:
+        return resolve_llama_backend(self.config)
+
+    def _inprocess_fallback_enabled(self) -> bool:
+        raw = os.environ.get("ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK", "").strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return False
+        if raw in ("1", "true", "yes", "on", "subprocess"):
+            return True
+        if sys.platform != "darwin":
+            return False
+        bin_p = self.config.llama_server_bin
+        return bin_p is not None and bin_p.is_file()
+
+    def _start_server_with_fallback(self, extra_args: list[str]) -> None:
+        if self._server is None:
+            raise LlamaServerError("llama forward not configured")
+        try:
+            self._server.start(extra_args=extra_args)
+        except LlamaServerError as exc:
+            if (
+                self._llama_backend_override is None
+                and self._requested_llama_backend() == LlamaBackendKind.INPROCESS
+                and self._inprocess_fallback_enabled()
+            ):
+                bin_p = self.config.llama_server_bin
+                model = getattr(self._server, "model", None)
+                if (
+                    bin_p is not None
+                    and bin_p.is_file()
+                    and model is not None
+                ):
+                    self._log.warning(
+                        "inprocess load failed; falling back to subprocess llama-server: %s",
+                        exc,
+                    )
+                    self._server.stop()
+                    self._llama_backend_override = LlamaBackendKind.SUBPROCESS
+                    self._server = create_llama_worker(
+                        kind=LlamaBackendKind.SUBPROCESS,
+                        binary=bin_p,
+                        model=model,
+                        host=self.config.host,
+                        port=self.config.port + 1,
+                        lib_path=self.config.llama_cpp_lib,
+                        cpp_root=self.config.llama_cpp_root,
+                        main_gpu=self.config.main_gpu,
+                        config=self.config,
+                    )
+                    self._server.start(extra_args=extra_args)
+                    self.invalidate_health_cache()
+                    return
+            raise
 
     def _llama_backend_enabled(self) -> bool:
         try:
@@ -297,7 +355,7 @@ class InferenceEngine:
                 "ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess|llama-cpp-python)"
             )
         if not self._server.is_running():
-            self._server.start(extra_args=self.config.llama_server_args())
+            self._start_server_with_fallback(extra_args=self.config.llama_server_args())
         return self._server
 
     @staticmethod
@@ -570,7 +628,7 @@ class InferenceEngine:
                 priority=priority_from_options(options),
                 **vram_kw,
             )
-            self._server.start(
+            self._start_server_with_fallback(
                 extra_args=self._llama_server_start_args(
                     resolved, num_ctx=needed_ctx, options=options
                 )
@@ -809,6 +867,8 @@ class InferenceEngine:
             "llama_server": self._server is not None and self._server.is_running(),
             "llama_backend": self._health_llama_backend(),
             "llama_backend_source": llama_backend_source(self.config),
+            "llama_backend_requested": self._requested_llama_backend().value,
+            "llama_backend_fallback": self._llama_backend_override is not None,
             "kv_inprocess_n_seq_max": self._health_inprocess_n_seq_max(),
             "loaded_vram_num_ctx": self._loaded_vram_num_ctx,
             "llama_model": str(self.config.llama_model)

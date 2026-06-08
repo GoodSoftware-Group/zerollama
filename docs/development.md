@@ -24,7 +24,24 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 ## macOS (Apple Silicon)
 
-macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** models — no CUDA steps required. For **runtime admission** on unified memory (Phase 11/13), autoconfig picks `apple_silicon.yaml` and probes via `metal-unified`. See [apple-silicon-metal.md](./apple-silicon-metal.md) and `./scripts/macos_metal_smoke.sh`.
+macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** models — no CUDA steps required. For **runtime admission** on unified memory (Phase 11/13), autoconfig picks `apple_silicon.yaml` and probes via `metal-unified`.
+
+**First-time setup:**
+
+```bash
+./scripts/mac_setup.sh          # uv venv + Metal llama.cpp + metal sign-off
+./scripts/serve_mac_runtime.sh  # daily dev: sidecar :8081 + Go :8080
+zerollama doctor                # check uv, libllama, sidecar /health
+```
+
+**Two serve modes (do not mix ports without intent):**
+
+| Mode | Command | Port | Use |
+|------|---------|------|-----|
+| Default ggml | `zerollama serve` | `:11434` | Chat, vision, most users |
+| Runtime + tools | `./scripts/serve_mac_runtime.sh` | `:8080` + `:8081` | Phase 12 tools, admission, inprocess forward |
+
+See [apple-silicon-metal.md](./apple-silicon-metal.md), `./scripts/metal_signoff.sh`, and `./scripts/macos_metal_smoke.sh`.
 
 Optional **MLX engine** for safetensors models: see [MLX Engine](#mlx-engine-optional) below.
 

@@ -6,6 +6,17 @@
 
 ---
 
+## Two serve modes on Mac
+
+| Mode | How | Port | When to use |
+|------|-----|------|-------------|
+| **Default ggml** | `zerollama serve` | `:11434` | General chat, vision, pulled library models — **start here** |
+| **Runtime + tools** | `./scripts/serve_mac_runtime.sh` | Go `:8080`, sidecar `:8081` | Phase 12 tools, admission, inprocess forward |
+
+Run `zerollama doctor` to validate uv venv, Metal `libllama.dylib`, and sidecar `/health`. First-time setup: `./scripts/mac_setup.sh`.
+
+---
+
 ## Why this guide exists
 
 Apple Silicon does **not** share the same stack as the RTX 5080 CUDA path:
@@ -188,6 +199,7 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | `zerollama serve` aborts (Python3.framework) | Embed-linked repo binary | Use sidecar (`serve_mac_runtime.sh`) or set `ZEROLLAMA_BIN` to a working install |
 | Phase 14 inprocess load error | Vision model on pinned llama.cpp | Use text-only GGUF (e.g. Qwen text, not gemma3 vision) |
 | `llama_backend_source: env` on Mac | `ZEROLLAMA_RUNTIME_LLAMA_BACKEND` set | Unset env; rely on `apple_silicon.yaml` |
+| Inprocess load fails on some GGUF | Vision / pinned llama.cpp mismatch | Auto-fallback to Metal `llama-server` on darwin when `LLAMA_SERVER_BIN` set (`ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK=auto`, default on Mac); check `/health` `llama_backend_fallback`; or use text-only GGUF |
 
 ---
 

@@ -29,6 +29,14 @@ def format_gpu_health_tuning_report(h: dict[str, Any]) -> str:
                 lines.append(
                     "# subprocess packaged default (no llama_backend key in autoconfig YAML)"
                 )
+    if h.get("llama_backend_requested"):
+        lines.append(f"llama_backend_requested: {h.get('llama_backend_requested')}")
+    if h.get("llama_backend_fallback"):
+        lines.append("llama_backend_fallback: true")
+        lines.append(
+            "# inprocess load failed; subprocess llama-server active "
+            "(ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK)"
+        )
 
     if ac:
         lines.append(f"autoconfig: {ac.get('pick')} {ac.get('config_path')}")

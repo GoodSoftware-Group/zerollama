@@ -70,7 +70,7 @@ export LLAMA_CPP_LIB=/path/to/llama.cpp/build/bin/libllama.so
 # YAML: uncomment llama_backend: inprocess in runtime/configs/single_gpu.yaml (env wins)
 ```
 
-`/health` reports `llama_backend_source`: `env` (override set), `config` (explicit YAML key), or `default` (packaged subprocess).
+`/health` reports `llama_backend_source`: `env` (override set), `config` (explicit YAML key), or `default` (packaged subprocess). When inprocess load fails on Darwin, the sidecar may fall back to subprocess `llama-server` (`llama_backend_fallback: true`, `llama_backend_requested: inprocess`); control via `ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK` (`auto` on Mac when `LLAMA_SERVER_BIN` is set).
 
 Sign-off: `../scripts/phase14_inprocess_smoke.sh` (5080 GPU), `../scripts/phase14_wheel_cpu_smoke.sh` (wheel CPU), `../scripts/phase14_yaml_config_smoke.sh`, or `../scripts/phase14_both_backends.sh` — see [../docs/phase14-inprocess-llama.md](../docs/phase14-inprocess-llama.md).
 

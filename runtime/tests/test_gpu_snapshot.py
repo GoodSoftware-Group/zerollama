@@ -141,6 +141,17 @@ def test_recommend_phase14_inprocess_from_config():
     assert "inprocess from /cfg/single_gpu.yaml" in text
 
 
+def test_recommend_phase14_inprocess_fallback():
+    snap = dict(_SNAPSHOT_5080)
+    snap["llama_backend"] = "subprocess"
+    snap["llama_backend_source"] = "config"
+    snap["llama_backend_requested"] = "inprocess"
+    snap["llama_backend_fallback"] = True
+    text = "\n".join(recommend_from_snapshot(snap))
+    assert "llama_backend_fallback=true" in text
+    assert "ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK" in text
+
+
 def test_recommend_phase14_wheel_cpu_default():
     snap = dict(_SNAPSHOT_5080)
     snap["llama_backend"] = "llama-cpp-python"

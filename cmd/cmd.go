@@ -880,7 +880,8 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 	var data [][]string
 
 	for _, m := range models.Models {
-		if m.RemoteModel != "" {
+		// Hide remote catalog stubs (e.g. Eliza cloud); LM Studio caches are local.
+		if m.RemoteModel != "" && !strings.EqualFold(m.RemoteHost, "lmstudio") {
 			continue
 		}
 		if len(args) == 0 || strings.HasPrefix(strings.ToLower(m.Name), strings.ToLower(args[0])) {
@@ -2231,6 +2232,8 @@ func NewCLI() *cobra.Command {
 		_ = runner.Execute(args[1:])
 	})
 
+	doctorCmd := NewDoctorCommand()
+
 	envVars := envconfig.AsMap()
 
 	envs := []envconfig.EnvVar{envVars["OLLAMA_HOST"]}
@@ -2294,6 +2297,7 @@ func NewCLI() *cobra.Command {
 		copyCmd,
 		deleteCmd,
 		runnerCmd,
+		doctorCmd,
 		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
 	)
 

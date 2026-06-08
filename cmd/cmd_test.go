@@ -1158,6 +1158,29 @@ func TestListHandler(t *testing.T) {
 				"model1    sha256:abc12    1.0 KB    24 hours ago    \n",
 		},
 		{
+			name: "include lm studio caches",
+			args: []string{},
+			serverResponse: []api.ListModelResponse{
+				{Name: "local:latest", Digest: "sha256:abc123", Size: 1024, ModifiedAt: time.Now().Add(-24 * time.Hour)},
+				{
+					Name:        "lmstudio-community/gemma-4-31b-it:q8_0",
+					RemoteModel: "/Users/user1/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+					RemoteHost:  "lmstudio",
+					Size:        32e9,
+					ModifiedAt:  time.Now().Add(-1 * time.Hour),
+				},
+				{
+					Name:        "acme/foo:cloud",
+					RemoteModel: "acme/foo",
+					RemoteHost:  "https://cloud.example.com",
+					ModifiedAt:  time.Now(),
+				},
+			},
+			expectedOutput: "NAME                                      ID              SIZE      MODIFIED          \n" +
+				"local:latest                              sha256:abc12    1.0 KB    24 hours ago         \n" +
+				"lmstudio-community/gemma-4-31b-it:q8_0                    32 GB     About an hour ago    \n",
+		},
+		{
 			name:          "server error",
 			args:          []string{},
 			expectedError: "server error",

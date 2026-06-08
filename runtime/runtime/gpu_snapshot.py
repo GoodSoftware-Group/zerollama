@@ -45,7 +45,16 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
             detail.append(f"llama_backend={backend}")
         if backend_src:
             detail.append(f"llama_backend_source={backend_src}")
+        if snap.get("llama_backend_requested"):
+            detail.append(f"llama_backend_requested={snap.get('llama_backend_requested')}")
+        if snap.get("llama_backend_fallback"):
+            detail.append("llama_backend_fallback=true")
         lines.append(f"# Phase 14 forward: {', '.join(detail)}")
+        if snap.get("llama_backend_fallback"):
+            lines.append(
+                "# inprocess load failed; subprocess llama-server active "
+                "(ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK)"
+            )
         if ac.get("pick") == "single_gpu" and backend == "subprocess":
             lines.append(
                 "# optional: after RUN_E2E_INPROCESS=1 phase14_backend_smoke passes, run "

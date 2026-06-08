@@ -16,6 +16,7 @@ llama/build
 llama/vendor
 /ollama
 /zerollama
+/lib/
 integration/testdata/models/
 
 # Python bytecode

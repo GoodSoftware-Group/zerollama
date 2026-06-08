@@ -8,6 +8,7 @@ import pytest
 
 from runtime.config import RuntimeConfig
 from runtime.engine import InferenceEngine
+from runtime.worker.factory import LlamaBackendKind
 
 
 @pytest.fixture
@@ -33,7 +34,17 @@ def test_health_llama_backend_from_config(engine: InferenceEngine):
     body = engine.health()
     assert body["llama_backend"] == "inprocess"
     assert body["llama_backend_source"] == "config"
+    assert body["llama_backend_requested"] == "inprocess"
+    assert body["llama_backend_fallback"] is False
     assert "llama_cpp" not in body
+
+
+def test_health_llama_backend_fallback_flag(engine: InferenceEngine):
+    engine._llama_backend_override = LlamaBackendKind.SUBPROCESS
+    body = engine.health()
+    assert body["llama_backend"] == "subprocess"
+    assert body["llama_backend_requested"] == "inprocess"
+    assert body["llama_backend_fallback"] is True
 
 
 def test_health_llama_backend_default_subprocess(

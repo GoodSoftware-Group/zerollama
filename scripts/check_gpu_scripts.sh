@@ -22,6 +22,7 @@ scripts=(
   gpu_metal_session.sh
   m3_metal_signoff.sh
   metal_signoff.sh
+  mac_setup.sh
   serve_mac_runtime.sh
   phase15_metal_signoff.sh
   macos_runtime_serve_lib.sh
@@ -85,6 +86,9 @@ grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu_metal_session.sh"
 grep -q 'METAL_SELF_START' "${ROOT}/scripts/gpu_metal_session.sh"
 grep -q 'RUN_E2E_PHASE15=1' "${ROOT}/scripts/metal_signoff.sh"
 grep -q 'test_m3_model_picker.py' "${ROOT}/scripts/macos_metal_smoke.sh"
+grep -q 'NewDoctorCommand' "${ROOT}/cmd/cmd.go"
+grep -q 'mac_setup.sh' "${ROOT}/docs/development.md"
+grep -q 'llama_backend_fallback' "${ROOT}/runtime/runtime/engine.py"
 grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"
 grep -q 'llama_backend: inprocess' "${ROOT}/runtime/configs/apple_silicon.yaml"
 grep -q 'vm.swapusage' "${ROOT}/runtime/runtime/host_memory.py"

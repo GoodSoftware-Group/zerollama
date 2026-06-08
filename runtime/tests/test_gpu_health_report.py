@@ -103,6 +103,18 @@ def test_format_gpu_health_default_source_shows_autoconfig_path():
     assert "subprocess default via /cfg/single_gpu.yaml" in out
 
 
+def test_format_gpu_health_includes_fallback_fields():
+    h = dict(SAMPLE_HEALTH)
+    h["llama_backend"] = "subprocess"
+    h["llama_backend_source"] = "config"
+    h["llama_backend_requested"] = "inprocess"
+    h["llama_backend_fallback"] = True
+    out = format_gpu_health_tuning_report(h)
+    assert "llama_backend_requested: inprocess" in out
+    assert "llama_backend_fallback: true" in out
+    assert "ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK" in out
+
+
 def test_format_gpu_health_llama_cpp_wheel_cpu():
     h = dict(SAMPLE_HEALTH)
     h["llama_backend"] = "llama-cpp-python"
