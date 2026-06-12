@@ -1328,6 +1328,51 @@ class InferenceEngine:
         finally:
             self.loop.complete(active)
 
+    def _generate_progress_chunk(
+        self,
+        model: str,
+        status: str,
+        detail: str,
+        *,
+        created: str,
+        position: int = 0,
+        queue_depth: int = 0,
+    ) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "model": model,
+            "created_at": created,
+            "response": "",
+            "done": False,
+            "status": status,
+            "detail": detail,
+        }
+        if position > 0:
+            out["position"] = position
+        if queue_depth > 0:
+            out["queue_depth"] = queue_depth
+        return out
+
+    def _gguf_needs_load(self, gguf: Path | None) -> bool:
+        if gguf is None:
+            if self._server is None:
+                return True
+            return not self._server.is_running()
+        try:
+            key = str(gguf.resolve())
+        except OSError:
+            key = str(gguf)
+        if self._server is not None:
+            try:
+                if (
+                    str(self._server.model.resolve()) == key
+                    and self._server.is_running()
+                ):
+                    return False
+            except OSError:
+                pass
+        loaded = self._model_swap.stats().get("loaded_gguf")
+        return loaded != key
+
     def stream_generate(
         self,
         prompt: str,
@@ -1339,6 +1384,10 @@ class InferenceEngine:
         options: dict | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield Ollama-shaped NDJSON objects for /api/generate streaming."""
+        created = self._utc_now()
+        yield self._generate_progress_chunk(
+            model, "accepted", "request accepted", created=created
+        )
         active = self._admit_one(
             prompt, n_predict, gguf=gguf, num_ctx=num_ctx, options=options
         )
@@ -1346,11 +1395,20 @@ class InferenceEngine:
         vram_opts = active.vram_options or self._vram_options(active.num_ctx, options)
         vram_api = self._api_vram_num_ctx_from_request(active)
         decode_before = self._kv_decode_steps_before()
-        created = self._utc_now()
         try:
             with self._model_swap.hold(gguf):
+                if self._gguf_needs_load(gguf):
+                    yield self._generate_progress_chunk(
+                        model,
+                        "loading",
+                        "loading model into memory",
+                        created=created,
+                    )
                 srv = self._ensure_gguf_loaded_unlocked(
                     gguf, num_ctx=active.num_ctx, options=vram_opts
+                )
+                yield self._generate_progress_chunk(
+                    model, "generating", "generating response", created=created
                 )
                 saw_stop = False
                 first = True
@@ -1416,6 +1474,21 @@ class InferenceEngine:
         for chunk in self.stream_generate(
             prompt, model, n_predict, gguf=gguf, num_ctx=num_ctx, options=options
         ):
+            if chunk.get("status") and not chunk.get("response") and not chunk.get("done"):
+                out: dict[str, Any] = {
+                    "model": model,
+                    "created_at": chunk.get("created_at", self._utc_now()),
+                    "message": {"role": "assistant", "content": ""},
+                    "done": False,
+                    "status": chunk["status"],
+                    "detail": chunk.get("detail", ""),
+                }
+                if chunk.get("position"):
+                    out["position"] = chunk["position"]
+                if chunk.get("queue_depth"):
+                    out["queue_depth"] = chunk["queue_depth"]
+                yield out
+                continue
             content = chunk.get("response", "")
             done = bool(chunk.get("done"))
             out: dict[str, Any] = {

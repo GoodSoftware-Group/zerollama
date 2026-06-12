@@ -50,17 +50,24 @@ func TestRuntimeGenerateStreamProxy(t *testing.T) {
 	}
 	sc := bufio.NewScanner(w.Body)
 	var lines int
+	var first map[string]any
 	var last map[string]any
 	for sc.Scan() {
 		var m map[string]any
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			t.Fatal(err)
 		}
+		if lines == 0 {
+			first = m
+		}
 		last = m
 		lines++
 	}
-	if lines != 2 {
-		t.Fatalf("expected 2 ndjson lines, got %d", lines)
+	if lines != 3 {
+		t.Fatalf("expected 3 ndjson lines, got %d", lines)
+	}
+	if first["status"] != "accepted" {
+		t.Fatalf("first chunk status %v", first["status"])
 	}
 	if last["kv_decode_steps"] != float64(99) {
 		t.Fatalf("final chunk kv_decode_steps %v", last["kv_decode_steps"])

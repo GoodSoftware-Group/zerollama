@@ -24,6 +24,56 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
+func isStreamProgressChatChunk(c api.ChatResponse) bool {
+	return c.Status != "" && c.Message.Content == "" && c.Message.Thinking == "" &&
+		len(c.Message.ToolCalls) == 0 && !c.Done
+}
+
+func readNDJSONChatResponses(t *testing.T, body io.Reader) []api.ChatResponse {
+	t.Helper()
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []api.ChatResponse
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var chunk api.ChatResponse
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			t.Fatalf("decode chat chunk: %v line=%q", err, line)
+		}
+		out = append(out, chunk)
+	}
+	return out
+}
+
+func finalChatStreamChunk(chunks []api.ChatResponse) api.ChatResponse {
+	for i := len(chunks) - 1; i >= 0; i-- {
+		if isStreamProgressChatChunk(chunks[i]) {
+			continue
+		}
+		return chunks[i]
+	}
+	if len(chunks) == 0 {
+		return api.ChatResponse{}
+	}
+	return chunks[len(chunks)-1]
+}
+
+func contentChatStreamChunks(chunks []api.ChatResponse) []api.ChatResponse {
+	out := make([]api.ChatResponse, 0, len(chunks))
+	for _, c := range chunks {
+		if isStreamProgressChatChunk(c) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // testPropsMap creates a ToolPropertiesMap from a map (convenience function for tests)
 func testPropsMap(m map[string]api.ToolProperty) *api.ToolPropertiesMap {
 	props := api.NewToolPropertiesMap()
@@ -332,10 +382,7 @@ func TestGenerateChat(t *testing.T) {
 	checkChatResponse := func(t *testing.T, body io.Reader, model, content string) {
 		t.Helper()
 
-		var actual api.ChatResponse
-		if err := json.NewDecoder(body).Decode(&actual); err != nil {
-			t.Fatal(err)
-		}
+		actual := finalChatStreamChunk(readNDJSONChatResponses(t, body))
 
 		if actual.Model != model {
 			t.Errorf("expected model test, got %s", actual.Model)
@@ -542,10 +589,7 @@ func TestGenerateChat(t *testing.T) {
 			t.Errorf("expected status 200, got %d", w.Code)
 		}
 
-		var resp api.ChatResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatal(err)
-		}
+		resp := finalChatStreamChunk(readNDJSONChatResponses(t, w.Body))
 
 		if resp.Message.ToolCalls == nil {
 			t.Error("expected tool calls, got nil")
@@ -843,12 +887,26 @@ func TestGenerateChat(t *testing.T) {
 			},
 		})
 
-		if w.Code != http.StatusTooManyRequests {
-			t.Errorf("expected status 429, got %d", w.Code)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200 once streaming started, got %d", w.Code)
 		}
 
-		if diff := cmp.Diff(w.Body.String(), `{"error":"rate limit exceeded"}`); diff != "" {
-			t.Errorf("mismatch (-got +want):\n%s", diff)
+		var sawError bool
+		for _, line := range strings.Split(strings.TrimSpace(w.Body.String()), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatal(err)
+			}
+			if errMsg, ok := m["error"].(string); ok && errMsg == "rate limit exceeded" {
+				sawError = true
+			}
+		}
+		if !sawError {
+			t.Errorf("expected streaming error chunk, got %q", w.Body.String())
 		}
 	})
 }
@@ -2032,20 +2090,7 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 			t.Errorf("expected second completion format to match original format")
 		}
 
-		decoder := json.NewDecoder(w.Body)
-		var events []api.ChatResponse
-		for {
-			var event api.ChatResponse
-			if err := decoder.Decode(&event); err == io.EOF {
-				break
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			events = append(events, event)
-			if event.Done {
-				break
-			}
-		}
+		events := contentChatStreamChunks(readNDJSONChatResponses(t, w.Body))
 
 		if len(events) < 2 {
 			t.Fatalf("expected at least two streaming events, got %d", len(events))

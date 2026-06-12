@@ -40,6 +40,8 @@ def create_app(
         OllamaGenerateResponse,
     )
 
+    from runtime.server.access_log import log_request_in, log_response_out, runtime_queue_snapshot
+
     eng = engine or InferenceEngine(config)
 
     class CompletionRequest(BaseModel):
@@ -132,6 +134,12 @@ def create_app(
 
     @app.post("/api/generate")
     def api_generate(req: OllamaGenerateRequest = Body()):
+        started = log_request_in(
+            "/api/generate",
+            model=req.model,
+            stream=bool(req.stream),
+            queue=runtime_queue_snapshot(eng),
+        )
         opts = dict(req.options)
         gguf = pop_gguf_path(opts)
         n_predict = _n_predict(opts)
@@ -140,6 +148,9 @@ def create_app(
             import json
 
             def _gen():
+                status = 200
+                done_reason = ""
+                queue_in = runtime_queue_snapshot(eng)
                 try:
                     for chunk in eng.stream_generate(
                         req.prompt,
@@ -149,9 +160,24 @@ def create_app(
                         num_ctx=num_ctx,
                         options=opts,
                     ):
+                        if chunk.get("done"):
+                            done_reason = str(chunk.get("done_reason") or "stop")
                         yield json.dumps(chunk) + "\n"
                 except LlamaServerError as e:
+                    status = _llama_error_status(e)
                     yield json.dumps({"error": str(e)}) + "\n"
+                finally:
+                    log_response_out(
+                        "/api/generate",
+                        started,
+                        model=req.model,
+                        stream=True,
+                        status=status,
+                        done_reason=done_reason or ("stop" if status == 200 else ""),
+                        error="" if status == 200 else "llama error",
+                        queue=runtime_queue_snapshot(eng),
+                        queue_in=queue_in,
+                    )
 
             return StreamingResponse(
                 _gen(), media_type="application/x-ndjson"
@@ -163,6 +189,16 @@ def create_app(
                 gguf=gguf,
                 num_ctx=num_ctx,
                 options=opts,
+            )
+            log_response_out(
+                "/api/generate",
+                started,
+                model=req.model,
+                stream=False,
+                status=200,
+                done_reason="stop",
+                queue=runtime_queue_snapshot(eng),
+                queue_in=runtime_queue_snapshot(eng),
             )
             return OllamaGenerateResponse(
                 model=req.model,
@@ -181,8 +217,24 @@ def create_app(
                 )
                 else 502
             )
+            log_response_out(
+                "/api/generate",
+                started,
+                model=req.model,
+                stream=False,
+                status=status,
+                error=str(e),
+            )
             raise HTTPException(status_code=status, detail=str(e)) from e
         except Exception as e:
+            log_response_out(
+                "/api/generate",
+                started,
+                model=req.model,
+                stream=False,
+                status=500,
+                error=str(e),
+            )
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.post("/api/chat")
@@ -195,6 +247,13 @@ def create_app(
             stream_tool_chat_chunks,
         )
         from runtime.server.runtime_chat import chat_needs_legacy, messages_to_prompt
+
+        started = log_request_in(
+            "/api/chat",
+            model=req.model,
+            stream=bool(req.stream),
+            queue=runtime_queue_snapshot(eng),
+        )
 
         if chat_needs_legacy(
             list(req.messages),
@@ -230,6 +289,9 @@ def create_app(
             import json
 
             def _gen():
+                status = 200
+                done_reason = ""
+                queue_in = runtime_queue_snapshot(eng)
                 try:
                     if tools:
                         it = stream_tool_chat_chunks(
@@ -256,11 +318,27 @@ def create_app(
                             options=opts,
                         )
                     for chunk in it:
+                        if isinstance(chunk, dict) and chunk.get("done"):
+                            done_reason = str(chunk.get("done_reason") or "stop")
                         yield json.dumps(chunk) + "\n"
                 except ToolParseUnavailableError as e:
+                    status = 503
                     yield json.dumps({"error": str(e)}) + "\n"
                 except LlamaServerError as e:
+                    status = _llama_error_status(e)
                     yield json.dumps({"error": str(e)}) + "\n"
+                finally:
+                    log_response_out(
+                        "/api/chat",
+                        started,
+                        model=req.model,
+                        stream=True,
+                        status=status,
+                        done_reason=done_reason or ("stop" if status == 200 else ""),
+                        error="" if status == 200 else "inference error",
+                        queue=runtime_queue_snapshot(eng),
+                        queue_in=queue_in,
+                    )
 
             return StreamingResponse(
                 _gen(), media_type="application/x-ndjson"
@@ -299,11 +377,38 @@ def create_app(
                 out["vram_num_ctx"] = result.vram_num_ctx
             if result.kv_decode_steps is not None:
                 out["kv_decode_steps"] = result.kv_decode_steps
+            log_response_out(
+                "/api/chat",
+                started,
+                model=req.model,
+                stream=False,
+                status=200,
+                done_reason=done_reason,
+                queue=runtime_queue_snapshot(eng),
+                queue_in=runtime_queue_snapshot(eng),
+            )
             return out
         except ToolParseUnavailableError as e:
+            log_response_out(
+                "/api/chat",
+                started,
+                model=req.model,
+                stream=False,
+                status=503,
+                error=str(e),
+            )
             raise HTTPException(status_code=503, detail=str(e)) from e
         except LlamaServerError as e:
-            raise HTTPException(status_code=_llama_error_status(e), detail=str(e)) from e
+            status = _llama_error_status(e)
+            log_response_out(
+                "/api/chat",
+                started,
+                model=req.model,
+                stream=False,
+                status=status,
+                error=str(e),
+            )
+            raise HTTPException(status_code=status, detail=str(e)) from e
 
     @app.post("/v1/chat/completions")
     def v1_chat_completions(payload: dict[str, Any] = Body()):

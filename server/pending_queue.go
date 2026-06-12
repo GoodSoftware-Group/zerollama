@@ -87,6 +87,23 @@ func (q *pendingQueue) OldestFifoSeq() uint64 {
 	return min
 }
 
+// FifoPosition returns the 1-based index of ticket in the pending queue and total depth.
+// Returns position=0 when ticket is not waiting (loading or unknown).
+func (q *pendingQueue) FifoPosition(ticket uint64) (position int, depth int) {
+	if ticket == 0 {
+		return 0, q.Len()
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	depth = len(q.items)
+	for i, req := range q.items {
+		if req != nil && req.fifoSeq == ticket {
+			return i + 1, depth
+		}
+	}
+	return 0, depth
+}
+
 // Len returns the number of queued requests.
 func (q *pendingQueue) Len() int {
 	q.mu.Lock()

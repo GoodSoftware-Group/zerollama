@@ -29,6 +29,8 @@ def test_stream_generate_yields_ollama_chunks(cfg_root):
     with patch.object(eng, "_admit_one", return_value=fake_req):
         with patch.object(eng, "_ensure_gguf_loaded_unlocked", return_value=mock_srv):
             chunks = list(eng.stream_generate("hi", "m", n_predict=8))
-    assert chunks[0]["response"] == "a"
-    assert chunks[0]["done"] is False
+    assert chunks[0]["status"] == "accepted"
+    token_chunks = [c for c in chunks if c.get("response")]
+    assert token_chunks[0]["response"] == "a"
+    assert token_chunks[0]["done"] is False
     assert chunks[-1]["done"] is True

@@ -69,6 +69,12 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 		stream := ollamaWantsStream(req.Stream)
 		payload := runtimeChatPayload(req, rtOpts, stream)
 		if stream {
+			if err := writeRuntimeStreamAccepted(c, req.Model, true); err != nil {
+				writeRuntimeProxyError(c, err)
+				return
+			}
+		}
+		if stream {
 			if err := forwardRuntimeNDJSON(c, "/api/chat", payload); err != nil {
 				writeRuntimeProxyError(c, err)
 			}

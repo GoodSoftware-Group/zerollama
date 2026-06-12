@@ -47,11 +47,12 @@ func (s *Server) initRequestLogging() error {
 }
 
 func (s *Server) withInferenceRequestLogging(route string, handlers ...gin.HandlerFunc) []gin.HandlerFunc {
-	if s.requestLogger == nil {
-		return handlers
+	out := []gin.HandlerFunc{s.inferenceAccessLogMiddleware(route)}
+	if s.requestLogger != nil {
+		out = append(out, s.requestLogger.middleware(route))
 	}
-
-	return append([]gin.HandlerFunc{s.requestLogger.middleware(route)}, handlers...)
+	out = append(out, handlers...)
+	return out
 }
 
 func (l *inferenceRequestLogger) middleware(route string) gin.HandlerFunc {

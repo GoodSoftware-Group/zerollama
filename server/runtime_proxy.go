@@ -85,6 +85,24 @@ func ollamaWantsStream(stream *bool) bool {
 	return stream == nil || *stream
 }
 
+func writeRuntimeStreamAccepted(c *gin.Context, model string, chat bool) error {
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Status(http.StatusOK)
+	var chunk any
+	if chat {
+		chunk = chatStatusChunk(model, "accepted", "request accepted", 0, 0)
+	} else {
+		chunk = generateStatusChunk(model, "accepted", "request accepted", 0, 0)
+	}
+	bts, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	bts = append(bts, '\n')
+	_, err = c.Writer.Write(bts)
+	return err
+}
+
 func forwardRuntimeNDJSON(
 	c *gin.Context,
 	path string,

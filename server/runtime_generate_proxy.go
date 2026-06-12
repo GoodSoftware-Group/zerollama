@@ -70,14 +70,18 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 		if gguf, ok := rtOpts["gguf"].(string); ok {
 			runtimeclient.LogVramBudgetIfTight(c.Request.Context(), req.Model, gguf, rtOpts)
 		}
-		if ollamaWantsStream(req.Stream) {
-			payload := map[string]any{
-				"model":   req.Model,
-				"prompt":  req.Prompt,
-				"stream":  true,
-				"options": rtOpts,
-			}
-			if err := forwardRuntimeNDJSON(c, "/api/generate", payload); err != nil {
+	if ollamaWantsStream(req.Stream) {
+		payload := map[string]any{
+			"model":   req.Model,
+			"prompt":  req.Prompt,
+			"stream":  true,
+			"options": rtOpts,
+		}
+		if err := writeRuntimeStreamAccepted(c, req.Model, false); err != nil {
+			writeRuntimeProxyError(c, err)
+			return
+		}
+		if err := forwardRuntimeNDJSON(c, "/api/generate", payload); err != nil {
 				writeRuntimeProxyError(c, err)
 			}
 			return

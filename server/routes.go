@@ -159,7 +159,7 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 
 // scheduleRunner schedules a runner after validating inputs such as capabilities and model options.
 // It returns the allocated runner, model instance, and consolidated options if successful and error otherwise.
-func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (llm.LlamaServer, *Model, *api.Options, error) {
+func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration, statusCh chan<- any, writeStatus func(ch chan<- any, model, status, detail string, position, queueDepth int)) (llm.LlamaServer, *Model, *api.Options, error) {
 	if name == "" {
 		return nil, nil, nil, fmt.Errorf("model %w", errRequired)
 	}
@@ -191,30 +191,47 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		"num_ctx", opts.NumCtx,
 		"keep_alive", schedKeepAliveDesc(keepAlive),
 	)
-	runnerCh, errCh := s.sched.GetRunner(ctx, model, opts, keepAlive)
+	runnerCh, errCh, ticket := s.sched.GetRunner(ctx, model, opts, keepAlive)
 	var runner *runnerRef
-	select {
-	case runner = <-runnerCh:
-		slog.Info("scheduleRunner: runner acquired",
-			"model", name,
-			"elapsed", time.Since(schedStart),
-			"pid", runner.pid,
-			"loading", runner.loading,
-		)
-	case err = <-errCh:
-		slog.Warn("scheduleRunner: failed",
-			"model", name,
-			"elapsed", time.Since(schedStart),
-			"error", err,
-		)
-		return nil, nil, nil, err
-	case <-ctx.Done():
-		slog.Warn("scheduleRunner: client canceled while waiting",
-			"model", name,
-			"elapsed", time.Since(schedStart),
-			"err", ctx.Err(),
-		)
-		return nil, nil, nil, ctx.Err()
+	if statusCh != nil {
+		writeFn := writeStatus
+		if writeFn == nil {
+			writeFn = writeGenerateStatus
+		}
+		var err error
+		runner, err = s.waitRunnerWithStatus(ctx, model.ShortName, ticket, runnerCh, errCh, statusCh, writeFn)
+		if err != nil {
+			slog.Warn("scheduleRunner: failed",
+				"model", name,
+				"elapsed", time.Since(schedStart),
+				"error", err,
+			)
+			return nil, nil, nil, err
+		}
+	} else {
+		select {
+		case runner = <-runnerCh:
+			slog.Info("scheduleRunner: runner acquired",
+				"model", name,
+				"elapsed", time.Since(schedStart),
+				"pid", runner.pid,
+				"loading", runner.loading,
+			)
+		case err = <-errCh:
+			slog.Warn("scheduleRunner: failed",
+				"model", name,
+				"elapsed", time.Since(schedStart),
+				"error", err,
+			)
+			return nil, nil, nil, err
+		case <-ctx.Done():
+			slog.Warn("scheduleRunner: client canceled while waiting",
+				"model", name,
+				"elapsed", time.Since(schedStart),
+				"err", ctx.Err(),
+			)
+			return nil, nil, nil, ctx.Err()
+		}
 	}
 
 	return runner.llama, model, &opts, nil
@@ -352,7 +369,16 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
+	streaming := req.Stream == nil || *req.Stream
+	var streamCh chan any
+	if streaming {
+		streamCh = make(chan any, 32)
+	}
+	statusWriter := func(ch chan<- any, _ string, status, detail string, pos, depth int) {
+		writeGenerateStatus(ch, req.Model, status, detail, pos, depth)
+	}
+
+	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
 		return
@@ -491,7 +517,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 	}
 
-	ch := make(chan any)
+	ch := streamCh
+	if ch == nil {
+		ch = make(chan any)
+	}
 	go func() {
 		// TODO (jmorganca): avoid building the response twice both here and below
 		var sb strings.Builder
@@ -545,6 +574,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				res.DoneReason = cr.DoneReason.String()
 				res.TotalDuration = time.Since(checkpointStart)
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount)
 
 				if !req.Raw {
 					tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
@@ -674,7 +704,7 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive)
+	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
@@ -829,7 +859,7 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 
 	name := modelRef.Name
 
-	r, _, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive)
+	r, _, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
@@ -2085,13 +2115,7 @@ func streamResponse(c *gin.Context, ch chan any) {
 }
 
 func (s *Server) StatusHandler(c *gin.Context) {
-	disabled, source := internalcloud.Status()
-	c.JSON(http.StatusOK, api.StatusResponse{
-		Cloud: api.CloudStatus{
-			Disabled: disabled,
-			Source:   source,
-		},
-	})
+	c.JSON(http.StatusOK, s.statusResponse(c.Request.Context()))
 }
 
 func (s *Server) WebSearchExperimentalHandler(c *gin.Context) {
@@ -2403,7 +2427,16 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		}
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
+	streaming := req.Stream == nil || *req.Stream
+	var streamCh chan any
+	if streaming {
+		streamCh = make(chan any, 32)
+	}
+	statusWriter := func(ch chan<- any, _ string, status, detail string, pos, depth int) {
+		writeChatStatus(ch, req.Model, status, detail, pos, depth)
+	}
+
+	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
 		return
@@ -2500,7 +2533,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		structuredOutputsState_Applying
 	)
 
-	ch := make(chan any)
+	ch := streamCh
+	if ch == nil {
+		ch = make(chan any)
+	}
 	go func() {
 		defer close(ch)
 
@@ -2553,6 +2589,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.DoneReason = r.DoneReason.String()
 					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount)
 				}
 
 				if builtinParser != nil {
@@ -2843,7 +2880,7 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 	}
 
 	// Schedule the runner for image generation
-	runner, _, _, err := s.scheduleRunner(c.Request.Context(), modelName, []model.Capability{model.CapabilityImage}, nil, req.KeepAlive)
+	runner, _, _, err := s.scheduleRunner(c.Request.Context(), modelName, []model.Capability{model.CapabilityImage}, nil, req.KeepAlive, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
@@ -2920,6 +2957,7 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 			res.DoneReason = cr.DoneReason.String()
 			res.Metrics.TotalDuration = time.Since(checkpointStart)
 			res.Metrics.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+			recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount)
 		}
 
 		if !isStreaming {

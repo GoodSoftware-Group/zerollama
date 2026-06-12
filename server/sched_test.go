@@ -445,10 +445,10 @@ func TestSchedGetRunner(t *testing.T) {
 	s.getSystemInfoFn = getSystemInfoFn
 	s.newServerFn = a.newServer
 	slog.Info("a")
-	successCh1a, errCh1a := s.GetRunner(a.ctx, a.req.model, a.req.opts, a.req.sessionDuration)
+	successCh1a, errCh1a, _ := s.GetRunner(a.ctx, a.req.model, a.req.opts, a.req.sessionDuration)
 	require.Equal(t, 1, s.pending.Len())
 	slog.Info("b")
-	successCh1b, errCh1b := s.GetRunner(b.ctx, b.req.model, b.req.opts, b.req.sessionDuration)
+	successCh1b, errCh1b, _ := s.GetRunner(b.ctx, b.req.model, b.req.opts, b.req.sessionDuration)
 	require.Equal(t, 1, s.pending.Len())
 	require.Empty(t, successCh1b)
 	require.Len(t, errCh1b, 1)
@@ -472,7 +472,7 @@ func TestSchedGetRunner(t *testing.T) {
 
 	c.req.model.ModelPath = "bad path"
 	slog.Info("c")
-	successCh1c, errCh1c := s.GetRunner(c.ctx, c.req.model, c.req.opts, c.req.sessionDuration)
+	successCh1c, errCh1c, _ := s.GetRunner(c.ctx, c.req.model, c.req.opts, c.req.sessionDuration)
 	// Starts in pending channel, then should be quickly processed to return an error
 	time.Sleep(50 * time.Millisecond) // Long enough for the "a" model to expire and unload
 	require.Empty(t, successCh1c)
@@ -507,7 +507,7 @@ func TestSchedGetRunnerUsesDigestKeyWhenModelPathEmpty(t *testing.T) {
 	s.loadedMu.Unlock()
 
 	reqModel := &Model{Name: "safetensors-b", Digest: "sha-b"}
-	successCh, errCh := s.GetRunner(ctx, reqModel, opts, nil)
+	successCh, errCh, _ := s.GetRunner(ctx, reqModel, opts, nil)
 
 	require.Empty(t, successCh)
 	require.Empty(t, errCh)
@@ -536,7 +536,7 @@ func TestSchedGetRunnerReusesSameDigestWhenModelPathEmpty(t *testing.T) {
 	s.loadedMu.Unlock()
 
 	reqCtx, cancelReq := context.WithCancel(ctx)
-	successCh, errCh := s.GetRunner(reqCtx, &Model{Name: "safetensors-a-copy", Digest: "sha-a"}, opts, nil)
+	successCh, errCh, _ := s.GetRunner(reqCtx, &Model{Name: "safetensors-a-copy", Digest: "sha-a"}, opts, nil)
 	cancelReq()
 
 	select {
@@ -626,7 +626,7 @@ func TestSchedPrematureExpired(t *testing.T) {
 	s.getGpuFn = getGpuFn
 	s.getSystemInfoFn = getSystemInfoFn
 	s.newServerFn = scenario1a.newServer
-	successCh1a, errCh1a := s.GetRunner(scenario1a.ctx, scenario1a.req.model, scenario1a.req.opts, scenario1a.req.sessionDuration)
+	successCh1a, errCh1a, _ := s.GetRunner(scenario1a.ctx, scenario1a.req.model, scenario1a.req.opts, scenario1a.req.sessionDuration)
 	require.Equal(t, 1, s.pending.Len())
 	s.Run(ctx)
 	select {

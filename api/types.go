@@ -572,6 +572,12 @@ type ChatResponse struct {
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
 
+	// Streaming progress (done=false, empty message): accepted, queued, loading, generating.
+	Status     string `json:"status,omitempty"`
+	Position   int    `json:"position,omitempty"`
+	QueueDepth int    `json:"queue_depth,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+
 	DebugInfo *DebugInfo `json:"_debug_info,omitempty"`
 
 	// Logprobs contains log probability information for the generated tokens,
@@ -859,9 +865,37 @@ type CloudStatus struct {
 	Source   string `json:"source"`
 }
 
-// StatusResponse is the response from [Client.CloudStatusExperimental].
+// GgmlStatus is the ggml scheduler snapshot on GET /api/status (fleet polling).
+type GgmlStatus struct {
+	Pending      int      `json:"pending"`
+	Active       int      `json:"active"`
+	Loaded       int      `json:"loaded"`
+	LoadsPaused  bool     `json:"loads_paused"`
+	Loading      bool     `json:"loading"`
+	LoadedModels []string `json:"loaded_models,omitempty"`
+}
+
+// RuntimeStatus is the Python runtime sidecar snapshot on GET /api/status.
+// Queue fields are omitted when enabled is true but available is false (probe failed).
+type RuntimeStatus struct {
+	Enabled     bool   `json:"enabled"`
+	Available   bool   `json:"available"`
+	Waiting     *int   `json:"waiting,omitempty"`
+	Running     *int   `json:"running,omitempty"`
+	LlamaLoaded *bool  `json:"llama_loaded,omitempty"`
+	State       string `json:"state,omitempty"`
+}
+
+// InferenceStatus summarizes local inference load for fleet management polling.
+type InferenceStatus struct {
+	Ggml    GgmlStatus    `json:"ggml"`
+	Runtime RuntimeStatus `json:"runtime"`
+}
+
+// StatusResponse is the response from GET /api/status.
 type StatusResponse struct {
-	Cloud CloudStatus `json:"cloud"`
+	Cloud     CloudStatus     `json:"cloud"`
+	Inference InferenceStatus `json:"inference"`
 }
 
 // GenerateResponse is the response passed into [GenerateResponseFunc].
@@ -890,6 +924,12 @@ type GenerateResponse struct {
 
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
+
+	// Streaming progress (done=false, empty response): accepted, queued, loading, generating.
+	Status     string `json:"status,omitempty"`
+	Position   int    `json:"position,omitempty"`
+	QueueDepth int    `json:"queue_depth,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 
 	// Context is an encoding of the conversation used in this response; this
 	// can be sent in the next request to keep a conversational memory.

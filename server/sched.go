@@ -134,7 +134,7 @@ func schedulerModelKey(m *Model) string {
 }
 
 // context must be canceled to decrement ref count and release the runner
-func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, sessionDuration *api.Duration) (chan *runnerRef, chan error) {
+func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, sessionDuration *api.Duration) (chan *runnerRef, chan error, uint64) {
 	if opts.NumCtx < 4 {
 		opts.NumCtx = 4
 	}
@@ -157,7 +157,7 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		select {
 		case <-c.Done():
 			req.errCh <- c.Err()
-			return req.successCh, req.errCh
+			return req.successCh, req.errCh, 0
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -171,19 +171,19 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		attrs = append(attrs, schedRunnerAttrs(runner)...)
 		schedLogInfo("GetRunner fast path (already loaded)", req, attrs...)
 		req.useLoadedRunner(runner, s.finishedReqCh)
-	} else {
-		req.fifoSeq = AllocCrossQueueSeq()
-		if !s.pending.Push(req) {
-			schedLogWarn("pending queue full", req, "max_queue", envconfig.MaxQueue())
-			req.errCh <- ErrMaxQueue
-		} else {
-			attrs := s.schedSnapshot()
-			attrs = append(attrs, "needs_reload", runner != nil)
-			schedLogInfo("queued for load", req, attrs...)
-			go s.dropPendingOnCancel(req)
-		}
+		return req.successCh, req.errCh, 0
 	}
-	return req.successCh, req.errCh
+	req.fifoSeq = AllocCrossQueueSeq()
+	if !s.pending.Push(req) {
+		schedLogWarn("pending queue full", req, "max_queue", envconfig.MaxQueue())
+		req.errCh <- ErrMaxQueue
+	} else {
+		attrs := s.schedSnapshot()
+		attrs = append(attrs, "needs_reload", runner != nil)
+		schedLogInfo("queued for load", req, attrs...)
+		go s.dropPendingOnCancel(req)
+	}
+	return req.successCh, req.errCh, req.fifoSeq
 }
 
 // Returns immediately, spawns go routines for the scheduler which will shutdown when ctx is done
@@ -1227,27 +1227,76 @@ func (s *Scheduler) oldestGgmlFifoSeq() uint64 {
 	return minNonZeroUint64(pending, loading)
 }
 
-// InferenceBacklog returns pending requests, active refs, and loaded runner count.
-func (s *Scheduler) InferenceBacklog() (pending int, active int, loaded int) {
+// InferenceFleetSnapshot is a consistent ggml scheduler view for GET /api/status.
+type InferenceFleetSnapshot struct {
+	Pending      int
+	Active       int
+	Loaded       int
+	LoadsPaused  bool
+	Loading      bool
+	LoadedModels []string
+}
+
+// InferenceFleetSnapshot returns a point-in-time ggml scheduler view for fleet polling.
+// Pending is read outside loadedMu; loaded_models and loaded are from the same lock
+// so len(loaded_models) == loaded when every resident runner has a resolvable name.
+func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 	if s == nil {
-		return 0, 0, 0
+		return InferenceFleetSnapshot{}
 	}
-	pending = s.pending.Len()
+	snap := InferenceFleetSnapshot{
+		Pending:     s.pending.Len(),
+		LoadsPaused: s.loadsPaused.Load(),
+	}
 	s.loadedMu.Lock()
-	loaded = len(s.loaded)
+	snap.Loaded = len(s.loaded)
+	snap.Loading = s.activeLoading != nil
 	for _, runner := range s.loaded {
 		runner.refMu.Lock()
 		if runner.refCount > 0 {
-			active++
+			snap.Active++
 		}
 		runner.refMu.Unlock()
+		name := runner.modelKey
+		if runner.model != nil && runner.model.ShortName != "" {
+			name = runner.model.ShortName
+		}
+		snap.LoadedModels = append(snap.LoadedModels, name)
 	}
-	loading := s.activeLoading != nil
+	if snap.Loading {
+		snap.Active++
+	}
 	s.loadedMu.Unlock()
-	if loading {
-		active++
+	slices.Sort(snap.LoadedModels)
+	return snap
+}
+
+// InferenceBacklog returns pending requests, active refs, and loaded runner count.
+func (s *Scheduler) InferenceBacklog() (pending int, active int, loaded int) {
+	snap := s.InferenceFleetSnapshot()
+	return snap.Pending, snap.Active, snap.Loaded
+}
+
+// WaitStatus returns a streaming progress snapshot for a scheduler ticket.
+func (s *Scheduler) WaitStatus(ticket uint64) (status, detail string, position, queueDepth int) {
+	if s == nil || ticket == 0 {
+		return "", "", 0, 0
 	}
-	return pending, active, loaded
+	position, queueDepth = s.pending.FifoPosition(ticket)
+	if position > 0 {
+		return "queued", fmt.Sprintf("queued (#%d of %d)", position, queueDepth), position, queueDepth
+	}
+	s.loadedMu.Lock()
+	loading := s.activeLoading != nil
+	loadingTicket := s.loadingFifoSeq.Load() == ticket
+	s.loadedMu.Unlock()
+	if loading && loadingTicket {
+		return "loading", "loading model into memory", 0, queueDepth
+	}
+	if loading {
+		return "loading", "loading model into memory", 0, queueDepth
+	}
+	return "loading", "starting inference", 0, queueDepth
 }
 
 // InferenceBusy reports whether ggml inference has queued, in-flight, or resident work.
