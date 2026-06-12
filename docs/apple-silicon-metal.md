@@ -45,7 +45,7 @@ Recent zerollama work optimized **CUDA runtime admission** first. This track mak
 
                     ┌─────────────────────────────────────┐
   Runtime-routed    │  Python runtime → llama-server      │  ← Phase 12 tools, manifest gguf
-  GGUF text         │  (Metal if llama-server built for it) │
+  GGUF text         │  or inprocess (Metal libllama)      │  ← --llama-cpp-backend
                     └─────────────────────────────────────┘
 
                     ┌─────────────────────────────────────┐
@@ -54,7 +54,9 @@ Recent zerollama work optimized **CUDA runtime admission** first. This track mak
                     └─────────────────────────────────────┘
 ```
 
-**Recommendation today:** Use **GGUF + default serve** for general chat. Enable **runtime proxy** when you need Phase 12 tools on runtime-routed models. Use **MLX** only for safetensors-native or image MLX models after building the MLX engine.
+**Upstream Ollama (reference):** default GGUF is **Go → llama-server** (no Python sidecar). Zerollama [Phase 17](./ROADMAP.md#phase-17--upstream-gguf-path-alignment-directional) targets that shape for plain text while keeping Python for admission/training. Compare: [upstream-ollama-diff.md](./upstream-ollama-diff.md).
+
+**Recommendation today:** Use **GGUF + default serve** for general chat. Enable **runtime proxy** when you need Phase 12 tools on runtime-routed models, or **`--llama-cpp-backend`** to benchmark against upstream. Use **MLX** only for safetensors-native or image MLX models after building the MLX engine.
 
 ---
 
@@ -191,6 +193,26 @@ zerollama serve
 
 ---
 
+## Compare with upstream Ollama
+
+Clone vanilla Ollama for Metal A/B without merging zerollama:
+
+```bash
+./scripts/clone_upstream_ollama.sh
+cd ../ollama-upstream && go build -o ollama .
+OLLAMA_HOST=127.0.0.1:11435 ./ollama serve
+```
+
+| Arm | Port | GGUF stack |
+|-----|------|------------|
+| Zerollama default | `:11434` | Go → ggml Metal runner |
+| Zerollama `--llama-cpp-backend` | `:11434` + sidecar `:8081` | Go → Python → inprocess / llama-server Metal |
+| Upstream Ollama | `:11435` | Go → llama-server Metal |
+
+Benchmark all three with `go run ./cmd/bench` (see [llama-cpp-backend.md](./llama-cpp-backend.md)). Roadmap milestone **M7** (done): keep ggml default — [phase17-llama-server.md](./phase17-llama-server.md), [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track).
+
+---
+
 ## Roadmap (Metal track)
 
 See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
@@ -203,6 +225,7 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M4** MLX vs runtime policy doc + routing guards | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md) |
 | **M5** Phase 15 KV + multi-seq on Metal | **Shipped** — `./scripts/metal_signoff.sh` |
 | **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
+| **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; [phase17-llama-server.md](./phase17-llama-server.md) |
 
 ## Troubleshooting
 

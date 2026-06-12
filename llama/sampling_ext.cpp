@@ -3,8 +3,7 @@
 #include "sampling_ext.h"
 #include "json-schema-to-grammar.h"
 #include "llama.h"
-#include "llama-model.h"
-#include "llama-model-loader.h"
+#include "llama-impl.h"
 #include "llama-grammar.h"
 #include "nlohmann/json.hpp"
 
@@ -21,7 +20,9 @@ struct common_sampler *common_sampler_cinit(const struct llama_model *model, str
         sparams.penalty_freq = params->penalty_freq;
         sparams.penalty_present = params->penalty_present;
         sparams.seed = params->seed;
-        sparams.grammar = params->grammar;
+        if (params->grammar != nullptr) {
+            sparams.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, params->grammar);
+        }
         sparams.xtc_probability = 0.0;
         sparams.xtc_threshold = 0.5;
         return common_sampler_init(model, sparams);
@@ -67,24 +68,6 @@ int schema_to_grammar(const char *json_schema, char *grammar, size_t max_len)
     }
 }
 
-struct llama_vocab * llama_load_vocab_from_file(const char * fname) {
-    llama_vocab * vocab = new llama_vocab();
-    try {
-        const auto kv = LLM_KV(LLM_ARCH_UNKNOWN);
-        std::vector<std::string> splits = {};
-        llama_model_loader ml(std::string(fname), splits, false, false, false, nullptr, nullptr);
-        vocab->load(ml, kv);
-    } catch (const std::exception & err) {
-        LLAMA_LOG_ERROR("%s: error loading model: %s\n", __func__, err.what());
-        return nullptr;
-    }
-
-    return vocab;
-}
-
-void llama_free_vocab(struct llama_vocab * vocab) {
-    delete vocab;
-}
 struct llama_grammar *grammar_init(char* grammar, uint32_t* tokens, size_t n_tokens, const char** pieces, uint32_t* eog_tokens, size_t n_eog_tokens) {
     try {
         if (grammar == nullptr) {
@@ -112,11 +95,8 @@ struct llama_grammar *grammar_init(char* grammar, uint32_t* tokens, size_t n_tok
 
 void grammar_free(struct llama_grammar *g) {
     if (g != nullptr) {
-        if (g->vocab != nullptr) {
-            delete g->vocab;
-        }
         if (g->o_vocab != nullptr) {
-                delete g->o_vocab;
+            delete g->o_vocab;
         }
         llama_grammar_free_impl(g);
     }

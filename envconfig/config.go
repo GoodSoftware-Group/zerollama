@@ -349,6 +349,8 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY": {"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", ggmlPauseWhenRuntimeBusyDisplay(), "Pause new ggml loads when Python runtime queue is deep (auto when runtime configured)"},
 		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
 		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy: 1/on (default when URL set), 0/off, unset=on if URL set"},
+		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
+		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "If 1, route eligible GGUF text inference through Go → llama-server subprocess (Phase 17)"},
 		"ZEROLLAMA_LEGACY_RUNNER":             {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
 		"OLLAMA_RUNTIME_ALL":                  {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
 		"OLLAMA_FFMPEG":                       {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
@@ -494,6 +496,47 @@ func RuntimeDefaultOn() bool {
 // LegacyRunnerForced keeps the ggml runner for models tagged zerollama-runtime.
 func LegacyRunnerForced() bool {
 	return Var("ZEROLLAMA_LEGACY_RUNNER") == "1"
+}
+
+// LlamaCppBackend routes eligible local GGUF text inference through the Python
+// runtime + pinned llama.cpp instead of the in-process ggml runner. Set via
+// ZEROLLAMA_LLAMA_CPP_BACKEND=1 or `zerollama serve --llama-cpp-backend`.
+func LlamaCppBackend() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_CPP_BACKEND"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// LlamaServerBackend routes eligible GGUF inference through Go → llama-server
+// (upstream shape). Set via ZEROLLAMA_LLAMA_SERVER=1 or `zerollama serve --llama-server-backend`.
+func LlamaServerBackend() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// ApplyLlamaServerBackendDefaults skips Python runtime routing so sched loads
+// models through Go → llama-server. Safe to call when the flag is off (no-op).
+func ApplyLlamaServerBackendDefaults() {
+	if !LlamaServerBackend() {
+		return
+	}
+	if strings.TrimSpace(Var("ZEROLLAMA_LEGACY_RUNNER")) == "" {
+		_ = os.Setenv("ZEROLLAMA_LEGACY_RUNNER", "1")
+	}
+}
+
+// ApplyLlamaCppBackendDefaults sets runtime env needed for llama.cpp backend testing.
+// Safe to call when the flag is off (no-op).
+func ApplyLlamaCppBackendDefaults() {
+	if !LlamaCppBackend() {
+		return
+	}
+	if strings.TrimSpace(Var("ZEROLLAMA_RUNTIME")) == "" {
+		_ = os.Setenv("ZEROLLAMA_RUNTIME", "1")
+	}
+	if strings.TrimSpace(Var("ZEROLLAMA_AUTO_CONFIG")) == "" &&
+		strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_CONFIG")) == "" {
+		_ = os.Setenv("ZEROLLAMA_AUTO_CONFIG", "1")
+	}
 }
 
 func runtimeEnvDisplay() string {
@@ -676,9 +719,28 @@ func WanVideoTimeoutSec() int {
 	return n
 }
 
-// RuntimeConfigured reports whether a Python runtime is in use (external URL or embedded).
+// RuntimeDarwinSidecarLikely reports whether macOS serve will start or attach to a uv sidecar.
+func RuntimeDarwinSidecarLikely() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if RuntimeURL() != "" {
+		return false
+	}
+	v = strings.TrimSpace(Var("ZEROLLAMA_RUNTIME"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	return true
+}
+
+// RuntimeConfigured reports whether a Python runtime is in use (external URL, embedded, or Darwin sidecar).
 func RuntimeConfigured() bool {
-	return RuntimeURL() != "" || RuntimeEmbedEnabled()
+	return RuntimeURL() != "" || RuntimeEmbedEnabled() || RuntimeDarwinSidecarLikely()
 }
 
 func ggmlPauseWhenRuntimeBusyDisplay() string {

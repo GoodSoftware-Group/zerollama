@@ -14,13 +14,24 @@ if [[ ! -f "${ROOT}/CMakeLists.txt" ]]; then
 fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  echo "Building llama-server in ${ROOT} (Metal)"
+  ZEROLLAMA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  # shellcheck source=scripts/mac_cgo_env.sh
+  source "${ZEROLLAMA_ROOT}/scripts/mac_cgo_env.sh"
+  mac_cgo_env
+  export CC="${CC:-$(xcrun --find clang)}"
+  export CXX="${CXX:-$(xcrun --find clang++)}"
+  if [[ "${CXX##*/}" == "clang" ]]; then
+    export CXX="$(xcrun --find clang++)"
+  fi
+  echo "Building llama-server in ${ROOT} (Metal) CC=${CC} CXX=${CXX}"
   rm -rf "${BUILD}"
   cmake -S "${ROOT}" -B "${BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER="${CC}" \
+    -DCMAKE_CXX_COMPILER="${CXX}" \
     -DGGML_METAL=ON \
     -DGGML_CUDA=OFF \
-    -DLLAMA_CURL=ON
+    -DLLAMA_CURL=OFF
   cmake --build "${BUILD}" --target llama llama-server -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
   BIN="${BUILD}/bin/llama-server"
   LIB="${BUILD}/bin/libllama.dylib"

@@ -185,7 +185,10 @@ func applyDarwinServeDefaults(repoRoot string) {
 	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME")); v == "" {
 		_ = os.Setenv("ZEROLLAMA_RUNTIME", "1")
 	}
-	_ = os.Unsetenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND")
+	if !envconfig.LlamaCppBackend() {
+		_ = os.Unsetenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND")
+	}
+	envconfig.ApplyLlamaCppBackendDefaults()
 	applyDarwinLlamaCppEnv(repoRoot)
 }
 

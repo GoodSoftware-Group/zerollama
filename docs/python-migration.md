@@ -25,6 +25,8 @@ zerollama_runtime (Python) — PA scheduler, continuous batching, llama-server w
 
 Go remains valuable for **distribution and API compatibility** until the Python runtime is stable enough to own more of local `/api/generate` and `/api/chat`.
 
+**Upstream divergence:** Vanilla [ollama/ollama](https://github.com/ollama/ollama) skipped a Python runtime entirely and routes default GGUF as **Go → llama-server**. Zerollama keeps Python for PA, admission, training, and Phase 15 experiments; [Phase 17](./ROADMAP.md#phase-17--upstream-gguf-path-alignment-directional) aligns **default text GGUF** with upstream while shrinking Python’s role on the hot path. See [upstream-ollama-diff.md](./upstream-ollama-diff.md).
+
 ---
 
 ## Phase 0 — Foundations (no user-visible change)
@@ -34,7 +36,7 @@ Go remains valuable for **distribution and API compatibility** until the Python 
 | Task | Notes |
 |------|--------|
 | Add `runtime/` Python package skeleton | `runtime/__init__.py`, `scheduler/`, `kv/`, `worker/`, `server/` stubs |
-| Pin **llama.cpp** | Single submodule or path (e.g. `../llama.cpp`); document commit; align with Ollama v0.30 / `llama-server` direction when rebasing |
+| Pin **llama.cpp** | Single submodule or path (e.g. `../llama.cpp`); document commit; align with upstream `LLAMA_CPP_VERSION` when rebasing — see [upstream-ollama-diff.md](./upstream-ollama-diff.md) |
 | Document env matrix | CUDA, Python 3.11+, `python3-dev` for existing embed; **uv** + `runtime/.venv` for sidecar runtime |
 | Define **GPU mutex** contract | Python API: `pause_inference()`, `unload_all()`, `resume_inference()` — mirror today’s `PauseNewLoads` / `UnloadAllRunners` / `ResumeLoads` |
 | CI smoke | Import `runtime`; CPU-only tests for block allocator math (no GPU required) |

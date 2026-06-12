@@ -19,5 +19,5 @@ echo ">>> SDKROOT=${SDKROOT}" >&2
 echo ">>> python3-embed: $(pkg-config --modversion python3-embed)" >&2
 
 cd "${ROOT}"
-go build -o "${OUT}" .
+GOFLAGS=-mod=mod go build -o "${OUT}" .
 echo ">>> wrote ${OUT}" >&2

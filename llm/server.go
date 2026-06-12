@@ -140,8 +140,20 @@ func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 	return ggml, err
 }
 
-// NewLlamaServer will run a server for the given GPUs
+// NewLlamaServer will run a server for the given GPUs.
+// When ZEROLLAMA_LLAMA_SERVER=1, eligible models use upstream-style Go → llama-server.
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int) (LlamaServer, error) {
+	if envconfig.LlamaServerBackend() {
+		trainCtx := f.KV().ContextLength()
+		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {
+			slog.Warn("requested context size too large for model", "num_ctx", opts.NumCtx, "n_ctx_train", trainCtx)
+			opts.NumCtx = int(trainCtx)
+		}
+		kvct := strings.ToLower(envconfig.KvCacheType())
+		slog.Info("using llama-server subprocess for model", "model", modelPath)
+		return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, LlamaServerConfig{})
+	}
+
 	var llamaModel *llama.Model
 	var tok tokenizer.Tokenizer
 	var err error
@@ -1560,11 +1572,15 @@ type CompletionRequest struct {
 	Prompt  string
 	Format  json.RawMessage
 	Images  []ImageData
+	Media   []MediaData // llama-server path; populated from Images when empty
 	Options *api.Options
 
-	Grammar  string // set before sending the request to the subprocess
-	Shift    bool
-	Truncate bool
+	Grammar         string // set before sending the request to the subprocess
+	Shift           bool
+	Truncate        bool
+	PreservedTokens []string // llama-server: parser tokens to render as text
+	ToolCallTag     string   // llama-server: generic tool parser tag
+	LeadingBOS      string   // llama-server: textual BOS from Go rendering
 
 	// Logprobs specifies whether to include log probabilities in the response
 	Logprobs bool

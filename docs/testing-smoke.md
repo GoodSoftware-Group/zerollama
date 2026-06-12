@@ -2,6 +2,8 @@
 
 Operator checklist for validating **local inference** on a GPU host (e.g. RTX 5080/4090). **Why this doc exists:** Zerollama runs **two** local inference stacks today—the embedded **Python runtime** (`llama-server` subprocess on loopback `:8081`) and the **legacy ggml runner** (`zerollama runner` on the main HTTP port). They share one GPU but do not coordinate VRAM automatically; smoke tests prove each path works and document how to switch between them without mystery 503/404/OOM errors.
 
+**Third reference arm (optional):** clone upstream Ollama and serve on another port for A/B — no Python sidecar, Go→llama-server only. See [upstream-ollama-diff.md](./upstream-ollama-diff.md) and [llama-cpp-backend.md](./llama-cpp-backend.md).
+
 ---
 
 ## What you are proving

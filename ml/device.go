@@ -532,6 +532,24 @@ func GetVisibleDevicesEnv(l []DeviceInfo, mustFilter bool) map[string]string {
 	return env
 }
 
+// GetDevicesEnv returns per-device runner env overrides for llama-server (upstream API).
+func GetDevicesEnv(l []DeviceInfo) map[string]string {
+	if len(l) == 0 {
+		return nil
+	}
+	mustFilter := len(l) == 1 || allDevicesUseLibrary(l, "CUDA")
+	return GetVisibleDevicesEnv(l, mustFilter)
+}
+
+func allDevicesUseLibrary(l []DeviceInfo, library string) bool {
+	for _, d := range l {
+		if d.Library != library {
+			return false
+		}
+	}
+	return true
+}
+
 // NeedsInitValidation returns true if the device in question has the potential
 // to crash at inference time and requires deeper validation before we include
 // it in the supported devices list.

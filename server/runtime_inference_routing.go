@@ -60,25 +60,29 @@ func modelExcludedFromRuntimeDefault(m *Model) bool {
 	return false
 }
 
-// modelEligibleForRuntimeDefault reports whether a local GGUF text model may use
-// the Python runtime when ZEROLLAMA_RUNTIME default-on is active (Phase 12).
-func modelEligibleForRuntimeDefault(m *Model) bool {
+// modelEligibleForLlamaCppRuntime reports whether a local GGUF text model may use
+// the Python runtime + llama.cpp (shared preconditions for default-on and explicit flag).
+func modelEligibleForLlamaCppRuntime(m *Model) bool {
 	if m == nil || effectiveRuntimeURL() == "" || envconfig.LegacyRunnerForced() {
 		return false
 	}
 	if m.ModelPath == "" || m.IsMLX() {
-		// MLX (safetensors) uses mlxrunner/imagegen — not the Python GGUF runtime.
 		return false
 	}
 	backend := modelInferenceBackend(m)
 	if backend != "" && backend != model.BackendZerollamaRuntime {
-		// Explicit non-runtime inference backend (e.g. future "ggml" opt-out).
 		return false
 	}
 	if modelExcludedFromRuntimeDefault(m) {
 		return false
 	}
 	return true
+}
+
+// modelEligibleForRuntimeDefault reports whether a local GGUF text model may use
+// the Python runtime when ZEROLLAMA_RUNTIME default-on is active (Phase 12).
+func modelEligibleForRuntimeDefault(m *Model) bool {
+	return modelEligibleForLlamaCppRuntime(m)
 }
 
 // modelUsesRuntimeInference is true when the Modelfile or runtime-default policy
@@ -91,6 +95,9 @@ func modelUsesRuntimeInference(m *Model) bool {
 		return false
 	}
 	if modelInferenceBackend(m) == model.BackendZerollamaRuntime {
+		return true
+	}
+	if envconfig.LlamaCppBackend() && modelEligibleForLlamaCppRuntime(m) {
 		return true
 	}
 	if envconfig.RuntimeDefaultOn() && modelEligibleForRuntimeDefault(m) {

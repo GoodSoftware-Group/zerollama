@@ -158,7 +158,10 @@ console.log(response.message.content);
 - [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, and **OLLAMA_VIDEO_*** for native video.
 - [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
 - [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.
-- [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, Wan T2V v1 + follow-ups, Option 2 milestones, **why** each phase exists (policy vs templates vs limits).
+- [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, Wan T2V v1 + follow-ups, Option 2 milestones, **Phase 17 upstream GGUF alignment**, **why** each phase exists (policy vs templates vs limits).
+- [Upstream Ollama comparison](docs/upstream-ollama-diff.md) — **why** vanilla Ollama uses Go→llama-server for GGUF; pin gaps; cherry-pick map vs zerollama Python runtime and training.
+- [llama.cpp backend (experimental)](docs/llama-cpp-backend.md) — `--llama-cpp-backend` routes text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml and upstream.
+- [ggml @ b9509 migration](docs/ggml-b9509-migration.md) — **why** in-process ggml was rebased to real upstream b9509 (not overlay snapshots); patch series, vendor sync, Ollama deltas, verification.
 - [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); single-GPU env checklist.
 - [Phase 11 runtime admission](docs/phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first; priority classes; enqueue before queue; tunable min-free and training reserve.
 - [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs.

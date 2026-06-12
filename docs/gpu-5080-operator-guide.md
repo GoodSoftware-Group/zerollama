@@ -2,7 +2,7 @@
 
 **Audience:** Operators on one consumer GPU (e.g. RTX 5080 ~16 GB VRAM, ~19 GiB host RAM) running embedded or sidecar Python runtime + optional ggml runners + training.
 
-**Related:** [testing-smoke.md](./testing-smoke.md) (script reference), [phase11-runtime-admission.md](./phase11-runtime-admission.md) (who gets the GPU when busy), [phase13-runtime-vram.md](./phase13-runtime-vram.md) (estimate/clamp/autotune), [scheduling-vram-policy.md](./scheduling-vram-policy.md) (full stack).
+**Related:** [testing-smoke.md](./testing-smoke.md) (script reference), [phase11-runtime-admission.md](./phase11-runtime-admission.md) (who gets the GPU when busy), [phase13-runtime-vram.md](./phase13-runtime-vram.md) (estimate/clamp/autotune), [scheduling-vram-policy.md](./scheduling-vram-policy.md) (full stack), [upstream-ollama-diff.md](./upstream-ollama-diff.md) (upstream default is Go→llama-server, no Python runtime).
 
 ---
 

@@ -86,6 +86,7 @@ go build -o zerollama .
 | `Library not loaded: @rpath/Python3.framework` | Rebuild/re-test after pulling latest (CGO embeds framework rpath); or `./scripts/build_zerollama_mac.sh` |
 | `go test` abort trap on Mac | `eval "$(./scripts/mac_cgo_env.sh --export)"` then `go test …`, or `./scripts/phase12_golden_ci.sh go` |
 | `go.mod not found` | `cd` to the zerollama repo root |
+| `Undefined symbols` / `std::` linker errors building llama.cpp | Shell has `CXX=.../clang`; use `./scripts/build_llama_server.sh` (forces `clang++`) or `eval "$(./scripts/mac_cgo_env.sh --export)"` |
 | Training torch missing at runtime | `MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh` or `./scripts/training_uv_venv.sh --verify` |
 | `CHECK failed: mlx_distributed_group_new_` at startup | Stale flat `build/lib/ollama/libmlxc.dylib` — `rm` it, or `./scripts/build_production_mac.sh` and run from `dist/darwin-arm64/` |
 | MLX / safetensors models fail | `./scripts/build_production_mac.sh` (needs local `mlx` + `mlx-c` checkouts); Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` |
@@ -97,6 +98,8 @@ go build -o zerollama .
 | Workflow | Build | Run from |
 |----------|-------|----------|
 | **Daily dev** (Go, sidecar, ggml Metal) | `./scripts/build_zerollama_mac.sh` | repo root: `./zerollama serve` |
+| **llama.cpp backend (experimental)** | `./scripts/build_llama_server.sh` | `./scripts/serve_llama_cpp_backend.sh` or `./zerollama serve --llama-cpp-backend` — [llama-cpp-backend.md](./llama-cpp-backend.md) |
+| **Upstream Ollama A/B** | `./scripts/build_upstream_ollama_mac.sh` | `OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve` — [upstream-ollama-diff.md](./upstream-ollama-diff.md) |
 | **MLX / release smoke** | `./scripts/build_production_mac.sh` | `dist/darwin-arm64/`: `./zerollama serve` |
 
 Dev builds do **not** rebuild MLX native libs. A leftover flat `build/lib/ollama/libmlxc.dylib` can shadow fresher `build/metal-v*/lib/ollama/` trees and cause startup CHECK errors. `zerollama doctor` warns when this happens.

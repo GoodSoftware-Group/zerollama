@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### llama.cpp b9611 + MLX pin bump
+
+**Why:** Stay on current upstream llama.cpp (latest tag `b9611`, ahead of vanilla Ollama’s `b9509`) with a **reviewable 14-patch series** instead of in-tree-only deltas. MLX pins aligned with upstream Ollama for MTP/speculation parity.
+
+**What shipped:**
+
+- **Pin:** `LLAMA_CPP_VERSION=b9611`, vendor `vendor/llama-cpp-b9611/`, **14 patches** (0013 mtmd C API, 0014 ollama_vocab grammar; 0011 rebased for b9611 CUDA struct layout).
+- **Sync:** `./scripts/sync_vendor_llama.sh` (replaces `sync_vendor_b9509.sh` shim); strips mtmd CLI `main()` after rsync.
+- **Go fixes:** `llama.go` mtmd `bitmap_wrapper` + placeholder arg; `build-info.cpp` @ `1aefee58`.
+- **MLX:** `MLX_VERSION` → `2165dc08`, `MLX_C_VERSION` → `fba4470b` (upstream Ollama pins).
+
+Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md) (workflow unchanged; pin is b9611).
+
+### ggml @ llama.cpp b9509 (real vendored tree)
+
+**Why this release:** Zerollama’s **in-process ggml Metal runner** was pinned to an old llama.cpp base with **27/36 patches failing** on upstream’s current pin (`b9509`). Overlay-regenerating patches produced **multi‑MB fork snapshots**, not a clean b9509 ggml. Without rebasing, every upstream bump increased merge pain and blocked Phase 17 alignment with vanilla Ollama’s `LLAMA_CPP_VERSION`.
+
+**What shipped:**
+
+- **Clean b9509 base:** `vendor/llama-cpp-b9509/` + **12 rebased patches** in `llama/patches/` (backup: `llama/patches.pre-b9509-20260612/`).
+- **Synced in-tree trees:** `ml/backend/ggml/ggml/` and `llama/llama.cpp/` via `./scripts/sync_vendor_b9509.sh`; `Makefile.sync` pins `FETCH_HEAD=b9509`.
+- **Ollama API ports for b9509:** `ggml_backend_sched_new_ext` (fit/no-alloc sizing), extended `ggml_backend_dev_props` + NVML/ROCm mem helpers, `ollama_vocab` grammar, mtmd C API, LoRA plural API, device props in Go.
+- **CGO build fixes for b9509 common/:** `jinja_wrap.cpp`, `httplib_wrap.cpp`, `llama/build-info.cpp`; exclude CLI `main()` from mtmd; `models.go` include path for `src/`.
+- **Build verified:** `go build`, `zerollama doctor` on Apple Silicon.
+
+**Not in this release:** full CUDA no-alloc pool overrides (`reserving_graph` stubs); automatic replacement of ggml with Go→llama-server (Phase 17 remains opt-in).
+
+Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md).
+
 ### Wan text-to-video (v1)
 
 **Why this release:** OpenAI clients expect async video jobs (`POST /v1/videos` → poll → download). Wan runs in a **separate PyTorch stack** from GGUF chat; bolting it into the runtime or ggml runner would duplicate VRAM policy and job lifecycle. Reusing the **embedded training worker** (`run_script`) gives one GPU handoff story (Phase 8 broker, T6 defer queue) without a second public daemon.

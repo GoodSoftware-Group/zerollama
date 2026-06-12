@@ -18,6 +18,8 @@ func TestGgmlPauseWhenRuntimeBusyEmbedDisabled(t *testing.T) {
 	t.Setenv("ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", "")
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "")
 	t.Setenv("ZEROLLAMA_RUNTIME_EMBED", "0")
+	t.Setenv("ZEROLLAMA_RUNTIME", "0")
+	t.Setenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", "0")
 	if GgmlPauseWhenRuntimeBusy() {
 		t.Fatal("expected auto off with embed disabled and no URL")
 	}

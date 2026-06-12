@@ -100,7 +100,8 @@ Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** blocked on u
 |---|-----------|--------|
 | 1 | Document deltas vs upstream checkout | **Done** — [upstream-ollama-diff.md](./upstream-ollama-diff.md) |
 | 2 | Bump sibling llama.cpp + pin toward upstream `b9509`; rebuild `llama-server` | **Done** — root `LLAMA_CPP_VERSION`, [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
-| 3 | Port `llama/compat/` overlay; reduce overlapping `llama/patches/` | **Partial** — compat imported; patch dedup open |
+| 2b | **Rebase in-tree ggml/llama.cpp to real b9509** (not overlay snapshot) | **Done** — 12 patches, vendor sync script, build+doctor; [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
+| 3 | Port `llama/compat/` overlay; reduce overlapping `llama/patches/` | **Partial** — compat imported; ggml patches rebased to b9509; dedup open |
 | 4 | Port `llm/llama_server.go` + discovery probe; eligible GGUF uses Go → llama-server | **Scaffold** — `--llama-server-backend`; see [phase17-llama-server.md](./phase17-llama-server.md) |
 | 5 | Benchmark ggml vs Go-llama-server vs Python runtime on ship hardware | **Done (M7)** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; keep ggml Mac default |
 | 6 | Deprecate `OLLAMA_NEW_ENGINE` / ollamarunner for plain text GGUF (keep vision/thinking until parity) | Open |
@@ -161,6 +162,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 | **M5** | **Phase 15 Metal KV sign-off** | Python | **Shipped** — `phase15_metal_signoff.sh` / `metal_signoff.sh` (M3 + Phase 15); sidecar multiseq + KV snapshot on Metal. |
 | **M6** | **MPS LoRA training + Mac operator polish** | Python + Go + CI | **Shipped** — PyTorch MPS + PEFT in `training.py`; QLoRA rejected on Darwin; `training_uv_venv.sh`; **`zerollama serve` Darwin bootstrap** (uv venvs, sidecar `:8081`, autoconfig); `zerollama doctor --json --fix`; Darwin CI (`macos-darwin-smoke`). |
 | **M7** | **Upstream-shape GGUF benchmark (Metal)** | Repo | **Done** — ggml Metal ~164 tok/s vs upstream Go→llama-server ~158 tok/s (`llama3.2:3b`, `num_ctx=4096`, 6 epochs, idle GPU). Keep ggml default; Phase 17 for mergeability. [phase17-llama-server.md](./phase17-llama-server.md) |
+| **M8** | **ggml @ b9509 (real vendored tree)** | Repo | **Done** — 12 patches (incl. GPU discovery + no-alloc), vendor sync, CGO wrappers; Mac build+doctor. [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 
 **Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
 

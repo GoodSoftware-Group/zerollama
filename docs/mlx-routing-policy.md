@@ -2,7 +2,7 @@
 
 **Audience:** operators and contributors choosing an inference path on Apple Silicon (and anywhere MLX is built).
 
-**Related:** [apple-silicon-metal.md](./apple-silicon-metal.md), [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md), [phase14-inprocess-llama.md](./phase14-inprocess-llama.md).
+**Related:** [apple-silicon-metal.md](./apple-silicon-metal.md), [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md), [phase14-inprocess-llama.md](./phase14-inprocess-llama.md), [upstream-ollama-diff.md](./upstream-ollama-diff.md).
 
 ---
 
@@ -30,6 +30,8 @@ Is ModelFormat safetensors (IsMLX)?
 ```
 
 **Default-on (Phase 12):** When `ZEROLLAMA_RUNTIME` default is on and runtime is embedded/URL set, **text completion GGUF** models may proxy to Python without an explicit Modelfile backend. **Excluded:** MLX, embedding-only, vision, video, image, audio, thinking-only legacy paths, empty path.
+
+**`--llama-cpp-backend`:** Forces eligible text GGUF through Python runtime (skips ggml load). Same defer path as explicit runtime backend — see [llama-cpp-backend.md](./llama-cpp-backend.md). Upstream Ollama achieves similar GGUF coverage via **Go → llama-server** without Python ([upstream-ollama-diff.md](./upstream-ollama-diff.md)).
 
 ---
 
@@ -72,6 +74,7 @@ if m.IsMLX() {
 | Opt model into runtime | Modelfile `MODALITY inference zerollama-runtime` |
 | Opt model out of runtime default | Modelfile `MODALITY inference ggml` (future) or legacy caps |
 | Keep ggml only | `ZEROLLAMA_LEGACY_RUNNER=1` |
+| Route text GGUF via Python llama.cpp (experimental) | `./zerollama serve --llama-cpp-backend` or `ZEROLLAMA_LLAMA_CPP_BACKEND=1` |
 | MLX build | [development.md](./development.md#mlx-engine-optional) — `cmake --install build --component MLX` |
 
 ---

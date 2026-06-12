@@ -24,6 +24,10 @@ func TestMain(m *testing.M) {
 	if os.Getenv("OLLAMA_NO_CLOUD") == "" {
 		_ = os.Setenv("OLLAMA_NO_CLOUD", "true")
 	}
+	// Why default off: dev boxes with LM Studio caches merge into /api/tags and list tests.
+	if os.Getenv("OLLAMA_LMSTUDIO_IMPORT") == "" {
+		_ = os.Setenv("OLLAMA_LMSTUDIO_IMPORT", "false")
+	}
 	// Why unset runtime env: operator shells often export ZEROLLAMA_RUNTIME_URL for smokes;
 	// sched tests use synthetic GGUFs and expect ggml load unless they opt into runtime.
 	for _, k := range []string{

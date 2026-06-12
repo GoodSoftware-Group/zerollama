@@ -66,6 +66,7 @@ benchstat -col /name gemma.bench
 | Option  	| Description | Default |
 |----------|-------------|---------|
 | -model	| Comma-separated list of models to benchmark	| (required)		|
+| -host	| Server host:port or URL (sets OLLAMA_HOST for this run)	| (OLLAMA_HOST / :11434)	|
 | -epochs	| Number of iterations per model		| 6			|
 | -max-tokens	| Maximum tokens for model response		| 200			|
 | -temperature	| Temperature parameter				| 0.0			|

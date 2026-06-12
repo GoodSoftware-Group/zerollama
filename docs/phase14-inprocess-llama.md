@@ -2,6 +2,8 @@
 
 **Status:** **Done** (Jun 2026 on 5080 dev host; **Mac Metal** via `./scripts/m3_metal_signoff.sh`). Subprocess `llama-server` remains the packaged default on Linux; **darwin autoconfig** sets `llama_backend: inprocess` in `apple_silicon.yaml`. Opt in elsewhere with env or YAML. In-process forward + libllama tokenize for Go render-chat shipped. **One-shot sign-off:** `./scripts/phase14_5080_signoff.sh` (5080, both backends, YAML config, Phase 15 multi-seq); **Mac:** `./scripts/m3_metal_signoff.sh` (sidecar + yaml config smoke).
 
+**Upstream context:** Vanilla Ollama integrates llama-server from **Go** (`llm/llama_server.go`), not Python ctypes. Phase 14 remains valuable for PA/KV experiments; [Phase 17](./ROADMAP.md#phase-17--upstream-gguf-path-alignment-directional) targets Go→llama-server for default GGUF — [upstream-ollama-diff.md](./upstream-ollama-diff.md).
+
 **Upgrade serve first:** Phase 14 needs a **current** `zerollama serve` (rebuild from this repo). Stale runtimes return HTTP 404 on `/internal/tokenize` and omit `llama_backend` in `/health`; `phase14_backend_smoke.sh` fails fast on that.
 
 **Embed vs sidecar:** If `ZEROLLAMA_RUNTIME_URL` is set in the shell, Go will **not** embed Python on `:8081` (expects an external sidecar). For single-process smokes:

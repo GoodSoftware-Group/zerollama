@@ -18,6 +18,7 @@ import (
 
 type flagOptions struct {
 	models       *string
+	host         *string
 	epochs       *int
 	maxTokens    *int
 	temperature  *float64
@@ -274,6 +275,12 @@ func BenchmarkModel(fOpt flagOptions) error {
 		fmt.Fprintf(os.Stderr, "Read file '%s'\n", *fOpt.imageFile)
 	}
 
+	if *fOpt.host != "" {
+		if err := os.Setenv("OLLAMA_HOST", *fOpt.host); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: Couldn't set OLLAMA_HOST: %v\n", err)
+			return err
+		}
+	}
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: Couldn't create ollama client: %v\n", err)
@@ -517,6 +524,7 @@ func readImage(filePath string) (api.ImageData, error) {
 func main() {
 	fOpt := flagOptions{
 		models:       flag.String("model", "", "Model to benchmark"),
+		host:         flag.String("host", "", "Ollama server host:port or URL (same as OLLAMA_HOST; e.g. 127.0.0.1:11435)"),
 		epochs:       flag.Int("epochs", 6, "Number of epochs (iterations) per model"),
 		maxTokens:    flag.Int("max-tokens", 200, "Maximum tokens for model response"),
 		temperature:  flag.Float64("temperature", 0, "Temperature parameter"),
@@ -543,6 +551,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  bench -model gemma3,llama3 -epochs 6\n")
 		fmt.Fprintf(os.Stderr, "  bench -model gemma3 -epochs 6 -prompt-tokens 512 -format csv\n")
+		fmt.Fprintf(os.Stderr, "  bench -host 127.0.0.1:11435 -model llama3.2:3b -epochs 3 -format csv\n")
 	}
 	flag.Parse()
 

@@ -37,7 +37,12 @@ mac_cgo_env() {
   export CGO_ENABLED="${CGO_ENABLED:-1}"
   export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path 2>/dev/null)}"
   export CC="${CC:-$(xcrun --find clang 2>/dev/null)}"
-  export CXX="${CXX:-$(xcrun --find clang++ 2>/dev/null)}"
+  # Some dev shells export CXX=.../clang (elan/llvm); C++ shared libs need clang++ linkage.
+  local _cxx_toolchain
+  _cxx_toolchain="$(xcrun --find clang++ 2>/dev/null || true)"
+  if [[ -z "${CXX:-}" || "${CXX}" == "${CC}" || "${CXX##*/}" == "clang" ]]; then
+    export CXX="${_cxx_toolchain}"
+  fi
 
   if [[ -f "${_MAC_CGO_XCODE_PY_PC}/python3-embed.pc" ]]; then
     export PKG_CONFIG_PATH="${_MAC_CGO_XCODE_PY_PC}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"

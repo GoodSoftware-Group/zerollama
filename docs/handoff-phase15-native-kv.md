@@ -29,6 +29,7 @@
 | [phase15-native-kv.md](./phase15-native-kv.md) | Operator knobs, `/health` fields, v7 schema |
 | [phase14-inprocess-llama.md](./phase14-inprocess-llama.md) | Forward backends |
 | [ROADMAP.md](./ROADMAP.md) | Phase 15 row; Phase 16 edge daemon next |
+| [upstream-ollama-diff.md](./upstream-ollama-diff.md) | Upstream delegates KV to llama-server; Phase 15 tensor bind blocked on llama.cpp pin/API |
 | [testing-smoke.md](./testing-smoke.md) | `phase15_*` scripts in smoke table |
 | [runtime/native/README.md](../runtime/native/README.md) | Build native ext |
 

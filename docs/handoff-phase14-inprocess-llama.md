@@ -31,7 +31,8 @@
 | [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md) | Tools render/parse (Phase 12); truncation now uses Phase 14 tokenize |
 | [scheduling-vram-policy.md](./scheduling-vram-policy.md) | VRAM broker unchanged; in-process `stop()` hooks same as subprocess |
 | [CHANGELOG.md](../CHANGELOG.md) | Unreleased Phase 14 summary + fixes |
-| [ROADMAP.md](./ROADMAP.md) | Phase 14 **Done**; Phase 15 native KV in progress |
+| [ROADMAP.md](./ROADMAP.md) | Phase 14 **Done**; Phase 15 native KV in progress; Phase 17 upstream GGUF alignment |
+| [upstream-ollama-diff.md](./upstream-ollama-diff.md) | Upstream uses Go→llama-server; Phase 14 Python inprocess is zerollama-specific |
 
 ---
 

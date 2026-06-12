@@ -27,6 +27,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — upstream GGUF path scaffold, build/serve scripts, M7 benchmark decision.
+* [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream b9509; patches, sync workflow, Ollama deltas.
 * [llama.cpp backend (experimental)](./llama-cpp-backend.md) — route text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml.
 
 ### GPU training & scheduling (repo)

@@ -1770,10 +1770,18 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 	return nil
 }
 
-func RunServer(_ *cobra.Command, _ []string) error {
+func RunServer(cmd *cobra.Command, _ []string) error {
 	if err := initializeKeypair(); err != nil {
 		return err
 	}
+	if flag, _ := cmd.Flags().GetBool("llama-cpp-backend"); flag {
+		_ = os.Setenv("ZEROLLAMA_LLAMA_CPP_BACKEND", "1")
+	}
+	if flag, _ := cmd.Flags().GetBool("llama-server-backend"); flag {
+		_ = os.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	}
+	envconfig.ApplyLlamaCppBackendDefaults()
+	envconfig.ApplyLlamaServerBackendDefaults()
 
 	ln, err := net.Listen("tcp", envconfig.Host().Host)
 	if err != nil {
@@ -2133,6 +2141,8 @@ func NewCLI() *cobra.Command {
 		Args:    cobra.ExactArgs(0),
 		RunE:    RunServer,
 	}
+	serveCmd.Flags().Bool("llama-cpp-backend", false, "Route eligible GGUF text inference through pinned llama.cpp (Python runtime) instead of the ggml runner")
+	serveCmd.Flags().Bool("llama-server-backend", false, "Route eligible GGUF text inference through Go → llama-server (upstream shape) instead of the ggml runner")
 
 	pullCmd := &cobra.Command{
 		Use:     "pull MODEL",

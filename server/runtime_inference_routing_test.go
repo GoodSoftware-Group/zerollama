@@ -114,6 +114,26 @@ func TestModelEligibleForRuntimeDefault(t *testing.T) {
 	}
 }
 
+func TestModelUsesRuntimeInferenceLlamaCppBackendFlag(t *testing.T) {
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
+	t.Setenv("ZEROLLAMA_LEGACY_RUNNER", "")
+	t.Setenv("ZEROLLAMA_RUNTIME", "0")
+	t.Setenv("ZEROLLAMA_LLAMA_CPP_BACKEND", "1")
+
+	text := &Model{
+		ModelPath: "/tmp/m.gguf",
+		Config: model.ConfigV2{
+			Capabilities: []string{string(model.CapabilityCompletion)},
+		},
+	}
+	if !modelUsesRuntimeInference(text) {
+		t.Fatal("llama-cpp-backend flag should route text GGUF even when ZEROLLAMA_RUNTIME=0")
+	}
+	if !deferInferenceToRuntime(text) {
+		t.Fatal("expected ggml load deferred")
+	}
+}
+
 func TestDeferInferenceToRuntimeWithToolsBackend(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
 	t.Setenv("ZEROLLAMA_LEGACY_RUNNER", "")
