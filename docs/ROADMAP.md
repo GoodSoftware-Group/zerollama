@@ -12,7 +12,11 @@ Directional (not a shipped scheduler contract): **GPU-backed batching system** f
 
 **Training** is intentionally a **separate job queue** (`/api/train/*`, embedded `training.py`, optional TCP `:9500`): jobs are submitted, listed, and cancelled independently of a single chat FIFO. **VRAM** is shared: Go scaffolding (Phase 8) and Python coordination ensure inference and training do not corrupt each other’s memory; **Phase 11** moves more of that **policy** into Python.
 
-**What is not automatic yet:** a single product-level **orchestrator** that says “maximize inference throughput until the backlog is idle, then drain training jobs” or “night window only.” That is **scheduling policy on top** of the existing queues—priority classes, SLOs, and optional idle-time training—aligned with the training track below and **Phase 11+**. Documenting the target shape here avoids mistaking today’s **two schedulers + one VRAM broker** for a finished global optimizer.
+**What is not automatic yet:** a single product-level **orchestrator on one machine** that says “maximize inference throughput until the backlog is idle, then drain training jobs” or “night window only.” That is **scheduling policy on top** of the existing queues—priority classes, SLOs, and optional idle-time training—aligned with the training track below and **Phase 11+**.
+
+**What is also not automatic yet:** a **fleet management node** when many zerollama instances serve one agent population. Each node keeps its local scheduler; a separate layer handles **discovery** (directional: mDNS), **warm-model routing**, and **short assignment tokens**—not long reservations or scatter-gather across GPUs. See [fleet-scheduling.md](./fleet-scheduling.md) and the [Fleet scheduling track](#fleet-scheduling-multi-node) below.
+
+Documenting both shapes here avoids mistaking today’s **two schedulers + one VRAM broker per node** for a finished global or multi-node optimizer.
 
 ---
 
@@ -30,6 +34,8 @@ Layer 2 (later)     C / Rust hot path — GGUF decode, KV blocks, in-process lla
 Edge (long-lived)   Thin API + pull + cloud — may stay Go *or* move to Rust; “Go gone” means inference
                     control plane gone from Go, not necessarily zero Go in the repo
 ```
+
+**Upstream Ollama note:** Vanilla [ollama/ollama](https://github.com/ollama/ollama) already routes **default GGUF** as **Go → llama-server** (no Python sidecar). That is **Layer 2 at the llama-server boundary**, not our Python runtime. Zerollama should **converge default GGUF chat** toward that shape ([Phase 17](#phase-17--upstream-gguf-path-alignment-directional)) while keeping Python for admission, training, and Phase 15 experiments. See [upstream-ollama-diff.md](./upstream-ollama-diff.md).
 
 **VRAM policy** follows the same ladder: **Go broker (scaffolding)** → **Python `InferenceGpuCoordinator`** → **native allocator** when Python shrinks.
 
@@ -54,6 +60,7 @@ Phases **0–7** are **done** (sidecar, embed, Go proxy, spec decode plugins). W
 | **14** | **In-process llama forward** | Python → C/Rust | **Done** — see [exit criteria](#phase-14--exit-criteria-done). Shipped: ctypes `inprocess`, wheel (CPU default), tokenize, sampling, YAML `llama_backend`, `llama_backend_source`, `llama_cpp` `/health`, heap-batch decode fix. Smokes: `phase14_inprocess_smoke`, `phase14_5080_signoff`, optional `phase14_wheel_gpu_smoke` (failed on 5080). Doc: [phase14-inprocess-llama.md](./phase14-inprocess-llama.md). |
 | **15** | **Native scheduler + KV** | C/Rust | **Partial (v0–v8 ops)** — see [exit criteria](#phase-15--exit-criteria-partial). C pool + tick/decode hooks; logical bind + forward plans; Go KV snapshot; GPU `phase15_inprocess_signoff`. **Blocked:** tensor page bind + batched decode in C. Docs: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md). |
 | **16** | **Thin edge daemon** | Rust or minimal Go | Pull/registry/cloud only; all local generate/chat through native runtime. **Why:** complete “Go gone” for inference control plane. |
+| **17** | **Upstream GGUF path alignment** | Go + llama.cpp | **Directional** — port `llm/llama_server.go`, adopt `llama/compat/`, bump `LLAMA_CPP_VERSION` to upstream pin; deprecate ggml runner for plain text GGUF. Python runtime stays for PA/training/admission—not permanent chat middleman. Doc: [upstream-ollama-diff.md](./upstream-ollama-diff.md). Test harness today: [llama-cpp-backend.md](./llama-cpp-backend.md). |
 
 **Deprioritized:** public `POST /api/runtime/unload` or `/resume` — automatic eviction only ([Phase 8](#local-inference--actionable-phases) → [Phase 11](#local-inference--actionable-phases)).
 
@@ -84,6 +91,23 @@ Mark **Done** when 1–2 and **3–4** pass on ship hardware. **5** failed on 50
 | 6 | **Native decode batch** in C wired to `kv_forward_plans` | **Blocked** (llama.cpp API) |
 
 Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** blocked on upstream llama.cpp. CPU gate: `./scripts/phase15_kv_native_ci.sh`. GPU gate: `./scripts/phase15_inprocess_signoff.sh`. See [phase15-native-kv.md](./phase15-native-kv.md).
+
+### Phase 17 — upstream GGUF path alignment (directional)
+
+**Why:** Upstream Ollama removed `runner/ollamarunner` for text GGUF and integrated **`llama-server` from Go** (`llm/llama_server.go`). Zerollama still defaults to **ggml runner** on Mac and uses **Python runtime** as the bridge for `--llama-cpp-backend`. Aligning default GGUF with upstream reduces merge pain, modernizes the llama.cpp pin, and removes an extra hop (Go → Python → llama) from the hot path—without dropping training or Phase 15 work.
+
+| # | Criterion | Owner |
+|---|-----------|--------|
+| 1 | Document deltas vs upstream checkout | **Done** — [upstream-ollama-diff.md](./upstream-ollama-diff.md) |
+| 2 | Bump sibling llama.cpp + pin toward upstream `b9509`; rebuild `llama-server` | **Done** — root `LLAMA_CPP_VERSION`, [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
+| 3 | Port `llama/compat/` overlay; reduce overlapping `llama/patches/` | **Partial** — compat imported; patch dedup open |
+| 4 | Port `llm/llama_server.go` + discovery probe; eligible GGUF uses Go → llama-server | **Scaffold** — `--llama-server-backend`; see [phase17-llama-server.md](./phase17-llama-server.md) |
+| 5 | Benchmark ggml vs Go-llama-server vs Python runtime on ship hardware | **Done (M7)** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; keep ggml Mac default |
+| 6 | Deprecate `OLLAMA_NEW_ENGINE` / ollamarunner for plain text GGUF (keep vision/thinking until parity) | Open |
+
+**Non-goals:** full rebase onto upstream; deleting `runtime/` or training; replacing Eliza with ollama.com.
+
+**Compare workflow:** `./scripts/clone_upstream_ollama.sh` → build upstream on `:11435`, zerollama on `:11434`. See [upstream-ollama-diff.md](./upstream-ollama-diff.md#compare--benchmark-workflow).
 
 ### Phase 8 — shipped
 
@@ -118,6 +142,8 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 
 **Still on ggml runner:** vision, logprobs, think, MLX safetensors, and models without `zerollama-runtime` backend. **Tools** on runtime-routed text models use Go render/parse (Phase 12 — done). Handoff: [handoff-phase12-runtime-tools.md](./handoff-phase12-runtime-tools.md).
 
+**Upstream tension:** Vanilla Ollama has **no** Python runtime; default GGUF is **Go → llama-server** ([upstream-ollama-diff.md](./upstream-ollama-diff.md)). Zerollama’s Python layer stays for PA, admission, training, and Phase 15—but **Phase 17** targets upstream-style Go integration for default text GGUF. **`--llama-cpp-backend`** is the current test harness (Go → Python → llama), not the long-term default shape.
+
 ---
 
 ## Apple Silicon & Metal track
@@ -134,10 +160,34 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 | **M4** | **MLX policy** | Go + docs | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md); `IsMLX()` excluded from runtime default **and** explicit Modelfile backend; Go tests. |
 | **M5** | **Phase 15 Metal KV sign-off** | Python | **Shipped** — `phase15_metal_signoff.sh` / `metal_signoff.sh` (M3 + Phase 15); sidecar multiseq + KV snapshot on Metal. |
 | **M6** | **MPS LoRA training + Mac operator polish** | Python + Go + CI | **Shipped** — PyTorch MPS + PEFT in `training.py`; QLoRA rejected on Darwin; `training_uv_venv.sh`; **`zerollama serve` Darwin bootstrap** (uv venvs, sidecar `:8081`, autoconfig); `zerollama doctor --json --fix`; Darwin CI (`macos-darwin-smoke`). |
+| **M7** | **Upstream-shape GGUF benchmark (Metal)** | Repo | **Done** — ggml Metal ~164 tok/s vs upstream Go→llama-server ~158 tok/s (`llama3.2:3b`, `num_ctx=4096`, 6 epochs, idle GPU). Keep ggml default; Phase 17 for mergeability. [phase17-llama-server.md](./phase17-llama-server.md) |
 
 **Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
 
 **Not goals:** Replacing ggml Metal with MLX for all GGUF; NVML on Mac; duplicating `gpu_5080_session` on Darwin.
+
+---
+
+## Fleet scheduling (multi-node)
+
+**Why a separate track:** Agents and integrations often see **many zerollama hosts**, not one. Per-node schedulers (Go + Python) are correct locally but do not answer “**which box has this model warm?**” or “**may I cancel and try another node without wasting VRAM?**” Scatter-gather and long quote/reservation windows **waste GPU work** on constrained fleets; the target is a **thin management node**, **warm-model routing**, and **honest status** over the wire.
+
+**Guide:** [fleet-scheduling.md](./fleet-scheduling.md)
+
+| Milestone | Goal | Owner | Exit criteria |
+|-----------|------|--------|----------------|
+| **F1** | **Stream progress contract** | Go + Python | **Shipped** — `/api/chat` and `/api/generate` emit `status` (`accepted` / `queued` / `loading` / `generating`), `position`, `queue_depth` on streaming paths; runtime proxy flushes `accepted` before forward. Agents can implement cancel-while-queued. Doc: [fleet-scheduling.md](./fleet-scheduling.md#status-contract-node--agent). |
+| **F2** | **Node status for fleet polling** | Go + Python | **Shipped** — `GET /api/status` includes `inference.ggml` (pending/active/loaded, `loaded_models`, `loading`) and `inference.runtime` (waiting/running, `llama_loaded`, probe `available`). Doc: [fleet-scheduling.md](./fleet-scheduling.md#shipped-fleet-polling). |
+| **F3** | **Management node v0** | New component (repo TBD) | Static peer list; periodic heartbeat; **warm-model map**; return `{url, node_id}` for agent direct call. No multi-node load/eviction from management. |
+| **F4** | **LAN discovery (mDNS)** | Go (+ mgmt) | Nodes advertise `_zerollama._tcp` (name TBD); management browses or agents discover fleet endpoint. Config fallback for K8s/static IPs. |
+| **F5** | **Short-TTL assignment token** | Go + mgmt | Optional header; ~5–10s hold one queue slot; validate on node; expire without long quote window. |
+| **F6** | **Operator + agent playbooks** | Docs | Sticky model shards, warm-only SLA, cancel policy (`queued` yes, `loading` no); explicit non-goals (scatter-gather, 60s quotes). |
+
+**Routing policy (directional):** Prefer **loaded model + lowest queue**; cold route only when SLA allows; management **assigns** node, never starts loads remotely.
+
+**Relationship to Phase 11 / T6:** Single-GPU admission and training defer remain on each node. Fleet layer only **chooses** which node receives the request.
+
+**Not goals:** Global preemption across nodes; Redis pull-queue as v1 requirement; reservation market with frequent cancel (penalty/backoff deferred).
 
 ---
 
@@ -254,6 +304,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 | Item | Phase hint | Why |
 |------|------------|-----|
 | Inference vs training **priority / idle policy** | Training **T6**, inference **Phase 11** | One GPU, many clients—documented target is queued work + policy, not “implicitly fair” |
+| **Fleet management + warm routing** | Fleet **F2–F5** | Many nodes, many agents—thin orchestrator, status, mDNS; avoid scatter-gather on constrained GPUs |
 | Eliza catalog / response mapping | Eliza follow-ups | Operator UX when local + cloud lists collide |
 | Video Option 2 A–D | Video track | Native VLM quality without SGLang dependency |
 | SSRF hardening | Security | High-assurance deployments |

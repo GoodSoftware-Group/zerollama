@@ -8,6 +8,8 @@ It complements:
 - [runtime/docs/OPERATIONS.md](../runtime/docs/OPERATIONS.md) — Python runtime ops, `/health`, internal handoff
 - [testing-smoke.md](./testing-smoke.md) — dual-stack smoke on a single GPU
 - [ROADMAP.md](./ROADMAP.md) — phases 8–13 and training track T6
+- [fleet-scheduling.md](./fleet-scheduling.md) — multi-node management, warm routing, agent status (fleet track F1–F6)
+- [upstream-ollama-diff.md](./upstream-ollama-diff.md) — upstream uses Go→llama-server only (no Python runtime); Phase 17 alignment
 
 ---
 
@@ -275,6 +277,18 @@ Code: `server/runtime_inference_routing.go`, `server/runtime_*_proxy.go`, `serve
 | Family tool output parsers ([Phase 12](./ROADMAP.md)) | **Done** — runtime streams via Go `parse-tool-output/session` + `chunk` (same parsers as ggml) |
 | Exact KV from tensor metadata ([Phase 13](./ROADMAP.md)) | **Partial** — `attn_k`/`attn_v` shapes infer head dims when metadata sparse; `/health` `vram_estimate` + `vram_budget`; clamp + `resolve_num_ctx_for_request` shipped — doc [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | Auth on `/api/train` ([T2](./ROADMAP.md)) | Same threat model as main API pending |
+
+---
+
+## Beyond one machine (fleet)
+
+Everything above is **per zerollama node**. When agents talk to **many hosts**, add a **fleet management layer** that:
+
+- Discovers nodes (directional: **mDNS** on LAN; static list in K8s)
+- Routes to **warm models** (loaded + low queue) instead of random idle GPUs
+- Relies on **stream progress** (`status`, `queue_depth`) for agent cancel-while-queued policy
+
+The management node does **not** replace this document’s VRAM broker or local FIFOs—it **picks which node** should receive the request. See [fleet-scheduling.md](./fleet-scheduling.md) and [ROADMAP — Fleet scheduling](./ROADMAP.md#fleet-scheduling-multi-node).
 
 ---
 

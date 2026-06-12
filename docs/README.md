@@ -25,10 +25,14 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers.
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
+* [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
+* [Phase 17 — Go → llama-server](./phase17-llama-server.md) — upstream GGUF path scaffold, build/serve scripts, M7 benchmark decision.
+* [llama.cpp backend (experimental)](./llama-cpp-backend.md) — route text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml.
 
 ### GPU training & scheduling (repo)
 
 * [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; tight-host env checklist.
+* [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; stream status for agents; mDNS discovery (directional); anti-patterns (scatter-gather, long quotes).
 * [Phase 11 runtime admission](./phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first policy; priority classes; enqueue/dequeue flow; `/health` gates; `VRAM_MIN_FREE` / `TRAINING_VRAM_RESERVE`.
 * [Phase 13 runtime VRAM estimates](./phase13-runtime-vram.md) — **why** GGUF VRAM heuristics, `suggested_max_num_ctx`, opt-in clamp, autotune, autoconfig, operator CLI.
 * [Phase 14 in-process llama](./phase14-inprocess-llama.md) — **why** subprocess HTTP was replaced for forward; three backends; render tokenize; sampling parity; 5080 sign-off scripts.
@@ -39,6 +43,11 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.
+
+### Upstream Ollama (compare, don't merge)
+
+* [Upstream Ollama comparison](./upstream-ollama-diff.md) — architecture deltas vs `../ollama-upstream`; Phase 17; benchmark workflow.
+* [llama.cpp backend (experimental)](./llama-cpp-backend.md) — `--llama-cpp-backend` test harness toward upstream GGUF path.
 
 ### Remote inference — Eliza Cloud (Zerollama)
 

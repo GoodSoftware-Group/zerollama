@@ -16,7 +16,9 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 **GPU inference smoke** (runtime + legacy runner, VRAM handoff): see [testing-smoke.md](./testing-smoke.md). **Why separate from `go test`:** unit tests do not run `llama-server` on your GPU or prove the two local inference stacks can share one card safely.
 
-**Architecture (directional):** Zerollama aggregates **many inference callers** and **optional training jobs** into **queued work** sharing one or few GPUs; the roadmap spells out today’s split schedulers vs a future **unified policy** (priorities, idle training). See [ROADMAP.md](./ROADMAP.md#product-model-queues-stakeholders-and-gpu-time).
+**Architecture (directional):** Zerollama aggregates **many inference callers** and **optional training jobs** into **queued work** sharing one or few GPUs per node; the roadmap spells out today’s split schedulers vs a future **unified policy** (priorities, idle training) on each host, and a **fleet management node** for multi-node warm routing and agent status. See [ROADMAP.md](./ROADMAP.md#product-model-queues-stakeholders-and-gpu-time) and [fleet-scheduling.md](./fleet-scheduling.md).
+
+**Compare with upstream Ollama:** Zerollama adds Python runtime, training, and Eliza; upstream routes default GGUF as **Go → llama-server** (no Python sidecar). Clone vanilla Ollama beside this repo for A/B without merging: `./scripts/clone_upstream_ollama.sh` → [upstream-ollama-diff.md](./upstream-ollama-diff.md).
 
 > [!NOTE]
 > Ollama includes native code compiled with CGO.  From time to time these data structures can change and CGO can get out of sync resulting in unexpected crashes.  You can force a full build of the native code by running `go clean -cache` first. 
@@ -223,6 +225,18 @@ $env:OLLAMA_MLX_SOURCE="../mlx"
 $env:OLLAMA_MLX_C_SOURCE="../mlx-c"
 ./scripts/build_darwin.ps1
 ```
+
+## Compare with upstream Ollama
+
+Zerollama is a fork with **Python runtime**, **training**, and **Eliza cloud**. Upstream [ollama/ollama](https://github.com/ollama/ollama) removed in-process ggml for text GGUF and uses **`llm/llama_server.go`** instead.
+
+```bash
+./scripts/clone_upstream_ollama.sh          # ../ollama-upstream
+cd ../ollama-upstream && go build -o ollama .
+OLLAMA_HOST=127.0.0.1:11435 ./ollama serve   # A/B vs zerollama :11434
+```
+
+Full delta table, pin gaps, and cherry-pick list: [upstream-ollama-diff.md](./upstream-ollama-diff.md). Experimental zerollama routing toward llama.cpp: [llama-cpp-backend.md](./llama-cpp-backend.md).
 
 ## Docker
 
