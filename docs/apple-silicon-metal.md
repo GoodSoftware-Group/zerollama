@@ -15,7 +15,7 @@
 
 On Apple Silicon, **`zerollama serve`** ensures `runtime/.venv` (via uv), starts the Python sidecar, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper script required.
 
-Run `zerollama doctor` to validate uv venv, Metal `libllama.dylib`, and sidecar `/health`. First-time setup: `./scripts/mac_setup.sh`.
+Run `zerollama doctor` to validate uv venv, Metal `libllama.dylib`, and sidecar `/health`. First-time setup: **`./scripts/mac_setup.sh`** — see [mac-dev-setup.md](./mac-dev-setup.md).
 
 ---
 
@@ -106,10 +106,13 @@ Env always wins over YAML.
 
 **Not** the default for GGUF. Required for **`ModelFormat: safetensors`** (`IsMLX()`).
 
-- Build: [development.md](./development.md) — MLX component, Metal toolchain on Apple Silicon.
-- `build_darwin.sh` can ship Metal v3/v4 MLX libs.
+- **Daily dev:** `./scripts/build_zerollama_mac.sh` — does not rebuild MLX; ggml Metal still works.
+- **MLX / release:** `./scripts/build_production_mac.sh` → run from `dist/darwin-arm64/` (see [mac-dev-setup.md](./mac-dev-setup.md)).
+- Metal Toolchain (build time): `xcodebuild -downloadComponent MetalToolchain`
 - Creation: `zerollama create --experimental …`
 - **Excluded** from Phase 12 runtime-default routing (`modelEligibleForRuntimeDefault` rejects `IsMLX()`).
+
+**Startup noise:** `CHECK failed: mlx_distributed_group_new_` usually means a **stale** flat `build/lib/ollama/libmlxc.dylib`. Remove it or use the production layout; `zerollama doctor` warns.
 
 **Why keep MLX:** Apple-native weights and image pipelines; **why not merge into runtime yet:** different weight format, subprocess, and long-term may stay a side path (see [python-migration.md](./python-migration.md) Phase 6).
 

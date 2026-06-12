@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1809,8 +1810,14 @@ func Serve(ln net.Listener) error {
 	// Default on (OLLAMA_TRAINING) so integrators see the feature; set false if libpython / torch deps are absent.
 	// Close order on signals: training worker (stops Python job thread) before tearing down inference runners.
 	if envconfig.TrainingEnabled(true) {
-		tw, terr := trainingworker.Start(ctx, sched)
-		if terr != nil {
+		if runtime.GOOS == "darwin" {
+			if repo, rerr := trainingworker.RepoRoot(); rerr == nil && repo != "" {
+				if err := EnsureDarwinTrainingEnv(ctx, repo); err != nil {
+					slog.Warn("darwin training env not ready", "error", err)
+				}
+			}
+		}
+		if tw, terr := trainingworker.Start(ctx, sched); terr != nil {
 			slog.Warn("training worker not started", "error", terr)
 		} else {
 			s.training = tw

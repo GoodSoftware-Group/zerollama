@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestDarwinSidecarEnvEnabled(t *testing.T) {
@@ -30,6 +33,13 @@ func TestDarwinSidecarEnvEnabled(t *testing.T) {
 	}
 }
 
+func TestDarwinSidecarSkipReasonURL(t *testing.T) {
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
+	if reason := darwinSidecarSkipReason(); !strings.Contains(reason, "ZEROLLAMA_RUNTIME_URL") {
+		t.Fatalf("reason=%q", reason)
+	}
+}
+
 func TestDarwinSidecarListenDefaults(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "")
 	host, port := darwinSidecarListen()
@@ -41,5 +51,18 @@ func TestDarwinSidecarListenDefaults(t *testing.T) {
 	host, port = darwinSidecarListen()
 	if port != 9090 {
 		t.Fatalf("embed port: %d", port)
+	}
+}
+
+func TestWaitRuntimeHealthRespectsContextTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := waitRuntimeHealth(ctx, "http://127.0.0.1:59999", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("waitRuntimeHealth blocked too long without sidecar")
 	}
 }

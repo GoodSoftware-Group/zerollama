@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -84,6 +87,20 @@ func TestDoctorOllamaHostDefault(t *testing.T) {
 	}
 }
 
+func TestDoctorCheckMacCGO(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin only")
+	}
+	repo := doctorRepoRoot()
+	c := doctorCheckMacCGO(repo)
+	if c.Name != "mac cgo build" {
+		t.Fatalf("name=%q", c.Name)
+	}
+	if c.Status == "fail" && !strings.Contains(c.FixHint, "build_zerollama_mac") {
+		t.Fatalf("unexpected fix=%q", c.FixHint)
+	}
+}
+
 func TestDoctorCheckServeModesNoServers(t *testing.T) {
 	c := doctorCheckServeModes()
 	if c.Name != "serve mode" {
@@ -91,6 +108,31 @@ func TestDoctorCheckServeModesNoServers(t *testing.T) {
 	}
 	if c.Status != "warn" && c.Status != "ok" {
 		t.Fatalf("status=%q", c.Status)
+	}
+}
+
+func TestDoctorIsStaleFlatMLXPath(t *testing.T) {
+	repo := t.TempDir()
+	build := filepath.Join(repo, "build")
+	flat := filepath.Join(build, "lib", "ollama", "libmlxc.dylib")
+	variant := filepath.Join(build, "metal-v3", "lib", "ollama", "libmlxc.dylib")
+	if err := os.MkdirAll(filepath.Dir(flat), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(variant), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(flat, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(variant, []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !doctorIsStaleFlatMLXPath(repo, flat) {
+		t.Fatal("expected stale flat detection")
+	}
+	if doctorIsStaleFlatMLXPath(repo, variant) {
+		t.Fatal("variant path should not be stale flat")
 	}
 }
 

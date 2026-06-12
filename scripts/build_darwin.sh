@@ -113,7 +113,11 @@ _build_darwin() {
             MLX_CGO_CFLAGS="-O3 -mmacosx-version-min=14.0"
             MLX_CGO_LDFLAGS="-lc++ -framework Metal -framework Foundation -framework Accelerate -mmacosx-version-min=14.0"
         fi
-        GOOS=darwin GOARCH=$ARCH CGO_ENABLED=1 CGO_CFLAGS="$MLX_CGO_CFLAGS" CGO_LDFLAGS="$MLX_CGO_LDFLAGS" go build -o "$INSTALL_PREFIX/zerollama" .
+        _GO_LDFLAGS="${MLX_CGO_LDFLAGS}"
+        if [ -n "${CGO_LDFLAGS:-}" ]; then
+            _GO_LDFLAGS="${CGO_LDFLAGS} ${_GO_LDFLAGS}"
+        fi
+        GOOS=darwin GOARCH=$ARCH CGO_ENABLED=1 CGO_CFLAGS="$MLX_CGO_CFLAGS" CGO_LDFLAGS="$_GO_LDFLAGS" go build -o "$INSTALL_PREFIX/zerollama" .
         # MLX libraries stay in lib/ollama/ (flat or variant subdirs).
         # The runtime discovery in dynamic.go searches lib/ollama/ relative
         # to the executable, including mlx_* subdirectories.

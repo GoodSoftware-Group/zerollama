@@ -26,13 +26,13 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** models — no CUDA steps required. For **runtime admission** on unified memory (Phase 11/13), autoconfig picks `apple_silicon.yaml` and probes via `metal-unified`.
 
-**First-time setup:**
+**First-time setup:** see **[mac-dev-setup.md](./mac-dev-setup.md)** (one command for any Mac).
 
 ```bash
-./scripts/mac_setup.sh   # uv venv + Metal llama.cpp + metal sign-off (once)
+./scripts/mac_setup.sh   # build zerollama + uv venv + Metal llama.cpp + doctor
 zerollama serve          # default :11434; auto sidecar on :8081, autoconfig, training venv
-zerollama doctor         # check uv, libllama, sidecar /health
-zerollama doctor --fix   # auto-create venv + build llama.cpp if missing
+zerollama doctor         # check CGO env, uv, libllama, sidecar /health
+zerollama doctor --fix   # auto-create venv + build binary + llama.cpp if missing
 ```
 
 **Serve on macOS:** `zerollama serve` listens on **`OLLAMA_HOST`** (default `:11434`). On Apple Silicon it automatically ensures `runtime/.venv`, starts the Python runtime sidecar on loopback `:8081`, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper scripts required for daily use.
@@ -40,6 +40,8 @@ zerollama doctor --fix   # auto-create venv + build llama.cpp if missing
 **CI / sign-off only:** `./scripts/serve_mac_runtime.sh` and `./scripts/macos_metal_smoke.sh` exercise the same sidecar stack explicitly for regression tests.
 
 **Escape hatches:** set `ZEROLLAMA_RUNTIME_URL` to an existing sidecar (skip spawn), `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0` for ggml-only, or `OLLAMA_TRAINING=false` to skip training deps.
+
+**Build (CGO):** use **`./scripts/build_zerollama_mac.sh`** (or `./scripts/mac_setup.sh`). Details: [mac-dev-setup.md](./mac-dev-setup.md).
 
 Optional **MLX engine** for safetensors models: see [MLX Engine](#mlx-engine-optional) below.
 
@@ -198,11 +200,22 @@ export OLLAMA_MLX_SOURCE=/path/to/mlx
 export OLLAMA_MLX_C_SOURCE=/path/to/mlx-c
 ```
 
+Clone sibling repos with **full history** (not `--depth 1`) so pinned commits stay available for diffs:
+
+```shell
+git clone https://github.com/ml-explore/mlx.git ../mlx
+git clone https://github.com/ml-explore/mlx-c.git ../mlx-c
+./scripts/ensure_mlx_sources.sh   # fetch MLX_VERSION / MLX_C_VERSION if missing
+```
+
 For example, using the helper scripts with local mlx and mlx-c repos:
 ```shell
 OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build_linux.sh
 
 OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build_darwin.sh
+
+# arm64 production layout (dist/darwin-arm64/) — see mac-dev-setup.md
+./scripts/build_production_mac.sh
 ```
 
 ```powershell

@@ -53,6 +53,12 @@ _run_check_gpu_scripts() {
 _run_go_golden() {
   _resolve_go
   echo "== Phase 12 golden (Go) =="
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    # shellcheck source=scripts/mac_cgo_env.sh
+    source "${ROOT}/scripts/mac_cgo_env.sh"
+    mac_cgo_env_warn_path
+    mac_cgo_env
+  fi
   CGO_ENABLED=1 OLLAMA_NO_CLOUD=true "${GO}" test -count=1 ./server/... -run Golden
 }
 

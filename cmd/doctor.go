@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
@@ -115,6 +118,22 @@ func runDoctorFix(repo string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("runtime_uv_venv: %w", err)
 	}
+	if runtime.GOOS == "darwin" {
+		bin := filepath.Join(repo, "zerollama")
+		if _, err := os.Stat(bin); err != nil {
+			build := filepath.Join(repo, "scripts", "build_zerollama_mac.sh")
+			if _, err := os.Stat(build); err == nil {
+				fmt.Println("== doctor --fix: build zerollama (mac CGO) ==")
+				bcmd := exec.Command("bash", build)
+				bcmd.Dir = repo
+				bcmd.Stdout = os.Stdout
+				bcmd.Stderr = os.Stderr
+				if err := bcmd.Run(); err != nil {
+					return fmt.Errorf("build_zerollama_mac: %w", err)
+				}
+			}
+		}
+	}
 	if runtime.GOOS == "darwin" && os.Getenv("DOCTOR_FIX_BUILD") != "0" {
 		if doctorFindLibLlama(repo) == "" {
 			build := filepath.Join(repo, "scripts", "build_llama_server.sh")
@@ -137,12 +156,17 @@ func runDoctorChecks(repo string) []doctorCheck {
 	var out []doctorCheck
 
 	out = append(out, doctorCheckGo())
+	if runtime.GOOS == "darwin" {
+		out = append(out, doctorCheckMacCGO(repo))
+	}
 	out = append(out, doctorCheckZerollamaBinary(repo))
 	out = append(out, doctorCheckUV())
 	out = append(out, doctorCheckRuntimeVenv(repo))
 	out = append(out, doctorCheckLibLlama(repo))
 
 	if runtime.GOOS == "darwin" {
+		out = append(out, doctorCheckMLX(repo))
+		out = append(out, doctorCheckDarwinSidecarBootstrap())
 		out = append(out, doctorCheckServeModes())
 		out = append(out, doctorCheckTrainingVenv(repo))
 		out = append(out, doctorCheckSidecarHealth())
@@ -198,7 +222,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 				Name:    "zerollama binary",
 				Status:  "warn",
 				Detail:  "not found in repo or PATH",
-				FixHint: "go build -o zerollama .",
+				FixHint: "./scripts/build_zerollama_mac.sh",
 			}
 		}
 	}
@@ -208,7 +232,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 			Name:    "zerollama binary",
 			Status:  "fail",
 			Detail:  fmt.Sprintf("%s serve --help failed: %v", bin, err),
-			FixHint: "rebuild with go build -o zerollama .",
+			FixHint: "./scripts/build_zerollama_mac.sh",
 		}
 	}
 	// Stale binary may lack doctor subcommand.
@@ -218,13 +242,49 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 			Name:    "zerollama binary",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s lacks doctor subcommand (stale build?)", bin),
-			FixHint: "go build -o zerollama .",
+			FixHint: "./scripts/build_zerollama_mac.sh",
 		}
 	}
 	return doctorCheck{
 		Name:   "zerollama binary",
 		Status: "ok",
 		Detail: bin,
+	}
+}
+
+func doctorCheckMacCGO(repo string) doctorCheck {
+	script := filepath.Join(repo, "scripts", "mac_cgo_env.sh")
+	if _, err := os.Stat(script); err != nil {
+		return doctorCheck{
+			Name:    "mac cgo build",
+			Status:  "warn",
+			Detail:  "scripts/mac_cgo_env.sh missing",
+			FixHint: "pull latest repo; ./scripts/build_zerollama_mac.sh",
+		}
+	}
+	cmd := exec.Command("bash", script, "--check")
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		status := "fail"
+		if strings.Contains(text, "warn:") {
+			status = "warn"
+		}
+		return doctorCheck{
+			Name:    "mac cgo build",
+			Status:  status,
+			Detail:  text,
+			FixHint: "xcode-select --install; ./scripts/build_zerollama_mac.sh (see docs/mac-dev-setup.md)",
+		}
+	}
+	detail := text
+	if idx := strings.Index(text, "ok CC="); idx >= 0 {
+		detail = strings.TrimSpace(text[idx:])
+	}
+	return doctorCheck{
+		Name:   "mac cgo build",
+		Status: "ok",
+		Detail: detail,
 	}
 }
 
@@ -314,22 +374,148 @@ func doctorCheckLibLlama(repo string) doctorCheck {
 	}
 }
 
-func doctorOllamaHost() string {
-	if u := strings.TrimSpace(os.Getenv("OLLAMA_HOST")); u != "" {
-		return strings.TrimSuffix(u, "/")
+func doctorCheckMLX(repo string) doctorCheck {
+	const name = "mlx engine"
+	if err := mlx.CheckInit(); err != nil {
+		return doctorCheck{
+			Name:    name,
+			Status:  "warn",
+			Detail:  err.Error(),
+			FixHint: doctorMLXFixHint(repo),
+		}
 	}
-	return "http://127.0.0.1:11434"
+	path := mlx.LoadedPath()
+	if path == "" {
+		return doctorCheck{
+			Name:    name,
+			Status:  "warn",
+			Detail:  "MLX optional — no libmlxc loaded (safetensors/MLX models unavailable)",
+			FixHint: doctorMLXFixHint(repo),
+		}
+	}
+	status := "ok"
+	detail := path
+	var fix string
+	if doctorIsStaleFlatMLXPath(repo, path) {
+		status = "warn"
+		detail = "loaded stale flat copy: " + path
+		fix = doctorMLXFixHint(repo)
+	} else if doctorHasProductionMLX(repo) && strings.Contains(path, filepath.Join("build", "lib", "ollama")) {
+		status = "warn"
+		detail = "dev tree MLX loaded; production layout available at dist/darwin-arm64/"
+		fix = "cd dist/darwin-arm64 && ./zerollama serve for release MLX layout"
+	}
+	return doctorCheck{
+		Name:    name,
+		Status:  status,
+		Detail:  detail,
+		FixHint: fix,
+	}
+}
+
+func doctorIsStaleFlatMLXPath(repo, loaded string) bool {
+	flatDir := filepath.Join(repo, "build", "lib", "ollama")
+	rel, err := filepath.Rel(flatDir, loaded)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return false
+	}
+	if strings.Contains(rel, string(filepath.Separator)) {
+		return false
+	}
+	if !strings.HasPrefix(filepath.Base(loaded), "libmlxc") {
+		return false
+	}
+	return doctorHasDevMLXVariant(repo) || doctorHasProductionMLX(repo)
+}
+
+func doctorHasDevMLXVariant(repo string) bool {
+	matches, err := filepath.Glob(filepath.Join(repo, "build", "*", "lib", "ollama", "libmlxc.*"))
+	return err == nil && len(matches) > 0
+}
+
+func doctorHasProductionMLX(repo string) bool {
+	p := filepath.Join(repo, "dist", "darwin-arm64", "lib", "ollama", "mlx_metal_v3", "libmlxc.dylib")
+	st, err := os.Stat(p)
+	return err == nil && st.Size() > 0
+}
+
+func doctorMLXFixHint(repo string) string {
+	var hints []string
+	stale := filepath.Join(repo, "build", "lib", "ollama", "libmlxc.dylib")
+	if _, err := os.Stat(stale); err == nil {
+		hints = append(hints, "rm "+stale+" if stale (CHECK failed: mlx_distributed_group_new_)")
+	}
+	hints = append(hints, "./scripts/build_production_mac.sh then cd dist/darwin-arm64 && ./zerollama serve")
+	return strings.Join(hints, "; ")
+}
+
+func doctorOllamaHost() string {
+	u := envconfig.ConnectableHost()
+	return strings.TrimSuffix(u.String(), "/")
 }
 
 func doctorRuntimeURL() string {
-	if u := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_URL")); u != "" {
+	if u := strings.TrimSpace(envconfig.RuntimeURL()); u != "" {
 		return strings.TrimSuffix(u, "/")
 	}
-	return "http://127.0.0.1:8081"
+	port := envconfig.RuntimeEmbedPort()
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+func doctorAddUniqueURL(urls []string, seen map[string]bool, raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return urls
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	raw = strings.TrimSuffix(raw, "/")
+	if seen[raw] {
+		return urls
+	}
+	seen[raw] = true
+	return append(urls, raw)
+}
+
+func doctorGoAPIProbeURLs() []string {
+	seen := map[string]bool{}
+	var urls []string
+	urls = doctorAddUniqueURL(urls, seen, doctorOllamaHost())
+	for _, hostport := range []string{
+		"127.0.0.1:11434",
+		"127.0.0.1:8080",
+		"localhost:11434",
+		"localhost:8080",
+		"[::1]:11434",
+	} {
+		urls = doctorAddUniqueURL(urls, seen, "http://"+hostport)
+	}
+	return urls
+}
+
+func doctorRuntimeProbeURLs() []string {
+	seen := map[string]bool{}
+	var urls []string
+	urls = doctorAddUniqueURL(urls, seen, doctorRuntimeURL())
+	port := envconfig.RuntimeEmbedPort()
+	for _, host := range []string{"127.0.0.1", "localhost", "[::1]"} {
+		urls = doctorAddUniqueURL(urls, seen, fmt.Sprintf("http://%s:%d", host, port))
+	}
+	return urls
+}
+
+func doctorTCPReachable(hostport string) bool {
+	conn, err := net.DialTimeout("tcp", hostport, 800*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func doctorHTTPReachable(url string) bool {
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
 		return false
@@ -338,24 +524,50 @@ func doctorHTTPReachable(url string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 500
 }
 
-func doctorCheckServeModes() doctorCheck {
-	goHost := doctorOllamaHost()
-	sidecarURL := doctorRuntimeURL()
-	sidecarUp := doctorHTTPReachable(sidecarURL + "/health")
-	goUp := doctorHTTPReachable(goHost + "/api/tags")
-	legacyGoUp := false
-	if goHost == "http://127.0.0.1:11434" {
-		legacyGoUp = doctorHTTPReachable("http://127.0.0.1:8080/api/tags")
+func doctorProbeGoAPI() (baseURL string, tcpOnly []string) {
+	for _, base := range doctorGoAPIProbeURLs() {
+		if doctorHTTPReachable(base + "/api/tags") {
+			return base, nil
+		}
 	}
+	for _, base := range doctorGoAPIProbeURLs() {
+		hostport := strings.TrimPrefix(strings.TrimPrefix(base, "http://"), "https://")
+		if doctorTCPReachable(hostport) {
+			tcpOnly = append(tcpOnly, base)
+		}
+	}
+	return "", tcpOnly
+}
+
+func doctorProbeRuntimeSidecar() (baseURL string, tcpOnly []string) {
+	for _, base := range doctorRuntimeProbeURLs() {
+		if doctorHTTPReachable(base + "/health") {
+			return base, nil
+		}
+	}
+	for _, base := range doctorRuntimeProbeURLs() {
+		hostport := strings.TrimPrefix(strings.TrimPrefix(base, "http://"), "https://")
+		if doctorTCPReachable(hostport) {
+			tcpOnly = append(tcpOnly, base)
+		}
+	}
+	return "", tcpOnly
+}
+
+func doctorCheckServeModes() doctorCheck {
+	goBase, goTCP := doctorProbeGoAPI()
+	sidecarBase, sidecarTCP := doctorProbeRuntimeSidecar()
 
 	var parts []string
-	if goUp {
-		parts = append(parts, "Go API "+goHost)
-	} else if legacyGoUp {
-		parts = append(parts, "Go API http://127.0.0.1:8080")
+	if goBase != "" {
+		parts = append(parts, "Go API "+goBase)
+	} else if len(goTCP) > 0 {
+		parts = append(parts, "Go API "+goTCP[0]+" (TCP up, /api/tags not ready)")
 	}
-	if sidecarUp {
-		parts = append(parts, "runtime sidecar "+sidecarURL)
+	if sidecarBase != "" {
+		parts = append(parts, "runtime sidecar "+sidecarBase)
+	} else if len(sidecarTCP) > 0 {
+		parts = append(parts, "runtime sidecar "+sidecarTCP[0]+" (TCP up, /health not ready)")
 	}
 	detail := "none detected"
 	if len(parts) > 0 {
@@ -365,29 +577,106 @@ func doctorCheckServeModes() doctorCheck {
 	status := "ok"
 	var fixes []string
 	switch {
-	case !goUp && !legacyGoUp && !sidecarUp:
+	case goBase == "" && sidecarBase == "" && len(goTCP) == 0 && len(sidecarTCP) == 0:
 		status = "warn"
 		fixes = append(fixes, "run zerollama serve (Mac auto-starts sidecar on :8081)")
-	case goUp && sidecarUp && strings.Contains(goHost, ":11434"):
+	case goBase != "" && sidecarBase != "" && strings.Contains(goBase, ":11434"):
 		detail += " (Mac default: Go :11434 + sidecar :8081)"
-	case legacyGoUp && sidecarUp && !goUp:
+	case goBase != "" && strings.Contains(goBase, ":8080") && sidecarBase != "":
 		detail += " (CI/smoke layout: Go :8080 + sidecar :8081)"
-	case (goUp || legacyGoUp) && !sidecarUp:
+	case (goBase != "" || len(goTCP) > 0) && sidecarBase == "" && len(sidecarTCP) == 0:
 		status = "warn"
 		if runtime.GOOS == "darwin" {
-			fixes = append(fixes, "runtime sidecar missing — zerollama serve auto-starts :8081 on Mac")
+			fixes = append(fixes, "runtime sidecar missing — check serve logs for darwin sidecar bootstrap; sidecar log: "+doctorSidecarLogHint())
 		} else {
 			fixes = append(fixes, "start runtime sidecar or set ZEROLLAMA_RUNTIME_URL")
 		}
-	case sidecarUp && !goUp && !legacyGoUp:
+	case sidecarBase != "" && goBase == "" && len(goTCP) == 0:
 		status = "warn"
 		fixes = append(fixes, "sidecar without Go proxy — run zerollama serve")
+	case len(goTCP) > 0 && goBase == "":
+		status = "warn"
+		fixes = append(fixes, "Go port open but HTTP not ready — wait for 'Listening on' in serve logs")
+	case len(sidecarTCP) > 0 && sidecarBase == "":
+		status = "warn"
+		fixes = append(fixes, "sidecar port open but /health not ready — see "+doctorSidecarLogHint())
 	}
 	return doctorCheck{
 		Name:    "serve mode",
 		Status:  status,
 		Detail:  detail,
 		FixHint: strings.Join(fixes, "; "),
+	}
+}
+
+func doctorSidecarLogHint() string {
+	if p := strings.TrimSpace(os.Getenv("MACOS_RT_LOG")); p != "" {
+		return p
+	}
+	return filepath.Join(os.TempDir(), "zerollama-runtime-sidecar.log")
+}
+
+func doctorCheckDarwinSidecarBootstrap() doctorCheck {
+	if u := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_URL")); u != "" {
+		base := strings.TrimSuffix(u, "/")
+		if doctorHTTPReachable(base+"/health") {
+			return doctorCheck{
+				Name:   "darwin sidecar bootstrap",
+				Status: "ok",
+				Detail: "using external ZEROLLAMA_RUNTIME_URL=" + u,
+			}
+		}
+		return doctorCheck{
+			Name:    "darwin sidecar bootstrap",
+			Status:  "warn",
+			Detail:  "ZEROLLAMA_RUNTIME_URL=" + u + " but /health unreachable",
+			FixHint: "unset ZEROLLAMA_RUNTIME_URL and restart zerollama serve (auto-spawns :8081), or start sidecar manually",
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR")); v == "0" || strings.EqualFold(v, "false") {
+		return doctorCheck{
+			Name:   "darwin sidecar bootstrap",
+			Status: "ok",
+			Detail: "disabled (ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0)",
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME")); v == "0" || strings.EqualFold(v, "false") {
+		return doctorCheck{
+			Name:   "darwin sidecar bootstrap",
+			Status: "ok",
+			Detail: "runtime off (ZEROLLAMA_RUNTIME=0)",
+		}
+	}
+	logPath := doctorSidecarLogHint()
+	if _, err := os.Stat(logPath); err == nil {
+		return doctorCheck{
+			Name:   "darwin sidecar bootstrap",
+			Status: "ok",
+			Detail: "sidecar log present at " + logPath,
+		}
+	}
+	_, sidecarTCP := doctorProbeRuntimeSidecar()
+	if len(sidecarTCP) > 0 {
+		return doctorCheck{
+			Name:   "darwin sidecar bootstrap",
+			Status: "ok",
+			Detail: "sidecar port open (reused or external; no log at " + logPath + ")",
+		}
+	}
+	_, goTCP := doctorProbeGoAPI()
+	if len(goTCP) > 0 {
+		return doctorCheck{
+			Name:    "darwin sidecar bootstrap",
+			Status:  "warn",
+			Detail:  "serve still starting (Go port open, sidecar not up yet) — wait for 'Listening on' in serve logs",
+			FixHint: "bootstrap runs before HTTP is ready; if stuck >2min see serve stderr for bootstrap skipped/failed",
+		}
+	}
+	return doctorCheck{
+		Name:    "darwin sidecar bootstrap",
+		Status:  "warn",
+		Detail:  "no sidecar log at " + logPath + " — zerollama serve did not spawn sidecar (see serve stderr for bootstrap skipped/failed)",
+		FixHint: "unset ZEROLLAMA_RUNTIME_URL; restart ./zerollama serve; watch for 'darwin runtime sidecar started' or bootstrap failed",
 	}
 }
 
@@ -418,7 +707,20 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 }
 
 func doctorCheckSidecarHealth() doctorCheck {
-	url := doctorRuntimeURL() + "/health"
+	base, tcpOnly := doctorProbeRuntimeSidecar()
+	if base == "" {
+		detail := "no sidecar /health on loopback"
+		if len(tcpOnly) > 0 {
+			detail = fmt.Sprintf("%s reachable but /health not ready", tcpOnly[0])
+		}
+		return doctorCheck{
+			Name:    "runtime sidecar",
+			Status:  "warn",
+			Detail:  detail,
+			FixHint: "zerollama serve (Mac auto-starts sidecar) or see " + doctorSidecarLogHint(),
+		}
+	}
+	url := base + "/health"
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -426,7 +728,7 @@ func doctorCheckSidecarHealth() doctorCheck {
 			Name:    "runtime sidecar",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s unreachable", url),
-			FixHint: "zerollama serve (Mac auto-starts sidecar) or ./scripts/serve_mac_runtime.sh for CI",
+			FixHint: "see " + doctorSidecarLogHint(),
 		}
 	}
 	defer resp.Body.Close()
@@ -435,7 +737,7 @@ func doctorCheckSidecarHealth() doctorCheck {
 			Name:    "runtime sidecar",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s returned HTTP %d", url, resp.StatusCode),
-			FixHint: "zerollama serve (Mac auto-starts sidecar) or ./scripts/serve_mac_runtime.sh for CI",
+			FixHint: "see " + doctorSidecarLogHint(),
 		}
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -454,7 +756,11 @@ func doctorCheckSidecarHealth() doctorCheck {
 			Detail: "invalid /health JSON",
 		}
 	}
-	return doctorEvaluateSidecarHealth(h)
+	c := doctorEvaluateSidecarHealth(h)
+	if c.Status == "ok" {
+		c.Detail = base + " — " + c.Detail
+	}
+	return c
 }
 
 func doctorEvaluateSidecarHealth(h map[string]any) doctorCheck {

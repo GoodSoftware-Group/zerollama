@@ -54,35 +54,42 @@ func (s *DarwinSidecar) Stop() {
 // a loopback runtime sidecar. Returns (nil, nil) when bootstrap does not apply.
 func BootstrapDarwinSidecar(ctx context.Context) (*DarwinSidecar, error) {
 	if !darwinSidecarEnabled() {
+		if runtime.GOOS == "darwin" {
+			slog.Info("darwin runtime sidecar bootstrap skipped", "reason", darwinSidecarSkipReason())
+		}
 		return nil, nil
 	}
+
+	slog.Info("darwin runtime sidecar bootstrap starting")
 
 	repoRoot, err := trainingworker.RepoRoot()
 	if err != nil || repoRoot == "" {
 		return nil, fmt.Errorf("darwin sidecar: repo root: %w", err)
 	}
+	slog.Info("darwin sidecar: repo root", "path", repoRoot)
 
 	applyDarwinServeDefaults(repoRoot)
 
 	venvCtx, venvCancel := context.WithTimeout(ctx, darwinVenvTimeout)
 	defer venvCancel()
+	slog.Info("darwin sidecar: ensuring runtime/.venv (uv; first run can take several minutes)")
 	if err := ensureDarwinRuntimeVenv(venvCtx, repoRoot); err != nil {
 		return nil, fmt.Errorf("darwin sidecar: runtime venv: %w", err)
 	}
-	if envconfig.TrainingEnabled(true) {
-		if err := ensureDarwinTrainingVenv(venvCtx, repoRoot); err != nil {
-			slog.Warn("darwin training venv not ready (OLLAMA_TRAINING may fail)", "error", err)
-		}
-	}
+	slog.Info("darwin sidecar: runtime/.venv ready")
 
 	host, port := darwinSidecarListen()
 	baseURL := fmt.Sprintf("http://%s:%d", host, port)
 	_ = os.Setenv("ZEROLLAMA_RUNTIME_URL", baseURL)
 
-	if waitRuntimeHealth(ctx, baseURL, 2*time.Second) == nil {
+	slog.Info("darwin sidecar: checking runtime health", "url", baseURL)
+	probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+	if waitRuntimeHealth(probeCtx, baseURL, 2*time.Second) == nil {
+		probeCancel()
 		slog.Info("darwin runtime sidecar already listening", "url", baseURL)
 		return &DarwinSidecar{}, nil
 	}
+	probeCancel()
 
 	py := filepath.Join(repoRoot, "runtime", ".venv", "bin", "python")
 	if _, err := os.Stat(py); err != nil {
@@ -100,9 +107,10 @@ func BootstrapDarwinSidecar(ctx context.Context) (*DarwinSidecar, error) {
 
 	cmd := exec.Command(py, "-m", "runtime", "serve", "--host", host, "--port", strconv.Itoa(port))
 	cmd.Dir = filepath.Join(repoRoot, "runtime")
-	cmd.Env = os.Environ()
+	cmd.Env = darwinSubprocessEnv()
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	slog.Info("darwin sidecar: starting python runtime", "log", logPath, "port", port)
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return nil, fmt.Errorf("darwin sidecar: start: %w", err)
@@ -119,6 +127,14 @@ func BootstrapDarwinSidecar(ctx context.Context) (*DarwinSidecar, error) {
 
 	slog.Info("darwin runtime sidecar started", "url", baseURL, "log", logPath)
 	return &DarwinSidecar{cmd: cmd}, nil
+}
+
+// EnsureDarwinTrainingEnv prepares .venv-training PYTHONPATH for embedded training on Darwin.
+// Called from Serve before trainingworker.Start (not sidecar bootstrap).
+func EnsureDarwinTrainingEnv(ctx context.Context, repoRoot string) error {
+	venvCtx, cancel := context.WithTimeout(ctx, darwinVenvTimeout)
+	defer cancel()
+	return ensureDarwinTrainingVenv(venvCtx, repoRoot)
 }
 
 func darwinSidecarEnabled() bool {
@@ -142,7 +158,26 @@ func darwinSidecarEnvEnabled() bool {
 	return true
 }
 
+func darwinSidecarSkipReason() string {
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR")); v == "0" || strings.EqualFold(v, "false") {
+		return "ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0"
+	}
+	if u := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_URL")); u != "" {
+		return "ZEROLLAMA_RUNTIME_URL already set (external sidecar expected): " + u
+	}
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME")); v == "0" || strings.EqualFold(v, "false") {
+		return "ZEROLLAMA_RUNTIME=0"
+	}
+	return "unknown"
+}
+
 func applyDarwinServeDefaults(repoRoot string) {
+	if strings.TrimSpace(os.Getenv("ZEROLLAMA_REPO")) == "" {
+		_ = os.Setenv("ZEROLLAMA_REPO", repoRoot)
+	}
+	if strings.TrimSpace(os.Getenv("OLLAMA_TRAINING_PYTHONPATH")) == "" {
+		_ = os.Setenv("OLLAMA_TRAINING_PYTHONPATH", repoRoot)
+	}
 	if strings.TrimSpace(os.Getenv("ZEROLLAMA_AUTO_CONFIG")) == "" &&
 		strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_CONFIG")) == "" {
 		_ = os.Setenv("ZEROLLAMA_AUTO_CONFIG", "1")
@@ -193,24 +228,78 @@ func darwinSidecarListen() (host string, port int) {
 }
 
 func ensureDarwinRuntimeVenv(ctx context.Context, repoRoot string) error {
+	py := filepath.Join(repoRoot, "runtime", ".venv", "bin", "python")
+	if darwinVenvImportOK(ctx, py, "fastapi") {
+		slog.Info("darwin sidecar: runtime/.venv already ready", "python", py)
+		return nil
+	}
 	return runRepoBash(ctx, repoRoot, "source scripts/runtime_uv_venv.sh && runtime_uv_venv")
 }
 
-func ensureDarwinTrainingVenv(ctx context.Context, repoRoot string) error {
-	if strings.TrimSpace(os.Getenv("OLLAMA_TRAINING_PYTHONPATH")) == "" &&
-		strings.TrimSpace(os.Getenv("ZEROLLAMA_REPO")) == "" {
-		_ = os.Setenv("OLLAMA_TRAINING_PYTHONPATH", repoRoot)
+func darwinVenvImportOK(ctx context.Context, py, module string) bool {
+	if py == "" {
+		return false
 	}
-	cmd := exec.CommandContext(ctx, "bash", "-c",
-		"source scripts/training_uv_venv.sh && training_uv_venv && printf '%s' \"$PYTHONPATH\"",
-	)
-	cmd.Dir = repoRoot
+	if _, err := os.Stat(py); err != nil {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, py, "-c", "import "+module)
+	cmd.Env = darwinSubprocessEnv()
+	return cmd.Run() == nil
+}
+
+func darwinSubprocessEnv() []string {
+	path := os.Getenv("PATH")
+	for _, dir := range []string{
+		filepath.Join(os.Getenv("HOME"), ".local", "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+	} {
+		if dir == "" {
+			continue
+		}
+		if !strings.Contains(path+":", dir+":") {
+			path = dir + ":" + path
+		}
+	}
+	env := os.Environ()
+	set := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = "PATH=" + path
+			set = true
+			break
+		}
+	}
+	if !set {
+		env = append(env, "PATH="+path)
+	}
+	return env
+}
+
+func ensureDarwinTrainingVenv(ctx context.Context, repoRoot string) error {
+	py := filepath.Join(repoRoot, ".venv-training", "bin", "python")
+	if darwinVenvImportOK(ctx, py, "torch") && darwinVenvImportOK(ctx, py, "peft") {
+		slog.Info("darwin training: .venv-training already ready", "python", py)
+		return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)
+	}
+	if err := runRepoBash(ctx, repoRoot, "source scripts/training_uv_venv.sh && training_uv_venv"); err != nil {
+		return err
+	}
+	return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)
+}
+
+func applyDarwinTrainingPYTHONPATH(ctx context.Context, repoRoot string) error {
+	py := filepath.Join(repoRoot, ".venv-training", "bin", "python")
+	cmd := exec.CommandContext(ctx, py, "-c", "import site; print(site.getsitepackages()[0])")
+	cmd.Env = darwinSubprocessEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return err
 	}
-	if pyPath := strings.TrimSpace(string(out)); pyPath != "" {
-		_ = os.Setenv("PYTHONPATH", pyPath)
+	site := strings.TrimSpace(string(out))
+	if site != "" {
+		_ = os.Setenv("PYTHONPATH", site)
 	}
 	return nil
 }
@@ -218,7 +307,8 @@ func ensureDarwinTrainingVenv(ctx context.Context, repoRoot string) error {
 func runRepoBash(ctx context.Context, repoRoot, script string) error {
 	cmd := exec.CommandContext(ctx, "bash", "-c", script)
 	cmd.Dir = repoRoot
-	cmd.Stdout = io.Discard
+	cmd.Env = darwinSubprocessEnv()
+	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }

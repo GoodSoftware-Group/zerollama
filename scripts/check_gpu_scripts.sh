@@ -23,6 +23,10 @@ scripts=(
   m3_metal_signoff.sh
   metal_signoff.sh
   mac_setup.sh
+  mac_cgo_env.sh
+  build_zerollama_mac.sh
+  build_production_mac.sh
+  ensure_mlx_sources.sh
   training_uv_venv.sh
   serve_mac_runtime.sh
   phase15_metal_signoff.sh
@@ -97,6 +101,11 @@ grep -q 'training/.venv-training' "${ROOT}/cmd/doctor.go"
 grep -q 'checkTrainingQloraPayload' "${ROOT}/server/training_platform.go"
 grep -q 'zerollama serve' "${ROOT}/cmd/doctor.go"
 grep -q 'BootstrapDarwinSidecar' "${ROOT}/server/routes.go"
+grep -q 'mac_cgo_env' "${ROOT}/scripts/build_zerollama_mac.sh"
+grep -q 'mac-dev-setup.md' "${ROOT}/docs/development.md"
+grep -q 'build_zerollama_mac' "${ROOT}/cmd/doctor.go"
+grep -q 'build_production_mac' "${ROOT}/docs/mac-dev-setup.md"
+grep -q 'doctorCheckMLX' "${ROOT}/cmd/doctor.go"
 grep -q 'darwinSidecarEnabled' "${ROOT}/server/darwin_sidecar.go"
 grep -q 'zerollama serve' "${ROOT}/docs/development.md"
 grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"

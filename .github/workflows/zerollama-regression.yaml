@@ -101,8 +101,8 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: doctor + training platform tests
-        env:
-          CGO_ENABLED: '1'
         run: |
+          source scripts/mac_cgo_env.sh
+          mac_cgo_env
           go test -count=1 ./cmd -run 'Doctor|Sidecar|Serve|Report'
           go test -count=1 ./server -run 'TrainingPlatform|TrainingQlora|DarwinSidecar'

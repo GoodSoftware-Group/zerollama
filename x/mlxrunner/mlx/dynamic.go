@@ -22,6 +22,11 @@ var initError error
 var initLoadError string
 var initLoadedPath string
 
+// LoadedPath returns the path of the MLX dynamic library loaded at init, or "" if none.
+func LoadedPath() string {
+	return initLoadedPath
+}
+
 // CheckInit returns any error that occurred during MLX dynamic library initialization.
 func CheckInit() error {
 	if initLoadedPath != "" {
@@ -35,6 +40,12 @@ func CheckInit() error {
 
 // tryLoadFromDir searches a directory for the mlxc shared library and loads it.
 func tryLoadFromDir(dir string) bool {
+	if skipStaleFlatMLXDir(dir) {
+		return false
+	}
+	if mlxVariantSubdirsPresent(dir) {
+		return false
+	}
 	// On Windows, MSVC produces mlxc.dll (no lib prefix)
 	// On Unix, it's libmlxc.so or libmlxc.dylib
 	pattern := "libmlxc.*"
@@ -96,7 +107,6 @@ func libOllamaRoots() []string {
 	// and incompatible variants are skipped. Without this, alphabetical
 	// order would always pick v3 over v4 in dev builds.
 	for _, base := range repoBuildDirs() {
-		roots = append(roots, filepath.Join(base, "lib", "ollama"))
 		if matches, err := filepath.Glob(filepath.Join(base, "*", "lib", "ollama")); err == nil {
 			sort.Sort(sort.Reverse(sort.StringSlice(matches)))
 			for _, m := range matches {
@@ -108,6 +118,8 @@ func libOllamaRoots() []string {
 				}
 			}
 		}
+		// Flat build/lib/ollama last — stale libmlxc.dylib copies here shadow metal-v* trees.
+		roots = append(roots, filepath.Join(base, "lib", "ollama"))
 	}
 
 	return roots
@@ -138,6 +150,63 @@ func repoBuildDirs() []string {
 // prependLibraryPath prepends dir to the platform's dynamic library search
 // path so the linker finds colocated libmlx before any stale copies.
 // Called once after successful library load.
+// skipStaleFlatMLXDir avoids loading an outdated flat libmlxc.dylib under build/lib/ollama
+// when fresher variant trees (build/metal-v*/lib/ollama or dist mlx_metal_v*) exist.
+func skipStaleFlatMLXDir(dir string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	base := filepath.Base(dir)
+	if base != "ollama" {
+		return false
+	}
+	parent := filepath.Base(filepath.Dir(dir))
+	if parent != "lib" {
+		return false
+	}
+	buildDir := filepath.Dir(filepath.Dir(dir))
+	if filepath.Base(buildDir) != "build" {
+		// dist/darwin-arm64/lib/ollama — variant subdirs are tried first; allow flat ggml-only roots.
+		return false
+	}
+	if devMLXVariantLibExists(buildDir) {
+		slog.Debug("skipping stale flat MLX dir", "dir", dir)
+		return true
+	}
+	return false
+}
+
+func devMLXVariantLibExists(buildDir string) bool {
+	matches, err := filepath.Glob(filepath.Join(buildDir, "*", "lib", "ollama", "libmlxc.*"))
+	if err != nil || len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		rel, err := filepath.Rel(buildDir, m)
+		if err != nil {
+			continue
+		}
+		variant := strings.SplitN(rel, string(filepath.Separator), 2)[0]
+		if isCompatibleMLXVariant(variant) {
+			return true
+		}
+	}
+	return false
+}
+
+func mlxVariantSubdirsPresent(dir string) bool {
+	matches, err := filepath.Glob(filepath.Join(dir, "mlx_*"))
+	if err != nil || len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		if isCompatibleMLXVariant(filepath.Base(m)) {
+			return true
+		}
+	}
+	return false
+}
+
 func prependLibraryPath(dir string) {
 	var envVar string
 	switch runtime.GOOS {

@@ -6,6 +6,7 @@ import "unsafe"
 
 /*
 #cgo pkg-config: python3-embed
+#cgo darwin LDFLAGS: -Wl,-rpath,/Applications/Xcode.app/Contents/Developer/Library/Frameworks -Wl,-rpath,/Library/Developer/CommandLineTools/Library/Frameworks
 #cgo CFLAGS: -I${SRCDIR}
 #include <stdlib.h>
 #include "runtime_shim.h"
