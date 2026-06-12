@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Apple Silicon: uv sidecar runtime + zerollama Go proxy (CI / sign-off; daily use: zerollama serve).
 #
-# Why sidecar not embed: macOS system Python is often 3.9; runtime requires 3.10+.
+// Why sidecar not embed: macOS system Python is often 3.9; runtime requires 3.10+.
+// Why log files not stdout: CI/sign-off scripts need clean terminals; script prints paths + tail hint.
 # apple_silicon.yaml sets llama_backend: inprocess when autoconfig picks darwin.
 #
 # Prerequisite:
@@ -15,6 +16,8 @@
 #   ZEROLLAMA_RUNTIME_URL  — sidecar URL (default :8081); disables Go embed
 #   OLLAMA_HOST            — Go API (default :8080)
 #   ZEROLLAMA_BIN          — override zerollama binary (repo ./zerollama, then PATH)
+#   MACOS_RT_LOG           — Python runtime log (default /tmp/macos-runtime.log)
+#   MACOS_GO_LOG           — zerollama serve log (default /tmp/macos-go.log)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,7 +63,9 @@ fi
 
 if ((${#_wait_pids[@]} == 0)); then
   echo "runtime and zerollama already running (${ZEROLLAMA_RUNTIME_URL}, ${OLLAMA_HOST})"
+  macos_runtime_print_ready
   exit 0
 fi
 
+macos_runtime_print_ready
 wait "${_wait_pids[@]}"

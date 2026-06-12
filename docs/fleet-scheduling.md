@@ -111,6 +111,50 @@ When the sidecar is configured but `/health` fails, runtime queue fields are **o
 
 Poll interval for fleet management: **1–5s** is typical; combine with stream progress for in-request updates.
 
+### Shipped (F3 management node v0)
+
+**Operator guide:** [fleet-management.md](./fleet-management.md) — quick start, API, env, agent pattern, and **why** the manager stays thin.
+
+Run a thin management process that polls peers and assigns agents to a node:
+
+```bash
+ZEROLLAMA_FLEET_PEERS=http://192.168.1.10:11434,http://192.168.1.11:11434 \
+  zerollama fleet serve --listen 0.0.0.0:11450
+```
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Liveness |
+| `/api/fleet/status` | GET | All peer snapshots + **warm_models** map |
+| `/api/fleet/assign` | POST | Pick `{url, node_id}` for a model |
+
+**Assign request:**
+
+```json
+{
+  "model": "llama3:latest",
+  "prefer_warm": true,
+  "warm_only": false,
+  "exclude": ["192.168.1.10:11434"]
+}
+```
+
+**Assign response:**
+
+```json
+{
+  "url": "http://192.168.1.11:11434",
+  "node_id": "192.168.1.11:11434",
+  "warm": true,
+  "queue_depth": 0,
+  "generated_at": "2026-06-12T20:00:00Z"
+}
+```
+
+**Routing (v0):** Prefer nodes with the model in `inference.ggml.loaded_models` and lowest combined queue (`pending + active` + runtime `waiting + running` when runtime probe is available). Cold route picks lowest queue among available peers. Management **does not** load models or evict on remote nodes.
+
+**Env:** `ZEROLLAMA_FLEET_PEERS`, `ZEROLLAMA_FLEET_LISTEN` (default `0.0.0.0:11450`), `ZEROLLAMA_FLEET_POLL_INTERVAL` (default `3s`).
+
 ### Shipped (streaming progress)
 
 On **`/api/chat`** and **`/api/generate`** with `stream: true` (default), nodes emit NDJSON progress before content:
@@ -204,7 +248,7 @@ See [ROADMAP.md — Fleet scheduling track](./ROADMAP.md#fleet-scheduling-multi-
 |-----------|---------|
 | **F1** | Stream progress contract documented; agents can implement cancel-while-queued |
 | **F2** | **`GET /api/status`** inference snapshot for management polling |
-| **F3** | Management node v0: static peer list + warm-model map + assign URL |
+| **F3** | Management node v0: static peer list + warm-model map + assign URL | **Shipped** |
 | **F4** | mDNS registration/browse for LAN discovery |
 | **F5** | Short-TTL assignment token (optional header) |
 | **F6** | Operator docs: sticky shards, SLA classes, when to reject cold route |
@@ -215,12 +259,23 @@ See [ROADMAP.md — Fleet scheduling track](./ROADMAP.md#fleet-scheduling-multi-
 
 ```python
 # Directional — not a shipped SDK
-assignment = fleet.assign(model="llama3", prefer_warm=True)
-stream = client.chat(model="llama3", messages=..., base_url=assignment.url)
+import requests
+
+fleet_base = "http://127.0.0.1:11450"
+assignment = requests.post(
+    f"{fleet_base}/api/fleet/assign",
+    json={"model": "llama3", "prefer_warm": True},
+    timeout=5,
+).json()
+stream = client.chat(model="llama3", messages=..., base_url=assignment["url"])
 for chunk in stream:
     if chunk.get("status") == "queued" and chunk.get("position", 0) > MAX_QUEUE:
         stream.cancel()  # cheap: still in pending FIFO
-        assignment = fleet.assign(model="llama3", exclude=assignment.node_id)
+        assignment = requests.post(
+            f"{fleet_base}/api/fleet/assign",
+            json={"model": "llama3", "exclude": [assignment["node_id"]]},
+            timeout=5,
+        ).json()
         ...
     elif chunk.get("status") == "loading":
         break  # commit — do not cancel

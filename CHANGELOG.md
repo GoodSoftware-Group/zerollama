@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fleet management node (F3)
+
+**Why:** Agents and integrations often see **many zerollama hosts**, not one. Per-node schedulers answer local FIFO and VRAM correctly but not “which box has model M warm?” Scatter-gather and long reservation quotes **waste GPU work** on constrained fleets. F3 adds a **thin management process** that polls F2 `/api/status`, builds a warm-model map, and returns `{url, node_id}` — it never loads or evicts remotely.
+
+**What shipped:**
+
+- **`zerollama fleet serve`** — static `ZEROLLAMA_FLEET_PEERS`; poll interval default 3s; listen default `0.0.0.0:11450`.
+- **HTTP API:** `GET /health`, `GET /api/fleet/status`, `POST /api/fleet/assign` (warm-first, lowest-queue routing; `warm_only`, `exclude`).
+- **Package:** `fleet/` (manager, assign logic, tests); env `ZEROLLAMA_FLEET_*` in `envconfig`.
+
+Doc: [docs/fleet-management.md](docs/fleet-management.md), [docs/fleet-scheduling.md](docs/fleet-scheduling.md#shipped-f3-management-node-v0).
+
+### macOS runtime serve logging
+
+**Why:** `./scripts/serve_mac_runtime.sh` backgrounded sidecar and Go to log files with no terminal progress — operators thought the script hung. Startup now prints wait dots, log paths, and a ready banner with `tail -f` hints.
+
+**What changed:** `scripts/macos_runtime_serve_lib.sh`, `scripts/serve_mac_runtime.sh` — `MACOS_RT_LOG`, `MACOS_GO_LOG` documented.
+
 ### llama.cpp b9611 + MLX pin bump
 
 **Why:** Stay on current upstream llama.cpp (latest tag `b9611`, ahead of vanilla Ollama’s `b9509`) with a **reviewable 14-patch series** instead of in-tree-only deltas. MLX pins aligned with upstream Ollama for MTP/speculation parity.

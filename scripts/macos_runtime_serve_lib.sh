@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Shared Darwin sidecar runtime + Go proxy startup (source only).
 #
+# Why this library exists: m3_metal_signoff.sh and serve_mac_runtime.sh share the same
+# sidecar+Go bootstrap; duplicating curl loops and log redirection caused silent hangs.
+#
 #   source ./scripts/macos_runtime_serve_lib.sh
 #   macos_runtime_urls
 #   macos_runtime_start_sidecar "$LLAMA_MODEL"   # optional config path as 2nd arg
@@ -19,6 +22,46 @@ _MACOS_RT_PID=""
 _MACOS_GO_PID=""
 _MACOS_RT_HOST=""
 _MACOS_RT_PORT=""
+
+macos_runtime_log_paths() {
+  export MACOS_RT_LOG="${MACOS_RT_LOG:-/tmp/macos-runtime.log}"
+  export MACOS_GO_LOG="${MACOS_GO_LOG:-/tmp/macos-go.log}"
+}
+
+_macos_wait_http() {
+  local label="$1"
+  local url="$2"
+  local max="${3:-30}"
+  local i
+  echo -n "waiting for ${label} (${url})"
+  for ((i = 1; i <= max; i++)); do
+    if curl -sf -m 2 "${url}" >/dev/null 2>&1; then
+      echo " ok"
+      return 0
+    fi
+    echo -n "."
+    sleep 1
+  done
+  echo " failed"
+  return 1
+}
+
+macos_runtime_print_ready() {
+  macos_runtime_log_paths
+  macos_runtime_urls
+  cat <<EOF
+
+=== macOS runtime stack ready ===
+  Go API:      ${OLLAMA_HOST}
+  Runtime:     ${ZEROLLAMA_RUNTIME_URL}
+  Go log:      ${MACOS_GO_LOG}
+  Runtime log: ${MACOS_RT_LOG}
+
+Follow logs:
+  tail -f "${MACOS_RT_LOG}" "${MACOS_GO_LOG}"
+
+EOF
+}
 
 macos_runtime_urls() {
   export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:8080}"
@@ -77,23 +120,22 @@ macos_runtime_start_sidecar() {
   runtime_uv_venv
   export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${_MACOS_RT_ROOT}/../llama.cpp}"
   [[ -n "${require_model}" ]] && export LLAMA_MODEL="${require_model}"
+  macos_runtime_log_paths
+  echo "starting Python runtime sidecar on ${ZEROLLAMA_RUNTIME_URL} (log: ${MACOS_RT_LOG})"
   "${RUNTIME_UV_PYTHON}" -m runtime serve --host "${_MACOS_RT_HOST}" --port "${_MACOS_RT_PORT}" \
-    >"${MACOS_RT_LOG:-/tmp/macos-runtime.log}" 2>&1 &
+    >"${MACOS_RT_LOG}" 2>&1 &
   _MACOS_RT_PID=$!
 
-  local health=""
-  for _ in $(seq 1 30); do
-    if health="$(curl -sf -m 2 "${ZEROLLAMA_RUNTIME_URL%/}/health" 2>/dev/null)"; then
-      if [[ "$assert_m3" == "1" ]]; then
-        smoke_runtime_assert_m3_inprocess_config "${ZEROLLAMA_RUNTIME_URL}"
-      fi
-      return 0
-    fi
-    sleep 1
-  done
-  tail -20 "${MACOS_RT_LOG:-/tmp/macos-runtime.log}" >&2
-  echo "runtime failed to start on ${ZEROLLAMA_RUNTIME_URL}" >&2
-  return 1
+  if ! _macos_wait_http "runtime /health" "${ZEROLLAMA_RUNTIME_URL%/}/health" 30; then
+    tail -20 "${MACOS_RT_LOG}" >&2
+    echo "runtime failed to start on ${ZEROLLAMA_RUNTIME_URL}" >&2
+    return 1
+  fi
+  if [[ "$assert_m3" == "1" ]]; then
+    smoke_runtime_assert_m3_inprocess_config "${ZEROLLAMA_RUNTIME_URL}"
+  fi
+  echo "runtime listening on ${ZEROLLAMA_RUNTIME_URL}"
+  return 0
 }
 
 macos_runtime_training_env() {
@@ -119,13 +161,15 @@ macos_runtime_start_go() {
   macos_runtime_training_env
   export ZEROLLAMA_RUNTIME=1 OLLAMA_NO_CLOUD="${OLLAMA_NO_CLOUD:-true}"
   export ZEROLLAMA_RUNTIME_URL
-  "${bin}" serve >"${MACOS_GO_LOG:-/tmp/macos-go.log}" 2>&1 &
+  macos_runtime_log_paths
+  echo "starting zerollama serve on ${OLLAMA_HOST} (log: ${MACOS_GO_LOG})"
+  "${bin}" serve >"${MACOS_GO_LOG}" 2>&1 &
   _MACOS_GO_PID=$!
-  for _ in $(seq 1 20); do
-    curl -sf -m 2 "${OLLAMA_HOST%/}/api/tags" >/dev/null && return 0
-    sleep 1
-  done
-  tail -20 "${MACOS_GO_LOG:-/tmp/macos-go.log}" >&2
-  echo "zerollama serve failed to start (${bin})" >&2
-  return 1
+  if ! _macos_wait_http "zerollama /api/tags" "${OLLAMA_HOST%/}/api/tags" 20; then
+    tail -20 "${MACOS_GO_LOG}" >&2
+    echo "zerollama serve failed to start (${bin})" >&2
+    return 1
+  fi
+  echo "zerollama listening on ${OLLAMA_HOST}"
+  return 0
 }
