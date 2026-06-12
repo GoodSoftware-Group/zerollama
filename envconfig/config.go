@@ -351,6 +351,9 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy: 1/on (default when URL set), 0/off, unset=on if URL set"},
 		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
 		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "If 1, route eligible GGUF text inference through Go → llama-server subprocess (Phase 17)"},
+		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
+		"ZEROLLAMA_FLEET_LISTEN":              {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
+		"ZEROLLAMA_FLEET_POLL_INTERVAL":       {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
 		"ZEROLLAMA_LEGACY_RUNNER":             {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
 		"OLLAMA_RUNTIME_ALL":                  {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
 		"OLLAMA_FFMPEG":                       {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
@@ -741,6 +744,34 @@ func RuntimeDarwinSidecarLikely() bool {
 // RuntimeConfigured reports whether a Python runtime is in use (external URL, embedded, or Darwin sidecar).
 func RuntimeConfigured() bool {
 	return RuntimeURL() != "" || RuntimeEmbedEnabled() || RuntimeDarwinSidecarLikely()
+}
+
+// FleetPeers is a comma-separated list of zerollama base URLs for fleet management polling.
+// Why static first: K8s and homelab both have stable endpoints; mDNS (F4) adds discovery without removing this.
+func FleetPeers() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_FLEET_PEERS"))
+}
+
+// FleetListen is the fleet management HTTP listen address.
+// Why 0.0.0.0 default: agents on other LAN hosts must reach the manager; use 127.0.0.1 only for all-local dev.
+func FleetListen() string {
+	if v := strings.TrimSpace(Var("ZEROLLAMA_FLEET_LISTEN")); v != "" {
+		return v
+	}
+	return "0.0.0.0:11450"
+}
+
+// FleetPollInterval is how often the fleet manager polls peer /api/status.
+func FleetPollInterval() time.Duration {
+	v := strings.TrimSpace(Var("ZEROLLAMA_FLEET_POLL_INTERVAL"))
+	if v == "" {
+		return 3 * time.Second
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 3 * time.Second
+	}
+	return d
 }
 
 func ggmlPauseWhenRuntimeBusyDisplay() string {

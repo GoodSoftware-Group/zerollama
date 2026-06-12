@@ -2308,6 +2308,7 @@ func NewCLI() *cobra.Command {
 		deleteCmd,
 		runnerCmd,
 		doctorCmd,
+		NewFleetCommand(),
 		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
 	)
 
