@@ -44,6 +44,48 @@ var (
 	backends           map[C.ggml_backend_dev_t]C.ggml_backend_t
 )
 
+func deviceLibrary(d C.ggml_backend_dev_t) string {
+	return C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(d)))
+}
+
+func deviceID(d C.ggml_backend_dev_t, props *C.struct_ggml_backend_dev_props) string {
+	if props.device_id != nil {
+		return C.GoString(props.device_id)
+	}
+	return C.GoString(props.name)
+}
+
+func deviceLibraryFromProps(d C.ggml_backend_dev_t, props *C.struct_ggml_backend_dev_props) string {
+	// b9509 dropped props.library; Ollama backends set it via extended ggml_backend_dev_props
+	// (e.g. Metal reports "Metal" for flash-attn gating). Fall back to registry name.
+	if props.library != nil {
+		return C.GoString(props.library)
+	}
+	return deviceLibrary(d)
+}
+
+// applyDeviceProps maps extended C ggml_backend_dev_props into Go DeviceInfo.
+// WHY: upstream b9509 removed id/library/compute fields from get_props; Ollama Go still
+// needs them for GPU routing, flash-attention eligibility, and /api/tags device metadata.
+func applyDeviceProps(info *ml.DeviceInfo, dev C.ggml_backend_dev_t, props *C.struct_ggml_backend_dev_props) {
+	info.Name = C.GoString(props.name)
+	info.Description = C.GoString(props.description)
+	info.Library = deviceLibraryFromProps(dev, props)
+	info.ID = deviceID(dev, props)
+	info.Integrated = props.integrated != 0
+	if !info.Integrated {
+		info.Integrated = C.ggml_backend_dev_type(dev) == C.GGML_BACKEND_DEVICE_TYPE_IGPU
+	}
+	info.ComputeMajor = int(props.compute_major)
+	info.ComputeMinor = int(props.compute_minor)
+	info.DriverMajor = int(props.driver_major)
+	info.DriverMinor = int(props.driver_minor)
+	if props.device_id != nil {
+		info.PCIID = C.GoString(props.device_id)
+		info.ID = info.PCIID
+	}
+}
+
 var initDevices = sync.OnceFunc(func() {
 	ggml.OnceLoad()
 
@@ -172,8 +214,8 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 	requiredMemory.CPU.Name = C.GoString(C.ggml_backend_dev_name(cpuDeviceBufferType.d))
 	var props C.struct_ggml_backend_dev_props
 	C.ggml_backend_dev_get_props(cpuDeviceBufferType.d, &props)
-	requiredMemory.CPU.ID = C.GoString(props.id)
-	requiredMemory.CPU.Library = C.GoString(props.library)
+	requiredMemory.CPU.ID = deviceID(cpuDeviceBufferType.d, &props)
+	requiredMemory.CPU.Library = deviceLibraryFromProps(cpuDeviceBufferType.d, &props)
 	requiredMemory.CPU.Weights = make([]uint64, blocks+1)
 	requiredMemory.CPU.Cache = make([]uint64, blocks+1)
 
@@ -191,8 +233,8 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 		requiredMemory.GPUs[i].Name = C.GoString(C.ggml_backend_dev_name(d))
 		var props C.struct_ggml_backend_dev_props
 		C.ggml_backend_dev_get_props(d, &props)
-		requiredMemory.GPUs[i].ID = C.GoString(props.id)
-		requiredMemory.GPUs[i].Library = C.GoString(props.library)
+		requiredMemory.GPUs[i].ID = deviceID(d, &props)
+		requiredMemory.GPUs[i].Library = deviceLibraryFromProps(d, &props)
 		requiredMemory.GPUs[i].Weights = make([]uint64, blocks+1)
 		requiredMemory.GPUs[i].Cache = make([]uint64, blocks+1)
 	}
@@ -380,6 +422,8 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 
 	maxGraphNodes := max(1024, len(meta.Tensors().Items())*32)
 
+	// sched_new_ext: alloc_buffers=false lets LoadOperationFit size VRAM without real GPU
+	// weight/graph allocation (buft no_alloc + dummy buffers). See ggml-backend.cpp.
 	sched := C.ggml_backend_sched_new_ext(
 		(*C.ggml_backend_t)(unsafe.Pointer(&schedBackends[0])),
 		(*C.ggml_backend_buffer_type_t)(unsafe.Pointer(&schedBufts[0])),
@@ -713,21 +757,7 @@ func (b *Backend) BackendDevices() []ml.DeviceInfo {
 		info := ml.DeviceInfo{}
 		props := C.struct_ggml_backend_dev_props{}
 		C.ggml_backend_dev_get_props(dev, &props)
-		info.Name = C.GoString(props.name)
-		info.Description = C.GoString(props.description)
-		info.ID = C.GoString(props.id)
-		info.Library = C.GoString(props.library)
-		info.ComputeMajor = (int)(props.compute_major)
-		info.ComputeMinor = (int)(props.compute_minor)
-		info.DriverMajor = (int)(props.driver_major)
-		info.DriverMinor = (int)(props.driver_minor)
-		info.Integrated = props.integrated != 0
-		if props.library != nil {
-			info.Library = C.GoString(props.library)
-		}
-		if props.device_id != nil {
-			info.PCIID = C.GoString(props.device_id)
-		}
+		applyDeviceProps(&info, dev, &props)
 		info.LibraryPath = ggml.LibPaths()
 		C.ggml_backend_dev_memory(dev, &props.memory_free, &props.memory_total)
 		info.TotalMemory = (uint64)(props.memory_total)
@@ -818,10 +848,6 @@ func (c *Context) ComputeWithNotify(cb func(), tensors ...ml.Tensor) {
 		go cb()
 	}
 
-	if c.batchSize > 0 {
-		C.ggml_backend_sched_set_batch_size(c.b.sched, C.int(c.batchSize))
-	}
-
 	if status := C.ggml_backend_sched_graph_compute_async(c.b.sched, c.graph); status != C.GGML_STATUS_SUCCESS {
 		panic(fmt.Errorf("error computing ggml graph: %v", status))
 	}
@@ -843,10 +869,6 @@ func (c *Context) ComputeWithNotify(cb func(), tensors ...ml.Tensor) {
 }
 
 func (c *Context) Reserve() {
-	if c.batchSize > 0 {
-		C.ggml_backend_sched_set_batch_size(c.b.sched, C.int(c.batchSize))
-	}
-
 	reserved := C.ggml_backend_sched_reserve(c.b.sched, c.graph)
 
 	slog.Debug("compute graph", "nodes", C.ggml_graph_n_nodes(c.graph), "splits", C.ggml_backend_sched_get_n_splits(c.b.sched))

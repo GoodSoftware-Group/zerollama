@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Fri, 12 Jun 2026 14:09:54 -0700
+Subject: [PATCH] ollama: add C API for mtmd_input_text (b9611 port)
+
+CGO multimodal path constructs mtmd prompts without stack-allocating C++
+structs from Go.
+---
+ tools/mtmd/mtmd.cpp | 10 ++++++++++
+ tools/mtmd/mtmd.h   |  3 +++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
+index 4140a3c4..202ab9cd 100644
+--- a/tools/mtmd/mtmd.cpp
++++ b/tools/mtmd/mtmd.cpp
+@@ -175,6 +175,16 @@ const char * mtmd_default_marker() {
+     return "<__media__>";
+ }
+ 
++mtmd_input_text * mtmd_input_text_init(const char * text, bool add_special, bool parse_special) {
++    return new mtmd_input_text{text, add_special, parse_special};
++}
++
++void mtmd_input_text_free(mtmd_input_text * input_text) {
++    if (input_text) {
++        delete input_text;
++    }
++}
++
+ static clip_flash_attn_type mtmd_get_clip_flash_attn_type(enum llama_flash_attn_type flash_attn_type) {
+     switch (flash_attn_type) {
+         case LLAMA_FLASH_ATTN_TYPE_AUTO:     return CLIP_FLASH_ATTN_TYPE_AUTO;
+diff --git a/tools/mtmd/mtmd.h b/tools/mtmd/mtmd.h
+index a76a6ec2..29f99b4d 100644
+--- a/tools/mtmd/mtmd.h
++++ b/tools/mtmd/mtmd.h
+@@ -81,6 +81,9 @@ typedef struct mtmd_input_chunk  mtmd_input_chunk;
+ typedef struct mtmd_input_chunks mtmd_input_chunks;
+ typedef struct mtmd_input_text   mtmd_input_text;
+ 
++MTMD_API mtmd_input_text * mtmd_input_text_init(const char * text, bool add_special, bool parse_special);
++MTMD_API void                mtmd_input_text_free(mtmd_input_text * input_text);
++
+ struct mtmd_context_params {
+     bool use_gpu;
+     bool print_timings;

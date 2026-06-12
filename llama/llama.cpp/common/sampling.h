@@ -36,18 +36,20 @@ struct common_sampler;
 
 // llama_sampler API overloads
 
-struct common_sampler * common_sampler_init(const struct llama_model * model, const struct common_params_sampling & params);
+// note: can mutate params in some cases
+struct common_sampler * common_sampler_init(const struct llama_model * model, struct common_params_sampling & params);
 
 void common_sampler_free(struct common_sampler * gsmpl);
 
-// if accept_grammar is true, the token is accepted both by the sampling chain and the grammar
-void                    common_sampler_accept(struct common_sampler * gsmpl, llama_token token, bool accept_grammar);
+// if is_generated is true, the token is accepted by the sampling chain, the reasoning budget sampler, and the grammar sampler
+void                    common_sampler_accept(struct common_sampler * gsmpl, llama_token token, bool is_generated);
 void                    common_sampler_reset (struct common_sampler * gsmpl);
 struct common_sampler * common_sampler_clone (struct common_sampler * gsmpl);
 
 // arguments can be nullptr to skip printing
 void common_perf_print(const struct llama_context * ctx, const struct common_sampler * gsmpl);
 
+// get the underlying llama_sampler_chain
 struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl);
 
 // extended sampling implementation:
@@ -57,7 +59,10 @@ struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl);
 // - check if the token fits the grammar (if any)
 // - if not: resample by first applying the grammar constraints and then sampling again (slower path)
 //
-llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx);
+// if grammar_first is true, the grammar is applied before the samplers (slower)
+// useful in cases where all the resulting candidates (not just the sampled one) must fit the grammar
+//
+llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first = false);
 
 // generalized version of common_sampler_sample
 //
@@ -75,12 +80,15 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
 //
 // returns at least 1 token, up to idxs.size()
 //
-std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft);
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first = false);
 
 // assume idxs == [ 0, 1, 2, ..., draft.size() ]
-std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const llama_tokens & draft);
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const llama_tokens & draft, bool grammar_first = false);
 
 uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
+
+// force the reasoning budget sampler (if any) to begin forcing its end sequence now.
+bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl);
 
 // helpers
 
@@ -101,7 +109,7 @@ std::string common_sampler_prev_str(common_sampler * gsmpl, llama_context * ctx,
 char        common_sampler_type_to_chr(enum common_sampler_type cnstr);
 std::string common_sampler_type_to_str(enum common_sampler_type cnstr);
 
-std::vector<enum common_sampler_type> common_sampler_types_from_names(const std::vector<std::string> & names, bool allow_alt_names);
+std::vector<enum common_sampler_type> common_sampler_types_from_names(const std::vector<std::string> & names);
 std::vector<enum common_sampler_type> common_sampler_types_from_chars(const std::string & chars);
 
 llama_sampler * llama_sampler_init_llg(const llama_vocab * vocab,

@@ -4,9 +4,9 @@
 
 #include <map>
 #include <regex>
+#include <set>
 #include <string>
 #include <vector>
-#include <set>
 
 struct llama_vocab;
 struct ollama_vocab {
@@ -17,7 +17,6 @@ struct ollama_vocab {
     void add_token_pieces(const uint32_t* tokens, size_t n_tokens, const char** pieces);
     void set_eog_tokens(const uint32_t* tokens, size_t n_tokens);
     bool is_eog(const uint32_t token) const;
-
 };
 
 // grammar element type
@@ -130,6 +129,8 @@ struct llama_grammar_parser {
 struct llama_grammar_trigger_pattern {
     std::string pattern;
     std::regex  regex;
+
+    size_t find(const std::string & input) const;
 };
 
 struct llama_grammar {
