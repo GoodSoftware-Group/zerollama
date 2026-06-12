@@ -34,6 +34,9 @@ func (s *Server) submitTrainingJob(
 	if s == nil || s.training == nil {
 		return TrainingSubmitResult{}, errors.New("training worker not available")
 	}
+	if err := checkTrainingQloraPayload(kind, payload); err != nil {
+		return TrainingSubmitResult{}, err
+	}
 	if !opts.Priority.bypassesIdleWait() {
 		if err := checkTrainingAllowedWindow(); err != nil {
 			if res, ok, derr := s.tryDeferTrainingSubmit(ctx, kind, payload, opts, err); derr != nil {

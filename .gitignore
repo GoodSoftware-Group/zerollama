@@ -17,6 +17,7 @@ llama/vendor
 /ollama
 /zerollama
 /lib/
+.venv-training/
 integration/testdata/models/
 
 # Python bytecode

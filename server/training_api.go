@@ -56,6 +56,10 @@ func (s *Server) trainHTTPSubmitJob(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return
 		}
+		if TrainingSubmitUnsupported(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		if TrainingSubmitConflict(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return

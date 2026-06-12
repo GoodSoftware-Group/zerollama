@@ -155,6 +155,7 @@ class _TrainingShimAPI:
         extras = {
             "device": training.STATE.device,
             "cuda_available": torch.cuda.is_available(),
+            "mps_available": getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available(),
             "model_loaded": training.STATE.current_model_name,
             "training_active": training.STATE.training_active,
             "queue": training.JOB_QUEUE.get_queue_status(),

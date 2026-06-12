@@ -1,6 +1,9 @@
 package envconfig
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestRuntimeDefaultOn(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "")
@@ -23,5 +26,20 @@ func TestRuntimeDefaultOn(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME", "1")
 	if !RuntimeDefaultOn() {
 		t.Fatal("explicit on")
+	}
+}
+
+func TestRuntimeEmbedDisabledOnDarwinByDefault(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only default")
+	}
+	t.Setenv("ZEROLLAMA_RUNTIME_EMBED", "")
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", "")
+	if RuntimeEmbedEnabled() {
+		t.Fatal("embed should default off on darwin")
+	}
+	t.Setenv("ZEROLLAMA_RUNTIME_EMBED", "1")
+	if !RuntimeEmbedEnabled() {
+		t.Fatal("embed explicit on")
 	}
 }

@@ -13,7 +13,8 @@ func TestTrainingOccupiesGPU(t *testing.T) {
 		{"active", `{"training_active":true,"cuda_available":true,"queue":{"running":0}}`, true},
 		{"running", `{"training_active":false,"cuda_available":true,"queue":{"running":1}}`, true},
 		{"model_loaded", `{"training_active":false,"cuda_available":true,"model_loaded":"Qwen/Qwen2.5-0.5B","queue":{"running":0}}`, true},
-		{"model_loaded_cpu", `{"training_active":false,"cuda_available":false,"model_loaded":"Qwen/Qwen2.5-0.5B","queue":{"running":0}}`, false},
+		{"model_loaded_cpu", `{"training_active":false,"cuda_available":false,"mps_available":false,"model_loaded":"Qwen/Qwen2.5-0.5B","queue":{"running":0}}`, false},
+		{"model_loaded_mps", `{"training_active":false,"cuda_available":false,"mps_available":true,"model_loaded":"Qwen/Qwen2.5-0.5B","queue":{"running":0}}`, true},
 		{"empty", "", false},
 	}
 	for _, tc := range cases {

@@ -69,3 +69,40 @@ jobs:
       - name: Check GPU operator scripts
         working-directory: ${{ github.workspace }}
         run: ./scripts/check_gpu_scripts.sh
+
+  macos-darwin-smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Darwin runtime pytest
+        run: |
+          source scripts/runtime_uv_venv.sh
+          runtime_uv_venv
+          cd runtime && PYTHONPATH=. "${RUNTIME_UV_PYTHON}" -m pytest \
+            tests/test_host_memory_darwin.py \
+            tests/test_metal_unified_probe.py \
+            tests/test_m3_model_picker.py \
+            tests/test_autoconfig.py::test_apple_silicon_yaml_inprocess_backend \
+            tests/test_vram_yaml_defaults.py::test_apply_apple_silicon_repo_defaults \
+            tests/test_engine_inprocess_fallback.py \
+            tests/test_engine_health_llama_backend.py::test_health_llama_backend_fallback_flag \
+            -q
+      - name: Check GPU operator scripts
+        run: ./scripts/check_gpu_scripts.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: doctor + training platform tests
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go test -count=1 ./cmd -run 'Doctor|Sidecar|Serve|Report'
+          go test -count=1 ./server -run 'TrainingPlatform|TrainingQlora|DarwinSidecar'

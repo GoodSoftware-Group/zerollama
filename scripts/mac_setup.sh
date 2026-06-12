@@ -6,6 +6,7 @@
 # Env:
 #   LLAMA_CPP_ROOT=../llama.cpp
 #   MAC_SETUP_SIGNOFF=0   — skip ./scripts/metal_signoff.sh
+#   MAC_SETUP_TRAINING=1  — also create .venv-training (uv) for /api/train MPS LoRA
 #   MAC_SETUP_BUILD=0     — skip llama.cpp build (lib already present)
 set -euo pipefail
 
@@ -23,6 +24,15 @@ export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dyli
 
 echo "== Mac setup: uv runtime venv =="
 runtime_uv_venv
+
+if [[ "${MAC_SETUP_TRAINING:-0}" == "1" ]]; then
+  echo ""
+  echo "== Mac setup: uv training venv (.venv-training) =="
+  # shellcheck source=scripts/training_uv_venv.sh
+  source "${ROOT}/scripts/training_uv_venv.sh"
+  training_uv_venv
+  training_uv_verify
+fi
 
 if [[ "${MAC_SETUP_BUILD:-1}" == "1" ]]; then
   echo ""

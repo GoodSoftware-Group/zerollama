@@ -6,12 +6,14 @@
 
 ---
 
-## Two serve modes on Mac
+## Serve on Mac
 
-| Mode | How | Port | When to use |
-|------|-----|------|-------------|
-| **Default ggml** | `zerollama serve` | `:11434` | General chat, vision, pulled library models — **start here** |
-| **Runtime + tools** | `./scripts/serve_mac_runtime.sh` | Go `:8080`, sidecar `:8081` | Phase 12 tools, admission, inprocess forward |
+| What | How | Port |
+|------|-----|------|
+| **Daily use** | `zerollama serve` | Go `:11434` (default); runtime sidecar auto on loopback `:8081` |
+| **CI / sign-off** | `./scripts/serve_mac_runtime.sh` | Explicit `:8080` + `:8081` stack for regression scripts |
+
+On Apple Silicon, **`zerollama serve`** ensures `runtime/.venv` (via uv), starts the Python sidecar, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper script required.
 
 Run `zerollama doctor` to validate uv venv, Metal `libllama.dylib`, and sidecar `/health`. First-time setup: `./scripts/mac_setup.sh`.
 
@@ -27,6 +29,7 @@ Apple Silicon does **not** share the same stack as the RTX 5080 CUDA path:
 | Default GGUF inference | Runtime + CUDA `llama-server` | **ggml Metal** in the main binary (best tested) |
 | Safetensors / MLX-native | N/A or CUDA MLX build | **Optional MLX engine** (Metal) |
 | Phase 11/13 probes | `nvidia-smi` autoconfig | **`metal-unified`** via `vm_stat` + `apple_silicon.yaml` |
+| LoRA fine-tuning | CUDA + PEFT (`training.py`) | **PyTorch MPS + PEFT** — same PEFT adapter output as CUDA; QLoRA not supported |
 
 Recent zerollama work optimized **CUDA runtime admission** first. This track makes **Metal usable** (correct probes + autoconfig) and documents **what is already optimized** in Go (scheduler) vs **what is still subprocess-default** in Python runtime.
 
@@ -114,16 +117,16 @@ Env always wins over YAML.
 
 ## Quick start (Apple Silicon)
 
-### Default GGUF chat
+### Default (ggml + runtime sidecar)
 
 ```bash
 zerollama serve
 zerollama run llama3.2:3b
 ```
 
-Uses **Metal ggml** — no `LLAMA_SERVER_BIN` required for this path.
+Listens on **`OLLAMA_HOST`** (default `:11434`). On Darwin, zerollama also starts the uv runtime sidecar on `:8081` with Metal autoconfig. GGUF chat uses **Metal ggml** in the main binary; runtime tools and admission use the sidecar.
 
-### Runtime + tools (sidecar — recommended on Mac)
+### CI / explicit sidecar stack
 
 ```bash
 LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
@@ -131,7 +134,18 @@ export LLAMA_MODEL=/path/to/text-only.gguf   # avoid vision/embed families for i
 ./scripts/serve_mac_runtime.sh
 ```
 
-Uses **uv** `runtime/.venv`, sidecar on `:8081`, Go proxy on `:8080`. `apple_silicon.yaml` sets **`llama_backend: inprocess`** when autoconfig picks darwin.
+Same uv sidecar as `zerollama serve`, but Go listens on `:8080` for smoke scripts.
+
+### LoRA fine-tuning (MPS)
+
+Same **`/api/train/*`** API as CUDA hosts. `zerollama serve` auto-creates `.venv-training` when training is enabled:
+
+```bash
+zerollama serve
+curl -s http://127.0.0.1:11434/api/train/status | jq .
+```
+
+Manual verify: `./scripts/training_uv_venv.sh --verify`. Submit with **`use_lora: true`**, **`use_qlora: false`**. Adapter output under `output_dir/lora_adapter/` is PEFT-compatible — use **`ADAPTER`** in a Modelfile against the same HF base model. Details: [gpu-training.md](./gpu-training.md#apple-silicon-mps).
 
 Check `/health` on `:8081`:
 
@@ -185,6 +199,7 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M3** Phase 14 inprocess on Metal + session autotune | **Shipped** — `./scripts/m3_metal_signoff.sh` |
 | **M4** MLX vs runtime policy doc + routing guards | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md) |
 | **M5** Phase 15 KV + multi-seq on Metal | **Shipped** — `./scripts/metal_signoff.sh` |
+| **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
 
 ## Troubleshooting
 
@@ -195,11 +210,13 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | Runtime 502 host memory on big model | Unified pool too small for MXFP4 mmap | Smaller quant; same as Linux — host RAM not VRAM |
 | Tools 501 on Mac | Model not runtime-routed | Manifest backend or `ZEROLLAMA_RUNTIME=1`; ggml path for vision/think |
 | MLX model won't load | MLX engine not built | `cmake --install build --component MLX` |
-| Embed runtime fails on Mac | System Python 3.9, no torch | Use `./scripts/serve_mac_runtime.sh` (uv sidecar) |
-| `zerollama serve` aborts (Python3.framework) | Embed-linked repo binary | Use sidecar (`serve_mac_runtime.sh`) or set `ZEROLLAMA_BIN` to a working install |
+| Embed runtime fails on Mac | System Python 3.9, no torch | Default `zerollama serve` uses uv sidecar; set `ZEROLLAMA_RUNTIME_EMBED=1` only if you know system libpython is 3.10+ |
+| `zerollama serve` aborts (Python3.framework) | Stale embed-linked binary | Rebuild; sidecar bootstrap skips embed on Darwin by default |
 | Phase 14 inprocess load error | Vision model on pinned llama.cpp | Use text-only GGUF (e.g. Qwen text, not gemma3 vision) |
 | `llama_backend_source: env` on Mac | `ZEROLLAMA_RUNTIME_LLAMA_BACKEND` set | Unset env; rely on `apple_silicon.yaml` |
 | Inprocess load fails on some GGUF | Vision / pinned llama.cpp mismatch | Auto-fallback to Metal `llama-server` on darwin when `LLAMA_SERVER_BIN` set (`ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK=auto`, default on Mac); check `/health` `llama_backend_fallback`; or use text-only GGUF |
+| `/api/train/status` 502 / `No module named 'torch'` | Training venv missing | Restart `zerollama serve` (auto venv) or `./scripts/training_uv_venv.sh --verify` |
+| Training job fails with QLoRA error | bitsandbytes is CUDA-only | Use `use_lora: true`, `use_qlora: false` |
 
 ---
 

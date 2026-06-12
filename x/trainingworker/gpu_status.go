@@ -12,6 +12,7 @@ type TrainingGPUStatus struct {
 	QueuePending   int
 	ModelLoaded    string
 	CudaAvailable  bool
+	MpsAvailable   bool
 }
 
 // trainingOccupiesGPU reports whether inference should yield to training work.
@@ -22,6 +23,7 @@ func trainingOccupiesGPU(extrasJSON string) (TrainingGPUStatus, bool) {
 	var extras struct {
 		TrainingActive bool `json:"training_active"`
 		CudaAvailable  bool `json:"cuda_available"`
+		MpsAvailable   bool `json:"mps_available"`
 		ModelLoaded    any  `json:"model_loaded"`
 		Queue          struct {
 			Running int `json:"running"`
@@ -38,11 +40,12 @@ func trainingOccupiesGPU(extrasJSON string) (TrainingGPUStatus, bool) {
 		QueuePending:   extras.Queue.Pending,
 		ModelLoaded:    modelName,
 		CudaAvailable:  extras.CudaAvailable,
+		MpsAvailable:   extras.MpsAvailable,
 	}
 	// Pending jobs do not block inference until one is running (inference-first default).
 	busy := st.TrainingActive ||
 		st.QueueRunning > 0 ||
-		trainingModelHoldsGPU(st.CudaAvailable, modelName)
+		trainingModelHoldsGPU(st.CudaAvailable, st.MpsAvailable, modelName)
 	return st, busy
 }
 
@@ -55,6 +58,6 @@ func trainingModelName(v any) string {
 	}
 }
 
-func trainingModelHoldsGPU(cudaAvailable bool, modelName string) bool {
-	return cudaAvailable && modelName != ""
+func trainingModelHoldsGPU(cudaAvailable, mpsAvailable bool, modelName string) bool {
+	return (cudaAvailable || mpsAvailable) && modelName != ""
 }

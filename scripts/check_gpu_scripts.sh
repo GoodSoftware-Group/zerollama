@@ -23,6 +23,7 @@ scripts=(
   m3_metal_signoff.sh
   metal_signoff.sh
   mac_setup.sh
+  training_uv_venv.sh
   serve_mac_runtime.sh
   phase15_metal_signoff.sh
   macos_runtime_serve_lib.sh
@@ -89,6 +90,15 @@ grep -q 'test_m3_model_picker.py' "${ROOT}/scripts/macos_metal_smoke.sh"
 grep -q 'NewDoctorCommand' "${ROOT}/cmd/cmd.go"
 grep -q 'mac_setup.sh' "${ROOT}/docs/development.md"
 grep -q 'llama_backend_fallback' "${ROOT}/runtime/runtime/engine.py"
+grep -q 'training_uv_venv.sh' "${ROOT}/scripts/mac_setup.sh"
+grep -q 'doctor --fix' "${ROOT}/cmd/doctor.go"
+grep -q 'macos-darwin-smoke' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'training/.venv-training' "${ROOT}/cmd/doctor.go"
+grep -q 'checkTrainingQloraPayload' "${ROOT}/server/training_platform.go"
+grep -q 'zerollama serve' "${ROOT}/cmd/doctor.go"
+grep -q 'BootstrapDarwinSidecar' "${ROOT}/server/routes.go"
+grep -q 'darwinSidecarEnabled' "${ROOT}/server/darwin_sidecar.go"
+grep -q 'zerollama serve' "${ROOT}/docs/development.md"
 grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"
 grep -q 'llama_backend: inprocess' "${ROOT}/runtime/configs/apple_silicon.yaml"
 grep -q 'vm.swapusage' "${ROOT}/runtime/runtime/host_memory.py"

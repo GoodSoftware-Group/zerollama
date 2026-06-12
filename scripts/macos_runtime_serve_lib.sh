@@ -96,6 +96,17 @@ macos_runtime_start_sidecar() {
   return 1
 }
 
+macos_runtime_training_env() {
+  [[ "${OLLAMA_TRAINING:-true}" == "false" ]] && return 0
+  # shellcheck source=scripts/training_uv_venv.sh
+  source "${_MACOS_RT_ROOT}/scripts/training_uv_venv.sh"
+  if [[ -x "${TRAINING_UV_VENV}/bin/python" ]] || [[ "${TRAINING_UV_AUTO:-0}" == "1" ]]; then
+    training_uv_venv
+    return 0
+  fi
+  echo "hint: run ./scripts/training_uv_venv.sh --verify for /api/train (sets PYTHONPATH via uv)" >&2
+}
+
 macos_runtime_start_go() {
   macos_runtime_urls
   local bin
@@ -105,6 +116,7 @@ macos_runtime_start_go() {
     echo "go api already listening on ${OLLAMA_HOST}"
     return 0
   fi
+  macos_runtime_training_env
   export ZEROLLAMA_RUNTIME=1 OLLAMA_NO_CLOUD="${OLLAMA_NO_CLOUD:-true}"
   export ZEROLLAMA_RUNTIME_URL
   "${bin}" serve >"${MACOS_GO_LOG:-/tmp/macos-go.log}" 2>&1 &

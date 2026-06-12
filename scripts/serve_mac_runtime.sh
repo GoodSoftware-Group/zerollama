@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apple Silicon: uv sidecar runtime + zerollama Go proxy (recommended Mac runtime path).
+# Apple Silicon: uv sidecar runtime + zerollama Go proxy (CI / sign-off; daily use: zerollama serve).
 #
 # Why sidecar not embed: macOS system Python is often 3.9; runtime requires 3.10+.
 # apple_silicon.yaml sets llama_backend: inprocess when autoconfig picks darwin.

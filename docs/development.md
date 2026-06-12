@@ -29,19 +29,17 @@ macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** m
 **First-time setup:**
 
 ```bash
-./scripts/mac_setup.sh          # uv venv + Metal llama.cpp + metal sign-off
-./scripts/serve_mac_runtime.sh  # daily dev: sidecar :8081 + Go :8080
-zerollama doctor                # check uv, libllama, sidecar /health
+./scripts/mac_setup.sh   # uv venv + Metal llama.cpp + metal sign-off (once)
+zerollama serve          # default :11434; auto sidecar on :8081, autoconfig, training venv
+zerollama doctor         # check uv, libllama, sidecar /health
+zerollama doctor --fix   # auto-create venv + build llama.cpp if missing
 ```
 
-**Two serve modes (do not mix ports without intent):**
+**Serve on macOS:** `zerollama serve` listens on **`OLLAMA_HOST`** (default `:11434`). On Apple Silicon it automatically ensures `runtime/.venv`, starts the Python runtime sidecar on loopback `:8081`, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper scripts required for daily use.
 
-| Mode | Command | Port | Use |
-|------|---------|------|-----|
-| Default ggml | `zerollama serve` | `:11434` | Chat, vision, most users |
-| Runtime + tools | `./scripts/serve_mac_runtime.sh` | `:8080` + `:8081` | Phase 12 tools, admission, inprocess forward |
+**CI / sign-off only:** `./scripts/serve_mac_runtime.sh` and `./scripts/macos_metal_smoke.sh` exercise the same sidecar stack explicitly for regression tests.
 
-See [apple-silicon-metal.md](./apple-silicon-metal.md), `./scripts/metal_signoff.sh`, and `./scripts/macos_metal_smoke.sh`.
+**Escape hatches:** set `ZEROLLAMA_RUNTIME_URL` to an existing sidecar (skip spawn), `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0` for ggml-only, or `OLLAMA_TRAINING=false` to skip training deps.
 
 Optional **MLX engine** for safetensors models: see [MLX Engine](#mlx-engine-optional) below.
 

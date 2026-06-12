@@ -519,6 +519,10 @@ func RuntimeEmbedEnabled() bool {
 	if strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_URL")) != "" {
 		return false
 	}
+	// Darwin: system libpython is too old for embed; zerollama serve spawns a uv sidecar.
+	if runtime.GOOS == "darwin" {
+		return false
+	}
 	return true
 }
 

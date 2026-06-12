@@ -1765,6 +1765,14 @@ func Serve(ln net.Listener) error {
 
 	s := &Server{addr: ln.Addr()}
 	ensureLoopbackGoURLEnv()
+
+	var darwinSidecar *DarwinSidecar
+	defer func() {
+		if darwinSidecar != nil {
+			darwinSidecar.Stop()
+		}
+	}()
+
 	if err := s.initRequestLogging(); err != nil {
 		return err
 	}
@@ -1786,6 +1794,13 @@ func Serve(ln net.Listener) error {
 		schedDone()
 		done()
 	}()
+
+	if sc, err := BootstrapDarwinSidecar(ctx); err != nil {
+		slog.Warn("darwin runtime sidecar bootstrap failed", "error", err)
+	} else if sc != nil {
+		darwinSidecar = sc
+	}
+
 	sched := InitScheduler(schedCtx)
 	s.sched = sched
 	sched.fifoYield = s.schedYieldToRuntimeFifo
@@ -1936,6 +1951,9 @@ func Serve(ln net.Listener) error {
 		}
 		if s.runtimeEmbed != nil {
 			s.runtimeEmbed.Close()
+		}
+		if darwinSidecar != nil {
+			darwinSidecar.Stop()
 		}
 		done()
 		// Embedded CPython/uvicorn pthreads prevent a clean return from main.

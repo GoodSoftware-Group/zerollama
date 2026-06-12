@@ -132,20 +132,56 @@ For paths that **wait** for Go (e.g. `load_model` retry, `job_processor` outer O
 
 **Dependencies:** same as before for `training.py` (`torch`, `transformers`, `peft`, …). **`grpcio` is not required** for training control.
 
-### Installing Python deps (embedded interpreter)
+### Apple Silicon (MPS)
 
-`zerollama` embeds **system** `libpython3` (check with `ldd "$(command -v zerollama)" | grep libpython`). Packages must be importable from **`/usr/bin/python3`**, not only an activated runtime venv:
+On **darwin**, the same embedded **`training.py`** worker runs with **PyTorch MPS** when CUDA is unavailable. Outputs match the CUDA path: **`lora_adapter/`** with PEFT **`adapter_model.safetensors`**, **`adapter_config.json`**, and tokenizer files — import via Modelfile **`ADAPTER`**.
+
+| Feature | CUDA | Apple Silicon (MPS) |
+|---------|------|------------------------|
+| LoRA (`use_lora: true`) | Yes | Yes |
+| QLoRA (`use_qlora: true`) | Yes (bitsandbytes) | **No** — rejected with a clear error |
+| VRAM OOM bridge (Go eviction) | Yes | Best-effort; unified memory, no NVML |
+| Training dtype | `bf16` | `float32` |
+
+Install deps with **uv** into **`.venv-training`** at the repo root (same pattern as `runtime/.venv`):
 
 ```bash
-deactivate 2>/dev/null || true
-/usr/bin/python3 -m pip install -U pip
-/usr/bin/python3 -m pip install -r requirements-training.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu128
-/usr/bin/python3 -c "import torch, transformers, datasets, peft; print('ok', torch.__version__)"
+./scripts/training_uv_venv.sh --verify
+# several uv binaries on PATH:
+UV_BIN="$HOME/.local/bin/uv" ./scripts/training_uv_venv.sh --verify
+eval "$(./scripts/training_uv_venv.sh --export)"
+zerollama serve
 ```
 
-Optional isolated venv: create `~/zerollama/venv-training`, pip install there, then in `serve.sh` set  
-`PYTHONPATH="$HOME/zerollama/venv-training/lib/python3.10/site-packages"` before `exec zerollama serve`.
+Or use `./scripts/serve_mac_runtime.sh` — it picks up `.venv-training` automatically when present.
+
+Submit jobs the same way as on Linux (`POST /api/train/jobs` with `kind: train`). Use **`use_lora: true`** and **`use_qlora: false`**.
+
+### Installing Python deps (embedded interpreter)
+
+`zerollama` embeds **system** `libpython3` (check with `otool -L` on Mac or `ldd` on Linux). Training packages are loaded via **`PYTHONPATH`** pointing at the uv venv site-packages — not by replacing the embedded interpreter.
+
+**Recommended (uv):**
+
+```bash
+./scripts/training_uv_venv.sh --verify
+eval "$(./scripts/training_uv_venv.sh --export)"
+```
+
+**Env:**
+
+| Variable | Purpose |
+|----------|---------|
+| `UV_BIN` | Which `uv` to use when several copies are installed |
+| `TRAINING_UV_VENV` | Override venv path (default: `$REPO/.venv-training`) |
+| `TRAINING_UV_AUTO=1` | `serve_mac_runtime.sh` creates the venv on first start if missing |
+
+**Linux + NVIDIA** (CUDA index passed by the script on non-Darwin):
+
+```bash
+UV_BIN=uv ./scripts/training_uv_venv.sh --verify
+eval "$(./scripts/training_uv_venv.sh --export)"
+```
 
 After a failed `training_init`, **restart** the daemon (`g_init_aborted` blocks retry in-process).
 
@@ -170,8 +206,8 @@ When `OLLAMA_HOST` binds `0.0.0.0`, set `ZEROLLAMA_GO_URL=http://127.0.0.1:8080`
 | `Python.h: No such file` at build | Install `python3-dev` / `python3-devel` and `pkg-config`. |
 | `does not contain training.py` | `OLLAMA_TRAINING_PYTHONPATH` or `ZEROLLAMA_REPO` is set but wrong—fix the path (no auto-fallback). |
 | `set OLLAMA_TRAINING_PYTHONPATH` | No `training.py` found via discovery (binary walk, cwd walk, `$HOME/zerollama`). Example: [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh). |
-| `training_init failed` / import errors | Missing Python deps (`torch`, …). Use [`requirements-training.txt`](../requirements-training.txt) on `/usr/bin/python3` (see **Installing Python deps** above). |
-| `No module named 'torch'` with `(.venv)` active | Venv is not embedded; install on `/usr/bin/python3` or set `PYTHONPATH` to a venv that has torch. |
+| `training_init failed` / import errors | Missing Python deps (`torch`, …). Run [`./scripts/training_uv_venv.sh --verify`](../scripts/training_uv_venv.sh). |
+| `No module named 'torch'` with `(.venv)` active | Training uses `PYTHONPATH` from `.venv-training`, not an activated shell venv. Run `./scripts/training_uv_venv.sh --export` before `serve`. |
 | `embedded Python failed to start earlier; restart the process` | A prior `training_init` failed after `Py_Initialize`; `g_init_aborted` is set. **Why:** we do not `Py_Finalize` a half-started interpreter (unsafe with torch). |
 | Port 9500 in use | Set `OLLAMA_TRAINING_TCP` to another address or disable with `0`. |
 | Embedded runtime `GET /health` hangs (training on) | Known shared-interpreter issue: [`docs/bugs/shared-interpreter-health-hang.md`](bugs/shared-interpreter-health-hang.md), repro [`scripts/repro_shared_interpreter_health_hang.sh`](../scripts/repro_shared_interpreter_health_hang.sh). Workaround: `OLLAMA_TRAINING=false` or external runtime (`ZEROLLAMA_RUNTIME_URL` + `ZEROLLAMA_RUNTIME_EMBED=0`). |

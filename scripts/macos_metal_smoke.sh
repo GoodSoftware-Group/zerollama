@@ -30,7 +30,8 @@ runtime_uv_venv
   tests/test_metal_unified_probe.py \
   tests/test_m3_model_picker.py \
   tests/test_autoconfig.py::test_apple_silicon_yaml_inprocess_backend \
-  tests/test_vram_yaml_defaults.py::test_apply_apple_silicon_repo_defaults -q)
+  tests/test_vram_yaml_defaults.py::test_apply_apple_silicon_repo_defaults \
+  tests/test_engine_inprocess_fallback.py -q)
 
 echo "== coordination smoke =="
 "${ROOT}/scripts/e2e_coordination_smoke.sh"

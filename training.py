@@ -57,6 +57,26 @@ from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
 
+def _mps_available() -> bool:
+    mps = getattr(torch.backends, "mps", None)
+    return mps is not None and mps.is_available()
+
+
+def _pick_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if _mps_available():
+        return "mps"
+    return "cpu"
+
+
+def _empty_device_cache() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif _mps_available():
+        torch.mps.empty_cache()
+
+
 def _is_cuda_oom(exc: BaseException) -> bool:
     """True if exception indicates GPU OOM (PyTorch or driver message)."""
     oom_cls = getattr(torch.cuda, "OutOfMemoryError", None)
@@ -296,7 +316,7 @@ class WorkerState:
         self.model = None
         self.tokenizer = None
         self.current_model_name: Optional[str] = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = _pick_device()
         self.socket_path: Optional[str] = None
         self.running = True
         self.client_socket = None  # For sending progress updates (legacy)
@@ -369,8 +389,7 @@ class WorkerState:
             del self.model
             self.model = None
             self.current_model_name = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        _empty_device_cache()
         print(f"WORKER: Model unloaded ({reason})", flush=True)
         return True
 
@@ -390,8 +409,7 @@ class WorkerState:
                 self.current_model_name = None
                 unloaded = True
             if unloaded:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                _empty_device_cache()
                 print(
                     f"WORKER: Model unloaded (idle, {IDLE_UNLOAD_SEC}s since last train)",
                     flush=True,
@@ -408,20 +426,35 @@ class WorkerState:
             self._idle_unload_timer = t
             t.start()
 
-    def load_model(self, model_name: str, use_lora: bool = True, use_qlora: bool = False, _oom_retry: bool = False):
+    def load_model(
+        self,
+        model_name: str,
+        use_lora: bool = True,
+        use_qlora: bool = False,
+        lora_rank: int = 16,
+        lora_alpha: float = 32.0,
+        _oom_retry: bool = False,
+    ):
         """Load model and tokenizer (only if different from current)"""
         if self.current_model_name == model_name and self.model is not None:
             print(f"WORKER: Model {model_name} already loaded, reusing", flush=True)
             return True
-            
+
+        if use_qlora and self.device != "cuda":
+            print(
+                "WORKER ERROR: QLoRA requires CUDA (bitsandbytes); use use_lora without use_qlora on Apple Silicon",
+                flush=True,
+            )
+            return False
+
         print(f"WORKER: Loading model {model_name}...", flush=True)
-        
+
         try:
             # Cleanup previous model
             if self.model is not None:
                 del self.model
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
-                
+                _empty_device_cache()
+
             # Load tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
@@ -430,8 +463,8 @@ class WorkerState:
             )
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-                
-            # Quantization config for QLoRA
+
+            # Quantization config for QLoRA (CUDA only)
             bnb_config = None
             if use_qlora and HAS_BNB:
                 from transformers import BitsAndBytesConfig
@@ -441,36 +474,41 @@ class WorkerState:
                     bnb_4bit_compute_dtype=torch.bfloat16,
                     bnb_4bit_use_double_quant=True,
                 )
-                
-            # Load model
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                device_map="auto" if self.device == "cuda" else None,
-                quantization_config=bnb_config,
-            )
-            
+
+            load_kwargs: Dict[str, Any] = {
+                "trust_remote_code": True,
+                "quantization_config": bnb_config,
+            }
+            if self.device == "cuda":
+                load_kwargs["torch_dtype"] = torch.bfloat16
+                load_kwargs["device_map"] = "auto"
+            else:
+                load_kwargs["torch_dtype"] = torch.float32
+
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+            if self.device == "mps":
+                self.model = self.model.to(self.device)
+
             # Prepare for LoRA if needed
             if use_lora or use_qlora:
                 if use_qlora:
                     self.model = prepare_model_for_kbit_training(self.model)
-                    
+
                 lora_config = LoraConfig(
                     task_type=TaskType.CAUSAL_LM,
-                    r=16,
-                    lora_alpha=32,
+                    r=lora_rank,
+                    lora_alpha=lora_alpha,
                     lora_dropout=0.05,
                     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
                     bias="none",
                 )
                 self.model = get_peft_model(self.model, lora_config)
                 self.model.print_trainable_parameters()
-                
+
             self.current_model_name = model_name
             print(f"WORKER: Model {model_name} loaded successfully on {self.device}", flush=True)
             return True
-            
+
         except Exception as e:
             print(f"WORKER ERROR: Failed to load model: {e}", flush=True)
             traceback.print_exc()
@@ -478,9 +516,10 @@ class WorkerState:
                 self._prepare_vram_relief_wait()
                 self._notify_cuda_oom(e, "load_model")
                 self._wait_vram_relief_after_oom()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                return self.load_model(model_name, use_lora, use_qlora, _oom_retry=True)
+                _empty_device_cache()
+                return self.load_model(
+                    model_name, use_lora, use_qlora, lora_rank, lora_alpha, _oom_retry=True
+                )
             return False
             
     def send_progress(self, progress: float, message: str = ""):
@@ -572,8 +611,7 @@ def job_processor():
                     STATE._prepare_vram_relief_wait()
                     STATE._notify_cuda_oom(e, "job_processor")
                     STATE._wait_vram_relief_after_oom()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    _empty_device_cache()
                 JOB_QUEUE.fail_job(job.id, str(e))
                 STATE.broadcast_to_job_owner(job, {
                     "type": "job_failed",
@@ -612,9 +650,15 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
             # Ensure output directory exists
             Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+            if use_qlora and STATE.device != "cuda":
+                return {
+                    "status": "error",
+                    "error": "QLoRA requires CUDA (bitsandbytes); use use_lora without use_qlora on Apple Silicon",
+                }
+
             # Load model (reuses if same model)
             STATE.send_progress(5.0, "Loading model...")
-            if not STATE.load_model(model_name, use_lora, use_qlora):
+            if not STATE.load_model(model_name, use_lora, use_qlora, lora_rank, lora_alpha):
                 return {"status": "error", "error": "Failed to load model"}
 
             STATE.send_progress(20.0, "Preparing dataset...")
@@ -731,8 +775,7 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 # does a no-op pop (nothing was registered), so no lost-wakeup risk.
                 # We still notify so Go frees inference VRAM for the *next* job.
                 STATE._notify_cuda_oom(e, "train")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                _empty_device_cache()
             return {"status": "error", "error": str(e)}
     finally:
         STATE.training_active = False
@@ -928,6 +971,7 @@ def handle_request(request: Dict[str, Any], client_id: Optional[str] = None) -> 
             "device": STATE.device,
             "model_loaded": STATE.current_model_name,
             "cuda_available": torch.cuda.is_available(),
+            "mps_available": _mps_available(),
             "queue": queue_status,
         }
     
@@ -1099,10 +1143,12 @@ def run_server(address: str):
         
         print(f"WORKER: Training worker listening on Unix socket {address}", flush=True)
     
-    print(f"WORKER: Device: {STATE.device}, CUDA available: {torch.cuda.is_available()}", flush=True)
+    print(f"WORKER: Device: {STATE.device}, CUDA available: {torch.cuda.is_available()}, MPS available: {_mps_available()}", flush=True)
     if torch.cuda.is_available():
         print(f"WORKER: GPU: {torch.cuda.get_device_name(0)}", flush=True)
         print(f"WORKER: GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB", flush=True)
+    elif _mps_available():
+        print("WORKER: Using Apple Metal (MPS) for training", flush=True)
     if IDLE_UNLOAD_SEC > 0:
         print(
             f"WORKER: Idle GPU unload enabled: TRAINING_WORKER_IDLE_UNLOAD_SEC={IDLE_UNLOAD_SEC}",
