@@ -31,21 +31,24 @@ if [[ -z "$QWEN_MODEL" ]]; then
   exit 1
 fi
 
+runtime_llama_loaded() {
+  runtime_fetch_health "$RUNTIME_URL" 2>/dev/null \
+    | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("llama_server") else "")' \
+    2>/dev/null || true
+}
+
 runtime_handoff_for_ggml() {
-  if [[ -z "$(runtime_fetch_health "$RUNTIME_URL" 2>/dev/null || true)" ]]; then
+  if ! curl -sf "${RUNTIME_URL%/}/health" >/dev/null 2>&1; then
     return 0
   fi
-  local loaded
-  loaded=$(runtime_fetch_health "$RUNTIME_URL" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("llama_server") else "")' 2>/dev/null || true)
-  if [[ "$loaded" != "1" ]]; then
+  if [[ "$(runtime_llama_loaded)" != "1" ]]; then
     return 0
   fi
   echo "== runtime training-handoff (free Metal for legacy qwen35 ggml) =="
   curl -sS -X POST "${RUNTIME_URL%/}/internal/training-handoff" >/dev/null || true
   local i
   for i in $(seq 1 30); do
-    loaded=$(runtime_fetch_health "$RUNTIME_URL" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("llama_server") else "")' 2>/dev/null || true)
-    if [[ "$loaded" != "1" ]]; then
+    if [[ "$(runtime_llama_loaded)" != "1" ]]; then
       echo "runtime llama_server idle"
       return 0
     fi
@@ -57,7 +60,7 @@ runtime_handoff_for_ggml() {
 
 runtime_handoff_for_ggml
 
-payload=$(python3 -c "import json, os; print(json.dumps({
+payload=$(QWEN_MODEL="$QWEN_MODEL" QWEN_NUM_CTX="$QWEN_NUM_CTX" QWEN_NUM_PREDICT="$QWEN_NUM_PREDICT" python3 -c "import json, os; print(json.dumps({
     'model': os.environ['QWEN_MODEL'],
     'prompt': 'Say hi in one word.',
     'stream': False,

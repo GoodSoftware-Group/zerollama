@@ -45,3 +45,22 @@ func TestDefaultRendererForBrokenVLManifest(t *testing.T) {
 		t.Fatalf("defaultRendererForFamily() = %q, want qwen3.5", got)
 	}
 }
+
+func TestPrimaryModelFamilyProjectorOnlyReturnsEmpty(t *testing.T) {
+	cfg := model.ConfigV2{
+		ModelFamily:   "clip",
+		ModelFamilies: []string{"clip"},
+	}
+	if got := primaryModelFamily(cfg); got != "" {
+		t.Fatalf("primaryModelFamily() = %q, want empty for projector-only", got)
+	}
+}
+
+func TestPrimaryModelFamilyFromModelFamilyOnlyClip(t *testing.T) {
+	cfg := model.ConfigV2{
+		ModelFamily: "clip",
+	}
+	if got := primaryModelFamily(cfg); got != "" {
+		t.Fatalf("primaryModelFamily() = %q, want empty when only ModelFamily is clip", got)
+	}
+}

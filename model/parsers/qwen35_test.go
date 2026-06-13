@@ -491,6 +491,39 @@ func TestQwen35ParserStreamingEatsWhitespaceAfterThinkClose(t *testing.T) {
 	}
 }
 
+func TestQwen35ParserDoneDuringWhitespaceEating(t *testing.T) {
+	parser := ParserForName("qwen3.5")
+	if parser == nil {
+		t.Fatal("expected qwen3.5 parser")
+	}
+
+	parser.Init(nil, nil, &api.ThinkValue{Value: true})
+	content, thinking, calls, err := parser.Add("Reasoning</think>", false)
+	if err != nil {
+		t.Fatalf("parse failed on first chunk: %v", err)
+	}
+	if thinking != "Reasoning" {
+		t.Fatalf("expected thinking %q, got %q", "Reasoning", thinking)
+	}
+	if content != "" {
+		t.Fatalf("expected empty content, got %q", content)
+	}
+
+	content, thinking, calls, err = parser.Add("   ", true)
+	if err != nil {
+		t.Fatalf("parse failed on trailing whitespace chunk: %v", err)
+	}
+	if thinking != "" {
+		t.Fatalf("expected no additional thinking, got %q", thinking)
+	}
+	if content != "" {
+		t.Fatalf("expected empty content after whitespace-only done chunk, got %q", content)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no tool calls, got %d", len(calls))
+	}
+}
+
 func TestQwen35ParserThinkingTruncatedWithoutCloseTag(t *testing.T) {
 	parser := ParserForName("qwen3.5")
 	if parser == nil {

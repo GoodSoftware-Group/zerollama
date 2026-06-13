@@ -160,6 +160,7 @@ func filterLMStudioImportFiles(files map[string]string, weightFile string) map[s
 }
 
 // weightFilesOnly keeps blobs convertModelFromFiles can parse (GGUF / safetensors).
+// Extend this switch when adding new on-disk weight formats for LM Studio import.
 func weightFilesOnly(files map[string]string) map[string]string {
 	out := make(map[string]string, len(files))
 	for path, digest := range files {

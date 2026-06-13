@@ -48,7 +48,8 @@ func primaryModelFamily(cfg model.ConfigV2) string {
 			return f
 		}
 	}
-	return cfg.ModelFamily
+	// Projector-only manifest (e.g. standalone clip mmproj) — no LLM family to route on.
+	return ""
 }
 
 func defaultParserForFamily(m *Model) string {

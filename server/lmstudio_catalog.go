@@ -41,10 +41,12 @@ func mergeLMStudioModels(local []api.ListModelResponse) []api.ListModelResponse 
 		}
 		if !envconfig.LMStudioListAll() {
 			if ok, free, need, err := lmstudio.HasDiskForImport(e); err != nil {
-				slog.Debug("lm studio catalog skip: disk check failed", "model", e.Name, "error", err)
 				if lmstudio.ImportCopyBytes(e) > 0 {
+					slog.Warn("lm studio catalog skip: disk check failed for MLX import",
+						"model", e.Name, "error", err)
 					continue
 				}
+				slog.Debug("lm studio catalog skip: disk check failed", "model", e.Name, "error", err)
 			} else if !ok {
 				slog.Debug("lm studio catalog skip: insufficient disk for import copy",
 					"model", e.Name, "need_bytes", need, "free_bytes", free)

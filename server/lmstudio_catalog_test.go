@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,5 +137,32 @@ func TestMergeLMStudioModels_ShowsLegacySafetensorsWithoutDisk(t *testing.T) {
 	out := mergeLMStudioModels(nil)
 	if len(out) != 1 {
 		t.Fatalf("len=%d want 1 (legacy safetensors without config.json still listed)", len(out))
+	}
+}
+
+func TestMergeLMStudioModels_SkipsMLXWhenDiskCheckErrors(t *testing.T) {
+	root := t.TempDir()
+	modelDir := filepath.Join(root, "lmstudio-community", "Hermes-4-70B-MLX-8bit")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.json", "model-00001-of-00002.safetensors"} {
+		if err := os.WriteFile(filepath.Join(modelDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("OLLAMA_LMSTUDIO_MODELS", root)
+	t.Setenv("OLLAMA_LMSTUDIO_IMPORT", "true")
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	restore := lmstudio.SetModelsFreeBytesHook(func(string) (int64, error) {
+		return 0, fmt.Errorf("statfs failed")
+	})
+	t.Cleanup(restore)
+
+	out := mergeLMStudioModels(nil)
+	if len(out) != 0 {
+		t.Fatalf("len=%d want 0 (MLX hidden when disk check errors)", len(out))
 	}
 }
