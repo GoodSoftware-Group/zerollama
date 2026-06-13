@@ -54,14 +54,16 @@ export LLAMA_MODEL RUN_E2E_GGUF GPU_PHASE13_SNAPSHOT_OUT
 echo "== Phase 14 inprocess Metal (apple_silicon.yaml) =="
 "${ROOT}/scripts/phase14_yaml_config_smoke.sh"
 
-if [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then
-  echo ""
-  M3_LLAMA_MODEL="$LLAMA_MODEL" PHASE15_SKIP_BOOT=1 "${ROOT}/scripts/phase15_metal_signoff.sh"
-fi
-
+# qwen35 before Phase 15: phase15 restarts/kills the :8081 sidecar on exit; qwen35 needs
+# runtime handoff + resume while the M3-managed stack is still up.
 if [[ "${RUN_E2E_QWEN35:-0}" == "1" ]]; then
   echo ""
   "${ROOT}/scripts/qwen35_mac_smoke.sh"
+fi
+
+if [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then
+  echo ""
+  M3_LLAMA_MODEL="$LLAMA_MODEL" PHASE15_SKIP_BOOT=1 "${ROOT}/scripts/phase15_metal_signoff.sh"
 fi
 
 echo "PASS: M3 metal sign-off (snapshot: ${GPU_PHASE13_SNAPSHOT_OUT})"
