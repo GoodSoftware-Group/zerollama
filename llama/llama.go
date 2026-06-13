@@ -9,6 +9,7 @@ package llama
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/vendor
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/tools/mtmd
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/src
+#cgo CPPFLAGS: -I${SRCDIR}/compat
 #cgo CPPFLAGS: -I${SRCDIR}/../ml/backend/ggml/ggml/include
 
 #include <stdlib.h>
@@ -39,6 +40,7 @@ import (
 	"sync"
 	"unsafe"
 
+	_ "github.com/ollama/ollama/llama/compat" // Ollama-format GGUF shim for in-process loader; see llama/compat/compat.go
 	_ "github.com/ollama/ollama/llama/llama.cpp/common"
 	_ "github.com/ollama/ollama/llama/llama.cpp/src"
 	_ "github.com/ollama/ollama/llama/llama.cpp/tools/mtmd"

@@ -107,6 +107,9 @@ var initDevices = sync.OnceFunc(func() {
 		}
 
 		backends[d] = C.ggml_backend_dev_init(d, nil)
+		if backends[d] == nil {
+			slog.Warn("ggml backend init failed, device will be skipped", "device", C.GoString(C.ggml_backend_dev_name(d)))
+		}
 	}
 })
 
@@ -400,6 +403,9 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 	var schedBufts []C.ggml_backend_buffer_type_t
 	for _, d := range append(gpus, append(accels, cpus...)...) {
 		b := backends[d]
+		if b == nil {
+			continue
+		}
 		bt := C.ggml_backend_get_default_buffer_type(b)
 
 		// Always include CPU as a fallback but otherwise, just use the devices where we assigned layers

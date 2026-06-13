@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Qwen 3.5 / 3.6 on Apple Silicon (Jun 2026)
+
+**Why:** Library tags like `qwen3.6:latest` (`qwen35moe`) and LM Studio–style `qwen35` VL GGUFs became loadable after the b9611 pin, but Mac operators hit **three independent failures**: Go-engine Metal SIGSEGV during init, llama.cpp `rope.dimension_sections` mismatch on published blobs, and missing unary Metal kernels on first decode. Each looked like one “Metal bug”; fixes belong to different layers.
+
+**What shipped:**
+
+- **Engine routing (`llm/server.go`):** On **darwin**, `qwen35`, `qwen35moe`, and `qwen3next` use the **legacy llamarunner** (CGO llama.cpp + Metal) instead of the Go ollama engine. **Why:** `OllamaEngineRequired()` sends these archs through `ggml.New()`; a C Metal segfault does not surface as a Go error, so there is no fallback. Legacy path + mtmd handles qwen35 after llama.cpp arch support landed.
+- **In-process compat (`llama/compat/`):** Wired the same Ollama GGUF translation layer used by **llama-server** into the **CGO llamarunner** (`compat.go`, hooks in `llama-model-loader.cpp` / `mtmd/clip.cpp`, import from `llama/llama.go`). **Why:** Published qwen35moe stores M-RoPE `rope.dimension_sections` as **3** elements; llama.cpp expects **4**. Compat existed but only ran on CMake-fetched builds—not the Mac default binary.
+- **Metal shader embed:** `build_zerollama_mac.sh` runs `go generate ./ml/backend/ggml/ggml/src/ggml-metal/` before `go build`. **Why:** macOS JIT-compiles from embedded `ggml-metal-embed.metal`; when ggml adds kernels (e.g. `kernel_unary_f32_f32` for sigmoid in gated SSM) without regenerating the embed, **load succeeds** but **first token** crashes with `Function kernel_unary_f32_f32 was not found`.
+- **Defensive ggml backend init:** Skip nil device backends in `ml/backend/ggml/ggml.go` scheduler setup (belt-and-suspenders for Metal device init edge cases).
+
+**Operator notes:**
+
+- Rebuild + **restart serve** after pulling.
+- Cap **`num_ctx`** (2048–8192) for first tests; `n_ctx_seq < n_ctx_train` log is informational.
+- `tensor API disabled for pre-M5` on M4 Max is **expected**, not the crash cause.
+
+Doc: [docs/qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md).
+
 ### Fleet management node (F3)
 
 **Why:** Agents and integrations often see **many zerollama hosts**, not one. Per-node schedulers answer local FIFO and VRAM correctly but not “which box has model M warm?” Scatter-gather and long reservation quotes **waste GPU work** on constrained fleets. F3 adds a **thin management process** that polls F2 `/api/status`, builds a warm-model map, and returns `{url, node_id}` — it never loads or evicts remotely.
@@ -24,16 +43,42 @@ Doc: [docs/fleet-management.md](docs/fleet-management.md), [docs/fleet-schedulin
 
 ### llama.cpp b9611 + MLX pin bump
 
-**Why:** Stay on current upstream llama.cpp (latest tag `b9611`, ahead of vanilla Ollama’s `b9509`) with a **reviewable 14-patch series** instead of in-tree-only deltas. MLX pins aligned with upstream Ollama for MTP/speculation parity.
+**Why:** Stay on current upstream llama.cpp (latest tag `b9611`, ahead of vanilla Ollama’s `b9509`) with a **reviewable 14-patch series** instead of in-tree-only deltas. MLX pins aligned with upstream Ollama for MTP/speculation parity. **Why not wait for vanilla Ollama:** zerollama’s in-process ggml runner needs Ollama deltas (no-alloc fit, device props, grammar) on a **clean vendor base**; lagging b9509 blocked Metal fixes and Phase 17 mergeability.
 
 **What shipped:**
 
 - **Pin:** `LLAMA_CPP_VERSION=b9611`, vendor `vendor/llama-cpp-b9611/`, **14 patches** (0013 mtmd C API, 0014 ollama_vocab grammar; 0011 rebased for b9611 CUDA struct layout).
 - **Sync:** `./scripts/sync_vendor_llama.sh` (replaces `sync_vendor_b9509.sh` shim); strips mtmd CLI `main()` after rsync.
-- **Go fixes:** `llama.go` mtmd `bitmap_wrapper` + placeholder arg; `build-info.cpp` @ `1aefee58`.
-- **MLX:** `MLX_VERSION` → `2165dc08`, `MLX_C_VERSION` → `fba4470b` (upstream Ollama pins).
+- **Go fixes:** `llama.go` mtmd `bitmap_wrapper` + `placeholder=false` (b9611 API); `build-info.cpp` @ `1aefee58`.
+- **Build:** `./scripts/build_zerollama_mac.sh` uses `GOFLAGS=-mod=mod` so CGO builds succeed when `vendor/` is incomplete.
+- **Sibling runtime tree:** `../llama.cpp` @ b9611 + `./scripts/build_llama_server.sh` for vanilla `llama-server` / `libllama.dylib` (Python runtime subprocess — separate from patched in-tree ggml).
+- **MLX:** `MLX_VERSION` → `2165dc08`, `MLX_C_VERSION` → `fba4470b` (upstream Ollama pins). **Not rebuilt in this pass:** safetensors/mlxrunner still uses existing `libmlxc.dylib` until `ensure_mlx_sources.sh` + Darwin MLX install.
 
-Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md) (workflow unchanged; pin is b9611).
+Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md) (filename kept; pin is b9611).
+
+### Apple Silicon sign-off (Jun 2026, M4 Max)
+
+**Why:** Operators need a repeatable gate beyond `doctor` — runtime Metal inprocess is the **daily Mac path** (`apple_silicon.yaml`), not legacy ggml. Sign-off proves Phase 13–15 and tools without CUDA-centric `gpu_5080_session.sh`.
+
+**Passed (GPU):**
+
+- **Phase 13:** `/tmp/metal-session.json` — `metal-unified` probe, autotune factor ~0.98 for eliza-1-2b @ `num_ctx=512`.
+- **Phase 14:** inprocess from YAML (`llama_backend_source=config`); generate/chat/stream; tokenize + render-chat; Go proxy with `RUN_E2E_PHASE14=1` / `X-Zerollama-Runtime: 1`.
+- **Phase 15:** KV decode hook (`kv_decode_steps` via native `llama_decode`); multi-seq (`llama_parallel_slots=2`, `kv_inprocess_n_seq_max=2`).
+- **Tools:** runtime + proxy `/api/chat` and `/v1/chat/completions` with tools (HTTP 200, not legacy 501).
+- **CPU (no model load):** Phase 12 golden, Phase 15 KV native CI, `go test ./server/... -short`, coordination smoke.
+
+**Known gaps (documented, not blockers for b9611):**
+
+| Gap | Why it happens | What to use instead |
+|-----|----------------|---------------------|
+| **`num_gpu=0` still init Metal** on Darwin | ggml is compiled with `GGML_USE_METAL`; `num_gpu=0` only sets layer count, not backend skip | CPU-only **tests** without model load; or wait for idle GPU |
+| **Legacy ggml load while runtime holds Metal** | Two stacks share one Metal device without full VRAM broker on ggml fit | Runtime path + proxy header; Phase 17 deprecates plain ggml for text GGUF |
+| **Proxy streaming hang** in full `e2e_runtime_smoke` | `v1/chat/completions` stream step can block long on some builds | Non-stream proxy/tools smokes pass; file issue if stream required |
+| **`go test ./ml/backend/ggml/...`** | Dummy GGUF fixture segfault | `doctor` + `metal_signoff.sh` as gate |
+| **MLX dylib** | Pin bump without rebuild | Rebuild when testing safetensors: `ensure_mlx_sources.sh` + `build_darwin.sh` MLX component |
+
+Scripts: `./scripts/metal_signoff.sh`, `./scripts/gpu_smoke_all.sh` with `RUN_E2E_PHASE14=1`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
 
 ### ggml @ llama.cpp b9509 (real vendored tree)
 

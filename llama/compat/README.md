@@ -16,6 +16,14 @@ override through `FETCHCONTENT_SOURCE_DIR_LLAMA_CPP`, the same patch is applied
 during configure. If `OLLAMA_LLAMA_CPP_SOURCE` is set, the patch is
 intentionally skipped so a developer can iterate on a local llama.cpp tree.
 
+**In-process llamarunner (macOS default):** The same sources and hook call sites
+are also linked through Go CGO (`llama/compat/compat.go`, blank-imported from
+`llama/llama.go`). **Why:** Mac operators use `runner/llamarunner`, not
+llama-server subprocess; without this path, published qwen35/qwen35moe GGUFs hit
+loader errors (e.g. `rope.dimension_sections` length 3 vs 4) even though the
+compat handlers already existed for CMake builds. See
+[docs/qwen35-apple-silicon.md](../docs/qwen35-apple-silicon.md).
+
 ## Files
 
 - `llama-ollama-compat.h`, `llama-ollama-compat.cpp` - the compatibility

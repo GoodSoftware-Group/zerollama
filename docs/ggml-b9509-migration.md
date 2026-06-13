@@ -53,9 +53,9 @@ zerollama serve
 
 ---
 
-## Patch series (b9509)
+## Patch series (b9611)
 
-Applied on top of upstream `b9509` (`512882ac` at time of migration):
+Applied on top of upstream `b9611` (vendor HEAD after patches: `1aefee58`):
 
 | # | Subject | Why Ollama still needs it on b9509 |
 |---|---------|-----------------------------------|
@@ -124,8 +124,8 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 
 ```bash
 # 1. Ensure vendor exists (once)
-git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9509
-cd vendor/llama-cpp-b9509 && git checkout b9509
+git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9611
+cd vendor/llama-cpp-b9611 && git checkout b9611
 
 # 2. Apply Ollama patches into vendor
 make -f Makefile.sync clean apply-patches
@@ -139,9 +139,11 @@ eval "$(./scripts/mac_cgo_env.sh --export)"
 ./zerollama doctor
 ```
 
-**Why `sync_vendor_b9509.sh` excludes certain paths:** rsync `--delete` would otherwise **wipe** Ollama-only files (`mem_nvml.cpp`, CGO wrappers, `build-info.cpp`) that **do not exist** in upstream vendor.
+**Why `sync_vendor_llama.sh` excludes certain paths:** rsync `--delete` would otherwise **wipe** Ollama-only files (`mem_nvml.cpp`, CGO wrappers, `build-info.cpp`) that **do not exist** in upstream vendor.
 
-**Why `GOFLAGS=-mod=mod` for `go generate`:** vendoring inconsistency warning during metal embed regeneration; generate must not fail the sync.
+**Why `GOFLAGS=-mod=mod` in `build_zerollama_mac.sh`:** `go build` must not fail on inconsistent `vendor/` when only CGO trees are synced; module mode uses `go.mod` sum files instead.
+
+**Legacy shim:** `./scripts/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin is now b9611 in `Makefile.sync`.
 
 ---
 

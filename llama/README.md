@@ -4,10 +4,18 @@
 
 | Surface | Tree | Patch path | Why separate |
 |---------|------|------------|--------------|
-| **In-process ggml** (`ollamarunner`) | `ml/backend/ggml/ggml/` + `llama/llama.cpp/` | `llama/patches/` on `vendor/llama-cpp-b9509` | CGO compile; Mac default runner |
+| **In-process ggml** (`llamarunner`) | `ml/backend/ggml/ggml/` + `llama/llama.cpp/` | `llama/patches/` + **`llama/compat/` (CGO)** | Mac default runner; compat translates published GGUF at load time |
 | **llama-server** (Phase 17 / Python runtime) | Sibling `../llama.cpp` | `llama/compat/` at CMake fetch | Subprocess GGUF path; upstream-shaped |
 
 Both pins must stay aligned on **`LLAMA_CPP_VERSION`** (`b9509`). For ggml vendor sync, patch series, and Ollama deltas see [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
+
+### In-process compat (Mac llamarunner)
+
+**Why this exists:** CMake `llama/server` applied `llama/compat/` only to **fetched** llama-server builds. The Mac **default binary** links llama.cpp via CGO (`llama/llama.go` → `runner/llamarunner`) and never ran those hooks—so published qwen35/qwen35moe blobs failed with metadata errors (e.g. `rope.dimension_sections` length 3 vs 4) even though llama-server would have worked.
+
+**What we did:** `llama/compat/compat.go` links the compat `.cpp` files into the Go binary; `llama-cpp-hooks.patch` call sites are applied to the vendored `llama/llama.cpp/src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp`. Blank import: `_ "github.com/ollama/ollama/llama/compat"` from `llama/llama.go`.
+
+**Operator doc:** [docs/qwen35-apple-silicon.md](../docs/qwen35-apple-silicon.md).
 
 ## Updating llama.cpp
 

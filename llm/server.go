@@ -140,6 +140,33 @@ func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 	return ggml, err
 }
 
+// useOllamaEngine picks the Go ggml inference engine (model.NewTextProcessor ->
+// ml/backend/ggml) vs the legacy CGO llamarunner (llama.cpp + Metal).
+//
+// Why darwin skips qwen35-class archs: they are in OllamaEngineRequired(), so
+// without this gate every load goes through ggml.New(). On Apple Silicon that
+// path has hit SIGSEGV in CGo Metal backend setup (_Cfunc_ggml_backend_get_default_buffer_type).
+// C segfaults do not return Go errors, so the server cannot fall back to legacy
+// runner after a failed init. Legacy llama.cpp + llama/compat + mtmd is the stable
+// Mac path until the Go Metal backend catches up. OLLAMA_NEW_ENGINE=1 overrides.
+//
+// See docs/qwen35-apple-silicon.md.
+func useOllamaEngine(f *ggml.GGML) bool {
+	if envconfig.NewEngine() {
+		return true
+	}
+	if !f.KV().OllamaEngineRequired() {
+		return false
+	}
+	if runtime.GOOS == "darwin" {
+		switch f.KV().Architecture() {
+		case "qwen35", "qwen35moe", "qwen3next":
+			return false
+		}
+	}
+	return true
+}
+
 // NewLlamaServer will run a server for the given GPUs.
 // When ZEROLLAMA_LLAMA_SERVER=1, eligible models use upstream-style Go → llama-server.
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int) (LlamaServer, error) {
@@ -157,7 +184,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	var llamaModel *llama.Model
 	var tok tokenizer.Tokenizer
 	var err error
-	if envconfig.NewEngine() || f.KV().OllamaEngineRequired() {
+	if useOllamaEngine(f) {
 		if len(projectors) == 0 {
 			tok, err = model.NewTextProcessor(modelPath)
 		} else {

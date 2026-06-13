@@ -150,6 +150,28 @@ console.log(response.message.content);
 - [Modelfile reference](https://docs.ollama.com/modelfile)
 - [Building from source](https://github.com/ollama/ollama/blob/main/docs/development.md)
 
+### Building zerollama on macOS (ggml @ b9611)
+
+**Why a separate build script:** CGO needs Xcode SDK, embedded Python, and Metal ggml from the **patched in-tree** vendor (`llama/patches/` on `b9611`), not only sibling `../llama.cpp`.
+
+```bash
+# 1. Pin is b9611 — materialize vendor + sync (see docs/ggml-b9509-migration.md)
+make -f Makefile.sync clean apply-patches
+./scripts/sync_vendor_llama.sh
+
+# 2. Build zerollama (Metal ggml) + doctor
+./scripts/build_zerollama_mac.sh   # regenerates ggml-metal-embed + links qwen35 compat
+./zerollama doctor
+
+# 3. Optional: sibling llama-server for Python runtime subprocess (vanilla b9611, no Ollama patches)
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+
+# 4. Full Metal sign-off (runtime inprocess — daily Mac path)
+./scripts/metal_signoff.sh
+```
+
+**Daily serve:** `zerollama serve` — Go `:11434` (or `:8080` in dev) + uv sidecar `:8081` with `apple_silicon.yaml` inprocess backend.
+
 ### In this repository
 
 - [Eliza Cloud / Zerollama remote inference](docs/eliza-cloud.md) — **why** Eliza is the default upstream (OpenAI/Anthropic APIs + API keys), **why** legacy Ed25519 signing is limited to `ollama.com`, path rewrites, catalog merge, and when responses are raw upstream JSON.
@@ -161,7 +183,7 @@ console.log(response.message.content);
 - [Roadmap](docs/ROADMAP.md) — remote Eliza cloud follow-ups, Wan T2V v1 + follow-ups, Option 2 milestones, **Phase 17 upstream GGUF alignment**, **why** each phase exists (policy vs templates vs limits).
 - [Upstream Ollama comparison](docs/upstream-ollama-diff.md) — **why** vanilla Ollama uses Go→llama-server for GGUF; pin gaps; cherry-pick map vs zerollama Python runtime and training.
 - [llama.cpp backend (experimental)](docs/llama-cpp-backend.md) — `--llama-cpp-backend` routes text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml and upstream.
-- [ggml @ b9509 migration](docs/ggml-b9509-migration.md) — **why** in-process ggml was rebased to real upstream b9509 (not overlay snapshots); patch series, vendor sync, Ollama deltas, verification.
+- [ggml @ b9611 migration](docs/ggml-b9509-migration.md) — **why** in-process ggml uses a pinned vendor tree + 14 reviewable patches (not overlay snapshots); ahead of vanilla Ollama b9509; sync, Ollama deltas, Mac sign-off checklist.
 - [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); single-GPU env checklist.
 - [Fleet management (multi-node)](docs/fleet-management.md) — **why** a thin manager above per-node schedulers; `zerollama fleet serve`; warm-model assign API (F3); pairs with [fleet scheduling design](docs/fleet-scheduling.md).
 - [Phase 11 runtime admission](docs/phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first; priority classes; enqueue before queue; tunable min-free and training reserve.
@@ -174,7 +196,8 @@ console.log(response.message.content);
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
 - [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
-- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; MLX optional path.
+- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; MLX optional path; **Jun 2026 sign-off** (`metal_signoff.sh`) and known Mac smoke gaps.
+- [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits three Mac layers (Go engine segfault, compat metadata, stale Metal embed); darwin llamarunner path; `num_ctx` and rebuild checklist.
 - [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards.
 
 ## Community Integrations

@@ -58,6 +58,8 @@ Recent zerollama work optimized **CUDA runtime admission** first. This track mak
 
 **Recommendation today:** Use **GGUF + default serve** for general chat. Enable **runtime proxy** when you need Phase 12 tools on runtime-routed models, or **`--llama-cpp-backend`** to benchmark against upstream. Use **MLX** only for safetensors-native or image MLX models after building the MLX engine.
 
+**Qwen 3.5 / 3.6 (`qwen35`, `qwen35moe`, e.g. `qwen3.6:latest`):** On Mac, use a **fresh build** (`./scripts/build_zerollama_mac.sh`) and **restart serve**. Routing, compat metadata, and Metal embed requirements are documented in [qwen35-apple-silicon.md](./qwen35-apple-silicon.md)—**why** three separate failure modes appeared in Jun 2026 builds.
+
 ---
 
 ## What Go already optimizes for Metal
@@ -108,7 +110,7 @@ Env always wins over YAML.
 
 **Not** the default for GGUF. Required for **`ModelFormat: safetensors`** (`IsMLX()`).
 
-- **Daily dev:** `./scripts/build_zerollama_mac.sh` — does not rebuild MLX; ggml Metal still works.
+- **Daily dev:** `./scripts/build_zerollama_mac.sh` — regenerates `ggml-metal-embed.metal`, links Metal ggml + qwen35 compat; does not rebuild MLX.
 - **MLX / release:** `./scripts/build_production_mac.sh` → run from `dist/darwin-arm64/` (see [mac-dev-setup.md](./mac-dev-setup.md)).
 - Metal Toolchain (build time): `xcodebuild -downloadComponent MetalToolchain`
 - Creation: `zerollama create --experimental …`
