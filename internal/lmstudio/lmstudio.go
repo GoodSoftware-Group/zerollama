@@ -3,6 +3,7 @@
 package lmstudio
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,6 +23,10 @@ var (
 )
 
 const remoteHost = "lmstudio"
+
+// ImportHeadroomBytes is reserved on top of model size for MLX safetensors import
+// (manifest layers, metadata, and temporary packing).
+const ImportHeadroomBytes = 512 << 20 // 512 MiB
 
 // Entry describes one LM Studio model directory.
 type Entry struct {
@@ -558,4 +563,111 @@ func tagTokens(tag string) []string {
 	}
 
 	return out
+}
+
+// dirIsMLXSafetensors reports whether dir uses the MLX native import path:
+// config.json present + safetensors weight files. Mirrors x/create.IsSafetensorsModelDir
+// without importing that package (import cycle: server → x/create/client → x/create).
+func dirIsMLXSafetensors(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+		return false
+	}
+	return dirHasSafetensorsWeights(dir)
+}
+
+// ImportCopyBytes returns additional disk space required to import e into
+// OLLAMA_MODELS. GGUF imports symlink existing files (near-zero copy); MLX
+// safetensors imports repack tensors into new blobs (~full model size).
+// Legacy safetensors without config.json are also symlinked, so they return 0.
+func ImportCopyBytes(e Entry) int64 {
+	if e.Format != "safetensors" {
+		return 0
+	}
+	if !dirIsMLXSafetensors(e.Dir) {
+		return 0
+	}
+	return e.Size + ImportHeadroomBytes
+}
+
+// DirImportCopyBytes estimates copy bytes for an MLX safetensors model directory.
+func DirImportCopyBytes(dir string) int64 {
+	if !dirIsMLXSafetensors(dir) {
+		return 0
+	}
+	size, _ := dirStats(dir)
+	return size + ImportHeadroomBytes
+}
+
+// FreeBytesAtModels returns available bytes on the filesystem holding OLLAMA_MODELS.
+func FreeBytesAtModels() (int64, error) {
+	return modelsFreeBytes(envconfig.Models())
+}
+
+// modelsFreeBytes is swappable in tests.
+var modelsFreeBytes = freeBytes
+
+// SetModelsFreeBytesHook replaces free-space lookup for tests. Returns restore.
+func SetModelsFreeBytesHook(fn func(string) (int64, error)) func() {
+	prev := modelsFreeBytes
+	if fn == nil {
+		modelsFreeBytes = freeBytes
+	} else {
+		modelsFreeBytes = fn
+	}
+	return func() { modelsFreeBytes = prev }
+}
+
+// HasDiskForImport reports whether there is enough free space to import e.
+func HasDiskForImport(e Entry) (ok bool, free int64, need int64, err error) {
+	need = ImportCopyBytes(e)
+	if need == 0 {
+		return true, 0, 0, nil
+	}
+	free, err = FreeBytesAtModels()
+	if err != nil {
+		return false, 0, need, err
+	}
+	return free >= need, free, need, nil
+}
+
+// HasDiskForDirImport reports whether dir (safetensors tree) can be imported.
+func HasDiskForDirImport(dir string) (ok bool, free int64, need int64, err error) {
+	need = DirImportCopyBytes(dir)
+	if need == 0 {
+		return true, 0, 0, nil
+	}
+	free, err = FreeBytesAtModels()
+	if err != nil {
+		return false, 0, need, err
+	}
+	return free >= need, free, need, nil
+}
+
+func freeBytes(path string) (int64, error) {
+	path, err := resolveExistingPath(path)
+	if err != nil {
+		return 0, err
+	}
+	return freeBytesOS(path)
+}
+
+func resolveExistingPath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	st, err := os.Stat(path)
+	if err == nil {
+		if st.IsDir() {
+			return path, nil
+		}
+		return filepath.Dir(path), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", fmt.Errorf("path does not exist: %s", path)
+	}
+	return resolveExistingPath(parent)
 }

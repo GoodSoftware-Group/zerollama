@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/internal/lmstudio"
 )
 
 func TestMergeLMStudioModels_Disabled(t *testing.T) {
@@ -60,5 +61,80 @@ func TestMergeLMStudioModels_DedupesLocal(t *testing.T) {
 	out := mergeLMStudioModels(local)
 	if len(out) != 1 {
 		t.Fatalf("len=%d want 1 (dedupe)", len(out))
+	}
+}
+
+func TestMergeLMStudioModels_SkipsSafetensorsWithoutDisk(t *testing.T) {
+	root := t.TempDir()
+	modelDir := filepath.Join(root, "lmstudio-community", "Hermes-4-70B-MLX-8bit")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.json", "model-00001-of-00002.safetensors"} {
+		if err := os.WriteFile(filepath.Join(modelDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("OLLAMA_LMSTUDIO_MODELS", root)
+	t.Setenv("OLLAMA_LMSTUDIO_IMPORT", "true")
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	restore := lmstudio.SetModelsFreeBytesHook(func(string) (int64, error) { return 0, nil })
+	t.Cleanup(restore)
+
+	local := []api.ListModelResponse{{Model: "local:latest", Name: "local:latest"}}
+	out := mergeLMStudioModels(local)
+	if len(out) != 1 {
+		t.Fatalf("len=%d want 1 (safetensors hidden when no disk)", len(out))
+	}
+}
+
+func TestMergeLMStudioModels_ListAllIgnoresDisk(t *testing.T) {
+	root := t.TempDir()
+	modelDir := filepath.Join(root, "lmstudio-community", "Hermes-4-70B-MLX-8bit")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.json", "model-00001-of-00002.safetensors"} {
+		if err := os.WriteFile(filepath.Join(modelDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("OLLAMA_LMSTUDIO_MODELS", root)
+	t.Setenv("OLLAMA_LMSTUDIO_IMPORT", "true")
+	t.Setenv("OLLAMA_LMSTUDIO_LIST_ALL", "true")
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	restore := lmstudio.SetModelsFreeBytesHook(func(string) (int64, error) { return 0, nil })
+	t.Cleanup(restore)
+
+	out := mergeLMStudioModels(nil)
+	if len(out) != 1 {
+		t.Fatalf("len=%d want 1 (LIST_ALL shows safetensors despite no disk)", len(out))
+	}
+}
+
+func TestMergeLMStudioModels_ShowsLegacySafetensorsWithoutDisk(t *testing.T) {
+	root := t.TempDir()
+	modelDir := filepath.Join(root, "lmstudio-community", "legacy-safetensors")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "model.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_LMSTUDIO_MODELS", root)
+	t.Setenv("OLLAMA_LMSTUDIO_IMPORT", "true")
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	restore := lmstudio.SetModelsFreeBytesHook(func(string) (int64, error) { return 0, nil })
+	t.Cleanup(restore)
+
+	out := mergeLMStudioModels(nil)
+	if len(out) != 1 {
+		t.Fatalf("len=%d want 1 (legacy safetensors without config.json still listed)", len(out))
 	}
 }

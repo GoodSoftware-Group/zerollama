@@ -129,6 +129,13 @@ Disable compat (debug): `OLLAMA_LLAMA_CPP_COMPAT=0`.
 3. **`dimension_sections` length error** — compat not linked; ensure tree includes `llama/compat` CGO import and `llama-model-loader.cpp` hooks.
 4. **Load OK, crash on first token, `kernel_unary_*`** — run `go generate` on `ggml-metal`, `go build -a`.
 5. **Still OOM** — lower `num_ctx`, use a smaller quant, or a smaller variant.
+6. **HTTP 503 darwin Metal contention** — runtime sidecar holds Metal; handoff before legacy qwen35 load. See [apple-silicon-metal.md](./apple-silicon-metal.md#scheduler-errors-http-status).
+
+**Opt-in smoke:**
+
+```bash
+RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+```
 
 ---
 

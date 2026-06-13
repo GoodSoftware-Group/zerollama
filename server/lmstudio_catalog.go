@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"strings"
 	"time"
 
@@ -37,6 +38,18 @@ func mergeLMStudioModels(local []api.ListModelResponse) []api.ListModelResponse 
 		k := strings.ToLower(e.Name)
 		if _, ok := seen[k]; ok {
 			continue
+		}
+		if !envconfig.LMStudioListAll() {
+			if ok, free, need, err := lmstudio.HasDiskForImport(e); err != nil {
+				slog.Debug("lm studio catalog skip: disk check failed", "model", e.Name, "error", err)
+				if lmstudio.ImportCopyBytes(e) > 0 {
+					continue
+				}
+			} else if !ok {
+				slog.Debug("lm studio catalog skip: insufficient disk for import copy",
+					"model", e.Name, "need_bytes", need, "free_bytes", free)
+				continue
+			}
 		}
 		seen[k] = struct{}{}
 		modified := e.Modified

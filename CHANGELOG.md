@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Apple Silicon polish (Jun 2026)
+
+**Why:** M10 qwen35 VL manifests could pick `clip` as primary family; LM Studio MLX imports need full disk copy but listed models anyway; scheduler contention errors returned HTTP 500.
+
+**What shipped:**
+
+- **`PrimaryFamily()`** — routes renderers/parsers/thinking for VL manifests where projector (`clip`) was stored first (`server/model_family.go`).
+- **Qwen35 parser** — flush trailing thinking buffer when stream ends without `</think>`.
+- **LM Studio MLX disk checks** — `ImportCopyBytes` / `HasDiskForImport`; catalog skips MLX safetensors when `OLLAMA_MODELS` volume lacks space; pull still enforces; `OLLAMA_LMSTUDIO_LIST_ALL=1` to list anyway.
+- **Scheduler HTTP status** — `ErrRuntimeInferenceModel` → 400, `ErrDarwinMetalContention` → 503 in `handleScheduleError`.
+- **Opt-in qwen35 smoke** — `./scripts/qwen35_mac_smoke.sh`; `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh`.
+- **Mac build** — `build_zerollama_mac.sh` passes `-ldflags` version.
+
+Docs: [apple-silicon-metal.md](docs/apple-silicon-metal.md), [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md).
+
 ### Fleet LAN discovery (F4)
 
 **Why:** Static `ZEROLLAMA_FLEET_PEERS` works for K8s and fixed IPs but homelab operators want zero-config LAN discovery without maintaining peer lists.
@@ -112,6 +127,7 @@ Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#mlx-engine-option
 | **`num_gpu=0` init Metal** | Metal registered at first ggml init | First CPU-only load sets `GGML_DISABLE_METAL` before backend register |
 | **`go test ./ml/backend/ggml/...`** | Dummy GGUF fixture segfault | `doctor` + `metal_signoff.sh` as gate |
 | **MLX dylib** | Pin bump without rebuild | `./scripts/ensure_mlx_sources.sh` + `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` |
+| **Qwen35 CI smoke** | Legacy ggml path needs Metal handoff | Opt-in `./scripts/qwen35_mac_smoke.sh`; `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh` |
 
 Scripts: `./scripts/metal_signoff.sh`, `./scripts/gpu_smoke_all.sh` with `RUN_E2E_PHASE14=1`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
 

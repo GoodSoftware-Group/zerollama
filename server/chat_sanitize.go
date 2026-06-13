@@ -33,7 +33,7 @@ func usesQwenStyleChat(m *Model) bool {
 	if m == nil {
 		return false
 	}
-	if slices.Contains([]string{"qwen35", "qwen35moe", "qwen3"}, m.Config.ModelFamily) {
+	if slices.Contains([]string{"qwen35", "qwen35moe", "qwen3"}, m.PrimaryFamily()) {
 		return true
 	}
 	return model.ParseName(m.Name).Model == "deepseek-r1"

@@ -43,7 +43,7 @@ func defaultRendererForFamily(m *Model) string {
 	if m == nil {
 		return ""
 	}
-	switch m.Config.ModelFamily {
+	switch m.PrimaryFamily() {
 	case "qwen35", "qwen35moe":
 		return "qwen3.5"
 	default:

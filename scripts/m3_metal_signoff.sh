@@ -12,6 +12,7 @@
 #   RUN_E2E_PROXY_MODEL  — pulled tag for render-chat (auto from blob when possible)
 #   M3_SKIP_START=1      — assume OLLAMA_HOST / ZEROLLAMA_RUNTIME_URL already up
 #   RUN_E2E_PHASE15=1    — also run ./scripts/phase15_metal_signoff.sh (sidecar path)
+#   RUN_E2E_QWEN35=1      — also run ./scripts/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL)
 #   ZEROLLAMA_BIN        — override zerollama binary (repo ./zerollama, then PATH)
 set -euo pipefail
 
@@ -56,6 +57,11 @@ echo "== Phase 14 inprocess Metal (apple_silicon.yaml) =="
 if [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then
   echo ""
   M3_LLAMA_MODEL="$LLAMA_MODEL" PHASE15_SKIP_BOOT=1 "${ROOT}/scripts/phase15_metal_signoff.sh"
+fi
+
+if [[ "${RUN_E2E_QWEN35:-0}" == "1" ]]; then
+  echo ""
+  "${ROOT}/scripts/qwen35_mac_smoke.sh"
 fi
 
 echo "PASS: M3 metal sign-off (snapshot: ${GPU_PHASE13_SNAPSHOT_OUT})"

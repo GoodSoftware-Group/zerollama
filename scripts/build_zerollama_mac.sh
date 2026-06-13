@@ -13,6 +13,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-${ROOT}/zerollama}"
+VERSION="${VERSION:-0.0.1}"
 
 # shellcheck source=scripts/mac_cgo_env.sh
 source "${ROOT}/scripts/mac_cgo_env.sh"
@@ -31,5 +32,5 @@ echo ">>> python3-embed: $(pkg-config --modversion python3-embed)" >&2
 cd "${ROOT}"
 echo ">>> regenerating ggml-metal-embed.metal" >&2
 GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src/ggml-metal/
-GOFLAGS=-mod=mod go build -o "${OUT}" .
-echo ">>> wrote ${OUT}" >&2
+GOFLAGS=-mod=mod go build -ldflags="-s -w -X=github.com/ollama/ollama/version.Version=${VERSION}" -o "${OUT}" .
+echo ">>> wrote ${OUT} (version ${VERSION})" >&2

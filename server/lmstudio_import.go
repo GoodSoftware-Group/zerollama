@@ -10,6 +10,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/internal/lmstudio"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/parser"
@@ -43,6 +44,12 @@ func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map
 	// MLX / HF safetensors trees: register native tensor blobs (no GGUF conversion).
 	// GGUF trees (and legacy safetensors without config.json) use blob staging + convert.
 	if lmStudioUseNativeSafetensorsImport(dir) {
+		if ok, free, need, err := lmstudio.HasDiskForDirImport(dir); err != nil {
+			return false, fmt.Errorf("lm studio import disk check: %w", err)
+		} else if !ok {
+			return false, fmt.Errorf("insufficient disk space for LM Studio MLX import (~%s needed, %s free on OLLAMA_MODELS volume)",
+				format.HumanBytes(need), format.HumanBytes(free))
+		}
 		if err := xcreateclient.ImportSafetensorsFromDirectory(n.String(), dir, func(status string) {
 			fn(api.ProgressResponse{Status: status})
 		}); err != nil {
@@ -98,6 +105,7 @@ func stageFilesToBlobs(files map[string]string) error {
 
 func createFromLMStudioFiles(name typesmodel.Name, dir string, files map[string]string, fn func(api.ProgressResponse)) error {
 	files = relativePathsInDir(dir, files)
+	files = weightFilesOnly(files)
 	config := &typesmodel.ConfigV2{
 		OS:           "linux",
 		Architecture: "amd64",
@@ -145,6 +153,19 @@ func filterLMStudioImportFiles(files map[string]string, weightFile string) map[s
 		case strings.HasSuffix(base, ".json"), base == "tokenizer.model":
 			out[path] = digest
 		case strings.Contains(path, string(filepath.Separator)) && strings.HasSuffix(base, ".json"):
+			out[path] = digest
+		}
+	}
+	return out
+}
+
+// weightFilesOnly keeps blobs convertModelFromFiles can parse (GGUF / safetensors).
+func weightFilesOnly(files map[string]string) map[string]string {
+	out := make(map[string]string, len(files))
+	for path, digest := range files {
+		lower := strings.ToLower(path)
+		switch {
+		case strings.HasSuffix(lower, ".gguf"), strings.HasSuffix(lower, ".safetensors"):
 			out[path] = digest
 		}
 	}

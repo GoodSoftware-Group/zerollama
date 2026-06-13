@@ -497,6 +497,7 @@ func kvFromLayers(baseLayers []*layerGGML) (ofs.Config, error) {
 
 func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, config *model.ConfigV2, fn func(resp api.ProgressResponse)) (err error) {
 	var layers []manifest.Layer
+	var primaryParams uint64
 	for _, layer := range baseLayers {
 		if layer.GGML != nil {
 			quantType := strings.ToUpper(cmp.Or(r.Quantize, r.Quantization))
@@ -516,17 +517,25 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 					}
 				}
 			}
-			config.ModelFormat = cmp.Or(config.ModelFormat, layer.GGML.Name())
-			config.ModelFamily = cmp.Or(config.ModelFamily, layer.GGML.KV().Architecture())
-			config.ModelType = cmp.Or(config.ModelType, format.HumanNumber(layer.GGML.KV().ParameterCount()))
-			config.FileType = cmp.Or(config.FileType, layer.GGML.KV().FileType().String())
-			config.ModelFamilies = append(config.ModelFamilies, layer.GGML.KV().Architecture())
+
+			arch := layer.GGML.KV().Architecture()
+			if !slices.Contains(config.ModelFamilies, arch) {
+				config.ModelFamilies = append(config.ModelFamilies, arch)
+			}
+
+			if !isProjectorArchitecture(arch) {
+				config.ModelFormat = cmp.Or(config.ModelFormat, layer.GGML.Name())
+				params := layer.GGML.KV().ParameterCount()
+				if params >= primaryParams {
+					primaryParams = params
+					config.ModelFamily = arch
+					config.ModelType = format.HumanNumber(params)
+					config.FileType = layer.GGML.KV().FileType().String()
+				}
+			}
 
 			// Auto-detect renderer, parser, and stop tokens from GGUF architecture.
-			// TODO: abstract this into a registry/lookup table when multiple models
-			// need architecture-based renderer/parser/stop defaults.
 			if config.Renderer == "" || config.Parser == "" {
-				arch := layer.GGML.KV().Architecture()
 				switch arch {
 				case "gemma4":
 					config.Renderer = cmp.Or(config.Renderer, gemma4RendererLegacy)
@@ -536,6 +545,15 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 							r.Parameters = make(map[string]any)
 						}
 						r.Parameters["stop"] = []string{"<turn|>"}
+					}
+				case "qwen35", "qwen35moe":
+					config.Renderer = cmp.Or(config.Renderer, "qwen3.5")
+					config.Parser = cmp.Or(config.Parser, "qwen3.5")
+					if _, ok := r.Parameters["stop"]; !ok {
+						if r.Parameters == nil {
+							r.Parameters = make(map[string]any)
+						}
+						r.Parameters["stop"] = []string{"<|im_end|>"}
 					}
 				}
 			}

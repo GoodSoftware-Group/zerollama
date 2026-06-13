@@ -255,6 +255,19 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
 | **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; [phase17-llama-server.md](./phase17-llama-server.md) |
 
+## Scheduler errors (HTTP status)
+
+When a request tries to load the **ggml runner** but Darwin policy blocks it, the API returns a structured error (not a generic 500):
+
+| HTTP | Error | Why | What to do |
+|------|-------|-----|--------------|
+| **400** | `model uses zerollama-runtime inference…` | Manifest or default-on routes this GGUF to the **Python runtime**; ggml load is intentionally skipped | Use `/api/generate` or `/api/chat` without forcing legacy ggml; ensure `ZEROLLAMA_RUNTIME_URL` is set |
+| **503** | `darwin: runtime sidecar holds Metal…` | Runtime sidecar has a model on Metal; this model **cannot** use runtime-default routing (vision, MLX, etc.) | Unload runtime model (`POST /internal/training-handoff` on `:8081`), use runtime-routed APIs for text GGUF, or set `ZEROLLAMA_LEGACY_RUNNER=1` to force ggml (dual-Metal risk) |
+
+**Why these exist:** Mac smoke and operators hit silent GPU contention when runtime + legacy ggml both touched Metal. The scheduler now fails fast with actionable messages.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Action |
@@ -271,6 +284,20 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | Inprocess load fails on some GGUF | Vision / pinned llama.cpp mismatch | Auto-fallback to Metal `llama-server` on darwin when `LLAMA_SERVER_BIN` set (`ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK=auto`, default on Mac); check `/health` `llama_backend_fallback`; or use text-only GGUF |
 | `/api/train/status` 502 / `No module named 'torch'` | Training venv missing | Restart `zerollama serve` (auto venv) or `./scripts/training_uv_venv.sh --verify` |
 | Training job fails with QLoRA error | bitsandbytes is CUDA-only | Use `use_lora: true`, `use_qlora: false` |
+| HTTP **400** runtime inference on generate | Model uses runtime-default routing | Do not force ggml; use runtime proxy path (see table above) |
+| HTTP **503** darwin Metal contention | Runtime holds Metal; vision/MLX ggml load blocked | Handoff runtime or route via runtime; see table above |
+| LM Studio MLX missing from `/api/tags` | MLX safetensors import needs full disk copy (~model size + 512 MiB) | Free space on `OLLAMA_MODELS` volume, or `OLLAMA_LMSTUDIO_LIST_ALL=1` to list anyway (pull still checks space) |
+| Qwen 3.5 VL wrong parser/renderer (`clip` family) | VL manifest stored `ModelFamily=clip` from projector layer | Re-create model on current tree, or rely on `PrimaryFamily()` routing (Jun 2026+) |
+
+**Qwen 3.5/3.6 opt-in smoke:** after `./scripts/build_zerollama_mac.sh` and pulling a local tag:
+
+```bash
+RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+# or append to full sign-off:
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/m3_metal_signoff.sh
+```
+
+See [qwen35-apple-silicon.md](./qwen35-apple-silicon.md).
 
 ---
 

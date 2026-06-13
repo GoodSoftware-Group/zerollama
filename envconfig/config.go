@@ -227,6 +227,9 @@ var (
 	// optional OLLAMA_LMSTUDIO_MODELS paths) when pulling a model, and listing them
 	// in /api/tags. Supports GGUF and safetensors layouts. Default is on.
 	LMStudioImport = BoolWithDefault("OLLAMA_LMSTUDIO_IMPORT")
+	// LMStudioListAll lists every discoverable LM Studio model even when MLX
+	// safetensors import would exceed free disk on OLLAMA_MODELS (pull still checks).
+	LMStudioListAll = Bool("OLLAMA_LMSTUDIO_LIST_ALL")
 	// SchedSpread allows scheduling models across all GPUs.
 	SchedSpread = Bool("OLLAMA_SCHED_SPREAD")
 	// MultiUserCache optimizes prompt caching for multi-user scenarios
@@ -321,6 +324,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_KEEP_ALIVE":                   {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
 		"OLLAMA_LLM_LIBRARY":                  {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
 		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches (GGUF/safetensors) for pull and list (default true)"},
+		"OLLAMA_LMSTUDIO_LIST_ALL":            {"OLLAMA_LMSTUDIO_LIST_ALL", LMStudioListAll(), "List all LM Studio models even when MLX import needs more disk than available (pull still enforces space)"},
 		"OLLAMA_LMSTUDIO_MODELS":              {"OLLAMA_LMSTUDIO_MODELS", Var("OLLAMA_LMSTUDIO_MODELS"), "Only scan these LM Studio model directories (comma-separated); unset uses default paths"},
 		"OLLAMA_LOAD_TIMEOUT":                 {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
 		"OLLAMA_MAX_LOADED_MODELS":            {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},

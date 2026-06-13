@@ -85,6 +85,11 @@ func (qwen35EventThinkingContent) isQwen35Event() {}
 func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 	events := p.parseEvents()
+	if done && p.state == qwen35ParserStateCollectingThinking && p.buffer.Len() > 0 {
+		events = append(events, qwen35EventThinkingContent{content: p.buffer.String()})
+		p.buffer.Reset()
+		p.state = qwen35ParserStateCollectingContent
+	}
 
 	var contentSb strings.Builder
 	var thinkingSb strings.Builder

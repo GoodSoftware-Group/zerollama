@@ -214,3 +214,81 @@ func TestListRealLMStudioCache(t *testing.T) {
 		t.Fatal("expected at least one safetensors model")
 	}
 }
+
+// makeMLXDir creates a temporary directory that looks like an MLX safetensors
+// model (config.json + one .safetensors weight file).
+func makeMLXDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestImportCopyBytes(t *testing.T) {
+	// GGUF: always zero.
+	gguf := Entry{Format: "gguf", Size: 30 << 30}
+	if got := ImportCopyBytes(gguf); got != 0 {
+		t.Fatalf("gguf copy bytes = %d, want 0", got)
+	}
+
+	// Legacy safetensors without config.json: symlinked, so zero.
+	legacyDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(legacyDir, "model.safetensors"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy := Entry{Format: "safetensors", Size: 30 << 30, Dir: legacyDir}
+	if got := ImportCopyBytes(legacy); got != 0 {
+		t.Fatalf("legacy safetensors (no config.json) copy bytes = %d, want 0", got)
+	}
+
+	// MLX safetensors with config.json: full copy.
+	mlxDir := makeMLXDir(t)
+	st := Entry{Format: "safetensors", Size: 30 << 30, Dir: mlxDir}
+	want := int64(30<<30) + ImportHeadroomBytes
+	if got := ImportCopyBytes(st); got != want {
+		t.Fatalf("mlx safetensors copy bytes = %d, want %d", got, want)
+	}
+}
+
+func TestDirImportCopyBytes(t *testing.T) {
+	legacyDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(legacyDir, "model.safetensors"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DirImportCopyBytes(legacyDir); got != 0 {
+		t.Fatalf("legacy safetensors copy bytes = %d, want 0", got)
+	}
+
+	mlxDir := makeMLXDir(t)
+	if got := DirImportCopyBytes(mlxDir); got <= ImportHeadroomBytes {
+		t.Fatalf("mlx safetensors copy bytes = %d, want > headroom", got)
+	}
+}
+
+func TestHasDiskForImport_Safetensors(t *testing.T) {
+	mlxDir := makeMLXDir(t)
+
+	orig := modelsFreeBytes
+	t.Cleanup(func() { modelsFreeBytes = orig })
+	modelsFreeBytes = func(string) (int64, error) { return 1 << 30, nil }
+
+	e := Entry{Format: "safetensors", Size: 80 << 30, Dir: mlxDir}
+	ok, free, need, err := HasDiskForImport(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatalf("expected insufficient disk: free=%d need=%d", free, need)
+	}
+
+	modelsFreeBytes = func(string) (int64, error) { return 100 << 30, nil }
+	ok, _, need, err = HasDiskForImport(e)
+	if err != nil || !ok {
+		t.Fatalf("expected sufficient disk: ok=%v err=%v need=%d", ok, err, need)
+	}
+}

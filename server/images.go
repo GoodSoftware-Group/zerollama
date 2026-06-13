@@ -173,8 +173,9 @@ func (m *Model) Capabilities() []model.Capability {
 	// Check for thinking capability
 	openingTag, closingTag := thinking.InferTags(m.Template.Template)
 	hasTags := openingTag != "" && closingTag != ""
-	isGptoss := slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily)
-	isQwen35 := slices.Contains([]string{"qwen35", "qwen35moe"}, m.Config.ModelFamily)
+	family := m.PrimaryFamily()
+	isGptoss := slices.Contains([]string{"gptoss", "gpt-oss"}, family)
+	isQwen35 := slices.Contains([]string{"qwen35", "qwen35moe"}, family)
 	if hasTags || isGptoss || isQwen35 || (builtinParser != nil && builtinParser.HasThinkingSupport()) {
 		capabilities = append(capabilities, model.CapabilityThinking)
 	}

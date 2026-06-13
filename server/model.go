@@ -79,6 +79,9 @@ func parseFromModel(ctx context.Context, name model.Name, fn func(api.ProgressRe
 
 func detectChatTemplate(layers []*layerGGML) ([]*layerGGML, error) {
 	for _, layer := range layers {
+		if layer.GGML == nil || isProjectorArchitecture(layer.GGML.KV().Architecture()) {
+			continue
+		}
 		if s := layer.GGML.KV().ChatTemplate(); s != "" {
 			if t, err := template.Named(s); err != nil {
 				slog.Debug("template detection", "error", err, "template", s)
