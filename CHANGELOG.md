@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Ggml manifest `num_ctx` suggest + opt-in clamp (M12, Jun 2026)
+
+**Why:** High-VRAM tier sets server default `num_ctx=262144`; merged manifest defaults pre-allocate full KV at ggml load and can hang qwen35/recurrent models. Phase 13 runtime already exposes `suggested_max_num_ctx` + opt-in clamp — ggml scheduler had docs only.
+
+**What shipped:**
+
+- **`server/ggml_num_ctx.go`** — binary-search `suggested_max_num_ctx` from `GraphSize` + weights vs free VRAM; optional clamp before `GetRunner`.
+- **`GET /api/show`** — `ggml_num_ctx.suggested_max_num_ctx` when computable.
+- **`/api/chat` / `/api/generate`** — `ggml_num_ctx` when clamp applied (mirrors runtime `vram_num_ctx`).
+- **Env (default off):** `ZEROLLAMA_GGML_CLAMP_NUM_CTX`, `ZEROLLAMA_GGML_SUGGEST_CTX_MAX`, `ZEROLLAMA_GGML_VRAM_MARGIN`.
+
+Doc: [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#num_ctx-manifest-default-vs-request-options).
+
 ### Go ollama-engine Metal stability — qwen35moe on Apple Silicon (Jun 2026)
 
 **Why:** `qwen35*` is in `OllamaEngineRequired()` — the Go ollama-engine path is the long-term default on every OS. On M-series Macs, load aborted in `ggml_backend_sched_reserve` with `GGML_ASSERT(tensor->buffer == NULL)` during worst-case graph reserve (after Metal init succeeded). C aborts do not return Go errors, so a darwin-only legacy gate had blocked the Go engine for qwen35. Operators also saw stale Metal free-memory during scheduling and per-load `/health` latency on the training submit path.

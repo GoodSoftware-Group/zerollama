@@ -98,6 +98,8 @@ Code: `server/sched.go` (`expireRunner`, `findLoadedRunner`, `processExpiredRunn
 
 **Guidance:** keep manifest defaults modest (4096–8192 on Mac ggml); pass large context via **`options.num_ctx`** when needed. Python runtime path uses `resolve_num_ctx_for_request` — see [phase13-runtime-vram.md](./phase13-runtime-vram.md).
 
+**Ggml VRAM suggest + opt-in clamp (Jun 2026, M12):** before `GetRunner`, `scheduleRunner` binary-searches `suggested_max_num_ctx` from `fs/ggml.GraphSize` + file size vs discovered free VRAM. **`GET /api/show`** includes `ggml_num_ctx.suggested_max_num_ctx` when computable. **`ZEROLLAMA_GGML_CLAMP_NUM_CTX=1`** lowers merged `num_ctx` to that suggestion before load; final `/api/chat` and `/api/generate` include `ggml_num_ctx` when clamped (default **off** — parity with Phase 13 `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX`). Env: `ZEROLLAMA_GGML_SUGGEST_CTX_MAX` (default 131072), `ZEROLLAMA_GGML_VRAM_MARGIN` (default 1.05). Code: `server/ggml_num_ctx.go`.
+
 ### Prompt truncation in responses (Jun 2026)
 
 When input exceeds effective `num_ctx`, final `/api/chat` and `/api/generate` responses include:

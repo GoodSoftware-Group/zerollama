@@ -582,6 +582,8 @@ type ChatResponse struct {
 	// MessagesDropped is how many leading chat messages were removed.
 	MessagesDropped int `json:"messages_dropped,omitempty"`
 
+	GgmlNumCtx *GgmlNumCtx `json:"ggml_num_ctx,omitempty"`
+
 	// Streaming progress (done=false, empty message): accepted, queued, loading, generating.
 	Status     string `json:"status,omitempty"`
 	Position   int    `json:"position,omitempty"`
@@ -791,6 +793,7 @@ type ShowResponse struct {
 	Capabilities  []model.Capability `json:"capabilities,omitempty"`
 	ModifiedAt    time.Time          `json:"modified_at,omitempty"`
 	Requires      string             `json:"requires,omitempty"`
+	GgmlNumCtx    *GgmlNumCtx        `json:"ggml_num_ctx,omitempty"`
 }
 
 // CopyRequest is the request passed to [Client.Copy].
@@ -945,6 +948,8 @@ type GenerateResponse struct {
 	// MessagesDropped is how many leading chat messages were removed.
 	MessagesDropped int `json:"messages_dropped,omitempty"`
 
+	GgmlNumCtx *GgmlNumCtx `json:"ggml_num_ctx,omitempty"`
+
 	// Streaming progress (done=false, empty response): accepted, queued, loading, generating.
 	Status     string `json:"status,omitempty"`
 	Position   int    `json:"position,omitempty"`
@@ -978,6 +983,14 @@ type GenerateResponse struct {
 	// Total is the total number of steps for image generation.
 	// Only present for image generation models during streaming.
 	Total int64 `json:"total,omitempty"`
+}
+
+// GgmlNumCtx surfaces VRAM-aware num_ctx suggest/clamp on the ggml scheduler path.
+type GgmlNumCtx struct {
+	SuggestedMaxNumCtx int  `json:"suggested_max_num_ctx,omitempty"`
+	NumCtxClamped      bool `json:"num_ctx_clamped,omitempty"`
+	NumCtxClampedFrom  int  `json:"num_ctx_clamped_from,omitempty"`
+	NumCtx             int  `json:"num_ctx,omitempty"`
 }
 
 // ModelDetails provides details about a model.
