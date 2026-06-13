@@ -117,6 +117,8 @@ struct ggml_backend_registry {
         register_backend(ggml_backend_cuda_reg());
 #endif
 #ifdef GGML_USE_METAL
+        // Why runtime disable: num_gpu=0 / CPU-only first load sets GGML_DISABLE_METAL
+        // before backend init so embed smokes do not contend with runtime sidecar Metal.
         if (getenv("GGML_DISABLE_METAL") == nullptr) {
             register_backend(ggml_backend_metal_reg());
         } else {

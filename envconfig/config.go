@@ -226,9 +226,12 @@ var (
 	// LMStudioImport enables reusing LM Studio caches under ~/.lmstudio/models (and
 	// optional OLLAMA_LMSTUDIO_MODELS paths) when pulling a model, and listing them
 	// in /api/tags. Supports GGUF and safetensors layouts. Default is on.
+	// Why default on: Mac operators commonly have LM Studio installed; opt-out avoids
+	// surprise registry downloads when cache already holds the weights.
 	LMStudioImport = BoolWithDefault("OLLAMA_LMSTUDIO_IMPORT")
 	// LMStudioListAll lists every discoverable LM Studio model even when MLX
 	// safetensors import would exceed free disk on OLLAMA_MODELS (pull still checks).
+	// Why separate from import: listing is discovery; pull must still fail safely on ENOSPC.
 	LMStudioListAll = Bool("OLLAMA_LMSTUDIO_LIST_ALL")
 	// SchedSpread allows scheduling models across all GPUs.
 	SchedSpread = Bool("OLLAMA_SCHED_SPREAD")

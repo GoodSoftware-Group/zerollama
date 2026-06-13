@@ -12,6 +12,10 @@ import (
 
 // mergeLMStudioModels appends discoverable LM Studio caches to local listings.
 // Registered local models win on duplicate names (case-insensitive).
+//
+// Why disk checks: MLX safetensors import repacks ~full model size into OLLAMA_MODELS;
+// GGUF/legacy safetensors symlink in place. Listing unimportable MLX models wastes
+// operator time — hide unless OLLAMA_LMSTUDIO_LIST_ALL=1 (pull still enforces space).
 func mergeLMStudioModels(local []api.ListModelResponse) []api.ListModelResponse {
 	if !envconfig.LMStudioImport(true) {
 		return local

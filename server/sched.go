@@ -649,6 +649,8 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			s.loadedMu.Unlock()
 			return false
 		}
+		// Why after contention checks: PrepareForLegacyRunner evicts the runtime sidecar;
+		// do not handoff VRAM for a ggml load we are about to skip.
 		vram.PrepareForLegacyRunner(ctx)
 		var err error
 		if !req.model.IsMLX() {

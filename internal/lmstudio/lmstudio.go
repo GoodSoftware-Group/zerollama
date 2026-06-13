@@ -25,7 +25,8 @@ var (
 const remoteHost = "lmstudio"
 
 // ImportHeadroomBytes is reserved on top of model size for MLX safetensors import
-// (manifest layers, metadata, and temporary packing).
+// (manifest layers, metadata, and temporary packing). Why 512 MiB: import creates
+// new blob files under OLLAMA_MODELS; GGUF symlinks need no headroom.
 const ImportHeadroomBytes = 512 << 20 // 512 MiB
 
 // Entry describes one LM Studio model directory.
@@ -599,6 +600,8 @@ func DirImportCopyBytes(dir string) int64 {
 }
 
 // FreeBytesAtModels returns available bytes on the filesystem holding OLLAMA_MODELS.
+// Why resolveExistingPath: OLLAMA_MODELS may not exist yet on first run; walk up to
+// find a mount point for statfs/GetDiskFreeSpaceEx.
 func FreeBytesAtModels() (int64, error) {
 	return modelsFreeBytes(envconfig.Models())
 }

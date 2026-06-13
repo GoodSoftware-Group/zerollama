@@ -6,6 +6,9 @@
 # the embed, model load can succeed but first decode crashes (missing unary ops
 # such as sigmoid for qwen35 SSM). See docs/qwen35-apple-silicon.md.
 #
+# Why this script does NOT rebuild MLX: safetensors inference uses libmlx.dylib +
+# libmlxc.dylib at MLX_VERSION pins — see build_production_mac.sh and docs/apple-silicon-metal.md.
+#
 # Usage:
 #   ./scripts/build_zerollama_mac.sh
 #   ./scripts/build_zerollama_mac.sh /path/to/output/binary

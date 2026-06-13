@@ -1,5 +1,7 @@
 //go:build !windows
 
+// Platform-specific free-space lookup for LM Studio import disk checks.
+// Why a separate file: syscall.Statfs is unavailable on Windows; see diskspace_windows.go.
 package lmstudio
 
 import (

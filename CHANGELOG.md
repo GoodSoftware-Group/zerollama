@@ -4,20 +4,43 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-### Apple Silicon polish (Jun 2026)
+### Mac smoke gaps (Jun 2026)
 
-**Why:** M10 qwen35 VL manifests could pick `clip` as primary family; LM Studio MLX imports need full disk copy but listed models anyway; scheduler contention errors returned HTTP 500.
+**Why:** M4 Max sign-off exposed three Mac-only failure modes that looked like one “broken Metal” bug but were independent: SSE proxies hung without terminal frames, runtime + legacy ggml both touched Metal on one device, and `num_gpu=0` still registered the Metal backend at first ggml init.
 
 **What shipped:**
 
-- **`PrimaryFamily()`** — routes renderers/parsers/thinking for VL manifests where projector (`clip`) was stored first (`server/model_family.go`).
-- **Qwen35 parser** — flush trailing thinking buffer when stream ends without `</think>`.
-- **LM Studio MLX disk checks** — `ImportCopyBytes` / `HasDiskForImport`; catalog skips MLX safetensors when `OLLAMA_MODELS` volume lacks space; pull still enforces; `OLLAMA_LMSTUDIO_LIST_ALL=1` to list anyway.
-- **Scheduler HTTP status** — `ErrRuntimeInferenceModel` → 400, `ErrDarwinMetalContention` → 503 in `handleScheduleError`.
-- **Opt-in qwen35 smoke** — `./scripts/qwen35_mac_smoke.sh`; `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh`.
-- **Mac build** — `build_zerollama_mac.sh` passes `-ldflags` version.
+- **Proxy v1 SSE hang** — Python runtime always yields `data: [DONE]` on error mid-stream; Go proxy uses `copyRuntimeResponseBody` (flush after each chunk). **Why:** Gin buffered `io.Copy` until EOF; partial SSE streams hung curl/CI for 20+ minutes.
+- **Darwin Metal contention** — `server/darwin_ggml_policy.go`: block ggml when runtime `llama_server=true`; contention checks run **before** `PrepareForLegacyRunner` so the sidecar is not evicted for a load that will be skipped. **Why:** dual Metal residency wedged the GPU silently.
+- **`num_gpu=0` Metal init** — `GGML_DISABLE_METAL` gates Metal backend registration in C++; Go sets it before first `OnceLoad` on CPU-only loads. **Why:** embed/CPU-only smokes still initialized Metal and contended with the runtime sidecar.
+- **Scheduler HTTP status** — `ErrRuntimeInferenceModel` → 400, `ErrDarwinMetalContention` → 503 (was generic 500). **Why:** operators need actionable routing errors, not “internal server error.”
+- **e2e smokes** — `RUN_E2E_STREAM_MAX` cap; legacy ggml skipped on darwin when runtime holds Metal unless `RUN_E2E_LEGACY_FORCE=1`.
 
-Docs: [apple-silicon-metal.md](docs/apple-silicon-metal.md), [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md).
+Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#scheduler-errors-http-status).
+
+### Apple Silicon polish (Jun 2026)
+
+**Why:** M10 qwen35 VL manifests could pick `clip` as primary family; LM Studio MLX imports need full disk copy but listed models anyway; qwen35 parser lost thinking text when streams ended without `</think>`; catalog hid MLX models silently on `statfs` errors; GGUF+config.json dirs failed pull; Windows CI broke on `syscall.Statfs`.
+
+**What shipped:**
+
+- **`PrimaryFamily()`** — routes renderers/parsers/thinking for VL manifests where projector (`clip`) was stored first; returns `""` for projector-only manifests (`server/model_family.go`). **Why:** create-time layer order stored `ModelFamily=clip` on qwen35 VL blobs.
+- **Qwen35 parser** — `flushDoneEvents` on stream end (thinking, whitespace-after-close, trailing content). **Why:** truncated streams dropped reasoning text that never received a close tag.
+- **LM Studio integration (v0.0.1)** — discover `~/.lmstudio/models`, merge into `list`/`/api/tags`, pull-from-cache for GGUF and MLX safetensors. **Why:** avoid re-downloading weights LM Studio already fetched.
+  - **Native MLX import** — `ImportSafetensorsFromDirectory` when `config.json` + `.safetensors` present. **Why:** MLX→GGUF conversion fails on dtypes like `U32`.
+  - **Disk checks** — `ImportCopyBytes` / `HasDiskForImport`; catalog hides MLX when `OLLAMA_MODELS` volume lacks ~model size + 512 MiB; pull fails early with readable error. **Why:** repack doubles disk use; mid-import ENOSPC wastes operator time.
+  - **`OLLAMA_LMSTUDIO_LIST_ALL=1`** — list all discoverable models anyway (pull still enforces). **Why:** hidden models confused operators on tight disks.
+  - **`dirIsMLXSafetensors`** — only MLX-layout dirs count toward copy bytes. **Why:** legacy safetensors without `config.json` symlink like GGUF and must stay visible in catalog.
+  - **`weightFilesOnly`** — strip `config.json` before GGUF convert. **Why:** multi-file dirs (GGUF + HF metadata) sent JSON to the GGUF parser.
+  - **Portable free space** — `diskspace_unix.go` / `diskspace_windows.go`. **Why:** `syscall.Statfs` is not available on Windows CI.
+- **Opt-in qwen35 smoke** — `./scripts/qwen35_mac_smoke.sh` (runtime handoff → legacy ggml generate); `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh`. **Why:** qwen35 uses llamarunner on darwin, not the runtime sidecar path covered by Phase 14 sign-off.
+- **Mac build** — `build_zerollama_mac.sh` passes `-ldflags` version (`VERSION` env, default `0.0.1`).
+
+Docs: [lmstudio-import.md](docs/lmstudio-import.md), [apple-silicon-metal.md](docs/apple-silicon-metal.md), [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md), [mlx-routing-policy.md](docs/mlx-routing-policy.md).
+
+## [0.0.1] — 2026-06-12
+
+First tagged zerollama build with embedded version string. Includes LM Studio cache import, MLX disk policy, and Mac polish items above. Operators: `./scripts/build_zerollama_mac.sh && ./zerollama serve`.
 
 ### Fleet LAN discovery (F4)
 
@@ -128,6 +151,7 @@ Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#mlx-engine-option
 | **`go test ./ml/backend/ggml/...`** | Dummy GGUF fixture segfault | `doctor` + `metal_signoff.sh` as gate |
 | **MLX dylib** | Pin bump without rebuild | `./scripts/ensure_mlx_sources.sh` + `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` |
 | **Qwen35 CI smoke** | Legacy ggml path needs Metal handoff | Opt-in `./scripts/qwen35_mac_smoke.sh`; `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh` |
+| **Scheduler 400/503** | Contention returned generic HTTP 500 | `handleScheduleError` maps runtime-routed → 400, Metal contention → 503 |
 
 Scripts: `./scripts/metal_signoff.sh`, `./scripts/gpu_smoke_all.sh` with `RUN_E2E_PHASE14=1`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
 

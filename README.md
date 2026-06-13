@@ -171,9 +171,30 @@ LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
 
 # 4. Full Metal sign-off (runtime inprocess — daily Mac path)
 ./scripts/metal_signoff.sh
+
+# 5. Optional: qwen35 legacy ggml smoke (needs pulled tag; handoffs runtime Metal first)
+# RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
 ```
 
 **Daily serve:** `zerollama serve` — Go `:11434` (or `:8080` in dev) + uv sidecar `:8081` with `apple_silicon.yaml` inprocess backend.
+
+### LM Studio cache (reuse local downloads)
+
+**Why:** LM Studio and zerollama often share a Mac; re-downloading 30–70 GB weights from the registry wastes time and disk when `~/.lmstudio/models` already has them.
+
+```bash
+./zerollama list                                    # includes discoverable LM Studio caches
+./zerollama pull lmstudio-community/gemma-4-31b-it:q8_0   # registers from cache when matched
+OLLAMA_LMSTUDIO_LIST_ALL=1 ./zerollama serve      # list MLX models even when disk is tight
+```
+
+- **GGUF:** symlinked into `OLLAMA_MODELS` (near-zero extra space).
+- **MLX safetensors** (`config.json` + weights): repacked into zerollama blobs (~full model size free required).
+- **Pull** fails early with a clear disk error if MLX import cannot fit.
+
+Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lmstudio-import.md).
+
+**Why runtime header on proxy:** Pulled model names may route to legacy ggml and contend with the sidecar on one Metal device — use `X-Zerollama-Runtime: 1` or runtime-default manifest backend. See [apple-silicon-metal.md](docs/apple-silicon-metal.md#scheduler-errors-http-status).
 
 ### In this repository
 
@@ -199,9 +220,10 @@ LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
 - [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
-- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **MLX dylib rebuild** at `MLX_VERSION` pins; **Jun 2026 sign-off** (`metal_signoff.sh`) and known Mac smoke gaps.
-- [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits three Mac layers (Go engine segfault, compat metadata, stale Metal embed); darwin llamarunner path; `num_ctx` and rebuild checklist.
-- [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards.
+- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; Darwin Metal contention policy; scheduler 400/503 errors; **MLX dylib rebuild** at `MLX_VERSION` pins; **Jun 2026 sign-off** (`metal_signoff.sh`).
+- [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits three Mac layers (Go engine segfault, compat metadata, stale Metal embed); darwin llamarunner path; `PrimaryFamily()` for VL; opt-in `qwen35_mac_smoke.sh`.
+- [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards; LM Studio MLX disk import policy.
+- [LM Studio cache import](docs/lmstudio-import.md) — **why** pull-from-cache, **why** MLX copies vs GGUF symlinks, disk policy, `OLLAMA_LMSTUDIO_LIST_ALL`, operator troubleshooting.
 
 ## Community Integrations
 

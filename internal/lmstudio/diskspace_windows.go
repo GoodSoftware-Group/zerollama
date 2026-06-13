@@ -1,5 +1,7 @@
 //go:build windows
 
+// Platform-specific free-space lookup for LM Studio import disk checks.
+// Why a separate file: Unix uses syscall.Statfs; Windows uses GetDiskFreeSpaceExW.
 package lmstudio
 
 import (

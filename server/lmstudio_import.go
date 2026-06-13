@@ -22,6 +22,10 @@ import (
 // tryImportFromLMStudio registers the model from a matching LM Studio cache
 // directory (GGUF or safetensors) when present, avoiding a registry blob
 // download. It returns true if the model was created locally.
+//
+// Why before registry pull: LM Studio may already hold multi-GB weights under
+// ~/.lmstudio/models; symlink (GGUF) or native import (MLX) is faster and
+// avoids duplicate disk use for GGUF quants.
 func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map[string]struct{}, fn func(api.ProgressResponse)) (bool, error) {
 	if !envconfig.LMStudioImport(true) {
 		return false, nil
@@ -43,6 +47,8 @@ func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map
 
 	// MLX / HF safetensors trees: register native tensor blobs (no GGUF conversion).
 	// GGUF trees (and legacy safetensors without config.json) use blob staging + convert.
+	// Why disk check here (not only catalog): pull must fail with a clear error before
+	// repacking multi-GB tensors into OLLAMA_MODELS.
 	if lmStudioUseNativeSafetensorsImport(dir) {
 		if ok, free, need, err := lmstudio.HasDiskForDirImport(dir); err != nil {
 			return false, fmt.Errorf("lm studio import disk check: %w", err)
@@ -105,6 +111,9 @@ func stageFilesToBlobs(files map[string]string) error {
 
 func createFromLMStudioFiles(name typesmodel.Name, dir string, files map[string]string, fn func(api.ProgressResponse)) error {
 	files = relativePathsInDir(dir, files)
+	// Why strip non-weights: filterLMStudioImportFiles keeps config.json for create metadata,
+	// but convertModelFromFiles tries to parse every blob as GGUF/safetensors. LM Studio
+	// GGUF dirs often ship config.json beside .gguf files (e.g. tiny-agent).
 	files = weightFilesOnly(files)
 	config := &typesmodel.ConfigV2{
 		OS:           "linux",

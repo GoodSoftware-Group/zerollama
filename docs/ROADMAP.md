@@ -163,8 +163,8 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 | **M6** | **MPS LoRA training + Mac operator polish** | Python + Go + CI | **Shipped** — PyTorch MPS + PEFT in `training.py`; QLoRA rejected on Darwin; `training_uv_venv.sh`; **`zerollama serve` Darwin bootstrap** (uv venvs, sidecar `:8081`, autoconfig); `zerollama doctor --json --fix`; Darwin CI (`macos-darwin-smoke`). |
 | **M7** | **Upstream-shape GGUF benchmark (Metal)** | Repo | **Done** — ggml Metal ~164 tok/s vs upstream Go→llama-server ~158 tok/s (`llama3.2:3b`, `num_ctx=4096`, 6 epochs, idle GPU). Keep ggml default; Phase 17 for mergeability. [phase17-llama-server.md](./phase17-llama-server.md) |
 | **M8** | **ggml @ b9611 (real vendored tree)** | Repo | **Done** — 14 patches on `vendor/llama-cpp-b9611/` (0011 GPU discovery rebased, 0012 no-alloc, 0013 mtmd C API, 0014 ollama_vocab); `sync_vendor_llama.sh`; Mac `build_zerollama_mac.sh` + `doctor`. Vanilla Ollama still on **b9509**. [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| **M9** | **Metal operator sign-off (Jun 2026)** | Repo | **Done (M4 Max)** — Phase 13 snapshot + Phase 14 inprocess + Phase 15 KV/multiseq + tools; `./scripts/metal_signoff.sh`. **Gaps fixed (Jun 2026):** v1 SSE `[DONE]` + proxy flush; darwin ggml blocked when runtime holds Metal; `num_gpu=0` + `GGML_DISABLE_METAL`. |
-| **M10** | **Qwen 3.5/3.6 GGUF on Mac (llamarunner path)** | Go + llama/compat + ggml Metal | **Done (Jun 2026, M4 Max)** — darwin engine fallback for `qwen35*`; in-process compat CGO link; Metal embed regen in `build_zerollama_mac.sh`; `PrimaryFamily()` for VL manifests; opt-in `./scripts/qwen35_mac_smoke.sh`. **Why M10 exists:** qwen35 is `OllamaEngineRequired()` but Go Metal init segfaults on Mac; published GGUF metadata differs from llama.cpp-native; stale `ggml-metal-embed.metal` broke first decode (sigmoid/unary). **Not done:** re-enable Go engine on darwin when Metal backend stable; full 27B Q8 VL on unified memory; qwen35 in default CI (opt-in smoke only). Doc: [qwen35-apple-silicon.md](./qwen35-apple-silicon.md). |
+| **M9** | **Metal operator sign-off (Jun 2026)** | Repo | **Done (M4 Max)** — Phase 13 snapshot + Phase 14 inprocess + Phase 15 KV/multiseq + tools; `./scripts/metal_signoff.sh`. **Gaps fixed (Jun 2026):** v1 SSE `[DONE]` + proxy flush; darwin ggml blocked when runtime holds Metal (`darwin_ggml_policy.go`); contention before `PrepareForLegacyRunner`; `num_gpu=0` + `GGML_DISABLE_METAL`; scheduler 400/503 for runtime-routed vs Metal contention. |
+| **M10** | **Qwen 3.5/3.6 GGUF on Mac (llamarunner path)** | Go + llama/compat + ggml Metal | **Done (Jun 2026, M4 Max)** — darwin engine fallback for `qwen35*`; in-process compat CGO link; Metal embed regen in `build_zerollama_mac.sh`; `PrimaryFamily()` for VL manifests (projector-only → `""`); qwen35 `flushDoneEvents`; LM Studio MLX disk checks; opt-in `./scripts/qwen35_mac_smoke.sh`. **Why M10 exists:** qwen35 is `OllamaEngineRequired()` but Go Metal init segfaults on Mac; published GGUF metadata differs from llama.cpp-native; stale `ggml-metal-embed.metal` broke first decode (sigmoid/unary). **Not done:** re-enable Go engine on darwin when Metal backend stable; full 27B Q8 VL on unified memory; qwen35 in default CI (opt-in smoke only). Doc: [qwen35-apple-silicon.md](./qwen35-apple-silicon.md). |
 
 **Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
 
@@ -319,3 +319,33 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 ## How to contribute
 
 Open an issue or PR with a concrete use case (API shape, model family, deployment constraints). **Why** matters as much as **what** for multimodal features—resource limits and API compatibility affect everyone.
+
+---
+
+## LM Studio integration
+
+**Why this track exists:** Many Mac operators run LM Studio for discovery/download and zerollama for API/agents. Sharing the same on-disk cache avoids duplicate downloads and registry bandwidth. The hard part is **layout mismatch** (LM Studio tree vs zerollama blob store) and **format split** (GGUF symlinks vs MLX repack).
+
+### Shipped (v0.0.1)
+
+| Item | Why |
+|------|-----|
+| Discover `~/.lmstudio/models` (+ optional roots) | Default LM Studio layout; no config file to maintain |
+| Merge into `list` / `/api/tags` with `remote_host=lmstudio` | Agents see one catalog; local pulls win on name collision |
+| Pull-from-cache (GGUF symlink, MLX native import) | Skip registry when files already exist |
+| Disk checks + `OLLAMA_LMSTUDIO_LIST_ALL` | MLX repack needs ~full model free; hide or list-all avoids confusion |
+| `weightFilesOnly` / `dirIsMLXSafetensors` | Correct path selection; GGUF+config dirs must not hit MLX or JSON-as-GGUF |
+
+Doc: [lmstudio-import.md](./lmstudio-import.md).
+
+### Directional follow-ups
+
+| Item | Why | Exit criteria |
+|------|-----|---------------|
+| **In-place MLX load** | Repack doubles disk for large models on tight volumes | Manifest references external LM Studio path; mlxrunner reads without full copy; disk check optional or advisory only |
+| **Cross-volume symlinks** | `OLLAMA_MODELS` on small disk, LM Studio cache on large external drive | Document + test `createLink` across volumes; clear errors when symlink unsupported |
+| **Quant tag parity** | LM Studio folder names ≠ Ollama tags | Expand fuzzy match tests; document naming table per publisher |
+| **CI fixture cache** | Regression without real 70 GB weights | Temp-dir fixtures in `internal/lmstudio` + `server/lmstudio_*_test.go` (partial today) |
+| **GLM / Hermes MLX runtime bugs** | Some MLX families panic in `mlxrunner` | Per-model compatibility matrix in docs; upstream MLX fixes |
+
+**Non-goals:** Proxying LM Studio’s own HTTP server; modifying LM Studio cache files in place; automatic two-way sync with LM Studio’s internal DB.

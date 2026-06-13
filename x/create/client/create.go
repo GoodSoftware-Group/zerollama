@@ -185,6 +185,10 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 
 // ImportSafetensorsFromDirectory registers an MLX-native safetensors model from a
 // local directory (e.g. LM Studio cache) without GGUF conversion.
+//
+// Why no GGUF path: LM Studio MLX checkpoints use dtypes and layouts (e.g. U32) that
+// safetensors→GGUF conversion rejects. Native CreateSafetensorsModel repacks into
+// zerollama tensor blobs the mlxrunner already understands.
 func ImportSafetensorsFromDirectory(modelName, modelDir string, fn func(status string)) error {
 	if !create.IsSafetensorsModelDir(modelDir) {
 		return fmt.Errorf("%s is not a safetensors model directory", modelDir)

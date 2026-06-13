@@ -35,6 +35,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; three inference paths; runtime autoconfig.
 * [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** three failure layers (Go engine, compat metadata, Metal embed); rebuild checklist; `num_ctx` guidance.
 * [Mac dev setup](./mac-dev-setup.md) — one-command `mac_setup.sh`, CGO, daily serve.
+* [LM Studio cache import](./lmstudio-import.md) — **why** pull-from-cache, MLX copy vs GGUF symlink, disk policy, env vars, troubleshooting.
+* [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
 
 ### GPU training & scheduling (repo)
 

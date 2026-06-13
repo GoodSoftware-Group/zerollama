@@ -110,6 +110,8 @@ func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string
 }
 
 // flushDoneEvents emits trailing thinking/content when the stream ends mid-state.
+// Why: models sometimes stop without </think> or leave whitespace after
+// the close tag; without this flush, reasoning text is dropped on the final chunk.
 func (p *Qwen35Parser) flushDoneEvents(events []qwen35Event) []qwen35Event {
 	if p.state == qwen35ParserStateThinkingDoneEatingWhitespace {
 		extra, _ := p.eatLeadingWhitespaceAndTransitionTo(qwen35ParserStateCollectingContent)

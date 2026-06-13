@@ -1,5 +1,10 @@
 package server
 
+// Darwin Metal contention policy — why: macOS has one Metal device shared by the
+// Python runtime sidecar (inprocess llama / llama-server) and the legacy ggml runner.
+// Loading both wedges the GPU; these guards fail fast with ErrDarwinMetalContention
+// (HTTP 503) or defer to runtime (ErrRuntimeInferenceModel, HTTP 400).
+
 import (
 	"context"
 	"errors"

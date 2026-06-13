@@ -1,5 +1,12 @@
 package server
 
+// Model family routing for VL and multi-arch manifests.
+//
+// Why: createModel processes GGUF layers in file order. Vision-language blobs often
+// include a clip/mmproj layer before the LLM; ModelFamily was set from whichever
+// layer ran first. PrimaryFamily() picks the LLM arch for renderers, parsers,
+// thinking tags, and /api/show — without requiring operators to re-pull old tags.
+
 import (
 	"slices"
 
@@ -35,6 +42,7 @@ func (m *Model) PrimaryFamily() string {
 }
 
 func primaryModelFamily(cfg model.ConfigV2) string {
+	// Prefer known LLM families when ModelFamilies lists clip + qwen35 (VL manifests).
 	for _, pref := range llmFamilyPreference {
 		if slices.Contains(cfg.ModelFamilies, pref) {
 			return pref

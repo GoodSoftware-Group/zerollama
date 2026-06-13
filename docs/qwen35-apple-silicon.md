@@ -98,6 +98,16 @@ Disable compat (debug): `OLLAMA_LLAMA_CPP_COMPAT=0`.
 
 ---
 
+## VL manifests and `PrimaryFamily()`
+
+**Why this exists:** Qwen 3.5 VL GGUFs include both a **clip** projector layer and a **qwen35** LLM layer. At create time, whichever layer is processed first can become `ModelFamily` in the manifest — often `clip`. Renderers, parsers, and thinking defaults then pointed at the wrong architecture.
+
+**Fix (Jun 2026):** `server/model_family.go` — `PrimaryFamily()` prefers LLM architectures (`qwen35`, `qwen35moe`, …) over projector-only strings like `clip`. Projector-only manifests return `""` (no LLM to route on).
+
+**Operator impact:** Existing VL tags work without re-pull when `ModelFamilies` includes both `clip` and `qwen35`. Re-create the model on current tree to persist correct defaults in the manifest.
+
+---
+
 ## Log lines explained
 
 | Log | Meaning |

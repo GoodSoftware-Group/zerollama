@@ -76,6 +76,23 @@ if m.IsMLX() {
 | Keep ggml only | `ZEROLLAMA_LEGACY_RUNNER=1` |
 | Route text GGUF via Python llama.cpp (experimental) | `./zerollama serve --llama-cpp-backend` or `ZEROLLAMA_LLAMA_CPP_BACKEND=1` |
 | MLX build | [apple-silicon-metal.md](./apple-silicon-metal.md#mlx-engine-optional) — **why** separate from ggml: safetensors + `libmlxc.dylib`; rebuild at `MLX_VERSION` via `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` |
+| LM Studio MLX import | `OLLAMA_LMSTUDIO_IMPORT` (default on); `OLLAMA_LMSTUDIO_LIST_ALL=1` lists MLX even when disk tight — **why:** MLX repacks ~full model size into `OLLAMA_MODELS`; GGUF symlinks are near-zero copy |
+
+---
+
+## LM Studio MLX disk policy (Jun 2026)
+
+**Why:** LM Studio caches MLX safetensors (`config.json` + weights) separately from GGUF. Importing MLX into zerollama **copies** tensors into new blobs (~model size + 512 MiB headroom). Listing models the operator cannot import wastes time; failing at pull with a clear error is better than a mid-import OOM.
+
+| Behavior | Setting |
+|----------|---------|
+| Hide MLX models when disk insufficient | Default (`OLLAMA_LMSTUDIO_LIST_ALL` unset) |
+| List all discoverable models anyway | `OLLAMA_LMSTUDIO_LIST_ALL=1` (pull still enforces space) |
+| Pull fails with human-readable error | Always when `HasDiskForDirImport` fails |
+
+**Full guide:** [lmstudio-import.md](./lmstudio-import.md) — three import paths, naming, troubleshooting, code map.
+
+Code: `internal/lmstudio/lmstudio.go` (`ImportCopyBytes`), `server/lmstudio_catalog.go`, `server/lmstudio_import.go`.
 
 ---
 

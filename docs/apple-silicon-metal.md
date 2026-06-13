@@ -255,6 +255,20 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
 | **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; [phase17-llama-server.md](./phase17-llama-server.md) |
 
+## Mac smoke gaps fixed (Jun 2026)
+
+Three sign-off failures had different root causes — fixing one often exposed the next:
+
+| Symptom | Why | Fix |
+|---------|-----|-----|
+| `/v1/chat/completions` stream hangs | Python omitted `[DONE]` on error; Gin buffered SSE until EOF | Runtime always emits `[DONE]`; `copyRuntimeResponseBody` flushes each chunk |
+| Legacy ggml + runtime both on Metal | Single device; no OS-level GPU isolation | `darwin_ggml_policy.go` blocks ggml when runtime `llama_server=true`; checks run **before** `PrepareForLegacyRunner` |
+| `num_gpu=0` still init Metal | Metal registered at first ggml backend init | `GGML_DISABLE_METAL` before `OnceLoad` on first CPU-only load |
+
+**e2e:** `RUN_E2E_STREAM_MAX` (default 120s); legacy ggml skipped on darwin when runtime holds Metal unless `RUN_E2E_LEGACY_FORCE=1`.
+
+---
+
 ## Scheduler errors (HTTP status)
 
 When a request tries to load the **ggml runner** but Darwin policy blocks it, the API returns a structured error (not a generic 500):
@@ -303,11 +317,16 @@ See [qwen35-apple-silicon.md](./qwen35-apple-silicon.md).
 
 ## Code map
 
-| Piece | Path |
-|-------|------|
-| Metal scheduler (Go) | `server/sched.go`, `llm/server.go` |
-| MLX runner | `x/mlxrunner/`, `server/sched.go` (`IsMLX`) |
-| Darwin host memory | `runtime/runtime/host_memory.py` |
-| Metal-unified probe | `runtime/runtime/gpu_vram.py` |
-| Autoconfig | `runtime/runtime/autoconfig.py`, `configs/apple_silicon.yaml` |
-| Smoke | `scripts/macos_metal_smoke.sh` |
+| Piece | Path | Why |
+|-------|------|-----|
+| Metal scheduler (Go) | `server/sched.go`, `llm/server.go` | Unified-memory layout; darwin contention checks before VRAM handoff |
+| Darwin Metal policy | `server/darwin_ggml_policy.go` | Block dual Metal residency (runtime + ggml) on one device |
+| VL family routing | `server/model_family.go` | `PrimaryFamily()` picks LLM arch over projector (`clip`) in VL manifests |
+| Runtime SSE proxy | `server/runtime_proxy.go` | `copyRuntimeResponseBody` — flush per chunk so SSE does not buffer until EOF |
+| MLX runner | `x/mlxrunner/`, `server/sched.go` (`IsMLX`) | Safetensors stay off Python GGUF runtime |
+| LM Studio MLX disk | `internal/lmstudio/lmstudio.go`, `server/lmstudio_catalog.go` | MLX import copies full model size; catalog hides unimportable models |
+| `num_gpu=0` Metal gate | `ml/backend/ggml/ggml.go`, `ggml-backend-reg.cpp` | CPU-only loads skip Metal registration when first in process |
+| Darwin host memory | `runtime/runtime/host_memory.py` | Unified pool admission (not NVML VRAM) |
+| Metal-unified probe | `runtime/runtime/gpu_vram.py` | `vm_stat`-based probe for Phase 13 admission |
+| Autoconfig | `runtime/runtime/autoconfig.py`, `configs/apple_silicon.yaml` | Daily Mac path: inprocess llama backend |
+| Sign-off smokes | `scripts/metal_signoff.sh`, `scripts/qwen35_mac_smoke.sh` | Phase 13–15 gate; opt-in qwen35 legacy ggml |
