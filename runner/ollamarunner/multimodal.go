@@ -67,6 +67,21 @@ func (m multimodalStore) getMultimodal(backend ml.Backend, ctx ml.Context, in []
 
 func (m multimodalStore) getTensor(backend ml.Backend, ctx ml.Context, in ml.Tensor, reserve bool) (ml.Tensor, error) {
 	entry := m[in]
+	if entry == nil {
+		return nil, errors.New("multimodal tensor not found")
+	}
+
+	for _, t := range entry.mm {
+		if in == t.Tensor {
+			if reserve {
+				// Worst-case graph sizing: placeholder tensors only. Running EncodeMultimodal
+				// outputs through Forward/Reserve binds buffers on the source tensors; a second
+				// Reserve then hits GGML_ASSERT(tensor->buffer == NULL) (qwen35moe on Metal).
+				return ctx.Input().Empty(t.Tensor.DType(), t.Tensor.Shape()...), nil
+			}
+			break
+		}
+	}
 
 	if entry.data == nil {
 		computeCtx := backend.NewContext()
@@ -88,27 +103,18 @@ func (m multimodalStore) getTensor(backend ml.Backend, ctx ml.Context, in ml.Ten
 
 		// Multimodal processing is computationally intensive, so treat it similarly to a large batch
 		computeCtx.SetBatchSize(512)
+		computeCtx.Compute(tensors...)
 
-		if !reserve {
-			computeCtx.Compute(tensors...)
-
-			for i, t := range entry.mm {
-				if t.Tensor != nil {
-					entry.data[i] = t.Tensor.Floats()
-				}
+		for i, t := range entry.mm {
+			if t.Tensor != nil {
+				entry.data[i] = t.Tensor.Floats()
 			}
-		} else {
-			computeCtx.Reserve()
 		}
 	}
 
 	for i, t := range entry.mm {
 		if in == t.Tensor {
-			if !reserve {
-				return ctx.Input().FromFloats(entry.data[i], t.Tensor.Shape()...), nil
-			} else {
-				return ctx.Input().Empty(t.Tensor.DType(), t.Tensor.Shape()...), nil
-			}
+			return ctx.Input().FromFloats(entry.data[i], t.Tensor.Shape()...), nil
 		}
 	}
 

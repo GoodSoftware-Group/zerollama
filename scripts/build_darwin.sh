@@ -72,42 +72,9 @@ _build_darwin() {
             cmake --build $BUILD_DIR_CPU --target ggml-cpu --parallel
             cmake --install $BUILD_DIR_CPU --component CPU
 
-            # Build MLX twice for arm64
-            # Metal 3.x build (backward compatible, macOS 14+)
-            BUILD_DIR=build/metal-v3
-            status "Building MLX Metal v3 (macOS 14+)"
-            cmake -S . -B $BUILD_DIR \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DMLX_ENGINE=ON \
-                -DOLLAMA_RUNNER_DIR=mlx_metal_v3 \
-                -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-                -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX
-            cmake --build $BUILD_DIR --target mlx mlxc --parallel
-            cmake --install $BUILD_DIR --component MLX
-
-            # Metal 4.x build (NAX-enabled, macOS 26+)
-            # Only possible with Xcode 26+ SDK; skip on older toolchains.
-            SDK_MAJOR=$(xcrun --show-sdk-version 2>/dev/null | cut -d. -f1)
-            if [ "${SDK_MAJOR:-0}" -ge 26 ]; then
-                V3_DEPS=$BUILD_DIR/_deps
-                BUILD_DIR_V4=build/metal-v4
-                status "Building MLX Metal v4 (macOS 26+, NAX)"
-                cmake -S . -B $BUILD_DIR_V4 \
-                    -DCMAKE_BUILD_TYPE=Release \
-                    -DMLX_ENGINE=ON \
-                    -DOLLAMA_RUNNER_DIR=mlx_metal_v4 \
-                    -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
-                    -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX \
-                    -DFETCHCONTENT_SOURCE_DIR_MLX=$V3_DEPS/mlx-src \
-                    -DFETCHCONTENT_SOURCE_DIR_MLX-C=$V3_DEPS/mlx-c-src \
-                    -DFETCHCONTENT_SOURCE_DIR_JSON=$V3_DEPS/json-src \
-                    -DFETCHCONTENT_SOURCE_DIR_FMT=$V3_DEPS/fmt-src \
-                    -DFETCHCONTENT_SOURCE_DIR_METAL_CPP=$V3_DEPS/metal_cpp-src
-                cmake --build $BUILD_DIR_V4 --target mlx mlxc --parallel
-                cmake --install $BUILD_DIR_V4 --component MLX
-            else
-                status "Skipping MLX Metal v4 (SDK $SDK_MAJOR < 26, need Xcode 26+)"
-            fi
+            # MLX Metal v3/v4 dylibs (shared with build_zerollama_mac.sh / build_mlx_dylibs_mac.sh)
+            status "Building MLX dylibs (arm64)"
+            INSTALL_PREFIX=$INSTALL_PREFIX bash ./scripts/build_mlx_dylibs_mac.sh
 
             # Use the v3 build for CGO linking (compatible with both)
             MLX_CGO_CFLAGS="-O3 -mmacosx-version-min=14.0"

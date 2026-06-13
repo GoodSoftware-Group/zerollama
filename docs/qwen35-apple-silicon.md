@@ -12,7 +12,7 @@ Qwen 3.5/3.6 GGUFs hit **three separate Mac-only failure modes** in mid-2026 zer
 
 | Symptom | Layer | Why it happened |
 |---------|--------|-----------------|
-| SIGSEGV in `ggml.New()` / `_Cfunc_ggml_backend_get_default_buffer_type` | Go **ollama engine** (Metal ggml backend) | `qwen35*` is in `OllamaEngineRequired()`; the new Go path initializes Metal before load finishes. C segfaults don’t return Go errors, so there is no fallback. |
+| SIGSEGV / SIGABRT in `ggml_backend_sched_reserve` during Go engine load | Go **ollama engine** (Metal ggml backend) | `qwen35*` is in `OllamaEngineRequired()`; Jun 2026 M4 Max probe: `GGML_ASSERT(tensor->buffer == NULL)` in worst-case graph reserve (after Metal init succeeds). C aborts don’t return Go errors, so there is no fallback. |
 | `rope.dimension_sections has wrong array length; expected 4, got 3` | **llama.cpp loader** + missing compat | Published Ollama GGUFs store M-RoPE sections as **3** ints; llama.cpp expects **4** (padded). The fix lived in `llama/compat/` but was only wired into **llama-server** CMake builds—not the **in-process llamarunner** CGO path. |
 | `kernel_unary_f32_f32 was not found` → SIGSEGV on first token | **Embedded Metal shaders** | macOS compiles shaders from `ggml-metal-embed.metal` at runtime. That file is **generated** from `ggml-metal.metal`; when ggml bumps without `go generate`, sigmoid/unary kernels (needed by qwen35 SSM/gated paths) are missing from the embed. |
 
@@ -74,9 +74,9 @@ go build -a -o zerollama .   # -a when embed changed, to force CGO relink
            └─ OLLAMA_NEW_ENGINE=1 ──► forces Go engine (avoid on Mac for qwen35*)
 ```
 
-**Why darwin uses legacy runner for qwen35\*:** Until the Go Metal backend handles qwen35-class models reliably, forcing legacy llama.cpp avoids a process-killing C segfault during `ggml.New()`. Phase 17 may reunify on llama-server; until then Mac qwen35 is **legacy + compat**, not **Go engine**.
+**Why darwin uses legacy runner for qwen35\*:** Go engine load still aborts in `ggml_backend_sched_reserve` on qwen35moe (M4 Max, Jun 2026) even after multimodal reserve fixes. Legacy llama.cpp + compat avoids the Go ollama engine graph allocator. Phase 17 may reunify on llama-server; until then Mac qwen35 is **legacy + compat**, not **Go engine**.
 
-**Override (debug only):** `OLLAMA_NEW_ENGINE=1` forces the Go path—expect crashes on qwen35 MoE/VL on pre-M5 Metal until upstream fixes land.
+**Debug override:** `OLLAMA_NEW_ENGINE=1` forces the Go path for investigation — expect abort during load until reserve is fixed upstream.
 
 ---
 

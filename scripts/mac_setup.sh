@@ -13,7 +13,7 @@
 #
 # Env:
 #   LLAMA_CPP_ROOT=../llama.cpp
-#   MAC_SETUP_GO=1          — build ./zerollama via build_zerollama_mac.sh (default)
+#   MAC_SETUP_GO=1          — build ./zerollama via build_zerollama_mac.sh (BUILD_MLX=auto when ../mlx present)
 #   MAC_SETUP_BUILD=1       — build Metal llama.cpp (default)
 #   MAC_SETUP_TRAINING=1     — also create .venv-training (uv) for MPS LoRA
 #   MAC_SETUP_SIGNOFF=1     — run ./scripts/metal_signoff.sh after setup

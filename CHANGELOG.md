@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Unified Mac build (Jun 2026)
+
+**Why:** Operators had to remember two scripts — `build_zerollama_mac.sh` (ggml) and `build_production_mac.sh` (MLX dylibs) — to run safetensors from repo-root `./zerollama`.
+
+**What shipped:**
+
+- **`build_mlx_dylibs_mac.sh`** — shared CMake install for MLX Metal v3/v4 (dev `build/metal-v*/` or production `dist/darwin-arm64/` via `INSTALL_PREFIX`).
+- **`build_zerollama_mac.sh`** — `BUILD_MLX=auto` (default): builds MLX dylibs when `../mlx` exists and `build/metal-v3/.../libmlxc.dylib` is missing; `BUILD_MLX=0` for fast ggml-only; `BUILD_MLX=1` / `MLX_FORCE=1` to force rebuild.
+- **`build_production_mac.sh`** — regenerates `ggml-metal-embed.metal` before `build_darwin.sh`; arm64 MLX cmake delegated to `build_mlx_dylibs_mac.sh`.
+- **`zerollama doctor`** — MLX fix hint points at `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` for dev.
+
+Doc: [mac-dev-setup.md](docs/mac-dev-setup.md#dev-vs-production-mlx-layout).
+
+### Go ollama engine on darwin (qwen35) — investigated, gate retained (Jun 2026)
+
+**Why:** Re-enable Go engine for `qwen35*` on Mac when Metal backend is stable.
+
+**Findings (M4 Max, `qwen3.6:latest` / qwen35moe):** `OLLAMA_NEW_ENGINE=1` aborts in `ggml_backend_sched_reserve` (`GGML_ASSERT(tensor->buffer == NULL)`) during worst-case graph reserve — not the older `ggml.New()` init segfault. Partial fixes: multimodal reserve placeholders; skip qwen35 multimodal worst-case sizing. **Load still aborts** on main forward reserve; **darwin legacy gate retained** (`pickOllamaEngine` + tests).
+
+Doc: [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md).
+
 ### Mac smoke gaps (Jun 2026)
 
 **Why:** M4 Max sign-off exposed three Mac-only failure modes that looked like one “broken Metal” bug but were independent: SSE proxies hung without terminal frames, runtime + legacy ggml both touched Metal on one device, and `num_gpu=0` still registered the Metal backend at first ggml init.
@@ -109,7 +130,7 @@ Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md) (filename kept
 
 ### MLX dylib rebuild (Jun 2026)
 
-**Why:** `MLX_VERSION` / `MLX_C_VERSION` are independent of the ggml llama.cpp pin — safetensors inference uses **`libmlx.dylib` + `libmlxc.dylib`**, not CGO ggml. Bumping pins without rebuilding leaves `mlxrunner` on stale Metal code (wrong kernels, ABI drift vs regenerated Go/C shims). **`build_zerollama_mac.sh` does not rebuild MLX** — only ggml Metal embed + Go binary.
+**Why:** `MLX_VERSION` / `MLX_C_VERSION` are independent of the ggml llama.cpp pin — safetensors inference uses **`libmlx.dylib` + `libmlxc.dylib`**, not CGO ggml. Bumping pins without rebuilding leaves `mlxrunner` on stale Metal code (wrong kernels, ABI drift vs regenerated Go/C shims). Use **`BUILD_MLX=1 ./scripts/build_zerollama_mac.sh`** (dev) or **`./scripts/build_production_mac.sh`** (release layout) after pin bumps.
 
 **What shipped:**
 

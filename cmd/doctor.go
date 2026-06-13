@@ -445,7 +445,7 @@ func doctorMLXFixHint(repo string) string {
 	if _, err := os.Stat(stale); err == nil {
 		hints = append(hints, "rm "+stale+" if stale (CHECK failed: mlx_distributed_group_new_)")
 	}
-	hints = append(hints, "./scripts/build_production_mac.sh then cd dist/darwin-arm64 && ./zerollama serve")
+	hints = append(hints, "BUILD_MLX=1 ./scripts/build_zerollama_mac.sh (dev) or ./scripts/build_production_mac.sh (dist/)")
 	return strings.Join(hints, "; ")
 }
 

@@ -25,6 +25,7 @@ scripts=(
   mac_setup.sh
   mac_cgo_env.sh
   build_zerollama_mac.sh
+  build_mlx_dylibs_mac.sh
   build_production_mac.sh
   ensure_mlx_sources.sh
   training_uv_venv.sh
@@ -107,7 +108,9 @@ grep -q 'mac_cgo_env' "${ROOT}/scripts/build_zerollama_mac.sh"
 grep -q 'mac-dev-setup.md' "${ROOT}/docs/development.md"
 grep -q 'build_zerollama_mac' "${ROOT}/cmd/doctor.go"
 grep -q 'build_production_mac' "${ROOT}/docs/mac-dev-setup.md"
-grep -q 'doctorCheckMLX' "${ROOT}/cmd/doctor.go"
+grep -q 'BUILD_MLX' "${ROOT}/scripts/build_zerollama_mac.sh"
+grep -q 'pickOllamaEngine' "${ROOT}/llm/server.go"
+grep -q 'skipMultimodalWorstCaseReserve' "${ROOT}/runner/ollamarunner/runner.go"
 grep -q 'darwinSidecarEnabled' "${ROOT}/server/darwin_sidecar.go"
 grep -q 'zerollama serve' "${ROOT}/docs/development.md"
 grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"

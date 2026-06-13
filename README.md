@@ -159,12 +159,15 @@ console.log(response.message.content);
 make -f Makefile.sync clean apply-patches
 ./scripts/sync_vendor_llama.sh
 
-# 2. Build zerollama (Metal ggml) + doctor
-./scripts/build_zerollama_mac.sh   # regenerates ggml-metal-embed + links qwen35 compat
+# 2. Build zerollama (Metal ggml; MLX auto when ../mlx present) + doctor
+./scripts/build_zerollama_mac.sh   # BUILD_MLX=auto: ggml-metal-embed + optional MLX dylibs
 ./zerollama doctor
 
-# 2b. Optional: MLX safetensors (separate from ggml — why: different pins + libmlxc.dylib)
-# ./scripts/ensure_mlx_sources.sh && GOFLAGS=-mod=mod ./scripts/build_production_mac.sh
+# 2b. ggml-only fast rebuild (skip MLX compile)
+# BUILD_MLX=0 ./scripts/build_zerollama_mac.sh
+
+# 2c. Release dist layout (optional — tarball / signed app path)
+# ./scripts/ensure_mlx_sources.sh && ./scripts/build_production_mac.sh
 
 # 3. Optional: sibling llama-server for Python runtime subprocess (vanilla b9611, no Ollama patches)
 LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Production arm64 macOS build: MLX Metal v3/v4 libs + release zerollama binary.
+# Production arm64 macOS build: ggml Metal embed + MLX dylibs + release zerollama binary.
 #
-# WHY separate from build_zerollama_mac.sh: MLX (safetensors / mlxrunner) uses libmlx +
-# libmlxc from sibling ../mlx repos — not in-process ggml CGO. This script is required
-# after MLX_VERSION / MLX_C_VERSION bumps and for safetensors model smoke.
+# WHY this script still exists: production output lands under dist/darwin-arm64/
+# (release layout, CPU ggml backend, signed tarball path). Daily dev uses
+# build_zerollama_mac.sh → repo-root ./zerollama with BUILD_MLX=auto.
 #
 # Output: dist/darwin-arm64/{zerollama,lib/ollama/...}
 # Run from dist:  cd dist/darwin-arm64 && ./zerollama serve
@@ -26,7 +26,6 @@ source "${ROOT}/scripts/ensure_mlx_sources.sh"
 
 export OLLAMA_MLX_SOURCE="${OLLAMA_MLX_SOURCE:-${ROOT}/../mlx}"
 export OLLAMA_MLX_C_SOURCE="${OLLAMA_MLX_C_SOURCE:-${ROOT}/../mlx-c}"
-# WHY: cmake runs `go generate` during MLX configure; -mod=mod avoids vendor/ mismatch abort.
 export GOFLAGS=-mod=mod
 
 ensure_mlx_sources
@@ -44,6 +43,9 @@ echo ">>> OLLAMA_MLX_C_SOURCE=${OLLAMA_MLX_C_SOURCE}" >&2
 echo ">>> CC=${CC} CXX=${CXX}" >&2
 
 cd "${ROOT}"
+echo ">>> regenerating ggml-metal-embed.metal (same as build_zerollama_mac.sh)" >&2
+go generate ./ml/backend/ggml/ggml/src/ggml-metal/
+
 ./scripts/build_darwin.sh -a arm64 build
 
 OUT="${ROOT}/dist/darwin-arm64/zerollama"

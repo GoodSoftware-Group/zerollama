@@ -22,7 +22,7 @@ Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake 
 | **MLX_C_VERSION** | `fba4470b89073180056c9ea46c443051375f7399` (upstream Ollama) |
 | **Fetch** | `./scripts/ensure_mlx_sources.sh` (sibling `../mlx`, `../mlx-c`) |
 
-**Why separate from llama.cpp:** MLX drives **safetensors** via `mlxrunner`, not GGUF ggml. Pin bumps require a **native dylib rebuild** — `build_zerollama_mac.sh` does not compile MLX.
+**Why separate from llama.cpp:** MLX drives **safetensors** via `mlxrunner`, not GGUF ggml. Pin bumps require a **native dylib rebuild** — use `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` (dev) or `./scripts/build_production_mac.sh` (release).
 
 **Rebuild (Darwin arm64):**
 
@@ -30,9 +30,8 @@ Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake 
 ./scripts/ensure_mlx_sources.sh
 git -C ../mlx checkout $(cat MLX_VERSION)
 git -C ../mlx-c checkout $(cat MLX_C_VERSION)
-export GOFLAGS=-mod=mod
-./scripts/build_production_mac.sh
-./zerollama doctor   # mlx engine → build/metal-v4/lib/ollama/libmlxc.dylib
+BUILD_MLX=1 ./scripts/build_zerollama_mac.sh
+./zerollama doctor   # mlx engine → build/metal-v*/lib/ollama/...
 ```
 
 See [docs/apple-silicon-metal.md](../docs/apple-silicon-metal.md#mlx-engine-optional).

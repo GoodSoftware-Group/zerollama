@@ -28,10 +28,10 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
-	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
+	ggmlbackend "github.com/ollama/ollama/ml/backend/ggml"
 	"github.com/ollama/ollama/ml/nn/pooling"
 	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/model/input"
@@ -41,6 +41,19 @@ import (
 
 	_ "github.com/ollama/ollama/model/models"
 )
+
+// skipMultimodalWorstCaseReserve avoids multimodal EncodeMultimodal sizing graphs for
+// architectures where published GGUFs embed vision weights but text-only load/reserve
+// must not run vision tensors through ggml sched reserve (darwin Metal abort:
+// GGML_ASSERT(tensor->buffer == NULL) during reserveWorstCaseGraph).
+func skipMultimodalWorstCaseReserve(m model.Model) bool {
+	switch m.Backend().Config().Architecture() {
+	case "qwen35", "qwen35moe", "qwen3next":
+		return true
+	default:
+		return false
+	}
+}
 
 // response contains a piece of generated text along with optional logprobs
 type response struct {
@@ -1093,7 +1106,7 @@ func (s *Server) reserveWorstCaseGraph(prompt bool) error {
 	// - The result may now be larger than a batch (images may not fit in a
 	//   single batch), so trim based on what will fit and must be grouped together.
 	// - Fill out the rest of the space with text tokens.
-	if multimodalProcessor, ok := s.model.(model.MultimodalProcessor); prompt && ok {
+	if multimodalProcessor, ok := s.model.(model.MultimodalProcessor); prompt && ok && !skipMultimodalWorstCaseReserve(s.model) {
 		mmCtx := s.model.Backend().NewContext()
 		defer mmCtx.Close()
 
@@ -1362,38 +1375,15 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	m := s.model
-
-	if m == nil {
-		startLoad := time.Now()
-
-		// Dummy load to get the backend wired up
-		f, err := os.CreateTemp("", "*.bin")
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to initialize backend: %v", err), http.StatusInternalServerError)
-			return
-		}
-		defer f.Close()
-		defer os.Remove(f.Name())
-
-		if err := ggml.WriteGGUF(f, ggml.KV{
-			"general.architecture": "llama",
-			"tokenizer.ggml.model": "gpt2",
-		}, nil); err != nil {
-			http.Error(w, fmt.Sprintf("failed to initialize backend: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		m, err = model.New(f.Name(), ml.BackendParams{NumThreads: runtime.NumCPU(), AllocMemory: false, GPULayers: ml.GPULayersList{{}}})
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to initialize backend: %v", err), http.StatusInternalServerError)
-			return
-		}
-		slog.Debug("dummy model load took", "duration", time.Since(startLoad))
-	}
-
 	startDevices := time.Now()
-	infos := m.Backend().BackendDevices()
+	var infos []ml.DeviceInfo
+	if s.model != nil {
+		infos = s.model.Backend().BackendDevices()
+	} else {
+		// Bootstrap discovery must enable Metal on darwin. A dummy model load with
+		// zero GPU layers calls ensureDevices(true) and permanently disables Metal.
+		infos = ggmlbackend.DiscoverBackendDevices()
+	}
 	slog.Debug("gathering device infos took", "duration", time.Since(startDevices))
 	if err := json.NewEncoder(w).Encode(&infos); err != nil {
 		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)

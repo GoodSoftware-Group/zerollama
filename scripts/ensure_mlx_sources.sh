@@ -4,8 +4,8 @@
 #
 # WHY this exists: MLX_VERSION / MLX_C_VERSION pin safetensors inference separately from
 # llama.cpp (GGUF). After bumping those files, checkout the SHAs here then rebuild dylibs
-# (GOFLAGS=-mod=mod ./scripts/build_production_mac.sh) — build_zerollama_mac.sh does NOT
-# compile libmlx/libmlxc.
+# (GOFLAGS=-mod=mod ./scripts/build_zerollama_mac.sh with BUILD_MLX=1) — or
+# build_mlx_dylibs_mac.sh alone after pins change.
 #
 # Usage:
 #   ./scripts/ensure_mlx_sources.sh
