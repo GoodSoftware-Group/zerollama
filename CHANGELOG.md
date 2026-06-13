@@ -105,13 +105,13 @@ Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#mlx-engine-option
 
 **Known gaps (documented, not blockers for b9611):**
 
-| Gap | Why it happens | What to use instead |
-|-----|----------------|---------------------|
-| **`num_gpu=0` still init Metal** on Darwin | ggml is compiled with `GGML_USE_METAL`; `num_gpu=0` only sets layer count, not backend skip | CPU-only **tests** without model load; or wait for idle GPU |
-| **Legacy ggml load while runtime holds Metal** | Two stacks share one Metal device without full VRAM broker on ggml fit | Runtime path + proxy header; Phase 17 deprecates plain ggml for text GGUF |
-| **Proxy streaming hang** in full `e2e_runtime_smoke` | `v1/chat/completions` stream step can block long on some builds | Non-stream proxy/tools smokes pass; file issue if stream required |
+| Gap | Why it happened | Fix (Jun 2026) |
+|-----|-----------------|----------------|
+| **Proxy v1 stream hang** | SSE missing `[DONE]` on errors; curl waited for EOF | Runtime always emits `[DONE]`; Go proxy flushes SSE; e2e `--max-time` via `RUN_E2E_STREAM_MAX` |
+| **Legacy ggml + runtime Metal** | Two stacks on one device | Scheduler blocks ggml when runtime `llama_server=true`; legacy smoke skips on darwin unless `RUN_E2E_LEGACY_FORCE=1` |
+| **`num_gpu=0` init Metal** | Metal registered at first ggml init | First CPU-only load sets `GGML_DISABLE_METAL` before backend register |
 | **`go test ./ml/backend/ggml/...`** | Dummy GGUF fixture segfault | `doctor` + `metal_signoff.sh` as gate |
-| **MLX dylib** | Pin bump without rebuild | `./scripts/ensure_mlx_sources.sh` + `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` — see CHANGELOG **MLX dylib rebuild** |
+| **MLX dylib** | Pin bump without rebuild | `./scripts/ensure_mlx_sources.sh` + `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` |
 
 Scripts: `./scripts/metal_signoff.sh`, `./scripts/gpu_smoke_all.sh` with `RUN_E2E_PHASE14=1`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
 

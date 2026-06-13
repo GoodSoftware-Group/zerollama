@@ -28,6 +28,8 @@ source "${ROOT}/scripts/runtime_smoke_lib.sh"
 
 RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
 OLLAMA_URL="${OLLAMA_HOST:-http://127.0.0.1:8080}"
+# Stream smokes: cap wait so a wedged SSE proxy cannot block CI for 20+ minutes.
+SMOKE_STREAM_MAX="${RUN_E2E_STREAM_MAX:-120}"
 
 # Optional: override GGUF for generate when daemon LLAMA_MODEL is too large for free VRAM.
 # Example: RUN_E2E_GGUF=/path/to/small.q8_0.gguf RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh
@@ -71,6 +73,14 @@ run_legacy_smoke() {
   if [[ -z "$legacy_model" ]]; then
     echo "RUN_E2E_LEGACY=1 requires RUN_E2E_LEGACY_MODEL (pulled local tag)" >&2
     return 1
+  fi
+  if [[ "$(uname -s)" == "Darwin" && "${RUN_E2E_LEGACY_FORCE:-0}" != "1" ]]; then
+    local rt_llama
+    rt_llama=$(runtime_fetch_health "$RUNTIME_URL" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("llama_server") else "")' 2>/dev/null || true)
+    if [[ "$rt_llama" == "1" ]]; then
+      echo "skip legacy ggml on darwin while runtime holds Metal (llama_server=true); set RUN_E2E_LEGACY_FORCE=1 to override"
+      return 0
+    fi
   fi
   echo "== zerollama legacy /api/generate (ggml) =="
   local legacy_opts
@@ -280,7 +290,7 @@ assert msg.get('content'), d
   echo "== runtime /api/generate (stream) =="
   stream_payload=$(python3 -c "import json,sys; print(json.dumps({'model':'smoke','prompt':'Say: hi','stream':True,'options':json.loads(sys.argv[1])}))" "$gen_opts")
   stream_tmp=$(mktemp)
-  code=$(curl -sS -o "$stream_tmp" -w "%{http_code}" -X POST \
+  code=$(curl -sS -m "${SMOKE_STREAM_MAX}" -o "$stream_tmp" -w "%{http_code}" -X POST \
     -H 'Content-Type: application/json' \
     -d "$stream_payload" \
     "${RUNTIME_URL}/api/generate")
@@ -305,7 +315,7 @@ assert msg.get('content'), d
     'options': json.loads(sys.argv[1]),
   }))" "$gen_opts")
   chat_stream_tmp=$(mktemp)
-  code=$(curl -sS -o "$chat_stream_tmp" -w "%{http_code}" -X POST \
+  code=$(curl -sS -m "${SMOKE_STREAM_MAX}" -o "$chat_stream_tmp" -w "%{http_code}" -X POST \
     -H 'Content-Type: application/json' \
     -d "$chat_stream_payload" \
     "${RUNTIME_URL}/api/chat")
@@ -340,7 +350,7 @@ if not found:
     'options': json.loads(sys.argv[1]),
   }))" "$gen_opts")
   v1_stream_tmp=$(mktemp)
-  code=$(curl -sS -o "$v1_stream_tmp" -w "%{http_code}" -X POST \
+  code=$(curl -sS -m "${SMOKE_STREAM_MAX}" -o "$v1_stream_tmp" -w "%{http_code}" -X POST \
     -H 'Content-Type: application/json' \
     -d "$v1_stream_payload" \
     "${RUNTIME_URL}/v1/chat/completions")
@@ -517,9 +527,9 @@ if [[ "${RUN_E2E_PROXY:-0}" == "1" ]]; then
   echo "== zerollama proxy /api/generate =="
   proxy_model="${RUN_E2E_PROXY_MODEL:-smoke}"
   proxy_headers=(-H 'Content-Type: application/json')
-  if [[ "$proxy_model" == "smoke" ]] || [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
-    # Ad-hoc name, or Phase 14: force runtime proxy (ZEROLLAMA_RUNTIME=1 is per-model
-    # default-on, not OLLAMA_RUNTIME_ALL; pulled tags may still hit ggml without header).
+  if [[ "$proxy_model" == "smoke" ]] || [[ "${RUN_E2E_PHASE14:-0}" == "1" ]] || [[ "${RUN_E2E_GPU:-0}" == "1" ]]; then
+    # Ad-hoc name, Phase 14, or GPU smokes: force runtime proxy (ZEROLLAMA_RUNTIME=1 is
+    # per-model default-on; pulled tags may still hit ggml without header on darwin).
     proxy_headers+=(-H 'X-Zerollama-Runtime: 1')
   fi
   proxy_opts=$(smoke_generate_options)
@@ -627,7 +637,7 @@ assert choices and (choices[0].get('message') or {}).get('content'), d
     'options': json.loads(sys.argv[2]),
   }))" "$proxy_model" "$proxy_opts")
   chat_stream_tmp=$(mktemp)
-  code=$(curl -sS -o "$chat_stream_tmp" -w "%{http_code}" -X POST \
+  code=$(curl -sS -m "${SMOKE_STREAM_MAX}" -o "$chat_stream_tmp" -w "%{http_code}" -X POST \
     "${proxy_headers[@]}" \
     -d "$chat_stream_proxy" \
     "${OLLAMA_URL}/api/chat")
@@ -657,7 +667,7 @@ else:
     'options': json.loads(sys.argv[2]),
   }))" "$proxy_model" "$proxy_opts")
   v1_stream_tmp=$(mktemp)
-  code=$(curl -sS -o "$v1_stream_tmp" -w "%{http_code}" -X POST \
+  code=$(curl -sS -m "${SMOKE_STREAM_MAX}" -o "$v1_stream_tmp" -w "%{http_code}" -X POST \
     "${proxy_headers[@]}" \
     -d "$v1_stream_proxy" \
     "${OLLAMA_URL}/v1/chat/completions")

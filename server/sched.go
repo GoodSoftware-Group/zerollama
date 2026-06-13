@@ -630,8 +630,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		vram.PrepareForLegacyRunner(ctx)
-		if deferInferenceToRuntime(req.model) {
+		if deferInferenceToRuntime(req.model) || darwinRuntimeMetalBlocksGgml(ctx, req.model) {
 			slog.Info(
 				"skipping ggml runner load; model uses python runtime",
 				"name", req.model.ShortName,
@@ -641,6 +640,16 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			s.loadedMu.Unlock()
 			return false
 		}
+		if darwinGgmlContentionWithRuntime(ctx, req.model) {
+			slog.Info(
+				"skipping ggml runner load; runtime sidecar holds Metal on darwin",
+				"name", req.model.ShortName,
+			)
+			req.errCh <- ErrDarwinMetalContention
+			s.loadedMu.Unlock()
+			return false
+		}
+		vram.PrepareForLegacyRunner(ctx)
 		var err error
 		if !req.model.IsMLX() {
 			f, loadErr := llm.LoadModel(req.model.ModelPath, 1024)

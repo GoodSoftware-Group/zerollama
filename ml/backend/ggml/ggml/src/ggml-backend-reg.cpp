@@ -117,7 +117,11 @@ struct ggml_backend_registry {
         register_backend(ggml_backend_cuda_reg());
 #endif
 #ifdef GGML_USE_METAL
-        register_backend(ggml_backend_metal_reg());
+        if (getenv("GGML_DISABLE_METAL") == nullptr) {
+            register_backend(ggml_backend_metal_reg());
+        } else {
+            GGML_LOG_DEBUG("Metal backend disabled by GGML_DISABLE_METAL environment variable\n");
+        }
 #endif
 #ifdef GGML_USE_SYCL
         register_backend(ggml_backend_sycl_reg());

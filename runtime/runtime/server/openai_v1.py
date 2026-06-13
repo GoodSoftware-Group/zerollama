@@ -266,32 +266,35 @@ def stream_openai_sse(
                 num_ctx=prep.num_ctx,
                 options=prep.options,
             )
+
+        for part in parts:
+            msg = part.get("message") or {}
+            content = msg.get("content", "")
+            done = bool(part.get("done"))
+            delta: dict[str, Any] = {}
+            if content:
+                delta["content"] = content
+            tcalls = msg.get("tool_calls")
+            if tcalls:
+                delta["tool_calls"] = _openai_tool_calls(tcalls)
+            if delta:
+                yield chunk(delta)
+            if done:
+                reason = part.get("done_reason") or "stop"
+                if reason == "tool_calls":
+                    reason = "tool_calls"
+                else:
+                    reason = "stop"
+                yield chunk({}, finish=reason)
+                break
     except ToolParseUnavailableError as e:
         err = {"error": {"message": str(e), "type": "tool_parse_unavailable"}}
         yield f"data: {json.dumps(err)}\n\n"
-        yield "data: [DONE]\n\n"
-        return
-
-    for part in parts:
-        msg = part.get("message") or {}
-        content = msg.get("content", "")
-        done = bool(part.get("done"))
-        delta: dict[str, Any] = {}
-        if content:
-            delta["content"] = content
-        tcalls = msg.get("tool_calls")
-        if tcalls:
-            delta["tool_calls"] = _openai_tool_calls(tcalls)
-        if delta:
-            yield chunk(delta)
-        if done:
-            reason = part.get("done_reason") or "stop"
-            if reason == "tool_calls":
-                reason = "tool_calls"
-            else:
-                reason = "stop"
-            yield chunk({}, finish=reason)
-            break
+    except Exception as e:
+        # Why: load/generate errors after the first SSE chunk left connections open
+        # without [DONE], so Go/curl proxies hung until client timeout.
+        err = {"error": {"message": str(e), "type": type(e).__name__}}
+        yield f"data: {json.dumps(err)}\n\n"
     yield "data: [DONE]\n\n"
 
 

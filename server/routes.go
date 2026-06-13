@@ -343,8 +343,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		m.Config.Parser = "harmony"
 	}
 
-	if !req.Raw && m.Config.Parser != "" {
-		builtinParser = parsers.ParserForName(m.Config.Parser)
+	parserName := resolveParserName(m)
+	if !req.Raw && parserName != "" {
+		builtinParser = parsers.ParserForName(parserName)
 		if builtinParser != nil {
 			// no tools or last message for generate endpoint
 			builtinParser.Init(nil, nil, req.Think)
@@ -360,7 +361,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		caps = append(caps, model.CapabilityThinking)
 		if req.Think == nil {
-			req.Think = &api.ThinkValue{Value: true}
+			req.Think = &api.ThinkValue{Value: false}
 		}
 	} else {
 		if req.Think != nil && req.Think.Bool() {
@@ -505,7 +506,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	var thinkingState *thinking.Parser
 	if builtinParser == nil {
-		openingTag, closingTag := thinking.TagsForModel(m.Config.ModelFamily, m.Template.Template)
+		openingTag, closingTag := thinking.TagsForModel(m.PrimaryFamily(), m.Template.Template)
 		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
 			thinkingState = &thinking.Parser{
 				OpeningTag: openingTag,
@@ -1164,7 +1165,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 	modelDetails := api.ModelDetails{
 		ParentModel:       m.ParentModel,
 		Format:            m.Config.ModelFormat,
-		Family:            m.Config.ModelFamily,
+		Family:            m.PrimaryFamily(),
 		Families:          m.Config.ModelFamilies,
 		ParameterSize:     m.Config.ModelType,
 		QuantizationLevel: m.Config.FileType,
@@ -2415,7 +2416,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		caps = append(caps, model.CapabilityThinking)
 		if req.Think == nil {
-			req.Think = &api.ThinkValue{Value: true}
+			req.Think = &api.ThinkValue{Value: false}
 		}
 	} else {
 		if req.Think != nil && req.Think.Bool() {
@@ -2474,8 +2475,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	var builtinParser parsers.Parser
 	processedTools := req.Tools
 
-	if m.Config.Parser != "" {
-		builtinParser = parsers.ParserForName(m.Config.Parser)
+	parserName := resolveParserName(m)
+	if parserName != "" {
+		builtinParser = parsers.ParserForName(parserName)
 		if builtinParser != nil {
 			// Determine last message for chat prefill
 			var lastMessage *api.Message
@@ -2789,6 +2791,14 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 	case errors.Is(err, os.ErrNotExist):
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model %q not found, try pulling it first", name)})
+	// Why 400: model is configured for the Python runtime sidecar; the legacy ggml
+	// runner will never load it — caller should use /api/generate or /api/chat via runtime.
+	case errors.Is(err, ErrRuntimeInferenceModel):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	// Why 503: runtime sidecar holds Metal; a second ggml runner would contend on the
+	// same device. Caller should unload the runtime model or use runtime routing.
+	case errors.Is(err, ErrDarwinMetalContention):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}

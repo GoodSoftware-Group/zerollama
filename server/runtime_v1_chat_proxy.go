@@ -115,7 +115,7 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 			}
 		}
 		c.Status(resp.StatusCode)
-		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		if err := copyRuntimeResponseBody(c.Writer, resp.Body); err != nil {
 			slog.Warn("runtime v1 proxy: copy body", "error", err)
 		}
 		c.Abort()

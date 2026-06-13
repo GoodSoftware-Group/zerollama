@@ -86,32 +86,43 @@ func applyDeviceProps(info *ml.DeviceInfo, dev C.ggml_backend_dev_t, props *C.st
 	}
 }
 
-var initDevices = sync.OnceFunc(func() {
-	ggml.OnceLoad()
+var initDevicesOnce sync.Once
 
-	backends = make(map[C.ggml_backend_dev_t]C.ggml_backend_t)
-	for i := range C.ggml_backend_dev_count() {
-		d := C.ggml_backend_dev_get(i)
+// ensureDevices registers ggml backends once per process (sync.Once).
+// When cpuOnly is true on the first call, Metal is not registered (GGML_DISABLE_METAL)
+// so num_gpu=0 loads avoid touching the GPU — why: Darwin Metal init contends with runtime.
+// First call wins: a later CPU-only New after an earlier GPU load cannot disable Metal.
+func ensureDevices(cpuOnly bool) {
+	initDevicesOnce.Do(func() {
+		if cpuOnly && os.Getenv("GGML_DISABLE_METAL") == "" {
+			_ = os.Setenv("GGML_DISABLE_METAL", "1")
+		}
+		ggml.OnceLoad()
 
-		switch C.ggml_backend_dev_type(d) {
-		case C.GGML_BACKEND_DEVICE_TYPE_CPU:
-			if len(cpus) == 0 {
-				// only the first cpu device should be used
-				cpus = append(cpus, d)
+		backends = make(map[C.ggml_backend_dev_t]C.ggml_backend_t)
+		for i := range C.ggml_backend_dev_count() {
+			d := C.ggml_backend_dev_get(i)
+
+			switch C.ggml_backend_dev_type(d) {
+			case C.GGML_BACKEND_DEVICE_TYPE_CPU:
+				if len(cpus) == 0 {
+					// only the first cpu device should be used
+					cpus = append(cpus, d)
+				}
+			case C.GGML_BACKEND_DEVICE_TYPE_ACCEL:
+				accels = append(accels, d)
+			case C.GGML_BACKEND_DEVICE_TYPE_GPU,
+				C.GGML_BACKEND_DEVICE_TYPE_IGPU:
+				gpus = append(gpus, d)
 			}
-		case C.GGML_BACKEND_DEVICE_TYPE_ACCEL:
-			accels = append(accels, d)
-		case C.GGML_BACKEND_DEVICE_TYPE_GPU,
-			C.GGML_BACKEND_DEVICE_TYPE_IGPU:
-			gpus = append(gpus, d)
-		}
 
-		backends[d] = C.ggml_backend_dev_init(d, nil)
-		if backends[d] == nil {
-			slog.Warn("ggml backend init failed, device will be skipped", "device", C.GoString(C.ggml_backend_dev_name(d)))
+			backends[d] = C.ggml_backend_dev_init(d, nil)
+			if backends[d] == nil {
+				slog.Warn("ggml backend init failed, device will be skipped", "device", C.GoString(C.ggml_backend_dev_name(d)))
+			}
 		}
-	}
-})
+	})
+}
 
 type layerDevice struct {
 	d  C.ggml_backend_dev_t
@@ -189,7 +200,7 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 		)
 	})
 
-	initDevices()
+	ensureDevices(params.GPULayers.Sum() == 0)
 
 	var requiredMemory ml.BackendMemory
 	btDeviceMemory := make(map[C.ggml_backend_buffer_type_t]*ml.DeviceMemory)

@@ -139,9 +139,11 @@ func forwardRuntimeNDJSON(
 
 	c.Header("Content-Type", "application/x-ndjson")
 	c.Status(http.StatusOK)
-	_, err = io.Copy(c.Writer, resp.Body)
+	if err := copyRuntimeResponseBody(c.Writer, resp.Body); err != nil {
+		return err
+	}
 	c.Abort()
-	return err
+	return nil
 }
 
 func runtimeOptionsWithNumPredict(nPredict int, limited bool) map[string]any {
@@ -230,4 +232,29 @@ func chatNeedsLegacyRunner(messages []api.Message, req api.ChatRequest) bool {
 func writeRuntimeProxyError(c *gin.Context, err error) {
 	slog.Warn("runtime proxy: request failed", "error", err)
 	c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+}
+
+// copyRuntimeResponseBody streams a runtime response to the client with flush after
+// each chunk — why: SSE/NDJSON proxies through Gin otherwise buffer until EOF and
+// curl without --max-time can hang for minutes on partial streams.
+func copyRuntimeResponseBody(w http.ResponseWriter, r io.Reader) error {
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		nr, err := r.Read(buf)
+		if nr > 0 {
+			if _, ew := w.Write(buf[:nr]); ew != nil {
+				return ew
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
 }
