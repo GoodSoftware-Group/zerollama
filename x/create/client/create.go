@@ -183,6 +183,31 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 	return nil
 }
 
+// ImportSafetensorsFromDirectory registers an MLX-native safetensors model from a
+// local directory (e.g. LM Studio cache) without GGUF conversion.
+func ImportSafetensorsFromDirectory(modelName, modelDir string, fn func(status string)) error {
+	if !create.IsSafetensorsModelDir(modelDir) {
+		return fmt.Errorf("%s is not a safetensors model directory", modelDir)
+	}
+
+	opts := CreateOptions{
+		ModelName: modelName,
+		ModelDir:  modelDir,
+	}
+
+	capabilities := inferSafetensorsCapabilities(modelDir)
+	parserName := getParserName(modelDir)
+	rendererName := getRendererName(modelDir)
+
+	return create.CreateSafetensorsModel(
+		modelName, modelDir, "",
+		newLayerCreator(), newTensorLayerCreator(),
+		newManifestWriter(opts, capabilities, parserName, rendererName),
+		fn,
+		newPackedTensorLayerCreator(),
+	)
+}
+
 func inferSafetensorsCapabilities(modelDir string) []string {
 	capabilities := []string{"completion"}
 

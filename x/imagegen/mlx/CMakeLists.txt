@@ -117,6 +117,8 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR OR NOT APPLE)
     set(ENV{CGO_CFLAGS} "")
     set(ENV{CGO_CXXFLAGS} "")
 
+    # WHY GOFLAGS=-mod=mod in the environment: go generate loads zerollama packages;
+    # incomplete vendor/ aborts configure (see build_production_mac.sh).
     execute_process(
         COMMAND ${GO_EXECUTABLE} generate ./x/...
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

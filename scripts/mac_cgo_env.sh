@@ -13,15 +13,39 @@ _MAC_CGO_XCODE_PY_PC="/Applications/Xcode.app/Contents/Developer/Library/Framewo
 _MAC_CGO_XCODE_FW="/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
 
 mac_cgo_env_python_rpath() {
-  local prefix
+  local prefix libdir rpath_flag
   prefix="$(pkg-config --variable=prefix python3-embed 2>/dev/null || true)"
-  if [[ "$prefix" != *Python3.framework* ]]; then
+  libdir="$(pkg-config --variable=libdir python3-embed 2>/dev/null || true)"
+  if [[ "$prefix" == *Python3.framework* ]]; then
+    rpath_flag="-Wl,-rpath,${_MAC_CGO_XCODE_FW}"
+    if [[ "${CGO_LDFLAGS:-}" != *"${_MAC_CGO_XCODE_FW}"* ]]; then
+      export CGO_LDFLAGS="${CGO_LDFLAGS:+$CGO_LDFLAGS }${rpath_flag}"
+    fi
     return 0
   fi
-  local rpath_flag="-Wl,-rpath,${_MAC_CGO_XCODE_FW}"
-  if [[ "${CGO_LDFLAGS:-}" != *"${_MAC_CGO_XCODE_FW}"* ]]; then
-    export CGO_LDFLAGS="${CGO_LDFLAGS:+$CGO_LDFLAGS }${rpath_flag}"
+  if [[ -n "$libdir" && "${CGO_LDFLAGS:-}" != *"${libdir}"* ]]; then
+    export CGO_LDFLAGS="${CGO_LDFLAGS:+$CGO_LDFLAGS }-Wl,-rpath,${libdir}"
   fi
+}
+
+# Prefer .venv-training's uv-managed Python (3.11+) for embedded training when present.
+# Xcode python3-embed is 3.9 and lacks typing.TypeGuard that torch requires.
+mac_cgo_env_prefer_training_embed() {
+  local root="${1:-}"
+  [[ -n "$root" ]] || return 0
+  local py="${root}/.venv-training/bin/python"
+  [[ -x "$py" ]] || return 0
+  local base major minor
+  base="$("$py" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || true)"
+  read -r major minor <<< "$("$py" -c 'import sys; print(sys.version_info.major, sys.version_info.minor)' 2>/dev/null || echo "0 0")"
+  if (( major < 3 || (major == 3 && minor < 10) )); then
+    return 0
+  fi
+  if [[ ! -f "${base}/lib/pkgconfig/python3-embed.pc" ]]; then
+    return 0
+  fi
+  export PKG_CONFIG_PATH="${base}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+  mac_cgo_env_python_rpath
 }
 
 mac_cgo_env() {

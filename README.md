@@ -163,6 +163,9 @@ make -f Makefile.sync clean apply-patches
 ./scripts/build_zerollama_mac.sh   # regenerates ggml-metal-embed + links qwen35 compat
 ./zerollama doctor
 
+# 2b. Optional: MLX safetensors (separate from ggml — why: different pins + libmlxc.dylib)
+# ./scripts/ensure_mlx_sources.sh && GOFLAGS=-mod=mod ./scripts/build_production_mac.sh
+
 # 3. Optional: sibling llama-server for Python runtime subprocess (vanilla b9611, no Ollama patches)
 LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
 
@@ -196,7 +199,7 @@ LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
 - [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
-- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; MLX optional path; **Jun 2026 sign-off** (`metal_signoff.sh`) and known Mac smoke gaps.
+- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **MLX dylib rebuild** at `MLX_VERSION` pins; **Jun 2026 sign-off** (`metal_signoff.sh`) and known Mac smoke gaps.
 - [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits three Mac layers (Go engine segfault, compat metadata, stale Metal embed); darwin llamarunner path; `num_ctx` and rebuild checklist.
 - [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards.
 

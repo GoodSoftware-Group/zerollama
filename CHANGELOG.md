@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fleet LAN discovery (F4)
+
+**Why:** Static `ZEROLLAMA_FLEET_PEERS` works for K8s and fixed IPs but homelab operators want zero-config LAN discovery without maintaining peer lists.
+
+**What shipped:**
+
+- **Nodes:** `ZEROLLAMA_MDNS=1` on `zerollama serve` advertises `_zerollama._tcp` (TXT: `role=node`, `version`).
+- **Fleet manager:** `--mdns` / `ZEROLLAMA_FLEET_MDNS=1` browses LAN and merges with static peers; peers optional when browse enabled.
+- **Fleet advertise:** `--mdns-advertise` / `ZEROLLAMA_FLEET_MDNS_ADVERTISE=1` registers `_zerollama-fleet._tcp` for agents.
+- **Package:** `fleet/mdns/` (register, browse, peer URL helpers).
+
+Doc: [docs/fleet-management.md](docs/fleet-management.md#lan-discovery-f4-mdns).
+
 ### Qwen 3.5 / 3.6 on Apple Silicon (Jun 2026)
 
 **Why:** Library tags like `qwen3.6:latest` (`qwen35moe`) and LM Studio–style `qwen35` VL GGUFs became loadable after the b9611 pin, but Mac operators hit **three independent failures**: Go-engine Metal SIGSEGV during init, llama.cpp `rope.dimension_sections` mismatch on published blobs, and missing unary Metal kernels on first decode. Each looked like one “Metal bug”; fixes belong to different layers.
@@ -52,9 +65,31 @@ Doc: [docs/fleet-management.md](docs/fleet-management.md), [docs/fleet-schedulin
 - **Go fixes:** `llama.go` mtmd `bitmap_wrapper` + `placeholder=false` (b9611 API); `build-info.cpp` @ `1aefee58`.
 - **Build:** `./scripts/build_zerollama_mac.sh` uses `GOFLAGS=-mod=mod` so CGO builds succeed when `vendor/` is incomplete.
 - **Sibling runtime tree:** `../llama.cpp` @ b9611 + `./scripts/build_llama_server.sh` for vanilla `llama-server` / `libllama.dylib` (Python runtime subprocess — separate from patched in-tree ggml).
-- **MLX:** `MLX_VERSION` → `2165dc08`, `MLX_C_VERSION` → `fba4470b` (upstream Ollama pins). **Not rebuilt in this pass:** safetensors/mlxrunner still uses existing `libmlxc.dylib` until `ensure_mlx_sources.sh` + Darwin MLX install.
+- **MLX:** `MLX_VERSION` → `2165dc08`, `MLX_C_VERSION` → `fba4470b` (upstream Ollama pins). Rebuild dylibs after pin bump — see **MLX dylib rebuild** below.
 
 Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md) (filename kept; pin is b9611).
+
+### MLX dylib rebuild (Jun 2026)
+
+**Why:** `MLX_VERSION` / `MLX_C_VERSION` are independent of the ggml llama.cpp pin — safetensors inference uses **`libmlx.dylib` + `libmlxc.dylib`**, not CGO ggml. Bumping pins without rebuilding leaves `mlxrunner` on stale Metal code (wrong kernels, ABI drift vs regenerated Go/C shims). **`build_zerollama_mac.sh` does not rebuild MLX** — only ggml Metal embed + Go binary.
+
+**What shipped:**
+
+- Rebuilt **Metal v3** (macOS 14+) and **Metal v4** (macOS 26+ / NAX) at pins `2165dc08` / `fba4470b`.
+- **Install layout:** `dist/darwin-arm64/lib/ollama/mlx_metal_v3/` and `mlx_metal_v4/` (`libmlx.dylib`, `libmlxc.dylib`, `mlx.metallib`).
+- **Dev discovery:** `build/metal-v4/lib/ollama/libmlxc.dylib` (repo-root `./zerollama doctor` loads newest variant tree).
+- **`GOFLAGS=-mod=mod`** in `build_production_mac.sh` — **why:** CMake runs `go generate ./x/...` during MLX configure; incomplete `vendor/` otherwise aborts configure.
+
+**Operator commands:**
+
+```bash
+./scripts/ensure_mlx_sources.sh          # verify ../mlx ../mlx-c have pinned SHAs
+export GOFLAGS=-mod=mod
+./scripts/build_production_mac.sh      # MLX + release zerollama → dist/darwin-arm64/
+# MLX dylibs only (no Go binary): cmake --build build/metal-v3 --target mlx mlxc && cmake --install …
+```
+
+Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#mlx-engine-optional), [docs/mac-dev-setup.md](docs/mac-dev-setup.md#dev-vs-production-mlx-layout).
 
 ### Apple Silicon sign-off (Jun 2026, M4 Max)
 
@@ -76,7 +111,7 @@ Doc: [docs/ggml-b9509-migration.md](docs/ggml-b9509-migration.md) (filename kept
 | **Legacy ggml load while runtime holds Metal** | Two stacks share one Metal device without full VRAM broker on ggml fit | Runtime path + proxy header; Phase 17 deprecates plain ggml for text GGUF |
 | **Proxy streaming hang** in full `e2e_runtime_smoke` | `v1/chat/completions` stream step can block long on some builds | Non-stream proxy/tools smokes pass; file issue if stream required |
 | **`go test ./ml/backend/ggml/...`** | Dummy GGUF fixture segfault | `doctor` + `metal_signoff.sh` as gate |
-| **MLX dylib** | Pin bump without rebuild | Rebuild when testing safetensors: `ensure_mlx_sources.sh` + `build_darwin.sh` MLX component |
+| **MLX dylib** | Pin bump without rebuild | `./scripts/ensure_mlx_sources.sh` + `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` — see CHANGELOG **MLX dylib rebuild** |
 
 Scripts: `./scripts/metal_signoff.sh`, `./scripts/gpu_smoke_all.sh` with `RUN_E2E_PHASE14=1`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
 

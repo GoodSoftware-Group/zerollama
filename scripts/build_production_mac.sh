@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Production arm64 macOS build: MLX Metal v3/v4 libs + release zerollama binary.
 #
+# WHY separate from build_zerollama_mac.sh: MLX (safetensors / mlxrunner) uses libmlx +
+# libmlxc from sibling ../mlx repos — not in-process ggml CGO. This script is required
+# after MLX_VERSION / MLX_C_VERSION bumps and for safetensors model smoke.
+#
 # Output: dist/darwin-arm64/{zerollama,lib/ollama/...}
 # Run from dist:  cd dist/darwin-arm64 && ./zerollama serve
 #
@@ -22,6 +26,8 @@ source "${ROOT}/scripts/ensure_mlx_sources.sh"
 
 export OLLAMA_MLX_SOURCE="${OLLAMA_MLX_SOURCE:-${ROOT}/../mlx}"
 export OLLAMA_MLX_C_SOURCE="${OLLAMA_MLX_C_SOURCE:-${ROOT}/../mlx-c}"
+# WHY: cmake runs `go generate` during MLX configure; -mod=mod avoids vendor/ mismatch abort.
+export GOFLAGS=-mod=mod
 
 ensure_mlx_sources
 

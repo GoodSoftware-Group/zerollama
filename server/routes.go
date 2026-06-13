@@ -2025,6 +2025,9 @@ func Serve(ln net.Listener) error {
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
 
+	// Register mDNS after startup work so the HTTP listener is about to accept connections.
+	startNodeMDNS(ctx, ln)
+
 	err = srvr.Serve(ln)
 	// If server is closed from the signal handler, wait for the ctx to be done
 	// otherwise error out quickly

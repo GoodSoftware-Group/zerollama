@@ -14,6 +14,8 @@ import (
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/parser"
 	typesmodel "github.com/ollama/ollama/types/model"
+	xcreate "github.com/ollama/ollama/x/create"
+	xcreateclient "github.com/ollama/ollama/x/create/client"
 )
 
 // tryImportFromLMStudio registers the model from a matching LM Studio cache
@@ -38,21 +40,33 @@ func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map
 	slog.Info("using LM Studio model files instead of registry download", "model", n.DisplayShortest(), "dir", dir)
 	fn(api.ProgressResponse{Status: fmt.Sprintf("using LM Studio cache: %s", dir)})
 
-	files, err := parser.FileDigestMap(dir)
-	if err != nil {
-		slog.Debug("lm studio import skipped", "dir", dir, "reason", err)
-		return false, nil
-	}
-	if weightFile != "" {
-		files = filterLMStudioImportFiles(files, weightFile)
-	}
+	// MLX / HF safetensors trees: register native tensor blobs (no GGUF conversion).
+	// GGUF trees (and legacy safetensors without config.json) use blob staging + convert.
+	if lmStudioUseNativeSafetensorsImport(dir) {
+		if err := xcreateclient.ImportSafetensorsFromDirectory(n.String(), dir, func(status string) {
+			fn(api.ProgressResponse{Status: status})
+		}); err != nil {
+			return false, fmt.Errorf("lm studio safetensors import: %w", err)
+		}
+	} else {
+		files, err := parser.FileDigestMap(dir)
+		if err != nil {
+			slog.Debug("lm studio import skipped", "dir", dir, "reason", err)
+			return false, nil
+		}
+		if weightFile != "" {
+			files = filterLMStudioImportFiles(files, weightFile)
+		}
 
-	if err := stageFilesToBlobs(files); err != nil {
-		return false, err
-	}
+		if err := stageFilesToBlobs(files); err != nil {
+			return false, err
+		}
 
-	if err := createFromLMStudioFiles(n, files, fn); err != nil {
-		return false, err
+		// Safetensors conversion expects map keys relative to the model root, not
+		// absolute paths from FileDigestMap.
+		if err := createFromLMStudioFiles(n, dir, files, fn); err != nil {
+			return false, err
+		}
 	}
 
 	if !envconfig.NoPrune() && len(deleteMap) > 0 {
@@ -82,7 +96,8 @@ func stageFilesToBlobs(files map[string]string) error {
 	return nil
 }
 
-func createFromLMStudioFiles(name typesmodel.Name, files map[string]string, fn func(api.ProgressResponse)) error {
+func createFromLMStudioFiles(name typesmodel.Name, dir string, files map[string]string, fn func(api.ProgressResponse)) error {
+	files = relativePathsInDir(dir, files)
 	config := &typesmodel.ConfigV2{
 		OS:           "linux",
 		Architecture: "amd64",
@@ -98,6 +113,24 @@ func createFromLMStudioFiles(name typesmodel.Name, files map[string]string, fn f
 	}
 
 	return createModel(r, name, baseLayers, config, fn)
+}
+
+// lmStudioUseNativeSafetensorsImport reports whether LM Studio cache dir should use
+// CreateSafetensorsModel (MLX/HF layout) instead of GGUF/safetensors→GGUF conversion.
+func lmStudioUseNativeSafetensorsImport(dir string) bool {
+	return xcreate.IsSafetensorsModelDir(dir)
+}
+
+func relativePathsInDir(dir string, files map[string]string) map[string]string {
+	out := make(map[string]string, len(files))
+	for path, digest := range files {
+		rel, err := filepath.Rel(dir, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			rel = filepath.Base(path)
+		}
+		out[filepath.ToSlash(rel)] = digest
+	}
+	return out
 }
 
 func filterLMStudioImportFiles(files map[string]string, weightFile string) map[string]string {

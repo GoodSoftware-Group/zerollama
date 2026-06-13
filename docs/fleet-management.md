@@ -104,7 +104,46 @@ curl -s http://192.168.1.11:11434/api/generate -d '{"model":"llama3.2:3b","promp
 
 **Model matching:** case-insensitive exact name, or base name before `:` (`llama3` matches `llama3:latest`).
 
-**Non-goals (v0):** remote load/evict, global preemption, assignment tokens (F5), mDNS (F4).
+**Non-goals (v0):** remote load/evict, global preemption, assignment tokens (F5).
+
+---
+
+## LAN discovery (F4 mDNS)
+
+**Why opt-in:** multicast on shared networks is surprising; homelab operators enable explicitly. K8s and fixed-IP deployments keep static peers.
+
+### Inference nodes
+
+```bash
+ZEROLLAMA_MDNS=1 OLLAMA_HOST=0.0.0.0:11434 zerollama serve
+```
+
+Advertises **`_zerollama._tcp`** on the listen port with TXT `role=node`, `version=…`.
+
+### Fleet manager — browse only (no static peers)
+
+```bash
+zerollama fleet serve --mdns --listen 0.0.0.0:11450
+# or: ZEROLLAMA_FLEET_MDNS=1 zerollama fleet serve
+```
+
+### Fleet manager — static + mDNS merge
+
+```bash
+ZEROLLAMA_FLEET_PEERS=http://10.0.0.5:11434 \
+  ZEROLLAMA_FLEET_MDNS=1 \
+  zerollama fleet serve
+```
+
+Static peers are always polled; mDNS adds LAN hosts as they appear.
+
+### Advertise fleet endpoint for agents
+
+```bash
+zerollama fleet serve --mdns --mdns-advertise --listen 0.0.0.0:11450
+```
+
+Registers **`_zerollama-fleet._tcp`** so agents can find the manager without a fixed IP. Warm-model details still come from F2 polling, not TXT records (v0).
 
 ---
 
@@ -112,11 +151,14 @@ curl -s http://192.168.1.11:11434/api/generate -d '{"model":"llama3.2:3b","promp
 
 | Variable | Default | Why |
 |----------|---------|-----|
-| `ZEROLLAMA_FLEET_PEERS` | *(required)* | Static peer list — K8s headless DNS or mDNS (F4) can replace later; explicit config avoids surprise LAN traffic. |
+| `ZEROLLAMA_FLEET_PEERS` | *(optional with mDNS)* | Static peer list — required unless `ZEROLLAMA_FLEET_MDNS=1`. K8s headless DNS stays static-only. |
 | `ZEROLLAMA_FLEET_LISTEN` | `0.0.0.0:11450` | Separate port from zerollama `:11434` so one host can run both node + manager. |
 | `ZEROLLAMA_FLEET_POLL_INTERVAL` | `3s` | Balance freshness vs load; 1–5s typical per [fleet-scheduling.md](./fleet-scheduling.md). |
+| `ZEROLLAMA_MDNS` | `0` | On inference nodes: advertise `_zerollama._tcp` when `zerollama serve` starts. |
+| `ZEROLLAMA_FLEET_MDNS` | `0` | Fleet manager: browse LAN for `_zerollama._tcp` peers (merged with static list). |
+| `ZEROLLAMA_FLEET_MDNS_ADVERTISE` | `0` | Fleet manager: advertise `_zerollama-fleet._tcp` for agent discovery. |
 
-CLI flags override env: `zerollama fleet serve --peers ... --listen ... --poll-interval 5s`.
+CLI flags override env: `zerollama fleet serve --peers ... --listen ... --poll-interval 5s --mdns --mdns-advertise`.
 
 ---
 
@@ -183,7 +225,6 @@ For Apple Silicon CI/dev, `./scripts/serve_mac_runtime.sh` starts sidecar + Go p
 
 | Milestone | Why |
 |-----------|-----|
-| **F4 mDNS** | Zero-config LAN discovery instead of static `ZEROLLAMA_FLEET_PEERS`. |
 | **F5 assignment token** | Short TTL hold (~5–10s) so two agents don't race the same queue slot after assign. |
 | **F6 playbooks** | Sticky shards, warm-only SLA, documented cancel policy for operators. |
 

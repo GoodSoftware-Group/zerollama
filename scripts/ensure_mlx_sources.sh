@@ -2,6 +2,11 @@
 # Ensure local MLX / MLX-C checkouts contain zerollama's pinned commits (and HEAD).
 # Shallow clones (e.g. git clone --depth 1) omit history; this fetches missing SHAs.
 #
+# WHY this exists: MLX_VERSION / MLX_C_VERSION pin safetensors inference separately from
+# llama.cpp (GGUF). After bumping those files, checkout the SHAs here then rebuild dylibs
+# (GOFLAGS=-mod=mod ./scripts/build_production_mac.sh) — build_zerollama_mac.sh does NOT
+# compile libmlx/libmlxc.
+#
 # Usage:
 #   ./scripts/ensure_mlx_sources.sh
 #   ./scripts/ensure_mlx_sources.sh --clone    # clone missing sibling repos (full history)

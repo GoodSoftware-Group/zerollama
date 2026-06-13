@@ -75,7 +75,7 @@ if m.IsMLX() {
 | Opt model out of runtime default | Modelfile `MODALITY inference ggml` (future) or legacy caps |
 | Keep ggml only | `ZEROLLAMA_LEGACY_RUNNER=1` |
 | Route text GGUF via Python llama.cpp (experimental) | `./zerollama serve --llama-cpp-backend` or `ZEROLLAMA_LLAMA_CPP_BACKEND=1` |
-| MLX build | [development.md](./development.md#mlx-engine-optional) — `cmake --install build --component MLX` |
+| MLX build | [apple-silicon-metal.md](./apple-silicon-metal.md#mlx-engine-optional) — **why** separate from ggml: safetensors + `libmlxc.dylib`; rebuild at `MLX_VERSION` via `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` |
 
 ---
 

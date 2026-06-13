@@ -18,6 +18,11 @@ OUT="${1:-${ROOT}/zerollama}"
 source "${ROOT}/scripts/mac_cgo_env.sh"
 mac_cgo_env_warn_path
 mac_cgo_env
+mac_cgo_env_prefer_training_embed "${ROOT}"
+
+if [[ ! -x "${ROOT}/.venv-training/bin/python" ]]; then
+  echo ">>> note: .venv-training missing — training embed falls back to system python3-embed (3.9 on Xcode); run: MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh" >&2
+fi
 
 echo ">>> CC=${CC}" >&2
 echo ">>> SDKROOT=${SDKROOT}" >&2

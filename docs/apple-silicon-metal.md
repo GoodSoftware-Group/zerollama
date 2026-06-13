@@ -110,8 +110,34 @@ Env always wins over YAML.
 
 **Not** the default for GGUF. Required for **`ModelFormat: safetensors`** (`IsMLX()`).
 
-- **Daily dev:** `./scripts/build_zerollama_mac.sh` — regenerates `ggml-metal-embed.metal`, links Metal ggml + qwen35 compat; does not rebuild MLX.
-- **MLX / release:** `./scripts/build_production_mac.sh` → run from `dist/darwin-arm64/` (see [mac-dev-setup.md](./mac-dev-setup.md)).
+### Why MLX is a separate build from ggml
+
+| Stack | Build script | Native libs | Weight format |
+|-------|--------------|-------------|---------------|
+| **ggml Metal** (default GGUF) | `./scripts/build_zerollama_mac.sh` | In-process CGO + `ggml-metal-embed.metal` | GGUF |
+| **MLX** (safetensors) | `./scripts/build_production_mac.sh` | `libmlx.dylib`, `libmlxc.dylib`, `mlx.metallib` | safetensors |
+
+**Why not one script:** MLX pins (`MLX_VERSION`, `MLX_C_VERSION`) track upstream Ollama’s **mlx/mlx-c** repos, not `llama.cpp`. CMake fetches MLX, regenerates Go/C bindings (`go generate`), and compiles a large Metal JIT stack — unrelated to ggml runner CGO. Daily GGUF dev should not pay a 10–15 minute MLX compile.
+
+### Rebuild after pin bump
+
+```bash
+# 1. Sibling checkouts at pinned commits (or --clone)
+./scripts/ensure_mlx_sources.sh
+git -C ../mlx checkout $(cat MLX_VERSION)
+git -C ../mlx-c checkout $(cat MLX_C_VERSION)
+
+# 2. Full production (MLX v3/v4 + zerollama binary)
+export GOFLAGS=-mod=mod   # WHY: cmake runs go generate during MLX configure
+./scripts/build_production_mac.sh
+
+# 3. Verify
+./zerollama doctor   # [ok] mlx engine → build/metal-v4/lib/ollama/libmlxc.dylib
+```
+
+**Outputs:** `dist/darwin-arm64/lib/ollama/mlx_metal_v3/` (macOS 14+) and `mlx_metal_v4/` (macOS 26+ / Xcode 26 SDK). Dev `./zerollama` from repo root discovers `build/metal-v*/lib/ollama/` via `x/mlxrunner/mlx/dynamic.go`.
+
+- **Daily dev (GGUF only):** `./scripts/build_zerollama_mac.sh` — regenerates ggml Metal embed + qwen35 compat; **does not** rebuild MLX.
 - Metal Toolchain (build time): `xcodebuild -downloadComponent MetalToolchain`
 - Creation: `zerollama create --experimental …`
 - **Excluded** from Phase 12 runtime-default routing (`modelEligibleForRuntimeDefault` rejects `IsMLX()`).
@@ -237,7 +263,7 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | `autoconfig.pick: single_gpu` on Mac | Explicit `ZEROLLAMA_RUNTIME_CONFIG` | Unset or point to `apple_silicon.yaml` |
 | Runtime 502 host memory on big model | Unified pool too small for MXFP4 mmap | Smaller quant; same as Linux — host RAM not VRAM |
 | Tools 501 on Mac | Model not runtime-routed | Manifest backend or `ZEROLLAMA_RUNTIME=1`; ggml path for vision/think |
-| MLX model won't load | MLX engine not built | `cmake --install build --component MLX` |
+| MLX model won't load | MLX engine not built or stale dylib after pin bump | `./scripts/ensure_mlx_sources.sh` then `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh`; `zerollama doctor` → mlx engine |
 | Embed runtime fails on Mac | System Python 3.9, no torch | Default `zerollama serve` uses uv sidecar; set `ZEROLLAMA_RUNTIME_EMBED=1` only if you know system libpython is 3.10+ |
 | `zerollama serve` aborts (Python3.framework) | Stale embed-linked binary | Rebuild; sidecar bootstrap skips embed on Darwin by default |
 | Phase 14 inprocess load error | Vision model on pinned llama.cpp | Use text-only GGUF (e.g. Qwen text, not gemma3 vision) |

@@ -12,6 +12,53 @@ import (
 	"github.com/ollama/ollama/api"
 )
 
+func TestManagerPrunesStaleDiscoveredPeer(t *testing.T) {
+	m, err := NewManager(Config{
+		Discovery: DiscoveryConfig{Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.AddDiscoveredPeer("http://192.168.1.99:11434"); err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.Lock()
+	m.discoveredAt["http://192.168.1.99:11434"] = time.Now().UTC().Add(-discoveredPeerStale - time.Second)
+	m.mu.Unlock()
+
+	m.maybePruneDiscovered("http://192.168.1.99:11434")
+	if m.PeerCount() != 0 {
+		t.Fatalf("peer count=%d want 0", m.PeerCount())
+	}
+}
+
+func TestManagerAddDiscoveredPeer(t *testing.T) {
+	m, err := NewManager(Config{
+		Discovery: DiscoveryConfig{Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.PeerCount() != 0 {
+		t.Fatalf("peer count=%d", m.PeerCount())
+	}
+	if err := m.AddDiscoveredPeer("192.168.1.5:11434"); err != nil {
+		t.Fatal(err)
+	}
+	if m.PeerCount() != 1 {
+		t.Fatalf("peer count=%d", m.PeerCount())
+	}
+	// duplicate ignored
+	if err := m.AddDiscoveredPeer("http://192.168.1.5:11434"); err != nil {
+		t.Fatal(err)
+	}
+	if m.PeerCount() != 1 {
+		t.Fatalf("peer count=%d", m.PeerCount())
+	}
+}
+
 func TestManagerPollsStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		wait := 1
@@ -68,10 +115,19 @@ func TestManagerPollsStatus(t *testing.T) {
 }
 
 func TestServerAssignEndpoint(t *testing.T) {
-	nodes := []NodeSnapshot{
-		{ID: "a", URL: "http://a:11434", Available: true, LoadedModels: []string{"llama3"}, QueueDepth: 0},
+	m, err := NewManager(Config{
+		Peers: []string{"http://a:11434"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	m := &Manager{nodes: map[string]NodeSnapshot{"a": nodes[0]}}
+	m.setNode(NodeSnapshot{
+		ID:           "a:11434",
+		URL:          "http://a:11434",
+		Available:    true,
+		LoadedModels: []string{"llama3"},
+		QueueDepth:   0,
+	})
 	srv := httptest.NewServer(NewServer(m).Handler())
 	defer srv.Close()
 

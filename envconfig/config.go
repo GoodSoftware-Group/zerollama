@@ -354,6 +354,9 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":              {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":       {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
+		"ZEROLLAMA_MDNS":                      {"ZEROLLAMA_MDNS", mdnsEnabledDisplay(), "Advertise this zerollama node via mDNS (_zerollama._tcp) on LAN"},
+		"ZEROLLAMA_FLEET_MDNS":                {"ZEROLLAMA_FLEET_MDNS", fleetMDNSDisplay(), "Browse LAN for zerollama nodes via mDNS (merges with ZEROLLAMA_FLEET_PEERS)"},
+		"ZEROLLAMA_FLEET_MDNS_ADVERTISE":      {"ZEROLLAMA_FLEET_MDNS_ADVERTISE", fleetMDNSAdvertiseDisplay(), "Advertise fleet management endpoint via mDNS (_zerollama-fleet._tcp)"},
 		"ZEROLLAMA_LEGACY_RUNNER":             {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
 		"OLLAMA_RUNTIME_ALL":                  {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
 		"OLLAMA_FFMPEG":                       {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
@@ -747,7 +750,7 @@ func RuntimeConfigured() bool {
 }
 
 // FleetPeers is a comma-separated list of zerollama base URLs for fleet management polling.
-// Why static first: K8s and homelab both have stable endpoints; mDNS (F4) adds discovery without removing this.
+// Optional when ZEROLLAMA_FLEET_MDNS=1; static list still used for K8s and merges with mDNS peers.
 func FleetPeers() string {
 	return strings.TrimSpace(Var("ZEROLLAMA_FLEET_PEERS"))
 }
@@ -772,6 +775,58 @@ func FleetPollInterval() time.Duration {
 		return 3 * time.Second
 	}
 	return d
+}
+
+// MDNSEnabled controls zerollama serve LAN advertisement (_zerollama._tcp).
+// Why default off: explicit opt-in avoids multicast on networks where operators did not expect it.
+func MDNSEnabled() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_MDNS"))
+	if v == "" {
+		return false
+	}
+	b, _ := strconv.ParseBool(v)
+	return b
+}
+
+// FleetMDNS enables mDNS browse for inference nodes on the fleet manager.
+func FleetMDNS() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_FLEET_MDNS"))
+	if v == "" {
+		return false
+	}
+	b, _ := strconv.ParseBool(v)
+	return b
+}
+
+// FleetMDNSAdvertise registers the fleet management HTTP endpoint on LAN (_zerollama-fleet._tcp).
+func FleetMDNSAdvertise() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_FLEET_MDNS_ADVERTISE"))
+	if v == "" {
+		return false
+	}
+	b, _ := strconv.ParseBool(v)
+	return b
+}
+
+func mdnsEnabledDisplay() string {
+	if MDNSEnabled() {
+		return "1"
+	}
+	return "0"
+}
+
+func fleetMDNSDisplay() string {
+	if FleetMDNS() {
+		return "1"
+	}
+	return "0"
+}
+
+func fleetMDNSAdvertiseDisplay() string {
+	if FleetMDNSAdvertise() {
+		return "1"
+	}
+	return "0"
 }
 
 func ggmlPauseWhenRuntimeBusyDisplay() string {

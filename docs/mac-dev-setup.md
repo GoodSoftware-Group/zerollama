@@ -89,7 +89,8 @@ go build -o zerollama .
 | `Undefined symbols` / `std::` linker errors building llama.cpp | Shell has `CXX=.../clang`; use `./scripts/build_llama_server.sh` (forces `clang++`) or `eval "$(./scripts/mac_cgo_env.sh --export)"` |
 | Training torch missing at runtime | `MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh` or `./scripts/training_uv_venv.sh --verify` |
 | `CHECK failed: mlx_distributed_group_new_` at startup | Stale flat `build/lib/ollama/libmlxc.dylib` — `rm` it, or `./scripts/build_production_mac.sh` and run from `dist/darwin-arm64/` |
-| MLX / safetensors models fail | `./scripts/build_production_mac.sh` (needs local `mlx` + `mlx-c` checkouts); Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` |
+| MLX / safetensors models fail | `./scripts/build_production_mac.sh` (needs local `mlx` + `mlx-c` at pins in `MLX_VERSION` / `MLX_C_VERSION`); `export GOFLAGS=-mod=mod` if cmake fails on `go generate`; Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` |
+| CMake MLX configure: `inconsistent vendoring` | `export GOFLAGS=-mod=mod` before `build_production_mac.sh` — **why:** MLX configure runs `go generate ./x/...` |
 
 ---
 
@@ -102,7 +103,9 @@ go build -o zerollama .
 | **Upstream Ollama A/B** | `./scripts/build_upstream_ollama_mac.sh` | `OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve` — [upstream-ollama-diff.md](./upstream-ollama-diff.md) |
 | **MLX / release smoke** | `./scripts/build_production_mac.sh` | `dist/darwin-arm64/`: `./zerollama serve` |
 
-Dev builds do **not** rebuild MLX native libs. A leftover flat `build/lib/ollama/libmlxc.dylib` can shadow fresher `build/metal-v*/lib/ollama/` trees and cause startup CHECK errors. `zerollama doctor` warns when this happens.
+Dev builds do **not** rebuild MLX native libs. After bumping `MLX_VERSION` or `MLX_C_VERSION`, run `./scripts/ensure_mlx_sources.sh`, checkout pins in `../mlx` / `../mlx-c`, then `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh`. A leftover flat `build/lib/ollama/libmlxc.dylib` can shadow fresher `build/metal-v*/lib/ollama/` trees and cause startup CHECK errors. `zerollama doctor` warns when this happens.
+
+**MLX dylibs only** (skip full zerollama binary): after `ensure_mlx_sources` and one successful `build_production_mac.sh` configure, `cmake --build build/metal-v3 --target mlx mlxc && cmake --install build/metal-v3 --component MLX` (repeat for `metal-v4` on Xcode 26+ SDK).
 
 Production output:
 

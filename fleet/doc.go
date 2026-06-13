@@ -7,4 +7,5 @@
 // and returns {url, node_id} for direct agent calls. It never loads models or evicts remotely.
 //
 // CLI: zerollama fleet serve — see docs/fleet-management.md.
+// LAN discovery (F4): nodes advertise _zerollama._tcp; fleet manager browses and merges with static peers.
 package fleet

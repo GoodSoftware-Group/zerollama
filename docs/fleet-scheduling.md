@@ -168,12 +168,22 @@ On **`/api/chat`** and **`/api/generate`** with `stream: true` (default), nodes 
 
 Agents should treat **`status` + empty content** as progress UI, not model output.
 
+### Shipped (F4 mDNS)
+
+| Surface | Purpose |
+|---------|---------|
+| **`_zerollama._tcp`** | Inference node advertisement when `ZEROLLAMA_MDNS=1` |
+| **`_zerollama-fleet._tcp`** | Optional fleet manager advertisement (`--mdns-advertise`) |
+| **Fleet `--mdns` browse** | Manager discovers nodes on LAN; merges with `ZEROLLAMA_FLEET_PEERS` |
+
+TXT records (v0): `role=node|fleet`, `version=…`. Loaded-model hints remain on F2 `/api/status` polling, not TXT.
+
 ### Planned (fleet-facing)
 
 | Surface | Purpose |
 |---------|---------|
 | **Assignment token** | Optional header validated by node; short TTL; one slot held |
-| **mDNS advertisement** | LAN discovery with loaded-model hints in TXT records |
+| **TXT models hash** | Optional browse hint before first poll |
 
 Per-node backlog internals (for reference):
 
@@ -249,7 +259,7 @@ See [ROADMAP.md — Fleet scheduling track](./ROADMAP.md#fleet-scheduling-multi-
 | **F1** | Stream progress contract documented; agents can implement cancel-while-queued |
 | **F2** | **`GET /api/status`** inference snapshot for management polling |
 | **F3** | Management node v0: static peer list + warm-model map + assign URL | **Shipped** |
-| **F4** | mDNS registration/browse for LAN discovery |
+| **F4** | **Shipped** — mDNS `_zerollama._tcp` / `_zerollama-fleet._tcp`; fleet `--mdns` browse; static peers still supported |
 | **F5** | Short-TTL assignment token (optional header) |
 | **F6** | Operator docs: sticky shards, SLA classes, when to reject cold route |
 

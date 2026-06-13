@@ -123,6 +123,50 @@ static int append_sys_path(const char *dir, char **err_out) {
 	return 0;
 }
 
+static int append_pythonpath_from_env(char **err_out) {
+	const char *pp = getenv("PYTHONPATH");
+	if (!pp || !*pp)
+		return 0;
+
+	char *copy = strdup(pp);
+	if (!copy) {
+		set_err(err_out, "OOM copying PYTHONPATH");
+		return -1;
+	}
+
+#ifdef _WIN32
+	const char *delim = ";";
+#else
+	const char *delim = ":";
+#endif
+
+	for (char *entry = strtok(copy, delim); entry; entry = strtok(NULL, delim)) {
+		if (!*entry)
+			continue;
+		if (append_sys_path(entry, err_out) != 0) {
+			free(copy);
+			return -1;
+		}
+	}
+	free(copy);
+	return 0;
+}
+
+static int check_embedded_python_version(char **err_out) {
+	const char *ver = Py_GetVersion();
+	int major = 0, minor = 0;
+	if (sscanf(ver, "%d.%d", &major, &minor) != 2)
+		return 0;
+	if (major < 3 || (major == 3 && minor < 10)) {
+		set_err(err_out,
+			"embedded Python 3.10+ required for training (got 3.x from libpython); "
+			"rebuild with ./scripts/build_zerollama_mac.sh after .venv-training exists "
+			"(see MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh)");
+		return -1;
+	}
+	return 0;
+}
+
 int training_init(const char *repo_root, const char *bootstrap_py, char **err_out) {
 	if (g_initialized) {
 		set_err(err_out, "training_init already called");
@@ -146,6 +190,12 @@ int training_init(const char *repo_root, const char *bootstrap_py, char **err_ou
 		set_err(err_out, "Py_Initialize failed");
 		return -1;
 	}
+
+	if (check_embedded_python_version(err_out) != 0)
+		goto fail_early;
+
+	if (append_pythonpath_from_env(err_out) != 0)
+		goto fail_early;
 
 	if (append_sys_path(repo_root, err_out) != 0)
 		goto fail_early;
