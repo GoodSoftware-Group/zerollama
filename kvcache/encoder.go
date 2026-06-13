@@ -122,7 +122,8 @@ func (c *EncoderCache) Put(ctx ml.Context, key, value ml.Tensor) {
 	}
 
 	if _, ok := c.ctxs[c.curLayer]; !ok {
-		c.ctxs[c.curLayer] = c.backend.NewContextSize(2).Layer(c.curLayer)
+		// Persistent — encoder KV is long-lived buffer storage, not sched_reserve scratch.
+		c.ctxs[c.curLayer] = c.backend.NewContextSize(2).Layer(c.curLayer).Persistent()
 	}
 
 	if _, ok := c.keys[c.curLayer]; !ok {

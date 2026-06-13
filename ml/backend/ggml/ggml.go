@@ -89,9 +89,15 @@ func applyDeviceProps(info *ml.DeviceInfo, dev C.ggml_backend_dev_t, props *C.st
 var initDevicesOnce sync.Once
 
 // ensureDevices registers ggml backends once per process (sync.Once).
+//
 // When cpuOnly is true on the first call, Metal is not registered (GGML_DISABLE_METAL)
-// so num_gpu=0 loads avoid touching the GPU — why: Darwin Metal init contends with runtime.
+// so num_gpu=0 loads avoid touching the GPU — why: Darwin Metal init contends with the
+// Python runtime sidecar on a single unified-memory device.
+//
 // First call wins: a later CPU-only New after an earlier GPU load cannot disable Metal.
+// Bootstrap GPU discovery must use DiscoverBackendDevices() (cpuOnly=false) — why: the
+// old ollama-engine /info dummy load used zero GPU layers, hit this gate, and made the
+// server believe there was no GPU (total_vram=0, 0 layers offloaded).
 func ensureDevices(cpuOnly bool) {
 	initDevicesOnce.Do(func() {
 		if cpuOnly && os.Getenv("GGML_DISABLE_METAL") == "" {
@@ -744,12 +750,57 @@ func (b *Backend) NewContextSize(n int) ml.Context {
 	}
 }
 
+func (c *Context) cloneContext() *Context {
+	if c == nil {
+		return nil
+	}
+	return &Context{
+		b:                c.b,
+		ctx:              c.ctx,
+		graph:            c.graph,
+		batchSize:        c.batchSize,
+		buft:             c.buft,
+		allocatedBuffers: c.allocatedBuffers,
+		maxGraphNodes:    c.maxGraphNodes,
+		layer:            c.layer,
+		persistent:       c.persistent,
+	}
+}
+
 func (b *Backend) CacheConfig() ml.CacheConfig {
 	if b.flashAttention == ml.FlashAttentionEnabled {
 		return ml.CacheConfig{CachePadding: 256, MaskDType: ml.DTypeF16}
 	} else {
 		return ml.CacheConfig{CachePadding: 256, PermutedV: true}
 	}
+}
+
+func deviceInfoFromGGML(dev C.ggml_backend_dev_t) ml.DeviceInfo {
+	info := ml.DeviceInfo{}
+	props := C.struct_ggml_backend_dev_props{}
+	C.ggml_backend_dev_get_props(dev, &props)
+	applyDeviceProps(&info, dev, &props)
+	info.LibraryPath = ggml.LibPaths()
+	C.ggml_backend_dev_memory(dev, &props.memory_free, &props.memory_total)
+	info.TotalMemory = (uint64)(props.memory_total)
+	info.FreeMemory = (uint64)(props.memory_free)
+	return info
+}
+
+// DiscoverBackendDevices initializes ggml backends for GPU enumeration during
+// bootstrap discovery (discover.GPUDevices → ollama-engine GET /info).
+//
+// Unlike model.New with zero GPU layers, this must call ensureDevices(false).
+// Why: ensureDevices(true) sets GGML_DISABLE_METAL before OnceLoad; sync.Once makes
+// that permanent in the discovery subprocess, so Metal never appears in /info and the
+// main server schedules CPU-only (wrong on Apple Silicon with unified memory).
+func DiscoverBackendDevices() []ml.DeviceInfo {
+	ensureDevices(false)
+	deviceInfos := make([]ml.DeviceInfo, 0, len(gpus))
+	for _, dev := range gpus {
+		deviceInfos = append(deviceInfos, deviceInfoFromGGML(dev))
+	}
+	return deviceInfos
 }
 
 func (b *Backend) BackendDevices() []ml.DeviceInfo {
@@ -771,16 +822,7 @@ func (b *Backend) BackendDevices() []ml.DeviceInfo {
 			}
 		}
 
-		info := ml.DeviceInfo{}
-		props := C.struct_ggml_backend_dev_props{}
-		C.ggml_backend_dev_get_props(dev, &props)
-		applyDeviceProps(&info, dev, &props)
-		info.LibraryPath = ggml.LibPaths()
-		C.ggml_backend_dev_memory(dev, &props.memory_free, &props.memory_total)
-		info.TotalMemory = (uint64)(props.memory_total)
-		info.FreeMemory = (uint64)(props.memory_free)
-
-		deviceInfos = append(deviceInfos, info)
+		deviceInfos = append(deviceInfos, deviceInfoFromGGML(dev))
 	}
 	return deviceInfos
 }
@@ -806,18 +848,18 @@ type Context struct {
 
 	// layer is the graph layer that this context is allocating for - assumed to be cache
 	layer int
+
+	// persistent tensors are eagerly allocated (KV/recurrent buffers). Graph tensors
+	// created on non-persistent contexts defer to ggml_backend_sched_reserve.
+	persistent bool
 }
 
 func (c *Context) Input() ml.Context {
 	if c.b.input != nil {
-		return &Context{
-			b:                c.b,
-			ctx:              c.ctx,
-			buft:             c.b.input,
-			allocatedBuffers: c.allocatedBuffers,
-			maxGraphNodes:    c.maxGraphNodes,
-			layer:            -1,
-		}
+		out := c.cloneContext()
+		out.buft = c.b.input
+		out.layer = -1
+		return out
 	}
 
 	return c
@@ -825,17 +867,19 @@ func (c *Context) Input() ml.Context {
 
 func (c *Context) Layer(i int) ml.Context {
 	if layer, ok := c.b.layers[i]; ok {
-		return &Context{
-			b:                c.b,
-			ctx:              c.ctx,
-			buft:             layer.bt,
-			allocatedBuffers: c.allocatedBuffers,
-			maxGraphNodes:    c.maxGraphNodes,
-			layer:            i,
-		}
+		out := c.cloneContext()
+		out.buft = layer.bt
+		out.layer = i
+		return out
 	}
 
 	return c
+}
+
+func (c *Context) Persistent() ml.Context {
+	out := c.cloneContext()
+	out.persistent = true
+	return out
 }
 
 func (c *Context) Forward(tensors ...ml.Tensor) ml.Context {
@@ -934,7 +978,11 @@ func (c *Context) newTensor(dtype ml.DType, shape []int) *Tensor {
 
 	if len(shape) < 1 || shape[0] == 0 {
 		var shape C.int64_t = 0
-		return &Tensor{b: c.b, t: C.ggml_new_tensor(c.ctx, cdtype, 1, &shape)}
+		t := C.ggml_new_tensor(c.ctx, cdtype, 1, &shape)
+		if c.b.input != nil && c.buft == c.b.input {
+			C.ggml_set_input(t)
+		}
+		return &Tensor{b: c.b, t: t}
 	} else if len(shape) > 4 {
 		panic("unsupported number of dimensions")
 	}
@@ -946,13 +994,29 @@ func (c *Context) newTensor(dtype ml.DType, shape []int) *Tensor {
 	}
 
 	t := C.ggml_new_tensor(c.ctx, cdtype, C.int(len(shape)), shapeToGGML(shape))
+	if c.b.input != nil && c.buft == c.b.input {
+		C.ggml_set_input(t)
+	}
+	if !c.b.allocMemory {
+		// LoadOperationFit: sched_reserve assigns compute buffers; eager alloc here
+		// leaves tensor->buffer set and ggml_backend_tensor_alloc aborts (qwen35moe on Metal).
+		return &Tensor{b: c.b, t: t}
+	}
+
 	size := pad(C.ggml_backend_buft_get_alloc_size(c.buft, t), C.ggml_backend_buft_get_alignment(c.buft))
 
-	b := C.ggml_backend_buft_alloc_buffer(c.buft, size)
+	// Persistent contexts (KV/recurrent) and input tensors need backing storage before
+	// compute. Transient graph intermediates defer to sched_reserve / sched_alloc_graph.
+	eager := c.persistent || (c.b.input != nil && c.buft == c.b.input)
+	if !eager {
+		return &Tensor{b: c.b, t: t}
+	}
+
 	if c.layer >= 0 {
 		c.b.btDeviceMemory[c.buft].Cache[c.layer] += uint64(size)
 	}
 
+	b := C.ggml_backend_buft_alloc_buffer(c.buft, size)
 	if b == nil {
 		panic(ml.ErrNoMem{BackendMemory: *c.b.requiredMemory})
 	}

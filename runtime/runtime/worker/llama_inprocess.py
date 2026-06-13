@@ -124,7 +124,10 @@ class LlamaInprocessWorker:
         kv_bind_req: Any | None = None,
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
+        cache_prompt: bool | None = None,
     ) -> dict[str, Any]:
+        # cache_prompt is llama-server HTTP only (L3 cache bridge); inprocess uses id_slot pinning.
+        _ = cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
         with self._lock:
             text = self._require_session().complete(
@@ -150,7 +153,10 @@ class LlamaInprocessWorker:
         kv_bind_req: Any | None = None,
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
+        cache_prompt: bool | None = None,
     ) -> Iterator[dict[str, Any]]:
+        # cache_prompt is llama-server HTTP only (L3 cache bridge); inprocess uses id_slot pinning.
+        _ = cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 
         def _gen() -> Iterator[dict[str, Any]]:

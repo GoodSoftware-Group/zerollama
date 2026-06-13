@@ -1,0 +1,33 @@
+{
+  "id": "rtx-5090",
+  "name": "NVIDIA GeForce RTX 5090",
+  "match_names": ["RTX 5090", "GeForce RTX 5090"],
+  "vram_gb": 32,
+  "llama_server_flags": {
+    "n_gpu_layers": 999,
+    "ctx_size": 65536,
+    "batch_size": 4096,
+    "ubatch_size": 1024,
+    "n_parallel": 12,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "flash_attn": true,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "mlock": false,
+    "no_mmap": false,
+    "no_kv_offload": false,
+    "draft_max": 24,
+    "draft_min": 4,
+    "draft_p_min": 0.5
+  },
+  "_fork_only_llama_server_flags": {
+    "ctx_checkpoints": 16,
+    "ctx_checkpoint_interval": 8192
+  },
+  "_eliza_fork_llama_server_flags": {
+    "cache_type_k": "qjl1_256",
+    "cache_type_v": "q4_polar"
+  },
+  "_provenance": "eliza-v3 5090.json; fork cache qjl/polar when ZEROLLAMA_LLAMA_FORK=1"
+}

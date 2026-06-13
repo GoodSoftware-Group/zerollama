@@ -70,7 +70,7 @@ GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src/ggml-metal/
 
 if _should_build_mlx; then
   echo ">>> building MLX dylibs (BUILD_MLX=${BUILD_MLX})" >&2
-  "${ROOT}/scripts/build_mlx_dylibs_mac.sh"
+  bash "${ROOT}/scripts/build_mlx_dylibs_mac.sh"
 fi
 
 GOFLAGS=-mod=mod go build -ldflags="-s -w -X=github.com/ollama/ollama/version.Version=${VERSION}" -o "${OUT}" .

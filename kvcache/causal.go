@@ -60,6 +60,14 @@ type Causal struct {
 	// curPositions is the positions corresponding to this pass's entries in the cache
 	curPositions []int32
 
+	// curReserve indicates this forward pass is only for memory reservation.
+	curReserve bool
+
+	// dimensions recorded by Put during reserve (Get placeholders)
+	reserveKHeadDim   int
+	reserveNumKVHeads int
+	reserveVHeadDim   int
+
 	// ** cache metadata **
 
 	// for each possible location in the cache, stores the position and set of sequences
@@ -199,6 +207,10 @@ func (c *Causal) StartForward(ctx ml.Context, batch input.Batch, reserve bool) e
 	c.curBatchSize = len(batch.Positions)
 	c.curSequences = batch.Sequences
 	c.curPositions = batch.Positions
+	c.curReserve = reserve
+	c.reserveKHeadDim = 0
+	c.reserveNumKVHeads = 0
+	c.reserveVHeadDim = 0
 	c.opts.Except = nil
 
 	var locs []int32
@@ -409,6 +421,10 @@ func (c *Causal) SetCausal(ctx ml.Context, opts CausalOptions) {
 }
 
 func (c *Causal) Get(ctx ml.Context) (ml.Tensor, ml.Tensor, ml.Tensor) {
+	if c.curReserve {
+		return c.placeholderKV(ctx)
+	}
+
 	key := c.keys[c.curLayer]
 	value := c.values[c.curLayer]
 
@@ -446,7 +462,35 @@ func (c *Causal) Get(ctx ml.Context) (ml.Tensor, ml.Tensor, ml.Tensor) {
 	return key, value, c.curMask
 }
 
+func (c *Causal) placeholderKV(ctx ml.Context) (ml.Tensor, ml.Tensor, ml.Tensor) {
+	cachedSize := c.curMask.Dim(0)
+	kHeadDim := c.reserveKHeadDim
+	numKVHeads := c.reserveNumKVHeads
+	vHeadDim := c.reserveVHeadDim
+	if kHeadDim == 0 {
+		kHeadDim = 1
+		numKVHeads = 1
+		vHeadDim = 1
+	}
+
+	key := ctx.Input().Empty(c.DType, kHeadDim, numKVHeads, cachedSize)
+	var value ml.Tensor
+	if c.config.PermutedV {
+		value = ctx.Input().Empty(c.DType, cachedSize, vHeadDim, numKVHeads)
+	} else {
+		value = ctx.Input().Empty(c.DType, vHeadDim, numKVHeads, cachedSize)
+	}
+	return key, value, c.curMask
+}
+
 func (c *Causal) Put(ctx ml.Context, key, value ml.Tensor) {
+	if c.curReserve {
+		c.reserveKHeadDim = key.Dim(0)
+		c.reserveNumKVHeads = key.Dim(1)
+		c.reserveVHeadDim = value.Dim(0)
+		return
+	}
+
 	kHeadDim := key.Dim(0)
 	vHeadDim := value.Dim(0)
 	numKVHeads := key.Dim(1)
@@ -457,7 +501,8 @@ func (c *Causal) Put(ctx ml.Context, key, value ml.Tensor) {
 	}
 
 	if _, ok := c.ctxs[c.curLayer]; !ok {
-		c.ctxs[c.curLayer] = c.backend.NewContextSize(2).Layer(c.curLayer)
+		// Persistent: KV tensors are not graph scratch — sched_reserve must not own them.
+		c.ctxs[c.curLayer] = c.backend.NewContextSize(2).Layer(c.curLayer).Persistent()
 	}
 
 	if _, ok := c.keys[c.curLayer]; !ok {

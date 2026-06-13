@@ -239,15 +239,15 @@ func (s *llamaServerRunner) tokenizerAddsBOS() bool {
 	return kv.Bool("tokenizer.ggml.add_bos_token")
 }
 
-func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req CompletionRequest) (any, error) {
-	prompt := s.completionPrompt(req.Prompt, req.LeadingBOS)
-	if !req.Truncate || len(req.Media) > 0 || s.options.NumCtx <= 1 || len(prompt) < s.options.NumCtx {
-		return prompt, nil
+func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req CompletionRequest) (prompt any, truncated bool, originalTokens int, err error) {
+	promptVal := s.completionPrompt(req.Prompt, req.LeadingBOS)
+	if !req.Truncate || len(req.Media) > 0 || s.options.NumCtx <= 1 || len(promptVal) < s.options.NumCtx {
+		return promptVal, false, 0, nil
 	}
 
-	tokens, err := s.tokenize(ctx, prompt, true, nil)
+	tokens, err := s.tokenize(ctx, promptVal, true, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, 0, err
 	}
 
 	// llama-server rejects prompts that fill the entire slot context, while the
@@ -256,7 +256,7 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	// llama-server allows.
 	limit := s.options.NumCtx - 1
 	if len(tokens) <= limit {
-		return prompt, nil
+		return promptVal, false, 0, nil
 	}
 
 	nKeep := req.Options.NumKeep
@@ -266,12 +266,12 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	nKeep = min(nKeep, limit)
 
 	discard := len(tokens) - limit
-	truncated := make([]int, 0, limit)
-	truncated = append(truncated, tokens[:nKeep]...)
-	truncated = append(truncated, tokens[nKeep+discard:]...)
+	truncatedTokens := make([]int, 0, limit)
+	truncatedTokens = append(truncatedTokens, tokens[:nKeep]...)
+	truncatedTokens = append(truncatedTokens, tokens[nKeep+discard:]...)
 
-	slog.Warn("truncating input prompt", "limit", s.options.NumCtx, "prompt", len(tokens), "keep", nKeep, "new", len(truncated))
-	return truncated, nil
+	slog.Warn("truncating input prompt", "limit", s.options.NumCtx, "prompt", len(tokens), "keep", nKeep, "new", len(truncatedTokens))
+	return truncatedTokens, true, len(tokens), nil
 }
 
 func (s *llamaServerRunner) ContextLength() int {
@@ -1361,7 +1361,7 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		return fmt.Errorf("unexpected server status: %s", status)
 	}
 
-	prompt, err := s.completionPromptForRequest(ctx, req)
+	prompt, promptTruncated, originalPromptTokens, err := s.completionPromptForRequest(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -1524,13 +1524,15 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 				}
 
 				finalResp = CompletionResponse{
-					Content:            lsResp.Content,
-					Done:               true,
-					DoneReason:         doneReason,
-					PromptEvalCount:    lsResp.Timings.promptEvalCount(),
-					PromptEvalDuration: time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
-					EvalCount:          lsResp.Timings.PredictN,
-					EvalDuration:       time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
+					Content:              lsResp.Content,
+					Done:                 true,
+					DoneReason:           doneReason,
+					PromptEvalCount:      lsResp.Timings.promptEvalCount(),
+					PromptEvalDuration:   time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
+					EvalCount:            lsResp.Timings.PredictN,
+					EvalDuration:         time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
+					PromptTruncated:      promptTruncated,
+					OriginalPromptTokens: originalPromptTokens,
 				}
 				hasFinalResp = true
 			}

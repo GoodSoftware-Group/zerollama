@@ -142,31 +142,20 @@ func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 
 // useOllamaEngine picks the Go ggml inference engine (model.NewTextProcessor ->
 // ml/backend/ggml) vs the legacy CGO llamarunner (llama.cpp + Metal).
-//
-// Why darwin skips qwen35-class archs: they are in OllamaEngineRequired(), so
-// without this gate every load goes through ggml.New(). On Apple Silicon the Go
-// engine still aborts in ggml_backend_sched_reserve during qwen35moe load (Jun 2026
-// probe on M4 Max: GGML_ASSERT(tensor->buffer == NULL)). C aborts do not return Go
-// errors, so there is no fallback. Legacy llama.cpp + llama/compat + mtmd is the
-// stable Mac path until Go Metal reserve is fixed. OLLAMA_NEW_ENGINE=1 overrides.
-//
-// See docs/qwen35-apple-silicon.md.
 func useOllamaEngine(f *ggml.GGML) bool {
-	return pickOllamaEngine(f.KV().Architecture(), envconfig.NewEngine(), f.KV().OllamaEngineRequired(), runtime.GOOS == "darwin")
+	return pickOllamaEngine(f.KV().Architecture(), envconfig.NewEngine(), f.KV().OllamaEngineRequired())
 }
 
-func pickOllamaEngine(arch string, newEngine, ollamaRequired, darwin bool) bool {
+func pickOllamaEngine(arch string, newEngine, ollamaRequired bool) bool {
+	// OllamaEngineRequired() architectures (qwen35*, qwen3next, …) use the Go
+	// ollama-engine path on all OSes including darwin. Why no darwin gate: Jun 2026
+	// sched_reserve fix (defer graph tensor alloc; Persistent KV contexts) removed
+	// the Metal abort that previously forced legacy llamarunner for qwen35 on Mac.
 	if newEngine {
 		return true
 	}
 	if !ollamaRequired {
 		return false
-	}
-	if darwin {
-		switch arch {
-		case "qwen35", "qwen35moe", "qwen3next":
-			return false
-		}
 	}
 	return true
 }
@@ -1669,6 +1658,12 @@ type CompletionResponse struct {
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration"`
 	EvalCount          int           `json:"eval_count"`
 	EvalDuration       time.Duration `json:"eval_duration"`
+
+	// PromptTruncated is true when the tokenized prompt exceeded num_ctx and was
+	// shortened to fit (see runner NewSequence). OriginalPromptTokens is the
+	// pre-truncation token count when PromptTruncated is set.
+	PromptTruncated      bool `json:"prompt_truncated,omitempty"`
+	OriginalPromptTokens int  `json:"original_prompt_tokens,omitempty"`
 
 	// Logprobs contains log probability information if requested
 	Logprobs []Logprob `json:"logprobs,omitempty"`

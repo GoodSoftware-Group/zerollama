@@ -1,4 +1,9 @@
 # Apple Silicon (Metal unified memory). Autoconfig picks this on darwin when unset.
+# GPU profile autotune (ROADMAP L1): configs/gpu/apple_silicon_*.json by hw.memsize tier
+# (16g / 24g / 48g / 96g / 128g). WHY tiers: same chip SKU ships multiple RAM sizes.
+# Disable: ZEROLLAMA_GPU_PROFILE=0. Doc: docs/gpu-profiles-l1.md
+# Profile ctx cap: ZEROLLAMA_GPU_PROFILE_CTX=0 or llama_profile.apply_ctx_size: false;
+# long-context override: LLAMA_SERVER_EXTRA_ARGS=-c 131072.
 # Why separate from single_gpu.yaml: no NVML framebuffer; admission uses metal-unified
 # probe (vm_stat). Lower headroom defaults than discrete 16GB CUDA — RAM is shared with OS.
 #

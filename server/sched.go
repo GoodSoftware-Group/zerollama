@@ -947,6 +947,8 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// Runner options (num_ctx, num_gpu, num_batch, …) are fixed at llama.Load time.
+	// Manifest or request changes to num_ctx require a reload — KV is pre-sized at load.
 	if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?
 		!reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) || // have the projectors changed?
 		(!runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew)) || // have the runner options changed?
@@ -1322,22 +1324,51 @@ func (s *Scheduler) InferenceBusy() bool {
 	return false
 }
 
-func (s *Scheduler) expireRunner(model *Model) {
-	modelKey := schedulerModelKey(model)
-	s.loadedMu.Lock()
-	runner, ok := s.loaded[modelKey]
-	s.loadedMu.Unlock()
-	if ok {
-		runner.refMu.Lock()
-		runner.expiresAt = time.Now()
-		if runner.expireTimer != nil {
-			runner.expireTimer.Stop()
-			runner.expireTimer = nil
-		}
-		runner.sessionDuration = 0
-		if runner.refCount <= 0 {
-			s.scheduleExpiredRunner(runner)
-		}
-		runner.refMu.Unlock()
+// findLoadedRunner returns the in-memory runner for a model.
+// Primary key is schedulerModelKey (GGUF path or digest); fall back to ShortName/Name
+// because stop/unload requests resolve names via GetModel while the loaded map may
+// have been keyed before alias normalization.
+func (s *Scheduler) findLoadedRunner(model *Model) *runnerRef {
+	if model == nil {
+		return nil
 	}
+	key := schedulerModelKey(model)
+	s.loadedMu.Lock()
+	defer s.loadedMu.Unlock()
+	if runner, ok := s.loaded[key]; ok {
+		return runner
+	}
+	for _, runner := range s.loaded {
+		if runner.model == nil {
+			continue
+		}
+		if model.ShortName != "" && runner.model.ShortName == model.ShortName {
+			return runner
+		}
+		if model.Name != "" && runner.model.Name == model.Name {
+			return runner
+		}
+	}
+	return nil
+}
+
+// expireRunner unloads a loaded model immediately (stop CLI, keep_alive:0, post-create
+// eviction). Called from HTTP handlers that do not hold a runner ref themselves.
+// Why always scheduleExpiredRunner: a prior version only unloaded when refCount<=0,
+// so stop returned "unload" while the model stayed in /api/ps; processExpiredRunner
+// already retries until refs drop.
+func (s *Scheduler) expireRunner(model *Model) {
+	runner := s.findLoadedRunner(model)
+	if runner == nil {
+		return
+	}
+	runner.refMu.Lock()
+	runner.expiresAt = time.Now()
+	if runner.expireTimer != nil {
+		runner.expireTimer.Stop()
+		runner.expireTimer = nil
+	}
+	runner.sessionDuration = 0
+	s.scheduleExpiredRunner(runner)
+	runner.refMu.Unlock()
 }

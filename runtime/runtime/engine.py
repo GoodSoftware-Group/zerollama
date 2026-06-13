@@ -346,6 +346,7 @@ class InferenceEngine:
             cpp_root=self.config.llama_cpp_root,
             main_gpu=self.config.main_gpu,
             config=self.config,
+            n_gpu_layers=self.config.n_gpu_layers_default,
         )
 
     def _ensure_server(self) -> LlamaForwardWorker:
@@ -375,13 +376,29 @@ class InferenceEngine:
         num_ctx: int | None = None,
         options: dict | None = None,
     ) -> list[str]:
-        """Config llama-server argv with request ``num_ctx`` when it differs from defaults."""
+        """Config llama-server argv with request ``num_ctx`` when it differs from defaults.
+
+        Appends ``--slot-save-path`` via cache_bridge when L3 is enabled. WHY after
+        profile/L1 merge: slot dir must reflect final cache-type-k/v and draft model.
+        """
         from runtime.llama_args import with_llama_num_ctx
+        from runtime.cache_bridge import llama_server_cache_argv
+        from runtime.speculative import resolve_method
 
         base = self.config.llama_server_args()
         ctx = self._vram_num_ctx_for_load(gguf, num_ctx=num_ctx, options=options)
         if ctx is not None and ctx > 0:
-            return with_llama_num_ctx(base, ctx)
+            base = with_llama_num_ctx(base, ctx)
+        draft: Path | None = None
+        spec = self.config.speculative
+        if (
+            spec.draft_model is not None
+            and spec.draft_model.is_file()
+            and resolve_method(spec.method).startswith("draft")
+        ):
+            draft = spec.draft_model
+        if "--slot-save-path" not in base:
+            base = base + llama_server_cache_argv(gguf, base, draft_model=draft)
         return base
 
     def _vram_llama_kwargs(self) -> dict[str, Any]:
@@ -392,7 +409,7 @@ class InferenceEngine:
             "llama_args": self.config.llama_server_args(),
             "parallel_slots_default": self.config.llama_parallel_slots,
             "llama_backend": self._health_llama_backend(),
-            "n_gpu_layers_default": -1,
+            "n_gpu_layers_default": self.config.n_gpu_layers_default,
         }
         spec = self.config.speculative
         if (
@@ -883,6 +900,29 @@ class InferenceEngine:
             body["embed_boot"] = embed_boot
         if llama_cpp_health is not None:
             body["llama_cpp"] = llama_cpp_health
+        if self.config.gpu_profile:
+            body["gpu_profile"] = self.config.gpu_profile
+        from runtime.llama_fork import fork_health
+
+        body["llama_fork"] = fork_health(
+            llama_server_bin=self.config.llama_server_bin
+        )
+        from runtime.cache_bridge import cache_health
+        from runtime.speculative import resolve_method
+
+        draft: Path | None = None
+        spec = self.config.speculative
+        if (
+            spec.draft_model is not None
+            and spec.draft_model.is_file()
+            and resolve_method(spec.method).startswith("draft")
+        ):
+            draft = spec.draft_model
+        body["llama_cache"] = cache_health(
+            model_path,
+            self.config.llama_server_args(),
+            draft_model=draft,
+        )
         return body
 
     def training_handoff(self) -> InferenceState:
@@ -1213,6 +1253,24 @@ class InferenceEngine:
                 resolved_gguf = gguf.resolve()
             except OSError:
                 resolved_gguf = gguf
+        from runtime.cache_bridge import (
+            derive_slot_id,
+            resolve_cache_key_from_options,
+        )
+
+        # L3: pin llama-server slot before tick so /completion sees stable id_slot.
+        # WHY here not in tick: cache key comes from HTTP options; admission is the
+        # single place options meet the scheduler Request.
+        prompt_cache_key = resolve_cache_key_from_options(options)
+        kv_slot: int | None = None
+        slot_pinned = False
+        if prompt_cache_key:
+            derived = derive_slot_id(
+                prompt_cache_key, self._effective_llama_parallel_slots()
+            )
+            if derived >= 0:
+                kv_slot = derived
+                slot_pinned = True
         req = Request(
             request_id=uuid.uuid4().hex[:12],
             prompt_tokens=self._prompt_tokens_for_admit(prompt, gguf),
@@ -1222,6 +1280,9 @@ class InferenceEngine:
             num_ctx=resolved_ctx,
             vram_options=vram_opts,
             vram_num_ctx_meta=clamp_meta or None,
+            prompt_cache_key=prompt_cache_key,
+            kv_slot=kv_slot,
+            slot_pinned=slot_pinned,
         )
         self.scheduler.add_request(req)
         try:
@@ -1306,6 +1367,7 @@ class InferenceEngine:
                     gguf, num_ctx=active.num_ctx, options=vram_opts
                 )
                 from runtime.kv.bind import reserved_token_capacity
+                from runtime.cache_bridge import cache_prompt_for_request
 
                 raw = srv.completion(
                     prompt,
@@ -1315,6 +1377,7 @@ class InferenceEngine:
                     kv_bind_req=active,
                     kv_block_size=self.config.block_size,
                     sampler=sampler_options_from_dict(options),
+                    cache_prompt=cache_prompt_for_request(active.prompt_cache_key),
                 )
                 content = raw.get("content") or raw.get("response") or ""
                 active.state = RequestState.DECODE
@@ -1414,6 +1477,7 @@ class InferenceEngine:
                 first = True
                 sampler = sampler_options_from_dict(options)
                 from runtime.kv.bind import reserved_token_capacity
+                from runtime.cache_bridge import cache_prompt_for_request
 
                 for chunk in srv.completion_stream(
                     prompt,
@@ -1423,6 +1487,7 @@ class InferenceEngine:
                     kv_bind_req=active,
                     kv_block_size=self.config.block_size,
                     sampler=sampler,
+                    cache_prompt=cache_prompt_for_request(active.prompt_cache_key),
                 ):
                     content = chunk.get("content") or chunk.get("response") or ""
                     stop = bool(chunk.get("stop"))

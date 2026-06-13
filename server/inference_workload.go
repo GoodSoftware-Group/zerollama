@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ollama/ollama/envconfig"
@@ -23,6 +24,15 @@ var (
 )
 
 var inferenceHealthClient = &http.Client{Timeout: 2 * time.Second}
+
+const runtimeHealthCacheTTL = 500 * time.Millisecond // Why: training submit idle-wait and ggml load paths probe /health multiple times per second; cache avoids loopback RTT on every check.
+
+var (
+	runtimeHealthCacheMu sync.Mutex
+	runtimeHealthCached  runtimeHealthSnapshot
+	runtimeHealthCacheURL string
+	runtimeHealthCachedAt time.Time
+)
 
 // InferenceWorkloadStatus summarizes ggml scheduler and Python runtime load.
 type InferenceWorkloadStatus struct {
@@ -125,6 +135,28 @@ func runtimeInferenceHealth(ctx context.Context) runtimeHealthSnapshot {
 	if base == "" {
 		return runtimeHealthSnapshot{ok: true}
 	}
+
+	// Short TTL cache — see runtimeHealthCacheTTL. Stale by 500ms is acceptable for
+	// training submit gating; fresh enough to detect runtime llama_server unload.
+	runtimeHealthCacheMu.Lock()
+	if runtimeHealthCacheURL == base && time.Since(runtimeHealthCachedAt) < runtimeHealthCacheTTL {
+		snap := runtimeHealthCached
+		runtimeHealthCacheMu.Unlock()
+		return snap
+	}
+	runtimeHealthCacheMu.Unlock()
+
+	snap := fetchRuntimeInferenceHealth(ctx, base)
+
+	runtimeHealthCacheMu.Lock()
+	runtimeHealthCached = snap
+	runtimeHealthCacheURL = base
+	runtimeHealthCachedAt = time.Now()
+	runtimeHealthCacheMu.Unlock()
+	return snap
+}
+
+func fetchRuntimeInferenceHealth(ctx context.Context, base string) runtimeHealthSnapshot {
 	url := strings.TrimSuffix(base, "/") + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

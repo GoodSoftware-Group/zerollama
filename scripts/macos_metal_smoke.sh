@@ -31,6 +31,7 @@ runtime_uv_venv
   tests/test_m3_model_picker.py \
   tests/test_autoconfig.py::test_apple_silicon_yaml_inprocess_backend \
   tests/test_vram_yaml_defaults.py::test_apply_apple_silicon_repo_defaults \
+  tests/test_gpu_profiles.py \
   tests/test_engine_inprocess_fallback.py -q)
 
 echo "== coordination smoke =="
@@ -55,6 +56,15 @@ else:
 print(f"vram_probe_effective: {probe}")
 if probe not in ("metal-unified", "skipped", None):
     print(f"note: probe={probe} (nvidia path on Mac is unusual)", file=sys.stderr)
+gp = h.get("gpu_profile") or {}
+if gp:
+    print(f"gpu_profile.id: {gp.get('id')}")
+    print(f"gpu_profile.bucket_label: {gp.get('bucket_label')}")
+    print(f"gpu_profile.n_parallel: {gp.get('n_parallel')}")
+    if gp.get("unified_memory_gb") is not None:
+        print(f"gpu_profile.unified_memory_gb: {gp.get('unified_memory_gb')}")
+else:
+    print("warn: gpu_profile missing from /health (ZEROLLAMA_GPU_PROFILE=0?)", file=sys.stderr)
 PY
 
 if [[ "${RUN_E2E_GPU:-0}" == "1" ]]; then

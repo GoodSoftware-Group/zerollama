@@ -35,6 +35,11 @@ class Request:
     vram_options: dict[str, Any] | None = None
     vram_num_ctx_meta: dict[str, Any] | None = None
     kv_slot: int | None = None
+    # L3: stable session key from request options (eliza conversationId, etc.).
+    prompt_cache_key: str | None = None
+    # When True, kv_slot was derived from prompt_cache_key; llama-server keeps KV
+    # after complete() — allocator releases tracking only, not llama slot contents.
+    slot_pinned: bool = False
 
     @property
     def num_prompt_tokens(self) -> int:

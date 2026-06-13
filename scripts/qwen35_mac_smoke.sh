@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Opt-in Qwen 3.5/3.6 legacy llamarunner smoke on macOS (M10).
+# Opt-in Qwen 3.5/3.6 ggml smoke on macOS (M10).
 #
-# Why separate from runtime smokes: qwen35* uses darwin → legacy ggml + compat, not
-# the Python runtime sidecar. Runtime Metal must be released before ggml can load.
+# Why separate from runtime smokes: qwen35* loads via Go ollama-engine (OllamaEngineRequired).
+# Runtime Metal must be released before ggml can load on the same device.
+# Why accept thinking OR response: qwen3.6 thinking models may return text only in `thinking`.
+#
+# Daily serve uses OLLAMA_HOST=:11434; this script defaults :8080 (CI smoke layout).
+# Override: OLLAMA_HOST=http://127.0.0.1:11434 ./scripts/qwen35_mac_smoke.sh
 #
 # Usage:
 #   RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
@@ -70,7 +74,7 @@ payload=$(QWEN_MODEL="$QWEN_MODEL" QWEN_NUM_CTX="$QWEN_NUM_CTX" QWEN_NUM_PREDICT
     },
 }))")
 
-echo "== qwen35 legacy ggml /api/generate (${QWEN_MODEL}, num_ctx=${QWEN_NUM_CTX}) =="
+echo "== qwen35 ggml /api/generate (${QWEN_MODEL}, num_ctx=${QWEN_NUM_CTX}) =="
 tmp=$(mktemp)
 code=$(curl -sS -m 600 -o "$tmp" -w "%{http_code}" -X POST \
   -H 'Content-Type: application/json' \
@@ -87,11 +91,13 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 assert d.get('done'), d
 resp = (d.get('response') or '').strip()
-assert resp, f'empty response: {d!r}'
+think = (d.get('thinking') or '').strip()
+text = resp or think
+assert text, f'empty response/thinking: {d!r}'
 blob = json.dumps(d).lower()
 for bad in ('kernel_unary', 'dimension_sections', 'unknown architecture'):
     assert bad not in blob, d
-print('qwen35 generate: ok', repr(resp[:80]))
+print('qwen35 generate: ok', repr(text[:80]))
 " "$tmp"
 rm -f "$tmp"
 

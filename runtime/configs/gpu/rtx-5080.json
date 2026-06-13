@@ -1,0 +1,33 @@
+{
+  "id": "rtx-5080",
+  "name": "NVIDIA GeForce RTX 5080",
+  "match_names": ["RTX 5080", "GeForce RTX 5080"],
+  "vram_gb": 16,
+  "llama_server_flags": {
+    "n_gpu_layers": 999,
+    "ctx_size": 32768,
+    "batch_size": 2048,
+    "ubatch_size": 512,
+    "n_parallel": 4,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "flash_attn": true,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "mlock": false,
+    "no_mmap": false,
+    "no_kv_offload": false,
+    "draft_max": 16,
+    "draft_min": 4,
+    "draft_p_min": 0.5
+  },
+  "_fork_only_llama_server_flags": {
+    "ctx_checkpoints": 4,
+    "ctx_checkpoint_interval": 8192
+  },
+  "_eliza_fork_llama_server_flags": {
+    "cache_type_k": "qjl1_256",
+    "cache_type_v": "q4_polar"
+  },
+  "_provenance": "derived from eliza 4090 profile, scaled for 16 GiB VRAM; fork cache qjl/polar"
+}

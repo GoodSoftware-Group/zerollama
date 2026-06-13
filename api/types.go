@@ -572,6 +572,16 @@ type ChatResponse struct {
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
 
+	// PromptTruncated is true when input was shortened to fit num_ctx (runner token trim).
+	// Why on API: logs showed truncation while clients got silent 200 responses.
+	PromptTruncated bool `json:"prompt_truncated,omitempty"`
+	// OriginalPromptTokens is the token count before prompt truncation.
+	OriginalPromptTokens int `json:"original_prompt_tokens,omitempty"`
+	// MessagesTruncated is true when older chat messages were dropped to fit context.
+	MessagesTruncated bool `json:"messages_truncated,omitempty"`
+	// MessagesDropped is how many leading chat messages were removed.
+	MessagesDropped int `json:"messages_dropped,omitempty"`
+
 	// Streaming progress (done=false, empty message): accepted, queued, loading, generating.
 	Status     string `json:"status,omitempty"`
 	Position   int    `json:"position,omitempty"`
@@ -924,6 +934,16 @@ type GenerateResponse struct {
 
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
+
+	// PromptTruncated is true when input was shortened to fit num_ctx (runner token trim).
+	// Why on API: logs showed truncation while clients got silent 200 responses.
+	PromptTruncated bool `json:"prompt_truncated,omitempty"`
+	// OriginalPromptTokens is the token count before prompt truncation.
+	OriginalPromptTokens int `json:"original_prompt_tokens,omitempty"`
+	// MessagesTruncated is true when older chat messages were dropped to fit context.
+	MessagesTruncated bool `json:"messages_truncated,omitempty"`
+	// MessagesDropped is how many leading chat messages were removed.
+	MessagesDropped int `json:"messages_dropped,omitempty"`
 
 	// Streaming progress (done=false, empty response): accepted, queued, loading, generating.
 	Status     string `json:"status,omitempty"`

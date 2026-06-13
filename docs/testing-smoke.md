@@ -43,6 +43,8 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `gpu_5080_session.sh` | `RUN_E2E_PREFLIGHT=1` + `gpu_smoke_all` + Phase 13 snapshot + recommendations; optional `RUN_E2E_PHASE14=1` (serve must match backend), `RUN_E2E_PHASE14_SIGNOFF=1` (full gate via `phase14_5080_signoff.sh`), or `RUN_E2E_PHASE15=1` (`phase15_inprocess_signoff`; needs `LLAMA_CPP_LIB`) — **official 16GB gate** — see [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
 | `macos_metal_smoke.sh` | Darwin: Phase 12 go golden + metal probe pytest + coordination + `/health` autoconfig/probe — see [apple-silicon-metal.md](./apple-silicon-metal.md) |
 | `gpu_metal_session.sh` | Darwin one-shot: `macos_metal_smoke` + Phase 13 snapshot + optional Phase 14 inprocess — Mac counterpart to `gpu_5080_session.sh` |
+| `m3_metal_signoff.sh` / `metal_signoff.sh` | Full Mac Metal gate (Phase 13–15 + tools); optional `RUN_E2E_QWEN35=1` appends qwen35 smoke — **why:** qwen35 is opt-in (large download, Go engine path) |
+| `qwen35_mac_smoke.sh` | Opt-in qwen35/qwen3.6 generate on darwin via Go ollama-engine; handoffs runtime Metal first; accepts `thinking` or `response` — see [qwen35-apple-silicon.md](./qwen35-apple-silicon.md) |
 | `e2e_training_ops_smoke.sh` | `GET /api/train/status` + jobs; optional TCP ping (no train job submit) |
 | `repro_shared_interpreter_health_hang.sh` | Training + embedded runtime on `19180`/`19181`; 5× `/health` must not hang |
 | `phase14_backend_smoke.sh` | Phase 14: one backend on running serve (`RUN_E2E_PHASE14=1`, `/internal/tokenize`, render-chat). Preflight prints `llama_backend` + `llama_backend_source`. **Rebuild + restart serve** — [phase14-inprocess-llama.md](./phase14-inprocess-llama.md) |

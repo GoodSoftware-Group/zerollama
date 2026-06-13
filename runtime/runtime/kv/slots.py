@@ -1,4 +1,8 @@
-"""Map scheduler requests to llama-server parallel slots (Phase 15 v1)."""
+"""Map scheduler requests to llama-server parallel slots (Phase 15 v1 + L3 pin).
+
+Phase 15 v1: dynamic ``acquire()`` for one-shot requests.
+L3: ``try_acquire(slot)`` for session-pinned slots derived from cache keys.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +26,15 @@ class SlotAllocator:
                 self._in_use.add(slot)
                 return slot
         return None
+
+    def try_acquire(self, slot: int) -> bool:
+        """Reserve a specific slot (L3 pinned sessions). False if busy or out of range."""
+        if slot < 0 or slot >= self.num_slots:
+            return False
+        if slot in self._in_use:
+            return False
+        self._in_use.add(slot)
+        return True
 
     def release(self, slot: int) -> None:
         if 0 <= slot < self.num_slots:

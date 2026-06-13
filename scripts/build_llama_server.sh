@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Build llama-server from pinned llama.cpp (see runtime/LLAMA_CPP_PIN.md).
+#
+# LLAMA_CPP_ROOT defaults to ${zerollama_repo}/../llama.cpp (sibling checkout).
+# Why sibling: mac_setup/dev_bootstrap clone here; path must not depend on repo nesting depth.
+#
 # Why validate nvcc: CMAKE may find headers under cuda-12.8 while CUDACXX points at a
 # missing cuda-13/bin/nvcc. RTX 5080: CMAKE_CUDA_ARCHITECTURES=120-real (see docs/testing-smoke.md).
 # macOS (M3): GGML_METAL=ON, GGML_CUDA=OFF — produces libllama.dylib + llama-server.
 set -euo pipefail
 
-ROOT="${LLAMA_CPP_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/llama.cpp}"
+_ZEROLLAMA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${LLAMA_CPP_ROOT:-${_ZEROLLAMA_ROOT}/../llama.cpp}"
 BUILD="${ROOT}/build"
 
 if [[ ! -f "${ROOT}/CMakeLists.txt" ]]; then

@@ -135,6 +135,7 @@ class LlamaServerProcess:
         kv_bind_req: Any | None = None,
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
+        cache_prompt: bool | None = None,
     ) -> dict[str, Any]:
         del kv_token_budget, kv_bind_req, kv_block_size
         if self._proc is None or self._proc.poll() is not None:
@@ -147,6 +148,9 @@ class LlamaServerProcess:
             payload["n_predict"] = n_predict
         if id_slot >= 0:
             payload["id_slot"] = id_slot
+        # L3: persist prefix KV into pinned slot (pairs with cache_bridge derive_slot_id).
+        if cache_prompt is not None:
+            payload["cache_prompt"] = cache_prompt
         apply_sampler_to_completion_payload(payload, sampler)
         body = json.dumps(payload).encode()
         req = urllib.request.Request(
@@ -185,6 +189,7 @@ class LlamaServerProcess:
         kv_bind_req: Any | None = None,
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
+        cache_prompt: bool | None = None,
     ) -> Iterator[dict[str, Any]]:
         del kv_token_budget, kv_bind_req, kv_block_size
         if self._proc is None or self._proc.poll() is not None:
@@ -197,6 +202,9 @@ class LlamaServerProcess:
             payload["n_predict"] = n_predict
         if id_slot >= 0:
             payload["id_slot"] = id_slot
+        # L3: persist prefix KV into pinned slot (pairs with cache_bridge derive_slot_id).
+        if cache_prompt is not None:
+            payload["cache_prompt"] = cache_prompt
         apply_sampler_to_completion_payload(payload, sampler)
         body = json.dumps(payload).encode()
         req = urllib.request.Request(

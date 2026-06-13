@@ -32,6 +32,9 @@ scripts=(
   serve_mac_runtime.sh
   phase15_metal_signoff.sh
   macos_runtime_serve_lib.sh
+  l2_fork_eval.sh
+  l2_metal_bench.sh
+  build_eliza_llama_server.sh
   phase14_backend_smoke.sh
   phase14_inprocess_smoke.sh
   phase14_wheel_cpu_smoke.sh
@@ -96,6 +99,11 @@ grep -q 'qwen35_mac_smoke.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
 grep -q 'test_m3_model_picker.py' "${ROOT}/scripts/macos_metal_smoke.sh"
 grep -q 'NewDoctorCommand' "${ROOT}/cmd/cmd.go"
 grep -q 'mac_setup.sh' "${ROOT}/docs/development.md"
+grep -q 'dev_bootstrap.sh' "${ROOT}/scripts/dev_bootstrap.sh"
+grep -q 'ensure_llama_cpp_sibling' "${ROOT}/scripts/mac_setup.sh"
+grep -q 'MAC_SETUP_SIGNOFF:-0' "${ROOT}/scripts/mac_setup.sh"
+grep -q 'M14' "${ROOT}/docs/ROADMAP.md"
+grep -q 'Onboarding tiers' "${ROOT}/docs/apple-silicon-metal.md"
 grep -q 'llama_backend_fallback' "${ROOT}/runtime/runtime/engine.py"
 grep -q 'training_uv_venv.sh' "${ROOT}/scripts/mac_setup.sh"
 grep -q 'doctor --fix' "${ROOT}/cmd/doctor.go"
@@ -110,7 +118,7 @@ grep -q 'build_zerollama_mac' "${ROOT}/cmd/doctor.go"
 grep -q 'build_production_mac' "${ROOT}/docs/mac-dev-setup.md"
 grep -q 'BUILD_MLX' "${ROOT}/scripts/build_zerollama_mac.sh"
 grep -q 'pickOllamaEngine' "${ROOT}/llm/server.go"
-grep -q 'skipMultimodalWorstCaseReserve' "${ROOT}/runner/ollamarunner/runner.go"
+grep -q 'Persistent()' "${ROOT}/kvcache/causal.go"
 grep -q 'darwinSidecarEnabled' "${ROOT}/server/darwin_sidecar.go"
 grep -q 'zerollama serve' "${ROOT}/docs/development.md"
 grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"
@@ -118,6 +126,9 @@ grep -q 'llama_backend: inprocess' "${ROOT}/runtime/configs/apple_silicon.yaml"
 grep -q 'vm.swapusage' "${ROOT}/runtime/runtime/host_memory.py"
 grep -q 'apple_silicon' "${ROOT}/runtime/runtime/gpu_snapshot.py"
 grep -q 'gpu_metal_session' "${ROOT}/docs/apple-silicon-metal.md"
+grep -q 'l2_metal_bench' "${ROOT}/docs/gpu-profiles-l2.md"
+grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_metal_bench.sh"
+grep -q 'l2_metal_bench' "${ROOT}/scripts/l2_fork_eval.sh"
 grep -q 'IsMLX()' "${ROOT}/docs/mlx-routing-policy.md"
 grep -q 'modelUsesRuntimeInference' "${ROOT}/server/runtime_inference_routing.go"
 grep -q 'RUN_E2E_LEGACY=1 with RUN_E2E_GPU' "${ROOT}/scripts/e2e_runtime_smoke.sh"

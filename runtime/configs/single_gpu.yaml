@@ -1,4 +1,10 @@
 # Single-GPU hosts (e.g. RTX 5080 16GB). Env vars override at launch.
+# GPU profile autotune (ROADMAP L1): when ZEROLLAMA_GPU_PROFILE is not off, runtime
+# merges tuned llama-server flags from configs/gpu/ based on nvidia-smi name or VRAM bucket.
+# WHY separate from Phase 13: Phase 13 estimates fit; L1 picks -b/-np/-fa/MTP draft_*.
+# Profile ctx cap: omit -c with ZEROLLAMA_GPU_PROFILE_CTX=0 or llama_profile.apply_ctx_size: false;
+# override context with LLAMA_SERVER_EXTRA_ARGS=-c 131072 (appended after profile flags).
+# Doc: docs/gpu-profiles-l1.md
 # Why not dual_4090.yaml: tensor split (-sm tensor -ts 1,1) needs multiple GPUs and
 # fails model fitting on one card; use a quantized GGUF so weights + KV fit in VRAM.
 #

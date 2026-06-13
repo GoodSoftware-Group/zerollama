@@ -125,6 +125,11 @@ type Context interface {
 
 	// Layer returns a context appropriate for creating intermediate tensors
 	Layer(int) Context
+
+	// Persistent marks tensors created on this context for eager allocation when
+	// AllocMemory is true (KV/recurrent buffers). Graph intermediates on non-persistent
+	// contexts defer to sched_reserve — why: double-assign aborts on Metal (qwen35moe).
+	Persistent() Context
 }
 
 type Tensor interface {

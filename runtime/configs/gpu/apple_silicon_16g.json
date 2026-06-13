@@ -1,0 +1,26 @@
+{
+  "id": "apple-silicon-16g",
+  "name": "Apple Silicon 16 GiB unified memory",
+  "platform": "darwin",
+  "match_names": [],
+  "unified_memory_gb": 16,
+  "llama_server_flags": {
+    "n_gpu_layers": 999,
+    "ctx_size": 16384,
+    "batch_size": 256,
+    "ubatch_size": 64,
+    "n_parallel": 1,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "flash_attn": true,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "mlock": false,
+    "no_mmap": false,
+    "no_kv_offload": false,
+    "draft_max": 4,
+    "draft_min": 2,
+    "draft_p_min": 0.5
+  },
+  "_provenance": "conservative Metal defaults for 8–16 GiB Macs (shared OS pool)"
+}

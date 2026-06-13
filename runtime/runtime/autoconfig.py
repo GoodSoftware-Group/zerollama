@@ -12,15 +12,16 @@ from pathlib import Path
 _PROBE_TTL_S = 5.0
 _probe_lock = threading.Lock()
 _gpu_count_cache: tuple[float, int | None] | None = None
-_gpu_total_cache: dict[int, tuple[float, int | None]] = {}
 
 
 def clear_autoconfig_probe_cache() -> None:
     """Test helper: drop cached nvidia-smi probe results."""
     global _gpu_count_cache
+    from runtime.nvidia_probe import clear_nvidia_probe_cache
+
     with _probe_lock:
         _gpu_count_cache = None
-        _gpu_total_cache.clear()
+    clear_nvidia_probe_cache()
 
 
 def _configs_dir() -> Path:
@@ -64,40 +65,9 @@ def auto_config_enabled() -> bool:
 
 def detect_gpu_total_vram_bytes(device_index: int = 0) -> int | None:
     """Total VRAM for a GPU from nvidia-smi (MiB → bytes), or None."""
-    global _gpu_total_cache
-    now = time.monotonic()
-    with _probe_lock:
-        cached = _gpu_total_cache.get(device_index)
-        if cached is not None and now - cached[0] < _PROBE_TTL_S:
-            return cached[1]
-    try:
-        proc = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.total",
-                "--format=csv,noheader,nounits",
-                "-i",
-                str(device_index),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        val = None
-    else:
-        if proc.returncode != 0:
-            val = None
-        else:
-            line = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
-            try:
-                val = int(float(line.split()[0]) * 1024 * 1024)
-            except (IndexError, ValueError):
-                val = None
-    with _probe_lock:
-        _gpu_total_cache[device_index] = (now, val)
-    return val
+    from runtime.nvidia_probe import detect_gpu_total_vram_bytes as _probe_vram
+
+    return _probe_vram(device_index)
 
 
 def resolved_config_path() -> Path:

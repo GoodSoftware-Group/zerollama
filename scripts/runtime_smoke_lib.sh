@@ -92,6 +92,7 @@ for mf in sorted(root.glob('manifests/registry.ollama.ai/library/*/latest')):
 }
 
 # Pick smallest local text GGUF for Darwin sign-off (skip embed + vision/multimodal).
+# Scans ~/.ollama/models — why not bundled: model weights are operator-local, not in git.
 # Prints two lines: blob path, model tag (may be empty).
 smoke_m3_pick_text_gguf() {
   python3 <<'PY'
@@ -455,6 +456,8 @@ print('resumed inference:', body.get('inference_state'))
 # Unload ggml runners via public API (empty prompt, keep_alive=0). No Phase-8 broker required.
 # WHY mapfile: model tags must not be word-split on spaces; one name per line from Python.
 # WHY SMOKE_UNLOAD_MAX_WAIT: large models can take >15s to exit after HTTP 200 unload.
+# WHY single-quoted python3 -c for unload payload: double-quoted dict braces { } can be
+# stripped by shell brace expansion in some environments, producing SyntaxError on unload.
 smoke_unload_ggml_runners() {
   local ollama_url="${OLLAMA_HOST:-http://127.0.0.1:8080}"
   if ! smoke_ggml_runner_running; then
@@ -487,7 +490,7 @@ for n in names:
   for m in "${_unload_models[@]}"; do
     code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
       -H 'Content-Type: application/json' \
-      -d "$(python3 -c "import json,sys; print(json.dumps({'model':sys.argv[1],'prompt':'','keep_alive':0}))" "$m")" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"model":sys.argv[1],"prompt":"","keep_alive":0}))' "$m")" \
       "${ollama_url}/api/generate" 2>/dev/null) || code=000
     echo "smoke_unload_ggml: ${m} (http ${code})"
   done

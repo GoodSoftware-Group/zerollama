@@ -20,7 +20,7 @@ type tokenizeFunc func(context.Context, string) ([]int, error)
 // chatPrompt accepts a list of messages and returns the prompt and images that should be used for the next chat turn.
 // chatPrompt truncates any messages that exceed the context window of the model, making sure to always include 1) the
 // latest message and 2) system messages
-func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue, truncate bool) (prompt string, images []llm.ImageData, _ error) {
+func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue, truncate bool) (prompt string, images []llm.ImageData, messagesDropped int, err error) {
 	var system []api.Message
 
 	// TODO: Ideally we would compute this from the projector metadata but some pieces are implementation dependent
@@ -43,12 +43,12 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 
 			p, err := renderPrompt(m, append(system, msgs[i:]...), tools, think)
 			if err != nil {
-				return "", nil, err
+				return "", nil, 0, err
 			}
 
 			s, err := tokenize(ctx, p)
 			if err != nil {
-				return "", nil, err
+				return "", nil, 0, err
 			}
 
 			ctxLen := len(s)
@@ -72,12 +72,13 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	}
 
 	if currMsgIdx > 0 {
-		slog.Debug("truncating input messages which exceed context length", "truncated", len(msgs[currMsgIdx:]))
+		messagesDropped = currMsgIdx
+		slog.Debug("truncating input messages which exceed context length", "truncated", messagesDropped)
 	}
 
 	for cnt, msg := range msgs[currMsgIdx:] {
 		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(msg.Images) > 1 {
-			return "", nil, errors.New("this model only supports one image; more than one was requested (including multiple frames sampled from video)")
+			return "", nil, 0, errors.New("this model only supports one image; more than one was requested (including multiple frames sampled from video)")
 		}
 
 		var prefix string
@@ -107,10 +108,10 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	// truncate any messages that do not fit into the context window
 	p, err := renderPrompt(m, append(system, msgs[currMsgIdx:]...), tools, think)
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 
-	return p, images, nil
+	return p, images, messagesDropped, nil
 }
 
 func renderPrompt(m *Model, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {

@@ -64,6 +64,8 @@ EOF
 }
 
 macos_runtime_urls() {
+  # CI/sign-off layout: Go :8080 + sidecar :8081. Daily `zerollama serve` uses :11434 — do not
+  # assume these defaults when curling a default serve; set OLLAMA_HOST explicitly in smokes.
   export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:8080}"
   export ZEROLLAMA_RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
   _MACOS_RT_HOST="$(runtime_url_host "${ZEROLLAMA_RUNTIME_URL}")"

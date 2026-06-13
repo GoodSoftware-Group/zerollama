@@ -47,6 +47,19 @@ See also [ROADMAP Phase 15 exit criteria](../ROADMAP.md#phase-15--exit-criteria-
 | `kv_slot` | Subprocess → llama-server `id_slot`; in-process → libllama `seq_id` (same slot index) |
 | Slot count | `resolve_parallel_slots(llama_server_args(), default=yaml)` — **`-np` in argv wins** over `llama_parallel_slots` in YAML |
 
+### v1b — L3 prompt cache → pinned slots (Jun 2026)
+
+| Piece | Notes |
+|-------|--------|
+| **Why** | v1 dynamic slots discard KV on `complete()` — agent threads re-prefill every turn |
+| `cache_bridge.py` | Stable keys → `derive_slot_id(key, parallel)`; disk TTL; `--slot-save-path` |
+| Admission | `_admit_one()` sets `prompt_cache_key`, pinned `kv_slot`, `slot_pinned` |
+| `try_acquire` | Same slot index blocked while another request holds it; re-queue head |
+| Subprocess | `cache_prompt: true` + `id_slot` on `/completion` |
+| `/health` `llama_cache` | Root, `model_hash`, slot files, `model_loaded` |
+| Env | `ZEROLLAMA_LLAMA_CACHE=0` disables; needs L1 `-np > 1` for multi-session |
+| Doc | [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
+
 ### v2 — in-process multi-seq
 
 | Piece | Notes |

@@ -277,6 +277,13 @@ func (s *Server) CreateHandler(c *gin.Context) {
 			}
 		}
 
+		// Create updates manifest blobs (parameters, template, …) but not runners already
+		// in sched.loaded. Evict so the next load picks up new num_ctx / num_gpu defaults.
+		// Why: /api/ps and inference would otherwise keep the old KV size until manual stop.
+		if m, err := GetModel(name.String()); err == nil {
+			s.sched.expireRunner(m)
+		}
+
 		ch <- api.ProgressResponse{Status: "success"}
 	}()
 

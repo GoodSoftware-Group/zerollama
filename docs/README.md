@@ -23,6 +23,10 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Video understanding (VLM)](./video-understanding.md) — **why** `video_url` / `videos` → ffmpeg → vision pipeline; **why** preflight and `video_spans` exist.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts.
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers.
+* [Roadmap — local voice & llama borrowings (eliza-v3)](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3) — **inference first:** GPU autotune profiles (**L1**), fork kernels (**L2**), KV prefix cache (**L3**); voice **L5+** later.
+* [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; NVIDIA + Apple tiers; operator env.
+* [L2 elizaOS/llama.cpp fork evaluation](./gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant need fork build; sibling eval before vendor merge; gate criteria.
+* [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM).
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
@@ -32,19 +36,19 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 
 ### Apple Silicon (repo)
 
-* [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; three inference paths; runtime autoconfig.
-* [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** three failure layers (Go engine, compat metadata, Metal embed); rebuild checklist; `num_ctx` guidance.
-* [Mac dev setup](./mac-dev-setup.md) — one-command `mac_setup.sh`, CGO, daily serve.
+* [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — onboarding tiers (M14); unified memory; L1 profiles; GPU bootstrap; sched_reserve; manifest vs `/api/ps` context.
+* [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — compat metadata + Metal embed; Go ollama-engine on darwin; manifest `num_ctx` vs request options; thinking-model fields.
+* [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **why** `:11434` daily vs `:8080` CI; CGO; auto-clone `../llama.cpp`.
 * [LM Studio cache import](./lmstudio-import.md) — **why** pull-from-cache, MLX copy vs GGUF symlink, disk policy, env vars, troubleshooting.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
 
 ### GPU training & scheduling (repo)
 
-* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; tight-host env checklist.
+* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; prompt truncation API fields.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Phase 11 runtime admission](./phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first policy; priority classes; enqueue/dequeue flow; `/health` gates; `VRAM_MIN_FREE` / `TRAINING_VRAM_RESERVE`.
-* [Phase 13 runtime VRAM estimates](./phase13-runtime-vram.md) — **why** GGUF VRAM heuristics, `suggested_max_num_ctx`, opt-in clamp, autotune, autoconfig, operator CLI.
+* [Phase 13 runtime VRAM estimates](./phase13-runtime-vram.md) — **why** GGUF VRAM heuristics, `suggested_max_num_ctx`, opt-in clamp, autotune, autoconfig, operator CLI. Complements **L1** throughput profiles: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 * [Phase 14 in-process llama](./phase14-inprocess-llama.md) — **why** subprocess HTTP was replaced for forward; three backends; render tokenize; sampling parity; 5080 sign-off scripts.
 * [Phase 14 handoff](./handoff-phase14-inprocess-llama.md) — architecture, code map, smoke footguns, bugs fixed during bring-up.
 * [Phase 15 native KV](./phase15-native-kv.md) — PA/C block pool, scheduler KV bind, seq-position track, forward plans (v0–v8 ops partial).

@@ -57,7 +57,9 @@ TMPYAML="$(mktemp /tmp/zerollama-phase15-metal-multiseq-XXXX.yaml)"
 sed -e 's/^llama_parallel_slots: 1/llama_parallel_slots: 2/' \
   "${ROOT}/runtime/configs/apple_silicon.yaml" >"$TMPYAML"
 
-macos_runtime_start_sidecar "$LLAMA_MODEL" "$TMPYAML" 0
+# Why disable L1 GPU profile here: apple-silicon-128g sets n_parallel=8, overriding yaml:2
+# and breaking kv_inprocess_n_seq_max assertions for this multiseq gate.
+ZEROLLAMA_GPU_PROFILE=0 macos_runtime_start_sidecar "$LLAMA_MODEL" "$TMPYAML" 0
 
 nseq=""
 slots=""

@@ -14,6 +14,8 @@ Phase 11 answers **“should we admit this request?”** when the GPU is busy or
 
 **Why heuristics instead of only NVML after load:** subprocess OOM on a full 16 GB card is slow, opaque, and hard to recover from. Pre-check + suggest + optional clamp turn failures into **actionable HTTP errors** (`try num_ctx<=N`) and dashboard fields.
 
+**Complements L1 GPU profiles:** Phase 13 answers fit; [gpu-profiles-l1.md](./gpu-profiles-l1.md) picks batch/parallel/MTP flags once the model fits. Use both — clamp off by default, profiles on by default.
+
 ---
 
 ## Operator surface (estimate + context)
@@ -31,6 +33,9 @@ Phase 11 answers **“should we admit this request?”** when the GPU is busy or
 | `ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE` | `2GiB` | Headroom while training / handoff / Go `training-gpu-busy`. |
 | `ZEROLLAMA_AUTO_CONFIG` | `1` | Pick `configs/single_gpu.yaml` vs `dual_4090.yaml` from visible GPU count. |
 | `ZEROLLAMA_RUNTIME_CONFIG` | autoconfig | Explicit YAML path overrides autoconfig. |
+| `ZEROLLAMA_GPU_PROFILE` | on (not `0`) | Merge L1 flags from `runtime/configs/gpu/*.json`. **Why:** throughput tuning separate from Phase 13 fit. |
+| `ZEROLLAMA_GPU_PROFILE_CTX` | on | When `0`, profile does not emit `-c`. **Why:** avoid capping long-context models at profile default. |
+| `ZEROLLAMA_GPU_PROFILE_MLOCK` | off unless `1` | Opt-in `--mlock` when profile sets `mlock: true`. **Why:** pinning fails in containers/shared Mac RAM. |
 
 **Apply exported factors at startup:** `ZEROLLAMA_RUNTIME_VRAM_APPLY_EXPORTED_ENV=1` loads `vram_estimate_factor.env` when `VRAM_ESTIMATE_FACTOR` is unset. **Why:** systemd units can `source` one file without hand-editing unit env; per-GGUF autotune persist still wins at load time.
 

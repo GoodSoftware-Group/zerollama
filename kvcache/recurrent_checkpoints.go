@@ -501,7 +501,7 @@ func (c *Recurrent) ensureCheckpointConv(layer int, entry *checkpointEntry) ml.T
 	}
 	ctx, ok := c.checkpointConvCtxs[layer]
 	if !ok {
-		ctx = c.backend.NewContextSize(c.checkpointCtxSize).Layer(layer)
+		ctx = c.backend.NewContextSize(c.checkpointCtxSize).Layer(layer).Persistent()
 		c.checkpointConvCtxs[layer] = ctx
 	}
 	t := ctx.Zeros(ml.DTypeF32, c.convDim*c.convChannels, 1)
@@ -518,7 +518,7 @@ func (c *Recurrent) ensureCheckpointRecurrent(layer int, entry *checkpointEntry)
 	}
 	ctx, ok := c.checkpointRecurCtxs[layer]
 	if !ok {
-		ctx = c.backend.NewContextSize(c.checkpointCtxSize).Layer(layer)
+		ctx = c.backend.NewContextSize(c.checkpointCtxSize).Layer(layer).Persistent()
 		c.checkpointRecurCtxs[layer] = ctx
 	}
 	t := ctx.Zeros(ml.DTypeF32, c.recurrentStateSize, 1)

@@ -256,11 +256,6 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 
 		bootstrapped = true
 	} else {
-		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-			// metal never updates free VRAM
-			return append([]ml.DeviceInfo{}, devices...)
-		}
-
 		slog.Debug("refreshing free memory")
 		updated := make([]bool, len(devices))
 		allDone := func() bool {
@@ -356,6 +351,12 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				slog.Warn("unable to refresh free memory, using old values")
 			}
 		}
+
+		// Apple Silicon: bootstrap Metal free memory is process-local. Fill any
+		// remaining gaps from the unified host pool (vm_stat via GetCPUMem).
+		// Why we run this on darwin (not skip refresh): scheduler layer fit needs
+		// current unified pool headroom, not stale zeros from an idle subprocess.
+		applyMetalUnifiedFreeMemory(devices, updated)
 	}
 
 	return append([]ml.DeviceInfo{}, devices...)
@@ -428,6 +429,10 @@ func (r *bootstrapRunner) HasExited() bool {
 }
 
 func bootstrapDevices(ctx context.Context, ollamaLibDirs []string, extraEnvs map[string]string) []ml.DeviceInfo {
+	// Spawns a short-lived ollama-engine runner and reads GET /info.
+	// Why ollama-engine: enumerates ggml backends (Metal on darwin) without loading
+	// a real model. The /info handler must call DiscoverBackendDevices() when unloaded
+	// — see ml/backend/ggml/ggml.go ensureDevices(false) and runner/ollamarunner /info.
 	var out io.Writer
 	if envconfig.LogLevel() == logutil.LevelTrace {
 		out = os.Stderr

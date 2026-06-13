@@ -1,6 +1,6 @@
 # macOS developer setup
 
-Short onboarding for **any Mac** (Apple Silicon or Intel) building and running zerollama locally. No Homebrew required for a standard build.
+Short onboarding for **any Mac** (Apple Silicon or Intel), **any checkout path**. No Homebrew required for a standard build.
 
 **Full guide:** [apple-silicon-metal.md](./apple-silicon-metal.md) · **Build details:** [development.md](./development.md#macos-apple-silicon)
 
@@ -13,34 +13,68 @@ Short onboarding for **any Mac** (Apple Silicon or Intel) building and running z
 | **Xcode CLI tools** | `xcode-select --install` |
 | **Go 1.22+** | [go.dev/dl](https://go.dev/dl/) |
 | **uv** | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **llama.cpp sibling** (runtime inprocess) | clone/build at `../llama.cpp` — `mac_setup` can build it |
 
 Optional: **Homebrew** `python@3.12 pkg-config` if you want to link against Homebrew Python instead of Xcode’s bundled 3.9.
 
+**Not required up front:** `../llama.cpp` (bootstrap clones it), pulled models (sign-off is opt-in), `../mlx` (safetensors only).
+
 ---
 
-## One command setup
+## Onboarding tiers
 
-From the repo root:
+| Tier | Goal | Command | Needs |
+|------|------|---------|-------|
+| **0** | Build + daily serve | `./scripts/dev_bootstrap.sh` | Xcode CLI, Go, uv |
+| **1** | Pull a model + chat | `./zerollama serve` then `./zerollama pull llama3.2:3b` | Tier 0 |
+| **2** | Metal sign-off (CI regression) | `MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh` | Tier 1 (local text GGUF) |
+| **3** | qwen35 ggml smoke | `RUN_E2E_QWEN35_MODEL=your:tag ./scripts/qwen35_mac_smoke.sh` | Pulled qwen tag + serve |
+
+**Why tiers:** sign-off and qwen smokes used to run inside default `mac_setup` and failed on fresh clones with no models. Tier 0 is the only required path for another developer.
+
+---
+
+## Fresh clone (recommended)
+
+From any directory (repo can live anywhere):
 
 ```bash
-./scripts/mac_setup.sh
+git clone <zerollama-repo-url> zerollama
+cd zerollama
+./scripts/dev_bootstrap.sh
+./zerollama serve
+# other terminal:
+./zerollama pull llama3.2:3b
+./zerollama run llama3.2:3b
 ```
 
-This will:
+`dev_bootstrap.sh` is `mac_setup.sh` with safe defaults:
 
-1. Configure **CGO** (Xcode `clang` + `python3-embed` from Xcode — fixes common `stddef.h` / embed errors)
-2. **`go build -o zerollama .`**
-3. Create **`runtime/.venv`** (uv, Python 3.11+)
-4. Build **Metal libllama** (`../llama.cpp`)
-5. Run **`zerollama doctor`**
-6. Run **metal sign-off** (skip with `MAC_SETUP_SIGNOFF=0`)
+- clones **`../llama.cpp`** at pin `LLAMA_CPP_VERSION` when missing (`MAC_SETUP_LLAMA_CLONE=1`)
+- **skips metal sign-off** by default (`MAC_SETUP_SIGNOFF=0`)
+- builds **`./zerollama`**, **`runtime/.venv`**, Metal **libllama** when clone/build succeed
+
+Equivalent:
+
+```bash
+./scripts/mac_setup.sh   # same defaults since Jun 2026 (sign-off off, auto-clone llama.cpp)
+```
 
 For MPS LoRA training deps:
 
 ```bash
-MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh
+MAC_SETUP_TRAINING=1 ./scripts/dev_bootstrap.sh
 ```
+
+---
+
+## Ports: daily dev vs CI smokes
+
+| Layout | Go API | Runtime sidecar | When |
+|--------|--------|-----------------|------|
+| **`./zerollama serve`** (default) | **`:11434`** | `:8081` | Daily dev |
+| **Sign-off / e2e smokes** | **`:8080`** | `:8081` | `metal_signoff.sh`, `macos_metal_smoke.sh` |
+
+**Why two Go ports:** upstream Ollama uses `:11434`; CI scripts historically bound `:8080` to avoid clashing with a system Ollama. Smokes set `OLLAMA_HOST=http://127.0.0.1:8080` internally — do not copy smoke curl examples against a default `:11434` serve without changing the host.
 
 ---
 
@@ -53,6 +87,22 @@ MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh
 ```
 
 No wrapper scripts or extra env vars needed for normal dev.
+
+---
+
+## Sign-off after you have a model
+
+```bash
+./zerollama pull llama3.2:3b
+MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh
+# or: ./scripts/metal_signoff.sh   # expects OLLAMA_HOST=:8080 layout; see serve_mac_runtime.sh
+```
+
+Or point at a GGUF blob:
+
+```bash
+M3_LLAMA_MODEL="$HOME/.ollama/models/blobs/sha256-...." MAC_SETUP_SIGNOFF=1 ...
+```
 
 ---
 
@@ -70,7 +120,7 @@ Many dev machines put a non-Apple **`clang`** first on `PATH` (elan/Lean, Homebr
 
 ```bash
 eval "$(./scripts/mac_cgo_env.sh --export)"
-go build -o zerollama .
+GOFLAGS=-mod=mod go build -o zerollama .
 ```
 
 **Verify:**
@@ -83,14 +133,21 @@ go build -o zerollama .
 |-------|-----|
 | `stddef.h file not found` | Use `build_zerollama_mac.sh` or `mac_cgo_env --export` |
 | `python3-embed not found` | `xcode-select --install` (Xcode ships the `.pc` file) |
-| `Library not loaded: @rpath/Python3.framework` | Rebuild/re-test after pulling latest (CGO embeds framework rpath); or `./scripts/build_zerollama_mac.sh` |
-| `go test` abort trap on Mac | `eval "$(./scripts/mac_cgo_env.sh --export)"` then `go test …`, or `./scripts/phase12_golden_ci.sh go` |
-| `go.mod not found` | `cd` to the zerollama repo root |
-| `Undefined symbols` / `std::` linker errors building llama.cpp | Shell has `CXX=.../clang`; use `./scripts/build_llama_server.sh` (forces `clang++`) or `eval "$(./scripts/mac_cgo_env.sh --export)"` |
-| Training torch missing at runtime | `MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh` or `./scripts/training_uv_venv.sh --verify` |
-| `CHECK failed: mlx_distributed_group_new_` at startup | Stale flat `build/lib/ollama/libmlxc.dylib` — `rm` it, or `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` |
-| MLX / safetensors models fail | `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` when `../mlx` exists (or `./scripts/build_production_mac.sh` for `dist/` layout); `ensure_mlx_sources.sh` at pin bumps; Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` |
-| CMake MLX configure: `inconsistent vendoring` | `export GOFLAGS=-mod=mod` before MLX build — **why:** CMake runs `go generate ./x/...` during configure |
+| `llama.cpp not found` | `./scripts/ensure_llama_cpp_sibling.sh` or `MAC_SETUP_LLAMA_CLONE=1 ./scripts/mac_setup.sh` |
+| `inconsistent vendoring` on `go build` | `GOFLAGS=-mod=mod` (set by `build_zerollama_mac.sh`) |
+| `Library not loaded: @rpath/Python3.framework` | Rebuild via `./scripts/build_zerollama_mac.sh` |
+| `go test` abort trap on Mac | `eval "$(./scripts/mac_cgo_env.sh --export)"` then `go test …` |
+| Training torch missing at runtime | `MAC_SETUP_TRAINING=1 ./scripts/dev_bootstrap.sh` |
+| MLX / safetensors models fail | `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` when `../mlx` exists |
+| Sign-off: `Set M3_LLAMA_MODEL` | `zerollama pull …` first, or `MAC_SETUP_SIGNOFF=0` for tier 0 only |
+
+**Ggml-only (skip llama.cpp build):**
+
+```bash
+MAC_SETUP_BUILD=0 MAC_SETUP_LLAMA_OPTIONAL=1 ./scripts/dev_bootstrap.sh
+```
+
+Runtime inprocess on `:8081` needs `libllama.dylib`; ggml chat via `:11434` still works.
 
 ---
 
@@ -99,35 +156,17 @@ go build -o zerollama .
 | Workflow | Build | Run from |
 |----------|-------|----------|
 | **Daily dev** (ggml + optional MLX) | `./scripts/build_zerollama_mac.sh` | repo root: `./zerollama serve` |
+| **Fresh clone bootstrap** | `./scripts/dev_bootstrap.sh` | same |
 | **ggml only (fast)** | `BUILD_MLX=0 ./scripts/build_zerollama_mac.sh` | repo root |
-| **llama.cpp backend (experimental)** | `./scripts/build_llama_server.sh` | `./scripts/serve_llama_cpp_backend.sh` or `./zerollama serve --llama-cpp-backend` — [llama-cpp-backend.md](./llama-cpp-backend.md) |
-| **Upstream Ollama A/B** | `./scripts/build_upstream_ollama_mac.sh` | `OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve` — [upstream-ollama-diff.md](./upstream-ollama-diff.md) |
-| **Release / dist tarball** | `./scripts/build_production_mac.sh` | `dist/darwin-arm64/`: `./zerollama serve` |
+| **Release / dist tarball** | `./scripts/build_production_mac.sh` | `dist/darwin-arm64/` |
 
-**One dev command:** `build_zerollama_mac.sh` regenerates ggml Metal embed, builds `./zerollama`, and with **`BUILD_MLX=auto`** (default) installs MLX dylibs under `build/metal-v*/lib/ollama/` when `../mlx` is present and dylibs are missing. Set **`BUILD_MLX=0`** for a fast ggml-only rebuild; **`BUILD_MLX=1`** or **`MLX_FORCE=1`** to force MLX rebuild after pin bumps.
-
-After bumping `MLX_VERSION` or `MLX_C_VERSION`, run `./scripts/ensure_mlx_sources.sh`, checkout pins in `../mlx` / `../mlx-c`, then `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` (dev) or `./scripts/build_production_mac.sh` (release layout). A leftover flat `build/lib/ollama/libmlxc.dylib` can shadow fresher `build/metal-v*/lib/ollama/` trees and cause startup CHECK errors. `zerollama doctor` warns when this happens.
-
-**MLX dylibs only** (skip Go binary): `./scripts/build_mlx_dylibs_mac.sh` after `ensure_mlx_sources`.
-
-Production output:
-
-```text
-dist/darwin-arm64/
-├── zerollama
-└── lib/ollama/
-    ├── libggml-*.dylib
-    ├── mlx_metal_v3/
-    └── mlx_metal_v4/   # macOS 26+ / Xcode 26+ SDK only
-```
-
-Override MLX sources: `OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build_production_mac.sh`
+See [apple-silicon-metal.md](./apple-silicon-metal.md) for MLX pin bumps and `zerollama doctor` hints.
 
 ---
 
 ## CI / regression only
 
-These scripts use explicit `:8080` + `:8081` ports for smoke tests — not required for daily dev:
+These use **`OLLAMA_HOST=:8080`** + **`ZEROLLAMA_RUNTIME_URL=:8081`** — not the default `:11434` serve:
 
 - `./scripts/serve_mac_runtime.sh`
 - `./scripts/macos_metal_smoke.sh`
@@ -140,10 +179,11 @@ These scripts use explicit `:8080` + `:8081` ports for smoke tests — not requi
 Add to `~/.zshrc` if you often run plain `go build` outside the helper scripts:
 
 ```bash
-# zerollama macOS CGO (only when in repo — optional)
-if [[ -f "$HOME/Sites/inference/zerollama/scripts/mac_cgo_env.sh" ]]; then
-  eval "$("$HOME/Sites/inference/zerollama/scripts/mac_cgo_env.sh" --export 2>/dev/null)" || true
+# zerollama macOS CGO (optional; adjust path to your checkout)
+ZEROLLAMA_DIR="$HOME/code/zerollama"
+if [[ -f "${ZEROLLAMA_DIR}/scripts/mac_cgo_env.sh" ]]; then
+  eval "$("${ZEROLLAMA_DIR}/scripts/mac_cgo_env.sh" --export 2>/dev/null)" || true
 fi
 ```
 
-Adjust the path to your checkout. Project scripts do **not** require editing `~/.zshrc`.
+Project scripts do **not** require editing `~/.zshrc`.

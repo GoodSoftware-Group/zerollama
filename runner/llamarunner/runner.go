@@ -104,6 +104,9 @@ type Sequence struct {
 	generationDuration time.Duration
 	numDecoded         int
 	numPromptInputs    int
+
+	promptTruncated      bool
+	originalPromptTokens int
 }
 
 type NewSequenceParams struct {
@@ -141,17 +144,21 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 	// Ensure that at least 1 input can be discarded during shift
 	params.numKeep = min(params.numKeep, s.cache.numCtx-1)
 
+	var promptTruncated bool
+	var originalPromptTokens int
 	if len(inputs) > s.cache.numCtx {
 		discard := len(inputs) - s.cache.numCtx
 		if !params.truncate {
 			return nil, errorInputTooLong
 		}
 
+		originalPromptTokens = len(inputs)
 		newInputs := inputs[:params.numKeep]
 		newInputs = append(newInputs, inputs[params.numKeep+discard:]...)
 
-		slog.Warn("truncating input prompt", "limit", s.cache.numCtx, "prompt", len(inputs), "keep", params.numKeep, "new", len(newInputs))
+		slog.Warn("truncating input prompt", "limit", s.cache.numCtx, "prompt", originalPromptTokens, "keep", params.numKeep, "new", len(newInputs))
 		inputs = newInputs
+		promptTruncated = true
 	}
 
 	var sc *llama.SamplingContext
@@ -168,20 +175,22 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 	}
 
 	return &Sequence{
-		inputs:           inputs,
-		numPromptInputs:  len(inputs),
-		numPredict:       params.numPredict,
-		pendingResponses: make([]string, 0),
-		responses:        make(chan response, 100),
-		quit:             make(chan bool, 1),
-		embedding:        make(chan []float32, 1),
-		samplingCtx:      sc,
-		embeddingOnly:    params.embedding,
-		stop:             params.stop,
-		numKeep:          params.numKeep,
-		shift:            params.shift,
-		logprobs:         params.logprobs,
-		topLogprobs:      params.topLogprobs,
+		inputs:               inputs,
+		numPromptInputs:      len(inputs),
+		numPredict:           params.numPredict,
+		pendingResponses:     make([]string, 0),
+		responses:            make(chan response, 100),
+		quit:                 make(chan bool, 1),
+		embedding:            make(chan []float32, 1),
+		samplingCtx:            sc,
+		embeddingOnly:          params.embedding,
+		stop:                   params.stop,
+		numKeep:                params.numKeep,
+		shift:                  params.shift,
+		logprobs:               params.logprobs,
+		topLogprobs:            params.topLogprobs,
+		promptTruncated:        promptTruncated,
+		originalPromptTokens:   originalPromptTokens,
 	}, nil
 }
 
@@ -731,12 +740,14 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 			} else {
 				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
-					Done:               true,
-					DoneReason:         seq.doneReason,
-					PromptEvalCount:    seq.numPromptInputs,
-					PromptEvalDuration: seq.processingDuration,
-					EvalCount:          seq.numDecoded,
-					EvalDuration:       seq.generationDuration,
+					Done:                 true,
+					DoneReason:           seq.doneReason,
+					PromptEvalCount:      seq.numPromptInputs,
+					PromptEvalDuration:   seq.processingDuration,
+					EvalCount:            seq.numDecoded,
+					EvalDuration:         seq.generationDuration,
+					PromptTruncated:      seq.promptTruncated,
+					OriginalPromptTokens: seq.originalPromptTokens,
 				}); err != nil {
 					http.Error(w, fmt.Sprintf("failed to encode final response: %v", err), http.StatusInternalServerError)
 				}

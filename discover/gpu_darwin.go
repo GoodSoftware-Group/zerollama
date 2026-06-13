@@ -10,12 +10,6 @@ import "C"
 import (
 	"log/slog"
 	"syscall"
-
-	"github.com/ollama/ollama/format"
-)
-
-const (
-	metalMinimumMemory = 512 * format.MebiByte
 )
 
 func GetCPUMem() (memInfo, error) {

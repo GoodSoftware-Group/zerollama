@@ -152,34 +152,48 @@ console.log(response.message.content);
 
 ### Building zerollama on macOS (ggml @ b9611)
 
+**Fresh clone (any path):** `./scripts/dev_bootstrap.sh` then `./zerollama serve`.
+
+**Why tiers, not one setup script:** sign-off needs pulled GGUFs; CI smokes bind Go **`:8080`** while daily serve uses **`:11434`**; `../llama.cpp` is cloned automatically on tier 0. Details: [mac-dev-setup.md](docs/mac-dev-setup.md) · ROADMAP [M14](docs/ROADMAP.md#apple-silicon--metal-track).
+
 **Why a separate build script:** CGO needs Xcode SDK, embedded Python, and Metal ggml from the **patched in-tree** vendor (`llama/patches/` on `b9611`), not only sibling `../llama.cpp`.
 
 ```bash
-# 1. Pin is b9611 — materialize vendor + sync (see docs/ggml-b9509-migration.md)
-make -f Makefile.sync clean apply-patches
-./scripts/sync_vendor_llama.sh
+# Tier 0 — build + serve (recommended first run)
+./scripts/dev_bootstrap.sh
+./zerollama serve
 
-# 2. Build zerollama (Metal ggml; MLX auto when ../mlx present) + doctor
-./scripts/build_zerollama_mac.sh   # BUILD_MLX=auto: ggml-metal-embed + optional MLX dylibs
-./zerollama doctor
+# Tier 1 — pull a model
+./zerollama pull llama3.2:3b
 
-# 2b. ggml-only fast rebuild (skip MLX compile)
-# BUILD_MLX=0 ./scripts/build_zerollama_mac.sh
+# Optional: vendor sync when hacking ggml patches (not required for first build)
+# make -f Makefile.sync clean apply-patches && ./scripts/sync_vendor_llama.sh
 
-# 2c. Release dist layout (optional — tarball / signed app path)
-# ./scripts/ensure_mlx_sources.sh && ./scripts/build_production_mac.sh
+# Rebuild ggml binary only
+./scripts/build_zerollama_mac.sh   # BUILD_MLX=auto when ../mlx present
 
-# 3. Optional: sibling llama-server for Python runtime subprocess (vanilla b9611, no Ollama patches)
-LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+# Tier 2 — sign-off (after pull; uses :8080/:8081 smoke layout)
+# MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh
 
-# 4. Full Metal sign-off (runtime inprocess — daily Mac path)
-./scripts/metal_signoff.sh
-
-# 5. Optional: qwen35 legacy ggml smoke (needs pulled tag; handoffs runtime Metal first)
+# Optional: qwen35 ggml smoke (needs pulled tag)
 # RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
 ```
 
 **Daily serve:** `zerollama serve` — Go `:11434` (or `:8080` in dev) + uv sidecar `:8081` with `apple_silicon.yaml` inprocess backend.
+
+**GPU profile autotune (L1):** the runtime sidecar auto-merges tuned llama-server flags (`-b`, `-ub`, `-np`, `-fa`, …) from `runtime/configs/gpu/` based on **unified RAM** on Mac (`apple-silicon-16g` … `128g`). Check `curl -s :8081/health | jq .gpu_profile`. **Why:** Phase 13 estimates fit; L1 picks throughput knobs — a 128 GiB M4 Max should not share the same batch/parallel defaults as a 16 GiB Air. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](docs/gpu-profiles-l1.md).
+
+**Prompt cache → slot bridge (L3):** pass a stable session key in request `options` (`eliza.conversationId`, `prompt_cache_key`, …) and the runtime pins llama-server `id_slot` + sets `cache_prompt: true` so repeat system prompts skip full prefill. Check `curl -s :8081/health | jq .llama_cache`. **Why:** agent threads re-send the same system prompt every turn — dynamic Phase 15 slots throw away KV on `complete()`. L3 maps keys → slots (needs `-np > 1` from L1). Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
+
+**Why rebuild after pull:** Jun 2026 fixed Mac **GPU bootstrap discovery** (`total_vram="0 B"` / CPU-only offload) and **Go ollama-engine sched_reserve** for qwen35moe (`GGML_ASSERT(tensor->buffer == NULL)` abort). Rebuild so `/info` uses `DiscoverBackendDevices()` and graph tensors defer to the scheduler — see [apple-silicon-metal.md](docs/apple-silicon-metal.md#gpu-bootstrap-discovery-jun-2026) and [sched_reserve](docs/apple-silicon-metal.md#go-ollama-engine-sched_reserve-jun-2026).
+
+**Context length on Mac (ggml):** keep manifest `num_ctx` modest (4096); use **`options.num_ctx` per request** for long context — manifest defaults pre-allocate KV at load and very large values can hang. `/api/ps` shows the **loaded** runner, not `/api/show`. After `/api/create` or `zerollama stop`, confirm with empty `/api/ps`. See [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md#manifest-num_ctx-vs-request-optionsnum_ctx-jun-2026).
+
+**Faster inference-only startup** (skip training embed + blob prune):
+
+```bash
+OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
+```
 
 ### LM Studio cache (reuse local downloads)
 
@@ -211,7 +225,7 @@ Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lm
 - [Upstream Ollama comparison](docs/upstream-ollama-diff.md) — **why** vanilla Ollama uses Go→llama-server for GGUF; pin gaps; cherry-pick map vs zerollama Python runtime and training.
 - [llama.cpp backend (experimental)](docs/llama-cpp-backend.md) — `--llama-cpp-backend` routes text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml and upstream.
 - [ggml @ b9611 migration](docs/ggml-b9509-migration.md) — **why** in-process ggml uses a pinned vendor tree + 14 reviewable patches (not overlay snapshots); ahead of vanilla Ollama b9509; sync, Ollama deltas, Mac sign-off checklist.
-- [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); single-GPU env checklist.
+- [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); **ggml unload / manifest `num_ctx` vs request options**; prompt truncation fields.
 - [Fleet management (multi-node)](docs/fleet-management.md) — **why** a thin manager above per-node schedulers; `zerollama fleet serve`; warm-model assign API (F3); pairs with [fleet scheduling design](docs/fleet-scheduling.md).
 - [Phase 11 runtime admission](docs/phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first; priority classes; enqueue before queue; tunable min-free and training reserve.
 - [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs.
@@ -223,8 +237,11 @@ Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lm
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
 - [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
-- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; Darwin Metal contention policy; scheduler 400/503 errors; **MLX dylib rebuild** at `MLX_VERSION` pins; **Jun 2026 sign-off** (`metal_signoff.sh`).
-- [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits three Mac layers (Go engine segfault, compat metadata, stale Metal embed); darwin llamarunner path; `PrimaryFamily()` for VL; opt-in `qwen35_mac_smoke.sh`.
+- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **L1 GPU profiles** (RAM tiers); Darwin Metal contention policy; scheduler 400/503 errors; **GPU bootstrap discovery**; **Go engine sched_reserve** (qwen35moe); **Jun 2026 sign-off** (`metal_signoff.sh`, `qwen35_mac_smoke.sh`).
+- [L1 GPU profiles (autotune)](docs/gpu-profiles-l1.md) — **why** Phase 13 ≠ throughput tuning; NVIDIA name/VRAM buckets; Apple RAM tiers; stock llama.cpp safety; operator env.
+- [L2 eliza fork evaluation](docs/gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant; build `../eliza-llama.cpp`; `ZEROLLAMA_LLAMA_FORK=1`; bench gate before vendor merge.
+- [L3 prompt cache → slot bridge](docs/gpu-profiles-l3.md) — **why** stable session keys skip repeat prefill; pinned `id_slot` + disk TTL; agent `options.eliza.*` shape.
+- [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits compat metadata + Metal embed layers; **Go ollama-engine default on Mac** (Jun 2026); `PrimaryFamily()` for VL; thinking-model API fields; opt-in `qwen35_mac_smoke.sh`.
 - [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards; LM Studio MLX disk import policy.
 - [LM Studio cache import](docs/lmstudio-import.md) — **why** pull-from-cache, **why** MLX copies vs GGUF symlinks, disk policy, `OLLAMA_LMSTUDIO_LIST_ALL`, operator troubleshooting.
 

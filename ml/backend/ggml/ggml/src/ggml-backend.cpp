@@ -785,7 +785,7 @@ static bool ggml_is_view_op(enum ggml_op op) {
 #endif
 
 #ifndef GGML_SCHED_MAX_SPLIT_INPUTS
-#define GGML_SCHED_MAX_SPLIT_INPUTS 30
+#define GGML_SCHED_MAX_SPLIT_INPUTS 128
 #endif
 
 #ifndef GGML_SCHED_MAX_COPIES
@@ -1913,8 +1913,10 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
         return false;
     }
 
-    if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
-        return false;
+    if (sched->alloc_buffers) {
+        if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
+            return false;
+        }
     }
 
     struct ggml_backend_sched_split * splits = sched->splits;

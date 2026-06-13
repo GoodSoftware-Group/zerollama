@@ -28,18 +28,18 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** models — no CUDA steps required. For **runtime admission** on unified memory (Phase 11/13), autoconfig picks `apple_silicon.yaml` and probes via `metal-unified`.
 
-**First-time setup:** see **[mac-dev-setup.md](./mac-dev-setup.md)** (one command for any Mac).
+**First-time setup:** see **[mac-dev-setup.md](./mac-dev-setup.md)** (tier 0 bootstrap for any Mac / any checkout path).
 
 ```bash
-./scripts/mac_setup.sh   # build zerollama + uv venv + Metal llama.cpp + doctor
-zerollama serve          # default :11434; auto sidecar on :8081, autoconfig, training venv
-zerollama doctor         # check CGO env, uv, libllama, sidecar /health
-zerollama doctor --fix   # auto-create venv + build binary + llama.cpp if missing
+./scripts/dev_bootstrap.sh   # clone ../llama.cpp if needed; sign-off off by default
+zerollama serve              # default :11434; auto sidecar on :8081, autoconfig, training venv
+zerollama doctor             # check CGO env, uv, libllama, sidecar /health
+zerollama doctor --fix       # auto-create venv + build binary + llama.cpp if missing
 ```
 
 **Serve on macOS:** `zerollama serve` listens on **`OLLAMA_HOST`** (default `:11434`). On Apple Silicon it automatically ensures `runtime/.venv`, starts the Python runtime sidecar on loopback `:8081`, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper scripts required for daily use.
 
-**CI / sign-off only:** `./scripts/serve_mac_runtime.sh` and `./scripts/macos_metal_smoke.sh` exercise the same sidecar stack explicitly for regression tests.
+**CI / sign-off only:** `./scripts/metal_signoff.sh` and `./scripts/macos_metal_smoke.sh` use **`OLLAMA_HOST=:8080`** + sidecar `:8081` — not the default `:11434` daily layout.
 
 **Escape hatches:** set `ZEROLLAMA_RUNTIME_URL` to an existing sidecar (skip spawn), `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0` for ggml-only, or `OLLAMA_TRAINING=false` to skip training deps.
 

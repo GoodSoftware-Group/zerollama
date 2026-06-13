@@ -692,6 +692,8 @@ func (c *testContext) Arange(start, stop, step float32, dtype ml.DType) ml.Tenso
 func (c *testContext) Input() ml.Context    { return c }
 func (c *testContext) Layer(int) ml.Context { return c }
 
+func (c *testContext) Persistent() ml.Context { return c }
+
 func (c *testContext) Forward(...ml.Tensor) ml.Context { return c }
 
 func (c *testContext) Compute(...ml.Tensor) {}

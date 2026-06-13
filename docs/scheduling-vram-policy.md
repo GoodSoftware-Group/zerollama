@@ -67,6 +67,50 @@ Code: `server/vram/broker.go`, wired from `server/routes.go` and `x/trainingwork
 
 ---
 
+## Go ggml scheduler: `keep_alive`, unload, and `num_ctx` at load
+
+**Why this section exists:** operators use `/api/create`, `zerollama stop`, and `/api/ps` together; behavior differs from the Python runtime path (Phase 13 per-request `-c`). Misunderstanding load-time KV sizing caused “manifest says 262K, `/api/ps` says 4096, stop did nothing, create hung.”
+
+### Unload (no public `/api/unload`)
+
+| Mechanism | API | Why |
+|-----------|-----|-----|
+| `zerollama stop MODEL` | `POST /api/generate` with `"prompt":""`, `"keep_alive":0` | Same contract as upstream Ollama; avoids a second unload API |
+| Chat unload | `POST /api/chat` with `"messages":[]`, `"keep_alive":0` | Symmetric with generate |
+| Post-create eviction | Successful `/api/create` → `expireRunner` | Manifest options changed; warm runner must not keep old `num_ctx` |
+| Training / runtime broker | `UnloadAllRunners`, `training-handoff` | Free VRAM before another stack uses the GPU |
+
+**Verify:** `GET /api/ps` should list no models after unload. If a model remains, an inference request may still hold a ref (`refCount > 0`); unload retries until refs drop.
+
+Code: `server/sched.go` (`expireRunner`, `findLoadedRunner`, `processExpiredRunner`), `server/routes.go` (generate/chat early return), `cmd/cmd.go` (`StopHandler`).
+
+### `num_ctx`: manifest default vs request options
+
+**Merge order** (`server/routes.go` → `modelOptions`): VRAM-tier server default → **manifest `parameters`** → **request `options`**.
+
+**At load** (`sched.go` → `load` → `llama.Load`): runner options (`NumCtx`, `NumGPU`, `NumBatch`, …) fix KV size. **`needsReload`** compares stored runner options to the merged options on the next request — a manifest or request change to `num_ctx` forces evict + reload with the new size.
+
+| Set where | Typical use | Risk |
+|-----------|-------------|------|
+| Manifest `parameters.num_ctx` | Default for all loads | **Pre-allocates full KV at load** — very large values (262144) can hang on qwen35/recurrent models |
+| Request `options.num_ctx` | Hermes, long single-shot prompts | May reload runner if ≠ loaded; still allocates KV for requested size at load of that runner |
+| `/api/ps` `context_length` | Observability | **Loaded** runner only — not manifest, not per-request unless reload occurred |
+
+**Guidance:** keep manifest defaults modest (4096–8192 on Mac ggml); pass large context via **`options.num_ctx`** when needed. Python runtime path uses `resolve_num_ctx_for_request` — see [phase13-runtime-vram.md](./phase13-runtime-vram.md).
+
+### Prompt truncation in responses (Jun 2026)
+
+When input exceeds effective `num_ctx`, final `/api/chat` and `/api/generate` responses include:
+
+- `prompt_truncated`, `original_prompt_tokens` — runner token trim
+- `messages_truncated`, `messages_dropped` — chat message drop in `chatPrompt`
+
+Set `"truncate": false` for HTTP **400** instead of silent truncation. **Why:** logs showed `truncating input prompt` while clients saw normal 200.
+
+Code: `server/truncation.go`, `llm/server.go`, `runner/*/runner.go`.
+
+---
+
 ## Training blocks inference (default on)
 
 **What:** While training is active, holds weights on CUDA, or a job is running, Go can:

@@ -42,20 +42,6 @@ import (
 	_ "github.com/ollama/ollama/model/models"
 )
 
-// skipMultimodalWorstCaseReserve avoids multimodal EncodeMultimodal sizing graphs for
-// architectures where published GGUFs embed vision weights but text-only load/reserve
-// must not run vision tensors through ggml sched reserve (darwin Metal abort:
-// GGML_ASSERT(tensor->buffer == NULL) during reserveWorstCaseGraph).
-func skipMultimodalWorstCaseReserve(m model.Model) bool {
-	switch m.Backend().Config().Architecture() {
-	case "qwen35", "qwen35moe", "qwen3next":
-		return true
-	default:
-		return false
-	}
-}
-
-// response contains a piece of generated text along with optional logprobs
 type response struct {
 	content  string
 	logprobs []llm.Logprob
@@ -126,6 +112,9 @@ type Sequence struct {
 	samplingDuration         time.Duration
 	numPredicted             int
 	numPromptInputs          int
+
+	promptTruncated      bool
+	originalPromptTokens int
 }
 
 type NewSequenceParams struct {
@@ -159,11 +148,14 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 	// Ensure that at least 1 input can be discarded during shift
 	params.numKeep = min(params.numKeep, s.cache.numCtx-1)
 
+	var promptTruncated bool
+	var originalPromptTokens int
 	if int32(len(inputs)) > s.cache.numCtx {
 		if !params.truncate {
 			return nil, errorInputTooLong
 		}
 
+		originalPromptTokens = len(inputs)
 		discard := int32(len(inputs)) - s.cache.numCtx
 
 		promptStart := params.numKeep + discard
@@ -197,29 +189,32 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 		newInputs := inputs[:params.numKeep]
 		newInputs = append(newInputs, inputs[promptStart:]...)
 
-		slog.Warn("truncating input prompt", "limit", s.cache.numCtx, "prompt", len(inputs), "keep", params.numKeep, "new", len(newInputs))
+		slog.Warn("truncating input prompt", "limit", s.cache.numCtx, "prompt", originalPromptTokens, "keep", params.numKeep, "new", len(newInputs))
 		inputs = newInputs
+		promptTruncated = true
 	}
 
 	// TODO(jessegross): Ingest cached history for grammar
 
 	return &Sequence{
-		ctxs:             ctxs,
-		mmStore:          mmStore,
-		inputs:           inputs,
-		numPromptInputs:  len(inputs),
-		numPredict:       params.numPredict,
-		pendingResponses: make([]string, 0),
-		responses:        make(chan response, 100),
-		quit:             make(chan bool, 1),
-		embedding:        make(chan []float32, 1),
-		sampler:          params.sampler,
-		embeddingOnly:    params.embedding,
-		stop:             params.stop,
-		numKeep:          params.numKeep,
-		shift:            params.shift,
-		logprobs:         params.logprobs,
-		topLogprobs:      params.topLogprobs,
+		ctxs:                 ctxs,
+		mmStore:              mmStore,
+		inputs:               inputs,
+		numPromptInputs:      len(inputs),
+		numPredict:           params.numPredict,
+		pendingResponses:     make([]string, 0),
+		responses:            make(chan response, 100),
+		quit:                 make(chan bool, 1),
+		embedding:            make(chan []float32, 1),
+		sampler:              params.sampler,
+		embeddingOnly:        params.embedding,
+		stop:                 params.stop,
+		numKeep:              params.numKeep,
+		shift:                params.shift,
+		logprobs:             params.logprobs,
+		topLogprobs:          params.topLogprobs,
+		promptTruncated:      promptTruncated,
+		originalPromptTokens: originalPromptTokens,
 	}, nil
 }
 
@@ -984,12 +979,14 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 			} else {
 				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
-					Done:               true,
-					DoneReason:         seq.doneReason,
-					PromptEvalCount:    seq.numPromptInputs,
-					PromptEvalDuration: seq.processingDuration,
-					EvalCount:          seq.numPredicted,
-					EvalDuration:       seq.lastUpdatedAt.Sub(seq.startedAt) - seq.samplingDuration,
+					Done:                 true,
+					DoneReason:           seq.doneReason,
+					PromptEvalCount:      seq.numPromptInputs,
+					PromptEvalDuration:   seq.processingDuration,
+					EvalCount:            seq.numPredicted,
+					EvalDuration:         seq.lastUpdatedAt.Sub(seq.startedAt) - seq.samplingDuration,
+					PromptTruncated:      seq.promptTruncated,
+					OriginalPromptTokens: seq.originalPromptTokens,
 				}); err != nil {
 					http.Error(w, fmt.Sprintf("failed to encode final response: %v", err), http.StatusInternalServerError)
 				}
@@ -1080,6 +1077,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) reserveWorstCaseGraph(prompt bool) error {
+	// Worst-case graph reserve sizes scheduler buffers for peak batch + multimodal.
+	// Graph intermediates must not pre-allocate (see newTensor + Persistent in ggml).
+	// Why no arch blocklist: qwen35moe abort was double-assign in newTensor, not reserve sizing.
 	ctx := s.model.Backend().NewContext()
 	defer ctx.Close()
 
@@ -1106,7 +1106,7 @@ func (s *Server) reserveWorstCaseGraph(prompt bool) error {
 	// - The result may now be larger than a batch (images may not fit in a
 	//   single batch), so trim based on what will fit and must be grouped together.
 	// - Fill out the rest of the space with text tokens.
-	if multimodalProcessor, ok := s.model.(model.MultimodalProcessor); prompt && ok && !skipMultimodalWorstCaseReserve(s.model) {
+	if multimodalProcessor, ok := s.model.(model.MultimodalProcessor); prompt && ok {
 		mmCtx := s.model.Backend().NewContext()
 		defer mmCtx.Close()
 
@@ -1368,7 +1368,12 @@ func (s *Server) load(w http.ResponseWriter, r *http.Request) {
 }
 
 // info is the handler called by the Ollama server to report information
-// about the GPU devices in use by this runner
+// about the GPU devices in use by this runner.
+//
+// When no model is loaded (bootstrap discovery), we call DiscoverBackendDevices()
+// instead of loading a dummy model with zero GPU layers. Why: zero layers triggers
+// ensureDevices(true) → GGML_DISABLE_METAL on first init, so Metal is invisible to
+// discover.GPUDevices and the scheduler offloads 0/N layers despite hardware present.
 func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	s.loadMu.Lock()
 	defer s.loadMu.Unlock()
@@ -1380,8 +1385,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	if s.model != nil {
 		infos = s.model.Backend().BackendDevices()
 	} else {
-		// Bootstrap discovery must enable Metal on darwin. A dummy model load with
-		// zero GPU layers calls ensureDevices(true) and permanently disables Metal.
+		// Bootstrap path — see DiscoverBackendDevices() comment in ml/backend/ggml.
 		infos = ggmlbackend.DiscoverBackendDevices()
 	}
 	slog.Debug("gathering device infos took", "duration", time.Since(startDevices))

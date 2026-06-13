@@ -76,6 +76,26 @@ RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
 ./scripts/phase15_inprocess_signoff.sh
 ```
 
+---
+
+## L1 GPU profiles (CUDA autotune)
+
+**Why:** Phase 13 (below) estimates fit and suggests `num_ctx`. **L1** merges eliza-derived llama-server flags — `-b`, `-ub`, `-np`, `-fa`, cache types, MTP `draft_*` — when `single_gpu.yaml` loads on a CUDA host.
+
+**Detection:** `nvidia-smi` GPU name → JSON `match_names` (e.g. RTX 4090 → `4090.json`); else VRAM bucket in `runtime/configs/gpu/index.json` (16 GiB → `rtx-5080` profile).
+
+**Verify:**
+
+```bash
+curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
+```
+
+**Disable / override:** `ZEROLLAMA_GPU_PROFILE=0`; `ZEROLLAMA_GPU_PROFILE_CTX=0` to skip profile `-c`; `LLAMA_SERVER_EXTRA_ARGS` appended last.
+
+**5080 gate (pending):** run `gpu_5080_session.sh` before/after tuning `rtx-5080.json` and compare tok/s + VRAM headroom. Apple tiers are sign-off complete — CUDA values are ported from eliza until measured on ship hardware.
+
+Full doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
+
 Individual smokes (optional):
 
 ```bash

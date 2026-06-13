@@ -140,6 +140,9 @@ var (
 	errBadTemplate = errors.New("template error")
 )
 
+// modelOptions merges server default → manifest parameters → request options.
+// Runner fields (num_ctx, num_gpu, …) from the result are passed to llama.Load and
+// pre-size KV at load time — very large manifest num_ctx can hang before first token.
 func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Options, error) {
 	opts := api.DefaultOptions()
 	if opts.NumCtx == 0 {
@@ -313,7 +316,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
-	// expire the runner if unload is requested (empty prompt, keep alive is 0)
+	// Unload without scheduling a runner (zerollama stop, keep_alive:0 preload eviction).
+	// Why not scheduleRunner: that would increment refCount and reload; we only expire.
 	if req.Prompt == "" && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
 		s.sched.expireRunner(m)
 
@@ -412,6 +416,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	prompt := req.Prompt
+	var messagesDropped int
 	if !req.Raw {
 		tmpl := m.Template
 		if req.Template != "" {
@@ -470,7 +475,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		// support for generate
 		if values.Messages != nil && values.Suffix == "" && req.Template == "" {
 			genTruncate := (req.Truncate == nil || *req.Truncate) && !m.IsMLX()
-			prompt, images, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate)
+			prompt, images, messagesDropped, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -575,6 +580,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				res.DoneReason = cr.DoneReason.String()
 				res.TotalDuration = time.Since(checkpointStart)
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				applyGenerateTruncation(&res, cr, messagesDropped)
 				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount)
 
 				if !req.Raw {
@@ -2005,7 +2011,9 @@ func Serve(ln net.Listener) error {
 	image.RegisterFormat("webp", "RIFF????WEBP", webp.Decode, webp.DecodeConfig)
 
 	// At startup we retrieve GPU information so we can get log messages before loading a model
-	// This will log warnings to the log in case we have problems with detected GPUs
+	// This will log warnings to the log in case we have problems with detected GPUs.
+	// Why this matters: empty discovery → totalVRAM=0 → defaultNumCtx=4096 and CPU-only
+	// layer layout even on Macs with Metal (see DiscoverBackendDevices / apple-silicon-metal.md).
 	gpus := discover.GPUDevices(ctx, nil)
 	discover.LogDetails(gpus)
 
@@ -2493,7 +2501,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if m.IsMLX() {
 		truncate = false
 	}
-	prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
+	prompt, images, messagesDropped, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
 	if err != nil {
 		slog.Error("chat prompt error", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2594,6 +2602,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.DoneReason = r.DoneReason.String()
 					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+					applyPromptTruncation(&res, r, messagesDropped)
 					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount)
 				}
 
@@ -2708,7 +2717,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 
 				msgs = append(msgs, msg)
-				prompt, _, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
+				prompt, _, _, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
 				if err != nil {
 					slog.Error("chat prompt error applying structured outputs", "error", err)
 					ch <- gin.H{"error": err.Error()}

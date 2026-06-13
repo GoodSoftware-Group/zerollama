@@ -50,6 +50,10 @@ class RuntimeConfig:
     llama_backend: str = _DEFAULT_LLAMA_BACKEND
     llama_backend_from_file: bool = False
     llama_cpp_lib: Path | None = None
+    n_gpu_layers_default: int = -1
+    gpu_profile: dict[str, object] | None = None
+    _gpu_profile_flags: dict[str, object] = field(default_factory=dict, repr=False)
+    _gpu_profile_emit: dict[str, bool] = field(default_factory=dict, repr=False)
 
     def active_kv_pools(self) -> int:
         """How many device pools participate in KV for one sequence."""
@@ -82,6 +86,14 @@ class RuntimeConfig:
         except ValueError:
             if self.speculative.method != "none":
                 raise
+        profile_flags = getattr(self, "_gpu_profile_flags", None) or {}
+        if profile_flags:
+            from runtime.gpu_profiles import llama_argv_from_profile_flags
+
+            # WHY after -np/-sm: profile supplies throughput flags; YAML/env still
+            # own topology. LLAMA_SERVER_EXTRA_ARGS appends last for overrides.
+            emit = getattr(self, "_gpu_profile_emit", None) or {}
+            args.extend(llama_argv_from_profile_flags(profile_flags, emit=emit))
         extra = os.environ.get("LLAMA_SERVER_EXTRA_ARGS", "").strip()
         if extra:
             args.extend(extra.split())
@@ -99,7 +111,12 @@ class RuntimeConfig:
     @classmethod
     def from_file(cls, path: Path) -> RuntimeConfig:
         data = _load_yaml(path)
-        return cls._from_mapping(data)._apply_env_overrides()
+        cfg = cls._from_mapping(data, config_path=path)._apply_env_overrides()
+        # WHY after env: fork probe and profile emit read LLAMA_SERVER_BIN / ZEROLLAMA_* env.
+        from runtime.gpu_profiles import maybe_apply_gpu_profile
+
+        maybe_apply_gpu_profile(cfg, data, config_path=path)
+        return cfg
 
     @classmethod
     def _defaults_from_env_only(cls) -> RuntimeConfig:
@@ -119,7 +136,9 @@ class RuntimeConfig:
         )._apply_env_overrides()
 
     @classmethod
-    def _from_mapping(cls, data: dict[str, Any]) -> RuntimeConfig:
+    def _from_mapping(
+        cls, data: dict[str, Any], *, config_path: Path | None = None
+    ) -> RuntimeConfig:
         kv = data.get("kv") or {}
         spec = data.get("speculative") or {}
         root = Path(
@@ -142,7 +161,7 @@ class RuntimeConfig:
         backend_raw = data.get("llama_backend")
         backend_from_file = backend_raw is not None and str(backend_raw).strip() != ""
 
-        return cls(
+        cfg = cls(
             host=str(data.get("host", "127.0.0.1")),
             port=int(data.get("port", 8081)),
             llama_cpp_root=root,
@@ -167,6 +186,7 @@ class RuntimeConfig:
             llama_backend=_normalize_llama_backend(backend_raw),
             llama_backend_from_file=backend_from_file,
         )
+        return cfg
 
     def _apply_env_overrides(self) -> RuntimeConfig:
         """Env wins over file defaults (operator overrides)."""

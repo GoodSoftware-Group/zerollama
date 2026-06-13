@@ -581,13 +581,31 @@ func (c *Recurrent) NumSeqs() int {
 	return len(c.curSeqs)
 }
 
+func (c *Recurrent) placeholderConvState(ctx ml.Context) ml.Tensor {
+	nSeqs := c.NumSeqs()
+	if nSeqs < 1 {
+		nSeqs = 1
+	}
+	return ctx.Input().Empty(ml.DTypeF32, c.convDim, c.convChannels, nSeqs)
+}
+
+func (c *Recurrent) placeholderRecurrentState(ctx ml.Context, dims ...int) ml.Tensor {
+	nSeqs := c.NumSeqs()
+	if nSeqs < 1 {
+		nSeqs = 1
+	}
+	shape := append(slices.Clone(dims), nSeqs)
+	return ctx.Input().Empty(ml.DTypeF32, shape...)
+}
+
 func (c *Recurrent) convBuffer(layer int) ml.Tensor {
 	if buf, ok := c.convStates[layer]; ok {
 		return buf
 	}
 
 	if _, ok := c.convCtxs[layer]; !ok {
-		c.convCtxs[layer] = c.backend.NewContextSize(1).Layer(layer)
+		// Persistent — recurrent/conv state buffers must exist before forward runs.
+		c.convCtxs[layer] = c.backend.NewContextSize(1).Layer(layer).Persistent()
 	}
 
 	buf := c.convCtxs[layer].Zeros(ml.DTypeF32, c.convDim*c.convChannels, c.maxSequences)
@@ -601,7 +619,7 @@ func (c *Recurrent) recurrentBuffer(layer int) ml.Tensor {
 	}
 
 	if _, ok := c.recurrentCtxs[layer]; !ok {
-		c.recurrentCtxs[layer] = c.backend.NewContextSize(1).Layer(layer)
+		c.recurrentCtxs[layer] = c.backend.NewContextSize(1).Layer(layer).Persistent()
 	}
 
 	buf := c.recurrentCtxs[layer].Zeros(ml.DTypeF32, c.recurrentStateSize, c.maxSequences)
@@ -659,6 +677,10 @@ func (c *Recurrent) ensureWritableOnce(ctx ml.Context) {
 
 // ConvState returns conv state for current batch sequences as [convDim, convChannels, nSeqs].
 func (c *Recurrent) ConvState(ctx ml.Context, layer int) (ml.Tensor, error) {
+	if c.reserveCheckpoints {
+		return c.placeholderConvState(ctx), nil
+	}
+
 	if err := c.ensureWritable(ctx); err != nil {
 		return nil, err
 	}
@@ -670,6 +692,11 @@ func (c *Recurrent) ConvState(ctx ml.Context, layer int) (ml.Tensor, error) {
 
 // UpdateConvState writes new conv state for current batch sequences.
 func (c *Recurrent) UpdateConvState(ctx ml.Context, layer int, newState ml.Tensor) {
+	if c.reserveCheckpoints {
+		c.reserveCheckpointConv(layer)
+		return
+	}
+
 	buf := c.convBuffer(layer)
 	src := newState.Reshape(ctx, c.convDim*c.convChannels, c.NumSeqs())
 	srcF32 := src
@@ -683,6 +710,10 @@ func (c *Recurrent) UpdateConvState(ctx ml.Context, layer int, newState ml.Tenso
 
 // RecurrentState returns recurrent state for current batch sequences with shape [dims..., nSeqs].
 func (c *Recurrent) RecurrentState(ctx ml.Context, layer int, dims ...int) (ml.Tensor, error) {
+	if c.reserveCheckpoints {
+		return c.placeholderRecurrentState(ctx, dims...), nil
+	}
+
 	if err := c.ensureWritable(ctx); err != nil {
 		return nil, err
 	}
@@ -711,6 +742,10 @@ func (c *Recurrent) RecurrentState(ctx ml.Context, layer int, dims ...int) (ml.T
 
 // RecurrentState4D returns recurrent state as [dim0, dim1, dim2, nSeqs].
 func (c *Recurrent) RecurrentState4D(ctx ml.Context, layer int, dim0, dim1, dim2 int) (ml.Tensor, error) {
+	if c.reserveCheckpoints {
+		return c.placeholderRecurrentState(ctx, dim0, dim1, dim2), nil
+	}
+
 	if err := c.ensureWritable(ctx); err != nil {
 		return nil, err
 	}
@@ -730,6 +765,11 @@ func (c *Recurrent) RecurrentState4D(ctx ml.Context, layer int, dim0, dim1, dim2
 
 // UpdateRecurrentState writes new recurrent state for current batch sequences.
 func (c *Recurrent) UpdateRecurrentState(ctx ml.Context, layer int, newState ml.Tensor) {
+	if c.reserveCheckpoints {
+		c.reserveCheckpointRecurrent(layer)
+		return
+	}
+
 	buf := c.recurrentBuffer(layer)
 	src := newState.Reshape(ctx, c.recurrentStateSize, c.NumSeqs())
 	srcF32 := src

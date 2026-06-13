@@ -4,6 +4,7 @@ Phase 11: each tick re-runs VRAM/policy checks before KV allocate; pop_waiting_f
 stalls only LOW at head under inference-first (normal chat keeps dequeuing).
 
 Phase 15: reserve blocks for ``num_ctx`` when set; assign llama-server ``kv_slot``.
+L3: ``try_acquire`` for session-pinned slots (prompt cache key → stable id_slot).
 """
 
 from __future__ import annotations
@@ -107,14 +108,23 @@ class SchedulerLoop:
                 self.scheduler.waiting.appendleft(req)
                 break
             if self.assign_llama_slots:
-                slot = self._slots.acquire()
-                if slot is None:
-                    if req.block_table is not None:
-                        req.block_table.release()
-                        req.block_table = None
-                    self.scheduler.waiting.appendleft(req)
-                    break
-                req.kv_slot = slot
+                # L3: pre-assigned kv_slot (session pin) vs dynamic acquire().
+                if req.kv_slot is not None and req.kv_slot >= 0:
+                    if not self._slots.try_acquire(req.kv_slot):
+                        if req.block_table is not None:
+                            req.block_table.release()
+                            req.block_table = None
+                        self.scheduler.waiting.appendleft(req)
+                        break
+                else:
+                    slot = self._slots.acquire()
+                    if slot is None:
+                        if req.block_table is not None:
+                            req.block_table.release()
+                            req.block_table = None
+                        self.scheduler.waiting.appendleft(req)
+                        break
+                    req.kv_slot = slot
             req.state = RequestState.PREFILL
             self.scheduler.running.append(req)
             admitted.append(req)
@@ -126,6 +136,9 @@ class SchedulerLoop:
 
     def complete(self, req: Request) -> None:
         if req.kv_slot is not None:
+            # Pinned sessions: release allocator tracking only. llama-server keeps KV
+            # in that id_slot; the next turn re-derives the same slot from cache key.
             self._slots.release(req.kv_slot)
-            req.kv_slot = None
+            if not req.slot_pinned:
+                req.kv_slot = None
         self.scheduler.finish(req)

@@ -137,6 +137,11 @@ func NewContextParams(numCtx int, batchSize int, numSeqMax int, threads int, fla
 	params.n_seq_max = C.uint(numSeqMax)
 	params.n_threads = C.int(threads)
 	params.n_threads_batch = params.n_threads
+	// Always enable llama context embedding mode so the same runner serves
+	// /api/embed via GetEmbeddingsSeq without a second context. Side effect:
+	// chat prefill only marks the last token as output, so llama-batch logs
+	// "embeddings required but some input tokens were not marked as outputs"
+	// once per session and overrides — harmless for generative chat.
 	params.embeddings = C.bool(true)
 	switch flashAttention {
 	case ml.FlashAttentionEnabled:

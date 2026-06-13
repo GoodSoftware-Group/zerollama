@@ -1,0 +1,26 @@
+{
+  "id": "apple-silicon-96g",
+  "name": "Apple Silicon 96 GiB unified memory",
+  "platform": "darwin",
+  "match_names": [],
+  "unified_memory_gb": 96,
+  "llama_server_flags": {
+    "n_gpu_layers": 999,
+    "ctx_size": 65536,
+    "batch_size": 1024,
+    "ubatch_size": 256,
+    "n_parallel": 4,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "flash_attn": true,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "mlock": false,
+    "no_mmap": false,
+    "no_kv_offload": false,
+    "draft_max": 12,
+    "draft_min": 4,
+    "draft_p_min": 0.5
+  },
+  "_provenance": "M3 Ultra / high-memory Pro class; tune after metal_signoff"
+}
