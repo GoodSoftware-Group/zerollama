@@ -126,7 +126,8 @@ class LlamaInprocessWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
     ) -> dict[str, Any]:
-        # cache_prompt is llama-server HTTP only (L3 cache bridge); inprocess uses id_slot pinning.
+        # cache_prompt is llama-server HTTP only (L3 cache bridge). Inprocess reuses KV via
+        # pinned id_slot from cache_bridge at admit time — why we accept but ignore the flag.
         _ = cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
         with self._lock:
@@ -155,7 +156,8 @@ class LlamaInprocessWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
     ) -> Iterator[dict[str, Any]]:
-        # cache_prompt is llama-server HTTP only (L3 cache bridge); inprocess uses id_slot pinning.
+        # cache_prompt is llama-server HTTP only (L3 cache bridge). Inprocess reuses KV via
+        # pinned id_slot from cache_bridge at admit time — why we accept but ignore the flag.
         _ = cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 

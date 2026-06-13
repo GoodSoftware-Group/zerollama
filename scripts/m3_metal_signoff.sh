@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # M3 Apple Silicon sign-off: Phase 13 snapshot + Phase 14 inprocess on Metal.
 #
+# Why this script exists: prove runtime Metal inprocess (apple_silicon.yaml) + optional
+# qwen35 Go ggml + Phase 15 KV on one Metal device — the Mac counterpart to gpu_5080_session.
+#
 # Prerequisite: build Metal llama.cpp once:
 #   LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
 #
@@ -12,7 +15,8 @@
 #   RUN_E2E_PROXY_MODEL  — pulled tag for render-chat (auto from blob when possible)
 #   M3_SKIP_START=1      — assume OLLAMA_HOST / ZEROLLAMA_RUNTIME_URL already up
 #   RUN_E2E_PHASE15=1    — also run ./scripts/phase15_metal_signoff.sh (sidecar path)
-#   RUN_E2E_QWEN35=1      — also run ./scripts/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL)
+#   RUN_E2E_QWEN35=1     — also run ./scripts/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL)
+#                          Why before Phase 15: Phase 15 stops :8081; qwen35 needs handoff/resume.
 #   ZEROLLAMA_BIN        — override zerollama binary (repo ./zerollama, then PATH)
 set -euo pipefail
 

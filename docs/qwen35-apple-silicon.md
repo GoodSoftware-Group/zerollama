@@ -261,6 +261,27 @@ RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
 
 ---
 
+## Full Metal sign-off (Jun 2026)
+
+**Why a separate gate from daily serve:** Sign-off uses **`OLLAMA_HOST=:8080`** + runtime **`:8081`** (CI layout), starts its own stack, and runs Phase 13–15 plus optional qwen35 — not the default `:11434` daily path.
+
+```bash
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+```
+
+**Order inside the script:** qwen35 runs **after Phase 14** and **before Phase 15**. **Why:** Phase 15 stops the runtime sidecar on exit; qwen35 needs `:8081` for training-handoff and resume after ggml unload.
+
+**M4 Max PASS (Jun 2026):** coordination, Phase 13 snapshot, Phase 14 inprocess, qwen35 generate + unload, Phase 15 KV + multiseq.
+
+Standalone qwen35 only (when you already have `:8080`/`:8081` up):
+
+```bash
+RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+```
+
+---
+
 ## Future direction (Phase 17)
 
 Upstream Ollama routes default GGUF through **Go → llama-server** with compat at CMake fetch time. Zerollama’s Mac default remains **in-process ggml** for now. When Phase 17 lands for Mac, qwen35 may move to llama-server subprocess with the same compat layer—**without** requiring the separate CGO compat package, but **with** the same metadata semantics documented here.

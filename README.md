@@ -174,8 +174,10 @@ console.log(response.message.content);
 
 # Tier 2 — sign-off (after pull; uses :8080/:8081 smoke layout)
 # MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh
+# Full gate + qwen35 (M4 Max, Jun 2026):
+# RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
 
-# Optional: qwen35 ggml smoke (needs pulled tag)
+# Optional: qwen35 ggml smoke only (needs :8080/:8081 stack or run via metal_signoff)
 # RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
 ```
 

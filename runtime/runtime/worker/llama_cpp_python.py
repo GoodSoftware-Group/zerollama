@@ -255,6 +255,7 @@ class LlamaCppPythonWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
     ) -> dict[str, Any]:
+        # L3 engine passes cache_prompt for subprocess; wheel backend has no slot bridge yet.
         del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
         with self._lock:
@@ -279,6 +280,7 @@ class LlamaCppPythonWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
     ) -> Iterator[dict[str, Any]]:
+        # L3 engine passes cache_prompt for subprocess; wheel backend has no slot bridge yet.
         del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 

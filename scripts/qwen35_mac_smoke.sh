@@ -102,6 +102,7 @@ print('qwen35 generate: ok', repr(text[:80]))
 rm -f "$tmp"
 
 # Best-effort unload so later runtime smokes can resume.
+# Why resume needs :8081 up: metal_signoff runs qwen35 before Phase 15 for this reason.
 RUN_E2E_UNLOAD_MODEL="$QWEN_MODEL" smoke_unload_ggml_runners || true
 runtime_resume_if_needed "$(runtime_fetch_health "$RUNTIME_URL")" "$RUNTIME_URL"
 

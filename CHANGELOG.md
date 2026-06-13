@@ -20,9 +20,27 @@ All notable changes to this project are documented in this file. The format is b
 - **Runtime health cache** — `server/inference_workload.go`: 500ms TTL on `runtimeInferenceHealth()`. **Why:** training submit idle-wait hit `:8081/health` on every ggml load attempt.
 - **Smoke** — `scripts/qwen35_mac_smoke.sh`: accept `thinking` when `response` is empty (qwen3.6 thinking models); `scripts/runtime_smoke_lib.sh` `smoke_unload_ggml_runners`: single-quoted Python for unload payload (shell brace expansion broke `{...}` dicts).
 
-**Sign-off (M4 Max):** `qwen3.6:latest` (qwen35moe) via `--ollama-engine`, 41/41 GPU layers, generate HTTP 200 — `./scripts/qwen35_mac_smoke.sh`.
+**Sign-off (M4 Max):** full gate `./scripts/metal_signoff.sh` with `RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest` — Phase 13–15 + qwen35 Go ollama-engine generate/unload PASS (Jun 2026).
 
 Doc: [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md), [apple-silicon-metal.md](docs/apple-silicon-metal.md#go-ollama-engine-sched_reserve-jun-2026). ROADMAP: [M10](docs/ROADMAP.md#apple-silicon--metal-track).
+
+### Metal sign-off gate repairs (Jun 2026)
+
+**Why:** After the sched_reserve fix, `./scripts/metal_signoff.sh` still failed on unrelated smoke wiring — not Metal regressions. Each failure blocked validating the full M3 + Phase 15 + qwen35 chain on one command.
+
+**What shipped:**
+
+- **Sign-off order** — `scripts/m3_metal_signoff.sh` runs **qwen35 before Phase 15**. **Why:** Phase 15’s exit trap stops the `:8081` sidecar; qwen35 handoff/resume needs runtime `/health` after ggml unload.
+- **Phase 15 multiseq** — `scripts/phase15_metal_signoff.sh` sets `ZEROLLAMA_GPU_PROFILE=0` for the `llama_parallel_slots=2` temp YAML. **Why:** L1 `apple-silicon-128g` sets `n_parallel=8`, overriding yaml `2` and breaking `kv_inprocess_n_seq_max` assertions.
+- **L3 + inprocess** — `llama_inprocess.py` / `llama_cpp_python.py` accept `cache_prompt` (ignored on inprocess). **Why:** L3 cache bridge passes the kwarg from `engine.py`; Phase 14 generate returned HTTP 500 without it.
+- **Unload payload** — `smoke_unload_ggml_runners` uses single-quoted Python `-c` (see Metal stability smoke bullet above).
+
+**Full gate (M4 Max, Jun 2026):**
+
+```bash
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+```
 
 ### L2 elizaOS/llama.cpp fork evaluation spike (Jun 2026)
 
@@ -50,6 +68,7 @@ Doc: [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md), [apple-silicon-met
 - **Admission** — `_admit_one()` sets `prompt_cache_key`, pinned `kv_slot`, `slot_pinned` before scheduler tick. **Why at admit:** slot must be reserved before `/completion` so llama-server sees a stable `id_slot`.
 - **Phase 15 loop** — `SlotAllocator.try_acquire()` for pinned slots; concurrent same-slot requests re-queue; allocator releases tracking on complete but llama-server keeps KV (next turn re-derives same slot from key hash).
 - **Subprocess completions** — `cache_prompt: true` when a cache key is present. **Why:** tells llama-server to persist prefix KV into the slot (RAM + optional disk under `--slot-save-path`).
+- **Inprocess / wheel workers** — `cache_prompt` kwarg accepted and ignored on `LlamaInprocessWorker` and `llama-cpp-python` backend. **Why:** `engine.py` always passes the flag after L3 admit; Phase 14 Metal sign-off hit HTTP 500 without a matching worker signature.
 - **Disk cache** — `~/.cache/zerollama/llama-cache/<modelHash>/`; hash includes GGUF path, draft model, `--cache-type-k/v` so fork vs stock profiles do not collide. TTL via `ZEROLLAMA_LLAMA_CACHE_TTL_MS` (default 1h) for llama-server `slot_*.bin` names.
 - **`/health.llama_cache`** — enabled, root, `model_hash`, `slot_save_path`, file stats; `model_loaded` false when GGUF path configured but not on disk yet.
 
@@ -190,7 +209,7 @@ Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#scheduler-errors-
   - **`dirIsMLXSafetensors`** — only MLX-layout dirs count toward copy bytes. **Why:** legacy safetensors without `config.json` symlink like GGUF and must stay visible in catalog.
   - **`weightFilesOnly`** — strip `config.json` before GGUF convert. **Why:** multi-file dirs (GGUF + HF metadata) sent JSON to the GGUF parser.
   - **Portable free space** — `diskspace_unix.go` / `diskspace_windows.go`. **Why:** `syscall.Statfs` is not available on Windows CI.
-- **Opt-in qwen35 smoke** — `./scripts/qwen35_mac_smoke.sh` (runtime handoff → legacy ggml generate); `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh`. **Why:** qwen35 uses llamarunner on darwin, not the runtime sidecar path covered by Phase 14 sign-off.
+- **Opt-in qwen35 smoke** — `./scripts/qwen35_mac_smoke.sh` (runtime handoff → Go ollama-engine generate); `RUN_E2E_QWEN35=1` on `metal_signoff.sh` / `m3_metal_signoff.sh` (**runs before Phase 15** — sidecar teardown order). **Why:** qwen35 uses ggml on `:8080`, not the runtime inprocess path covered by Phase 14 alone.
 - **Mac build** — `build_zerollama_mac.sh` passes `-ldflags` version (`VERSION` env, default `0.0.1`).
 
 Docs: [lmstudio-import.md](docs/lmstudio-import.md), [apple-silicon-metal.md](docs/apple-silicon-metal.md), [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md), [mlx-routing-policy.md](docs/mlx-routing-policy.md).
@@ -288,13 +307,23 @@ Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#mlx-engine-option
 
 ### Apple Silicon sign-off (Jun 2026, M4 Max)
 
-**Why:** Operators need a repeatable gate beyond `doctor` — runtime Metal inprocess is the **daily Mac path** (`apple_silicon.yaml`), not legacy ggml. Sign-off proves Phase 13–15 and tools without CUDA-centric `gpu_5080_session.sh`.
+**Why:** Operators need a repeatable gate beyond `doctor` — runtime Metal inprocess is the **daily Mac path** (`apple_silicon.yaml`), while qwen35 validates the **Go ollama-engine ggml** path on the same Metal device. Sign-off proves Phase 13–15, optional qwen35, and tools without CUDA-centric `gpu_5080_session.sh`.
 
-**Passed (GPU):**
+**One command (recommended):**
 
-- **Phase 13:** `/tmp/metal-session.json` — `metal-unified` probe, autotune factor ~0.98 for eliza-1-2b @ `num_ctx=512`.
-- **Phase 14:** inprocess from YAML (`llama_backend_source=config`); generate/chat/stream; tokenize + render-chat; Go proxy with `RUN_E2E_PHASE14=1` / `X-Zerollama-Runtime: 1`.
-- **Phase 15:** KV decode hook (`kv_decode_steps` via native `llama_decode`); multi-seq (`llama_parallel_slots=2`, `kv_inprocess_n_seq_max=2`).
+```bash
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+```
+
+**Why qwen35 before Phase 15 in the script:** Phase 15 stops the runtime sidecar on exit; qwen35 needs `:8081` for training-handoff and resume after ggml unload.
+
+**Passed (GPU, Jun 2026):**
+
+- **Phase 13:** `/tmp/metal-session.json` — `metal-unified` probe, L1 GPU profile, autotune catalog.
+- **Phase 14:** inprocess from YAML (`llama_backend_source=config`); generate/chat/stream; tokenize + render-chat; Go proxy.
+- **Qwen35 (opt-in):** `qwen3.6:latest` via Go `--ollama-engine`; generate + API unload; thinking field OK.
+- **Phase 15:** KV decode hook (`kv_decode_steps`); multi-seq (`llama_parallel_slots=2`, `kv_inprocess_n_seq_max=2` with `ZEROLLAMA_GPU_PROFILE=0`).
 - **Tools:** runtime + proxy `/api/chat` and `/v1/chat/completions` with tools (HTTP 200, not legacy 501).
 - **CPU (no model load):** Phase 12 golden, Phase 15 KV native CI, `go test ./server/... -short`, coordination smoke.
 
@@ -307,10 +336,12 @@ Doc: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md#mlx-engine-option
 | **`num_gpu=0` init Metal** | Metal registered at first ggml init | First CPU-only load sets `GGML_DISABLE_METAL` before backend register |
 | **`go test ./ml/backend/ggml/...`** | Dummy GGUF fixture segfault | `doctor` + `metal_signoff.sh` as gate |
 | **MLX dylib** | Pin bump without rebuild | `./scripts/ensure_mlx_sources.sh` + `GOFLAGS=-mod=mod ./scripts/build_production_mac.sh` |
-| **Qwen35 CI smoke** | Legacy ggml path needs Metal handoff | Opt-in `./scripts/qwen35_mac_smoke.sh`; `RUN_E2E_QWEN35=1` on `m3_metal_signoff.sh` |
+| **Qwen35 in full gate** | Phase 15 killed sidecar before qwen35 resume | qwen35 runs **before** Phase 15 in `m3_metal_signoff.sh`; opt-in `RUN_E2E_QWEN35=1` |
+| **Phase 15 multiseq vs L1** | `apple-silicon-128g` forced `n_parallel=8` | Multiseq step uses `ZEROLLAMA_GPU_PROFILE=0` + temp yaml `llama_parallel_slots: 2` |
+| **Phase 14 + L3 cache_prompt** | Inprocess worker lacked kwarg | Accept/ignore `cache_prompt` on inprocess and wheel backends |
 | **Scheduler 400/503** | Contention returned generic HTTP 500 | `handleScheduleError` maps runtime-routed → 400, Metal contention → 503 |
 
-Scripts: `./scripts/metal_signoff.sh`, `./scripts/gpu_smoke_all.sh` with `RUN_E2E_PHASE14=1`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
+Scripts: `./scripts/metal_signoff.sh`, `./scripts/qwen35_mac_smoke.sh`. Guide: [docs/apple-silicon-metal.md](docs/apple-silicon-metal.md).
 
 ### ggml @ llama.cpp b9509 (real vendored tree)
 

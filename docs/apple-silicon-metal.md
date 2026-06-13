@@ -263,9 +263,20 @@ zerollama serve
 # RUN_E2E_PHASE14=1 LLAMA_MODEL=... ./scripts/gpu_metal_session.sh
 ```
 
-**Full sign-off (recommended):** `./scripts/metal_signoff.sh` — M3 + Phase 15 in one command.
+**Full sign-off (recommended):** `./scripts/metal_signoff.sh` — M3 + Phase 15 in one command (starts `:8080` Go + `:8081` runtime sidecar).
 
-**M3 only:** `./scripts/m3_metal_signoff.sh` ensures `runtime/.venv` via **uv**, starts sidecar runtime + Go proxy, runs coordination + snapshot + **`phase14_yaml_config_smoke.sh`** (inprocess from `apple_silicon.yaml`). Default model: smallest local **text** GGUF (skips embed/vision models). Override with `M3_LLAMA_MODEL=/path/to/model.gguf`. Add Phase 15: `RUN_E2E_PHASE15=1 ./scripts/m3_metal_signoff.sh`.
+**With qwen35 (M4 Max, Jun 2026 PASS):**
+
+```bash
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+```
+
+**Why qwen35 runs before Phase 15 inside the script:** Phase 15’s cleanup stops the runtime sidecar; qwen35 needs `:8081` alive for training-handoff and `runtime_resume_if_needed` after ggml unload.
+
+**M3 only:** `./scripts/m3_metal_signoff.sh` ensures `runtime/.venv` via **uv**, starts sidecar runtime + Go proxy, runs coordination + snapshot + **`phase14_yaml_config_smoke.sh`** (inprocess from `apple_silicon.yaml`). Default model: smallest local **text** GGUF (skips embed/vision models). Override with `M3_LLAMA_MODEL=/path/to/model.gguf`. Add Phase 15: `RUN_E2E_PHASE15=1 ./scripts/m3_metal_signoff.sh`. Add qwen35: `RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=…` (same order: qwen35 before Phase 15 when both set).
+
+**Phase 15 multiseq note:** the multiseq step uses a temp YAML with `llama_parallel_slots: 2` and **`ZEROLLAMA_GPU_PROFILE=0`**. **Why:** L1 `apple-silicon-128g` would set `n_parallel=8` and break `kv_inprocess_n_seq_max=2` assertions.
 
 **Routing policy (GGUF vs runtime vs MLX):** [mlx-routing-policy.md](./mlx-routing-policy.md)
 
@@ -435,6 +446,9 @@ Three sign-off failures had different root causes — fixing one often exposed t
 | `num_gpu=0` still init Metal | Metal registered at first ggml backend init | `GGML_DISABLE_METAL` before `OnceLoad` on first CPU-only load |
 | `total_vram="0 B"`, CPU-only offload | Bootstrap `/info` used zero-layer dummy load → `GGML_DISABLE_METAL` in discovery subprocess | `DiscoverBackendDevices()` — see [GPU bootstrap discovery](#gpu-bootstrap-discovery-jun-2026) |
 | qwen35moe SIGABRT on Go engine load | `newTensor` eager alloc + `sched_reserve` double-assign | Defer graph alloc; `Persistent()` for KV — see [sched_reserve](#go-ollama-engine-sched_reserve-jun-2026) |
+| Full gate fails after qwen35 generate | Phase 15 killed `:8081` before qwen35 resume | qwen35 before Phase 15 in `m3_metal_signoff.sh` |
+| Phase 15 multiseq expects `n_seq_max=2`, got 8 | L1 GPU profile `n_parallel=8` on 128 GiB | `ZEROLLAMA_GPU_PROFILE=0` for multiseq temp YAML |
+| Phase 14 HTTP 500 `cache_prompt` | L3 bridge passes kwarg; inprocess worker lacked it | Accept/ignore on inprocess + wheel workers |
 | Stale Metal free memory on scheduler | Bootstrap subprocess local free bytes | `applyMetalUnifiedFreeMemory` — see [Metal unified free memory](#metal-unified-free-memory-refresh-jun-2026) |
 
 **e2e:** `RUN_E2E_STREAM_MAX` (default 120s); legacy ggml skipped on darwin when runtime holds Metal unless `RUN_E2E_LEGACY_FORCE=1`.
@@ -485,8 +499,8 @@ When a request tries to load the **ggml runner** but Darwin policy blocks it, th
 
 ```bash
 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
-# or append to full sign-off:
-RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/m3_metal_signoff.sh
+# Full gate (Phase 13–15 + qwen35 — qwen35 runs before Phase 15 in script):
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
 ```
 
 See [qwen35-apple-silicon.md](./qwen35-apple-silicon.md).

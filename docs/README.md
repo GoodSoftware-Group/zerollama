@@ -36,8 +36,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 
 ### Apple Silicon (repo)
 
-* [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — onboarding tiers (M14); unified memory; L1 profiles; GPU bootstrap; sched_reserve; manifest vs `/api/ps` context.
-* [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — compat metadata + Metal embed; Go ollama-engine on darwin; manifest `num_ctx` vs request options; thinking-model fields.
+* [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — onboarding tiers (M14); unified memory; L1 profiles; GPU bootstrap; sched_reserve; **`metal_signoff.sh` + qwen35**; manifest vs `/api/ps` context.
+* [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** compat + Metal embed; Go ollama-engine; **full `metal_signoff.sh` + qwen35** (qwen35 before Phase 15); manifest `num_ctx` vs request options; thinking-model fields.
 * [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **why** `:11434` daily vs `:8080` CI; CGO; auto-clone `../llama.cpp`.
 * [LM Studio cache import](./lmstudio-import.md) — **why** pull-from-cache, MLX copy vs GGUF symlink, disk policy, env vars, troubleshooting.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.

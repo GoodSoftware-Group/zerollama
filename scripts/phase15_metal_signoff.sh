@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Phase 15 Apple Silicon sign-off (uv sidecar + inprocess Metal).
 #
+# Why separate from phase15_inprocess_signoff.sh: Mac daily path uses uv sidecar, not
+# embedded CPython (system Python is often 3.9 without torch).
+#
 # Mirrors phase15_inprocess_signoff.sh without embed serve (Mac system Python is often 3.9).
 #
 # Prerequisite:
@@ -12,6 +15,9 @@
 # Env:
 #   M3_LLAMA_MODEL       — GGUF blob (default: auto-pick smallest text GGUF)
 #   PHASE15_SKIP_BOOT=1  — skip step-1 sidecar+go start (M3 chain); step-2 multiseq still reloads
+#
+# Multiseq step: temp YAML llama_parallel_slots=2 + ZEROLLAMA_GPU_PROFILE=0 — why: L1 128g
+# profile sets n_parallel=8 and breaks kv_inprocess_n_seq_max=2 assertions.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
