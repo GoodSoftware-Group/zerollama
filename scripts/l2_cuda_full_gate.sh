@@ -62,7 +62,10 @@ if [[ "${L2_SKIP_BENCH:-0}" != "1" ]]; then
   if [[ "${L2_RUN_131K_FORK:-0}" == "1" ]]; then
     echo ""
     echo "== L2 CUDA fork-only long ctx (131072) — timed decode after warmups =="
+    # WHY KV blocks: single_gpu.yaml defaults 2048×16=32k tokens; 131k needs 8192 blocks.
+    # Use a QJL-compatible GGUF (OuteTTS 1B fails n_embd_head_k); 9B @ 131k needs >16 GiB VRAM.
     export ZEROLLAMA_GPU_PROFILE_CTX=0
+    export ZEROLLAMA_KV_NUM_BLOCKS="${ZEROLLAMA_KV_NUM_BLOCKS:-8192}"
     L2_SKIP_STOCK=1 \
       L2_CUDA_BENCH_OUT="${OUT_DIR}/bench-131k-fork.json" \
       L2_NUM_CTX=131072 \

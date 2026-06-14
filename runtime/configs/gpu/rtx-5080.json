@@ -6,9 +6,9 @@
   "llama_server_flags": {
     "n_gpu_layers": 999,
     "ctx_size": 32768,
-    "batch_size": 2048,
-    "ubatch_size": 512,
-    "n_parallel": 4,
+    "batch_size": 1024,
+    "ubatch_size": 256,
+    "n_parallel": 2,
     "cache_type_k": "q8_0",
     "cache_type_v": "q8_0",
     "flash_attn": true,
@@ -29,5 +29,5 @@
     "cache_type_k": "qjl1_256",
     "cache_type_v": "q4_polar"
   },
-  "_provenance": "derived from eliza 4090 profile, scaled for 16 GiB VRAM; fork cache qjl/polar"
+  "_provenance": "5080 CT 1564 L1 cal Jun 2026: np 4 regressed 1B single-stream (−12%); 9B −1% at np4. Tuned np=2, batch=1024/ub=256 (half 4090 for 16 GiB); fork cache qjl/polar when L2 lands"
 }

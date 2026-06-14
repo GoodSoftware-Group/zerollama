@@ -403,7 +403,9 @@ def llama_argv_from_profile_flags(
         args.extend(["--ctx-checkpoints", str(int(ckpt))])
     ckpt_iv = flags.get("ctx_checkpoint_interval")
     if ckpt_iv is not None:
-        args.extend(["--ctx-checkpoint-interval", str(int(ckpt_iv))])
+        # WHY -cpent: elizaOS/llama.cpp fork @ 96dd1a8 renamed interval flag; old
+        # --ctx-checkpoint-interval crashes llama-server at startup on CUDA sign-off.
+        args.extend(["--checkpoint-every-n-tokens", str(int(ckpt_iv))])
     draft_p = flags.get("draft_p_min")
     if draft_p is not None:
         args.extend(["--spec-draft-p-min", str(float(draft_p))])

@@ -35,6 +35,7 @@ scripts=(
   l2_fork_eval.sh
   l2_metal_bench.sh
   l2_cuda_bench.sh
+  l1_cuda_calibrate.sh
   l2_gate_report.sh
   l2_runtime_compat_smoke.sh
   l2_cuda_runtime_compat_smoke.sh
@@ -140,6 +141,8 @@ grep -q 'l2_metal_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_metal_bench.sh"
 grep -q 'l2_metal_bench' "${ROOT}/scripts/l2_fork_eval.sh"
 grep -q 'l2_full_gate' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'l1_cuda_calibrate' "${ROOT}/docs/gpu-profiles-l1.md"
+grep -q 'ZEROLLAMA_GPU_PROFILE' "${ROOT}/scripts/l1_cuda_calibrate.sh"
 grep -q 'l2_cuda_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_cuda_bench.sh"
 grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_bench.sh"

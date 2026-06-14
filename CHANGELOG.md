@@ -4,16 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-### RTX 5080 CUDA gates — Phase 15 PASS, L2 FAIL merge, L3 SOFT PASS (Jun 2026)
+### L1 CUDA 5080 calibration — rtx-5080.json tuned on ship hardware (Jun 2026)
+
+**Why:** Eliza-ported profile (`-np 4 -b 2048`) regressed single-stream on 1B Q8 (−12.5%); production 9B only −1% — slot overhead dominates on tiny models.
+
+- **`scripts/l1_cuda_calibrate.sh`** — OFF vs ON (+ `L1_SWEEP_NP`) through `l2_cuda_bench.sh`; cleans `${L1_OUT_DIR}` each run.
+- **`scripts/l2_cuda_bench.sh`** — `ZEROLLAMA_GPU_PROFILE` overridable (default `1`) for L1 OFF baseline.
+- **`runtime/configs/gpu/rtx-5080.json`** — `n_parallel=2`, `batch_size=1024`, `ubatch_size=256` (half 4090 batch for 16 GiB). Measured: 1B **+0.5%**, 9B **+0.7%** vs OFF @ 8k.
+- **Docs:** [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [ROADMAP.md](docs/ROADMAP.md).
+
 
 **Why:** Metal sign-off (M5/M9) proved Phase 15 batch decode on Apple Silicon; CUDA 5080 (CT 1564, Proxmox) needed the same evidence before claiming cross-platform Phase 15 + borrowings L2/L3 status.
 
 - **Phase 15 `phase15_inprocess_signoff.sh` PASS** — KV decode hook (`kv_decode_steps` native), multiseq `kv_inprocess_n_seq_max=2`, continuous batch decode (`batch_decode_in_c=true`) on RTX 5080 with patched b9611 `libllama.so` (`120-real`).
 - **`scripts/phase15_inprocess_multiseq_smoke.sh`** — `ZEROLLAMA_GPU_PROFILE=0` on multiseq serve. **Why:** L1 `rtx-5080` sets `n_parallel=4`, overriding temp YAML `llama_parallel_slots: 2` (same pattern as `phase15_metal_signoff.sh`).
 - **L2 `l2_cuda_full_gate.sh`** — stock **79.3** vs fork **56.9** tok/s @ 8192 ctx (OuteTTS 1B Q8; reruns ±1 tok/s); **FAIL merge** verdict (exit 1 = verdict fail, not broken run); compat smoke PASS.
+- **L2 long-ctx 5080 (Jun 2026):** eliza-1 9B @ 8k/26624 — stock **~18.5** vs fork **~14.3** tok/s (~−22%); **no fork salvage at 27k**. 131k fork blocked: 9B needs ~31 GiB VRAM; 1B QJL `qjl1_256` incompatible with model head dim.
+- **`gpu_profiles.py`** — emit `--checkpoint-every-n-tokens` (fork @ 96dd1a8); old `--ctx-checkpoint-interval` crashed llama-server on 131k leg.
 - **`scripts/build_eliza_llama_server.sh`** + **`build_llama_server.sh`** — `LLAMA_BUILD_WEBUI=OFF` on Linux. **Why:** headless CT builds fail cmake `xxd.cmake` when HF WebUI download/npm build fails.
-- **L3 `l3_cache_smoke.sh`** — **SOFT PASS** (bridge wired; no latency win on 1B @ 8k).
-- **L1 5080 A/B** — profile ON **37.9** vs OFF **43.3** tok/s @ 8k (1B Q8); detection PASS; tok/s calibration **open** on production GGUF.
+- **L3 `l3_cache_smoke.sh`** — **STRICT PASS** on eliza-1 9B (CT 1564): `L3_PREFIX_REPEAT=150`, cached turn2 **0.66s** vs no-cache **1.13s**; 1B Q8 remains SOFT PASS.
+- **`scripts/l3_cache_smoke.sh`** — Linux/CUDA via `linux_runtime_serve_lib.sh`; `CUDA_LLAMA_MODEL` alias; `L3_PREFIX_REPEAT`; `ZEROLLAMA_GPU_PROFILE_CTX=1` on Linux (WHY: avoid n_ctx=1024 on long agent prefix).
 - **`scripts/gpu_5080_session.sh`** — `RUN_E2E_PREFLIGHT` now respects env (default `1`). **Why:** Proxmox CT 1564 lacks vendored `cpp-httplib` for CGO; hardcoding preflight on blocked the official GPU gate — use `RUN_E2E_PREFLIGHT=0` on minimal trees; CI still runs `phase12_golden_ci.sh`.
 - **Docs:** [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) (Proxmox CT layout, gate sequence, preflight skip, WHYs), [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-profiles-l2.md](docs/gpu-profiles-l2.md), [gpu-profiles-l3.md](docs/gpu-profiles-l3.md), [ROADMAP.md](docs/ROADMAP.md).
 

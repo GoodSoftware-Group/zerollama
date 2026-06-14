@@ -155,16 +155,16 @@ curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
 
 **Disable / override:** `ZEROLLAMA_GPU_PROFILE=0`; `ZEROLLAMA_GPU_PROFILE_CTX=0` to skip profile `-c`; `LLAMA_SERVER_EXTRA_ARGS` appended last.
 
-**5080 L1 gate (partial, Jun 2026, CT 1564):**
+**5080 L1 gate (Jun 2026, CT 1564 — calibrated):**
 
 | Check | Result |
 |-------|--------|
-| Profile detection | **PASS** — `rtx-5080`, `n_parallel=4`, `source=match` |
-| `test_gpu_profiles.py` | **PASS** — 19 passed |
-| `gpu_smoke_all` + snapshot | **PASS** — `/tmp/5080-session.json` |
-| Profile A/B @ 8k (1B Q8) | **OPEN** — ON **37.9** vs OFF **43.3** tok/s (−12.5%) |
+| Profile detection | **PASS** — `rtx-5080`, `n_parallel=2`, `source=match` |
+| `test_gpu_profiles.py` | **PASS** |
+| `gpu_smoke_all` + snapshot | **PASS** |
+| Single-stream A/B @ 8k | **PASS** — 1B Q8 ON **+0.5%**; eliza-1 9B ON **+0.7%** vs OFF |
 
-**Why partial:** `-np 4` reserves four KV slots — good for L3 agent threads, slower on single-stream 1B smoke. Tune `runtime/configs/gpu/rtx-5080.json` on **production** GGUF before claiming L1 shipped on CUDA.
+**Tune workflow:** `./scripts/l1_cuda_calibrate.sh` on your production GGUF; edit `runtime/configs/gpu/rtx-5080.json`; rerun. **Why `np=2`:** L3 agent cache needs ≥2 slots; `np=4` wasted KV on single-stream / 1B smoke.
 
 Full doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 
@@ -402,8 +402,8 @@ grep -q llama-memory-kv-ext.cpp "$L/src/CMakeLists.txt" || \
 |------|--------|------------------------------|
 | 0 Pin | `phase15_llama_kv_ext_pin_check.sh` | PASS in-tree; sibling symbols after rebuild |
 | 1 Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** — KV hook, multiseq `n_seq_max=2`, batch decode |
-| 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** @ 8k — stock **79.3** vs fork **56.9** tok/s (1B Q8; reruns ±1 tok/s) |
-| 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **SOFT PASS** — bridge wired; no latency win on 1B @ 8k |
+| 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** — 8k stock wins (1B **79.3** / fork **56.9**; 9B **18.6** / **14.4**); **27k** same (~−22%); **131k fork** blocked (9B VRAM; 1B QJL head) |
+| 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **STRICT PASS** on eliza-1 9B (`L3_PREFIX_REPEAT=150`, cached turn2 **0.66s** vs no-cache **1.13s**); 1B Q8 SOFT PASS |
 
 ### Gate 1 — Phase 15 in-process (CUDA)
 
@@ -418,7 +418,24 @@ export OLLAMA_HOST=http://127.0.0.1:8080
 
 **What it checks:** `kv_decode_steps` increment (native), `kv_inprocess_n_seq_max=2`, `batch_decode_in_c=true`, batch + stream via `/internal/generate-batch`.
 
-**WHY `ZEROLLAMA_GPU_PROFILE=0` in multiseq smoke:** L1 `rtx-5080` sets `n_parallel=4`, overriding temp YAML `llama_parallel_slots: 2` — same fix as `phase15_metal_signoff.sh` on Mac 128g (`n_parallel=8`).
+**WHY `ZEROLLAMA_GPU_PROFILE=0` in multiseq smoke:** L1 `rtx-5080` sets `n_parallel=2` (tuned); multiseq smoke YAML uses `llama_parallel_slots: 2` — disable profile when testing explicit slot count.
+
+### Gate 3 — L3 agent cache bench
+
+```bash
+# Strict PASS on 7B+ (eliza-1 9B on CT 1564):
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
+export L3_PREFIX_REPEAT=150
+export L3_COMPARE_NO_CACHE=1
+L3_OUT=/tmp/l3-cache-smoke-9b.json ./scripts/l3_cache_smoke.sh
+./scripts/l3_gate_report.sh /tmp/l3-cache-smoke-9b.json
+
+# 1B wiring smoke (SOFT PASS expected):
+export CUDA_LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
+./scripts/l3_cache_smoke.sh
+```
+
+**Strict gate:** turn 2 faster than turn 1 **or** `cached_faster_than_no_cache` with `L3_COMPARE_NO_CACHE=1`. **Jun 2026 9B:** cached **0.66s** vs no-cache **1.13s** on same turn-2 prompt. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md).
 
 Folded into session: `RUN_E2E_PHASE15=1` or `RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh`.
 
@@ -432,16 +449,6 @@ export CUDA_LLAMA_MODEL=$LLAMA_MODEL
 ```
 
 Artifacts: `/tmp/l2-cuda-gate/`. **Verdict (Jun 2026):** stock wins decode @ 8192 ctx on 1B Q8; vendor merge still blocked. Optional long-ctx legs: `L2_RUN_27K=1 L2_RUN_131K_FORK=1`. Doc: [gpu-profiles-l2.md](./gpu-profiles-l2.md).
-
-### Gate 3 — L3 agent cache bench
-
-```bash
-export M3_LLAMA_MODEL=$LLAMA_MODEL   # alias accepted on CUDA
-./scripts/l3_cache_smoke.sh
-./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
-```
-
-**Strict gate:** turn 2 faster than turn 1 with same `prompt_cache_key`. **SOFT PASS** is acceptable when bridge is wired but prefix is too short for 1B — try larger model / longer stable prefix. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md).
 
 ### Optional — tensor bind spot-check
 

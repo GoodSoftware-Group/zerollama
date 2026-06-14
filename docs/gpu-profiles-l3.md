@@ -396,25 +396,30 @@ Compare llama-server timings / `slot_save_path` file mtimes. Disable with `ZEROL
 
 ## CUDA 5080 sign-off (Jun 2026, CT 1564)
 
-| Field | Value |
-|-------|--------|
-| Model | `Llama-OuteTTS-1.0-1B-Q8_0.gguf` |
-| Backend | subprocess + stock `llama-server` |
-| `n_parallel` | 4 (rtx-5080 L1) |
-| `derived_slot` | 3 (`l3-smoke-thread-1`) |
-| Turn 1 / 2 wall | 1.379s / 1.384s |
-| `turn2_faster_than_turn1` | false |
+| Field | 1B Q8 (smoke) | eliza-1 9B (strict) |
+|-------|---------------|---------------------|
+| Model | `Llama-OuteTTS-1.0-1B-Q8_0.gguf` | `eliza-1-9b-256k.gguf` |
+| Backend | subprocess + stock `llama-server` | same |
+| `n_parallel` | 2 (rtx-5080 L1 tuned) | 2 |
+| Prefix | default (~64 repeats) | `L3_PREFIX_REPEAT=150` (~17k chars) |
+| Turn 1 / 2 wall | 1.379s / 1.384s | 0.624s / 0.656s |
+| vs no-cache turn2 | — | **1.128s** → cached **42% faster** |
+| Verdict | **SOFT PASS** | **STRICT PASS** (`cached_faster_than_no_cache`) |
 
-**Verdict:** **SOFT PASS** — `llama_cache.enabled`, slot derivation, and both turns OK; no measurable latency win on tiny 1B @ 8192 ctx.
+**Why 1B is SOFT only:** decode dominates wall time; prefix too short to beat turn-1 timing noise.
 
-**Why SOFT PASS is acceptable:** stable prefix in the smoke is sized for ~25% of `num_ctx` but 1B decode dominates wall time; agent workloads with multi-kB system prompts on larger models should re-run `l3_agent_bench.sh` for strict PASS.
+**Why 9B strict needs long prefix + compare leg:** agent-scale system prompt makes prefill the signal; `L3_COMPARE_NO_CACHE=1` proves cache vs cold slot on the same turn-2 prompt.
 
-**Run inside Proxmox CT:**
+**Run inside Proxmox CT (CUDA):**
 
 ```bash
-export M3_LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
+export L3_PREFIX_REPEAT=150
+export L3_COMPARE_NO_CACHE=1
+# WHY ZEROLLAMA_GPU_PROFILE_CTX=1 on Linux: l3_cache_smoke.sh sets this — without -c,
+# deferred load leaves n_ctx=1024 and long prefix fails.
 ./scripts/l3_cache_smoke.sh
 ./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
 ```
 
-Artifact: `/tmp/l3-cache-smoke.json`. Doc: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#gate-3--l3-agent-cache-bench).
+Artifact: `/tmp/l3-cache-smoke-9b.json` (or `L3_OUT=…`). Doc: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#gate-3--l3-agent-cache-bench).

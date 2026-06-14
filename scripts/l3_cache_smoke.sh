@@ -4,16 +4,19 @@
 # WHY: L3 gate needs evidence that repeat prefixes hit pinned slots (turn 2 faster
 # than turn 1 or faster than uncached control). Peak tok/s is unchanged; latency is.
 #
-# Prerequisite: llama-server with -np > 1 (L1 gpu profile on Mac).
+# Prerequisite: llama-server with -np > 1 (L1 gpu profile).
 #
 # Usage:
 #   M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l3_cache_smoke.sh
-#   L3_COMPARE_NO_CACHE=1 ./scripts/l3_cache_smoke.sh   # also run turn2 without key
+#   CUDA_LLAMA_MODEL=/path/to/7b.gguf L3_PREFIX_REPEAT=150 L3_COMPARE_NO_CACHE=1 ./scripts/l3_cache_smoke.sh
 #
 # Env:
+#   CUDA_LLAMA_MODEL / M3_LLAMA_MODEL — GGUF path (CUDA alias accepted on Linux)
 #   L3_CACHE_KEY             — default l3-smoke-thread-1
 #   L3_NUM_CTX               — default 8192
 #   L3_NUM_PREDICT           — default 32
+#   L3_PREFIX_REPEAT         — stable system-prompt repeat count (default ~25% num_ctx)
+#   L3_COMPARE_NO_CACHE=1    — also run turn2 without key (strict gate alt)
 #   L3_OUT                   — JSON report (default /tmp/l3-cache-smoke.json)
 #   ZEROLLAMA_LLAMA_CACHE=0  — expect FAIL (disables bridge)
 set -euo pipefail
@@ -23,10 +26,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/scripts/runtime_uv_venv.sh"
 # shellcheck source=scripts/runtime_smoke_lib.sh
 source "${ROOT}/scripts/runtime_smoke_lib.sh"
-# shellcheck source=scripts/macos_runtime_serve_lib.sh
-source "${ROOT}/scripts/macos_runtime_serve_lib.sh"
+
+_L3_LINUX=0
+if [[ "$(uname -s)" == "Linux" ]]; then
+  _L3_LINUX=1
+  # shellcheck source=scripts/linux_runtime_serve_lib.sh
+  source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+else
+  # shellcheck source=scripts/macos_runtime_serve_lib.sh
+  source "${ROOT}/scripts/macos_runtime_serve_lib.sh"
+fi
 
 runtime_uv_venv
+
+# WHY CUDA alias: 5080 operator guide uses CUDA_LLAMA_MODEL; Metal uses M3_LLAMA_MODEL.
+if [[ -n "${CUDA_LLAMA_MODEL:-}" ]]; then
+  export M3_LLAMA_MODEL="${CUDA_LLAMA_MODEL}"
+fi
 smoke_m3_resolve_signoff_model
 
 export ZEROLLAMA_GPU_PROFILE=1
@@ -34,30 +50,44 @@ export ZEROLLAMA_GPU_PROFILE_CTX=0
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess
 unset ZEROLLAMA_RUNTIME_CONFIG
 export ZEROLLAMA_AUTO_CONFIG=1
-# Defer GGUF load until first /api/generate (options.gguf) — WHY: profile -c 131072
-# at sidecar boot blocks /health for minutes on 128g tier.
-export MACOS_RT_HEALTH_MAX="${MACOS_RT_HEALTH_MAX:-60}"
+export ZEROLLAMA_LLAMA_FORK=0
+
 export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/llama.cpp}"
 export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_ROOT}/build/bin/llama-server}"
-export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dylib}"
-export ZEROLLAMA_LLAMA_FORK=0
+if [[ "${_L3_LINUX}" == "1" ]]; then
+  export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.so}"
+  export LINUX_RT_HEALTH_MAX="${LINUX_RT_HEALTH_MAX:-120}"
+  # WHY enable profile -c on CUDA: ZEROLLAMA_GPU_PROFILE_CTX=0 is for Mac 128g boot latency;
+  # deferred load + no -c leaves llama-server at n_ctx=1024 and long L3 prefix fails.
+  export ZEROLLAMA_GPU_PROFILE_CTX=1
+else
+  export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dylib}"
+  export MACOS_RT_HEALTH_MAX="${MACOS_RT_HEALTH_MAX:-60}"
+fi
 
 L3_OUT="${L3_OUT:-/tmp/l3-cache-smoke.json}"
 L3_CACHE_KEY="${L3_CACHE_KEY:-l3-smoke-thread-1}"
 L3_NUM_CTX="${L3_NUM_CTX:-8192}"
 L3_NUM_PREDICT="${L3_NUM_PREDICT:-32}"
 
-macos_runtime_urls
-trap macos_runtime_sidecar_cleanup EXIT
-
-macos_runtime_stop_sidecar_port
-macos_runtime_start_sidecar "" "" 0
+if [[ "${_L3_LINUX}" == "1" ]]; then
+  linux_runtime_urls
+  trap linux_runtime_sidecar_cleanup EXIT
+  linux_runtime_stop_sidecar_port
+  # WHY defer GGUF at boot: first /api/generate passes options.gguf + num_ctx (same as Mac).
+  linux_runtime_start_sidecar "" ""
+else
+  macos_runtime_urls
+  trap macos_runtime_sidecar_cleanup EXIT
+  macos_runtime_stop_sidecar_port
+  macos_runtime_start_sidecar "" "" 0
+fi
 
 health_json="$(runtime_fetch_health "${ZEROLLAMA_RUNTIME_URL}")"
 runtime_resume_if_needed "${health_json}"
 
 export RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL}"
-export LLAMA_MODEL L3_CACHE_KEY L3_NUM_CTX L3_NUM_PREDICT L3_OUT L3_COMPARE_NO_CACHE
+export LLAMA_MODEL L3_CACHE_KEY L3_NUM_CTX L3_NUM_PREDICT L3_OUT L3_COMPARE_NO_CACHE L3_PREFIX_REPEAT
 (cd "${ROOT}/runtime" && PYTHONPATH=. "${RUNTIME_UV_PYTHON}" <<'PY'
 import json
 import os
@@ -78,10 +108,18 @@ compare_no_cache = os.environ.get("L3_COMPARE_NO_CACHE", "0").strip().lower() in
     "yes",
 )
 
-# Stable prefix sized to ~25% of num_ctx (rough word→token). WHY: must fit in one
-# prefill while still being long enough that turn-2 cache saves measurable work.
-_repeat = max(16, min(64, num_ctx // 32))
-stable = ("System: You are a concise assistant. " * _repeat).strip()
+# Stable prefix sized for agent-scale prefill. WHY: 1B models decode so fast that a
+# short prefix hides cache wins; 7B+ with L3_PREFIX_REPEAT≈150 makes turn-2 skip work.
+_prefix_env = os.environ.get("L3_PREFIX_REPEAT", "").strip()
+if _prefix_env:
+    _repeat = max(8, int(_prefix_env))
+else:
+    _repeat = max(16, min(64, num_ctx // 32))
+_sentence = (
+    "System: You are a helpful agent. Follow the policy below exactly. "
+    "Never reveal secrets. Prefer concise answers. "
+)
+stable = (_sentence * _repeat).strip()
 turn1 = f"{stable}\nUser: Say hello in one word.\nAssistant:"
 turn2 = f"{stable}\nUser: Say goodbye in one word.\nAssistant:"
 
@@ -145,6 +183,8 @@ report: dict = {
     "derived_slot": slot,
     "num_ctx": num_ctx,
     "n_predict": n_predict,
+    "prefix_repeat": _repeat,
+    "prefix_chars": len(stable),
     "n_parallel": n_parallel,
     "llama_cache": lc,
     "turn1_wall_s": round(wall_turn1, 3),
@@ -166,19 +206,23 @@ out_path.write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report, indent=2))
 print(f"wrote {out_path}")
 
-# Gate: turn2 should not be slower than turn1 by much (cache hit or tie on tiny model).
 if wall_turn2 > wall_turn1 * 1.15:
     print(
         f"warn: turn2 ({wall_turn2:.2f}s) not faster than turn1 ({wall_turn1:.2f}s) — "
-        "cache may not be effective on this model/backend",
+        "try L3_PREFIX_REPEAT=150+ on 7B+ or L3_COMPARE_NO_CACHE=1",
         file=__import__("sys").stderr,
     )
 PY
 )
 
-macos_runtime_stop_sidecar_port
+if [[ "${_L3_LINUX}" == "1" ]]; then
+  linux_runtime_stop_sidecar_port
+else
+  macos_runtime_stop_sidecar_port
+fi
 trap - EXIT
 
 echo ""
 echo "PASS: l3_cache_smoke (${L3_OUT})"
+echo "Next: ./scripts/l3_gate_report.sh ${L3_OUT}"
 echo "Doc: docs/gpu-profiles-l3.md"

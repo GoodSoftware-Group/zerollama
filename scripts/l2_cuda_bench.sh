@@ -73,7 +73,9 @@ if [[ "${L2_SKIP_FORK:-0}" != "1" && ! -x "${FORK_BIN}" ]]; then
   exit 1
 fi
 
-export ZEROLLAMA_GPU_PROFILE=1
+# WHY default-on but overridable: L2 gate expects profile ON; L1 calibration passes
+# ZEROLLAMA_GPU_PROFILE=0 for OFF baseline (see scripts/l1_cuda_calibrate.sh).
+export ZEROLLAMA_GPU_PROFILE="${ZEROLLAMA_GPU_PROFILE:-1}"
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess
 unset ZEROLLAMA_RUNTIME_CONFIG
 export ZEROLLAMA_AUTO_CONFIG=1
