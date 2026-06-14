@@ -134,8 +134,8 @@ See also: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-nativ
 |------|--------|-------|
 | Phase 15 in-process | **PASS** | Native decode + multiseq + batch decode; OuteTTS 1B Q8 |
 | L2 CUDA (8k) | **FAIL merge** | Stock **79.7** vs fork **55.9 tok/s** — expected; long-ctx legs optional |
-| L3 cache (subprocess) | **SOFT PASS** | Bridge wired (`derived_slot`, `llama_cache.enabled`); no latency win on 1B @ 8k |
-| L1 autotune | Pending | Measure `rtx-5080.json` tok/s before/after tuning |
+| L3 cache (subprocess) | **PASS** | 8k strict on eliza-1 9B; **27k production gate** cached **51%** vs no-cache |
+| L1 autotune | **PASS** | Single-stream +0.5%/+0.7%; **concurrent N=2 +10.5%** agg tok/s |
 
 Individual scripts: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
 
@@ -163,8 +163,9 @@ curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
 | `test_gpu_profiles.py` | **PASS** |
 | `gpu_smoke_all` + snapshot | **PASS** |
 | Single-stream A/B @ 8k | **PASS** — 1B Q8 ON **+0.5%**; eliza-1 9B ON **+0.7%** vs OFF |
+| Concurrent A/B @ 8k (`L1C_N=2`) | **PASS** — ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**) |
 
-**Tune workflow:** `./scripts/l1_cuda_calibrate.sh` on your production GGUF; edit `runtime/configs/gpu/rtx-5080.json`; rerun. **Why `np=2`:** L3 agent cache needs ≥2 slots; `np=4` wasted KV on single-stream / 1B smoke.
+**Tune workflow:** `./scripts/l1_cuda_calibrate.sh` (single-stream) then `./scripts/l1_cuda_concurrent_bench.sh` (concurrent) on your production GGUF; edit `runtime/configs/gpu/rtx-5080.json`; rerun. **Why `np=2`:** L3 agent cache needs ≥2 slots; `np=4` wasted KV on single-stream / 1B smoke.
 
 Full doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 
@@ -403,7 +404,9 @@ grep -q llama-memory-kv-ext.cpp "$L/src/CMakeLists.txt" || \
 | 0 Pin | `phase15_llama_kv_ext_pin_check.sh` | PASS in-tree; sibling symbols after rebuild |
 | 1 Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** — KV hook, multiseq `n_seq_max=2`, batch decode |
 | 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** — 8k stock wins (1B **79.3** / fork **56.9**; 9B **18.6** / **14.4**); **27k** same (~−22%); **131k fork** blocked (9B VRAM; 1B QJL head) |
-| 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **STRICT PASS** on eliza-1 9B (`L3_PREFIX_REPEAT=150`, cached turn2 **0.66s** vs no-cache **1.13s**); 1B Q8 SOFT PASS |
+| 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **STRICT PASS** on eliza-1 9B @ 8k (`L3_PREFIX_REPEAT=150`, cached turn2 **0.66s** vs no-cache **1.13s**); 1B Q8 SOFT PASS |
+| 3b L3 production | `l3_production_gate.sh` | **PASS** on eliza-1 9B @ 27k — cached **0.72s** vs no-cache **1.48s**; strict ratio **1.02** (open on supernova) |
+| 4 L1 concurrent | `l1_cuda_concurrent_bench.sh` | **PASS** — `L1C_N=2`: ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**) |
 
 ### Gate 1 — Phase 15 in-process (CUDA)
 
@@ -435,7 +438,25 @@ export CUDA_LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
 ./scripts/l3_cache_smoke.sh
 ```
 
-**Strict gate:** turn 2 faster than turn 1 **or** `cached_faster_than_no_cache` with `L3_COMPARE_NO_CACHE=1`. **Jun 2026 9B:** cached **0.66s** vs no-cache **1.13s** on same turn-2 prompt. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md).
+**Strict gate:** turn 2 faster than turn 1 **or** `cached_faster_than_no_cache` with `L3_COMPARE_NO_CACHE=1`. **Jun 2026 9B @ 8k:** cached **0.66s** vs no-cache **1.13s** on same turn-2 prompt. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md).
+
+### Gate 3b — L3 production gate (27k ctx)
+
+```bash
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
+./scripts/l3_production_gate.sh
+# PASS: cached faster than no-cache (Jun 2026: 0.72s vs 1.48s)
+```
+
+**Why 27k:** agent threads use long `num_ctx`; cache must skip prefill at production window, not just 8k smoke. Strict ratio `turn2/turn1 ≤ 0.75` may fail when turn-1 already warmed the slot — alternate PASS is cached vs no-cache control.
+
+### Gate 4 — L1 concurrent bench
+
+```bash
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
+./scripts/l1_cuda_concurrent_bench.sh
+# PASS: profile ON +10.5% aggregate tok/s vs OFF at L1C_N=2 (Jun 2026)
+```
 
 Folded into session: `RUN_E2E_PHASE15=1` or `RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh`.
 

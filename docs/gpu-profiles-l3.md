@@ -257,7 +257,9 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 | Platform | Model | Verdict | Notes |
 |----------|-------|---------|-------|
 | Metal (M4 Max) | *(see m3 signoff)* | PASS / SOFT PASS | `RUN_E2E_L3=1` on `m3_metal_signoff.sh` |
-| CUDA 5080 (CT 1564) | OuteTTS 1B Q8 @ 8k | **SOFT PASS** | Bridge wired: `llama_cache.enabled=true`, `derived_slot=3`, `n_parallel=4`; turn2 wall 1.384s vs turn1 1.379s (ratio 0.996 — no measurable win on tiny prefix). Artifacts: `/tmp/l3-cache-smoke.json`. **Strict PASS** needs larger model or longer stable prefix (e.g. 27b @ 26k). |
+| CUDA 5080 (CT 1564) | OuteTTS 1B Q8 @ 8k | **SOFT PASS** | Bridge wired: `llama_cache.enabled=true`, `derived_slot=3`, `n_parallel=2`; turn2 wall 1.384s vs turn1 1.379s (ratio 0.996 — no measurable win on tiny prefix). Artifacts: `/tmp/l3-cache-smoke.json`. |
+| CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **STRICT PASS** | `l3_cache_smoke.sh`: cached turn2 **0.66s** vs no-cache **1.13s** (`L3_PREFIX_REPEAT=150`). |
+| CUDA 5080 (CT 1564) | eliza-1 9B @ 27k | **PASS** | `l3_production_gate.sh`: cached **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met). Artifact: `/tmp/l3-production-gate.json`. |
 
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
@@ -400,15 +402,16 @@ Compare llama-server timings / `slot_save_path` file mtimes. Disable with `ZEROL
 
 ## CUDA 5080 sign-off (Jun 2026, CT 1564)
 
-| Field | 1B Q8 (smoke) | eliza-1 9B (strict) |
-|-------|---------------|---------------------|
-| Model | `Llama-OuteTTS-1.0-1B-Q8_0.gguf` | `eliza-1-9b-256k.gguf` |
-| Backend | subprocess + stock `llama-server` | same |
-| `n_parallel` | 2 (rtx-5080 L1 tuned) | 2 |
-| Prefix | default (~64 repeats) | `L3_PREFIX_REPEAT=150` (~17k chars) |
-| Turn 1 / 2 wall | 1.379s / 1.384s | 0.624s / 0.656s |
-| vs no-cache turn2 | — | **1.128s** → cached **42% faster** |
-| Verdict | **SOFT PASS** | **STRICT PASS** (`cached_faster_than_no_cache`) |
+| Field | 1B Q8 @ 8k | eliza-1 9B @ 8k | eliza-1 9B @ 27k (`l3_production_gate`) |
+|-------|------------|-----------------|----------------------------------------|
+| Model | `Llama-OuteTTS-1.0-1B-Q8_0.gguf` | `eliza-1-9b-256k.gguf` | same |
+| Script | `l3_cache_smoke.sh` | `l3_cache_smoke.sh` | `l3_production_gate.sh` |
+| `num_ctx` | 8192 | 8192 | **26624** |
+| Prefix | default (~64 repeats) | `L3_PREFIX_REPEAT=150` | `L3_PREFIX_REPEAT=150` |
+| Turn 1 / 2 wall | 1.379s / 1.384s | 0.624s / 0.656s | 0.709s / 0.722s |
+| vs no-cache turn2 | — | **1.128s** → cached **42% faster** | **1.480s** → cached **51% faster** |
+| `turn2/turn1` | 1.004 | 1.05 | **1.02** (need ≤0.75 for strict ratio) |
+| Verdict | **SOFT PASS** | **STRICT PASS** (`cached_faster_than_no_cache`) | **PASS** (`cached_faster_than_no_cache`) |
 
 **Why 1B is SOFT only:** decode dominates wall time; prefix too short to beat turn-1 timing noise.
 

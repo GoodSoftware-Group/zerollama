@@ -16,6 +16,15 @@ All notable changes to this project are documented in this file. The format is b
 
 **Env:** ``ZEROLLAMA_KV_AUTO_BATCH=1`` (default off); ``ZEROLLAMA_KV_AUTO_BATCH_MS=5`` (default). Streaming ``generate`` unchanged.
 
+### L1 concurrent + L3 production gates — 5080 CT 1564 (Jun 2026)
+
+**Why:** Single-stream L1 calibration showed only +0.5%/+0.7%; `n_parallel=2` must win under concurrent agent load. L3 @ 8k strict PASS did not prove cache at production ctx (27k).
+
+- **`l1_cuda_concurrent_bench.sh` PASS** — eliza-1 9B, `L1C_N=2` @ 8k: profile ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**); ON leg 0 errors; OFF leg 1×502 (expected at `n_parallel=1`).
+- **`l3_production_gate.sh` PASS** — eliza-1 9B @ `L3_NUM_CTX=26624`, `L3_PREFIX_REPEAT=150`: cached turn2 **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met — decode-bound after warm prefill).
+- **`linux_runtime_serve_lib.sh`** — `curl -m` 15s on `/health` wait (WHY: cold health probe ~9s on 5080); kill llama-server on `runtime_port+1` on stop.
+- **Docs:** [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-profiles-l3.md](docs/gpu-profiles-l3.md), [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [ROADMAP.md](docs/ROADMAP.md).
+
 ### Phase 15 v32b — writable bind upstream tracker (Jun 2026)
 
 **Why:** Criterion #5 (writable PA→tensor page bind) is upstream-blocked; operators need a static probe and CI watch for when llama.cpp ships page-handle APIs — without requiring a live decode context.

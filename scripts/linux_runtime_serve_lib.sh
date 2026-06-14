@@ -12,6 +12,7 @@
 #   linux_runtime_stop_sidecar_port
 #
 # Env: OLLAMA_HOST, ZEROLLAMA_RUNTIME_URL, LLAMA_MODEL, LLAMA_CPP_*
+#      LINUX_RT_HEALTH_MAX, LINUX_RT_CURL_TIMEOUT (default 15 — cold /health can take ~9s on CUDA)
 # shellcheck shell=bash
 
 _LINUX_RT_ROOT="${LINUX_RT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -36,10 +37,11 @@ _linux_wait_http() {
   local label="$1"
   local url="$2"
   local max="${3:-30}"
+  local curl_to="${LINUX_RT_CURL_TIMEOUT:-15}"
   local i
   echo -n "waiting for ${label} (${url})"
   for ((i = 1; i <= max; i++)); do
-    if curl -sf -m 2 "${url}" >/dev/null 2>&1; then
+    if curl -sf -m "${curl_to}" "${url}" >/dev/null 2>&1; then
       echo " ok"
       return 0
     fi
@@ -67,6 +69,8 @@ linux_runtime_stop_sidecar_port() {
   # fuser is part of util-linux and always present on CI runners.
   # macOS equivalent uses lsof (see macos_runtime_serve_lib.sh).
   fuser -k "${_LINUX_RT_PORT}/tcp" 2>/dev/null || true
+  # WHY port+1: subprocess llama-server binds loopback at runtime_port+1.
+  fuser -k "$((_LINUX_RT_PORT + 1))/tcp" 2>/dev/null || true
   sleep 1
 }
 

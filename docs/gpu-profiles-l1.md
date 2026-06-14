@@ -152,6 +152,15 @@ L1C_N=4 L1C_SWEEP_NP="1,2,4" CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scrip
 
 The summary prints aggregate tok/s (sum across all threads) and `%` vs OFF. PASS when ON ≥ OFF at the target concurrency.
 
+**Jun 2026 concurrent (CT 1564, eliza-1 9B, `L1C_N=2`, ctx 8192, predict 128):**
+
+| Leg | agg tok/s | errors | vs OFF |
+|-----|-----------|--------|--------|
+| profile OFF (`n_parallel=1`) | **92.9** | 1×502/thread (expected) | — |
+| profile ON (`rtx-5080`, `n_parallel=2`) | **102.7** | 0 | **+10.5%** |
+
+Artifact: `/tmp/l1-cuda-concurrent/profile-on-default.json`.
+
 ### Sign-off gates
 
 | Platform | Script | L1 validation |
@@ -166,7 +175,7 @@ The summary prints aggregate tok/s (sum across all threads) and `%` vs OFF. PASS
 | Platform | Status | Next |
 |----------|--------|------|
 | **Apple Silicon** | **Shipped** — RAM tiers, M4 Max 128g sign-off, docs + smoke | Re-measure after L2 fork if KV types change |
-| **NVIDIA CUDA** | **Partial → 5080 single-stream calibrated** — `rtx-5080.json` tuned on CT 1564 Jun 2026 (`np=2`, `b=1024`) | Concurrent agent bench open; re-calibrate when production GGUF changes |
+| **NVIDIA CUDA** | **Partial → 5080 calibrated + concurrent PASS** — `rtx-5080.json` tuned Jun 2026; concurrent N=2 **+10.5%** on eliza-1 9B | Re-calibrate on supernova-class production GGUF |
 
 **Not in L1:** Go ggml Metal runner flags (separate scheduler); voice phrase cache (**L5**); eliza fork kernels (**L2** — see [gpu-profiles-l2.md](./gpu-profiles-l2.md)).
 

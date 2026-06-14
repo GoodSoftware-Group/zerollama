@@ -47,6 +47,8 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `l3_cache_smoke.sh` | Two-turn same cache key; JSON timing report — **why:** L3 is prefill-bound; gate checks bridge wiring before agent-scale bench. Needs subprocess backend + L1 `-np > 1`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
 | `l3_gate_report.sh` | PASS/FAIL from `l3_cache_smoke.sh` JSON (strict latency or soft wiring pass) |
 | `l1_cuda_calibrate.sh` | L1 profile OFF vs ON (+ `L1_SWEEP_NP`) on production GGUF — **why:** tune `rtx-5080.json` from ship hardware, not eliza port |
+| `l1_cuda_concurrent_bench.sh` | N parallel `/api/generate` (barrier-synced) OFF vs ON — **why:** validate `n_parallel=2` wins under agent concurrency, not just single-stream |
+| `l3_production_gate.sh` | L3 strict gate @ 27k ctx on 9B+ — **why:** 8k smoke can pass wiring while production agent prefix at 26k+ is where cache pays |
 | `l2_full_gate.sh` / `l2_gate_report.sh` | Fork vs stock A/B + runtime compat — **why:** vendor merge blocked until measured wins; see [gpu-profiles-l2.md](./gpu-profiles-l2.md) |
 | `qwen35_mac_smoke.sh` | Opt-in qwen35/qwen3.6 generate on darwin via Go ollama-engine; handoffs runtime Metal first; accepts `thinking` or `response` — see [qwen35-apple-silicon.md](./qwen35-apple-silicon.md) |
 | `e2e_training_ops_smoke.sh` | `GET /api/train/status` + jobs; optional TCP ping (no train job submit) |
