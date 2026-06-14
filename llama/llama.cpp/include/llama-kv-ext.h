@@ -80,6 +80,18 @@ LLAMA_API int32_t llama_memory_kv_tensor_info(
         uint32_t               stream,
         llama_kv_tensor_info * out);
 
+/*
+ * Probe whether writable cross-allocator PA→tensor page bind is available.
+ * out_available: 1 when staging or upstream writable page-map API is linked.
+ * out_api_name: detected API name (e.g. "llama_memory_kv_page_map") or "none".
+ * WHY separate from read probes: operators track upstream page-handle API without
+ * a live decode context; CI pin check greps llama.h for the same symbol names.
+ */
+LLAMA_API int32_t llama_memory_kv_ext_writable_bind_probe(
+        int32_t  * out_available,
+        char     * out_api_name,
+        uint32_t   name_cap);
+
 #ifdef __cplusplus
 }
 #endif

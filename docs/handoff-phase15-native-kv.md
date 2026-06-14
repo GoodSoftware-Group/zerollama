@@ -317,6 +317,18 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 51. **`llama_memory_kv_ext_classify`** — resolve hybrid/iSWA to attn base cache; `memory_kind_name` on probe.
 52. **`scripts/phase15_llama_kv_ext_pin_check.sh`** — pin gate in `phase15_kv_native_ci.sh`.
 
+### v32b — writable bind upstream tracker (shipped)
+
+53. **`llama_memory_kv_ext_writable_bind_probe`** — static probe: is writable page-map API linked (`LLAMA_KV_EXT_WRITABLE_PAGE_MAP`).
+54. **`page_bind_writable_probe()`** — Python/C binding; `/health.kv_page_bind.writable_bind_available` + `writable_bind_api` + `writable_bind_blocker`.
+55. **Pin check upstream watch** — greps `llama.h` for page-map symbol names.
+
+### v32 — scheduler-driven auto-batch (shipped)
+
+56. **`runtime/kv/auto_batch.py`** — `AutoBatchCoordinator` coalesces concurrent non-stream `generate()` when `ZEROLLAMA_KV_AUTO_BATCH=1`.
+57. **`/health.kv_auto_batch`** — `enabled`, `pending`, `window_ms`, `flush_count`, `batched_requests`.
+58. **WHY opt-in default off:** batch window adds TTFT latency (``ZEROLLAMA_KV_AUTO_BATCH_MS``, default 5ms); streaming unchanged.
+
 ### v20 remaining
 
 23. **Hybrid / iSWA / recurrent** memory types — **v31:** hybrid + iswa attn base resolve; pure recurrent still unsupported.

@@ -107,6 +107,14 @@ export RUN_E2E_DECODE_LOOP=1 LLAMA_MODEL=/path/to/small.gguf
 | `page_bind_tensor_probe` | Sets `cell_pages_bound`, `tensor_pages_bound`, `kv_k_data_layer0` when linked |
 | `/health.kv_page_bind.status=bound` | Operator signal that PA pages map to live llama KV |
 
+### v32b — writable bind upstream tracker
+
+| API / field | Why |
+|-------------|-----|
+| `llama_memory_kv_ext_writable_bind_probe` | Static libllama probe — no ctx; flips when `LLAMA_KV_EXT_WRITABLE_PAGE_MAP` ships |
+| `page_bind_writable_probe()` | Python binding → `/health.kv_page_bind.writable_bind_available` |
+| Pin check upstream watch | CI greps `llama.h` for page-map symbol names |
+
 ### v24 — C decode loop bind validation + post-prefill probe
 
 | Piece | Why |

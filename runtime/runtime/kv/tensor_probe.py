@@ -16,6 +16,24 @@ def tensor_probe_available() -> bool:
         return False
 
 
+def writable_bind_probe() -> dict[str, Any]:
+    """Static probe: is writable PA→tensor page bind API linked in libllama?
+
+    WHY no ctx: upstream page-handle availability is a build-time capability,
+    not per-request. Operators watch ``writable_bind_available`` on /health
+    until llama.cpp ships a stable writable page-map API.
+    """
+    try:
+        from runtime.kv._kv_native import page_bind_writable_probe
+    except Exception:
+        return {
+            "writable_bind_available": False,
+            "writable_bind_api": "none",
+            "writable_bind_blocker": "native_ext_not_built",
+        }
+    return dict(page_bind_writable_probe())
+
+
 def run_tensor_probe(ctx_ptr: int, seq_id: int, kv_slot: int) -> dict[str, Any] | None:
     """Probe llama memory vs native page_bind table for one sequence.
 

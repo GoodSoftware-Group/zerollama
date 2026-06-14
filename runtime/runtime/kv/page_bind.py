@@ -123,11 +123,15 @@ def page_bind_health(
     *,
     native_ext_available: bool,
     tensor_probe: dict[str, Any] | None = None,
+    writable_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Operator-facing status for tensor/page bind readiness."""
+    from runtime.kv.tensor_probe import writable_bind_probe as default_writable_probe
+
     stats = page_bind_stats()
     active = int(stats.get("active_binds") or 0)
     base_probe = tensor_probe or {}
+    writable = writable_probe if writable_probe is not None else default_writable_probe()
 
     # Normalise int 0/1 from C to bool; None means no probe was run.
     def _bool_probe(key: str) -> bool | None:
@@ -194,6 +198,9 @@ def page_bind_health(
             "bind_level": bind_level,
             "tensor_pages_bound": tensor_bound,
             "tensor_bind_ready": tensor_bound,
+            "writable_bind_available": bool(writable.get("writable_bind_available")),
+            "writable_bind_api": writable.get("writable_bind_api") or "none",
+            "writable_bind_blocker": writable.get("writable_bind_blocker") or "",
             "reason": reason,
             "native_ext_available": True,
             "active_binds": active,
@@ -213,6 +220,9 @@ def page_bind_health(
         "bind_level": None,
         "tensor_pages_bound": False,
         "tensor_bind_ready": False,
+        "writable_bind_available": False,
+        "writable_bind_api": "none",
+        "writable_bind_blocker": "native_ext_not_built",
         "reason": (
             "build native ext (cd runtime && python3 setup.py build_ext --inplace); "
             "use kv_forward_plans for logical page tables"

@@ -16,6 +16,7 @@
 
 #include "ggml.h"
 
+#include <cstdio>
 #include <cstring>
 
 static llama_kv_cache * llama_kv_ext_resolve_cache(
@@ -186,4 +187,31 @@ int32_t llama_memory_kv_tensor_info(
     out->v_size_bytes  = llama_kv_ext_tensor_bytes(v);
     out->ok            = 1;
     return LLAMA_KV_EXT_OK;
+}
+
+int32_t llama_memory_kv_ext_writable_bind_probe(
+        int32_t  * out_available,
+        char     * out_api_name,
+        uint32_t   name_cap) {
+    if (!out_available) {
+        return LLAMA_KV_EXT_ARG;
+    }
+    *out_available = 0;
+    if (out_api_name && name_cap > 0) {
+        out_api_name[0] = '\0';
+    }
+
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+    /* Staging writable page-map shipped in this libllama build. */
+    *out_available = 1;
+    if (out_api_name && name_cap > 0) {
+        std::snprintf(out_api_name, name_cap, "llama_memory_kv_page_map");
+    }
+    return LLAMA_KV_EXT_OK;
+#else
+    if (out_api_name && name_cap > 0) {
+        std::snprintf(out_api_name, name_cap, "none");
+    }
+    return LLAMA_KV_EXT_OK;
+#endif
 }

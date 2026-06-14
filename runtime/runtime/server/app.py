@@ -486,7 +486,7 @@ def create_app(
         n_predict: int = Field(default=8, ge=1, le=256)
         max_admit: int = Field(default=4, ge=1, le=8)
         stream: bool = False
-        options: dict[str, Any] | None = None
+        options: Optional[dict[str, Any]] = None
 
     @app.post("/internal/tokenize")
     def internal_tokenize(body: TokenizeBody = Body()) -> dict[str, Any]:

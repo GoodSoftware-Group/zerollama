@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Phase 15 v32 — scheduler-driven auto-batch (Jun 2026)
+
+**Why:** v27–v30 batch decode only ran on explicit ``generate_batch`` / ``/internal/generate-batch``. Concurrent ``/api/generate`` threads each called ``completion()`` separately — N ``llama_decode`` calls per token step. v32 opt-in coalesces admitted requests within a short window into ``completions_parallel``.
+
+- **`runtime/runtime/kv/auto_batch.py`** — ``AutoBatchCoordinator``; flush on ``parallel_slots`` fill or ``ZEROLLAMA_KV_AUTO_BATCH_MS`` timeout; batch key includes sampler options hash.
+- **`InferenceEngine.generate()``** — routes through coordinator when ``ZEROLLAMA_KV_AUTO_BATCH=1`` + in-process multiseq + linked batch decode.
+- **`/health.kv_auto_batch`** — operator stats (``pending``, ``flush_count``, ``batched_requests``).
+- **Tests:** ``tests/test_kv_auto_batch.py`` in ``phase15_kv_native_ci.sh``.
+- **`runtime/runtime/server/app.py`** — ``Optional[dict[str, Any]]`` on ``InternalBatchGenerateBody.options`` (Python 3.9 + FastAPI compat).
+
+**Env:** ``ZEROLLAMA_KV_AUTO_BATCH=1`` (default off); ``ZEROLLAMA_KV_AUTO_BATCH_MS=5`` (default). Streaming ``generate`` unchanged.
+
+### Phase 15 v32b — writable bind upstream tracker (Jun 2026)
+
+**Why:** Criterion #5 (writable PA→tensor page bind) is upstream-blocked; operators need a static probe and CI watch for when llama.cpp ships page-handle APIs — without requiring a live decode context.
+
+- **`llama_memory_kv_ext_writable_bind_probe`** — staging C API in `llama-kv-ext.h`; returns available when `LLAMA_KV_EXT_WRITABLE_PAGE_MAP` is defined at libllama build time.
+- **`page_bind_writable_probe()`** — native ext + Python facade; `/health.kv_page_bind` exposes `writable_bind_available`, `writable_bind_api`, `writable_bind_blocker`.
+- **`scripts/phase15_llama_kv_ext_pin_check.sh`** — greps upstream `llama.h` for writable page-map symbol names and prints NOTICE when detected.
+
 ### L1 CUDA 5080 calibration — rtx-5080.json tuned on ship hardware (Jun 2026)
 
 **Why:** Eliza-ported profile (`-np 4 -b 2048`) regressed single-stream on 1B Q8 (−12.5%); production 9B only −1% — slot overhead dominates on tiny models.
@@ -13,6 +33,7 @@ All notable changes to this project are documented in this file. The format is b
 - **`runtime/configs/gpu/rtx-5080.json`** — `n_parallel=2`, `batch_size=1024`, `ubatch_size=256` (half 4090 batch for 16 GiB). Measured: 1B **+0.5%**, 9B **+0.7%** vs OFF @ 8k.
 - **Docs:** [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [ROADMAP.md](docs/ROADMAP.md).
 
+### RTX 5080 CUDA gates — Phase 15 PASS, L2 FAIL merge, L3 STRICT PASS (Jun 2026)
 
 **Why:** Metal sign-off (M5/M9) proved Phase 15 batch decode on Apple Silicon; CUDA 5080 (CT 1564, Proxmox) needed the same evidence before claiming cross-platform Phase 15 + borrowings L2/L3 status.
 

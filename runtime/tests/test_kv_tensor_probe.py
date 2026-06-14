@@ -30,6 +30,50 @@ def test_page_bind_table_export():
     page_bind_clear(4)
 
 
+def test_page_bind_health_includes_writable_bind_probe(monkeypatch):
+    monkeypatch.setattr("runtime.kv.page_bind._native_page_bind_available", lambda: True)
+    probe = {"memory_non_null": 1, "aligned": 1}
+    writable = {
+        "writable_bind_available": False,
+        "writable_bind_api": "none",
+        "writable_bind_blocker": "staging_writable_page_map_not_implemented",
+    }
+    h = page_bind_health(
+        native_ext_available=True,
+        tensor_probe=probe,
+        writable_probe=writable,
+    )
+    assert h["writable_bind_available"] is False
+    assert h["writable_bind_api"] == "none"
+    assert h["writable_bind_blocker"] == "staging_writable_page_map_not_implemented"
+
+
+def test_writable_bind_probe_without_native_ext():
+    from runtime.kv.tensor_probe import writable_bind_probe
+
+    if native_available():
+        pytest.skip("native ext built")
+    out = writable_bind_probe()
+    assert out["writable_bind_available"] is False
+    assert out["writable_bind_blocker"] == "native_ext_not_built"
+
+
+@pytest.mark.skipif(not native_available(), reason="native ext not built")
+def test_writable_bind_probe_linked_build():
+    from runtime.kv.tensor_probe import writable_bind_probe
+
+    out = writable_bind_probe()
+    assert "writable_bind_available" in out
+    assert "writable_bind_api" in out
+    assert "writable_bind_blocker" in out
+    # Until LLAMA_KV_EXT_WRITABLE_PAGE_MAP is defined, expect false on linked builds too.
+    if not out["writable_bind_available"]:
+        assert out["writable_bind_blocker"] in (
+            "staging_writable_page_map_not_implemented",
+            "llama_kv_ext_not_linked",
+        )
+
+
 def test_page_bind_health_bound_when_tensor_pages_bound(monkeypatch):
     monkeypatch.setattr("runtime.kv.page_bind._native_page_bind_available", lambda: True)
     probe = {

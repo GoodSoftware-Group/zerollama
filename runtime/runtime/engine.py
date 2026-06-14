@@ -115,6 +115,9 @@ class InferenceEngine:
         self._health_build_lock = threading.Lock()
         self._vocab_sessions: dict[str, Any] = {}
         self._vocab_lock = threading.RLock()
+        from runtime.kv.auto_batch import AutoBatchCoordinator
+
+        self._auto_batch = AutoBatchCoordinator(self)
         if self.config.llama_model and self.config.llama_model.is_file():
             if self._llama_backend_enabled():
                 self._server = self._create_llama_worker(self.config.llama_model)
@@ -893,6 +896,7 @@ class InferenceEngine:
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
             "kv_continuous_batch": self._kv_continuous_batch_health(),
+            "kv_auto_batch": self._kv_auto_batch_health(),
             "kv_page_bind": self._kv_page_bind_health(),
             "kv_decode_loop": self._kv_decode_loop_health(),
             "kv_resume": self._kv_resume_health(),
@@ -1239,6 +1243,17 @@ class InferenceEngine:
             parallel_slots=self._effective_llama_parallel_slots(),
         )
 
+    def _kv_auto_batch_health(self) -> dict[str, Any]:
+        from runtime.kv.auto_batch import native_auto_batch_enabled
+
+        out = self._auto_batch.stats()
+        if not native_auto_batch_enabled():
+            out.setdefault(
+                "note",
+                "set ZEROLLAMA_KV_AUTO_BATCH=1 + inprocess multiseq + linked batch decode",
+            )
+        return out
+
     def _kv_page_bind_health(self) -> dict[str, Any]:
         from runtime.kv.backend import native_available
         from runtime.kv.page_bind import (
@@ -1321,6 +1336,7 @@ class InferenceEngine:
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
             "kv_continuous_batch": self._kv_continuous_batch_health(),
+            "kv_auto_batch": self._kv_auto_batch_health(),
             "kv_page_bind": self._kv_page_bind_health(),
             "kv_decode_loop": self._kv_decode_loop_health(),
             "kv_resume": self._kv_resume_health(),
@@ -1477,6 +1493,113 @@ class InferenceEngine:
         meta = req.vram_num_ctx_meta or {}
         return api_vram_num_ctx_meta(meta, req.num_ctx)
 
+    def _generate_one_admitted(
+        self,
+        prompt: str,
+        active: Request,
+        *,
+        n_predict: int,
+        gguf: Path | None,
+        options: dict | None,
+    ) -> GenerateResult:
+        """Run single-request decode for an already-admitted request (v32 helper)."""
+        self._assert_kv_bind(active, at="generate")
+        vram_opts = active.vram_options or self._vram_options(active.num_ctx, options)
+        decode_before = self._kv_decode_steps_before()
+        with self._model_swap.hold(gguf):
+            srv = self._ensure_gguf_loaded_unlocked(
+                gguf, num_ctx=active.num_ctx, options=vram_opts
+            )
+            from runtime.kv.bind import reserved_token_capacity
+            from runtime.cache_bridge import cache_prompt_for_request
+
+            raw = srv.completion(
+                prompt,
+                n_predict=n_predict,
+                id_slot=self._id_slot_for_request(active),
+                kv_token_budget=reserved_token_capacity(active),
+                kv_bind_req=active,
+                kv_block_size=self.config.block_size,
+                sampler=sampler_options_from_dict(options),
+                cache_prompt=cache_prompt_for_request(active.prompt_cache_key),
+                current_pos=self._decode_current_pos_for_request(active),
+            )
+            content = raw.get("content") or raw.get("response") or ""
+            active.state = RequestState.DECODE
+            return GenerateResult(
+                content=content,
+                request_id=active.request_id,
+                llama=raw,
+                vram_num_ctx=self._api_vram_num_ctx_from_request(active),
+                kv_decode_steps=self._kv_decode_steps_after(decode_before),
+            )
+
+    def _generate_parallel_admitted(
+        self, jobs: list[Any]
+    ) -> list[GenerateResult]:
+        """Decode N already-admitted requests via C batch path (v32 auto-batch)."""
+        from runtime.kv.auto_batch import _PendingJob
+
+        pending = [j for j in jobs if isinstance(j, _PendingJob)]
+        if not pending:
+            return []
+        first = pending[0]
+        n_predict = first.n_predict
+        gguf = first.gguf
+        options = first.options
+        for job in pending[1:]:
+            if job.n_predict != n_predict:
+                raise LlamaServerError("auto-batch n_predict mismatch")
+        admitted = [job.request for job in pending]
+        prompts = [job.prompt for job in pending]
+        for active in admitted:
+            self._assert_kv_bind(active, at="auto_batch")
+        vram_opts = admitted[0].vram_options or self._vram_options(
+            admitted[0].num_ctx, options
+        )
+        decode_before = self._kv_decode_steps_before()
+        with self._model_swap.hold(gguf):
+            srv = self._ensure_gguf_loaded_unlocked(
+                gguf, num_ctx=admitted[0].num_ctx, options=vram_opts
+            )
+            from runtime.kv.bind import reserved_token_capacity
+            from runtime.cache_bridge import cache_prompt_for_request
+
+            raws = srv.completions_parallel(
+                prompts,
+                n_predict=n_predict,
+                id_slots=[self._id_slot_for_request(a) for a in admitted],
+                kv_token_budgets=[reserved_token_capacity(a) for a in admitted],
+                kv_bind_reqs=admitted,
+                kv_block_size=self.config.block_size,
+                sampler=sampler_options_from_dict(options),
+                cache_prompts=[
+                    cache_prompt_for_request(a.prompt_cache_key) for a in admitted
+                ],
+                current_positions=[
+                    self._decode_current_pos_for_request(a) for a in admitted
+                ],
+            )
+            if len(raws) != len(admitted):
+                raise LlamaServerError(
+                    f"auto-batch result count mismatch: {len(admitted)} admitted, {len(raws)} results"
+                )
+            kv_steps = self._kv_decode_steps_after(decode_before)
+            results: list[GenerateResult] = []
+            for active, raw in zip(admitted, raws):
+                content = raw.get("content") or raw.get("response") or ""
+                active.state = RequestState.DECODE
+                results.append(
+                    GenerateResult(
+                        content=content,
+                        request_id=active.request_id,
+                        llama=raw,
+                        vram_num_ctx=self._api_vram_num_ctx_from_request(active),
+                        kv_decode_steps=kv_steps if len(admitted) == 1 else None,
+                    )
+                )
+            return results
+
     def generate(
         self,
         prompt: str,
@@ -1486,40 +1609,28 @@ class InferenceEngine:
         num_ctx: int | None = None,
         options: dict | None = None,
     ) -> GenerateResult:
+        from runtime.kv.auto_batch import auto_batch_eligible
+
         active = self._admit_one(
             prompt, n_predict, gguf=gguf, num_ctx=num_ctx, options=options
         )
-        self._assert_kv_bind(active, at="generate")
-        vram_opts = active.vram_options or self._vram_options(active.num_ctx, options)
-        decode_before = self._kv_decode_steps_before()
         try:
-            with self._model_swap.hold(gguf):
-                srv = self._ensure_gguf_loaded_unlocked(
-                    gguf, num_ctx=active.num_ctx, options=vram_opts
-                )
-                from runtime.kv.bind import reserved_token_capacity
-                from runtime.cache_bridge import cache_prompt_for_request
-
-                raw = srv.completion(
-                    prompt,
+            if auto_batch_eligible(self, gguf=gguf, stream=False):
+                return self._auto_batch.submit(
+                    prompt=prompt,
+                    request=active,
                     n_predict=n_predict,
-                    id_slot=self._id_slot_for_request(active),
-                    kv_token_budget=reserved_token_capacity(active),
-                    kv_bind_req=active,
-                    kv_block_size=self.config.block_size,
-                    sampler=sampler_options_from_dict(options),
-                    cache_prompt=cache_prompt_for_request(active.prompt_cache_key),
-                    current_pos=self._decode_current_pos_for_request(active),
+                    gguf=gguf,
+                    num_ctx=active.num_ctx,
+                    options=options,
                 )
-                content = raw.get("content") or raw.get("response") or ""
-                active.state = RequestState.DECODE
-                return GenerateResult(
-                    content=content,
-                    request_id=active.request_id,
-                    llama=raw,
-                    vram_num_ctx=self._api_vram_num_ctx_from_request(active),
-                    kv_decode_steps=self._kv_decode_steps_after(decode_before),
-                )
+            return self._generate_one_admitted(
+                prompt,
+                active,
+                n_predict=n_predict,
+                gguf=gguf,
+                options=options,
+            )
         finally:
             self.loop.complete(active)
 

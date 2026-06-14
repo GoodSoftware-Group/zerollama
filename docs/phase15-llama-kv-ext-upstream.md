@@ -27,8 +27,24 @@
 | `llama_memory_kv_cell_map_range` | Page-aligned cell map for bind verify |
 | `llama_memory_kv_tensor_info` | K/V tensor backing pointer + size (read-only) |
 | `llama_memory_kv_ext_classify` | Operator visibility: `kv_cache`, `iswa_base`, `hybrid_attn`, … |
+| `llama_memory_kv_ext_writable_bind_probe` | Static probe: is writable page-map API linked (`LLAMA_KV_EXT_WRITABLE_PAGE_MAP`) |
 
 **WHY separate from `llama.h`:** upstream exposes `llama_get_memory` and seq position queries but not cell/tensor handles keyed for external PA block pools. Upstreaming requires a writable page-handle contract — not just read probes.
+
+### Writable bind tracker (v32b)
+
+| Field | Meaning |
+|-------|---------|
+| `/health.kv_page_bind.writable_bind_available` | `true` when staging/upstream writable page-map is linked |
+| `writable_bind_api` | Detected symbol name (e.g. `llama_memory_kv_page_map`) or `none` |
+| `writable_bind_blocker` | Empty when available; else `staging_writable_page_map_not_implemented` |
+
+CI pin check greps `llama.h` for upstream watch symbols (`llama_memory_kv_page_map`, `llama_memory_kv_page_write`, `llama_kv_cache_get_block`) and prints NOTICE when any appear.
+
+```bash
+./scripts/phase15_llama_kv_ext_pin_check.sh   # includes writable API + upstream watch
+python3 -c "from runtime.kv.tensor_probe import writable_bind_probe; print(writable_bind_probe())"
+```
 
 ---
 
@@ -66,7 +82,7 @@ If a pin bump removes or renames these, refresh patch 0015 and `kv_tensor_probe.
 
 | Gap | Why blocked | Path forward |
 |-----|-------------|--------------|
-| **Writable cross-allocator bind** | PA `block_ids` cannot be written into llama tensor pages without upstream page-handle API | Upstream proposal: `(layer, page_index) → writable span` or equivalent |
+| **Writable cross-allocator bind** | PA `block_ids` cannot be written into llama tensor pages without upstream page-handle API | Upstream proposal: `(layer, page_index) → writable span` or equivalent; **v32b:** `llama_memory_kv_ext_writable_bind_probe` + `/health.kv_page_bind.writable_bind_available` tracks when API lands |
 | **SWA cache pages** | Windowed SWA tensor is separate from PA full-context reserve | Dual bind registry or upstream unified page API |
 | **Recurrent state** | No cell/page model — different memory layout | Out of scope for attn PA bind; separate Phase 15 slice if needed |
 

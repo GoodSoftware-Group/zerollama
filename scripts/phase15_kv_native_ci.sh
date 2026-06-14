@@ -34,6 +34,7 @@ PYTHONPATH=. python3 -m pytest \
   tests/test_kv_native_build.py \
   tests/test_kv_decode_batch_loop.py \
   tests/test_kv_decode_engine_batch.py \
+  tests/test_kv_auto_batch.py \
   tests/test_kv_live_physical.py \
   tests/test_internal_kv_snapshot.py \
   tests/test_resolve_parallel_slots.py \

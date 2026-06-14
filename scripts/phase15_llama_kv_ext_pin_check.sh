@@ -38,6 +38,7 @@ REQUIRED_API=(
   llama_memory_kv_cell_map_range
   llama_memory_kv_tensor_info
   llama_memory_kv_ext_classify
+  llama_memory_kv_ext_writable_bind_probe
 )
 for sym in "${REQUIRED_API[@]}"; do
   grep -q "${sym}" "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
@@ -51,6 +52,19 @@ UPSTREAM_DEPS=(
   llama_memory_seq_pos_max
 )
 LLAMA_H="${ROOT}/llama/llama.cpp/include/llama.h"
+
+# Upstream writable page-handle symbols — when any appear in llama.h, refresh v32b tracker.
+UPSTREAM_WRITABLE_WATCH=(
+  llama_memory_kv_page_map
+  llama_memory_kv_page_write
+  llama_kv_cache_get_block
+)
+for sym in "${UPSTREAM_WRITABLE_WATCH[@]}"; do
+  if grep -q "${sym}" "${LLAMA_H}"; then
+    echo "NOTICE: upstream writable KV API '${sym}' found in llama.h — refresh Phase 15 writable bind tracker (v32b)"
+  fi
+done
+
 for sym in "${UPSTREAM_DEPS[@]}"; do
   if ! grep -q "${sym}" "${LLAMA_H}"; then
     echo "FAIL: upstream dep ${sym} missing from in-tree llama.h — pin bump may need ext refresh" >&2

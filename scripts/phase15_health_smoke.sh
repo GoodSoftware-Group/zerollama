@@ -40,6 +40,8 @@ for key in (
     assert key in h, f"missing /health key: {key}"
 pb = h["kv_page_bind"]
 assert "status" in pb
+assert "writable_bind_available" in pb
+assert "writable_bind_api" in pb
 if pb.get("available"):
     assert "bind_level" in pb
     assert "slots" in pb

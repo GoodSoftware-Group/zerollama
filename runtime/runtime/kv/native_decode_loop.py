@@ -12,6 +12,8 @@ v15: ``run_sample`` + ``run_step(..., smpl_ptr=)`` call ``llama_sampler_sample``
 v27: ``native_batch_decode_available()`` gates engine ``complete_parallel`` wiring.
 v29: ``complete_parallel_stream`` + ``_decode_parallel_stream`` for tagged batch streaming.
 v30: ``run_batch_step(..., smpl_ptrs=)`` — per-row C sampling after batch decode.
+v32: ``ZEROLLAMA_KV_AUTO_BATCH=1`` — opt-in coordinator coalesces concurrent
+     ``generate()`` into ``completions_parallel`` (in-process multiseq only).
 
 ``run_prefill`` and ``run_step`` accept a raw ``llama_context`` pointer as a
 Python int (the value returned by ctypes ``c_void_p``).  The C layer casts it

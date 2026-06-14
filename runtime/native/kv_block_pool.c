@@ -656,6 +656,36 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
 
 static PyObject *
+kv_native_page_bind_writable_probe(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
+{
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+    return Py_BuildValue(
+        "{s:O,s:s,s:s}",
+        "writable_bind_available",
+        Py_True,
+        "writable_bind_api",
+        "llama_memory_kv_page_map",
+        "writable_bind_blocker",
+        "");
+#else
+    const char *blocker =
+#ifdef ZEROLLAMA_KV_DECODE_LOOP
+        "staging_writable_page_map_not_implemented";
+#else
+        "llama_kv_ext_not_linked";
+#endif
+    return Py_BuildValue(
+        "{s:O,s:s,s:s}",
+        "writable_bind_available",
+        Py_False,
+        "writable_bind_api",
+        "none",
+        "writable_bind_blocker",
+        blocker);
+#endif /* LLAMA_KV_EXT_WRITABLE_PAGE_MAP */
+}
+
+static PyObject *
 kv_native_decode_batch_layout(PyObject *Py_UNUSED(self), PyObject *args)
 {
     int seq_id = 0;
@@ -1380,6 +1410,8 @@ static PyMethodDef kv_module_methods[] = {
      "Active page bind rows (kv_slot, cell_pages_bound, tensor_pages_bound)"},
     {"page_bind_table", kv_native_page_bind_table, METH_VARARGS,
      "Export PA page table rows for kv_slot (page, block_id, token range)"},
+    {"page_bind_writable_probe", kv_native_page_bind_writable_probe, METH_NOARGS,
+     "Probe whether writable PA→tensor page bind API is linked (Phase 15 v32b)"},
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
     {"page_bind_tensor_probe", kv_native_page_bind_tensor_probe, METH_VARARGS,
      "Probe llama memory vs PA page table (ctx_ptr, seq_id, kv_slot)"},

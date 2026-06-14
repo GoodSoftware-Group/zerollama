@@ -232,7 +232,8 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | `validate_token_positions` | Endpoints of each batch checked against registry; raises `LlamaServerError` on overrun |
 | `decode_batch_layout` (C) | Returns `{token, pos, seq_id, logits}` lists — Python fills `LlamaBatch` |
 | `decode_prefill_chunks` (C) | Splits long prompts at PA page boundaries when `len(prompt) > block_size` |
-| `kv_page_bind` on `/health` | `status` values: `partial` (normal), `misaligned` (llama cells exceed PA reserve), `bound` (tensor verified), `not_implemented` (ext not built). `bind_level` values: `seq_position` → `cell_index` → `tensor` (escalating bind quality). `blocker`: probe-reported string when a probe ran, or `llama_kv_ext_not_linked_or_no_decode` when no probe. `slots`: per-slot `cell_pages_bound`/`tensor_pages_bound` export from v21 C registry. v19 adds `tensor_probe`, `tensor_bind_ready`, `blocker`, `accounting_aligned`. |
+| `kv_auto_batch` | v32: opt-in coordinator stats when `ZEROLLAMA_KV_AUTO_BATCH=1` — `pending`, `flush_count`, `window_ms` |
+| `kv_page_bind` on `/health` | `status` values: `partial` (normal), `misaligned` (llama cells exceed PA reserve), `bound` (tensor verified), `not_implemented` (ext not built). `bind_level` values: `seq_position` → `cell_index` → `tensor` (escalating bind quality). `blocker`: probe-reported string when a probe ran, or `llama_kv_ext_not_linked_or_no_decode` when no probe. **v32b:** `writable_bind_available`, `writable_bind_api`, `writable_bind_blocker` — static upstream writable page-map tracker (no live ctx). `slots`: per-slot `cell_pages_bound`/`tensor_pages_bound` export from v21 C registry. v19 adds `tensor_probe`, `tensor_bind_ready`, `blocker`, `accounting_aligned`. |
 | `kv_live_physical` | Opt-in env bumps in-process effective `-np` to 2 when YAML defaults to 1 |
 | Go loopback | `GET :8080/internal/kv-snapshot` proxies Python runtime snapshot |
 
