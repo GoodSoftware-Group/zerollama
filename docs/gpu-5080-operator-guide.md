@@ -54,6 +54,15 @@ cd /root/zerollama && ./scripts/gpu_5080_session.sh
 
 **Pass criteria:** `PASS: gpu_5080_session` and snapshot file written. Smoke GGUF calibration (e.g. ~1.20× for OuteTTS Q8) is **smoke evidence only** until you run the same flow on your **production** GGUF (e.g. supernova fp16).
 
+**Proxmox CT / minimal checkout — skip Go preflight:**
+
+```bash
+# WHY: CT 1564 lacks vendored cpp-httplib; `go test` CGO fails before any GPU step runs.
+RUN_E2E_PREFLIGHT=0 ./scripts/gpu_5080_session.sh
+```
+
+`gpu_5080_session.sh` defaults `RUN_E2E_PREFLIGHT=1` but **honors** `RUN_E2E_PREFLIGHT=0` from the environment. Run `./scripts/phase12_golden_ci.sh` on a full dev host or in CI — the GPU gate does not replace parser golden tests.
+
 **Optional Phase 14 in one session** (after ctypes smoke passes on serve):
 
 ```bash
@@ -92,7 +101,16 @@ curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
 
 **Disable / override:** `ZEROLLAMA_GPU_PROFILE=0`; `ZEROLLAMA_GPU_PROFILE_CTX=0` to skip profile `-c`; `LLAMA_SERVER_EXTRA_ARGS` appended last.
 
-**5080 gate (partial, Jun 2026):** L1 `rtx-5080` profile active (`n_parallel=4`, `-c 32768`); values still eliza-ported until `gpu_5080_session.sh` before/after JSON tuning. **Why partial:** Phase 15/L2/L3 gates ran on ship hardware; L1 tok/s calibration against production GGUF is still open.
+**5080 L1 gate (partial, Jun 2026, CT 1564):**
+
+| Check | Result |
+|-------|--------|
+| Profile detection | **PASS** — `rtx-5080`, `n_parallel=4`, `source=match` |
+| `test_gpu_profiles.py` | **PASS** — 19 passed |
+| `gpu_smoke_all` + snapshot | **PASS** — `/tmp/5080-session.json` |
+| Profile A/B @ 8k (1B Q8) | **OPEN** — ON **37.9** vs OFF **43.3** tok/s (−12.5%) |
+
+**Why partial:** `-np 4` reserves four KV slots — good for L3 agent threads, slower on single-stream 1B smoke. Tune `runtime/configs/gpu/rtx-5080.json` on **production** GGUF before claiming L1 shipped on CUDA.
 
 Full doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 
@@ -178,6 +196,7 @@ Applied at runtime start by `vram_yaml_defaults.py` (before optional `VRAM_APPLY
 | `RUN_E2E_UNLOAD_MODEL` | Fallback when `/api/ps` empty but runner process exists. |
 | `SMOKE_UNLOAD_MAX_WAIT` | Seconds to wait for ggml teardown (default 30). |
 | `GPU_PHASE13_SNAPSHOT_OUT` | Snapshot JSON path (default `/tmp/5080-session.json`). |
+| `RUN_E2E_PREFLIGHT` | `1` (default in `gpu_5080_session.sh`) runs `phase12_golden_ci.sh` first; `0` skips Go CGO golden — **why:** Proxmox CT often lacks vendored `cpp-httplib`; GPU smokes should not fail on parser compile. |
 | `GPU_SNAPSHOT_RECOMMEND` | `0` to skip inline recommendations in snapshot script. |
 
 ---
@@ -329,7 +348,7 @@ grep -q llama-memory-kv-ext.cpp "$L/src/CMakeLists.txt" || \
 |------|--------|------------------------------|
 | 0 Pin | `phase15_llama_kv_ext_pin_check.sh` | PASS in-tree; sibling symbols after rebuild |
 | 1 Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** — KV hook, multiseq `n_seq_max=2`, batch decode |
-| 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** @ 8k — stock **79.7** vs fork **55.9** tok/s |
+| 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** @ 8k — stock **79.3** vs fork **56.9** tok/s (1B Q8; reruns ±1 tok/s) |
 | 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **SOFT PASS** — bridge wired; no latency win on 1B @ 8k |
 
 ### Gate 1 — Phase 15 in-process (CUDA)

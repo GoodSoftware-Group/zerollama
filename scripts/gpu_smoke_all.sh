@@ -11,7 +11,8 @@
 #   RUN_E2E_TOOLS=1        # /api/chat with tools on :8081 and via :8080 proxy
 #   RUN_E2E_PROXY_MODEL=my-local-tag
 #   RUN_E2E_LEGACY=1 RUN_E2E_LEGACY_MODEL=llama3.2:3B  # defaults to RUN_E2E_PROXY_MODEL or llama3.2:3B
-#   RUN_E2E_PREFLIGHT=1  # run ./scripts/phase12_golden_ci.sh before GPU steps
+#   RUN_E2E_PREFLIGHT=1  # run ./scripts/phase12_golden_ci.sh before GPU steps (default in gpu_5080_session.sh)
+#   RUN_E2E_PREFLIGHT=0  # GPU-only path when CGO vendored httplib missing (Proxmox CT); CI runs golden elsewhere
 #   RUN_E2E_PHASE13_SNAPSHOT=1  # write gpu_phase13_snapshot JSON after smokes
 #   RUN_E2E_PHASE14=1         # phase14_backend_smoke (serve must match backend)
 #   RUN_E2E_PHASE14_SIGNOFF=1 # phase14_5080_signoff (needs LLAMA_CPP_LIB; self-contained restarts)

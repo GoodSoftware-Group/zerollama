@@ -131,7 +131,7 @@ cd runtime && uv run pytest tests/test_gpu_profiles.py -q
 | Platform | Status | Next |
 |----------|--------|------|
 | **Apple Silicon** | **Shipped** — RAM tiers, M4 Max 128g sign-off, docs + smoke | Re-measure after L2 fork if KV types change |
-| **NVIDIA CUDA** | **Partial** — JSON + detection shipped; values from eliza port | Benchmark gate on 5080; tune `rtx-5080.json` |
+| **NVIDIA CUDA** | **Partial** — JSON + detection shipped; **5080 CT 1564 measured Jun 2026** | Detection PASS; A/B @ 8k (1B Q8): profile ON 37.9 vs OFF 43.3 tok/s — tune `rtx-5080.json` on production GGUF; `-np 4` trades single-stream speed for L3 parallelism |
 
 **Not in L1:** Go ggml Metal runner flags (separate scheduler); voice phrase cache (**L5**); eliza fork kernels (**L2** — see [gpu-profiles-l2.md](./gpu-profiles-l2.md)).
 

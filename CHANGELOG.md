@@ -10,10 +10,12 @@ All notable changes to this project are documented in this file. The format is b
 
 - **Phase 15 `phase15_inprocess_signoff.sh` PASS** — KV decode hook (`kv_decode_steps` native), multiseq `kv_inprocess_n_seq_max=2`, continuous batch decode (`batch_decode_in_c=true`) on RTX 5080 with patched b9611 `libllama.so` (`120-real`).
 - **`scripts/phase15_inprocess_multiseq_smoke.sh`** — `ZEROLLAMA_GPU_PROFILE=0` on multiseq serve. **Why:** L1 `rtx-5080` sets `n_parallel=4`, overriding temp YAML `llama_parallel_slots: 2` (same pattern as `phase15_metal_signoff.sh`).
-- **L2 `l2_cuda_full_gate.sh`** — stock **79.7** vs fork **55.9** tok/s @ 8192 ctx (OuteTTS 1B Q8); **FAIL merge** verdict; compat smoke PASS.
+- **L2 `l2_cuda_full_gate.sh`** — stock **79.3** vs fork **56.9** tok/s @ 8192 ctx (OuteTTS 1B Q8; reruns ±1 tok/s); **FAIL merge** verdict; compat smoke PASS.
 - **`scripts/build_eliza_llama_server.sh`** + **`build_llama_server.sh`** — `LLAMA_BUILD_WEBUI=OFF` on Linux. **Why:** headless CT builds fail cmake `xxd.cmake` when HF WebUI download/npm build fails.
 - **L3 `l3_cache_smoke.sh`** — **SOFT PASS** (bridge wired; no latency win on 1B @ 8k).
-- **Docs:** [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) (Proxmox CT layout, gate sequence, WHYs), [gpu-profiles-l2.md](docs/gpu-profiles-l2.md), [gpu-profiles-l3.md](docs/gpu-profiles-l3.md), [ROADMAP.md](docs/ROADMAP.md).
+- **L1 5080 A/B** — profile ON **37.9** vs OFF **43.3** tok/s @ 8k (1B Q8); detection PASS; tok/s calibration **open** on production GGUF.
+- **`scripts/gpu_5080_session.sh`** — `RUN_E2E_PREFLIGHT` now respects env (default `1`). **Why:** Proxmox CT 1564 lacks vendored `cpp-httplib` for CGO; hardcoding preflight on blocked the official GPU gate — use `RUN_E2E_PREFLIGHT=0` on minimal trees; CI still runs `phase12_golden_ci.sh`.
+- **Docs:** [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) (Proxmox CT layout, gate sequence, preflight skip, WHYs), [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-profiles-l2.md](docs/gpu-profiles-l2.md), [gpu-profiles-l3.md](docs/gpu-profiles-l3.md), [ROADMAP.md](docs/ROADMAP.md).
 
 ### Phase 15 v31 — llama-kv-ext pin tracking + hybrid/iSWA resolve (Jun 2026)
 

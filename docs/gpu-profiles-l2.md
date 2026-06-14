@@ -169,7 +169,7 @@ JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PAS
 
 | Model | ctx | Stock | Fork | Notes |
 |-------|-----|-------|------|-------|
-| OuteTTS 1B Q8 | 8192 | **79.7 tok/s**, q8_0/q8_0 | 55.9 tok/s, qjl1_256/q4_polar | Stock wins decode (~30%); VRAM est tied |
+| OuteTTS 1B Q8 | 8192 | **79.3 tok/s**, q8_0/q8_0 | 56.9 tok/s, qjl1_256/q4_polar | Stock wins decode (~28%); VRAM est tied; reruns ±1 tok/s |
 
 JSON: `/tmp/l2-cuda-gate/bench-8k.json`, verdict in `/tmp/l2-cuda-gate/verdict.txt`. **Runtime compat smoke:** PASS (stock + fork subprocess generate). **Fork build:** `L2_BUILD_FORK=1` or `build_eliza_llama_server.sh` — **WHY** `LLAMA_BUILD_WEBUI=OFF` on Linux (headless CT WebUI/npm failure).
 

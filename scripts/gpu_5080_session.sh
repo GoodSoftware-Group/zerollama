@@ -17,12 +17,17 @@
 #   RUN_E2E_PHASE15=1                                       # phase15_inprocess_signoff (needs LLAMA_CPP_LIB)
 #   RUN_E2E_LLAMA_BACKEND_SOURCE=config                      # with phase14_yaml_config_smoke prerequisites
 #   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1                           # wheel GPU (with RUN_E2E_LLAMA_CPP_PYTHON=1)
+#   RUN_E2E_PREFLIGHT=0                                      # skip Go golden in CT/minimal trees (see below)
 #   GPU_PHASE13_SNAPSHOT_OUT=/tmp/5080-session.json
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ZEROLLAMA_REPO_ROOT="${ZEROLLAMA_REPO_ROOT:-$ROOT}"
-export RUN_E2E_PREFLIGHT=1
+# WHY default-on but overridable: full hosts should run phase12_golden_ci before GPU smokes.
+# Proxmox CT 1564 (and other minimal checkouts) often lack vendored cpp-httplib for CGO
+# (`fatal error: cpp-httplib/httplib.h`) — operators set RUN_E2E_PREFLIGHT=0 for GPU-only gate.
+# CI still runs golden separately; this only gates the 5080 session wrapper.
+export RUN_E2E_PREFLIGHT="${RUN_E2E_PREFLIGHT:-1}"
 export RUN_E2E_PHASE13_SNAPSHOT=1
 export GPU_PHASE13_SNAPSHOT_OUT="${GPU_PHASE13_SNAPSHOT_OUT:-/tmp/5080-session.json}"
 
@@ -35,7 +40,11 @@ if [[ -z "${LLAMA_SERVER_BIN:-}" ]]; then
   exit 1
 fi
 
-echo "== Phase 12 preflight + GPU smokes + snapshot =="
+if [[ "${RUN_E2E_PREFLIGHT}" == "1" ]]; then
+  echo "== Phase 12 preflight + GPU smokes + snapshot =="
+else
+  echo "== GPU smokes + snapshot (RUN_E2E_PREFLIGHT=0 — skip Go golden) =="
+fi
 # Phase 14/15 smokes run after snapshot in this script; suppress during gpu_smoke_all
 # so RUN_E2E_PHASE14*=1 does not execute twice (~15–20 min sign-off).
 _saved_phase14_signoff="${RUN_E2E_PHASE14_SIGNOFF:-0}"
