@@ -117,6 +117,31 @@ Expect `gpu_profile.id`, `bucket_label`, and on Mac `unified_memory_gb`.
 cd runtime && uv run pytest tests/test_gpu_profiles.py -q
 ```
 
+### CUDA 5080 calibration (ship hardware)
+
+**Why not trust eliza port values:** 4090 profile scaled to 16 GiB kept `-np 4 -b 2048`; on a 1B smoke model that regressed single-stream decode **−12.5%** vs profile OFF. Production-sized GGUFs (9B) only showed **−1%** at the same flags — the bug is slot overhead on tiny models, not broken detection.
+
+**Script:** `./scripts/l1_cuda_calibrate.sh` — profile OFF baseline vs ON (+ optional `L1_SWEEP_NP=1,2,4`).
+
+```bash
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf   # 7B–9B class on 16GB
+export ZEROLLAMA_LLAMA_FORK=0                         # stock llama.cpp flags only
+./scripts/l1_cuda_calibrate.sh
+# Sweep parallel slots after single-stream baseline:
+L1_SWEEP_NP=1,2,4 CUDA_LLAMA_MODEL=/root/your-prod.gguf ./scripts/l1_cuda_calibrate.sh
+```
+
+`l2_cuda_bench.sh` honors `ZEROLLAMA_GPU_PROFILE=0|1` (default `1`) for OFF/ON legs.
+
+**Jun 2026 tuned `rtx-5080.json` (CT 1564):** `n_parallel=2`, `batch_size=1024`, `ubatch_size=256` (half 4090 batch for 16 GiB). Re-measure after edits.
+
+| Model | ctx | OFF tok/s | ON tok/s | Δ |
+|-------|-----|-----------|----------|---|
+| OuteTTS 1B Q8 | 8192 | 43.48 | 43.69 | **+0.5%** |
+| eliza-1 9B | 8192 | 56.31 | 56.71 | **+0.7%** |
+
+**Open:** concurrent (2+ in-flight) bench — L3 needs `n_parallel≥2`; validate agent-scale load does not regress vs OFF.
+
 ### Sign-off gates
 
 | Platform | Script | L1 validation |
@@ -131,7 +156,7 @@ cd runtime && uv run pytest tests/test_gpu_profiles.py -q
 | Platform | Status | Next |
 |----------|--------|------|
 | **Apple Silicon** | **Shipped** — RAM tiers, M4 Max 128g sign-off, docs + smoke | Re-measure after L2 fork if KV types change |
-| **NVIDIA CUDA** | **Partial** — JSON + detection shipped; **5080 CT 1564 measured Jun 2026** | Detection PASS; A/B @ 8k (1B Q8): profile ON 37.9 vs OFF 43.3 tok/s — tune `rtx-5080.json` on production GGUF; `-np 4` trades single-stream speed for L3 parallelism |
+| **NVIDIA CUDA** | **Partial → 5080 single-stream calibrated** — `rtx-5080.json` tuned on CT 1564 Jun 2026 (`np=2`, `b=1024`) | Concurrent agent bench open; re-calibrate when production GGUF changes |
 
 **Not in L1:** Go ggml Metal runner flags (separate scheduler); voice phrase cache (**L5**); eliza fork kernels (**L2** — see [gpu-profiles-l2.md](./gpu-profiles-l2.md)).
 

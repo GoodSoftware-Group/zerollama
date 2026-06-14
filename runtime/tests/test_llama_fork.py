@@ -116,7 +116,7 @@ def test_llama_argv_emits_fork_checkpoints():
     )
     assert "--ctx-checkpoints" in args
     assert "4" in args
-    assert "--ctx-checkpoint-interval" in args
+    assert "--checkpoint-every-n-tokens" in args
 
 
 def test_runtime_config_fork_profile(monkeypatch, tmp_path):

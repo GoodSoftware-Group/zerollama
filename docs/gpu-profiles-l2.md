@@ -52,7 +52,7 @@ Stored in `runtime/configs/gpu/*.json` under `_eliza_fork_llama_server_flags` (a
 | Flag | Purpose |
 |------|---------|
 | `--ctx-checkpoints N` | Voice optimistic-rollback snapshots (eliza duplex); optional for text-only zerollama |
-| `--ctx-checkpoint-interval N` | Token interval between checkpoints |
+| `--checkpoint-every-n-tokens N` | Token interval between ctx checkpoints (fork; was `--ctx-checkpoint-interval` in eliza JSON key) |
 
 **Detection:** fork `llama-server --help` includes `ctx-checkpoints`. Stock b9611 does not.
 
@@ -170,10 +170,14 @@ JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PAS
 | Model | ctx | Stock | Fork | Notes |
 |-------|-----|-------|------|-------|
 | OuteTTS 1B Q8 | 8192 | **79.3 tok/s**, q8_0/q8_0 | 56.9 tok/s, qjl1_256/q4_polar | Stock wins decode (~28%); VRAM est tied; reruns ±1 tok/s |
+| eliza-1 9B | 8192 | **18.6 tok/s**, q8_0/q8_0 | 14.4 tok/s, qjl1_256/q4_polar | Stock wins (~23%); same model long-ctx gate |
+| eliza-1 9B | 26624 | **18.5 tok/s**, q8_0/q8_0 | 14.3 tok/s, qjl1_256/q4_polar | **No fork salvage at 27k** — delta ~same as 8k |
+| eliza-1 9B | 131072 fork | — | **blocked** | Admission: ~31 GiB required on 16 GiB 5080 |
+| OuteTTS 1B Q8 | 131072 fork | — | **blocked** | QJL `qjl1_256` incompatible with `n_embd_head_k=64` on this GGUF |
 
-JSON: `/tmp/l2-cuda-gate/bench-8k.json`, verdict in `/tmp/l2-cuda-gate/verdict.txt`. **Runtime compat smoke:** PASS (stock + fork subprocess generate). **Fork build:** `L2_BUILD_FORK=1` or `build_eliza_llama_server.sh` — **WHY** `LLAMA_BUILD_WEBUI=OFF` on Linux (headless CT WebUI/npm failure).
+JSON: `/tmp/l2-cuda-gate/bench-8k.json` (1B), `/tmp/l2-cuda-gate-long/bench-{8k,27k}.json` (9B). **131k:** needs `ZEROLLAMA_KV_NUM_BLOCKS=8192` + GGUF compatible with QJL head dims; 9B needs >16 GiB VRAM at 131k.
 
-**Gate status (CUDA 5080):** **FAIL merge** @ 8k (stock faster). Long-ctx legs not run on 5080 yet — `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh` before concluding on TBQ/QJL. **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression.
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor merge:** blocked. Pin `96dd1a8`; profile checkpoint argv uses `--checkpoint-every-n-tokens` (not deprecated `--ctx-checkpoint-interval`).
 
 ---
 
