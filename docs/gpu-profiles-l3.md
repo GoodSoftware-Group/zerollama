@@ -247,6 +247,7 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 | `scripts/l3_inprocess_smoke.sh` | Two-turn in-process + disk file check |
 | `scripts/l3_agent_bench.sh` | Multi-turn agent workload (cached vs cold) |
 | `scripts/l3_gate_report.sh` | PASS/FAIL verdict from smoke JSON |
+| `scripts/l3_production_gate.sh` | **Strict PASS gate on production GGUF** — 9B+ @ 27k ctx with `L3_PREFIX_REPEAT=150`; requires `turn2/turn1 ≤ L3_STRICT_RATIO (0.75)` or cached faster than no-cache control |
 | `RUN_E2E_L3=1` in `m3_metal_signoff.sh` | Sign-off hook |
 
 Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `generate_batch` prompt order. When this list is present, out-of-range indices get **no** cache key (no flat-key fallback) so unrelated batch rows do not share a slot.
@@ -261,10 +262,13 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
 ```bash
-# CUDA subprocess path (5080):
+# CUDA subprocess path (5080) — smoke:
 export M3_LLAMA_MODEL=/path/to/model.gguf   # alias accepted on Linux
 ./scripts/l3_cache_smoke.sh
 ./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+
+# CUDA strict PASS — production GGUF (9B+ at 27k ctx):
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_PREFIX_REPEAT=150 ./scripts/l3_production_gate.sh
 ```
 
 ---

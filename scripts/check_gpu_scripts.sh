@@ -36,6 +36,7 @@ scripts=(
   l2_metal_bench.sh
   l2_cuda_bench.sh
   l1_cuda_calibrate.sh
+  l1_cuda_concurrent_bench.sh
   l2_gate_report.sh
   l2_runtime_compat_smoke.sh
   l2_cuda_runtime_compat_smoke.sh
@@ -44,6 +45,7 @@ scripts=(
   linux_runtime_serve_lib.sh
   l3_cache_smoke.sh
   l3_gate_report.sh
+  l3_production_gate.sh
   build_eliza_llama_server.sh
   phase14_backend_smoke.sh
   phase14_inprocess_smoke.sh

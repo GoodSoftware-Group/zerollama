@@ -140,7 +140,17 @@ L1_SWEEP_NP=1,2,4 CUDA_LLAMA_MODEL=/root/your-prod.gguf ./scripts/l1_cuda_calibr
 | OuteTTS 1B Q8 | 8192 | 43.48 | 43.69 | **+0.5%** |
 | eliza-1 9B | 8192 | 56.31 | 56.71 | **+0.7%** |
 
-**Open:** concurrent (2+ in-flight) bench — L3 needs `n_parallel≥2`; validate agent-scale load does not regress vs OFF.
+**Concurrent bench:** `./scripts/l1_cuda_concurrent_bench.sh` — fires `L1C_N` parallel `/api/generate` requests simultaneously and measures aggregate tok/s and per-thread wall time, A/B profile OFF vs ON. This is the critical validation for `n_parallel=2`: single-stream showed +0.5%/+0.7%; the win should grow under concurrency where two slots amortise prefill across requests.
+
+```bash
+# Default: n_concurrent=2 (matches n_parallel), 9B class model
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l1_cuda_concurrent_bench.sh
+
+# Sweep n_parallel values while N=4 concurrent:
+L1C_N=4 L1C_SWEEP_NP="1,2,4" CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l1_cuda_concurrent_bench.sh
+```
+
+The summary prints aggregate tok/s (sum across all threads) and `%` vs OFF. PASS when ON ≥ OFF at the target concurrency.
 
 ### Sign-off gates
 
