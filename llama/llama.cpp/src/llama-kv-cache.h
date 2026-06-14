@@ -161,6 +161,13 @@ public:
     ggml_type type_k() const;
     ggml_type type_v() const;
 
+    // zerollama Phase 15 v20: external PA page bind helpers (llama-kv-ext.h)
+    int32_t  cell_index_for(llama_seq_id seq_id, llama_pos pos, uint32_t * out_stream = nullptr) const;
+    uint32_t n_kv_layers() const;
+    // stream=0 → full (single-stream) tensor; stream>=1 → per-stream 2D view
+    ggml_tensor * kv_tensor_k(int32_t kv_layer, uint32_t stream = 0) const;
+    ggml_tensor * kv_tensor_v(int32_t kv_layer, uint32_t stream = 0) const;
+
     //
     // graph_build API
     //

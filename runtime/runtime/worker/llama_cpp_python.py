@@ -254,9 +254,10 @@ class LlamaCppPythonWorker:
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
+        current_pos: int | None = None,
     ) -> dict[str, Any]:
         # L3 engine passes cache_prompt for subprocess; wheel backend has no slot bridge yet.
-        del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt
+        del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt, current_pos
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
         with self._lock:
             out = self._require_llama().create_completion(
@@ -279,9 +280,10 @@ class LlamaCppPythonWorker:
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
+        current_pos: int | None = None,
     ) -> Iterator[dict[str, Any]]:
         # L3 engine passes cache_prompt for subprocess; wheel backend has no slot bridge yet.
-        del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt
+        del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt, current_pos
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 
         def _gen() -> Iterator[dict[str, Any]]:
@@ -310,10 +312,56 @@ class LlamaCppPythonWorker:
         kv_bind_reqs: list[Any] | None = None,
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
+        cache_prompts: list[bool] | None = None,
+        current_positions: list[int | None] | None = None,
     ) -> list[dict[str, Any]]:
-        del id_slots, kv_token_budgets, kv_bind_reqs, kv_block_size
+        del id_slots, kv_token_budgets, kv_bind_reqs, kv_block_size, cache_prompts, current_positions
         if not prompts:
             return []
         return [
             self.completion(p, n_predict=n_predict, sampler=sampler) for p in prompts
         ]
+
+    def completions_parallel_stream(
+        self,
+        prompts: list[str],
+        n_predict: int | None = None,
+        *,
+        id_slots: list[int] | None = None,
+        kv_token_budgets: list[int] | None = None,
+        kv_bind_reqs: list[Any] | None = None,
+        kv_block_size: int = 16,
+        sampler: SamplerOptions | None = None,
+        cache_prompts: list[bool] | None = None,
+        current_positions: list[int | None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        del kv_token_budgets, kv_bind_reqs, kv_block_size, current_positions
+        if not prompts:
+            return iter(())
+        slots = id_slots if id_slots is not None else list(range(len(prompts)))
+
+        def _slot(idx: int) -> int:
+            if idx < len(slots):
+                return slots[idx]
+            return idx
+
+        def _cache_prompt(idx: int) -> bool | None:
+            if cache_prompts is None or idx >= len(cache_prompts):
+                return None
+            return cache_prompts[idx]
+
+        def _sequential() -> Iterator[dict[str, Any]]:
+            for idx, prompt in enumerate(prompts):
+                for chunk in self.completion_stream(
+                    prompt,
+                    n_predict=n_predict,
+                    id_slot=_slot(idx),
+                    sampler=sampler,
+                    cache_prompt=_cache_prompt(idx),
+                ):
+                    out = dict(chunk)
+                    out.setdefault("seq_idx", idx)
+                    out.setdefault("seq_id", _slot(idx))
+                    yield out
+
+        return _sequential()

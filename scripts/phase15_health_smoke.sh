@@ -29,12 +29,20 @@ for key in (
     "kv_bind",
     "kv_forward_plans",
     "kv_page_bind",
+    "kv_decode_loop",
+    "kv_resume",
+    "kv_continuous_batch",
     "kv_live_physical",
     "kv_native_stats",
     "kv_decode_steps",
     "kv_scheduler_tick",
 ):
     assert key in h, f"missing /health key: {key}"
+pb = h["kv_page_bind"]
+assert "status" in pb
+if pb.get("available"):
+    assert "bind_level" in pb
+    assert "slots" in pb
 assert isinstance(h["kv_forward_plans"], list)
 snap = eng.kv_snapshot()
 assert "kv_forward_plans" in snap

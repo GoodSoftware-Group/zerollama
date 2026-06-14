@@ -46,7 +46,7 @@ zerollama serve
 | `LLAMA_CPP_VERSION` | Human pin (`b9611`) |
 | `Makefile.sync` | `FETCH_HEAD=b9611`, `WORKDIR=vendor/llama-cpp-b9611` |
 | `vendor/llama-cpp-b9611/` | Fresh clone + Ollama patch commits (gitignored) |
-| `llama/patches/` | **14** format-patches on b9611 |
+| `llama/patches/` | **15** format-patches on b9611 |
 | `llama/patches.pre-b9509-20260612/` | Backup of pre-migration patch series |
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
@@ -73,6 +73,7 @@ Applied on top of upstream `b9611` (vendor HEAD after patches: `1aefee58`):
 | 0012 | No-alloc scheduler mode | `ggml_backend_sched_new_ext` for `LoadOperationFit` VRAM sizing without allocation |
 | 0013 | mtmd C API | `mtmd_input_text_init/free` for CGO multimodal |
 | 0014 | ollama_vocab grammar | Go-side token pieces into C++ grammar without full `llama_model` |
+| 0015 | **llama-kv-ext Phase 15** | Staging KV cell map + tensor introspection for PA page bind; hybrid/iSWA resolve to attn base cache |
 
 **CGO-only (not patches):** `jinja_wrap.cpp`, `httplib_wrap.cpp`, `llama/build-info.cpp`; exclude mtmd CLI mains after sync.
 

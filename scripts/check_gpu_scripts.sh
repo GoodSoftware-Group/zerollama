@@ -34,6 +34,15 @@ scripts=(
   macos_runtime_serve_lib.sh
   l2_fork_eval.sh
   l2_metal_bench.sh
+  l2_cuda_bench.sh
+  l2_gate_report.sh
+  l2_runtime_compat_smoke.sh
+  l2_cuda_runtime_compat_smoke.sh
+  l2_full_gate.sh
+  l2_cuda_full_gate.sh
+  linux_runtime_serve_lib.sh
+  l3_cache_smoke.sh
+  l3_gate_report.sh
   build_eliza_llama_server.sh
   phase14_backend_smoke.sh
   phase14_inprocess_smoke.sh
@@ -52,6 +61,7 @@ scripts=(
   e2e_training_ops_smoke.sh
   repro_shared_interpreter_health_hang.sh
   phase15_kv_native_ci.sh
+  phase15_llama_kv_ext_pin_check.sh
   phase15_health_smoke.sh
 )
 
@@ -129,6 +139,15 @@ grep -q 'gpu_metal_session' "${ROOT}/docs/apple-silicon-metal.md"
 grep -q 'l2_metal_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_metal_bench.sh"
 grep -q 'l2_metal_bench' "${ROOT}/scripts/l2_fork_eval.sh"
+grep -q 'l2_full_gate' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'l2_cuda_bench' "${ROOT}/docs/gpu-profiles-l2.md"
+grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_cuda_bench.sh"
+grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_bench.sh"
+grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.sh"
+grep -q 'l2_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l2.md"
+grep -q 'l2_cuda_runtime_compat_smoke' "${ROOT}/scripts/l2_cuda_full_gate.sh"
+grep -q 'l3_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
+grep -q 'prompt_cache_keys' "${ROOT}/runtime/runtime/cache_bridge.py"
 grep -q 'IsMLX()' "${ROOT}/docs/mlx-routing-policy.md"
 grep -q 'modelUsesRuntimeInference' "${ROOT}/server/runtime_inference_routing.go"
 grep -q 'RUN_E2E_LEGACY=1 with RUN_E2E_GPU' "${ROOT}/scripts/e2e_runtime_smoke.sh"
@@ -187,7 +206,10 @@ grep -q '/api/train/status' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
 grep -q 'cmd.*ping' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
 grep -q 'ZEROLLAMA_RUNTIME_SHARED_PYTHON' "${ROOT}/runtime/runtime/gpu_vram.py"
 grep -q 'health try' "${ROOT}/scripts/repro_shared_interpreter_health_hang.sh"
+grep -q 'phase15_llama_kv_ext_pin_check' "${ROOT}/scripts/phase15_kv_native_ci.sh"
 grep -q 'test_kv_native_parity' "${ROOT}/scripts/phase15_kv_native_ci.sh"
+grep -q 'test_kv_decode_long_ctx' "${ROOT}/scripts/phase15_kv_native_ci.sh"
+grep -q 'ZEROLLAMA_KV_DECODE_LOOP' "${ROOT}/scripts/phase15_kv_native_ci.sh"
 grep -q 'kv_backend_health' "${ROOT}/runtime/runtime/engine.py"
 grep -q 'native_requested' "${ROOT}/runtime/runtime/kv/backend.py"
 grep -q 'kv_scheduler_snapshot' "${ROOT}/runtime/runtime/kv/accounting.py"

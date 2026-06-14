@@ -5,7 +5,7 @@ postponed annotations make FastAPI treat parameters as query fields (422 on ``qu
 Per-request weights: ``options.gguf`` (from Go manifest lookup) or ``LLAMA_MODEL`` env fallback.
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from runtime.config import RuntimeConfig
 from runtime.engine import InferenceEngine
@@ -13,8 +13,8 @@ from runtime.worker.llama_server import LlamaServerError
 
 
 def create_app(
-    config: RuntimeConfig | None = None,
-    engine: InferenceEngine | None = None,
+    config: Optional[RuntimeConfig] = None,
+    engine: Optional[InferenceEngine] = None,
 ) -> Any:
     try:
         from fastapi import Body, FastAPI, HTTPException
@@ -107,7 +107,7 @@ def create_app(
             return 503
         return 502
 
-    def _n_predict(options: dict) -> int | None:
+    def _n_predict(options: dict) -> Optional[int]:
         """Output token limit; None means use llama-server default (unlimited)."""
         if "num_predict" not in options:
             return None
@@ -121,8 +121,8 @@ def create_app(
         opts: dict[str, Any],
         gguf: Any,
         *,
-        explicit: int | None = None,
-    ) -> int | None:
+        explicit: Optional[int] = None,
+    ) -> Optional[int]:
         # Why not resolve_vram_num_ctx alone: tools render and load must see the same
         # clamped ctx as _admit_one (Phase 13 resolve_num_ctx_for_request).
         out = eng.resolve_num_ctx_for_request(
@@ -471,13 +471,22 @@ def create_app(
 
     class VramEstimateBody(BaseModel):
         gguf: str
-        num_ctx: int | None = None
+        num_ctx: Optional[int] = None
         options: dict[str, Any] = Field(default_factory=dict)
 
     class TokenizeBody(BaseModel):
         gguf: str
         text: str
         add_special: bool = True
+
+    class InternalBatchGenerateBody(BaseModel):
+        """Loopback batch generate for Phase 15 GPU sign-off (v27–v30)."""
+
+        prompts: list[str] = Field(min_length=1, max_length=8)
+        n_predict: int = Field(default=8, ge=1, le=256)
+        max_admit: int = Field(default=4, ge=1, le=8)
+        stream: bool = False
+        options: dict[str, Any] | None = None
 
     @app.post("/internal/tokenize")
     def internal_tokenize(body: TokenizeBody = Body()) -> dict[str, Any]:
@@ -531,6 +540,54 @@ def create_app(
         if est is None:
             raise HTTPException(status_code=500, detail="vram estimate failed")
         return {"vram_estimate": est, "vram_budget": budget}
+
+    @app.post("/internal/generate-batch")
+    def internal_generate_batch(body: InternalBatchGenerateBody = Body()):
+        """Loopback-only batched generate (Phase 15 v27–v30 GPU sign-off).
+
+        WHY internal, not public /api/generate: batch admission policy and streaming
+        NDJSON shape are still evolving; this endpoint exercises the real engine
+        path (generate_batch / stream_generate_batch) without committing to an
+        external OpenAI-compatible contract. GPU smokes call it from localhost only.
+        """
+        import json
+
+        opts = dict(body.options or {})
+        try:
+            if body.stream:
+
+                def _gen():
+                    for chunk in eng.stream_generate_batch(
+                        body.prompts,
+                        n_predict=body.n_predict,
+                        max_admit=body.max_admit,
+                        options=opts,
+                    ):
+                        yield json.dumps(chunk) + "\n"
+
+                return StreamingResponse(
+                    _gen(), media_type="application/x-ndjson"
+                )
+            results = eng.generate_batch(
+                body.prompts,
+                n_predict=body.n_predict,
+                max_admit=body.max_admit,
+                options=opts,
+            )
+            return {
+                "results": [
+                    {
+                        "request_id": r.request_id,
+                        "content": r.content,
+                        "kv_decode_steps": r.kv_decode_steps,
+                    }
+                    for r in results
+                ]
+            }
+        except LlamaServerError as e:
+            raise HTTPException(
+                status_code=_llama_error_status(e), detail=str(e)
+            ) from e
 
     @app.get("/internal/kv-snapshot")
     def internal_kv_snapshot() -> dict[str, Any]:

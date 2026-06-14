@@ -149,3 +149,11 @@ func TestBuildDoctorReportJSON(t *testing.T) {
 		t.Fatalf("json=%s", string(b))
 	}
 }
+
+func TestDoctorEnsureLlamaCppSiblingScript(t *testing.T) {
+	repo := doctorRepoRoot()
+	script := filepath.Join(repo, "scripts", "ensure_llama_cpp_sibling.sh")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("missing ensure script: %v", err)
+	}
+}

@@ -17,6 +17,8 @@
 #   RUN_E2E_PHASE15=1    — also run ./scripts/phase15_metal_signoff.sh (sidecar path)
 #   RUN_E2E_QWEN35=1     — also run ./scripts/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL)
 #                          Why before Phase 15: Phase 15 stops :8081; qwen35 needs handoff/resume.
+#   RUN_E2E_L2=1         — also run ./scripts/l2_full_gate.sh (fork eval + compat + bench)
+#   RUN_E2E_L3=1         — also run ./scripts/l3_cache_smoke.sh + gate report
 #   ZEROLLAMA_BIN        — override zerollama binary (repo ./zerollama, then PATH)
 set -euo pipefail
 
@@ -63,6 +65,17 @@ echo "== Phase 14 inprocess Metal (apple_silicon.yaml) =="
 if [[ "${RUN_E2E_QWEN35:-0}" == "1" ]]; then
   echo ""
   "${ROOT}/scripts/qwen35_mac_smoke.sh"
+fi
+
+if [[ "${RUN_E2E_L2:-0}" == "1" ]]; then
+  echo ""
+  M3_LLAMA_MODEL="$LLAMA_MODEL" "${ROOT}/scripts/l2_full_gate.sh"
+fi
+
+if [[ "${RUN_E2E_L3:-0}" == "1" ]]; then
+  echo ""
+  M3_LLAMA_MODEL="$LLAMA_MODEL" "${ROOT}/scripts/l3_cache_smoke.sh"
+  "${ROOT}/scripts/l3_gate_report.sh" "${L3_OUT:-/tmp/l3-cache-smoke.json}"
 fi
 
 if [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then

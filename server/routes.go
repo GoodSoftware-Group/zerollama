@@ -108,7 +108,6 @@ type Server struct {
 	addr           net.Addr
 	sched          *Scheduler
 	defaultNumCtx  int
-	totalVRAM      uint64
 	requestLogger  *inferenceRequestLogger
 	training       *trainingworker.Client
 	trainingDefer  *trainingDeferQueue
@@ -119,6 +118,12 @@ type Server struct {
 
 	runtimeFifoMu     sync.RWMutex
 	runtimeFifoOldest uint64
+
+	// ggmlFreeVRAM* — TTL cache for /api/show suggest (M12). Why: show is hot-path;
+	// load path calls effectiveGgmlFreeVRAMForSuggest with refresh=true instead.
+	ggmlFreeVRAMMu     sync.Mutex
+	ggmlFreeVRAMCached uint64
+	ggmlFreeVRAMAt     time.Time
 }
 
 func init() {
@@ -144,6 +149,8 @@ var (
 // modelOptions merges server default → manifest parameters → request options.
 // Runner fields (num_ctx, num_gpu, …) from the result are passed to llama.Load and
 // pre-size KV at load time — very large manifest num_ctx can hang before first token.
+// scheduleRunner may lower num_ctx afterward when ZEROLLAMA_GGML_CLAMP_NUM_CTX=1
+// (see ggml_num_ctx.go); show surfaces suggest via enrichShowGgmlNumCtx without clamping.
 func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Options, error) {
 	opts := api.DefaultOptions()
 	if opts.NumCtx == 0 {
@@ -190,7 +197,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		return nil, nil, nil, nil, err
 	}
 
-	ggmlCtx := s.applyGgmlNumCtxClamp(model, &opts)
+	ggmlCtx := s.applyGgmlNumCtxClamp(ctx, model, &opts) // M12: opt-in VRAM clamp before GetRunner
 
 	schedStart := time.Now()
 	slog.Debug("scheduleRunner: waiting for runner",
@@ -1139,7 +1146,7 @@ func (s *Server) ShowHandler(c *gin.Context) {
 
 	if modelRef.Source == modelSourceLocal {
 		if m, err := GetModel(modelRef.Base); err == nil {
-			s.enrichShowGgmlNumCtx(resp, m)
+			s.enrichShowGgmlNumCtx(c.Request.Context(), resp, m)
 		}
 	}
 
@@ -2043,7 +2050,6 @@ func Serve(ln net.Listener) error {
 	default:
 		s.defaultNumCtx = 4096
 	}
-	s.totalVRAM = totalVRAM
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
 
 	// Register mDNS after startup work so the HTTP listener is about to accept connections.

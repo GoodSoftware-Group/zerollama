@@ -72,9 +72,11 @@ def test_cross_queue_depth_snapshot():
 def test_cross_queue_depth_stale_mirror_note():
     import runtime.go_coordination as gc
 
+    import time
+
     update_go_coordination({"defer_waiting": 9})
     with gc._lock:
-        gc._updated_at = 0.0
+        gc._updated_at = time.monotonic() - 1000.0  # force stale regardless of uptime
     depth = cross_queue_depth(runtime_waiting=0, runtime_running=0)
     assert depth["go_mirror_fresh"] is False
     assert depth["go_defer_waiting"] == 0

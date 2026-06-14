@@ -11,13 +11,19 @@ from runtime.cache_bridge import (
     DEFAULT_CACHE_TTLS,
     build_model_hash,
     cache_health,
+    cache_pin_from_options,
     default_slot_ttl_ms,
     derive_slot_id,
     evict_expired,
+    evict_orphaned_cache_dirs,
     evict_ttl_ms_for_file,
+    inprocess_disk_cache_enabled,
     llama_server_cache_argv,
+    resolve_cache_key_for_batch,
     resolve_cache_key_from_options,
     resolve_local_cache_key,
+    slot_cache_file_path,
+    slot_cache_filename,
     slot_save_path,
     ttl_ms_for_key,
 )
@@ -28,6 +34,43 @@ from runtime.kv.block_pool import BlockPool
 from runtime.scheduler.loop import SchedulerLoop
 from runtime.scheduler.scheduler import Request, Scheduler
 from runtime.gpu.mutex import InferenceGpuCoordinator
+
+
+def test_resolve_cache_key_for_batch():
+    opts = {
+        "prompt_cache_keys": ["batch-a", "batch-b"],
+        "prompt_cache_key": "ignored",
+    }
+    assert resolve_cache_key_for_batch(opts, 0) == "batch-a"
+    assert resolve_cache_key_for_batch(opts, 1) == "batch-b"
+    assert resolve_cache_key_for_batch(opts, 2) is None
+
+
+def test_resolve_cache_key_for_batch_flat_fallback():
+    opts = {"prompt_cache_key": "flat-only"}
+    assert resolve_cache_key_for_batch(opts, 0) == "flat-only"
+    assert resolve_cache_key_for_batch(opts, 3) == "flat-only"
+
+
+def test_cache_pin_from_options():
+    key, slot, pinned = cache_pin_from_options(
+        {"prompt_cache_key": "sess-1"},
+        parallel=4,
+    )
+    assert key == "sess-1"
+    assert pinned is True
+    assert slot == derive_slot_id("sess-1", 4)
+
+
+def test_cache_pin_from_options_batch_index():
+    key, slot, pinned = cache_pin_from_options(
+        {"prompt_cache_keys": ["a", "b"]},
+        parallel=4,
+        batch_index=1,
+    )
+    assert key == "b"
+    assert pinned is True
+    assert slot == derive_slot_id("b", 4)
 
 
 def test_derive_slot_id_stable_and_bounded():
@@ -41,6 +84,32 @@ def test_derive_slot_id_stable_and_bounded():
 def test_derive_slot_id_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE", "0")
     assert derive_slot_id("x", 8) == -1
+
+
+def test_slot_cache_filename_and_path():
+    assert slot_cache_filename(3, 0) == "slot_3_0.bin"
+    h = build_model_hash(target_model_path="/m.gguf")
+    assert slot_cache_file_path(h, 3) == slot_save_path(h) / "slot_3_0.bin"
+
+
+def test_inprocess_disk_cache_respects_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE_DISK", raising=False)
+    assert inprocess_disk_cache_enabled() is True
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "0")
+    assert inprocess_disk_cache_enabled() is False
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE", "0")
+    assert inprocess_disk_cache_enabled() is False
+
+
+def test_cache_health_inprocess_disk_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_ROOT", str(tmp_path))
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"x")
+    h = cache_health(gguf, [])
+    assert h["inprocess_disk_cache"] is True
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "0")
+    h2 = cache_health(gguf, [])
+    assert h2["inprocess_disk_cache"] is False
 
 
 def test_resolve_cache_key_precedence():
@@ -83,6 +152,35 @@ def test_build_model_hash_and_slot_path():
     )
     assert len(h) == 16
     assert slot_save_path(h) == slot_save_path(h)
+
+
+def test_build_model_hash_canonical_path(tmp_path: Path):
+    real = tmp_path / "model.gguf"
+    real.write_bytes(b"gguf")
+    link = tmp_path / "link.gguf"
+    link.symlink_to(real)
+    h_real = build_model_hash(target_model_path=real)
+    h_link = build_model_hash(target_model_path=link)
+    assert h_real == h_link
+
+
+def test_evict_orphaned_cache_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_ROOT", str(tmp_path))
+    keep = build_model_hash(target_model_path="/models/keep.gguf")
+    stale = build_model_hash(target_model_path="/models/stale.gguf")
+    keep_dir = tmp_path / keep
+    stale_dir = tmp_path / stale
+    keep_dir.mkdir(parents=True)
+    stale_dir.mkdir(parents=True)
+    old = stale_dir / "slot_0_0.bin"
+    old.write_bytes(b"x")
+    old_time = time.time() - 7200
+    os.utime(old, (old_time, old_time))
+    keep_dir.joinpath("slot_0_0.bin").write_bytes(b"y")
+    removed = evict_orphaned_cache_dirs(keep_model_hash=keep, now_ms=time.time() * 1000)
+    assert removed == 1
+    assert not stale_dir.exists()
+    assert keep_dir.is_dir()
 
 
 def test_evict_ttl_llama_server_filenames():

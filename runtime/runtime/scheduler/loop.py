@@ -5,6 +5,8 @@ stalls only LOW at head under inference-first (normal chat keeps dequeuing).
 
 Phase 15: reserve blocks for ``num_ctx`` when set; assign llama-server ``kv_slot``.
 L3: ``try_acquire`` for session-pinned slots (prompt cache key → stable id_slot).
+v8: ``register_request_bind`` on admit / ``unregister_request_bind`` on complete —
+registers PA page tables in native C for seq-position validation before decode.
 """
 
 from __future__ import annotations
@@ -109,6 +111,8 @@ class SchedulerLoop:
                 break
             if self.assign_llama_slots:
                 # L3: pre-assigned kv_slot (session pin) vs dynamic acquire().
+                # WHY try_acquire not hold: idle sessions free the allocator bit;
+                # llama-server retains prefix KV until evicted or overwritten.
                 if req.kv_slot is not None and req.kv_slot >= 0:
                     if not self._slots.try_acquire(req.kv_slot):
                         if req.block_table is not None:
@@ -130,15 +134,27 @@ class SchedulerLoop:
             admitted.append(req)
         if admitted:
             from runtime.kv.native_tick import record_scheduler_tick
+            from runtime.kv.page_bind import register_request_bind
 
             self.last_scheduler_tick = record_scheduler_tick()
+            # pools[0].block_size: SchedulerLoop has no block_size field; pool is source of truth.
+            bs = self.pools[0].block_size if self.pools else 16
+            for req in admitted:
+                register_request_bind(req, block_size=bs)
         return admitted
 
     def complete(self, req: Request) -> None:
         if req.kv_slot is not None:
+            from runtime.kv.page_bind import unregister_request_bind
+
+            slot = req.kv_slot
+            # ORDERING INVARIANT: unregister native bind, then release allocator.
+            # Never release before unregister — a concurrent tick could try_acquire
+            # the slot and register new block_ids while unregister still clears them.
+            unregister_request_bind(slot)
             # Pinned sessions: release allocator tracking only. llama-server keeps KV
             # in that id_slot; the next turn re-derives the same slot from cache key.
-            self._slots.release(req.kv_slot)
+            self._slots.release(slot)
             if not req.slot_pinned:
                 req.kv_slot = None
         self.scheduler.finish(req)

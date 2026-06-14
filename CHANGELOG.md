@@ -4,18 +4,437 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-### Ggml manifest `num_ctx` suggest + opt-in clamp (M12, Jun 2026)
+### Phase 15 v31 — llama-kv-ext pin tracking + hybrid/iSWA resolve (Jun 2026)
 
-**Why:** High-VRAM tier sets server default `num_ctx=262144`; merged manifest defaults pre-allocate full KV at ggml load and can hang qwen35/recurrent models. Phase 13 runtime already exposes `suggested_max_num_ctx` + opt-in clamp — ggml scheduler had docs only.
+**Why:** `llama-kv-ext.h` lived untracked in-tree — vendor sync could wipe it on pin bumps. Hybrid/iSWA models returned `unsupported_memory_type` even though attn KV is reachable via `get_base()` / `get_mem_attn()`.
+
+- **`llama/patches/0015-ollama-llama-kv-ext-phase15.patch`** — formal patch on b9611 pin (cell map, tensor info, CMake entry).
+- **`llama/llama.cpp/src/llama-memory-kv-ext.cpp`** — resolve `llama_kv_cache_iswa`, `llama_memory_hybrid`, `llama_memory_hybrid_iswa` to attn base cache; `llama_memory_kv_ext_classify`.
+- **`scripts/phase15_llama_kv_ext_pin_check.sh`** — CI gate: patch + in-tree files + upstream `llama.h` deps at pin.
+- **`runtime/native/kv_tensor_probe.c`** — exports `memory_kind` / `memory_kind_name` on probe.
+- **Docs:** [phase15-llama-kv-ext-upstream.md](docs/phase15-llama-kv-ext-upstream.md).
+
+**Still blocked:** writable cross-allocator PA→tensor page bind (needs upstream page-handle API); pure recurrent-only models.
+
+### Phase 15 v30 — per-row C sampling in batch decode (Jun 2026)
+
+**Why:** v29 batch steps sampled in Python via ctypes because v26 C path used one shared sampler (accept-state bleed) and `run_sample` always read the last logit row. v30 passes one sampler pointer per batch row so sampling stays in C with correct logit indices and isolated accept state.
+
+- **`runtime/native/kv_decode_loop.c`** — `kv_decode_loop_run_batch_step` takes `smpl_ptrs[]` per row.
+- **`runtime/native/kv_block_pool.c`** — `decode_loop_batch_step` accepts int (legacy) or list of smpl pointers.
+- **`runtime/runtime/kv/native_decode_loop.py`** — `run_batch_step(..., smpl_ptrs=)`.
+- **`runtime/runtime/worker/libllama_ctypes.py`** — `_decode_parallel_stream` uses C batch sampling when all row samplers are available.
+
+### Phase 15 v29 — streaming batch decode + GPU sign-off (Jun 2026)
+
+**Why:** v27 batched autoregressive steps for `generate_batch` but only returned full text at the end. v29 streams `seq_idx`-tagged chunks through the same C `run_batch_step` path so callers can consume interleaved tokens from N sequences. GPU sign-off needed a loopback hook because batch APIs are engine-internal (no public `/api/generate` batch yet).
+
+- **`runtime/runtime/worker/libllama_ctypes.py`** — `_decode_parallel_stream()`; `complete_parallel_stream()`; shared `_parallel_jobs_and_smpls` / `_finalize_parallel_jobs`; non-stream collects from stream.
+- **`runtime/runtime/worker/llama_inprocess.py`** — `completions_parallel_stream()` with batch path + sequential fallback.
+- **`runtime/runtime/engine.py`** — `stream_generate_batch()` admits N requests and yields tagged NDJSON-shaped chunks.
+- **`runtime/runtime/server/app.py`** — `POST /internal/generate-batch` (loopback-only) for GPU smokes and operator debug.
+- **`scripts/phase15_batch_decode_smoke.sh`** — GPU batch + stream smoke; wired into `phase15_metal_signoff.sh` (step 3/5) and `phase15_inprocess_multiseq_smoke.sh`.
+- **`scripts/phase15_runtime_kv_env.sh`** — **Why fix:** prefer sibling `../llama.cpp` (has `ggml.h`) over in-repo vendor stub; single venv Python build (avoids 3.9 universal overwrite that caused first-run Metal segfault).
+- **Audit fixes:** post-prefill-only native sample (`batch_idx == -1`); sampler cleanup on `_parallel_jobs_and_smpls` failure; `RequestState.FINISHED` on stream batch stop; L3 disk-restore test binds `_prepare_seq_for_decode`.
+- **GPU sign-off:** `./scripts/phase15_metal_signoff.sh` **PASS** (M4 Max, Jun 2026) — batch decode step reports `batch_decode_in_c=True`, non-stream + stream batch OK.
+- **Tests:** `test_kv_decode_engine_batch.py`; `test_l3_inprocess_disk.py`.
+
+### Phase 15 v28 — `/health` continuous batch plan export (Jun 2026)
+
+**Why:** v27 wired batch decode but operators had no merged view of what `run_batch_step` would consume for N running sequences — only per-request `kv_forward_plans`. v28 adds `kv_continuous_batch` on `/health` for GPU sign-off.
+
+- **`runtime/runtime/kv/forward_plan.py`** — `kv_continuous_batch_forward_plan()` merges running decode-phase rows into `kv_continuous_batch_step_plan`.
+- **`runtime/runtime/engine.py`** — `kv_continuous_batch` health field + `kv_snapshot` export.
+- **Tests:** `test_kv_forward_plan.py` — batch candidate filtering + `would_batch`.
+
+### Phase 15 v27 — engine wiring for C continuous batch decode (Jun 2026)
+
+**Why:** v26 shipped the C batch primitive but `generate_batch` still called `completion()` per row — N sequential `llama_decode` hot paths. v27 prefills each admitted sequence then merges autoregressive steps through `run_batch_step` when `n_seq_max>1` and the linked ext is available.
+
+- **`runtime/runtime/worker/libllama_ctypes.py`** — `_prepare_seq_for_decode()` (extracted resume/clear); `complete_parallel()` + `_decode_parallel_non_stream()`; `n_batch` sized for `n_seq_max`; **one sampler chain per sequence** (audit fix: shared chain bled `llama_sampler_accept` state across rows).
+- **`runtime/runtime/worker/llama_inprocess.py`** — `completions_parallel()` uses batch path when `native_batch_decode_available()`; sequential fallback when disabled or on error.
+- **`runtime/runtime/kv/native_decode_loop.py`** — `native_batch_decode_available()`; env `ZEROLLAMA_KV_NATIVE_BATCH=0` disables.
+- **Tests:** `test_kv_decode_engine_batch.py`; resume stub binds `_prepare_seq_for_decode`.
+
+### Phase 15 v26 — continuous batch decode in C (Jun 2026)
+
+**Why:** With `llama_parallel_slots>1`, each sequence previously called `llama_decode` separately from Python — N scheduler ticks, N GIL transitions. v26 batches N single-token rows into one C `llama_decode` (continuous batching scaffold).
+
+- **`runtime/native/kv_decode_loop.c`** — `kv_decode_loop_run_batch_step()`; per-row page-bind validation; optional per-row C sampling.
+- **`runtime/native/kv_block_pool.c`** — `decode_loop_batch_step`, `decode_batch_layout_multi` bindings; `batch_decode_in_c` on `decode_loop_status`.
+- **`runtime/runtime/kv/native_decode_loop.py`** — `run_batch_step()`.
+- **`runtime/runtime/kv/decode_plan.py`** — `kv_continuous_batch_step_plan()` for `/health` export.
+- **Tests:** `test_kv_decode_batch_loop.py`.
+
+### Phase 15 v25 — auto-link decode loop + 131k long-ctx validation (Jun 2026)
+
+**Why:** C prefill/decode is the hot path but required `ZEROLLAMA_KV_DECODE_LOOP=1` on every build when libllama was present. The page-bind registry capped at 4096 pages (65536 tokens @ block_size=16), blocking 131072 ctx validation that L2 fork-only bench legs depend on.
+
+- **`runtime/setup.py`** — auto-links libllama when found under `LLAMA_CPP_ROOT` / `LLAMA_CPP_LIB`; `ZEROLLAMA_KV_DECODE_LOOP=0` forces unlinked ext (CI); `=1` requires libllama and **exits non-zero** when missing (audit fix: was silently unlinked).
+- **`runtime/native/kv_page_bind_internal.h`** — `KV_MAX_PAGES_PER_BIND` 4096 → 8192 (131072 ctx @ block_size=16).
+- **`runtime/native/kv_decode_loop.c`** — post-prefill tensor probe moved to `kv_decode_loop_post_prefill_probe()` called after `Py_END_ALLOW_THREADS` (GIL-held registry write; fixes data race from v24 audit).
+- **`scripts/phase15_kv_native_ci.sh`** — default unlinked build (`ZEROLLAMA_KV_DECODE_LOOP=0`); includes `test_kv_decode_long_ctx.py`.
+- **Tests:** `test_kv_decode_long_ctx.py` — 8192-chunk prefill plan, page-bind boundary at 131072, C bind validation; `test_kv_native_build.py` — forced-link fail-fast.
+
+### Phase 15 v24 — C decode loop page-bind validation + post-prefill tensor probe (Jun 2026)
+
+**Why:** Native C prefill (`kv_decode_loop_run_prefill`) validated page tables only in Python before the GIL-released call; a ctypes bypass or future direct-C caller could write past PA-reserved pages. Tensor bind flags (`cell_pages_bound`, `tensor_pages_bound_slot`) only updated at `complete()` — too late for `/health` polling during long streaming prefills.
+
+- **`runtime/native/kv_page_bind_internal.h`** — `kv_page_bind_validate_range()` (endpoint check, matches Python `validate_token_positions`).
+- **`runtime/native/kv_decode_loop.c`** — validate each prefill chunk + decode step before `llama_decode`; post-prefill tensor probe (v25: moved to `kv_decode_loop_post_prefill_probe` in binding after GIL re-acquire).
+- **`runtime/native/kv_block_pool.c`** — map bind validation failure (`-2`) to `ValueError` in Python bindings.
+- **`runtime/runtime/kv/native_decode_loop.py`** — wrap C bind errors as `LlamaServerError`.
+- **`scripts/phase15_metal_signoff.sh`** — step 4: `phase15_tensor_bind_probe.sh`; document why post-generate health cannot assert `tensor_pages_bound`.
+- **Tests:** `test_decode_loop_prefill_c_page_bind_validation`.
+
+### L3 — in-process disk cache audit fixes (Jun 2026)
+
+**Why:** Audit found three correctness bugs in the initial disk parity implementation.
+
+- **`runtime/worker/libllama_ctypes.py`** — `_save_slot_cache_disk` now derives token count from live `pos_max` via `sequence_kv_usage` instead of the caller's current-turn `prompt_tokens`; the token metadata written to the blob now matches the full KV history (prompt + all generated tokens). Removed `prompt_tokens` parameter from the API.
+- **`runtime/worker/libllama_ctypes.py`** — disk restore guard no longer requires `decode_pos == 0`; any `not is_resume` + pinned slot attempts restore, fixing the case where a running sidecar has a stale owner and non-zero decode_pos.
+- **`runtime/cache_bridge.py`** — `prepare_slot_cache_dir` takes `evict: bool = False`; eviction now runs at most once per session (on worker `start()`), not on every save turn.
+- **`runtime/worker/llama_inprocess.py`** — calls `prepare_slot_cache_dir(evict=True)` at session start.
+- **`runtime/tests/test_l3_inprocess_disk.py`** — updated test stubs to match new `_save_slot_cache_disk` signature (uses `sequence_kv_usage` mock).
+
+### L3 — in-process disk cache parity (Jun 2026)
+
+**Why:** subprocess L3 used llama-server `--slot-save-path`; in-process only had RAM resume (v17). Agent threads lost prefix KV on sidecar restart.
+
+- **`runtime/cache_bridge.py`** — `inprocess_disk_cache_enabled`, `slot_cache_filename`, `slot_cache_file_path`, `prepare_slot_cache_dir`; `/health.llama_cache.inprocess_disk_cache`.
+- **`runtime/worker/libllama_ctypes.py`** — `llama_state_seq_{save,load}_file` ctypes; save after pinned decode; restore before clear when slot cold.
+- **`runtime/worker/llama_inprocess.py`** — `slot_cache_model_hash` from L1 argv cache types.
+- **Env:** `ZEROLLAMA_LLAMA_CACHE_DISK=0` disables disk only.
+- **Scripts:** `l3_inprocess_smoke.sh`, `l3_agent_bench.sh`.
+- **Tests:** `test_l3_inprocess_disk.py`, cache_bridge disk helpers.
+
+### L2 — CUDA gate audit fixes (Jun 2026)
+
+**Why:** Post-creation audit found four bugs before the CUDA gate scripts were run in CI.
+
+- **`scripts/l2_cuda_full_gate.sh`** — called `l2_runtime_compat_smoke.sh` (Darwin/Metal only: `macos_runtime_serve_lib.sh`, `lsof`, `.dylib`); replaced with `l2_cuda_runtime_compat_smoke.sh`.
+- **`scripts/linux_runtime_serve_lib.sh`** — had `set -euo pipefail` at the top; removed. Sourced library scripts must not set shell options — the caller's `set -euo pipefail` must govern (a sourced `-e` would override caller error handling and cause unexpected exits).
+- **`scripts/l2_cuda_bench.sh`** — redundantly sourced `runtime_uv_venv.sh` and `runtime_smoke_lib.sh` before sourcing `linux_runtime_serve_lib.sh`, which already sources both; removed the duplicate `source` calls.
+- **`scripts/l2_cuda_bench.sh`, `scripts/l2_metal_bench.sh`** — Python bench core read `llama_server_args` for reporting from a static YAML file, which may not match the arguments chosen by `ZEROLLAMA_AUTO_CONFIG=1` at runtime. Fixed: now prefer `gpu_profile.llama_server_args` from the live `/health` response; fall back to YAML only when that field is absent.
+- **`scripts/check_gpu_scripts.sh`** — added new CUDA gate scripts to the syntax-check array and added `grep` assertions for their key content.
+- **`docs/gpu-profiles-l2.md`** — step 5 in the CUDA build/run section incorrectly called `l2_runtime_compat_smoke.sh` (Mac-only); updated to `l2_cuda_runtime_compat_smoke.sh`.
+
+### L2 — CUDA bench gate scripts (Jun 2026)
+
+**Why:** `l2_metal_bench.sh` is Darwin/Metal only (dylib, apple_silicon.yaml, lsof). CUDA sign-off needs a parallel bench path for RTX 5080-class hosts before the vendor-merge decision.
+
+- **`scripts/linux_runtime_serve_lib.sh`** — shared sidecar start/stop for Linux; mirrors `macos_runtime_serve_lib.sh` (fuser, .so, single_gpu.yaml).
+- **`scripts/l2_cuda_bench.sh`** — Linux A/B: stock vs fork decode tok/s + VRAM JSON at configurable `num_ctx`; same `L2_HIGH_CTX_WARMUPS` logic as Metal.
+- **`scripts/l2_cuda_full_gate.sh`** — CUDA gate orchestrator: eval + compat + 8k/27k/131k bench legs + `l2_gate_report.sh` verdict.
+- **`docs/gpu-profiles-l2.md`** — CUDA build/run section; updated runtime integration table; gate status entry.
+
+### L2 — 131k decode bench warmups (Jun 2026)
+
+**Why:** fork-only 131k leg measured first-touch KV alloc, not steady-state decode tok/s.
+
+- **`scripts/l2_metal_bench.sh`** — `L2_HIGH_CTX_WARMUPS` (default 2 when `num_ctx >= 65536`); reports warmup count in JSON.
+- **`scripts/l2_full_gate.sh`** — 131k leg uses `L2_BENCH_RUNS=2`, `L2_NUM_PREDICT=64`, warmups.
+
+### Phase 15 v23 — unified prefill chunker + sign-off C pool defaults (Jun 2026)
+
+**Why:** `kv_decode_prefill_plan` and `_prefill_prompt` duplicated chunk boundaries; exported `logits_last` did not match execution (v15 requires final prefill chunk True). Sign-off left C block pool off despite built ext.
+
+- **`runtime/runtime/kv/decode_plan.py`** — `iter_prefill_execute_chunks()`; plan export uses it; final chunk `logits_last=True`.
+- **`runtime/runtime/worker/libllama_ctypes.py`** — ctypes prefill calls shared chunker.
+- **`scripts/phase15_runtime_kv_env.sh`** — shared env (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`, native decode/sample); `phase15_runtime_kv_ext_build`.
+- **`scripts/phase15_metal_signoff.sh`**, **`phase15_inprocess_signoff.sh`** — source env; build ext when `PHASE15_BUILD_KV_EXT=1` (default).
+- **Tests:** updated `test_kv_decode_plan.py` for logits_last + execute parity.
+
+### Phase 15 v22 — fix stale decode_pos after sequence clear; re-enable native sampling (Jun 2026)
+
+**Root cause:** In `LlamaLoadedSession._complete_locked` (multiseq / shared-ctx path), `decode_pos` was read from the live KV sequence *before* the `is_resume` check. On the non-resume path `_clear_sequence` wiped the slot, but `decode_pos` still held the previous sequence's final position (7–13 in practice) and was forwarded unchanged as `current_pos` into `_decode_stream` / `_decode_non_stream`. The native C prefill skipped entirely (`start_pos >= n_prompt`) and `llama_sampler_sample` was called with no valid logits → intermittent segfault on Metal. Repro: `ZEROLLAMA_GPU_PROFILE=1` (n_seq_max=8), 5 sequential generates without resume — crashed on loop 4 reliably.
+
+**Fix (one line):** reset `decode_pos = 0` immediately after `_clear_sequence`. The slot is empty; position 0 is the only correct value.
+
+- **`runtime/runtime/worker/libllama_ctypes.py`** — `decode_pos = 0` after `_clear_sequence` on non-resume path; `infer_trace complete.clear stale_decode_pos=N` emitted for observability.
+- **`runtime/runtime/infer_trace.py`** — new opt-in trace module (`ZEROLLAMA_INFER_TRACE=1`); wired into `engine.py` and `libllama_ctypes.py` for reload/reuse/prefill/sample phase logging.
+- **`scripts/phase15_metal_signoff.sh`** — `ZEROLLAMA_KV_NATIVE_SAMPLE` default changed back to `1` (workaround removed now root cause is fixed).
+- **`scripts/e2e_runtime_smoke.sh`** — removed Darwin `sleep` workaround before `/api/chat`.
+- **`scripts/phase15_metal_crash_repro.sh`** — new repro bisect harness (runtime_loop / broker_gguf / phase14_full scenarios).
+- **`runtime/tests/test_infer_trace.py`** — unit tests for `infer_trace` enable/disable.
+
+**Verified:** `phase15_metal_signoff.sh` PASS with `ZEROLLAMA_KV_NATIVE_SAMPLE=1`; bisect 10/10 invocations × 5 generates = 50 calls with no crash.
+
+### Phase 15 v21b — tensor bind probe correctness fixes (Jun 2026)
+
+**Why:** v21 audit found five correctness issues in `kv_tensor_bind_attempt`: wrong early-exit blocker for `lctx==NULL`, stale-flag clear happened before `llama_get_memory` (obscuring failure path), `seq_max+1` could overflow `int32_t`, `blocker` on `/health` used a static fallback string even when a probe had run, and `accounting_ok` was compared as raw int.
+
+- **`runtime/native/kv_tensor_probe.c`** — restructured guard order: `lctx==NULL` sets `KV_TENSOR_BLOCKER_NO_PAGE_API`; stale-flag clear is now inside the same block that precedes `llama_get_memory`; overflow guard replaces `seq_max+1` with `base + llama_token_cells` (avoids `INT32_MAX + 1` wrap).
+- **`runtime/runtime/kv/page_bind.py`** — `blocker` field now uses the probe's own blocker string whenever a probe ran (cell_bound or not); `accounting_ok` normalised via `bool()` before `None`-guard; `accounting_aligned` in output is `None` when no probe ran.
+- **`runtime/tests/test_kv_tensor_probe.py`** — new: `test_page_bind_health_blocker_from_probe_when_cell_bound`, `test_page_bind_health_blocker_fallback_when_no_probe`.
+- **`runtime/tests/test_kv_page_bind.py`** — `test_page_bind_health_without_native_ext` now asserts `slots == []` and `bind_level is None`.
+- **`docs/phase15-native-kv.md`** — `kv_page_bind` health field row expanded with `status`/`bind_level`/`blocker`/`slots` value catalogue.
+
+### Phase 15 v21 — per-slot bind registry + post-decode warnings (Jun 2026)
+
+**Why:** v20 bind state lived only inside ephemeral probe results; operators could not see per-slot `cell_pages_bound` on `/health` without a running request + linked probe.
+
+- **`page_bind_slots()`** — C export of active registry rows; `/health.kv_page_bind.slots`.
+- **`libllama_ctypes.py`** — post-decode warns on incomplete bind (`cell_map_gap`, etc.) when accounting is ok.
+- **Scripts** — health smoke + metal signoff assert `slots`/`bind_level`; decode loop build prefers vendored fork.
+
+### Phase 15 v20b — tensor bind audit fixes (Jun 2026)
+
+**Why:** v20 audit found compile bug (C++ `cell_index_for` in `.c` file), wrong tensor for multi-stream, shifted-position cell map, stale bind flags, and health state machine inconsistency.
+
+- **`kv_tensor_probe.c`** — use `llama_memory_kv_cell_for_pos` for stream; probe only live token pages + partial last page; clear stale bind flags before attempt.
+- **`llama-kv-cache.cpp`** — `kv_tensor_k/v(kv_layer, stream)` returns per-stream 2D view when `n_stream>1`.
+- **`llama-kv-ext.h`** — `llama_memory_kv_tensor_info(..., stream, ...)`.
+- **`runtime/kv/page_bind.py`** — misaligned does not override `status=bound`.
+- **Tests** — bound-not-overridden-by-misaligned health case.
+
+### Phase 15 v20 — cell + tensor bind via llama-kv-ext (Jun 2026)
+
+**Why:** v19 accounting bind could not resolve PA pages to llama KV storage. v20 adds a staging API in the pinned llama.cpp fork and wires zerollama's tensor probe to cell-index + K/V tensor verification after decode.
+
+- **`llama/llama.cpp/include/llama-kv-ext.h`** — `llama_memory_kv_cell_for_pos`, `llama_memory_kv_cell_map_range`, `llama_memory_kv_tensor_info`.
+- **`llama/llama.cpp/src/llama-memory-kv-ext.cpp`** — implementation for standard `llama_kv_cache`.
+- **`llama/llama.cpp/src/llama-kv-cache.{h,cpp}`** — `cell_index_for`, `kv_tensor_k/v`.
+- **`runtime/native/kv_tensor_probe.c`** — v20 bind attempt; `cell_pages_bound`, `tensor_pages_bound`.
+- **`runtime/kv/page_bind.py`** — `status=bound`, `bind_level=tensor` when probe succeeds.
+- **`runtime/setup.py`** — prefer `llama/llama.cpp` vendored root for linked builds.
+
+**Requires:** rebuild libllama from fork before `ZEROLLAMA_KV_DECODE_LOOP=1` link.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v20-ops--cell--tensor-bind-via-llama-kv-ext-jun-2026).
+
+### Phase 15 v20a — native page table on forward plans (Jun 2026)
+
+**Why:** v19 `page_bind_table` was script-only; operators comparing `kv_forward_plans.pages[]` to the C registry had no single JSON view. v20a mirrors the native registry on admitted plans with a parity flag.
+
+- **`runtime/kv/tensor_probe.py`** — `page_table_native_parity()`.
+- **`runtime/kv/forward_plan.py`** — `native_page_table`, `page_table_native_parity` when C registry populated.
+- **`scripts/phase15_kv_native_ci.sh`** — adds `test_kv_tensor_probe.py`, `test_kv_decode_engine_resume.py`.
+- **Tests** — forward plan native mirror; misaligned health status.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v20a-ops--native-page-table-in-forward-plans-jun-2026).
+
+### Phase 15 v19 — tensor bind scaffold (Jun 2026)
+
+**Why:** v8–v18 seq-position bind could validate token ranges but could not map PA `block_ids` onto llama KV tensor pages — blocked on missing public llama.cpp page-handle API. v19 unblocks the path with accounting-level verify + operator probes so full tensor bind is a thin layer when upstream ships handles.
+
+- **`native/kv_tensor_probe.c`** — `kv_tensor_probe_run`: `llama_get_memory`, seq positions, PA page fit vs live cells.
+- **`native/kv_page_bind_internal.h`** — shared page bind registry for pool + probe.
+- **`native/kv_block_pool.c`** — `page_bind_table(kv_slot)` export; `page_bind_tensor_probe(ctx_ptr, seq_id, kv_slot)` when linked.
+- **`runtime/kv/tensor_probe.py`** — Python facade.
+- **`runtime/kv/page_bind.py`** — health includes `tensor_probe`, `tensor_bind_ready`, `blocker`, `accounting_aligned`.
+- **`runtime/worker/libllama_ctypes.py`** — post-decode tensor probe warn/strict.
+- **`scripts/phase15_tensor_bind_probe.sh`** — build + table export smoke.
+- **Tests** — `tests/test_kv_tensor_probe.py`.
+
+**Still blocked for full tensor bind:** public llama.cpp API to attach external page ids to KV tensor storage.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v19-ops--tensor-bind-scaffold-jun-2026).
+
+### Phase 15 v18 — kv_resume health + L3 two-turn gate (Jun 2026)
+
+**Why:** v16–v17 resume state lived only inside `LlamaLoadedSession._seq_last_owner` with no operator visibility. v18 exposes `/health.kv_resume` and adds a Metal sign-off step for two-turn L3 `prompt_cache_key` traffic.
+
+- **`runtime/worker/libllama_ctypes.py`** — `resume_owner_snapshot()` for health export.
+- **`runtime/engine.py`** — `_kv_resume_health()` on `/health` and `kv_snapshot`.
+- **`scripts/phase15_metal_signoff.sh`** — step 3: two-turn L3 generate + `kv_resume` assert.
+- **`scripts/phase15_health_smoke.sh`** — asserts `kv_resume` key.
+- **Tests** — `test_kv_resume_health_*`, `test_generate_l3_second_turn_passes_current_pos`.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v18-ops--kv_resume-health--l3-gate-jun-2026).
+
+### Phase 15 v17 — L3 session resume owner (Jun 2026)
+
+**Why:** v16b keyed slot ownership on `request_id`, but L3 pinned sessions (`slot_pinned=True`) allocate a **new** `request_id` every HTTP turn while reusing `prompt_cache_key` and `kv_slot`. Multi-turn agent chat therefore always failed the owner check, cleared good prefix KV, and re-prefilled from scratch — defeating L3 cache for in-process backends.
+
+- **`runtime/cache_bridge.py`** — `slot_resume_owner_key(kv_bind_req)`: pinned → `cache:{prompt_cache_key}`; otherwise → `request_id`.
+- **`runtime/worker/libllama_ctypes.py`** — `_seq_last_owner` (renamed from v16b `_seq_last_request_id`); resume guard uses `slot_resume_owner_key`; owner cleared on sequence clear and on `close()` (model teardown).
+- **Tests** — `test_slot_resume_owner_key_*`, `test_complete_skips_clear_l3_second_turn`, `test_complete_clears_sequence_different_pinned_session`, `test_close_clears_seq_last_owner`.
+
+**Still open:** tensor page bind (blocked on llama.cpp API).
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v17-ops--l3-session-resume-owner-jun-2026).
+
+### Phase 15 v16b — slot-ownership guard for resume (Jun 2026)
+
+**Why:** v16 added `decode_pos > 0` as the guard for skipping `_clear_sequence`, but that condition alone is insufficient: a *different* request can land on the same slot after the first one completes.  Without an ownership check, the second request would resume into stale KV from the first, producing corrupted generations.  v16b adds `_seq_last_owner` on `LlamaLoadedSession` (shipped as `_seq_last_request_id`, renamed in v17) so `complete()` only skips the clear when the incoming owner matches the last writer of that slot.
+
+- **`runtime/worker/libllama_ctypes.py`**
+  - `LlamaLoadedSession._seq_last_owner: dict[int, str]` — tracks last owning key per seq slot (v16b: `request_id` only).
+  - `complete()` — skip `_clear_sequence` only when `decode_pos > 0` **and** owner matches; writes owner back after decode (stream and non-stream paths).
+  - `_resolve_decode_current_pos` — `WHY` docstring explaining the no-op on the single-seq path.
+- **`runtime/engine.py`** — `_decode_current_pos_for_request` gets a `WHY` docstring documenting the read-outside-lock pattern, why it is safe, and how `_seq_last_owner` re-validates under the lock.
+- **Tests** — `tests/test_kv_decode_engine_resume.py`:
+  - `test_complete_skips_clear_same_request_id` — same request resumes; no clear.
+  - `test_complete_clears_sequence_different_request_id` — different request on same slot; clears.
+  - `test_complete_clears_sequence_no_req_id_with_decode_pos` — `kv_bind_req=None`; conservative clear.
+  - `test_complete_clears_sequence_when_current_pos_zero` — refactored onto shared helper.
+  - `test_engine_decode_current_pos_for_request` — asserts exact `(lib, ctx, seq_id)` args to `current_pos_for_seq`.
+
+**Still open:** tensor page bind (blocked on llama.cpp API).
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v16b-ops--slot-ownership-guard-jun-2026).
+
+### Phase 15 v16 — engine resume wiring (Jun 2026)
+
+**Why:** v15 added `_decode_stream(current_pos=)` but generate always started from position 0 and cleared the seq. v16 reads live llama seq positions at completion time and skips `_clear_sequence` when resuming.
+
+- **`runtime/kv/physical.py`** — `current_pos_for_seq(lib, ctx, seq_id)`.
+- **`runtime/engine.py`** — `_decode_current_pos_for_request()`; passed to `completion` / `completion_stream` / batch.
+- **`runtime/worker/libllama_ctypes.py`** — `complete(..., current_pos=)`; skip clear when `decode_pos > 0`.
+- **`runtime/worker/llama_inprocess.py`** — forwards `current_pos` / `current_positions`.
+- **Tests** — `tests/test_kv_decode_engine_resume.py`.
+
+**Still open:** tensor page bind (blocked on llama.cpp API). **Hardened by v16b** (slot-ownership guard).
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v16-ops--engine-resume-wiring-jun-2026).
+
+### Phase 15 v15 — sampling in C + resume prefill wiring (Jun 2026)
+
+**Why:** v14 hardened the C decode loop but sampling still round-tripped through ctypes each token, and `_decode_stream` always prefilled from position 0 despite `decode_work` exporting live `current_pos`.
+
+- **`native/kv_decode_loop.c`** — `kv_decode_loop_sample`; optional `smpl` on `kv_decode_loop_run_step` (decode + sample in one GIL-released block).
+- **`native/kv_block_pool.c`** — `decode_loop_sample(smpl_ptr, ctx_ptr)`; `decode_loop_step(..., smpl_ptr=0)` returns `(steps, token)` when sampling; `/health.kv_decode_loop.sampling_in_c`.
+- **`runtime/kv/native_decode_loop.py`** — `run_sample`, `run_step(..., smpl_ptr=)`; `greedy_decode_tokens` uses C sampling when linked.
+- **`runtime/worker/libllama_ctypes.py`** — `_decode_stream(..., current_pos=0)` wires remaining prefill + decode resume; C sampling on native fast path.
+- **Tests** — `tests/test_kv_decode_stream_resume.py`; E2E patches `run_sample` for ctypes baseline.
+
+**Still open:** tensor page bind; engine passes `current_pos` from `kv_physical` into generate (API ready on `_decode_stream`).
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v15-ops--sampling-in-c--resume-prefill-jun-2026).
+
+### Phase 15 v14 — harden C decode loop (Jun 2026)
+
+**Why:** v13 moved `llama_decode` into C but still held the GIL and lacked resume prefill + operator E2E confidence. v14 releases the GIL, validates page bind before C calls, supports `pos_start` for remaining prefill, and adds optional linked-build parity smoke.
+
+- **`native/kv_block_pool.c`** — `Py_BEGIN_ALLOW_THREADS` around `kv_decode_loop_run_prefill` / `run_step`; `/health.kv_decode_loop.gil_released`; `decode_loop_prefill(..., pos_start=0)`.
+- **`native/kv_decode_loop.c`** — `pos_start` on prefill (llama positions = `pos_start + tok_off`).
+- **`runtime/kv/native_decode_loop.py`** — `pos_start`, `kv_slot` + `validate_token_positions`; `greedy_decode_tokens()` for E2E parity.
+- **`runtime/worker/libllama_ctypes.py`** — passes `kv_slot` into native prefill/step calls.
+- **Tests** — `tests/test_kv_decode_loop_e2e.py` (gated: `RUN_E2E_DECODE_LOOP=1`, `LLAMA_MODEL`, linked ext).
+- **CI** — `scripts/phase15_kv_decode_loop_build.sh` checks `gil_released`; runs E2E when env set.
+
+**Still open (v15+):** tensor page bind.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v14-ops--harden-c-decode-loop-jun-2026).
+
+### Phase 15 v13 — native C decode loop via llama_decode (Jun 2026)
+
+**Why:** v12 proved `libllama` links; v13 moves the hot `llama_decode` call into C, reducing GIL contention. Sampling (`llama_sampler_sample`) stays in Python — it's negligible relative to the forward pass and allows reuse of the existing ctypes sampler chain.
+
+- **`native/kv_decode_loop.c`** — `kv_decode_loop_run_prefill` (page-aligned chunking + repeated `llama_decode`); `kv_decode_loop_run_step` (single-token decode step). Manual heap `llama_batch` — **why:** `llama_batch_get_one` is stack-unsafe for chunked prefill; `llama_batch_init` leaves arrays uninitialized unless we fill every field.
+- **`native/kv_decode_loop.h`** — declarations for both entry points (gated by `ZEROLLAMA_KV_DECODE_LOOP`).
+- **`native/kv_block_pool.c`** — Python bindings `decode_loop_prefill(ctx_ptr, tokens, seq_id, block_size)` and `decode_loop_step(ctx_ptr, token, seq_id, current_pos)`, `#ifdef` gated.
+- **`runtime/kv/native_decode_loop.py`** — `run_prefill()` / `run_step()` with `ctx_ptr: int` (ctypes `c_void_p` value); returns `None` when not linked.
+- **`runtime/worker/libllama_ctypes.py`** (`_decode_stream`) — v13 fast path: C prefill → sample (ctypes) → C step loop; ctypes fallback when ext not linked or encoder model.
+- **Tests** — `test_kv_decode_work_plan.py` covers `run_prefill` / `run_step` no-op safety when not linked.
+- **CI** — `scripts/phase15_kv_decode_loop_build.sh` verifies `decode_loop_prefill` + `decode_loop_step` symbols.
+
+**Audit (v13):** documented reserved `n_seq_max` in `kv_batch_alloc` (inner seq arrays are length 1 today); removed stale `sampled_out` from header comment; conftest only resets `vram_yaml_defaults._APPLIED` when a test actually applied YAML defaults.
+
+**Runtime test hermeticity (Jun 2026):** **why** full pytest was failing on Python 3.9 / macOS from env leaks and syntax — `runtime/server/app.py` uses `Optional[]` (FastAPI needs live annotations); `tests/conftest.py` clears native `page_bind` slots and restores VRAM YAML env keys between tests; `engine.py` drops `zip(strict=True)`.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v13-ops--native-c-decode-loop-jun-2026). **Next:** [v14 — harden C decode loop](docs/phase15-native-kv.md#v14-ops--harden-c-decode-loop-jun-2026) (shipped Jun 2026).
+
+### Phase 15 v12 — libllama link build + probe (Jun 2026)
+
+**Why:** v11 shipped `decode_loop_status` but always reported `ctypes`. v12 wires optional libllama linking at build time so operators can verify the extension links before a full C decode loop lands.
+
+- **`runtime/setup.py`** — `ZEROLLAMA_KV_DECODE_LOOP=1` + `LLAMA_CPP_LIB` / `LLAMA_CPP_ROOT` → `-DZEROLLAMA_KV_DECODE_LOOP`, link `-lllama`, rpath.
+- **`native/kv_decode_loop.c`** — calls `llama_max_devices()` as link probe; exposed on `/health.kv_decode_loop.llama_max_devices`.
+- **`scripts/phase15_kv_decode_loop_build.sh`** — optional smoke (skips when libllama not built).
+- **Audit (v11):** removed duplicate top-level `decode_steps` on forward plans (`decode_work.decode` is canonical); `_empty_prefill_plan` sets `prefill_complete: true`.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v12-ops--libllama-link-build--probe-jun-2026).
+
+### Phase 15 v11 — unified decode work plan + libllama link scaffold (Jun 2026)
+
+**Why:** v9–v10 export separate `decode_prefill` and `decode_steps`; operators and a future C loop need one phase indicator. Linking libllama into the native ext is a separate build — v11 adds the probe and contract before the loop ships.
+
+- **`kv_decode_work_plan()`** — unified `{phase, prefill, decode}` (`admit` / `prefill` / `decode` / `done`).
+- **`kv_forward_plans[].decode_work`** — always present when admitted; includes live phase when `current_pos` known.
+- **`current_pos_by_request_from_physical()`** — testable helper; engine uses it for forward-plan wiring.
+- **`/health.kv_decode_loop`** — `{available, reason, link}`; C `decode_loop_status()` (linked loop blocked until `ZEROLLAMA_KV_DECODE_LOOP=1` + `LLAMA_CPP_LIB` at build time).
+- **Tests / CI** — `tests/test_kv_decode_work_plan.py` in `phase15_kv_native_ci.sh`.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v11-ops--unified-decode-work-plan--libllama-link-scaffold-jun-2026).
+
+### Phase 15 v10 — in-progress decode plans (Jun 2026)
+
+**Why:** v9 exported admit-time prefill plans (`pos_start=0`). Running requests need the **current** llama write position so operators see remaining prefill + planned decode steps on `/health` without guessing.
+
+- **`kv_decode_prefill_plan(..., pos_start=)`** — plan remaining prompt from `current_pos`; `prefill_complete` when prefill done.
+- **`kv_decode_step_plan()`** — single-token decode steps with `logits_last=True` (matches `_decode_stream`); `pending_prefill` while `current_pos < n_prompt`.
+- **`kv_forward_plans[].decode_steps`** + **`plan_current_pos`** — when live seq positions available from `kv_physical`.
+- **`next_pos_from_llama()`** — `llama_pos_max + 1` → next write position.
+- **Engine** — `_kv_forward_plans_health()` wires `kv_physical.running[].llama_pos_max` into forward plans.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v10-ops--in-progress-decode-plans-jun-2026).
+
+### Phase 15 v9 — decode prefill plan on forward plans (Jun 2026)
+
+**Why:** exit criterion #6 requires C batch layout wired to `kv_forward_plans`. v8 page-chunks at decode time; v9 exports the same plan on `/health` and `/internal/kv-snapshot` so operators and a future native decode loop share one contract without running inference.
 
 **What shipped:**
 
-- **`server/ggml_num_ctx.go`** — binary-search `suggested_max_num_ctx` from `GraphSize` + weights vs free VRAM; optional clamp before `GetRunner`.
-- **`GET /api/show`** — `ggml_num_ctx.suggested_max_num_ctx` when computable.
-- **`/api/chat` / `/api/generate`** — `ggml_num_ctx` when clamp applied (mirrors runtime `vram_num_ctx`).
+- **`runtime/kv/decode_plan.py`** — `kv_decode_prefill_plan()`; page-aligned chunks + optional native `batch_layout` summary. **Why shared chunker:** calls the same `iter_prefill_decode_chunks` as `libllama_ctypes._prefill_prompt` — plan boundaries cannot drift from real decode.
+- **`kv_forward_plans[].decode_prefill`** — present when request has admitted `block_ids` and `prompt_tokens`. **Why both guards:** waiting requests have no page table yet; exporting a plan without reserved blocks would mislead operators.
+- **`logits_last: false` on every prefill chunk** — matches ctypes prefill (`_prefill_prompt` never sets logits on prefill batches). **Why not True on the last chunk:** the first sampled token’s logit comes from the decode loop’s separate single-token batch, not the final prefill batch.
+- **`pos_start=0`** — plan covers the full prompt at admit time; continuation positions (`n_pos` after generation or multi-turn) stay a decode-time concern (v10+).
+- **Tests / CI** — `tests/test_kv_decode_plan.py` (10 tests) in `phase15_kv_native_ci.sh`.
+
+**Audit fixes (same release):**
+
+- **`logits_last` on final prefill chunk** — earlier draft marked the last chunk `True`; corrected after tracing `_prefill_prompt`. **Why:** llama prefill batches do not emit sampling logits; marking the last chunk True would mislead a future C decode loop.
+- **Test structure** — split `test_forward_plan_omits_decode_prefill_without_block_table` out of the page-boundary test; removed unused `pytest` import. **Why:** unrelated assertions in one test name hide failures.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v9-ops--decode-prefill-plan-export-jun-2026).
+
+### Phase 15 v8 — seq-position page bind + C decode batch layout (Jun 2026)
+
+**Why:** ROADMAP exit criteria 5–6 need llama.cpp **tensor** APIs that do not exist on the public surface. Operators still need (a) PA page tables enforced before decode so generation cannot silently exceed reserved blocks, and (b) batch metadata built off the GIL hot path so a future native decode loop can wire to `kv_forward_plans` without another refactor. v8 ships the bookkeeping + layout layer; tensor mapping and `llama_decode` in C remain blocked upstream.
+
+**What shipped:**
+
+- **`runtime/native/kv_block_pool.c`** — `page_bind_set/clear/resolve/stats`, `decode_batch_layout`, `decode_prefill_chunks`. **Why C:** admission and decode share the same page table; keeping resolve + batch layout in the extension avoids Python list churn on every token batch.
+- **`runtime/kv/page_bind.py`** — register PA page tables on scheduler admit, clear on `complete()`; `/health` `kv_page_bind.status=partial`, `bind_level=seq_position` when native ext built. **Why admit-time register:** decode validates against the table that was reserved at admission — not a stale export from `/health`.
+- **`runtime/kv/native_decode_batch.py`** — C-built `llama_batch` field lists; page-aligned prefill chunks for prompts longer than one PA page. **Why page-aligned chunks:** matches PA page boundaries so bind validation and future tensor bind share the same token ranges.
+- **`runtime/runtime/worker/libllama_ctypes.py`** — ctypes decode uses native batch builder; overrun raises `LlamaServerError` (not raw C exceptions). **Why:** stream/generate paths already catch `LlamaServerError`; operators see a clear KV bind failure instead of a traceback.
+- **`runtime/runtime/scheduler/loop.py`** — `register_request_bind` on admit, `unregister_request_bind` on complete; block size from `pools[0].block_size`. **Why pool block_size:** `SchedulerLoop` has no separate config field — the pool is the source of truth for page size.
+
+**M14 — `zerollama doctor --fix` clones llama.cpp:**
+
+- **`cmd/doctor.go`** — runs `ensure_llama_cpp_sibling.sh` (with `ZEROLLAMA_REPO`) before `build_llama_server.sh`. **Why:** fresh clones failed opaquely at Metal build time; `mac_setup` already cloned first — doctor should match that order so `--fix` is a one-command bootstrap.
+
+**Audit fixes (same release):**
+
+- **`self.block_size` crash** — admission called `register_request_bind(..., block_size=self.block_size)` but `SchedulerLoop` has no such field → `AttributeError` on first admit. **Why:** use `pools[0].block_size` like every other KV callsite.
+- **`tensor_pages_bound` type** — C `page_bind_stats` now returns Python `False` (not `0`); Python normalizes to `bool`. **Why:** `/health` JSON should not mix int/bool for the same semantic flag.
+- **Duplicate bind validation** — validate once in `build_batch_from_tokens` / `_make_batch`, not again in chunk iterator. **Why:** hot path; same check twice bought nothing.
+- **`n_predict=0` prefill** — decode loop now decodes the prompt when `limit=0`. **Why:** old condition `n_pos + batch.n_tokens < n_prompt + limit` skipped the only prefill decode when `limit=0`.
+
+**Still blocked:** PA `block_ids` → llama **tensor** KV pages; full decode loop in C without ctypes.
+
+Doc: [phase15-native-kv.md](docs/phase15-native-kv.md#v8-ops--seq-position-page-bind--c-decode-batch-jun-2026) · ROADMAP Phase 15 criteria 5–6 · [mac-dev-setup.md](docs/mac-dev-setup.md) (M14 doctor).
+
+### Ggml manifest `num_ctx` suggest + opt-in clamp (M12, Jun 2026)
+
+**Why:** High-VRAM tier sets server default `num_ctx=262144`; merged manifest defaults pre-allocate full KV at ggml load and can hang qwen35/recurrent models before the first token. Phase 13 runtime already exposes `suggested_max_num_ctx` + opt-in clamp — the Go ggml scheduler had docs only, so operators on the legacy/Metal path had no API signal when manifest defaults exceeded VRAM.
+
+**What shipped:**
+
+- **`server/ggml_num_ctx.go`** — binary-search `suggested_max_num_ctx` from `fs/ggml.GraphSize` + file size vs **free** VRAM (same overhead floor as `sched.go`); optional clamp in `scheduleRunner` before `GetRunner`.
+- **`GET /api/show`** — `ggml_num_ctx.suggested_max_num_ctx`; `merged_num_ctx` when the merged default exceeds the suggestion (separate fields so clients are not confused about clamped vs requested context).
+- **`/api/chat` / `/api/generate`** — `ggml_num_ctx` only when clamp applied (mirrors runtime `vram_num_ctx`; default off preserves operator trust).
 - **Env (default off):** `ZEROLLAMA_GGML_CLAMP_NUM_CTX`, `ZEROLLAMA_GGML_SUGGEST_CTX_MAX`, `ZEROLLAMA_GGML_VRAM_MARGIN`.
 
-Doc: [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#num_ctx-manifest-default-vs-request-options).
+**Audit fixes (same release):**
+
+- **No total-VRAM fallback** — early code used startup `totalVRAM` when free was unknown; that over-suggested context (total ≠ free). **Why:** fail-open suggest is safer than pretending all installed VRAM is available.
+- **Free-VRAM cache (~2s) for `/api/show`** — avoids live `GPUDevices` probe on every show (CLI startup calls show often). Load path refreshes via `LoadedRunnersForDiscovery()`.
+- **Removed silent `recover()` in suggest hi-bound** — `llm.LoadModel` always returns parsed GGUF; panics should not be swallowed.
+
+Doc: [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#ggml-vram-suggest-and-opt-in-clamp-m12-jun-2026).
 
 ### Go ollama-engine Metal stability — qwen35moe on Apple Silicon (Jun 2026)
 
@@ -67,9 +486,21 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
 - **`scripts/l2_fork_eval.sh`** — probe + profile argv smoke.
 - **GPU JSON** — `_eliza_fork_llama_server_flags` on 3090/4090/5080/5090/H200 profiles.
 - **`/health.llama_fork`** — observability for operators.
+- **`scripts/l2_metal_bench.sh`**, **`l2_runtime_compat_smoke.sh`**, **`l2_gate_report.sh`**, **`l2_full_gate.sh`** — Metal A/B + verdict orchestrator.
+- **`m3_metal_signoff.sh`** — `RUN_E2E_L2=1` runs full gate.
 - Doc: [gpu-profiles-l2.md](docs/gpu-profiles-l2.md).
 
 **Gate (open):** measured tok/s + VRAM win on 5080 + M-series before vendor merge.
+
+**Metal gate run (M4 Max 128 GiB, Jun 2026):**
+
+| Model | ctx | Stock | Fork |
+|-------|-----|-------|------|
+| eliza-1-2b | 8192 | 37.6 tok/s, q8_0 | 20.5 tok/s, tbq4_0/tbq3_0 |
+| eliza-1-27b | 26624 | 13.2 tok/s | 12.7 tok/s |
+| eliza-1-27b | 131072 | admission fail (est.) | 5.0 tok/s (fork-only leg) |
+
+**Runtime compat smoke:** PASS (`l2_runtime_compat_smoke.sh`). **Verdict:** stock wins decode on measured A/B legs; fork enables 131k ctx where stock path rejects. **Vendor merge blocked** pending CUDA 5080 bench + qwen35 ggml smoke. Scripts: `l2_full_gate.sh`, `l2_gate_report.sh`.
 
 ### L3 prompt cache key → llama-server slot bridge (Jun 2026)
 
@@ -84,10 +515,20 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
 - **Inprocess / wheel workers** — `cache_prompt` kwarg accepted and ignored on `LlamaInprocessWorker` and `llama-cpp-python` backend. **Why:** `engine.py` always passes the flag after L3 admit; Phase 14 Metal sign-off hit HTTP 500 without a matching worker signature.
 - **Disk cache** — `~/.cache/zerollama/llama-cache/<modelHash>/`; hash includes GGUF path, draft model, `--cache-type-k/v` so fork vs stock profiles do not collide. TTL via `ZEROLLAMA_LLAMA_CACHE_TTL_MS` (default 1h) for llama-server `slot_*.bin` names.
 - **`/health.llama_cache`** — enabled, root, `model_hash`, `slot_save_path`, file stats; `model_loaded` false when GGUF path configured but not on disk yet.
+- **Batch** — `generate_batch` + `completions_parallel` pass per-request `cache_prompt`; `options.prompt_cache_keys[]` for per-row keys.
+- **`scripts/l3_cache_smoke.sh`**, **`l3_gate_report.sh`** — two-turn cache latency gate; `RUN_E2E_L3=1` on `m3_metal_signoff.sh`.
+- **Fixes:** gpu profile emits `-fa on` (stock llama-server rejected bare `-fa`); `macos_runtime_serve_lib` preserves `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess` for L2/L3 smokes.
+
+**Audit fixes (Jun 2026, second pass):**
+
+- **Canonical GGUF path in `model_hash`** — `_canonical_model_path()` resolves symlinks before hashing. **Why:** same weights via LM Studio symlink vs absolute path must share one `--slot-save-path` directory; fragmented hashes miss disk-restored prefix KV on restart.
+- **Orphan model-hash dir sweep** — `evict_orphaned_cache_dirs()` on llama-server cold start. **Why:** L2 profile switches change cache-type fields in the hash; stale sibling dirs accumulate expired `slot_*.bin` files and waste disk without touching the active model hash.
+- **Batch `prompt_cache_keys` semantics** — when the list is present, out-of-range indices get no key (no flat-key fallback). **Why:** unrelated batch rows must not accidentally share one pinned slot when only some rows specify keys.
+- **`complete()` ordering** — document and enforce `unregister_request_bind` before `SlotAllocator.release`. **Why:** releasing first lets the next tick `try_acquire` the slot while native page bind is still being torn down — stale block ids on decode.
 
 **Operator env:** `ZEROLLAMA_LLAMA_CACHE=0` (disable), `ZEROLLAMA_LLAMA_CACHE_ROOT`, `ZEROLLAMA_LLAMA_CACHE_TTL_MS`. Requires `-np > 1` (L1 profile) for multi-session pinning; subprocess backend for full disk save. Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
 
-**Remaining:** measured prefill-skip benchmark on agent workloads; batch `/completions_parallel` per-request `cache_prompt`; in-process disk parity.
+**Remaining:** in-process disk parity; agent-scale bench on CUDA 5080.
 
 ### L1 GPU profiles — per-hardware llama-server autotune (Jun 2026)
 
@@ -167,6 +608,7 @@ Set `"truncate": false` on the request to get HTTP 400 instead of silent truncat
 
 - **`dev_bootstrap.sh`** — thin entry; sets `MAC_SETUP_SIGNOFF=0`, `MAC_SETUP_LLAMA_CLONE=1`. **Why:** one command name for “fresh clone, any checkout path.”
 - **`ensure_llama_cpp_sibling.sh`** — shallow-clone `LLAMA_CPP_VERSION` pin to `${REPO}/../llama.cpp`. **Why:** runtime inprocess and sign-off need `libllama.dylib`; failing late in `build_llama_server.sh` was opaque.
+- **`zerollama doctor --fix`** — runs `ensure_llama_cpp_sibling.sh` before Metal `build_llama_server.sh` (same order as `mac_setup`). **Why:** tier-0 bootstrap should not require knowing about sibling clone scripts — `doctor --fix` is the self-service path on fresh checkouts.
 - **`mac_setup.sh`** — sign-off **off** by default; `mac_setup_has_signoff_model()` skips sign-off with pull instructions when no GGUF; tier hints at end. **`MAC_SETUP_LLAMA_OPTIONAL=1`** for ggml-only dev without llama build.
 - **`build_llama_server.sh`** — default `LLAMA_CPP_ROOT=${REPO}/../llama.cpp` (was `${REPO}/../../llama.cpp`). **Why:** sibling path must not depend on repo nesting depth.
 - **`qwen35_mac_smoke.sh`** — documents `OLLAMA_HOST=:11434` override for daily serve.

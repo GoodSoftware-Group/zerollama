@@ -201,3 +201,33 @@ def kv_bind_physical_level(llama_backend: str, *, inprocess_weights_loaded: bool
     if llama_backend == "inprocess" and inprocess_weights_loaded:
         return "seq_position"
     return None
+
+
+def current_pos_for_seq(lib: Any, ctx: Any, seq_id: int) -> int:
+    """Next llama write position for ``seq_id`` (0 when seq empty or untracked)."""
+    from runtime.kv.decode_plan import next_pos_from_llama
+
+    usage = usage_from_libllama(lib, ctx, seq_id)
+    if usage is None:
+        return 0
+    return next_pos_from_llama(int(usage.pos_max))
+
+
+def current_pos_by_request_from_physical(
+    kv_physical: dict[str, Any] | None,
+) -> dict[str, int]:
+    """Map ``request_id`` → next llama write position from ``kv_physical.running``."""
+    from runtime.kv.decode_plan import next_pos_from_llama
+
+    if not kv_physical:
+        return {}
+    out: dict[str, int] = {}
+    for row in kv_physical.get("running") or []:
+        if not row.get("llama_tracked"):
+            continue
+        pos_max = row.get("llama_pos_max")
+        rid = row.get("request_id")
+        if pos_max is None or not rid:
+            continue
+        out[str(rid)] = next_pos_from_llama(int(pos_max))
+    return out

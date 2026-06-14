@@ -1284,6 +1284,22 @@ func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 	return snap
 }
 
+// LoadedRunnersForDiscovery returns loaded ggml runners for GPU free-memory refresh.
+// Why: GPUDevices(nil, nil) on every /api/show was slow; load-path suggest passes
+// these runners so discovery reuses in-process free bytes instead of bootstrap-only.
+func (s *Scheduler) LoadedRunnersForDiscovery() []ml.FilteredRunnerDiscovery {
+	if s == nil {
+		return nil
+	}
+	s.loadedMu.Lock()
+	defer s.loadedMu.Unlock()
+	out := make([]ml.FilteredRunnerDiscovery, 0, len(s.loaded))
+	for _, runner := range s.loaded {
+		out = append(out, runner)
+	}
+	return out
+}
+
 // InferenceBacklog returns pending requests, active refs, and loaded runner count.
 func (s *Scheduler) InferenceBacklog() (pending int, active int, loaded int) {
 	snap := s.InferenceFleetSnapshot()

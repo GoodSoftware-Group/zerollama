@@ -85,7 +85,7 @@ Slot id: `SHA256(key) mod parallel` (always `0` when `parallel == 1`).
 
 On `complete()` for a pinned request:
 
-1. **`SlotAllocator.release(slot)`** — frees scheduler tracking so another request can use the slot index while this one is not running.
+1. **`unregister_request_bind(slot)`** then **`SlotAllocator.release(slot)`** — see [Correctness invariants](#correctness-invariants-jun-2026-audit) for ordering.
 2. **`kv_slot` kept on the finished Request** — observability only; the live state is in llama-server.
 3. **Next turn** — `_admit_one()` re-derives the **same** slot from the cache key hash; llama-server still holds prefix KV in that slot.
 
@@ -106,6 +106,8 @@ $XDG_CACHE_HOME/zerollama/llama-cache/<modelHash>/
 
 `build_model_hash()` mixes target GGUF, draft model (MTP), and `--cache-type-k/v`. **Why:** L2 fork profiles use different KV layouts (tbq3_0 vs q8_0). Reusing the same directory would load incompatible slot blobs after a profile switch.
 
+Paths are **canonicalized** (`resolve()` for existing files) so symlinks and absolute vs relative paths share one hash.
+
 ### TTL eviction
 
 llama-server writes `slot_<id>_<seq>.bin` — **no TTL class in the filename**. Eviction uses mtime against **`ZEROLLAMA_LLAMA_CACHE_TTL_MS`** (default **1 hour**).
@@ -114,6 +116,43 @@ Optional eliza-style names (`*.short.bin`, `*.long.bin`) still honor class horiz
 
 Eviction runs synchronously on llama-server startup. **Why then:** small directory (≈ one file per slot); stale files from crashed processes should not fill disk; startup is already a cold path.
 
+On startup, sibling **orphan model-hash directories** under the cache root are TTL-swept and removed when empty (e.g. after switching fork/stock or cache types).
+
+---
+
+## Correctness invariants (Jun 2026 audit)
+
+These rules prevent subtle bugs when L3 shares Phase 15 slot indices with native page bind and batch admission.
+
+### Native bind before slot release (`SchedulerLoop.complete`)
+
+On `complete()`, the runtime must:
+
+1. **`unregister_request_bind(slot)`** — drop Phase 15 v8 native page-table entries for this slot.
+2. **`SlotAllocator.release(slot)`** — mark the slot index free for the next admit.
+
+**Why order matters:** if release runs first, another request can `try_acquire` the same slot in the next tick while unregister is still clearing block ids — the new request could decode against stale page mappings. This is a scheduling invariant, not an llama-server detail.
+
+Pinned L3 sessions still follow this order; llama-server keeps prefix KV in RAM/disk independently of Python’s allocator bit.
+
+### Batch keys: no silent flat-key fallback
+
+When `options.prompt_cache_keys` is a list, index `i` uses `keys[i]` only. Out-of-range or empty entries return **no** cache key — they do **not** fall back to `prompt_cache_key`.
+
+**Why:** a batch of three prompts with two explicit keys must not pin rows 2 and 3 to the same slot via a shared flat key. Omit `prompt_cache_keys` entirely to reuse one flat key for every row (single-session batch).
+
+### Canonical GGUF path in `model_hash`
+
+`build_model_hash()` resolves symlinks and existing files before hashing.
+
+**Why:** LM Studio import and operator symlinks often expose the same weights at different paths. Without canonicalization, disk cache fragments across duplicate directories and cold restarts miss saved slots.
+
+### Orphan model-hash directory sweep
+
+On llama-server start, `evict_orphaned_cache_dirs(keep_model_hash=…)` TTL-sweeps **sibling** directories under the cache root and deletes empty ones.
+
+**Why:** switching L2 fork vs stock changes `--cache-type-k/v`, which changes `model_hash`. Old directories linger with stale blobs; sweeping on cold boot reclaims disk without touching the active hash dir.
+
 ---
 
 ## Environment
@@ -121,6 +160,7 @@ Eviction runs synchronously on llama-server startup. **Why then:** small directo
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `ZEROLLAMA_LLAMA_CACHE` | `1` | `0` disables key resolution, slot pinning, and `--slot-save-path` |
+| `ZEROLLAMA_LLAMA_CACHE_DISK` | `1` | `0` disables in-process `llama_state_seq_*` disk save/load (RAM resume still works) |
 | `ZEROLLAMA_LLAMA_CACHE_ROOT` | (XDG / `~/.cache/...`) | Override slot save root |
 | `ZEROLLAMA_LLAMA_CACHE_TTL_MS` | `3600000` (1h) | Disk slot file TTL for llama-server `slot_*.bin` names |
 
@@ -131,6 +171,7 @@ Eviction runs synchronously on llama-server startup. **Why then:** small directo
 ```json
 "llama_cache": {
   "enabled": true,
+  "inprocess_disk_cache": true,
   "root": "/Users/you/.cache/zerollama/llama-cache",
   "default_ttl_ms": 3600000,
   "model_path": "/path/to/model.gguf",
@@ -190,10 +231,111 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 
 | Gap | Why deferred |
 |-----|----------------|
-| No prefill-skip benchmark gate yet | Need A/B on agent workloads with `-np > 1` |
-| Batch `/completions_parallel` | Per-request `cache_prompt` not wired |
-| In-process disk save | ctypes path lacks llama-server slot files |
 | Go-side explicit field docs | `options` already flow through runtime proxy |
+
+**Closed (Jun 2026):** batch `generate_batch` + `completions_parallel` per-request `cache_prompt`; `l3_cache_smoke.sh` gate script.
+
+**In-process disk parity (Jun 2026):** `llama_state_seq_save_file` / `load_file` on pinned slots under `~/.cache/zerollama/llama-cache/<modelHash>/slot_<id>_0.bin`. RAM resume remains Phase 15 v17 (`slot_resume_owner_key`). Disable disk only: `ZEROLLAMA_LLAMA_CACHE_DISK=0`. Smokes: `l3_inprocess_smoke.sh`, `l3_agent_bench.sh`. See [In-process disk cache](#in-process-disk-cache-inprocess-backend) below.
+
+---
+
+## Gate scripts
+
+| Script | Role |
+|--------|------|
+| `scripts/l3_cache_smoke.sh` | Two-turn same `prompt_cache_key`; subprocess path |
+| `scripts/l3_inprocess_smoke.sh` | Two-turn in-process + disk file check |
+| `scripts/l3_agent_bench.sh` | Multi-turn agent workload (cached vs cold) |
+| `scripts/l3_gate_report.sh` | PASS/FAIL verdict from smoke JSON |
+| `RUN_E2E_L3=1` in `m3_metal_signoff.sh` | Sign-off hook |
+
+Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `generate_batch` prompt order. When this list is present, out-of-range indices get **no** cache key (no flat-key fallback) so unrelated batch rows do not share a slot.
+
+---
+
+## In-process disk cache (inprocess backend)
+
+The subprocess backend uses `llama-server --slot-save-path` for disk persistence. The in-process backend (`llama_backend: inprocess`) cannot do that — it owns the `llama_context` directly and has no HTTP slot-save endpoint.
+
+Instead, the runtime calls `llama_state_seq_save_file` / `llama_state_seq_load_file` from `llama.cpp` directly via ctypes after every pinned decode.
+
+### How it works
+
+```text
+pinned complete() — non-stream path:
+  1. _decode_non_stream(...)               ← fills KV for seq_id
+  2. _save_slot_cache_disk(lib, ctx, seq_id, model_hash)
+        → sequence_kv_usage(lib, ctx, seq_id) → pos_max
+        → llama_state_seq_save_file(ctx, path, seq_id, buf, pos_max+1)
+        → writes slot_<id>_0.bin under ~/.cache/zerollama/llama-cache/<modelHash>/
+
+cold pinned slot on next turn (sidecar restarted):
+  1. is_resume = False, slot_pinned = True, model_hash set
+  2. _try_restore_slot_cache_disk(lib, ctx, seq_id, model_hash, n_ctx_cap)
+        → reads slot_<id>_0.bin if present
+        → llama_state_seq_load_file(ctx, path, dest_seq_id, tokens_out, cap, &n_out)
+        → returns restored token count
+  3. decode_pos = _resolve_decode_current_pos(ctx, seq_id, None)
+  4. is_resume = True → skip _clear_sequence → partial prefill from decode_pos
+```
+
+### Why `pos_max + 1`, not `prompt_tokens`
+
+The `tokens` argument to `llama_state_seq_save_file` is the **sequence's full token history** stored alongside the KV — not just the current request's input. After multi-turn exchanges the KV holds prompt + every generated token from every prior turn.
+
+Saving only the current input prompt's tokens would cause the blob's embedded token vector to under-report the prefix it actually covers. On restore, the `n_past` computed from that metadata would be wrong for turn 3+.
+
+The fix: call `sequence_kv_usage()` to read the live `pos_max` from the KV cache; `n_tokens = pos_max + 1`. This matches exactly what `llama-server` does on `SLOT_SAVE`: `slot->prompt.tokens.get_tokens()` — the accumulated sequence history.
+
+### Why disk restore attempts on any `not is_resume`, not only `decode_pos == 0`
+
+The original guard was:
+```python
+if not is_resume and decode_pos == 0 and slot_pinned and model_hash:
+```
+
+`decode_pos == 0` is true for a cold-started sidecar (the normal restart case). But a still-running sidecar where `_seq_last_owner` was reset (e.g. `is_resume = False` due to mismatched owner, but `decode_pos > 0` from a previous different session) would skip disk restore silently — leaving stale KV in the slot and ignoring the valid on-disk blob.
+
+The fix: remove the `decode_pos == 0` sub-check. When `not is_resume` and the slot is pinned, always attempt disk restore. The C load will overwrite any stale KV regardless of `decode_pos`.
+
+### Why eviction runs once per session, not per save
+
+`prepare_slot_cache_dir` previously called `evict_expired(save_dir)` unconditionally — on every pinned decode, for every agent turn. This scans the cache directory (stat every file) on the hot inference path.
+
+The fix: `prepare_slot_cache_dir(model_hash, evict=False)` by default. Pass `evict=True` only at `LlamaInprocessWorker.start()` — once per sidecar lifetime, on the cold path. Agent turns pay zero eviction cost.
+
+### File layout
+
+```text
+~/.cache/zerollama/llama-cache/<modelHash>/
+  slot_0_0.bin    ← seq_id=0 save (llama_state_seq_save_file format)
+  slot_1_0.bin    ← seq_id=1 save
+  ...
+```
+
+`modelHash` is `build_model_hash(target_model_path, cache_type_k, cache_type_v)`. Including cache types is **critical**: L2 fork profiles use different KV tensor layouts (`qjl1_256` vs `q8_0`). Loading a blob saved with one layout under a different layout causes silent corruption or a crash.
+
+### Environment
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `ZEROLLAMA_LLAMA_CACHE_DISK` | `1` | `0` disables in-process disk save/load; RAM resume still works |
+| `ZEROLLAMA_LLAMA_CACHE` | `1` | `0` disables both RAM resume and disk cache |
+
+### Observability
+
+`infer_trace` events (set `ZEROLLAMA_INFER_TRACE=1`):
+
+| Event | When |
+|-------|------|
+| `complete.disk_save` | After successful `llama_state_seq_save_file`; includes `nbytes` |
+| `complete.disk_restore` | After successful `llama_state_seq_load_file`; includes `restored_tokens`, `decode_pos` |
+| `complete.clear` | Slot cleared (not resumed, disk restore also failed or disabled) |
+
+`/health`:
+```json
+"llama_cache": { "inprocess_disk_cache": true, ... }
+```
 
 ---
 
@@ -206,8 +348,10 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 | `runtime/runtime/scheduler/loop.py` | `try_acquire` pinned slots | Serializes concurrent same-slot access |
 | `runtime/runtime/kv/slots.py` | `SlotAllocator.try_acquire` | Phase 15 v1 dynamic slots extended for L3 |
 | `runtime/runtime/worker/llama_server.py` | `cache_prompt` payload | Subprocess HTTP boundary |
+| `runtime/runtime/worker/libllama_ctypes.py` | `_save_slot_cache_disk`, `_try_restore_slot_cache_disk`, ctypes bindings for `llama_state_seq_{save,load}_file` | In-process disk parity; same save dir as subprocess path |
+| `runtime/runtime/worker/llama_inprocess.py` | `slot_cache_model_hash`, `prepare_slot_cache_dir(evict=True)` at start | Derives hash from L1 argv cache types; owns session lifecycle |
 
-Tests: `runtime/tests/test_cache_bridge.py`.
+Tests: `runtime/tests/test_cache_bridge.py`, `runtime/tests/test_l3_inprocess_disk.py`.
 
 ---
 

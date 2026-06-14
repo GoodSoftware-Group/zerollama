@@ -5,8 +5,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT}/runtime"
 
+echo "== Phase 15: llama-kv-ext pin check =="
+"${ROOT}/scripts/phase15_llama_kv_ext_pin_check.sh"
+
 echo "== Phase 15: build native extension (in-tree) =="
-python3 setup.py build_ext --inplace >/dev/null
+# WHY ZEROLLAMA_KV_DECODE_LOOP=0 on CI default: GitHub runners have no libllama;
+# auto-link (v25) is skipped. GPU sign-off scripts build with libllama present.
+ZEROLLAMA_KV_DECODE_LOOP="${ZEROLLAMA_KV_DECODE_LOOP:-0}" python3 setup.py build_ext --inplace >/dev/null
 
 echo "== Phase 15: KV pytest (native + bind + physical + tick) =="
 PYTHONPATH=. python3 -m pytest \
@@ -18,8 +23,17 @@ PYTHONPATH=. python3 -m pytest \
   tests/test_kv_native_tick.py \
   tests/test_kv_native_decode.py \
   tests/test_kv_forward_plan.py \
+  tests/test_kv_decode_plan.py \
+  tests/test_kv_decode_work_plan.py \
   tests/test_kv_native_stats.py \
   tests/test_kv_page_bind.py \
+  tests/test_kv_tensor_probe.py \
+  tests/test_kv_decode_engine_resume.py \
+  tests/test_kv_native_decode_batch.py \
+  tests/test_kv_decode_long_ctx.py \
+  tests/test_kv_native_build.py \
+  tests/test_kv_decode_batch_loop.py \
+  tests/test_kv_decode_engine_batch.py \
   tests/test_kv_live_physical.py \
   tests/test_internal_kv_snapshot.py \
   tests/test_resolve_parallel_slots.py \

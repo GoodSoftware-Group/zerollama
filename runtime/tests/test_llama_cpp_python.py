@@ -57,6 +57,7 @@ def test_llama_cpp_python_backend_parse(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_llama_cpp_python_import():
+    pytest.importorskip("llama_cpp", reason="llama_cpp not installed")
     from runtime.worker.llama_cpp_python import _import_llama
 
     Llama = _import_llama()

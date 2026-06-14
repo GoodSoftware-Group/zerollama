@@ -793,6 +793,7 @@ type ShowResponse struct {
 	Capabilities  []model.Capability `json:"capabilities,omitempty"`
 	ModifiedAt    time.Time          `json:"modified_at,omitempty"`
 	Requires      string             `json:"requires,omitempty"`
+	// GgmlNumCtx is VRAM suggest for ggml models (M12); see scheduling-vram-policy.md.
 	GgmlNumCtx    *GgmlNumCtx        `json:"ggml_num_ctx,omitempty"`
 }
 
@@ -985,12 +986,18 @@ type GenerateResponse struct {
 	Total int64 `json:"total,omitempty"`
 }
 
-// GgmlNumCtx surfaces VRAM-aware num_ctx suggest/clamp on the ggml scheduler path.
+// GgmlNumCtx surfaces VRAM-aware num_ctx suggest/clamp on the ggml scheduler path (M12).
+// Field semantics differ by endpoint — see docs/scheduling-vram-policy.md.
 type GgmlNumCtx struct {
-	SuggestedMaxNumCtx int  `json:"suggested_max_num_ctx,omitempty"`
-	NumCtxClamped      bool `json:"num_ctx_clamped,omitempty"`
-	NumCtxClampedFrom  int  `json:"num_ctx_clamped_from,omitempty"`
-	NumCtx             int  `json:"num_ctx,omitempty"`
+	// SuggestedMaxNumCtx is the largest num_ctx estimate that fits free VRAM (show + load).
+	SuggestedMaxNumCtx int `json:"suggested_max_num_ctx,omitempty"`
+	// MergedNumCtx is the merged server/manifest default when it exceeds SuggestedMaxNumCtx (show only).
+	// Why separate from NumCtx: NumCtx on load means effective after clamp, not "requested default".
+	MergedNumCtx int `json:"merged_num_ctx,omitempty"`
+	NumCtxClamped     bool `json:"num_ctx_clamped,omitempty"`
+	NumCtxClampedFrom int  `json:"num_ctx_clamped_from,omitempty"`
+	// NumCtx is effective context after opt-in clamp (chat/generate when clamped).
+	NumCtx int `json:"num_ctx,omitempty"`
 }
 
 // ModelDetails provides details about a model.

@@ -43,7 +43,10 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `gpu_5080_session.sh` | `RUN_E2E_PREFLIGHT=1` + `gpu_smoke_all` + Phase 13 snapshot + recommendations; optional `RUN_E2E_PHASE14=1` (serve must match backend), `RUN_E2E_PHASE14_SIGNOFF=1` (full gate via `phase14_5080_signoff.sh`), or `RUN_E2E_PHASE15=1` (`phase15_inprocess_signoff`; needs `LLAMA_CPP_LIB`) — **official 16GB gate** — see [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
 | `macos_metal_smoke.sh` | Darwin: Phase 12 go golden + metal probe pytest + coordination + `/health` autoconfig/probe — see [apple-silicon-metal.md](./apple-silicon-metal.md) |
 | `gpu_metal_session.sh` | Darwin one-shot: `macos_metal_smoke` + Phase 13 snapshot + optional Phase 14 inprocess — Mac counterpart to `gpu_5080_session.sh` |
-| `m3_metal_signoff.sh` / `metal_signoff.sh` | Full Mac Metal gate (Phase 13–15). **`RUN_E2E_QWEN35=1`** adds qwen35 **before Phase 15** — **why:** Phase 15 stops the sidecar; qwen35 needs runtime handoff/resume. M4 Max PASS Jun 2026. |
+| `m3_metal_signoff.sh` / `metal_signoff.sh` | Full Mac Metal gate (Phase 13–15). **`RUN_E2E_QWEN35=1`** adds qwen35 **before Phase 15** — **why:** Phase 15 stops the sidecar; qwen35 needs runtime handoff/resume. **`RUN_E2E_L3=1`** runs prefix-cache smoke — **why:** verify stable `prompt_cache_key` wiring + `/health.llama_cache` (latency win optional on tiny models). M4 Max PASS Jun 2026. |
+| `l3_cache_smoke.sh` | Two-turn same cache key; JSON timing report — **why:** L3 is prefill-bound; gate checks bridge wiring before agent-scale bench. Needs subprocess backend + L1 `-np > 1`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
+| `l3_gate_report.sh` | PASS/FAIL from `l3_cache_smoke.sh` JSON (strict latency or soft wiring pass) |
+| `l2_full_gate.sh` / `l2_gate_report.sh` | Fork vs stock A/B + runtime compat — **why:** vendor merge blocked until measured wins; see [gpu-profiles-l2.md](./gpu-profiles-l2.md) |
 | `qwen35_mac_smoke.sh` | Opt-in qwen35/qwen3.6 generate on darwin via Go ollama-engine; handoffs runtime Metal first; accepts `thinking` or `response` — see [qwen35-apple-silicon.md](./qwen35-apple-silicon.md) |
 | `e2e_training_ops_smoke.sh` | `GET /api/train/status` + jobs; optional TCP ping (no train job submit) |
 | `repro_shared_interpreter_health_hang.sh` | Training + embedded runtime on `19180`/`19181`; 5× `/health` must not hang |
@@ -59,10 +62,13 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `phase14_yaml_config_full_smoke.sh` | Temp YAML with `llama_backend: inprocess`; asserts `llama_backend_source=config` without editing repo YAML |
 | `phase14_serve_env.sh` | Source before `zerollama serve` — **why:** unset `ZEROLLAMA_RUNTIME_URL` so Go embeds `:8081` (exporting URL forces external sidecar mode) |
 | `phase15_kv_native_ci.sh` | Build C `BlockPool` + KV pytest bundle + `phase15_health_smoke.sh` (no GPU); [phase15-native-kv.md](./phase15-native-kv.md) |
-| `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_page_bind`, `kv_live_physical`, …) via `InferenceEngine` only |
+| `phase15_health_smoke.sh` | Assert `/health` KV keys (`kv_forward_plans`, `kv_page_bind`, `kv_live_physical`, …) via `InferenceEngine` only; `kv_page_bind.status=partial` when native ext built |
 | `phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq (self-contained restarts). |
 | `phase15_inprocess_kv_smoke.sh` | Self-contained: starts inprocess serve, asserts `kv_decode_steps` on generate and post-generate `/health` (GPU host) |
-| `phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2` + inprocess; asserts `kv_inprocess_n_seq_max` and generate |
+| `phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2` + inprocess; asserts `kv_inprocess_n_seq_max` and generate; ends with `phase15_batch_decode_smoke.sh` when linked ext available |
+| `phase15_batch_decode_smoke.sh` | GPU: continuous batch decode via `POST /internal/generate-batch` (non-stream + stream); needs multiseq sidecar (`kv_inprocess_n_seq_max≥2`, `batch_decode_in_c`); [phase15-native-kv.md](./phase15-native-kv.md#continuous-batch-decode-v26v30) |
+| `phase15_metal_signoff.sh` | Mac Metal Phase 15 gate (5 steps): KV hook → multiseq → **batch decode** → L3 two-turn → tensor bind; sources `phase15_runtime_kv_env.sh` |
+| `phase15_runtime_kv_env.sh` | Shared env for Phase 15 GPU smokes — **why:** one place to enable C pool + native decode + build linked ext against sibling `../llama.cpp` (avoids vendor stub / wrong Python arch overwrite) |
 | `gpu_harmony_capture.sh` | Optional real-weight harmony capture — **needs ~40+ GiB host RAM** for `gpt-oss:20b` MXFP4 on runtime path; **not** required on 5080 (~19 GiB); CI uses Go golden |
 
 CI (`.github/workflows/zerollama-regression.yaml`): Phase 12 is covered by `go test ./server/...` (Golden tests) and runtime pytest (`test_go_render_chat.py`), plus `check_gpu_scripts.sh`. Optional self-hosted: `.github/workflows/zerollama-gpu-smoke.yaml` (`workflow_dispatch`; repo vars `GPU_SMOKE_*`, serve must be up).

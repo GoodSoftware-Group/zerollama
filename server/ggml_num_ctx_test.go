@@ -67,3 +67,18 @@ func TestApplyGgmlNumCtxResponseOnlyWhenClamped(t *testing.T) {
 		t.Fatal("expected clamped info on response")
 	}
 }
+
+func TestEnrichShowGgmlNumCtxInfo(t *testing.T) {
+	info := &api.GgmlNumCtx{SuggestedMaxNumCtx: 8192}
+	got := enrichShowGgmlNumCtxInfo(4096, info)
+	if got.MergedNumCtx != 0 {
+		t.Fatalf("merged = %d, want 0", got.MergedNumCtx)
+	}
+	got = enrichShowGgmlNumCtxInfo(262144, info)
+	if got.MergedNumCtx != 262144 {
+		t.Fatalf("merged = %d, want 262144", got.MergedNumCtx)
+	}
+	if got.NumCtx != 0 {
+		t.Fatalf("num_ctx should stay unset on show, got %d", got.NumCtx)
+	}
+}

@@ -136,8 +136,9 @@ class LlamaServerProcess:
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
+        current_pos: int | None = None,
     ) -> dict[str, Any]:
-        del kv_token_budget, kv_bind_req, kv_block_size
+        del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
             raise LlamaServerError("llama-server is not running")
         payload: dict[str, Any] = {
@@ -190,8 +191,9 @@ class LlamaServerProcess:
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
+        current_pos: int | None = None,
     ) -> Iterator[dict[str, Any]]:
-        del kv_token_budget, kv_bind_req, kv_block_size
+        del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
             raise LlamaServerError("llama-server is not running")
         payload: dict[str, Any] = {
@@ -229,9 +231,11 @@ class LlamaServerProcess:
         kv_bind_reqs: list[Any] | None = None,
         kv_block_size: int = 16,
         sampler: SamplerOptions | None = None,
+        cache_prompts: list[bool] | None = None,
+        current_positions: list[int | None] | None = None,
     ) -> list[dict[str, Any]]:
         """Run completions on distinct llama-server slots in parallel."""
-        del kv_token_budgets, kv_bind_reqs, kv_block_size
+        del kv_token_budgets, kv_bind_reqs, kv_block_size, current_positions
         if not prompts:
             return []
         slots = id_slots if id_slots is not None else list(range(len(prompts)))
@@ -241,6 +245,11 @@ class LlamaServerProcess:
                 return slots[idx]
             return idx
 
+        def _cache_prompt(idx: int) -> bool | None:
+            if cache_prompts is None or idx >= len(cache_prompts):
+                return None
+            return cache_prompts[idx]
+
         if len(prompts) == 1:
             return [
                 self.completion(
@@ -248,6 +257,7 @@ class LlamaServerProcess:
                     n_predict=n_predict,
                     id_slot=_slot(0),
                     sampler=sampler,
+                    cache_prompt=_cache_prompt(0),
                 )
             ]
 
@@ -259,6 +269,7 @@ class LlamaServerProcess:
                 n_predict=n_predict,
                 id_slot=_slot(idx),
                 sampler=sampler,
+                cache_prompt=_cache_prompt(idx),
             )
 
         workers = min(len(prompts), 8)
@@ -268,3 +279,48 @@ class LlamaServerProcess:
                 idx, data = fut.result()
                 results[idx] = data
         return [r if r is not None else {} for r in results]
+
+    def completions_parallel_stream(
+        self,
+        prompts: list[str],
+        n_predict: int | None = None,
+        *,
+        id_slots: list[int] | None = None,
+        kv_token_budgets: list[int] | None = None,
+        kv_bind_reqs: list[Any] | None = None,
+        kv_block_size: int = 16,
+        sampler: SamplerOptions | None = None,
+        cache_prompts: list[bool] | None = None,
+        current_positions: list[int | None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream completions on distinct llama-server slots (sequential fallback)."""
+        del kv_token_budgets, kv_bind_reqs, kv_block_size, current_positions
+        if not prompts:
+            return iter(())
+        slots = id_slots if id_slots is not None else list(range(len(prompts)))
+
+        def _slot(idx: int) -> int:
+            if idx < len(slots):
+                return slots[idx]
+            return idx
+
+        def _cache_prompt(idx: int) -> bool | None:
+            if cache_prompts is None or idx >= len(cache_prompts):
+                return None
+            return cache_prompts[idx]
+
+        def _sequential() -> Iterator[dict[str, Any]]:
+            for idx, prompt in enumerate(prompts):
+                for chunk in self.completion_stream(
+                    prompt,
+                    n_predict=n_predict,
+                    id_slot=_slot(idx),
+                    sampler=sampler,
+                    cache_prompt=_cache_prompt(idx),
+                ):
+                    out = dict(chunk)
+                    out.setdefault("seq_idx", idx)
+                    out.setdefault("seq_id", _slot(idx))
+                    yield out
+
+        return _sequential()

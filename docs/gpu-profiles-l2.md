@@ -60,14 +60,16 @@ Stored in `runtime/configs/gpu/*.json` under `_eliza_fork_llama_server_flags` (a
 
 ## Build & run (runtime path)
 
+### macOS / Metal
+
 ```bash
-# 1. Build fork sibling (Metal on Mac, CUDA on Linux)
+# 1. Build fork sibling (Metal)
 ./scripts/build_eliza_llama_server.sh
 
 # 2. Point runtime at fork binary + enable fork profile merge
 export LLAMA_CPP_ROOT=$PWD/../eliza-llama.cpp
 export LLAMA_SERVER_BIN=$LLAMA_CPP_ROOT/build/bin/llama-server
-export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.dylib   # .so on Linux
+export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.dylib
 export ZEROLLAMA_LLAMA_FORK=1   # or omit: auto-probes --help when binary set
 
 # 3. Smoke probe + profile argv
@@ -77,9 +79,45 @@ export ZEROLLAMA_LLAMA_FORK=1   # or omit: auto-probes --help when binary set
 M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_metal_bench.sh
 # Output: L2_METAL_BENCH_OUT=/tmp/l2-metal-bench.json (default)
 
-# 5. Serve / sign-off (compare tok/s vs stock binary)
-./scripts/m3_metal_signoff.sh          # Mac
-# ./scripts/gpu_5080_session.sh        # CUDA
+# 5. Runtime subprocess compat (load + generate both binaries)
+./scripts/l2_runtime_compat_smoke.sh
+
+# 6. Full gate (eval + compat + bench + verdict)
+L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh
+# 131k leg: fork-only, L2_HIGH_CTX_WARMUPS=2 decode warmups before timed runs
+
+# 7. Serve / sign-off
+./scripts/m3_metal_signoff.sh
+```
+
+### Linux / CUDA (RTX 5080-class)
+
+```bash
+# 1. Build fork sibling (CUDA)
+./scripts/build_eliza_llama_server.sh
+
+# 2. Point runtime at fork binary
+export LLAMA_CPP_ROOT=$PWD/../eliza-llama.cpp
+export LLAMA_SERVER_BIN=$LLAMA_CPP_ROOT/build/bin/llama-server
+export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.so    # .so on Linux
+export ZEROLLAMA_LLAMA_FORK=1
+
+# 3. Smoke probe + profile argv
+./scripts/l2_fork_eval.sh
+
+# 4. CUDA A/B benchmark (stock vs fork decode tok/s + VRAM)
+CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_bench.sh
+# Output: L2_CUDA_BENCH_OUT=/tmp/l2-cuda-bench.json (default)
+
+# 5. Runtime compat smoke (Linux variant — uses linux_runtime_serve_lib + .so)
+CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_runtime_compat_smoke.sh
+
+# 6. Full CUDA gate (eval + compat + bench legs + verdict)
+L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
+# 131k leg: fork-only, L2_HIGH_CTX_WARMUPS=2 decode warmups before timed runs
+
+# 7. Serve / sign-off
+./scripts/gpu_5080_session.sh
 ```
 
 **Env:**
@@ -103,8 +141,29 @@ M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_metal_bench.sh
 | `scripts/build_eliza_llama_server.sh` | Isolated fork build |
 | `scripts/l2_fork_eval.sh` | Probe + pytest smoke |
 | `scripts/l2_metal_bench.sh` | Darwin A/B: stock vs fork decode tok/s + VRAM JSON |
+| `scripts/l2_cuda_bench.sh` | Linux/CUDA A/B: stock vs fork decode tok/s + VRAM JSON |
+| `scripts/l2_runtime_compat_smoke.sh` | Darwin subprocess compat: load+generate on stock vs fork |
+| `scripts/l2_cuda_runtime_compat_smoke.sh` | Linux subprocess compat: mirrors compat smoke with `.so` + `linux_runtime_serve_lib` |
+| `scripts/l2_gate_report.sh` | Verdict from one or more bench JSON files |
+| `scripts/l2_full_gate.sh` | Darwin gate orchestrator: eval + compat + bench legs + report |
+| `scripts/l2_cuda_full_gate.sh` | CUDA gate orchestrator: same structure as Metal gate |
+| `scripts/linux_runtime_serve_lib.sh` | Shared sidecar start/stop helpers for Linux (mirrors `macos_runtime_serve_lib.sh`) |
 
 **WHY sibling tree first:** `vendor/llama-cpp-b9611/` + `llama/patches/` stay on b9611 until the gate passes.
+
+---
+
+## M-series sign-off (Jun 2026, M4 Max 128 GiB)
+
+| Model | ctx | Stock | Fork | Notes |
+|-------|-----|-------|------|-------|
+| eliza-1-2b | 8192 | **37.6 tok/s**, q8_0 | 20.5 tok/s, tbq4_0/tbq3_0 | Stock wins decode + VRAM est |
+| eliza-1-27b | 26624 | 13.2 tok/s, q8_0 | 12.7 tok/s, tbq | Stock wins decode (~4%); VRAM est heuristic favors stock (TBQ not modeled) |
+| eliza-1-27b | 131072 | Rejected (KV est) | **5.0 tok/s** | Fork-only; `ZEROLLAMA_GPU_PROFILE_CTX=0` + `runtime_kv` 8192 blocks |
+
+JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PASS (stock + fork subprocess generate).
+
+**Gate status (Metal):** **FAIL merge** at small ctx (stock faster). Fork may still win **max ctx + VRAM** at 27k+ — run `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh`. **Gate status (CUDA 5080):** **Not run** — scripts ready (`l2_cuda_bench.sh`, `l2_cuda_full_gate.sh`); run `CUDA_LLAMA_MODEL=/path/to/model.gguf L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh`. **Vendor merge:** blocked until fork wins ≥2/3 on both platforms + qwen35 ggml smoke unchanged.
 
 ---
 

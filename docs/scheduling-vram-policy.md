@@ -98,7 +98,50 @@ Code: `server/sched.go` (`expireRunner`, `findLoadedRunner`, `processExpiredRunn
 
 **Guidance:** keep manifest defaults modest (4096–8192 on Mac ggml); pass large context via **`options.num_ctx`** when needed. Python runtime path uses `resolve_num_ctx_for_request` — see [phase13-runtime-vram.md](./phase13-runtime-vram.md).
 
-**Ggml VRAM suggest + opt-in clamp (Jun 2026, M12):** before `GetRunner`, `scheduleRunner` binary-searches `suggested_max_num_ctx` from `fs/ggml.GraphSize` + file size vs discovered free VRAM. **`GET /api/show`** includes `ggml_num_ctx.suggested_max_num_ctx` when computable. **`ZEROLLAMA_GGML_CLAMP_NUM_CTX=1`** lowers merged `num_ctx` to that suggestion before load; final `/api/chat` and `/api/generate` include `ggml_num_ctx` when clamped (default **off** — parity with Phase 13 `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX`). Env: `ZEROLLAMA_GGML_SUGGEST_CTX_MAX` (default 131072), `ZEROLLAMA_GGML_VRAM_MARGIN` (default 1.05). Code: `server/ggml_num_ctx.go`.
+### Ggml VRAM suggest and opt-in clamp (M12, Jun 2026)
+
+**Why:** Phase 13 runtime answers “what is the largest `num_ctx` that fits?” before enqueue. The Go ggml scheduler merges manifest defaults at load time with no equivalent signal — operators on Metal/legacy saw hangs with `num_ctx: 262144` (high-VRAM tier default + manifest) and no API hint. Clamp defaults **off** on both paths so context is never reduced silently unless opted in.
+
+**When it runs:** `scheduleRunner` → `applyGgmlNumCtxClamp` after `modelOptions`, before `GetRunner`. `/api/show` calls suggest only (no clamp).
+
+**Estimate path:** `llm.LoadModel` → `fs/ggml.GraphSize` (KV + graph scratch) + on-disk file size (weights proxy) × `ZEROLLAMA_GGML_VRAM_MARGIN` (default 1.05) vs **free** VRAM after `GpuOverhead()` + `MinimumMemory()` per device — same floor as load logging in `sched.go`. Binary search 512 … `min(train_ctx, ZEROLLAMA_GGML_SUGGEST_CTX_MAX)`.
+
+**Free VRAM discovery:**
+
+| Path | Behavior | Why |
+|------|----------|-----|
+| Load (chat/generate) | `GPUDevices(ctx, LoadedRunnersForDiscovery())` — refresh | Layer fit must see current headroom; loaded runners report accurate free bytes |
+| `/api/show` | 2s TTL cache on server | CLI and UIs call show often; full probe per request was too slow |
+| Free unknown | Suggest omitted (no fields) | **Why:** total installed VRAM ≠ free; an early fallback to startup total over-suggested context and could still OOM |
+
+**API (`ggml_num_ctx` object):**
+
+| Field | When set | Meaning |
+|-------|----------|---------|
+| `suggested_max_num_ctx` | Show + load (when computable) | Largest ctx estimate that fits free VRAM |
+| `merged_num_ctx` | Show only, when merged default > suggestion | Merged server/manifest default that exceeds VRAM — **not** clamped |
+| `num_ctx_clamped` | Load response when clamp env on | True when context was lowered before load |
+| `num_ctx_clamped_from` | With clamp | Original merged/request ctx |
+| `num_ctx` | With clamp | Effective ctx after clamp (load responses only) |
+
+Example show when manifest tier default is too high:
+
+```json
+"ggml_num_ctx": {
+  "suggested_max_num_ctx": 8192,
+  "merged_num_ctx": 262144
+}
+```
+
+**Env (default off — parity with Phase 13):**
+
+| Variable | Default | Why |
+|----------|---------|-----|
+| `ZEROLLAMA_GGML_CLAMP_NUM_CTX` | `0` | Lower merged `num_ctx` to suggestion before load; operators expect requested context unless opted in |
+| `ZEROLLAMA_GGML_SUGGEST_CTX_MAX` | `131072` | Upper bound for binary search (matches runtime `VRAM_SUGGEST_CTX_MAX`) |
+| `ZEROLLAMA_GGML_VRAM_MARGIN` | `1.05` | Conservative multiplier on estimate vs free bytes |
+
+Code: `server/ggml_num_ctx.go`, `envconfig/ggml_num_ctx.go`, `server/sched.go` (`LoadedRunnersForDiscovery`).
 
 ### Prompt truncation in responses (Jun 2026)
 

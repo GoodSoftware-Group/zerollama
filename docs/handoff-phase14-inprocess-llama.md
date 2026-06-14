@@ -9,7 +9,7 @@
 | Item | State | Evidence |
 |------|--------|----------|
 | **ROADMAP Phase 14** | **Done** | ctypes GPU + wheel CPU smokes; `phase14_5080_signoff.sh` |
-| **ROADMAP Phase 15** | **Partial (v0–v8 ops)** | Native KV pool, bind, forward plans — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
+| **ROADMAP Phase 15** | **Partial (v0–v9 ops)** | Native KV pool, bind, forward plans, decode prefill export — [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
 | **ctypes `inprocess` (GPU)** | **Shipped** | `phase14_inprocess_smoke.sh` PASS on 5080-class host |
 | **`llama-cpp-python` (CPU default)** | **Shipped** | `phase14_both_backends.sh` PASS (~10 min); GPU opt-in via env (**wheel GPU aborts on 5080**) |
 | **Render `truncate_mode=tokenize`** | **Shipped** | Go `/internal/render-chat` + Python `/internal/tokenize` |

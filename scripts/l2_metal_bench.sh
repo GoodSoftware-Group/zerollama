@@ -71,6 +71,8 @@ export ZEROLLAMA_GPU_PROFILE=1
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess
 unset ZEROLLAMA_RUNTIME_CONFIG
 export ZEROLLAMA_AUTO_CONFIG=1
+# Large GGUF + profile -c can exceed default 30s sidecar boot wait.
+export MACOS_RT_HEALTH_MAX="${MACOS_RT_HEALTH_MAX:-120}"
 
 macos_runtime_urls
 trap macos_runtime_sidecar_cleanup EXIT
@@ -177,15 +179,28 @@ estimate = http_json(
     {"gguf": gguf, "num_ctx": num_ctx},
 )
 
-# Profile argv from loaded config (same tree as sidecar env).
-from runtime.config import RuntimeConfig
-
-cfg_path = Path("configs/apple_silicon.yaml")
-cfg = RuntimeConfig.from_file(cfg_path)
-llama_args = cfg.llama_server_args()
+# Profile argv: prefer live gpu_profile.llama_server_args from /health when present;
+# otherwise read apple_silicon.yaml.  WHY fallback: this is metadata for the report only.
+gp_live = health.get("gpu_profile") or {}
+llama_args = gp_live.get("llama_server_args") or []
+if not llama_args:
+    from runtime.config import RuntimeConfig
+    cfg_path = Path("configs/apple_silicon.yaml")
+    cfg = RuntimeConfig.from_file(cfg_path) if cfg_path.exists() else None
+    llama_args = cfg.llama_server_args() if cfg else []
+else:
+    cfg = None
 
 # Warmup load + short decode.
 _, warmup_s = generate(decode_prompt, n_predict=min(16, num_predict))
+
+# High-ctx legs: extra warmup decodes so timed runs measure steady-state tok/s,
+# not first-touch KV allocation at full num_ctx.
+high_ctx_warmups = 0
+if num_ctx >= 65536:
+    high_ctx_warmups = max(1, int(os.environ.get("L2_HIGH_CTX_WARMUPS", "2")))
+    for _ in range(high_ctx_warmups):
+        generate(decode_prompt, n_predict=min(8, num_predict))
 
 decode_times: list[float] = []
 for _ in range(bench_runs):
@@ -214,7 +229,7 @@ vb = (estimate.get("vram_budget") or {}) if estimate else {}
 leg = {
     "label": os.environ["L2_LEG_LABEL"],
     "llama_cpp_root": os.environ["L2_LEG_CPP_ROOT"],
-    "llama_server_bin": str(cfg.llama_server_bin) if cfg.llama_server_bin else None,
+    "llama_server_bin": str(cfg.llama_server_bin) if (cfg and cfg.llama_server_bin) else os.environ.get("LLAMA_SERVER_BIN"),
     "fork_mode": os.environ["L2_LEG_FORK_MODE"],
     "llama_fork": lf,
     "gpu_profile": gp,
@@ -232,6 +247,7 @@ leg = {
         "num_ctx": num_ctx,
         "num_predict": num_predict,
         "warmup_wall_s": round(warmup_s, 3),
+        "high_ctx_warmup_decodes": high_ctx_warmups,
         "decode_wall_s_mean": round(decode_mean, 3),
         "decode_wall_s_runs": [round(x, 3) for x in decode_times],
         "decode_tok_per_s": round(decode_tps, 2),

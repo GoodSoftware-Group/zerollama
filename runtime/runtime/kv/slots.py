@@ -28,7 +28,11 @@ class SlotAllocator:
         return None
 
     def try_acquire(self, slot: int) -> bool:
-        """Reserve a specific slot (L3 pinned sessions). False if busy or out of range."""
+        """Reserve a specific slot (L3 pinned sessions). False if busy or out of range.
+
+        WHY not hold pinned slots between turns: llama-server owns idle prefix KV;
+        Python only blocks concurrent use of the same slot index while a request runs.
+        """
         if slot < 0 or slot >= self.num_slots:
             return False
         if slot in self._in_use:

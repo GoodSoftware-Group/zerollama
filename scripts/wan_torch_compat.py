@@ -37,7 +37,7 @@ def _path_may_shadow_cudnn(entry: str) -> bool:
         return False
     if "hostlibs" in p:
         return True
-    if "cudnn" in Path(p).name.lower():
+    if any("cudnn" in part.lower() for part in Path(p).parts):
         return True
     try:
         d = Path(p)

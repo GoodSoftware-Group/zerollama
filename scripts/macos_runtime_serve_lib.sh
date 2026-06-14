@@ -97,7 +97,10 @@ macos_runtime_start_sidecar() {
     unset ZEROLLAMA_RUNTIME_CONFIG
     export ZEROLLAMA_AUTO_CONFIG="${ZEROLLAMA_AUTO_CONFIG:-1}"
   fi
-  unset ZEROLLAMA_RUNTIME_LLAMA_BACKEND
+  # Preserve explicit backend override (L2/L3 smokes force subprocess for llama-server slots).
+  if [[ -z "${ZEROLLAMA_RUNTIME_LLAMA_BACKEND:-}" ]]; then
+    unset ZEROLLAMA_RUNTIME_LLAMA_BACKEND
+  fi
 
   # Explicit YAML (e.g. multiseq) must reload — do not reuse a running sidecar on another config.
   if [[ -n "$config" ]]; then
@@ -128,7 +131,7 @@ macos_runtime_start_sidecar() {
     >"${MACOS_RT_LOG}" 2>&1 &
   _MACOS_RT_PID=$!
 
-  if ! _macos_wait_http "runtime /health" "${ZEROLLAMA_RUNTIME_URL%/}/health" 30; then
+  if ! _macos_wait_http "runtime /health" "${ZEROLLAMA_RUNTIME_URL%/}/health" "${MACOS_RT_HEALTH_MAX:-30}"; then
     tail -20 "${MACOS_RT_LOG}" >&2
     echo "runtime failed to start on ${ZEROLLAMA_RUNTIME_URL}" >&2
     return 1

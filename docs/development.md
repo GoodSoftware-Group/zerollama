@@ -34,8 +34,10 @@ macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** m
 ./scripts/dev_bootstrap.sh   # clone ../llama.cpp if needed; sign-off off by default
 zerollama serve              # default :11434; auto sidecar on :8081, autoconfig, training venv
 zerollama doctor             # check CGO env, uv, libllama, sidecar /health
-zerollama doctor --fix       # auto-create venv + build binary + llama.cpp if missing
+zerollama doctor --fix       # uv venv + Mac CGO build; clones ../llama.cpp then builds libllama when missing (M14)
 ```
+
+**Why `doctor --fix` clones before build:** `build_llama_server.sh` assumes a sibling checkout at `../llama.cpp`. Fresh clones used to fail with an opaque CMake error; `mac_setup` already ran `ensure_llama_cpp_sibling.sh` first — doctor now matches that order so tier-0 bootstrap is one command.
 
 **Serve on macOS:** `zerollama serve` listens on **`OLLAMA_HOST`** (default `:11434`). On Apple Silicon it automatically ensures `runtime/.venv`, starts the Python runtime sidecar on loopback `:8081`, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper scripts required for daily use.
 

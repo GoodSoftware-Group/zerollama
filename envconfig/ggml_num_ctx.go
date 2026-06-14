@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
-// GgmlClampNumCtxEnabled is true when ggml scheduler should lower merged num_ctx
-// to suggested_max before load. Default off — parity with Phase 13 runtime clamp.
+// GgmlClampNumCtxEnabled is true when the ggml scheduler should lower merged num_ctx
+// to suggested_max before load.
+//
+// Default off — parity with Phase 13 ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX. Why: silent
+// context reduction broke operator trust; manifest num_ctx and request options should
+// apply unless the operator opts in.
 func GgmlClampNumCtxEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(Var("ZEROLLAMA_GGML_CLAMP_NUM_CTX")))
 	if v == "" {
@@ -24,7 +28,9 @@ func GgmlClampNumCtxEnabled() bool {
 	}
 }
 
-// GgmlSuggestCtxMaxCap upper bound for binary-search suggest (default 131072).
+// GgmlSuggestCtxMaxCap is the upper bound for ggml suggest binary search (default 131072).
+// Why cap: matches runtime VRAM_SUGGEST_CTX_MAX; avoids searching to 262K when train
+// metadata allows it but VRAM does not.
 func GgmlSuggestCtxMaxCap() int {
 	raw := strings.TrimSpace(Var("ZEROLLAMA_GGML_SUGGEST_CTX_MAX"))
 	if raw == "" {
@@ -38,6 +44,8 @@ func GgmlSuggestCtxMaxCap() int {
 }
 
 // GgmlVRAMMargin multiplies load estimates before comparing to free VRAM (default 1.05).
+// Why >1.0: GraphSize + file-size proxy underestimates projector/graph spikes; margin
+// keeps suggest conservative without requiring exact tensor offload math in suggest path.
 func GgmlVRAMMargin() float64 {
 	raw := strings.TrimSpace(Var("ZEROLLAMA_GGML_VRAM_MARGIN"))
 	if raw == "" {

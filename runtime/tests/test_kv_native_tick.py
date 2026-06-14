@@ -40,3 +40,12 @@ def test_loop_records_scheduler_tick():
     assert admitted
     assert loop.last_scheduler_tick is not None
     assert int(loop.last_scheduler_tick) >= 1
+    # WHY cleanup: page_bind registers in native C global state; without teardown
+    # subsequent tests that count active_binds see stale entries.
+    try:
+        from runtime.kv._kv_native import page_bind_clear
+
+        for r in admitted:
+            page_bind_clear(int(r.kv_slot or 0))
+    except ImportError:
+        pass

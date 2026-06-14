@@ -385,7 +385,7 @@ def llama_argv_from_profile_flags(
     if ubatch is not None:
         args.extend(["-ub", str(int(ubatch))])
     if flags.get("flash_attn"):
-        args.append("-fa")
+        args.extend(["-fa", "on"])
     ck = flags.get("cache_type_k")
     if ck:
         args.extend(["--cache-type-k", str(ck)])

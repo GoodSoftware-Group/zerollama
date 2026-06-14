@@ -382,7 +382,10 @@ smoke_runtime_assert_kv_snapshot() {
 import json, sys
 h = json.loads(sys.argv[1])
 pb = h.get('kv_page_bind') or {}
-assert pb.get('status') == 'not_implemented' and pb.get('available') is False, pb
+if pb.get('available'):
+    assert pb.get('status') == 'partial' and pb.get('bind_level') == 'seq_position', pb
+else:
+    assert pb.get('status') == 'not_implemented' and pb.get('available') is False, pb
 bind = h.get('kv_bind') or {}
 assert bind.get('physical_pages_bound') is False, bind
 assert isinstance(h.get('kv_forward_plans'), list)
@@ -397,7 +400,11 @@ import json
 b = json.load(open('/tmp/zerollama-kv-snapshot.json'))
 for key in ('kv_forward_plans', 'kv_page_bind', 'kv_decode_steps', 'kv_bind'):
     assert key in b, sorted(b.keys())
-assert b['kv_page_bind']['status'] == 'not_implemented'
+pb = b['kv_page_bind']
+if pb.get('available'):
+    assert pb['status'] == 'partial'
+else:
+    assert pb['status'] == 'not_implemented'
 print('kv-snapshot ok')
 "
 }

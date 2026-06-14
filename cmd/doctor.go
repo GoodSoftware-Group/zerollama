@@ -136,6 +136,9 @@ func runDoctorFix(repo string) error {
 	}
 	if runtime.GOOS == "darwin" && os.Getenv("DOCTOR_FIX_BUILD") != "0" {
 		if doctorFindLibLlama(repo) == "" {
+			if err := doctorEnsureLlamaCppSibling(repo); err != nil {
+				return err
+			}
 			build := filepath.Join(repo, "scripts", "build_llama_server.sh")
 			if _, err := os.Stat(build); err == nil {
 				fmt.Println("== doctor --fix: build Metal llama.cpp ==")
@@ -148,6 +151,27 @@ func runDoctorFix(repo string) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// doctorEnsureLlamaCppSibling clones ../llama.cpp when missing (M14).
+// Why before build_llama_server: that script assumes LLAMA_CPP_ROOT exists; failing at
+// CMake time was opaque on fresh checkouts. mac_setup already runs ensure_llama_cpp_sibling
+// first — doctor --fix should match so tier-0 bootstrap is one self-service command.
+func doctorEnsureLlamaCppSibling(repo string) error {
+	script := filepath.Join(repo, "scripts", "ensure_llama_cpp_sibling.sh")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("missing %s", script)
+	}
+	fmt.Println("== doctor --fix: ensure llama.cpp sibling ==")
+	cmd := exec.Command("bash", script)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "ZEROLLAMA_REPO="+repo)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ensure_llama_cpp_sibling: %w", err)
 	}
 	return nil
 }
@@ -370,7 +394,7 @@ func doctorCheckLibLlama(repo string) doctorCheck {
 		Name:    "libllama",
 		Status:  "fail",
 		Detail:  "Metal/CUDA libllama not found",
-		FixHint: "LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh or zerollama doctor --fix",
+		FixHint: "zerollama doctor --fix (clones ../llama.cpp then builds) or ./scripts/ensure_llama_cpp_sibling.sh",
 	}
 }
 

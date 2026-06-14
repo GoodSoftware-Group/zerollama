@@ -23,10 +23,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/macos_runtime_serve_lib.sh
 source "${ROOT}/scripts/macos_runtime_serve_lib.sh"
+# shellcheck source=scripts/phase15_runtime_kv_env.sh
+source "${ROOT}/scripts/phase15_runtime_kv_env.sh"
 
 LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
 export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dylib}"
 export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_ROOT}/build/bin/llama-server}"
+phase15_runtime_kv_env_apply
+
+if [[ "${PHASE15_BUILD_KV_EXT:-1}" == "1" ]]; then
+  phase15_runtime_kv_ext_build
+fi
 
 smoke_m3_resolve_signoff_model
 
@@ -48,7 +55,7 @@ trap _phase15_cleanup EXIT INT TERM
 echo "== Phase 15 Metal in-process sign-off =="
 
 echo ""
-echo "== [1/2] KV decode hook (single-seq, apple_silicon.yaml) =="
+echo "== [1/4] KV decode hook (single-seq, apple_silicon.yaml) =="
 if [[ "${PHASE15_SKIP_BOOT:-0}" != "1" ]]; then
   macos_runtime_start_sidecar "$LLAMA_MODEL" "" 1
   macos_runtime_start_go
@@ -58,7 +65,7 @@ smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 echo "PASS: phase15 metal kv hook"
 
 echo ""
-echo "== [2/2] multi-seq shared context (llama_parallel_slots=2) =="
+echo "== [2/5] multi-seq shared context (llama_parallel_slots=2) =="
 TMPYAML="$(mktemp /tmp/zerollama-phase15-metal-multiseq-XXXX.yaml)"
 sed -e 's/^llama_parallel_slots: 1/llama_parallel_slots: 2/' \
   "${ROOT}/runtime/configs/apple_silicon.yaml" >"$TMPYAML"
@@ -119,11 +126,58 @@ h = json.loads(sys.argv[1])
 assert h.get('kv_inprocess_n_seq_max') == 2, h.get('kv_inprocess_n_seq_max')
 kd = h.get('kv_decode_steps') or {}
 assert kd.get('active') is True, kd
-print('post-generate kv_decode_steps:', kd.get('value'), 'n_seq_max=2')
+pb = h.get('kv_page_bind') or {}
+assert pb.get('available') is True, pb
+assert 'bind_level' in pb, pb
+assert 'slots' in pb, pb
+# WHY not assert tensor_pages_bound here: complete() unregisters page bind
+# after _tensor_probe_after_decode; post-generate health has no running request.
+print('post-generate kv_decode_steps:', kd.get('value'), 'kv_page_bind=', pb.get('bind_level'), 'n_seq_max=2')
 " "$post_health"
 
 smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 echo "PASS: phase15 metal multiseq"
+
+echo ""
+echo "== [3/5] continuous batch decode (generate_batch + stream) =="
+"${ROOT}/scripts/phase15_batch_decode_smoke.sh"
+
+echo ""
+echo "== [4/5] L3 prompt_cache_key two-turn (in-process resume wiring) =="
+l3_key="phase15-metal-$(date +%s)"
+l3_turn1='{"model":"smoke","prompt":"System: helpful.\nUser: hi","stream":false,"options":{"num_predict":4,"num_ctx":4096,"temperature":0,"prompt_cache_key":"'"${l3_key}"'"}}'
+l3_code=$(curl -s -o /tmp/phase15-metal-l3-t1.json -w '%{http_code}' -X POST "${RUNTIME_URL}/api/generate" \
+  -H 'Content-Type: application/json' -d "$l3_turn1")
+if [[ "$l3_code" != "200" ]]; then
+  echo "HTTP ${l3_code} L3 turn 1:" >&2
+  head -c 400 /tmp/phase15-metal-l3-t1.json >&2
+  echo >&2
+  exit 1
+fi
+l3_turn2='{"model":"smoke","prompt":"System: helpful.\nUser: hi\nAssistant: ok\nUser: follow up","stream":false,"options":{"num_predict":4,"num_ctx":4096,"temperature":0,"prompt_cache_key":"'"${l3_key}"'"}}'
+l3_code2=$(curl -s -o /tmp/phase15-metal-l3-t2.json -w '%{http_code}' -X POST "${RUNTIME_URL}/api/generate" \
+  -H 'Content-Type: application/json' -d "$l3_turn2")
+if [[ "$l3_code2" != "200" ]]; then
+  echo "HTTP ${l3_code2} L3 turn 2:" >&2
+  head -c 400 /tmp/phase15-metal-l3-t2.json >&2
+  echo >&2
+  exit 1
+fi
+post_l3_health=$(curl -sf "${RUNTIME_URL}/health")
+python3 -c "
+import json, sys
+h = json.loads(sys.argv[1])
+kr = h.get('kv_resume') or {}
+assert kr.get('active') is True, kr
+owners = kr.get('owners_by_slot') or {}
+assert len(owners) >= 1, kr
+print('kv_resume active, owners_by_slot=', owners)
+" "$post_l3_health"
+echo "PASS: phase15 metal L3 two-turn"
+
+echo ""
+echo "== [5/5] tensor bind scaffold (page_bind_table + linked ext probe) =="
+"${ROOT}/scripts/phase15_tensor_bind_probe.sh"
 
 echo ""
 echo "PASS: phase15_metal_signoff"

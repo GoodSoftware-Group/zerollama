@@ -25,8 +25,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers.
 * [Roadmap — local voice & llama borrowings (eliza-v3)](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3) — **inference first:** GPU autotune profiles (**L1**), fork kernels (**L2**), KV prefix cache (**L3**); voice **L5+** later.
 * [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; NVIDIA + Apple tiers; operator env.
-* [L2 elizaOS/llama.cpp fork evaluation](./gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant need fork build; sibling eval before vendor merge; gate criteria.
-* [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM).
+* [L2 elizaOS/llama.cpp fork evaluation](./gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant need fork build; `l2_full_gate.sh` A/B; Metal sign-off table; vendor merge gate.
+* [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release.
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
@@ -44,15 +44,16 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 
 ### GPU training & scheduling (repo)
 
-* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; prompt truncation API fields.
+* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; prompt truncation API fields.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Phase 11 runtime admission](./phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first policy; priority classes; enqueue/dequeue flow; `/health` gates; `VRAM_MIN_FREE` / `TRAINING_VRAM_RESERVE`.
 * [Phase 13 runtime VRAM estimates](./phase13-runtime-vram.md) — **why** GGUF VRAM heuristics, `suggested_max_num_ctx`, opt-in clamp, autotune, autoconfig, operator CLI. Complements **L1** throughput profiles: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 * [Phase 14 in-process llama](./phase14-inprocess-llama.md) — **why** subprocess HTTP was replaced for forward; three backends; render tokenize; sampling parity; 5080 sign-off scripts.
 * [Phase 14 handoff](./handoff-phase14-inprocess-llama.md) — architecture, code map, smoke footguns, bugs fixed during bring-up.
-* [Phase 15 native KV](./phase15-native-kv.md) — PA/C block pool, scheduler KV bind, seq-position track, forward plans (v0–v8 ops partial).
-* [Phase 15 handoff](./handoff-phase15-native-kv.md) — code map, `/health` fields, gaps, v8+ next steps.
+* [Phase 15 native KV](./phase15-native-kv.md) — **why** PA/C block pool + scheduler bind precede tensor KV; v8–v20 page bind + tensor probe; **v26–v30** continuous batch decode; `/health.kv_decode_loop`, `kv_continuous_batch`; loopback `POST /internal/generate-batch`; GPU sign-off `phase15_metal_signoff.sh` (batch step 3/5).
+* [Phase 15 llama-kv-ext upstream tracking](./phase15-llama-kv-ext-upstream.md) — **why** patch 0015 + pin check; hybrid/iSWA memory resolve; upstreaming checklist; writable bind still blocked.
+* [Phase 15 handoff](./handoff-phase15-native-kv.md) — code map, `/health` fields, gaps; **v0–v31 shipped** (C decode loop, engine resume, L3 gate, batch decode + Metal sign-off PASS Jun 2026).
 * [GPU training integration](./gpu-training.md) — **why** Go fronts HTTP + TCP `:9500` while Python holds PyTorch; embedded CPython; inference-first VRAM policy; OOM ordering; env vars and troubleshooting.
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.

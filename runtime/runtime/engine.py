@@ -574,6 +574,15 @@ class InferenceEngine:
             else None
         )
         if self._server is None or current != resolved:
+            from runtime.infer_trace import infer_trace
+
+            infer_trace(
+                "engine.reload",
+                reason="path_mismatch_or_cold",
+                current=str(current) if current else None,
+                resolved=str(resolved),
+                server_was_none=self._server is None,
+            )
             if self._server is not None:
                 self._stop_server()
             self.config.llama_model = resolved
@@ -593,6 +602,15 @@ class InferenceEngine:
             and needed_ctx > loaded_ctx
         )
         if ctx_grew:
+            from runtime.infer_trace import infer_trace
+
+            infer_trace(
+                "engine.reload",
+                reason="ctx_grew",
+                resolved=str(resolved),
+                needed_ctx=needed_ctx,
+                loaded_ctx=loaded_ctx,
+            )
             vram_kw = self._vram_llama_kwargs()
             check_gguf_vram_budget(
                 resolved,
@@ -611,8 +629,24 @@ class InferenceEngine:
             self.coordinator.set_unload_hook(self._stop_server)
             proc_alive = False
         elif proc_alive and current == resolved:
+            from runtime.infer_trace import infer_trace
+
+            infer_trace(
+                "engine.reuse",
+                resolved=str(resolved),
+                needed_ctx=needed_ctx,
+                loaded_ctx=loaded_ctx,
+            )
             return self._server
         if not self._server.is_running():
+            from runtime.infer_trace import infer_trace
+
+            infer_trace(
+                "engine.start",
+                reason="not_running",
+                resolved=str(resolved),
+                needed_ctx=needed_ctx,
+            )
             from runtime.gpu_vram import (
                 active_vram_probe,
                 estimate_gguf_vram_bytes,
@@ -858,7 +892,10 @@ class InferenceEngine:
             "kv_decode_steps": self._kv_decode_steps_health(),
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
+            "kv_continuous_batch": self._kv_continuous_batch_health(),
             "kv_page_bind": self._kv_page_bind_health(),
+            "kv_decode_loop": self._kv_decode_loop_health(),
+            "kv_resume": self._kv_resume_health(),
             "kv_live_physical": self._kv_live_physical_health(),
             "kv_scheduler": kv_scheduler_snapshot(
                 self.scheduler,
@@ -1071,6 +1108,28 @@ class InferenceEngine:
             return req.kv_slot
         return -1
 
+    def _decode_current_pos_for_request(self, req: Request) -> int | None:
+        """Live llama write position for in-process KV resume (v16).
+
+        Returns ``None`` when not in-process (subprocess worker ignores the arg).
+
+        WHY read outside the inprocess lock: ``LlamaInprocessWorker.completion``
+        acquires the lock before calling ``session.complete``.  Reading position
+        here is a best-effort snapshot; it is always 0 for a fresh slot and
+        non-zero only for a running/finished request in the same slot.  The
+        ``_seq_last_owner`` guard in ``complete()`` re-validates ownership
+        under the lock (v17: ``prompt_cache_key`` for L3 pinned sessions), so a
+        stale read here is safe — worst-case we clear a slot that is about to
+        be written (same as pre-v16 behaviour).
+        """
+        pair = self._inprocess_ctx_for_health()
+        if pair is None:
+            return None
+        from runtime.kv.physical import current_pos_for_seq
+
+        lib, ctx = pair
+        return current_pos_for_seq(lib, ctx, self._id_slot_for_request(req))
+
     def _assert_kv_bind(self, req: Request, *, at: str) -> None:
         from runtime.kv.bind import assert_kv_capacity
 
@@ -1157,17 +1216,97 @@ class InferenceEngine:
 
     def _kv_forward_plans_health(self) -> list[dict[str, Any]]:
         from runtime.kv.forward_plan import kv_forward_plans_for_requests
+        from runtime.kv.physical import current_pos_by_request_from_physical
 
+        pos_by_id = current_pos_by_request_from_physical(self._kv_physical_health())
         reqs = list(self.scheduler.waiting) + list(self.scheduler.running)
         return kv_forward_plans_for_requests(
-            reqs, block_size=self.config.block_size
+            reqs,
+            block_size=self.config.block_size,
+            current_pos_by_request_id=pos_by_id or None,
+        )
+
+    def _kv_continuous_batch_health(self) -> dict[str, Any]:
+        from runtime.kv.forward_plan import kv_continuous_batch_forward_plan
+        from runtime.kv.physical import current_pos_by_request_from_physical
+
+        running = list(self.scheduler.running)
+        pos_by_id = current_pos_by_request_from_physical(self._kv_physical_health())
+        return kv_continuous_batch_forward_plan(
+            running,
+            block_size=self.config.block_size,
+            current_pos_by_request_id=pos_by_id or None,
+            parallel_slots=self._effective_llama_parallel_slots(),
         )
 
     def _kv_page_bind_health(self) -> dict[str, Any]:
         from runtime.kv.backend import native_available
-        from runtime.kv.page_bind import page_bind_health
+        from runtime.kv.page_bind import (
+            page_bind_health,
+            page_bind_tensor_probe_for_ctx,
+        )
 
-        return page_bind_health(native_ext_available=native_available())
+        # WHY only probe running requests: slot 0 with no active bind would
+        # return aligned=True trivially and mislead the operator into thinking
+        # a live seq has been verified.  Omit probe when nothing is running.
+        tensor_probe = None
+        pair = self._inprocess_ctx_for_health()
+        if pair is not None:
+            lib, ctx = pair
+            for req in self.scheduler.running:
+                slot = req.kv_slot
+                if slot is not None and slot >= 0:
+                    tensor_probe = page_bind_tensor_probe_for_ctx(
+                        lib, ctx, seq_id=slot, kv_slot=slot
+                    )
+                    break
+        return page_bind_health(
+            native_ext_available=native_available(),
+            tensor_probe=tensor_probe,
+        )
+
+    def _kv_decode_loop_health(self) -> dict[str, Any]:
+        from runtime.kv.native_decode_loop import decode_loop_status
+
+        return decode_loop_status()
+
+    def _kv_resume_health(self) -> dict[str, Any]:
+        """In-process KV resume operator probe (Phase 15 v18).
+
+        WHY: v16–v17 resume is session-local on ``LlamaLoadedSession``; without
+        this field operators cannot tell whether L3 prefix reuse is armed for
+        the loaded in-process model (needs ``llama_parallel_slots > 1``).
+        """
+        backend = self._health_llama_backend()
+        parallel = self._effective_llama_parallel_slots()
+        session = self._inprocess_session_for_health()
+        owners: dict[str, str] = {}
+        if session is not None:
+            snap = getattr(session, "resume_owner_snapshot", None)
+            if callable(snap):
+                owners = {str(slot): owner for slot, owner in snap().items()}
+        active = (
+            backend == "inprocess"
+            and parallel > 1
+            and session is not None
+            and getattr(session, "_ctx", None) is not None
+        )
+        note: str | None = None
+        if backend != "inprocess":
+            note = "subprocess: L3 resume uses llama-server cache_prompt + id_slot"
+        elif parallel <= 1:
+            note = (
+                "single-seq in-process uses per-request ctx; "
+                "resume requires llama_parallel_slots>1"
+            )
+        return {
+            "active": active,
+            "llama_parallel_slots": parallel,
+            "owners_by_slot": owners,
+            "owner_key_pinned": "cache:{prompt_cache_key}",
+            "owner_key_unpinned": "request_id",
+            "note": note,
+        }
 
     def kv_snapshot(self) -> dict[str, Any]:
         """KV-focused subset for ``/internal/kv-snapshot`` (loopback debug)."""
@@ -1181,7 +1320,10 @@ class InferenceEngine:
             "kv_decode_steps": self._kv_decode_steps_health(),
             "kv_native_stats": self._kv_native_stats_health(),
             "kv_forward_plans": self._kv_forward_plans_health(),
+            "kv_continuous_batch": self._kv_continuous_batch_health(),
             "kv_page_bind": self._kv_page_bind_health(),
+            "kv_decode_loop": self._kv_decode_loop_health(),
+            "kv_resume": self._kv_resume_health(),
             "kv_live_physical": self._kv_live_physical_health(),
         }
 
@@ -1253,24 +1395,13 @@ class InferenceEngine:
                 resolved_gguf = gguf.resolve()
             except OSError:
                 resolved_gguf = gguf
-        from runtime.cache_bridge import (
-            derive_slot_id,
-            resolve_cache_key_from_options,
-        )
+        from runtime.cache_bridge import cache_pin_from_options
 
         # L3: pin llama-server slot before tick so /completion sees stable id_slot.
-        # WHY here not in tick: cache key comes from HTTP options; admission is the
-        # single place options meet the scheduler Request.
-        prompt_cache_key = resolve_cache_key_from_options(options)
-        kv_slot: int | None = None
-        slot_pinned = False
-        if prompt_cache_key:
-            derived = derive_slot_id(
-                prompt_cache_key, self._effective_llama_parallel_slots()
-            )
-            if derived >= 0:
-                kv_slot = derived
-                slot_pinned = True
+        prompt_cache_key, kv_slot, slot_pinned = cache_pin_from_options(
+            options,
+            parallel=self._effective_llama_parallel_slots(),
+        )
         req = Request(
             request_id=uuid.uuid4().hex[:12],
             prompt_tokens=self._prompt_tokens_for_admit(prompt, gguf),
@@ -1378,6 +1509,7 @@ class InferenceEngine:
                     kv_block_size=self.config.block_size,
                     sampler=sampler_options_from_dict(options),
                     cache_prompt=cache_prompt_for_request(active.prompt_cache_key),
+                    current_pos=self._decode_current_pos_for_request(active),
                 )
                 content = raw.get("content") or raw.get("response") or ""
                 active.state = RequestState.DECODE
@@ -1488,6 +1620,7 @@ class InferenceEngine:
                     kv_block_size=self.config.block_size,
                     sampler=sampler,
                     cache_prompt=cache_prompt_for_request(active.prompt_cache_key),
+                    current_pos=self._decode_current_pos_for_request(active),
                 ):
                     content = chunk.get("content") or chunk.get("response") or ""
                     stop = bool(chunk.get("stop"))
@@ -1575,7 +1708,14 @@ class InferenceEngine:
         *,
         options: dict | None = None,
     ) -> list[GenerateResult]:
-        """Admit up to ``max_admit`` requests in one tick; decode sequentially."""
+        """Admit up to ``max_admit`` requests in one tick; decode via C batch path (v27).
+
+        WHY batch API: with ``llama_parallel_slots>1``, merging autoregressive rows
+        into one ``run_batch_step`` avoids N separate ``llama_decode`` calls from
+        Python. Prefill stays sequential per row (different prompts/resume positions).
+        Falls back to per-row ``completion()`` when ``native_batch_decode_available()``
+        is false (``ZEROLLAMA_KV_NATIVE_BATCH=0`` or ext not linked).
+        """
         if not prompts:
             return []
 
@@ -1583,6 +1723,7 @@ class InferenceEngine:
         if batch_opts.get("priority") is None:
             batch_opts["priority"] = "batch"
         priority = priority_from_options(batch_opts)
+        from runtime.cache_bridge import cache_pin_from_options
         from runtime.gpu_vram import resolve_vram_num_ctx
         from runtime.server.gguf_path import peek_gguf_path
 
@@ -1626,8 +1767,16 @@ class InferenceEngine:
             priority=priority,
         )
         pending: list[tuple[str, Request]] = []
-        for prompt in prompts:
+        parallel = self._effective_llama_parallel_slots()
+        for idx, prompt in enumerate(prompts):
             req_id = uuid.uuid4().hex[:12]
+            # L3 batch: per-row key from prompt_cache_keys[i]; strict index semantics
+            # (see cache_bridge.resolve_cache_key_for_batch — no flat-key fallback).
+            cache_key, kv_slot, slot_pinned = cache_pin_from_options(
+                batch_opts,
+                parallel=parallel,
+                batch_index=idx,
+            )
             req = Request(
                 request_id=req_id,
                 prompt_tokens=self._prompt_tokens_for_admit(prompt, batch_gguf),
@@ -1636,6 +1785,9 @@ class InferenceEngine:
                 gguf=resolved_batch_gguf,
                 num_ctx=batch_num_ctx,
                 vram_options=vram_opts,
+                prompt_cache_key=cache_key,
+                kv_slot=kv_slot,
+                slot_pinned=slot_pinned,
             )
             self.scheduler.add_request(req)
             pending.append((prompt, req))
@@ -1668,6 +1820,7 @@ class InferenceEngine:
                     gguf, num_ctx=batch_num_ctx, options=vram_opts
                 )
                 from runtime.kv.bind import reserved_token_capacity
+                from runtime.cache_bridge import cache_prompt_for_request
 
                 raws = srv.completions_parallel(
                     prompts_ordered,
@@ -1679,6 +1832,13 @@ class InferenceEngine:
                     kv_bind_reqs=admitted,
                     kv_block_size=self.config.block_size,
                     sampler=sampler_options_from_dict(batch_opts),
+                    cache_prompts=[
+                        cache_prompt_for_request(a.prompt_cache_key)
+                        for a in admitted
+                    ],
+                    current_positions=[
+                        self._decode_current_pos_for_request(a) for a in admitted
+                    ],
                 )
                 from runtime.vram_suggest import api_vram_num_ctx_meta
 
@@ -1688,7 +1848,11 @@ class InferenceEngine:
                     if len(admitted) == 1
                     else None
                 )
-                for active, raw in zip(admitted, raws, strict=True):
+                if len(admitted) != len(raws):
+                    raise LlamaServerError(
+                        f"batch result count mismatch: {len(admitted)} admitted, {len(raws)} results"
+                    )
+                for active, raw in zip(admitted, raws):
                     content = raw.get("content") or raw.get("response") or ""
                     active.state = RequestState.DECODE
                     results.append(
@@ -1704,3 +1868,170 @@ class InferenceEngine:
             for active in admitted:
                 self.loop.complete(active)
         return results
+
+    def stream_generate_batch(
+        self,
+        prompts: list[str],
+        n_predict: int = 64,
+        max_admit: int = 4,
+        *,
+        options: dict | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Admit up to ``max_admit`` requests; stream via batched decode (v29).
+
+        WHY stream batch: v27 returned full text only at the end; agent and sign-off
+        callers need interleaved ``seq_idx``-tagged chunks from the same C
+        ``run_batch_step`` hot path. Yields ``{request_id, seq_idx, response, done}``.
+        """
+        if not prompts:
+            return iter(())
+
+        batch_opts = dict(options or {})
+        if batch_opts.get("priority") is None:
+            batch_opts["priority"] = "batch"
+        priority = priority_from_options(batch_opts)
+        from runtime.cache_bridge import cache_pin_from_options
+        from runtime.gpu_vram import resolve_vram_num_ctx
+        from runtime.server.gguf_path import peek_gguf_path
+
+        batch_gguf = peek_gguf_path(batch_opts)
+        if batch_gguf is None and self.config.llama_model:
+            batch_gguf = Path(self.config.llama_model)
+        batch_num_ctx = (
+            resolve_vram_num_ctx(
+                batch_opts,
+                batch_gguf,
+                llama_args=self.config.llama_server_args(),
+            )
+            if batch_gguf
+            else None
+        )
+        batch_clamp_meta: dict[str, Any] = {}
+        if batch_gguf is not None and batch_num_ctx is not None:
+            batch_num_ctx, batch_clamp_meta = self._cap_num_ctx_for_vram(
+                batch_gguf.resolve(),
+                batch_num_ctx,
+                options=batch_opts,
+                priority=priority,
+            )
+        vram_opts = self._vram_options(batch_num_ctx, batch_opts)
+        resolved_batch_gguf: Path | None = None
+        if batch_gguf is not None:
+            try:
+                resolved_batch_gguf = batch_gguf.resolve()
+            except OSError:
+                resolved_batch_gguf = batch_gguf
+        self._check_admit_policy(
+            batch_opts,
+            priority=priority,
+            extra_waiting=len(prompts),
+            skip_generic_vram_gate=batch_gguf is not None,
+        )
+        self._vram_precheck_enqueue(
+            batch_gguf,
+            num_ctx=batch_num_ctx,
+            vram_options=vram_opts,
+            priority=priority,
+        )
+        pending: list[tuple[str, Request]] = []
+        parallel = self._effective_llama_parallel_slots()
+        for idx, prompt in enumerate(prompts):
+            req_id = uuid.uuid4().hex[:12]
+            cache_key, kv_slot, slot_pinned = cache_pin_from_options(
+                batch_opts,
+                parallel=parallel,
+                batch_index=idx,
+            )
+            req = Request(
+                request_id=req_id,
+                prompt_tokens=self._prompt_tokens_for_admit(prompt, batch_gguf),
+                max_tokens=n_predict,
+                priority=priority,
+                gguf=resolved_batch_gguf,
+                num_ctx=batch_num_ctx,
+                vram_options=vram_opts,
+                prompt_cache_key=cache_key,
+                kv_slot=kv_slot,
+                slot_pinned=slot_pinned,
+            )
+            self.scheduler.add_request(req)
+            pending.append((prompt, req))
+
+        try:
+            admitted = self.loop.tick(
+                max_admit=min(max_admit, len(prompts)),
+                vram_check=self._loop_vram_check,
+            )
+        except LlamaServerError:
+            self._cancel_batch_pending(pending)
+            raise
+        admitted_ids = {a.request_id for a in admitted}
+        for _, req in pending:
+            if req.request_id not in admitted_ids:
+                self.scheduler.cancel_waiting(req)
+        if not admitted:
+            raise LlamaServerError("could not admit batch (KV pool or pause)")
+
+        by_id = {req.request_id: prompt for prompt, req in pending}
+        gguf = batch_gguf
+        prompts_ordered = [by_id[a.request_id] for a in admitted]
+        req_by_idx = {i: a for i, a in enumerate(admitted)}
+        for active in admitted:
+            self._assert_kv_bind(active, at="stream_generate_batch")
+        decode_before = self._kv_decode_steps_before()
+
+        def _stream() -> Iterator[dict[str, Any]]:
+            from runtime.kv.bind import reserved_token_capacity
+            from runtime.cache_bridge import cache_prompt_for_request
+            from runtime.vram_suggest import api_vram_num_ctx_meta
+
+            batch_vram = api_vram_num_ctx_meta(batch_clamp_meta, batch_num_ctx)
+            try:
+                with self._model_swap.hold(gguf):
+                    srv = self._ensure_gguf_loaded_unlocked(
+                        gguf, num_ctx=batch_num_ctx, options=vram_opts
+                    )
+                    for chunk in srv.completions_parallel_stream(
+                        prompts_ordered,
+                        n_predict=n_predict,
+                        id_slots=[self._id_slot_for_request(a) for a in admitted],
+                        kv_token_budgets=[
+                            reserved_token_capacity(a) for a in admitted
+                        ],
+                        kv_bind_reqs=admitted,
+                        kv_block_size=self.config.block_size,
+                        sampler=sampler_options_from_dict(batch_opts),
+                        cache_prompts=[
+                            cache_prompt_for_request(a.prompt_cache_key)
+                            for a in admitted
+                        ],
+                        current_positions=[
+                            self._decode_current_pos_for_request(a) for a in admitted
+                        ],
+                    ):
+                        seq_idx = int(chunk.get("seq_idx", 0))
+                        active = req_by_idx.get(seq_idx)
+                        if active is None:
+                            continue
+                        content = chunk.get("content") or chunk.get("response") or ""
+                        stop = bool(chunk.get("stop"))
+                        if stop:
+                            active.state = RequestState.FINISHED
+                        out: dict[str, Any] = {
+                            "request_id": active.request_id,
+                            "seq_idx": seq_idx,
+                            "response": content,
+                            "done": stop,
+                        }
+                        if batch_vram:
+                            out["vram_num_ctx"] = batch_vram
+                        if stop:
+                            kv_steps = self._kv_decode_steps_after(decode_before)
+                            if kv_steps is not None:
+                                out["kv_decode_steps"] = kv_steps
+                        yield out
+            finally:
+                for active in admitted:
+                    self.loop.complete(active)
+
+        return _stream()

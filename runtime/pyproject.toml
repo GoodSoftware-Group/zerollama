@@ -18,7 +18,7 @@ native = []  # builds runtime.kv._kv_native C extension (Phase 15)
 
 [[tool.setuptools.ext-modules]]
 name = "runtime.kv._kv_native"
-sources = ["native/kv_block_pool.c"]
+sources = ["native/kv_block_pool.c", "native/kv_decode_loop.c"]
 
 [project.scripts]
 zerollama-runtime = "runtime.cli:main"

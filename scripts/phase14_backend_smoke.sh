@@ -75,6 +75,10 @@ echo "== Phase 14 backend smoke (runtime GPU + optional proxy/render-chat) =="
 runtime_resume_if_needed "$_health"
 smoke_runtime_require_phase14_endpoints "$RUNTIME_URL" "$_gguf_pf"
 smoke_prepare_vram_for_runtime
+# WHY unset RUN_E2E_GGUF: broker already loaded this GGUF into the sidecar;
+# repeating options.gguf on subsequent calls is redundant and forces the
+# engine to validate path equality on every request (harmless but wasteful).
+unset RUN_E2E_GGUF
 
 e2e_env=(
   RUN_E2E_GPU=1

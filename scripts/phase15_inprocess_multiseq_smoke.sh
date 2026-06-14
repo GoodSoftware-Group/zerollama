@@ -125,4 +125,8 @@ print('post-generate kv_decode_steps:', kd.get('value'), 'n_seq_max=2')
 
 smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 
+echo ""
+echo "== [3/3] continuous batch decode (generate_batch + stream) =="
+"${ROOT}/scripts/phase15_batch_decode_smoke.sh"
+
 echo "PASS: phase15_inprocess_multiseq_smoke"

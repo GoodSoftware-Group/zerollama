@@ -16,7 +16,8 @@ on each chat turn.
 WHY subprocess-first
 --------------------
 ``--slot-save-path`` and ``cache_prompt`` are llama-server HTTP features.
-In-process backends get pinned slots for in-RAM reuse; disk parity is future work.
+In-process backends use pinned slots for in-RAM reuse (Phase 15 v17) and optional
+``llama_state_seq_{save,load}_file`` disk blobs under the same ``model_hash`` dirs.
 
 Ports eliza-v3 ``cache-bridge.ts``: stable cache keys hash to ``id_slot`` in
 ``[0, parallel)`` so repeat prefixes reuse in-RAM KV. Optional ``--slot-save-path``
@@ -45,6 +46,40 @@ def llama_cache_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def inprocess_disk_cache_enabled() -> bool:
+    """In-process slot save/load under ``llama_cache_root/<modelHash>/``.
+
+    WHY separate from ``llama_cache_enabled``: operators can keep RAM prefix reuse
+    (Phase 15 v17) while disabling disk I/O on latency-sensitive Metal paths.
+    """
+    if not llama_cache_enabled():
+        return False
+    raw = os.environ.get("ZEROLLAMA_LLAMA_CACHE_DISK", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def slot_cache_filename(slot_id: int, seq: int = 0) -> str:
+    """llama-server / in-process slot blob name under ``slot_save_path``."""
+    return f"slot_{int(slot_id)}_{int(seq)}.bin"
+
+
+def slot_cache_file_path(model_hash: str, slot_id: int, seq: int = 0) -> Path:
+    return slot_save_path(model_hash) / slot_cache_filename(slot_id, seq)
+
+
+def prepare_slot_cache_dir(model_hash: str, *, evict: bool = False) -> Path:
+    """Ensure save dir exists.
+
+    ``evict=True`` sweeps expired blobs — pass this only on session start, not on
+    every save call, to avoid per-turn directory scans on latency-sensitive Metal paths.
+    """
+    save_dir = slot_save_path(model_hash)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    if evict:
+        evict_expired(save_dir)
+    return save_dir
+
+
 def llama_cache_root() -> Path:
     override = os.environ.get("ZEROLLAMA_LLAMA_CACHE_ROOT", "").strip()
     if override:
@@ -65,6 +100,20 @@ def slot_save_path(model_hash: str) -> Path:
     return cache_root(model_hash)
 
 
+def _canonical_model_path(path: str | Path) -> str:
+    """Stable path for ``build_model_hash`` (symlink target, expanduser).
+
+    WHY: same GGUF via symlink vs absolute path must share one slot-save dir.
+    """
+    p = Path(path).expanduser()
+    try:
+        if p.is_file():
+            return str(p.resolve())
+    except OSError:
+        pass
+    return str(p)
+
+
 def build_model_hash(
     *,
     target_model_path: str | Path,
@@ -73,10 +122,17 @@ def build_model_hash(
     cache_type_v: str | None = None,
     extra: str | None = None,
 ) -> str:
+    """Fingerprint for ``--slot-save-path`` subdirectory.
+
+    WHY mix path + draft + cache types: L2 fork profiles change KV layout;
+    reusing one directory would load incompatible slot blobs after a switch.
+    WHY canonical path: symlinks must not fragment cache across duplicate dirs.
+    """
     h = hashlib.sha256()
-    h.update(str(target_model_path).encode())
+    h.update(_canonical_model_path(target_model_path).encode())
     h.update(b"\x01")
-    h.update(str(drafter_model_path or "").encode())
+    draft = drafter_model_path
+    h.update(_canonical_model_path(draft).encode() if draft else b"")
     h.update(b"\x01")
     h.update(str(cache_type_k or "").encode())
     h.update(b"\x01")
@@ -195,6 +251,36 @@ def evict_expired(
             except OSError:
                 pass
     return deleted
+
+
+def evict_orphaned_cache_dirs(
+    *,
+    keep_model_hash: str | None = None,
+    ttls: dict[str, int] | None = None,
+    now_ms: float | None = None,
+) -> int:
+    """Remove empty sibling model-hash dirs under ``llama_cache_root``.
+
+    WHY: switching fork/stock or cache types creates new hashes; expired slot
+    files are evicted per-dir and empty directories are deleted on startup.
+    """
+    root = llama_cache_root()
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        if keep_model_hash and entry.name == keep_model_hash:
+            continue
+        evict_expired(entry, ttls=ttls, now_ms=now_ms)
+        try:
+            if not any(entry.iterdir()):
+                entry.rmdir()
+                removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def read_cache_stats(root_dir: Path | str, *, now_ms: float | None = None) -> list[dict[str, Any]]:
@@ -330,6 +416,80 @@ def resolve_cache_key_from_options(options: dict[str, Any] | None) -> str | None
     return resolve_local_cache_key(options) if options else None
 
 
+def resolve_cache_key_for_batch(
+    options: dict[str, Any] | None,
+    index: int,
+) -> str | None:
+    """Per-prompt cache key for batch generate (`options.prompt_cache_keys[i]`).
+
+    When ``prompt_cache_keys`` is present, out-of-range indices return ``None``
+    (no flat-key fallback) so unrelated batch rows do not share one slot.
+
+    WHY no fallback: callers that pass a partial list intend per-row isolation;
+    falling back to ``prompt_cache_key`` would pin extra rows to one session slot.
+    Omit ``prompt_cache_keys`` to apply one flat key to every batch row.
+    """
+    if not options:
+        return None
+    keys = options.get("prompt_cache_keys")
+    if isinstance(keys, list):
+        if 0 <= index < len(keys):
+            raw = keys[index]
+            if isinstance(raw, str) and raw:
+                return raw
+        return None
+    return resolve_cache_key_from_options(options)
+
+
+def cache_pin_from_options(
+    options: dict[str, Any] | None,
+    *,
+    parallel: int,
+    batch_index: int | None = None,
+) -> tuple[str | None, int | None, bool]:
+    """Return ``(prompt_cache_key, kv_slot, slot_pinned)`` for admission.
+
+    WHY at admit (not at HTTP forward): llama-server ``id_slot`` must be stable
+    before ``/completion``; scheduler ``try_acquire`` serializes same-slot traffic.
+    """
+    if batch_index is not None:
+        key = resolve_cache_key_for_batch(options, batch_index)
+    else:
+        key = resolve_cache_key_from_options(options)
+    kv_slot: int | None = None
+    slot_pinned = False
+    if key:
+        derived = derive_slot_id(key, parallel)
+        if derived >= 0:
+            kv_slot = derived
+            slot_pinned = True
+    return key, kv_slot, slot_pinned
+
+
+def slot_resume_owner_key(kv_bind_req: Any | None) -> str | None:
+    """Stable owner id for in-process KV resume (Phase 15 v17).
+
+    WHY not ``request_id`` alone: L3 pinned sessions allocate a fresh
+    ``request_id`` every HTTP turn but reuse ``prompt_cache_key`` and ``kv_slot``.
+    v16b keyed only on ``request_id``, so multi-turn agent chat always cleared
+    good prefix KV and re-prefilled from scratch.
+
+    Pinned → ``cache:{prompt_cache_key}``; otherwise → ``request_id`` string.
+
+    If ``slot_pinned`` is set but ``prompt_cache_key`` is missing (should not
+    happen via ``cache_pin_from_options``, which only pins when key is truthy),
+    falls back to ``request_id`` so resume degrades to v16b behaviour.
+    """
+    if kv_bind_req is None:
+        return None
+    if getattr(kv_bind_req, "slot_pinned", False):
+        cache_key = getattr(kv_bind_req, "prompt_cache_key", None)
+        if cache_key:
+            return f"cache:{cache_key}"
+    rid = getattr(kv_bind_req, "request_id", None)
+    return str(rid) if rid else None
+
+
 def cache_type_from_llama_argv(args: list[str]) -> tuple[str | None, str | None]:
     ck = cv = None
     for i, a in enumerate(args):
@@ -362,6 +522,9 @@ def llama_server_cache_argv(
     )
     save_dir = slot_save_path(model_hash)
     save_dir.mkdir(parents=True, exist_ok=True)
+    # WHY sweep siblings first: profile/fork switches create new hashes; stale dirs
+    # should not accumulate expired slot blobs under ~/.cache/zerollama/llama-cache/.
+    evict_orphaned_cache_dirs(keep_model_hash=model_hash)
     # Sync scan before llama-server start; small dir expected (one entry per slot).
     evict_expired(save_dir)
     return ["--slot-save-path", str(save_dir)]
@@ -381,6 +544,7 @@ def cache_health(
     enabled = llama_cache_enabled()
     out: dict[str, Any] = {
         "enabled": enabled,
+        "inprocess_disk_cache": enabled and inprocess_disk_cache_enabled(),
         "root": str(llama_cache_root()),
         "default_ttl_ms": default_slot_ttl_ms(),
     }

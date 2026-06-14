@@ -170,6 +170,19 @@ Disable compat (debug): `OLLAMA_LLAMA_CPP_COMPAT=0`.
 - **`/api/show`** shows `num_ctx 262144` but **`/api/ps`** shows `context_length: 4096` — manifest updated, **warm runner not reloaded** (fixed: create now evicts loaded runners; or run stop / `keep_alive:0`).
 - **Generation hangs after create with huge manifest `num_ctx`** — load-time KV pre-allocation for 262K on qwen35moe; **revert manifest default** to 4096 and use request options for long context.
 
+**VRAM suggest on show (M12, Jun 2026):** when free VRAM is known, `/api/show` may include `ggml_num_ctx`:
+
+```json
+"ggml_num_ctx": {
+  "suggested_max_num_ctx": 8192,
+  "merged_num_ctx": 262144
+}
+```
+
+**Why two fields:** `merged_num_ctx` is the merged server/manifest default that exceeds VRAM; `suggested_max_num_ctx` is what fits today. They are separate from `num_ctx` (effective after opt-in clamp on load). **Why no suggest when free unknown:** total installed VRAM is not free VRAM — using total would over-suggest and still hang load.
+
+Opt-in clamp before ggml load: `ZEROLLAMA_GGML_CLAMP_NUM_CTX=1` (default off). Doc: [scheduling-vram-policy.md — ggml VRAM suggest](./scheduling-vram-policy.md#ggml-vram-suggest-and-opt-in-clamp-m12-jun-2026).
+
 **Recommended pattern (M4 Max, qwen3.6):**
 
 ```bash

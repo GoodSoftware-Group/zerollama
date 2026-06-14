@@ -10,6 +10,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/phase15_runtime_kv_env.sh
+source "${ROOT}/scripts/phase15_runtime_kv_env.sh"
 
 if [[ -z "${LLAMA_MODEL:-}" ]]; then
   echo "Set LLAMA_MODEL to a small GGUF on this host" >&2
@@ -22,6 +24,11 @@ fi
 
 export LLAMA_MODEL LLAMA_CPP_LIB
 [[ -n "${RUN_E2E_PROXY_MODEL:-}" ]] && export RUN_E2E_PROXY_MODEL
+
+phase15_runtime_kv_env_apply
+if [[ "${PHASE15_BUILD_KV_EXT:-1}" == "1" ]]; then
+  phase15_runtime_kv_ext_build
+fi
 
 echo "== Phase 15 in-process GPU sign-off =="
 

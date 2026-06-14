@@ -83,8 +83,11 @@ MAC_SETUP_TRAINING=1 ./scripts/dev_bootstrap.sh
 ```bash
 ./zerollama serve          # :11434; auto sidecar :8081 on Darwin
 ./zerollama doctor
+./zerollama doctor --fix   # optional: uv venv + zerollama build + clone ../llama.cpp + Metal libllama
 ./zerollama run llama3.2:3b
 ```
+
+**Why `doctor --fix` on fresh clones:** runtime in-process and sign-off need `libllama.dylib` at `../llama.cpp/build/bin/`. Without the sibling checkout, `build_llama_server.sh` fails late. `--fix` runs `ensure_llama_cpp_sibling.sh` first (same as `mac_setup` tier 0).
 
 No wrapper scripts or extra env vars needed for normal dev.
 
@@ -133,7 +136,7 @@ GOFLAGS=-mod=mod go build -o zerollama .
 |-------|-----|
 | `stddef.h file not found` | Use `build_zerollama_mac.sh` or `mac_cgo_env --export` |
 | `python3-embed not found` | `xcode-select --install` (Xcode ships the `.pc` file) |
-| `llama.cpp not found` | `./scripts/ensure_llama_cpp_sibling.sh` or `MAC_SETUP_LLAMA_CLONE=1 ./scripts/mac_setup.sh` |
+| `llama.cpp not found` | `./scripts/ensure_llama_cpp_sibling.sh`, `zerollama doctor --fix`, or `MAC_SETUP_LLAMA_CLONE=1 ./scripts/mac_setup.sh` |
 | `inconsistent vendoring` on `go build` | `GOFLAGS=-mod=mod` (set by `build_zerollama_mac.sh`) |
 | `Library not loaded: @rpath/Python3.framework` | Rebuild via `./scripts/build_zerollama_mac.sh` |
 | `go test` abort trap on Mac | `eval "$(./scripts/mac_cgo_env.sh --export)"` then `go test …` |

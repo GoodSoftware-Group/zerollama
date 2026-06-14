@@ -23,5 +23,5 @@ def test_pop_gguf_path_empty():
 
 def test_peek_gguf_path_leaves_options():
     opts = {"gguf": "/tmp/m.gguf"}
-    assert peek_gguf_path(opts) == Path("/tmp/m.gguf").resolve()
+    assert peek_gguf_path(opts) == Path("/tmp/m.gguf")
     assert "gguf" in opts

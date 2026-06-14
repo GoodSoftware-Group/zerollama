@@ -7,17 +7,21 @@ operators already build ``build/bin/libllama.so`` with ``scripts/build_llama_ser
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from runtime.cache_bridge import slot_resume_owner_key
 from runtime.worker.llama_server import LlamaServerError
 from runtime.worker.sampler_options import SamplerOptions
 
-_lib_lock = threading.Lock()
+_llama_log = logging.getLogger(__name__)
 _lib: ctypes.CDLL | None = None
+_lib_lock = threading.Lock()
 _backend_init = False
 
 LLAMA_TOKEN = ctypes.c_int32
@@ -301,6 +305,26 @@ def _bind(lib: ctypes.CDLL) -> None:
     lib.llama_n_ctx.argtypes = [ctypes.c_void_p]
     lib.llama_n_ctx.restype = ctypes.c_uint32
 
+    if hasattr(lib, "llama_state_seq_save_file"):
+        lib.llama_state_seq_save_file.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+            ctypes.POINTER(LLAMA_TOKEN),
+            ctypes.c_size_t,
+        ]
+        lib.llama_state_seq_save_file.restype = ctypes.c_size_t
+    if hasattr(lib, "llama_state_seq_load_file"):
+        lib.llama_state_seq_load_file.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+            ctypes.POINTER(LLAMA_TOKEN),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        lib.llama_state_seq_load_file.restype = ctypes.c_size_t
+
 
 def tokenize(vocab: ctypes.c_void_p, text: str, *, add_special: bool = True) -> list[int]:
     lib = get_lib()
@@ -463,6 +487,92 @@ def _clear_sequence(lib: ctypes.CDLL, ctx: ctypes.c_void_p, seq_id: int) -> None
     lib.llama_memory_seq_rm(mem, ctypes.c_int32(seq_id), ctypes.c_int32(-1), ctypes.c_int32(-1))
 
 
+def _save_slot_cache_disk(
+    lib: ctypes.CDLL,
+    ctx: ctypes.c_void_p,
+    *,
+    seq_id: int,
+    model_hash: str,
+) -> int:
+    """Persist sequence KV to ``slot_<id>_0.bin`` (L3 in-process disk parity).
+
+    WHY use live pos_max rather than the caller's prompt_tokens: the sequence KV
+    accumulates both prompt AND generated tokens over multi-turn exchanges.  Saving
+    only the input prompt for the *current* turn under-reports the token count stored
+    in the blob, breaking prefix-match on the next restore.  We derive the true count
+    from the live KV via ``llama_memory_seq_pos_max`` (pos_max + 1 == n_tokens).
+    """
+    from runtime.cache_bridge import (
+        inprocess_disk_cache_enabled,
+        prepare_slot_cache_dir,
+        slot_cache_file_path,
+    )
+
+    if not inprocess_disk_cache_enabled() or not model_hash:
+        return 0
+    if not hasattr(lib, "llama_state_seq_save_file"):
+        return 0
+    usage = sequence_kv_usage(lib, ctx, seq_id)
+    if usage is None:
+        return 0
+    _seq_id, _pmin, pmax = usage
+    if pmax < 0:
+        return 0
+    n = pmax + 1
+    path = slot_cache_file_path(model_hash, seq_id)
+    prepare_slot_cache_dir(model_hash)
+    buf = (LLAMA_TOKEN * n)()
+    written = int(
+        lib.llama_state_seq_save_file(
+            ctx,
+            str(path).encode(),
+            ctypes.c_int32(seq_id),
+            buf,
+            ctypes.c_size_t(n),
+        )
+    )
+    return written
+
+
+def _try_restore_slot_cache_disk(
+    lib: ctypes.CDLL,
+    ctx: ctypes.c_void_p,
+    *,
+    seq_id: int,
+    model_hash: str,
+    token_capacity: int,
+) -> int:
+    """Load ``slot_<id>_0.bin`` when present; returns restored token count or 0."""
+    from runtime.cache_bridge import (
+        inprocess_disk_cache_enabled,
+        slot_cache_file_path,
+    )
+
+    if not inprocess_disk_cache_enabled() or not model_hash:
+        return 0
+    if not hasattr(lib, "llama_state_seq_load_file"):
+        return 0
+    path = slot_cache_file_path(model_hash, seq_id)
+    if not path.is_file():
+        return 0
+    cap = max(1, int(token_capacity))
+    out_buf = (LLAMA_TOKEN * cap)()
+    n_out = ctypes.c_size_t(0)
+    nread = int(
+        lib.llama_state_seq_load_file(
+            ctx,
+            str(path).encode(),
+            ctypes.c_int32(seq_id),
+            out_buf,
+            ctypes.c_size_t(cap),
+            ctypes.byref(n_out),
+        )
+    )
+    if nread == 0 or int(n_out.value) == 0:
+        return 0
+    return int(n_out.value)
+
+
 def sequence_kv_usage(
     lib: ctypes.CDLL, ctx: ctypes.c_void_p, seq_id: int
 ) -> tuple[int, int, int] | None:
@@ -506,7 +616,15 @@ def _batch_from_tokens(
 
 
 class LlamaLoadedSession:
-    """Model in VRAM; one shared context when ``n_seq_max > 1`` (multi-seq KV)."""
+    """Model in VRAM; one shared context when ``n_seq_max > 1`` (multi-seq KV).
+
+    Phase 15 v16b adds ``_seq_last_owner`` so ``complete()`` can skip
+    ``_clear_sequence`` only when the *same owner* last wrote a given slot.
+    WHY needed: ``decode_pos > 0`` (v16) is a necessary but not sufficient
+    condition — a different session may have written that slot after the first
+    one completed.  v17 uses ``prompt_cache_key`` for L3 pinned turns (new
+    ``request_id`` every HTTP call).
+    """
 
     def __init__(
         self,
@@ -521,6 +639,7 @@ class LlamaLoadedSession:
         default_main_gpu: int = 0,
         tensor_split_buf: ctypes.Array[ctypes.c_float] | None = None,
         kv_pool_token_cap: int | None = None,
+        slot_cache_model_hash: str | None = None,
     ) -> None:
         self.model_path = model_path.resolve()
         self.n_gpu_layers = n_gpu_layers
@@ -529,10 +648,22 @@ class LlamaLoadedSession:
         self.kv_pool_token_cap = (
             int(kv_pool_token_cap) if kv_pool_token_cap and kv_pool_token_cap > 0 else None
         )
+        self.slot_cache_model_hash = slot_cache_model_hash
         self.lib_path = lib_path
         self.cpp_root = cpp_root
         self._lib = get_lib(lib_path, cpp_root)
         self._ctx: ctypes.c_void_p | None = None
+        # WHY _seq_last_owner: guards the skip-clear path in complete().
+        # We only skip _clear_sequence when the same owner last wrote this
+        # slot — otherwise a new session would resume into stale KV from a
+        # prior (different) owner.  Keyed by normalised seq_id (int).
+        # v17: owner is prompt_cache_key for L3 pinned sessions, else request_id.
+        # Reset in close() so teardown/reload never inherits stale owners.
+        self._seq_last_owner: dict[int, str] = {}
+        # WHY: libllama + Metal are not safe for concurrent decode on the same
+        # model (even with per-request contexts when n_seq_max==1).  Go proxy
+        # broker + runtime smokes can overlap two /api/generate calls.
+        self._infer_lock = threading.RLock()
         mparams = self._lib.llama_model_default_params()
         apply_load_hints_to_model_params(
             mparams,
@@ -559,7 +690,10 @@ class LlamaLoadedSession:
             need = min(need, self.kv_pool_token_cap)
         cparams.n_ctx = max(int(need), n_prompt_budget + 64)
         cparams.n_seq_max = self.n_seq_max
-        cparams.n_batch = min(cparams.n_ctx, max(n_prompt_budget, 512))
+        # WHY max(..., n_seq_max): continuous batch decode feeds one row per slot.
+        cparams.n_batch = min(
+            cparams.n_ctx, max(n_prompt_budget, self.n_seq_max, 512)
+        )
         self._ctx = self._lib.llama_init_from_model(self._model, cparams)
         if not self._ctx:
             raise LlamaServerError("llama_init_from_model failed (multi-seq)")
@@ -569,13 +703,25 @@ class LlamaLoadedSession:
             raise LlamaServerError("model session is closed")
         return tokenize(self._vocab, text, add_special=add_special)
 
+    def resume_owner_snapshot(self) -> dict[int, str]:
+        """Per-slot resume owner keys for operator /health (Phase 15 v18).
+
+        WHY expose: L3 multi-turn resume is invisible without inspecting
+        ``_seq_last_owner``; operators debugging prefix reuse need slot→owner map.
+        """
+        return dict(self._seq_last_owner)
+
     def close(self) -> None:
-        if self._ctx:
-            self._lib.llama_free(self._ctx)
-            self._ctx = None
-        if self._model:
-            self._lib.llama_model_free(self._model)
-            self._model = None
+        with self._infer_lock:
+            if self._ctx:
+                self._lib.llama_free(self._ctx)
+                self._ctx = None
+            if self._model:
+                self._lib.llama_model_free(self._model)
+                self._model = None
+            # WHY clear owners on teardown: a future in-place reload must not match
+            # resume against KV from a prior model/context on the same slot index.
+            self._seq_last_owner.clear()
 
     def _physical_check_after_decode(
         self,
@@ -587,12 +733,408 @@ class LlamaLoadedSession:
     ) -> None:
         if kv_bind_req is None:
             return
-        from runtime.kv.physical import usage_from_libllama, verify_after_decode
+        from runtime.kv.physical import physical_strict_enabled, usage_from_libllama, verify_after_decode
 
         usage = usage_from_libllama(self._lib, ctx, seq_id)
         verify_after_decode(
             kv_bind_req, usage, block_size=kv_block_size, at="inprocess_complete"
         )
+        self._tensor_probe_after_decode(
+            ctx, seq_id, kv_bind_req, usage,
+            strict=physical_strict_enabled(),
+        )
+
+    def _tensor_probe_after_decode(
+        self,
+        ctx: ctypes.c_void_p,
+        seq_id: int,
+        kv_bind_req: Any | None,
+        usage: Any | None,
+        *,
+        strict: bool = False,
+    ) -> None:
+        """v19 accounting bind: PA page table vs live llama seq cells.
+
+        WHY no-op when ext not linked: ``run_tensor_probe`` returns ``None``
+        when ``ZEROLLAMA_KV_DECODE_LOOP`` was not set at build time; the
+        method exits silently so non-linked operators are not affected.
+        """
+        if kv_bind_req is None or usage is None:
+            return
+        slot = getattr(kv_bind_req, "kv_slot", None)
+        if slot is None or slot < 0:
+            return
+        from runtime.kv.tensor_probe import run_tensor_probe
+
+        try:
+            ctx_ptr = int(ctx.value) if ctx is not None else 0
+        except (TypeError, ValueError, AttributeError):
+            return
+        probe = run_tensor_probe(ctx_ptr, seq_id, int(slot))
+        if not probe:
+            return
+        if probe.get("tensor_pages_bound"):
+            _llama_log.debug(
+                "KV tensor bind ok (%s kv_slot=%s stream=%s)",
+                seq_id,
+                slot,
+                probe.get("kv_stream"),
+            )
+            return
+        if probe.get("aligned"):
+            blocker = probe.get("blocker") or ""
+            # cell_map_gap: cell map failed for a live page (sparse cells, defrag, etc.)
+            # kv_tensor_not_materialized: backend has no host-accessible tensor data
+            # unsupported_memory_type: hybrid/iSWA/recurrent — ext does not support
+            if blocker in ("cell_map_gap", "kv_tensor_not_materialized", "unsupported_memory_type"):
+                msg = (
+                    f"KV tensor bind ({seq_id=} kv_slot={slot}): "
+                    f"accounting ok but bind incomplete (blocker={blocker!r})"
+                )
+                if strict:
+                    raise LlamaServerError(msg)
+                _llama_log.warning("%s", msg)
+            return
+        msg = (
+            f"KV tensor probe ({seq_id=} kv_slot={slot}): llama cells "
+            f"{probe.get('llama_token_cells')} exceed PA reserve "
+            f"({probe.get('pa_pages_registered')} pages × "
+            f"{probe.get('pa_block_size')} tokens)"
+        )
+        if strict:
+            raise LlamaServerError(msg)
+        _llama_log.warning("%s", msg)
+
+    def _resolve_decode_current_pos(
+        self,
+        ctx: ctypes.c_void_p,
+        seq_id: int,
+        current_pos: int | None,
+    ) -> int:
+        """Return next llama write position; ``None`` reads live seq state (v16 resume).
+
+        WHY no-op for single-seq path: when ``n_seq_max == 1`` the engine passes
+        ``current_pos=None`` (no shared ctx).  This method is then called on a
+        freshly-created per-request context whose ``pos_max`` is ``-1``, so it
+        returns ``0``.  That is correct — single-seq sessions never resume.
+        """
+        if current_pos is not None:
+            return max(0, int(current_pos))
+        from runtime.kv.physical import current_pos_for_seq
+
+        return current_pos_for_seq(self._lib, ctx, seq_id)
+
+    def _prepare_seq_for_decode(
+        self,
+        ctx: ctypes.c_void_p,
+        sid: int,
+        *,
+        n_prompt: int,
+        n_predict: int,
+        kv_token_budget: int | None,
+        kv_bind_req: Any | None,
+        current_pos: int | None,
+    ) -> int:
+        """Clear or resume a multi-seq slot; return the llama write position (v16–v17)."""
+        from runtime.infer_trace import infer_trace
+
+        decode_pos = self._resolve_decode_current_pos(ctx, sid, current_pos)
+        need_ctx = max(
+            n_prompt + max(n_predict, 1),
+            decode_pos + max(n_predict, 1),
+        )
+        if kv_token_budget is not None and need_ctx > kv_token_budget:
+            raise LlamaServerError(
+                f"prompt+generation ({need_ctx} tokens) exceeds PA KV reserve "
+                f"({kv_token_budget} tokens)"
+            )
+        if need_ctx > int(self._lib.llama_n_ctx(ctx)):
+            raise LlamaServerError(
+                f"prompt+generation ({need_ctx} tokens) exceeds n_ctx "
+                f"({self._lib.llama_n_ctx(ctx)})"
+            )
+        incoming_owner = slot_resume_owner_key(kv_bind_req)
+        is_resume = (
+            decode_pos > 0
+            and incoming_owner is not None
+            and self._seq_last_owner.get(sid) == incoming_owner
+        )
+        if (
+            not is_resume
+            and incoming_owner is not None
+            and getattr(kv_bind_req, "slot_pinned", False)
+            and self.slot_cache_model_hash
+        ):
+            n_ctx_cap = int(self._lib.llama_n_ctx(ctx))
+            restored = _try_restore_slot_cache_disk(
+                self._lib,
+                ctx,
+                seq_id=sid,
+                model_hash=self.slot_cache_model_hash,
+                token_capacity=n_ctx_cap,
+            )
+            if restored > 0:
+                decode_pos = self._resolve_decode_current_pos(ctx, sid, None)
+                if decode_pos > 0:
+                    is_resume = True
+                    self._seq_last_owner[sid] = incoming_owner
+                    infer_trace(
+                        "complete.disk_restore",
+                        seq_id=sid,
+                        restored_tokens=restored,
+                        decode_pos=decode_pos,
+                    )
+        if not is_resume:
+            self._seq_last_owner.pop(sid, None)
+            infer_trace(
+                "complete.clear",
+                seq_id=sid,
+                stale_decode_pos=decode_pos,
+                incoming_owner=str(incoming_owner)[:32] if incoming_owner else None,
+            )
+            _clear_sequence(self._lib, ctx, sid)
+            decode_pos = 0
+        return decode_pos
+
+    def _parallel_jobs_and_smpls(
+        self,
+        prompts: list[str],
+        *,
+        n_predict: int,
+        seq_ids: list[int],
+        kv_token_budgets: list[int | None] | None,
+        kv_bind_reqs: list[Any] | None,
+        current_positions: list[int | None] | None,
+        sampler: SamplerOptions | None,
+    ) -> tuple[list[_ParallelDecodeJob], list[ctypes.c_void_p]]:
+        """Build parallel decode jobs + one sampler per row (v27/v29)."""
+        ctx = self._ctx
+        if ctx is None:
+            raise LlamaServerError("shared ctx not initialized")
+        smpls = [build_sampler_chain(self._lib, sampler) for _ in prompts]
+        jobs: list[_ParallelDecodeJob] = []
+        try:
+            for idx, prompt in enumerate(prompts):
+                tokens = self.tokenize_text(prompt, add_special=True)
+                if not tokens:
+                    raise LlamaServerError("empty prompt after tokenize")
+                sid = _normalize_seq_id(
+                    seq_ids[idx] if idx < len(seq_ids) else idx,
+                    self.n_seq_max,
+                )
+                budget = None
+                if kv_token_budgets is not None and idx < len(kv_token_budgets):
+                    b = kv_token_budgets[idx]
+                    budget = b if b is not None and b > 0 else None
+                bind_req = (
+                    kv_bind_reqs[idx]
+                    if kv_bind_reqs is not None and idx < len(kv_bind_reqs)
+                    else None
+                )
+                cur_pos = (
+                    current_positions[idx]
+                    if current_positions is not None and idx < len(current_positions)
+                    else None
+                )
+                decode_pos = self._prepare_seq_for_decode(
+                    ctx,
+                    sid,
+                    n_prompt=len(tokens),
+                    n_predict=n_predict,
+                    kv_token_budget=budget,
+                    kv_bind_req=bind_req,
+                    current_pos=cur_pos,
+                )
+                jobs.append(
+                    _ParallelDecodeJob(
+                        prompt_tokens=tokens,
+                        seq_id=sid,
+                        kv_slot=sid,
+                        decode_pos=decode_pos,
+                        n_predict=n_predict,
+                        kv_bind_req=bind_req,
+                    )
+                )
+        except Exception:
+            for smpl in smpls:
+                self._lib.llama_sampler_free(smpl)
+            raise
+        return jobs, smpls
+
+    def _finalize_parallel_jobs(
+        self,
+        jobs: list[_ParallelDecodeJob],
+        *,
+        kv_block_size: int,
+    ) -> None:
+        from runtime.infer_trace import infer_trace
+
+        ctx = self._ctx
+        if ctx is None:
+            return
+        for job in jobs:
+            owner = slot_resume_owner_key(job.kv_bind_req)
+            if owner is not None:
+                self._seq_last_owner[job.seq_id] = owner
+            self._physical_check_after_decode(
+                ctx,
+                job.seq_id,
+                kv_bind_req=job.kv_bind_req,
+                kv_block_size=kv_block_size,
+            )
+            if (
+                job.kv_bind_req is not None
+                and getattr(job.kv_bind_req, "slot_pinned", False)
+                and self.slot_cache_model_hash
+            ):
+                saved = _save_slot_cache_disk(
+                    self._lib,
+                    ctx,
+                    seq_id=job.seq_id,
+                    model_hash=self.slot_cache_model_hash,
+                )
+                if saved:
+                    infer_trace(
+                        "complete.disk_save",
+                        seq_id=job.seq_id,
+                        nbytes=saved,
+                    )
+
+    def complete_parallel(
+        self,
+        prompts: list[str],
+        *,
+        n_predict: int,
+        seq_ids: list[int],
+        kv_token_budgets: list[int | None] | None = None,
+        kv_bind_reqs: list[Any] | None = None,
+        kv_block_size: int = 16,
+        current_positions: list[int | None] | None = None,
+        sampler: SamplerOptions | None = None,
+    ) -> list[str]:
+        """Decode N prompts on one shared ctx via C continuous batch steps (v27).
+
+        WHY separate from ``complete``: ``generate_batch`` admits N requests with
+        distinct PA slots; v26 ``run_batch_step`` merges their decode rows into one
+        ``llama_decode``.  Prefill stays sequential (different prompts/resume pos);
+        autoregressive steps use the batched C path when linked.
+        """
+        if not prompts:
+            return []
+        if self.n_seq_max <= 1 or self._ctx is None:
+            raise LlamaServerError("complete_parallel requires n_seq_max > 1")
+        from runtime.kv.native_decode_loop import native_batch_decode_available
+
+        if not native_batch_decode_available():
+            raise LlamaServerError("native batch decode not available")
+
+        with self._infer_lock:
+            from runtime.infer_trace import infer_trace
+
+            infer_trace(
+                "complete.parallel.enter",
+                n_prompts=len(prompts),
+                n_seq_max=self.n_seq_max,
+            )
+            smpls: list[ctypes.c_void_p] = []
+            jobs: list[_ParallelDecodeJob] = []
+            try:
+                jobs, smpls = self._parallel_jobs_and_smpls(
+                    prompts,
+                    n_predict=n_predict,
+                    seq_ids=seq_ids,
+                    kv_token_budgets=kv_token_budgets,
+                    kv_bind_reqs=kv_bind_reqs,
+                    current_positions=current_positions,
+                    sampler=sampler,
+                )
+                ctx = self._ctx
+                assert ctx is not None
+                texts = _decode_parallel_non_stream(
+                    self._lib,
+                    self._model,
+                    ctx,
+                    self._vocab,
+                    smpls,
+                    jobs,
+                    kv_block_size=kv_block_size,
+                )
+                self._finalize_parallel_jobs(jobs, kv_block_size=kv_block_size)
+                return texts
+            finally:
+                for smpl in smpls:
+                    self._lib.llama_sampler_free(smpl)
+
+    def complete_parallel_stream(
+        self,
+        prompts: list[str],
+        *,
+        n_predict: int,
+        seq_ids: list[int],
+        kv_token_budgets: list[int | None] | None = None,
+        kv_bind_reqs: list[Any] | None = None,
+        kv_block_size: int = 16,
+        current_positions: list[int | None] | None = None,
+        sampler: SamplerOptions | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream N prompts via batched decode steps (v29).
+
+        WHY stream parallel decode: same prefill + ``run_batch_step`` path as
+        ``complete_parallel`` (v27) but yields ``seq_idx``-tagged chunks for
+        interleaved multi-request token delivery. One ``stop=True`` sentinel per
+        sequence when it finishes.
+        """
+        if not prompts:
+            return iter(())
+        if self.n_seq_max <= 1 or self._ctx is None:
+            raise LlamaServerError("complete_parallel_stream requires n_seq_max > 1")
+        from runtime.kv.native_decode_loop import native_batch_decode_available
+
+        if not native_batch_decode_available():
+            raise LlamaServerError("native batch decode not available")
+
+        def _locked_stream() -> Iterator[dict[str, Any]]:
+            from runtime.infer_trace import infer_trace
+
+            infer_trace(
+                "complete.parallel.stream.enter",
+                n_prompts=len(prompts),
+                n_seq_max=self.n_seq_max,
+            )
+            smpls: list[ctypes.c_void_p] = []
+            jobs: list[_ParallelDecodeJob] = []
+            try:
+                with self._infer_lock:
+                    jobs, smpls = self._parallel_jobs_and_smpls(
+                        prompts,
+                        n_predict=n_predict,
+                        seq_ids=seq_ids,
+                        kv_token_budgets=kv_token_budgets,
+                        kv_bind_reqs=kv_bind_reqs,
+                        current_positions=current_positions,
+                        sampler=sampler,
+                    )
+                    ctx = self._ctx
+                    assert ctx is not None
+                    try:
+                        yield from _decode_parallel_stream(
+                            self._lib,
+                            self._model,
+                            ctx,
+                            self._vocab,
+                            smpls,
+                            jobs,
+                            kv_block_size=kv_block_size,
+                        )
+                    finally:
+                        self._finalize_parallel_jobs(
+                            jobs, kv_block_size=kv_block_size
+                        )
+            finally:
+                for smpl in smpls:
+                    self._lib.llama_sampler_free(smpl)
+
+        return _locked_stream()
 
     def complete(
         self,
@@ -605,7 +1147,64 @@ class LlamaLoadedSession:
         kv_token_budget: int | None = None,
         kv_bind_req: Any | None = None,
         kv_block_size: int = 16,
+        current_pos: int | None = None,
     ) -> str | Iterator[dict[str, Any]]:
+        if not stream:
+            with self._infer_lock:
+                return self._complete_locked(
+                    prompt,
+                    n_predict=n_predict,
+                    stream=False,
+                    sampler=sampler,
+                    seq_id=seq_id,
+                    kv_token_budget=kv_token_budget,
+                    kv_bind_req=kv_bind_req,
+                    kv_block_size=kv_block_size,
+                    current_pos=current_pos,
+                )
+
+        def _locked_stream() -> Iterator[dict[str, Any]]:
+            with self._infer_lock:
+                inner = self._complete_locked(
+                    prompt,
+                    n_predict=n_predict,
+                    stream=True,
+                    sampler=sampler,
+                    seq_id=seq_id,
+                    kv_token_budget=kv_token_budget,
+                    kv_bind_req=kv_bind_req,
+                    kv_block_size=kv_block_size,
+                    current_pos=current_pos,
+                )
+                yield from inner
+
+        return _locked_stream()
+
+    def _complete_locked(
+        self,
+        prompt: str,
+        *,
+        n_predict: int,
+        stream: bool = False,
+        sampler: SamplerOptions | None = None,
+        seq_id: int = -1,
+        kv_token_budget: int | None = None,
+        kv_bind_req: Any | None = None,
+        kv_block_size: int = 16,
+        current_pos: int | None = None,
+    ) -> str | Iterator[dict[str, Any]]:
+        from runtime.infer_trace import infer_trace
+
+        ctx_int = int(ctypes.cast(self._ctx, ctypes.c_void_p).value or 0) if self._ctx else 0
+        infer_trace(
+            "complete.enter",
+            seq_id=seq_id,
+            n_predict=n_predict,
+            stream=stream,
+            n_prompt=len(prompt) if prompt else 0,
+            ctx=hex(ctx_int) if ctx_int else None,
+            n_seq_max=self.n_seq_max,
+        )
         tokens = self.tokenize_text(prompt, add_special=True)
         if not tokens:
             raise LlamaServerError("empty prompt after tokenize")
@@ -614,18 +1213,16 @@ class LlamaLoadedSession:
 
         if self.n_seq_max > 1 and self._ctx:
             sid = _normalize_seq_id(seq_id, self.n_seq_max)
-            need_ctx = n_prompt + max(n_predict, 1)
-            if kv_token_budget is not None and need_ctx > kv_token_budget:
-                raise LlamaServerError(
-                    f"prompt+generation ({need_ctx} tokens) exceeds PA KV reserve "
-                    f"({kv_token_budget} tokens)"
-                )
-            if need_ctx > int(self._lib.llama_n_ctx(self._ctx)):
-                raise LlamaServerError(
-                    f"prompt+generation ({need_ctx} tokens) exceeds n_ctx "
-                    f"({self._lib.llama_n_ctx(self._ctx)})"
-                )
-            _clear_sequence(self._lib, self._ctx, sid)
+            decode_pos = self._prepare_seq_for_decode(
+                self._ctx,
+                sid,
+                n_prompt=n_prompt,
+                n_predict=n_predict,
+                kv_token_budget=kv_token_budget,
+                kv_bind_req=kv_bind_req,
+                current_pos=current_pos,
+            )
+            incoming_owner = slot_resume_owner_key(kv_bind_req)
 
             def _release_smpl() -> None:
                 self._lib.llama_sampler_free(smpl)
@@ -642,7 +1239,29 @@ class LlamaLoadedSession:
                         n_predict=n_predict,
                         seq_id=sid,
                         n_seq_max=self.n_seq_max,
+                        kv_slot=sid,
+                        kv_block_size=kv_block_size,
+                        current_pos=decode_pos,
                     )
+                    if incoming_owner is not None:
+                        # Record owner so next turn (possibly new request_id) can resume.
+                        self._seq_last_owner[sid] = incoming_owner
+                    if (
+                        getattr(kv_bind_req, "slot_pinned", False)
+                        and self.slot_cache_model_hash
+                    ):
+                        saved = _save_slot_cache_disk(
+                            self._lib,
+                            self._ctx,
+                            seq_id=sid,
+                            model_hash=self.slot_cache_model_hash,
+                        )
+                        if saved:
+                            infer_trace(
+                                "complete.disk_save",
+                                seq_id=sid,
+                                nbytes=saved,
+                            )
                     self._physical_check_after_decode(
                         self._ctx,
                         sid,
@@ -665,8 +1284,26 @@ class LlamaLoadedSession:
                         n_predict=n_predict,
                         seq_id=sid,
                         n_seq_max=self.n_seq_max,
+                        kv_slot=sid,
+                        kv_block_size=kv_block_size,
+                        current_pos=decode_pos,
                     )
                 finally:
+                    # Record owner in finally so a partial stream still
+                    # allows the next turn to resume from the position
+                    # reached (rather than clearing a partially written slot).
+                    if incoming_owner is not None:
+                        self._seq_last_owner[sid] = incoming_owner
+                    if (
+                        getattr(kv_bind_req, "slot_pinned", False)
+                        and self.slot_cache_model_hash
+                    ):
+                        _save_slot_cache_disk(
+                            self._lib,
+                            self._ctx,
+                            seq_id=sid,
+                            model_hash=self.slot_cache_model_hash,
+                        )
                     self._physical_check_after_decode(
                         self._ctx,
                         sid,
@@ -695,6 +1332,7 @@ class LlamaLoadedSession:
         if not ctx:
             raise LlamaServerError("llama_init_from_model failed")
         sid = _normalize_seq_id(seq_id, 1)
+        decode_pos = self._resolve_decode_current_pos(ctx, sid, current_pos)
 
         def _release() -> None:
             self._lib.llama_sampler_free(smpl)
@@ -712,6 +1350,9 @@ class LlamaLoadedSession:
                     n_predict=n_predict,
                     seq_id=sid,
                     n_seq_max=1,
+                    kv_slot=sid,
+                    kv_block_size=kv_block_size,
+                    current_pos=decode_pos,
                 )
                 self._physical_check_after_decode(
                     ctx,
@@ -735,6 +1376,9 @@ class LlamaLoadedSession:
                     n_predict=n_predict,
                     seq_id=sid,
                     n_seq_max=1,
+                    kv_slot=sid,
+                    kv_block_size=kv_block_size,
+                    current_pos=decode_pos,
                 )
             finally:
                 self._physical_check_after_decode(
@@ -784,6 +1428,9 @@ def _decode_non_stream(
     n_predict: int,
     seq_id: int = 0,
     n_seq_max: int = 1,
+    kv_slot: int | None = None,
+    kv_block_size: int | None = None,
+    current_pos: int = 0,
 ) -> str:
     pieces: list[str] = []
     for chunk in _decode_stream(
@@ -796,6 +1443,9 @@ def _decode_non_stream(
         n_predict=n_predict,
         seq_id=seq_id,
         n_seq_max=n_seq_max,
+        kv_slot=kv_slot,
+        kv_block_size=kv_block_size,
+        current_pos=current_pos,
     ):
         if chunk.get("content"):
             pieces.append(str(chunk["content"]))
@@ -813,16 +1463,79 @@ def _decode_stream(
     n_predict: int,
     seq_id: int = 0,
     n_seq_max: int = 1,
+    kv_slot: int | None = None,
+    kv_block_size: int | None = None,
+    current_pos: int = 0,
 ) -> Iterator[dict[str, Any]]:
+    """Token streaming decode with optional Phase 15 v8–v15 native decode loop.
+
+    v8: C batch metadata + page-bind validation; llama_decode via ctypes.
+    v13: when ZEROLLAMA_KV_DECODE_LOOP ext is built, prefill + decode steps
+         run entirely in C (kv_decode_loop_run_prefill / run_step).
+    v14: GIL release, ``pos_start`` resume prefill, page-bind validation.
+    v15: ``current_pos`` for mid-request resume; C ``llama_sampler_sample`` when linked.
+
+    Why kv_slot/kv_block_size: scheduler registers PA page tables per kv_slot
+    at admit; long prompts may prefill in page-aligned chunks; overrun raises
+    LlamaServerError.
+    """
     from runtime.kv.native_decode import record_decode_step
+    from runtime.kv.native_decode_loop import run_prefill as _native_prefill
+    from runtime.kv.native_decode_loop import run_sample as _native_sample
+    from runtime.kv.native_decode_loop import run_step as _native_step
 
     n_prompt = len(prompt_tokens)
     limit = max(0, n_predict)
+    bind_slot = kv_slot if kv_slot is not None else seq_id
+    start_pos = max(0, int(current_pos))
+    ctx_int = ctypes.cast(ctx, ctypes.c_void_p).value or 0
+    native_decode = os.environ.get("ZEROLLAMA_KV_NATIVE_DECODE", "1") != "0"
+    use_native_step = bool(
+        ctx_int and not lib.llama_model_has_encoder(model) and native_decode
+    )
+    smpl_int = int(ctypes.cast(smpl, ctypes.c_void_p).value or 0)
+    use_native_sample = bool(
+        use_native_step
+        and smpl_int
+        and os.environ.get("ZEROLLAMA_KV_NATIVE_SAMPLE", "1") != "0"
+    )
+    from runtime.infer_trace import infer_trace
+
+    infer_trace(
+        "decode.begin",
+        seq_id=seq_id,
+        n_prompt=n_prompt,
+        n_predict=limit,
+        start_pos=start_pos,
+        ctx=hex(ctx_int) if ctx_int else None,
+        kv_slot=bind_slot,
+        kv_block_size=kv_block_size,
+        native_decode=native_decode,
+        native_step=use_native_step,
+        native_sample=use_native_sample,
+    )
 
     def _make_batch(
         tokens: list[int], *, logits_last: bool, pos_start: int
     ) -> LlamaBatch:
-        # Heap batch only: llama_batch_get_one keeps a pointer to caller memory.
+        from runtime.kv.native_decode_batch import (
+            build_batch_from_tokens,
+            native_decode_batch_available,
+        )
+        from runtime.kv.page_bind import validate_token_positions
+
+        if native_decode_batch_available():
+            return build_batch_from_tokens(
+                lib,
+                tokens,
+                seq_id=seq_id,
+                n_seq_max=n_seq_max,
+                logits_last=logits_last,
+                pos_start=pos_start,
+                kv_slot=bind_slot,
+            )
+        if bind_slot is not None:
+            validate_token_positions(bind_slot, pos_start, len(tokens))
         return _batch_from_tokens(
             lib,
             tokens,
@@ -832,10 +1545,95 @@ def _decode_stream(
             pos_start=pos_start,
         )
 
-    batch = _make_batch(prompt_tokens, logits_last=False, pos_start=0)
-    batch_owned = True
+    def _prefill_prompt() -> tuple[LlamaBatch | None, int]:
+        """Return (batch, n_pos). batch=None when prefill was handled entirely in C.
+
+        WHY logits_last on final prefill token only: intermediate chunks skip logits;
+        the last chunk (C or ctypes) sets logits_last so the first sample after
+        prefill has valid output.  v9 ``decode_prefill`` export mirrors this.
+
+        WHY v15 ``start_pos``: ``decode_work.current_pos`` may be mid-prefill or
+        mid-decode; remaining prompt slices use ``pos_start=start_pos``.
+        """
+        ctx_int = ctypes.cast(ctx, ctypes.c_void_p).value or 0
+
+        if start_pos >= n_prompt:
+            return None, start_pos
+
+        prefill_tokens = (
+            prompt_tokens[start_pos:] if start_pos > 0 else prompt_tokens
+        )
+        pos_start = start_pos
+
+        # v13+ native path: page-aligned chunking + llama_decode entirely in C.
+        if (
+            ctx_int
+            and not lib.llama_model_has_encoder(model)
+            and native_decode
+        ):
+            infer_trace(
+                "decode.prefill",
+                path="native",
+                pos_start=pos_start,
+                n_tokens=len(prefill_tokens),
+            )
+            steps = _native_prefill(
+                ctx_int,
+                prefill_tokens,
+                seq_id=seq_id,
+                block_size=kv_block_size or 0,
+                pos_start=pos_start,
+                kv_slot=bind_slot,
+            )
+            if steps is not None:
+                record_decode_step(steps)
+                return None, n_prompt
+
+        infer_trace(
+            "decode.prefill",
+            path="ctypes",
+            pos_start=pos_start,
+            n_tokens=len(prefill_tokens),
+            chunked=bool(kv_block_size and kv_block_size > 0),
+        )
+        # ctypes multi-chunk prefill — v23: same chunker as kv_decode_prefill_plan export.
+        # WHY prompt_tokens + pos_start (not pre-sliced prefill_tokens): iter_prefill_execute_chunks
+        # slices internally so the returned chunk_pos values are correct absolute positions.
+        from runtime.kv.decode_plan import iter_prefill_execute_chunks
+
+        if kv_block_size and kv_block_size > 0:
+            exec_chunks = iter_prefill_execute_chunks(
+                prompt_tokens,
+                block_size=kv_block_size,
+                pos_start=pos_start,
+            )
+            if len(exec_chunks) > 1:
+                for chunk_tokens, chunk_pos, logits_last in exec_chunks:
+                    chunk_batch = _make_batch(
+                        chunk_tokens,
+                        logits_last=logits_last,
+                        pos_start=chunk_pos,
+                    )
+                    if lib.llama_decode(ctx, chunk_batch) != 0:
+                        lib.llama_batch_free(chunk_batch)
+                        raise LlamaServerError("llama_decode failed")
+                    record_decode_step(1)
+                    lib.llama_batch_free(chunk_batch)
+                return None, n_prompt
+        # Single chunk (short prompt or native batch unavailable): use pre-sliced tokens.
+        return _make_batch(
+            prefill_tokens, logits_last=True, pos_start=pos_start
+        ), pos_start
+
+    batch, n_pos = _prefill_prompt()
+    batch_owned = batch is not None
+    prefill_chunked = batch is None
 
     if lib.llama_model_has_encoder(model):
+        if batch is None:
+            batch = _make_batch(prompt_tokens, logits_last=False, pos_start=0)
+            batch_owned = True
+            prefill_chunked = False
         if lib.llama_encode(ctx, batch) != 0:
             if batch_owned:
                 lib.llama_batch_free(batch)
@@ -848,29 +1646,352 @@ def _decode_stream(
             lib.llama_batch_free(batch)
         batch = _make_batch([int(start)], logits_last=True, pos_start=0)
         batch_owned = True
+        n_pos = 0
+        prefill_chunked = False
 
-    n_pos = 0
+    smpl_int = int(ctypes.cast(smpl, ctypes.c_void_p).value or 0)
 
     def _emit_piece(piece: str, *, stop: bool) -> dict[str, Any]:
         return {"content": piece, "response": piece, "stop": stop}
 
+    _sample_path_logged = False
+
+    def _sample_token() -> int | None:
+        nonlocal _sample_path_logged
+        path = "native" if use_native_sample else "ctypes"
+        if not _sample_path_logged:
+            infer_trace("decode.sample", path=path, pos=n_pos)
+            _sample_path_logged = True
+        if use_native_sample:
+            tid = _native_sample(smpl_int, ctx_int)
+            if tid is not None:
+                new_id = int(tid)
+            else:
+                new_id = int(lib.llama_sampler_sample(smpl, ctx, -1))
+        else:
+            new_id = int(lib.llama_sampler_sample(smpl, ctx, -1))
+        if lib.llama_vocab_is_eog(vocab, new_id):
+            return None
+        return new_id
+
+    def _native_step_and_sample(token: int, pos: int) -> int | None:
+        if use_native_sample:
+            step_out = _native_step(
+                ctx_int,
+                token,
+                seq_id=seq_id,
+                current_pos=pos,
+                kv_slot=bind_slot,
+                smpl_ptr=smpl_int,
+            )
+            if not isinstance(step_out, tuple):
+                # smpl_ptr was set; run_step must return (steps, token).
+                # Non-tuple means the ext returned unexpectedly — do not
+                # silently fall through and decode the same position again.
+                raise LlamaServerError(
+                    "native decode step with smpl_ptr returned non-tuple; "
+                    "possible ABI mismatch between Python and linked libllama"
+                )
+            record_decode_step(step_out[0])
+            new_id = int(step_out[1])
+            if lib.llama_vocab_is_eog(vocab, new_id):
+                return None
+            return new_id
+        steps = _native_step(
+            ctx_int, token, seq_id=seq_id, current_pos=pos, kv_slot=bind_slot
+        )
+        if steps is not None:
+            record_decode_step(steps)
+            return _sample_token()
+        return None
+
     try:
-        while n_pos + batch.n_tokens < n_prompt + limit:
+        target = n_pos + limit
+        if prefill_chunked and n_pos >= n_prompt and limit > 0:
+            # Prefill ran in C — sample first decode token from the last prefill logits.
+            new_id = _sample_token()
+            if new_id is None:
+                yield _emit_piece("", stop=True)
+                return
+            yield _emit_piece(token_to_piece(vocab, new_id), stop=False)
+            if use_native_step:
+                while n_pos < target:
+                    next_id = _native_step_and_sample(new_id, n_pos)
+                    n_pos += 1
+                    if next_id is None:
+                        yield _emit_piece("", stop=True)
+                        return
+                    if n_pos >= target:
+                        break
+                    yield _emit_piece(token_to_piece(vocab, next_id), stop=False)
+                    new_id = next_id
+                yield _emit_piece("", stop=True)
+                return
+            batch = _make_batch([new_id], logits_last=True, pos_start=n_pos)
+            batch_owned = True
+            prefill_chunked = False
+
+        while n_pos < target:
+            if batch is None:
+                raise LlamaServerError("decode state: missing batch")
             if lib.llama_decode(ctx, batch) != 0:
                 raise LlamaServerError("llama_decode failed")
             record_decode_step(1)
             n_pos += batch.n_tokens
-            new_id = int(lib.llama_sampler_sample(smpl, ctx, -1))
-            if lib.llama_vocab_is_eog(vocab, new_id):
+            if n_pos >= target:
+                break
+            new_id = _sample_token()
+            if new_id is None:
                 yield _emit_piece("", stop=True)
                 return
-            piece = token_to_piece(vocab, new_id)
-            yield _emit_piece(piece, stop=False)
+            yield _emit_piece(token_to_piece(vocab, new_id), stop=False)
             if batch_owned:
                 lib.llama_batch_free(batch)
             batch = _make_batch([new_id], logits_last=True, pos_start=n_pos)
             batch_owned = True
         yield _emit_piece("", stop=True)
     finally:
-        if batch_owned:
+        if batch_owned and batch is not None:
             lib.llama_batch_free(batch)
+
+
+@dataclass
+class _ParallelDecodeJob:
+    prompt_tokens: list[int]
+    seq_id: int
+    kv_slot: int
+    decode_pos: int
+    n_predict: int
+    kv_bind_req: Any | None = None
+
+
+@dataclass
+class _ParallelSeqState:
+    job: _ParallelDecodeJob
+    n_pos: int
+    generated: int
+    pieces: list[str]
+    job_idx: int = 0
+    feed_token: int | None = None
+    done: bool = False
+
+
+def _parallel_stream_chunk(
+    seq_idx: int,
+    seq_id: int,
+    piece: str,
+    *,
+    stop: bool = False,
+) -> dict[str, Any]:
+    return {
+        "seq_idx": seq_idx,
+        "seq_id": seq_id,
+        "content": piece,
+        "response": piece,
+        "stop": stop,
+    }
+
+
+def _decode_parallel_stream(
+    lib: ctypes.CDLL,
+    model: ctypes.c_void_p,
+    ctx: ctypes.c_void_p,
+    vocab: ctypes.c_void_p,
+    smpls: list[ctypes.c_void_p],
+    jobs: list[_ParallelDecodeJob],
+    *,
+    kv_block_size: int,
+) -> Iterator[dict[str, Any]]:
+    """Multi-sequence decode stream: sequential prefill, batched decode steps (v29).
+
+    Yields ``_parallel_stream_chunk`` dicts tagged with ``seq_idx`` / ``seq_id``.
+    One ``stop=True`` sentinel per sequence when it finishes (including EOG / limit).
+    """
+    from runtime.infer_trace import infer_trace
+    from runtime.kv.native_decode import record_decode_step
+    from runtime.kv.native_decode_loop import run_batch_step as _native_batch_step
+    from runtime.kv.native_decode_loop import run_prefill as _native_prefill
+    from runtime.kv.native_decode_loop import run_sample as _native_sample
+
+    ctx_int = int(ctypes.cast(ctx, ctypes.c_void_p).value or 0)
+    native_decode = os.environ.get("ZEROLLAMA_KV_NATIVE_DECODE", "1") != "0"
+    use_native = bool(
+        ctx_int and not lib.llama_model_has_encoder(model) and native_decode
+    )
+    _first_smpl_int = (
+        int(ctypes.cast(smpls[0], ctypes.c_void_p).value or 0) if smpls else 0
+    )
+    use_native_sample = bool(
+        use_native
+        and _first_smpl_int
+        and os.environ.get("ZEROLLAMA_KV_NATIVE_SAMPLE", "1") != "0"
+    )
+    infer_trace(
+        "decode.parallel.stream.begin",
+        n_jobs=len(jobs),
+        native=use_native,
+        native_sample=use_native_sample,
+    )
+    if not use_native:
+        raise LlamaServerError("parallel decode requires native decode loop")
+
+    def _smpl_int(job_idx: int) -> int:
+        if job_idx < len(smpls):
+            return int(ctypes.cast(smpls[job_idx], ctypes.c_void_p).value or 0)
+        return 0
+
+    def _sample_one_for(job_idx: int, batch_idx: int = -1) -> int:
+        si = _smpl_int(job_idx)
+        # WHY: use_native_sample reads the last logit row (single-row assumption).
+        # After run_batch_step the matrix has N rows; only use native path for the
+        # post-prefill sample (batch_idx == -1) where there is exactly one row.
+        if use_native_sample and si and batch_idx == -1:
+            tid = _native_sample(si, ctx_int)
+            if tid is not None:
+                return int(tid)
+        smpl = smpls[job_idx] if job_idx < len(smpls) else smpls[0]
+        return int(lib.llama_sampler_sample(smpl, ctx, batch_idx))
+
+    def _emit_token(st: _ParallelSeqState, new_id: int) -> Iterator[dict[str, Any]]:
+        if lib.llama_vocab_is_eog(vocab, new_id):
+            st.done = True
+            yield _parallel_stream_chunk(
+                st.job_idx, st.job.seq_id, "", stop=True
+            )
+            return
+        piece = token_to_piece(vocab, new_id)
+        st.pieces.append(piece)
+        st.generated += 1
+        yield _parallel_stream_chunk(st.job_idx, st.job.seq_id, piece, stop=False)
+        if st.generated >= st.job.n_predict:
+            st.done = True
+            yield _parallel_stream_chunk(
+                st.job_idx, st.job.seq_id, "", stop=True
+            )
+        else:
+            st.feed_token = int(new_id)
+
+    states: list[_ParallelSeqState] = []
+    for job_idx, job in enumerate(jobs):
+        n_prompt = len(job.prompt_tokens)
+        start_pos = max(0, int(job.decode_pos))
+        limit = max(0, int(job.n_predict))
+        bind_slot = job.kv_slot
+
+        if use_native and start_pos < n_prompt:
+            infer_trace(
+                "decode.parallel.prefill",
+                seq_id=job.seq_id,
+                pos_start=start_pos,
+                n_tokens=n_prompt - start_pos,
+            )
+            steps = _native_prefill(
+                ctx_int,
+                job.prompt_tokens,
+                seq_id=job.seq_id,
+                block_size=kv_block_size or 0,
+                pos_start=start_pos,
+                kv_slot=bind_slot,
+            )
+            if steps is None:
+                raise LlamaServerError("native prefill unavailable in parallel decode")
+            record_decode_step(steps)
+
+        n_pos = n_prompt if start_pos < n_prompt else start_pos
+        st = _ParallelSeqState(
+            job=job, n_pos=n_pos, generated=0, pieces=[], job_idx=job_idx
+        )
+
+        if limit <= 0:
+            st.done = True
+            states.append(st)
+            yield _parallel_stream_chunk(job_idx, job.seq_id, "", stop=True)
+            continue
+
+        new_id = _sample_one_for(job_idx)
+        if lib.llama_vocab_is_eog(vocab, new_id):
+            st.done = True
+            states.append(st)
+            yield _parallel_stream_chunk(job_idx, job.seq_id, "", stop=True)
+            continue
+
+        piece = token_to_piece(vocab, new_id)
+        st.pieces.append(piece)
+        st.generated = 1
+        states.append(st)
+        yield _parallel_stream_chunk(job_idx, job.seq_id, piece, stop=False)
+        if st.generated >= limit:
+            st.done = True
+            yield _parallel_stream_chunk(job_idx, job.seq_id, "", stop=True)
+        else:
+            st.feed_token = new_id
+
+    while True:
+        active = [s for s in states if not s.done and s.feed_token is not None]
+        if not active:
+            break
+
+        tokens = [int(s.feed_token) for s in active]
+        seq_ids = [s.job.seq_id for s in active]
+        positions = [s.n_pos for s in active]
+        infer_trace(
+            "decode.parallel.batch_step",
+            n_rows=len(active),
+            seq_ids=seq_ids,
+        )
+
+        active_smpls = [_smpl_int(st.job_idx) for st in active]
+        batch_out = None
+        # WHY smpl_ptrs (v30): after a multi-row batch step the logit matrix has N
+        # rows. ctypes batch_idx sampling works but stays in Python; per-row C
+        # samplers keep decode+sample in one GIL-released call with correct indices
+        # and isolated accept state (v27 audit — no shared sampler chain).
+        if use_native_sample and active_smpls and all(active_smpls):
+            batch_out = _native_batch_step(
+                ctx_int,
+                tokens,
+                seq_ids,
+                positions,
+                smpl_ptrs=active_smpls,
+            )
+        if batch_out is None:
+            batch_out = _native_batch_step(ctx_int, tokens, seq_ids, positions)
+        if batch_out is None:
+            raise LlamaServerError("native batch step unavailable")
+        if isinstance(batch_out, tuple):
+            steps, sampled = batch_out
+            record_decode_step(int(steps))
+            for st, new_id in zip(active, sampled):
+                st.n_pos += 1
+                st.feed_token = None
+                yield from _emit_token(st, int(new_id))
+            continue
+
+        record_decode_step(int(batch_out))
+        for batch_idx, st in enumerate(active):
+            st.n_pos += 1
+            st.feed_token = None
+            new_id = _sample_one_for(st.job_idx, batch_idx)
+            yield from _emit_token(st, new_id)
+
+
+def _decode_parallel_non_stream(
+    lib: ctypes.CDLL,
+    model: ctypes.c_void_p,
+    ctx: ctypes.c_void_p,
+    vocab: ctypes.c_void_p,
+    smpls: list[ctypes.c_void_p],
+    jobs: list[_ParallelDecodeJob],
+    *,
+    kv_block_size: int,
+) -> list[str]:
+    """Collect ``_decode_parallel_stream`` into per-sequence text (v27)."""
+    texts = [""] * len(jobs)
+    for chunk in _decode_parallel_stream(
+        lib, model, ctx, vocab, smpls, jobs, kv_block_size=kv_block_size
+    ):
+        if chunk.get("stop"):
+            continue
+        idx = int(chunk["seq_idx"])
+        texts[idx] += str(chunk.get("content") or "")
+    return texts

@@ -45,8 +45,8 @@ def test_new_vocab_session_uses_wheel_when_backend_is_cpp_python(
 
 
 def test_build_llama_cpp_load_kwargs_split_mode():
+    llama_cpp = pytest.importorskip("llama_cpp", reason="llama_cpp not installed")
     from runtime.llama_args import LlamaServerArgHints, split_mode_to_llama_cpp_int
-    import llama_cpp
 
     assert split_mode_to_llama_cpp_int("none") == llama_cpp.LLAMA_SPLIT_MODE_NONE
     assert split_mode_to_llama_cpp_int("row") == llama_cpp.LLAMA_SPLIT_MODE_ROW
