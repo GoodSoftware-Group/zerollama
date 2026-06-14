@@ -95,6 +95,8 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh
 ```bash
 # 1. Build fork sibling (CUDA)
 ./scripts/build_eliza_llama_server.sh
+# Headless container: if WebUI asset download fails, rebuild with
+#   cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_WEBUI=OFF ...
 
 # 2. Point runtime at fork binary
 export LLAMA_CPP_ROOT=$PWD/../eliza-llama.cpp
@@ -173,7 +175,7 @@ JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PAS
 
 JSON: `/tmp/l2-cuda-gate/bench-8k.json`, verdict in `/tmp/l2-cuda-gate/verdict.txt`. **Runtime compat smoke:** PASS (stock + fork subprocess generate). **Fork build:** `L2_BUILD_FORK=1` or `build_eliza_llama_server.sh` — **WHY** `LLAMA_BUILD_WEBUI=OFF` on Linux (headless CT WebUI/npm failure).
 
-**Gate status (CUDA 5080):** **FAIL merge** @ 8k (stock faster). Long-ctx legs not run on 5080 yet — `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh` before concluding on TBQ/QJL. **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression.
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run). Long-ctx legs not run on 5080 yet — `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh` before concluding on TBQ/QJL. **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression.
 
 ---
 

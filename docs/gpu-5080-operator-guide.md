@@ -87,6 +87,60 @@ RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
 
 ---
 
+## Phase 15 CUDA libllama + sign-off
+
+**Status:** **PASS (Jun 2026, CT 1564 / cudallama)** on RTX 5080 — OuteTTS 1B Q8, sibling `libllama.so` with kv-ext + decode loop.
+
+**Why separate from L1 gate:** Phase 15 needs a **patched** libllama (kv-ext symbols + optional `ZEROLLAMA_KV_DECODE_LOOP=1` ext build). L1 profile autotune (`rtx-5080.json`) is orthogonal; multiseq sign-off must **disable** L1 override on serve (`ZEROLLAMA_GPU_PROFILE=0`) so yaml `llama_parallel_slots: 2` maps to `kv_inprocess_n_seq_max=2`, not L1 `-np 4`.
+
+### Build patched libllama (5080 / sm_120)
+
+Host CUDA **12.3** cannot compile **sm_120** (Blackwell). Install **cuda-nvcc-12-8** in the container and point CMake at it:
+
+```bash
+# Inside CT (example: pct exec 1564 -- bash)
+apt install cuda-nvcc-12-8   # or equivalent for your image
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+export CUDACXX=/usr/local/cuda-12.8/bin/nvcc
+
+cd ~/llama.cpp && git checkout b9611   # zerollama pin
+# Patch 0015 may not apply cleanly to stock b9611 alone — copy from zerollama tree:
+#   include/llama-kv-ext.h, src/llama-memory-kv-ext.cpp, kv-cache cell_index changes, CMakeLists
+cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120-real
+cmake --build build -j
+nm -D build/bin/libllama.so | grep llama_memory_kv_   # expect four symbols
+```
+
+### Sign-off (embed path)
+
+```bash
+export LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
+export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+pkill -f 'zerollama serve' || true   # stale :8080/:8081 blocks embed startup
+./scripts/phase15_inprocess_signoff.sh
+```
+
+**Pass criteria:** `phase15_inprocess_kv_smoke` (`kv_decode_steps>0`, `batch_decode_in_c=True`), `phase15_inprocess_multiseq_smoke` (`kv_inprocess_n_seq_max=2`), `phase15_batch_decode_smoke` (batch + stream via `/internal/generate-batch`).
+
+Multiseq smoke sets `ZEROLLAMA_GPU_PROFILE=0` automatically (same rationale as `phase15_metal_signoff.sh` step 2).
+
+See also: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md).
+
+---
+
+## 5080 gate summary (CT 1564, Jun 2026)
+
+| Gate | Result | Notes |
+|------|--------|-------|
+| Phase 15 in-process | **PASS** | Native decode + multiseq + batch decode; OuteTTS 1B Q8 |
+| L2 CUDA (8k) | **FAIL merge** | Stock **79.7** vs fork **55.9 tok/s** — expected; long-ctx legs optional |
+| L3 cache (subprocess) | **SOFT PASS** | Bridge wired (`derived_slot`, `llama_cache.enabled`); no latency win on 1B @ 8k |
+| L1 autotune | Pending | Measure `rtx-5080.json` tok/s before/after tuning |
+
+Individual scripts: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
+
+---
+
 ## L1 GPU profiles (CUDA autotune)
 
 **Why:** Phase 13 (below) estimates fit and suggests `num_ctx`. **L1** merges eliza-derived llama-server flags — `-b`, `-ub`, `-np`, `-fa`, cache types, MTP `draft_*` — when `single_gpu.yaml` loads on a CUDA host.

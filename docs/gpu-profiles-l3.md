@@ -251,6 +251,22 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 
 Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `generate_batch` prompt order. When this list is present, out-of-range indices get **no** cache key (no flat-key fallback) so unrelated batch rows do not share a slot.
 
+### Gate sign-off (Jun 2026)
+
+| Platform | Model | Verdict | Notes |
+|----------|-------|---------|-------|
+| Metal (M4 Max) | *(see m3 signoff)* | PASS / SOFT PASS | `RUN_E2E_L3=1` on `m3_metal_signoff.sh` |
+| CUDA 5080 (CT 1564) | OuteTTS 1B Q8 @ 8k | **SOFT PASS** | Bridge wired: `llama_cache.enabled=true`, `derived_slot=3`, `n_parallel=4`; turn2 wall 1.384s vs turn1 1.379s (ratio 0.996 — no measurable win on tiny prefix). Artifacts: `/tmp/l3-cache-smoke.json`. **Strict PASS** needs larger model or longer stable prefix (e.g. 27b @ 26k). |
+
+**Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
+
+```bash
+# CUDA subprocess path (5080):
+export M3_LLAMA_MODEL=/path/to/model.gguf   # alias accepted on Linux
+./scripts/l3_cache_smoke.sh
+./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+```
+
 ---
 
 ## In-process disk cache (inprocess backend)

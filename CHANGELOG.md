@@ -10,7 +10,7 @@ All notable changes to this project are documented in this file. The format is b
 
 - **Phase 15 `phase15_inprocess_signoff.sh` PASS** — KV decode hook (`kv_decode_steps` native), multiseq `kv_inprocess_n_seq_max=2`, continuous batch decode (`batch_decode_in_c=true`) on RTX 5080 with patched b9611 `libllama.so` (`120-real`).
 - **`scripts/phase15_inprocess_multiseq_smoke.sh`** — `ZEROLLAMA_GPU_PROFILE=0` on multiseq serve. **Why:** L1 `rtx-5080` sets `n_parallel=4`, overriding temp YAML `llama_parallel_slots: 2` (same pattern as `phase15_metal_signoff.sh`).
-- **L2 `l2_cuda_full_gate.sh`** — stock **79.3** vs fork **56.9** tok/s @ 8192 ctx (OuteTTS 1B Q8; reruns ±1 tok/s); **FAIL merge** verdict; compat smoke PASS.
+- **L2 `l2_cuda_full_gate.sh`** — stock **79.3** vs fork **56.9** tok/s @ 8192 ctx (OuteTTS 1B Q8; reruns ±1 tok/s); **FAIL merge** verdict (exit 1 = verdict fail, not broken run); compat smoke PASS.
 - **`scripts/build_eliza_llama_server.sh`** + **`build_llama_server.sh`** — `LLAMA_BUILD_WEBUI=OFF` on Linux. **Why:** headless CT builds fail cmake `xxd.cmake` when HF WebUI download/npm build fails.
 - **L3 `l3_cache_smoke.sh`** — **SOFT PASS** (bridge wired; no latency win on 1B @ 8k).
 - **L1 5080 A/B** — profile ON **37.9** vs OFF **43.3** tok/s @ 8k (1B Q8); detection PASS; tok/s calibration **open** on production GGUF.

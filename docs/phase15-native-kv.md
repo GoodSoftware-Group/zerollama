@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (Jun 2026) — **v0–v30 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **Not done:** hybrid/iSWA bind; upstream-stable writable page handles; scheduler-driven async batching across concurrent HTTP streams.
+**Status:** Partial (Jun 2026) — **v0–v30 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **Not done:** writable cross-allocator page bind; scheduler-driven async batching across concurrent HTTP streams.
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
