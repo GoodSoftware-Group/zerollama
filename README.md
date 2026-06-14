@@ -156,6 +156,26 @@ console.log(response.message.content);
 
 **Why tiers, not one setup script:** sign-off needs pulled GGUFs; CI smokes bind Go **`:8080`** while daily serve uses **`:11434`**; `../llama.cpp` is cloned automatically on tier 0. **`zerollama doctor --fix`** clones the sibling and builds Metal libllama when missing — same order as `mac_setup`. Details: [mac-dev-setup.md](docs/mac-dev-setup.md) · ROADMAP [M14](docs/ROADMAP.md#apple-silicon--metal-track).
 
+### Building zerollama on CUDA (RTX 5080-class / Proxmox CT)
+
+**Why a separate section:** CUDA hosts use discrete VRAM (`single_gpu.yaml`, `nvidia-smi`), **sm_120** needs CUDA **12.8+** `nvcc`, and Proxmox operators often land on the **host** while GPU passthrough lives in an **LXC** — run gates **inside** the CT (`pct exec 1564 -- …`), not on the host with stale CUDA 12.3.
+
+```bash
+# Inside CT (e.g. cudallama) — sibling llama.cpp @ b9611 + kv-ext patch 0015
+export LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf   # ~1B Q8 smoke
+export LLAMA_CPP_LIB=/root/llama.cpp/build/bin/libllama.so
+export CMAKE_CUDA_ARCHITECTURES=120-real
+CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build_llama_server.sh
+
+# Gate sequence (see gpu-5080-operator-guide.md)
+./scripts/phase15_llama_kv_ext_pin_check.sh
+./scripts/phase15_inprocess_signoff.sh          # PASS
+CUDA_LLAMA_MODEL=$LLAMA_MODEL ./scripts/l2_cuda_full_gate.sh
+./scripts/l3_cache_smoke.sh && ./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+```
+
+**Jun 2026 sign-off (CT 1564):** Phase 15 **PASS**; L2 **FAIL merge** @ 8k (stock faster); L3 **SOFT PASS**. Full playbook: [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md).
+
 **Why a separate build script:** CGO needs Xcode SDK, embedded Python, and Metal ggml from the **patched in-tree** vendor (`llama/patches/` on `b9611`), not only sibling `../llama.cpp`.
 
 ```bash
@@ -185,9 +205,9 @@ console.log(response.message.content);
 
 **GPU profile autotune (L1):** the runtime sidecar auto-merges tuned llama-server flags (`-b`, `-ub`, `-np`, `-fa`, …) from `runtime/configs/gpu/` based on **unified RAM** on Mac (`apple-silicon-16g` … `128g`). Check `curl -s :8081/health | jq .gpu_profile`. **Why:** Phase 13 estimates fit; L1 picks throughput knobs — a 128 GiB M4 Max should not share the same batch/parallel defaults as a 16 GiB Air. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](docs/gpu-profiles-l1.md).
 
-**Prompt cache → slot bridge (L3):** pass a stable session key in request `options` (`eliza.conversationId`, `prompt_cache_key`, …) and the runtime pins llama-server `id_slot` + sets `cache_prompt: true` so repeat system prompts skip full prefill. Check `curl -s :8081/health | jq .llama_cache`. **Why:** agent threads re-send the same system prompt every turn — dynamic Phase 15 slots throw away KV on `complete()`. L3 maps keys → slots (needs `-np > 1` from L1). Batch rows use `prompt_cache_keys[]` (strict per-index — no silent fallback to a flat key). Disk cache lives under `~/.cache/zerollama/llama-cache/<modelHash>/`; hash canonicalizes GGUF paths and includes L2 cache types so fork/stock blobs never mix. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Sign-off: `./scripts/l3_cache_smoke.sh` + `./scripts/l3_gate_report.sh` (or `RUN_E2E_L3=1` on `m3_metal_signoff.sh`). Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
+**Prompt cache → slot bridge (L3):** pass a stable session key in request `options` (`eliza.conversationId`, `prompt_cache_key`, …) and the runtime pins llama-server `id_slot` + sets `cache_prompt: true` so repeat system prompts skip full prefill. Check `curl -s :8081/health | jq .llama_cache`. **Why:** agent threads re-send the same system prompt every turn — dynamic Phase 15 slots throw away KV on `complete()`. L3 maps keys → slots (needs `-np > 1` from L1). Batch rows use `prompt_cache_keys[]` (strict per-index — no silent fallback to a flat key). Disk cache lives under `~/.cache/zerollama/llama-cache/<modelHash>/`; hash canonicalizes GGUF paths and includes L2 cache types so fork/stock blobs never mix. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Sign-off: `./scripts/l3_cache_smoke.sh` + `./scripts/l3_gate_report.sh` (or `RUN_E2E_L3=1` on `m3_metal_signoff.sh`). **5080 Jun 2026:** SOFT PASS on 1B Q8 (bridge wired). Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
 
-**Fork evaluation (L2):** build eliza `llama-server` sibling + A/B against stock. `./scripts/l2_full_gate.sh` (or `RUN_E2E_L2=1 ./scripts/m3_metal_signoff.sh`). **Why:** QJL/TurboQuant live in `elizaOS/llama.cpp` — vendor merge is gated on measured wins. Metal Jun 2026: stock wins decode at 8k/27k; fork runs 131k ctx. Doc: [gpu-profiles-l2.md](docs/gpu-profiles-l2.md).
+**Fork evaluation (L2):** build eliza `llama-server` sibling + A/B against stock. `./scripts/l2_full_gate.sh` (Mac) or `./scripts/l2_cuda_full_gate.sh` (CUDA). **Why:** QJL/TurboQuant live in `elizaOS/llama.cpp` — vendor merge is gated on measured wins. Metal Jun 2026: stock wins decode at 8k/27k; fork runs 131k ctx. **CUDA 5080 Jun 2026:** stock wins @ 8k (FAIL merge); long-ctx legs pending. Doc: [gpu-profiles-l2.md](docs/gpu-profiles-l2.md).
 
 **Why rebuild after pull:** Jun 2026 fixed Mac **GPU bootstrap discovery** (`total_vram="0 B"` / CPU-only offload) and **Go ollama-engine sched_reserve** for qwen35moe (`GGML_ASSERT(tensor->buffer == NULL)` abort). Rebuild so `/info` uses `DiscoverBackendDevices()` and graph tensors defer to the scheduler — see [apple-silicon-metal.md](docs/apple-silicon-metal.md#gpu-bootstrap-discovery-jun-2026) and [sched_reserve](docs/apple-silicon-metal.md#go-ollama-engine-sched_reserve-jun-2026).
 
@@ -235,16 +255,16 @@ Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lm
 - [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs. **Ggml path (M12):** same suggest/clamp idea on Go scheduler — see [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#ggml-vram-suggest-and-opt-in-clamp-m12-jun-2026).
 - [Phase 14 in-process llama](docs/phase14-inprocess-llama.md) — **why** loopback `llama-server` added latency, split VRAM, and blocked token-accurate tools truncation; three backends (`subprocess` default, `inprocess` ctypes GPU, `llama-cpp-python` wheel CPU-default); `POST /internal/tokenize` for Go render-chat; sign-off scripts `phase14_inprocess_smoke.sh`, `phase14_wheel_cpu_smoke.sh`, `phase14_yaml_config_smoke.sh`, `phase14_both_backends.sh`.
 - [Phase 14 handoff](docs/handoff-phase14-inprocess-llama.md) — engineer handoff: architecture, code map, bugs fixed, 5080 sign-off commands.
-- [Phase 15 native KV](docs/phase15-native-kv.md) — **why** PA block pool + scheduler bind precede tensor KV; **v13–v16** C `llama_decode` + GIL release + engine resume via `current_pos`; **v26–v30** continuous batch decode (`run_batch_step`, `generate_batch`, `stream_generate_batch`, per-row C sampling); **GPU sign-off** `phase15_metal_signoff.sh` (Mac, batch step 3/5) + `phase15_inprocess_signoff.sh` (Linux); loopback `POST /internal/generate-batch` for operator smokes; `/health.kv_decode_loop`, `kv_continuous_batch`. Linked build: `scripts/phase15_runtime_kv_env.sh` (prefers sibling `../llama.cpp`).
+- [Phase 15 native KV](docs/phase15-native-kv.md) — **why** PA block pool + scheduler bind precede tensor KV; **v13–v16** C `llama_decode` + GIL release + engine resume via `current_pos`; **v26–v30** continuous batch decode (`run_batch_step`, `generate_batch`, `stream_generate_batch`, per-row C sampling); **GPU sign-off** `phase15_metal_signoff.sh` (Mac) + `phase15_inprocess_signoff.sh` (**PASS RTX 5080 Jun 2026**); loopback `POST /internal/generate-batch`; `/health.kv_decode_loop`, `kv_continuous_batch`. Linked build: `scripts/phase15_runtime_kv_env.sh` (sibling `../llama.cpp` @ b9611 + patch 0015).
 - [Phase 12 tools + admission handoff](docs/handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), GPU code maps, smokes.
 - [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500`; embedded CPython; inference-first VRAM on OOM; defer queue env vars. Code map: [`x/trainingworker/pyembed/README.md`](x/trainingworker/pyembed/README.md).
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
-- [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
+- [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; Proxmox CT layout; Phase 15 + L2 + L3 sign-off sequence; API unload before VRAM broker; snapshot + autotune; harmony deferred without high host RAM.
+- [L2 eliza fork evaluation](docs/gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant; build `../eliza-llama.cpp`; **5080 Jun 2026:** stock wins @ 8k (FAIL merge); bench gate before vendor merge.
+- [L3 prompt cache → slot bridge](docs/gpu-profiles-l3.md) — **why** stable session keys skip repeat prefill; pinned `id_slot` + disk TTL; batch `prompt_cache_keys`; **5080 Jun 2026:** SOFT PASS (bridge wired on 1B).
 - [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **L1 GPU profiles** (RAM tiers); Darwin Metal contention policy; scheduler 400/503 errors; **GPU bootstrap discovery**; **Go engine sched_reserve** (qwen35moe); **Jun 2026 sign-off** (`metal_signoff.sh`, `qwen35_mac_smoke.sh`).
 - [L1 GPU profiles (autotune)](docs/gpu-profiles-l1.md) — **why** Phase 13 ≠ throughput tuning; NVIDIA name/VRAM buckets; Apple RAM tiers; stock llama.cpp safety; operator env.
-- [L2 eliza fork evaluation](docs/gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant; build `../eliza-llama.cpp`; `ZEROLLAMA_LLAMA_FORK=1`; bench gate before vendor merge.
-- [L3 prompt cache → slot bridge](docs/gpu-profiles-l3.md) — **why** stable session keys skip repeat prefill; pinned `id_slot` + disk TTL; batch `prompt_cache_keys`; audit invariants (canonical paths, orphan sweep, bind-before-release).
 - [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits compat metadata + Metal embed layers; **Go ollama-engine default on Mac** (Jun 2026); `PrimaryFamily()` for VL; thinking-model API fields; opt-in `qwen35_mac_smoke.sh`.
 - [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards; LM Studio MLX disk import policy.
 - [LM Studio cache import](docs/lmstudio-import.md) — **why** pull-from-cache, **why** MLX copies vs GGUF symlinks, disk policy, `OLLAMA_LMSTUDIO_LIST_ALL`, operator troubleshooting.

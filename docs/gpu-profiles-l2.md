@@ -163,7 +163,17 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 
 JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PASS (stock + fork subprocess generate).
 
-**Gate status (Metal):** **FAIL merge** at small ctx (stock faster). Fork may still win **max ctx + VRAM** at 27k+ — run `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh`. **Gate status (CUDA 5080):** **Not run** — scripts ready (`l2_cuda_bench.sh`, `l2_cuda_full_gate.sh`); run `CUDA_LLAMA_MODEL=/path/to/model.gguf L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh`. **Vendor merge:** blocked until fork wins ≥2/3 on both platforms + qwen35 ggml smoke unchanged.
+**Gate status (Metal):** **FAIL merge** at small ctx (stock faster). Fork may still win **max ctx + VRAM** at 27k+ — run `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh`.
+
+### CUDA 5080 sign-off (Jun 2026, CT 1564, RTX 5080)
+
+| Model | ctx | Stock | Fork | Notes |
+|-------|-----|-------|------|-------|
+| OuteTTS 1B Q8 | 8192 | **79.7 tok/s**, q8_0/q8_0 | 55.9 tok/s, qjl1_256/q4_polar | Stock wins decode (~30%); VRAM est tied |
+
+JSON: `/tmp/l2-cuda-gate/bench-8k.json`, verdict in `/tmp/l2-cuda-gate/verdict.txt`. **Runtime compat smoke:** PASS (stock + fork subprocess generate). **Fork build:** `L2_BUILD_FORK=1` or `build_eliza_llama_server.sh` — **WHY** `LLAMA_BUILD_WEBUI=OFF` on Linux (headless CT WebUI/npm failure).
+
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k (stock faster). Long-ctx legs not run on 5080 yet — `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh` before concluding on TBQ/QJL. **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression.
 
 ---
 

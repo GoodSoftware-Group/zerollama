@@ -375,3 +375,30 @@ curl -s :8081/api/generate -d '{
 ```
 
 Compare llama-server timings / `slot_save_path` file mtimes. Disable with `ZEROLLAMA_LLAMA_CACHE=0` to confirm prefill regression.
+
+---
+
+## CUDA 5080 sign-off (Jun 2026, CT 1564)
+
+| Field | Value |
+|-------|--------|
+| Model | `Llama-OuteTTS-1.0-1B-Q8_0.gguf` |
+| Backend | subprocess + stock `llama-server` |
+| `n_parallel` | 4 (rtx-5080 L1) |
+| `derived_slot` | 3 (`l3-smoke-thread-1`) |
+| Turn 1 / 2 wall | 1.379s / 1.384s |
+| `turn2_faster_than_turn1` | false |
+
+**Verdict:** **SOFT PASS** — `llama_cache.enabled`, slot derivation, and both turns OK; no measurable latency win on tiny 1B @ 8192 ctx.
+
+**Why SOFT PASS is acceptable:** stable prefix in the smoke is sized for ~25% of `num_ctx` but 1B decode dominates wall time; agent workloads with multi-kB system prompts on larger models should re-run `l3_agent_bench.sh` for strict PASS.
+
+**Run inside Proxmox CT:**
+
+```bash
+export M3_LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
+./scripts/l3_cache_smoke.sh
+./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+```
+
+Artifact: `/tmp/l3-cache-smoke.json`. Doc: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#gate-3--l3-agent-cache-bench).

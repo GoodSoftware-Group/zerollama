@@ -41,6 +41,11 @@ fi
 echo "elizaOS/llama.cpp @ $(git rev-parse --short HEAD)"
 
 # Reuse zerollama Metal/CUDA cmake wiring (stock flags; fork adds kernels in-tree).
+# WHY LLAMA_BUILD_WEBUI=OFF on Linux: headless CTs lack Node 20+ / HF llama-ui assets;
+# cmake still embeds WebUI unless disabled (xxd.cmake fails on missing bundle.css).
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  export LLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}"
+fi
 LLAMA_CPP_ROOT="${ELIZA_LLAMA_CPP_ROOT}" "${ROOT}/scripts/build_llama_server.sh"
 
 BIN="${ELIZA_LLAMA_CPP_ROOT}/build/bin/llama-server"

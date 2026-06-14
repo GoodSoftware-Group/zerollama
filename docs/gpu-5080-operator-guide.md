@@ -92,7 +92,7 @@ curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
 
 **Disable / override:** `ZEROLLAMA_GPU_PROFILE=0`; `ZEROLLAMA_GPU_PROFILE_CTX=0` to skip profile `-c`; `LLAMA_SERVER_EXTRA_ARGS` appended last.
 
-**5080 gate (pending):** run `gpu_5080_session.sh` before/after tuning `rtx-5080.json` and compare tok/s + VRAM headroom. Apple tiers are sign-off complete — CUDA values are ported from eliza until measured on ship hardware.
+**5080 gate (partial, Jun 2026):** L1 `rtx-5080` profile active (`n_parallel=4`, `-c 32768`); values still eliza-ported until `gpu_5080_session.sh` before/after JSON tuning. **Why partial:** Phase 15/L2/L3 gates ran on ship hardware; L1 tok/s calibration against production GGUF is still open.
 
 Full doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 
@@ -282,11 +282,117 @@ Doc: [phase14-inprocess-llama.md](./phase14-inprocess-llama.md).
 
 ---
 
+## Proxmox / CT layout (why run gates inside the container)
+
+**Why document this:** Operators often SSH to the Proxmox **host** (`pct status` works) while GPU passthrough and CUDA toolchains live in an **LXC** (e.g. CT **1564**, hostname `cudallama`). The host may have an older `nvcc` (12.3) that **cannot** compile `sm_120` for RTX 5080; the CT needs **CUDA 12.8+** `nvcc` and all sign-off commands should run **inside** the CT.
+
+```bash
+# From Proxmox host — all GPU gates below use this wrapper
+pct exec 1564 -- bash -lc 'cd /root/zerollama && …'
+```
+
+| Path | Role |
+|------|------|
+| Host mount | `/var/lib/vz/private/1564/root/zerollama` (optional) |
+| Inside CT | `/root/zerollama` — **use this in scripts** |
+| Sibling llama.cpp | `/root/llama.cpp` (pin **b9611** + patch **0015**) |
+| Smoke GGUF | e.g. `/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf` (~1B Q8 fits 16 GB) |
+
+**One-time CT setup (WHY each step):**
+
+1. **`cuda-nvcc-12-8`** in the CT — host CUDA 12.3 rejects `compute_120`; 5080 Blackwell needs 12.8+.
+2. **Reset sibling `llama.cpp` to tag `b9611`** — copying kv-ext onto `master` breaks `llama-kv-cache.h` vs the rest of the tree.
+3. **Apply fork files from zerollama** (patch 0015 may not apply cleanly to stock b9611 alone):
+
+```bash
+ZROOT=/root/zerollama
+L=/root/llama.cpp
+git -C "$L" checkout -f b9611
+cp "$ZROOT/llama/llama.cpp/include/llama-kv-ext.h" "$L/include/"
+cp "$ZROOT/llama/llama.cpp/src/llama-memory-kv-ext.cpp" "$L/src/"
+cp "$ZROOT/llama/llama.cpp/src/llama-kv-cache.{h,cpp}" "$L/src/"
+grep -q llama-memory-kv-ext.cpp "$L/src/CMakeLists.txt" || \
+  sed -i '/llama-memory-recurrent.cpp/a\            llama-memory-kv-ext.cpp' "$L/src/CMakeLists.txt"
+```
+
+4. **Rebuild libllama** with `CMAKE_CUDA_ARCHITECTURES=120-real`, `BUILD_SHARED_LIBS=ON` (see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md)).
+
+**Stale serve:** kill `zerollama serve` on `:8080`/`:8081` before Phase 15 embed smokes — a leftover process blocks embed and health checks hit the wrong backend.
+
+---
+
+## Phase 15 + borrowings gates (5080 sign-off sequence)
+
+**Why this order:** pin check proves fork files before a long CUDA build; Phase 15 needs patched `libllama.so`; L2/L3 use **subprocess** `llama-server` (different path than Phase 15 **inprocess**).
+
+| Gate | Script | Jun 2026 (CT 1564, RTX 5080) |
+|------|--------|------------------------------|
+| 0 Pin | `phase15_llama_kv_ext_pin_check.sh` | PASS in-tree; sibling symbols after rebuild |
+| 1 Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** — KV hook, multiseq `n_seq_max=2`, batch decode |
+| 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** @ 8k — stock **79.7** vs fork **55.9** tok/s |
+| 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **SOFT PASS** — bridge wired; no latency win on 1B @ 8k |
+
+### Gate 1 — Phase 15 in-process (CUDA)
+
+```bash
+export LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
+export LLAMA_CPP_LIB=/root/llama.cpp/build/bin/libllama.so
+export LLAMA_CPP_ROOT=/root/llama.cpp
+export OLLAMA_HOST=http://127.0.0.1:8080
+./scripts/phase15_inprocess_signoff.sh
+# PASS: phase15_inprocess_signoff
+```
+
+**What it checks:** `kv_decode_steps` increment (native), `kv_inprocess_n_seq_max=2`, `batch_decode_in_c=true`, batch + stream via `/internal/generate-batch`.
+
+**WHY `ZEROLLAMA_GPU_PROFILE=0` in multiseq smoke:** L1 `rtx-5080` sets `n_parallel=4`, overriding temp YAML `llama_parallel_slots: 2` — same fix as `phase15_metal_signoff.sh` on Mac 128g (`n_parallel=8`).
+
+Folded into session: `RUN_E2E_PHASE15=1` or `RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh`.
+
+### Gate 2 — L2 fork eval (CUDA A/B)
+
+```bash
+export CUDA_LLAMA_MODEL=$LLAMA_MODEL
+# First time: L2_BUILD_FORK=1 (sets LLAMA_BUILD_WEBUI=OFF on Linux — headless WebUI build fails)
+./scripts/l2_cuda_full_gate.sh
+./scripts/l2_gate_report.sh /tmp/l2-cuda-gate/bench-*.json
+```
+
+Artifacts: `/tmp/l2-cuda-gate/`. **Verdict (Jun 2026):** stock wins decode @ 8192 ctx on 1B Q8; vendor merge still blocked. Optional long-ctx legs: `L2_RUN_27K=1 L2_RUN_131K_FORK=1`. Doc: [gpu-profiles-l2.md](./gpu-profiles-l2.md).
+
+### Gate 3 — L3 agent cache bench
+
+```bash
+export M3_LLAMA_MODEL=$LLAMA_MODEL   # alias accepted on CUDA
+./scripts/l3_cache_smoke.sh
+./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+```
+
+**Strict gate:** turn 2 faster than turn 1 with same `prompt_cache_key`. **SOFT PASS** is acceptable when bridge is wired but prefix is too short for 1B — try larger model / longer stable prefix. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md).
+
+### Optional — tensor bind spot-check
+
+After multiseq sidecar (`kv_inprocess_n_seq_max≥2`):
+
+```bash
+source ./scripts/phase15_runtime_kv_env.sh
+phase15_runtime_kv_ext_build
+./scripts/phase15_tensor_bind_probe.sh
+curl -s :8081/health | jq '.kv_page_bind, .kv_decode_loop'
+```
+
+Expect `batch_decode_in_c: true`; after generate with active bind: `status: "bound"`, `bind_level: "tensor"` when linked ext is present.
+
+---
+
 ## Code map
 
 | Piece | Path |
 |-------|------|
 | Phase 14 smokes | `scripts/phase14_serve_env.sh`, `phase14_backend_smoke.sh`, `phase14_both_backends.sh` |
+| Phase 15 smokes | `scripts/phase15_inprocess_signoff.sh`, `phase15_runtime_kv_env.sh`, `phase15_llama_kv_ext_pin_check.sh` |
+| L2 / L3 gates | `scripts/l2_cuda_full_gate.sh`, `l3_cache_smoke.sh`, `l3_gate_report.sh` |
+| Eliza fork build | `scripts/build_eliza_llama_server.sh` (`LLAMA_BUILD_WEBUI=OFF` on Linux) |
 | Unload + broker prep | `scripts/runtime_smoke_lib.sh` |
 | 5080 one-liner | `scripts/gpu_5080_session.sh` |
 | Snapshot JSON | `scripts/gpu_phase13_snapshot.sh` |

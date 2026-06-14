@@ -5,6 +5,9 @@
 # asserts /health kv_inprocess_n_seq_max and a successful generate (num_ctx capped
 # for PA block pool — default autoconfig budget can exceed num_blocks*block_size).
 #
+# WHY ZEROLLAMA_GPU_PROFILE=0 on serve: L1 rtx-5080 (and Mac 128g) override YAML
+# n_parallel — sign-off requires kv_inprocess_n_seq_max=2 (see phase15_metal_signoff.sh).
+#
 #   export LLAMA_MODEL=/path/to/small.q8_0.gguf
 #   export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 #   ./scripts/phase15_inprocess_multiseq_smoke.sh
@@ -49,6 +52,9 @@ echo "== Phase 15 in-process multi-seq smoke =="
 (
   cd "${ROOT}"
   env -u ZEROLLAMA_RUNTIME_URL -u ZEROLLAMA_RUNTIME_LLAMA_BACKEND \
+    # WHY disable L1 profile: rtx-5080 sets n_parallel=4, overriding temp YAML
+    # llama_parallel_slots: 2 — sign-off asserts kv_inprocess_n_seq_max=2 (same as Metal).
+    ZEROLLAMA_GPU_PROFILE=0 \
     ZEROLLAMA_RUNTIME_CONFIG="$TMPYAML" \
     ZEROLLAMA_RUNTIME_EMBED="${ZEROLLAMA_RUNTIME_EMBED:-on}" \
     ZEROLLAMA_RUNTIME="${ZEROLLAMA_RUNTIME:-1}" \
