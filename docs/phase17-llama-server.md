@@ -12,6 +12,9 @@ Zerollama’s default Mac path remains **in-process ggml Metal**. Phase 17 ports
 | `ZEROLLAMA_LLAMA_SERVER=1`, `--llama-server-backend` | Wired via `llm.NewLlamaServer` |
 | `scripts/build_ollama_llama_server_darwin.sh` | Done |
 | Default routing policy (replace ggml on Mac) | **Not yet** — opt-in flag only |
+| Linux plain-text auto-default (llama-server when binary found) | **Shipped** — `ZEROLLAMA_LLAMA_SERVER=0` to disable |
+| `OLLAMA_NEW_ENGINE` | **Deprecated** — warns; use llama-server path |
+| E2E smoke | `./scripts/phase17_llama_server_smoke.sh` |
 | M7 Metal benchmark | Done — keep ggml default (see below) |
 
 ## Enable the path
@@ -82,10 +85,10 @@ go run ./cmd/bench -model llama3.2:3b -num-ctx 4096 -epochs 6 -format csv -outpu
 
 ## Remaining work
 
-1. Smoke-test `--llama-server-backend` end-to-end on ship hardware (load, chat, unload).
+1. ~~Smoke-test `--llama-server-backend` end-to-end on ship hardware~~ — `phase17_llama_server_smoke.sh`.
 2. Reduce duplicate `llama/patches/` vs `llama/compat/` overlay.
 3. Port upstream `discover/llama_server.go` GPU probe if needed.
-4. Deprecate `OLLAMA_NEW_ENGINE` / ollamarunner for plain text GGUF after parity sign-off.
+4. ~~Deprecate `OLLAMA_NEW_ENGINE` for plain text GGUF~~ — **partial**: deprecated + Linux auto-default; Mac still uses ggml llamarunner until policy flip.
 5. Policy decision: when (if ever) to flip Mac default from ggml to Go → llama-server.
 
 ## Related docs

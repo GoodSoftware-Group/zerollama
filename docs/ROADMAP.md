@@ -103,9 +103,9 @@ Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial unti
 | 2 | Bump sibling llama.cpp + pin toward upstream `b9509`; rebuild `llama-server` | **Done** — root `LLAMA_CPP_VERSION`, [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
 | 2b | **Rebase in-tree ggml/llama.cpp to real b9509** (not overlay snapshot) | **Done** — 12 patches, vendor sync script, build+doctor; [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | 3 | Port `llama/compat/` overlay; reduce overlapping `llama/patches/` | **Partial** — compat imported; ggml patches rebased to b9509; dedup open |
-| 4 | Port `llm/llama_server.go` + discovery probe; eligible GGUF uses Go → llama-server | **Scaffold** — `--llama-server-backend`; see [phase17-llama-server.md](./phase17-llama-server.md) |
+| 4 | Port `llm/llama_server.go` + discovery probe; eligible GGUF uses Go → llama-server | **Partial (Jun 2026)** — `--llama-server-backend`; **Linux auto-default** when `llama-server` found; `phase17_llama_server_smoke.sh`; see [phase17-llama-server.md](./phase17-llama-server.md) |
 | 5 | Benchmark ggml vs Go-llama-server vs Python runtime on ship hardware | **Done (M7)** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; keep ggml Mac default |
-| 6 | Deprecate `OLLAMA_NEW_ENGINE` / ollamarunner for plain text GGUF (keep vision/thinking until parity) | Open |
+| 6 | Deprecate `OLLAMA_NEW_ENGINE` / ollamarunner for plain text GGUF (keep vision/thinking until parity) | **Partial (Jun 2026)** — `OLLAMA_NEW_ENGINE` deprecated (warn); Linux plain text → llama-server auto; Mac/vision still ggml/ollamarunner |
 | 7 | Coordinate llama.cpp pin with borrowings **L2** (eliza fork kernels vs upstream merge) | **Partial** — L2 spike infra shipped; vendor merge gated on bench |
 
 **Non-goals:** full rebase onto upstream; deleting `runtime/` or training; replacing Eliza with ollama.com.

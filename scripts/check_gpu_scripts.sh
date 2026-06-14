@@ -48,6 +48,7 @@ scripts=(
   l3_production_gate.sh
   build_eliza_llama_server.sh
   phase14_backend_smoke.sh
+  phase17_llama_server_smoke.sh
   phase14_inprocess_smoke.sh
   phase14_wheel_cpu_smoke.sh
   phase14_yaml_config_smoke.sh

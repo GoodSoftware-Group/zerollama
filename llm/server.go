@@ -146,14 +146,19 @@ func useOllamaEngine(f *ggml.GGML) bool {
 	return pickOllamaEngine(f.KV().Architecture(), envconfig.NewEngine(), f.KV().OllamaEngineRequired())
 }
 
+var warnNewEngineOnce sync.Once
+
 func pickOllamaEngine(arch string, newEngine, ollamaRequired bool) bool {
+	if newEngine {
+		warnNewEngineOnce.Do(func() {
+			slog.Warn("OLLAMA_NEW_ENGINE is deprecated; prefer --llama-server-backend or Linux plain-text auto-default (Phase 17)")
+		})
+		return true
+	}
 	// OllamaEngineRequired() architectures (qwen35*, qwen3next, …) use the Go
 	// ollama-engine path on all OSes including darwin. Why no darwin gate: Jun 2026
 	// sched_reserve fix (defer graph tensor alloc; Persistent KV contexts) removed
 	// the Metal abort that previously forced legacy llamarunner for qwen35 on Mac.
-	if newEngine {
-		return true
-	}
 	if !ollamaRequired {
 		return false
 	}
@@ -163,7 +168,7 @@ func pickOllamaEngine(arch string, newEngine, ollamaRequired bool) bool {
 // NewLlamaServer will run a server for the given GPUs.
 // When ZEROLLAMA_LLAMA_SERVER=1, eligible models use upstream-style Go → llama-server.
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int) (LlamaServer, error) {
-	if envconfig.LlamaServerBackend() {
+	if useLlamaServerBackend(projectors) {
 		trainCtx := f.KV().ContextLength()
 		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {
 			slog.Warn("requested context size too large for model", "num_ctx", opts.NumCtx, "n_ctx_train", trainCtx)

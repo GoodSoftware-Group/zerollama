@@ -90,6 +90,20 @@ func TestLlamaCppBackend(t *testing.T) {
 	}
 }
 
+func TestLlamaServerBackendDisabled(t *testing.T) {
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "0")
+	if !LlamaServerBackendDisabled() {
+		t.Fatal("0 should disable")
+	}
+	if LlamaServerBackend() {
+		t.Fatal("0 should not be enabled")
+	}
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	if LlamaServerBackendDisabled() {
+		t.Fatal("1 should not be disabled")
+	}
+}
+
 func TestLlamaServerBackend(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "")
 	if LlamaServerBackend() {

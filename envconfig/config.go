@@ -346,7 +346,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_MULTIUSER_CACHE":              {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
 		"OLLAMA_CONTEXT_LENGTH":               {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
 		"OLLAMA_EDITOR":                       {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
-		"OLLAMA_NEW_ENGINE":                   {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
+		"OLLAMA_NEW_ENGINE":                   {"OLLAMA_NEW_ENGINE", NewEngine(), "Deprecated — use ZEROLLAMA_LLAMA_SERVER / --llama-server-backend (Phase 17)"},
 		"OLLAMA_REMOTES":                      {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 		"ELIZACLOUD_API_KEY":                  {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
 		"OLLAMA_SGLANG_URL":                   {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
@@ -357,7 +357,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
 		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy: 1/on (default when URL set), 0/off, unset=on if URL set"},
 		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
-		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "If 1, route eligible GGUF text inference through Go → llama-server subprocess (Phase 17)"},
+		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, 0/off; Linux auto when binary found)"},
 		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":              {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":       {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
@@ -527,6 +527,13 @@ func LlamaCppBackend() bool {
 func LlamaServerBackend() bool {
 	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER"))
 	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// LlamaServerBackendDisabled is true when ZEROLLAMA_LLAMA_SERVER=0 explicitly disables
+// Phase 17 auto-default on Linux.
+func LlamaServerBackendDisabled() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER"))
+	return v == "0" || strings.EqualFold(v, "false")
 }
 
 // ApplyLlamaServerBackendDefaults skips Python runtime routing so sched loads

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -43,6 +44,7 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/internal/modelref"
+	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/parser"
 	"github.com/ollama/ollama/progress"
 	"github.com/ollama/ollama/readline"
@@ -1779,6 +1781,14 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 	}
 	if flag, _ := cmd.Flags().GetBool("llama-server-backend"); flag {
 		_ = os.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	}
+	// Phase 17: on Linux, default plain-text GGUF to Go → llama-server when binary is present.
+	// WHY not Darwin: M7 bench keeps ggml Metal default (~164 vs ~158 tok/s @ 4k).
+	if runtime.GOOS == "linux" && strings.TrimSpace(os.Getenv("ZEROLLAMA_LLAMA_SERVER")) == "" {
+		if llm.LlamaServerDiscoverable() {
+			slog.Info("Phase 17: auto-enabling Go → llama-server on Linux (set ZEROLLAMA_LLAMA_SERVER=0 to disable)")
+			_ = os.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+		}
 	}
 	envconfig.ApplyLlamaCppBackendDefaults()
 	envconfig.ApplyLlamaServerBackendDefaults()
