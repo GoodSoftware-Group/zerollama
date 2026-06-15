@@ -221,7 +221,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. Phase 14 in-proces
 - **Standalone OmniVoice / libelizainference** monolith unless **L7** proves subprocess voice insufficient.
 - **Replacing** Eliza Cloud proxy or LM Studio import with eliza local-inference UI.
 
-**Cross-links:** Spec decode — [runtime/docs/SPECULATIVE.md](../runtime/docs/SPECULATIVE.md). CUDA — [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md). Mac — [apple-silicon-metal.md](./apple-silicon-metal.md). Voice today — [multimodal-backends.md](./multimodal-backends.md).
+**Cross-links:** Spec decode — [runtime/docs/SPECULATIVE.md](../runtime/docs/SPECULATIVE.md). CUDA — [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) (build, serve, gates). Mac — [apple-silicon-metal.md](./apple-silicon-metal.md). Voice today — [multimodal-backends.md](./multimodal-backends.md). Remote clients — [runtime-embed.md](./runtime-embed.md#remote-clients-go-api-vs-embedded-runtime).
 
 ---
 

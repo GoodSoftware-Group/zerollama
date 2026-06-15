@@ -72,3 +72,21 @@ pkill -f 'zerollama serve'    # or kill the sidecar PID
 ```
 
 `scripts/serve_gpu_example.sh` and `scripts/phase14_serve_env.sh` warn (and the example script may `pkill` stale zerollama). **`systemctl stop ollama` does not stop zerollama** — common footgun on cudallama-style `~/bin/serve.sh` wrappers.
+
+## Remote clients (Go API vs embedded runtime)
+
+| Listener | Default | Remote clients? |
+|----------|---------|-----------------|
+| Go daemon (`zerollama serve`) | `127.0.0.1:11434` upstream; **5080 CT uses `0.0.0.0:8080`** | **Yes** — set `OLLAMA_HOST=0.0.0.0:8080` (or your CT IP) |
+| Embedded Python runtime | `127.0.0.1:8081` | **No** — loopback only; Go proxies |
+
+**Why two ports:** Go owns registry, scheduling, training HTTP, Eliza cloud merge, and VRAM broker. Python runtime is an internal inference worker. Remote apps (`ZEROLLAMA_API_ENDPOINT`, `OLLAMA_HOST`, Open WebUI) must target **Go `:8080`**, not `:8081`.
+
+**Verify bind after restart:**
+
+```bash
+ss -tlnp | grep 8080    # expect *:8080 or 0.0.0.0:8080
+curl -s http://<host-ip>:8080/api/tags
+```
+
+**Logs when stdout is redirected:** CT `~/bin/serve.sh` uses `>> /tmp/zerollama-serve.log` — `tail -f` that file; screen will look idle. See [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#production-serve-binserve-sh).

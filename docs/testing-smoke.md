@@ -48,7 +48,11 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `l3_gate_report.sh` | PASS/FAIL from `l3_cache_smoke.sh` JSON (strict latency or soft wiring pass) |
 | `l1_cuda_calibrate.sh` | L1 profile OFF vs ON (+ `L1_SWEEP_NP`) on production GGUF — **why:** tune `rtx-5080.json` from ship hardware, not eliza port |
 | `l1_cuda_concurrent_bench.sh` | N parallel `/api/generate` (barrier-synced) OFF vs ON — **why:** validate `n_parallel=2` wins under agent concurrency, not just single-stream |
+| `l1_cuda_full_gate.sh` / `l1_gate_report.sh` | L1 production gate — calibrate + concurrent + merged `gate.json` verdict |
+| `l1_full_gate.sh` | Platform dispatch (CUDA full gate vs Mac metal gate) |
 | `l3_production_gate.sh` | L3 strict gate @ 27k ctx on 9B+ — **why:** 8k smoke can pass wiring while production agent prefix at 26k+ is where cache pays |
+| `l3_cuda_full_gate.sh` / `l3_gate_report.sh` | L3 production gate — 8k smoke + 27k production + merged verdict |
+| `l3_full_gate.sh` | Platform dispatch (CUDA full gate vs Mac smoke) |
 | `l2_full_gate.sh` / `l2_gate_report.sh` | Fork vs stock A/B + runtime compat — **why:** vendor merge blocked until measured wins; see [gpu-profiles-l2.md](./gpu-profiles-l2.md) |
 | `qwen35_mac_smoke.sh` | Opt-in qwen35/qwen3.6 generate on darwin via Go ollama-engine; handoffs runtime Metal first; accepts `thinking` or `response` — see [qwen35-apple-silicon.md](./qwen35-apple-silicon.md) |
 | `e2e_training_ops_smoke.sh` | `GET /api/train/status` + jobs; optional TCP ping (no train job submit) |
@@ -264,6 +268,10 @@ GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD
 | `llama_backend_source=default` on subprocess serve | Expected when autoconfig YAML has no `llama_backend` key | Set env or uncomment YAML key; use `RUN_E2E_LLAMA_BACKEND_SOURCE=default` only to assert packaged default |
 | `address already in use` on `:8081` / embed warns then stale `/health` | Previous `zerollama serve` or `zerollama-runtime` sidecar still listening | `ss -tlnp \| grep 8081`; `pkill -f 'zerollama serve'`; unset `ZEROLLAMA_RUNTIME_URL`; use `scripts/serve_gpu_example.sh` or `phase14_serve_env.sh` |
 | `embedded runtime not started` (port in use) | Go preflight blocked embed (fixed vs silent stale attach) | Free `:8081` before `./serve.sh`; only one embed listener per host |
+| Remote client cannot reach API | `OLLAMA_HOST` default `127.0.0.1:11434` (localhost only) | Set `OLLAMA_HOST=0.0.0.0:8080`; verify `ss -tlnp \| grep 8080`; clients use Go `:8080`, not embedded `:8081` |
+| `go build` fails `cpp-httplib/httplib.h` | httplib not vendored in minimal checkout | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` — [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#building-zerollama-cgo-on-proxmox-ct) |
+| Screen shows no serve output | `exec zerollama serve >> /tmp/zerollama-serve.log` | `tail -f /tmp/zerollama-serve.log` — **why:** log redirect keeps screen quiet |
+| L1 bench "runtime failed to start" | `/health` cold probe ~9s; curl `-m 2` too short | Fixed in `linux_runtime_serve_lib.sh` (`LINUX_RT_CURL_TIMEOUT=15`); kill orphan `llama-server` on `:8082` |
 | ggml `runner terminated` during Phase 14 proxy | Pulled tag hit legacy path | `RUN_E2E_PHASE14=1` adds header; or `OLLAMA_RUNTIME_ALL=1` on serve |
 | `llama-server exited` / CUDA OOM | Model too large, wrong arch, tensor split on 1 GPU | Quantized GGUF, `single_gpu.yaml`, rebuild `120-real` |
 | Legacy `runner terminated` | GPU held by runtime | Retry (broker should hand off); or manual `training-handoff` |

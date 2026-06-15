@@ -7,6 +7,10 @@
 # turn2 wall time at least L3_STRICT_RATIO faster than turn1, OR cached faster than
 # the no-cache control run.
 #
+# WHY 27k default: agent manifests use long num_ctx; 8k smoke proves wiring only.
+# WHY turn2/turn1 may fail strict ratio after warmup: turn-1 already fills the pinned
+# slot — cached turn-2 vs no-cache control is the ship bar (5080 eliza-1 9B: 0.72s vs 1.48s).
+#
 # Usage:
 #   CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l3_production_gate.sh
 #

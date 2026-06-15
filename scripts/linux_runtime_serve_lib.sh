@@ -37,6 +37,8 @@ _linux_wait_http() {
   local label="$1"
   local url="$2"
   local max="${3:-30}"
+  # WHY not curl -m 2: InferenceEngine.health() on cold CUDA can take ~9s (nvidia probe +
+  # scheduler snapshot). Shorter timeout made every attempt fail for 120s while uvicorn was up.
   local curl_to="${LINUX_RT_CURL_TIMEOUT:-15}"
   local i
   echo -n "waiting for ${label} (${url})"
@@ -69,7 +71,8 @@ linux_runtime_stop_sidecar_port() {
   # fuser is part of util-linux and always present on CI runners.
   # macOS equivalent uses lsof (see macos_runtime_serve_lib.sh).
   fuser -k "${_LINUX_RT_PORT}/tcp" 2>/dev/null || true
-  # WHY port+1: subprocess llama-server binds loopback at runtime_port+1.
+  # WHY port+1: subprocess llama-server binds loopback at runtime_port+1 (e.g. 8082).
+  # Killing :8081 alone leaves orphan llama-server holding GPU VRAM across L1/L2 A/B legs.
   fuser -k "$((_LINUX_RT_PORT + 1))/tcp" 2>/dev/null || true
   sleep 1
 }

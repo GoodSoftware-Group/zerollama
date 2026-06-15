@@ -72,4 +72,14 @@ export ZEROLLAMA_RUNTIME_EMBED="${ZEROLLAMA_RUNTIME_EMBED:-on}"
 # Optional: RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh
 # Optional clamp smoke: export ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto
 #   RUN_E2E_VRAM_CLAMP=1 RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh
+#
+# Logging (pick one):
+#   exec "$ZEROLLAMA_BIN" serve                                    # stdout to screen/tmux
+#   exec "$ZEROLLAMA_BIN" serve >> /tmp/zerollama-serve.log 2>&1 # quiet screen; tail -f log
+#   exec "$ZEROLLAMA_BIN" serve 2>&1 | tee -a /tmp/zerollama-serve.log  # both
+# WHY log redirect on CT 1564: GIN + runner spam fills screen; operators use tail -f on one file.
+SERVE_LOG="${SERVE_LOG:-}"
+if [[ -n "$SERVE_LOG" ]]; then
+  exec "$ZEROLLAMA_BIN" serve >> "$SERVE_LOG" 2>&1
+fi
 exec "$ZEROLLAMA_BIN" serve

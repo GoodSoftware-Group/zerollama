@@ -23,6 +23,10 @@
 #   L1C_OUT_DIR              — default /tmp/l1-cuda-concurrent
 #   L1C_ENFORCE=1            — exit 1 when best ON concurrent leg does not beat OFF
 #   LINUX_RT_HEALTH_MAX      — sidecar startup timeout in seconds (default: 120)
+#
+# OFF leg note: profile OFF uses n_parallel=1 — expect 1×502 Bad Gateway per run when
+# L1C_N=2 (second slot rejected). Aggregate tok/s still sums successful threads; ON leg
+# should show 0 errors when n_parallel matches L1C_N.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

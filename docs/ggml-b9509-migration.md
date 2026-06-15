@@ -150,6 +150,17 @@ eval "$(./scripts/mac_cgo_env.sh --export)"
 
 **Legacy shim:** `./scripts/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin is now b9611 in `Makefile.sync`.
 
+### cpp-httplib on CUDA / Proxmox CT (CGO build)
+
+**Why not in git:** root `.gitignore` has `vendor/` — matches `llama/llama.cpp/vendor/cpp-httplib/` even though `miniaudio` / `nlohmann` / `stb` are tracked. Full upstream llama.cpp vendor includes httplib; minimal rsync checkouts often omit it.
+
+| Symptom | Fix |
+|---------|-----|
+| `cpp-httplib/httplib.h: No such file or directory` | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` then `CGO_ENABLED=1 go build -o zerollama .` |
+| GPU gate fails on Go golden, not GPU | `RUN_E2E_PREFLIGHT=0 ./scripts/gpu_5080_session.sh` — CI still runs `phase12_golden_ci.sh` |
+
+**Why CGO needs httplib:** b9611 `common/download.cpp` links cpp-httplib. Zerollama wraps it in `common/httplib_wrap.cpp` because CGO does not run CMake `add_subdirectory(vendor/cpp-httplib)`.
+
 ---
 
 ## Regenerating patches (after editing vendor)

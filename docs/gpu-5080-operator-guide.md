@@ -54,6 +54,15 @@ cd /root/zerollama && ./scripts/gpu_5080_session.sh
 
 **Pass criteria:** `PASS: gpu_5080_session` and snapshot file written. Smoke GGUF calibration (e.g. ~1.20× for OuteTTS Q8) is **smoke evidence only** until you run the same flow on your **production** GGUF (e.g. supernova fp16).
 
+Optional L1/L3 production gates (need `CUDA_LLAMA_MODEL` or `LLAMA_MODEL` — 7B–9B class):
+
+```bash
+RUN_E2E_L1=1 RUN_E2E_L3=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/gpu_5080_session.sh
+# Or standalone:
+./scripts/l1_cuda_full_gate.sh
+./scripts/l3_cuda_full_gate.sh
+```
+
 **Proxmox CT / minimal checkout — skip Go preflight:**
 
 ```bash
@@ -138,6 +147,65 @@ See also: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-nativ
 | L1 autotune | **PASS** | Single-stream +0.5%/+0.7%; **concurrent N=2 +10.5%** agg tok/s |
 
 Individual scripts: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
+
+---
+
+## Building zerollama (CGO) on Proxmox CT
+
+**Why this section exists:** CT 1564 and other minimal checkouts sync `llama/llama.cpp/vendor/{miniaudio,nlohmann,stb}` into git but **not** `cpp-httplib` — root `.gitignore` matches `vendor/`. CGO compiles `download.cpp` / `httplib_wrap.cpp`, which `#include <cpp-httplib/httplib.h>`. Without the header, `go build` fails before any GPU work runs.
+
+**Symptom:**
+
+```text
+fatal error: cpp-httplib/httplib.h: No such file or directory
+```
+
+**Fix (fast — sibling llama.cpp checkout):**
+
+```bash
+cd ~/zerollama
+rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/
+CGO_ENABLED=1 go build -o zerollama .
+sudo cp zerollama /usr/bin/zerollama   # if serve uses /usr/bin/zerollama
+```
+
+**Fix (full vendor sync):** clone `vendor/llama-cpp-b9611`, `make -f Makefile.sync apply-patches`, `./scripts/sync_vendor_llama.sh` — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
+
+**Why `RUN_E2E_PREFLIGHT=0` on GPU gate:** `gpu_5080_session.sh` can skip `phase12_golden_ci.sh` when httplib is missing; CI and full dev hosts still run Go golden tests. GPU smokes should not fail on parser compile in a tree that only ships inference.
+
+---
+
+## Production serve (`~/bin/serve.sh`)
+
+**Why not default `127.0.0.1:11434`:** upstream Ollama binds localhost on port 11434. Remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, ruby-trivia `OLLAMA_HOST`, Open WebUI, etc.) cannot reach localhost on the GPU box. CT 1564 listens on **`192.168.255.164:8080`** (`eth0` on `vmbr253`).
+
+**Required for remote inference:**
+
+```bash
+export OLLAMA_HOST=0.0.0.0:8080   # or http://0.0.0.0:8080
+zerollama serve
+```
+
+Log line should show `Listening on [::]:8080` or `0.0.0.0:8080` — **not** `127.0.0.1:11434`.
+
+**Embedded runtime stays loopback:** Go embeds Python runtime on `127.0.0.1:8081` (`ZEROLLAMA_RUNTIME_EMBED_PORT`). Remote clients talk to **`:8080` only**; they must not point at `:8081`.
+
+**Example wrapper:** `scripts/serve_gpu_example.sh` — copy to `~/bin/serve.sh` and adjust paths. CT 1564 production script adds:
+
+```bash
+exec zerollama serve >> /tmp/zerollama-serve.log 2>&1
+```
+
+**Why log redirect:** screen/tmux sessions stay quiet; GIN + runner logs accumulate in one file. **Watch live:** `tail -f /tmp/zerollama-serve.log`. **Trade-off:** no stdout in the screen — use `tee` if you want both (see comment in `serve_gpu_example.sh`).
+
+**After `git pull` + rebuild:** restart serve so `/usr/bin/zerollama` picks up the new binary.
+
+**Smoke from another host:**
+
+```bash
+curl -s http://192.168.255.164:8080/api/tags
+curl -s http://192.168.255.164:8080/v1/models
+```
 
 ---
 
@@ -252,6 +320,10 @@ Applied at runtime start by `vram_yaml_defaults.py` (before optional `VRAM_APPLY
 | `SMOKE_UNLOAD_MAX_WAIT` | Seconds to wait for ggml teardown (default 30). |
 | `GPU_PHASE13_SNAPSHOT_OUT` | Snapshot JSON path (default `/tmp/5080-session.json`). |
 | `RUN_E2E_PREFLIGHT` | `1` (default in `gpu_5080_session.sh`) runs `phase12_golden_ci.sh` first; `0` skips Go CGO golden — **why:** Proxmox CT often lacks vendored `cpp-httplib`; GPU smokes should not fail on parser compile. |
+| `RUN_E2E_L1` | `1` runs `l1_cuda_full_gate.sh` (needs `CUDA_LLAMA_MODEL` / `LLAMA_MODEL`). |
+| `RUN_E2E_L3` | `1` runs `l3_cuda_full_gate.sh` (needs 9B+ production GGUF). |
+| `OLLAMA_HOST` | **Bind address for Go API.** Default upstream `127.0.0.1:11434` — use `0.0.0.0:8080` for remote clients. |
+| `LINUX_RT_CURL_TIMEOUT` | Sidecar `/health` wait per attempt (default **15s**). **Why:** cold CUDA health probe ~9s; old 2s curl caused false startup failure. |
 | `GPU_SNAPSHOT_RECOMMEND` | `0` to skip inline recommendations in snapshot script. |
 
 ---

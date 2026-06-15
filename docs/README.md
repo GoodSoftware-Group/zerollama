@@ -24,14 +24,14 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts.
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers.
 * [Roadmap — local voice & llama borrowings (eliza-v3)](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3) — **inference first:** GPU autotune profiles (**L1**), fork kernels (**L2**), KV prefix cache (**L3**); voice **L5+** later.
-* [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; NVIDIA + Apple tiers; operator env.
+* [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; **`l1_cuda_full_gate.sh`**; NVIDIA + Apple tiers; operator env.
 * [L2 elizaOS/llama.cpp fork evaluation](./gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant need fork build; `l2_full_gate.sh` A/B; Metal sign-off table; vendor merge gate.
 * [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release.
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — upstream GGUF path scaffold, build/serve scripts, M7 benchmark decision.
-* [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream b9509; patches, sync workflow, Ollama deltas.
+* [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream b9509; patches, sync workflow, Ollama deltas; **cpp-httplib CGO vendoring on CUDA CT**.
 * [llama.cpp backend (experimental)](./llama-cpp-backend.md) — route text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml.
 
 ### Apple Silicon (repo)
@@ -58,6 +58,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.
+* [GPU 5080 operator guide](./gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh`; Proxmox CT; **CGO `cpp-httplib` vendoring**; **`OLLAMA_HOST=0.0.0.0:8080`** for remote clients; L1/L3 full gates; Phase 15 + L2 sign-off.
+* [Embedded Python runtime](./runtime-embed.md) — **why** embed vs sidecar; **remote clients use Go `:8080` only**; port conflicts; log redirect pattern.
 
 ### Upstream Ollama (compare, don't merge)
 

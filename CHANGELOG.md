@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### L1/L3 full gates + Proxmox build/serve ops (Jun 2026)
+
+**Why:** L1/L3 exit criteria need one-shot orchestrators (not three manual scripts). Proxmox CT 1564 ships inference to remote Ruby clients but minimal checkouts cannot `go build` without vendored `cpp-httplib`; default `OLLAMA_HOST` binds localhost only.
+
+- **`scripts/l1_cuda_full_gate.sh`** + **`l1_gate_report.sh`** — calibrate + concurrent bench → merged `gate.json` + PASS/REGRESS verdict. **Why:** single-stream can be flat (+0.7%); concurrent N=2 is the ship bar (+10.5% on eliza-1 9B).
+- **`scripts/l1_full_gate.sh`** / **`l1_metal_gate.sh`** — platform wrappers (CUDA vs Metal).
+- **`scripts/l3_cuda_full_gate.sh`** + **`l3_gate_report.sh`** — 8k smoke + 27k production gate → merged verdict. **Why:** wiring @ 8k ≠ agent-scale win @ 27k.
+- **`scripts/l3_full_gate.sh`** — dispatches CUDA vs Mac smoke paths.
+- **`gpu_5080_session.sh`** — optional `RUN_E2E_L1=1`, `RUN_E2E_L3=1` (need `CUDA_LLAMA_MODEL` or `LLAMA_MODEL`).
+- **CGO build on minimal checkout** — root `.gitignore` `vendor/` excludes `llama/llama.cpp/vendor/cpp-httplib/`; copy from sibling `llama.cpp` or run `./scripts/sync_vendor_llama.sh` after full vendor clone. Doc: [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md#building-zerollama-cgo-on-proxmox-ct).
+- **Production serve** — `OLLAMA_HOST=0.0.0.0:8080` for remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, `OLLAMA_HOST`); embedded runtime stays `127.0.0.1:8081`. Example: `scripts/serve_gpu_example.sh`; CT 1564 uses `~/bin/serve.sh` with log redirect to `/tmp/zerollama-serve.log`.
+- **`linux_runtime_serve_lib.sh`** — `LINUX_RT_CURL_TIMEOUT=15` (cold `/health` ~9s on 5080); kill `llama-server` on `runtime_port+1` when stopping sidecar. **Why:** 2s curl timeout caused false “runtime failed to start”; orphan llama-server held VRAM across A/B legs.
+
 ### Phase 15 v32 — scheduler-driven auto-batch (Jun 2026)
 
 **Why:** v27–v30 batch decode only ran on explicit ``generate_batch`` / ``/internal/generate-batch``. Concurrent ``/api/generate`` threads each called ``completion()`` separately — N ``llama_decode`` calls per token step. v32 opt-in coalesces admitted requests within a short window into ``completions_parallel``.
