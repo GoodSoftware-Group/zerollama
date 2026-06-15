@@ -225,6 +225,9 @@ func NewMultiLinear(weight *mlx.Array) *MultiLinear {
 }
 
 func (ml *MultiLinear) Forward(x *mlx.Array) *mlx.Array {
+	if ml == nil || ml.Weight == nil {
+		panic("MultiLinear.Forward: weight not loaded (nil); check that the model checkpoint contains the required MLA projection tensors")
+	}
 	wT := ml.Weight.Transpose(0, 2, 1)
 	return x.Matmul(wT)
 }

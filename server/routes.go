@@ -149,8 +149,10 @@ var (
 // modelOptions merges server default → manifest parameters → request options.
 // Runner fields (num_ctx, num_gpu, …) from the result are passed to llama.Load and
 // pre-size KV at load time — very large manifest num_ctx can hang before first token.
-// scheduleRunner may lower num_ctx afterward when ZEROLLAMA_GGML_CLAMP_NUM_CTX=1
-// (see ggml_num_ctx.go); show surfaces suggest via enrichShowGgmlNumCtx without clamping.
+// scheduleRunner caps num_ctx to the model maximum (n_ctx_train / manifest context_length),
+// warns when load exceeds memory, and applies per-request VRAM policy from options
+// (ggml_clamp_num_ctx, ggml_auto_kv_quant, kv_cache_type).
+// show surfaces VRAM suggest via enrichShowGgmlNumCtx without clamping.
 func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Options, error) {
 	opts := api.DefaultOptions()
 	if opts.NumCtx == 0 {
@@ -197,7 +199,10 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		return nil, nil, nil, nil, err
 	}
 
-	ggmlCtx := s.applyGgmlNumCtxClamp(ctx, model, &opts) // M12: opt-in VRAM clamp before GetRunner
+	ggmlCtx := capNumCtxToModelMax(model, &opts)
+	if vram := s.applyGgmlNumCtxClamp(ctx, model, &opts); vram != nil {
+		ggmlCtx = mergeGgmlNumCtxInfo(ggmlCtx, vram)
+	}
 
 	schedStart := time.Now()
 	slog.Debug("scheduleRunner: waiting for runner",
@@ -246,6 +251,11 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 			)
 			return nil, nil, nil, nil, ctx.Err()
 		}
+	}
+
+	// Reflect effective load-time runner options (num_ctx may be clamped to n_ctx_train).
+	if runner.Options != nil {
+		opts.Runner = runner.Options.Runner
 	}
 
 	return runner.llama, model, &opts, ggmlCtx, nil
@@ -404,6 +414,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	checkpointLoaded := time.Now()
+	logInferencePhase(c, "runner_ready", req.Model, checkpointStart)
 
 	// load the model
 	if req.Prompt == "" {
@@ -520,6 +531,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	checkpointPromptReady := time.Now()
+	logInferencePhase(c, "prompt_ready", req.Model, checkpointLoaded)
+
 	var thinkingState *thinking.Parser
 	if builtinParser == nil {
 		openingTag, closingTag := thinking.TagsForModel(m.PrimaryFamily(), m.Template.Template)
@@ -542,6 +556,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		// TODO (jmorganca): avoid building the response twice both here and below
 		var sb strings.Builder
 		defer close(ch)
+		firstToken := true
 		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
 			Prompt:      prompt,
 			Images:      images,
@@ -552,6 +567,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			Logprobs:    req.Logprobs,
 			TopLogprobs: req.TopLogprobs,
 		}, func(cr llm.CompletionResponse) {
+			if firstToken {
+				firstToken = false
+				logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
+			}
 			res := api.GenerateResponse{
 				Model:     req.Model,
 				CreatedAt: time.Now().UTC(),
@@ -1953,7 +1972,16 @@ func Serve(ln net.Listener) error {
 
 	http.Handle("/", h)
 
-	slog.Info(fmt.Sprintf("Listening on %s (version %s)", ln.Addr(), version.Version))
+	bindHost, bindPort, _ := net.SplitHostPort(envconfig.Host().Host)
+	if bindHost == "" {
+		bindHost = "0.0.0.0"
+	}
+	slog.Info("server listening",
+		"bind", net.JoinHostPort(bindHost, bindPort),
+		"listener", ln.Addr().String(),
+		"url", envconfig.ConnectableHost().String(),
+		"version", version.Version,
+	)
 	srvr := &http.Server{
 		// Use http.DefaultServeMux so we get net/http/pprof for
 		// free.
@@ -2476,6 +2504,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 
 	checkpointLoaded := time.Now()
+	logInferencePhase(c, "runner_ready", req.Model, checkpointStart)
 
 	if len(req.Messages) == 0 {
 		c.JSON(http.StatusOK, api.ChatResponse{
@@ -2526,6 +2555,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	checkpointPromptReady := time.Now()
+	logInferencePhase(c, "prompt_ready", req.Model, checkpointLoaded)
+
 	// If debug mode is enabled, return the rendered template instead of calling the model
 	if req.DebugRenderOnly {
 		c.JSON(http.StatusOK, api.ChatResponse{
@@ -2572,6 +2604,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		defer close(ch)
 
 		structuredOutputsState := structuredOutputsState_None
+		firstToken := true
 
 		for {
 			var tb strings.Builder
@@ -2597,28 +2630,32 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				Images:      images,
 				Format:      currentFormat,
 				Options:     opts,
-				Shift:       req.Shift == nil || *req.Shift,
-				Truncate:    truncate,
-				Logprobs:    req.Logprobs,
-				TopLogprobs: req.TopLogprobs,
-			}, func(r llm.CompletionResponse) {
-				res := api.ChatResponse{
-					Model:     req.Model,
-					CreatedAt: time.Now().UTC(),
-					Message:   api.Message{Role: "assistant", Content: r.Content},
-					Done:      r.Done,
-					Metrics: api.Metrics{
-						PromptEvalCount:    r.PromptEvalCount,
-						PromptEvalDuration: r.PromptEvalDuration,
-						EvalCount:          r.EvalCount,
-						EvalDuration:       r.EvalDuration,
-					},
-					Logprobs: toAPILogprobs(r.Logprobs),
-				}
+			Shift:       req.Shift == nil || *req.Shift,
+			Truncate:    truncate,
+			Logprobs:    req.Logprobs,
+			TopLogprobs: req.TopLogprobs,
+		}, func(r llm.CompletionResponse) {
+			if firstToken {
+				firstToken = false
+				logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
+			}
+			res := api.ChatResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				Message:   api.Message{Role: "assistant", Content: r.Content},
+				Done:      r.Done,
+				Metrics: api.Metrics{
+					PromptEvalCount:    r.PromptEvalCount,
+					PromptEvalDuration: r.PromptEvalDuration,
+					EvalCount:          r.EvalCount,
+					EvalDuration:       r.EvalDuration,
+				},
+				Logprobs: toAPILogprobs(r.Logprobs),
+			}
 
-				if r.Done {
-					res.DoneReason = r.DoneReason.String()
-					res.TotalDuration = time.Since(checkpointStart)
+			if r.Done {
+				res.DoneReason = r.DoneReason.String()
+				res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 					applyPromptTruncation(&res, r, messagesDropped)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)

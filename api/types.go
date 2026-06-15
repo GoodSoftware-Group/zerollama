@@ -643,6 +643,36 @@ type Runner struct {
 	MainGPU   int   `json:"main_gpu,omitempty"`
 	UseMMap   *bool `json:"use_mmap,omitempty"`
 	NumThread int   `json:"num_thread,omitempty"`
+
+	// KvCacheType sets KV cache quantization for this load (e.g. f16, q8_0, q4_0).
+	// Overrides OLLAMA_KV_CACHE_TYPE when set. Different requests may use different types.
+	KvCacheType string `json:"kv_cache_type,omitempty"`
+	// GgmlClampNumCtx lowers num_ctx to the VRAM-safe maximum for this request when true.
+	GgmlClampNumCtx *bool `json:"ggml_clamp_num_ctx,omitempty"`
+	// GgmlAutoKVQuant downgrades KV cache type (f16→q8_0→q4_0) when the load would exceed memory.
+	GgmlAutoKVQuant *bool `json:"ggml_auto_kv_quant,omitempty"`
+}
+
+// KvCacheTypeEffective returns the KV cache type for load/estimate: request option, then
+// OLLAMA_KV_CACHE_TYPE server default, then f16.
+func (o Options) KvCacheTypeEffective() string {
+	if kt := strings.ToLower(strings.TrimSpace(o.KvCacheType)); kt != "" {
+		return kt
+	}
+	if kv := envconfig.KvCacheType(); kv != "" {
+		return strings.ToLower(kv)
+	}
+	return "f16"
+}
+
+// GgmlClampNumCtxEnabled is true when this request opts in to VRAM-based num_ctx clamping.
+func (o Options) GgmlClampNumCtxEnabled() bool {
+	return o.GgmlClampNumCtx != nil && *o.GgmlClampNumCtx
+}
+
+// GgmlAutoKVQuantEnabled is true when this request opts in to automatic KV cache downgrade.
+func (o Options) GgmlAutoKVQuantEnabled() bool {
+	return o.GgmlAutoKVQuant != nil && *o.GgmlAutoKVQuant
 }
 
 // EmbedRequest is the request passed to [Client.Embed].
@@ -998,6 +1028,21 @@ type GgmlNumCtx struct {
 	NumCtxClampedFrom int  `json:"num_ctx_clamped_from,omitempty"`
 	// NumCtx is effective context after opt-in clamp (chat/generate when clamped).
 	NumCtx int `json:"num_ctx,omitempty"`
+
+	// EstimatedLoadBytes is the estimated memory needed for the requested num_ctx (weights + KV + graph).
+	EstimatedLoadBytes uint64 `json:"estimated_load_bytes,omitempty"`
+	// AvailableBytes is the free device memory at schedule time.
+	AvailableBytes uint64 `json:"available_bytes,omitempty"`
+	// ExceedsAvailable is true when the estimated load would exceed available memory.
+	ExceedsAvailable bool `json:"exceeds_available,omitempty"`
+	// SuggestedKVCacheType is a KV quantization type (e.g. "q8_0") that would reduce
+	// KV memory enough to fit the requested context. Set kv_cache_type or ggml_auto_kv_quant on the request.
+	SuggestedKVCacheType string `json:"suggested_kv_cache_type,omitempty"`
+	// KVCacheTypeDowngraded is set when ggml_auto_kv_quant was true on the request and the
+	// scheduler automatically applied a quantized KV cache to fit context in memory.
+	KVCacheTypeDowngraded bool   `json:"kv_cache_type_downgraded,omitempty"`
+	KVCacheTypeFrom       string `json:"kv_cache_type_from,omitempty"`
+	KVCacheType           string `json:"kv_cache_type,omitempty"`
 }
 
 // ModelDetails provides details about a model.

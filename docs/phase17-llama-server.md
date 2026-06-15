@@ -50,7 +50,7 @@ LLAMA_SERVER_BIN=../ollama-upstream/build/llama-server-darwin/bin/llama-server \
 
 | Flag / env | Text GGUF path |
 |------------|----------------|
-| (default Mac) | ggml Metal runner, or Python runtime when sidecar + `ZEROLLAMA_RUNTIME` default-on |
+| (default Mac) | ggml Metal runner; sidecar for tokenize/VRAM only (`ZEROLLAMA_RUNTIME=1` or `--llama-cpp-backend` to proxy text GGUF) |
 | `--llama-cpp-backend` | Go → Python runtime → inprocess / llama-server |
 | `--llama-server-backend` | Go → llama-server subprocess (upstream shape) |
 
@@ -86,7 +86,7 @@ go run ./cmd/bench -model llama3.2:3b -num-ctx 4096 -epochs 6 -format csv -outpu
 ## Remaining work
 
 1. ~~Smoke-test `--llama-server-backend` end-to-end on ship hardware~~ — `phase17_llama_server_smoke.sh`.
-2. Reduce duplicate `llama/patches/` vs `llama/compat/` overlay.
+2. ~~Reduce duplicate `llama/patches/` vs `llama/compat/` overlay.~~ — **Done:** retired patch 0007 (BakLLaVA MLP default → compat); formalized compat hook call sites as patch **0016** (symlinked for CMake, includes shard-loop skip); patch **0017** preserves ggml scheduler/Metal customizations through vendor sync; fixed 0015 header hunk.
 3. Port upstream `discover/llama_server.go` GPU probe if needed.
 4. ~~Deprecate `OLLAMA_NEW_ENGINE` for plain text GGUF~~ — **partial**: deprecated + Linux auto-default; Mac still uses ggml llamarunner until policy flip.
 5. Policy decision: when (if ever) to flip Mac default from ggml to Go → llama-server.

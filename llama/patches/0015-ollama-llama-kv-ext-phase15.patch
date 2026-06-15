@@ -11,11 +11,17 @@ WHY separate from llama.h: upstream has no stable writable page-handle API yet.
  src/CMakeLists.txt            |  1 +
  src/llama-kv-cache.h          |  7 ++
  src/llama-kv-cache.cpp        | 53 +++++++++++++
- src/llama-memory-kv-ext.cpp   | 191 ++++++++++++++++++++++++++++++++++++++++++
- 5 files changed, 337 insertions(+)
+ src/llama-memory-kv-ext.cpp   | 216 ++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 362 insertions(+)
  create mode 100644 include/llama-kv-ext.h
  create mode 100644 src/llama-memory-kv-ext.cpp
 
+diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
+new file mode 100644
+index 00000000..b8c4e2a1
+--- /dev/null
++++ b/include/llama-kv-ext.h
+@@ -0,0 +1,96 @@
 +#pragma once
 +
 +/*
@@ -111,6 +117,7 @@ WHY separate from llama.h: upstream has no stable writable page-handle API yet.
 +#ifdef __cplusplus
 +}
 +#endif
++
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index d15ccfd9..f506a4bb 100644
 --- a/src/CMakeLists.txt
@@ -210,7 +217,7 @@ new file mode 100644
 index 00000000..a1f53d24
 --- /dev/null
 +++ b/src/llama-memory-kv-ext.cpp
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,216 @@
 +/*
 + * Staging llama.cpp KV cell / tensor introspection for zerollama Phase 15 v20/v31.
 + *

@@ -165,7 +165,7 @@ curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
 | Single-stream A/B @ 8k | **PASS** — 1B Q8 ON **+0.5%**; eliza-1 9B ON **+0.7%** vs OFF |
 | Concurrent A/B @ 8k (`L1C_N=2`) | **PASS** — ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**) |
 
-**Tune workflow:** `./scripts/l1_cuda_calibrate.sh` (single-stream) then `./scripts/l1_cuda_concurrent_bench.sh` (concurrent) on your production GGUF; edit `runtime/configs/gpu/rtx-5080.json`; rerun. **Why `np=2`:** L3 agent cache needs ≥2 slots; `np=4` wasted KV on single-stream / 1B smoke.
+**Tune workflow:** `./scripts/l1_cuda_full_gate.sh` (calibrate + concurrent + verdict), or run `./scripts/l1_cuda_calibrate.sh` and `./scripts/l1_cuda_concurrent_bench.sh` separately; edit `runtime/configs/gpu/rtx-5080.json`; rerun. **Session wrapper:** `RUN_E2E_L1=1 ./scripts/gpu_5080_session.sh`. **Why `np=2`:** L3 agent cache needs ≥2 slots; `np=4` wasted KV on single-stream / 1B smoke.
 
 Full doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 
@@ -426,12 +426,16 @@ export OLLAMA_HOST=http://127.0.0.1:8080
 ### Gate 3 — L3 agent cache bench
 
 ```bash
-# Strict PASS on 7B+ (eliza-1 9B on CT 1564):
+# Production gate (recommended — 8k + 27k):
 export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
-export L3_PREFIX_REPEAT=150
-export L3_COMPARE_NO_CACHE=1
+./scripts/l3_cuda_full_gate.sh
+# or: RUN_E2E_L3=1 ./scripts/gpu_5080_session.sh
+
+# Individual legs:
+export L3_PREFIX_REPEAT=150 L3_COMPARE_NO_CACHE=1
 L3_OUT=/tmp/l3-cache-smoke-9b.json ./scripts/l3_cache_smoke.sh
-./scripts/l3_gate_report.sh /tmp/l3-cache-smoke-9b.json
+./scripts/l3_production_gate.sh
+./scripts/l3_gate_report.sh /tmp/l3-cuda-full-gate/gate.json
 
 # 1B wiring smoke (SOFT PASS expected):
 export CUDA_LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
@@ -441,6 +445,8 @@ export CUDA_LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf
 **Strict gate:** turn 2 faster than turn 1 **or** `cached_faster_than_no_cache` with `L3_COMPARE_NO_CACHE=1`. **Jun 2026 9B @ 8k:** cached **0.66s** vs no-cache **1.13s** on same turn-2 prompt. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md).
 
 ### Gate 3b — L3 production gate (27k ctx)
+
+Folded into `./scripts/l3_cuda_full_gate.sh`. Individual leg:
 
 ```bash
 export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
@@ -492,7 +498,7 @@ Expect `batch_decode_in_c: true`; after generate with active bind: `status: "bou
 |-------|------|
 | Phase 14 smokes | `scripts/phase14_serve_env.sh`, `phase14_backend_smoke.sh`, `phase14_both_backends.sh` |
 | Phase 15 smokes | `scripts/phase15_inprocess_signoff.sh`, `phase15_runtime_kv_env.sh`, `phase15_llama_kv_ext_pin_check.sh` |
-| L2 / L3 gates | `scripts/l2_cuda_full_gate.sh`, `l3_cache_smoke.sh`, `l3_gate_report.sh` |
+| L2 / L3 gates | `scripts/l2_cuda_full_gate.sh`, `l3_cuda_full_gate.sh`, `l3_gate_report.sh` |
 | Eliza fork build | `scripts/build_eliza_llama_server.sh` (`LLAMA_BUILD_WEBUI=OFF` on Linux) |
 | Unload + broker prep | `scripts/runtime_smoke_lib.sh` |
 | 5080 one-liner | `scripts/gpu_5080_session.sh` |

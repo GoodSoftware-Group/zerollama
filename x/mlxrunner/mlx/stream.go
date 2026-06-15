@@ -52,8 +52,10 @@ func (s Stream) LogValue() slog.Value {
 	return slog.StringValue(C.GoString(C.mlx_string_data(str)))
 }
 
-var DefaultStream = sync.OnceValue(func() Stream {
-	s := C.mlx_stream_new()
-	C.mlx_get_default_stream(&s, DefaultDevice().ctx)
-	return Stream{s}
-})
+// DefaultStream returns the MLX default stream for the current OS thread.
+func DefaultStream() Stream {
+	if GPUIsAvailable() {
+		return Stream{C.mlx_default_gpu_stream_new()}
+	}
+	return Stream{C.mlx_default_cpu_stream_new()}
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/ml"
@@ -53,10 +54,7 @@ func ggmlLoadProfileFor(model *Model, opts api.Options) ggmlLoadProfile {
 		numParallel = 1
 	}
 
-	kv := envconfig.KvCacheType()
-	if kv == "" {
-		kv = "f16"
-	}
+	kv := opts.KvCacheTypeEffective()
 
 	return ggmlLoadProfile{
 		batchSize:   batch,
@@ -180,6 +178,70 @@ func suggestMaxGgmlNumCtx(f *ggml.GGML, modelPath string, effectiveFree uint64, 
 	return suggestMaxGgmlNumCtxWith(estimateGgmlLoadVRAM, f, modelPath, effectiveFree, profile)
 }
 
+// modelMaxNumCtx returns n_ctx_train for GGUF models or manifest context_length for MLX.
+func modelMaxNumCtx(model *Model) int {
+	if model == nil {
+		return 0
+	}
+	if model.IsMLX() {
+		return model.Config.ContextLen
+	}
+	if model.ModelPath == "" {
+		return 0
+	}
+	f, err := llm.LoadModel(model.ModelPath, 1024)
+	if err != nil {
+		slog.Debug("model max num_ctx lookup skipped", "model", model.ShortName, "error", err)
+		return 0
+	}
+	return int(f.KV().ContextLength())
+}
+
+// capNumCtxToModelMax lowers merged num_ctx to the model's trained/context limit before
+// scheduler load. Clients may request (or inherit) a larger default; we cap silently.
+func capNumCtxToModelMax(model *Model, opts *api.Options) *api.GgmlNumCtx {
+	if opts == nil || model == nil || opts.NumCtx <= 0 {
+		return nil
+	}
+	maxCtx := modelMaxNumCtx(model)
+	if maxCtx <= 0 || opts.NumCtx <= maxCtx {
+		return nil
+	}
+	from := opts.NumCtx
+	opts.NumCtx = maxCtx
+	slog.Info("num_ctx capped to model maximum",
+		"model", model.ShortName,
+		"from", from,
+		"to", maxCtx,
+	)
+	return &api.GgmlNumCtx{
+		NumCtxClamped:     true,
+		NumCtxClampedFrom: from,
+		NumCtx:            maxCtx,
+	}
+}
+
+func mergeGgmlNumCtxInfo(train, vram *api.GgmlNumCtx) *api.GgmlNumCtx {
+	if train == nil {
+		return vram
+	}
+	if vram == nil {
+		return train
+	}
+	out := *train
+	if vram.SuggestedMaxNumCtx > 0 {
+		out.SuggestedMaxNumCtx = vram.SuggestedMaxNumCtx
+	}
+	if vram.NumCtxClamped {
+		out.NumCtx = vram.NumCtx
+		// Preserve the original request when train cap ran first.
+		if !train.NumCtxClamped {
+			out.NumCtxClampedFrom = vram.NumCtxClampedFrom
+		}
+	}
+	return &out
+}
+
 func capGgmlNumCtx(numCtx, suggested int, clampEnabled bool) (int, *api.GgmlNumCtx) {
 	if numCtx <= 0 || suggested <= 0 {
 		return numCtx, nil
@@ -253,40 +315,140 @@ func (s *Server) ggmlNumCtxSuggest(ctx context.Context, model *Model, opts api.O
 	return suggested, &api.GgmlNumCtx{SuggestedMaxNumCtx: suggested}
 }
 
-// applyGgmlNumCtxClamp optionally lowers merged num_ctx before ggml load (env-gated).
-// Returns metadata for chat/generate when clamp applied; mutates opts.NumCtx in place.
+// ggmlKVQuantFallbackWith is the testable variant accepting a custom estimator.
+func ggmlKVQuantFallbackWith(estimator ggmlVRAMEstimator, f *ggml.GGML, modelPath string, numCtx int, profile ggmlLoadProfile, free uint64, margin float64) string {
+	// Only suggest a downgrade when f16 doesn't already fit.
+	f16est := uint64(float64(estimator(modelPath, f, numCtx, profile)) * margin)
+	if f16est <= free {
+		return ""
+	}
+	for _, kt := range []string{"q8_0", "q4_0"} {
+		p := profile
+		p.kvCacheType = kt
+		est := uint64(float64(estimator(modelPath, f, numCtx, p)) * margin)
+		if est <= free {
+			return kt
+		}
+	}
+	return ""
+}
+
+// ggmlKVQuantFallback returns the cheapest KV cache type that would fit numCtx in free VRAM,
+// trying q8_0 then q4_0 in order. Returns "" when f16 already fits or no fallback works.
+func ggmlKVQuantFallback(f *ggml.GGML, modelPath string, numCtx int, profile ggmlLoadProfile, free uint64, margin float64) string {
+	return ggmlKVQuantFallbackWith(estimateGgmlLoadVRAM, f, modelPath, numCtx, profile, free, margin)
+}
+
+// applyGgmlNumCtxClamp loads the GGUF metadata once, estimates memory for the requested
+// context, warns loudly when it would exceed available memory, optionally suggests or
+// applies a KV cache quantization fallback (request ggml_auto_kv_quant), and optionally
+// clamps num_ctx to the VRAM-safe maximum (request ggml_clamp_num_ctx).
+//
+// Returns metadata for chat/generate responses; mutates opts in place.
 func (s *Server) applyGgmlNumCtxClamp(ctx context.Context, model *Model, opts *api.Options) *api.GgmlNumCtx {
-	if opts == nil {
+	if opts == nil || model == nil || model.ModelPath == "" || model.IsMLX() {
 		return nil
 	}
-	suggested, _ := s.ggmlNumCtxSuggest(ctx, model, *opts, true)
-	if suggested <= 0 {
+
+	f, err := llm.LoadModel(model.ModelPath, 1024)
+	if err != nil {
+		slog.Debug("ggml VRAM check skipped", "model", model.ShortName, "error", err)
 		return nil
 	}
-	clamped, out := capGgmlNumCtx(opts.NumCtx, suggested, envconfig.GgmlClampNumCtxEnabled())
-	if clamped != opts.NumCtx {
-		slog.Warn("ggml num_ctx clamped for VRAM",
+
+	free := s.effectiveGgmlFreeVRAMForSuggest(ctx, true)
+	if free == 0 {
+		return nil
+	}
+
+	profile := ggmlLoadProfileFor(model, *opts)
+	margin := envconfig.GgmlVRAMMargin()
+	estimated := uint64(float64(estimateGgmlLoadVRAM(model.ModelPath, f, opts.NumCtx, profile)) * margin)
+
+	out := &api.GgmlNumCtx{
+		EstimatedLoadBytes: estimated,
+		AvailableBytes:     free,
+	}
+
+	// Suggest VRAM-safe max regardless of clamping policy.
+	suggested := suggestMaxGgmlNumCtx(f, model.ModelPath, free, profile)
+	if suggested > 0 {
+		out.SuggestedMaxNumCtx = suggested
+	}
+
+	if estimated > free {
+		out.ExceedsAvailable = true
+
+		// Check whether KV quantization would rescue the requested context.
+		suggestedKV := ggmlKVQuantFallback(f, model.ModelPath, opts.NumCtx, profile, free, margin)
+		if suggestedKV != "" {
+			out.SuggestedKVCacheType = suggestedKV
+		}
+
+		slog.Warn("ggml load estimate exceeds available memory",
 			"model", model.ShortName,
-			"from", opts.NumCtx,
-			"to", clamped,
-			"suggested_max", suggested,
+			"num_ctx", opts.NumCtx,
+			"estimated", format.HumanBytes2(estimated),
+			"available", format.HumanBytes2(free),
+			"suggested_max_num_ctx", suggested,
+			"suggested_kv_cache_type", suggestedKV,
 		)
-		opts.NumCtx = clamped
+
+		// Auto KV-quant: downgrade KV cache type when this request opts in.
+		if suggestedKV != "" && opts.GgmlAutoKVQuantEnabled() {
+			fromKV := profile.kvCacheType
+			if fromKV == "" {
+				fromKV = "f16"
+			}
+			opts.KvCacheType = suggestedKV
+			profile.kvCacheType = suggestedKV
+			estimated = uint64(float64(estimateGgmlLoadVRAM(model.ModelPath, f, opts.NumCtx, profile)) * margin)
+			out.EstimatedLoadBytes = estimated
+			out.ExceedsAvailable = estimated > free
+			out.KVCacheTypeDowngraded = true
+			out.KVCacheTypeFrom = fromKV
+			out.KVCacheType = suggestedKV
+			slog.Warn("ggml KV cache type auto-downgraded for VRAM",
+				"model", model.ShortName,
+				"from", fromKV,
+				"to", suggestedKV,
+			)
+		}
 	}
+
+	// VRAM-based context clamp (per-request opt-in via ggml_clamp_num_ctx).
+	if suggested > 0 {
+		clamped, clampInfo := capGgmlNumCtx(opts.NumCtx, suggested, opts.GgmlClampNumCtxEnabled())
+		if clampInfo != nil {
+			out.NumCtxClamped = clampInfo.NumCtxClamped
+			out.NumCtxClampedFrom = clampInfo.NumCtxClampedFrom
+			out.NumCtx = clampInfo.NumCtx
+		}
+		if clamped != opts.NumCtx {
+			slog.Warn("ggml num_ctx clamped for VRAM",
+				"model", model.ShortName,
+				"from", opts.NumCtx,
+				"to", clamped,
+				"suggested_max", suggested,
+			)
+			opts.NumCtx = clamped
+		}
+	}
+
 	return out
 }
 
 func applyGgmlNumCtxResponse(res *api.GenerateResponse, info *api.GgmlNumCtx) {
-	// Why only when clamped: suggest-only belongs on show; load responses mirror runtime vram_num_ctx.
-	if res == nil || info == nil || !info.NumCtxClamped {
+	// Emit when clamped OR when load exceeds memory — operators need the signal either way.
+	if res == nil || info == nil || (!info.NumCtxClamped && !info.ExceedsAvailable && !info.KVCacheTypeDowngraded) {
 		return
 	}
 	res.GgmlNumCtx = info
 }
 
 func applyGgmlNumCtxChatResponse(res *api.ChatResponse, info *api.GgmlNumCtx) {
-	// Why only when clamped: suggest-only belongs on show; load responses mirror runtime vram_num_ctx.
-	if res == nil || info == nil || !info.NumCtxClamped {
+	// Emit when clamped OR when load exceeds memory — operators need the signal either way.
+	if res == nil || info == nil || (!info.NumCtxClamped && !info.ExceedsAvailable && !info.KVCacheTypeDowngraded) {
 		return
 	}
 	res.GgmlNumCtx = info

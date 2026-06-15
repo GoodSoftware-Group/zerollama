@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -144,6 +145,9 @@ func (r *Runner) Run(host, port string, mux http.Handler) error {
 	g, ctx := errgroup.WithContext(context.Background())
 
 	g.Go(func() error {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
 		for {
 			select {
 			case <-ctx.Done():

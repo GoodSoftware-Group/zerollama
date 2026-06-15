@@ -14,7 +14,11 @@ func TestRuntimeDefaultOn(t *testing.T) {
 
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
 	t.Setenv("ZEROLLAMA_RUNTIME", "")
-	if !RuntimeDefaultOn() {
+	if runtime.GOOS == "darwin" {
+		if RuntimeDefaultOn() {
+			t.Fatal("darwin implicit off (ggml default)")
+		}
+	} else if !RuntimeDefaultOn() {
 		t.Fatal("implicit on")
 	}
 

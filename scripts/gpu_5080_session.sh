@@ -15,6 +15,8 @@
 #   RUN_E2E_PHASE14=1 RUN_E2E_INPROCESS=1                   # phase14_inprocess_smoke (serve must use inprocess)
 #   RUN_E2E_PHASE14_SIGNOFF=1                               # phase14_5080_signoff (needs LLAMA_CPP_LIB; self-contained restarts)
 #   RUN_E2E_PHASE15=1                                       # phase15_inprocess_signoff (needs LLAMA_CPP_LIB)
+#   RUN_E2E_L1=1                                            # l1_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 7B–9B)
+#   RUN_E2E_L3=1                                            # l3_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 9B+)
 #   RUN_E2E_LLAMA_BACKEND_SOURCE=config                      # with phase14_yaml_config_smoke prerequisites
 #   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1                           # wheel GPU (with RUN_E2E_LLAMA_CPP_PYTHON=1)
 #   RUN_E2E_PREFLIGHT=0                                      # skip Go golden in CT/minimal trees (see below)
@@ -93,6 +95,28 @@ elif [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
     # shellcheck disable=SC2086
     env "${phase14_env[@]}" "${ROOT}/scripts/phase14_backend_smoke.sh"
   fi
+fi
+
+if [[ "${RUN_E2E_L1:-0}" == "1" ]]; then
+  export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-${LLAMA_MODEL:-}}"
+  if [[ -z "${CUDA_LLAMA_MODEL:-}" ]]; then
+    echo "RUN_E2E_L1=1 requires CUDA_LLAMA_MODEL or LLAMA_MODEL (7B–9B production GGUF)" >&2
+    exit 1
+  fi
+  echo ""
+  echo "== L1 CUDA full gate =="
+  CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" "${ROOT}/scripts/l1_cuda_full_gate.sh"
+fi
+
+if [[ "${RUN_E2E_L3:-0}" == "1" ]]; then
+  export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-${LLAMA_MODEL:-}}"
+  if [[ -z "${CUDA_LLAMA_MODEL:-}" ]]; then
+    echo "RUN_E2E_L3=1 requires CUDA_LLAMA_MODEL or LLAMA_MODEL (9B+ production GGUF)" >&2
+    exit 1
+  fi
+  echo ""
+  echo "== L3 CUDA full gate =="
+  CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" "${ROOT}/scripts/l3_cuda_full_gate.sh"
 fi
 
 echo "PASS: gpu_5080_session (snapshot: ${GPU_PHASE13_SNAPSHOT_OUT})"

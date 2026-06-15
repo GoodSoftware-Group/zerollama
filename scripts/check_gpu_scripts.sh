@@ -37,6 +37,10 @@ scripts=(
   l2_cuda_bench.sh
   l1_cuda_calibrate.sh
   l1_cuda_concurrent_bench.sh
+  l1_cuda_full_gate.sh
+  l1_gate_report.sh
+  l1_metal_gate.sh
+  l1_full_gate.sh
   l2_gate_report.sh
   l2_runtime_compat_smoke.sh
   l2_cuda_runtime_compat_smoke.sh
@@ -46,6 +50,10 @@ scripts=(
   l3_cache_smoke.sh
   l3_gate_report.sh
   l3_production_gate.sh
+  l3_cuda_full_gate.sh
+  l3_full_gate.sh
+  l3_inprocess_smoke.sh
+  l3_agent_bench.sh
   build_eliza_llama_server.sh
   phase14_backend_smoke.sh
   phase17_llama_server_smoke.sh
@@ -145,6 +153,8 @@ grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_metal_b
 grep -q 'l2_metal_bench' "${ROOT}/scripts/l2_fork_eval.sh"
 grep -q 'l2_full_gate' "${ROOT}/scripts/m3_metal_signoff.sh"
 grep -q 'l1_cuda_calibrate' "${ROOT}/docs/gpu-profiles-l1.md"
+grep -q 'l1_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l1.md"
+grep -q 'RUN_E2E_L1' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'ZEROLLAMA_GPU_PROFILE' "${ROOT}/scripts/l1_cuda_calibrate.sh"
 grep -q 'l2_cuda_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_cuda_bench.sh"
@@ -153,6 +163,8 @@ grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.
 grep -q 'l2_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'l2_cuda_runtime_compat_smoke' "${ROOT}/scripts/l2_cuda_full_gate.sh"
 grep -q 'l3_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
+grep -q 'l3-cuda-full-gate' "${ROOT}/docs/gpu-profiles-l3.md"
+grep -q 'RUN_E2E_L3' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'prompt_cache_keys' "${ROOT}/runtime/runtime/cache_bridge.py"
 grep -q 'IsMLX()' "${ROOT}/docs/mlx-routing-policy.md"
 grep -q 'modelUsesRuntimeInference' "${ROOT}/server/runtime_inference_routing.go"

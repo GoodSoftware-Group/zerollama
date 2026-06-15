@@ -46,7 +46,7 @@ zerollama serve
 | `LLAMA_CPP_VERSION` | Human pin (`b9611`) |
 | `Makefile.sync` | `FETCH_HEAD=b9611`, `WORKDIR=vendor/llama-cpp-b9611` |
 | `vendor/llama-cpp-b9611/` | Fresh clone + Ollama patch commits (gitignored) |
-| `llama/patches/` | **15** format-patches on b9611 |
+| `llama/patches/` | **16** format-patches on b9611 (0007 retired → compat) |
 | `llama/patches.pre-b9509-20260612/` | Backup of pre-migration patch series |
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
@@ -65,7 +65,7 @@ Applied on top of upstream `b9611` (vendor HEAD after patches: `1aefee58`):
 | 0004 | mtmd-audio Windows build | Cross-platform multimodal |
 | 0005 | Uncaught exception registration | Safer C++ boundary for CGO |
 | 0006 | CUDA skip large batches | CUDA stability (no-op on Mac) |
-| 0007 | bakllava regression | Vision model fix |
+| ~~0007~~ | ~~bakllava regression~~ | **Retired** — `llama/compat/` `handle_missing_llava_projector_type` |
 | 0008 | Win exit instead of abort | Windows runner lifecycle |
 | 0009 | CUDA get_rows q6_k | Quantized op support |
 | 0010 | `ggml_backend_dev_reset` | Go calls reset on device unload — **required** |
@@ -74,6 +74,10 @@ Applied on top of upstream `b9611` (vendor HEAD after patches: `1aefee58`):
 | 0013 | mtmd C API | `mtmd_input_text_init/free` for CGO multimodal |
 | 0014 | ollama_vocab grammar | Go-side token pieces into C++ grammar without full `llama_model` |
 | 0015 | **llama-kv-ext Phase 15** | Staging KV cell map + tensor introspection for PA page bind; hybrid/iSWA resolve to attn base cache |
+| 0016 | **compat loader hooks** | Call sites for `llama/compat/` — canonical patch; symlinked as `llama/compat/llama-cpp-hooks.patch` for CMake fetch |
+| 0017 | **ggml scheduler + Metal gate** | `GGML_SCHED_MAX_SPLIT_INPUTS 128`, `alloc_buffers` guard for LoadOperationFit, `GGML_DISABLE_METAL` runtime gate |
+
+**Patch vs compat ownership:** GGUF translation logic lives in `llama/compat/*.cpp`. Numbered patches carry **ggml/llama.cpp deltas** that compat cannot replace (scheduler, grammar, kv-ext, CGO hooks). Overlap removed: BakLLaVA MLP default (was 0007) is compat-only.
 
 **CGO-only (not patches):** `jinja_wrap.cpp`, `httplib_wrap.cpp`, `llama/build-info.cpp`; exclude mtmd CLI mains after sync.
 

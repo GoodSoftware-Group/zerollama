@@ -31,7 +31,7 @@ compat handlers already existed for CMake builds. See
 - `llama-ollama-compat-util.h`, `llama-ollama-compat-util.cpp` - helpers for
   KV edits, tensor renames, skip-prefix tracking, tensor load operations, and
   small tensor repacking primitives.
-- `llama-cpp-hooks.patch` - small additive call-site edits in llama.cpp files.
+- `llama-cpp-hooks.patch` - symlink to `../patches/0016-ollama-compat-loader-hooks.patch` (canonical). Small additive call-site edits in llama.cpp files.
   It currently touches `src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp`.
 - `compat.cmake`, `apply-patch.cmake` - CMake glue and an idempotent applier
   (used by `llama/server/CMakeLists.txt`) that applies every `*.patch` under
@@ -97,7 +97,7 @@ This table tracks the dispatch surface. Keep it brief; the handler comments in
 | `nemotron_h_omni` | Selects the Nemotron text loader and hides audio/vision/projector tensors from the text loader. | Nemotron V2 VL projector translation; audio remains disabled. |
 | `llama` with Llama 3 markers | Fixes Llama 3 tokenizer metadata. | n/a |
 | `llama4` | Hides embedded vision/projector tensors from the text loader. | Llama 4 projector translation. |
-| `clip` projector without `clip.projector_type` | n/a | Defaults LLaVA/BakLLaVA projectors to `clip.projector_type=mlp`. |
+| `clip` projector without `clip.projector_type` | n/a | Defaults LLaVA/BakLLaVA projectors to `clip.projector_type=mlp`. (Was patch 0007; retired in favor of compat.) |
 
 Usage:
 
@@ -124,7 +124,8 @@ cd /path/to/llama.cpp
 git diff -- \
     src/llama-model-loader.cpp \
     tools/mtmd/clip.cpp \
-    > /path/to/ollama/llama/compat/llama-cpp-hooks.patch
+    > /path/to/zerollama/llama/patches/0016-ollama-compat-loader-hooks.patch
+# Re-wrap with git format-patch header, or: make -f Makefile.sync format-patches
 ```
 
 ## Implementation Notes

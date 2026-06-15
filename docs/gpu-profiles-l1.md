@@ -165,17 +165,44 @@ Artifact: `/tmp/l1-cuda-concurrent/profile-on-default.json`.
 
 | Platform | Script | L1 validation |
 |----------|--------|----------------|
-| Apple Silicon | `./scripts/metal_signoff.sh` or `./scripts/m3_metal_signoff.sh` | Phase 13 snapshot + inprocess Metal; `macos_metal_smoke.sh` prints `gpu_profile` |
-| CUDA 5080-class | `./scripts/gpu_5080_session.sh` | Snapshot + compare tok/s before/after profile tuning |
+| Apple Silicon | `./scripts/l1_metal_gate.sh` or `./scripts/m3_metal_signoff.sh` | RAM-tier pytest + optional live `/health.gpu_profile` |
+| CUDA 5080-class | `./scripts/l1_cuda_full_gate.sh` | Single-stream calibrate + concurrent N=2; merged `gate.json` + verdict |
+| Full 5080 session | `RUN_E2E_L1=1 ./scripts/gpu_5080_session.sh` | Phase 10–13 snapshot + L1 CUDA gate when model set |
+
+**Production gate (CUDA):**
+
+```bash
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf   # ship proxy on 16GB; supernova optional re-run
+./scripts/l1_cuda_full_gate.sh
+# Artifacts: /tmp/l1-production-gate/{calibrate,concurrent}/ + gate.json
+./scripts/l1_gate_report.sh /tmp/l1-production-gate/gate.json
+```
+
+**Pass criteria:**
+
+| Leg | Threshold | Jun 2026 (CT 1564, eliza-1 9B) |
+|-----|-----------|--------------------------------|
+| Single-stream | ON ≥ OFF (non-regression) | +0.7% @ 8k |
+| Concurrent `L1C_N=2` | ON **>** OFF (strict win) | +10.5% agg tok/s |
+
+Optional supernova-class re-validation when that GGUF is on host — not blocking L1 Done.
+
+**Metal gate:**
+
+```bash
+./scripts/l1_metal_gate.sh
+# or platform dispatcher:
+./scripts/l1_full_gate.sh
+```
 
 ---
 
 ## Status (Jun 2026)
 
-| Platform | Status | Next |
-|----------|--------|------|
-| **Apple Silicon** | **Shipped** — RAM tiers, M4 Max 128g sign-off, docs + smoke | Re-measure after L2 fork if KV types change |
-| **NVIDIA CUDA** | **Partial → 5080 calibrated + concurrent PASS** — `rtx-5080.json` tuned Jun 2026; concurrent N=2 **+10.5%** on eliza-1 9B | Re-calibrate on supernova-class production GGUF |
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **Apple Silicon** | **Done** — RAM tiers, M4 Max 128g sign-off, `l1_metal_gate.sh` | Re-measure after L2 fork if KV types change |
+| **NVIDIA CUDA** | **Done** — `rtx-5080.json` tuned; `l1_cuda_full_gate.sh` PASS on eliza-1 9B | Optional: re-run gate on supernova-class GGUF |
 
 **Not in L1:** Go ggml Metal runner flags (separate scheduler); voice phrase cache (**L5**); eliza fork kernels (**L2** — see [gpu-profiles-l2.md](./gpu-profiles-l2.md)).
 

@@ -19,7 +19,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-${ROOT}/zerollama}"
-VERSION="${VERSION:-0.0.1}"
+if [[ -z "${VERSION:-}" ]]; then
+  if git -C "${ROOT}" describe --tags --first-parent --abbrev=7 --long --dirty --always &>/dev/null; then
+    VERSION="$(git -C "${ROOT}" describe --tags --first-parent --abbrev=7 --long --dirty --always | sed -e 's/^v//')"
+  else
+    VERSION="0.19.0"
+  fi
+fi
 BUILD_MLX="${BUILD_MLX:-auto}"
 
 # shellcheck source=scripts/mac_cgo_env.sh

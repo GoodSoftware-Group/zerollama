@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,7 @@ import (
 func TestModelEligibleForRuntimeDefault(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
 	t.Setenv("ZEROLLAMA_LEGACY_RUNNER", "")
+	t.Setenv("ZEROLLAMA_RUNTIME", "1")
 
 	text := &Model{
 		ModelPath: "/tmp/m.gguf",
@@ -111,6 +113,26 @@ func TestModelEligibleForRuntimeDefault(t *testing.T) {
 	}
 	if modelUsesRuntimeInference(mlxExplicitRuntime) {
 		t.Fatal("MLX must not use runtime even with mistaken zerollama-runtime Modelfile")
+	}
+}
+
+func TestModelUsesRuntimeInferenceDarwinDefaultOff(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
+	t.Setenv("ZEROLLAMA_LEGACY_RUNNER", "")
+	t.Setenv("ZEROLLAMA_RUNTIME", "")
+	t.Setenv("ZEROLLAMA_LLAMA_CPP_BACKEND", "")
+
+	text := &Model{
+		ModelPath: "/tmp/m.gguf",
+		Config: model.ConfigV2{
+			Capabilities: []string{string(model.CapabilityCompletion)},
+		},
+	}
+	if modelUsesRuntimeInference(text) {
+		t.Fatal("plain GGUF should use ggml on darwin when runtime default is off")
 	}
 }
 

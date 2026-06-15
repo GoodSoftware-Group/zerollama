@@ -1,6 +1,7 @@
 package version
 
 // Version is the default when the binary is built without -ldflags.
-// Why ldflags in build_zerollama_mac.sh: release builds must report the tag
-// operators passed (VERSION=…) via ./zerollama --version and /api/version.
-var Version string = "0.0.1"
+// Why not 0.0.1: registry.ollama.ai returns 412 for ollama/0.0.x pulls (MLX/safetensors
+// models like gemma4:26b-mlx). Match MinOllamaVersion floor for safetensors.
+// Release builds should set this via -ldflags in scripts/build_zerollama_mac.sh.
+var Version string = "0.19.0"

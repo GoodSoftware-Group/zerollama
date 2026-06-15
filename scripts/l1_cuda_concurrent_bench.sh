@@ -21,6 +21,7 @@
 #   L1C_SWEEP_NP             — comma list of n_parallel overrides to sweep (profile ON legs)
 #   L1C_SKIP_OFF=1           — skip profile-off baseline
 #   L1C_OUT_DIR              — default /tmp/l1-cuda-concurrent
+#   L1C_ENFORCE=1            — exit 1 when best ON concurrent leg does not beat OFF
 #   LINUX_RT_HEALTH_MAX      — sidecar startup timeout in seconds (default: 120)
 set -euo pipefail
 
@@ -281,9 +282,11 @@ if off:
     if on_rows:
         best = max(on_rows, key=lambda r: r["agg_tok_s"])
         pct = (best["agg_tok_s"] - off["agg_tok_s"]) / off["agg_tok_s"] * 100
-        verdict = "PASS" if pct >= 0 else "REGRESS"
+        verdict = "PASS" if pct > 0 else ("FLAT" if pct == 0 else "REGRESS")
         print()
         print(f"VERDICT: concurrent {verdict} — best ON {best['agg_tok_s']} tok/s ({pct:+.1f}% vs OFF)")
+        if pct <= 0 and os.environ.get("L1C_ENFORCE", "0") == "1":
+            raise SystemExit(1)
         if pct < -5:
             print("  Recommendation: reduce n_parallel in rtx-5080.json or bump -b/-ub")
 PY

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/ollama/ollama/envconfig"
@@ -38,7 +39,11 @@ func TestDeferInferenceToRuntime(t *testing.T) {
 func TestRuntimeDefaultOnImplicit(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
 	t.Setenv("ZEROLLAMA_RUNTIME", "")
-	if !envconfig.RuntimeDefaultOn() {
+	if runtime.GOOS == "darwin" {
+		if envconfig.RuntimeDefaultOn() {
+			t.Fatal("darwin: unset ZEROLLAMA_RUNTIME should default off (ggml Metal)")
+		}
+	} else if !envconfig.RuntimeDefaultOn() {
 		t.Fatal("unset ZEROLLAMA_RUNTIME should default on when URL set")
 	}
 	t.Setenv("ZEROLLAMA_RUNTIME", "0")

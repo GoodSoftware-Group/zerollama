@@ -182,6 +182,25 @@ func parseTextConfig(configData []byte) (TextConfig, bool, error) {
 	return cfg, fromConditional, nil
 }
 
+func readConfigQuantization(configData []byte) *struct {
+	GroupSize int `json:"group_size"`
+	Bits      int `json:"bits"`
+} {
+	var top struct {
+		Quantization *struct {
+			GroupSize int `json:"group_size"`
+			Bits      int `json:"bits"`
+		} `json:"quantization"`
+	}
+	if err := json.Unmarshal(configData, &top); err != nil || top.Quantization == nil {
+		return nil
+	}
+	if top.Quantization.GroupSize <= 0 && top.Quantization.Bits <= 0 {
+		return nil
+	}
+	return top.Quantization
+}
+
 func resolveWeightPrefix(tensors map[string]*mlx.Array) string {
 	for _, prefix := range []string{"", "language_model."} {
 		if tensors[prefix+"model.embed_tokens.weight"] != nil {
@@ -263,6 +282,15 @@ func newModel(root *model.Root) (base.Model, error) {
 		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams(qt)
 		if gs := root.GroupSize(); gs > 0 {
 			cfg.QuantGroupSize = gs
+		}
+	} else if q := readConfigQuantization(configData); q != nil {
+		cfg.QuantGroupSize = q.GroupSize
+		cfg.QuantBits = q.Bits
+		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams(
+			fmt.Sprintf("Q%d", q.Bits),
+		)
+		if q.GroupSize > 0 {
+			cfg.QuantGroupSize = q.GroupSize
 		}
 	} else {
 		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams("")

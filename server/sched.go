@@ -823,6 +823,7 @@ iGPUScan:
 		if runner.pid < 0 {
 			runner.pid = llama.Pid()
 		}
+		syncRunnerLoadOptions(runner)
 		runner.refCount++
 		runner.loading = false
 		go func() {
@@ -917,6 +918,31 @@ func (runner *runnerRef) unload() {
 	runner.gpus = nil
 }
 
+// syncRunnerLoadOptions updates runner.Options to the context size actually allocated
+// at load. llm.NewLlamaServer receives opts by value and may clamp NumCtx to
+// n_ctx_train without writing back to the scheduler's LlmRequest.opts copy.
+func syncRunnerLoadOptions(runner *runnerRef) {
+	if runner == nil || runner.Options == nil || runner.llama == nil {
+		return
+	}
+	effective := runner.llama.ContextLength()
+	if effective <= 0 {
+		return
+	}
+	if runner.Options.NumCtx != effective {
+		slog.Debug("sync runner num_ctx to effective load size",
+			"model", runner.model.ShortName,
+			"requested", runner.Options.NumCtx,
+			"effective", effective,
+		)
+	}
+	runner.Options.NumCtx = effective
+	// Only clamp NumBatch down when it exceeds the effective context — preserve explicit user requests.
+	if runner.Options.NumBatch > effective {
+		runner.Options.NumBatch = effective
+	}
+}
+
 func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool {
 	slog.Debug("evaluating already loaded", "model", schedulerModelKey(req.model))
 	runner.refMu.Lock()
@@ -947,6 +973,24 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Compare against the loaded runner's effective KV size, not only stored Options.
+	// Stored Options can still reflect the pre-clamp request when n_ctx_train is smaller.
+	// Only reload when the request needs MORE context than the loaded KV — requesting less
+	// is fine since llama.cpp just uses fewer slots from the pre-allocated KV.
+	// Also normalize optsNew.NumCtx for the DeepEqual below: a smaller-than-loaded ctx
+	// is served by the existing runner without reload.
+	if runner.llama != nil {
+		if effective := runner.llama.ContextLength(); effective > 0 {
+			if optsNew.NumCtx > effective {
+				return true
+			}
+			if optsNew.NumCtx < effective {
+				optsNew.NumCtx = optsExisting.NumCtx // treat "fits in loaded ctx" as same
+			}
+		}
+	}
+
 	// Runner options (num_ctx, num_gpu, num_batch, …) are fixed at llama.Load time.
 	// Manifest or request changes to num_ctx require a reload — KV is pre-sized at load.
 	if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?

@@ -71,7 +71,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
 | llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9509`** (repo root) | **Aligned** — runtime sibling + in-tree ggml @ b9509; [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**12** patches on b9509 vendor) + in-tree CGO deltas; compat for llama-server |
+| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**16** on b9611) + in-tree CGO deltas; compat hooks via **0016**, ggml deltas via **0017** |
 | GPU discovery | `discover/llama_server.go` probe | ggml-centric + runtime probes |
 | MLX MTP / speculation | Recent commits (draft tokens, KV file split) | Pin behind `MLX_VERSION`; cherry-pick as needed |
 
@@ -234,7 +234,7 @@ Absent: Python runtime, training API, native KV experiments, Eliza.
 ## Suggested next steps (ordered)
 
 1. ~~Bump sibling `../llama.cpp` toward upstream **`b9509`**~~ — **done**; see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
-2. Port **`llama/compat/`** CMake overlay; retire overlapping `llama/patches/` over time (**partial** — compat imported; ggml patches rebased to 12).
+2. Port **`llama/compat/`** CMake overlay; retire overlapping `llama/patches/` over time (**done** — 0007 retired; 0016 hooks unified).
 3. ~~Port **`llm/llama_server.go`**~~ — **scaffold done** (Phase 17 opt-in); wire as default after parity sign-off.
 4. Benchmark **ggml vs Go-llama-server vs Python runtime** on ship hardware ([apple-silicon-metal.md](./apple-silicon-metal.md), [testing-smoke.md](./testing-smoke.md)).
 5. Cherry-pick MLX MTP commits after MLX pin alignment (`./scripts/ensure_mlx_sources.sh`).

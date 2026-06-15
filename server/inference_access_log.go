@@ -110,6 +110,24 @@ func inferencePeekRequestBody(body []byte) (model string, stream bool) {
 	return model, stream
 }
 
+// logInferencePhase emits an INFO-level log for a named phase of inference
+// (e.g. "runner_ready", "prompt_ready", "first_token"). Each entry includes
+// the model name, phase label, and elapsed time since the request started.
+func logInferencePhase(c *gin.Context, phase string, model string, since time.Time) {
+	v, _ := c.Get(inferenceAccessLogKey)
+	meta, _ := v.(*inferenceAccessMeta)
+	var requestElapsed time.Duration
+	if meta != nil {
+		requestElapsed = time.Since(meta.start)
+	}
+	slog.Info("inference phase",
+		"phase", phase,
+		"model", model,
+		"phase_elapsed", time.Since(since).Round(time.Millisecond),
+		"request_elapsed", requestElapsed.Round(time.Millisecond),
+	)
+}
+
 func recordInferenceCompletion(c *gin.Context, doneReason string, promptEvalCount, evalCount int) {
 	v, ok := c.Get(inferenceAccessLogKey)
 	if !ok {

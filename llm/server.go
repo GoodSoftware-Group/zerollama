@@ -174,7 +174,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 			slog.Warn("requested context size too large for model", "num_ctx", opts.NumCtx, "n_ctx_train", trainCtx)
 			opts.NumCtx = int(trainCtx)
 		}
-		kvct := strings.ToLower(envconfig.KvCacheType())
+		kvct := opts.KvCacheTypeEffective()
 		slog.Info("using llama-server subprocess for model", "model", modelPath)
 		return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, LlamaServerConfig{})
 	}
@@ -259,7 +259,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		}
 	}
 
-	kvct := strings.ToLower(envconfig.KvCacheType())
+	kvct := opts.KvCacheTypeEffective()
 
 	if tok == nil {
 		flashAttention := ml.FlashAttentionAuto

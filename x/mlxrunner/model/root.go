@@ -252,9 +252,9 @@ func inferQuantTypeFromShapes(header map[string]json.RawMessage, tensorName stri
 		if strings.Contains(h, "8") {
 			return "INT8", 32
 		}
-		if strings.Contains(h, "4") {
-			return "INT4", 64
-		}
+		// QAT 4-bit (group 64) and 8-bit (group 32) both match; default 4-bit —
+		// gemma3 27b QAT and similar MLX exports use U32 packed weights at gs=64.
+		return "INT4", 64
 	}
 
 	if isCommonGroupSize(groupSize4) && !isCommonGroupSize(groupSize8) {

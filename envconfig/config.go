@@ -19,7 +19,7 @@ import (
 )
 
 // Host returns the scheme and host. Host can be configured via the OLLAMA_HOST environment variable.
-// Default is scheme "http" and host "127.0.0.1:11434"
+// Default is scheme "http" and host "0.0.0.0:11434" (all interfaces).
 func Host() *url.URL {
 	defaultPort := "11434"
 
@@ -40,7 +40,7 @@ func Host() *url.URL {
 	hostport, path, _ := strings.Cut(hostport, "/")
 	host, port, err := net.SplitHostPort(hostport)
 	if err != nil {
-		host, port = "127.0.0.1", defaultPort
+		host, port = "0.0.0.0", defaultPort
 		if ip := net.ParseIP(strings.Trim(hostport, "[]")); ip != nil {
 			host = ip.String()
 		} else if hostport != "" {
@@ -323,7 +323,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_FLASH_ATTENTION":              {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
 		"OLLAMA_KV_CACHE_TYPE":                {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
 		"OLLAMA_GPU_OVERHEAD":                 {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
-		"OLLAMA_HOST":                         {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
+		"OLLAMA_HOST":                         {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 0.0.0.0:11434)"},
 		"OLLAMA_KEEP_ALIVE":                   {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
 		"OLLAMA_LLM_LIBRARY":                  {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
 		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches (GGUF/safetensors) for pull and list (default true)"},
@@ -355,7 +355,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_RUNTIME_EMBED_PORT":        {"ZEROLLAMA_RUNTIME_EMBED_PORT", Var("ZEROLLAMA_RUNTIME_EMBED_PORT"), "Loopback port for embedded runtime HTTP (default 8081)"},
 		"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY": {"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", ggmlPauseWhenRuntimeBusyDisplay(), "Pause new ggml loads when Python runtime queue is deep (auto when runtime configured)"},
 		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
-		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy: 1/on (default when URL set), 0/off, unset=on if URL set"},
+		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy for text GGUF: 1/on, 0/off; unset=off on Darwin (ggml default), on on Linux when URL set"},
 		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
 		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, 0/off; Linux auto when binary found)"},
 		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
@@ -494,7 +494,9 @@ func RuntimeDefault() bool {
 }
 
 // RuntimeDefaultOn enables the Python runtime for local non-streaming generate/chat
-// when RuntimeURL is set. Unset ZEROLLAMA_RUNTIME defaults to on; set 0/false to disable.
+// when RuntimeURL is set. Unset ZEROLLAMA_RUNTIME defaults to on on Linux (CUDA runtime
+// path); on Darwin defaults to off so plain GGUF uses ggml Metal (M7 benchmark).
+// Set ZEROLLAMA_RUNTIME=1 or --llama-cpp-backend to opt in on Mac.
 func RuntimeDefaultOn() bool {
 	if RuntimeURL() == "" {
 		return false
@@ -505,6 +507,9 @@ func RuntimeDefaultOn() bool {
 	}
 	if v == "1" || strings.EqualFold(v, "true") {
 		return true
+	}
+	if runtime.GOOS == "darwin" {
+		return false
 	}
 	return true
 }

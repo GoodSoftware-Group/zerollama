@@ -182,9 +182,8 @@ func applyDarwinServeDefaults(repoRoot string) {
 		strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_CONFIG")) == "" {
 		_ = os.Setenv("ZEROLLAMA_AUTO_CONFIG", "1")
 	}
-	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME")); v == "" {
-		_ = os.Setenv("ZEROLLAMA_RUNTIME", "1")
-	}
+	// Do not set ZEROLLAMA_RUNTIME=1 here: sidecar stays up for tokenize/VRAM probes,
+	// but plain GGUF chat stays on ggml Metal unless the operator opts in.
 	if !envconfig.LlamaCppBackend() {
 		_ = os.Unsetenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND")
 	}

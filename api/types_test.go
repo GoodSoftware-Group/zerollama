@@ -910,3 +910,30 @@ func TestToolPropertiesMap_NestedProperties(t *testing.T) {
 		assert.Equal(t, expected, string(data))
 	})
 }
+
+func TestGgmlVRAMRequestOptions(t *testing.T) {
+	t.Setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+
+	opts := DefaultOptions()
+	require.NoError(t, opts.FromMap(map[string]any{
+		"kv_cache_type":      "q8_0",
+		"ggml_clamp_num_ctx": true,
+		"ggml_auto_kv_quant": true,
+	}))
+	assert.Equal(t, "q8_0", opts.KvCacheTypeEffective())
+	assert.True(t, opts.GgmlClampNumCtxEnabled())
+	assert.True(t, opts.GgmlAutoKVQuantEnabled())
+
+	opts = DefaultOptions()
+	assert.Equal(t, "f16", opts.KvCacheTypeEffective())
+	assert.False(t, opts.GgmlClampNumCtxEnabled())
+	assert.False(t, opts.GgmlAutoKVQuantEnabled())
+
+	t.Setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+	opts = DefaultOptions()
+	assert.Equal(t, "q4_0", opts.KvCacheTypeEffective())
+
+	opts = DefaultOptions()
+	require.NoError(t, opts.FromMap(map[string]any{"kv_cache_type": "q8_0"}))
+	assert.Equal(t, "q8_0", opts.KvCacheTypeEffective())
+}

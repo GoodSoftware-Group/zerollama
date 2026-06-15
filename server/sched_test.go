@@ -868,6 +868,59 @@ func TestSchedNeedsReload(t *testing.T) {
 	require.False(t, resp)
 }
 
+func TestSchedNeedsReloadEffectiveNumCtx(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+
+	llm := &mockLlm{
+		vramByGPU:       map[ml.DeviceID]uint64{},
+		contextLength:   4096,
+	}
+	do := api.DefaultOptions()
+	do.NumCtx = 131072 // stored Options still show pre-clamp request
+	runner := &runnerRef{
+		model:   &Model{},
+		Options: &do,
+		llama:   llm,
+	}
+	req := &LlmRequest{
+		model: &Model{},
+		opts:  api.DefaultOptions(),
+	}
+	req.opts.NumCtx = 131072
+	require.True(t, runner.needsReload(ctx, req), "must reload when request ctx > effective ctx")
+
+	runner.Options.NumCtx = 4096
+	req.opts.NumCtx = 4096
+	require.False(t, runner.needsReload(ctx, req), "must not reload when request matches effective ctx")
+
+	req.opts.NumCtx = 8192
+	require.True(t, runner.needsReload(ctx, req), "must reload when request ctx grows beyond effective")
+
+	// Requesting less context than loaded is fine — reuse the runner.
+	req.opts.NumCtx = 2048
+	require.False(t, runner.needsReload(ctx, req), "must not reload when request ctx < effective ctx")
+}
+
+func TestSyncRunnerLoadOptions(t *testing.T) {
+	do := api.DefaultOptions()
+	do.NumCtx = 131072
+	do.NumBatch = 256 // explicit user request, smaller than default 512
+	runner := &runnerRef{
+		model:   &Model{ShortName: "m"},
+		Options: &do,
+		llama:   &mockLlm{contextLength: 4096},
+	}
+	syncRunnerLoadOptions(runner)
+	require.Equal(t, 4096, runner.Options.NumCtx, "NumCtx must be synced to effective ctx")
+	require.Equal(t, 256, runner.Options.NumBatch, "explicit NumBatch below effective ctx must be preserved")
+
+	// NumBatch exceeding effective ctx should be clamped down.
+	runner.Options.NumBatch = 65536
+	syncRunnerLoadOptions(runner)
+	require.Equal(t, 4096, runner.Options.NumBatch, "NumBatch > effective ctx must be clamped to effective ctx")
+}
+
 func TestSchedUnloadAllRunners(t *testing.T) {
 	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer done()
@@ -935,6 +988,7 @@ type mockLlm struct {
 	vramSize          uint64
 	totalSize         uint64
 	vramByGPU         map[ml.DeviceID]uint64
+	contextLength     int
 }
 
 func (s *mockLlm) ModelPath() string {
@@ -990,7 +1044,12 @@ func (s *mockLlm) GetPort() int                                       { return -
 func (s *mockLlm) GetDeviceInfos(ctx context.Context) []ml.DeviceInfo { return nil }
 func (s *mockLlm) HasExited() bool                                    { return false }
 func (s *mockLlm) GetActiveDeviceIDs() []ml.DeviceID                  { return nil }
-func (s *mockLlm) ContextLength() int                                 { return 0 }
+func (s *mockLlm) ContextLength() int {
+	if s.contextLength > 0 {
+		return s.contextLength
+	}
+	return 0
+}
 
 // TestImageGenRunnerCanBeEvicted verifies that an image generation model
 // loaded in the scheduler can be evicted when idle.

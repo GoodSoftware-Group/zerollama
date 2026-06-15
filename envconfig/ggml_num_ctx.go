@@ -6,12 +6,8 @@ import (
 	"strings"
 )
 
-// GgmlClampNumCtxEnabled is true when the ggml scheduler should lower merged num_ctx
-// to suggested_max before load.
-//
-// Default off — parity with Phase 13 ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX. Why: silent
-// context reduction broke operator trust; manifest num_ctx and request options should
-// apply unless the operator opts in.
+// GgmlClampNumCtxEnabled reports ZEROLLAMA_GGML_CLAMP_NUM_CTX (legacy server-wide default).
+// Prefer per-request options.ggml_clamp_num_ctx so each client controls its own load policy.
 func GgmlClampNumCtxEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(Var("ZEROLLAMA_GGML_CLAMP_NUM_CTX")))
 	if v == "" {

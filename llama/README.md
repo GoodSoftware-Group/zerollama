@@ -13,7 +13,7 @@ Both pins must stay aligned on **`LLAMA_CPP_VERSION`** (`b9509`). For ggml vendo
 
 **Why this exists:** CMake `llama/server` applied `llama/compat/` only to **fetched** llama-server builds. The Mac **default binary** links llama.cpp via CGO (`llama/llama.go` → `runner/llamarunner`) and never ran those hooks—so published qwen35/qwen35moe blobs failed with metadata errors (e.g. `rope.dimension_sections` length 3 vs 4) even though llama-server would have worked.
 
-**What we did:** `llama/compat/compat.go` links the compat `.cpp` files into the Go binary; `llama-cpp-hooks.patch` call sites are applied to the vendored `llama/llama.cpp/src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp`. Blank import: `_ "github.com/ollama/ollama/llama/compat"` from `llama/llama.go`.
+**What we did:** `llama/compat/compat.go` links the compat `.cpp` files into the Go binary; hook call sites live in patch **0016** (`llama/patches/0016-ollama-compat-loader-hooks.patch`, symlinked as `llama/compat/llama-cpp-hooks.patch` for CMake fetch). Blank import: `_ "github.com/ollama/ollama/llama/compat"` from `llama/llama.go`.
 
 **Operator doc:** [docs/qwen35-apple-silicon.md](../docs/qwen35-apple-silicon.md).
 
@@ -78,7 +78,7 @@ For build prerequisites, platform notes, and backend selection, see the
 
 ### Compatibility patches
 
-**In-tree ggml (b9509):** patches live in `llama/patches/` (12 format-patches, 0011 GPU discovery + 0012 no-alloc scheduler). Materialize with `make -f Makefile.sync apply-patches`, then `./scripts/sync_vendor_b9509.sh`. Do **not** edit synced trees directly — regenerate patches from vendor.
+**In-tree ggml (b9611):** patches live in `llama/patches/` (**16** format-patches; 0007 retired → compat). Materialize with `make -f Makefile.sync apply-patches`, then `./scripts/sync_vendor_llama.sh`. Do **not** edit synced trees directly — regenerate patches from vendor.
 
 **llama-server (compat):** patches under `llama/compat/` are applied during CMake configure. If a patch
 insertion point moved, regenerate the patch against a fresh checkout of the new

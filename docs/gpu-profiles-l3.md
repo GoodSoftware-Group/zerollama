@@ -243,12 +243,14 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 
 | Script | Role |
 |--------|------|
-| `scripts/l3_cache_smoke.sh` | Two-turn same `prompt_cache_key`; subprocess path |
+| `scripts/l3_cache_smoke.sh` | Two-turn same `prompt_cache_key`; subprocess path @ 8k |
 | `scripts/l3_inprocess_smoke.sh` | Two-turn in-process + disk file check |
 | `scripts/l3_agent_bench.sh` | Multi-turn agent workload (cached vs cold) |
-| `scripts/l3_gate_report.sh` | PASS/FAIL verdict from smoke JSON |
-| `scripts/l3_production_gate.sh` | **Strict PASS gate on production GGUF** — 9B+ @ 27k ctx with `L3_PREFIX_REPEAT=150`; requires `turn2/turn1 ≤ L3_STRICT_RATIO (0.75)` or cached faster than no-cache control |
-| `RUN_E2E_L3=1` in `m3_metal_signoff.sh` | Sign-off hook |
+| `scripts/l3_gate_report.sh` | PASS/FAIL from smoke JSON or merged full-gate JSON |
+| `scripts/l3_production_gate.sh` | Strict gate on production GGUF @ 27k ctx (`L3_PREFIX_REPEAT=150`) |
+| `scripts/l3_cuda_full_gate.sh` | **Production gate** — 8k smoke + 27k production + merged `gate.json` |
+| `scripts/l3_full_gate.sh` | Platform dispatcher (CUDA full gate / Darwin smoke) |
+| `RUN_E2E_L3=1` in `gpu_5080_session.sh` or `m3_metal_signoff.sh` | Sign-off hooks |
 
 Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `generate_batch` prompt order. When this list is present, out-of-range indices get **no** cache key (no flat-key fallback) so unrelated batch rows do not share a slot.
 
@@ -264,14 +266,36 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
 ```bash
-# CUDA subprocess path (5080) — smoke:
-export M3_LLAMA_MODEL=/path/to/model.gguf   # alias accepted on Linux
-./scripts/l3_cache_smoke.sh
-./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+# CUDA production gate (5080) — recommended:
+export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
+./scripts/l3_cuda_full_gate.sh
+./scripts/l3_gate_report.sh /tmp/l3-cuda-full-gate/gate.json
 
-# CUDA strict PASS — production GGUF (9B+ at 27k ctx):
-CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_PREFIX_REPEAT=150 ./scripts/l3_production_gate.sh
+# Or inside full 5080 session:
+RUN_E2E_L3=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/gpu_5080_session.sh
+
+# Individual legs:
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_PREFIX_REPEAT=150 L3_COMPARE_NO_CACHE=1 ./scripts/l3_cache_smoke.sh
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l3_production_gate.sh
 ```
+
+**Pass criteria (ship bar):**
+
+| Leg | Threshold | Jun 2026 (CT 1564, eliza-1 9B) |
+|-----|-----------|--------------------------------|
+| 8k smoke | cached turn2 **<** no-cache **or** turn2 **<** turn1 | cached **0.66s** vs no-cache **1.13s** |
+| 27k production | cached **<** no-cache **or** strict ratio ≤ 0.75 | cached **0.72s** vs no-cache **1.48s** (ratio **1.02** — strict optional) |
+
+Optional supernova-class re-validation when that GGUF is on host — not blocking L3 Done.
+
+## Status (Jun 2026)
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **Subprocess (5080 CUDA)** | **Done** — `l3_cuda_full_gate.sh` on eliza-1 9B | Optional supernova re-run |
+| **In-process (Metal)** | **Done** — RAM resume + disk parity; `l3_inprocess_smoke.sh` | `RUN_E2E_L3=1` on `m3_metal_signoff.sh` |
+
+**Deferred:** Go-side explicit cache-key field docs (options passthrough works).
 
 ---
 

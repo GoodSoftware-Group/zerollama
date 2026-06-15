@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/ollama/ollama/x/mlxrunner/cache"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
@@ -382,9 +383,8 @@ func loadExpertWeight(tensors map[string]*mlx.Array, path string, useQuantized b
 		return nil
 	}
 
-	scales := tensors[path+".weight_scale"]
-	if scales != nil {
-		qbiases := tensors[path+".weight_qbias"]
+	scales, qbiases, quantized := model.LinearQuantTensors(tensors, path)
+	if quantized {
 
 		groupSize, bits, mode := model.ResolveLinearQuantParams(
 			cfg.QuantGroupSize,
@@ -459,25 +459,117 @@ func collectAndStackExpertWeights(
 	return result
 }
 
-// sanitizeExpertWeights stacks individual expert weights into tensors.
+// sanitizeExpertWeights loads MoE expert projections. LM Studio / MLX GLM checkpoints
+// store pre-stacked weights under mlp.switch_mlp.*; other layouts use mlp.experts.N.*.
 func sanitizeExpertWeights(tensors map[string]*mlx.Array, prefix string, numExperts int32, useQuantized bool, cfg *Config) (gate, up, down *StackedExpertWeights) {
-	gate = collectAndStackExpertWeights(tensors, prefix, "gate_proj", numExperts, useQuantized, cfg)
-	up = collectAndStackExpertWeights(tensors, prefix, "up_proj", numExperts, useQuantized, cfg)
-	down = collectAndStackExpertWeights(tensors, prefix, "down_proj", numExperts, useQuantized, cfg)
+	switchBase := prefix + ".mlp.switch_mlp"
+	gate = loadSwitchMLPProjection(tensors, switchBase+".gate_proj", useQuantized, cfg)
+	up = loadSwitchMLPProjection(tensors, switchBase+".up_proj", useQuantized, cfg)
+	down = loadSwitchMLPProjection(tensors, switchBase+".down_proj", useQuantized, cfg)
+
+	if gate != nil && up != nil && down != nil {
+		return gate, up, down
+	}
+
+	if gate == nil {
+		gate = collectAndStackExpertWeights(tensors, prefix, "gate_proj", numExperts, useQuantized, cfg)
+	}
+	if up == nil {
+		up = collectAndStackExpertWeights(tensors, prefix, "up_proj", numExperts, useQuantized, cfg)
+	}
+	if down == nil {
+		down = collectAndStackExpertWeights(tensors, prefix, "down_proj", numExperts, useQuantized, cfg)
+	}
 	return gate, up, down
 }
 
+func tensorByBase(tensors map[string]*mlx.Array, base string) (*mlx.Array, string) {
+	if w := tensors[base+".weight"]; w != nil {
+		return w, base + ".weight"
+	}
+	if w := tensors[base]; w != nil {
+		return w, base
+	}
+	return nil, ""
+}
+
+// loadSwitchMLPProjection loads a pre-stacked switch_mlp projection (gate/up/down).
+func loadSwitchMLPProjection(tensors map[string]*mlx.Array, base string, useQuantized bool, cfg *Config) *StackedExpertWeights {
+	w, key := tensorByBase(tensors, base)
+	if w == nil {
+		return nil
+	}
+
+	path := strings.TrimSuffix(key, ".weight")
+	scales, qbiases, quantized := model.LinearQuantTensors(tensors, path)
+	if !quantized {
+		return &StackedExpertWeights{Weight: w}
+	}
+
+	groupSize, bits, mode := model.ResolveLinearQuantParams(
+		cfg.QuantGroupSize,
+		cfg.QuantBits,
+		cfg.QuantMode,
+		cfg.TensorQuant,
+		key,
+		w,
+		scales,
+	)
+	if useQuantized && supportsGatherQMM(mode, bits) {
+		return &StackedExpertWeights{
+			Weight:    w,
+			Scales:    scales,
+			Biases:    qbiases,
+			Bits:      bits,
+			GroupSize: groupSize,
+		}
+	}
+
+	return &StackedExpertWeights{
+		Weight:    mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode),
+		Bits:      bits,
+		GroupSize: groupSize,
+	}
+}
+
+// loadPreAbsorbedMLAWeight loads a pre-absorbed MLA weight tensor (embed_q or
+// unembed_out) that already exists in the safetensors in final form. The tensor
+// may be quantized using .weight.scale / .weight.bias suffixes.
+func loadPreAbsorbedMLAWeight(tensors map[string]*mlx.Array, path string, cfg *Config) *mlx.Array {
+	w := tensors[path+".weight"]
+	if w == nil {
+		return nil
+	}
+	if scales, qbiases, ok := model.LinearQuantTensors(tensors, path); ok {
+		groupSize, bits, mode := model.ResolveLinearQuantParams(
+			cfg.QuantGroupSize,
+			cfg.QuantBits,
+			cfg.QuantMode,
+			cfg.TensorQuant,
+			path+".weight",
+			w,
+			scales,
+		)
+		w = mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode)
+	}
+	return w
+}
+
 // sanitizeMLAWeights transforms kv_b_proj weights into absorbed MLA format.
+// If the model already stores pre-absorbed embed_q / unembed_out tensors
+// (common in newer GLM-4 checkpoints), those are loaded directly instead.
 func sanitizeMLAWeights(tensors map[string]*mlx.Array, prefix string, cfg *Config) (*mlx.Array, *mlx.Array) {
 	path := prefix + ".self_attn.kv_b_proj"
 	w := tensors[path+".weight"]
 	if w == nil {
-		return nil, nil
+		// Fall back to pre-absorbed weights stored directly in the checkpoint.
+		embedQ := loadPreAbsorbedMLAWeight(tensors, prefix+".self_attn.embed_q", cfg)
+		unembedOut := loadPreAbsorbedMLAWeight(tensors, prefix+".self_attn.unembed_out", cfg)
+		return embedQ, unembedOut
 	}
 
 	// Check if quantized and dequantize
-	if scales := tensors[path+".weight_scale"]; scales != nil {
-		qbiases := tensors[path+".weight_qbias"]
+	if scales, qbiases, ok := model.LinearQuantTensors(tensors, path); ok {
 		groupSize, bits, mode := model.ResolveLinearQuantParams(
 			cfg.QuantGroupSize,
 			cfg.QuantBits,
@@ -644,11 +736,14 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 				block.PostAttentionLayerNorm = nn.NewRMSNorm(postAttnLN, cfg.RMSNormEps)
 			}
 
-			// Stack expert weights
 			gate, up, down := sanitizeExpertWeights(tensors, prefix, cfg.NRoutedExperts, useQuantized, cfg)
+			if gate == nil || gate.Weight == nil || up == nil || up.Weight == nil || down == nil || down.Weight == nil {
+				return fmt.Errorf("layer %d: missing MoE switch_mlp weights", i)
+			}
 
-			switchMLP := &SwitchMLP{UseQuantized: useQuantized}
-			if useQuantized {
+			useQMM := useQuantized && gate.Scales != nil && up.Scales != nil && down.Scales != nil
+			switchMLP := &SwitchMLP{UseQuantized: useQMM}
+			if useQMM {
 				switchMLP.GateWeightQ = gate.Weight
 				switchMLP.GateScales = gate.Scales
 				switchMLP.GateBiases = gate.Biases
