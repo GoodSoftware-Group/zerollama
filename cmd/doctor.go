@@ -408,8 +408,8 @@ func doctorCheckMLX(repo string) doctorCheck {
 			FixHint: doctorMLXFixHint(repo),
 		}
 	}
-	path := mlx.LoadedPath()
-	if path == "" {
+	path, err := mlx.LoadedLibraryPath()
+	if err != nil || path == "" {
 		return doctorCheck{
 			Name:    name,
 			Status:  "warn",

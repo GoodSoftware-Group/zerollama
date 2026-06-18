@@ -40,6 +40,32 @@ type Entry struct {
 	WeightFile string // non-empty when the entry is one quant variant in a multi-GGUF dir
 }
 
+// ModelPath returns the concrete weight file to inspect/import when the entry
+// maps to a single GGUF file. For sharded GGUF directories it returns the first
+// shard, which is the path readers use to discover the shard set.
+func (e Entry) ModelPath() string {
+	if e.Format != "gguf" {
+		return ""
+	}
+	if e.WeightFile != "" {
+		return filepath.Join(e.Dir, e.WeightFile)
+	}
+	weights, ok := ggufWeightFiles(e.Dir)
+	if !ok || len(weights) == 0 {
+		return ""
+	}
+	return weights[0]
+}
+
+// ConfigPath returns the Hugging Face/MLX config.json path when present.
+func (e Entry) ConfigPath() string {
+	p := filepath.Join(e.Dir, "config.json")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
+}
+
 // Roots returns directories to scan for LM Studio models. If
 // OLLAMA_LMSTUDIO_MODELS is set, only those roots are used (comma- or
 // filepath.ListSeparator-separated). Otherwise the default is ~/.lmstudio/models

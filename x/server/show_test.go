@@ -70,11 +70,7 @@ func TestBuildModelInfo(t *testing.T) {
 			config: modelConfig{
 				Architectures: []string{"Gemma3ForConditionalGeneration"},
 				HiddenSize:    1152, // vision hidden size
-				TextConfig: &struct {
-					HiddenSize            int `json:"hidden_size"`
-					MaxPositionEmbeddings int `json:"max_position_embeddings"`
-					NumHiddenLayers       int `json:"num_hidden_layers"`
-				}{
+				TextConfig: &modelTextConfig{
 					HiddenSize:            2560,
 					MaxPositionEmbeddings: 131072,
 					NumHiddenLayers:       34,

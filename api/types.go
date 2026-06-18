@@ -637,12 +637,20 @@ type Options struct {
 
 // Runner options which must be set when the model is loaded into memory
 type Runner struct {
-	NumCtx    int   `json:"num_ctx,omitempty"`
-	NumBatch  int   `json:"num_batch,omitempty"`
-	NumGPU    int   `json:"num_gpu,omitempty"`
-	MainGPU   int   `json:"main_gpu,omitempty"`
-	UseMMap   *bool `json:"use_mmap,omitempty"`
-	NumThread int   `json:"num_thread,omitempty"`
+	NumCtx          int   `json:"num_ctx,omitempty"`
+	NumBatch        int   `json:"num_batch,omitempty"`
+	NumGPU          int   `json:"num_gpu,omitempty"`
+	MainGPU         int   `json:"main_gpu,omitempty"`
+	UseMMap         *bool `json:"use_mmap,omitempty"`
+	NumThread       int   `json:"num_thread,omitempty"`
+	DraftNumPredict int   `json:"draft_num_predict,omitempty"`
+
+	// SpecType selects llama-server speculative decoding (e.g. ngram-simple, draft-mtp, draft-eagle3).
+	SpecType string `json:"spec_type,omitempty"`
+	// N-gram speculative tuning (--spec-ngram-simple-*).
+	SpecNgramSizeN    int `json:"spec_ngram_size_n,omitempty"`
+	SpecNgramSizeM    int `json:"spec_ngram_size_m,omitempty"`
+	SpecNgramMinHits  int `json:"spec_ngram_min_hits,omitempty"`
 
 	// KvCacheType sets KV cache quantization for this load (e.g. f16, q8_0, q4_0).
 	// Overrides OLLAMA_KV_CACHE_TYPE when set. Different requests may use different types.
@@ -750,6 +758,12 @@ type CreateRequest struct {
 
 	// Adapters is a map of LoRA adapters to include when creating the model.
 	Adapters map[string]string `json:"adapters,omitempty"`
+
+	// DraftFiles is a map of draft model files to include when creating the model.
+	DraftFiles map[string]string `json:"draft_files,omitempty"`
+
+	// DraftQuantize is the quantization format for draft model tensors.
+	DraftQuantize string `json:"draft_quantize,omitempty"`
 
 	// Template is the template used when constructing a request to the model.
 	Template string `json:"template,omitempty"`
@@ -1047,12 +1061,17 @@ type GgmlNumCtx struct {
 
 // ModelDetails provides details about a model.
 type ModelDetails struct {
-	ParentModel       string   `json:"parent_model"`
-	Format            string   `json:"format"`
-	Family            string   `json:"family"`
-	Families          []string `json:"families"`
-	ParameterSize     string   `json:"parameter_size"`
-	QuantizationLevel string   `json:"quantization_level"`
+	ParentModel          string   `json:"parent_model"`
+	Format               string   `json:"format"`
+	Family               string   `json:"family"`
+	Families             []string `json:"families"`
+	ParameterSize        string   `json:"parameter_size"`
+	QuantizationLevel    string   `json:"quantization_level"`
+	ArchitectureType     string   `json:"architecture_type,omitempty"`
+	ParameterCount       uint64   `json:"parameter_count,omitempty"`
+	ActiveParameterCount uint64   `json:"active_parameter_count,omitempty"`
+	ExpertCount          uint32   `json:"expert_count,omitempty"`
+	ExpertUsedCount      uint32   `json:"expert_used_count,omitempty"`
 }
 
 // UserResponse provides information about a user.
@@ -1215,11 +1234,12 @@ func DefaultOptions() Options {
 
 		Runner: Runner{
 			// options set when the model is loaded
-			NumCtx:    int(envconfig.ContextLength()),
-			NumBatch:  512,
-			NumGPU:    -1, // -1 here indicates that NumGPU should be set dynamically
-			NumThread: 0,  // let the runtime decide
-			UseMMap:   nil,
+			NumCtx:          int(envconfig.ContextLength()),
+			NumBatch:        512,
+			NumGPU:          -1, // -1 here indicates that NumGPU should be set dynamically
+			NumThread:       0,  // let the runtime decide
+			DraftNumPredict: 4,
+			UseMMap:         nil,
 		},
 	}
 }

@@ -41,6 +41,7 @@ var (
 	errUnknownType             = errors.New("unknown type")
 	errNeitherFromOrFiles      = errors.New("neither 'from' or 'files' was specified")
 	errFilePath                = errors.New("file path must be relative")
+	errRemoteDraftUnsupported  = errors.New("DRAFT cannot be used with remote models")
 )
 
 func (s *Server) CreateHandler(c *gin.Context) {
@@ -81,6 +82,21 @@ func (s *Server) CreateHandler(c *gin.Context) {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": manifest.ErrInvalidDigestFormat.Error()})
 			return
 		}
+	}
+
+	for v, digest := range r.DraftFiles {
+		if !fs.ValidPath(v) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errFilePath.Error()})
+			return
+		}
+		if digest == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": manifest.ErrInvalidDigestFormat.Error()})
+			return
+		}
+	}
+	if r.DraftQuantize != "" && len(r.DraftFiles) == 0 {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "--draft-quantize requires a DRAFT model"})
+		return
 	}
 
 	name := model.ParseName(cmp.Or(r.Model, r.Name))
@@ -139,6 +155,7 @@ func (s *Server) CreateHandler(c *gin.Context) {
 				baseLayers, err = parseFromModel(ctx, fromName, fn)
 				if err != nil {
 					ch <- gin.H{"error": err.Error()}
+					return
 				}
 
 				if err == nil && !remote {
@@ -194,6 +211,26 @@ func (s *Server) CreateHandler(c *gin.Context) {
 			return
 		}
 
+		if remote && len(r.DraftFiles) > 0 {
+			ch <- gin.H{"error": errRemoteDraftUnsupported.Error(), "status": http.StatusBadRequest}
+			return
+		}
+
+		var draftLayers []*layerGGML
+		if !remote && r.DraftFiles != nil {
+			draftLayers, err = convertDraftModelFromFiles(r.DraftFiles, fn)
+			if err != nil {
+				for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType, errFilePath} {
+					if errors.Is(err, badReq) {
+						ch <- gin.H{"error": err.Error(), "status": http.StatusBadRequest}
+						return
+					}
+				}
+				ch <- gin.H{"error": err.Error(), "status": http.StatusBadRequest}
+				return
+			}
+		}
+
 		var adapterLayers []*layerGGML
 		if !remote && r.Adapters != nil {
 			adapterLayers, err = convertModelFromFiles(r.Adapters, baseLayers, true, fn)
@@ -211,6 +248,9 @@ func (s *Server) CreateHandler(c *gin.Context) {
 
 		if len(adapterLayers) > 0 {
 			baseLayers = append(baseLayers, adapterLayers...)
+		}
+		if len(draftLayers) > 0 {
+			baseLayers = append(baseLayers, draftLayers...)
 		}
 
 		// Info is not currently exposed by Modelfiles, but allows overriding various
@@ -340,6 +380,22 @@ func remoteURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
+func convertDraftModelFromFiles(files map[string]string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+	if len(files) == 0 {
+		return nil, errNoFilesProvided
+	}
+
+	var allLayers []*layerGGML
+	for filePath, digest := range files {
+		layers, err := ggufLayersWithMediaType(digest, filePath, manifest.MediaTypeImageDraft, false, fn)
+		if err != nil {
+			return nil, err
+		}
+		allLayers = append(allLayers, layers...)
+	}
+	return allLayers, nil
+}
+
 func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isAdapter bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	switch detectModelTypeFromFiles(files) {
 	case "safetensors":
@@ -358,9 +414,9 @@ func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isA
 
 		var digest string
 		var allLayers []*layerGGML
-		for _, v := range files {
+		for filePath, v := range files {
 			digest = v
-			layers, err := ggufLayers(digest, fn)
+			layers, err := ggufLayersWithMediaType(digest, filePath, "", true, fn)
 			if err != nil {
 				return nil, err
 			}
@@ -507,15 +563,22 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 	var primaryParams uint64
 	for _, layer := range baseLayers {
 		if layer.GGML != nil {
-			quantType := strings.ToUpper(cmp.Or(r.Quantize, r.Quantization))
-			if quantType != "" && layer.GGML.Name() == "gguf" && layer.MediaType == "application/vnd.ollama.image.model" {
+			quantType := ""
+			if layer.MediaType == "application/vnd.ollama.image.model" {
+				quantType = strings.ToUpper(cmp.Or(r.Quantize, r.Quantization))
+			} else if layer.MediaType == manifest.MediaTypeImageDraft {
+				quantType = strings.ToUpper(r.DraftQuantize)
+			}
+			if quantType != "" && layer.GGML.Name() == "gguf" && slices.Contains([]string{"application/vnd.ollama.image.model", manifest.MediaTypeImageDraft}, layer.MediaType) {
 				want, err := ggml.ParseFileType(quantType)
 				if err != nil {
 					return err
 				}
 
 				ft := layer.GGML.KV().FileType()
-				if !slices.Contains([]string{"F16", "F32"}, ft.String()) {
+				if layer.MediaType == manifest.MediaTypeImageDraft && ft.ToTensorType().IsQuantized() {
+					return fmt.Errorf("draft quantization requires an unquantized draft model, got %s", ft)
+				} else if !slices.Contains([]string{"F16", "F32"}, ft.String()) {
 					return errors.New("quantization is only supported for F16 and F32 models")
 				} else if ft != want {
 					layer, err = quantizeLayer(layer, quantType, fn)
@@ -690,6 +753,10 @@ func quantizeLayer(layer *layerGGML, quantizeType string, fn func(resp api.Progr
 }
 
 func ggufLayers(digest string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+	return ggufLayersWithMediaType(digest, "", "", true, fn)
+}
+
+func ggufLayersWithMediaType(digest, sourceName, mediaType string, detectTemplate bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	var layers []*layerGGML
 
 	fn(api.ProgressResponse{Status: "parsing GGUF"})
@@ -720,15 +787,21 @@ func ggufLayers(digest string, fn func(resp api.ProgressResponse)) ([]*layerGGML
 		return nil, err
 	}
 
-	mediatype := "application/vnd.ollama.image.model"
-	if f.KV().Kind() == "adapter" {
-		mediatype = "application/vnd.ollama.image.adapter"
-	} else if (f.KV().Uint("block_count") == 0 && f.KV().Uint("vision.block_count") > 0) || f.KV().Kind() == "projector" {
-		// if a model has vision.block_count but not block_count, it is a standalone vision model
-		mediatype = "application/vnd.ollama.image.projector"
+	if mediaType == "" {
+		mediaType = "application/vnd.ollama.image.model"
+		if f.KV().Kind() == "adapter" {
+			mediaType = "application/vnd.ollama.image.adapter"
+		} else if (f.KV().Uint("block_count") == 0 && f.KV().Uint("vision.block_count") > 0) || f.KV().Kind() == "projector" {
+			// if a model has vision.block_count but not block_count, it is a standalone vision model
+			mediaType = "application/vnd.ollama.image.projector"
+		}
 	}
 
-	layer, err := manifest.NewLayerFromLayer(digest, mediatype, blob.Name())
+	layerName := blob.Name()
+	if sourceName != "" {
+		layerName = sourceName
+	}
+	layer, err := manifest.NewLayerFromLayer(digest, mediaType, layerName)
 	if err != nil {
 		slog.Debug("could not create new layer from layer", "error", err)
 		return nil, err
@@ -736,7 +809,10 @@ func ggufLayers(digest string, fn func(resp api.ProgressResponse)) ([]*layerGGML
 
 	layers = append(layers, &layerGGML{layer, f})
 
-	return detectChatTemplate(layers)
+	if detectTemplate {
+		return detectChatTemplate(layers)
+	}
+	return layers, nil
 }
 
 func removeLayer(layers []manifest.Layer, mediatype string) []manifest.Layer {

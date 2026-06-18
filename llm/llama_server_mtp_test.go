@@ -1,0 +1,122 @@
+package llm
+
+import (
+	"slices"
+	"testing"
+
+	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/fs/ggml"
+)
+
+func TestAppendSpeculativeArgsNgram(t *testing.T) {
+	got := appendSpeculativeArgs([]string{"base"}, LlamaServerConfig{SpecType: "ngram-simple"}, api.Options{})
+	want := []string{
+		"base", "--spec-type", "ngram-simple",
+		"--spec-ngram-simple-size-n", "12",
+		"--spec-ngram-simple-size-m", "48",
+		"--spec-ngram-simple-min-hits", "1",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("appendSpeculativeArgs = %v, want %v", got, want)
+	}
+}
+
+func TestAppendSpeculativeArgsDFlash(t *testing.T) {
+	got := appendSpeculativeArgs([]string{"base"}, LlamaServerConfig{
+		SpecType:       "draft-eagle3",
+		DraftModelPath: "drafter.gguf",
+	}, api.Options{Runner: api.Runner{DraftNumPredict: 6}})
+	want := []string{
+		"base", "--spec-type", "draft-eagle3",
+		"--spec-draft-model", "drafter.gguf",
+		"--spec-draft-n-max", "6",
+		"--spec-draft-backend-sampling",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("appendSpeculativeArgs = %v, want %v", got, want)
+	}
+}
+
+func TestAppendMTPDraftArgs(t *testing.T) {
+	tests := []struct {
+		name   string
+		config LlamaServerConfig
+		opts   api.Options
+		want   []string
+	}{
+		{
+			name: "no draft model leaves speculative decoding disabled",
+			opts: api.Options{Runner: api.Runner{DraftNumPredict: 4}},
+			want: []string{"base"},
+		},
+		{
+			name:   "embedded draft uses configured draft depth",
+			config: LlamaServerConfig{EnableMTP: true},
+			opts:   api.Options{Runner: api.Runner{DraftNumPredict: 4}},
+			want:   []string{"base", "--spec-type", "draft-mtp", "--spec-draft-n-max", "4", "--spec-draft-backend-sampling"},
+		},
+		{
+			name:   "separate draft model uses configured draft depth",
+			config: LlamaServerConfig{DraftModelPath: "draft.gguf"},
+			opts:   api.Options{Runner: api.Runner{DraftNumPredict: 8}},
+			want:   []string{"base", "--spec-type", "draft-mtp", "--spec-draft-n-max", "8", "--spec-draft-backend-sampling", "--spec-draft-model", "draft.gguf"},
+		},
+		{
+			name:   "zero draft depth disables speculative decoding",
+			config: LlamaServerConfig{EnableMTP: true, DraftModelPath: "draft.gguf"},
+			opts:   api.Options{Runner: api.Runner{DraftNumPredict: 0}},
+			want:   []string{"base"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := appendMTPDraftArgs([]string{"base"}, tt.config, tt.opts)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("appendMTPDraftArgs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasLegacyQwenMTPDraft(t *testing.T) {
+	tests := []struct {
+		name    string
+		arch    string
+		tensors []*ggml.Tensor
+		want    bool
+	}{
+		{
+			name:    "qwen35 legacy mtp marker",
+			arch:    "qwen35",
+			tensors: []*ggml.Tensor{{Name: "mtp.fc.weight"}},
+			want:    true,
+		},
+		{
+			name:    "qwen35moe legacy mtp marker",
+			arch:    "qwen35moe",
+			tensors: []*ggml.Tensor{{Name: "mtp.layers.0.attn_q.weight"}},
+			want:    true,
+		},
+		{
+			name:    "qwen35 without legacy mtp marker",
+			arch:    "qwen35",
+			tensors: nil,
+			want:    false,
+		},
+		{
+			name:    "other arch with mtp prefix",
+			arch:    "qwen3next",
+			tensors: []*ggml.Tensor{{Name: "mtp.fc.weight"}},
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasLegacyQwenMTPDraft(tt.arch, tt.tensors); got != tt.want {
+				t.Fatalf("hasLegacyQwenMTPDraft() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -1,0 +1,5 @@
+FROM eliza-1-27b-256k:latest
+PARAMETER spec_type ngram-simple
+PARAMETER spec_ngram_size_n 12
+PARAMETER spec_ngram_size_m 48
+PARAMETER spec_ngram_min_hits 1

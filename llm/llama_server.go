@@ -259,6 +259,13 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 		return promptVal, false, 0, nil
 	}
 
+	if !s.launch.config.ContextShift {
+		return nil, false, 0, api.StatusError{
+			StatusCode:   http.StatusBadRequest,
+			ErrorMessage: "the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length",
+		}
+	}
+
 	nKeep := req.Options.NumKeep
 	if nKeep < 0 {
 		nKeep = len(tokens)
@@ -329,7 +336,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	params = appendJinjaArgs(params, launch.config)
 
 	params = appendMMProjArgs(params, launch)
-	params = appendMTPDraftArgs(params, launch.config, launch.opts)
+	params = appendSpeculativeArgs(params, launch.config, launch.opts)
 
 	params = append(params, qwenVLServerArgs(launch.modelArch)...)
 
@@ -655,13 +662,75 @@ func appendContextShiftArgs(params []string, opts api.Options, enabled bool) []s
 	return params
 }
 
+func appendSpeculativeArgs(params []string, config LlamaServerConfig, opts api.Options) []string {
+	specType := strings.ToLower(strings.TrimSpace(config.SpecType))
+	switch specType {
+	case "ngram", "ngram-simple":
+		sizeN := config.NgramSizeN
+		if sizeN <= 0 {
+			sizeN = 12
+		}
+		sizeM := config.NgramSizeM
+		if sizeM <= 0 {
+			sizeM = 48
+		}
+		minHits := config.NgramMinHits
+		if minHits <= 0 {
+			minHits = 1
+		}
+		return append(params,
+			"--spec-type", "ngram-simple",
+			"--spec-ngram-simple-size-n", strconv.Itoa(sizeN),
+			"--spec-ngram-simple-size-m", strconv.Itoa(sizeM),
+			"--spec-ngram-simple-min-hits", strconv.Itoa(minHits),
+		)
+	case "draft-eagle3", "eagle3", "dflash":
+		if config.DraftModelPath == "" {
+			return params
+		}
+		nMax := opts.DraftNumPredict
+		if nMax <= 0 {
+			nMax = 4
+		}
+		return append(params,
+			"--spec-type", "draft-eagle3",
+			"--spec-draft-model", config.DraftModelPath,
+			"--spec-draft-n-max", strconv.Itoa(nMax),
+			"--spec-draft-backend-sampling",
+		)
+	case "draft-mtp", "mtp":
+		return appendMTPDraftArgs(params, config, opts)
+	case "":
+		if config.EnableMTP {
+			return appendMTPDraftArgs(params, config, opts)
+		}
+		return params
+	default:
+		slog.Warn("unknown llama-server spec type; ignoring", "spec_type", config.SpecType)
+		return params
+	}
+}
+
 func appendMTPDraftArgs(params []string, config LlamaServerConfig, opts api.Options) []string {
 	if !config.EnableMTP && config.DraftModelPath == "" {
 		return params
 	}
-	// DraftNumPredict not yet on zerollama api.Options; skip MTP flags until follow-up.
-	_ = opts
+	if opts.DraftNumPredict <= 0 {
+		return params
+	}
+
+	params = append(params, "--spec-type", "draft-mtp")
+	params = append(params, "--spec-draft-n-max", strconv.Itoa(opts.DraftNumPredict))
+	params = append(params, "--spec-draft-backend-sampling")
+	if config.DraftModelPath != "" {
+		params = append(params, "--spec-draft-model", config.DraftModelPath)
+	}
 	return params
+}
+
+// HasMTPDraft reports whether a GGUF bundles embedded multi-token prediction weights.
+func HasMTPDraft(f *ggml.GGML) bool {
+	return hasMTPDraft(f)
 }
 
 func hasMTPDraft(f *ggml.GGML) bool {

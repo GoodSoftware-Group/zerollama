@@ -15,6 +15,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -193,17 +194,23 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		// Resolve relative paths based on Modelfile location
-		if !filepath.IsAbs(modelDir) && filename != "" {
+		// Resolve relative paths based on Modelfile location.
+		// Keep Ollama model refs (e.g. gemma4:26b-mlx) for base+draft safetensors merges.
+		if !filepath.IsAbs(modelDir) && filename != "" && !model.ParseName(modelDir).IsValid() {
 			modelDir = filepath.Join(filepath.Dir(filename), modelDir)
+		}
+		if mfConfig != nil && mfConfig.Draft != "" && !filepath.IsAbs(mfConfig.Draft) && filename != "" {
+			mfConfig.Draft = filepath.Join(filepath.Dir(filename), mfConfig.Draft)
 		}
 
 		quantize, _ := cmd.Flags().GetString("quantize")
+		draftQuantize, _ := cmd.Flags().GetString("draft-quantize")
 		return xcreateclient.CreateModel(xcreateclient.CreateOptions{
-			ModelName: modelName,
-			ModelDir:  modelDir,
-			Quantize:  quantize,
-			Modelfile: mfConfig,
+			ModelName:     modelName,
+			ModelDir:      modelDir,
+			Quantize:      quantize,
+			DraftQuantize: draftQuantize,
+			Modelfile:     mfConfig,
 		}, p)
 	}
 
@@ -249,6 +256,13 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 	if quantize != "" {
 		req.Quantize = quantize
 	}
+	draftQuantize, _ := cmd.Flags().GetString("draft-quantize")
+	if draftQuantize != "" {
+		if len(req.DraftFiles) == 0 {
+			return errors.New("--draft-quantize requires a DRAFT model")
+		}
+		req.DraftQuantize = draftQuantize
+	}
 
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
@@ -286,12 +300,25 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 		})
 	}
 
+	draftFiles := syncmap.NewSyncMap[string, string]()
+	for f, digest := range req.DraftFiles {
+		g.Go(func() error {
+			if _, err := createBlob(cmd, client, f, digest, p); err != nil {
+				return err
+			}
+
+			draftFiles.Store(filepath.Base(f), digest)
+			return nil
+		})
+	}
+
 	if err := g.Wait(); err != nil {
 		return err
 	}
 
 	req.Files = files.Items()
 	req.Adapters = adapters.Items()
+	req.DraftFiles = draftFiles.Items()
 
 	bars := make(map[string]*progress.Bar)
 	fn := func(resp api.ProgressResponse) error {
@@ -893,12 +920,12 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 			if len(digest) > 12 {
 				digest = digest[:12]
 			}
-			data = append(data, []string{m.Name, digest, size, format.HumanTime(m.ModifiedAt, "Never")})
+			data = append(data, []string{m.Name, digest, size, listParameterSummary(m.Details), format.HumanTime(m.ModifiedAt, "Never")})
 		}
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "ID", "SIZE", "MODIFIED"})
+	table.SetHeader([]string{"NAME", "ID", "SIZE", "PARAMS", "MODIFIED"})
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 	table.SetAlignment(tablewriter.ALIGN_LEFT)
 	table.SetHeaderLine(false)
@@ -909,6 +936,38 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 	table.Render()
 
 	return nil
+}
+
+func listParameterSummary(details api.ModelDetails) string {
+	total := details.ParameterSize
+	if details.ParameterCount > 0 {
+		total = format.HumanNumber(details.ParameterCount)
+	}
+
+	if details.ArchitectureType != "moe" {
+		return total
+	}
+
+	if details.ActiveParameterCount > 0 {
+		active := format.HumanNumber(details.ActiveParameterCount)
+		if total != "" {
+			return fmt.Sprintf("%s/%s active", total, active)
+		}
+		return active + " active"
+	}
+
+	if details.ExpertCount > 0 && details.ExpertUsedCount > 0 {
+		routing := fmt.Sprintf("MoE %dx%d", details.ExpertCount, details.ExpertUsedCount)
+		if total != "" {
+			return total + " " + routing
+		}
+		return routing
+	}
+
+	if total != "" {
+		return total + " MoE"
+	}
+	return "MoE"
 }
 
 func ListRunningHandler(cmd *cobra.Command, args []string) error {
@@ -1092,7 +1151,6 @@ func showInfo(resp *api.ShowResponse, verbose bool, w io.Writer) error {
 	}
 
 	tableRender("Model", func() (rows [][]string) {
-
 
 		if resp.ModelInfo != nil {
 			arch, _ := resp.ModelInfo["general.architecture"].(string)
@@ -1793,6 +1851,10 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 	envconfig.ApplyLlamaCppBackendDefaults()
 	envconfig.ApplyLlamaServerBackendDefaults()
 
+	if err := checkConnectableHostAvailable(envconfig.Host(), envconfig.ConnectableHost()); err != nil {
+		return err
+	}
+
 	ln, err := net.Listen("tcp", envconfig.Host().Host)
 	if err != nil {
 		return err
@@ -1804,6 +1866,31 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	return err
+}
+
+func checkConnectableHostAvailable(bindURL, connectURL *url.URL) error {
+	bindHost, bindPort, err := net.SplitHostPort(bindURL.Host)
+	if err != nil {
+		return nil
+	}
+
+	ip := net.ParseIP(bindHost)
+	if ip == nil || !ip.IsUnspecified() {
+		return nil
+	}
+
+	connectHost, connectPort, err := net.SplitHostPort(connectURL.Host)
+	if err != nil || connectPort != bindPort {
+		return nil
+	}
+
+	ln, err := net.Listen("tcp", net.JoinHostPort(connectHost, connectPort))
+	if err == nil {
+		_ = ln.Close()
+		return nil
+	}
+
+	return fmt.Errorf("cannot serve %s: client address %s is already occupied; close the process using that loopback port or set OLLAMA_HOST to a free address such as 127.0.0.1:11435", bindURL.Host, connectURL.Host)
 }
 
 func initializeKeypair() error {
@@ -2091,6 +2178,7 @@ func NewCLI() *cobra.Command {
 
 	createCmd.Flags().StringP("file", "f", "", "Name of the Modelfile (default \"Modelfile\")")
 	createCmd.Flags().StringP("quantize", "q", "", "Quantize model to this level (e.g. q4_K_M)")
+	createCmd.Flags().String("draft-quantize", "", "Quantize draft model to this level")
 	createCmd.Flags().Bool("experimental", false, "Enable experimental safetensors model creation")
 
 	showCmd := &cobra.Command{

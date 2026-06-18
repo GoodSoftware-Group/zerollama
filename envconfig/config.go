@@ -358,6 +358,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy for text GGUF: 1/on, 0/off; unset=off on Darwin (ggml default), on on Linux when URL set"},
 		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
 		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, 0/off; Linux auto when binary found)"},
+		"ZEROLLAMA_ELIZA_NGRAM":               {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
 		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":              {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":       {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
@@ -524,6 +525,13 @@ func LegacyRunnerForced() bool {
 // ZEROLLAMA_LLAMA_CPP_BACKEND=1 or `zerollama serve --llama-cpp-backend`.
 func LlamaCppBackend() bool {
 	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_CPP_BACKEND"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// ElizaNgramDefault enables ngram-simple speculative decoding for eliza-1-* tags on the
+// llama-server path when no draft model is configured. Set ZEROLLAMA_ELIZA_NGRAM=1.
+func ElizaNgramDefault() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_ELIZA_NGRAM"))
 	return v == "1" || strings.EqualFold(v, "true")
 }
 

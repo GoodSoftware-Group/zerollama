@@ -56,8 +56,8 @@ import (
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/version"
 	imagegenmanifest "github.com/ollama/ollama/x/imagegen/manifest"
-	xserver "github.com/ollama/ollama/x/server"
 	"github.com/ollama/ollama/x/runtimeworker"
+	xserver "github.com/ollama/ollama/x/server"
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
@@ -105,13 +105,13 @@ var useClient2 = experimentEnabled("client2")
 var mode string = gin.DebugMode
 
 type Server struct {
-	addr           net.Addr
-	sched          *Scheduler
-	defaultNumCtx  int
-	requestLogger  *inferenceRequestLogger
-	training       *trainingworker.Client
-	trainingDefer  *trainingDeferQueue
-	runtimeEmbed   *runtimeworker.Client
+	addr          net.Addr
+	sched         *Scheduler
+	defaultNumCtx int
+	requestLogger *inferenceRequestLogger
+	training      *trainingworker.Client
+	trainingDefer *trainingDeferQueue
+	runtimeEmbed  *runtimeworker.Client
 
 	trainingVRAMMu      sync.Mutex
 	trainingVRAMBlocked bool
@@ -159,21 +159,91 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 		opts.NumCtx = s.defaultNumCtx
 	}
 
-	if err := opts.FromMap(model.Options); err != nil {
-		return api.Options{}, err
+	// api.Options stores defaulted values, so lower layers cannot distinguish
+	// an unset draft_num_predict from the default. Track that while we still
+	// have the raw model/request option maps.
+	draftNumPredictSet := hasOption(requestOpts, "draft_num_predict")
+	if model != nil {
+		draftNumPredictSet = draftNumPredictSet || hasOption(model.Options, "draft_num_predict")
+		if err := opts.FromMap(model.Options); err != nil {
+			return api.Options{}, err
+		}
 	}
 
 	if err := opts.FromMap(requestOpts); err != nil {
 		return api.Options{}, err
 	}
 
+	if model != nil && model.DraftPath == "" && !model.EmbeddedMTP && !draftNumPredictSet {
+		opts.DraftNumPredict = 0
+	}
+
 	return opts, nil
+}
+
+func hasOption(opts map[string]any, name string) bool {
+	_, ok := opts[name]
+	return ok
+}
+
+func llamaServerConfigForModel(m *Model, contextShift bool, opts api.Options) llm.LlamaServerConfig {
+	if m == nil {
+		return llm.LlamaServerConfig{}
+	}
+	manifestDraft := m.DraftPath
+	sidecarDraft := sidecarDraftModelPath(m)
+	cfg := llm.LlamaServerConfig{
+		DisableJinja:   usesOllamaRenderedChat(m),
+		DraftModelPath: cmp.Or(manifestDraft, sidecarDraft),
+		ContextShift:   contextShift,
+		SpecType:       opts.SpecType,
+		NgramSizeN:     opts.SpecNgramSizeN,
+		NgramSizeM:     opts.SpecNgramSizeM,
+		NgramMinHits:   opts.SpecNgramMinHits,
+	}
+	if cfg.SpecType == "" {
+		switch {
+		case manifestDraft != "":
+			cfg.SpecType = "draft-mtp"
+		case sidecarDraft != "":
+			cfg.SpecType = "draft-eagle3"
+		case modelUsesElizaNgramDefault(m):
+			cfg.SpecType = "ngram-simple"
+		}
+	}
+	return cfg
+}
+
+func sidecarDraftModelPath(m *Model) string {
+	if m == nil || m.Options == nil {
+		return ""
+	}
+	v, ok := m.Options["draft_model_path"]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func modelUsesElizaNgramDefault(m *Model) bool {
+	if m == nil || !envconfig.ElizaNgramDefault() {
+		return false
+	}
+	return strings.HasPrefix(model.ParseName(m.Name).Model, "eliza-1")
+}
+
+func usesOllamaRenderedChat(m *Model) bool {
+	return m != nil && (m.Config.Renderer != "" || m.Config.Parser != "" || shouldUseHarmony(m))
 }
 
 // scheduleRunner schedules a runner after validating inputs such as capabilities and model options.
 // It returns the allocated runner, model instance, consolidated options, and optional ggml num_ctx
 // clamp metadata if successful and error otherwise.
-func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration, statusCh chan<- any, writeStatus func(ch chan<- any, model, status, detail string, position, queueDepth int)) (llm.LlamaServer, *Model, *api.Options, *api.GgmlNumCtx, error) {
+func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration, shift *bool, statusCh chan<- any, writeStatus func(ch chan<- any, model, status, detail string, position, queueDepth int)) (llm.LlamaServer, *Model, *api.Options, *api.GgmlNumCtx, error) {
 	if name == "" {
 		return nil, nil, nil, nil, fmt.Errorf("model %w", errRequired)
 	}
@@ -210,7 +280,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		"num_ctx", opts.NumCtx,
 		"keep_alive", schedKeepAliveDesc(keepAlive),
 	)
-	runnerCh, errCh, ticket := s.sched.GetRunner(ctx, model, opts, keepAlive)
+	runnerCh, errCh, ticket := s.sched.GetRunner(ctx, model, opts, keepAlive, shift)
 	var runner *runnerRef
 	if statusCh != nil {
 		writeFn := writeStatus
@@ -404,7 +474,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		writeGenerateStatus(ch, req.Model, status, detail, pos, depth)
 	}
 
-	r, m, opts, ggmlCtx, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, streamCh, statusWriter)
+	r, m, opts, ggmlCtx, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
 		return
@@ -742,7 +812,7 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
-	r, m, opts, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil)
+	r, m, opts, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
@@ -897,7 +967,7 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 
 	name := modelRef.Name
 
-	r, _, _, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil)
+	r, _, _, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
@@ -1233,6 +1303,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 				modelDetails.ParameterSize = format.HumanNumber(uint64(paramCount))
 			}
 		}
+		enrichModelDetailsFromSafetensors(&modelDetails, name)
 		// Older manifests may not have file_type populated for safetensors models.
 		if modelDetails.QuantizationLevel == "" {
 			if dtype, err := xserver.GetSafetensorsDtype(name); err == nil && dtype != "" {
@@ -1367,6 +1438,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	enrichModelDetailsFromGGML(&resp.Details, kvData, tensors)
 
 	delete(kvData, "general.name")
 	delete(kvData, "tokenizer.chat_template")
@@ -1441,6 +1513,20 @@ func (s *Server) ListHandler(c *gin.Context) {
 			continue
 		}
 
+		details := api.ModelDetails{
+			Format:            cf.ModelFormat,
+			Family:            cf.ModelFamily,
+			Families:          cf.ModelFamilies,
+			ParameterSize:     cf.ModelType,
+			QuantizationLevel: cf.FileType,
+		}
+		if model, err := GetModel(n.String()); err == nil {
+			enrichModelDetailsFromPath(&details, model.ModelPath)
+		}
+		if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
+			enrichModelDetailsFromSafetensors(&details, n)
+		}
+
 		// tag should never be masked
 		models = append(models, api.ListModelResponse{
 			Model:       n.DisplayShortest(),
@@ -1450,13 +1536,7 @@ func (s *Server) ListHandler(c *gin.Context) {
 			Size:        m.Size(),
 			Digest:      m.Digest(),
 			ModifiedAt:  m.FileInfo().ModTime(),
-			Details: api.ModelDetails{
-				Format:            cf.ModelFormat,
-				Family:            cf.ModelFamily,
-				Families:          cf.ModelFamilies,
-				ParameterSize:     cf.ModelType,
-				QuantizationLevel: cf.FileType,
-			},
+			Details:     details,
 		})
 	}
 
@@ -2494,7 +2574,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		writeChatStatus(ch, req.Model, status, detail, pos, depth)
 	}
 
-	r, m, opts, ggmlCtx, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, streamCh, statusWriter)
+	r, m, opts, ggmlCtx, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
 		return
@@ -2630,32 +2710,32 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				Images:      images,
 				Format:      currentFormat,
 				Options:     opts,
-			Shift:       req.Shift == nil || *req.Shift,
-			Truncate:    truncate,
-			Logprobs:    req.Logprobs,
-			TopLogprobs: req.TopLogprobs,
-		}, func(r llm.CompletionResponse) {
-			if firstToken {
-				firstToken = false
-				logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
-			}
-			res := api.ChatResponse{
-				Model:     req.Model,
-				CreatedAt: time.Now().UTC(),
-				Message:   api.Message{Role: "assistant", Content: r.Content},
-				Done:      r.Done,
-				Metrics: api.Metrics{
-					PromptEvalCount:    r.PromptEvalCount,
-					PromptEvalDuration: r.PromptEvalDuration,
-					EvalCount:          r.EvalCount,
-					EvalDuration:       r.EvalDuration,
-				},
-				Logprobs: toAPILogprobs(r.Logprobs),
-			}
+				Shift:       req.Shift == nil || *req.Shift,
+				Truncate:    truncate,
+				Logprobs:    req.Logprobs,
+				TopLogprobs: req.TopLogprobs,
+			}, func(r llm.CompletionResponse) {
+				if firstToken {
+					firstToken = false
+					logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
+				}
+				res := api.ChatResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Message:   api.Message{Role: "assistant", Content: r.Content},
+					Done:      r.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    r.PromptEvalCount,
+						PromptEvalDuration: r.PromptEvalDuration,
+						EvalCount:          r.EvalCount,
+						EvalDuration:       r.EvalDuration,
+					},
+					Logprobs: toAPILogprobs(r.Logprobs),
+				}
 
-			if r.Done {
-				res.DoneReason = r.DoneReason.String()
-				res.TotalDuration = time.Since(checkpointStart)
+				if r.Done {
+					res.DoneReason = r.DoneReason.String()
+					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 					applyPromptTruncation(&res, r, messagesDropped)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
@@ -2958,7 +3038,7 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 	}
 
 	// Schedule the runner for image generation
-	runner, _, _, _, err := s.scheduleRunner(c.Request.Context(), modelName, []model.Capability{model.CapabilityImage}, nil, req.KeepAlive, nil, nil)
+	runner, _, _, _, err := s.scheduleRunner(c.Request.Context(), modelName, []model.Capability{model.CapabilityImage}, nil, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return

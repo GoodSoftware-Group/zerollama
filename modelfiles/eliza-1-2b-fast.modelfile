@@ -1,0 +1,3 @@
+FROM eliza-1-2b-dflash
+PARAMETER spec_type draft-eagle3
+PARAMETER draft_num_predict 4
