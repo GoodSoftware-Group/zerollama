@@ -85,7 +85,29 @@ sudo mkdir -p /usr/lib/ollama/mlx_cuda_v12
 sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 ```
 
-**Why `patch_mlx_cuda_vram.sh`:** MLX's default `cudaMallocAsync` pool reserves address space that counts against physical VRAM on tight cards. The patch switches to synchronous `cudaMalloc`, lowers the default memory limit to 90%, and disables buffer-cache recycle that caused heap issues after checkpoint frees.
+**Why three patch scripts (apply in order):**
+
+```bash
+# 1. mlx-c/array.cpp — add mlx_array_detach + mlx_go_export_latents_bin_d2h
+./scripts/patch_mlx_c_array.sh
+
+# 2. (first build only / clean tree) — strip debug fprintfs added during OOM
+#    diagnosis; safe no-op if already clean
+./scripts/patch_mlx_c_debug_cleanup.sh
+
+# 3. mlx/backend/cuda/allocator.cpp — cudaMalloc, 90% limit, disable recycle
+./scripts/patch_mlx_cuda_vram.sh
+
+cmake --build build-mlx --target mlx --target mlxc --parallel
+```
+
+| Script | File patched | Why |
+|--------|-------------|-----|
+| `patch_mlx_c_array.sh` | `mlx-c-src/mlx/c/array.cpp` | Adds `mlx_array_detach` (break graph links before free) and `mlx_go_export_latents_bin_d2h` (direct `cudaMemcpy` D2H for latent export after denoise — bypasses `mlx::core::copy` which faults post-checkpoint on CUDA) |
+| `patch_mlx_c_debug_cleanup.sh` | same file | Strips `fprintf` debug instrumentation added during OOM diagnosis; not needed in production but must be removed before shipping |
+| `patch_mlx_cuda_vram.sh` | `mlx-src/mlx/backend/cuda/allocator.cpp` | `cudaMalloc` vs async pool (pool reserves virtual address space that counts against physical VRAM); 90% memory limit; disable buffer-cache recycle (caused heap corruption after checkpoint frees) |
+
+All three scripts are idempotent — safe to re-run if you're unsure whether a patch is already applied.
 
 ---
 
@@ -191,7 +213,9 @@ NDJSON lines include `completed`/`total` during denoise and `image` (base64 PNG)
 | Weight I/O | `x/imagegen/manifest/weights.go` | mmap safetensors, batched eval |
 | MLX bindings | `x/imagegen/mlx/mlx.go` | `EvalErrBatched`, VRAM trim, cleanup |
 | CPU VAE helper | `x/imagegen/decode_latents.go` | Subprocess entry for post-denoise decode |
-| MLX allocator patch | `scripts/patch_mlx_cuda_vram.sh` | 16 GB CUDA tuning |
+| MLX allocator patch | `scripts/patch_mlx_cuda_vram.sh` | `cudaMalloc`, 90% limit, disable recycle |
+| MLX-C array patch | `scripts/patch_mlx_c_array.sh` | `mlx_array_detach` + `mlx_go_export_latents_bin_d2h` |
+| MLX-C debug cleanup | `scripts/patch_mlx_c_debug_cleanup.sh` | Strip debug `fprintf`s before production build |
 | Serve template | `scripts/serve_gpu_example.sh` | Library paths + comments |
 
 Developer notes: [x/imagegen/README.md](../x/imagegen/README.md).

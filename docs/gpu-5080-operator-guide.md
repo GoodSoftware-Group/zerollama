@@ -592,10 +592,18 @@ sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 **Why patch before rebuild on 16 GB:**
 
 ```bash
-./scripts/patch_mlx_cuda_vram.sh   # cudaMalloc vs async pool; 90% memory limit
+# mlx-c/array.cpp: mlx_array_detach + cudaMemcpy D2H latent export
+./scripts/patch_mlx_c_array.sh
+# mlx-c/array.cpp: remove debug fprintf noise from OOM diagnosis
+./scripts/patch_mlx_c_debug_cleanup.sh
+# mlx/backend/cuda/allocator.cpp: cudaMalloc, 90% limit, disable recycle
+./scripts/patch_mlx_cuda_vram.sh
+
 cmake --build build-mlx --target mlx --target mlxc --parallel
 sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 ```
+
+**Why three patches:** they touch two source packages (`mlx-src` vs `mlx-c-src`) and have distinct roles. All are idempotent — safe to re-run after a clean cmake configure.
 
 ### Serve env (included in `serve_gpu_example.sh`)
 
