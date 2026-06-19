@@ -176,6 +176,8 @@ CUDA_LLAMA_MODEL=$LLAMA_MODEL ./scripts/l2_cuda_full_gate.sh
 
 **Jun 2026 sign-off (CT 1564):** Phase 15 **PASS**; L2 **FAIL merge** @ 8k (stock faster); L3 **SOFT PASS**. Full playbook: [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md).
 
+**MLX image generation (experimental):** build MLX-C once, set `OLLAMA_LIBRARY_PATH` to include `mlx_cuda_v12`, pull `x/z-image-turbo`, stop other models, then `zerollama run x/z-image-turbo "prompt"`. Default **384×384** on 16 GB CUDA — **why:** activations scale with pixels². Guide: [imagegen-zimage-turbo.md](docs/imagegen-zimage-turbo.md).
+
 **Why a separate build script:** CGO needs Xcode SDK, embedded Python, and Metal ggml from the **patched in-tree** vendor (`llama/patches/` on `b9611`), not only sibling `../llama.cpp`.
 
 ```bash
@@ -242,6 +244,7 @@ Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lm
 - [Eliza Cloud / Zerollama remote inference](docs/eliza-cloud.md) — **why** Eliza is the default upstream (OpenAI/Anthropic APIs + API keys), **why** legacy Ed25519 signing is limited to `ollama.com`, path rewrites, catalog merge, and when responses are raw upstream JSON.
 - [Video understanding (VLM)](docs/video-understanding.md) — **why** OpenAI `video_url` merges into one message, **why** ffmpeg samples to frames, security (HTTPS, SSRF), native **fps/stride** sampling, context preflight, and optional SGLang proxy.
 - [Wan text-to-video (T2V)](docs/wan-t2v.md) — **why** async `/v1/videos` uses the training `run_script` queue (not GGUF chat), **why** checkpoints install separately, defer ids, and artifact paths.
+- [MLX image generation (Z-Image Turbo)](docs/imagegen-zimage-turbo.md) — **why** diffusion uses an MLX subprocess (not ggml/runtime); 16 GB CUDA staged VRAM; `zerollama run x/z-image-turbo`; build `libmlxc.so` + `patch_mlx_cuda_vram.sh`.
 - [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, and **OLLAMA_VIDEO_*** for native video.
 - [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
 - [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.

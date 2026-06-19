@@ -1,250 +1,80 @@
-# Image Generation in Ollama (Experimental)
+# `x/imagegen` — MLX diffusion runner
 
-Generate images from text prompts using local AI models.
+Go package that implements Ollama-compatible **image generation** via an MLX subprocess. Used for models with the `image` capability (e.g. `x/z-image-turbo`).
 
-## Quick Start
-
-```bash
-# Run with a prompt
-ollama run z-image "a sunset over mountains"
-Generating: step 30/30
-Image saved to: /tmp/ollama-image-1704067200.png
-```
-
-On macOS, the generated image will automatically open in Preview.
-
-## Supported Models
-
-| Model | VRAM Required | Notes |
-|-------|---------------|-------|
-| z-image | ~12GB | Based on Flux architecture |
-
-## CLI Usage
-
-```bash
-# Generate an image
-ollama run z-image "a cat playing piano"
-
-# Check if model is running
-ollama ps
-
-# Stop the model
-ollama stop z-image
-```
-
-## API
-
-### OpenAI-Compatible Endpoint
-
-```bash
-POST /v1/images/generations
-```
-
-**Request:**
-```json
-{
-  "model": "z-image",
-  "prompt": "a sunset over mountains",
-  "size": "1024x1024",
-  "response_format": "b64_json"
-}
-```
-
-**Response:**
-```json
-{
-  "created": 1704067200,
-  "data": [
-    {
-      "b64_json": "iVBORw0KGgo..."
-    }
-  ]
-}
-```
-
-### Example: cURL
-
-```bash
-curl http://localhost:11434/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "z-image",
-    "prompt": "a white cat",
-    "size": "1024x1024"
-  }'
-```
-
-### Example: Save to File
-
-```bash
-curl -s http://localhost:11434/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "z-image",
-    "prompt": "a white cat",
-    "size": "1024x1024"
-  }' | jq -r '.data[0].b64_json' | base64 -d > image.png
-```
-
-### Streaming Progress
-
-Enable streaming to receive progress updates via SSE:
-
-```bash
-curl http://localhost:11434/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -d '{"model": "z-image", "prompt": "a sunset", "stream": true}'
-```
-
-Events:
-```
-event: progress
-data: {"step": 1, "total": 30}
-
-event: progress
-data: {"step": 2, "total": 30}
-...
-
-event: done
-data: {"created": 1704067200, "data": [{"b64_json": "..."}]}
-```
-
-## Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| model | string | required | Model name |
-| prompt | string | required | Text description of image |
-| size | string | "1024x1024" | Image dimensions (WxH) |
-| n | int | 1 | Number of images (currently only 1 supported) |
-| response_format | string | "b64_json" | "b64_json" or "url" |
-| stream | bool | false | Enable progress streaming |
-
-## Requirements
-
-- macOS with Apple Silicon (M1/M2/M3/M4)
-- CUDA: tested on CUDA 12 Blackwell, more testing coming soon
-- Sufficient VRAM (see model table above)
-- Ollama built with MLX support
-
-## Limitations
-
-- macOS only (uses MLX backend)
-- Single image per request
-- Fixed step count (30 steps)
-- Modelfiles not yet supported (use `ollama create` from model directory)
+**Operator guide:** [docs/imagegen-zimage-turbo.md](../../docs/imagegen-zimage-turbo.md)
 
 ---
 
-# Tensor Model Storage Format
+## Why a subprocess
 
-Tensor models store each tensor as a separate blob with metadata in the manifest. This enables faster downloads (parallel fetching) and deduplication (shared tensors are stored once).
+- MLX-C requires a dedicated thread and GPU context; mixing with Go's ggml CGO and embedded Python in one process risks allocator and driver contention.
+- Crash isolation: a bad `mlx_eval` in denoise does not take down the whole daemon.
+- Same pattern as upstream Ollama MLX imagegen — we extend it for **CUDA** and **tight VRAM** hosts.
 
-## Manifest Structure
+The Go `server.Scheduler` treats `imagegen.NewServer()` as `llm.LlamaServer`: load, ping, completion, close.
 
-The manifest follows the standard ollama format with tensor-specific layer metadata:
+---
 
-```json
-{
-  "schemaVersion": 2,
-  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-  "config": { "digest": "sha256:...", "size": 1234 },
-  "layers": [
-    {
-      "mediaType": "application/vnd.ollama.image.tensor",
-      "digest": "sha256:25b36eed...",
-      "size": 49807448,
-      "name": "text_encoder/model.layers.0.mlp.down_proj.weight",
-      "dtype": "BF16",
-      "shape": [2560, 9728]
-    },
-    {
-      "mediaType": "application/vnd.ollama.image.json",
-      "digest": "sha256:abc123...",
-      "size": 512,
-      "name": "text_encoder/config.json"
-    }
-  ]
-}
-```
+## Package layout
 
-Each tensor layer includes:
-- `name`: Path-style tensor name (e.g., `text_encoder/model.layers.0.mlp.down_proj.weight`)
-- `dtype`: Data type (BF16, F32, etc.)
-- `shape`: Tensor dimensions
+| Path | Purpose |
+|------|---------|
+| `server.go` | Subprocess lifecycle, HTTP client to runner, `Completion` NDJSON parse |
+| `runner.go` | MLX runner HTTP server (`/completion`, `/health`) |
+| `imagegen.go` | Request handling, progress streaming, PNG base64 |
+| `cli.go` | `zerollama run` client-side error surfacing |
+| `models/zimage/` | Z-Image turbo pipeline (text encoder, transformer, VAE) |
+| `manifest/` | Ollama blob → safetensors mmap loader |
+| `mlx/` | Go bindings to MLX-C (eval, memory, arrays) |
+| `size/` | Aspect presets + VRAM-aware max side |
+| `decode_latents.go` | CLI entry for CPU VAE subprocess |
+| `latents/` | Latent tensor file format for subprocess handoff |
 
-Config layers use the same path-style naming (e.g., `tokenizer/tokenizer.json`).
+---
 
-## Blob Format
+## Request flow
 
-Each tensor blob is a minimal safetensors file:
+1. Go `scheduleRunner` starts or reuses MLX runner for model key.
+2. Runner loads manifest on first request (`loadImageModel`).
+3. `handleImageCompletion` holds `imageGenMu` — **one generation at a time per process** (WHY: peak VRAM is already at the card limit).
+4. `generateOnMLXThread` resolves dimensions, calls `GenerateImage`, encodes PNG.
+5. Z-Image `generate()` stages: encoder → free → transformer → denoise → export latents → subprocess VAE.
 
-```
-[8 bytes: header size (uint64 LE)]
-[~80 bytes: JSON header, padded to 8-byte alignment]
-[N bytes: raw tensor data]
-```
+---
 
-Header contains a single tensor named `"data"`:
+## VRAM conventions (CUDA 16GB)
 
-```json
-{"data":{"dtype":"BF16","shape":[2560,9728],"data_offsets":[0,49807360]}}
-```
+Documented in depth in the operator guide. Summary for contributors:
 
-## Why Include the Header?
+- **Defer** text encoder load until first `generate` when `mlx.GPUIsAvailable()`.
+- **Batch** weight materialization via `manifest/weights.go` → `mlx.EvalErrBatched(16, ...)`.
+- **Keep** mmap `SafetensorsFile` handles in `nativeCache` until `ReleaseAll()` — freeing after eval invalidates CUDA buffers.
+- **Free** text encoder before transformer load; call `mlx.ResumeCleanup()` to drop graph debris.
+- **Keep** transformer weights between requests on CUDA (`freeTransformerWeights` no-op release).
+- **Decode** VAE in a **fresh CPU subprocess** after denoise on CUDA.
 
-The ~88 byte safetensors header enables MLX's native `mlx_load_safetensors` function, which:
+---
 
-1. **Uses mmap** - Maps file directly into memory, no copies
-2. **Zero-copy to GPU** - MLX reads directly from mapped pages
-3. **No custom code** - Standard MLX API, battle-tested
+## Building / testing
 
-Without the header, we'd need custom C++ code to create MLX arrays from raw mmap'd data. MLX's public API doesn't expose this - it always copies when creating arrays from external pointers.
-
-The overhead is negligible: 88 bytes per tensor = ~100KB total for a 13GB model (0.0007%).
-
-## Why Per-Tensor Blobs?
-
-**Deduplication**: Blobs are content-addressed by SHA256. If two models share identical tensors (same weights, dtype, shape), they share the same blob file.
-
-Example: Model A and Model B both use the same text encoder. The text encoder's 400 tensors are stored once, referenced by both manifests.
-
-```
-~/.ollama/models/
-  blobs/
-    sha256-25b36eed...  <- shared by both models
-    sha256-abc123...
-  manifests/
-    library/model-a/latest  <- references sha256-25b36eed
-    library/model-b/latest  <- references sha256-25b36eed
-```
-
-## Import Flow
-
-```
-cd ./weights/Z-Image-Turbo
-ollama create z-image
-
-1. Scan component directories (text_encoder/, transformer/, vae/)
-2. For each .safetensors file:
-   - Extract individual tensors
-   - Wrap each in minimal safetensors format (88B header + data)
-   - Write to blob store (SHA256 content-addressed)
-   - Add layer entry to manifest with path-style name
-3. Copy config files (*.json) as config layers
-4. Write manifest
-```
-
-## FP8 Quantization
-
-Z-Image supports FP8 quantization to reduce memory usage by ~50% while maintaining image quality.
-
-### Usage
+Requires MLX-C built and installed — see [docs/imagegen-zimage-turbo.md](../../docs/imagegen-zimage-turbo.md#one-time-build-5080--sm_120).
 
 ```bash
-cd ./weights/Z-Image-Turbo
-ollama create z-image-fp8 --quantize fp8
+# From repo root — links imagegen into zerollama binary
+CGO_ENABLED=1 go build -o zerollama .
+
+# Unit tests (no GPU required for size/manifest)
+go test ./x/imagegen/size/... ./x/imagegen/manifest/...
 ```
 
-This quantizes weights during import. The resulting model will be ~15GB instead of ~31GB.
+`x/imagegen/nn` tests require MLX shared libs and may crash in CI without GPU — pre-existing.
 
+---
+
+## Adding a model family
+
+1. Implement `ImageModel` (`GenerateImage` in `imagegen.go`).
+2. Register in `loadImageModel` switch (`DetectModelType`).
+3. Ensure manifest layout matches `manifest.LoadManifest` component prefixes.
+4. If VRAM > 16GB at full resolution, add staged loading like `zimage.Model`.

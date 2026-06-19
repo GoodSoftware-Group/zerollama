@@ -41,6 +41,7 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/x/imagegen/size"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/middleware"
@@ -49,6 +50,7 @@ import (
 	"github.com/ollama/ollama/server/internal/client/ollama"
 	"github.com/ollama/ollama/server/internal/registry"
 	"github.com/ollama/ollama/server/modality"
+	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
 	"github.com/ollama/ollama/tools"
@@ -2931,6 +2933,10 @@ func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateReq
 
 // handleImageGenerate handles image generation requests within GenerateHandler.
 // This is called when the model has the Image capability.
+//
+// WHY PrepareForImageGen is conditional: re-evicting while the same model is already
+// loaded and generating would kill the MLX subprocess mid-stream. WHY aspect-only
+// validation here: final width/height need mlx.GPUIsAvailable() in the runner child.
 func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, modelName string, checkpointStart time.Time) {
 	// Validate image dimensions
 	const maxDimension int32 = 4096
@@ -2955,6 +2961,13 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 	if modality.BackendFor(m.Config, model.ModalityImage) == model.BackendExternalImage {
 		s.handleExternalImageGenerate(c, req, checkpointStart)
 		return
+	}
+
+	// Imagegen needs exclusive GPU; evict other ggml runners and the runtime sidecar first.
+	// Skip when this model is already loaded — avoids tearing down an in-flight generation.
+	keepKey := s.sched.keepModelKeyForUnload(m)
+	if s.sched.findLoadedRunner(m) == nil {
+		vram.PrepareForImageGen(c.Request.Context(), s.sched, keepKey)
 	}
 
 	// Schedule the runner for image generation
@@ -3004,18 +3017,34 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 		images = append(images, llm.ImageData{ID: i, Data: imgData})
 	}
 
+	// Validate aspect ratio early (before paying subprocess startup cost), but do not
+	// pre-resolve dimensions here — the runner subprocess knows GPU availability and
+	// applies the correct maxSide for the target hardware.
+	if req.AspectRatio != "" {
+		if _, _, ok := size.ParseAspect(req.AspectRatio); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf(
+				"unsupported aspect_ratio %q (supported: %s)",
+				req.AspectRatio, strings.Join(size.SupportedAspects(), ", "),
+			)})
+			return
+		}
+	}
+
 	var streamStarted bool
 	var finalResponse api.GenerateResponse
 
 	if err := runner.Completion(c.Request.Context(), llm.CompletionRequest{
-		Prompt: req.Prompt,
-		Width:  req.Width,
-		Height: req.Height,
-		Steps:  req.Steps,
-		Seed:   seed,
-		Images: images,
+		Prompt:      req.Prompt,
+		Width:       req.Width,
+		Height:      req.Height,
+		AspectRatio: req.AspectRatio,
+		Steps:       req.Steps,
+		Seed:        seed,
+		Images:      images,
 	}, func(cr llm.CompletionResponse) {
-		streamStarted = true
+		if isStreaming {
+			streamStarted = true
+		}
 		res := api.GenerateResponse{
 			Model:     req.Model,
 			CreatedAt: time.Now().UTC(),
@@ -3029,6 +3058,9 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 
 		if cr.Image != "" {
 			res.Image = cr.Image
+		}
+		if cr.Content != "" {
+			res.Response = cr.Content
 		}
 
 		if cr.Done {
@@ -3048,14 +3080,30 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 		c.Writer.Flush()
 	}); err != nil {
 		// Only send JSON error if streaming hasn't started yet
-		// (once streaming starts, headers are committed and we can't change status code)
-		if !streamStarted {
+		// (once streaming starts, headers are committed and we can't change status code).
+		// WHY NDJSON error line: imagegen clients already consumed progress chunks; a bare
+		// connection close produced "completed without image data" with no root cause.
+		if !isStreaming || !streamStarted {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		} else {
+			errResp := api.GenerateResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				Done:      true,
+				Response:  "error: " + err.Error(),
+			}
+			data, _ := json.Marshal(errResp)
+			c.Writer.Write(append(data, '\n'))
+			c.Writer.Flush()
 		}
 		return
 	}
 
 	if !isStreaming {
+		if finalResponse.Done && finalResponse.Image == "" && strings.HasPrefix(finalResponse.Response, "error:") {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": strings.TrimSpace(strings.TrimPrefix(finalResponse.Response, "error:"))})
+			return
+		}
 		c.JSON(http.StatusOK, finalResponse)
 	}
 }

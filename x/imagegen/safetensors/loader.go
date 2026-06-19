@@ -9,6 +9,15 @@ import (
 	"github.com/ollama/ollama/x/imagegen/nn"
 )
 
+// quantizedLoadEnabled controls whether LoadLinearLayer keeps QuantizedLinear weights.
+// CUDA transformer loads disable this to avoid QuantizedMatmul deadlocks on sm120.
+var quantizedLoadEnabled = true
+
+// SetQuantizedLoadEnabled toggles QuantizedLinear vs lazy-dequant loading for quantized layers.
+func SetQuantizedLoadEnabled(enabled bool) {
+	quantizedLoadEnabled = enabled
+}
+
 // WeightSource is an interface for loading weights.
 // Both ModelWeights (directory-based) and ManifestWeights (blob-based) implement this.
 type WeightSource interface {
@@ -315,10 +324,48 @@ func LoadMultiLinearLayer(weights WeightSource, path string) (nn.MultiLinearLaye
 			packFactor := 32 / bits
 			groupSize = weightCols * packFactor / scalesCols
 		}
-		weight = mlx.Dequantize(weight, scales, qbiases, groupSize, bits, "affine")
+		dequantized := mlx.Dequantize(weight, scales, qbiases, groupSize, bits, "affine")
+		mlx.EvalMaterialize(dequantized)
+		mlx.Untrack(dequantized)
+		weight.Release()
+		scales.Release()
+		if qbiases != nil {
+			qbiases.Release()
+		}
+		mlx.CleanupCount()
+		weight = dequantized
 	}
 
 	return nn.NewMultiLinear(weight), nil
+}
+
+// preferQuantizedLinear keeps mmap quantized weights when QMM kernels are reliable.
+func preferQuantizedLinear(mode string) bool {
+	if !quantizedLoadEnabled {
+		return false
+	}
+	if mode == "nvfp4" {
+		return false
+	}
+	return mlx.MetalIsAvailable() || mlx.GPUIsAvailable()
+}
+
+func releaseQuantizedSources(weight, scales, qbiases *mlx.Array) {
+	weight.Release()
+	scales.Release()
+	if qbiases != nil {
+		qbiases.Release()
+	}
+	mlx.CleanupCount()
+}
+
+// eagerDequantLinear materializes one layer to BF16 immediately and releases FP8 mmap.
+func eagerDequantLinear(weight, scales, qbiases *mlx.Array, groupSize, bits int, mode string, bias *mlx.Array) nn.LinearLayer {
+	dequantized := mlx.Dequantize(weight, scales, qbiases, groupSize, bits, mode)
+	mlx.EvalMaterialize(dequantized)
+	mlx.Untrack(dequantized)
+	releaseQuantizedSources(weight, scales, qbiases)
+	return nn.NewLinear(dequantized, bias)
 }
 
 // LoadLinearLayer loads a linear layer from weights, automatically detecting if it's quantized.
@@ -368,9 +415,14 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 		// Use metadata to help disambiguate when shapes are ambiguous
 		// (e.g., Q4 with group_size=64 has same shapes as Q8 with group_size=32)
 		quantType := strings.ToUpper(weights.Quantization())
-		isQ8Type := quantType == "Q8" || quantType == "FP8" || quantType == "INT8"
+		isQ8Type := quantType == "Q8" || quantType == "FP8" || quantType == "INT8" || quantType == "MXFP8"
 
-		if groupSize4 == 32 {
+		if quantType == "MXFP8" || quantType == "NVFP4" {
+			groupSize, bits, mode = QuantizationParams(weights.Quantization())
+		} else if qbiases == nil && isQ8Type {
+			// No qbias tensors → mxfp8-style E4M3 scales (not affine zero-point).
+			groupSize, bits, mode = QuantizationParams("MXFP8")
+		} else if groupSize4 == 32 {
 			// Unambiguous: Q4 with group_size=32
 			bits = 4
 			groupSize = 32
@@ -394,9 +446,7 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 			groupSize = weightCols * packFactor / scalesCols
 		}
 
-		// NVFP4 and MXFP8 don't have native quantized matmul kernels in MLX,
-		// so we always dequantize at load time. Affine modes (FP4, FP8) have kernel support.
-		if mlx.MetalIsAvailable() && mode != "nvfp4" && mode != "mxfp8" {
+		if preferQuantizedLinear(mode) {
 			return &nn.QuantizedLinear{
 				Weight:    weight,
 				Scales:    scales,
@@ -408,7 +458,14 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 			}, nil
 		}
 
+		if mlx.GPUIsAvailable() {
+			return eagerDequantLinear(weight, scales, qbiases, groupSize, bits, mode, bias), nil
+		}
+
 		dequantized := mlx.Dequantize(weight, scales, qbiases, groupSize, bits, mode)
+		mlx.EvalMaterialize(dequantized)
+		mlx.Untrack(dequantized)
+		releaseQuantizedSources(weight, scales, qbiases)
 		return nn.NewLinear(dequantized, bias), nil
 	}
 

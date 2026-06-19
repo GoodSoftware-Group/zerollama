@@ -564,6 +564,72 @@ Expect `batch_decode_in_c: true`; after generate with active bind: `status: "bou
 
 ---
 
+## MLX image generation (experimental)
+
+**Model:** `x/z-image-turbo` (~12 GB tensor manifest). **Why separate from ggml:** diffusion runs in the MLX imagegen subprocess (`libmlxc.so`), not the Python runtime or ggml runner. **Why a fourth stack:** manifest safetensors + staged VRAM (encoder → transformer → VAE) do not map onto llama.cpp KV or runtime `llama-server`.
+
+**Full guide:** [imagegen-zimage-turbo.md](./imagegen-zimage-turbo.md) — architecture, troubleshooting, code map.
+
+### One-time MLX build (5080 / sm_120)
+
+```bash
+cd /root/zerollama
+apt install -y libopenblas-dev liblapacke-dev
+export CUDNN_INCLUDE_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/include
+export CUDNN_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+
+cmake -B build-mlx --preset "MLX CUDA 12" \
+  -DMLX_CUDA_ARCHITECTURES=120-real \
+  -DBLAS_INCLUDE_DIRS=/usr/include/x86_64-linux-gnu \
+  -DLAPACK_INCLUDE_DIRS=/usr/include
+cmake --build build-mlx --target mlx --target mlxc --parallel
+cmake --install build-mlx --component MLX --strip
+sudo mkdir -p /usr/lib/ollama/mlx_cuda_v12
+sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
+```
+
+**Why patch before rebuild on 16 GB:**
+
+```bash
+./scripts/patch_mlx_cuda_vram.sh   # cudaMalloc vs async pool; 90% memory limit
+cmake --build build-mlx --target mlx --target mlxc --parallel
+sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
+```
+
+### Serve env (included in `serve_gpu_example.sh`)
+
+```bash
+export OLLAMA_LIBRARY_PATH=/usr/lib/ollama:/usr/lib/ollama/mlx_cuda_v12
+export LD_LIBRARY_PATH=/usr/lib/ollama/mlx_cuda_v12:$LD_LIBRARY_PATH
+```
+
+Restart `zerollama serve` after installing libs — the MLX subprocess inherits these from serve.
+
+### Pull and generate
+
+```bash
+OLLAMA_HOST=127.0.0.1:8080 zerollama pull x/z-image-turbo   # not library/z-image
+OLLAMA_HOST=127.0.0.1:8080 zerollama stop <other-model>       # needs ~12 GB VRAM alone
+OLLAMA_HOST=127.0.0.1:8080 zerollama run x/z-image-turbo "a sunset over mountains"
+```
+
+**VRAM:** Image model needs the full GPU (~12 GB weights + activations). Stop other loaded runners first (`zerollama ps` / `zerollama stop`). Set `OLLAMA_MAX_LOADED_MODELS=1` on tight hosts.
+
+**Default size on 16 GB CUDA:** 384×384 long edge — **why:** denoise activations scale with pixel count; 1024² OOMs even when weights fit. Override with `ZEROLLAMA_IMAGE_MAX_SIDE` only if you have measured headroom.
+
+### Common failures
+
+| Symptom | Likely cause | What to do |
+|---------|--------------|------------|
+| `mlx eval failed (ret=1)` | OOM during transformer load | Stop other models; run `patch_mlx_cuda_vram.sh` rebuild; lower `ZEROLLAMA_IMAGE_MAX_SIDE` |
+| `completed without image data` | Subprocess error after stream started | Check serve log / NDJSON `error:` line; ensure scheduler did not kill in-use runner (fixed: defer unload) |
+| Scheduler panic on load | Stale `activeLoading` handle | Rebuild with `clearActiveLoading` fix |
+| CPU-only / `/info` panic | ggml props ABI | Rebuild with `ggml_backend_dev_name` fix |
+| Wrong resolution | Go pre-clamped before runner | Rebuild — dimensions resolve only in MLX subprocess |
+
+---
+
 ## Code map
 
 | Piece | Path |
@@ -579,6 +645,8 @@ Expect `batch_decode_in_c: true`; after generate with active bind: `status: "bou
 | YAML → env | `runtime/runtime/vram_yaml_defaults.py` |
 | 16GB defaults | `runtime/configs/single_gpu.yaml` |
 | Phase 8 broker | `server/vram/broker.go` |
+| MLX imagegen guide | `docs/imagegen-zimage-turbo.md`, `x/imagegen/README.md` |
+| MLX VRAM patch | `scripts/patch_mlx_cuda_vram.sh` |
 
 ---
 

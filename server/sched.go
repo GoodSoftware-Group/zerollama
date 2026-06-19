@@ -71,8 +71,9 @@ type Scheduler struct {
 	// including by evicting one or more other models. We can only load
 	// one model at a time but new requests to models that already loaded can
 	// happen in parallel
-	activeLoading llm.LlamaServer
-	loaded        map[string]*runnerRef
+	activeLoading    llm.LlamaServer
+	activeLoadingKey string // schedulerModelKey for activeLoading; avoids killing same-model load probes
+	loaded           map[string]*runnerRef
 
 	loadFn          func(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) bool
 	newServerFn     func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error)
@@ -498,25 +499,42 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 		runnerToExpire.sessionDuration = 0
 		if runnerToExpire.refCount <= 0 {
 			schedLogDebug("victim idle, sending expiredCh immediately", pending, "ref_count", evictRefCount)
-			s.expiredCh <- runnerToExpire
 		} else {
-			schedLogInfo("victim still in use, waiting for refCount to drop", pending, "ref_count", evictRefCount)
+			schedLogInfo("victim still in use, forcing expiration after refs drain", pending, "ref_count", evictRefCount)
 		}
+		// Always queue expiration; processExpiredRunner retries until refCount reaches zero.
+		s.expiredCh <- runnerToExpire
 		runnerToExpire.refMu.Unlock()
+
+		evictionPaused := false
+		if !s.loadsPaused.Load() {
+			s.PauseNewLoads()
+			evictionPaused = true
+			schedLogDebug("paused new loads during eviction wait", pending)
+		}
+		resumeAfterEvict := func() {
+			if evictionPaused {
+				s.ResumeLoads()
+			}
+		}
+
 		// Wait for the unload to happen
 		evictWaitStart := time.Now()
 		select {
 		case <-ctx.Done():
+			resumeAfterEvict()
 			slog.Debug("shutting down scheduler pending loop")
 			return
 		case <-pending.ctx.Done():
 			evictAttrs := append([]any{"evict_wait", time.Since(evictWaitStart)}, schedRunnerAttrs(runnerToExpire)...)
 			schedLogWarn("client canceled while waiting for eviction unload", pending, evictAttrs...)
+			resumeAfterEvict()
 			pending.failIfCanceled()
 			break
 		case <-s.unloadedCh:
 			evictAttrs := append([]any{"evict_wait", time.Since(evictWaitStart)}, schedRunnerAttrs(runnerToExpire)...)
 			schedLogInfo("eviction unload completed", pending, evictAttrs...)
+			resumeAfterEvict()
 			continue
 		}
 	}
@@ -590,6 +608,23 @@ func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *Llm
 		slog.Debug("context for request finished", "runner", runner)
 		finished <- pending
 	}()
+}
+
+// clearActiveLoading closes the in-flight load subprocess. llama is the handle for the
+// current load attempt; if another goroutine already cleared activeLoading (e.g. VRAM
+// handoff), llama is closed directly so the subprocess is not leaked.
+func (s *Scheduler) clearActiveLoading(llama llm.LlamaServer) {
+	s.loadedMu.Lock()
+	defer s.loadedMu.Unlock()
+	if s.activeLoading != nil {
+		s.activeLoading.Close()
+		s.activeLoading = nil
+		s.activeLoadingKey = ""
+		return
+	}
+	if llama != nil {
+		llama.Close()
+	}
 }
 
 // load creates a new model based on req and loads it. If requireFull is true then the model must be loaded fully onto GPUs
@@ -686,7 +721,8 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		}
 
 		s.activeLoading = llama
-		schedLogDebug("activeLoading set", req, "path", llama.ModelPath())
+		s.activeLoadingKey = schedulerModelKey(req.model)
+		schedLogDebug("activeLoading set", req, "path", llama.ModelPath(), "model_key", s.activeLoadingKey)
 	} else {
 		wantPath := req.model.ModelPath
 		if wantPath == "" {
@@ -726,28 +762,21 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			if !requireFull {
 				// No other models loaded, yet we still don't fit, so report an error
 				schedLogWarn("model too large for system memory", req, "require_full", requireFull)
-				s.activeLoading.Close()
-				s.activeLoading = nil
+				s.clearActiveLoading(llama)
 				req.errCh <- err
 			} else {
 				// Fit probe alongside an loaded model: partial GPU is fine after eviction.
 				// Drop the probe subprocess so eviction sees accurate VRAM and the retry
 				// can commit with requireFull=false (hybrid GPU+CPU offload).
 				schedLogInfo("Load requires eviction (ErrLoadRequiredFull)", req)
-				s.loadedMu.Lock()
-				if s.activeLoading != nil {
-					s.activeLoading.Close()
-					s.activeLoading = nil
-					schedLogDebug("cleared load probe before eviction", req)
-				}
-				s.loadedMu.Unlock()
+				s.clearActiveLoading(llama)
+				schedLogDebug("cleared load probe before eviction", req)
 			}
 			return true
 		}
 
 		schedLogWarn("Load failed", req, "error", err, "total_elapsed", time.Since(loadStart))
-		s.activeLoading.Close()
-		s.activeLoading = nil
+		s.clearActiveLoading(llama)
 		req.errCh <- err
 		return false
 	}
@@ -794,6 +823,7 @@ iGPUScan:
 		oldRunner.refMu.Unlock()
 	}
 	s.activeLoading = nil
+	s.activeLoadingKey = ""
 	s.loaded[runner.modelKey] = runner
 	slog.Info("loaded runners", "count", len(s.loaded))
 	s.loadedMu.Unlock()
@@ -995,8 +1025,10 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	// Manifest or request changes to num_ctx require a reload — KV is pre-sized at load.
 	if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?
 		!reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) || // have the projectors changed?
-		(!runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew)) || // have the runner options changed?
-		runner.llama.Ping(ctx) != nil {
+		(!runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew)) { // have the runner options changed?
+		return true
+	}
+	if runner.llama != nil && runner.llama.Ping(ctx) != nil {
 		return true
 	}
 
@@ -1214,31 +1246,86 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 	return runnerList[0]
 }
 
-func (s *Scheduler) unloadAllRunners() {
+func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
+	// keepModelKey: preserve one loaded model during targeted VRAM prep (e.g. imagegen
+	// reload). Empty keepModelKey means UnloadAllRunners — defer runners with refCount>0
+	// so active HTTP streams (image NDJSON) finish instead of losing the client while the
+	// MLX subprocess keeps running orphaned in the background.
 	s.loadedMu.Lock()
-	defer s.loadedMu.Unlock()
-
 	if s.activeLoading != nil {
-		slog.Debug("shutting down currently loading runner")
-		s.activeLoading.Close()
-		s.activeLoading = nil
+		if keepModelKey != "" && s.activeLoadingKey == keepModelKey {
+			slog.Debug("keeping activeLoading probe for requested model", "model_key", keepModelKey)
+		} else {
+			slog.Debug("shutting down currently loading runner", "model_key", s.activeLoadingKey)
+			s.activeLoading.Close()
+			s.activeLoading = nil
+			s.activeLoadingKey = ""
+		}
 	}
 
-	models := make([]string, 0, len(s.loaded))
-	for model := range s.loaded {
-		models = append(models, model)
-	}
-	for _, model := range models {
-		runner := s.loaded[model]
-		if runner == nil {
+	runners := make([]*runnerRef, 0, len(s.loaded))
+	deferred := make([]*runnerRef, 0)
+	for key, runner := range s.loaded {
+		if keepModelKey != "" && key == keepModelKey {
 			continue
 		}
+		runner.refMu.Lock()
+		refs := runner.refCount
+		runner.refMu.Unlock()
+		// UnloadAllRunners (empty keepModelKey): defer in-use runners so active
+		// requests (e.g. image generation) finish instead of losing the HTTP stream
+		// while the MLX subprocess keeps running.
+		if keepModelKey == "" && refs > 0 {
+			runner.refMu.Lock()
+			if runner.expireTimer != nil {
+				runner.expireTimer.Stop()
+				runner.expireTimer = nil
+			}
+			runner.sessionDuration = 0
+			runner.refMu.Unlock()
+			deferred = append(deferred, runner)
+			continue
+		}
+		runners = append(runners, runner)
+		delete(s.loaded, key)
+	}
+	s.loadedMu.Unlock()
+
+	for _, runner := range deferred {
+		slog.Info("deferring unload of in-use runner", "model", runner.modelPath, "ref_count", runner.refCount)
+		s.scheduleExpiredRunner(runner)
+	}
+
+	for _, runner := range runners {
+		runner.refMu.Lock()
+		if runner.expireTimer != nil {
+			runner.expireTimer.Stop()
+			runner.expireTimer = nil
+		}
+		runner.sessionDuration = 0
+		runner.refCount = 0
+		runner.refMu.Unlock()
 		if runner.llama != nil {
-			slog.Debug("shutting down runner", "model", model)
+			slog.Debug("shutting down runner", "model", runner.modelPath, "pid", runner.pid)
 			runner.llama.Close()
 		}
-		delete(s.loaded, model)
 	}
+}
+
+// keepModelKeyForUnload returns the scheduler map key to preserve during VRAM prep.
+// Uses the loaded runner's key when present so digest vs path aliases match.
+func (s *Scheduler) keepModelKeyForUnload(m *Model) string {
+	if m == nil {
+		return ""
+	}
+	if runner := s.findLoadedRunner(m); runner != nil {
+		return runner.modelKey
+	}
+	return schedulerModelKey(m)
+}
+
+func (s *Scheduler) unloadAllRunners() {
+	s.unloadRunnersExcept("")
 }
 
 // PauseNewLoads blocks new inference runner scheduling until [Scheduler.ResumeLoads].
@@ -1264,6 +1351,11 @@ func (s *Scheduler) ResumeLoads() {
 // UnloadAllRunners evicts all loaded inference models (exported for training worker).
 func (s *Scheduler) UnloadAllRunners() {
 	s.unloadAllRunners()
+}
+
+// UnloadOtherRunners evicts loaded models except keepModelKey (empty keepModelKey evicts all).
+func (s *Scheduler) UnloadOtherRunners(keepModelKey string) {
+	s.unloadRunnersExcept(keepModelKey)
 }
 
 // pendingOldestFifoSeq is the smallest FIFO ticket among ggml pending loads (0 if none).
@@ -1418,6 +1510,9 @@ func (s *Scheduler) findLoadedRunner(model *Model) *runnerRef {
 // so stop returned "unload" while the model stayed in /api/ps; processExpiredRunner
 // already retries until refs drop.
 func (s *Scheduler) expireRunner(model *Model) {
+	if s == nil {
+		return
+	}
 	runner := s.findLoadedRunner(model)
 	if runner == nil {
 		return

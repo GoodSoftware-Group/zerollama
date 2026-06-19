@@ -3983,6 +3983,9 @@ const int64_t* mlx_array_data_int64(const mlx_array arr) {
 }
 
 const float* mlx_array_data_float32(const mlx_array arr) {
+    if (mlx_array_data_float32_ptr == NULL) {
+        return NULL;
+    }
     return mlx_array_data_float32_ptr(arr);
 }
 

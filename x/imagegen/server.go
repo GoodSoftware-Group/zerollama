@@ -269,12 +269,13 @@ func (s *Server) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 
 	// Build request for subprocess
 	creq := Request{
-		Prompt: req.Prompt,
-		Width:  req.Width,
-		Height: req.Height,
-		Steps:  int(req.Steps),
-		Seed:   seed,
-		Images: images,
+		Prompt:      req.Prompt,
+		Width:       req.Width,
+		Height:      req.Height,
+		AspectRatio: req.AspectRatio,
+		Steps:       int(req.Steps),
+		Seed:        seed,
+		Images:      images,
 	}
 
 	// Pass LLM options if present
@@ -352,6 +353,14 @@ func (s *Server) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 
 		fn(cresp)
 		if cresp.Done {
+			// Surface runner-side errors (error: prefix) instead of a generic empty-image
+			// message — WHY: subprocess may fail after denoise/VAE while still sending done.
+			if cresp.Image == "" && strings.HasPrefix(cresp.Content, "error:") {
+				return fmt.Errorf("%s", strings.TrimSpace(strings.TrimPrefix(cresp.Content, "error:")))
+			}
+			if cresp.Image == "" {
+				return fmt.Errorf("image generation finished without image data")
+			}
 			return nil
 		}
 	}
@@ -360,16 +369,16 @@ func (s *Server) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 	scanErr := scanner.Err()
 	if scanErr != nil {
 		slog.Error("mlx scanner error", "error", scanErr)
-	} else {
-		slog.Warn("mlx scanner EOF without Done response - subprocess may have crashed")
+		return fmt.Errorf("mlx runner stream ended: %w", scanErr)
 	}
+	slog.Warn("mlx scanner EOF without Done response - subprocess may have crashed")
 
 	// Check if subprocess is still alive
 	if s.HasExited() {
-		slog.Error("mlx subprocess has exited unexpectedly")
+		return fmt.Errorf("mlx runner subprocess exited before completing image generation")
 	}
 
-	return scanErr
+	return fmt.Errorf("mlx runner returned no image")
 }
 
 // Close terminates the subprocess.

@@ -37,6 +37,16 @@ export GGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS:-1}"
 # ggml. Wan run_script subprocesses sanitize LD (prepend venv torch/lib, drop hostlibs).
 # See docs/wan-t2v.md troubleshooting: "cuDNN version incompatibility".
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/hostlibs:/usr/local/cuda-12.6/targets/x86_64-linux/lib}"
+# ggml CUDA backend (chat/completion runners) — without /usr/lib/ollama + cuda_v12, ggml falls back to CPU-only.
+export OLLAMA_LIBRARY_PATH="${OLLAMA_LIBRARY_PATH:-/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12}"
+export LD_LIBRARY_PATH="/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12:${LD_LIBRARY_PATH}"
+
+# MLX imagegen (x/z-image-turbo, etc.) — requires libmlxc.so from a one-time cmake MLX build.
+# WHY separate dir: imagegen uses MLX-C CUDA backend, not ggml cuda_v12 runners.
+# Build once: cmake -B build-mlx --preset "MLX CUDA 12" -DMLX_CUDA_ARCHITECTURES=120-real
+#   && cmake --build build-mlx --target mlx --target mlxc --parallel
+#   && cmake --install build-mlx --component MLX --strip
+#   && sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 
 # Wan T2V on 16g / SM120 (5080 class); unset to use manifest-only defaults.
 export ZEROLLAMA_WAN_FORCE_SDPA="${ZEROLLAMA_WAN_FORCE_SDPA:-1}"

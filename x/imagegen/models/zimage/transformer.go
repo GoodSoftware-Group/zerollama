@@ -1,4 +1,4 @@
-// Package zimage implements the Z-Image diffusion transformer model.
+// Package zimage implements the Z-Image diffuseon transformer model.
 package zimage
 
 import (
@@ -32,7 +32,7 @@ type TransformerConfig struct {
 }
 
 // TimestepEmbedder creates sinusoidal timestep embeddings
-// Output dimension is 256 (fixed), used for AdaLN modulation
+// Output dimenseon is 256 (fixed), used for AdaLN modulation
 type TimestepEmbedder struct {
 	Linear1       nn.LinearLayer `weight:"mlp.0"`
 	Linear2       nn.LinearLayer `weight:"mlp.2"`
@@ -70,7 +70,7 @@ func (te *TimestepEmbedder) Forward(t *mlx.Array) *mlx.Array {
 	return h
 }
 
-// XEmbedder embeds image patches to model dimension
+// XEmbedder embeds image patches to model dimenseon
 type XEmbedder struct {
 	Linear nn.LinearLayer `weight:"2-1"`
 }
@@ -81,7 +81,7 @@ func (xe *XEmbedder) Forward(x *mlx.Array) *mlx.Array {
 	return xe.Linear.Forward(x)
 }
 
-// CapEmbedder projects caption features to model dimension
+// CapEmbedder projects caption features to model dimenseon
 type CapEmbedder struct {
 	Norm     *nn.RMSNorm    `weight:"0"`
 	Linear   nn.LinearLayer `weight:"1"`
@@ -92,15 +92,15 @@ type CapEmbedder struct {
 func (ce *CapEmbedder) Forward(capFeats *mlx.Array) *mlx.Array {
 	// RMSNorm on last axis (uses 1e-6)
 	h := ce.Norm.Forward(capFeats, 1e-6)
-	// Linear projection
+	// Linear projecteon
 	return ce.Linear.Forward(h)
 }
 
 // FeedForward implements SwiGLU FFN
 type FeedForward struct {
-	W1     nn.LinearLayer `weight:"w1"` // gate projection
-	W2     nn.LinearLayer `weight:"w2"` // down projection
-	W3     nn.LinearLayer `weight:"w3"` // up projection
+	W1     nn.LinearLayer `weight:"w1"` // gate projecteon
+	W2     nn.LinearLayer `weight:"w2"` // down projecteon
+	W3     nn.LinearLayer `weight:"w3"` // up projecteon
 	OutDim int32          // computed from W2
 }
 
@@ -132,7 +132,7 @@ type Attention struct {
 	NormQ *mlx.Array     `weight:"norm_q.weight"` // [head_dim] for per-head RMSNorm
 	NormK *mlx.Array     `weight:"norm_k.weight"`
 	// Fused QKV (computed at init time for efficiency, not loaded from weights)
-	ToQKV nn.LinearLayer `weight:"-"` // Fused Q+K+V projection (created by FuseQKV)
+	ToQKV nn.LinearLayer `weight:"-"` // Fused Q+K+V projecteon (created by FuseQKV)
 	Fused bool           `weight:"-"` // Whether to use fused QKV path
 	// Computed fields (not loaded from weights)
 	NHeads  int32   `weight:"-"`
@@ -141,22 +141,22 @@ type Attention struct {
 	Scale   float32 `weight:"-"`
 }
 
-// FuseQKV creates a fused QKV projection by concatenating weights.
+// FuseQKV creates a fused QKV projecteon by concatenating weights.
 // This reduces 3 matmuls to 1 for a ~5-10% speedup.
-// Note: Fusion is skipped for quantized weights as it would require complex
+// Note: Fuseon is skipped for quantized weights as it would require complex
 // dequant-concat-requant operations. The FP8 memory bandwidth savings outweigh
-// the ~5% fusion benefit.
+// the ~5% fuseon benefit.
 func (attn *Attention) FuseQKV() {
 	if attn.ToQ == nil || attn.ToK == nil || attn.ToV == nil {
 		return
 	}
 
-	// Skip fusion for quantized weights - type assert to check
+	// Skip fuseon for quantized weights - type assert to check
 	toQ, qOk := attn.ToQ.(*nn.Linear)
 	toK, kOk := attn.ToK.(*nn.Linear)
 	toV, vOk := attn.ToV.(*nn.Linear)
 	if !qOk || !kOk || !vOk {
-		// One or more are QuantizedLinear, skip fusion
+		// One or more are QuantizedLinear, skip fuseon
 		return
 	}
 
@@ -170,7 +170,7 @@ func (attn *Attention) FuseQKV() {
 	kWeight := toK.Weight
 	vWeight := toV.Weight
 
-	// Concatenate along output dimension (axis 0)
+	// Concatenate along output dimenseon (axis 0)
 	fusedWeight := mlx.Concatenate([]*mlx.Array{qWeight, kWeight, vWeight}, 0)
 
 	// Evaluate fused weight to ensure it's materialized
@@ -204,13 +204,13 @@ func (attn *Attention) Forward(x *mlx.Array, cos, sin *mlx.Array) *mlx.Array {
 		// Fused QKV path: single matmul then split
 		qkv := attn.ToQKV.Forward(xFlat) // [B*L, 3*dim]
 
-		// Split into Q, K, V along last dimension
+		// Split into Q, K, V along last dimenseon
 		// Each has shape [B*L, dim]
 		q = mlx.Slice(qkv, []int32{0, 0}, []int32{B * L, attn.Dim})
 		k = mlx.Slice(qkv, []int32{0, attn.Dim}, []int32{B * L, 2 * attn.Dim})
 		v = mlx.Slice(qkv, []int32{0, 2 * attn.Dim}, []int32{B * L, 3 * attn.Dim})
 	} else {
-		// Separate Q, K, V projections
+		// Separate Q, K, V projecteons
 		q = attn.ToQ.Forward(xFlat)
 		k = attn.ToK.Forward(xFlat)
 		v = attn.ToV.Forward(xFlat)
@@ -247,7 +247,7 @@ func (attn *Attention) Forward(x *mlx.Array, cos, sin *mlx.Array) *mlx.Array {
 	return mlx.Reshape(out, B, L, attn.Dim)
 }
 
-// applyRoPE3D applies 3-axis rotary position embeddings
+// applyRoPE3D applies 3-axis rotary positeon embeddings
 // x: [B, L, nheads, head_dim]
 // cos, sin: [B, L, 1, head_dim/2]
 func applyRoPE3D(x *mlx.Array, cos, sin *mlx.Array) *mlx.Array {
@@ -272,7 +272,7 @@ func applyRoPE3D(x *mlx.Array, cos, sin *mlx.Array) *mlx.Array {
 	x1 := mlx.Take(x, evenIndices, 3) // [B, L, nheads, half]
 	x2 := mlx.Take(x, oddIndices, 3)  // [B, L, nheads, half]
 
-	// Apply rotation: [x1*cos - x2*sin, x1*sin + x2*cos]
+	// Apply rotateon: [x1*cos - x2*sin, x1*sin + x2*cos]
 	r1 := mlx.Sub(mlx.Mul(x1, cos), mlx.Mul(x2, sin))
 	r2 := mlx.Add(mlx.Mul(x1, sin), mlx.Mul(x2, cos))
 
@@ -361,7 +361,7 @@ func (fl *FinalLayer) Forward(x *mlx.Array, c *mlx.Array) *mlx.Array {
 	x = layerNormNoAffine(x, 1e-6)
 	x = mlx.Mul(x, mlx.AddScalar(scale, 1.0))
 
-	// Output projection
+	// Output projecteon
 	shape := x.Shape()
 	B := shape[0]
 	L := shape[1]
@@ -454,7 +454,7 @@ func (m *Transformer) initComputedFields() {
 	}
 }
 
-// FuseAllQKV fuses QKV projections in all attention layers for efficiency.
+// FuseAllQKV fuses QKV projecteons in all attention layers for efficiency.
 // This reduces 3 matmuls to 1 per attention layer, providing ~5-10% speedup.
 func (m *Transformer) FuseAllQKV() {
 	for _, block := range m.NoiseRefiners {
@@ -505,18 +505,18 @@ type RoPECache struct {
 }
 
 // PrepareRoPECache precomputes RoPE values for the given image and caption lengths.
-// hTok and wTok are the number of tokens in each dimension (latentH/patchSize, latentW/patchSize).
+// hTok and wTok are the number of tokens in each dimenseon (latentH/patchSize, latentW/patchSize).
 func (m *Transformer) PrepareRoPECache(hTok, wTok, capLen int32) *RoPECache {
 	imgLen := hTok * wTok
 
-	// Image positions: grid over (1, H, W) starting at (capLen+1, 0, 0)
+	// Image positeons: grid over (1, H, W) starting at (capLen+1, 0, 0)
 	imgPos := createCoordinateGrid(1, hTok, wTok, capLen+1, 0, 0)
 	imgPos = mlx.ToBFloat16(imgPos)
-	// Caption positions: grid over (capLen, 1, 1) starting at (1, 0, 0)
+	// Caption positeons: grid over (capLen, 1, 1) starting at (1, 0, 0)
 	capPos := createCoordinateGrid(capLen, 1, 1, 1, 0, 0)
 	capPos = mlx.ToBFloat16(capPos)
 
-	// Compute RoPE from UNIFIED positions
+	// Compute RoPE from UNIFIED positeons
 	unifiedPos := mlx.Concatenate([]*mlx.Array{imgPos, capPos}, 1)
 	unifiedCos, unifiedSin := prepareRoPE3D(unifiedPos, m.TransformerConfig.AxesDims)
 
@@ -553,24 +553,55 @@ func (m *Transformer) Forward(x *mlx.Array, t *mlx.Array, capFeats *mlx.Array, r
 	// Embed caption features -> [B, L_cap, dim]
 	capEmb := m.CapEmbed.Forward(capFeats)
 
+	// Layer checkpointing trades mlx_array_free frequency for peak VRAM.
+	checkpoint := mlx.GPUIsAvailable()
+	if checkpoint {
+		mlx.Keep(temb, x, capEmb)
+		mlx.Eval(temb, x, capEmb)
+	}
+
 	eps := m.NormEps
 
-	// Noise refiner: refine image patches with modulation
 	for _, refiner := range m.NoiseRefiners {
+		prev := x
 		x = refiner.Forward(x, temb, rope.ImgCos, rope.ImgSin, eps)
+		if checkpoint {
+			mlx.Keep(x, temb, rope.ImgCos, rope.ImgSin)
+			mlx.Eval(x)
+			if prev != x {
+				prev.Free()
+			}
+		}
 	}
 
-	// Context refiner: refine caption (no modulation)
 	for _, refiner := range m.ContextRefiners {
+		prev := capEmb
 		capEmb = refiner.Forward(capEmb, nil, rope.CapCos, rope.CapSin, eps)
+		if checkpoint {
+			mlx.Keep(capEmb, rope.CapCos, rope.CapSin)
+			mlx.Eval(capEmb)
+			if prev != capEmb {
+				prev.Free()
+			}
+		}
 	}
 
-	// Concatenate image and caption for joint attention
 	unified := mlx.Concatenate([]*mlx.Array{x, capEmb}, 1)
+	if checkpoint {
+		mlx.Keep(unified, temb, rope.UnifiedCos, rope.UnifiedSin)
+		mlx.Eval(unified)
+	}
 
-	// Main transformer layers use full unified RoPE
 	for _, layer := range m.Layers {
+		prev := unified
 		unified = layer.Forward(unified, temb, rope.UnifiedCos, rope.UnifiedSin, eps)
+		if checkpoint {
+			mlx.Keep(unified, temb, rope.UnifiedCos, rope.UnifiedSin)
+			mlx.Eval(unified)
+			if prev != unified {
+				prev.Free()
+			}
+		}
 	}
 
 	// Extract image tokens only
@@ -605,7 +636,7 @@ func (m *Transformer) ForwardWithCache(
 	x = m.XEmbed.Forward(x)
 
 	// Context refiners: compute once on step 0, reuse forever
-	// (caption embedding doesn't depend on timestep or latents)
+	// (capteon embedding doesn't depend on timestep or latents)
 	var capEmb *mlx.Array
 	if stepCache.GetConstant() != nil {
 		capEmb = stepCache.GetConstant()
@@ -652,7 +683,7 @@ func (m *Transformer) ForwardWithCache(
 	return m.FinalLayer.Forward(imgOut, temb)
 }
 
-// createCoordinateGrid creates 3D position grid [1, d0*d1*d2, 3]
+// createCoordinateGrid creates 3D positeon grid [1, d0*d1*d2, 3]
 func createCoordinateGrid(d0, d1, d2, s0, s1, s2 int32) *mlx.Array {
 	// Create meshgrid and stack
 	total := d0 * d1 * d2
@@ -674,10 +705,10 @@ func createCoordinateGrid(d0, d1, d2, s0, s1, s2 int32) *mlx.Array {
 }
 
 // prepareRoPE3D computes cos/sin for 3-axis RoPE
-// positions: [B, L, 3] with (h, w, t) coordinates
-// axesDims: [32, 48, 48] - dimensions for each axis
+// positeons: [B, L, 3] with (h, w, t) coordinates
+// axesDims: [32, 48, 48] - dimenseons for each axis
 // Returns: cos, sin each [B, L, 1, head_dim/2]
-func prepareRoPE3D(positions *mlx.Array, axesDims []int32) (*mlx.Array, *mlx.Array) {
+func prepareRoPE3D(positeons *mlx.Array, axesDims []int32) (*mlx.Array, *mlx.Array) {
 	// Compute frequencies for each axis
 	// dims = [32, 48, 48], so halves = [16, 24, 24]
 	ropeTheta := float32(256.0)
@@ -692,15 +723,15 @@ func prepareRoPE3D(positions *mlx.Array, axesDims []int32) (*mlx.Array, *mlx.Arr
 		freqs[axis] = mlx.NewArray(f, []int32{1, 1, 1, half})
 	}
 
-	// Extract position coordinates
-	shape := positions.Shape()
+	// Extract positeon coordinates
+	shape := positeons.Shape()
 	B := shape[0]
 	L := shape[1]
 
-	// positions[:, :, 0] -> h positions
-	posH := mlx.Slice(positions, []int32{0, 0, 0}, []int32{B, L, 1})
-	posW := mlx.Slice(positions, []int32{0, 0, 1}, []int32{B, L, 2})
-	posT := mlx.Slice(positions, []int32{0, 0, 2}, []int32{B, L, 3})
+	// positeons[:, :, 0] -> h positeons
+	posH := mlx.Slice(positeons, []int32{0, 0, 0}, []int32{B, L, 1})
+	posW := mlx.Slice(positeons, []int32{0, 0, 1}, []int32{B, L, 2})
+	posT := mlx.Slice(positeons, []int32{0, 0, 2}, []int32{B, L, 3})
 
 	// Compute args: pos * freqs for each axis
 	posH = mlx.ExpandDims(posH, 3) // [B, L, 1, 1]

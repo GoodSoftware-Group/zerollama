@@ -13,6 +13,7 @@ import (
 	"github.com/ollama/ollama/x/imagegen/mlx"
 	"github.com/ollama/ollama/x/imagegen/models/flux2"
 	"github.com/ollama/ollama/x/imagegen/models/zimage"
+	"github.com/ollama/ollama/x/imagegen/size"
 )
 
 // ImageModel is the interface for image generation models.
@@ -21,6 +22,9 @@ type ImageModel interface {
 }
 
 var imageGenMu sync.Mutex
+
+// imageGenMu serializes completions in the MLX runner process.
+// WHY: peak VRAM on 16GB already equals one full pipeline; overlapping generates OOM.
 
 // loadImageModel loads an image generation model.
 func (s *server) loadImageModel() error {
@@ -60,18 +64,19 @@ func (s *server) loadImageModel() error {
 	return nil
 }
 
-// handleImageCompletion handles image generation requests.
+type completionOutcome struct {
+	imageData string
+	err       error
+}
+
 func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, req Request) {
-	// Serialize generation requests - MLX model may not handle concurrent generation
 	imageGenMu.Lock()
 	defer imageGenMu.Unlock()
 
-	// Set seed if not provided
 	if req.Seed <= 0 {
 		req.Seed = time.Now().UnixNano()
 	}
 
-	// Set up streaming response
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Transfer-Encoding", "chunked")
 	flusher, ok := w.(http.Flusher)
@@ -82,51 +87,73 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
-
-	// Progress callback streams step updates
-	progress := func(step, total int) {
+	streamProgress := func(step, total int) {
 		resp := Response{Step: step, Total: total}
-		enc.Encode(resp)
+		_ = enc.Encode(resp)
 		w.Write([]byte("\n"))
 		flusher.Flush()
 	}
 
-	// Generate image
-	img, err := s.imageModel.GenerateImage(ctx, req.Prompt, req.Width, req.Height, req.Steps, req.Seed, progress)
-	if err != nil {
-		// Don't send error for cancellation
+	var outcome completionOutcome
+	if err := s.mlxThread.Do(ctx, func() error {
+		outcome = s.generateOnMLXThread(ctx, req, streamProgress)
+		return nil
+	}); err != nil {
+		if ctx.Err() == nil {
+			resp := Response{Content: fmt.Sprintf("error: %v", err), Done: true}
+			data, _ := json.Marshal(resp)
+			w.Write(data)
+			w.Write([]byte("\n"))
+		}
+		return
+	}
+
+	if outcome.err != nil {
 		if ctx.Err() != nil {
+			resp := Response{Content: fmt.Sprintf("error: %v", ctx.Err()), Done: true}
+			data, _ := json.Marshal(resp)
+			w.Write(data)
+			w.Write([]byte("\n"))
 			return
 		}
-		resp := Response{Content: fmt.Sprintf("error: %v", err), Done: true}
+		resp := Response{Content: fmt.Sprintf("error: %v", outcome.err), Done: true}
 		data, _ := json.Marshal(resp)
 		w.Write(data)
 		w.Write([]byte("\n"))
 		return
 	}
 
-	// Encode image as base64 PNG
-	imageData, err := EncodeImageBase64(img)
-	if err != nil {
-		resp := Response{Content: fmt.Sprintf("error encoding: %v", err), Done: true}
-		data, _ := json.Marshal(resp)
-		w.Write(data)
-		w.Write([]byte("\n"))
-		return
-	}
-
-	// Free the generated image array and clean up MLX state
-	img.Free()
-	mlx.ClearCache()
-	mlx.MetalResetPeakMemory()
-
-	// Send final response with image data
-	resp := Response{
-		Image: imageData,
-		Done:  true,
-	}
+	resp := Response{Image: outcome.imageData, Done: true}
 	data, _ := json.Marshal(resp)
 	w.Write(data)
 	w.Write([]byte("\n"))
 	flusher.Flush()
+}
+
+func (s *server) generateOnMLXThread(ctx context.Context, req Request, progress func(step, total int)) completionOutcome {
+
+	w, h := req.Width, req.Height
+	maxSide := size.MaxSide(mlx.GPUIsAvailable())
+	var resolveErr error
+	w, h, resolveErr = size.Resolve(w, h, req.AspectRatio, maxSide)
+	if resolveErr != nil {
+		return completionOutcome{err: resolveErr}
+	}
+	if w != req.Width || h != req.Height {
+		slog.Info("image dimensions", "width", w, "height", h, "requested_w", req.Width, "requested_h", req.Height, "aspect", req.AspectRatio)
+	}
+
+	img, err := s.imageModel.GenerateImage(ctx, req.Prompt, w, h, req.Steps, req.Seed, progress)
+	if err != nil {
+		return completionOutcome{err: err}
+	}
+
+	imageData, err := EncodeImageBase64(img)
+	img.Free()
+	mlx.ClearCache()
+	mlx.MetalResetPeakMemory()
+	if err != nil {
+		return completionOutcome{err: fmt.Errorf("encoding: %w", err)}
+	}
+	return completionOutcome{imageData: imageData}
 }

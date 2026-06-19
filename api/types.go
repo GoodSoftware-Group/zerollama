@@ -150,6 +150,10 @@ type GenerateRequest struct {
 	// Only used for image generation models.
 	Height int32 `json:"height,omitempty"`
 
+	// AspectRatio selects a preset shape when width/height are omitted: 16:9, 9:16, 3:2, 2:3, 1:1.
+	// Only used for image generation models.
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+
 	// Steps is the number of diffusion steps for image generation.
 	// Only used for image generation models.
 	Steps int32 `json:"steps,omitempty"`

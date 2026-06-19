@@ -944,6 +944,29 @@ func TestSchedUnloadAllRunners(t *testing.T) {
 	require.True(t, llm2.closeCalled)
 }
 
+func TestSchedUnloadAllRunnersDefersInUse(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+
+	busy := &mockLlm{vramByGPU: map[ml.DeviceID]uint64{}}
+	idle := &mockLlm{vramByGPU: map[ml.DeviceID]uint64{}}
+	s := InitScheduler(ctx)
+	s.waitForRecovery = 10 * time.Millisecond
+
+	busyRunner := &runnerRef{llama: busy, modelPath: "image", numParallel: 1, refCount: 1}
+	idleRunner := &runnerRef{llama: idle, modelPath: "llama", numParallel: 1}
+
+	s.loadedMu.Lock()
+	s.loaded["image"] = busyRunner
+	s.loaded["llama"] = idleRunner
+	s.loadedMu.Unlock()
+
+	s.unloadAllRunners()
+
+	require.False(t, busy.closeCalled, "in-use runner should not be closed immediately")
+	require.True(t, idle.closeCalled, "idle runner should be closed")
+}
+
 func TestSchedUnload(t *testing.T) {
 	llm1 := &mockLlm{vramByGPU: map[ml.DeviceID]uint64{}}
 	r1 := &runnerRef{llama: llm1, numParallel: 1}

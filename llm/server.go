@@ -1614,10 +1614,11 @@ type CompletionRequest struct {
 	TopLogprobs int
 
 	// Image generation fields
-	Width  int32 `json:"width,omitempty"`
-	Height int32 `json:"height,omitempty"`
-	Steps  int32 `json:"steps,omitempty"`
-	Seed   int64 `json:"seed,omitempty"`
+	Width       int32  `json:"width,omitempty"`
+	Height      int32  `json:"height,omitempty"`
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+	Steps       int32  `json:"steps,omitempty"`
+	Seed        int64  `json:"seed,omitempty"`
 }
 
 // DoneReason represents the reason why a completion response is done

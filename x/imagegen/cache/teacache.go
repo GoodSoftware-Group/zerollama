@@ -114,7 +114,7 @@ func (tc *TeaCache) ShouldCompute(step int, timestep float32) bool {
 func (tc *TeaCache) UpdateCache(output *mlx.Array, timestep float32) {
 	// Free previous cached output
 	if tc.cachedOutput != nil {
-		tc.cachedOutput.Free()
+		tc.cachedOutput.Release()
 	}
 
 	// Store new cached values
@@ -128,10 +128,10 @@ func (tc *TeaCache) UpdateCache(output *mlx.Array, timestep float32) {
 func (tc *TeaCache) UpdateCFGCache(posOutput, negOutput *mlx.Array, timestep float32) {
 	// Free previous cached outputs
 	if tc.cachedPosOutput != nil {
-		tc.cachedPosOutput.Free()
+		tc.cachedPosOutput.Release()
 	}
 	if tc.cachedNegOutput != nil {
-		tc.cachedNegOutput.Free()
+		tc.cachedNegOutput.Release()
 	}
 
 	// Store new cached values
@@ -181,15 +181,15 @@ func (tc *TeaCache) Stats() (hits, misses int) {
 // Free releases all cached arrays.
 func (tc *TeaCache) Free() {
 	if tc.cachedOutput != nil {
-		tc.cachedOutput.Free()
+		tc.cachedOutput.Release()
 		tc.cachedOutput = nil
 	}
 	if tc.cachedPosOutput != nil {
-		tc.cachedPosOutput.Free()
+		tc.cachedPosOutput.Release()
 		tc.cachedPosOutput = nil
 	}
 	if tc.cachedNegOutput != nil {
-		tc.cachedNegOutput.Free()
+		tc.cachedNegOutput.Release()
 		tc.cachedNegOutput = nil
 	}
 }

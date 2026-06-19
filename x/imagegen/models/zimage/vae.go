@@ -638,6 +638,9 @@ type VAEDecoder struct {
 
 	// Tiling configuration (nil = no tiling)
 	Tiling *vae.TilingConfig
+
+	// weights keeps mmap-backed safetensors handles alive until VAE weights are materialized.
+	weights *manifest.ManifestWeights
 }
 
 // Load loads the VAE decoder from ollama blob storage.
@@ -657,7 +660,27 @@ func (m *VAEDecoder) Load(modelManifest *manifest.ModelManifest) error {
 	if err := weights.Load(0); err != nil {
 		return fmt.Errorf("load weights: %w", err)
 	}
-	defer weights.ReleaseAll()
+	m.weights = weights
+
+	return m.loadWeights(weights, &cfg)
+}
+
+// LoadOnCPU loads the VAE decoder weights onto the CPU stream.
+func (m *VAEDecoder) LoadOnCPU(modelManifest *manifest.ModelManifest) error {
+	var cfg VAEConfig
+	if err := modelManifest.ReadConfigJSON("vae/config.json", &cfg); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	m.Config = &cfg
+
+	weights, err := manifest.LoadWeightsFromManifest(modelManifest, "vae")
+	if err != nil {
+		return fmt.Errorf("weights: %w", err)
+	}
+	if err := weights.LoadOnCPU(0); err != nil {
+		return fmt.Errorf("load weights: %w", err)
+	}
+	m.weights = weights
 
 	return m.loadWeights(weights, &cfg)
 }
@@ -727,23 +750,45 @@ func (m *VAEDecoder) loadWeights(weights safetensors.WeightSource, cfg *VAEConfi
 	m.ConvOut = NewConv2D(convOutWeight, convOutBias, 1, 1)
 	fmt.Println("✓")
 
+	mlx.UntrackWeights(m)
 	return nil
+}
+
+func (v *VAEDecoder) pinWeights() {
+	if v == nil || mlx.GetDefaultDeviceType() != 1 {
+		return
+	}
+	mlx.Keep(mlx.Collect(v)...)
+}
+
+// MaterializeWeights is a no-op when weights were loaded via manifest Load (already GPU-resident).
+func (v *VAEDecoder) MaterializeWeights() {
+	v.pinWeights()
 }
 
 // Decode decodes latents to images.
 // Input latents are in NCHW format, output is in NCHW format.
 // If Tiling is set, uses tiled decoding to reduce memory for large images.
 func (v *VAEDecoder) Decode(latents *mlx.Array) *mlx.Array {
+	mlx.SuppressCleanup()
+	defer mlx.ResumeCleanup()
+
 	// Scale latents
 	z := mlx.DivScalar(latents, v.Config.ScalingFactor)
 	z = mlx.AddScalar(z, v.Config.ShiftFactor)
 	// Convert NCHW -> NHWC for internal processing
 	z = mlx.Transpose(z, 0, 2, 3, 1)
+	mlx.Keep(z)
+	mlx.Eval(z)
 
 	// Use tiled decoding if enabled
 	if v.Tiling != nil {
-		mlx.Eval(z)
-		return vae.DecodeTiled(z, v.Tiling, v.decodeTile)
+		mlx.Keep(z)
+		mlx.EvalMaterialize(z)
+		out := vae.DecodeTiled(z, v.Tiling, v.decodeTile)
+		mlx.Keep(out)
+		mlx.EvalMaterialize(out)
+		return out
 	}
 
 	// Direct decode
@@ -751,7 +796,8 @@ func (v *VAEDecoder) Decode(latents *mlx.Array) *mlx.Array {
 	h = mlx.ClipScalar(h, 0.0, 1.0, true, true)
 	// Convert NHWC -> NCHW for output
 	h = mlx.Transpose(h, 0, 3, 1, 2)
-	mlx.Eval(h)
+	mlx.Keep(h)
+	mlx.EvalMaterialize(h)
 	return h
 }
 
@@ -759,7 +805,10 @@ func (v *VAEDecoder) Decode(latents *mlx.Array) *mlx.Array {
 // Input: [B, H, W, C] latent tile in NHWC format (already scaled)
 // Output: [B, H*8, W*8, 3] pixel tile in NHWC format
 func (v *VAEDecoder) decodeTile(z *mlx.Array) *mlx.Array {
+	v.pinWeights()
+	mlx.Keep(z)
 	h := v.ConvIn.Forward(z)
+	mlx.Keep(h)
 	mlx.Eval(h)
 
 	prev := h
@@ -786,6 +835,8 @@ func (v *VAEDecoder) decodeTile(z *mlx.Array) *mlx.Array {
 	// VAE outputs [-1, 1], convert to [0, 1]
 	h = mlx.MulScalar(h, 0.5)
 	h = mlx.AddScalar(h, 0.5)
+	mlx.Keep(h)
+	mlx.Eval(h)
 
 	return h
 }

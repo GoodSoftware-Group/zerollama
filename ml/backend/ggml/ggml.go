@@ -45,31 +45,48 @@ var (
 )
 
 func deviceLibrary(d C.ggml_backend_dev_t) string {
-	return C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(d)))
+	return goString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(d)))
 }
 
-func deviceID(d C.ggml_backend_dev_t, props *C.struct_ggml_backend_dev_props) string {
-	if props.device_id != nil {
-		return C.GoString(props.device_id)
+func goString(p *C.char) string {
+	if p == nil {
+		return ""
 	}
-	return C.GoString(props.name)
+	return C.GoString(p)
 }
 
-func deviceLibraryFromProps(d C.ggml_backend_dev_t, props *C.struct_ggml_backend_dev_props) string {
-	// b9509 dropped props.library; Ollama backends set it via extended ggml_backend_dev_props
-	// (e.g. Metal reports "Metal" for flash-attn gating). Fall back to registry name.
-	if props.library != nil {
-		return C.GoString(props.library)
+// deviceName, deviceDescription, and deviceID read strings from the stable C API
+// (ggml_backend_dev_name / description). Do not dereference props.name or
+// props.description pointers — on RTX 5080 / CUDA 12.x those fields can be invalid
+// while the dev_name API returns the correct GPU label, avoiding /info panics and
+// false CPU-only fallback when ggml would otherwise skip the device.
+func deviceName(dev C.ggml_backend_dev_t, _ *C.struct_ggml_backend_dev_props) string {
+	return goString(C.ggml_backend_dev_name(dev))
+}
+
+func deviceDescription(dev C.ggml_backend_dev_t, _ *C.struct_ggml_backend_dev_props) string {
+	return goString(C.ggml_backend_dev_description(dev))
+}
+
+func deviceID(d C.ggml_backend_dev_t, _ *C.struct_ggml_backend_dev_props) string {
+	if name := goString(C.ggml_backend_dev_name(d)); name != "" {
+		return name
 	}
+	return deviceLibrary(d)
+}
+
+func deviceLibraryFromProps(d C.ggml_backend_dev_t, _ *C.struct_ggml_backend_dev_props) string {
 	return deviceLibrary(d)
 }
 
 // applyDeviceProps maps extended C ggml_backend_dev_props into Go DeviceInfo.
 // WHY: upstream b9509 removed id/library/compute fields from get_props; Ollama Go still
 // needs them for GPU routing, flash-attention eligibility, and /api/tags device metadata.
+// String fields come from ggml_backend_dev_* APIs, not props pointers — shipped libggml-cuda
+// builds can leave props.name/device_id unset or with stale pointers (5080 discovery panic).
 func applyDeviceProps(info *ml.DeviceInfo, dev C.ggml_backend_dev_t, props *C.struct_ggml_backend_dev_props) {
-	info.Name = C.GoString(props.name)
-	info.Description = C.GoString(props.description)
+	info.Name = deviceName(dev, props)
+	info.Description = deviceDescription(dev, props)
 	info.Library = deviceLibraryFromProps(dev, props)
 	info.ID = deviceID(dev, props)
 	info.Integrated = props.integrated != 0
@@ -80,10 +97,6 @@ func applyDeviceProps(info *ml.DeviceInfo, dev C.ggml_backend_dev_t, props *C.st
 	info.ComputeMinor = int(props.compute_minor)
 	info.DriverMajor = int(props.driver_major)
 	info.DriverMinor = int(props.driver_minor)
-	if props.device_id != nil {
-		info.PCIID = C.GoString(props.device_id)
-		info.ID = info.PCIID
-	}
 }
 
 var initDevicesOnce sync.Once

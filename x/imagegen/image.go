@@ -59,40 +59,32 @@ func ArrayToImage(arr *mlx.Array) (*image.RGBA, error) {
 	if len(shape) != 4 {
 		return nil, fmt.Errorf("expected 4D array [B, C, H, W], got %v", shape)
 	}
-
-	// Transform to [H, W, C] for image conversion
-	// Free intermediate arrays to avoid memory leak
-	squeezed := mlx.Squeeze(arr, 0)
-	transposed := mlx.Transpose(squeezed, 1, 2, 0)
-	squeezed.Free()
-	img := mlx.Contiguous(transposed)
-	transposed.Free()
-	mlx.Eval(img)
-
-	imgShape := img.Shape()
-	H := int(imgShape[0])
-	W := int(imgShape[1])
-	C := int(imgShape[2])
-
+	B, C, H, W := int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3])
+	if B != 1 {
+		return nil, fmt.Errorf("expected batch size 1, got %d", B)
+	}
 	if C != 3 {
-		img.Free()
 		return nil, fmt.Errorf("expected 3 channels (RGB), got %d", C)
 	}
 
-	// Copy to CPU and free GPU memory
-	data := img.Data()
-	img.Free()
+	data := mlx.HostFloat32Slice(arr)
+	if data == nil || len(data) == 0 {
+		return nil, fmt.Errorf("failed to read image data from array")
+	}
+	expected := C * H * W
+	if len(data) < expected {
+		return nil, fmt.Errorf("image data length %d, expected at least %d for %dx%d", len(data), expected, H, W)
+	}
 
-	// Write directly to Pix slice (faster than SetRGBA)
 	goImg := image.NewRGBA(image.Rect(0, 0, W, H))
 	pix := goImg.Pix
 	for y := 0; y < H; y++ {
 		for x := 0; x < W; x++ {
-			srcIdx := (y*W + x) * C
 			dstIdx := (y*W + x) * 4
-			pix[dstIdx+0] = uint8(clampF(data[srcIdx+0]*255+0.5, 0, 255))
-			pix[dstIdx+1] = uint8(clampF(data[srcIdx+1]*255+0.5, 0, 255))
-			pix[dstIdx+2] = uint8(clampF(data[srcIdx+2]*255+0.5, 0, 255))
+			for c := 0; c < 3; c++ {
+				srcIdx := c*H*W + y*W + x
+				pix[dstIdx+c] = uint8(clampF(data[srcIdx]*255+0.5, 0, 255))
+			}
 			pix[dstIdx+3] = 255
 		}
 	}

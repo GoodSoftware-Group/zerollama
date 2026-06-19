@@ -50,3 +50,22 @@ func PrepareForTraining(ctx context.Context, evictor TrainingEvictor) {
 	}
 	ReleaseRuntimeVRAM(ctx)
 }
+
+// ImageGenEvictor evicts non-image runners before MLX imagegen load.
+type ImageGenEvictor interface {
+	TrainingEvictor
+	UnloadOtherRunners(keepModelKey string)
+}
+
+// PrepareForImageGen frees other ggml runners and the Python runtime sidecar before MLX imagegen load.
+// keepModelKey is the scheduler key for the image model being loaded (may already be resident).
+//
+// WHY UnloadOtherRunners not UnloadAllRunners: if the same image model is already loaded
+// and serving an in-flight request, we must not tear it down — routes.go skips this call
+// when findLoadedRunner hits, but broker callers pass keepModelKey for partial eviction.
+func PrepareForImageGen(ctx context.Context, evictor ImageGenEvictor, keepModelKey string) {
+	if evictor != nil {
+		evictor.UnloadOtherRunners(keepModelKey)
+	}
+	ReleaseRuntimeVRAM(ctx)
+}

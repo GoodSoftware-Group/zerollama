@@ -31,6 +31,7 @@ import (
 type ImageGenOptions struct {
 	Width          int
 	Height         int
+	AspectRatio    string
 	Steps          int
 	Seed           int
 	NegativePrompt string
@@ -39,8 +40,8 @@ type ImageGenOptions struct {
 // DefaultOptions returns the default image generation options.
 func DefaultOptions() ImageGenOptions {
 	return ImageGenOptions{
-		Width:  1024,
-		Height: 1024,
+		Width:  0,
+		Height: 0,
 		Steps:  0, // 0 means model default
 		Seed:   0, // 0 means random
 	}
@@ -49,8 +50,9 @@ func DefaultOptions() ImageGenOptions {
 // RegisterFlags adds image generation flags to the given command.
 // Flags are hidden since they only apply to image generation models.
 func RegisterFlags(cmd *cobra.Command) {
-	cmd.Flags().Int("width", 1024, "Image width")
-	cmd.Flags().Int("height", 1024, "Image height")
+	cmd.Flags().Int("width", 0, "Image width (0 = auto from aspect or max side)")
+	cmd.Flags().Int("height", 0, "Image height (0 = auto from aspect or max side)")
+	cmd.Flags().String("aspect", "", "Aspect preset: 16:9, 9:16, 3:2, 2:3, 1:1")
 	cmd.Flags().Int("steps", 0, "Denoising steps (0 = model default)")
 	cmd.Flags().Int("seed", 0, "Random seed (0 for random)")
 	cmd.Flags().String("negative", "", "Negative prompt")
@@ -60,14 +62,16 @@ func RegisterFlags(cmd *cobra.Command) {
 	cmd.Flags().MarkHidden("steps")
 	cmd.Flags().MarkHidden("seed")
 	cmd.Flags().MarkHidden("negative")
+	cmd.Flags().MarkHidden("aspect")
 }
 
 // AppendFlagsDocs appends image generation flags documentation to the command's usage template.
 func AppendFlagsDocs(cmd *cobra.Command) {
 	usage := `
 Image Generation Flags (experimental):
-      --width int      Image width
-      --height int     Image height
+      --width int      Image width (0 = auto)
+      --height int     Image height (0 = auto)
+      --aspect str     Aspect preset: 16:9, 9:16, 3:2, 2:3, 1:1
       --steps int      Denoising steps
       --seed int       Random seed
       --negative str   Negative prompt
@@ -88,6 +92,9 @@ func RunCLI(cmd *cobra.Command, name string, prompt string, interactive bool, ke
 		}
 		if v, err := cmd.Flags().GetInt("height"); err == nil && v > 0 {
 			opts.Height = v
+		}
+		if v, err := cmd.Flags().GetString("aspect"); err == nil && v != "" {
+			opts.AspectRatio = v
 		}
 		if v, err := cmd.Flags().GetInt("steps"); err == nil && v > 0 {
 			opts.Steps = v
@@ -122,12 +129,13 @@ func generateImageWithOptions(cmd *cobra.Command, modelName, prompt string, keep
 	}
 
 	req := &api.GenerateRequest{
-		Model:  modelName,
-		Prompt: prompt,
-		Images: images,
-		Width:  int32(opts.Width),
-		Height: int32(opts.Height),
-		Steps:  int32(opts.Steps),
+		Model:       modelName,
+		Prompt:      prompt,
+		Images:      images,
+		Width:       int32(opts.Width),
+		Height:      int32(opts.Height),
+		AspectRatio: opts.AspectRatio,
+		Steps:       int32(opts.Steps),
 	}
 	if opts.Seed != 0 {
 		req.Options = map[string]any{"seed": opts.Seed}
@@ -143,6 +151,7 @@ func generateImageWithOptions(cmd *cobra.Command, modelName, prompt string, keep
 
 	var stepBar *progress.StepBar
 	var imageBase64 string
+	var lastErr string
 	err = client.Generate(cmd.Context(), req, func(resp api.GenerateResponse) error {
 		// Handle progress updates using structured fields
 		if resp.Total > 0 {
@@ -154,9 +163,13 @@ func generateImageWithOptions(cmd *cobra.Command, modelName, prompt string, keep
 			stepBar.Set(int(resp.Completed))
 		}
 
-		// Handle final response with image data
-		if resp.Done && resp.Image != "" {
-			imageBase64 = resp.Image
+		if resp.Done {
+			if resp.Image != "" {
+				imageBase64 = resp.Image
+			}
+			if strings.HasPrefix(resp.Response, "error:") {
+				lastErr = strings.TrimSpace(strings.TrimPrefix(resp.Response, "error:"))
+			}
 		}
 
 		return nil
@@ -165,6 +178,13 @@ func generateImageWithOptions(cmd *cobra.Command, modelName, prompt string, keep
 	p.StopAndClear()
 	if err != nil {
 		return err
+	}
+	if lastErr != "" {
+		return fmt.Errorf("%s", lastErr)
+	}
+
+	if imageBase64 == "" {
+		return fmt.Errorf("image generation ended without image data (another model may have preempted the GPU; stop other loads and retry, or check server logs if generation is still running)")
 	}
 
 	if imageBase64 != "" {
@@ -384,6 +404,7 @@ func sanitizeFilename(s string) string {
 // TODO: reconcile /set commands with /set parameter in text gen REPL (cmd/cmd.go)
 func printInteractiveHelp() {
 	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  /set aspect <r>     Set aspect ratio (16:9, 9:16, 3:2, 2:3, 1:1)")
 	fmt.Fprintln(os.Stderr, "  /set width <n>     Set image width")
 	fmt.Fprintln(os.Stderr, "  /set height <n>    Set image height")
 	fmt.Fprintln(os.Stderr, "  /set steps <n>     Set denoising steps")
@@ -401,6 +422,9 @@ func printCurrentSettings(opts ImageGenOptions) {
 	fmt.Fprintf(os.Stderr, "Current settings:\n")
 	fmt.Fprintf(os.Stderr, "  width:    %d\n", opts.Width)
 	fmt.Fprintf(os.Stderr, "  height:   %d\n", opts.Height)
+	if opts.AspectRatio != "" {
+		fmt.Fprintf(os.Stderr, "  aspect:   %s\n", opts.AspectRatio)
+	}
 	fmt.Fprintf(os.Stderr, "  steps:    %d\n", opts.Steps)
 	fmt.Fprintf(os.Stderr, "  seed:     %d (0=random)\n", opts.Seed)
 	if opts.NegativePrompt != "" {
@@ -420,6 +444,13 @@ func handleSetCommand(args string, opts *ImageGenOptions) error {
 	value := strings.TrimSpace(parts[1])
 
 	switch key {
+	case "aspect", "a":
+		opts.AspectRatio = value
+		if value == "" {
+			fmt.Fprintln(os.Stderr, "Cleared aspect ratio")
+		} else {
+			fmt.Fprintf(os.Stderr, "Set aspect ratio to: %s\n", value)
+		}
 	case "width", "w":
 		v, err := strconv.Atoi(value)
 		if err != nil || v <= 0 {

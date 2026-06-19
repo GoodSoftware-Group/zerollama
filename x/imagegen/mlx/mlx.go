@@ -12,9 +12,41 @@ package mlx
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
+#include <dlfcn.h>
+
+// cuda_device_sync calls cudaDeviceSynchronize via dlopen.
+// Kept for potential future use.
+static void cuda_device_sync() {
+    static int (*fn)() = NULL;
+    static int loaded = 0;
+    if (!loaded) {
+        loaded = 1;
+        void* h = dlopen("libcudart.so", RTLD_NOW | RTLD_GLOBAL);
+        if (!h) h = dlopen("libcudart.so.12", RTLD_NOW | RTLD_GLOBAL);
+        if (h) fn = dlsym(h, "cudaDeviceSynchronize");
+    }
+    if (fn) fn();
+}
+
+// safe_array_data_float32 reads the float32 data pointer from an array,
+// returning NULL if the array is not ready rather than crashing.
+// Uses mlx_array_item_float32 as a probe since item() triggers eval+wait.
+static const float* safe_array_data_float32(const mlx_array arr) {
+    // Force single-element eval to ensure data is available on host
+    if (mlx_array_eval(arr) != 0) return NULL;
+    return mlx_array_data_float32(arr);
+}
 
 // Forward declare cpu_stream
 static mlx_stream cpu_stream();
+
+// Detach array from MLX graph (implemented in mlx_helpers.c)
+extern int mlx_go_array_detach(mlx_array arr);
+extern const uint16_t* mlx_go_array_data_bfloat16(mlx_array arr);
+extern void mlx_go_trim_cuda_pool(void);
+extern void mlx_go_set_cuda_pool_threshold(size_t threshold);
+extern int mlx_go_export_latents_bin_d2h(const char* path, mlx_array gpu);
 
 // Cached default GPU stream for all ops
 static mlx_stream _default_stream = {0};
@@ -39,6 +71,117 @@ static inline mlx_stream cpu_stream() {
     return _cpu_stream;
 }
 
+// mlx_go_export_latents_bin copies GPU latents to CPU and writes the ZLAT binary format.
+static float mlx_bf16_to_f32(uint16_t v) {
+    uint32_t bits = (uint32_t)v << 16;
+    float out;
+    memcpy(&out, &bits, sizeof(out));
+    return out;
+}
+
+static int mlx_go_export_latents_bin(const char* path, mlx_array gpu) {
+    // Prefer direct cudaMemcpy export (avoids mlx_copy faults after checkpointed denoise).
+    int d2h = mlx_go_export_latents_bin_d2h(path, gpu);
+    if (d2h == 0) {
+        return 0;
+    }
+    if (d2h > 0) {
+        return d2h;
+    }
+    // Fallback when libmlxc lacks mlx_go_export_latents_bin_d2h.
+    if (mlx_array_eval(gpu) != 0) {
+        return 1;
+    }
+    mlx_synchronize(default_stream());
+    mlx_array cpu = mlx_array_new();
+    if (mlx_copy(&cpu, gpu, cpu_stream()) != 0) {
+        return 2;
+    }
+    if (mlx_array_eval(cpu) != 0) {
+        mlx_array_free(cpu);
+        return 3;
+    }
+    mlx_synchronize(cpu_stream());
+
+    size_t ndim = mlx_array_ndim(cpu);
+    if (ndim == 0 || ndim > 4) {
+        mlx_array_free(cpu);
+        return 4;
+    }
+    int32_t shape[4] = {0, 0, 0, 0};
+    for (size_t i = 0; i < ndim; i++) {
+        shape[i] = (int32_t)mlx_array_dim(cpu, (int)i);
+    }
+    size_t n = mlx_array_size(cpu);
+    if (n == 0) {
+        mlx_array_free(cpu);
+        return 5;
+    }
+
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        mlx_array_free(cpu);
+        return 6;
+    }
+    fwrite("ZLAT", 1, 4, f);
+    int32_t nd = (int32_t)ndim;
+    fwrite(&nd, sizeof(int32_t), 1, f);
+    fwrite(shape, sizeof(int32_t), 4, f);
+    int32_t count = (int32_t)n;
+    fwrite(&count, sizeof(int32_t), 1, f);
+
+    mlx_dtype dt = mlx_array_dtype(cpu);
+    if (dt == MLX_FLOAT32) {
+        const float* ptr = mlx_array_data_float32(cpu);
+        if (!ptr) {
+            fclose(f);
+            mlx_array_free(cpu);
+            return 7;
+        }
+        fwrite(ptr, sizeof(float), n, f);
+    } else if (dt == MLX_BFLOAT16) {
+        const uint16_t* ptr = mlx_go_array_data_bfloat16(cpu);
+        if (!ptr) {
+            fclose(f);
+            mlx_array_free(cpu);
+            return 8;
+        }
+        for (size_t i = 0; i < n; i++) {
+            float v = mlx_bf16_to_f32(ptr[i]);
+            fwrite(&v, sizeof(float), 1, f);
+        }
+    } else {
+        fclose(f);
+        mlx_array_free(cpu);
+        return 9;
+    }
+
+    fclose(f);
+    mlx_array_free(cpu);
+    return 0;
+}
+
+// mlx_go_save_gpu_npy copies a GPU array to CPU and writes npy entirely in C.
+// Avoids Go-side host reads that may fault after checkpointed denoise.
+static int mlx_go_save_gpu_npy(const char* path, mlx_array gpu) {
+    if (mlx_array_eval(gpu) != 0) {
+        return 1;
+    }
+    mlx_synchronize(default_stream());
+    mlx_array cpu = mlx_array_new();
+    if (mlx_copy(&cpu, gpu, cpu_stream()) != 0) {
+        return 1;
+    }
+    if (mlx_array_eval(cpu) != 0) {
+        mlx_array_free(cpu);
+        return 1;
+    }
+    mlx_synchronize(cpu_stream());
+    int rc = mlx_save(path, cpu);
+    mlx_array_free(cpu);
+    return rc;
+}
+
 // CGO noescape/nocallback hints to reduce CGO overhead
 // noescape: pointers won't escape, no heap allocation needed
 // nocallback: function won't call back into Go
@@ -47,6 +190,7 @@ import "C"
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -138,13 +282,12 @@ type Array struct {
 // Not goroutine-safe.
 var arrays = make([]*Array, 0, 4096)
 
+// suppressCleanup disables Eval/ForceEval cleanup while set (e.g. during imagegen).
+// Call ResumeCleanup() to re-enable and drain tracked intermediates.
+var suppressCleanup bool
+
 // evalHandles is a pre-allocated slice for passing arrays to MLX eval.
 var evalHandles = make([]C.mlx_array, 0, 64)
-
-// arrayPool reduces allocations for intermediate arrays
-var arrayPool = sync.Pool{
-	New: func() any { return &Array{} },
-}
 
 func newArray(array C.mlx_array) *Array {
 	// In compiled closures, MLX manages memory - skip Go tracking
@@ -152,11 +295,11 @@ func newArray(array C.mlx_array) *Array {
 		return &Array{c: array}
 	}
 
-	// Use pooled Array struct for efficiency
-	a := arrayPool.Get().(*Array)
-	a.c = array
-	a.freed = false
-	a.kept = false
+	a := &Array{
+		c:     array,
+		freed: false,
+		kept:  false,
+	}
 
 	// Track in global list
 	arrays = append(arrays, a)
@@ -245,6 +388,14 @@ func FreeStruct(v any) {
 	}
 }
 
+// ReleaseStruct detaches and releases all *Array fields in a struct (recursively).
+// Prefer this over FreeStruct when unloading model weights that may share MLX graph refs.
+func ReleaseStruct(v any) {
+	for _, arr := range Collect(v) {
+		arr.Release()
+	}
+}
+
 // Keep marks arrays to persist across Eval() cleanup.
 // Kept arrays will NOT be freed when Eval() runs cleanup.
 func Keep(arrays ...*Array) {
@@ -255,9 +406,36 @@ func Keep(arrays ...*Array) {
 	}
 }
 
+// SuppressCleanup disables automatic cleanup after Eval/ForceEval.
+func SuppressCleanup() {
+	suppressCleanup = true
+}
+
+// ResumeCleanup re-enables cleanup and frees all non-kept tracked arrays.
+func ResumeCleanup() int {
+	suppressCleanup = false
+	return cleanup()
+}
+
+// freeArray frees the MLX array handle. Detach graph links first so shared
+// ArrayDesc refs drop to zero before the buffer is released.
+func freeArray(a *Array) {
+	if a == nil || a.freed || a.c.ctx == nil {
+		return
+	}
+	C.mlx_synchronize(C.default_stream())
+	C.mlx_go_array_detach(a.c)
+	C.mlx_array_free(a.c)
+	a.c.ctx = nil
+	a.freed = true
+}
+
 // cleanup frees non-kept arrays and compacts the live array list.
 // Returns number of arrays freed.
 func cleanup() int {
+	if suppressCleanup {
+		return 0
+	}
 	freed := 0
 	n := 0
 	for _, a := range arrays {
@@ -265,13 +443,89 @@ func cleanup() int {
 			arrays[n] = a
 			n++
 		} else if a.c.ctx != nil && !a.freed {
-			C.mlx_array_free(a.c)
-			a.c.ctx = nil
-			arrayPool.Put(a)
+			freeArray(a)
 			freed++
 		}
 	}
 	arrays = arrays[:n]
+	if freed > 0 {
+		// Print caller for debugging
+		_, file, line, _ := runtime.Caller(1)
+		fmt.Printf("[cleanup] freed %d arrays from %s:%d\n", freed, file, line)
+	}
+	return freed
+}
+
+// Cleanup frees all non-kept arrays.
+func Cleanup() {
+	cleanup()
+}
+
+// CleanupCount frees all non-kept arrays and returns the count freed.
+func CleanupCount() int {
+	return cleanup()
+}
+
+// Untrack removes an array from the global tracker without freeing it.
+// Use for model weights owned exclusively by a struct field so Eval() cleanup
+// does not retain duplicate kept=true entries for the same GPU buffers.
+func Untrack(a *Array) {
+	if a == nil {
+		return
+	}
+	for i := 0; i < len(arrays); i++ {
+		if arrays[i] == a {
+			arrays = append(arrays[:i], arrays[i+1:]...)
+			return
+		}
+	}
+}
+
+// UntrackWeights untracks all *Array fields in a struct (recursively).
+func UntrackWeights(v any) {
+	for _, a := range Collect(v) {
+		Untrack(a)
+	}
+}
+
+// Release untracks and immediately frees an array's GPU/CPU buffer.
+// Detach clears sibling graph links so shared ArrayDesc refs drop to zero.
+func (a *Array) Release() {
+	if a == nil || a.freed || a.c.ctx == nil {
+		return
+	}
+	Untrack(a)
+	freeArray(a)
+}
+
+// DrainExcept force-frees all tracked arrays except those in keep.
+// Use before loading a large component to drop stray kept diffusion intermediates.
+func DrainExcept(keep []*Array) int {
+	keepSet := make(map[*Array]bool, len(keep))
+	for _, a := range keep {
+		if a != nil {
+			keepSet[a] = true
+		}
+	}
+	freed := 0
+	var remaining []*Array
+	for _, a := range arrays {
+		if a == nil {
+			continue
+		}
+		if keepSet[a] {
+			remaining = append(remaining, a)
+			continue
+		}
+		if a.c.ctx != nil && !a.freed {
+			freeArray(a)
+			freed++
+		}
+	}
+	arrays = remaining
+	if freed > 0 {
+		C.mlx_synchronize(C.default_stream())
+	}
 	return freed
 }
 
@@ -346,10 +600,9 @@ func Eval(outputs ...*Array) []*Array {
 		}
 	}
 
-	// Cleanup non-kept arrays
-	cleanup()
-
-	// Then evaluate
+	// Evaluate first: mlx_eval materializes the computation graph, which still
+	// holds references to intermediate arrays. Calling cleanup() before eval
+	// would free those intermediates while the graph still needs them.
 	if len(outputs) > 0 {
 		evalHandles = evalHandles[:0]
 		for _, o := range outputs {
@@ -359,9 +612,191 @@ func Eval(outputs ...*Array) []*Array {
 		}
 		if len(evalHandles) > 0 {
 			vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
-			C.mlx_eval(vec)
+			if ret := C.mlx_eval(vec); ret != 0 {
+				logMLXEvalError("Eval", ret)
+			}
 			C.mlx_vector_array_free(vec)
 		}
+	}
+
+	syncStreams()
+
+	// Cleanup non-kept intermediates after eval completes
+	cleanup()
+	return outputs
+}
+
+// EvalErr evaluates arrays like Eval but returns an error if mlx_eval fails.
+func EvalErr(outputs ...*Array) error {
+	for _, o := range outputs {
+		if o != nil {
+			o.kept = true
+		}
+	}
+	if len(outputs) == 0 {
+		return nil
+	}
+	evalHandles = evalHandles[:0]
+	for _, o := range outputs {
+		if o != nil {
+			evalHandles = append(evalHandles, o.c)
+		}
+	}
+	if len(evalHandles) == 0 {
+		return nil
+	}
+	vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
+	ret := C.mlx_eval(vec)
+	C.mlx_vector_array_free(vec)
+	syncStreams()
+	cleanup()
+	if ret != 0 {
+		msg := ""
+		if C.mlx_had_init_error() != 0 {
+			msg = C.GoString(C.mlx_get_init_error())
+		}
+		if msg != "" {
+			return fmt.Errorf("mlx eval: %s", msg)
+		}
+		if GPUIsAvailable() {
+			return fmt.Errorf("mlx eval failed (ret=%d): likely GPU out of memory; unload other models and retry", ret)
+		}
+		return fmt.Errorf("mlx eval failed (ret=%d)", ret)
+	}
+	return nil
+}
+
+// EvalErrBatched materializes arrays in chunks to cap peak VRAM during weight loads.
+// WHY: manifest Load() may touch hundreds of mmap tensors; one mlx_eval allocates
+// temporaries for all of them at once — on 16GB CUDA this OOMs right after the text
+// encoder was freed to make room for the transformer. TrimVRAM every other batch
+// returns driver memory between chunks without freeing model-owned arrays.
+func EvalErrBatched(batchSize int, outputs []*Array) error {
+	if batchSize <= 0 {
+		batchSize = 16
+	}
+	for i := 0; i < len(outputs); i += batchSize {
+		end := min(i+batchSize, len(outputs))
+		if err := EvalErr(outputs[i:end]...); err != nil {
+			return fmt.Errorf("batch %d-%d of %d: %w", i, end, len(outputs), err)
+		}
+		if GPUIsAvailable() && end < len(outputs) && (i/batchSize)%2 == 1 {
+			TrimVRAM()
+		}
+	}
+	return nil
+}
+
+// EvalMaterialize evaluates arrays without marking them kept and without cleanup.
+// Use when materializing mmap weights that will be owned by model fields after load.
+func EvalMaterialize(outputs ...*Array) {
+	if len(outputs) == 0 {
+		return
+	}
+	evalHandles = evalHandles[:0]
+	for _, o := range outputs {
+		if o != nil {
+			evalHandles = append(evalHandles, o.c)
+		}
+	}
+	if len(evalHandles) == 0 {
+		return
+	}
+	vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
+	if ret := C.mlx_eval(vec); ret != 0 {
+		logMLXEvalError("EvalMaterialize", ret)
+	}
+	C.mlx_vector_array_free(vec)
+	syncStreams()
+}
+
+func logMLXEvalError(label string, ret C.int) {
+	msg := ""
+	if C.mlx_had_init_error() != 0 {
+		msg = C.GoString(C.mlx_get_init_error())
+	}
+	if msg != "" {
+		fmt.Printf("[%s] mlx_eval failed ret=%d: %s\n", label, ret, msg)
+	} else {
+		fmt.Printf("[%s] mlx_eval failed ret=%d\n", label, ret)
+	}
+}
+
+// MaterializeOnCPU evaluates a (usually GPU) array and returns an independent CPU copy.
+// The source array is released; the returned array is untracked and safe for host reads.
+func MaterializeOnCPU(a *Array) *Array {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	Keep(a)
+	EvalMaterialize(a)
+	syncStreams()
+	cpu := CopyToCPU(a)
+	Keep(cpu)
+	EvalMaterialize(cpu)
+	syncStreams()
+	Untrack(cpu)
+	a.Release()
+	return cpu
+}
+
+// EvalSync evaluates arrays without running cleanup (caller must ResumeCleanup or Eval later).
+func EvalSync(outputs ...*Array) {
+	for _, o := range outputs {
+		if o != nil {
+			o.kept = true
+		}
+	}
+	if len(outputs) == 0 {
+		return
+	}
+	evalHandles = evalHandles[:0]
+	for _, o := range outputs {
+		if o != nil {
+			evalHandles = append(evalHandles, o.c)
+		}
+	}
+	if len(evalHandles) > 0 {
+		vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
+		ret := C.mlx_eval(vec)
+		if ret != 0 {
+			logMLXEvalError("evalSync", ret)
+		}
+		C.mlx_vector_array_free(vec)
+	}
+	syncStreams()
+}
+// Use before reading host data when lazy graph dependencies must stay alive.
+func ForceEval(outputs ...*Array) []*Array {
+	for _, o := range outputs {
+		if o != nil {
+			o.kept = true
+		}
+	}
+	// Evaluate all outputs in a single pass so shared intermediates are only
+	// allocated once. mlx_eval takes copies but shares array_desc via shared_ptr,
+	// so status updates propagate back to the originals.
+	if len(outputs) > 0 {
+		evalHandles = evalHandles[:0]
+		for _, o := range outputs {
+			if o != nil {
+				evalHandles = append(evalHandles, o.c)
+			}
+		}
+		if len(evalHandles) > 0 {
+			vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
+			ret := C.mlx_eval(vec)
+			if ret != 0 {
+				logMLXEvalError("ForceEval", ret)
+			}
+			C.mlx_vector_array_free(vec)
+		}
+	}
+	// Synchronize before cleanup: eval schedules work on the GPU/CPU streams, so we must
+	// wait for completion before freeing any inputs the graph may still reference.
+	syncStreams()
+	if !suppressCleanup {
+		cleanup()
 	}
 	return outputs
 }
@@ -395,9 +830,15 @@ func AsyncEval(outputs ...*Array) {
 	}
 }
 
+// syncStreams waits for both GPU and CPU MLX streams.
+func syncStreams() {
+	C.mlx_synchronize(C.default_stream())
+	C.mlx_synchronize(C.cpu_stream())
+}
+
 // Sync waits for all async operations to complete (no cleanup).
 func Sync() {
-	C.mlx_synchronize(C.default_stream())
+	syncStreams()
 }
 
 // Free marks this array for cleanup on the next Eval().
@@ -444,6 +885,10 @@ func NewArray(data []float32, shape []int32) *Array {
 		C.int(len(shape)),
 		C.MLX_FLOAT32,
 	)
+	if handle.ctx == nil {
+		errStr := C.GoString(C.mlx_get_init_error())
+		fmt.Printf("[NewArray] mlx_array_new_data returned null ctx! shape=%v err=%s\n", shape, errStr)
+	}
 	return newArray(handle)
 }
 
@@ -860,6 +1305,100 @@ func Contiguous(a *Array) *Array {
 	return newArray(res)
 }
 
+// CopyToCPU copies the array to the CPU stream so host data pointers are valid.
+// Required on CUDA before calling mlx_array_data_* — GPU arrays return nil data pointers.
+func CopyToCPU(a *Array) *Array {
+	res := C.mlx_array_new()
+	C.mlx_copy(&res, a.c, C.cpu_stream())
+	return newArray(res)
+}
+
+// Clone returns a deep copy of the array on the default stream.
+// Use after dequantization so weight tensors own their GPU buffers exclusively.
+func Clone(a *Array) *Array {
+	res := C.mlx_array_new()
+	C.mlx_copy(&res, a.c, C.default_stream())
+	return newArray(res)
+}
+
+// OwnedCopy returns an independent materialized GPU copy of a.
+func OwnedCopy(a *Array) *Array {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	c := Clone(a)
+	Keep(c)
+	EvalMaterialize(c)
+	Untrack(c)
+	return c
+}
+
+// OwnStructArrays replaces every exported *Array field in v with OwnedCopy.
+func OwnStructArrays(v any) {
+	ownValue(reflect.ValueOf(v), make(map[uintptr]bool))
+}
+
+func ownValue(v reflect.Value, seen map[uintptr]bool) {
+	if !v.IsValid() {
+		return
+	}
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return
+		}
+		if v.Type() == reflect.TypeOf((*Array)(nil)) {
+			if !v.CanInterface() || !v.CanSet() {
+				return
+			}
+			arr := v.Interface().(*Array)
+			if arr != nil && arr.c.ctx != nil {
+				v.Set(reflect.ValueOf(OwnedCopy(arr)))
+			}
+			return
+		}
+		ptr := v.Pointer()
+		if seen[ptr] {
+			return
+		}
+		seen[ptr] = true
+		ownValue(v.Elem(), seen)
+		return
+	}
+	if v.Kind() == reflect.Struct {
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if !field.CanInterface() {
+				continue
+			}
+			if field.CanAddr() {
+				ownValue(field.Addr(), seen)
+			} else {
+				ownValue(field, seen)
+			}
+		}
+		return
+	}
+	if v.Kind() == reflect.Slice {
+		for i := 0; i < v.Len(); i++ {
+			el := v.Index(i)
+			if !el.CanInterface() {
+				continue
+			}
+			if el.CanAddr() {
+				ownValue(el.Addr(), seen)
+			} else {
+				ownValue(el, seen)
+			}
+		}
+		return
+	}
+	if v.Kind() == reflect.Interface {
+		if !v.IsNil() && v.Elem().CanInterface() {
+			ownValue(v.Elem(), seen)
+		}
+	}
+}
+
 // Clip clips values to [min, max]. Pass nil for no bound on that side.
 func Clip(a *Array, aMin, aMax *Array) *Array {
 	res := C.mlx_array_new()
@@ -976,15 +1515,23 @@ func ArangeInt(start, stop, step int32, dtype Dtype) *Array {
 }
 
 // Concatenate concatenates arrays along an axis
-func Concatenate(arrays []*Array, axis int) *Array {
-	handles := make([]C.mlx_array, len(arrays))
-	for i, arr := range arrays {
+func Concatenate(arrs []*Array, axis int) *Array {
+	handles := make([]C.mlx_array, len(arrs))
+	for i, arr := range arrs {
 		handles[i] = arr.c
 	}
 	vec := C.mlx_vector_array_new_data(&handles[0], C.size_t(len(handles)))
 	res := C.mlx_array_new()
-	C.mlx_concatenate_axis(&res, vec, C.int(axis), C.default_stream())
+	ret := C.mlx_concatenate_axis(&res, vec, C.int(axis), C.default_stream())
 	C.mlx_vector_array_free(vec)
+	if ret != 0 {
+		fmt.Printf("[Concatenate] mlx_concatenate_axis failed: axis=%d, narrs=%d\n", axis, len(arrs))
+		errStr := C.GoString(C.mlx_get_init_error())
+		fmt.Printf("[Concatenate] mlx error: %s\n", errStr)
+		for i, arr := range arrs {
+			fmt.Printf("  arr[%d]: valid=%v ndim=%d ctx=%p\n", i, arr.IsValid(), arr.Ndim(), arr.c.ctx)
+		}
+	}
 	return newArray(res)
 }
 
@@ -994,9 +1541,9 @@ func Concat(a, b *Array, axis int) *Array {
 }
 
 // Stack stacks arrays along a new axis (axis 0 by default)
-func Stack(arrays []*Array, axis int) *Array {
-	handles := make([]C.mlx_array, len(arrays))
-	for i, arr := range arrays {
+func Stack(arrs []*Array, axis int) *Array {
+	handles := make([]C.mlx_array, len(arrs))
+	for i, arr := range arrs {
 		handles[i] = arr.c
 	}
 	vec := C.mlx_vector_array_new_data(&handles[0], C.size_t(len(handles)))
@@ -1272,26 +1819,221 @@ func (d Dtype) ItemSize() int64 {
 
 // ============ Data Access ============
 
+func waitArray(a *Array) {
+	if a == nil || !a.Valid() {
+		return
+	}
+	C._mlx_array_wait(a.c)
+	syncStreams()
+}
+
+func arrayIsAvailable(a *Array) bool {
+	if a == nil || !a.Valid() {
+		return false
+	}
+	var available C.bool
+	if C._mlx_array_is_available(&available, a.c) != 0 {
+		return false
+	}
+	return bool(available)
+}
+
+// ArrayIsAvailable reports whether array data is ready to read.
+func ArrayIsAvailable(a *Array) bool {
+	return arrayIsAvailable(a)
+}
+
+// cpuArrayDataFloat32 reads float32 elements from a materialized array without
+// scheduling GPU layout transforms. Call after eval+sync on the array's stream.
+func cpuArrayDataFloat32(a *Array) []float32 {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	size := a.Size()
+	if size == 0 {
+		return nil
+	}
+	waitArray(a)
+	if !arrayIsAvailable(a) {
+		if C.mlx_array_eval(a.c) != 0 {
+			fmt.Printf("[cpuArrayDataFloat32] eval failed shape=%v dtype=%s\n", a.Shape(), a.Dtype())
+			return nil
+		}
+		waitArray(a)
+	}
+
+	switch a.Dtype() {
+	case DtypeFloat32:
+		ptr := C.mlx_array_data_float32(a.c)
+		if ptr == nil {
+			fmt.Printf("[cpuArrayDataFloat32] data ptr nil shape=%v\n", a.Shape())
+			return nil
+		}
+		out := make([]float32, size)
+		copy(out, unsafe.Slice((*float32)(unsafe.Pointer(ptr)), size))
+		return out
+	case DtypeBFloat16:
+		ptr := C.mlx_go_array_data_bfloat16(a.c)
+		if ptr == nil {
+			return nil
+		}
+		raw := unsafe.Slice(ptr, size)
+		out := make([]float32, size)
+		for i := range out {
+			out[i] = float32FromBFloat16(uint16(raw[i]))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// CPUArrayAsFloat32 reads array elements as float32 from a CPU-resident array.
+// Supports float32 and bfloat16 without scheduling GPU layout transforms.
+func CPUArrayAsFloat32(a *Array) []float32 {
+	return cpuArrayDataFloat32(a)
+}
+
+func float32FromBFloat16(u uint16) float32 {
+	return math.Float32frombits(uint32(u) << 16)
+}
+
+// GPUToHostFloat32 copies a GPU array to the host and returns float32 elements.
+// The source array is not freed; the caller owns its lifetime.
+func GPUToHostFloat32(a *Array) []float32 {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	Keep(a)
+	src := a
+	if !a.IsContiguous() {
+		src = Contiguous(a)
+		Keep(src)
+	}
+	EvalMaterialize(src)
+	syncStreams()
+	cpu := CopyToCPU(src)
+	Keep(cpu)
+	EvalMaterialize(cpu)
+	syncStreams()
+	Untrack(cpu)
+	data := cpuArrayDataFloat32(cpu)
+	cpu.Release()
+	return data
+}
+
+// HostFloat32Slice returns array elements as float32 on the host.
+// On CUDA, GPU-resident arrays are copied to CPU before reading.
+func HostFloat32Slice(a *Array) []float32 {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	if data := cpuArrayDataFloat32(a); len(data) > 0 {
+		return data
+	}
+	return GPUToHostFloat32(a)
+}
+
+// RawFloat32Slice reads a materialized GPU array as float32 without layout transforms.
+// Unlike Data(), this does not call Contiguous/AsType (which can OOM at peak VRAM).
+func RawFloat32Slice(a *Array) []float32 {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	size := a.Size()
+	if size == 0 {
+		return nil
+	}
+	if ret := C.mlx_array_eval(a.c); ret != 0 {
+		fmt.Printf("[RawFloat32Slice] eval failed ret=%d shape=%v dtype=%s\n", ret, a.Shape(), a.Dtype())
+		// Try reading anyway if the array was already materialized by a prior eval.
+	} else {
+		C.mlx_synchronize(C.default_stream())
+	}
+
+	switch a.Dtype() {
+	case DtypeFloat32:
+		ptr := C.safe_array_data_float32(a.c)
+		if ptr == nil {
+			return nil
+		}
+		out := make([]float32, size)
+		copy(out, unsafe.Slice((*float32)(unsafe.Pointer(ptr)), size))
+		return out
+	case DtypeBFloat16:
+		ptr := C.mlx_go_array_data_bfloat16(a.c)
+		if ptr == nil {
+			return nil
+		}
+		raw := unsafe.Slice(ptr, size)
+		out := make([]float32, size)
+		for i := range out {
+			out[i] = float32FromBFloat16(uint16(raw[i]))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// CPUDataFloat32 copies float32 data from an array already resident on the CPU stream.
+// Does not run GPU layout transforms — use for export after CopyToCPU.
+func CPUDataFloat32(a *Array) []float32 {
+	if a == nil || !a.Valid() {
+		return nil
+	}
+	size := a.Size()
+	if size == 0 {
+		return nil
+	}
+	if ret := C.mlx_array_eval(a.c); ret != 0 {
+		return nil
+	}
+	C.mlx_synchronize(C.cpu_stream())
+	ptr := C.safe_array_data_float32(a.c)
+	if ptr == nil {
+		return nil
+	}
+	data := make([]float32, size)
+	copy(data, unsafe.Slice((*float32)(unsafe.Pointer(ptr)), size))
+	return data
+}
+
 // Data copies the float32 data out of the array.
 // Note: For non-contiguous arrays (e.g., from SliceStride), call Contiguous() first.
 // Note: Arrays of other dtypes (bf16, f16, etc) are automatically converted to float32.
 // Note: Triggers cleanup of non-kept arrays.
 func (a *Array) Data() []float32 {
-	cleanup()
+	if a == nil || !a.Valid() {
+		return nil
+	}
 	size := a.Size()
 	if size == 0 {
 		return nil
 	}
 
+	a.kept = true
+
 	arr := a
-	if a.Dtype() != DtypeFloat32 {
-		arr = AsType(a, DtypeFloat32)
-		arr.Eval()
-		// Cast array will be cleaned up on next Eval
+	// Ensure contiguous layout first (on GPU stream)
+	if !arr.IsContiguous() {
+		arr = Contiguous(arr)
+		ForceEval(arr)
+	}
+	// Cast to float32 if needed (on GPU stream)
+	if arr.Dtype() != DtypeFloat32 {
+		arr = AsType(arr, DtypeFloat32)
+		ForceEval(arr)
+	}
+	// Ensure evaluation is complete before accessing host data.
+	if ret := C.mlx_array_eval(arr.c); ret != 0 {
+		fmt.Printf("[Data] mlx_array_eval failed ret=%d\n", ret)
+		return nil
 	}
 
 	ptr := C.mlx_array_data_float32(arr.c)
 	if ptr == nil {
+		fmt.Printf("[Data] mlx_array_data_float32 returned nil\n")
 		return nil
 	}
 	data := make([]float32, size)
@@ -1402,18 +2144,24 @@ func NewArrayFromBytes(data []byte, shape []int32, dtype Dtype) *Array {
 
 // ============ Device Control ============
 
-// SetDefaultDeviceGPU sets the default device to GPU (Metal)
+// SetDefaultDeviceGPU sets the default device to GPU and routes ops to the GPU stream.
 func SetDefaultDeviceGPU() {
 	dev := C.mlx_device_new_type(C.MLX_GPU, 0)
 	C.mlx_set_default_device(dev)
 	C.mlx_device_free(dev)
+	gpu := C.default_stream()
+	C.mlx_set_default_stream(gpu)
+	C.set_default_stream(gpu)
 }
 
-// SetDefaultDeviceCPU sets the default device to CPU
+// SetDefaultDeviceCPU sets the default device to CPU and routes ops to the CPU stream.
 func SetDefaultDeviceCPU() {
 	dev := C.mlx_device_new_type(C.MLX_CPU, 0)
 	C.mlx_set_default_device(dev)
 	C.mlx_device_free(dev)
+	cpu := C.cpu_stream()
+	C.mlx_set_default_stream(cpu)
+	C.set_default_stream(cpu)
 }
 
 // MetalIsAvailable returns true if Metal GPU is available
@@ -1458,9 +2206,9 @@ func GetDefaultDeviceType() int {
 	return int(devType)
 }
 
-// Synchronize waits for all GPU operations to complete
+// Synchronize waits for all GPU and CPU operations to complete
 func Synchronize() {
-	C.mlx_synchronize(C.default_stream())
+	syncStreams()
 }
 
 // ScaledDotProductAttention computes optimized attention using GPU kernel
@@ -1502,6 +2250,19 @@ func ScaledDotProductAttentionWithSinks(q, k, v *Array, scale float32, maskMode 
 type SafetensorsFile struct {
 	arrays   C.mlx_map_string_to_array
 	metadata C.mlx_map_string_to_string
+}
+
+// LoadSafetensorsCPU loads a safetensors file onto the CPU stream.
+func LoadSafetensorsCPU(path string) (*SafetensorsFile, error) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	var arrays C.mlx_map_string_to_array
+	var metadata C.mlx_map_string_to_string
+	if C.mlx_load_safetensors(&arrays, &metadata, cPath, C.cpu_stream()) != 0 {
+		return nil, fmt.Errorf("failed to load safetensors on CPU: %s", path)
+	}
+	return &SafetensorsFile{arrays: arrays, metadata: metadata}, nil
 }
 
 // LoadSafetensorsNative loads a safetensors file using MLX's optimized loader.
@@ -1634,6 +2395,77 @@ func SaveSafetensorsWithMetadata(path string, arrays map[string]*Array, metadata
 }
 
 // ============ NPY Loading ============
+
+// SaveNpy writes a materialized array to an npy file (via CPU copy on GPU builds).
+func SaveNpy(path string, a *Array) error {
+	if a == nil || !a.Valid() {
+		return fmt.Errorf("invalid array for npy save")
+	}
+	Keep(a)
+	EvalMaterialize(a)
+	syncStreams()
+	cpu := CopyToCPU(a)
+	Keep(cpu)
+	EvalMaterialize(cpu)
+	syncStreams()
+	defer cpu.Release()
+	return saveNpyArray(path, cpu.c)
+}
+
+// ExportLatentsBin snapshots a GPU latent tensor to disk without a Go host read.
+func ExportLatentsBin(path string, a *Array) error {
+	if a == nil || !a.Valid() {
+		return fmt.Errorf("invalid array for latent export")
+	}
+	Keep(a)
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	if rc := C.mlx_go_export_latents_bin(cPath, a.c); rc != 0 {
+		return fmt.Errorf("latent export failed (rc=%d, dtype=%s)", int(rc), a.Dtype())
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() < 64 {
+		return fmt.Errorf("latent export produced empty file: %s", path)
+	}
+	return nil
+}
+
+// SaveNpyDirect saves a GPU-resident array via C-side copy+save (no Go host read).
+func SaveNpyDirect(path string, a *Array) error {
+	if a == nil || !a.Valid() {
+		return fmt.Errorf("invalid array for npy save")
+	}
+	Keep(a)
+	EvalMaterialize(a)
+	syncStreams()
+	src := a
+	if a.Dtype() != DtypeFloat32 {
+		src = AsType(a, DtypeFloat32)
+		Keep(src)
+		EvalMaterialize(src)
+		syncStreams()
+	}
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	if C.mlx_go_save_gpu_npy(cPath, src.c) != 0 {
+		return fmt.Errorf("failed to save npy: %s (dtype=%s)", path, src.Dtype())
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() < 128 {
+		return fmt.Errorf("npy save produced empty file: %s", path)
+	}
+	return nil
+}
+
+func saveNpyArray(path string, arr C.mlx_array) error {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	if C.mlx_save(cPath, arr) != 0 {
+		return fmt.Errorf("failed to save npy: %s", path)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() < 128 {
+		return fmt.Errorf("npy save produced empty file: %s", path)
+	}
+	return nil
+}
 
 // LoadNpy loads a numpy array from an npy file
 // Note: Uses CPU stream because Load primitive only runs on CPU
@@ -1818,6 +2650,24 @@ func InitMLX() error {
 	return nil
 }
 
+func init() {
+	if err := InitMLX(); err != nil {
+		mlxInitError = err
+		return
+	}
+
+	C.mlx_set_safe_init_mode()
+	runtime.LockOSThread()
+	RandomState[0] = RandomKey(uint64(time.Now().UnixMilli()))
+	Keep(RandomState[0])
+
+	if C.mlx_had_init_error() != 0 {
+		msg := C.GoString(C.mlx_get_init_error())
+		mlxInitError = fmt.Errorf("MLX GPU init failed: %s", msg)
+		mlxInitialized = false
+	}
+}
+
 // IsMLXAvailable returns whether MLX was successfully initialized
 func IsMLXAvailable() bool {
 	return mlxInitialized && mlxInitError == nil
@@ -1826,35 +2676,6 @@ func IsMLXAvailable() bool {
 // GetMLXInitError returns any error that occurred during MLX initialization
 func GetMLXInitError() error {
 	return mlxInitError
-}
-
-func init() {
-	// Initialize MLX dynamic library first
-	if err := InitMLX(); err != nil {
-		// Don't panic in init - let the caller handle the error
-		// Store the error for later retrieval
-		mlxInitError = err
-		return
-	}
-
-	// Enter safe mode: replace the default exit(-1) error handler with one
-	// that logs and stores errors. This prevents a GPU init failure from
-	// killing the entire process during startup.
-	C.mlx_set_safe_init_mode()
-
-	// Lock main goroutine to OS thread for CUDA context stability.
-	// CUDA contexts are bound to threads; Go can migrate goroutines between threads.
-	runtime.LockOSThread()
-	RandomState[0] = RandomKey(uint64(time.Now().UnixMilli()))
-	Keep(RandomState[0]) // Global state should persist
-
-	// Check if the RandomKey call silently failed under safe mode
-	if C.mlx_had_init_error() != 0 {
-		msg := C.GoString(C.mlx_get_init_error())
-		mlxInitError = fmt.Errorf("MLX GPU init failed: %s", msg)
-		mlxInitialized = false
-		return
-	}
 }
 
 // RestoreDefaultErrorHandler restores the default MLX error handler (exit on error).
@@ -2043,6 +2864,31 @@ func MetalGetActiveMemory() uint64 {
 // ClearCache clears the MLX memory cache
 func ClearCache() {
 	C.mlx_clear_cache()
+}
+
+// ClearCompileCache drops cached CUDA graphs from mlx.compile.
+// Call after large model unload or before a new heavy eval phase (e.g. VAE decode).
+func ClearCompileCache() {
+	C.mlx_detail_compile_clear_cache()
+}
+
+// TrimVRAM aggressively returns pooled GPU memory and clears compile caches.
+// Use between pipeline stages (text encoder → transformer → VAE) on tight VRAM hosts.
+func TrimVRAM() {
+	SetCacheLimit(0)
+	ClearCache()
+	ClearCompileCache()
+	// Flush any pool-reserved-but-freed memory back to the device (CUDA only).
+	C.mlx_go_trim_cuda_pool()
+	syncStreams()
+}
+
+// SetCudaPoolThreshold sets cudaMemPoolAttrReleaseThreshold for the default CUDA memory
+// pool. Setting to 0 causes freed buffers to be released immediately to the OS rather
+// than held in the pool for reuse. This maximally reduces peak VRAM at the cost of
+// slightly higher allocation latency. Call once at runner startup for 16 GB GPUs.
+func SetCudaPoolThreshold(threshold uint64) {
+	C.mlx_go_set_cuda_pool_threshold(C.size_t(threshold))
 }
 
 // SetCacheLimit sets the free cache limit in bytes

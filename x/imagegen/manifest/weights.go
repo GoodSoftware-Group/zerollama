@@ -53,15 +53,18 @@ func LoadWeightsFromManifest(manifest *ModelManifest, component string) (*Manife
 	}, nil
 }
 
-// Load loads all tensor blobs using native mmap (zero-copy).
-// Blobs are stored in safetensors format for native mlx_load_safetensors mmap.
-// Combined quantized blobs contain tensors keyed by name, name+".scale", and optional name+".bias"
-// with quantization metadata. Scale and bias are stored in cache as name+"_scale"
-// and name+"_qbias" for compatibility with downstream loading code.
-// Packed blobs (e.g., for expert groups) contain multiple tensors; the manifest name
-// is a group prefix and individual tensors are loaded by their actual names from the blob.
-// If dtype is non-zero, non-quantized tensors are converted to the specified dtype.
+// Load loads all tensor blobs using native mmap (zero-copy) on the GPU stream.
+// Callers must keep nativeCache alive until ReleaseAll — see load() below.
 func (mw *ManifestWeights) Load(dtype mlx.Dtype) error {
+	return mw.load(dtype, mlx.LoadSafetensorsNative)
+}
+
+// LoadOnCPU loads all tensor blobs onto the CPU stream (for post-denoise VAE decode on CUDA).
+func (mw *ManifestWeights) LoadOnCPU(dtype mlx.Dtype) error {
+	return mw.load(dtype, mlx.LoadSafetensorsCPU)
+}
+
+func (mw *ManifestWeights) load(dtype mlx.Dtype, open func(string) (*mlx.SafetensorsFile, error)) error {
 	// Track native handles to free after batch eval
 	nativeHandles := make([]*mlx.SafetensorsFile, 0, len(mw.tensors))
 	arrays := make([]*mlx.Array, 0, len(mw.tensors))
@@ -80,7 +83,7 @@ func (mw *ManifestWeights) Load(dtype mlx.Dtype) error {
 		path := mw.manifest.BlobPath(digest)
 
 		// Load blob as safetensors (native mmap, zero-copy)
-		sf, err := mlx.LoadSafetensorsNative(path)
+		sf, err := open(path)
 		if err != nil {
 			for _, h := range nativeHandles {
 				h.Free()
@@ -185,13 +188,20 @@ func (mw *ManifestWeights) Load(dtype mlx.Dtype) error {
 		}
 	}
 
-	// Batch evaluate all tensors at once (much faster than one at a time)
-	mlx.Eval(arrays...)
-
-	// Now safe to free all native handles
-	for _, sf := range nativeHandles {
-		sf.Free()
+	// Materialize weights in batches — a single mlx_eval over the full transformer
+	// spikes VRAM on 16GB GPUs when text-encoder weights were just released.
+	if err := mlx.EvalErrBatched(16, arrays); err != nil {
+		for _, h := range nativeHandles {
+			h.Free()
+		}
+		return fmt.Errorf("materialize weights: %w", err)
 	}
+	for _, arr := range arrays {
+		mlx.Untrack(arr)
+	}
+	// Keep mmap handles alive until ReleaseAll(); freeing immediately after Eval can
+	// invalidate weight buffers still referenced by model structs on CUDA.
+	mw.nativeCache = append(mw.nativeCache, nativeHandles...)
 
 	return nil
 }

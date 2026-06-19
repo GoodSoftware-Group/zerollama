@@ -13,8 +13,9 @@ type Request struct {
 	Options *RequestOptions `json:"options,omitempty"`
 
 	// Image generation fields
-	Width  int32    `json:"width,omitempty"`
-	Height int32    `json:"height,omitempty"`
+	Width       int32  `json:"width,omitempty"`
+	Height      int32  `json:"height,omitempty"`
+	AspectRatio string `json:"aspect_ratio,omitempty"` // 16:9, 9:16, 3:2, 2:3, 1:1
 	Steps  int      `json:"steps,omitempty"`
 	Seed   int64    `json:"seed,omitempty"`
 	Images [][]byte `json:"images,omitempty"` // Input images for image editing/conditioning

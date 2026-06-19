@@ -3,12 +3,20 @@ package zimage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/ollama/ollama/x/imagegen/cache"
+	latentfile "github.com/ollama/ollama/x/imagegen/latents"
 	"github.com/ollama/ollama/x/imagegen/manifest"
 	"github.com/ollama/ollama/x/imagegen/mlx"
+	"github.com/ollama/ollama/x/imagegen/size"
 	"github.com/ollama/ollama/x/imagegen/tokenizer"
 	"github.com/ollama/ollama/x/imagegen/vae"
 )
@@ -18,8 +26,9 @@ type GenerateConfig struct {
 	Prompt         string
 	NegativePrompt string                     // Empty = no CFG
 	CFGScale       float32                    // Only used if NegativePrompt is set (default: 4.0)
-	Width          int32                      // Image width (default: 1024)
-	Height         int32                      // Image height (default: 1024)
+	Width          int32                      // Image width (default: max side for VRAM)
+	Height         int32                      // Image height (default: max side for VRAM)
+	AspectRatio    string                     // Optional preset: 16:9, 9:16, 3:2, 2:3, 1:1
 	Steps          int                        // Denoising steps (default: 9 for turbo)
 	Seed           int64                      // Random seed
 	Progress       func(step, totalSteps int) // Optional progress callback
@@ -40,7 +49,13 @@ type Model struct {
 	TextEncoder *Qwen3TextEncoder
 	Transformer *Transformer
 	VAEDecoder  *VAEDecoder
+	manifest    *manifest.ModelManifest
 	qkvFused    bool // Track if QKV has been fused (do only once)
+	needsReload struct {
+		textEncoder bool
+		transformer bool
+		vae         bool
+	}
 }
 
 // Load loads the Z-Image model from ollama blob storage.
@@ -50,33 +65,36 @@ func (m *Model) Load(modelName string) error {
 
 	if mlx.GPUIsAvailable() {
 		mlx.SetDefaultDeviceGPU()
-		mlx.EnableCompile()
+		mlx.DisableCompile()
+		mlx.SetCacheLimit(0)
+		mlx.SetMemoryLimit(12 * 1024 * 1024 * 1024)
 	}
 
 	m.ModelName = modelName
 
 	// Load manifest
-	manifest, err := manifest.LoadManifest(modelName)
+	mf, err := manifest.LoadManifest(modelName)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
+	m.manifest = mf
 
 	// Load tokenizer from manifest with config
 	fmt.Print("  Loading tokenizer... ")
-	tokData, err := manifest.ReadConfig("tokenizer/tokenizer.json")
+	tokData, err := mf.ReadConfig("tokenizer/tokenizer.json")
 	if err != nil {
 		return fmt.Errorf("tokenizer: %w", err)
 	}
 
 	// Try to read tokenizer config files from manifest
 	tokConfig := &tokenizer.TokenizerConfig{}
-	if data, err := manifest.ReadConfig("tokenizer/tokenizer_config.json"); err == nil {
+	if data, err := mf.ReadConfig("tokenizer/tokenizer_config.json"); err == nil {
 		tokConfig.TokenizerConfigJSON = data
 	}
-	if data, err := manifest.ReadConfig("tokenizer/generation_config.json"); err == nil {
+	if data, err := mf.ReadConfig("tokenizer/generation_config.json"); err == nil {
 		tokConfig.GenerationConfigJSON = data
 	}
-	if data, err := manifest.ReadConfig("tokenizer/special_tokens_map.json"); err == nil {
+	if data, err := mf.ReadConfig("tokenizer/special_tokens_map.json"); err == nil {
 		tokConfig.SpecialTokensMapJSON = data
 	}
 
@@ -87,40 +105,147 @@ func (m *Model) Load(modelName string) error {
 	m.Tokenizer = tok
 	fmt.Println("✓")
 
-	// Load text encoder
-	m.TextEncoder = &Qwen3TextEncoder{}
-	if err := m.TextEncoder.Load(manifest, "text_encoder/config.json"); err != nil {
-		return fmt.Errorf("text encoder: %w", err)
+	if mlx.GPUIsAvailable() {
+		// Defer text encoder to first generate so serve startup does not hold ~4.5GB
+		// while other models may also be loading on tight VRAM hosts. CPU/Metal paths
+		// load immediately because they are not contending with ggml on the same card.
+		m.TextEncoder = nil
+		m.needsReload.textEncoder = true
+		fmt.Println("  Text encoder... deferred until first generate")
+	} else {
+		m.TextEncoder = &Qwen3TextEncoder{}
+		if err := m.TextEncoder.Load(mf, "text_encoder/config.json"); err != nil {
+			return fmt.Errorf("text encoder: %w", err)
+		}
+		mlx.UntrackWeights(m.TextEncoder)
+		fmt.Printf("  (%.1f GB, peak %.1f GB)\n",
+			float64(mlx.MetalGetActiveMemory())/(1024*1024*1024),
+			float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))
 	}
-	mlx.Eval(mlx.Collect(m.TextEncoder)...)
-	fmt.Printf("  (%.1f GB, peak %.1f GB)\n",
-		float64(mlx.MetalGetActiveMemory())/(1024*1024*1024),
-		float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))
 
-	// Load transformer
-	m.Transformer = &Transformer{}
-	if err := m.Transformer.Load(manifest); err != nil {
-		return fmt.Errorf("transformer: %w", err)
-	}
-	mlx.Eval(mlx.Collect(m.Transformer)...)
-	fmt.Printf("  (%.1f GB, peak %.1f GB)\n",
-		float64(mlx.MetalGetActiveMemory())/(1024*1024*1024),
-		float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))
-
-	// Load VAE decoder
-	m.VAEDecoder = &VAEDecoder{}
-	if err := m.VAEDecoder.Load(manifest); err != nil {
-		return fmt.Errorf("VAE decoder: %w", err)
-	}
-	mlx.Eval(mlx.Collect(m.VAEDecoder)...)
-	fmt.Printf("  (%.1f GB, peak %.1f GB)\n",
-		float64(mlx.MetalGetActiveMemory())/(1024*1024*1024),
-		float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))
+	fmt.Println("  Transformer... deferred until after text encoding")
+	fmt.Println("  VAE decoder... deferred until decode")
+	m.needsReload.transformer = true
+	m.needsReload.vae = true
 
 	mem := mlx.MetalGetActiveMemory()
 	fmt.Printf("  Loaded in %.2fs (%.1f GB VRAM)\n", time.Since(start).Seconds(), float64(mem)/(1024*1024*1024))
 
 	return nil
+}
+
+func (m *Model) ensureTextEncoder() error {
+	if !m.needsReload.textEncoder && m.TextEncoder != nil {
+		return nil
+	}
+	m.TextEncoder = &Qwen3TextEncoder{}
+	if err := m.TextEncoder.Load(m.manifest, "text_encoder/config.json"); err != nil {
+		return fmt.Errorf("reload text encoder: %w", err)
+	}
+	mlx.UntrackWeights(m.TextEncoder)
+	m.needsReload.textEncoder = false
+	return nil
+}
+
+func (m *Model) ensureTransformer() error {
+	if !m.needsReload.transformer && m.Transformer != nil {
+		return nil
+	}
+	m.Transformer = &Transformer{}
+	if err := m.Transformer.Load(m.manifest); err != nil {
+		return fmt.Errorf("reload transformer: %w", err)
+	}
+	mlx.UntrackWeights(m.Transformer)
+	m.needsReload.transformer = false
+	m.qkvFused = false
+	return nil
+}
+
+func (m *Model) freeTextEncoderWeights() {
+	if m.TextEncoder == nil {
+		return
+	}
+	fmt.Printf("  [freeTextEncoder] releasing %d arrays\n", len(mlx.Collect(m.TextEncoder)))
+	before := mlx.MetalGetActiveMemory()
+	mlx.ReleaseStruct(m.TextEncoder)
+	m.TextEncoder = nil
+	// ResumeCleanup drops MLX graph nodes that still reference freed encoder weights;
+	// without this, transformer load sees inflated active memory and OOMs on 16GB.
+	mlx.ResumeCleanup()
+	mlx.Sync()
+	mlx.TrimVRAM()
+	fmt.Printf("  [freeTextEncoder] active=%.2fGB→%.2fGB\n",
+		float64(before)/(1<<30), float64(mlx.MetalGetActiveMemory())/(1<<30))
+	runtime.GC()
+	m.needsReload.textEncoder = true
+}
+
+func (m *Model) reloadVAEDecoder() error {
+	m.VAEDecoder = nil
+	m.needsReload.vae = true
+	return m.ensureVAEDecoder()
+}
+
+func (m *Model) ensureVAEDecoderCPU() error {
+	if !m.needsReload.vae && m.VAEDecoder != nil {
+		return nil
+	}
+	fmt.Print("  VAE decoder (CPU)... ")
+	m.VAEDecoder = &VAEDecoder{}
+	if err := m.VAEDecoder.LoadOnCPU(m.manifest); err != nil {
+		return fmt.Errorf("load VAE on CPU: %w", err)
+	}
+	mlx.UntrackWeights(m.VAEDecoder)
+	m.needsReload.vae = false
+	fmt.Println("✓")
+	return nil
+}
+
+func (m *Model) ensureVAEDecoder() error {
+	if !m.needsReload.vae && m.VAEDecoder != nil {
+		return nil
+	}
+	m.VAEDecoder = &VAEDecoder{}
+	if err := m.VAEDecoder.Load(m.manifest); err != nil {
+		return fmt.Errorf("reload VAE decoder: %w", err)
+	}
+	mlx.UntrackWeights(m.VAEDecoder)
+	m.VAEDecoder.pinWeights()
+	m.needsReload.vae = false
+	return nil
+}
+
+func (m *Model) freeTransformerWeights() {
+	if m.Transformer == nil {
+		return
+	}
+	if mlx.GPUIsAvailable() {
+		// Keep transformer weights resident between CUDA requests. Reloading after
+		// denoise previously leaked handles and the second load OOMs on 16GB cards.
+		// Idle VRAM stays higher until keep_alive expires — acceptable vs reload cost.
+		mlx.ClearCache()
+		mlx.TrimVRAM()
+		fmt.Printf("  [freeTransformer] keeping transformer resident (%.2f GB active)\n",
+			float64(mlx.MetalGetActiveMemory())/(1<<30))
+		return
+	}
+	fmt.Printf("  [freeTransformer] releasing %d arrays\n", len(mlx.Collect(m.Transformer)))
+	before := mlx.MetalGetActiveMemory()
+	if m.VAEDecoder != nil {
+		m.VAEDecoder.pinWeights()
+	}
+	mlx.ReleaseStruct(m.Transformer)
+	m.Transformer = nil
+	m.needsReload.transformer = true
+	m.qkvFused = false
+	if m.VAEDecoder != nil {
+		m.VAEDecoder.pinWeights()
+	}
+	mlx.Sync()
+	mlx.TrimVRAM()
+	fmt.Printf("  [freeTransformer] active=%.2fGB→%.2fGB\n",
+		float64(before)/(1<<30), float64(mlx.MetalGetActiveMemory())/(1<<30))
+	runtime.GC()
 }
 
 // Generate creates an image from a prompt.
@@ -189,12 +314,21 @@ func (m *Model) GenerateImage(ctx context.Context, prompt string, width, height 
 
 // generate is the internal denoising pipeline.
 func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, error) {
-	// Apply defaults
-	if cfg.Width <= 0 {
-		cfg.Width = 1024
+	if err := m.ensureTextEncoder(); err != nil {
+		return nil, err
 	}
-	if cfg.Height <= 0 {
-		cfg.Height = 1024
+
+	// Apply defaults and aspect presets
+	maxSide := maxImageSideForVRAM()
+	var err error
+	cfg.Width, cfg.Height, err = size.Resolve(cfg.Width, cfg.Height, cfg.AspectRatio, maxSide)
+	if err != nil {
+		return nil, err
+	}
+	origW, origH := cfg.Width, cfg.Height
+	cfg.Width, cfg.Height = size.Clamp(cfg.Width, cfg.Height, maxSide)
+	if cfg.Width != origW || cfg.Height != origH {
+		fmt.Printf("  Output: %dx%d (VRAM clamp from %dx%d)\n", cfg.Width, cfg.Height, origW, origH)
 	}
 	if cfg.Steps <= 0 {
 		cfg.Steps = 9 // Z-Image turbo default
@@ -202,25 +336,16 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 	if cfg.CFGScale <= 0 {
 		cfg.CFGScale = 4.0
 	}
-	// TeaCache enabled by default
+	// TeaCache enabled by default (disabled on GPU — unreliable with CUDA graphs off)
 	cfg.TeaCache = true
 	if cfg.TeaCacheThreshold <= 0 {
 		cfg.TeaCacheThreshold = 0.15
 	}
-
-	// Enable fused QKV if requested (only fuse once)
-	if cfg.FusedQKV && !m.qkvFused {
-		m.Transformer.FuseAllQKV()
-		m.qkvFused = true
-		fmt.Println("  Fused QKV enabled")
+	if mlx.GPUIsAvailable() {
+		cfg.TeaCache = false
 	}
 
 	useCFG := cfg.NegativePrompt != ""
-	tcfg := m.Transformer.TransformerConfig
-	latentH := cfg.Height / 8
-	latentW := cfg.Width / 8
-	hTok := latentH / tcfg.PatchSize
-	wTok := latentW / tcfg.PatchSize
 
 	// Text encoding with padding to multiple of 32
 	var posEmb, negEmb *mlx.Array
@@ -249,6 +374,27 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 			mlx.Eval(posEmb)
 		}
 	}
+
+	// Text encoder (~4.5GB) is not needed during denoise; free after embeddings are materialized.
+	m.freeTextEncoderWeights()
+
+	if err := m.ensureTransformer(); err != nil {
+		return nil, err
+	}
+	mlx.TrimVRAM()
+
+	// Enable fused QKV if requested (only fuse once)
+	if cfg.FusedQKV && !m.qkvFused {
+		m.Transformer.FuseAllQKV()
+		m.qkvFused = true
+		fmt.Println("  Fused QKV enabled")
+	}
+
+	tcfg := m.Transformer.TransformerConfig
+	latentH := cfg.Height / 8
+	latentW := cfg.Width / 8
+	hTok := latentH / tcfg.PatchSize
+	wTok := latentW / tcfg.PatchSize
 
 	// Scheduler
 	scheduler := NewFlowMatchEulerScheduler(DefaultFlowMatchSchedulerConfig())
@@ -348,6 +494,8 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		shouldCompute := teaCache == nil || teaCache.ShouldCompute(i, tCurr)
 
 		if shouldCompute {
+			// Flush CUDA pool-reserved-but-freed memory before each forward pass.
+			mlx.TrimVRAM()
 			timestep := mlx.ToBFloat16(mlx.NewArray([]float32{1.0 - tCurr}, []int32{1}))
 			patches := PatchifyLatents(latents, tcfg.PatchSize)
 
@@ -411,10 +559,20 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		}
 
 		oldLatents := latents
+
 		latents = scheduler.Step(noisePred, latents, i)
 
-		mlx.Eval(latents)
+		if err := mlx.EvalErr(latents); err != nil {
+			oldLatents.Free()
+			cleanup()
+			return nil, fmt.Errorf(
+				"denoise step %d failed (%.2fs, %dx%d): %w",
+				i+1, time.Since(stepStart).Seconds(), cfg.Width, cfg.Height, err,
+			)
+		}
 		oldLatents.Free()
+
+		stepDur := time.Since(stepStart)
 
 		if cfg.CapturePath != "" && i == 1 {
 			mlx.MetalStopCapture()
@@ -423,11 +581,58 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		activeMem := float64(mlx.MetalGetActiveMemory()) / (1024 * 1024 * 1024)
 		peakMem := float64(mlx.MetalGetPeakMemory()) / (1024 * 1024 * 1024)
 		fmt.Printf("  Step %d/%d: t=%.4f (%.2fs) [%.1f GB active, %.1f GB peak]\n",
-			i+1, cfg.Steps, tCurr, time.Since(stepStart).Seconds(), activeMem, peakMem)
+			i+1, cfg.Steps, tCurr, stepDur.Seconds(), activeMem, peakMem)
 
 		if cfg.Progress != nil {
 			cfg.Progress(i+1, cfg.Steps) // Report completed step
 		}
+	}
+
+	// CUDA path: write latents to disk and decode in a fresh CPU subprocess.
+	// WHY not in-process GPU VAE: MLX CUDA allocator state after denoise caused
+	// heap corruption / OOM when loading VAE weights in the same process (5080 16GB).
+	if mlx.GPUIsAvailable() {
+		mlx.Keep(latents)
+		if err := mlx.EvalErr(latents); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("finalize latents: %w", err)
+		}
+		latentsPath, err := exportLatentTensor(latents, "zimage-latents-")
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("export latents: %w", err)
+		}
+		fmt.Printf("  Exported latents: %s\n", latentsPath)
+		latents.Free()
+		cleanup()
+		m.freeTransformerWeights()
+		mlx.Sync()
+		mlx.TrimVRAM()
+		return m.decodeLatentsSubprocess(latentsPath, cfg.Width, cfg.Height)
+	}
+
+	// Metal path: capture latents on CPU then decode.
+	var latentShape []int32
+	var latentData []float32
+	if !mlx.GPUIsAvailable() {
+		mlx.Keep(latents)
+		if err := mlx.EvalErr(latents); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("finalize latents: %w", err)
+		}
+		latentShape = latents.Shape()
+		latentData = mlx.RawFloat32Slice(latents)
+		if len(latentData) == 0 {
+			latentData = mlx.HostFloat32Slice(latents)
+		}
+		if len(latentData) == 0 {
+			cleanup()
+			return nil, fmt.Errorf("latents raw read failed")
+		}
+		latents.Free()
+	} else {
+		cleanup()
+		return nil, fmt.Errorf("CUDA decode path did not run")
 	}
 
 	// Free denoising temporaries before VAE decode
@@ -451,15 +656,265 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		teaCache.Free()
 	}
 
-	// VAE decode - enable tiling for larger images to reduce memory
-	// VAE attention is O(n²) on latent pixels, tiling helps significantly
+	var latentsDecode *mlx.Array
+	m.freeTransformerWeights()
+	mlx.Sync()
+	mlx.TrimVRAM()
+	latentsDecode = mlx.NewArray(latentData, latentShape)
+	mlx.Untrack(latentsDecode)
+	mlx.Eval(latentsDecode)
+
+	var decoded *mlx.Array
+	if m.VAEDecoder == nil {
+		latentsDecode.Release()
+		return nil, fmt.Errorf("VAE decoder not loaded")
+	}
 	if latentH > 64 || latentW > 64 {
 		m.VAEDecoder.Tiling = vae.DefaultTilingConfig()
 	}
-	decoded := m.VAEDecoder.Decode(latents)
-	latents.Free()
+	decoded = m.VAEDecoder.Decode(latentsDecode)
+	latentsDecode.Release()
+	mlx.Sync()
 
-	return decoded, nil
+	cpuImage, err := exportDecodedToCPU(decoded)
+	decoded.Free()
+	if err != nil {
+		return nil, err
+	}
+	return cpuImage, nil
+}
+
+func maxImageSideForVRAM() int32 {
+	return size.MaxSide(mlx.GPUIsAvailable())
+}
+
+func clampResolutionForVRAM(w, h int32) (int32, int32) {
+	return size.Clamp(w, h, maxImageSideForVRAM())
+}
+
+func exportLatentTensor(arr *mlx.Array, prefix string) (string, error) {
+	if arr == nil || !arr.Valid() {
+		return "", fmt.Errorf("invalid tensor")
+	}
+	f, err := os.CreateTemp("", prefix+"*.bin")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	f.Close()
+	if err := mlx.ExportLatentsBin(path, arr); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func (m *Model) decodeLatentsSubprocess(latentsPath string, width, height int32) (*mlx.Array, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if eval, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = eval
+	}
+
+	outFile, err := os.CreateTemp("", "zimage-decoded-*.bin")
+	if err != nil {
+		return nil, err
+	}
+	outPath := outFile.Name()
+	outFile.Close()
+	defer os.Remove(outPath)
+	defer os.Remove(latentsPath)
+
+	fmt.Println("  VAE decode via subprocess (CPU)...")
+	cmd := exec.Command(
+		exe, "runner", "--imagegen-decode-latents",
+		"--model", m.ModelName,
+		"--latents-file", latentsPath,
+		"--output", outPath,
+		"--width", strconv.Itoa(int(width)),
+		"--height", strconv.Itoa(int(height)),
+	)
+	cmd.Env = os.Environ()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("vae subprocess: %w", err)
+	}
+	var status struct {
+		OK bool `json:"ok"`
+	}
+	if json.Unmarshal(out, &status) != nil || !status.OK {
+		return nil, fmt.Errorf("vae subprocess bad status: %s", string(out))
+	}
+
+	img, err := latentfile.LoadBin(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("load decoded image: %w", err)
+	}
+	return img, nil
+}
+
+func (m *Model) decodeHandoffSubprocess(metaPath string) (*mlx.Array, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if eval, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = eval
+	}
+
+	outFile, err := os.CreateTemp("", "zimage-decoded-*.bin")
+	if err != nil {
+		return nil, err
+	}
+	outPath := outFile.Name()
+	outFile.Close()
+	defer os.Remove(outPath)
+	defer os.Remove(metaPath)
+
+	fmt.Println("  VAE decode via subprocess (CPU handoff)...")
+	cmd := exec.Command(
+		exe, "runner", "--imagegen-decode-latents",
+		"--model", m.ModelName,
+		"--denoise-meta", metaPath,
+		"--output", outPath,
+	)
+	cmd.Env = os.Environ()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("vae subprocess: %w", err)
+	}
+	var status struct {
+		OK bool `json:"ok"`
+	}
+	if json.Unmarshal(out, &status) != nil || !status.OK {
+		return nil, fmt.Errorf("vae subprocess bad status: %s", string(out))
+	}
+
+	img, err := latentfile.LoadBin(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("load decoded image: %w", err)
+	}
+	return img, nil
+}
+
+// DecodeFromHandoff applies the final Euler step on CPU and runs VAE decode.
+func (m *Model) DecodeFromHandoff(modelName string, meta *latentfile.FinalStepMeta) (*mlx.Array, error) {
+	m.ModelName = modelName
+	mf, err := manifest.LoadManifest(modelName)
+	if err != nil {
+		return nil, fmt.Errorf("load manifest: %w", err)
+	}
+	m.manifest = mf
+
+	sample, err := latentfile.LoadBin(meta.SamplePath)
+	if err != nil {
+		return nil, fmt.Errorf("load sample: %w", err)
+	}
+	defer sample.Release()
+	noise, err := latentfile.LoadBin(meta.NoisePath)
+	if err != nil {
+		return nil, fmt.Errorf("load noise: %w", err)
+	}
+	defer noise.Release()
+
+	latentH := meta.Height / 8
+	latentW := meta.Width / 8
+	patchSize := int32(2)
+	scheduler := NewFlowMatchEulerScheduler(DefaultFlowMatchSchedulerConfig())
+	scheduler.SetTimestepsWithMu(meta.Steps, CalculateShift((latentH/patchSize)*(latentW/patchSize)))
+	dt := scheduler.Sigmas[meta.StepIdx+1] - scheduler.Sigmas[meta.StepIdx]
+	latentsArr := mlx.Add(sample, mlx.MulScalar(noise, dt))
+	mlx.Keep(latentsArr)
+	mlx.Eval(latentsArr)
+
+	mlx.SetDefaultDeviceCPU()
+	if err := m.ensureVAEDecoderCPU(); err != nil {
+		return nil, err
+	}
+	if latentH > 64 || latentW > 64 {
+		m.VAEDecoder.Tiling = vae.DefaultTilingConfig()
+	}
+	decoded := m.VAEDecoder.Decode(latentsArr)
+	if decoded == nil || !decoded.Valid() {
+		return nil, fmt.Errorf("VAE decode failed")
+	}
+	mlx.EvalMaterialize(decoded)
+	mlx.Sync()
+	return exportDecodedToCPU(decoded)
+}
+
+// DecodeLatentsFromFile loads latents from disk and runs VAE decode in a fresh MLX process.
+func (m *Model) DecodeLatentsFromFile(modelName, latentsPath string, width, height int32) (*mlx.Array, error) {
+	m.ModelName = modelName
+	mf, err := manifest.LoadManifest(modelName)
+	if err != nil {
+		return nil, fmt.Errorf("load manifest: %w", err)
+	}
+	m.manifest = mf
+
+	latentsArr, err := latentfile.LoadBin(latentsPath)
+	if err != nil {
+		return nil, err
+	}
+	defer latentsArr.Release()
+
+	// Fresh subprocess: decode on CPU to avoid CUDA heap issues after denoise.
+	mlx.SetDefaultDeviceCPU()
+	if err := m.ensureVAEDecoderCPU(); err != nil {
+		return nil, err
+	}
+	latentH := height / 8
+	latentW := width / 8
+	if latentH > 64 || latentW > 64 {
+		m.VAEDecoder.Tiling = vae.DefaultTilingConfig()
+	}
+	decoded := m.VAEDecoder.Decode(latentsArr)
+	if decoded == nil || !decoded.Valid() {
+		return nil, fmt.Errorf("VAE decode failed")
+	}
+	mlx.EvalMaterialize(decoded)
+	mlx.Sync()
+	return exportDecodedToCPU(decoded)
+}
+
+func exportDecodedToCPU(gpu *mlx.Array) (*mlx.Array, error) {
+	if gpu == nil || !gpu.Valid() {
+		return nil, fmt.Errorf("invalid decode output")
+	}
+	shape := gpu.Shape()
+	if len(shape) != 4 || shape[1] != 3 {
+		return nil, fmt.Errorf("unexpected decode shape %v", shape)
+	}
+
+	cpu := mlx.MaterializeOnCPU(gpu)
+	if cpu == nil {
+		return nil, fmt.Errorf("failed to materialize decode output")
+	}
+	read := cpu
+	if cpu.Dtype() != mlx.DtypeFloat32 {
+		read = mlx.AsType(cpu, mlx.DtypeFloat32)
+		mlx.EvalMaterialize(read)
+	}
+	data := mlx.HostFloat32Slice(read)
+	if read != cpu {
+		read.Release()
+	}
+	cpu.Release()
+
+	expected := int(shape[0] * shape[1] * shape[2] * shape[3])
+	if len(data) < expected {
+		return nil, fmt.Errorf("decode export: got %d floats, want %d", len(data), expected)
+	}
+	if len(data) > expected {
+		data = data[:expected]
+	}
+	out := mlx.NewArrayFloat32(data, shape)
+	mlx.Untrack(out)
+	return out, nil
 }
 
 // padToLength pads a sequence tensor to the target length by repeating the last token.

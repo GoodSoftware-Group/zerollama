@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### MLX imagegen — Z-Image Turbo on CUDA 16GB (Jun 2026)
+
+**Why:** RTX 5080-class hosts need `x/z-image-turbo` working alongside the existing three VRAM consumers (ggml, Python runtime, training). Upstream MLX imagegen targets Apple Metal; this fork adds CUDA survival tactics, scheduler/VRAM integration, and operator docs — without a second public scheduling system.
+
+- **Staged VRAM pipeline (`x/imagegen/models/zimage/zimage.go`)** — defer text encoder until first generate on CUDA; free encoder before transformer load; keep transformer resident between requests. **Why:** ~12 GB weights + activations cannot coexist on 16 GB; reloading transformer on every request OOM'd the second load.
+- **Batched weight materialization (`x/imagegen/mlx/mlx.go`, `manifest/weights.go`)** — `EvalErrBatched(16, …)` + periodic `TrimVRAM`. **Why:** one `mlx_eval` over the full transformer spikes VRAM right after encoder release.
+- **CPU VAE subprocess (`decode_latents`, `zimage.go`)** — export latents after denoise; fresh process decodes on CPU. **Why:** in-process CUDA VAE after denoise hit allocator heap issues on 5080.
+- **Dimension resolution (`x/imagegen/size`, `server/routes.go`)** — Go validates aspect presets only; runner resolves `width`/`height` with `mlx.GPUIsAvailable()`. **Why:** serve process has no MLX context → wrong `maxSide` caused silent double-clamp (1024→384).
+- **Scheduler stability (`server/sched.go`)** — `clearActiveLoading`, `activeLoadingKey`, defer in-use runner unload on `UnloadAllRunners`, nil-safe `needsReload` Ping. **Why:** VRAM handoff during load probe caused nil deref panic; training handoff killed active image streams.
+- **VRAM broker (`server/vram/broker.go`)** — `PrepareForImageGen` evicts other runners + runtime sidecar; skip when image model already loaded. **Why:** imagegen needs exclusive GPU; re-prep mid-request tore down in-flight generation.
+- **Streaming errors (`server/routes.go`, `x/imagegen/server.go`, `cli.go`)** — propagate `error: …` on NDJSON after stream start; fail if `done` without `image`. **Why:** clients saw generic “completed without image data” when subprocess failed late.
+- **ggml GPU discovery (`ml/backend/ggml/ggml.go`)** — `ggml_backend_dev_name` / `description` instead of props string pointers. **Why:** `/info` panic and CPU fallback on RTX 5080 drivers.
+- **MLX CUDA allocator patch (`scripts/patch_mlx_cuda_vram.sh`)** — `cudaMalloc` vs async pool, 90% limit, disable buffer recycle. **Why:** async pool reservations exhaust physical VRAM on 16 GB.
+- **Docs:** [docs/imagegen-zimage-turbo.md](docs/imagegen-zimage-turbo.md), [x/imagegen/README.md](x/imagegen/README.md); expanded [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) MLX section.
+
 ### L1/L3 full gates + Proxmox build/serve ops (Jun 2026)
 
 **Why:** L1/L3 exit criteria need one-shot orchestrators (not three manual scripts). Proxmox CT 1564 ships inference to remote Ruby clients but minimal checkouts cannot `go build` without vendored `cpp-httplib`; default `OLLAMA_HOST` binds localhost only.

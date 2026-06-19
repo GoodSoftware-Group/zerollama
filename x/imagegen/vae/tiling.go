@@ -2,6 +2,8 @@
 package vae
 
 import (
+	"fmt"
+
 	"github.com/ollama/ollama/x/imagegen/mlx"
 )
 
@@ -46,12 +48,13 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 	tileLatentSize := cfg.TileSize
 	overlapLatent := cfg.Overlap
 
-	// If image is small enough, just decode normally
+	// If image is small enough, decode one tile and return NCHW float32 on GPU.
 	if H <= tileLatentSize && W <= tileLatentSize {
 		decoded := decoder(latents)
 		decoded = mlx.AsType(decoded, mlx.DtypeFloat32)
 		decoded = mlx.ClipScalar(decoded, 0.0, 1.0, true, true)
 		decoded = mlx.Transpose(decoded, 0, 3, 1, 2) // NHWC -> NCHW
+		mlx.Eval(decoded)
 		return decoded
 	}
 
@@ -76,14 +79,16 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 
 			tile := mlx.Slice(latents, []int32{0, i, j, 0}, []int32{1, i2, j2, C})
 			decoded := decoder(tile)
-			decoded = mlx.AsType(decoded, mlx.DtypeFloat32)
-			mlx.Eval(decoded)
-
 			decodedShape := decoded.Shape()
 			tileH := decodedShape[1]
 			tileW := decodedShape[2]
-			tileData := decoded.Data()
-			decoded.Free()
+			cpu := mlx.MaterializeOnCPU(decoded)
+			decoded.Release()
+			var tileData []float32
+			if cpu != nil {
+				tileData = mlx.CPUArrayAsFloat32(cpu)
+				cpu.Release()
+			}
 
 			row = append(row, decodedTile{data: tileData, height: tileH, width: tileW})
 		}
@@ -137,23 +142,32 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 		totalH += h
 	}
 
-	// Phase 4: Assemble final image by interleaving tiles row-by-row
-	finalData := make([]float32, totalH*totalW*3)
+	// Create mlx array [1, 3, H, W] on CPU (no GPU transpose).
+	result := mlx.NewArray(finalDataNCHW(totalH, totalW, rows, colWidths, rowHeights), []int32{1, 3, totalH, totalW})
+	mlx.Untrack(result)
+	return result
+}
 
+func finalDataNCHW(totalH, totalW int32, rows [][]decodedTile, colWidths, rowHeights []int32) []float32 {
+	finalData := make([]float32, 3*totalH*totalW)
 	dstY := int32(0)
 	for i, row := range rows {
 		keepH := rowHeights[i]
-
 		for y := int32(0); y < keepH; y++ {
 			dstX := int32(0)
 			for j, tile := range row {
 				keepW := colWidths[j]
-
 				for x := int32(0); x < keepW; x++ {
 					for c := int32(0); c < 3; c++ {
-						srcIdx := (y*tile.width + x) * 3 + c
-						dstIdx := ((dstY + y) * totalW + (dstX + x)) * 3 + c
-						finalData[dstIdx] = tile.data[srcIdx]
+						srcIdx := (y*tile.width + x)*3 + c
+						dstIdx := c*totalH*totalW + (dstY+y)*totalW + (dstX+x)
+						v := tile.data[srcIdx]*0.5 + 0.5
+						if v < 0 {
+							v = 0
+						} else if v > 1 {
+							v = 1
+						}
+						finalData[dstIdx] = v
 					}
 				}
 				dstX += keepW
@@ -161,13 +175,41 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 		}
 		dstY += keepH
 	}
+	return finalData
+}
 
-	// Create mlx array [1, H, W, 3] then transpose to NCHW [1, 3, H, W]
-	result := mlx.NewArray(finalData, []int32{1, totalH, totalW, 3})
-	result = mlx.Transpose(result, 0, 3, 1, 2)
-	result = mlx.ClipScalar(result, 0.0, 1.0, true, true)
-
-	return result
+func exportNCHWFromNHWC(h *mlx.Array) *mlx.Array {
+	shape := h.Shape()
+	if len(shape) != 4 || shape[0] != 1 || shape[3] != 3 {
+		fmt.Printf("[exportNCHWFromNHWC] unexpected shape=%v\n", shape)
+		return mlx.NewArray([]float32{0}, []int32{1, 3, 1, 1})
+	}
+	tileH, tileW := shape[1], shape[2]
+	nhwc := mlx.GPUToHostFloat32(h)
+	h.Release()
+	if len(nhwc) == 0 {
+		fmt.Printf("[exportNCHWFromNHWC] read failed shape=%v\n", shape)
+		return mlx.NewArray([]float32{0}, []int32{1, 3, 1, 1})
+	}
+	nchw := make([]float32, 3*tileH*tileW)
+	for y := int32(0); y < tileH; y++ {
+		for x := int32(0); x < tileW; x++ {
+			for c := int32(0); c < 3; c++ {
+				src := (y*tileW + x)*3 + c
+				dst := c*tileH*tileW + y*tileW + x
+				v := nhwc[src]*0.5 + 0.5
+				if v < 0 {
+					v = 0
+				} else if v > 1 {
+					v = 1
+				}
+				nchw[dst] = v
+			}
+		}
+	}
+	out := mlx.NewArray(nchw, []int32{1, 3, tileH, tileW})
+	mlx.Untrack(out)
+	return out
 }
 
 // blendV blends the bottom of 'above' tile into top of 'current' tile (vertical blend)
@@ -198,14 +240,20 @@ func blendH(left, current *decodedTile, blendExtent int32) {
 	if blend <= 0 {
 		return
 	}
+	if len(left.data) == 0 || len(current.data) == 0 {
+		return
+	}
 
 	h := min(left.height, current.height)
 	for y := int32(0); y < h; y++ {
 		for x := int32(0); x < blend; x++ {
 			alpha := float32(x) / float32(blend)
 			for c := int32(0); c < 3; c++ {
-				leftIdx := (y * left.width + (left.width - blend + x)) * 3 + c
-				currIdx := (y * current.width + x) * 3 + c
+				leftIdx := (y*left.width+(left.width-blend+x))*3 + c
+				currIdx := (y*current.width+x)*3 + c
+				if leftIdx >= int32(len(left.data)) || currIdx >= int32(len(current.data)) {
+					continue
+				}
 				current.data[currIdx] = left.data[leftIdx]*(1-alpha) + current.data[currIdx]*alpha
 			}
 		}

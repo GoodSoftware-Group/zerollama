@@ -15,11 +15,10 @@ import (
 
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/x/imagegen/mlx"
+	"github.com/ollama/ollama/x/internal/mlxthread"
 )
 
-// Execute is the entry point for the unified MLX runner subprocess.
 func Execute(args []string) error {
-	// Set up logging with appropriate level from environment
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: envconfig.LogLevel()})))
 
 	fs := flag.NewFlagSet("mlx-runner", flag.ExitOnError)
@@ -29,7 +28,6 @@ func Execute(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	if *modelName == "" {
 		return fmt.Errorf("--model is required")
 	}
@@ -37,47 +35,66 @@ func Execute(args []string) error {
 		return fmt.Errorf("--port is required")
 	}
 
-	// Detect model type from capabilities
+	// CUDA graph capture in libmlxc corrupts batched eval on RTX 5080 class GPUs.
+	// Must be set before any MLX GPU call (static init in use_cuda_graphs()).
+	_ = os.Setenv("MLX_USE_CUDA_GRAPHS", "false")
+	_ = os.Setenv("MLX_DISABLE_COMPILE", "1")
+
 	mode := detectModelMode(*modelName)
 	slog.Info("starting mlx runner", "model", *modelName, "port", *port, "mode", mode)
-
 	if mode != ModeImageGen {
 		return fmt.Errorf("imagegen runner only supports image generation models")
 	}
 
-	// Initialize MLX only for image generation mode.
 	if err := mlx.InitMLX(); err != nil {
 		slog.Error("unable to initialize MLX", "error", err)
 		return err
 	}
 	slog.Info("MLX library initialized")
 
-	// Create and start server
 	server, err := newServer(*modelName, *port)
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
-	// Set up HTTP handlers
+	worker, err := mlxthread.Start("imagegen", func() error {
+		if mlx.GPUIsAvailable() {
+			mlx.SetDefaultDeviceGPU()
+			// CUDA graph capture (mlx.compile) corrupts eval on RTX 5080 class GPUs.
+			mlx.DisableCompile()
+			mlx.SetCacheLimit(0)
+			// Force the CUDA allocator to trim cache during eval on 16GB cards.
+			mlx.SetMemoryLimit(12 * 1024 * 1024 * 1024)
+			// Set CUDA pool release threshold to 0: freed buffers are returned to the
+			// OS immediately instead of being held in the async pool. This trades
+			// allocation latency for reduced peak VRAM, critical on 16 GB GPUs.
+			mlx.SetCudaPoolThreshold(0)
+		}
+		// Load the model on this OS thread so all weight arrays share the same
+		// GPU stream as inference and export operations. The CUDA MLX backend uses
+		// thread_local CommandEncoders — cross-thread stream access is not supported.
+		return server.loadImageModel()
+	})
+	if err != nil {
+		return err
+	}
+	server.mlxThread = worker
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", server.healthHandler)
 	mux.HandleFunc("/completion", server.completionHandler)
 
-	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", *port),
-		Handler: mux,
-	}
+	httpServer := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", *port), Handler: mux}
 
-	// Handle shutdown
 	done := make(chan struct{})
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		slog.Info("shutting down mlx runner")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		httpServer.Shutdown(ctx)
+		_ = httpServer.Shutdown(ctx)
+		_ = worker.Stop(ctx, func() { mlx.ClearCache() })
 		close(done)
 	}()
 
@@ -85,54 +102,36 @@ func Execute(args []string) error {
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}
-
 	<-done
 	return nil
 }
 
-// detectModelMode determines whether a model is an LLM or image generation model.
 func detectModelMode(modelName string) ModelMode {
-	// Check for image generation model by looking at model_index.json
 	modelType := DetectModelType(modelName)
 	if modelType != "" {
-		// Known image generation model types
 		switch modelType {
 		case "ZImagePipeline", "FluxPipeline", "Flux2KleinPipeline":
 			return ModeImageGen
 		}
 	}
-
-	// Default to LLM mode for safetensors models without known image gen types
 	return ModeLLM
 }
 
-// server holds the model and handles HTTP requests.
 type server struct {
 	modelName string
 	port      int
-
-	// Image generation model.
+	mlxThread *mlxthread.Thread
 	imageModel ImageModel
 }
 
-// newServer creates a new server instance for image generation models.
 func newServer(modelName string, port int) (*server, error) {
-	s := &server{
-		modelName: modelName,
-		port:      port,
-	}
-
-	if err := s.loadImageModel(); err != nil {
-		return nil, fmt.Errorf("failed to load image model: %w", err)
-	}
-
+	s := &server{modelName: modelName, port: port}
 	return s, nil
 }
 
 func (s *server) healthHandler(w http.ResponseWriter, r *http.Request) {
-	resp := HealthResponse{Status: "ok"}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
 }
 
 func (s *server) completionHandler(w http.ResponseWriter, r *http.Request) {
@@ -140,12 +139,10 @@ func (s *server) completionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	var req Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	s.handleImageCompletion(w, r, req)
 }
