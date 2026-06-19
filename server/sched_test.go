@@ -83,7 +83,7 @@ func TestSchedLoad(t *testing.T) {
 		sessionDuration: &api.Duration{Duration: 2 * time.Second},
 	}
 	// Fail to load model first
-	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error) {
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
 		return nil, errors.New("something failed to load model blah")
 	}
 	gpus := []ml.DeviceInfo{}
@@ -98,7 +98,7 @@ func TestSchedLoad(t *testing.T) {
 	require.Contains(t, err.Error(), "this model may be incompatible")
 
 	server := &mockLlm{vramSize: 10, vramByGPU: map[ml.DeviceID]uint64{}}
-	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error) {
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
 		server.modelPath = model
 		return server, nil
 	}
@@ -154,7 +154,7 @@ type reqBundle struct {
 	req     *LlmRequest
 }
 
-func (scenario *reqBundle) newServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error) {
+func (scenario *reqBundle) newServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
 	scenario.srv.modelPath = model
 	return scenario.srv, nil
 }
@@ -449,10 +449,10 @@ func TestSchedGetRunner(t *testing.T) {
 	s.getSystemInfoFn = getSystemInfoFn
 	s.newServerFn = a.newServer
 	slog.Info("a")
-	successCh1a, errCh1a, _ := s.GetRunner(a.ctx, a.req.model, a.req.opts, a.req.sessionDuration)
+	successCh1a, errCh1a, _ := s.GetRunner(a.ctx, a.req.model, a.req.opts, a.req.sessionDuration, nil)
 	require.Equal(t, 1, s.pending.Len())
 	slog.Info("b")
-	successCh1b, errCh1b, _ := s.GetRunner(b.ctx, b.req.model, b.req.opts, b.req.sessionDuration)
+	successCh1b, errCh1b, _ := s.GetRunner(b.ctx, b.req.model, b.req.opts, b.req.sessionDuration, nil)
 	require.Equal(t, 1, s.pending.Len())
 	require.Empty(t, successCh1b)
 	require.Len(t, errCh1b, 1)
@@ -476,7 +476,7 @@ func TestSchedGetRunner(t *testing.T) {
 
 	c.req.model.ModelPath = "bad path"
 	slog.Info("c")
-	successCh1c, errCh1c, _ := s.GetRunner(c.ctx, c.req.model, c.req.opts, c.req.sessionDuration)
+	successCh1c, errCh1c, _ := s.GetRunner(c.ctx, c.req.model, c.req.opts, c.req.sessionDuration, nil)
 	// Starts in pending channel, then should be quickly processed to return an error
 	time.Sleep(50 * time.Millisecond) // Long enough for the "a" model to expire and unload
 	require.Empty(t, successCh1c)
@@ -511,7 +511,7 @@ func TestSchedGetRunnerUsesDigestKeyWhenModelPathEmpty(t *testing.T) {
 	s.loadedMu.Unlock()
 
 	reqModel := &Model{Name: "safetensors-b", Digest: "sha-b"}
-	successCh, errCh, _ := s.GetRunner(ctx, reqModel, opts, nil)
+	successCh, errCh, _ := s.GetRunner(ctx, reqModel, opts, nil, nil)
 
 	require.Empty(t, successCh)
 	require.Empty(t, errCh)
@@ -540,7 +540,7 @@ func TestSchedGetRunnerReusesSameDigestWhenModelPathEmpty(t *testing.T) {
 	s.loadedMu.Unlock()
 
 	reqCtx, cancelReq := context.WithCancel(ctx)
-	successCh, errCh, _ := s.GetRunner(reqCtx, &Model{Name: "safetensors-a-copy", Digest: "sha-a"}, opts, nil)
+	successCh, errCh, _ := s.GetRunner(reqCtx, &Model{Name: "safetensors-a-copy", Digest: "sha-a"}, opts, nil, nil)
 	cancelReq()
 
 	select {
@@ -587,7 +587,7 @@ func TestSchedExpireRunner(t *testing.T) {
 	gpus := []ml.DeviceInfo{}
 	systemInfo := ml.SystemInfo{}
 	server := &mockLlm{vramSize: 10, vramByGPU: map[ml.DeviceID]uint64{}}
-	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error) {
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
 		server.modelPath = model
 		return server, nil
 	}
@@ -647,7 +647,7 @@ func TestSchedExpireRunnerByShortName(t *testing.T) {
 		errCh:           make(chan error, 1),
 		sessionDuration: &api.Duration{Duration: 2 * time.Minute},
 	}
-	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error) {
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
 		return &mockLlm{vramSize: 10, vramByGPU: map[ml.DeviceID]uint64{}}, nil
 	}
 	s.load(req, ml.SystemInfo{}, nil, false)
@@ -683,7 +683,7 @@ func TestSchedPrematureExpired(t *testing.T) {
 	s.getGpuFn = getGpuFn
 	s.getSystemInfoFn = getSystemInfoFn
 	s.newServerFn = scenario1a.newServer
-	successCh1a, errCh1a, _ := s.GetRunner(scenario1a.ctx, scenario1a.req.model, scenario1a.req.opts, scenario1a.req.sessionDuration)
+	successCh1a, errCh1a, _ := s.GetRunner(scenario1a.ctx, scenario1a.req.model, scenario1a.req.opts, scenario1a.req.sessionDuration, nil)
 	require.Equal(t, 1, s.pending.Len())
 	s.Run(ctx)
 	select {

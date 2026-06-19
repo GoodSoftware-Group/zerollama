@@ -14,8 +14,8 @@ var ErrStopped = errors.New("mlx thread stopped")
 type Thread struct {
 	name string
 
-	jobs chan job
-	done chan struct{}
+	jobs     chan job
+	done     chan struct{}
 	stopping atomic.Bool
 }
 
@@ -30,6 +30,10 @@ type result struct {
 	panic *panicError
 }
 
+// panicError carries a value recovered from the worker goroutine together with
+// the stack captured at recovery, before the original stack unwinds. Because it
+// implements error, re-panicking with it makes the runtime print the original
+// worker location in the fatal trace instead of this package's re-panic site.
 type panicError struct {
 	value any
 	stack []byte
@@ -39,6 +43,7 @@ func (p *panicError) Error() string {
 	return fmt.Sprintf("%v\n\nmlx worker stack:\n%s", p.value, p.stack)
 }
 
+// Start creates a long-lived worker goroutine locked to one OS thread.
 func Start(name string, init func() error) (*Thread, error) {
 	t := &Thread{
 		name: name,
@@ -60,6 +65,11 @@ func Start(name string, init func() error) (*Thread, error) {
 	return t, nil
 }
 
+// Do runs fn on the locked OS thread.
+//
+// Context cancellation only applies while the work is queued. Once the worker
+// accepts a job, the job runs until fn returns or reaches its own cancellation
+// checks.
 func (t *Thread) Do(ctx context.Context, fn func() error) error {
 	res, err := t.enqueue(ctx, fn, false, false)
 	if err != nil {
@@ -71,6 +81,17 @@ func (t *Thread) Do(ctx context.Context, fn func() error) error {
 	return res.err
 }
 
+func Call[T any](ctx context.Context, t *Thread, fn func() (T, error)) (T, error) {
+	var value T
+	err := t.Do(ctx, func() error {
+		var err error
+		value, err = fn()
+		return err
+	})
+	return value, err
+}
+
+// Stop runs cleanup on the locked OS thread and then shuts the worker down.
 func (t *Thread) Stop(ctx context.Context, cleanup func()) error {
 	ctx = contextOrBackground(ctx)
 
@@ -112,6 +133,8 @@ func (t *Thread) Stop(ctx context.Context, cleanup func()) error {
 
 func (t *Thread) loop(init func() error, initResult chan<- result) {
 	runtime.LockOSThread()
+	// Deliberately do not unlock. MLX thread-local state belongs to this worker
+	// until shutdown so it cannot leak back to arbitrary Go goroutines.
 
 	res := run(init)
 	initResult <- res

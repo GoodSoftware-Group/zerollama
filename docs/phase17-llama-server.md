@@ -9,6 +9,12 @@ Zerollama’s default Mac path remains **in-process ggml Metal**. Phase 17 ports
 | `LLAMA_CPP_VERSION` pin (`b9509`) | Done |
 | `llama/compat/`, `llama/server/` CMake tree | Imported |
 | `llm/llama_server.go`, `llm/llama_binary.go` | Ported; compiles |
+| MTP / draft-mtp (GGUF, llama-server path) | Done — manifest `DRAFT` → `draft-mtp`; embedded MTP auto when `draft_num_predict` set |
+| DFlash / draft-eagle3 (GGUF sidecar) | Done — `PARAMETER spec_type draft-eagle3` + `DRAFT` or `draft_model_path` |
+| Eliza ngram-simple | Opt-in — `ZEROLLAMA_ELIZA_NGRAM=1` or `PARAMETER spec_type ngram-simple` |
+| Context shift + DisableJinja (llama-server) | Done — upstream parity on Phase 17 path only |
+| MLX MTP (safetensors) | Done — Gemma4 assistant drafts, `DRAFT` modelfile |
+| GGUF `DRAFT` create | Done — `DraftFiles`, `--draft-quantize` |
 | `ZEROLLAMA_LLAMA_SERVER=1`, `--llama-server-backend` | Wired via `llm.NewLlamaServer` |
 | `scripts/build_ollama_llama_server_darwin.sh` | Done |
 | Default routing policy (replace ggml on Mac) | **Not yet** — opt-in flag only |

@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -62,6 +64,11 @@ func mergeLMStudioModels(local []api.ListModelResponse) []api.ListModelResponse 
 		if modified.IsZero() {
 			modified = now
 		}
+		details := api.ModelDetails{
+			Format: e.Format,
+			Family: "lmstudio",
+		}
+		enrichModelDetailsFromConfigPath(&details, e.ConfigPath())
 		out = append(out, api.ListModelResponse{
 			Name:        e.Name,
 			Model:       e.Name,
@@ -69,11 +76,63 @@ func mergeLMStudioModels(local []api.ListModelResponse) []api.ListModelResponse 
 			RemoteHost:  lmstudio.RemoteHost(),
 			Size:        e.Size,
 			ModifiedAt:  modified,
-			Details: api.ModelDetails{
-				Format: e.Format,
-				Family: "lmstudio",
-			},
+			Details:     details,
 		})
 	}
 	return out
+}
+
+func enrichModelDetailsFromConfigPath(details *api.ModelDetails, configPath string) {
+	if configPath == "" {
+		return
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+
+	if details.Family == "" || details.Family == "lmstudio" {
+		if architectures, ok := cfg["architectures"].([]any); ok && len(architectures) > 0 {
+			if architecture, ok := architectures[0].(string); ok && architecture != "" {
+				details.Family = architecture
+			}
+		}
+		if details.Family == "" || details.Family == "lmstudio" {
+			if modelType, ok := cfg["model_type"].(string); ok && modelType != "" {
+				details.Family = modelType
+			}
+		}
+	}
+
+	expertCount := configUint32(cfg, "num_experts", "num_local_experts", "n_routed_experts")
+	expertUsedCount := configUint32(cfg, "experts_per_token", "num_experts_per_tok", "top_k_experts")
+	if expertCount == 0 {
+		return
+	}
+
+	details.ArchitectureType = "moe"
+	details.ExpertCount = expertCount
+	details.ExpertUsedCount = expertUsedCount
+}
+
+func configUint32(cfg map[string]any, keys ...string) uint32 {
+	for _, key := range keys {
+		switch v := cfg[key].(type) {
+		case float64:
+			if v > 0 {
+				return uint32(v)
+			}
+		case int:
+			if v > 0 {
+				return uint32(v)
+			}
+		}
+	}
+	return 0
 }

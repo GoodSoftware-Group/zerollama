@@ -19,6 +19,10 @@ type LlamaServerConfig struct {
 	ContextShift   bool
 	EnableMTP      bool
 	DraftModelPath string
+	SpecType       string
+	NgramSizeN     int
+	NgramSizeM     int
+	NgramMinHits   int
 }
 
 type MediaKind string

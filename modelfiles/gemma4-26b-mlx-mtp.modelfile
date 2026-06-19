@@ -1,0 +1,4 @@
+FROM gemma4:26b-mlx
+DRAFT /Users/user1/.cache/zerollama/gemma-4-26B-A4B-it-assistant
+RENDERER gemma4
+PARSER gemma4

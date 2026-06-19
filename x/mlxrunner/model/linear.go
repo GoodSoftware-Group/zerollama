@@ -42,19 +42,6 @@ func (f LinearFactory) Make(path string) nn.LinearLayer {
 	)
 }
 
-// LinearQuantTensors returns scale and q-bias arrays for a linear weight path.
-// Supports both Ollama-style (path.weight_scale) and LM Studio / HF MLX-style
-// (path.weight.scale + path.weight.bias) naming.
-func LinearQuantTensors(tensors map[string]*mlx.Array, path string) (scales, qbiases *mlx.Array, ok bool) {
-	if scales = tensors[path+".weight_scale"]; scales != nil {
-		return scales, tensors[path+".weight_qbias"], true
-	}
-	if scales = tensors[path+".weight.scale"]; scales != nil {
-		return scales, tensors[path+".weight.bias"], true
-	}
-	return nil, nil, false
-}
-
 // MakeLinearLayer constructs a linear layer from a tensor map.
 //
 // For quantized tensors (path.weight + path.weight_scale), it resolves per-tensor
@@ -72,8 +59,9 @@ func MakeLinearLayer(
 		return nil
 	}
 
-	scales, qbiases, quantized := LinearQuantTensors(tensors, path)
-	if quantized {
+	scales := tensors[path+".weight_scale"]
+	if scales != nil {
+		qbiases := tensors[path+".weight_qbias"]
 		bias := tensors[path+".bias"]
 
 		groupSize, bits, mode := ResolveLinearQuantParams(
@@ -86,14 +74,23 @@ func MakeLinearLayer(
 			scales,
 		)
 
+		// Check for per-tensor global scale (NVIDIA double-scale nvfp4).
+		// NVIDIA ModelOpt stores this as "weight_scale_2"; our import
+		// pipeline maps it to "weight.global_scale".
+		globalScale := tensors[path+".weight.global_scale"]
+		if globalScale == nil {
+			globalScale = tensors[path+".weight_scale_2"]
+		}
+
 		return &nn.QuantizedLinear{
-			Weight:    w,
-			Scales:    scales,
-			QBiases:   qbiases,
-			Bias:      bias,
-			GroupSize: groupSize,
-			Bits:      bits,
-			Mode:      mode,
+			Weight:      w,
+			Scales:      scales,
+			QBiases:     qbiases,
+			Bias:        bias,
+			GlobalScale: globalScale,
+			GroupSize:   groupSize,
+			Bits:        bits,
+			Mode:        mode,
 		}
 	}
 

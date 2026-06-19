@@ -24,6 +24,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/fs/gguf"
+	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/parser"
@@ -68,6 +69,8 @@ type Model struct {
 	Config         model.ConfigV2
 	ShortName      string
 	ModelPath      string
+	DraftPath      string
+	EmbeddedMTP    bool
 	ParentModel    string
 	AdapterPaths   []string
 	ProjectorPaths []string
@@ -254,6 +257,13 @@ func (m *Model) String() string {
 		})
 	}
 
+	if m.DraftPath != "" {
+		modelfile.Commands = append(modelfile.Commands, parser.Command{
+			Name: "draft",
+			Args: m.DraftPath,
+		})
+	}
+
 	for _, projector := range m.ProjectorPaths {
 		modelfile.Commands = append(modelfile.Commands, parser.Command{
 			Name: "model",
@@ -364,6 +374,8 @@ func GetModel(name string) (*Model, error) {
 		case "application/vnd.ollama.image.model":
 			m.ModelPath = filename
 			m.ParentModel = layer.From
+		case manifest.MediaTypeImageDraft:
+			m.DraftPath = filename
 		case "application/vnd.ollama.image.embed":
 			// Deprecated in versions  > 0.1.2
 			// TODO: remove this warning in a future version
@@ -417,6 +429,17 @@ func GetModel(name string) (*Model, error) {
 				return nil, err
 			}
 			m.License = append(m.License, string(bts))
+		}
+	}
+
+	if m.ModelPath != "" {
+		if f, err := llm.LoadModel(m.ModelPath, 1024); err == nil {
+			m.EmbeddedMTP = llm.HasMTPDraft(f)
+			if m.Config.ModelFamily == "" {
+				if arch := f.KV().Architecture(); arch != "" {
+					m.Config.ModelFamily = arch
+				}
+			}
 		}
 	}
 

@@ -167,7 +167,7 @@ func pickOllamaEngine(arch string, newEngine, ollamaRequired bool) bool {
 
 // NewLlamaServer will run a server for the given GPUs.
 // When ZEROLLAMA_LLAMA_SERVER=1, eligible models use upstream-style Go → llama-server.
-func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int) (LlamaServer, error) {
+func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int, config LlamaServerConfig) (LlamaServer, error) {
 	if useLlamaServerBackend(projectors) {
 		trainCtx := f.KV().ContextLength()
 		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {
@@ -176,7 +176,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		}
 		kvct := opts.KvCacheTypeEffective()
 		slog.Info("using llama-server subprocess for model", "model", modelPath)
-		return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, LlamaServerConfig{})
+		return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, config)
 	}
 
 	var llamaModel *llama.Model

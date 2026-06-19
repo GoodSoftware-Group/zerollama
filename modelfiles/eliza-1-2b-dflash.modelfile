@@ -1,0 +1,4 @@
+FROM eliza-1-2b:latest
+DRAFT /Users/user1/.cache/zerollama/eliza-1/bundles/2b/dflash/drafter-2b.gguf
+PARAMETER spec_type draft-eagle3
+PARAMETER draft_num_predict 4

@@ -222,7 +222,27 @@ Absent: Python runtime, training API, native KV experiments, Eliza.
 
 ---
 
-## Non-goals for this track
+## Cherry-pick status (Jun 2026, upstream `8c432fc8`)
+
+Additive ports that **do not** change zerollama architecture (Mac ggml default, Python sidecar, fleet/training, FIFO scheduler policy):
+
+| Area | Status | Notes |
+|------|--------|-------|
+| **llama-server MTP (GGUF)** | Done | `appendMTPDraftArgs`, draft GGUF layers, `DraftNumPredict`, opt-in `draft_num_predict` |
+| **Context shift (llama-server only)** | Done | `resolveContextShift`, `req.Shift` → sched → `LlamaServerConfig.ContextShift`; 400 when disabled |
+| **DisableJinja (llama-server)** | Done | `usesOllamaRenderedChat` → `LlamaServerConfig.DisableJinja` for parser/renderer/harmony models |
+| **MLX MTP / Gemma4 assistant** | Done | `x/mlxrunner/mtp.go`, `x/models/gemma4/assistant.go`, safetensors draft create |
+| **GGUF create `DRAFT`** | Done | `DraftFiles`/`DraftQuantize`, parser `DRAFT`, `server/create.go` draft layers |
+| **Safetensors create `DRAFT`** | Done | `x/create/client`, `--draft-quantize` |
+| **Upstream llama-server tests** | Partial | Small unit tests only; full `llama_server_test.go` not ported (C++ link env) |
+| **llama.cpp pin `b9672`** | Not merged | Zerollama on `b9509`/ggml vendor track; bump separately for llama-server compat |
+| **Remove CGO runners (#16031)** | **Skipped** | Would break Mac ggml default |
+| **Wholesale `sched.go` replace** | **Skipped** | Keep FIFO / VRAM broker / darwin sidecar gates |
+| **Mac default → llama-server** | **Skipped** | Phase 17 opt-in only |
+
+**Explicitly not ported:** upstream Mac-default llama-server routing, Python runtime removal, ollama.com cloud default, Cohere2 MoE / Laguna MLX (not in zerollama imports), LFM2 thinking parser (optional follow-up).
+
+---
 
 - **Full rebase** onto upstream `main` — conflict surface too large; loses training/runtime work.
 - **Deleting Python runtime** to match upstream — different product; shrink its role on the critical path instead.

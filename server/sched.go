@@ -36,6 +36,11 @@ type LlmRequest struct {
 	errCh           chan error
 	schedAttempts   uint
 	fifoSeq         uint64
+
+	// contextShift is a llama-server launch attribute resolved from the
+	// request-level shift option before scheduling.
+	contextShift bool
+	shift        *bool
 }
 
 // failIfCanceled reports ctx cancellation on errCh so scheduleRunner does not hang.
@@ -76,7 +81,7 @@ type Scheduler struct {
 	loaded           map[string]*runnerRef
 
 	loadFn          func(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) bool
-	newServerFn     func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error)
+	newServerFn     func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error)
 	getGpuFn        func(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo
 	getSystemInfoFn func() ml.SystemInfo
 	waitForRecovery time.Duration
@@ -135,7 +140,7 @@ func schedulerModelKey(m *Model) string {
 }
 
 // context must be canceled to decrement ref count and release the runner
-func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, sessionDuration *api.Duration) (chan *runnerRef, chan error, uint64) {
+func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, sessionDuration *api.Duration, shift *bool) (chan *runnerRef, chan error, uint64) {
 	if opts.NumCtx < 4 {
 		opts.NumCtx = 4
 	}
@@ -145,6 +150,11 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		opts.NumCtx = max(opts.NumCtx, 2048)
 	}
 
+	contextShift := false
+	if m.ModelPath != "" {
+		contextShift = resolveContextShift(shift, m)
+	}
+
 	req := &LlmRequest{
 		ctx:             c,
 		model:           m,
@@ -152,6 +162,8 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		sessionDuration: sessionDuration,
 		successCh:       make(chan *runnerRef, 1),
 		errCh:           make(chan error, 1),
+		contextShift:    contextShift,
+		shift:           shift,
 	}
 
 	for s.loadsPaused.Load() {
@@ -185,6 +197,23 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		go s.dropPendingOnCancel(req)
 	}
 	return req.successCh, req.errCh, req.fifoSeq
+}
+
+func resolveContextShift(shift *bool, m *Model) bool {
+	if shift != nil {
+		return *shift
+	}
+	return supportsContextShift(m)
+}
+
+func supportsContextShift(m *Model) bool {
+	if m == nil {
+		return true
+	}
+	if m.Config.ModelFamily == "deepseek2" || slices.Contains(m.Config.ModelFamilies, "deepseek2") {
+		return false
+	}
+	return true
 }
 
 // Returns immediately, spawns go routines for the scheduler which will shutdown when ctx is done
@@ -696,7 +725,8 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 				s.loadedMu.Unlock()
 				return false
 			}
-			llama, err = s.newServerFn(systemInfo, gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
+			config := llamaServerConfigForModel(req.model, req.contextShift, req.opts)
+			llama, err = s.newServerFn(systemInfo, gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel, config)
 			if err != nil {
 				// some older models are not compatible with newer versions of llama.cpp
 				// show a generalized compatibility error until there is a better way to
@@ -810,6 +840,7 @@ iGPUScan:
 		vramSize:        vramSize,
 		loading:         true,
 		pid:             llama.Pid(),
+		contextShift:    req.contextShift,
 	}
 	runner.numParallel = numParallel
 	runner.refMu.Lock() // hold lock until running or aborted
@@ -931,6 +962,7 @@ type runnerRef struct {
 	modelPath   string
 	modelKey    string
 	numParallel int
+	contextShift bool
 	*api.Options
 }
 
@@ -946,6 +978,7 @@ func (runner *runnerRef) unload() {
 	runner.model = nil
 	runner.Options = nil
 	runner.gpus = nil
+	runner.contextShift = false
 }
 
 // syncRunnerLoadOptions updates runner.Options to the context size actually allocated
@@ -999,6 +1032,14 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	if optsNew.NumGPU < 0 {
 		optsExisting.NumGPU = -1
 		optsNew.NumGPU = -1
+	}
+
+	contextShift := req.contextShift
+	if req.model.ModelPath != "" {
+		contextShift = resolveContextShift(req.shift, req.model)
+	}
+	if runner.contextShift != contextShift {
+		return true
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)

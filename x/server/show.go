@@ -19,25 +19,39 @@ func canonicalQuantType(quantType string) string {
 	return strings.ToLower(strings.TrimSpace(quantType))
 }
 
+type modelTextConfig struct {
+	HiddenSize            int `json:"hidden_size"`
+	MaxPositionEmbeddings int `json:"max_position_embeddings"`
+	NumHiddenLayers       int `json:"num_hidden_layers"`
+	NumExperts            int `json:"num_experts"`
+	NumLocalExperts       int `json:"num_local_experts"`
+	NRoutedExperts        int `json:"n_routed_experts"`
+	ExpertsPerToken       int `json:"experts_per_token"`
+	NumExpertsPerTok      int `json:"num_experts_per_tok"`
+	TopKExperts           int `json:"top_k_experts"`
+}
+
 // modelConfig represents the HuggingFace config.json structure
 type modelConfig struct {
-	Architectures         []string `json:"architectures"`
-	ModelType             string   `json:"model_type"`
-	HiddenSize            int      `json:"hidden_size"`
-	NumHiddenLayers       int      `json:"num_hidden_layers"`
-	MaxPositionEmbeddings int      `json:"max_position_embeddings"`
-	IntermediateSize      int      `json:"intermediate_size"`
-	NumAttentionHeads     int      `json:"num_attention_heads"`
-	NumKeyValueHeads      int      `json:"num_key_value_heads"`
-	VocabSize             int      `json:"vocab_size"`
-	RMSNormEps            float64  `json:"rms_norm_eps"`
-	RopeTheta             float64  `json:"rope_theta"`
-	TorchDtype            string   `json:"torch_dtype"`
-	TextConfig            *struct {
-		HiddenSize            int `json:"hidden_size"`
-		MaxPositionEmbeddings int `json:"max_position_embeddings"`
-		NumHiddenLayers       int `json:"num_hidden_layers"`
-	} `json:"text_config"`
+	Architectures         []string         `json:"architectures"`
+	ModelType             string           `json:"model_type"`
+	HiddenSize            int              `json:"hidden_size"`
+	NumHiddenLayers       int              `json:"num_hidden_layers"`
+	MaxPositionEmbeddings int              `json:"max_position_embeddings"`
+	IntermediateSize      int              `json:"intermediate_size"`
+	NumAttentionHeads     int              `json:"num_attention_heads"`
+	NumKeyValueHeads      int              `json:"num_key_value_heads"`
+	NumExperts            int              `json:"num_experts"`
+	NumLocalExperts       int              `json:"num_local_experts"`
+	NRoutedExperts        int              `json:"n_routed_experts"`
+	ExpertsPerToken       int              `json:"experts_per_token"`
+	NumExpertsPerTok      int              `json:"num_experts_per_tok"`
+	TopKExperts           int              `json:"top_k_experts"`
+	VocabSize             int              `json:"vocab_size"`
+	RMSNormEps            float64          `json:"rms_norm_eps"`
+	RopeTheta             float64          `json:"rope_theta"`
+	TorchDtype            string           `json:"torch_dtype"`
+	TextConfig            *modelTextConfig `json:"text_config"`
 }
 
 // GetSafetensorsLLMInfo extracts model information from safetensors LLM models.
@@ -105,6 +119,13 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 		}
 	}
 
+	expertCount := firstPositive(config.NumLocalExperts, config.NumExperts, config.NRoutedExperts)
+	expertUsedCount := firstPositive(config.ExpertsPerToken, config.NumExpertsPerTok, config.TopKExperts)
+	if config.TextConfig != nil {
+		expertCount = firstPositive(config.TextConfig.NumLocalExperts, config.TextConfig.NumExperts, config.TextConfig.NRoutedExperts, expertCount)
+		expertUsedCount = firstPositive(config.TextConfig.ExpertsPerToken, config.TextConfig.NumExpertsPerTok, config.TextConfig.TopKExperts, expertUsedCount)
+	}
+
 	// Get dtype to determine bytes per parameter for count calculation
 	dtype := config.TorchDtype
 
@@ -153,6 +174,14 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 		info[fmt.Sprintf("%s.feed_forward_length", arch)] = config.IntermediateSize
 	}
 
+	if expertCount > 0 {
+		info[fmt.Sprintf("%s.expert_count", arch)] = uint32(expertCount)
+	}
+
+	if expertUsedCount > 0 {
+		info[fmt.Sprintf("%s.expert_used_count", arch)] = uint32(expertUsedCount)
+	}
+
 	if config.VocabSize > 0 {
 		info[fmt.Sprintf("%s.vocab_size", arch)] = config.VocabSize
 	}
@@ -162,6 +191,15 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 	}
 
 	return info
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 // getParameterCountFromManifest counts model parameters from tensor shapes.

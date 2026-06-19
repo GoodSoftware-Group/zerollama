@@ -64,14 +64,11 @@ func ResolveLinearQuantParams(
 		tensorName,
 	)
 
-	if mode == "affine" || (mode == "" && scales != nil) {
+	if mode == "affine" {
 		if inferredGroupSize, inferredBits, ok := InferAffineQuantParamsFromShapes(weight, scales, bits); ok {
 			if !fromTensor || groupSize == 0 || bits == 0 {
 				groupSize = inferredGroupSize
 				bits = inferredBits
-			}
-			if mode == "" {
-				mode = "affine"
 			}
 		}
 	}
@@ -110,7 +107,9 @@ func InferAffineQuantParamsFromShapes(weight, scales *mlx.Array, hintBits int) (
 		if hintBits == 8 {
 			return 32, 8, true
 		}
-		return 64, 4, true
+		if hintBits == 4 {
+			return 64, 4, true
+		}
 	}
 
 	if isCommonGroupSize(groupSize4) && !isCommonGroupSize(groupSize8) {

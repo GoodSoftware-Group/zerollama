@@ -256,3 +256,23 @@ func TestRemoteURL_Idempotent(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertDraftModelFromFilesMediaType(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	path, digest := createBinFile(t, map[string]any{
+		"general.architecture": "qwen35",
+		"general.file_type":    uint32(1),
+	}, nil)
+
+	layers, err := convertDraftModelFromFiles(map[string]string{filepath.Base(path): digest}, func(api.ProgressResponse) {})
+	if err != nil {
+		t.Fatalf("convertDraftModelFromFiles() error = %v", err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("len(layers) = %d, want 1", len(layers))
+	}
+	if layers[0].MediaType != manifest.MediaTypeImageDraft {
+		t.Fatalf("MediaType = %q, want %q", layers[0].MediaType, manifest.MediaTypeImageDraft)
+	}
+}

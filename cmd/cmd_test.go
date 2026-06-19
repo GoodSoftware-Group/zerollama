@@ -1143,9 +1143,9 @@ func TestListHandler(t *testing.T) {
 				{Name: "model1", Digest: "sha256:abc123", Size: 1024, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 				{Name: "model2", Digest: "sha256:def456", Size: 2048, ModifiedAt: time.Now().Add(-48 * time.Hour)},
 			},
-			expectedOutput: "NAME      ID              SIZE      MODIFIED     \n" +
-				"model1    sha256:abc12    1.0 KB    24 hours ago    \n" +
-				"model2    sha256:def45    2.0 KB    2 days ago      \n",
+			expectedOutput: "NAME      ID              SIZE      PARAMS    MODIFIED     \n" +
+				"model1    sha256:abc12    1.0 KB              24 hours ago    \n" +
+				"model2    sha256:def45    2.0 KB              2 days ago      \n",
 		},
 		{
 			name: "filter models by prefix",
@@ -1154,8 +1154,8 @@ func TestListHandler(t *testing.T) {
 				{Name: "model1", Digest: "sha256:abc123", Size: 1024, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 				{Name: "model2", Digest: "sha256:def456", Size: 2048, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 			},
-			expectedOutput: "NAME      ID              SIZE      MODIFIED     \n" +
-				"model1    sha256:abc12    1.0 KB    24 hours ago    \n",
+			expectedOutput: "NAME      ID              SIZE      PARAMS    MODIFIED     \n" +
+				"model1    sha256:abc12    1.0 KB              24 hours ago    \n",
 		},
 		{
 			name: "include lm studio caches",
@@ -1176,9 +1176,9 @@ func TestListHandler(t *testing.T) {
 					ModifiedAt:  time.Now(),
 				},
 			},
-			expectedOutput: "NAME                                      ID              SIZE      MODIFIED          \n" +
-				"local:latest                              sha256:abc12    1.0 KB    24 hours ago         \n" +
-				"lmstudio-community/gemma-4-31b-it:q8_0                    32 GB     About an hour ago    \n",
+			expectedOutput: "NAME                                      ID              SIZE      PARAMS    MODIFIED          \n" +
+				"local:latest                              sha256:abc12    1.0 KB              24 hours ago         \n" +
+				"lmstudio-community/gemma-4-31b-it:q8_0                    32 GB               About an hour ago    \n",
 		},
 		{
 			name:          "server error",
@@ -1236,6 +1236,56 @@ func TestListHandler(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tt.expectedError) {
 					t.Errorf("expected error containing %q, got %v", tt.expectedError, err)
 				}
+			}
+		})
+	}
+}
+
+func TestListParameterSummary(t *testing.T) {
+	tests := []struct {
+		name    string
+		details api.ModelDetails
+		want    string
+	}{
+		{
+			name:    "dense",
+			details: api.ModelDetails{ParameterSize: "7B"},
+			want:    "7B",
+		},
+		{
+			name: "dense count overrides stale manifest size",
+			details: api.ModelDetails{
+				ParameterSize:  "460.73M",
+				ParameterCount: 26_895_998_464,
+			},
+			want: "26.9B",
+		},
+		{
+			name: "moe active",
+			details: api.ModelDetails{
+				ArchitectureType:     "moe",
+				ParameterSize:        "120B",
+				ParameterCount:       120_000_000_000,
+				ActiveParameterCount: 5_100_000_000,
+			},
+			want: "120B/5.1B active",
+		},
+		{
+			name: "moe routing only",
+			details: api.ModelDetails{
+				ArchitectureType: "moe",
+				ParameterSize:    "26B",
+				ExpertCount:      64,
+				ExpertUsedCount:  4,
+			},
+			want: "26B MoE 64x4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := listParameterSummary(tt.details); got != tt.want {
+				t.Fatalf("listParameterSummary() = %q, want %q", got, tt.want)
 			}
 		})
 	}
