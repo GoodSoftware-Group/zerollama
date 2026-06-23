@@ -1,3 +1,6 @@
+//go:build ignore
+
+// Codegen tool for mlx bindings — run via `go generate` in x/mlxrunner/mlx, not `go build ./...`.
 package main
 
 import (

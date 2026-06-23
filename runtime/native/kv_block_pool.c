@@ -1055,6 +1055,13 @@ kv_native_decode_loop_prefill(PyObject *Py_UNUSED(self), PyObject *args)
                                     (int32_t)block_size, (int32_t)pos_start, &steps);
     Py_END_ALLOW_THREADS
     PyMem_Free(toks);
+    if (rc == -3) {
+        /* v31: abort flag was set between chunks (PrefillAbortedError in Python). */
+        PyErr_SetString(
+            PyExc_ValueError,
+            "KV prefill aborted: cancel flag set between chunks");
+        return NULL;
+    }
     if (rc == -2) {
         PyErr_SetString(
             PyExc_ValueError,
@@ -1357,6 +1364,39 @@ kv_native_decode_loop_sample(PyObject *Py_UNUSED(self), PyObject *args)
     Py_END_ALLOW_THREADS
     return PyLong_FromLong((long)tok);
 }
+
+static PyObject *
+kv_native_invalidate_cuda_graphs(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    unsigned PY_LONG_LONG ctx_ptr;
+    if (!PyArg_ParseTuple(args, "K", &ctx_ptr)) {
+        return NULL;
+    }
+    void *ctx = (void *)(uintptr_t)ctx_ptr;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = kv_decode_loop_invalidate_cuda_graphs(ctx);
+    Py_END_ALLOW_THREADS
+    return Py_BuildValue("{s:i,s:i}", "backends_cleared", rc, "ok", rc >= 0 ? 1 : 0);
+}
+
+/*
+ * v31: abort flag bindings — called without GIL released because the flag
+ * write is atomic and the Python caller is signalling from a different thread.
+ */
+static PyObject *
+kv_native_decode_loop_abort_set(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
+{
+    kv_decode_loop_abort_set();
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+kv_native_decode_loop_abort_clear(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
+{
+    kv_decode_loop_abort_clear();
+    Py_RETURN_NONE;
+}
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
 
 static PyObject *
@@ -1434,6 +1474,12 @@ static PyMethodDef kv_module_methods[] = {
      "Run continuous batch decode (ctx_ptr, tokens, seq_ids, positions) -> steps"},
     {"decode_loop_sample", kv_native_decode_loop_sample, METH_VARARGS,
      "Sample token via libllama (smpl_ptr, ctx_ptr) -> token"},
+    {"invalidate_cuda_graphs", kv_native_invalidate_cuda_graphs, METH_VARARGS,
+     "Clear ggml CUDA graph cache for ctx_ptr (WHY: L3 slot clear + stale graph safety)"},
+    {"decode_loop_abort_set", kv_native_decode_loop_abort_set, METH_NOARGS,
+     "Signal prefill abort (v31): set process-global atomic flag; checked between chunks"},
+    {"decode_loop_abort_clear", kv_native_decode_loop_abort_clear, METH_NOARGS,
+     "Clear prefill abort flag before next run_prefill call"},
 #endif
     {NULL},
 };

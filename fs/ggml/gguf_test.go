@@ -10,6 +10,42 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func TestDecodeMetadataSkipsTensorWalk(t *testing.T) {
+	t.Parallel()
+	w, err := os.CreateTemp(t.TempDir(), "*.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	ts := []*Tensor{
+		{Name: "token_embd.weight", Shape: []uint64{2, 3}, WriterTo: bytes.NewReader(make([]byte, 24))},
+	}
+	if err := WriteGGUF(w, KV{
+		"general.architecture": "test",
+		"general.alignment":    uint32(32),
+	}, ts); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := os.Open(w.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	meta, err := DecodeMetadata(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.KV().Architecture() != "test" {
+		t.Fatalf("architecture: got %q", meta.KV().Architecture())
+	}
+	if len(meta.Tensors().Items()) != 1 {
+		t.Fatalf("tensor count: got %d", len(meta.Tensors().Items()))
+	}
+}
+
 func TestWriteGGUF(t *testing.T) {
 	tensorData := make([]byte, 2*3*4) // 6 F32 elements = 24 bytes
 	for range 8 {

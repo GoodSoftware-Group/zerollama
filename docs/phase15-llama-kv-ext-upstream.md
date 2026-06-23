@@ -1,6 +1,6 @@
 # Phase 15 — `llama-kv-ext.h` upstream tracking
 
-**Why this doc exists:** Tensor page bind (Phase 15 exit criterion #5) needs cell-index and K/V tensor introspection that upstream llama.cpp does not expose as a stable public API. Zerollama ships a **staging extension** (`llama-kv-ext.h`) as **patch 0015** on the b9611 pin. This document tracks what is unblocked, what remains blocked, and how to refresh on pin bumps.
+**Why this doc exists:** Tensor page bind (Phase 15 exit criterion #5) needs cell-index and K/V tensor introspection that upstream llama.cpp does not expose as a stable public API. Zerollama ships a **staging extension** (`llama-kv-ext.h`) as **patch 0014** on the b9672 pin. This document tracks what is unblocked, what remains blocked, and how to refresh on pin bumps.
 
 ---
 
@@ -8,11 +8,11 @@
 
 | Source | Pin / path |
 |--------|------------|
-| `LLAMA_CPP_VERSION` | `b9611` |
-| `Makefile.sync` `FETCH_HEAD` | `b9611` |
-| In-tree vendored tree | `llama/llama.cpp/` (synced from `vendor/llama-cpp-b9611` + patches) |
+| `LLAMA_CPP_VERSION` | `b9672` |
+| `Makefile.sync` `FETCH_HEAD` | `b9672` |
+| In-tree vendored tree | `llama/llama.cpp/` (synced from `vendor/llama-cpp-b9672` + patches) |
 | Runtime sibling build | `../llama.cpp` via `LLAMA_CPP_ROOT` |
-| Staging patch | `llama/patches/0015-ollama-llama-kv-ext-phase15.patch` |
+| Staging patch | `llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` |
 | CI pin gate | `./scripts/phase15_llama_kv_ext_pin_check.sh` |
 
 **On every pin bump:** run `make -f Makefile.sync clean apply-patches sync`, then `phase15_llama_kv_ext_pin_check.sh`, rebuild libllama, rebuild `_kv_native` with `ZEROLLAMA_KV_DECODE_LOOP=1`.
@@ -43,6 +43,8 @@ CI pin check greps `llama.h` for upstream watch symbols (`llama_memory_kv_page_m
 
 ```bash
 ./scripts/phase15_llama_kv_ext_pin_check.sh   # includes writable API + upstream watch
+P15_PIN_JSON=/tmp/phase15-kv-ext-pin-check.json ./scripts/phase15_llama_kv_ext_pin_check.sh
+./scripts/phase15_upstream_kv_watch.sh        # scan in-tree + ollama-upstream llama.h
 python3 -c "from runtime.kv.tensor_probe import writable_bind_probe; print(writable_bind_probe())"
 ```
 
@@ -66,7 +68,7 @@ python3 -c "from runtime.kv.tensor_probe import writable_bind_probe; print(writa
 
 ---
 
-## Upstream dependencies (stable at b9611)
+## Upstream dependencies (stable at b9672)
 
 These **must** remain in `include/llama.h` — pin check verifies them:
 
@@ -74,7 +76,7 @@ These **must** remain in `include/llama.h` — pin check verifies them:
 - `llama_memory_can_shift`
 - `llama_memory_seq_pos_min` / `llama_memory_seq_pos_max`
 
-If a pin bump removes or renames these, refresh patch 0015 and `kv_tensor_probe.c` before merging.
+If a pin bump removes or renames these, refresh patch **0014** and `kv_tensor_probe.c` before merging.
 
 ---
 
@@ -86,7 +88,7 @@ If a pin bump removes or renames these, refresh patch 0015 and `kv_tensor_probe.
 | **SWA cache pages** | Windowed SWA tensor is separate from PA full-context reserve | Dual bind registry or upstream unified page API |
 | **Recurrent state** | No cell/page model — different memory layout | Out of scope for attn PA bind; separate Phase 15 slice if needed |
 
-Read-verify bind (`status=bound` on standard + hybrid attn models) is **unblocked** with patch 0015 + linked libllama.
+Read-verify bind (`status=bound` on standard + hybrid attn models) is **unblocked** with patch **0014** + linked libllama.
 
 ---
 
@@ -129,5 +131,5 @@ When proposing upstream merge:
 
 - [phase15-native-kv.md](./phase15-native-kv.md) — operator knobs, `/health.kv_page_bind`
 - [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) — code map
-- [ggml-b9509-migration.md](./ggml-b9509-migration.md) — patch series table (0015)
+- [ggml-b9509-migration.md](./ggml-b9509-migration.md) — patch series table (0014 kv-ext)
 - [../runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) — pin bump checklist

@@ -184,12 +184,18 @@ func modelMaxNumCtx(model *Model) int {
 		return 0
 	}
 	if model.IsMLX() {
-		return model.Config.ContextLen
+		if model.Config.ContextLen > 0 {
+			return model.Config.ContextLen
+		}
+		if model.Config.ModelFamily == "gemma4" {
+			return 131072
+		}
+		return 0
 	}
 	if model.ModelPath == "" {
 		return 0
 	}
-	f, err := llm.LoadModel(model.ModelPath, 1024)
+	f, err := llm.LoadModelMetadata(model.ModelPath)
 	if err != nil {
 		slog.Debug("model max num_ctx lookup skipped", "model", model.ShortName, "error", err)
 		return 0
@@ -296,7 +302,7 @@ func (s *Server) ggmlNumCtxSuggest(ctx context.Context, model *Model, opts api.O
 		return 0, nil
 	}
 
-	f, err := llm.LoadModel(model.ModelPath, 1024)
+	f, err := llm.LoadModelMetadata(model.ModelPath)
 	if err != nil {
 		slog.Debug("ggml num_ctx suggest skipped", "model", model.ShortName, "error", err)
 		return 0, nil
@@ -350,7 +356,7 @@ func (s *Server) applyGgmlNumCtxClamp(ctx context.Context, model *Model, opts *a
 		return nil
 	}
 
-	f, err := llm.LoadModel(model.ModelPath, 1024)
+	f, err := llm.LoadModelMetadata(model.ModelPath)
 	if err != nil {
 		slog.Debug("ggml VRAM check skipped", "model", model.ShortName, "error", err)
 		return nil
@@ -416,9 +422,10 @@ func (s *Server) applyGgmlNumCtxClamp(ctx context.Context, model *Model, opts *a
 		}
 	}
 
-	// VRAM-based context clamp (per-request opt-in via ggml_clamp_num_ctx).
+	// VRAM-based context clamp (request ggml_clamp_num_ctx or ZEROLLAMA_GGML_CLAMP_NUM_CTX).
 	if suggested > 0 {
-		clamped, clampInfo := capGgmlNumCtx(opts.NumCtx, suggested, opts.GgmlClampNumCtxEnabled())
+		clamp := opts.GgmlClampNumCtxEnabled() || envconfig.GgmlClampNumCtxEnabled()
+		clamped, clampInfo := capGgmlNumCtx(opts.NumCtx, suggested, clamp)
 		if clampInfo != nil {
 			out.NumCtxClamped = clampInfo.NumCtxClamped
 			out.NumCtxClampedFrom = clampInfo.NumCtxClampedFrom

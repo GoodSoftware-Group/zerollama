@@ -183,6 +183,36 @@ func eat(s *HarmonyParser) ([]HarmonyEvent, bool) {
 	return nil, false
 }
 
+// FlushRemainder emits buffered text when generation ends without a complete
+// harmony message (e.g. model output that omits <|channel|>/<|message|>).
+func (s *HarmonyParser) FlushRemainder() []HarmonyEvent {
+	switch s.state {
+	case harmonyParserState_ParsingContent:
+		content := s.acc.String()
+		if content == "" {
+			return nil
+		}
+		s.acc.Reset()
+		s.state = harmonyParserState_LookingForMessageStart
+		return []HarmonyEvent{HarmonyEventContentEmitted{Content: content}}
+	case harmonyParserState_ParsingHeader:
+		raw := s.acc.String()
+		if strings.Contains(raw, s.HeaderEndTag) {
+			return nil
+		}
+		text := strings.TrimPrefix(raw, "assistant")
+		text = strings.TrimSpace(text)
+		if text == "" || strings.Contains(text, "<|") {
+			return nil
+		}
+		s.acc.Reset()
+		s.state = harmonyParserState_LookingForMessageStart
+		return []HarmonyEvent{HarmonyEventContentEmitted{Content: text}}
+	default:
+		return nil
+	}
+}
+
 func (s *HarmonyParser) parseHeader(raw string) HarmonyHeader {
 	harmonyHeader := HarmonyHeader{}
 
@@ -286,12 +316,7 @@ func NewHarmonyMessageHandler() *HarmonyMessageHandler {
 
 // AddContent processes the content and returns the content, thinking, and tool content.
 // content and thinking are already fully parsed, but tool content still needs to be passed to the tool parser
-func (h *HarmonyMessageHandler) AddContent(content string, toolParser *HarmonyToolCallAccumulator) (string, string, string) {
-	contentSb := strings.Builder{}
-	thinkingSb := strings.Builder{}
-	toolContentSb := strings.Builder{}
-
-	events := h.HarmonyParser.AddContent(content)
+func (h *HarmonyMessageHandler) applyEvents(events []HarmonyEvent, toolParser *HarmonyToolCallAccumulator, contentSb, thinkingSb, toolContentSb *strings.Builder) {
 	for _, event := range events {
 		switch event := event.(type) {
 		case HarmonyEventHeaderComplete:
@@ -300,9 +325,6 @@ func (h *HarmonyMessageHandler) AddContent(content string, toolParser *HarmonyTo
 			case "analysis":
 				if event.Header.Recipient != "" {
 					h.state = harmonyMessageState_ToolCalling
-					// event.Header.Recipient is the tool name, something like
-					// "browser.search" for a built-in, or "functions.calc" for a
-					// custom one
 					toolParser.SetToolName(event.Header.Recipient)
 				} else {
 					h.state = harmonyMessageState_Thinking
@@ -330,6 +352,11 @@ func (h *HarmonyMessageHandler) AddContent(content string, toolParser *HarmonyTo
 			h.state = harmonyMessageState_Normal
 		}
 	}
+}
+
+func (h *HarmonyMessageHandler) AddContent(content string, toolParser *HarmonyToolCallAccumulator) (string, string, string) {
+	var contentSb, thinkingSb, toolContentSb strings.Builder
+	h.applyEvents(h.HarmonyParser.AddContent(content), toolParser, &contentSb, &thinkingSb, &toolContentSb)
 	return contentSb.String(), thinkingSb.String(), toolContentSb.String()
 }
 
@@ -435,6 +462,16 @@ func (h *HarmonyMessageHandler) Add(s string, done bool) (content string, thinki
 
 	// tool calls always happen one at a time, and always at the end of a message,
 	// so for simplicity we defer parsing them until we know we're done
+	if done && h.HarmonyParser != nil {
+		var contentSb, thinkingSb, toolContentSb strings.Builder
+		h.applyEvents(h.HarmonyParser.FlushRemainder(), h.toolAccumulator, &contentSb, &thinkingSb, &toolContentSb)
+		content += contentSb.String()
+		thinking += thinkingSb.String()
+		if toolContentSb.Len() > 0 {
+			h.toolAccumulator.Add(toolContentSb.String())
+		}
+	}
+
 	if done {
 		toolName, raw := h.toolAccumulator.Drain()
 		if toolName != nil {
@@ -459,6 +496,18 @@ func (h *HarmonyMessageHandler) HasToolSupport() bool {
 // HasThinkingSupport implements the Parser interface
 func (h *HarmonyMessageHandler) HasThinkingSupport() bool {
 	return true
+}
+
+func (h *HarmonyMessageHandler) PreservedTokens() []string {
+	// <|call|> is an EOG marker for tool calls. Preserve structural tokens
+	// used by the parser, but let llama-server stop on the call terminator.
+	return []string{
+		"<|start|>",
+		"<|end|>",
+		"<|message|>",
+		"<|channel|>",
+		"<|constrain|>",
+	}
 }
 
 func (m *FunctionNameMap) ConvertAndAdd(userFunctionName string) string {

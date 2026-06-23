@@ -119,6 +119,10 @@ type NewSequenceParams struct {
 	truncate       bool
 	logprobs       bool
 	topLogprobs    int
+	promptTokens        []int
+	paddedLayoutConsume string
+	promptCacheKey      string
+	gemma4PaddedMedia   Gemma4PaddedMediaSchedule
 }
 
 var errorInputTooLong = errors.New("the input length exceeds the context length")
@@ -126,10 +130,38 @@ var errorInputTooLong = errors.New("the input length exceeds the context length"
 func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSequenceParams) (*Sequence, error) {
 	s.ready.Wait()
 
-	inputs, err := s.inputs(prompt, images)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process inputs: %w", err)
-	} else if len(inputs) == 0 {
+	var inputs []input
+	var err error
+	switch {
+	case len(params.promptTokens) > 0 && params.paddedLayoutConsume == PaddedLayoutConsumeQwen3VLHFRunner:
+		inputs, err = s.inputsFromPaddedPromptTokens(params.promptTokens, images, params.promptCacheKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process padded prompt tokens: %w", err)
+		}
+		slog.Info("padded_input_ids runner inject",
+			"prompt_tokens", len(params.promptTokens),
+			"images", len(images),
+			"inputs", len(inputs),
+			"consume", params.paddedLayoutConsume,
+		)
+	case len(params.promptTokens) > 0 && params.paddedLayoutConsume == PaddedLayoutConsumeGemma4ImgRunner:
+		inputs, err = s.inputsFromGemma4PaddedPromptTokens(params.promptTokens, images, params.promptCacheKey, params.gemma4PaddedMedia)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process gemma4 padded prompt tokens: %w", err)
+		}
+		slog.Info("padded_input_ids runner inject",
+			"prompt_tokens", len(params.promptTokens),
+			"images", len(images),
+			"inputs", len(inputs),
+			"consume", params.paddedLayoutConsume,
+		)
+	default:
+		inputs, err = s.inputs(prompt, images, params.promptCacheKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process inputs: %w", err)
+		}
+	}
+	if len(inputs) == 0 {
 		return nil, errors.New("no input provided")
 	}
 
@@ -199,10 +231,110 @@ func calculateLogprobsLlama(logits []float32, selectedToken int, topK int, model
 	return common.CalculateLogprobs(logits, selectedToken, topK, model.TokenToPiece)
 }
 
+// inputsFromGemma4PaddedPromptTokens builds runner inputs from pretokenized Gemma4 layout,
+// injecting mtmd chunks at <|image|>, <|video|>, and <|audio|> soft token ids.
+func (s *Server) inputsFromGemma4PaddedPromptTokens(promptTokens []int, images []llm.ImageData, sessionKey string, media Gemma4PaddedMediaSchedule) ([]input, error) {
+	if s.image == nil {
+		return nil, errors.New("padded prompt tokens require a vision model")
+	}
+	slots, err := s.gemma4SoftTokens()
+	if err != nil {
+		return nil, err
+	}
+	s.image.growCacheForDistinctFrames(len(images))
+	imageChunks, _, err := s.encodeImageChunks(images, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	schedule := Gemma4PaddedMediaSchedule{
+		StillImageCount:  media.StillImageCount,
+		VideoFrameCounts: media.VideoFrameCounts,
+		AudioClipCount:   media.AudioClipCount,
+	}
+	inputs := inputsFromGemma4PromptTokens(promptTokens, imageChunks, slots, schedule)
+	if len(inputs) == 0 {
+		return nil, errors.New("no input provided")
+	}
+	return inputs, nil
+}
+
+func (s *Server) gemma4SoftTokens() (Gemma4SoftTokens, error) {
+	imageSlot, err := s.gemma4SlotToken(gemma4ImagePlaceholder)
+	if err != nil {
+		return Gemma4SoftTokens{}, err
+	}
+	videoSlot, err := s.gemma4SlotToken(gemma4VideoPlaceholder)
+	if err != nil {
+		return Gemma4SoftTokens{}, err
+	}
+	audioSlot, err := s.gemma4SlotToken(gemma4AudioPlaceholder)
+	if err != nil {
+		return Gemma4SoftTokens{}, err
+	}
+	return Gemma4SoftTokens{Image: imageSlot, Video: videoSlot, Audio: audioSlot}, nil
+}
+
+func (s *Server) gemma4SlotToken(placeholder string) (int, error) {
+	toks, err := s.lc.Model().Tokenize(placeholder, false, true)
+	if err != nil {
+		return 0, fmt.Errorf("tokenize gemma4 placeholder %q: %w", placeholder, err)
+	}
+	if len(toks) == 0 {
+		return 0, fmt.Errorf("gemma4 placeholder %q tokenized to empty ids", placeholder)
+	}
+	return toks[len(toks)-1], nil
+}
+
+// encodeImageChunks runs mtmd per raster and logs grid_thw hint vs embed-count stats.
+// WHY separate from inputs(): padded inject and [img-N] paths share encode + hint compare.
+func (s *Server) encodeImageChunks(images []llm.ImageData, sessionKey string) ([][]visionChunk, visionGridHintStats, error) {
+	var imageChunks [][]visionChunk
+	var stats visionGridHintStats
+	for _, img := range images {
+		chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW)
+		if err != nil {
+			return nil, stats, err
+		}
+		var vc []visionChunk
+		for _, c := range chunks {
+			if len(c.Embed) != 0 {
+				vc = append(vc, visionChunk{embed: c.Embed})
+			} else if len(c.Tokens) != 0 {
+				vc = append(vc, visionChunk{tokens: c.Tokens})
+			}
+		}
+		st := logVisionGridHint(img.ID, img.GridTHW, vc)
+		stats.Hinted += st.Hinted
+		stats.Matched += st.Matched
+		stats.Mismatched += st.Mismatched
+		imageChunks = append(imageChunks, vc)
+	}
+	logVisionGridHintSummary(stats)
+	return imageChunks, stats, nil
+}
+
+// inputsFromPaddedPromptTokens builds runner inputs from pretokenized ids, injecting
+// ViT embeds at each Qwen3-VL <|image_pad|> token (SGLang padded_input_ids path).
+func (s *Server) inputsFromPaddedPromptTokens(promptTokens []int, images []llm.ImageData, sessionKey string) ([]input, error) {
+	if s.image == nil {
+		return nil, errors.New("padded prompt tokens require a vision model")
+	}
+	s.image.growCacheForDistinctFrames(len(images))
+	imageChunks, _, err := s.encodeImageChunks(images, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	inputs := inputsFromQwen3VLPromptTokens(promptTokens, imageChunks)
+	if len(inputs) == 0 {
+		return nil, errors.New("no input provided")
+	}
+	return inputs, nil
+}
+
 // inputs processes the prompt and images into a list of inputs
 // by splitting the prompt on [img-<n>] tags, tokenizing text and
 // generating image embeddings for each image
-func (s *Server) inputs(prompt string, images []llm.ImageData) ([]input, error) {
+func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string) ([]input, error) {
 	var inputs []input
 	var parts []string
 	var matches [][]string
@@ -211,6 +343,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData) ([]input, error) 
 		re := regexp.MustCompile(`\[img-(\d+)\]`)
 		parts = re.Split(prompt, -1)
 		matches = re.FindAllStringSubmatch(prompt, -1)
+		s.image.growCacheForDistinctFrames(len(images))
 	} else {
 		parts = []string{prompt}
 	}
@@ -242,7 +375,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData) ([]input, error) 
 				return nil, fmt.Errorf("invalid image index: %d", n)
 			}
 
-			chunks, err := s.image.MultimodalTokenize(s.lc, images[imageIndex].Data)
+			chunks, err := s.image.MultimodalTokenize(s.lc, images[imageIndex].Data, sessionKey, images[imageIndex].GridTHW)
 			if err != nil {
 				return nil, err
 			}
@@ -666,15 +799,23 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	seq, err := s.NewSequence(req.Prompt, req.Images, NewSequenceParams{
-		numPredict:     req.Options.NumPredict,
-		stop:           req.Options.Stop,
-		numKeep:        req.Options.NumKeep,
-		samplingParams: &samplingParams,
-		embedding:      false,
-		shift:          req.Shift,
-		truncate:       req.Truncate,
-		logprobs:       req.Logprobs,
-		topLogprobs:    req.TopLogprobs,
+		numPredict:          req.Options.NumPredict,
+		stop:                req.Options.Stop,
+		numKeep:             req.Options.NumKeep,
+		samplingParams:      &samplingParams,
+		embedding:           false,
+		shift:               req.Shift,
+		truncate:            req.Truncate,
+		logprobs:            req.Logprobs,
+		topLogprobs:         req.TopLogprobs,
+		promptTokens:        req.PromptTokens,
+		paddedLayoutConsume: req.PaddedLayoutConsume,
+		promptCacheKey:      req.PromptCacheKey,
+		gemma4PaddedMedia: Gemma4PaddedMediaSchedule{
+			StillImageCount:  req.Gemma4PaddedMedia.StillImageCount,
+			VideoFrameCounts: req.Gemma4PaddedMedia.VideoFrameCounts,
+			AudioClipCount:   req.Gemma4PaddedMedia.AudioClipCount,
+		},
 	})
 	if err != nil {
 		if errors.Is(err, errorInputTooLong) {
@@ -869,7 +1010,7 @@ func (s *Server) loadModel(
 
 	if ppath != "" {
 		var err error
-		s.image, err = NewImageContext(s.lc, ppath)
+		s.image, err = NewImageContext(s.lc, ppath, envconfig.ImageEmbedCacheSize())
 		if err != nil {
 			panic(err)
 		}
@@ -1000,6 +1141,7 @@ func Execute(args []string) error {
 	defer listener.Close()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /score", server.score)
 	mux.HandleFunc("POST /load", server.load)
 	mux.HandleFunc("/embedding", server.embeddings)
 	mux.HandleFunc("/completion", server.completion)

@@ -16,5 +16,5 @@ package metal
 
 // #cgo CXXFLAGS: -std=c++17
 // #cgo CPPFLAGS: -DGGML_METAL_NDEBUG -DGGML_METAL_EMBED_LIBRARY -DGGML_METAL_HAS_BF16 -I.. -I../../include
-// #cgo LDFLAGS: -framework Metal -framework MetalKit
+// #cgo LDFLAGS: -framework Metal -framework MetalKit -framework IOSurface
 import "C"

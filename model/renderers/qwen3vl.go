@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/server/modality"
 )
 
 type Qwen3VLRenderer struct {
@@ -14,7 +15,22 @@ type Qwen3VLRenderer struct {
 	useImgTags              bool
 }
 
-func (r *Qwen3VLRenderer) renderContent(content api.Message, imageOffset int) (string, int) {
+func (r *Qwen3VLRenderer) LeadingBOS() string {
+	return ""
+}
+
+func (r *Qwen3VLRenderer) renderContent(msgs []api.Message, msgIdx int, imageOffset int) (string, int) {
+	content := msgs[msgIdx]
+	// SGLang preprocessed path: padded_input_ids already includes vision placeholder
+	// tokens. Skip duplicate blocks only when splice/inject will consume the layout.
+	// WHY MessageSkipsVisionPlaceholdersForChat (not unconditional skip): tool-calling
+	// agents can fail multi-turn splice; prior turns must keep [img-N] / vision blocks
+	// when role=tool is present. See modality.MessageSkipsVisionPlaceholdersForChat.
+	if modality.MessageSkipsVisionPlaceholdersForChat(msgs, msgIdx, r.useImgTags) {
+		var subSb strings.Builder
+		subSb.WriteString(content.Content)
+		return subSb.String(), imageOffset
+	}
 	// This assumes all images are at the front of the message - same assumption as ollama/ollama/runner.go
 	var subSb strings.Builder
 	emitOne := func() {
@@ -26,7 +42,9 @@ func (r *Qwen3VLRenderer) renderContent(content api.Message, imageOffset int) (s
 		}
 	}
 	// When VideoSpans is set, Images are [still images..., frames from clip 0..., clip 1...].
-	// We emit the same vision tokens per frame as the flat path; spans only change grouping for future layouts.
+	// HF path (!useImgTags): one <|vision_start|><|image_pad|><|vision_end|> per frame — matches
+	// SGLang Qwen-VL (per-frame vision blocks, not a single grouped <|video|> token).
+	// Production (useImgTags): [img-N] per raster for the flat mtmd image list.
 	if len(content.VideoSpans) > 0 {
 		videoFrames := 0
 		for _, sp := range content.VideoSpans {
@@ -91,7 +109,7 @@ func (r *Qwen3VLRenderer) Render(messages []api.Message, tools []api.Tool, think
 		message := messages[i]
 		if multiStepTool && message.Role == "user" {
 			// Check if content starts with <tool_response> and ends with </tool_response>
-			content, _ := r.renderContent(message, 0)
+			content, _ := r.renderContent(messages, i, 0)
 			if !(strings.HasPrefix(content, "<tool_response>") && strings.HasSuffix(content, "</tool_response>")) {
 				multiStepTool = false
 				lastQueryIndex = i
@@ -101,7 +119,7 @@ func (r *Qwen3VLRenderer) Render(messages []api.Message, tools []api.Tool, think
 
 	imageOffset := 0
 	for i, message := range messages {
-		content, nextImageOffset := r.renderContent(message, imageOffset)
+		content, nextImageOffset := r.renderContent(messages, i, imageOffset)
 		imageOffset = nextImageOffset
 
 		lastMessage := i == len(messages)-1

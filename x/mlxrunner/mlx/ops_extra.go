@@ -661,6 +661,20 @@ func EnableCompile() {
 	C.mlx_enable_compile()
 }
 
+// BroadcastTo expands a to the given shape using MLX broadcast rules.
+func BroadcastTo(a *Array, shape ...int32) *Array {
+	if len(shape) == 0 {
+		return a
+	}
+	cShape := make([]C.int, len(shape))
+	for i, d := range shape {
+		cShape[i] = C.int(d)
+	}
+	out := New("BROADCAST_TO")
+	C.mlx_broadcast_to(&out.ctx, a.ctx, &cShape[0], C.size_t(len(shape)), DefaultStream().ctx)
+	return out
+}
+
 func DisableCompile() {
 	C.mlx_disable_compile()
 }

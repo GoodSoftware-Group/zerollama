@@ -138,6 +138,11 @@ func llamaCppBinaryCandidates(name string, search llamaCppBinarySearch) []string
 			return
 		}
 		matches, _ := filepath.Glob(filepath.Join(base, "build", "llama-server-*", "bin"))
+		// Include flash-moe build dirs always; llamaCppBuildOutputRank prefers them when
+		// ZEROLLAMA_FLASH_MOE=1 — why: FindFlashMoELlamaServer and FindLlamaServer share candidates.
+		if flash, _ := filepath.Glob(filepath.Join(base, "build", "flash-moe-llama-server-*", "bin")); len(flash) > 0 {
+			matches = append(matches, flash...)
+		}
 		slices.SortFunc(matches, func(a, b string) int {
 			if rank := llamaCppBuildOutputRank(a) - llamaCppBuildOutputRank(b); rank != 0 {
 				return rank
@@ -164,6 +169,12 @@ func llamaCppBinaryName(name, goos string) string {
 }
 
 func llamaCppBuildOutputRank(path string) int {
+	if strings.Contains(path, "flash-moe-llama-server") {
+		if preferFlashMoELlamaServer() {
+			return -1
+		}
+		return 3
+	}
 	if strings.Contains(path, "llama-server-darwin") ||
 		strings.Contains(path, "llama-server-cuda") ||
 		strings.Contains(path, "llama-server-rocm") {

@@ -83,9 +83,24 @@ class LlamaInprocessWorker:
                 build_model_hash,
                 cache_type_from_llama_argv,
                 llama_cache_enabled,
+                prepare_slot_cache_dir,
             )
 
             slot_hash: str | None = None
+            disk_persist = False
+            from runtime.kv_cache_spec import resolve_kv_cache_spec
+            from runtime.prefix_cache_policy import (
+                PrefixCachePolicy,
+                effective_disk_cache_enabled,
+                spec_method_from_hints,
+            )
+
+            spec_method = spec_method_from_hints(hints)
+            kv_spec = resolve_kv_cache_spec(
+                gguf=self.model,
+                num_ctx=hints.num_ctx,
+                spec_method=spec_method,
+            )
             if llama_cache_enabled():
                 ck, cv = cache_type_from_llama_argv(extra_args or [])
                 slot_hash = build_model_hash(
@@ -93,13 +108,15 @@ class LlamaInprocessWorker:
                     cache_type_k=ck,
                     cache_type_v=cv,
                 )
-                from runtime.cache_bridge import (
-                    inprocess_disk_cache_enabled,
-                    prepare_slot_cache_dir,
+                disk_persist = effective_disk_cache_enabled(
+                    PrefixCachePolicy.from_spec(kv_spec)
                 )
-
-                if inprocess_disk_cache_enabled() and slot_hash:
-                    prepare_slot_cache_dir(slot_hash, evict=True)
+                if disk_persist and slot_hash:
+                    prepare_slot_cache_dir(
+                        slot_hash,
+                        evict=True,
+                        slot_bin_ttl_ms=kv_spec.disk_ttl_ms,
+                    )
             self._slot_cache_model_hash = slot_hash
             self._session = LlamaLoadedSession(
                 self.model,
@@ -113,6 +130,8 @@ class LlamaInprocessWorker:
                 tensor_split_buf=self._tensor_split_buf,
                 kv_pool_token_cap=self.kv_pool_token_cap,
                 slot_cache_model_hash=slot_hash,
+                slot_cache_disk_persist=disk_persist,
+                kv_cache_spec=kv_spec,
             )
             logger.info(
                 "model %s ready in-process (gguf=%s, n_gpu_layers=%s, n_ctx=%s, "
@@ -150,9 +169,9 @@ class LlamaInprocessWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
+        prefill_cancel: Any | None = None,
     ) -> dict[str, Any]:
         # cache_prompt: RAM resume via pinned slot (v17); disk save when enabled (L3).
-        _ = cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
         with self._lock:
             text = self._require_session().complete(
@@ -165,6 +184,8 @@ class LlamaInprocessWorker:
                 kv_bind_req=kv_bind_req,
                 kv_block_size=kv_block_size,
                 current_pos=current_pos,
+                cache_prompt=cache_prompt,
+                prefill_cancel=prefill_cancel,
             )
         assert isinstance(text, str)
         return {"content": text, "response": text, "stop": True}
@@ -181,9 +202,9 @@ class LlamaInprocessWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
+        prefill_cancel: Any | None = None,
     ) -> Iterator[dict[str, Any]]:
         # cache_prompt: RAM resume via pinned slot (v17); disk save when enabled (L3).
-        _ = cache_prompt
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 
         def _gen() -> Iterator[dict[str, Any]]:
@@ -198,6 +219,8 @@ class LlamaInprocessWorker:
                     kv_bind_req=kv_bind_req,
                     kv_block_size=kv_block_size,
                     current_pos=current_pos,
+                    cache_prompt=cache_prompt,
+                    prefill_cancel=prefill_cancel,
                 )
                 yield from stream
 
@@ -216,7 +239,6 @@ class LlamaInprocessWorker:
         cache_prompts: list[bool] | None = None,
         current_positions: list[int | None] | None = None,
     ) -> list[dict[str, Any]]:
-        del cache_prompts
         if not prompts:
             return []
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
@@ -224,6 +246,7 @@ class LlamaInprocessWorker:
         budgets = kv_token_budgets
         bind_reqs = kv_bind_reqs
         pos_list = current_positions
+        cache_list = cache_prompts
 
         def _slot(idx: int) -> int:
             return slots[idx] if idx < len(slots) else -1
@@ -244,6 +267,11 @@ class LlamaInprocessWorker:
                 return None
             return pos_list[idx]
 
+        def _cache_prompt(idx: int) -> bool | None:
+            if cache_list is None or idx >= len(cache_list):
+                return None
+            return cache_list[idx]
+
         if len(prompts) == 1:
             return [
                 self.completion(
@@ -254,6 +282,7 @@ class LlamaInprocessWorker:
                     kv_bind_req=_bind_req(0),
                     kv_block_size=kv_block_size,
                     sampler=sampler,
+                    cache_prompt=_cache_prompt(0),
                     current_pos=_current_pos(0),
                 )
             ]
@@ -277,6 +306,9 @@ class LlamaInprocessWorker:
                             current_positions=[
                                 _current_pos(i) for i in range(len(prompts))
                             ],
+                            cache_prompts=[
+                                _cache_prompt(i) for i in range(len(prompts))
+                            ],
                             sampler=sampler,
                         )
                         return [
@@ -297,6 +329,7 @@ class LlamaInprocessWorker:
                 kv_bind_req=_bind_req(i),
                 kv_block_size=kv_block_size,
                 sampler=sampler,
+                cache_prompt=_cache_prompt(i),
                 current_pos=_current_pos(i),
             )
             for i, p in enumerate(prompts)

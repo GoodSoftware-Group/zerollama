@@ -13,9 +13,10 @@ var (
 	ErrModelRequired = errors.New("model is required")
 )
 
-// Assign picks a node for the requested model using warm-first, lowest-queue routing.
-// Pure function over a snapshot so unit tests and future F5 token validation stay deterministic.
-func Assign(nodes []NodeSnapshot, req AssignRequest) (AssignResponse, error) {
+// Assign picks a node for the requested model using filter-then-score routing.
+// Optional cache biases toward nodes that recently served the same session_key (L3 fleet affinity).
+// Pure function over a snapshot so unit tests and /internal/score stay deterministic.
+func Assign(nodes []NodeSnapshot, req AssignRequest, cache *PrefixCache) (AssignResponse, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		return AssignResponse{}, ErrModelRequired
@@ -24,41 +25,44 @@ func Assign(nodes []NodeSnapshot, req AssignRequest) (AssignResponse, error) {
 		return AssignResponse{}, ErrNoNodes
 	}
 
-	preferWarm := true
-	if req.PreferWarm != nil {
-		preferWarm = *req.PreferWarm
+	scoreReq := ScoreRequest{
+		Model:          model,
+		PreferWarm:     req.PreferWarm,
+		WarmOnly:       req.WarmOnly,
+		Exclude:        req.Exclude,
+		SessionKey:     req.SessionKey,
+		PromptCacheKey: req.PromptCacheKey,
 	}
-
-	excluded := excludedSet(req.Exclude)
-	candidates := filterCandidates(nodes, excluded)
-	if len(candidates) == 0 {
-		return AssignResponse{}, ErrNoNodes
-	}
-
-	now := time.Now().UTC()
-	if preferWarm {
-		if warm := pickBestNode(candidates, model, true); warm != nil {
-			return assignFromNode(*warm, true, now), nil
-		}
+	result := ScoreCandidates(nodes, scoreReq, cache)
+	if result.Best == nil {
 		if req.WarmOnly {
 			return AssignResponse{}, ErrNoWarmNode
 		}
+		return AssignResponse{}, ErrNoNodes
 	}
 
-	// Cold route: lowest queue; Warm reflects whether the chosen node already has the model.
-	if cold := pickBestNode(candidates, model, false); cold != nil {
-		return assignFromNode(*cold, nodeHasModel(*cold, model), now), nil
+	best := result.Best
+	now := time.Now().UTC()
+	sessionKey := strings.TrimSpace(req.SessionKey)
+	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(req.PromptCacheKey)
 	}
-	return AssignResponse{}, ErrNoNodes
+	if cache != nil && sessionKey != "" {
+		cache.Remember(model, sessionKey, best.ID)
+	}
+
+	resp := assignFromScored(*best, now)
+	return resp, nil
 }
 
-func assignFromNode(n NodeSnapshot, warm bool, now time.Time) AssignResponse {
+func assignFromScored(n ScoredNode, now time.Time) AssignResponse {
 	return AssignResponse{
 		URL:         n.URL,
 		NodeID:      n.ID,
-		Warm:        warm,
+		Warm:        n.Warm,
 		QueueDepth:  n.QueueDepth,
 		Loading:     n.Loading,
+		Score:       n.Score,
 		GeneratedAt: now,
 	}
 }
@@ -87,30 +91,6 @@ func filterCandidates(nodes []NodeSnapshot, excluded map[string]struct{}) []Node
 		out = append(out, n)
 	}
 	return out
-}
-
-func pickBestNode(nodes []NodeSnapshot, model string, warmOnly bool) *NodeSnapshot {
-	var best *NodeSnapshot
-	for i := range nodes {
-		n := &nodes[i]
-		if warmOnly && !nodeHasModel(*n, model) {
-			continue
-		}
-		if best == nil || nodeLess(*n, *best) {
-			best = n
-		}
-	}
-	return best
-}
-
-func nodeLess(a, b NodeSnapshot) bool {
-	if a.QueueDepth != b.QueueDepth {
-		return a.QueueDepth < b.QueueDepth
-	}
-	if a.Loading != b.Loading {
-		return !a.Loading
-	}
-	return a.ID < b.ID
 }
 
 func nodeHasModel(n NodeSnapshot, model string) bool {

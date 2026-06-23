@@ -27,7 +27,7 @@ func (c *Codex) args(model string, extra []string) []string {
 	return args
 }
 
-func (c *Codex) Run(model string, args []string) error {
+func (c *Codex) Run(model string, _ []LaunchModel, args []string) error {
 	if err := checkCodexVersion(); err != nil {
 		return err
 	}

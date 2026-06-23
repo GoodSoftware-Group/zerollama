@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -150,11 +151,6 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		opts.NumCtx = max(opts.NumCtx, 2048)
 	}
 
-	contextShift := false
-	if m.ModelPath != "" {
-		contextShift = resolveContextShift(shift, m)
-	}
-
 	req := &LlmRequest{
 		ctx:             c,
 		model:           m,
@@ -162,9 +158,9 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		sessionDuration: sessionDuration,
 		successCh:       make(chan *runnerRef, 1),
 		errCh:           make(chan error, 1),
-		contextShift:    contextShift,
 		shift:           shift,
 	}
+	req.contextShift = runnerContextShift(req)
 
 	for s.loadsPaused.Load() {
 		select {
@@ -194,7 +190,9 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		attrs := s.schedSnapshot()
 		attrs = append(attrs, "needs_reload", runner != nil)
 		schedLogInfo("queued for load", req, attrs...)
-		go s.dropPendingOnCancel(req)
+		if req.ctx != nil {
+			go s.dropPendingOnCancel(req)
+		}
 	}
 	return req.successCh, req.errCh, req.fifoSeq
 }
@@ -204,6 +202,15 @@ func resolveContextShift(shift *bool, m *Model) bool {
 		return *shift
 	}
 	return supportsContextShift(m)
+}
+
+// runnerContextShift is the context-shift flag stored on runnerRef and compared in needsReload.
+// MLX and other path-less runners do not use llama-server --context-shift; always false.
+func runnerContextShift(req *LlmRequest) bool {
+	if req == nil || req.model == nil || req.model.ModelPath == "" {
+		return false
+	}
+	return resolveContextShift(req.shift, req.model)
 }
 
 func supportsContextShift(m *Model) bool {
@@ -225,6 +232,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 	go s.processFinishedRequests(ctx)
 	go s.processExpiredRunners(ctx)
+	go s.processSchedWatchdog(ctx)
 }
 
 // scheduleExpiredRunner queues an unload without blocking the completion loop.
@@ -246,6 +254,8 @@ func (s *Scheduler) processFinishedRequest(finished *LlmRequest) {
 	runner.refMu.Lock()
 	runner.refCount--
 	if runner.refCount <= 0 {
+		runner.busySince = time.Time{}
+		runner.lastUsedAt = time.Now()
 		if runner.sessionDuration <= 0 {
 			slog.Debug("runner with zero duration has gone idle, expiring to unload", "runner", runner)
 			if runner.expireTimer != nil {
@@ -382,7 +392,14 @@ func (s *Scheduler) processPending(ctx context.Context) {
 
 // dropPendingOnCancel removes a queued request when its client context ends.
 func (s *Scheduler) dropPendingOnCancel(req *LlmRequest) {
-	<-req.ctx.Done()
+	if req == nil || req.ctx == nil {
+		return
+	}
+	done := req.ctx.Done()
+	if done == nil {
+		return
+	}
+	<-done
 	if s.pending.Remove(req) {
 		s.pending.notify()
 	}
@@ -441,6 +458,9 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 				pending.useLoadedRunner(runner, s.finishedReqCh)
 				break
 			}
+		} else if conflict := s.findConcurrencyGroupConflict(pending.model); conflict != nil {
+			schedLogInfo("concurrency group conflict, will evict", pending, schedRunnerAttrs(conflict)...)
+			runnerToExpire = conflict
 		} else if maxRunners > 0 && loadedCount >= int(maxRunners) {
 			schedLogInfo("max loaded models, picking eviction victim", pending, "max_runners", maxRunners, "loaded_count", loadedCount)
 			runnerToExpire = s.findRunnerToUnload()
@@ -621,9 +641,23 @@ func (s *Scheduler) drainSameModelPending(ctx context.Context, runner *runnerRef
 // Wires up a finished event after the request context is completed
 // Updates session duration, and resets expiration timer
 func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *LlmRequest) {
+	if err := runner.waitUntilReady(pending.ctx); err != nil {
+		pending.errCh <- err
+		return
+	}
 	runner.refMu.Lock()
 	defer runner.refMu.Unlock()
+	if runner.loading || runner.llama == nil {
+		pending.errCh <- errors.New("runner unavailable")
+		return
+	}
+	wasIdle := runner.refCount == 0
 	runner.refCount++
+	now := time.Now()
+	runner.lastUsedAt = now
+	if wasIdle {
+		runner.busySince = now
+	}
 	if runner.expireTimer != nil {
 		runner.expireTimer.Stop()
 		runner.expireTimer = nil
@@ -701,6 +735,17 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 				"path", req.model.ModelPath,
 			)
 			req.errCh <- ErrRuntimeInferenceModel
+			s.loadedMu.Unlock()
+			return false
+		}
+		if skip, skipErr := schedSkipGgmlRunnerLoad(req.model); skip {
+			slog.Info(
+				"skipping ggml runner load; edge / llama-server policy",
+				"name", req.model.ShortName,
+				"path", req.model.ModelPath,
+				"error", skipErr,
+			)
+			req.errCh <- skipErr
 			s.loadedMu.Unlock()
 			return false
 		}
@@ -839,11 +884,12 @@ iGPUScan:
 		totalSize:       totalSize,
 		vramSize:        vramSize,
 		loading:         true,
+		loadDone:        make(chan struct{}),
+		lastUsedAt:      time.Now(),
 		pid:             llama.Pid(),
-		contextShift:    req.contextShift,
+		contextShift:    runnerContextShift(req),
 	}
 	runner.numParallel = numParallel
-	runner.refMu.Lock() // hold lock until running or aborted
 
 	s.loadedMu.Lock()
 	if oldRunner, ok := s.loaded[runner.modelKey]; ok {
@@ -862,10 +908,13 @@ iGPUScan:
 		"pid", runner.pid, "vram_size", runner.vramSize, "llama_load_elapsed", time.Since(llamaLoadStart))
 
 	go func() {
-		defer runner.refMu.Unlock()
+		defer close(runner.loadDone)
 		waitStart := time.Now()
 		if err = llama.WaitUntilRunning(req.ctx); err != nil {
 			schedLogWarn("WaitUntilRunning failed", req, "error", err, "wait_elapsed", time.Since(waitStart), "total_elapsed", time.Since(loadStart))
+			runner.refMu.Lock()
+			runner.loading = false
+			runner.refMu.Unlock()
 			req.errCh <- err
 			s.scheduleExpiredRunner(runner)
 			return
@@ -881,12 +930,15 @@ iGPUScan:
 			"path", runner.modelPath,
 			"pid", runner.pid,
 		)
+		runner.refMu.Lock()
 		if runner.pid < 0 {
 			runner.pid = llama.Pid()
 		}
 		syncRunnerLoadOptions(runner)
 		runner.refCount++
 		runner.loading = false
+		runner.lastUsedAt = time.Now()
+		runner.refMu.Unlock()
 		go func() {
 			<-req.ctx.Done()
 			slog.Debug("context for request finished")
@@ -896,6 +948,45 @@ iGPUScan:
 	}()
 
 	return false
+}
+
+// waitUntilReady blocks until the runner finishes its initial load or ctx is canceled.
+func (runner *runnerRef) waitUntilReady(ctx context.Context) error {
+	for {
+		runner.refMu.Lock()
+		loading := runner.loading
+		done := runner.loadDone
+		llama := runner.llama
+		runner.refMu.Unlock()
+
+		if !loading {
+			if llama == nil {
+				return errors.New("runner unavailable")
+			}
+			return nil
+		}
+		if done == nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-done:
+			runner.refMu.Lock()
+			loading = runner.loading
+			llama = runner.llama
+			runner.refMu.Unlock()
+			if llama == nil || loading {
+				return errors.New("runner failed to load")
+			}
+			return nil
+		}
+	}
 }
 
 func (s *Scheduler) updateFreeSpace(allGpus []ml.DeviceInfo) {
@@ -948,6 +1039,9 @@ type runnerRef struct {
 	llama        llm.LlamaServer
 	pid          int
 	loading      bool          // True only during initial load, then false forever
+	loadDone     chan struct{} // closed when initial load finishes (success or failure)
+	lastUsedAt   time.Time     // updated on acquire and when going idle (LRU reclaim)
+	busySince    time.Time     // set when refCount goes 0→1; cleared when idle
 	gpus         []ml.DeviceID // Recorded at time of provisioning
 	discreteGPUs bool          // True if all devices are discrete GPUs - used to skip VRAM recovery check for iGPUs
 	isImagegen   bool          // True if loaded via imagegen runner (vs mlxrunner)
@@ -963,6 +1057,7 @@ type runnerRef struct {
 	modelKey    string
 	numParallel int
 	contextShift bool
+	loadedMeta  api.LoadedModelMetadata
 	*api.Options
 }
 
@@ -1004,6 +1099,7 @@ func syncRunnerLoadOptions(runner *runnerRef) {
 	if runner.Options.NumBatch > effective {
 		runner.Options.NumBatch = effective
 	}
+	runner.loadedMeta = probeRunnerMetadata(runner)
 }
 
 func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool {
@@ -1011,19 +1107,32 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	runner.refMu.Lock()
 	defer runner.refMu.Unlock()
 
+	reloadReason := func(reason string, attrs ...any) bool {
+		// Why INFO + reason: needs_reload=true alone did not explain cold reload loops
+		// (common: num_ctx mismatch after MLX context cap fix).
+		args := append([]any{"model", schedulerModelKey(req.model), "reload_reason", reason}, attrs...)
+		slog.Info("runner needs reload", args...)
+		return true
+	}
+
 	// Check if runner type (imagegen vs mlxrunner) matches what's requested.
 	wantImagegen := slices.Contains(req.model.Config.Capabilities, "image")
 	if runner.isImagegen != wantImagegen {
-		return true
+		return reloadReason("runner_type_mismatch",
+			"loaded_imagegen", runner.isImagegen,
+			"want_imagegen", wantImagegen,
+		)
+	}
+
+	// Reuse the runner while the initial load is still in progress.
+	if runner.loading {
+		return false
 	}
 
 	timeout := 10 * time.Second
-	if runner.loading {
-		timeout = 2 * time.Minute // Initial load can take a long time for big models on slow systems...
-	}
 
 	if runner.Options == nil {
-		return true
+		return reloadReason("nil_options")
 	}
 
 	// Don't reload runner if num_gpu=-1 was provided
@@ -1034,12 +1143,14 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 		optsNew.NumGPU = -1
 	}
 
-	contextShift := req.contextShift
 	if req.model.ModelPath != "" {
-		contextShift = resolveContextShift(req.shift, req.model)
-	}
-	if runner.contextShift != contextShift {
-		return true
+		contextShift := runnerContextShift(req)
+		if runner.contextShift != contextShift {
+			return reloadReason("context_shift_changed",
+				"loaded", runner.contextShift,
+				"want", contextShift,
+			)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -1054,7 +1165,10 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	if runner.llama != nil {
 		if effective := runner.llama.ContextLength(); effective > 0 {
 			if optsNew.NumCtx > effective {
-				return true
+				return reloadReason("num_ctx_exceeds_loaded_kv",
+					"loaded_ctx", effective,
+					"want_ctx", optsNew.NumCtx,
+				)
 			}
 			if optsNew.NumCtx < effective {
 				optsNew.NumCtx = optsExisting.NumCtx // treat "fits in loaded ctx" as same
@@ -1064,13 +1178,30 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 
 	// Runner options (num_ctx, num_gpu, num_batch, …) are fixed at llama.Load time.
 	// Manifest or request changes to num_ctx require a reload — KV is pre-sized at load.
-	if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?
-		!reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) || // have the projectors changed?
-		(!runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew)) { // have the runner options changed?
-		return true
+	if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) {
+		return reloadReason("adapter_paths_changed")
 	}
-	if runner.llama != nil && runner.llama.Ping(ctx) != nil {
-		return true
+	if !reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) {
+		return reloadReason("projector_paths_changed")
+	}
+	if !runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew) {
+		return reloadReason("runner_options_changed",
+			"loaded_num_ctx", optsExisting.NumCtx,
+			"want_num_ctx", optsNew.NumCtx,
+			"loaded_num_gpu", optsExisting.NumGPU,
+			"want_num_gpu", optsNew.NumGPU,
+		)
+	}
+	if runner.llama != nil {
+		if runner.model.IsMLX() {
+			// MLX runs inference on a single worker thread; Ping can block behind prefill
+			// or fail spuriously while the subprocess is healthy.
+			if runner.llama.HasExited() {
+				return reloadReason("mlx_runner_exited")
+			}
+		} else if runner.llama.Ping(ctx) != nil {
+			return reloadReason("ping_failed")
+		}
 	}
 
 	return false
@@ -1424,12 +1555,13 @@ type InferenceFleetSnapshot struct {
 	Loaded       int
 	LoadsPaused  bool
 	Loading      bool
-	LoadedModels []string
+	LoadedModels       []string
+	LoadedModelDetails []api.GgmlLoadedModelStatus
 }
 
 // InferenceFleetSnapshot returns a point-in-time ggml scheduler view for fleet polling.
-// Pending is read outside loadedMu; loaded_models and loaded are from the same lock
-// so len(loaded_models) == loaded when every resident runner has a resolvable name.
+// loaded and loaded_models count only ready runners (not still loading); loading=true
+// when a new model load probe is in flight via activeLoading.
 func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 	if s == nil {
 		return InferenceFleetSnapshot{}
@@ -1438,27 +1570,89 @@ func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 		Pending:     s.pending.Len(),
 		LoadsPaused: s.loadsPaused.Load(),
 	}
+	type readyEntry struct {
+		name string
+		meta api.LoadedModelMetadata
+	}
+	var ready []readyEntry
+
 	s.loadedMu.Lock()
-	snap.Loaded = len(s.loaded)
 	snap.Loading = s.activeLoading != nil
 	for _, runner := range s.loaded {
 		runner.refMu.Lock()
 		if runner.refCount > 0 {
 			snap.Active++
 		}
-		runner.refMu.Unlock()
-		name := runner.modelKey
-		if runner.model != nil && runner.model.ShortName != "" {
-			name = runner.model.ShortName
+		if !runner.loading && runner.model != nil && runner.llama != nil {
+			name := runner.modelKey
+			if runner.model.ShortName != "" {
+				name = runner.model.ShortName
+			}
+			meta := runner.loadedMeta
+			runner.refMu.Unlock()
+			if meta.ProbedAt.IsZero() {
+				meta = probeRunnerMetadata(runner)
+			}
+			ready = append(ready, readyEntry{name: name, meta: meta})
+		} else {
+			runner.refMu.Unlock()
 		}
-		snap.LoadedModels = append(snap.LoadedModels, name)
 	}
 	if snap.Loading {
 		snap.Active++
 	}
 	s.loadedMu.Unlock()
-	slices.Sort(snap.LoadedModels)
+
+	slices.SortFunc(ready, func(a, b readyEntry) int {
+		return strings.Compare(a.name, b.name)
+	})
+	snap.Loaded = len(ready)
+	snap.LoadedModels = make([]string, 0, len(ready))
+	snap.LoadedModelDetails = make([]api.GgmlLoadedModelStatus, 0, len(ready))
+	for _, e := range ready {
+		snap.LoadedModels = append(snap.LoadedModels, e.name)
+		snap.LoadedModelDetails = append(snap.LoadedModelDetails, api.GgmlLoadedModelStatus{
+			Name:                e.name,
+			LoadedModelMetadata: e.meta,
+		})
+	}
 	return snap
+}
+
+// ProcessModelsSnapshot returns loaded runners for GET /api/ps (mutex-safe).
+func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
+	if s == nil {
+		return nil
+	}
+	s.loadedMu.Lock()
+	runners := make([]*runnerRef, 0, len(s.loaded))
+	for _, r := range s.loaded {
+		runners = append(runners, r)
+	}
+	s.loadedMu.Unlock()
+
+	models := make([]api.ProcessModelResponse, 0, len(runners))
+	for _, runner := range runners {
+		runner.refMu.Lock()
+		if runner.loading || runner.model == nil {
+			runner.refMu.Unlock()
+			continue
+		}
+		mr := buildProcessModelResponse(runner)
+		runner.refMu.Unlock()
+
+		meta := loadedMetadataForRunner(runner)
+		mr.LoadedMetadata = &meta
+		if mr.ContextLength == 0 && meta.NumCtx > 0 {
+			mr.ContextLength = meta.NumCtx
+		}
+		models = append(models, mr)
+	}
+
+	slices.SortStableFunc(models, func(i, j api.ProcessModelResponse) int {
+		return cmp.Compare(j.ExpiresAt.Unix(), i.ExpiresAt.Unix())
+	})
+	return models
 }
 
 // LoadedRunnersForDiscovery returns loaded ggml runners for GPU free-memory refresh.
@@ -1477,10 +1671,28 @@ func (s *Scheduler) LoadedRunnersForDiscovery() []ml.FilteredRunnerDiscovery {
 	return out
 }
 
-// InferenceBacklog returns pending requests, active refs, and loaded runner count.
+// InferenceBacklog returns pending requests, active refs, and resident runner count.
+// loaded counts every runner in the scheduler map (including still loading), not only
+// ready runners — training idle-wait uses this to block while VRAM is occupied.
 func (s *Scheduler) InferenceBacklog() (pending int, active int, loaded int) {
-	snap := s.InferenceFleetSnapshot()
-	return snap.Pending, snap.Active, snap.Loaded
+	if s == nil {
+		return 0, 0, 0
+	}
+	pending = s.pending.Len()
+	s.loadedMu.Lock()
+	loaded = len(s.loaded)
+	for _, runner := range s.loaded {
+		runner.refMu.Lock()
+		if runner.refCount > 0 {
+			active++
+		}
+		runner.refMu.Unlock()
+	}
+	if s.activeLoading != nil {
+		active++
+	}
+	s.loadedMu.Unlock()
+	return pending, active, loaded
 }
 
 // WaitStatus returns a streaming progress snapshot for a scheduler ticket.

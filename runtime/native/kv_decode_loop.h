@@ -99,5 +99,33 @@ int kv_decode_loop_run_batch_step(
  */
 void kv_decode_loop_post_prefill_probe(void *ctx, int32_t seq_id);
 
+/*
+ * Invalidate ggml CUDA graph cache (vLLM breakable-graph bind).
+ * Returns backends cleared (>=0), or 0 on Metal / non-CUDA builds.
+ * WHY: prefix cache clear changes KV; ggml graph keys ignore sequence id.
+ */
+int kv_decode_loop_invalidate_cuda_graphs(void *ctx);
+
+/*
+ * Chunked-prefill abort flag (v31).
+ *
+ * WHY process-global atomic: the GIL is released during prefill; a Python
+ * thread-local or ctypes pointer would race.  One flag per process is safe
+ * because the runtime only runs one native prefill at a time.
+ *
+ * Usage:
+ *   kv_decode_loop_abort_set()   — signal cancel (call from Python thread)
+ *   kv_decode_loop_abort_clear() — reset before next prefill
+ *   kv_decode_loop_abort_check() — non-zero → abort requested (C internal)
+ *
+ * kv_decode_loop_run_prefill checks the flag between page-aligned chunks and
+ * returns KV_DECODE_LOOP_ERR_ABORT (-3) when set.
+ */
+#define KV_DECODE_LOOP_ERR_ABORT (-3)
+
+void kv_decode_loop_abort_set(void);
+void kv_decode_loop_abort_clear(void);
+int  kv_decode_loop_abort_check(void);
+
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
 #endif /* KV_DECODE_LOOP_H */

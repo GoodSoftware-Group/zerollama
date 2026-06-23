@@ -2,21 +2,17 @@ package launch
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 func TestOpenclawIntegration(t *testing.T) {
@@ -77,7 +73,7 @@ func TestOpenclawRunPassthroughArgs(t *testing.T) {
 	defer func() { DefaultConfirmPrompt = oldConfirmPrompt }()
 
 	c := &Openclaw{}
-	if err := c.Run("llama3.2", []string{"gateway", "--someflag"}); err != nil {
+	if err := c.Run("llama3.2", nil, []string{"gateway", "--someflag"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -151,7 +147,7 @@ fi
 	defer func() { DefaultConfirmPrompt = oldConfirmPrompt }()
 
 	c := &Openclaw{}
-	if err := c.Run("llama3.2", nil); err != nil {
+	if err := c.Run("llama3.2", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -223,7 +219,7 @@ func TestOpenclawRun_SetupLaterContinuesToGatewayAndTUI(t *testing.T) {
 	defer func() { DefaultConfirmPrompt = oldConfirmPrompt }()
 
 	c := &Openclaw{}
-	if err := c.Run("llama3.2", nil); err != nil {
+	if err := c.Run("llama3.2", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -263,7 +259,7 @@ func TestOpenclawEdit(t *testing.T) {
 
 	t.Run("fresh install", func(t *testing.T) {
 		cleanup()
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 		assertOpenclawModelExists(t, configPath, "llama3.2")
@@ -272,7 +268,7 @@ func TestOpenclawEdit(t *testing.T) {
 
 	t.Run("multiple models - first is primary", func(t *testing.T) {
 		cleanup()
-		if err := c.Edit([]string{"llama3.2", "mistral"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2", "mistral")); err != nil {
 			t.Fatal(err)
 		}
 		assertOpenclawModelExists(t, configPath, "llama3.2")
@@ -284,7 +280,7 @@ func TestOpenclawEdit(t *testing.T) {
 		cleanup()
 		os.MkdirAll(configDir, 0o755)
 		os.WriteFile(configPath, []byte(`{"models":{"providers":{"anthropic":{"apiKey":"xxx"}}}}`), 0o644)
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 		data, _ := os.ReadFile(configPath)
@@ -301,7 +297,7 @@ func TestOpenclawEdit(t *testing.T) {
 		cleanup()
 		os.MkdirAll(configDir, 0o755)
 		os.WriteFile(configPath, []byte(`{"theme":"dark","mcp":{"servers":{}}}`), 0o644)
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 		data, _ := os.ReadFile(configPath)
@@ -317,7 +313,7 @@ func TestOpenclawEdit(t *testing.T) {
 
 	t.Run("preserve user customizations on models", func(t *testing.T) {
 		cleanup()
-		c.Edit([]string{"llama3.2"})
+		c.Edit(testLaunchModels("llama3.2"))
 
 		// User adds custom field
 		data, _ := os.ReadFile(configPath)
@@ -333,7 +329,7 @@ func TestOpenclawEdit(t *testing.T) {
 		os.WriteFile(configPath, configData, 0o644)
 
 		// Re-run Edit
-		c.Edit([]string{"llama3.2"})
+		c.Edit(testLaunchModels("llama3.2"))
 
 		data, _ = os.ReadFile(configPath)
 		json.Unmarshal(data, &cfg)
@@ -349,8 +345,8 @@ func TestOpenclawEdit(t *testing.T) {
 
 	t.Run("edit replaces models list", func(t *testing.T) {
 		cleanup()
-		c.Edit([]string{"llama3.2", "mistral"})
-		c.Edit([]string{"llama3.2"})
+		c.Edit(testLaunchModels("llama3.2", "mistral"))
+		c.Edit(testLaunchModels("llama3.2"))
 
 		assertOpenclawModelExists(t, configPath, "llama3.2")
 		assertOpenclawModelNotExists(t, configPath, "mistral")
@@ -362,7 +358,7 @@ func TestOpenclawEdit(t *testing.T) {
 		original := `{"existing":"data"}`
 		os.WriteFile(configPath, []byte(original), 0o644)
 
-		c.Edit([]string{})
+		c.Edit(nil)
 
 		data, _ := os.ReadFile(configPath)
 		if string(data) != original {
@@ -375,7 +371,7 @@ func TestOpenclawEdit(t *testing.T) {
 		os.MkdirAll(configDir, 0o755)
 		os.WriteFile(configPath, []byte(`{corrupted`), 0o644)
 
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -391,7 +387,7 @@ func TestOpenclawEdit(t *testing.T) {
 		os.MkdirAll(configDir, 0o755)
 		os.WriteFile(configPath, []byte(`{"models":"not a map"}`), 0o644)
 
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 		assertOpenclawModelExists(t, configPath, "llama3.2")
@@ -571,7 +567,7 @@ func TestOpenclawEditSchemaFields(t *testing.T) {
 	setTestHome(t, tmpDir)
 	configPath := filepath.Join(tmpDir, ".openclaw", "openclaw.json")
 
-	if err := c.Edit([]string{"llama3.2"}); err != nil {
+	if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -612,7 +608,7 @@ func TestOpenclawEditModelNames(t *testing.T) {
 
 	t.Run("model with colon tag", func(t *testing.T) {
 		cleanup()
-		if err := c.Edit([]string{"llama3.2:70b"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2:70b")); err != nil {
 			t.Fatal(err)
 		}
 		assertOpenclawModelExists(t, configPath, "llama3.2:70b")
@@ -621,7 +617,7 @@ func TestOpenclawEditModelNames(t *testing.T) {
 
 	t.Run("model with slash", func(t *testing.T) {
 		cleanup()
-		if err := c.Edit([]string{"library/model:tag"}); err != nil {
+		if err := c.Edit(testLaunchModels("library/model:tag")); err != nil {
 			t.Fatal(err)
 		}
 		assertOpenclawModelExists(t, configPath, "library/model:tag")
@@ -630,7 +626,7 @@ func TestOpenclawEditModelNames(t *testing.T) {
 
 	t.Run("model with hyphen", func(t *testing.T) {
 		cleanup()
-		if err := c.Edit([]string{"test-model"}); err != nil {
+		if err := c.Edit(testLaunchModels("test-model")); err != nil {
 			t.Fatal(err)
 		}
 		assertOpenclawModelExists(t, configPath, "test-model")
@@ -650,7 +646,7 @@ func TestOpenclawEditAgentsPreservation(t *testing.T) {
 		os.MkdirAll(configDir, 0o755)
 		os.WriteFile(configPath, []byte(`{"agents":{"defaults":{"model":{"primary":"old"},"temperature":0.7}}}`), 0o644)
 
-		c.Edit([]string{"llama3.2"})
+		c.Edit(testLaunchModels("llama3.2"))
 
 		data, _ := os.ReadFile(configPath)
 		var cfg map[string]any
@@ -667,7 +663,7 @@ func TestOpenclawEditAgentsPreservation(t *testing.T) {
 		os.MkdirAll(configDir, 0o755)
 		os.WriteFile(configPath, []byte(`{"agents":{"defaults":{},"custom-agent":{"foo":"bar"}}}`), 0o644)
 
-		c.Edit([]string{"llama3.2"})
+		c.Edit(testLaunchModels("llama3.2"))
 
 		data, _ := os.ReadFile(configPath)
 		var cfg map[string]any
@@ -707,7 +703,7 @@ func TestOpenclawEdit_RoundTrip(t *testing.T) {
 	os.MkdirAll(configDir, 0o755)
 	os.WriteFile(configPath, []byte(testOpenclawFixture), 0o644)
 
-	if err := c.Edit([]string{"llama3.2", "mistral"}); err != nil {
+	if err := c.Edit(testLaunchModels("llama3.2", "mistral")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -753,10 +749,10 @@ func TestOpenclawEdit_Idempotent(t *testing.T) {
 	os.MkdirAll(configDir, 0o755)
 	os.WriteFile(configPath, []byte(testOpenclawFixture), 0o644)
 
-	c.Edit([]string{"llama3.2", "mistral"})
+	c.Edit(testLaunchModels("llama3.2", "mistral"))
 	firstData, _ := os.ReadFile(configPath)
 
-	c.Edit([]string{"llama3.2", "mistral"})
+	c.Edit(testLaunchModels("llama3.2", "mistral"))
 	secondData, _ := os.ReadFile(configPath)
 
 	if string(firstData) != string(secondData) {
@@ -779,7 +775,7 @@ func TestOpenclawEdit_MultipleConsecutiveEdits(t *testing.T) {
 		if i%2 == 0 {
 			models = []string{"model-x", "model-y", "model-z"}
 		}
-		if err := c.Edit(models); err != nil {
+		if err := c.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("edit %d failed: %v", i, err)
 		}
 	}
@@ -808,7 +804,7 @@ func TestOpenclawEdit_BackupCreated(t *testing.T) {
 	original := fmt.Sprintf(`{"theme": "%s"}`, uniqueMarker)
 	os.WriteFile(configPath, []byte(original), 0o644)
 
-	if err := c.Edit([]string{"model-a"}); err != nil {
+	if err := c.Edit(testLaunchModels("model-a")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -930,7 +926,7 @@ func TestOpenclawLegacyPaths(t *testing.T) {
 		os.WriteFile(filepath.Join(newDir, "openclaw.json"), []byte(`{"theme":"new"}`), 0o644)
 		os.WriteFile(filepath.Join(legacyDir, "clawdbot.json"), []byte(`{"theme":"legacy"}`), 0o644)
 
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -949,7 +945,7 @@ func TestOpenclawLegacyPaths(t *testing.T) {
 		os.MkdirAll(legacyDir, 0o755)
 		os.WriteFile(filepath.Join(legacyDir, "clawdbot.json"), []byte(`{"theme":"dark"}`), 0o644)
 
-		if err := c.Edit([]string{"llama3.2"}); err != nil {
+		if err := c.Edit(testLaunchModels("llama3.2")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -977,7 +973,7 @@ func TestOpenclawEdit_CreatesDirectoryIfMissing(t *testing.T) {
 		t.Fatal("directory should not exist before test")
 	}
 
-	if err := c.Edit([]string{"model-a"}); err != nil {
+	if err := c.Edit(testLaunchModels("model-a")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1882,8 +1878,8 @@ func TestPrintOpenclawReady(t *testing.T) {
 }
 
 func TestOpenclawModelConfig(t *testing.T) {
-	t.Run("nil client returns base config", func(t *testing.T) {
-		cfg, _ := openclawModelConfig(context.Background(), nil, "llama3.2")
+	t.Run("minimal model returns base config", func(t *testing.T) {
+		cfg, _ := openclawModelConfig(fallbackLaunchModel("llama3.2"))
 
 		if cfg["id"] != "llama3.2" {
 			t.Errorf("id = %v, want llama3.2", cfg["id"])
@@ -1894,29 +1890,17 @@ func TestOpenclawModelConfig(t *testing.T) {
 		if cfg["cost"] == nil {
 			t.Error("cost should be set")
 		}
-		// Should not have capability fields without API
+		// Should not have capability fields without inventory metadata.
 		if _, ok := cfg["reasoning"]; ok {
-			t.Error("reasoning should not be set without API")
+			t.Error("reasoning should not be set without metadata")
 		}
 		if _, ok := cfg["contextWindow"]; ok {
-			t.Error("contextWindow should not be set without API")
+			t.Error("contextWindow should not be set without metadata")
 		}
 	})
 
 	t.Run("sets vision input when model has vision capability", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["vision"],"model_info":{"llama.context_length":4096}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "llava:7b")
+		cfg, _ := openclawModelConfig(LaunchModel{Name: "llava:7b", Capabilities: []model.Capability{"vision"}, ContextLength: 4096})
 
 		input, ok := cfg["input"].([]any)
 		if !ok || len(input) != 2 {
@@ -1925,19 +1909,7 @@ func TestOpenclawModelConfig(t *testing.T) {
 	})
 
 	t.Run("sets text-only input when model lacks vision", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["completion"],"model_info":{}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "llama3.2")
+		cfg, _ := openclawModelConfig(LaunchModel{Name: "llama3.2", Capabilities: []model.Capability{"completion"}})
 
 		input, ok := cfg["input"].([]any)
 		if !ok || len(input) != 1 {
@@ -1949,39 +1921,15 @@ func TestOpenclawModelConfig(t *testing.T) {
 	})
 
 	t.Run("sets reasoning when model has thinking capability", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["thinking"],"model_info":{}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "qwq")
+		cfg, _ := openclawModelConfig(LaunchModel{Name: "qwq", Capabilities: []model.Capability{"thinking"}})
 
 		if cfg["reasoning"] != true {
 			t.Error("expected reasoning = true for thinking model")
 		}
 	})
 
-	t.Run("extracts context window from model info", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":[],"model_info":{"llama.context_length":131072}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "llama3.2")
+	t.Run("sets context window from inventory metadata", func(t *testing.T) {
+		cfg, _ := openclawModelConfig(LaunchModel{Name: "llama3.2", ContextLength: 131072})
 
 		if cfg["contextWindow"] != 131072 {
 			t.Errorf("contextWindow = %v, want 131072", cfg["contextWindow"])
@@ -1989,19 +1937,11 @@ func TestOpenclawModelConfig(t *testing.T) {
 	})
 
 	t.Run("handles all capabilities together", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["vision","thinking"],"model_info":{"qwen3.context_length":32768}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "qwen3-vision")
+		cfg, _ := openclawModelConfig(LaunchModel{
+			Name:          "qwen3-vision",
+			Capabilities:  []model.Capability{"vision", "thinking"},
+			ContextLength: 32768,
+		})
 
 		input, ok := cfg["input"].([]any)
 		if !ok || len(input) != 2 {
@@ -2015,17 +1955,8 @@ func TestOpenclawModelConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("returns base config when show fails", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"error":"model not found"}`)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "missing-model")
+	t.Run("returns base config when metadata is unavailable", func(t *testing.T) {
+		cfg, _ := openclawModelConfig(fallbackLaunchModel("missing-model"))
 
 		if cfg["id"] != "missing-model" {
 			t.Errorf("id = %v, want missing-model", cfg["id"])
@@ -2035,110 +1966,41 @@ func TestOpenclawModelConfig(t *testing.T) {
 			t.Error("input should always be set")
 		}
 		if _, ok := cfg["reasoning"]; ok {
-			t.Error("reasoning should not be set when show fails")
+			t.Error("reasoning should not be set when metadata is unavailable")
 		}
 		if _, ok := cfg["contextWindow"]; ok {
-			t.Error("contextWindow should not be set when show fails")
-		}
-	})
-
-	t.Run("times out slow show and returns base config", func(t *testing.T) {
-		oldTimeout := openclawModelShowTimeout
-		openclawModelShowTimeout = 50 * time.Millisecond
-		t.Cleanup(func() { openclawModelShowTimeout = oldTimeout })
-
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				time.Sleep(300 * time.Millisecond)
-				fmt.Fprintf(w, `{"capabilities":["thinking"],"model_info":{"llama.context_length":4096}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		start := time.Now()
-		cfg, _ := openclawModelConfig(context.Background(), client, "slow-model")
-		elapsed := time.Since(start)
-		if elapsed >= 250*time.Millisecond {
-			t.Fatalf("openclawModelConfig took too long: %v", elapsed)
-		}
-		if cfg["id"] != "slow-model" {
-			t.Errorf("id = %v, want slow-model", cfg["id"])
-		}
-		if _, ok := cfg["reasoning"]; ok {
-			t.Error("reasoning should not be set on timeout")
-		}
-		if _, ok := cfg["contextWindow"]; ok {
-			t.Error("contextWindow should not be set on timeout")
+			t.Error("contextWindow should not be set when metadata is unavailable")
 		}
 	})
 
 	t.Run("skips zero context length", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":[],"model_info":{"llama.context_length":0}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, _ := openclawModelConfig(context.Background(), client, "test-model")
+		cfg, _ := openclawModelConfig(LaunchModel{Name: "test-model", ContextLength: 0})
 
 		if _, ok := cfg["contextWindow"]; ok {
 			t.Error("contextWindow should not be set for zero value")
 		}
 	})
 
-	t.Run("cloud model without hardcoded limits omits token windows", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":[],"model_info":{},"remote_model":"minimax-m2.7"}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, isCloud := openclawModelConfig(context.Background(), client, "minimax-m2.7:cloud")
+	t.Run("cloud model without limit metadata omits token windows", func(t *testing.T) {
+		cfg, isCloud := openclawModelConfig(fallbackLaunchModel("minimax-m2.7:cloud"))
 
 		if !isCloud {
 			t.Error("expected isCloud = true for cloud model")
 		}
 		if _, ok := cfg["contextWindow"]; ok {
-			t.Error("expected no contextWindow without cloud limit metadata")
+			t.Error("contextWindow should not be set without cloud limit metadata")
 		}
 		if _, ok := cfg["maxTokens"]; ok {
-			t.Error("expected no maxTokens without cloud limit metadata")
+			t.Error("maxTokens should not be set without cloud limit metadata")
 		}
 	})
 
 	t.Run("cloud model with vision capability gets image input", func(t *testing.T) {
-		// Regression test: cloud models must not skip capability detection.
-		// A cloud model that reports vision capability should have input: [text, image].
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["vision"],"model_info":{},"remote_model":"qwen3-vl"}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, isCloud := openclawModelConfig(context.Background(), client, "qwen3-vl:235b-cloud")
+		cfg, isCloud := openclawModelConfig(LaunchModel{
+			Name:         "qwen3-vl:235b-cloud",
+			Remote:       true,
+			Capabilities: []model.Capability{"vision"},
+		}.WithCloudLimits())
 
 		if !isCloud {
 			t.Error("expected isCloud = true for cloud vision model")
@@ -2150,21 +2012,11 @@ func TestOpenclawModelConfig(t *testing.T) {
 	})
 
 	t.Run("cloud model with thinking capability gets reasoning flag", func(t *testing.T) {
-		// Regression test: cloud models must not skip capability detection.
-		// A cloud model that reports thinking capability should have reasoning: true.
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["thinking"],"model_info":{},"remote_model":"qwq-cloud"}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg, isCloud := openclawModelConfig(context.Background(), client, "qwq:cloud")
+		cfg, isCloud := openclawModelConfig(LaunchModel{
+			Name:         "qwq:cloud",
+			Remote:       true,
+			Capabilities: []model.Capability{"thinking"},
+		})
 
 		if !isCloud {
 			t.Error("expected isCloud = true for cloud thinking model")

@@ -10,6 +10,10 @@ import (
 
 type Nemotron3NanoRenderer struct{}
 
+func (r *Nemotron3NanoRenderer) LeadingBOS() string {
+	return ""
+}
+
 func (r *Nemotron3NanoRenderer) Render(messages []api.Message, tools []api.Tool, thinkValue *api.ThinkValue) (string, error) {
 	var sb strings.Builder
 

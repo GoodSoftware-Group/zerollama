@@ -243,8 +243,11 @@ var (
 	ContextLength = Uint("OLLAMA_CONTEXT_LENGTH", 0)
 	// Auth enables authentication between the Ollama client and server
 	UseAuth = Bool("OLLAMA_AUTH")
-	// Enable Vulkan backend
-	EnableVulkan = Bool("OLLAMA_VULKAN")
+	// EnableVulkan controls experimental Vulkan backend discovery.
+	EnableVulkan = BoolWithDefault("OLLAMA_VULKAN")
+	// EnableIntegratedGPU controls whether integrated GPUs may be selected.
+	// Default false except upstream allowlist (CUDA iGPU, ROCm gfx1151 Strix Halo).
+	EnableIntegratedGPU = BoolWithDefault("OLLAMA_IGPU_ENABLE")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
 	// TrainingEnabled starts embedded GPU training (CGO + training.py) and registers training APIs when true.
@@ -293,6 +296,61 @@ var (
 	MaxQueue = Uint("OLLAMA_MAX_QUEUE", 512)
 )
 
+// MemoryReclaimThreshold returns the GPU VRAM usage ratio (0–1) at which the
+// scheduler watchdog evicts the least-recently-used idle runner. Zero disables.
+func MemoryReclaimThreshold() float64 {
+	s := Var("ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD")
+	if s == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 || f > 1 {
+		slog.Warn("invalid ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD, disabled", "value", s)
+		return 0
+	}
+	return f
+}
+
+// RunnerBusyTimeout returns how long a runner may stay busy before the watchdog
+// forces an unload. Zero disables (default).
+func RunnerBusyTimeout() time.Duration {
+	s := Var("ZEROLLAMA_RUNNER_BUSY_TIMEOUT")
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return time.Duration(n) * time.Second
+		}
+		slog.Warn("invalid ZEROLLAMA_RUNNER_BUSY_TIMEOUT, disabled", "value", s)
+		return 0
+	}
+	if d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// SchedWatchdogInterval is how often the scheduler memory/busy watchdog runs.
+func SchedWatchdogInterval() time.Duration {
+	s := Var("ZEROLLAMA_SCHED_WATCHDOG_INTERVAL")
+	if s == "" {
+		return 30 * time.Second
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return time.Duration(n) * time.Second
+		}
+		return 30 * time.Second
+	}
+	if d < 5*time.Second {
+		return 5 * time.Second
+	}
+	return d
+}
+
 func Uint64(key string, defaultValue uint64) func() uint64 {
 	return func() uint64 {
 		if s := Var(key); s != "" {
@@ -326,7 +384,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_HOST":                         {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 0.0.0.0:11434)"},
 		"OLLAMA_KEEP_ALIVE":                   {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
 		"OLLAMA_LLM_LIBRARY":                  {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
-		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches (GGUF/safetensors) for pull and list (default true)"},
+		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches; auto-sync on list/serve and pull shortcut (default true)"},
 		"OLLAMA_LMSTUDIO_LIST_ALL":            {"OLLAMA_LMSTUDIO_LIST_ALL", LMStudioListAll(), "List all LM Studio models even when MLX import needs more disk than available (pull still enforces space)"},
 		"OLLAMA_LMSTUDIO_MODELS":              {"OLLAMA_LMSTUDIO_MODELS", Var("OLLAMA_LMSTUDIO_MODELS"), "Only scan these LM Studio model directories (comma-separated); unset uses default paths"},
 		"OLLAMA_LOAD_TIMEOUT":                 {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
@@ -346,7 +404,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_MULTIUSER_CACHE":              {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
 		"OLLAMA_CONTEXT_LENGTH":               {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
 		"OLLAMA_EDITOR":                       {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
-		"OLLAMA_NEW_ENGINE":                   {"OLLAMA_NEW_ENGINE", NewEngine(), "Deprecated — use ZEROLLAMA_LLAMA_SERVER / --llama-server-backend (Phase 17)"},
+		"OLLAMA_NEW_ENGINE":                   {"OLLAMA_NEW_ENGINE", NewEngine(), "Deprecated — ignored for routing; use ZEROLLAMA_LLAMA_SERVER / --edge (Phase 16/17)"},
 		"OLLAMA_REMOTES":                      {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 		"ELIZACLOUD_API_KEY":                  {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
 		"OLLAMA_SGLANG_URL":                   {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
@@ -357,7 +415,22 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
 		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy for text GGUF: 1/on, 0/off; unset=off on Darwin (ggml default), on on Linux when URL set"},
 		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
-		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, 0/off; Linux auto when binary found)"},
+		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, auto=Linux serve default, 0/off)"},
+		"ZEROLLAMA_FLASH_MOE":                    {"ZEROLLAMA_FLASH_MOE", FlashMoEEnabled(), "Flash-MoE slot-bank via anemll-flash-llama.cpp (1/on)"},
+		"ZEROLLAMA_FLASH_MOE_SIDECAR":            {"ZEROLLAMA_FLASH_MOE_SIDECAR", FlashMoESidecar(), "Routed-expert sidecar directory for Flash-MoE"},
+		"ZEROLLAMA_FLASH_MOE_MODE":               {"ZEROLLAMA_FLASH_MOE_MODE", FlashMoEMode(), "Flash-MoE runtime mode (default slot-bank)"},
+		"ZEROLLAMA_FLASH_MOE_SLOT_BANK":          {"ZEROLLAMA_FLASH_MOE_SLOT_BANK", Var("ZEROLLAMA_FLASH_MOE_SLOT_BANK"), "Resident expert slots per MoE layer"},
+		"ZEROLLAMA_FLASH_MOE_TOPK":               {"ZEROLLAMA_FLASH_MOE_TOPK", Var("ZEROLLAMA_FLASH_MOE_TOPK"), "Routed expert top-k override (0=model default)"},
+		"ZEROLLAMA_FLASH_MOE_PREFETCH":           {"ZEROLLAMA_FLASH_MOE_PREFETCH", FlashMoEPrefetchTemporal(), "One-step temporal expert prefetch (1/on)"},
+		"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN":   {"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN", FlashMoELlamaServerBin(), "Override Flash-MoE llama-server binary path"},
+		"FLASH_MOE_REPO":                         {"FLASH_MOE_REPO", FlashMoERepo(), "anemll-flash-llama.cpp checkout for build script"},
+		"ANE_REPO":                               {"ANE_REPO", ANERepo(), "maderix/ane checkout for ANE probe bridge"},
+		"ZEROLLAMA_ANE_DRAFT":                    {"ZEROLLAMA_ANE_DRAFT", ANEDraftEnabled(), "Route speculative draft to ANE when wired (default off)"},
+		"ZEROLLAMA_EDGE":                       {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
+		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":    {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
+		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":  {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
+		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":       {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
+		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":   {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
 		"ZEROLLAMA_ELIZA_NGRAM":               {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
 		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":              {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
@@ -381,6 +454,8 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":         {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
 		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":    {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
 		"OLLAMA_VIDEO_FETCH_TIMEOUT":          {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
+		"OLLAMA_IMAGE_EMBED_CACHE_SIZE":       {"OLLAMA_IMAGE_EMBED_CACHE_SIZE", ImageEmbedCacheSize(), "Per-runner vision embed (ViT) LRU cache slots (default 4; set 32–64 for video agents)"},
+		"OLLAMA_IMAGE_EMBED_CACHE_MAX":        {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64)"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},
@@ -402,7 +477,8 @@ func AsMap() map[string]EnvVar {
 		ret["GGML_VK_VISIBLE_DEVICES"] = EnvVar{"GGML_VK_VISIBLE_DEVICES", VkVisibleDevices(), "Set which Vulkan devices are visible by numeric ID"}
 		ret["GPU_DEVICE_ORDINAL"] = EnvVar{"GPU_DEVICE_ORDINAL", GpuDeviceOrdinal(), "Set which AMD devices are visible by numeric ID"}
 		ret["HSA_OVERRIDE_GFX_VERSION"] = EnvVar{"HSA_OVERRIDE_GFX_VERSION", HsaOverrideGfxVersion(), "Override the gfx used for all detected AMD GPUs"}
-		ret["OLLAMA_VULKAN"] = EnvVar{"OLLAMA_VULKAN", EnableVulkan(), "Enable experimental Vulkan support"}
+		ret["OLLAMA_VULKAN"] = EnvVar{"OLLAMA_VULKAN", strconv.FormatBool(EnableVulkan(true)), "Enable Vulkan support"}
+		ret["OLLAMA_IGPU_ENABLE"] = EnvVar{"OLLAMA_IGPU_ENABLE", strconv.FormatBool(EnableIntegratedGPU(false)), "Enable integrated GPU selection"}
 	}
 
 	return ret
@@ -528,6 +604,26 @@ func LlamaCppBackend() bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+// DarwinSidecarKillOnServeExit is true when the child sidecar should exit with zerollama serve.
+// Default: persist — sidecar survives serve restarts and is reused on the next bootstrap.
+// Set ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=managed to kill the child on serve shutdown.
+func DarwinSidecarKillOnServeExit() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR"))
+	return strings.EqualFold(v, "managed")
+}
+
+func darwinSidecarEnvDisplay() string {
+	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR"))
+	switch {
+	case v == "0" || strings.EqualFold(v, "false"):
+		return "off"
+	case strings.EqualFold(v, "managed"):
+		return "managed"
+	default:
+		return "persist"
+	}
+}
+
 // ElizaNgramDefault enables ngram-simple speculative decoding for eliza-1-* tags on the
 // llama-server path when no draft model is configured. Set ZEROLLAMA_ELIZA_NGRAM=1.
 func ElizaNgramDefault() bool {
@@ -536,10 +632,22 @@ func ElizaNgramDefault() bool {
 }
 
 // LlamaServerBackend routes eligible GGUF inference through Go → llama-server
-// (upstream shape). Set via ZEROLLAMA_LLAMA_SERVER=1 or `zerollama serve --llama-server-backend`.
+// (upstream shape). Set via ZEROLLAMA_LLAMA_SERVER=1, `auto` (Linux serve default),
+// or `zerollama serve --llama-server-backend`.
 func LlamaServerBackend() bool {
 	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "auto")
+}
+
+// LlamaServerBackendExplicit is true for operator opt-in (all platforms, all GGUF).
+func LlamaServerBackendExplicit() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER"))
 	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// LlamaServerBackendAuto is true when Linux serve auto-enables upstream routing.
+func LlamaServerBackendAuto() bool {
+	return strings.EqualFold(strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER")), "auto")
 }
 
 // LlamaServerBackendDisabled is true when ZEROLLAMA_LLAMA_SERVER=0 explicitly disables
@@ -547,6 +655,38 @@ func LlamaServerBackend() bool {
 func LlamaServerBackendDisabled() bool {
 	v := strings.TrimSpace(Var("ZEROLLAMA_LLAMA_SERVER"))
 	return v == "0" || strings.EqualFold(v, "false")
+}
+
+// EdgeMode enables Phase 16 upstream-shaped deployment: Go → llama-server for GGUF,
+// Python runtime off for chat (training embed may still run).
+func EdgeMode() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_EDGE"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// ApplyEdgeModeDefaults configures upstream-shaped local inference without the Python
+// runtime chat middleman. Safe to call when the flag is off (no-op).
+func ApplyEdgeModeDefaults() {
+	if !EdgeMode() {
+		return
+	}
+	// Always force llama-server when edge mode is active, even if the operator
+	// previously set ZEROLLAMA_LLAMA_SERVER=0. Edge with no llama-server would
+	// disable the Python runtime but have no inference backend at all.
+	_ = os.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	if strings.TrimSpace(Var("ZEROLLAMA_LEGACY_RUNNER")) == "" {
+		_ = os.Setenv("ZEROLLAMA_LEGACY_RUNNER", "1")
+	}
+	// Runtime defaults: do not override an explicit operator value, but default off.
+	if strings.TrimSpace(Var("ZEROLLAMA_RUNTIME")) == "" {
+		_ = os.Setenv("ZEROLLAMA_RUNTIME", "0")
+	}
+	if strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_EMBED")) == "" {
+		_ = os.Setenv("ZEROLLAMA_RUNTIME_EMBED", "0")
+	}
+	if strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR")) == "" {
+		_ = os.Setenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", "0")
+	}
 }
 
 // ApplyLlamaServerBackendDefaults skips Python runtime routing so sched loads
@@ -588,6 +728,9 @@ func runtimeEnvDisplay() string {
 // RuntimeEmbedEnabled starts inference runtime inside the zerollama process (CGO).
 // Default: on when ZEROLLAMA_RUNTIME_URL is unset; set 0 to use an external sidecar only.
 func RuntimeEmbedEnabled() bool {
+	if EdgeMode() {
+		return false
+	}
 	v := strings.TrimSpace(Var("ZEROLLAMA_RUNTIME_EMBED"))
 	if v == "0" || strings.EqualFold(v, "false") {
 		return false
@@ -995,6 +1138,28 @@ func VideoAllowInsecureHTTP() bool {
 // VideoFetchTimeout bounds the entire remote GET for video_url (connect + response headers + body read, default 10m).
 func VideoFetchTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_VIDEO_FETCH_TIMEOUT", 10*time.Minute)
+}
+
+// ImageEmbedCacheSize is the number of LRU slots in the per-runner vision embed cache.
+// Default 4 matches the upstream llamarunner constant; raise to 32–64 for video agents
+// that resend the same clip frames across turns.
+func ImageEmbedCacheSize() int {
+	n := int(Uint64("OLLAMA_IMAGE_EMBED_CACHE_SIZE", 4)())
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// ImageEmbedCacheMax is the upper bound for auto-grown ViT embed LRU slots per turn.
+// WHY: video agents may send 32 frames while OLLAMA_IMAGE_EMBED_CACHE_SIZE stays at 4;
+// llamarunner grows the cache up to this cap for the loaded runner session.
+func ImageEmbedCacheMax() int {
+	n := int(Uint64("OLLAMA_IMAGE_EMBED_CACHE_MAX", 64)())
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // serverConfigData holds the parsed fields from ~/.ollama/server.json.

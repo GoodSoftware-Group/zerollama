@@ -47,8 +47,11 @@ type ConfigV2 struct {
 	ModelType     string   `json:"model_type"` // shown as Parameter Size
 	FileType      string   `json:"file_type"`  // shown as Quantization Level
 	Renderer      string   `json:"renderer,omitempty"`
-	Parser        string   `json:"parser,omitempty"`
-	Requires      string   `json:"requires,omitempty"`
+	Parser            string   `json:"parser,omitempty"`
+	// ConcurrencyGroups declare mutual exclusion with other loaded models (LocalAI pattern).
+	// Why: on tight GPUs, imagegen + chat must not stay resident together.
+	ConcurrencyGroups []string `json:"concurrency_groups,omitempty"`
+	Requires          string   `json:"requires,omitempty"`
 
 	RemoteHost  string `json:"remote_host,omitempty"`
 	RemoteModel string `json:"remote_model,omitempty"`
@@ -83,6 +86,9 @@ type ConfigV2 struct {
 	// TokensPerImage is an optional vision-token budget per raster frame for context preflight only.
 	// Default 768 matches server/prompt.go until projector metadata supplies a real per-image cost.
 	TokensPerImage int `json:"tokens_per_image,omitempty"`
+	// VisionPatchSize / VisionSpatialMergeSize tune native grid_thw estimates (Qwen/SGLang layout).
+	VisionPatchSize        int `json:"vision_patch_size,omitempty"`
+	VisionSpatialMergeSize int `json:"vision_spatial_merge_size,omitempty"`
 }
 
 // Draft describes an auxiliary draft model stored in the same manifest.

@@ -41,7 +41,6 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/llm"
-	"github.com/ollama/ollama/x/imagegen/size"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/middleware"
@@ -58,6 +57,7 @@ import (
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/version"
 	imagegenmanifest "github.com/ollama/ollama/x/imagegen/manifest"
+	"github.com/ollama/ollama/x/imagegen/size"
 	"github.com/ollama/ollama/x/runtimeworker"
 	xserver "github.com/ollama/ollama/x/server"
 	"github.com/ollama/ollama/x/trainingworker"
@@ -87,14 +87,20 @@ func writeModelRefParseError(c *gin.Context, err error, fallbackStatus int, fall
 }
 
 func shouldUseHarmony(model *Model) bool {
-	if slices.Contains([]string{"gptoss", "gpt-oss"}, model.Config.ModelFamily) {
-		// heuristic to check whether the template expects to be parsed via harmony:
-		// search for harmony tags that are nearly always used
-		if model.Template.Contains("<|start|>") && model.Template.Contains("<|end|>") {
-			return true
-		}
+	if model == nil {
+		return false
 	}
-
+	if !isGptOSSFamily(model.Config.ModelFamily) && !isGptOSSFamily(model.PrimaryFamily()) {
+		return false
+	}
+	// MLX imports often ship with {{ .Prompt }} only; still route through harmony.
+	if model.IsMLX() {
+		return true
+	}
+	// Heuristic for GGUF: template must include harmony structural tags.
+	if model.Template != nil && model.Template.Contains("<|start|>") && model.Template.Contains("<|end|>") {
+		return true
+	}
 	return false
 }
 
@@ -250,6 +256,12 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		return nil, nil, nil, nil, fmt.Errorf("model %w", errRequired)
 	}
 
+	if repaired, err := RepairLMStudioModelIfNeeded(ctx, name); err != nil {
+		slog.Warn("lm studio repair before load failed", "model", name, "error", err)
+	} else if repaired {
+		slog.Info("lm studio repaired model before load", "model", name)
+	}
+
 	model, err := GetModel(name)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -271,6 +283,8 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		return nil, nil, nil, nil, err
 	}
 
+	capMLXScheduleOptions(model, &opts)
+	keepAlive = mlxKeepAliveFloor(model, keepAlive)
 	ggmlCtx := capNumCtxToModelMax(model, &opts)
 	if vram := s.applyGgmlNumCtxClamp(ctx, model, &opts); vram != nil {
 		ggmlCtx = mergeGgmlNumCtxInfo(ggmlCtx, vram)
@@ -297,7 +311,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 				"elapsed", time.Since(schedStart),
 				"error", err,
 			)
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, enrichModelLoadError(name, err)
 		}
 	} else {
 		select {
@@ -314,7 +328,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 				"elapsed", time.Since(schedStart),
 				"error", err,
 			)
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, enrichModelLoadError(name, err)
 		case <-ctx.Done():
 			slog.Warn("scheduleRunner: client canceled while waiting",
 				"model", name,
@@ -504,6 +518,12 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	var streamKeepalive *chatStreamSession
+	if streaming && !req.DebugRenderOnly {
+		streamKeepalive = beginChatStream(c, streamCh, req.Model)
+		defer streamKeepalive.Wait()
+	}
+
 	images := make([]llm.ImageData, len(req.Images))
 	for i := range req.Images {
 		images[i] = llm.ImageData{ID: i, Data: req.Images[i]}
@@ -511,12 +531,14 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	prompt := req.Prompt
 	var messagesDropped int
+	var promptTokens []int
+	var leadingBOS string
 	if !req.Raw {
 		tmpl := m.Template
 		if req.Template != "" {
 			tmpl, err = template.Parse(req.Template)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 				return
 			}
 		}
@@ -556,7 +578,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			slog.Warn("the context field is deprecated and will be removed in a future version of Ollama")
 			s, err := r.Detokenize(c.Request.Context(), req.Context)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 				return
 			}
 			b.WriteString(s)
@@ -568,10 +590,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		// the real chat handler, but doing this as a stopgap to get renderer
 		// support for generate
 		if values.Messages != nil && values.Suffix == "" && req.Template == "" {
-			genTruncate := (req.Truncate == nil || *req.Truncate) && !m.IsMLX()
-			prompt, images, messagesDropped, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate)
+			genTruncate := req.Truncate == nil || *req.Truncate
+			tokenBudget, detok := chatPromptLimits(m, opts, genTruncate, r.ContextLength(), r.Detokenize)
+			prompt, images, messagesDropped, promptTokens, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 				return
 			}
 			// TEMP(drifkin): req.Context will be removed very soon, but we're temporarily supporting it in this flow here
@@ -579,10 +602,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				b.WriteString(prompt)
 				prompt = b.String()
 			}
+			leadingBOS = leadingBOSForModel(m)
 		} else {
 			// legacy flow
 			if err := tmpl.Execute(&b, values); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 				return
 			}
 
@@ -605,6 +629,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	checkpointPromptReady := time.Now()
 	logInferencePhase(c, "prompt_ready", req.Model, checkpointLoaded)
+	logLargeMLXPromptIfNeeded(m, promptTokens, opts)
+	recordInferencePromptSize(c, len(promptTokens), 0, messagesDropped)
 
 	var thinkingState *thinking.Parser
 	if builtinParser == nil {
@@ -625,22 +651,41 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		ch = make(chan any)
 	}
 	go func() {
+		var sentDone bool
 		// TODO (jmorganca): avoid building the response twice both here and below
 		var sb strings.Builder
-		defer close(ch)
+		defer func() {
+			if streamKeepalive != nil {
+				streamKeepalive.StopKeepalive()
+			}
+			if req.Stream != nil && *req.Stream && !sentDone {
+				emitSyntheticGenerateFinish(ch, req.Model)
+			}
+			close(ch)
+		}()
 		firstToken := true
 		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
-			Prompt:      prompt,
-			Images:      images,
-			Format:      req.Format,
-			Options:     opts,
-			Shift:       req.Shift == nil || *req.Shift,
-			Truncate:    req.Truncate == nil || *req.Truncate,
-			Logprobs:    req.Logprobs,
-			TopLogprobs: req.TopLogprobs,
+			Prompt:          prompt,
+			PromptTokens:    mlxCompletionPromptTokens(m, promptTokens),
+			Images:          images,
+			Format:          req.Format,
+			Options:         opts,
+			Shift:           req.Shift == nil || *req.Shift,
+			Truncate:        req.Truncate == nil || *req.Truncate,
+			PreservedTokens: preservedTokensForCompletion(builtinParser),
+			LeadingBOS:      leadingBOS,
+			Logprobs:        req.Logprobs,
+			TopLogprobs:     req.TopLogprobs,
+			PromptCacheKey:  modality.ExtractPromptCacheKey(req.Options),
 		}, func(cr llm.CompletionResponse) {
+			if emitMLXPrefillGenerateStatus(ch, req.Model, cr.PrefillProcessed, cr.PrefillTotal, cr.Content, cr.Done) {
+				return
+			}
 			if firstToken {
 				firstToken = false
+				if streamKeepalive != nil {
+					streamKeepalive.StopKeepalive()
+				}
 				logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
 			}
 			res := api.GenerateResponse{
@@ -653,6 +698,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 					PromptEvalDuration: cr.PromptEvalDuration,
 					EvalCount:          cr.EvalCount,
 					EvalDuration:       cr.EvalDuration,
+					CachedPromptTokens: cr.PromptEvalCachedCount,
 				},
 				Logprobs: toAPILogprobs(cr.Logprobs),
 			}
@@ -660,7 +706,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			if builtinParser != nil {
 				content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
 				if err != nil {
-					ch <- gin.H{"error": err.Error()}
+					enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 					return
 				}
 				res.Response = content
@@ -675,7 +721,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 
 			if _, err := sb.WriteString(cr.Content); err != nil {
-				ch <- gin.H{"error": err.Error()}
+				enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 			}
 
 			if cr.Done {
@@ -684,12 +730,15 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 				applyGenerateTruncation(&res, cr, messagesDropped)
 				applyGgmlNumCtxResponse(&res, ggmlCtx)
-				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount)
+				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount)
+				if cr.OriginalPromptTokens > 0 {
+					recordInferencePromptSize(c, cr.PromptEvalCount, cr.OriginalPromptTokens, messagesDropped)
+				}
 
 				if !req.Raw {
 					tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
 					if err != nil {
-						ch <- gin.H{"error": err.Error()}
+						enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 						return
 					}
 					res.Context = tokens
@@ -700,18 +749,24 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				// only send messages with meaningful content (empty messages confuse clients)
 				if res.Response != "" || res.Thinking != "" || res.Done || len(res.ToolCalls) > 0 {
 					ch <- res
+					if res.Done {
+						sentDone = true
+					}
 				}
 
 				return
 			}
 
 			ch <- res
+			if res.Done {
+				sentDone = true
+			}
 		}); err != nil {
 			var serr api.StatusError
 			if errors.As(err, &serr) {
-				ch <- gin.H{"error": serr.ErrorMessage, "status": serr.StatusCode}
+				enqueueGenerateStreamError(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode)
 			} else {
-				ch <- gin.H{"error": err.Error()}
+				enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 			}
 		}
 	}()
@@ -758,7 +813,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
-	streamResponse(c, ch)
+	if streamKeepalive == nil {
+		streamResponse(c, ch)
+	}
 }
 
 func (s *Server) EmbedHandler(c *gin.Context) {
@@ -1010,12 +1067,67 @@ func (s *Server) PullHandler(c *gin.Context) {
 		return
 	}
 
+	rawModel := strings.TrimSpace(cmp.Or(req.Model, req.Name))
+	if rawModel == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		return
+	}
+
+	if IsHFPull(rawModel) {
+		ch := make(chan any)
+		go func() {
+			defer close(ch)
+			fn := func(r api.ProgressResponse) { ch <- r }
+			ctx, cancel := context.WithCancel(c.Request.Context())
+			defer cancel()
+			if err := PullModel(ctx, rawModel, &registryOptions{Insecure: req.Insecure}, fn); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+		if req.Stream != nil && !*req.Stream {
+			waitForStream(c, ch)
+			return
+		}
+		streamResponse(c, ch)
+		return
+	}
+
+	if strings.TrimSpace(req.Source) != "" {
+		localName := model.ParseName(rawModel)
+		if !localName.IsValid() {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid model name %q", rawModel)})
+			return
+		}
+		localName, err = getExistingName(localName)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		ch := make(chan any)
+		go func() {
+			defer close(ch)
+			fn := func(r api.ProgressResponse) { ch <- r }
+			ctx, cancel := context.WithCancel(c.Request.Context())
+			defer cancel()
+			regOpts := &registryOptions{Insecure: req.Insecure, HFSource: req.Source}
+			if err := PullModel(ctx, localName.DisplayShortest(), regOpts, fn); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+		if req.Stream != nil && !*req.Stream {
+			waitForStream(c, ch)
+			return
+		}
+		streamResponse(c, ch)
+		return
+	}
+
 	// TEMP(drifkin): we're temporarily allowing to continue pulling cloud model
 	// stub-files until we integrate cloud models into `/api/tags` (in which case
 	// this roundabout way of "adding" cloud models won't be needed anymore). So
 	// right here normalize any `:cloud` models into the legacy-style suffixes
 	// `:<tag>-cloud` and `:cloud`
-	modelRef, err := parseNormalizePullModelRef(cmp.Or(req.Model, req.Name))
+	modelRef, err := parseNormalizePullModelRef(rawModel)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusBadRequest, errtypes.InvalidModelNameErrMsg)
 		return
@@ -1183,9 +1295,11 @@ func (s *Server) ShowHandler(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	switch {
 	case errors.Is(err, io.EOF):
+		logShowHandlerOutcome("", c.Request.UserAgent(), http.StatusBadRequest, err)
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
 		return
 	case err != nil:
+		logShowHandlerOutcome("", c.Request.UserAgent(), http.StatusBadRequest, err)
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1195,12 +1309,14 @@ func (s *Server) ShowHandler(c *gin.Context) {
 	} else if req.Name != "" {
 		req.Model = req.Name
 	} else {
+		logShowHandlerOutcome("", c.Request.UserAgent(), http.StatusBadRequest, errors.New("model is required"))
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
 		return
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
+		logShowHandlerOutcome(req.Model, c.Request.UserAgent(), http.StatusBadRequest, err)
 		writeModelRefParseError(c, err, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1213,24 +1329,32 @@ func (s *Server) ShowHandler(c *gin.Context) {
 	}
 
 	req.Model = modelRef.Base
+	userAgent := c.Request.UserAgent()
 
 	resp, err := GetModelInfo(req)
 	if err != nil {
 		var statusErr api.StatusError
+		var status int
 		switch {
 		case os.IsNotExist(err):
-			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", req.Model)})
+			status = http.StatusNotFound
+			c.JSON(status, gin.H{"error": fmt.Sprintf("model '%s' not found", req.Model)})
 		case errors.As(err, &statusErr):
-			c.JSON(statusErr.StatusCode, gin.H{"error": statusErr.ErrorMessage})
+			status = statusErr.StatusCode
+			c.JSON(status, gin.H{"error": statusErr.ErrorMessage})
 		case err.Error() == errtypes.InvalidModelNameErrMsg:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			status = http.StatusBadRequest
+			c.JSON(status, gin.H{"error": err.Error()})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			status = http.StatusInternalServerError
+			c.JSON(status, gin.H{"error": err.Error()})
 		}
+		logShowHandlerOutcome(req.Model, userAgent, status, err)
 		return
 	}
 
 	if modelRef.Source == modelSourceLocal && resp.RemoteHost != "" {
+		logShowHandlerOutcome(modelRef.Original, userAgent, http.StatusNotFound, nil)
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", modelRef.Original)})
 		return
 	}
@@ -1238,10 +1362,11 @@ func (s *Server) ShowHandler(c *gin.Context) {
 	if modelRef.Source == modelSourceLocal {
 		if m, err := GetModel(modelRef.Base); err == nil {
 			s.enrichShowGgmlNumCtx(c.Request.Context(), resp, m)
+		} else {
+			slog.Debug("api/show ggml_num_ctx enrich skipped", "model", modelRef.Base, "error", err)
 		}
 	}
 
-	userAgent := c.Request.UserAgent()
 	if strings.HasPrefix(userAgent, copilotChatUserAgentPrefix) {
 		if resp.ModelInfo == nil {
 			resp.ModelInfo = map[string]any{}
@@ -1258,16 +1383,16 @@ func (s *Server) ShowHandler(c *gin.Context) {
 func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 	name := model.ParseName(req.Model)
 	if !name.IsValid() {
-		return nil, model.Unqualified(name)
+		return nil, showErr("parse_name", model.Unqualified(name))
 	}
 	name, err := getExistingName(name)
 	if err != nil {
-		return nil, err
+		return nil, showErr("list_manifests", err)
 	}
 
 	m, err := GetModel(name.String())
 	if err != nil {
-		return nil, err
+		return nil, showErr("load_model", err)
 	}
 
 	if m.Config.RemoteHost != "" && m.Config.RemoteModel != "" {
@@ -1325,7 +1450,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 
 	mf, err := manifest.ParseNamedManifest(name)
 	if err != nil {
-		return nil, err
+		return nil, showErr("parse_manifest", err)
 	}
 
 	resp := &api.ShowResponse{
@@ -1424,13 +1549,25 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 
 	// For safetensors LLM models (experimental), populate ModelInfo from config.json
 	if m.Config.ModelFormat == "safetensors" && slices.Contains(m.Config.Capabilities, "completion") {
-		if info, err := xserver.GetSafetensorsLLMInfo(name); err == nil {
+		info, infoErr := xserver.GetSafetensorsLLMInfo(name)
+		if infoErr != nil {
+			slog.Warn("api/show safetensors model_info skipped",
+				"model", name.String(),
+				"show_stage", "safetensors_info",
+				"error", infoErr,
+			)
+		} else {
 			resp.ModelInfo = info
 		}
 		// Populate tensor info if verbose
 		if req.Verbose {
 			if tensors, err := xserver.GetSafetensorsTensorInfo(name); err == nil {
 				resp.Tensors = tensors
+			} else {
+				slog.Debug("api/show safetensors tensors skipped",
+					"model", name.String(),
+					"error", err,
+				)
 			}
 		}
 		return resp, nil
@@ -1438,7 +1575,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 
 	kvData, tensors, err := getModelData(m.ModelPath, req.Verbose)
 	if err != nil {
-		return nil, err
+		return nil, showErr("gguf_metadata", err)
 	}
 	enrichModelDetailsFromGGML(&resp.Details, kvData, tensors)
 
@@ -1455,7 +1592,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 	if len(m.ProjectorPaths) > 0 {
 		projectorData, _, err := getModelData(m.ProjectorPaths[0], req.Verbose)
 		if err != nil {
-			return nil, err
+			return nil, showErr("projector_metadata", err)
 		}
 		resp.ProjectorInfo = projectorData
 	}
@@ -1487,6 +1624,10 @@ func getModelData(digest string, verbose bool) (ggml.KV, ggml.Tensors, error) {
 }
 
 func (s *Server) ListHandler(c *gin.Context) {
+	if err := SyncLMStudioModels(c.Request.Context()); err != nil {
+		slog.Warn("lm studio sync before list failed", "error", err)
+	}
+
 	ms, err := manifest.Manifests(true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1522,23 +1663,28 @@ func (s *Server) ListHandler(c *gin.Context) {
 			ParameterSize:     cf.ModelType,
 			QuantizationLevel: cf.FileType,
 		}
-		if model, err := GetModel(n.String()); err == nil {
-			enrichModelDetailsFromPath(&details, model.ModelPath)
+		var capabilities []model.Capability
+		if mdl, err := GetModel(n.String()); err == nil {
+			enrichModelDetailsFromPath(&details, mdl.ModelPath)
+			capabilities = mdl.Capabilities()
 		}
 		if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
 			enrichModelDetailsFromSafetensors(&details, n)
 		}
 
-		// tag should never be masked
+		// Capabilities + enriched Details feed cmd/launch modelInventory (one /api/tags
+		// load per zerollama launch run). WHY list not show: launch configures N models
+		// without loading each into a runner first.
 		models = append(models, api.ListModelResponse{
-			Model:       n.DisplayShortest(),
-			Name:        n.DisplayShortest(),
-			RemoteModel: cf.RemoteModel,
-			RemoteHost:  cf.RemoteHost,
-			Size:        m.Size(),
-			Digest:      m.Digest(),
-			ModifiedAt:  m.FileInfo().ModTime(),
-			Details:     details,
+			Model:        n.DisplayShortest(),
+			Name:         n.DisplayShortest(),
+			RemoteModel:  cf.RemoteModel,
+			RemoteHost:   cf.RemoteHost,
+			Size:         m.Size(),
+			Digest:       m.Digest(),
+			ModifiedAt:   m.FileInfo().ModTime(),
+			Details:      details,
+			Capabilities: capabilities,
 		})
 	}
 
@@ -1805,8 +1951,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// General
 	r.HEAD("/", func(c *gin.Context) { c.String(http.StatusOK, "Ollama is running") })
 	r.GET("/", func(c *gin.Context) { c.String(http.StatusOK, "Ollama is running") })
-	r.HEAD("/api/version", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"version": version.Version}) })
-	r.GET("/api/version", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"version": version.Version}) })
+	r.HEAD("/api/version", VersionHandler)
+	r.GET("/api/version", VersionHandler)
 	r.GET("/api/status", s.StatusHandler)
 	internal := r.Group("/internal", internalLoopbackOnly())
 	internal.POST("/cross-queue-seq", s.CrossQueueSeqHandler)
@@ -1836,6 +1982,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/blobs/:digest", s.CreateBlobHandler)
 	r.HEAD("/api/blobs/:digest", s.HeadBlobHandler)
 	r.POST("/api/copy", s.CopyHandler)
+	r.POST("/api/repair", s.RepairHandler)
 	r.POST("/api/experimental/web_search", s.WebSearchExperimentalHandler)
 	r.POST("/api/experimental/web_fetch", s.WebFetchExperimentalHandler)
 
@@ -1845,6 +1992,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
+	r.POST("/api/score", s.ScoreHandler)
 
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
@@ -1898,6 +2046,14 @@ func Serve(ln net.Listener) error {
 	}
 	if err := fixBlobs(blobsDir); err != nil {
 		return err
+	}
+
+	if envconfig.LMStudioImport(true) {
+		go func() {
+			if err := SyncLMStudioModels(context.Background()); err != nil {
+				slog.Warn("lm studio startup sync failed", "error", err)
+			}
+		}()
 	}
 
 	if !envconfig.NoPrune() {
@@ -2079,6 +2235,7 @@ func Serve(ln net.Listener) error {
 	// listen for a ctrl+c and stop any loaded llm
 	signals := make(chan os.Signal, 8)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	var shutdownViaSignal atomic.Bool
 	go func() {
 		<-signals
 		slog.Info("shutting down server (Ctrl+C again to force quit)")
@@ -2086,7 +2243,7 @@ func Serve(ln net.Listener) error {
 		go func() {
 			<-signals
 			slog.Warn("forced exit on second shutdown signal")
-			os.Exit(1)
+			exitProcess(1)
 		}()
 
 		sched.ResumeLoads()
@@ -2127,9 +2284,8 @@ func Serve(ln net.Listener) error {
 		if darwinSidecar != nil {
 			darwinSidecar.Stop()
 		}
+		shutdownViaSignal.Store(true)
 		done()
-		// Embedded CPython/uvicorn pthreads prevent a clean return from main.
-		os.Exit(0)
 	}()
 
 	s.sched.Run(schedCtx)
@@ -2175,6 +2331,11 @@ func Serve(ln net.Listener) error {
 		return err
 	}
 	<-ctx.Done()
+	if shutdownViaSignal.Load() {
+		// Exit from the main goroutine via _exit(2): os.Exit from the signal handler
+		// can SIGSEGV in runtime.exit when embedded CPython/torch is loaded.
+		exitProcess(0)
+	}
 	return nil
 }
 
@@ -2367,49 +2528,7 @@ func (s *Server) SignoutHandler(c *gin.Context) {
 }
 
 func (s *Server) PsHandler(c *gin.Context) {
-	models := []api.ProcessModelResponse{}
-
-	for _, v := range s.sched.loaded {
-		model := v.model
-		modelDetails := api.ModelDetails{
-			Format:            model.Config.ModelFormat,
-			Family:            model.Config.ModelFamily,
-			Families:          model.Config.ModelFamilies,
-			ParameterSize:     model.Config.ModelType,
-			QuantizationLevel: model.Config.FileType,
-		}
-
-		mr := api.ProcessModelResponse{
-			Model:     model.ShortName,
-			Name:      model.ShortName,
-			Size:      int64(v.totalSize),
-			SizeVRAM:  int64(v.vramSize),
-			Digest:    model.Digest,
-			Details:   modelDetails,
-			ExpiresAt: v.expiresAt,
-		}
-		if v.llama != nil {
-			mr.ContextLength = v.llama.ContextLength()
-			total, vram := v.llama.MemorySize()
-			mr.Size = int64(total)
-			mr.SizeVRAM = int64(vram)
-		}
-		// The scheduler waits to set expiresAt, so if a model is loading it's
-		// possible that it will be set to the unix epoch. For those cases, just
-		// calculate the time w/ the sessionDuration instead.
-		var epoch time.Time
-		if v.expiresAt == epoch {
-			mr.ExpiresAt = time.Now().Add(v.sessionDuration)
-		}
-
-		models = append(models, mr)
-	}
-
-	slices.SortStableFunc(models, func(i, j api.ProcessModelResponse) int {
-		// longest duration remaining listed first
-		return cmp.Compare(j.ExpiresAt.Unix(), i.ExpiresAt.Unix())
-	})
-
+	models := s.sched.ProcessModelsSnapshot()
 	c.JSON(http.StatusOK, api.ProcessResponse{Models: models})
 }
 
@@ -2420,6 +2539,20 @@ func toolCallId() string {
 		b[i] = letterBytes[rand.Intn(len(letterBytes))]
 	}
 	return "call_" + strings.ToLower(string(b))
+}
+
+func preservedTokensForCompletion(builtinParser parsers.Parser) []string {
+	if builtinParser != nil {
+		return builtinParser.PreservedTokens()
+	}
+	return nil
+}
+
+func toolCallTagForCompletion(toolParser *tools.Parser) string {
+	if toolParser == nil {
+		return ""
+	}
+	return toolParser.Tag()
 }
 
 func (s *Server) ChatHandler(c *gin.Context) {
@@ -2502,16 +2635,24 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 	// Native VLM: expand Videos before chatPrompt so the rendered prompt and llm.ImageData list match.
 	// ResolveVideoPolicy here (not inside modality) so one policy value crosses preflight + expand.
-	// Capability check first avoids loading the runner when the model cannot accept expanded frames.
-	hasVideo := false
+	// ChatRequestHasVideoPayload includes pre-expanded video_spans — not only raw videos[] — so
+	// SGLang-style clients cannot skip capability checks or video preflight before load/ffmpeg.
+	hasVideo := modality.ChatRequestHasVideoPayload(&req)
+	hasAudio := false
 	for _, msg := range req.Messages {
-		if len(msg.Videos) > 0 {
-			hasVideo = true
+		if len(msg.AudioClips) > 0 {
+			hasAudio = true
 			break
 		}
 	}
 	if hasVideo {
 		if err := m.CheckCapabilities(model.CapabilityVision, model.CapabilityVideo); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if hasAudio {
+		if err := m.CheckCapabilities(model.CapabilityAudio); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -2526,7 +2667,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			req.Options[k] = v
 		}
 	}
-	if hasVideo {
+	if hasVideo || hasAudio {
 		opts, err := s.modelOptions(m, req.Options)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2536,11 +2677,25 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if err := modality.PreflightMllamaSingleImage(policy, m.Config.ModelFamilies, &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := modality.ExpandVideosInChatRequest(c.Request.Context(), policy, &req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if modality.ChatRequestHasMultimodalPayload(&req) {
+		modality.LogViTEmbedCacheSizing(req.Messages)
+	}
+	var mmTokenEstimate modality.MultimodalTokenEstimate
+	if modality.ChatRequestHasMultimodalPayload(&req) {
+		mmTokenEstimate = modality.EstimateMultimodalTokens(policy, &req)
+		if mmTokenEstimate.HasValues() {
+			recordInferenceMultimodalEstimate(c, mmTokenEstimate.ImageTokens, mmTokenEstimate.VideoTokens, mmTokenEstimate.AudioTokens)
+		}
 	}
 
 	caps := []model.Capability{model.CapabilityCompletion}
@@ -2599,11 +2754,21 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	var streamKeepalive *chatStreamSession
+	if streaming && !req.DebugRenderOnly {
+		streamKeepalive = beginChatStream(c, streamCh, req.Model)
+		defer streamKeepalive.Wait()
+	}
+
 	msgs := append(m.Messages, req.Messages...)
 	if req.Messages[0].Role != "system" && m.System != "" {
 		msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
 	}
 	msgs = filterThinkTags(msgs, m)
+
+	paddedLayoutPlan := modality.PaddedLayoutConsumePlanForChat(
+		resolveRendererName(m), m.Config.ModelFamilies, msgs, renderers.RenderImgTags,
+	)
 
 	if shouldUseHarmony(m) && m.Config.Parser == "" {
 		m.Config.Parser = "harmony"
@@ -2627,28 +2792,51 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 
 	truncate := req.Truncate == nil || *req.Truncate
-	if m.IsMLX() {
-		truncate = false
-	}
-	prompt, images, messagesDropped, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
+	tokenBudget, detok := chatPromptLimits(m, opts, truncate, r.ContextLength(), r.Detokenize)
+	prompt, images, messagesDropped, promptTokens, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 	if err != nil {
 		slog.Error("chat prompt error", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	completionPromptTokens := mlxCompletionPromptTokens(m, promptTokens)
+	paddedLayoutConsume := ""
+	// WHY propagate mode without paddedIDs: splice failure downgrades to
+	// deferred_multimodal_history for logs/access metrics even when inject ids are absent.
+	paddedIDs, mode := ggmlPaddedCompletionPromptTokens(c.Request.Context(), m, r.Tokenize, prompt, msgs, paddedLayoutPlan)
+	if mode != paddedLayoutPlan.Mode {
+		paddedLayoutPlan.Mode = mode
+	}
+	if len(paddedIDs) > 0 {
+		completionPromptTokens = paddedIDs
+		paddedLayoutConsume = string(mode)
+	}
+	gemma4PaddedMedia := llmGemma4PaddedMediaSchedule(paddedLayoutConsume, msgs)
+	if paddedLayoutPlan.Active {
+		modality.LogPaddedLayoutRunnerStub(req.Model, paddedLayoutPlan.Stub, paddedLayoutPlan.Mode)
+		recordInferencePaddedLayout(c, paddedLayoutPlan.Stub.Len, string(paddedLayoutPlan.Mode))
 	}
 
 	checkpointPromptReady := time.Now()
 	logInferencePhase(c, "prompt_ready", req.Model, checkpointLoaded)
+	logLargeMLXPromptIfNeeded(m, promptTokens, opts)
+	recordInferencePromptSize(c, len(promptTokens), 0, messagesDropped)
 
 	// If debug mode is enabled, return the rendered template instead of calling the model
 	if req.DebugRenderOnly {
+		dbg := &api.DebugInfo{
+			RenderedTemplate: prompt,
+			ImageCount:       len(images),
+		}
+		if paddedLayoutPlan.Active {
+			dbg.PaddedInputIDsLen = paddedLayoutPlan.Stub.Len
+			dbg.PaddedLayoutConsume = string(paddedLayoutPlan.Mode)
+		}
 		c.JSON(http.StatusOK, api.ChatResponse{
 			Model:     req.Model,
 			CreatedAt: time.Now().UTC(),
-			DebugInfo: &api.DebugInfo{
-				RenderedTemplate: prompt,
-				ImageCount:       len(images),
-			},
+			DebugInfo: dbg,
 		})
 		return
 	}
@@ -2683,7 +2871,22 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		ch = make(chan any)
 	}
 	go func() {
-		defer close(ch)
+		var sentDone bool
+		defer func() {
+			if streamKeepalive != nil {
+				streamKeepalive.StopKeepalive()
+			}
+			// OpenAI clients (Mercury) require a final chunk with finish_reason or they
+			// treat the stream as malformed when prefill ends without decode tokens.
+			if req.Stream != nil && *req.Stream && !sentDone {
+				slog.Warn("chat stream closed without done chunk; emitting synthetic finish",
+					"model", req.Model,
+					"client_canceled", c.Request.Context().Err() != nil,
+				)
+				emitSyntheticChatFinish(ch, req.Model)
+			}
+			close(ch)
+		}()
 
 		structuredOutputsState := structuredOutputsState_None
 		firstToken := true
@@ -2708,31 +2911,51 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			// sets up new context given parent context per request
 			ctx, cancel := context.WithCancel(c.Request.Context())
 			err := r.Completion(ctx, llm.CompletionRequest{
-				Prompt:      prompt,
-				Images:      images,
-				Format:      currentFormat,
-				Options:     opts,
-				Shift:       req.Shift == nil || *req.Shift,
-				Truncate:    truncate,
-				Logprobs:    req.Logprobs,
-				TopLogprobs: req.TopLogprobs,
+				Prompt:              prompt,
+				PromptTokens:        completionPromptTokens,
+				PaddedLayoutConsume: paddedLayoutConsume,
+				Images:              images,
+				Format:          currentFormat,
+				Options:         opts,
+				Shift:           req.Shift == nil || *req.Shift,
+				Truncate:        truncate,
+				PreservedTokens: preservedTokensForCompletion(builtinParser),
+				ToolCallTag:     toolCallTagForCompletion(toolParser),
+				LeadingBOS:      leadingBOSForModel(m),
+				Logprobs:        req.Logprobs,
+				TopLogprobs:     req.TopLogprobs,
+				PromptCacheKey:  modality.ExtractPromptCacheKey(req.Options),
+				Gemma4PaddedMedia: gemma4PaddedMedia,
 			}, func(r llm.CompletionResponse) {
+				if emitMLXPrefillStatus(ch, req.Model, r.PrefillProcessed, r.PrefillTotal, r.Content, r.Done) {
+					return
+				}
 				if firstToken {
 					firstToken = false
+					if streamKeepalive != nil {
+						streamKeepalive.StopKeepalive()
+					}
 					logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
+				}
+				metrics := api.Metrics{
+					PromptEvalCount:    r.PromptEvalCount,
+					PromptEvalDuration: r.PromptEvalDuration,
+					EvalCount:          r.EvalCount,
+					EvalDuration:       r.EvalDuration,
+					CachedPromptTokens: r.PromptEvalCachedCount,
+				}
+				if mmTokenEstimate.HasValues() {
+					metrics.ImageTokens = mmTokenEstimate.ImageTokens
+					metrics.VideoTokens = mmTokenEstimate.VideoTokens
+					metrics.AudioTokens = mmTokenEstimate.AudioTokens
 				}
 				res := api.ChatResponse{
 					Model:     req.Model,
 					CreatedAt: time.Now().UTC(),
 					Message:   api.Message{Role: "assistant", Content: r.Content},
 					Done:      r.Done,
-					Metrics: api.Metrics{
-						PromptEvalCount:    r.PromptEvalCount,
-						PromptEvalDuration: r.PromptEvalDuration,
-						EvalCount:          r.EvalCount,
-						EvalDuration:       r.EvalDuration,
-					},
-					Logprobs: toAPILogprobs(r.Logprobs),
+					Metrics:   metrics,
+					Logprobs:  toAPILogprobs(r.Logprobs),
 				}
 
 				if r.Done {
@@ -2741,7 +2964,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 					applyPromptTruncation(&res, r, messagesDropped)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
-					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount)
+					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount)
+					if r.OriginalPromptTokens > 0 {
+						recordInferencePromptSize(c, r.PromptEvalCount, r.OriginalPromptTokens, messagesDropped)
+					}
+					sentDone = true
 				}
 
 				if builtinParser != nil {
@@ -2749,7 +2976,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 					content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
 					if err != nil {
-						ch <- gin.H{"error": err.Error()}
+						enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 						return
 					}
 
@@ -2836,11 +3063,16 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
 					// only ignores error if it's a context cancellation due to setting structured outputs
 				} else {
+					slog.Error("chat completion failed",
+						"model", req.Model,
+						"error", err,
+						"client_canceled", c.Request.Context().Err() != nil,
+					)
 					var serr api.StatusError
 					if errors.As(err, &serr) {
-						ch <- gin.H{"error": serr.ErrorMessage, "status": serr.StatusCode}
+						enqueueChatStreamError(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode)
 					} else {
-						ch <- gin.H{"error": err.Error()}
+						enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 					}
 					return
 				}
@@ -2855,10 +3087,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 
 				msgs = append(msgs, msg)
-				prompt, _, _, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
+				prompt, _, _, promptTokens, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 				if err != nil {
 					slog.Error("chat prompt error applying structured outputs", "error", err)
-					ch <- gin.H{"error": err.Error()}
+					enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 					return
 				}
 				// force constraining by terminating thinking header, the parser is already at this state
@@ -2925,7 +3157,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
-	streamResponse(c, ch)
+	if streamKeepalive == nil {
+		streamResponse(c, ch)
+	}
 }
 
 func handleScheduleError(c *gin.Context, name string, err error) {
@@ -2946,6 +3180,8 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	// same device. Caller should unload the runtime model or use runtime routing.
 	case errors.Is(err, ErrDarwinMetalContention):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+	case errors.Is(err, ErrEdgeGgmlRunnerDisabled), errors.Is(err, llm.ErrGgmlRunnerUnlinked):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}
@@ -3147,7 +3383,7 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 			res.DoneReason = cr.DoneReason.String()
 			res.Metrics.TotalDuration = time.Since(checkpointStart)
 			res.Metrics.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-			recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount)
+			recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount)
 		}
 
 		if !isStreaming {

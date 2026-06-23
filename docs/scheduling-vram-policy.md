@@ -8,7 +8,8 @@ It complements:
 - [runtime/docs/OPERATIONS.md](../runtime/docs/OPERATIONS.md) — Python runtime ops, `/health`, internal handoff
 - [testing-smoke.md](./testing-smoke.md) — dual-stack smoke on a single GPU
 - [ROADMAP.md](./ROADMAP.md) — phases 8–13 and training track T6
-- [fleet-scheduling.md](./fleet-scheduling.md) — multi-node management, warm routing, agent status (fleet track F1–F6)
+- [fleet-scheduling.md](./fleet-scheduling.md) — multi-node management, warm routing, agent status (fleet track F1–F7)
+- [localai-borrowings.md](./localai-borrowings.md) — fast GGUF metadata, guess hooks, watchdog, concurrency groups, manifest hygiene
 - [upstream-ollama-diff.md](./upstream-ollama-diff.md) — upstream uses Go→llama-server only (no Python runtime); Phase 17 alignment
 
 ---
@@ -143,6 +144,23 @@ Example show when manifest tier default is too high:
 
 Code: `server/ggml_num_ctx.go`, `envconfig/ggml_num_ctx.go`, `server/sched.go` (`LoadedRunnersForDiscovery`).
 
+### Scheduler watchdog and concurrency groups (Jun 2026)
+
+**Why:** `OLLAMA_MAX_LOADED_MODELS` caps resident runners but does not reclaim under VRAM pressure, recover stuck loads, or prevent **incompatible pairs** (chat + imagegen on 16 GB). LocalAI’s WatchDog pattern maps to a lightweight Go goroutine—not a second scheduler.
+
+| Mechanism | Env / manifest | Why |
+|-----------|----------------|-----|
+| Idle LRU + VRAM reclaim | `ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD` (e.g. `0.95`) | Evict least-recently-used idle runner when GPU usage crosses threshold |
+| Busy timeout | `ZEROLLAMA_RUNNER_BUSY_TIMEOUT` (e.g. `30m`) | Unload runners stuck in-flight (agent disconnect, bad client) |
+| Tick | `ZEROLLAMA_SCHED_WATCHDOG_INTERVAL` (default `30s`) | Periodic reclaim/busy checks |
+| Concurrency groups | `PARAMETER concurrency_groups ["vram-heavy"]` | Evict conflicting residents **before** loading a model in the same group |
+| Load coalescing | (built-in) | Concurrent pulls/loads for same model share one load |
+| Pull dedup | `singleflight` on `PullModel` | Avoid duplicate registry work |
+
+**Training idle-wait:** `InferenceBacklog().loaded` counts **all** runners in the scheduler map (including loading). Fleet `inference.ggml.loaded` counts **ready** runners only — see [fleet-scheduling.md](./fleet-scheduling.md).
+
+Full reference: [localai-borrowings.md](./localai-borrowings.md). Code: `server/sched_watchdog.go`, `server/concurrency_groups.go`, `server/images.go`.
+
 ### Prompt truncation in responses (Jun 2026)
 
 When input exceeds effective `num_ctx`, final `/api/chat` and `/api/generate` responses include:
@@ -152,7 +170,11 @@ When input exceeds effective `num_ctx`, final `/api/chat` and `/api/generate` re
 
 Set `"truncate": false` for HTTP **400** instead of silent truncation. **Why:** logs showed `truncating input prompt` while clients saw normal 200.
 
-Code: `server/truncation.go`, `llm/server.go`, `runner/*/runner.go`.
+**Access log (Jun 2026):** `inference response out` also includes `prompt_tokens`, `original_tokens`, `truncated_tokens`, and `messages_dropped` when applicable — **why:** fleet logs should show prompt sizing without parsing JSON bodies or correlating runner-only warnings.
+
+**MLX tail truncate:** token-ID front-drop in `chatPrompt` before runner load; see [mlx-agent-prompts.md](./mlx-agent-prompts.md).
+
+Code: `server/truncation.go`, `server/inference_access_log.go`, `llm/server.go`, `runner/*/runner.go`.
 
 ---
 

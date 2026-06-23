@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 )
 
 // Server exposes fleet management HTTP endpoints for agents.
@@ -22,6 +24,7 @@ func NewServer(manager *Manager) *Server {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/fleet/status", s.handleStatus)
 	s.mux.HandleFunc("POST /api/fleet/assign", s.handleAssign)
+	s.mux.HandleFunc("POST /internal/score", internalLoopbackOnly(s.handleScore))
 	return s
 }
 
@@ -59,10 +62,49 @@ func (s *Server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
+	var req ScoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": ErrModelRequired.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.manager.Score(req))
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("fleet: write JSON response", "error", err)
 	}
+}
+
+func internalLoopbackOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requestFromLoopback(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "internal endpoints are loopback-only"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func requestFromLoopback(r *http.Request) bool {
+	host := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return isLoopbackHost(host)
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return true // httptest default
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

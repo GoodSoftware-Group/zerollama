@@ -312,8 +312,21 @@ type DeviceInfo struct {
 	DriverMajor int `json:"driver_major,omitempty"`
 	DriverMinor int `json:"driver_minor,omitempty"`
 
+	// NVIDIADriverMajor is the NVIDIA kernel driver branch. CUDA driver APIs
+	// expose a separate CUDA compatibility version, so keep this distinct.
+	// Populated by llama-server discovery for scheduling diagnostics.
+	NVIDIADriverMajor int `json:"-"`
+
+	// GFXTarget is the AMD GPU gfx target string (e.g. "gfx1100") for ROCm
+	// device validation against bundled rocBLAS kernels. Empty on non-AMD devices.
+	GFXTarget string `json:"gfx_target,omitempty"`
+
 	// Where backends were loaded from
 	LibraryPath []string
+
+	// RunnerEnvOverrides stores per-device runner env discovered during bootstrap
+	// (e.g. GGML_METAL_TENSOR_DISABLE after Metal tensor retry). Not serialized.
+	RunnerEnvOverrides map[string]string `json:"-"`
 }
 
 type SystemInfo struct {
@@ -336,6 +349,50 @@ func (d DeviceInfo) Compute() string {
 		return fmt.Sprintf("gfx%x%02x", d.ComputeMajor, d.ComputeMinor)
 	}
 	return strconv.Itoa(d.ComputeMajor) + "." + strconv.Itoa(d.ComputeMinor)
+}
+
+// SimilarDeviceDescription reports whether two backend device descriptions are
+// close enough to identify the same physical GPU across different libraries.
+func SimilarDeviceDescription(a, b string) bool {
+	normalizedA := normalizeDeviceDescription(a)
+	return normalizedA != "" && normalizedA == normalizeDeviceDescription(b)
+}
+
+func normalizeDeviceDescription(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '(':
+			depth++
+			continue
+		case r == ')':
+			if depth > 0 {
+				depth--
+				continue
+			}
+		case depth > 0:
+			continue
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+func SimilarDeviceMemory(a, b uint64) bool {
+	if a == 0 || b == 0 {
+		return false
+	}
+	maxMemory := max(a, b)
+	tolerance := maxMemory / 20
+	if tolerance < 512*1024*1024 {
+		tolerance = 512 * 1024 * 1024
+	}
+	return maxMemory-min(a, b) <= tolerance
 }
 
 func (d DeviceInfo) Driver() string {
@@ -481,7 +538,7 @@ func FlashAttentionSupported(l []DeviceInfo) bool {
 	for _, gpu := range l {
 		supportsFA := gpu.Library == "cpu" ||
 			gpu.Name == "Metal" || gpu.Library == "Metal" ||
-			(gpu.Library == "CUDA" && gpu.DriverMajor >= 7 && !(gpu.ComputeMajor == 7 && gpu.ComputeMinor == 2)) ||
+			cudaFlashAttentionSupported(gpu) ||
 			gpu.Library == "ROCm" ||
 			gpu.Library == "Vulkan"
 
@@ -490,6 +547,22 @@ func FlashAttentionSupported(l []DeviceInfo) bool {
 		}
 	}
 	return true
+}
+
+func cudaFlashAttentionSupported(gpu DeviceInfo) bool {
+	if gpu.Library != "CUDA" ||
+		gpu.ComputeMajor < 7 ||
+		(gpu.ComputeMajor == 7 && gpu.ComputeMinor == 2) {
+		return false
+	}
+
+	if gpu.DriverMajor == 0 {
+		slog.Warn("CUDA driver version unavailable; allowing flash attention based on compute capability",
+			"device", gpu.Description, "compute", gpu.Compute())
+		return true
+	}
+
+	return gpu.DriverMajor >= 7
 }
 
 type FlashAttentionType int32
@@ -532,13 +605,23 @@ func GetVisibleDevicesEnv(l []DeviceInfo, mustFilter bool) map[string]string {
 	return env
 }
 
-// GetDevicesEnv returns per-device runner env overrides for llama-server (upstream API).
+// GetDevicesEnv returns visible-device env plus any per-device runner overrides.
 func GetDevicesEnv(l []DeviceInfo) map[string]string {
 	if len(l) == 0 {
 		return nil
 	}
 	mustFilter := len(l) == 1 || allDevicesUseLibrary(l, "CUDA")
-	return GetVisibleDevicesEnv(l, mustFilter)
+	env := map[string]string{}
+	for _, d := range l {
+		d.updateVisibleDevicesEnv(env, mustFilter)
+		for k, v := range d.RunnerEnvOverrides {
+			if existing, ok := env[k]; ok && existing != v {
+				slog.Warn("conflicting device environment override", "key", k, "existing", existing, "new", v, "library", d.Library, "id", d.ID)
+			}
+			env[k] = v
+		}
+	}
+	return env
 }
 
 func allDevicesUseLibrary(l []DeviceInfo, library string) bool {

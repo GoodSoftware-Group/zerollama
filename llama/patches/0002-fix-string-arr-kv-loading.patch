@@ -13,7 +13,7 @@ such as vocab fields
  3 files changed, 7 insertions(+), 5 deletions(-)
 
 diff --git a/ggml/include/gguf.h b/ggml/include/gguf.h
-index 67851ba6..41b5d55f 100644
+index 67851ba6f..41b5d55fa 100644
 --- a/ggml/include/gguf.h
 +++ b/ggml/include/gguf.h
 @@ -121,6 +121,7 @@ extern "C" {
@@ -25,7 +25,7 @@ index 67851ba6..41b5d55f 100644
      // get ith C string from array with given key_id
      GGML_API const char * gguf_get_arr_str (const struct gguf_context * ctx, int64_t key_id, size_t i);
 diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
-index 5e198618..6d786877 100644
+index 5e1986182..6d7868771 100644
 --- a/ggml/src/gguf.cpp
 +++ b/ggml/src/gguf.cpp
 @@ -1051,10 +1051,14 @@ enum gguf_type gguf_get_arr_type(const struct gguf_context * ctx, int64_t key_id
@@ -53,7 +53,7 @@ index 5e198618..6d786877 100644
  }
  
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 8543e178..9b85d4b7 100644
+index 6e78a3f6c..5c2c60110 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -2013,9 +2013,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {

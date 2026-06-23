@@ -246,7 +246,7 @@ func TestChatPrompt(t *testing.T) {
 			model := tt.model
 			opts := api.Options{Runner: api.Runner{NumCtx: tt.limit}}
 			think := false
-			prompt, images, _, err := chatPrompt(t.Context(), &model, mockRunner{}.Tokenize, &opts, tt.msgs, nil, &api.ThinkValue{Value: think}, tt.truncate)
+			prompt, images, _, _, err := chatPrompt(t.Context(), &model, mockRunner{}.Tokenize, &opts, tt.msgs, nil, &api.ThinkValue{Value: think}, tt.truncate, 0, nil)
 			if tt.error == nil && err != nil {
 				t.Fatal(err)
 			} else if tt.error != nil && err != tt.error {
@@ -302,7 +302,7 @@ func TestChatPromptTokenizeCalls(t *testing.T) {
 				{Role: "assistant", Content: "response 2"},
 				{Role: "user", Content: "message 3"},
 			},
-			maxTokenizes: 1,
+			maxTokenizes: 2,
 		},
 		{
 			name:  "truncate to last message",
@@ -329,7 +329,7 @@ func TestChatPromptTokenizeCalls(t *testing.T) {
 
 			opts := api.Options{Runner: api.Runner{NumCtx: tt.limit}}
 			think := false
-			_, _, _, err := chatPrompt(t.Context(), &model, countingTokenize, &opts, tt.msgs, nil, &api.ThinkValue{Value: think}, true)
+			_, _, _, _, err := chatPrompt(t.Context(), &model, countingTokenize, &opts, tt.msgs, nil, &api.ThinkValue{Value: think}, true, 0, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -358,7 +358,7 @@ func TestChatPromptRendererDoesNotRewriteMessageContent(t *testing.T) {
 	opts := api.Options{Runner: api.Runner{NumCtx: 8192}}
 	think := false
 
-	prompt, images, _, err := chatPrompt(t.Context(), &m, mockRunner{}.Tokenize, &opts, msgs, nil, &api.ThinkValue{Value: think}, true)
+	prompt, images, _, _, err := chatPrompt(t.Context(), &m, mockRunner{}.Tokenize, &opts, msgs, nil, &api.ThinkValue{Value: think}, true, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestChatPromptGLMOcrRendererAddsImageTags(t *testing.T) {
 	opts := api.Options{Runner: api.Runner{NumCtx: 8192}}
 	think := false
 
-	prompt, images, _, err := chatPrompt(t.Context(), &m, mockRunner{}.Tokenize, &opts, msgs, nil, &api.ThinkValue{Value: think}, true)
+	prompt, images, _, _, err := chatPrompt(t.Context(), &m, mockRunner{}.Tokenize, &opts, msgs, nil, &api.ThinkValue{Value: think}, true, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,6 +403,52 @@ func TestChatPromptGLMOcrRendererAddsImageTags(t *testing.T) {
 
 	if !strings.Contains(prompt, "<|user|>\n[img-0][img-1]extract text") {
 		t.Fatalf("prompt missing glm-ocr image tags, got: %q", prompt)
+	}
+}
+
+func TestTailTruncatePrompt(t *testing.T) {
+	tokenize := func(_ context.Context, s string) ([]int, error) {
+		out := make([]int, len(s))
+		for i := range s {
+			out[i] = int(s[i])
+		}
+		return out, nil
+	}
+	detokenize := func(_ context.Context, ids []int) (string, error) {
+		b := make([]byte, len(ids))
+		for i, id := range ids {
+			b[i] = byte(id)
+		}
+		return string(b), nil
+	}
+
+	prompt := "abcdefghij"
+	out, dropped, kept, err := tailTruncatePrompt(t.Context(), tokenize, detokenize, prompt, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 5 {
+		t.Fatalf("dropped = %d want 5", dropped)
+	}
+	if len(kept) != 5 {
+		t.Fatalf("kept len = %d want 5", len(kept))
+	}
+	if out != "fghij" {
+		t.Fatalf("out = %q want %q", out, "fghij")
+	}
+
+	out, dropped, kept, err = tailTruncatePrompt(t.Context(), tokenize, nil, prompt, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 5 {
+		t.Fatalf("without detokenize dropped = %d want 5", dropped)
+	}
+	if out != prompt {
+		t.Fatalf("without detokenize should keep original prompt, got %q", out)
+	}
+	if len(kept) != 5 {
+		t.Fatalf("without detokenize kept len = %d want 5", len(kept))
 	}
 }
 

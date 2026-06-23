@@ -77,4 +77,9 @@ if [[ "${RUN_E2E_GPU:-0}" == "1" ]]; then
   "${ROOT}/scripts/e2e_runtime_smoke.sh"
 fi
 
+if [[ "${RUN_E2E_FLASH_MOE_TIER0:-0}" == "1" ]]; then
+  echo "== Flash-MoE tier 0 (toolchain only) =="
+  FLASH_MOE_SKIP_GO_TEST="${FLASH_MOE_SKIP_GO_TEST:-0}" "${ROOT}/scripts/flash_moe_smoke.sh"
+fi
+
 echo "PASS: macos_metal_smoke"

@@ -28,11 +28,13 @@ func (s *Server) inferenceStatus(ctx context.Context) api.InferenceStatus {
 		ggml.LoadsPaused = snap.LoadsPaused
 		ggml.Loading = snap.Loading
 		ggml.LoadedModels = snap.LoadedModels
+		ggml.LoadedModelDetails = snap.LoadedModelDetails
 	}
 
 	return api.InferenceStatus{
 		Ggml:    ggml,
 		Runtime: runtimeStatusFromHealth(ctx, runtimeHealthProbeRequired()),
+		Backend: inferenceBackendPolicy(),
 	}
 }
 

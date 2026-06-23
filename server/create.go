@@ -604,26 +604,20 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 				}
 			}
 
-			// Auto-detect renderer, parser, and stop tokens from GGUF architecture.
+			// Auto-detect renderer and parser from GGUF architecture.
+			// Stop tokens are filled by guessFromBaseLayers via GuessParametersFromGGUF.
 			if config.Renderer == "" || config.Parser == "" {
 				switch arch {
 				case "gemma4":
 					config.Renderer = cmp.Or(config.Renderer, gemma4RendererLegacy)
 					config.Parser = cmp.Or(config.Parser, "gemma4")
-					if _, ok := r.Parameters["stop"]; !ok {
-						if r.Parameters == nil {
-							r.Parameters = make(map[string]any)
-						}
-						r.Parameters["stop"] = []string{"<turn|>"}
-					}
 				case "qwen35", "qwen35moe":
 					config.Renderer = cmp.Or(config.Renderer, "qwen3.5")
 					config.Parser = cmp.Or(config.Parser, "qwen3.5")
-					if _, ok := r.Parameters["stop"]; !ok {
-						if r.Parameters == nil {
-							r.Parameters = make(map[string]any)
-						}
-						r.Parameters["stop"] = []string{"<|im_end|>"}
+				default:
+					if isGptOSSFamily(arch) {
+						config.Renderer = cmp.Or(config.Renderer, "harmony")
+						config.Parser = cmp.Or(config.Parser, "harmony")
 					}
 				}
 			}
@@ -670,6 +664,11 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 			return fmt.Errorf("unknown license type: %T", l)
 		}
 	}
+
+	if r.Parameters == nil {
+		r.Parameters = make(map[string]any)
+	}
+	guessFromBaseLayers(config, r.Parameters, baseLayers)
 
 	layers, err = setParameters(layers, r.Parameters)
 	if err != nil {

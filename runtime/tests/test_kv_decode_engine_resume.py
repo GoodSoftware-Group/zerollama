@@ -12,6 +12,8 @@ from runtime.cache_bridge import slot_resume_owner_key
 from runtime.config import RuntimeConfig
 from runtime.engine import InferenceEngine
 from runtime.kv.physical import current_pos_for_seq
+from runtime.worker.factory import LlamaBackendKind
+from runtime.subprocess_slot_state import SubprocessSlotState
 from runtime.worker.libllama_ctypes import LlamaLoadedSession
 
 
@@ -96,6 +98,7 @@ def _make_session_stub() -> MagicMock:
     session._seq_last_owner = {}
     session._infer_lock = threading.RLock()
     session.slot_cache_model_hash = None
+    session.kv_cache_spec = None
     session._resolve_decode_current_pos = (
         LlamaLoadedSession._resolve_decode_current_pos.__get__(session)
     )
@@ -108,7 +111,7 @@ def _make_session_stub() -> MagicMock:
     return session
 
 
-def _run_complete(session, kv_bind_req=None, current_pos=0, *, decode_side_effect=None):
+def _run_complete(session, kv_bind_req=None, current_pos=0, *, cache_prompt=None, decode_side_effect=None):
     decode_mock = patch(
         "runtime.worker.libllama_ctypes._decode_non_stream",
         side_effect=decode_side_effect,
@@ -133,6 +136,7 @@ def _run_complete(session, kv_bind_req=None, current_pos=0, *, decode_side_effec
                                 n_predict=1,
                                 current_pos=current_pos,
                                 kv_bind_req=kv_bind_req,
+                                cache_prompt=cache_prompt,
                             )
     return out, mock_clear
 
@@ -165,6 +169,57 @@ def test_complete_skips_clear_l3_second_turn():
 
     assert out == "ok"
     mock_clear.assert_not_called()
+
+
+def test_complete_cache_prompt_false_clears_despite_owner():
+    """SWA / policy block: cache_prompt=False clears even when owner matches."""
+    from runtime.decode_graph_policy import decode_graph_epoch, reset_decode_graph_epochs
+
+    reset_decode_graph_epochs()
+    session = _make_session_stub()
+    req = MagicMock()
+    req.slot_pinned = True
+    req.prompt_cache_key = "sess-agent-1"
+    req.request_id = "turn-2-new-id"
+    session._seq_last_owner[1] = "cache:sess-agent-1"
+
+    _out, mock_clear = _run_complete(
+        session, kv_bind_req=req, current_pos=42, cache_prompt=False
+    )
+
+    mock_clear.assert_called_once()
+    assert decode_graph_epoch(1) >= 1
+
+
+def test_prepare_seq_demotes_resume_when_swa_spec_blocks():
+    """Defense-in-depth: owner match but SWA spec blocks → clear slot."""
+    from runtime.decode_graph_policy import reset_decode_graph_epochs
+    from runtime.kv_cache_spec import KVCacheSpec
+
+    reset_decode_graph_epochs()
+    session = _make_session_stub()
+    session.kv_cache_spec = KVCacheSpec(
+        kind="sliding_window",
+        effective_window=1024,
+        allow_cache_prompt_base=True,
+        allow_disk_persist=True,
+        disk_ttl_ms=300000,
+        speculative_draft=False,
+    )
+    req = MagicMock()
+    req.slot_pinned = True
+    req.prompt_cache_key = "sess-agent-1"
+    req.request_id = "turn-2"
+    session._seq_last_owner[1] = "cache:sess-agent-1"
+
+    _out, mock_clear = _run_complete(
+        session,
+        kv_bind_req=req,
+        current_pos=1024,
+        cache_prompt=True,
+    )
+
+    mock_clear.assert_called_once()
 
 
 def test_complete_clears_sequence_different_pinned_session():
@@ -270,16 +325,52 @@ def test_engine_decode_current_pos_none_when_subprocess():
 
     eng = MagicMock(spec=InferenceEngine)
     eng._inprocess_ctx_for_health.return_value = None
+    eng._resolved_llama_backend.return_value = LlamaBackendKind.SUBPROCESS
+    eng._id_slot_for_request.return_value = -1
+    eng._subprocess_slots = SubprocessSlotState()
+    eng._decode_current_pos_for_request = (
+        InferenceEngine._decode_current_pos_for_request.__get__(eng)
+    )
     assert InferenceEngine._decode_current_pos_for_request(eng, MagicMock()) is None
+
+
+def test_engine_decode_current_pos_subprocess_slots_fallback():
+    from runtime.engine import InferenceEngine
+
+    eng = MagicMock(spec=InferenceEngine)
+    eng._inprocess_ctx_for_health.return_value = None
+    eng._resolved_llama_backend.return_value = LlamaBackendKind.SUBPROCESS
+    eng._id_slot_for_request.return_value = 3
+    eng._server = MagicMock()
+    eng._server.base_url = "http://127.0.0.1:8082"
+    eng._subprocess_slots = SubprocessSlotState()
+    eng._subprocess_slots.merge_slots(
+        [{"id": 3, "n_prompt_tokens": 900, "next_token": {"n_decoded": 0}}]
+    )
+    eng._decode_current_pos_for_request = (
+        InferenceEngine._decode_current_pos_for_request.__get__(eng)
+    )
+    assert InferenceEngine._decode_current_pos_for_request(eng, MagicMock()) == 900
 
 
 def test_kv_resume_health_inactive_without_inprocess():
     from runtime.engine import InferenceEngine
+    from runtime.prefix_cache_policy import PrefixCachePolicy
 
     eng = MagicMock(spec=InferenceEngine)
     eng._health_llama_backend.return_value = "subprocess"
     eng._effective_llama_parallel_slots.return_value = 2
     eng._inprocess_session_for_health.return_value = None
+    eng._subprocess_slots = SubprocessSlotState()
+    eng._loaded_vram_num_ctx = None
+    eng._prefix_cache_policy.return_value = PrefixCachePolicy(
+        kind="standard",
+        allow_cache_prompt=True,
+        allow_disk_persist=True,
+        effective_window=8192,
+        disk_ttl_ms=3600000,
+        speculative_draft=False,
+    )
 
     out = InferenceEngine._kv_resume_health(eng)
 
@@ -289,6 +380,7 @@ def test_kv_resume_health_inactive_without_inprocess():
 
 def test_kv_resume_health_shows_owners():
     from runtime.engine import InferenceEngine
+    from runtime.prefix_cache_policy import PrefixCachePolicy
 
     session = MagicMock()
     session._ctx = MagicMock()
@@ -298,11 +390,222 @@ def test_kv_resume_health_shows_owners():
     eng._health_llama_backend.return_value = "inprocess"
     eng._effective_llama_parallel_slots.return_value = 2
     eng._inprocess_session_for_health.return_value = session
+    eng._subprocess_slots = SubprocessSlotState()
+    eng._loaded_vram_num_ctx = None
+    eng._prefix_cache_policy.return_value = PrefixCachePolicy(
+        kind="standard",
+        allow_cache_prompt=True,
+        allow_disk_persist=True,
+        effective_window=8192,
+        disk_ttl_ms=3600000,
+        speculative_draft=False,
+    )
 
     out = InferenceEngine._kv_resume_health(eng)
 
     assert out["active"] is True
     assert out["owners_by_slot"] == {"1": "cache:sess-a"}
+
+
+def test_engine_decode_current_pos_subprocess_fetches_slots(monkeypatch):
+    from runtime.engine import InferenceEngine
+
+    eng = MagicMock(spec=InferenceEngine)
+    eng._inprocess_ctx_for_health.return_value = None
+    eng._resolved_llama_backend.return_value = LlamaBackendKind.SUBPROCESS
+    eng._id_slot_for_request.return_value = 2
+    eng._server = MagicMock()
+    eng._server.base_url = "http://127.0.0.1:8082"
+    eng._subprocess_slots = SubprocessSlotState()
+
+    def _fake_fetch(base_url: str, *, timeout: float = 2.0):
+        return [{"id": 2, "n_prompt_tokens": 500, "next_token": {"n_decoded": 10}}]
+
+    monkeypatch.setattr(
+        "runtime.subprocess_slot_state.fetch_llama_server_slots", _fake_fetch
+    )
+    eng._decode_current_pos_for_request = (
+        InferenceEngine._decode_current_pos_for_request.__get__(eng)
+    )
+    assert InferenceEngine._decode_current_pos_for_request(eng, MagicMock()) == 510
+
+
+def test_engine_decode_current_pos_subprocess_local_cache():
+    from runtime.engine import InferenceEngine
+
+    eng = MagicMock(spec=InferenceEngine)
+    eng._inprocess_ctx_for_health.return_value = None
+    eng._resolved_llama_backend.return_value = LlamaBackendKind.SUBPROCESS
+    eng._id_slot_for_request.return_value = 3
+    eng._subprocess_slots = SubprocessSlotState()
+    eng._subprocess_slots.record_completion(
+        3, {"timings": {"cache_n": 0, "prompt_n": 3000, "predicted_n": 32}}
+    )
+    eng._decode_current_pos_for_request = (
+        InferenceEngine._decode_current_pos_for_request.__get__(eng)
+    )
+    assert InferenceEngine._decode_current_pos_for_request(eng, MagicMock()) == 3032
+
+
+def test_generate_subprocess_l3_turn2_disables_swa_cache_prompt(engine, monkeypatch):
+    """Subprocess turn 2 uses slot timings for SWA cache_prompt guard."""
+    from contextlib import contextmanager
+    from runtime.gpu.inference_policy import InferencePriority
+    from runtime.prefix_cache_policy import PrefixCachePolicy
+
+    monkeypatch.setattr(engine, "_vram_precheck_enqueue", lambda *a, **k: None)
+    monkeypatch.setattr(
+        engine, "_check_admit_policy", lambda opts, **k: InferencePriority.NORMAL
+    )
+    monkeypatch.setattr(
+        engine,
+        "_prefix_cache_policy",
+        lambda *a, **k: PrefixCachePolicy(
+            kind="sliding_window",
+            allow_cache_prompt=True,
+            allow_disk_persist=True,
+            effective_window=1024,
+            disk_ttl_ms=300000,
+            speculative_draft=False,
+        ),
+    )
+
+    @contextmanager
+    def _hold(_gguf):
+        yield
+
+    monkeypatch.setattr(engine._model_swap, "hold", _hold)
+    monkeypatch.setattr(
+        engine, "_resolved_llama_backend", lambda: LlamaBackendKind.SUBPROCESS
+    )
+
+    cache_flags: list[bool | None] = []
+    positions: list[int | None] = []
+    mock_srv = MagicMock()
+    mock_srv.is_running.return_value = True
+    admit_calls = {"n": 0}
+
+    def _prompt_tokens(_prompt, _gguf):
+        admit_calls["n"] += 1
+        n = 100 if admit_calls["n"] == 1 else 950
+        return list(range(n))
+
+    monkeypatch.setattr(engine, "_prompt_tokens_for_admit", _prompt_tokens)
+
+    def _completion(*_args, cache_prompt=None, current_pos=None, **_kwargs):
+        cache_flags.append(cache_prompt)
+        positions.append(current_pos)
+        if len(cache_flags) == 1:
+            return {
+                "content": "ok",
+                "response": "ok",
+                "timings": {"cache_n": 0, "prompt_n": 100, "predicted_n": 32},
+            }
+        return {"content": "ok2", "response": "ok2"}
+
+    mock_srv.completion = _completion
+
+    with patch.object(
+        engine, "resolve_num_ctx_for_request", return_value=(512, {})
+    ):
+        with patch.object(engine, "_ensure_gguf_loaded_unlocked", return_value=mock_srv):
+            engine.generate(
+                "turn one",
+                4,
+                options={"prompt_cache_key": "agent-sess"},
+            )
+            engine.generate(
+                "turn one plus more tokens in prompt",
+                4,
+                options={"prompt_cache_key": "agent-sess"},
+            )
+
+    assert len(cache_flags) == 2
+    assert cache_flags[0] is True
+    assert cache_flags[1] is False
+    assert positions[1] is None
+
+
+def test_generate_inprocess_l3_turn2_disables_swa_resume_pos(engine, monkeypatch):
+    """In-process turn 2 omits resume pos when SWA cache_prompt guard blocks."""
+    from contextlib import contextmanager
+    from runtime.gpu.inference_policy import InferencePriority
+    from runtime.prefix_cache_policy import PrefixCachePolicy
+
+    monkeypatch.setattr(engine, "_vram_precheck_enqueue", lambda *a, **k: None)
+    monkeypatch.setattr(
+        engine, "_check_admit_policy", lambda opts, **k: InferencePriority.NORMAL
+    )
+    monkeypatch.setattr(
+        engine,
+        "_prefix_cache_policy",
+        lambda *a, **k: PrefixCachePolicy(
+            kind="sliding_window",
+            allow_cache_prompt=True,
+            allow_disk_persist=True,
+            effective_window=1024,
+            disk_ttl_ms=300000,
+            speculative_draft=False,
+        ),
+    )
+    monkeypatch.setattr(
+        engine, "_resolved_llama_backend", lambda: LlamaBackendKind.INPROCESS
+    )
+
+    @contextmanager
+    def _hold(_gguf):
+        yield
+
+    monkeypatch.setattr(engine._model_swap, "hold", _hold)
+
+    cache_flags: list[bool | None] = []
+    positions: list[int | None] = []
+    mock_srv = MagicMock()
+    mock_srv.is_running.return_value = True
+    admit_calls = {"n": 0}
+
+    def _prompt_tokens(_prompt, _gguf):
+        admit_calls["n"] += 1
+        n = 100 if admit_calls["n"] == 1 else 950
+        return list(range(n))
+
+    monkeypatch.setattr(engine, "_prompt_tokens_for_admit", _prompt_tokens)
+
+    def _completion(*_args, cache_prompt=None, current_pos=None, **_kwargs):
+        cache_flags.append(cache_prompt)
+        positions.append(current_pos)
+        return {"content": "ok", "response": "ok"}
+
+    mock_srv.completion = _completion
+
+    pair = MagicMock(), MagicMock()
+    monkeypatch.setattr(engine, "_inprocess_ctx_for_health", lambda: pair)
+
+    with patch.object(
+        engine, "resolve_num_ctx_for_request", return_value=(512, {})
+    ):
+        with patch.object(engine, "_ensure_gguf_loaded_unlocked", return_value=mock_srv):
+            with patch.object(
+                engine,
+                "_decode_current_pos_for_request",
+                side_effect=[None, 900, 900],
+            ):
+                engine.generate(
+                    "turn one",
+                    4,
+                    options={"prompt_cache_key": "agent-sess"},
+                )
+                engine.generate(
+                    "turn one plus more tokens in prompt",
+                    4,
+                    options={"prompt_cache_key": "agent-sess"},
+                )
+
+    assert len(cache_flags) == 2
+    assert cache_flags[0] is True
+    assert cache_flags[1] is False
+    assert positions[0] is None
+    assert positions[1] is None
 
 
 def test_generate_l3_second_turn_passes_current_pos(engine, monkeypatch):

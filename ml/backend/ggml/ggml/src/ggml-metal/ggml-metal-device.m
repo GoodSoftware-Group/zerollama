@@ -5,9 +5,12 @@
 
 #include <Foundation/Foundation.h>
 
+#include <IOSurface/IOSurface.h>
 #include <Metal/Metal.h>
 
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <strings.h>
 
 #ifndef TARGET_OS_VISION
 #define TARGET_OS_VISION 0
@@ -1382,6 +1385,9 @@ struct ggml_metal_buffer {
     // note: cannot use explicitly "id<MTLResidencySet>" here because it is not available on certain OSes
     id rset;
 
+    // retained IOSurface when mapped via ggml_metal_buffer_map_iosurface (ANE draft handoff)
+    IOSurfaceRef iosurface;
+
     // pointers to global device
     ggml_metal_device_t dev;
 };
@@ -1649,8 +1655,68 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
     return res;
 }
 
+static bool ggml_metal_ane_draft_env(void) {
+    const char * v = getenv("ZEROLLAMA_ANE_DRAFT");
+    if (!v || v[0] == '\0') {
+        return false;
+    }
+    return v[0] == '1' || strcasecmp(v, "true") == 0 || strcasecmp(v, "yes") == 0 || strcasecmp(v, "on") == 0;
+}
+
+ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(
+        ggml_metal_device_t dev,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size,
+        size_t surface_offset) {
+    if (!dev || surface_id == 0 || size == 0) {
+        return NULL;
+    }
+
+    IOSurfaceRef surface = IOSurfaceLookup(surface_id);
+    if (!surface) {
+        GGML_LOG_ERROR("%s: IOSurfaceLookup failed for id=%u (same-process only)\n", __func__, surface_id);
+        return NULL;
+    }
+
+    IOSurfaceLock(surface, 0, NULL);
+    void * base = IOSurfaceGetBaseAddress(surface);
+    if (!base) {
+        IOSurfaceUnlock(surface, 0, NULL);
+        CFRelease(surface);
+        GGML_LOG_ERROR("%s: IOSurfaceGetBaseAddress failed for id=%u\n", __func__, surface_id);
+        return NULL;
+    }
+
+    if (surface_offset > 0) {
+        base = (void *) ((uint8_t *) base + surface_offset);
+    }
+
+    ggml_metal_buffer_t res = ggml_metal_buffer_map(dev, base, size, max_tensor_size);
+    if (!res) {
+        IOSurfaceUnlock(surface, 0, NULL);
+        CFRelease(surface);
+        return NULL;
+    }
+
+    res->iosurface = surface; // keep lookup retain until buffer free
+    IOSurfaceUnlock(surface, 0, NULL);
+
+    if (ggml_metal_ane_draft_env()) {
+        GGML_LOG_INFO("%s: mapped IOSurface id=%u size=%zu offset=%zu (ZEROLLAMA_ANE_DRAFT)\n",
+            __func__, surface_id, size, surface_offset);
+    }
+
+    return res;
+}
+
 void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
     ggml_metal_device_rsets_rm(buf->dev, buf->rset);
+
+    if (buf->iosurface) {
+        CFRelease(buf->iosurface);
+        buf->iosurface = NULL;
+    }
 
     for (int i = 0; i < buf->n_buffers; i++) {
         [buf->buffers[i].metal release];

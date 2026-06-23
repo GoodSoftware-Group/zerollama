@@ -23,7 +23,7 @@ func findZoey() (string, bool) {
 	return "", false
 }
 
-func (z *Zoey) Run(model string, args []string) error {
+func (z *Zoey) Run(model string, _ []LaunchModel, args []string) error {
 	_ = model
 	bin, ok := findZoey()
 	if !ok {

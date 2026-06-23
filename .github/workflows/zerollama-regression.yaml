@@ -44,6 +44,26 @@ jobs:
           OLLAMA_NO_CLOUD: 'true'
         run: go test -count=1 ./server/... ./envconfig/... ./x/trainingworker/... ./x/runtimeworker/...
 
+      - name: Phase 16 edge compile marker smoke
+        env:
+          CGO_ENABLED: '1'
+        run: ./scripts/phase16_edge_build_smoke.sh
+
+      - name: Phase 15 llama-kv-ext pin check
+        env:
+          P15_PIN_JSON: /tmp/phase15-kv-ext-pin-check.json
+        run: ./scripts/phase15_llama_kv_ext_pin_check.sh
+
+      - name: Phase 17 L2 pin status report
+        env:
+          P17_L2_OUT: /tmp/phase17-l2-pin-status.json
+        run: ./scripts/phase17_l2_pin_status.sh
+
+      - name: Phase 15 upstream writable KV watch
+        env:
+          P15_UPSTREAM_JSON: /tmp/phase15-upstream-kv-watch.json
+        run: ./scripts/phase15_upstream_kv_watch.sh
+
   runtime-pytest:
     runs-on: ubuntu-latest
     defaults:

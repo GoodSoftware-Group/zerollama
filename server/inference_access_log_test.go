@@ -31,7 +31,7 @@ func TestInferenceAccessLogMiddleware(t *testing.T) {
 	s := &Server{sched: InitScheduler(t.Context())}
 	r := gin.New()
 	r.POST("/api/generate", s.inferenceAccessLogMiddleware("/api/generate"), func(c *gin.Context) {
-		recordInferenceCompletion(c, "stop", 10, 5)
+		recordInferenceCompletion(c, "stop", 10, 5, 3)
 		c.JSON(200, gin.H{"done": true})
 	})
 

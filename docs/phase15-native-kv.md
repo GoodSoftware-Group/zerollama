@@ -561,7 +561,7 @@ cd ../../runtime && python3 setup.py build_ext --inplace
 
 **Limitations:** pure recurrent-only models → `memory_kind_name=unsupported`. SWA window cache is not the PA bind target (base attn cache is). Writable cross-process PA→tensor migration still needs upstream stable page-handle API; v20/v31 is read-verify bind on live decode.
 
-**Pin tracking:** patch `0015-ollama-llama-kv-ext-phase15.patch` + `./scripts/phase15_llama_kv_ext_pin_check.sh` — see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
+**Pin tracking:** patch `0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` + `./scripts/phase15_llama_kv_ext_pin_check.sh` — see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
 
 ### v20b ops — audit fixes (Jun 2026)
 

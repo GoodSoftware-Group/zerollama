@@ -1,19 +1,16 @@
 package launch
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -137,7 +134,7 @@ exit 0
 		})
 
 		p := &Pi{}
-		if err := p.Run("ignored", []string{"--version"}); err != nil {
+		if err := p.Run("ignored", nil, []string{"--version"}); err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
 
@@ -180,7 +177,7 @@ exit 0
 		})
 
 		p := &Pi{}
-		err := p.Run("ignored", nil)
+		err := p.Run("ignored", nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "pi installation cancelled") {
 			t.Fatalf("expected install cancellation error, got %v", err)
 		}
@@ -202,7 +199,7 @@ exit 0
 		})
 
 		p := &Pi{}
-		if err := p.Run("ignored", []string{"session"}); err != nil {
+		if err := p.Run("ignored", nil, []string{"session"}); err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
 
@@ -237,7 +234,7 @@ exit 0
 		seedNpmNoop(t, tmpDir)
 
 		p := &Pi{}
-		if err := p.Run("ignored", []string{"doctor"}); err != nil {
+		if err := p.Run("ignored", nil, []string{"doctor"}); err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
 
@@ -265,7 +262,7 @@ exit 0
 
 		p := &Pi{}
 		stderr := captureStderr(t, func() {
-			if err := p.Run("ignored", []string{"session"}); err != nil {
+			if err := p.Run("ignored", nil, []string{"session"}); err != nil {
 				t.Fatalf("Run() should continue after web search update failure, got %v", err)
 			}
 		})
@@ -300,7 +297,7 @@ exit 0
 
 		p := &Pi{}
 		stderr := captureStderr(t, func() {
-			if err := p.Run("ignored", []string{"session"}); err != nil {
+			if err := p.Run("ignored", nil, []string{"session"}); err != nil {
 				t.Fatalf("Run() should continue after web search install failure, got %v", err)
 			}
 		})
@@ -330,7 +327,7 @@ exit 0
 
 		p := &Pi{}
 		stderr := captureStderr(t, func() {
-			if err := p.Run("ignored", []string{"session"}); err != nil {
+			if err := p.Run("ignored", nil, []string{"session"}); err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
 		})
@@ -359,7 +356,7 @@ exit 0
 		seedPiScript(t, tmpDir)
 
 		p := &Pi{}
-		err := p.Run("ignored", []string{"session"})
+		err := p.Run("ignored", nil, []string{"session"})
 		if err == nil || !strings.Contains(err.Error(), "npm (Node.js) is required to launch pi") {
 			t.Fatalf("expected missing npm error, got %v", err)
 		}
@@ -434,7 +431,7 @@ func TestPiEdit(t *testing.T) {
 	}
 
 	t.Run("returns nil for empty models", func(t *testing.T) {
-		if err := pi.Edit([]string{}); err != nil {
+		if err := pi.Edit(nil); err != nil {
 			t.Errorf("Edit([]) error = %v, want nil", err)
 		}
 	})
@@ -443,7 +440,7 @@ func TestPiEdit(t *testing.T) {
 		cleanup()
 
 		models := []string{"llama3.2", "qwen3:8b"}
-		if err := pi.Edit(models); err != nil {
+		if err := pi.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -496,7 +493,7 @@ func TestPiEdit(t *testing.T) {
 		}
 
 		models := []string{"new-model"}
-		if err := pi.Edit(models); err != nil {
+		if err := pi.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -549,7 +546,7 @@ func TestPiEdit(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := pi.Edit([]string{"glm-5:cloud"}); err != nil {
+		if err := pi.Edit(testLaunchModels("glm-5:cloud")); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -594,7 +591,7 @@ func TestPiEdit(t *testing.T) {
 		}
 
 		newModels := []string{"new-model-1", "new-model-2"}
-		if err := pi.Edit(newModels); err != nil {
+		if err := pi.Edit(launchModelsFromNames(newModels)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -645,7 +642,7 @@ func TestPiEdit(t *testing.T) {
 		}
 
 		newModels := []string{"keep-model", "add-model"}
-		if err := pi.Edit(newModels); err != nil {
+		if err := pi.Edit(launchModelsFromNames(newModels)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -682,7 +679,7 @@ func TestPiEdit(t *testing.T) {
 		}
 
 		models := []string{"test-model"}
-		if err := pi.Edit(models); err != nil {
+		if err := pi.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("Edit() should not fail with corrupt config, got %v", err)
 		}
 
@@ -731,7 +728,7 @@ func TestPiEdit(t *testing.T) {
 
 		// Add a new ollama-managed model
 		newModels := []string{"new-ollama-model"}
-		if err := pi.Edit(newModels); err != nil {
+		if err := pi.Edit(launchModelsFromNames(newModels)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -792,7 +789,7 @@ func TestPiEdit(t *testing.T) {
 		}
 
 		models := []string{"llama3.2"}
-		if err := pi.Edit(models); err != nil {
+		if err := pi.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -830,7 +827,7 @@ func TestPiEdit(t *testing.T) {
 		os.MkdirAll(configDir, 0o755)
 
 		models := []string{"qwen3:8b"}
-		if err := pi.Edit(models); err != nil {
+		if err := pi.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("Edit() error = %v", err)
 		}
 
@@ -864,7 +861,7 @@ func TestPiEdit(t *testing.T) {
 		}
 
 		models := []string{"test-model"}
-		if err := pi.Edit(models); err != nil {
+		if err := pi.Edit(launchModelsFromNames(models)); err != nil {
 			t.Fatalf("Edit() should not fail with corrupt settings, got %v", err)
 		}
 
@@ -1030,19 +1027,7 @@ func TestIsPiOllamaModel(t *testing.T) {
 
 func TestCreateConfig(t *testing.T) {
 	t.Run("sets vision input when model has vision capability", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["vision"],"model_info":{}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "llava:7b")
+		cfg := createConfig(LaunchModel{Name: "llava:7b", Capabilities: []model.Capability{model.CapabilityVision}})
 
 		if cfg["id"] != "llava:7b" {
 			t.Errorf("id = %v, want llava:7b", cfg["id"])
@@ -1057,19 +1042,7 @@ func TestCreateConfig(t *testing.T) {
 	})
 
 	t.Run("sets text-only input when model lacks vision", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["completion"],"model_info":{}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "llama3.2")
+		cfg := createConfig(LaunchModel{Name: "llama3.2", Capabilities: []model.Capability{model.CapabilityCompletion}})
 
 		input, ok := cfg["input"].([]string)
 		if !ok || len(input) != 1 || input[0] != "text" {
@@ -1081,39 +1054,15 @@ func TestCreateConfig(t *testing.T) {
 	})
 
 	t.Run("sets reasoning when model has thinking capability", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["thinking"],"model_info":{}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "qwq")
+		cfg := createConfig(LaunchModel{Name: "qwq", Capabilities: []model.Capability{model.CapabilityThinking}})
 
 		if cfg["reasoning"] != true {
 			t.Error("expected reasoning = true for thinking model")
 		}
 	})
 
-	t.Run("extracts context window from model info", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":[],"model_info":{"llama.context_length":131072}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "llama3.2")
+	t.Run("sets context window from metadata", func(t *testing.T) {
+		cfg := createConfig(LaunchModel{Name: "llama3.2", ContextLength: 131072})
 
 		if cfg["contextWindow"] != 131072 {
 			t.Errorf("contextWindow = %v, want 131072", cfg["contextWindow"])
@@ -1121,19 +1070,11 @@ func TestCreateConfig(t *testing.T) {
 	})
 
 	t.Run("handles all capabilities together", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":["vision","thinking"],"model_info":{"qwen3.context_length":32768}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "qwen3-vision")
+		cfg := createConfig(LaunchModel{
+			Name:          "qwen3-vision",
+			Capabilities:  []model.Capability{model.CapabilityVision, model.CapabilityThinking},
+			ContextLength: 32768,
+		})
 
 		input := cfg["input"].([]string)
 		if len(input) != 2 || input[0] != "text" || input[1] != "image" {
@@ -1147,17 +1088,8 @@ func TestCreateConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("returns minimal config when show fails", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"error":"model not found"}`)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "missing-model")
+	t.Run("returns minimal config when metadata is unavailable", func(t *testing.T) {
+		cfg := createConfig(LaunchModel{Name: "missing-model"})
 
 		if cfg["id"] != "missing-model" {
 			t.Errorf("id = %v, want missing-model", cfg["id"])
@@ -1165,85 +1097,28 @@ func TestCreateConfig(t *testing.T) {
 		if cfg["_launch"] != true {
 			t.Error("expected _launch = true")
 		}
-		// Should not have capability fields
-		if _, ok := cfg["input"]; ok {
-			t.Error("input should not be set when show fails")
+		// Input defaults to text even when capabilities are unavailable.
+		input, ok := cfg["input"].([]string)
+		if !ok || len(input) != 1 || input[0] != "text" {
+			t.Errorf("input = %v, want [text]", cfg["input"])
 		}
 		if _, ok := cfg["reasoning"]; ok {
-			t.Error("reasoning should not be set when show fails")
+			t.Error("reasoning should not be set when metadata is unavailable")
 		}
 		if _, ok := cfg["contextWindow"]; ok {
-			t.Error("contextWindow should not be set when show fails")
+			t.Error("contextWindow should not be set when metadata is unavailable")
 		}
 	})
 
-	t.Run("cloud model does not use hardcoded context when show fails", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"error":"model not found"}`)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "kimi-k2.5:cloud")
-
+	t.Run("cloud model without limit metadata omits context window", func(t *testing.T) {
+		cfg := createConfig(fallbackLaunchModel("glm-5:cloud"))
 		if _, ok := cfg["contextWindow"]; ok {
-			t.Errorf("contextWindow = %v, want unset", cfg["contextWindow"])
+			t.Errorf("contextWindow = %v, want unset without cloud limit metadata", cfg["contextWindow"])
 		}
 	})
 
-	t.Run("cloud model does not use hardcoded context when show omits model info", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":[],"model_info":{}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "glm-5:cloud")
-
-		if _, ok := cfg["contextWindow"]; ok {
-			t.Errorf("contextWindow = %v, want unset", cfg["contextWindow"])
-		}
-	})
-
-	t.Run("cloud model with dash suffix does not use hardcoded context when show fails", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"error":"model not found"}`)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "gpt-oss:120b-cloud")
-
-		if _, ok := cfg["contextWindow"]; ok {
-			t.Errorf("contextWindow = %v, want unset", cfg["contextWindow"])
-		}
-	})
 	t.Run("skips zero context length", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/show" {
-				fmt.Fprintf(w, `{"capabilities":[],"model_info":{"llama.context_length":0}}`)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer srv.Close()
-
-		u, _ := url.Parse(srv.URL)
-		client := api.NewClient(u, srv.Client())
-
-		cfg := createConfig(context.Background(), client, "test-model")
+		cfg := createConfig(LaunchModel{Name: "test-model", ContextLength: 0})
 
 		if _, ok := cfg["contextWindow"]; ok {
 			t.Error("contextWindow should not be set for zero value")

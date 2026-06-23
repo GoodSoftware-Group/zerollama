@@ -17,13 +17,21 @@
 #   RUN_E2E_PHASE15=1                                       # phase15_inprocess_signoff (needs LLAMA_CPP_LIB)
 #   RUN_E2E_L1=1                                            # l1_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 7B–9B)
 #   RUN_E2E_L3=1                                            # l3_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 9B+)
+#   RUN_E2E_L3_SPEC=1                                       # also L3_RUN_SPEC_CACHE=1 on l3_cuda_full_gate (ngram policy leg)
 #   RUN_E2E_LLAMA_BACKEND_SOURCE=config                      # with phase14_yaml_config_smoke prerequisites
 #   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1                           # wheel GPU (with RUN_E2E_LLAMA_CPP_PYTHON=1)
 #   RUN_E2E_PREFLIGHT=0                                      # skip Go golden in CT/minimal trees (see below)
+#   RUN_E2E_P17=1                                            # phase17_llama_server_smoke (needs LLAMA_SERVER_BIN + pulled tag)
+#   RUN_E2E_P17_LINUX_AUTO=1                                 # phase17_linux_auto_smoke (plain serve, Linux only)
+#   RUN_E2E_EDGE=1                                           # phase16_edge_smoke (serve --edge, runtime off)
+#   RUN_E2E_UPSTREAM_GGUF=1                                  # bundle P17 + P17_LINUX_AUTO + EDGE (upstream GGUF path)
+#   RUN_E2E_P17_VISION=1                                     # phase17_llama_server_vision_smoke (heavy; needs projector tag)
 #   GPU_PHASE13_SNAPSHOT_OUT=/tmp/5080-session.json
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/sched_watchdog_env.sh
+source "${ROOT}/scripts/sched_watchdog_env.sh"
 export ZEROLLAMA_REPO_ROOT="${ZEROLLAMA_REPO_ROOT:-$ROOT}"
 # WHY default-on but overridable: full hosts should run phase12_golden_ci before GPU smokes.
 # Proxmox CT 1564 (and other minimal checkouts) often lack vendored cpp-httplib for CGO
@@ -31,6 +39,12 @@ export ZEROLLAMA_REPO_ROOT="${ZEROLLAMA_REPO_ROOT:-$ROOT}"
 # CI still runs golden separately; this only gates the 5080 session wrapper.
 export RUN_E2E_PREFLIGHT="${RUN_E2E_PREFLIGHT:-1}"
 export RUN_E2E_PHASE13_SNAPSHOT=1
+
+if [[ "${RUN_E2E_UPSTREAM_GGUF:-0}" == "1" ]]; then
+  export RUN_E2E_P17=1
+  export RUN_E2E_P17_LINUX_AUTO=1
+  export RUN_E2E_EDGE=1
+fi
 export GPU_PHASE13_SNAPSHOT_OUT="${GPU_PHASE13_SNAPSHOT_OUT:-/tmp/5080-session.json}"
 
 if [[ -z "${LLAMA_MODEL:-}" && -z "${RUN_E2E_GGUF:-}" ]]; then
@@ -116,7 +130,71 @@ if [[ "${RUN_E2E_L3:-0}" == "1" ]]; then
   fi
   echo ""
   echo "== L3 CUDA full gate =="
+  L3_RUN_SPEC_CACHE="${RUN_E2E_L3_SPEC:-0}" \
   CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" "${ROOT}/scripts/l3_cuda_full_gate.sh"
+fi
+
+if [[ "${RUN_E2E_P17:-0}" == "1" ]]; then
+  if [[ -z "${LLAMA_SERVER_BIN:-}" || ! -x "${LLAMA_SERVER_BIN}" ]]; then
+    echo "RUN_E2E_P17=1 requires LLAMA_SERVER_BIN (built llama-server)" >&2
+    exit 1
+  fi
+  export P17_MODEL="${P17_MODEL:-${RUN_E2E_PROXY_MODEL:-}}"
+  if [[ -z "${P17_MODEL}" ]]; then
+    echo "RUN_E2E_P17=1 requires RUN_E2E_PROXY_MODEL or P17_MODEL (pulled local tag)" >&2
+    exit 1
+  fi
+  echo ""
+  echo "== Phase 17 llama-server smoke =="
+  LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN}" P17_MODEL="${P17_MODEL}" \
+    "${ROOT}/scripts/phase17_llama_server_smoke.sh"
+fi
+
+if [[ "${RUN_E2E_P17_LINUX_AUTO:-0}" == "1" ]]; then
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "RUN_E2E_P17_LINUX_AUTO=1 is Linux-only; skipping on $(uname -s)" >&2
+  else
+    if [[ -z "${LLAMA_SERVER_BIN:-}" || ! -x "${LLAMA_SERVER_BIN}" ]]; then
+      echo "RUN_E2E_P17_LINUX_AUTO=1 requires LLAMA_SERVER_BIN (built llama-server)" >&2
+      exit 1
+    fi
+    export P17_MODEL="${P17_MODEL:-${RUN_E2E_PROXY_MODEL:-}}"
+    if [[ -z "${P17_MODEL}" ]]; then
+      echo "RUN_E2E_P17_LINUX_AUTO=1 requires RUN_E2E_PROXY_MODEL or P17_MODEL (pulled local tag)" >&2
+      exit 1
+    fi
+    echo ""
+    echo "== Phase 17 Linux auto smoke =="
+    LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN}" P17_MODEL="${P17_MODEL}" \
+      "${ROOT}/scripts/phase17_linux_auto_smoke.sh"
+  fi
+fi
+
+if [[ "${RUN_E2E_EDGE:-0}" == "1" ]]; then
+  if [[ -z "${LLAMA_SERVER_BIN:-}" || ! -x "${LLAMA_SERVER_BIN}" ]]; then
+    echo "RUN_E2E_EDGE=1 requires LLAMA_SERVER_BIN (built llama-server)" >&2
+    exit 1
+  fi
+  export P16_MODEL="${P16_MODEL:-${RUN_E2E_PROXY_MODEL:-${P17_MODEL:-}}}"
+  if [[ -z "${P16_MODEL:-}" ]]; then
+    echo "RUN_E2E_EDGE=1 requires RUN_E2E_PROXY_MODEL or P16_MODEL (pulled local tag)" >&2
+    exit 1
+  fi
+  echo ""
+  echo "== Phase 16 edge smoke =="
+  LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN}" P16_MODEL="${P16_MODEL}" \
+    "${ROOT}/scripts/phase16_edge_smoke.sh"
+fi
+
+if [[ "${RUN_E2E_P17_VISION:-0}" == "1" ]]; then
+  if [[ -z "${LLAMA_SERVER_BIN:-}" || ! -x "${LLAMA_SERVER_BIN}" ]]; then
+    echo "RUN_E2E_P17_VISION=1 requires LLAMA_SERVER_BIN (built llama-server)" >&2
+    exit 1
+  fi
+  echo ""
+  echo "== Phase 17 llama-server vision smoke =="
+  RUN_E2E_P17_VISION=1 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN}" \
+    "${ROOT}/scripts/phase17_llama_server_vision_smoke.sh"
 fi
 
 echo "PASS: gpu_5080_session (snapshot: ${GPU_PHASE13_SNAPSHOT_OUT})"

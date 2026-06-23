@@ -23,7 +23,7 @@ func findElizaOS() (string, bool) {
 	return "", false
 }
 
-func (e *Eliza) Run(model string, args []string) error {
+func (e *Eliza) Run(model string, _ []LaunchModel, args []string) error {
 	_ = model
 	bin, ok := findElizaOS()
 	if !ok {

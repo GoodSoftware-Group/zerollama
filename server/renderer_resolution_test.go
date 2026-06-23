@@ -12,3 +12,10 @@ func TestResolveRendererNameQwen35Default(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestResolveRendererNameGptOSSDefault(t *testing.T) {
+	got := resolveRendererName(&Model{Config: model.ConfigV2{ModelFamily: "gpt_oss"}})
+	if got != "harmony" {
+		t.Fatalf("got %q", got)
+	}
+}

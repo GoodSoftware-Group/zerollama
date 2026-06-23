@@ -17,7 +17,7 @@ func NewProjectLink(displayName, url string) *ProjectLink {
 
 func (p *ProjectLink) String() string { return p.displayName }
 
-func (p *ProjectLink) Run(model string, args []string) error {
+func (p *ProjectLink) Run(model string, _ []LaunchModel, args []string) error {
 	_ = model
 	_ = args
 	return browser.OpenURL(p.url)

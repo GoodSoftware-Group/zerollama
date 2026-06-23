@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -39,9 +38,11 @@ import (
 	"golang.org/x/term"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/cmd/benchcache"
 	"github.com/ollama/ollama/cmd/config"
 	"github.com/ollama/ollama/cmd/launch"
 	"github.com/ollama/ollama/cmd/tui"
+	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/internal/modelref"
@@ -908,6 +909,9 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 
 	var data [][]string
 
+	// WHY soft-fail: ls must never break when bench.json is missing or corrupt; show "--" instead.
+	benchEntries, _ := benchcache.Load()
+
 	for _, m := range models.Models {
 		// Hide remote catalog stubs (e.g. Eliza cloud); LM Studio caches are local.
 		if m.RemoteModel != "" && !strings.EqualFold(m.RemoteHost, "lmstudio") {
@@ -920,12 +924,18 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 			if len(digest) > 12 {
 				digest = digest[:12]
 			}
-			data = append(data, []string{m.Name, digest, size, listParameterSummary(m.Details), format.HumanTime(m.ModifiedAt, "Never")})
+
+			tokStr := "--"
+			if e, ok := benchEntries[m.Digest]; ok && e.TokPerSec > 0 {
+				tokStr = fmt.Sprintf("%.1f", e.TokPerSec)
+			}
+
+			data = append(data, []string{m.Name, digest, size, listParameterSummary(m.Details), tokStr, format.HumanTime(m.ModifiedAt, "Never")})
 		}
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "ID", "SIZE", "PARAMS", "MODIFIED"})
+	table.SetHeader([]string{"NAME", "ID", "SIZE", "PARAMS", "TOK/S", "MODIFIED"})
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 	table.SetAlignment(tablewriter.ALIGN_LEFT)
 	table.SetHeaderLine(false)
@@ -1411,7 +1421,7 @@ func PullHandler(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	request := api.PullRequest{Name: args[0], Insecure: insecure}
+	request := api.PullRequest{Model: args[0], Insecure: insecure}
 	return client.Pull(cmd.Context(), &request, fn)
 }
 
@@ -1834,22 +1844,15 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 	if err := initializeKeypair(); err != nil {
 		return err
 	}
-	if flag, _ := cmd.Flags().GetBool("llama-cpp-backend"); flag {
-		_ = os.Setenv("ZEROLLAMA_LLAMA_CPP_BACKEND", "1")
-	}
-	if flag, _ := cmd.Flags().GetBool("llama-server-backend"); flag {
-		_ = os.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
-	}
-	// Phase 17: on Linux, default plain-text GGUF to Go → llama-server when binary is present.
-	// WHY not Darwin: M7 bench keeps ggml Metal default (~164 vs ~158 tok/s @ 4k).
-	if runtime.GOOS == "linux" && strings.TrimSpace(os.Getenv("ZEROLLAMA_LLAMA_SERVER")) == "" {
-		if llm.LlamaServerDiscoverable() {
-			slog.Info("Phase 17: auto-enabling Go → llama-server on Linux (set ZEROLLAMA_LLAMA_SERVER=0 to disable)")
-			_ = os.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
-		}
-	}
-	envconfig.ApplyLlamaCppBackendDefaults()
-	envconfig.ApplyLlamaServerBackendDefaults()
+	llamaCppBackend, _ := cmd.Flags().GetBool("llama-cpp-backend")
+	llamaServerBackend, _ := cmd.Flags().GetBool("llama-server-backend")
+	edge, _ := cmd.Flags().GetBool("edge")
+	envconfig.ApplyServeBackendEnv(envconfig.ServeBackendOpts{
+		LlamaCppBackend:         llamaCppBackend,
+		LlamaServerBackend:      llamaServerBackend,
+		Edge:                    edge,
+		LlamaServerDiscoverable: llm.LlamaServerDiscoverable(),
+	})
 
 	if err := checkConnectableHostAvailable(envconfig.Host(), envconfig.ConnectableHost()); err != nil {
 		return err
@@ -1956,6 +1959,12 @@ func checkServerHeartbeat(cmd *cobra.Command, _ []string) error {
 }
 
 func versionHandler(cmd *cobra.Command, _ []string) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "zerollama version is %s\n", version.Version)
+	if version.IsEdgeBuild() {
+		fmt.Fprintln(out, "edge build: true")
+	}
+
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		return
@@ -1963,15 +1972,12 @@ func versionHandler(cmd *cobra.Command, _ []string) {
 
 	serverVersion, err := client.Version(cmd.Context())
 	if err != nil {
-		fmt.Println("Warning: could not connect to a running Ollama instance")
-	}
-
-	if serverVersion != "" {
-		fmt.Printf("zerollama version is %s\n", serverVersion)
+		fmt.Fprintln(out, "Warning: could not connect to a running Ollama instance")
+		return
 	}
 
 	if serverVersion != version.Version {
-		fmt.Printf("Warning: client version is %s\n", version.Version)
+		fmt.Fprintf(out, "Warning: server version is %s\n", serverVersion)
 	}
 }
 
@@ -2240,7 +2246,8 @@ func NewCLI() *cobra.Command {
 		RunE:    RunServer,
 	}
 	serveCmd.Flags().Bool("llama-cpp-backend", false, "Route eligible GGUF text inference through pinned llama.cpp (Python runtime) instead of the ggml runner")
-	serveCmd.Flags().Bool("llama-server-backend", false, "Route eligible GGUF text inference through Go → llama-server (upstream shape) instead of the ggml runner")
+	serveCmd.Flags().Bool("llama-server-backend", false, "Route eligible GGUF inference through Go → llama-server (upstream shape) instead of the ggml runner")
+	serveCmd.Flags().Bool("edge", false, "Phase 16 upstream-shaped edge: Go → llama-server for GGUF, Python runtime chat off")
 
 	pullCmd := &cobra.Command{
 		Use:     "pull MODEL",
@@ -2340,7 +2347,45 @@ func NewCLI() *cobra.Command {
 		_ = runner.Execute(args[1:])
 	})
 
+	// gpu-discover runs native GGML/CUDA/ROCm probes in a short-lived subprocess so
+	// llama-server discovery can enrich PCI IDs, compute capability, and gfx targets
+	// without loading a model. Hidden — parent server invokes it via discoverNativeDevices.
+	var gpuDiscoverLibDirs []string
+	gpuDiscoverCmd := &cobra.Command{
+		Use:    "gpu-discover",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return discover.RunNativeProbeCommand(cmd.Context(), gpuDiscoverLibDirs, os.Stdout)
+		},
+	}
+	gpuDiscoverCmd.Flags().StringArrayVar(&gpuDiscoverLibDirs, "lib-dir", nil, "Ollama runtime library directory")
+
+	aneProbeCmd := NewANEProbeCommand()
+	aneBenchCmd := NewANEBenchCommand()
+	aneDraftBenchCmd := NewANEDraftBenchCommand()
+	aneHandoffSmokeCmd := NewANEHandoffSmokeCommand()
+	aneDraftResolveCmd := NewANEDraftResolveCommand()
+	aneDraftInspectCmd := NewANEDraftInspectCommand()
+	aneDraftSmokeCmd := NewANEDraftSmokeCommand()
+	aneHybridSmokeCmd := NewANEHybridSmokeCommand()
+	aneDraftSurfaceCmd := NewANEDraftSurfaceSmokeCommand()
+	aneDraftDaemonCmd := NewANEDraftDaemonSmokeCommand()
+	aneDraftRouterCmd := NewANEDraftRouterSmokeCommand()
+	aneGGMLMapCmd := NewANEGGMLMapSmokeCommand()
+	aneGGMLHookCmd := NewANEGGMLHookStatusCommand()
+	aneDraftMILCmd := NewANEDraftMILStatusCommand()
+	aneDraftMILMapCmd := NewANEDraftMILMapCommand()
+	aneDraftMILExtractCmd := NewANEDraftMILExtractCommand()
+	anePrefillBenchCmd := NewANEPrefillBenchCommand()
+	anePrefillHandoffCmd := NewANEPrefillHandoffSmokeCommand()
+	aneModelResolveCmd := NewANEModelResolveCommand()
+	anePrefillSweepCmd := NewANEPrefillSweepCommand()
+	anePrefillCrossoverCmd := NewANEPrefillCrossoverCommand()
+	aneLabStatusCmd := NewANELabStatusCommand()
+	flashMoEResolveCmd := NewFlashMoEResolveCommand()
+
 	doctorCmd := NewDoctorCommand()
+	benchCmd := NewBenchCommand()
 
 	envVars := envconfig.AsMap()
 
@@ -2357,6 +2402,7 @@ func NewCLI() *cobra.Command {
 		psCmd,
 		copyCmd,
 		deleteCmd,
+		benchCmd,
 		serveCmd,
 	} {
 		switch cmd {
@@ -2405,7 +2451,33 @@ func NewCLI() *cobra.Command {
 		copyCmd,
 		deleteCmd,
 		runnerCmd,
+		gpuDiscoverCmd,
+		aneProbeCmd,
+		aneBenchCmd,
+		aneDraftBenchCmd,
+		aneHandoffSmokeCmd,
+		aneDraftResolveCmd,
+		aneDraftInspectCmd,
+		aneDraftSmokeCmd,
+		aneHybridSmokeCmd,
+		aneDraftSurfaceCmd,
+		aneDraftDaemonCmd,
+		aneDraftRouterCmd,
+		aneGGMLMapCmd,
+		aneGGMLHookCmd,
+		aneDraftMILCmd,
+		aneDraftMILMapCmd,
+		aneDraftMILExtractCmd,
+		anePrefillBenchCmd,
+		anePrefillHandoffCmd,
+		aneModelResolveCmd,
+		anePrefillSweepCmd,
+		anePrefillCrossoverCmd,
+		aneLabStatusCmd,
+		flashMoEResolveCmd,
 		doctorCmd,
+		benchCmd,
+		NewRepairCommand(),
 		NewFleetCommand(),
 		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
 	)

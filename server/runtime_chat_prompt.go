@@ -124,32 +124,13 @@ func renderChatPromptTokenized(
 		p, err := renderPrompt(m, msgs, tools, think)
 		return p, false, err
 	}
-	lastIdx := len(msgs) - 1
-	var system []api.Message
-	for i := 0; i <= lastIdx; i++ {
-		system = system[:0]
-		for j := range i {
-			if msgs[j].Role == "system" {
-				system = append(system, msgs[j])
-			}
-		}
-		p, err := renderPrompt(m, append(system, msgs[i:]...), tools, think)
-		if err != nil {
-			return "", false, err
-		}
-		tokens, err := tokenize(ctx, p)
-		if err != nil {
-			return "", false, err
-		}
-		if len(tokens) <= maxPromptTokens {
-			return p, i > 0, nil
-		}
-		if i == lastIdx {
-			return p, i > 0, nil
-		}
+	start, err := findChatPromptStartIdx(ctx, m, msgs, tools, think, tokenize, maxPromptTokens, 0, false)
+	if err != nil {
+		return "", false, err
 	}
-	p, err := renderPrompt(m, msgs, tools, think)
-	return p, false, err
+	system := chatSystemPrefix(msgs, start)
+	p, err := renderPrompt(m, append(system, msgs[start:]...), tools, think)
+	return p, start > 0, err
 }
 
 func renderChatPromptHeuristic(

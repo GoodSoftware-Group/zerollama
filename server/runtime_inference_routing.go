@@ -91,6 +91,10 @@ func modelUsesRuntimeInference(m *Model) bool {
 	if m == nil {
 		return false
 	}
+	// Phase 16 edge: runtime chat middleman is intentionally off — all GGUF goes Go → llama-server.
+	if envconfig.EdgeMode() {
+		return false
+	}
 	if m.IsMLX() {
 		return false
 	}

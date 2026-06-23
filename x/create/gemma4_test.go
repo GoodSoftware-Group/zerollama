@@ -2,6 +2,8 @@ package create
 
 import (
 	"testing"
+
+	"github.com/ollama/ollama/x/safetensors"
 )
 
 func TestGemma4QuantizationType(t *testing.T) {
@@ -182,6 +184,8 @@ func TestIsGemma4StackedMoETensor(t *testing.T) {
 		{"non-expert 3D", "model.layers.0.mlp.gate_proj", []int32{3, 2816, 2816}, false},
 		// Not a projection
 		{"expert non-proj", "model.layers.0.experts.scale", []int32{128, 1, 1}, false},
+		// mlx-optiq switch_glu uses dedicated splitter (not generic stacked path)
+		{"switch_glu gate_proj 3D", "language_model.model.layers.0.experts.switch_glu.gate_proj.weight", []int32{128, 704, 704}, false},
 	}
 
 	for _, tt := range tests {
@@ -192,5 +196,70 @@ func TestIsGemma4StackedMoETensor(t *testing.T) {
 					tt.tensorName, tt.shape, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGemma4OptiqTensorKey(t *testing.T) {
+	got := gemma4OptiqTensorKey("language_model.model.layers.0.moe.experts.3.gate_proj.weight")
+	want := "language_model.model.layers.0.experts.switch_glu.gate_proj"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	got = gemma4OptiqTensorKey("language_model.model.layers.0.self_attn.q_proj.weight")
+	if got != "language_model.model.layers.0.self_attn.q_proj" {
+		t.Fatalf("dense key: got %q", got)
+	}
+}
+
+func TestGemma4OptiqMetadataForTensor(t *testing.T) {
+	tf := gemma4ImportTransform{
+		optiqPerLayer: map[string]gemma4OptiqLayerQuant{
+			"language_model.model.layers.0.experts.switch_glu.gate_proj": {Bits: 8, GroupSize: 64},
+			"language_model.model.layers.0.mlp.gate_proj":                {Bits: 8, GroupSize: 64},
+		},
+	}
+	meta := tf.prequantizedMetadataForTensor("language_model.model.layers.0.mlp.gate_proj.weight")
+	if meta == nil || meta["quant_type"] != "int8" {
+		t.Fatalf("mlp gate_proj metadata = %v, want int8", meta)
+	}
+	meta = tf.prequantizedMetadataForTensor("language_model.model.layers.0.moe.experts.2.gate_proj.weight")
+	if meta["quant_type"] != "int8" || meta["group_size"] != "64" {
+		t.Fatalf("meta = %#v", meta)
+	}
+}
+
+func TestSplitSwitchGluStackedTensor(t *testing.T) {
+	const (
+		experts = 4
+		rows    = 2
+		cols    = 2
+	)
+	raw := make([]byte, experts*rows*cols*4)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+
+	td := safetensors.NewTensorDataFromBytes(
+		"language_model.model.layers.0.experts.switch_glu.gate_proj.weight",
+		"U32",
+		[]int32{experts, rows, cols},
+		raw,
+	)
+
+	transform := gemma4ImportTransform{}
+	out, err := transform.transformTensor(td)
+	if err != nil {
+		t.Fatalf("transformTensor: %v", err)
+	}
+	if len(out) != experts {
+		t.Fatalf("got %d experts, want %d", len(out), experts)
+	}
+	wantName := "language_model.model.layers.0.moe.experts.0.gate_proj.weight"
+	if out[0].Name != wantName {
+		t.Errorf("expert 0 name = %q, want %q", out[0].Name, wantName)
+	}
+	wantShape := []int32{rows, cols}
+	if len(out[0].Shape) != 2 || out[0].Shape[0] != wantShape[0] || out[0].Shape[1] != wantShape[1] {
+		t.Errorf("expert 0 shape = %v, want %v", out[0].Shape, wantShape)
 	}
 }

@@ -38,6 +38,14 @@ PYTHONPATH=. python3 -m pytest \
   tests/test_kv_live_physical.py \
   tests/test_internal_kv_snapshot.py \
   tests/test_resolve_parallel_slots.py \
+  tests/test_prefix_cache_policy.py \
+  tests/test_kv_cache_spec.py \
+  tests/test_prefix_cache_trace.py \
+  tests/test_prefix_cache_golden_trace.py \
+  tests/test_spec_bind.py \
+  tests/test_decode_graph_policy.py \
+  tests/test_subprocess_slot_state.py \
+  tests/test_cache_bridge.py \
   -q
 
 echo "== Phase 15: health KV smoke =="

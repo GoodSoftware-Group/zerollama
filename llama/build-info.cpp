@@ -1,14 +1,14 @@
-#include "llama.cpp/common/build-info.h"
+#include "build-info.h"
 
 #include <cstdio>
 #include <string>
 
-// CMake generates build-info.cpp upstream; zerollama CGO build has no configure step.
-// Keep BUILD_NUMBER/COMMIT in sync with LLAMA_CPP_VERSION and vendor/llama-cpp-b9611 HEAD.
-int LLAMA_BUILD_NUMBER = 9611;
-char const * LLAMA_COMMIT = "1aefee58";
-char const * LLAMA_COMPILER = "cgo";
-char const * LLAMA_BUILD_TARGET = "zerollama";
+// CGO has no CMake configure step; Makefile.sync / sync_vendor_llama.sh substitute
+// placeholders from Makefile.sync FETCH_HEAD (e.g. b9672 → BUILD_NUMBER 9672).
+int LLAMA_BUILD_NUMBER = 9672;
+char const * LLAMA_COMMIT = "b9672";
+char const * LLAMA_COMPILER = "";
+char const * LLAMA_BUILD_TARGET = "";
 
 int llama_build_number(void) {
     return LLAMA_BUILD_NUMBER;

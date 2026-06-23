@@ -142,6 +142,42 @@ func TestFromChatRequest_WithVideoURL_MergeOrder(t *testing.T) {
 	}
 }
 
+func TestFromChatRequest_WithInputAudio(t *testing.T) {
+	audioBytes := []byte{0x52, 0x49, 0x46, 0x46} // RIFF
+	audioB64 := base64.StdEncoding.EncodeToString(audioBytes)
+	req := ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{"type": "text", "text": "listen"},
+					map[string]any{
+						"type": "input_audio",
+						"input_audio": map[string]any{
+							"data":   audioB64,
+							"format": "wav",
+						},
+					},
+				},
+			},
+		},
+	}
+	result, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	if len(result.Messages[0].Images) != 0 {
+		t.Fatalf("audio should not be in Images, got %d", len(result.Messages[0].Images))
+	}
+	if len(result.Messages[0].AudioClips) != 1 || string(result.Messages[0].AudioClips[0]) != string(audioBytes) {
+		t.Fatalf("audio clip mismatch")
+	}
+}
+
 func TestChatCompletionRequestHasVideoURL(t *testing.T) {
 	req := ChatCompletionRequest{
 		Model: "m",
@@ -155,6 +191,30 @@ func TestChatCompletionRequestHasVideoURL(t *testing.T) {
 	req.Messages[0].Content = []any{map[string]any{"type": "video_url", "video_url": map[string]any{"url": "data:video/mp4;base64,AAAA"}}}
 	if !ChatCompletionRequestHasVideoURL(&req) {
 		t.Fatal("expected true")
+	}
+}
+
+func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
+	key := "agent-thread-42"
+	req := ChatCompletionRequest{
+		Model: "m",
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+		},
+		PromptCacheKey: &key,
+		Options: map[string]any{
+			"num_ctx": float64(8192),
+		},
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Options["prompt_cache_key"] != key {
+		t.Fatalf("prompt_cache_key=%v", out.Options["prompt_cache_key"])
+	}
+	if out.Options["num_ctx"] != float64(8192) {
+		t.Fatalf("num_ctx=%v", out.Options["num_ctx"])
 	}
 }
 
@@ -220,6 +280,61 @@ func TestToUsage(t *testing.T) {
 
 	if usage.TotalTokens != 30 {
 		t.Errorf("expected TotalTokens 30, got %d", usage.TotalTokens)
+	}
+}
+
+func TestToUsage_multimodalPromptTokensDetails(t *testing.T) {
+	resp := api.ChatResponse{
+		Metrics: api.Metrics{
+			PromptEvalCount: 100,
+			EvalCount:       5,
+			ImageTokens:     768,
+			VideoTokens:     2304,
+		},
+	}
+	usage := ToUsage(resp)
+	if usage.PromptTokensDetails == nil {
+		t.Fatal("expected prompt_tokens_details")
+	}
+	if usage.PromptTokensDetails.ImageTokens == nil || *usage.PromptTokensDetails.ImageTokens != 768 {
+		t.Fatalf("image_tokens=%v, want 768", usage.PromptTokensDetails.ImageTokens)
+	}
+	if usage.PromptTokensDetails.VideoTokens == nil || *usage.PromptTokensDetails.VideoTokens != 2304 {
+		t.Fatalf("video_tokens=%v, want 2304", usage.PromptTokensDetails.VideoTokens)
+	}
+	if usage.PromptTokensDetails.AudioTokens != nil {
+		t.Fatal("expected no audio_tokens")
+	}
+}
+
+func TestToUsage_cachedPromptTokens(t *testing.T) {
+	resp := api.ChatResponse{
+		Metrics: api.Metrics{
+			PromptEvalCount:      200,
+			EvalCount:            10,
+			CachedPromptTokens:   150,
+		},
+	}
+	usage := ToUsage(resp)
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens == nil {
+		t.Fatal("expected cached_tokens")
+	}
+	if *usage.PromptTokensDetails.CachedTokens != 150 {
+		t.Fatalf("cached_tokens=%d, want 150", *usage.PromptTokensDetails.CachedTokens)
+	}
+}
+
+func TestToUsageGenerate_multimodalPromptTokensDetails(t *testing.T) {
+	resp := api.GenerateResponse{
+		Metrics: api.Metrics{
+			PromptEvalCount: 50,
+			EvalCount:       10,
+			VideoTokens:     1536,
+		},
+	}
+	usage := ToUsageGenerate(resp)
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.VideoTokens == nil || *usage.PromptTokensDetails.VideoTokens != 1536 {
+		t.Fatalf("video_tokens=%v, want 1536", usage.PromptTokensDetails)
 	}
 }
 
@@ -383,6 +498,48 @@ func TestFromCompleteRequest_WithLogprobs(t *testing.T) {
 	}
 }
 
+func TestToListCompletionUsesModelIdentity(t *testing.T) {
+	modified := time.Unix(1234567890, 0).UTC()
+
+	result := ToListCompletion(api.ListResponse{
+		Models: []api.ListModelResponse{
+			{
+				Name:       "legacy-name:latest",
+				Model:      "namespace/exposed-model:latest",
+				ModifiedAt: modified,
+			},
+			{
+				Name:       "fallback-name:latest",
+				ModifiedAt: modified.Add(time.Second),
+			},
+		},
+	})
+
+	if result.Object != "list" {
+		t.Fatalf("object = %q, want list", result.Object)
+	}
+	if len(result.Data) != 2 {
+		t.Fatalf("models = %d, want 2", len(result.Data))
+	}
+
+	if result.Data[0].Id != "namespace/exposed-model:latest" {
+		t.Fatalf("id = %q, want model field", result.Data[0].Id)
+	}
+	if result.Data[0].OwnedBy != "namespace" {
+		t.Fatalf("owned_by = %q, want namespace", result.Data[0].OwnedBy)
+	}
+	if result.Data[0].Created != modified.Unix() {
+		t.Fatalf("created = %d, want %d", result.Data[0].Created, modified.Unix())
+	}
+
+	if result.Data[1].Id != "fallback-name:latest" {
+		t.Fatalf("fallback id = %q, want name field", result.Data[1].Id)
+	}
+	if result.Data[1].OwnedBy != "library" {
+		t.Fatalf("fallback owned_by = %q, want library", result.Data[1].OwnedBy)
+	}
+}
+
 func TestToChatCompletion_WithLogprobs(t *testing.T) {
 	createdAt := time.Unix(1234567890, 0)
 	resp := api.ChatResponse{
@@ -488,6 +645,22 @@ func TestToChatCompletion_WithoutLogprobs(t *testing.T) {
 	// When no logprobs, Logprobs should be nil
 	if result.Choices[0].Logprobs != nil {
 		t.Error("expected Logprobs to be nil when not requested")
+	}
+}
+
+func TestKeepaliveChunk(t *testing.T) {
+	chunk := KeepaliveChunk("chatcmpl-test", "test-model")
+	if chunk.Object != "chat.completion.chunk" {
+		t.Fatalf("object = %q want chat.completion.chunk", chunk.Object)
+	}
+	if len(chunk.Choices) != 1 {
+		t.Fatalf("choices = %d want 1", len(chunk.Choices))
+	}
+	if chunk.Choices[0].FinishReason != nil {
+		t.Fatalf("finish_reason = %v want nil", chunk.Choices[0].FinishReason)
+	}
+	if chunk.Choices[0].Delta.Role != "assistant" {
+		t.Fatalf("delta role = %q want assistant", chunk.Choices[0].Delta.Role)
 	}
 }
 

@@ -44,6 +44,8 @@ type Manager struct {
 	discoveredAt  map[string]time.Time
 	lastAvailable map[string]time.Time
 	peerURLs      []string
+	prefixCache   *PrefixCache
+	probeCache    *ProbeCache
 }
 
 func NewManager(cfg Config) (*Manager, error) {
@@ -86,6 +88,8 @@ func NewManager(cfg Config) (*Manager, error) {
 		discoveredAt:  make(map[string]time.Time),
 		lastAvailable: make(map[string]time.Time),
 		peerURLs:      peerURLs,
+		prefixCache:   newPrefixCacheFromEnv(),
+		probeCache:    NewProbeCache(probeCacheTTLFromEnv()),
 	}, nil
 }
 
@@ -177,9 +181,14 @@ func (m *Manager) pollPeer(ctx context.Context, peer string) {
 	probeCtx, cancel := context.WithTimeout(ctx, m.cfg.ProbeTimeout)
 	defer cancel()
 
-	status, err := fetchStatus(probeCtx, m.client, peer)
+	status, err := m.probeCache.Fetch(probeCtx, peer, func(ctx context.Context) (*api.StatusResponse, error) {
+		return fetchStatus(ctx, m.client, peer)
+	})
 	if err != nil {
 		snap.LastError = err.Error()
+		if m.prefixCache != nil {
+			m.prefixCache.DropNode(id)
+		}
 		m.setNode(snap)
 		m.maybePruneDiscovered(peer)
 		return
@@ -319,7 +328,13 @@ func sortNodes(nodes []NodeSnapshot) {
 // Assign routes a model request to the best node.
 func (m *Manager) Assign(req AssignRequest) (AssignResponse, error) {
 	snap := m.Snapshot()
-	return Assign(snap.Nodes, req)
+	return Assign(snap.Nodes, req, m.prefixCache)
+}
+
+// Score ranks nodes for a model without committing an assign (or updating affinity).
+func (m *Manager) Score(req ScoreRequest) ScoreResponse {
+	snap := m.Snapshot()
+	return ScoreCandidates(snap.Nodes, req, m.prefixCache)
 }
 
 // RunMDNSDiscovery browses _zerollama._tcp until ctx is cancelled.

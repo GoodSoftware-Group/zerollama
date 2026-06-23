@@ -1,0 +1,54 @@
+diff --git a/ane_bridge.h b/ane_bridge.h
+--- a/ane_bridge.h
++++ b/ane_bridge.h
+@@ -57,6 +57,14 @@ void ane_bridge_write_input(ANEKernelHandle *kernel, int idx,
+ void ane_bridge_read_output(ANEKernelHandle *kernel, int idx,
+                               void *data, size_t bytes);
+ 
++// IOSurface export for Metal zero-copy producers (zerollama hybrid path).
++uint32_t ane_bridge_input_surface_id(ANEKernelHandle *kernel, int idx);
++size_t ane_bridge_input_surface_bytes(ANEKernelHandle *kernel, int idx);
++uint32_t ane_bridge_output_surface_id(ANEKernelHandle *kernel, int idx);
++size_t ane_bridge_output_surface_bytes(ANEKernelHandle *kernel, int idx);
++
+ // Free a compiled kernel and all associated resources
+ void ane_bridge_free(ANEKernelHandle *kernel);
+ 
+diff --git a/ane_bridge.m b/ane_bridge.m
+--- a/ane_bridge.m
++++ b/ane_bridge.m
+@@ -246,6 +246,34 @@ void ane_bridge_read_output(ANEKernelHandle *kernel, int idx,
+     IOSurfaceUnlock(kernel->ioOutputs[idx], kIOSurfaceLockReadOnly, NULL);
+ }
+ 
++uint32_t ane_bridge_input_surface_id(ANEKernelHandle *kernel, int idx) {
++    if (!kernel || idx < 0 || idx >= kernel->nInputs || !kernel->ioInputs[idx]) {
++        return 0;
++    }
++    return IOSurfaceGetID(kernel->ioInputs[idx]);
++}
++
++size_t ane_bridge_input_surface_bytes(ANEKernelHandle *kernel, int idx) {
++    if (!kernel || idx < 0 || idx >= kernel->nInputs) {
++        return 0;
++    }
++    return kernel->inputBytes[idx];
++}
++
++uint32_t ane_bridge_output_surface_id(ANEKernelHandle *kernel, int idx) {
++    if (!kernel || idx < 0 || idx >= kernel->nOutputs || !kernel->ioOutputs[idx]) {
++        return 0;
++    }
++    return IOSurfaceGetID(kernel->ioOutputs[idx]);
++}
++
++size_t ane_bridge_output_surface_bytes(ANEKernelHandle *kernel, int idx) {
++    if (!kernel || idx < 0 || idx >= kernel->nOutputs) {
++        return 0;
++    }
++    return kernel->outputBytes[idx];
++}
++
+ void ane_bridge_free(ANEKernelHandle *kernel) {
+     @autoreleasepool {
+         if (!kernel) return;

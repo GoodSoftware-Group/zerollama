@@ -44,7 +44,27 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `macos_metal_smoke.sh` | Darwin: Phase 12 go golden + metal probe pytest + coordination + `/health` autoconfig/probe — see [apple-silicon-metal.md](./apple-silicon-metal.md) |
 | `gpu_metal_session.sh` | Darwin one-shot: `macos_metal_smoke` + Phase 13 snapshot + optional Phase 14 inprocess — Mac counterpart to `gpu_5080_session.sh` |
 | `m3_metal_signoff.sh` / `metal_signoff.sh` | Full Mac Metal gate (Phase 13–15). **`RUN_E2E_QWEN35=1`** adds qwen35 **before Phase 15** — **why:** Phase 15 stops the sidecar; qwen35 needs runtime handoff/resume. **`RUN_E2E_L3=1`** runs prefix-cache smoke — **why:** verify stable `prompt_cache_key` wiring + `/health.llama_cache` (latency win optional on tiny models). M4 Max PASS Jun 2026. |
+| `phase17_llama_server_smoke.sh` | Go → llama-server E2E (`--llama-server-backend`); uses pulled tag via `P17_MODEL` / `RUN_E2E_PROXY_MODEL`; needs `LLAMA_SERVER_BIN`. Doc: [phase17-llama-server.md](./phase17-llama-server.md) |
+| `phase17_linux_auto_smoke.sh` | Linux-only: plain `zerollama serve` (`P17_LINUX_AUTO=1`); asserts `/api/status` `backend.llama_server=auto` |
+| `phase16_edge_smoke.sh` | Phase 16 edge (`serve --edge`, runtime off); wraps Phase 17 smoke. Doc: [phase16-thin-edge.md](./phase16-thin-edge.md) |
+| `phase16_edge_build_smoke.sh` | No GPU: `-tags edge` unit tests + edge binary build + `zerollama -v` marker + runner stub message (CI regression); **why:** proves v1 subprocess stub and v2 CGO exclusion compile cleanly |
+| `RUN_E2E_UPSTREAM_GGUF=1` | 5080 bundle: sets `RUN_E2E_P17`, `RUN_E2E_P17_LINUX_AUTO`, `RUN_E2E_EDGE` in `gpu_5080_session.sh` — **why:** one flag for upstream-shaped ship-hardware sign-off |
+| `serve_linux_auto.sh` | Linux operator helper: plain `zerollama serve` with auto llama-server when binary discoverable |
+| `serve_edge.sh` | Phase 16 edge serve (`--edge`, runtime chat off) |
+| `phase15_upstream_kv_watch.sh` | No GPU: scan in-tree + ollama-upstream `llama.h` for writable page-handle symbols (Phase 15 criterion 5) |
+| `phase17_l2_pin_status.sh` | No GPU: stock vs eliza L2 pin report + merge gate pointers (Phase 17 criterion 7) |
+| `phase17_llama_server_vision_smoke.sh` | Opt-in vision chat+image on llama-server (`RUN_E2E_P17_VISION=1`, `P17_VISION_MODEL`); verifies serve log routes through llama-server subprocess. Doc: [phase17-llama-server.md](./phase17-llama-server.md) |
+| `flash_moe_smoke.sh` | **Darwin opt-in** Flash-MoE: tier 0 = unit tests + `--moe-sidecar` binary check; tier 1 = direct llama-server startup; tier 2 = `zerollama serve` E2E (`RUN_E2E_FLASH_MOE=1`). **Why tiered:** sidecar + MoE GGUF are operator-local, not in git. Doc: [flash-moe.md](./flash-moe.md) |
+| `ane_probe_smoke.sh` | **Darwin opt-in** ANE bridge smoke via `zerollama ane-probe`. **Why subprocess:** private ANE APIs isolated from main binary. Doc: [ane-probe.md](./ane-probe.md) |
+| `video_expand_cache_smoke.sh` | Native video xfer unit gate — expansion/session/URL LRU + preflight spans — **why:** SGLang Tier 1 caches without GPU/VLM; runs `go test` on `server/modality` + `openai`. Doc: [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
+| `video_agent_cache_smoke.sh` | Agent two-turn session cache — raw video + **pre-expanded** layout restore; modality + OpenAI `video_url` + Qwen3-VL render + runner stub tests; **`RUN_E2E_VIDEO_AGENT=1`** live `/api/chat` + `/v1/chat/completions` + preprocessed turn 2 + ffmpeg lavfi + log grep — **why:** proves resend-clip agent loop across API shapes. Needs `VIDEO_SMOKE_MODEL` for live. |
+| `video_l3_agent_gate.sh` | Combined operator gate — runs `video_agent_cache_smoke.sh`; **`RUN_E2E_L3=1`** adds `l3_cache_smoke.sh` + `l3_gate_report.sh` — **why:** video session cache and L3 prefix KV use the same `prompt_cache_key` discipline but different layers. |
+| `video_agent_infer_smoke.sh` | Live VLM inference gate — two-turn `/api/chat`; strict pass on turn-2 `cached_prompt_tokens` (L3 subprocess or **ollama-engine input cache**); v1 `cached_tokens` advisory — **`RUN_E2E_VIDEO_AGENT_INFER=1`** + `VIDEO_SMOKE_MODEL`; **`VIDEO_AGENT_INFER_SOFT=1`** when MLX/cache off; **`VIDEO_AGENT_INFER_PREPROC=1`** optional padded+`grid_thw` infer leg (requires `VIDEO_AGENT_GO_LOG` for `preprocessed layout session cache hit`); grep `padded_input_ids runner inject`, `vision grid hints`, `vision embed session cache hit`. |
+| `video_agent_infer_gate_report.sh` | Verdict printer for infer JSON report — **why:** operator sign-off like `l3_gate_report.sh`. |
+| `gen_video_testdata.sh` | Writes `server/modality/testdata/lavfi_1s_64x64.mp4` via ffmpeg lavfi — **why:** optional Phase D fixture without committing binary blobs to git. |
 | `l3_cache_smoke.sh` | Two-turn same cache key; JSON timing report — **why:** L3 is prefill-bound; gate checks bridge wiring before agent-scale bench. Needs subprocess backend + L1 `-np > 1`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
+| `l3_spec_cache_smoke.sh` | Spec decode × prefix cache policy — **why:** eagle3/mtp/dflash must disable `cache_prompt` + disk persist; checks `/health.llama_cache.policy`. Default `L3_SPEC_METHOD=ngram` (no draft GGUF). Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
+| `l3_prefix_cache_trace_replay.sh` | Offline golden trace replay — **why:** SWA/draft-spec regressions without GPU; replays `tests/fixtures/prefix_cache_golden.jsonl` against `KVCacheSpec`. |
 | `l3_gate_report.sh` | PASS/FAIL from `l3_cache_smoke.sh` JSON (strict latency or soft wiring pass) |
 | `l1_cuda_calibrate.sh` | L1 profile OFF vs ON (+ `L1_SWEEP_NP`) on production GGUF — **why:** tune `rtx-5080.json` from ship hardware, not eliza port |
 | `l1_cuda_concurrent_bench.sh` | N parallel `/api/generate` (barrier-synced) OFF vs ON — **why:** validate `n_parallel=2` wins under agent concurrency, not just single-stream |
@@ -276,6 +296,56 @@ GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD
 | `llama-server exited` / CUDA OOM | Model too large, wrong arch, tensor split on 1 GPU | Quantized GGUF, `single_gpu.yaml`, rebuild `120-real` |
 | Legacy `runner terminated` | GPU held by runtime | Retry (broker should hand off); or manual `training-handoff` |
 | Empty JSON from `curl -sf` | HTTP error hidden | Use smoke script or `curl -w '%{http_code}'` |
+
+---
+
+## Video agent + padded multimodal (operator)
+
+**Why three smokes:** `video_expand_cache_smoke` proves unit caches without GPU; `video_agent_cache_smoke` proves session expansion with `_debug_render_only` (no real VLM); `video_agent_infer_smoke` proves turn-2 prefix hits on **real** vision prefill — the layer agents actually care about for latency.
+
+**Unit (no GPU):**
+
+```bash
+./scripts/video_expand_cache_smoke.sh
+go test ./server/modality/... -run 'PaddedLayoutConsume|Deepseek|qwen25vl'
+```
+
+**Expand-only live** (`RUN_E2E_VIDEO_AGENT=1`): session VIDEO cache + preprocessed layout restore — needs `VIDEO_SMOKE_MODEL`, ffmpeg, running serve, optional `VIDEO_AGENT_GO_LOG`.
+
+**Full infer live** (`RUN_E2E_VIDEO_AGENT_INFER=1`): real VLM prefill + turn-2 `cached_prompt_tokens`. Mac Metal ollama-engine: input-cache hits count even when `llama_cache.enabled=false`. Set `VIDEO_AGENT_INFER_SOFT=1` only when KV cache is off or model is MLX-only.
+
+```bash
+RUN_E2E_VIDEO_AGENT_INFER=1 \
+  VIDEO_SMOKE_MODEL=qwen3-vl:latest \
+  VIDEO_AGENT_GO_LOG=/tmp/zerollama-go.log \
+  ./scripts/video_agent_infer_smoke.sh
+./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
+```
+
+**Preprocessed padded leg** (`VIDEO_AGENT_INFER_PREPROC=1`, requires `VIDEO_AGENT_GO_LOG`): turn-1 sends `padded_input_ids` + `images` + `video_spans` + `grid_thw`; turn-2 resends frames only — strict layout-cache grep + turn-2 `cached_prompt_tokens` (use `VIDEO_AGENT_INFER_SOFT=1` when cache off):
+
+| Log line | Meaning |
+|----------|---------|
+| `preprocessed layout session cache hit` | Session layout LRU restored `padded_input_ids` |
+| `padded_input_ids runner inject` | Runner consumed pretokenized ids (ollama-engine / llamarunner) |
+| `vision embed session cache hit` | Per-agent ViT overlay on turn 2+ |
+| `vision grid hints` | Client `grid_thw` vs embed-count compare (Info) |
+
+**Ollama-engine padded families** (native Go VLM inject — grep `layout_consume=` on access log):
+
+| Consume mode | Families |
+|--------------|----------|
+| `qwen3vl_hf_runner_inject` | Qwen3-VL, qwen25vl, qwen2vl |
+| `gemma4_img_runner_inject` | Gemma4 |
+| `mllama_img_runner_inject` | mllama |
+| `gemma3_img_runner_inject` | Gemma3 |
+| `llama4_img_runner_inject` | Llama4 |
+| `lfm2_img_runner_inject` | LFM2 |
+| `glmocr_img_runner_inject` | GLM-OCR |
+| `mistral3_img_runner_inject` | Mistral3 |
+| `deepseekocr_img_runner_inject` | DeepSeek-OCR |
+
+Still `deferred_non_qwen3vl`: text-only archs (gemma3n, glm4moelite). Doc: [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md), [phase17-llama-server.md](./phase17-llama-server.md#padded-multimodal-inject-llama-server).
 
 ---
 

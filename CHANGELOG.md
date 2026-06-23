@@ -4,6 +4,416 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Flash-MoE (anemll) + ANE probe (maderix) — experimental Mac inference upgrades
+
+**Why:** Scouting [@anemll](https://x.com/anemll) and [@maderix](https://x.com/maderix) surfaced two complementary Apple Silicon paths: **Flash-MoE** runs MoE models **larger than RAM** by streaming routed experts from SSD (immediate operator value via Phase 17 llama-server), while **ANE probe** validates private Neural Engine access for a **future hybrid** (embeddings / vision front-ends) without touching the ggml Metal hot path.
+
+**Flash-MoE — why llama-server only, not ggml default:** anemll's slot-bank runtime lives in a forked `llama-server` with `--moe-*` flags; Mac ggml stays ~+7% faster for in-RAM models (M7). Passthrough via existing Go→llama-server seam is the smallest correct integration.
+
+- **`envconfig/flash_moe.go`** — `ZEROLLAMA_FLASH_MOE*`, `FLASH_MOE_REPO`, `FlashMoELlamaServerBin()`; **why:** centralize operator knobs and surface in `zerollama envconfig`.
+- **`llm/flash_moe.go`** — `appendFlashMoEArgs`, `FindFlashMoELlamaServer`, sidecar-gated activation; auto **`-fit on`** + **`-ub 1`**; **why:** anemll documents these as required for MoE prefill correctness and dense/slot VRAM balance.
+- **`api/types.go`** — `moe_mode`, `moe_sidecar`, `moe_slot_bank`, `moe_topk`, `moe_prefetch_temporal` on runner options; **why:** per-model Modelfile config without global env.
+- **`discover/flash_moe_inventory.go`** + **`zerollama flash-moe-resolve`** — scan `~/.ollama/models` for MoE tags, blob paths, manifest `moe_sidecar`, default `~/Models/flash/<tag>`; **why:** smoke/operators should not hand-copy GGUF paths zerollama already knows from `pull`.
+- **`scripts/flash_moe_extract_sidecar.sh`** — operator wrapper for `flashmoe_sidecar.py extract` + verify; prints serve env hints.
+- **`scripts/build_flash_moe_llama_server.sh`** — builds `anemll-flash-llama.cpp` → `build/flash-moe-llama-server-darwin/bin/llama-server`.
+- **`scripts/flash_moe_smoke.sh`** — tier 0 toolchain (go tests + `--moe-sidecar` binary); tier 1 startup; tier 2 zerollama E2E; **why:** MoE sidecar/GGUF are operator-local — CI validates wiring without 100GB fixtures.
+- **`cmd/doctor_flash_moe.go`** — doctor check reports repo/binary readiness even when disabled; **why:** operators should see "binary ready" before setting env vars.
+- **Doc:** [docs/flash-moe.md](docs/flash-moe.md).
+
+**ANE probe — why subprocess, not CGO:** maderix `libane_bridge.dylib` uses private `_ANEClient` APIs that break across macOS updates; isolating compile/eval in `ane-probe` keeps `zerollama` stable and lets doctor warn without blocking serve.
+
+- **`tools/ane-probe/`** — minimal ObjC MIL conv smoke test; `@loader_path` dylib + `install_name_tool`.
+- **`discover/ane_probe.go`** — find/run probe, JSON parse; `cmd.Dir` set for dyld.
+- **`cmd/doctor_ane.go`** + hidden **`zerollama ane-probe`**; **`scripts/ane_probe_build.sh`**, **`scripts/ane_probe_smoke.sh`**.
+- **`envconfig/ANERepo()`**, **`internal/reporoots`** — shared checkout discovery for local build artifacts.
+- **Doc:** [docs/ane-probe.md](docs/ane-probe.md).
+
+**Not in scope:** Flash-MoE in ggml Metal; automatic sidecar extract on `pull`; ANE on inference hot path; CUDA Flash-MoE build script.
+
+### Model bench cache (`zerollama bench` + `TOK/S` in `ls`)
+
+**Why:** Parameter size and disk footprint in `zerollama ls` do not tell operators which local tag decodes fastest on *their* GPU/backend. A lightweight client-side bench avoids N× manual `run --verbose` sessions and keeps numbers visible in daily `list` output without server or manifest changes.
+
+- **`zerollama bench [MODEL...]`** — warmup + averaged `/api/generate` epochs; reports decode tok/s from `EvalCount` / `EvalDuration`; **why:** same HTTP path agents use, reflects live serve policy (ggml vs llama-server).
+- **`~/.ollama/bench.json`** — keyed by manifest **digest** (not name); atomic write after each model; **why:** re-pull invalidates stale entries; Ctrl-C mid-run keeps completed models.
+- **`zerollama ls`** — **TOK/S** column (`--` when not benchmarked); soft-fail load; **why:** list must never break when cache is missing.
+- **`cmd/benchcache/`** — load/save helper shared by bench + list.
+- **Filters** — skips remote catalog stubs (except LM Studio), embedding/image/video_gen/speech-only tags; **why:** generate bench is meaningless on non-completion models.
+- **Doc:** [docs/bench-cache.md](docs/bench-cache.md).
+
+**Not in scope:** auto-bench on pull; prefill/TTFT in `ls`; fleet-wide bench aggregation (use `cmd/bench/bench.go` or L1 gates for CI).
+
+### Phase 16 — thin edge daemon (v0–v2)
+
+**Why:** Upstream Ollama’s default GGUF path is **Go → llama-server** with no Python chat middleman. Zerollama keeps training, Eliza, fleet, and Mac ggml speed as differentiators, but operators deploying upstream-shaped Linux/edge nodes need a **thin Go daemon** that routes all GGUF chat/generate through llama-server and turns off runtime chat by default — without forking the API surface.
+
+- **`zerollama serve --edge`** / **`ZEROLLAMA_EDGE=1`** — forces `ZEROLLAMA_LLAMA_SERVER=1`, `ZEROLLAMA_RUNTIME=0`, and legacy-runner routing; **why:** one flag for “upstream-shaped edge” without hand-tuning five env vars.
+- **`server/edge_ggml_policy.go`** — `schedSkipGgmlRunnerLoad` returns HTTP 400 when edge policy would spawn ggml; **why:** fail fast with a clear operator message instead of hanging on a runner that will never load.
+- **`server/inference_backend_policy.go`** + **`GET /api/status`** — `inference.backend` snapshot (`edge`, `edge_build`, `ggml_linked`, `llama_server`, `gguf_path`, `runtime_chat`); **why:** fleet ops and smokes need one JSON probe, not log archaeology.
+- **`GET /api/version`** + **`zerollama -v`** — `edge_build` compile marker; **why:** CI and operators must distinguish `-tags edge` binaries from runtime `--edge` alone.
+- **`-tags edge` (v1)** — `GgmlRunnerLinked=false`, stubs `zerollama runner` subprocess, `ggmlRunnerRequired` fail-fast without llama-server; **`build_zerollama_edge.sh`**, **`phase16_edge_build_smoke.sh`** (CI regression).
+- **`-tags edge` (v2)** — `llm/server.go` + `server_score.go` excluded (`//go:build !edge`); **`llm/server_edge.go`** llama-server-only `NewLlamaServer`; edge main dep tree drops `llama`/`model` CGO; **why:** smaller edge binary and no accidental ggml load paths at link time.
+- **`discover/gpu_discovery_upstream.go`** — skip ggml bootstrap when `!GgmlRunnerLinked()`; **why:** edge discovery must use llama-server probe, not spawn a ggml runner subprocess that is stubbed out.
+- **Scripts:** `serve_edge.sh`, `serve_linux_auto.sh`, `phase16_edge_smoke.sh`; **`RUN_E2E_UPSTREAM_GGUF=1`** bundles P17 + P17_LINUX_AUTO + EDGE on 5080 session.
+- **Doc:** [docs/phase16-thin-edge.md](docs/phase16-thin-edge.md).
+
+### Phase 17 — upstream GGUF path alignment (operator + CI)
+
+**Why:** Cherry-picking upstream’s Go→llama-server integration reduces merge pain and removes Go→Python→llama hops for default text GGUF on Linux — while Mac keeps ggml Metal (~+7% decode on M4 Max).
+
+- **Linux auto-default** — plain `zerollama serve` sets `ZEROLLAMA_LLAMA_SERVER=auto` when llama-server is on disk; routes **all** GGUF (text + vision + thinking); **`serve_linux_auto.sh`**, **`phase17_linux_auto_smoke.sh`**.
+- **Explicit opt-in on Mac** — `--llama-server-backend` / `ZEROLLAMA_LLAMA_SERVER=1`; Mac default unchanged (M7 bench).
+- **`ErrEdgeGgmlRunnerDisabled`** remedy text — points to llama-server env, not `--edge` (which *enables* the restriction); **why:** operators were told to use the mode that caused the error.
+- **`phase17_l2_pin_status.sh`**, **`phase15_upstream_kv_watch.sh`** — JSON pin/L2/upstream-KV reports for CI regression.
+- **Doc:** [docs/phase17-llama-server.md](docs/phase17-llama-server.md).
+
+### Build / CI fixes
+
+**Why:** `go build ./...` must succeed on dev Macs; smoke scripts must not false-fail when subprocesses correctly exit non-zero.
+
+- **`app/webview/webview.go`** — Darwin LDFLAGS `-lc++`; **why:** header-only webview C++ compiled without libc++ link caused undefined `std::` symbols on current Xcode toolchains.
+- **`x/mlxrunner/mlx/generator/main.go`** — `//go:build ignore`; **`go generate -tags ignore`**; **why:** codegen tool pulled incomplete vendor tree-sitter into `./...` builds.
+- **`scripts/phase16_edge_build_smoke.sh`** — capture runner stderr without `pipefail` false negative; **why:** expected non-zero exit from stubbed runner must not fail the grep check.
+
+### Upstream Ollama — launch model inventory (v0.30.10)
+
+**Why:** Each integration used to call `/api/show` per model when writing agent configs — slow, easy to timeout, and inconsistent with the model picker (`/api/tags`). Upstream loads tags once per launch run and passes rich `LaunchModel` structs to every integration. Zerollama ports that pattern for mergeability and faster `zerollama launch`.
+
+- **`cmd/launch/model_inventory.go`** — `LaunchModel`, per-run `modelInventory` (load/refresh/resolve); local miss triggers refresh after `pull`.
+- **`cmd/launch/launch.go`** — `resolveRunModels`, `liveConfigMatches` drift guard; managed catalog uses inventory only (not picker recommendations).
+- **`api/types.go`**, **`server/routes.go`**, **`server/model_details.go`** — list tags carry `Capabilities`, context/embedding length from GGUF kv.
+- **Integrations** — `Edit`/`Run`/`ConfigureWithModels` take `[]LaunchModel`; OpenCode, OpenClaw, Pi, Droid, OMP stop per-edit Show calls.
+- **Fixes** — Cline `Models()` ignores stale legacy state when `providers.json` active provider ≠ ollama; `Makefile.sync` rsync-before-build-info to prevent pin skew.
+- **Doc:** [docs/launch-model-inventory.md](docs/launch-model-inventory.md).
+
+**Not ported:** Kimi launch, desktop app launchers (`claude-desktop`, `codex-app`, `hermes-desktop`).
+
+### Upstream Ollama — Qwen Code + Pool launch integrations
+
+**Why:** Upstream ships first-class agent launchers for Qwen Code CLI and Poolside; zerollama keeps Eliza/Zoey but should expose the same upstream integrations for operator parity.
+
+- **`cmd/launch/qwen.go`** — ManagedSingleModel config for `~/.qwen/settings.json`; auto-install; `ConnectableHost()` `/v1` base URL.
+- **`cmd/launch/poolside.go`** — `POOLSIDE_STANDALONE_BASE_URL` + API key wiring; hidden on Windows.
+- **`cmd/launch/registry.go`** — register `qwen` and `pool` in launcher order.
+
+### Phase 17 — vision/thinking llama-server opt-in
+
+**Why:** Upstream routes all GGUF through llama-server; zerollama blocked split projectors even with explicit `--llama-server-backend`. Opt-in now matches upstream for vision (mmproj) and thinking (`enable_thinking`); Linux auto-default stays plain text only.
+
+- **`llm/llama_server_routing.go`** — check explicit `ZEROLLAMA_LLAMA_SERVER=1` before plain-text gate; projectors allowed on opt-in path.
+- **`llm/llama_server_routing_test.go`** — explicit-on + projectors; reject projectors without explicit flag.
+- **`scripts/phase17_llama_server_vision_smoke.sh`** — opt-in E2E chat+image on llama-server (`RUN_E2E_P17_VISION=1`).
+
+### Upstream Ollama — Cline providers.json (#16402)
+
+**Why:** Upstream Cline reads `~/.cline/data/settings/providers.json` (OpenAI-compatible `/v1` base URL). Legacy `globalState.json` alone was insufficient for provider drift detection and launch reconfigure.
+
+- **`cmd/launch/cline.go`** — dual-write `providers.json` + legacy state; `ensureClineInstalled()` npm prompt; `Models()` prefers active ollama provider config.
+- **`cmd/launch/cline_test.go`** — providers.json coverage; **`TestLaunchIntegration_ClineRewritesWhenLiveProviderDrifted`** in launch tests.
+
+### Upstream Ollama — Phase 17 smoke + integration tests
+
+**Why:** E2E proof that Go → llama-server generates on ship hardware; integration tests aligned with upstream context-shift and HF CLI behavior.
+
+- **`scripts/phase17_llama_server_smoke.sh`** — uses pulled model tag (`P17_MODEL` / `RUN_E2E_PROXY_MODEL`); accepts `thinking` when `response` empty.
+- **`integration/context_test.go`** — context-limit 4xx tolerance for llama-server oversized initial prompts (#16764).
+- **`integration/create_test.go`** — prefer `hf` CLI over deprecated `huggingface-cli` (#16765).
+- **`x/create/create_test.go`** — FP8 error message + Qwen35 MTP tensor expectations aligned with upstream.
+
+### Upstream Ollama — OMP launch (#16410)
+
+**Why:** Upstream added [oh-my-pi / OMP](https://omp.sh) as a first-class `ollama launch omp` integration with Ollama provider discovery and optional web-search plugin.
+
+- **`cmd/launch/omp.go`** — ManagedSingleModel; writes `~/.omp/agent/models.yml` + `config.yml`; launches `omp --model ollama/<name>`.
+- **Registry** — `zerollama launch omp`; web search plugin uses shared `shouldManagePiWebSearch()` gate.
+
+### Upstream Ollama — Cohere2 MoE MLX (#16670)
+
+**Why:** Upstream added Command A / North safetensors (`Cohere2MoeForCausalLM`) with a distinct chat template and MoE architecture. Without parser/renderer/MLX model registration, `ollama create` and inference would fall back to passthrough.
+
+- **`model/parsers/cohere.go`**, **`model/renderers/cohere.go`** — North template tokens (`<|START_OF_TURN_TOKEN|>`, thinking/action blocks, tool results).
+- **`x/models/cohere2_moe/`** — MLX forward (parallel residual, sliding-window + NoPE layers, sparse MoE).
+- **`x/create/cohere2moe.go`** — layer-position quantization heuristic for import.
+- **`x/create/client/create.go`** — auto-detect `cohere` template from `config.json` architecture.
+
+### Chunked prefill abort — Phase 15 v31 (Jun 2026)
+
+**Why:** Long context prefill (100k+ tokens) can take 30–60 s on a single GPU. If the client disconnects mid-prefill, the runtime has no way to cancel — it burns the GPU until the last chunk completes. This adds the mechanism to signal abort between page-aligned chunks.
+
+- **`kv_decode_loop_abort_set/clear/check`** (`runtime/native/kv_decode_loop.h`, `.c`) — `atomic_int` abort flag; `run_prefill` checks between chunks and returns `KV_DECODE_LOOP_ERR_ABORT` (-3). GIL is released during prefill, so a Python thread can safely call `abort_set()` concurrently.
+- **`decode_loop_abort_set/clear`** Python bindings (`runtime/native/kv_block_pool.c`) — exposed as `METH_NOARGS`; no GIL release needed (atomic write).
+- **`PrefillAbortedError`** (`runtime/runtime/kv/native_decode_loop.py`) — distinct exception type so callers can distinguish abort from decode failure (`RuntimeError`) and page bind (`LlamaServerError`).
+- **`prefill_abort_set()` / `prefill_abort_clear()`** — thin Python wrappers; swallow `ImportError` in non-linked builds.
+- **`run_prefill` auto-clear** — clears abort flag before each call so a stale flag from a previous cancel doesn't immediately abort the next request.
+- **Tests** — `test_run_prefill_raises_prefill_aborted_error_on_minus_three`, `test_run_prefill_page_bind_error_still_raises_on_minus_two`, `test_prefill_abort_helpers_no_op_when_not_linked`.
+- **Engine wiring (Jun 2026 follow-up):** `PrefillCancelToken` (`runtime/kv/prefill_cancel.py`); passed through inprocess `_decode_stream` (native + ctypes chunk loops); `/api/generate` + `/api/chat` streaming use `disconnect_stream.ndjson_stream_on_disconnect` to call `prefill_abort_set()` when `request.is_disconnected()`; `done_reason=cancelled` on abort.
+- **Non-stream disconnect (Jun 2026):** `run_sync_on_disconnect` polls disconnect while `engine.generate()` runs; wired on non-stream `/api/generate`, `/api/chat`, `/v1/chat/completions` (ctypes + llama-server HTTP close + llama-cpp-python wheel via internal streaming).
+- **ViT embed cache sizing log (Jun 2026):** `vision embed cache may be undersized` when latest-user frames exceed `OLLAMA_IMAGE_EMBED_CACHE_SIZE`.
+
+### ViT embed cache — configurable slots (Jun 2026)
+
+**Why:** Video agent turns resend the same clip frames; the llamarunner vision encoder (`ImageContext`) had a fixed 4-slot LRU. For 32-frame clips this evicts and re-encodes frames on every turn.
+
+- **`OLLAMA_IMAGE_EMBED_CACHE_SIZE`** — per-runner ViT embed LRU initial slots (default 4).
+- **`OLLAMA_IMAGE_EMBED_CACHE_MAX`** — auto-grow cap per multimodal turn (default 64).
+- **`growCacheForDistinctFrames`** — expands LRU at encode time for video agents.
+- **Session ViT embed overlay (Jun 2026):** `prompt_cache_key` flows to llamarunner `MultimodalTokenize` and **ollama-engine** `VisionEmbedCache`; per-session embed map (32 sessions, 30m TTL) survives global LRU eviction on agent turn 2+. Log: `vision embed session cache hit`.
+
+### Qwen3-VL `padded_input_ids` ggml runner inject (Jun 2026)
+
+**Why:** SGLang preprocessed clients send pretokenized layouts; native path previously re-tokenized text and ignored layout at the runner.
+
+- **`BuildPaddedCompletionPromptTokens`** — splices latest-user `padded_input_ids` into Qwen3-VL HF rendered template (`server/modality/build_padded_prompt.go`).
+- **`qwen3vl_hf_runner_inject`** — routes pass `prompt_tokens` to llamarunner; full mtmd chunks replace each `<|vision_start|>…<|vision_end|>` block. Works on **HF** and production **`[img-N]`** paths (renderer skips duplicate tags when `padded_input_ids` set). **llama-server subprocess:** vision blocks → `prompt_string` + `multimodal_data`.
+- **Multimodal agent history** — splice targets **each** user block when counts align; prior turns with rendered images OK; multi-turn `padded_input_ids` on both user turns supported.
+- **Runtime disconnect cancel** — `/v1/chat/completions` SSE uses `sse_stream_on_disconnect` (same prefill abort as `/api/chat`); `finish_reason: cancelled` on client disconnect.
+
+### Qwen3-VL `padded_input_ids` audit hardening (Jun 2026)
+
+**Why:** Tool-calling agents broke multi-turn padded splice: Qwen3-VL renders tool results inside pseudo `<|im_start|>user\n<tool_response>…` blocks. Span mismatch caused silent inject failure after the renderer had already stripped vision placeholders — prompts lost both layout ids and `[img-N]` markers.
+
+- **Tool-span exclusion** — `qwenVLUserContentSpans` skips `<tool_response>` pseudo-user blocks so span count matches `role=user` messages.
+- **`MessageSkipsVisionPlaceholdersForChat`** — latest user skips duplicate vision tags when padded; prior padded users keep placeholders when the chat has tool messages (safe fallback if splice fails).
+- **`deferred_multimodal_history`** — `ggmlPaddedCompletionPromptTokens` + `routes.go` downgrade and log when inject cannot build pretokenized ids.
+- **llama-server pretokenized truncate with media** — vision-block-aware middle discard; no longer skips truncation when images are attached.
+- **llama-server inject fallback** — pretokenized layout without `vision_start` but with media → detokenize + standard media-marker path.
+
+### Gemma4 `padded_input_ids` ggml runner inject (Jun 2026)
+
+**Why:** SGLang preprocessed clients send pretokenized layouts for Gemma4 VLMs; native path previously deferred as `deferred_non_qwen3vl`.
+
+- **`BuildGemma4PaddedCompletionPromptTokens`** — splices `padded_input_ids` into `<|turn>user\n…<turn|>` blocks.
+- **`gemma4_img_runner_inject`** — runner injects mtmd chunks at `<|image|>`, `<|video|>` (N frames per clip), `<|audio|>` soft tokens; llama-server maps slots to media markers.
+- **`MessageSkipsVisionPlaceholdersForChat`** on Gemma4 render — skip duplicate `[img-N]` when layout is consumed.
+- **Unclosed vision blocks** — no phantom `multimodal_data` entries for incomplete `vision_start` spans.
+- **OpenAI SSE** — `finish_reason: cancelled` preserved (not coerced to `stop`).
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §25; [phase17-llama-server.md](docs/phase17-llama-server.md#padded-multimodal-inject-llama-server).
+
+### Ollama-engine + mllama `padded_input_ids` inject (Jun 2026)
+
+**Why:** Mac Metal default uses **ollama-engine** (`OllamaEngineRequired` families). Padded inject on llamarunner/llama-server alone missed Qwen3-VL, Gemma4, and mllama on the hot path.
+
+- **`runner/ollamarunner/padded_inputs.go`** — `inputsFromPaddedPromptTokens`: Qwen3-VL vision blocks, Gemma4 soft tokens, mllama slot `128256` → `EncodeMultimodal` + `PostTokenize`.
+- **`BuildMllamaPaddedCompletionPromptTokens`** — splices `padded_input_ids` into Llama3 `<|start_header_id|>user…<|eot_id|>` spans; `mllama_img_runner_inject` consume mode.
+- **`runner/ollamarunner/runner.go`** — `NewSequence` branches on `promptTokens` + `paddedLayoutConsume`; passes Gemma4 soft-token resolution at sequence start.
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §32.
+
+### Ollama-engine ViT embed cache + session overlay (Jun 2026)
+
+**Why:** Mac Metal default uses ollama-engine; session ViT overlay was llamarunner-only — agent turn 2+ still re-ran `EncodeMultimodal` on the hot path after global LRU eviction.
+
+- **`runner/ollamarunner/vision_embed_cache.go`** — materialized vision tensors (float32 + grid metadata) in per-runner LRU; auto-grow via `OLLAMA_IMAGE_EMBED_CACHE_MAX`.
+- **Session overlay** — `prompt_cache_key` wired through `CompletionRequest` → `NewSequence`; 32 sessions, 30m TTL (same as llamarunner).
+- **Log:** `vision embed session cache hit` with `engine=ollama`.
+- **`PromptEvalCachedCount` on ollama-engine** — input-cache prefix hits wired to `cached_prompt_tokens` for agent E2E gate (`runner/ollamarunner/runner.go`).
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §28–§29.
+
+### Gemma3 `padded_input_ids` ollama-engine inject (Jun 2026)
+
+**Why:** Gemma3 vision is `OllamaEngineRequired` and popular for native image chat; SGLang preprocessed layouts were still `deferred_non_qwen3vl`.
+
+- **`BuildGemma3PaddedCompletionPromptTokens`** — splices `padded_input_ids` into `<start_of_turn>user\n…<end_of_turn>` spans.
+- **`gemma3_img_runner_inject`** — ollama-engine injects at `<start_of_image>` token `255999` (`EncodeMultimodal` + `PostTokenize`).
+- **gemma3n** — text-only; remains `deferred_non_qwen3vl`.
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §32.
+
+### Llama4 `padded_input_ids` ollama-engine inject (Jun 2026)
+
+**Why:** Llama4 Scout/Maverick vision is `OllamaEngineRequired`; pretokenized layouts with tile `<|patch|>` tokens were still `deferred_non_qwen3vl`.
+
+- **`BuildLlama4PaddedCompletionPromptTokens`** — splices into `<|header_start|>user<|header_end|>\n\n…<|eot|>` spans.
+- **`llama4_img_runner_inject`** — replaces each `<|image_start|>…<|image_end|>` block (`200080`) with `EncodeMultimodal` + `PostTokenize` tile expansion.
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §32.
+
+### LFM2 `padded_input_ids` ollama-engine inject (Jun 2026)
+
+**Why:** LFM2-VL is `OllamaEngineRequired`; pretokenized ChatML layouts with tiled `<|img_row_N_col_M|>` blocks were still `deferred_non_qwen3vl`.
+
+- **`BuildLfm2PaddedCompletionPromptTokens`** — splices into `<|im_start|>user\n…<|im_end|>` spans (same delimiters as Qwen3-VL HF; tool turns use `role=tool` wrappers).
+- **`lfm2_img_runner_inject`** — replaces each `<|image_start|>…<|image_end|>` block (or contiguous `<image>` runs when special tokens disabled) with `EncodeMultimodal` + `PostTokenize` tile expansion.
+- **LFM2 renderer** — skips `[img-N]` / `<image>` placeholders when latest user carries `padded_input_ids`.
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §33.
+
+### GLM-OCR `padded_input_ids` ollama-engine inject (Jun 2026)
+
+**Why:** GLM-OCR vision is `OllamaEngineRequired`; pretokenized image_start…image_end layouts were still `deferred_non_qwen3vl`.
+
+- **`BuildGlmocrPaddedCompletionPromptTokens`** — splices into `<|user|>\n…` spans (ends at next role tag).
+- **`glmocr_img_runner_inject`** — replaces each image_start…image_end block with `EncodeMultimodal` + `PostTokenize` M-RoPE expansion.
+- **GLM-OCR renderer** — skips `[img-N]` when latest user carries `padded_input_ids`.
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §34.
+
+### Mistral3 `padded_input_ids` ollama-engine inject (Jun 2026)
+
+**Why:** Pixtral/Mistral3 vision is `OllamaEngineRequired`; pretokenized `[IMG]…[IMG_END]` layouts were still `deferred_non_qwen3vl`.
+
+- **`BuildMistral3PaddedCompletionPromptTokens`** — splices into `[INST] … [/INST]` user spans (mistral-instruct jinja).
+- **`mistral3_img_runner_inject`** — one `EncodeMultimodal` per image block; skip through `[IMG_END]`; `PostTokenize` expands Pixtral patch rows.
+- **`chatPrompt`** — skips `[img-N]` prefix when latest user carries `padded_input_ids` (template path, no Go renderer).
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §35.
+
+### DeepSeek-OCR `padded_input_ids` ollama-engine inject (Jun 2026)
+
+**Why:** DeepSeek-OCR vision is `OllamaEngineRequired`; pretokenized `<image>` token (`128815`) runs were still `deferred_non_qwen3vl`.
+
+- **`BuildDeepseekOcrPaddedCompletionPromptTokens`** — splices by content-order user spans (deepseek-ocr template has no role wrappers).
+- **`deepseekocr_img_runner_inject`** — one `EncodeMultimodal` per contiguous image-token run; `PostTokenize` expands SAM+CLIP layout.
+- **`chatPrompt`** — skips `[img-N]` when latest user carries `padded_input_ids` (same gate as Mistral3 template path).
+
+**Docs:** [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §36.
+
+**Note:** `qwen25vl` / `qwen2vl` already route through `qwen3vl_hf_runner_inject` via `isQwen3VLModel` (vision tokens `151652…151653`).
+
+### `grid_thw` mtmd Go seam + video agent infer smoke hardening (Jun 2026)
+
+**Why:** SGLang clients attach `[T,H,W]` on `video_spans` so pretokenized `padded_input_ids` are sized to a specific patch grid. Zerollama used hints for preflight/usage only — operators could not tell whether mtmd embed counts matched client layout until upstream mtmd accepts hints. Separately, `video_agent_cache_smoke` proved expansion/session caches with `_debug_render_only` but not real VLM prefill + turn-2 prefix hits; the infer smoke had log-parse ordering bugs and weak preproc gates.
+
+- **`llama.MtmdContext.MultimodalTokenize(..., gridTHW []int)`** — Go signature accepts per-frame `[1,H,W]`; debug log when hint present until `mtmd_bitmap_set_grid_hint` lands in llama.cpp. **Why:** wire callers now so upstream bump is a one-line C bind, not a runner refactor.
+- **`runner/llamarunner/image.go`** — `ImageContext.MultimodalTokenize` passes `gridTHW` from `llm.ImageData`; cache keys remain image-bytes only (hints do not affect LRU). **Why:** same frame bytes → same ViT embed regardless of client grid metadata.
+- **`runner/llamarunner/runner.go`** — `encodeImageChunks` and `[img-N]` path pass `img.GridTHW`; `logVisionGridHint` compares hint vs embed count after encode.
+- **`./scripts/video_agent_infer_smoke.sh`** — log read **after** all HTTP legs (preproc included); `VIDEO_AGENT_INFER_PREPROC=1` requires `VIDEO_AGENT_GO_LOG`; greps `preprocessed layout session cache hit`, `padded_input_ids runner inject`, `vision grid hints`; ollama-engine detected via `engine=ollama` on inject log; separate `preproc_report.verdict` (`pass`/`soft`/`fail`). **Why:** expand-only smoke does not prove L3/input-cache on real vision prefill; preproc leg must not grep stale logs.
+- **`./scripts/video_agent_infer_gate_report.sh`** — prints preproc verdict; exits non-zero on preproc `fail`. **Why:** operator sign-off parity with `l3_gate_report.sh`.
+
+**Docs:** [mtmd-grid-thw-handoff.md](docs/mtmd-grid-thw-handoff.md), [testing-smoke.md](docs/testing-smoke.md#video-agent--padded-multimodal-operator), [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §37.
+
+### MLX agent prompts — context, tokenize, keepalive, observability (Jun 2026)
+
+**Why:** Agent clients (Hermes, Mercury) send 100k+ token megaprompts to MLX safetensors models. Gemma4 multimodal `config.json` can store `vocab_size` in `text_config.max_position_embeddings` (262144) instead of real ctx (131072) → no tail truncate, double tokenize, 5m keep-alive evictions, empty SSE during multi-minute prefill. Fixes are **generic**, not client-specific.
+
+- **Context length correction** (`x/server/show.go`, `server/mlx_model_config.go`) — ignore bogus `text_config.max_position_embeddings == vocab_size`; enrich MLX `ContextLen` at load + schedule. **Why:** VRAM tier defaults inherited 262144; tail truncate never fired.
+- **`capMLXScheduleOptions`** — cap `num_ctx` / `num_predict` to MLX model max before scheduler load. **Why:** clients and 128 GB tier defaults request more than the model supports.
+- **Tail truncate + budget** (`server/prompt.go`, `effectiveChatPromptBudget`) — token-ID front-drop for single megaprompts; message binary search for multi-turn. **Why:** message drop alone cannot shrink one huge user blob.
+- **`PromptTokens` passthrough** — `chatPrompt` always captures MLX token IDs once; routes → `CompletionRequest.PromptTokens` → `Prepare` skips re-encode. **Why:** detokenize→re-tokenize diverges after front-drop; MLX MTP needs exact IDs.
+- **Tokenize LRU** (`x/mlxrunner/tokenize_cache.go`) — 16 entries / 2M tokens / 15 m TTL per MLX client. **Why:** duplicate `/v1/tokenize` within one request + identical megaprompts every agent turn (~500ms each).
+- **MLX keep-alive floor** (`mlxKeepAliveFloor`, 30 m when unset) — **Why:** MLX load 3–10s; default 5m evicts during agent think pauses.
+- **SSE stream keepalive** (`server/stream_keepalive.go`, `OLLAMA_STREAM_KEEPALIVE_INTERVAL`) — status chunks until first token. **Why:** agent HTTP clients abort on empty streams during long MLX prefill.
+- **Prefill tuning** (`x/mlxrunner/prefill_config.go`) — chunk size, snapshot disable for long prompts, MTP off above threshold. **Why:** 131k prefill with MTP snapshots can stall or OOM on unified memory.
+- **Operator logs** — `runner needs reload` + `reload_reason`; `prefill complete` + `tok_per_sec`; `inference response out` + `prompt_tokens` / `truncated_tokens` / `messages_dropped`; debug `mlx tokenize cache hit`. **Why:** `03:12` audit showed load vs prefill vs template time invisible in one line.
+
+**Docs:** [docs/mlx-agent-prompts.md](docs/mlx-agent-prompts.md); [ROADMAP.md](docs/ROADMAP.md#m15--mlx-agent-prompt-hardening-jun-2026).
+
+### Phase 17 upstream cherry-picks (Jun 2026)
+
+**Why:** Vanilla Ollama @ `07ed7523` (v0.30.10) routes text GGUF as **Go → llama-server** and ships renderer/discovery/pin deltas zerollama lacked. Full rebase would drop training, Python runtime, and Eliza. Phase 17 cherry-picks **integration seams** so merges stay cheap while **Mac ggml Metal remains default** (~+7% decode vs upstream on M4 Max).
+
+- **`llm/llama_server.go` path** — DisableJinja, context shift, MTP/draft-mtp, Linux auto-default when binary found. **Why:** upstream shape without Python hop on the critical path.
+- **`discover/llama_server.go`** — short-lived llama-server probe; CUDA arch + ROCm gfx filter; **ggml fallback** on Mac default. **Why:** upstream scheduler inputs; Mac must not spawn llama-server when Phase 17 is off (tests + latency).
+- **`LeadingBOSForRenderer`** — `Renderer.LeadingBOS()` + `CompletionRequest.LeadingBOS`. **Why:** with `--no-jinja`, llama-server must not prepend BOS Go already rendered (Gemma4, LFM2, Cogito, …).
+- **`chatPrompt` → `PromptTokens`** — tail-truncation returns pre-tokenized IDs to the runner. **Why:** avoid re-tokenize drift after front-drop; MLX MTP long-prefill path.
+- **`PreservedTokens()` wiring** — parser interface + harmony + generate/chat routes. **Why:** llama-server preserved-token slots must match Go parser vocabulary.
+- **`cmd/launch`** — OpenCode thinking models; `liveConfigMatches` drift guard. **Why:** agent integrations break when inline config diverges from disk.
+- **LFM2 optional thinking** — parser + renderer parity with upstream.
+- **`llama/llama.go` `-lc++` LDFLAGS** — darwin/linux test + link fix for jinja C++ in CGO graph. **Why:** `go test ./discover/` failed with missing `libc++` on Mac without production build scripts.
+- **`LLAMA_CPP_VERSION=b9672`** — vendor synced: `vendor/llama-cpp-b9672`, 16 patches, in-tree ggml/llama.cpp rsync + Metal embed regen. **Why:** match upstream Ollama v0.30.10; Phase 17 mergeability + qwen35/Metal fixes on current llama.cpp.
+- **Native `gpu-discover` subcommand** — hidden CLI + Linux/Windows CGO probes (`native_probe_*.go`). **Why:** llama-server discovery merges PCI IDs, compute capability, and gfx targets from a crash-isolated subprocess without loading a model.
+- **Integrated GPU policy (`gfx1151`)** — upstream allowlist for Strix Halo 8060S; `OLLAMA_IGPU_ENABLE`. **Why:** default iGPU filter dropped the only GPU on Ryzen AI Max+ boxes.
+- **Metal discovery retry** — `ShouldRetryWithMetalTensorDisabled` + `RunnerEnvOverrides`. **Why:** Metal tensor API probe can pass while real context init fails; conservative path must stick for later loads.
+- **`llm/llama_server_test.go`** — upstream regression suite (health, SSE ping, context shift, load stall, mmproj). **Why:** Phase 17 mergeability without full C++ link in CI.
+- **OpenAI `/v1/models` list** — prefer `ListModelResponse.model` over `name` (#16556). **Why:** tagged manifests expose canonical model id separately from legacy name.
+- **`filteredEnv` secret redaction** + **`cudaFlashAttentionSupported`** — upstream log hygiene and old-GPU FA default-off.
+- **`filterOldCUDADriver`** — drops pre-Volta GPUs on `cuda_v12` when NVIDIA driver < 570. **Why:** upstream parity; old Pascal cards fail at load with newer CUDA blobs.
+- **Docs:** [phase17-llama-server.md](docs/phase17-llama-server.md), [upstream-ollama-diff.md](docs/upstream-ollama-diff.md), [ROADMAP.md](docs/ROADMAP.md#phase-17--upstream-gguf-path-alignment-directional).
+
+**Explicitly not ported:** Mac-default llama-server routing, Python runtime removal, wholesale `sched.go` replace.
+
+### SGLang-inspired multimodal borrowings (Jun 2026)
+
+**Why:** SGLang’s Jun 2026 stack optimizes agent VLMs (repeat clips, OpenAI usage breakdown, prefix KV observability). Zerollama keeps native ffmpeg + vision runners but ports **narrow** patterns that fit Option 2 — without RadixAttention, required SGLang servers, or full `grid_thw` processor parity.
+
+**Caches (three layers):**
+- **Pooled `video_url` HTTP** (`openai/video_url.go`) — shared transport + per-request context deadlines. **Why:** repeat HTTPS fetches should reuse TLS/idle conns; timeouts must not be frozen on the client at init.
+- **Remote video body LRU** (`openai/video_fetch_cache.go`, 32 entries / 30 m) — keyed by URL after SSRF checks. **Why:** agent turns re-hit the same CDN URL; skip network before ffmpeg.
+- **Global video expansion LRU** (`server/modality/video_cache.go`) — `(policy, video digest) → PNG frames`. **Why:** ffmpeg is the dominant cost on repeat bytes.
+- **Session expansion cache** (`server/modality/session_video_cache.go`) — `prompt_cache_key` / `eliza.conversationId` pins frames per thread (16 clips / session, 256 sessions). **Why:** global LRU evicts under fleet load; L3 session keys keep **their** clips warm.
+
+**Pipeline and API:**
+- **Preprocessed fast path** — `video_spans` + `images`, no `videos` → skip ffmpeg; reject inconsistent spans. **Why:** clients may send already-expanded frames (SGLang-style).
+- **Capability on pre-expanded video** — `video_spans` trigger vision/video checks, not only raw `videos`. **Why:** pre-expanded clients must not bypass model capability gates.
+- **Preflight scoping** — raw `videos` on any message; pre-expanded spans / audio on **latest user** only. **Why:** echoed multimodal history must not false-reject follow-up turns.
+- **mllama preflight** — `PreflightMllamaSingleImage` before ffmpeg. **Why:** one-image models should fail fast with `max_frames=1` guidance, not after subprocess work.
+- **OpenAI `prompt_tokens_details`** — `image_tokens`, `video_tokens`, `audio_tokens` (heuristic post-expand); `input_audio` → `AudioClips`. **Why:** billing/debug parity with OpenAI/SGLang; audio must not ride in `Images`.
+- **`cached_tokens` usage** — `timings.cache_n` → `api.Metrics` → OpenAI `cached_tokens`; runtime `llama_timings.py` + access log `cached_prompt_tokens`. **Why:** L3 prefix hits were invisible to operators and API clients.
+- **Access log modality tokens** — `image_tokens`, `video_tokens`, `audio_tokens` on `inference response out` (post-expand heuristic). **Why:** fleet logs should mirror OpenAI `prompt_tokens_details` without parsing response bodies.
+- **OpenAI session keys** — `/v1/chat/completions` accepts `prompt_cache_key` + `options`. **Why:** OpenAI-shaped clients need the same L3 + session expansion pins as `/api/chat`.
+- **Gemma4 span placeholders** (`model/renderers/gemma4.go`) — HF `<|video|>` path when `!RenderImgTags`; production uses `[img-N]` per frame.
+- **`grid_thw` runner hints** — per-frame `[1,H,W]` on `llm.ImageData`; Info `vision grid hints` after encode on llamarunner (mtmd) and **ollama-engine** (Mac default); `MultimodalTokenize(..., gridTHW)` Go seam (debug until mtmd C API); handoff [mtmd-grid-thw-handoff.md](docs/mtmd-grid-thw-handoff.md).
+
+**Tests and smoke:**
+- **Policy golden tests** (`video_policy_golden_test.go`). **Why:** Phase D regression without ffmpeg fixtures in git.
+- **ffmpeg golden test** (`video_ffmpeg_golden_test.go`, skips without ffmpeg). **Why:** hook tests do not exercise real ffmpeg argv.
+- **Agent turn test** (`TestExpandVideosInChatRequest_agentSecondTurn`). **Why:** LRU unit tests ≠ turn-2 resend-clip agent pattern.
+- **OpenAI agent session test** (`openai/video_agent_session_test.go`). **Why:** `/v1/chat/completions` `video_url` + `prompt_cache_key` must hit session expansion cache like `/api/chat`.
+- **Qwen3-VL video span render tests** (`qwen3vl_video_test.go`). **Why:** document SGLang per-frame vision blocks vs production `[img-N]` list.
+- **`./scripts/video_expand_cache_smoke.sh`** — unit gate (modality + openai). **Why:** CI proof without GPU/VLM.
+- **`./scripts/video_agent_cache_smoke.sh`** — agent loop + OpenAI + Qwen3-VL render; live E2E adds `/v1/chat/completions` probe (`RUN_E2E_VIDEO_AGENT=1`). **Why:** proves session cache in the HTTP loop across API shapes.
+- **`./scripts/video_l3_agent_gate.sh`** — unit video gate + optional L3 text smoke (`RUN_E2E_L3=1`). **Why:** video expansion and L3 prefix cache are separate layers; one operator entry point.
+- **`./scripts/video_agent_infer_smoke.sh`** — live VLM inference + turn-2 `cached_prompt_tokens` (`RUN_E2E_VIDEO_AGENT_INFER=1`); greps `padded_input_ids runner inject`, `vision grid hints`, `preprocessed layout session cache hit` (preproc leg, after all requests); optional `VIDEO_AGENT_INFER_PREPROC=1` padded+`grid_thw` leg with `turn2_cached_ok`. **Why:** expand-only `_debug_render_only` smoke does not prove L3 on real vision prefill.
+- **`./scripts/video_agent_infer_gate_report.sh`** — infer JSON verdict printer. **Why:** operator sign-off parity with `l3_gate_report.sh`.
+- **Preprocessed metadata (partial)** — session layout LRU; Qwen3-VL HF skips duplicate vision placeholders when `padded_input_ids` set (`qwen3vl_hf_skip_placeholders`).
+- **Token estimate scoping** — `EstimateMultimodalTokens` counts only latest user message (matches preflight). **Why:** agent history echo inflated `image_tokens`/`video_tokens` in usage and access logs.
+- **`./scripts/gen_video_testdata.sh`** — lavfi MP4 for local ffmpeg golden debugging (no checked-in blobs). **Why:** Phase D fixtures on demand.
+
+**Docs:** [docs/sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md); [video-understanding.md](docs/video-understanding.md), [video-parity.md](docs/video-parity.md), [ROADMAP.md](docs/ROADMAP.md), [testing-smoke.md](docs/testing-smoke.md).
+
+**Deferred:** full runner consume of `padded_input_ids` (family processor hook); chunked-prefill abort; ViT embedding cache; int8 linear-attn pool (Phase 15).
+
+### LocalAI control-plane borrowings + manifest hygiene (Jun 2026)
+
+**Why:** LocalAI invests in cheap GGUF metadata, scheduler lifecycle, and fleet routing at the daemon—not in replacing llama.cpp. Zerollama keeps ggml/runtime/training but adopts the same **control-plane** patterns so operators spend less time on manifest footguns, VRAM thrash, and blind fleet picks.
+
+- **Fast GGUF metadata** (`fs/ggml.DecodeMetadata`, `llm.LoadModelMetadata`) — skip vocab bodies and tensor weight walks on metadata probes. **Why:** large models on slow disks hung pull/show/load ([LocalAI #9790](https://github.com/mudler/LocalAI/issues/9790)).
+- **GGUF guess hooks** (`server/gguf_guess.go`, `gguf_guess_parser.go`) — auto-fill arch, capped `num_ctx` (8192), MTP, stops, `parser`; kill-switch `ZEROLLAMA_DISABLE_GGUF_GUESS` / `LOCALAI_DISABLE_GUESSING`. **Why:** train-context manifests pre-allocate KV and hang before first token.
+- **Scheduler watchdog** (`server/sched_watchdog.go`) — LRU `lastUsedAt`, optional VRAM reclaim (`ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD`), busy timeout (`ZEROLLAMA_RUNNER_BUSY_TIMEOUT`), load coalescing, pull `singleflight`. **Why:** multi-model agents evict thrash and stuck runners without manual `stop`.
+- **Concurrency groups** (`server/concurrency_groups.go`, `types/model/config.go`) — Modelfile `PARAMETER concurrency_groups`; scheduler evicts conflicting residents before load. **Why:** imagegen + chat on 16 GB need mutual exclusion, not just `OLLAMA_MAX_LOADED_MODELS`.
+- **Post-load metadata probe** (`server/runner_metadata.go`, `api.LoadedModelMetadata`) — `num_ctx`, parser, thinking/tools flags, `has_chat_template` on `/api/ps` and fleet `loaded_model_details`. **Why:** manifest vs effective load drift; fleet ops need ground truth without re-pull.
+- **Fleet filter-then-score** (`fleet/score.go`, `prefixcache.go`, `probecache.go`, `POST /internal/score`) — warm/queue/affinity scoring; probe cache TTL. **Why:** deterministic routing beats ad-hoc warm+queue sorts; fewer `/health` storms on assign.
+- **Status semantics** — fleet `loaded` = ready runners; `InferenceBacklog().loaded` = resident map size for training idle-wait. **Why:** warm routing must not count still-loading runners; training block must see VRAM occupied during load.
+- **Docs:** [docs/localai-borrowings.md](docs/localai-borrowings.md) — shipped vs deferred, manifest hygiene, env table.
+- **`zerollama repair`:** metadata-only manifest rewrite (`repair MODEL`, `--all`, `--write`) — cap `num_ctx`, fill parser/arch/template without re-downloading weights.
+- **Pull enrich + `POST /api/repair`:** new pulls auto-apply GGUF metadata hints; HTTP repair evicts resident runners when `--write`.
+- **Fleet capacity scoring:** penalize warm nodes with other loaded models / high effective `num_ctx` from `loaded_model_details`.
+- **HF pull (LA8):** `zerollama pull huggingface://org/repo[/file.gguf]` — GGUF from Hugging Face Hub without registry.
+- **Logprob score API (LA9):** `POST /api/score` — joint log-probability of candidate continuations for agent routing without generation; llamarunner, ollamarunner, and llama-server backends.
+
+### L3 prefix cache policy — spec × SWA guards (Jun 2026)
+
+**Why:** vLLM-style selective retention — draft speculative decode (eagle3/mtp/dflash) must not persist KV slot blobs; pure sliding-window models must not `cache_prompt` when the prefix exceeds the SWA window.
+
+- **`runtime/runtime/prefix_cache_policy.py`** — GGUF classification (standard / sliding_window / hybrid), `allow_cache_prompt` / `allow_disk_persist`, SWA `effective_window`, draft-spec disable.
+- **`cache_bridge.py`**, **`engine.py`**, in-process worker — policy-aware `cache_prompt`, disk TTL on eviction, `/health.llama_cache.policy`.
+- **`scripts/l3_spec_cache_smoke.sh`** — subprocess policy gate (`L3_SPEC_METHOD=ngram` default; `eagle3` + `LLAMA_DRAFT_MODEL` for draft leg). Optional: `L3_RUN_SPEC_CACHE=1` on `l3_cuda_full_gate.sh`.
+- **Parser tests** — Qwen3 streaming `<` in JSON tool args (`qwen3_test.go`, `runtime_parse_golden_test.go`).
+- **Subprocess SWA guard** — `subprocess_slot_state.py` tracks llama-server slot length from completion timings; turn-2 `cache_prompt` respects `pos + n_prompt` vs SWA window; `GET /slots` backfill after restart/disk restore.
+- **In-process SWA enforcement** — `engine._prefix_cache_request()` pairs `(cache_prompt, resume_pos)`; `libllama_ctypes._prepare_seq_for_decode(cache_prompt=False)` clears slot and skips disk restore when policy blocks prefix reuse.
+- **`kv_cache_spec.py`** — pluggable `KVCacheSpec` (standard / sliding_window / hybrid / disabled); `prefix_cache_policy.py` delegates to specs.
+- **Prefix cache trace replay** — `ZEROLLAMA_PREFIX_CACHE_TRACE=1` writes JSONL decisions; `prefix_cache_trace.replay_trace_file()` for offline regression.
+- **Spec × page bind** — `runtime/kv/spec_bind.py` validates SWA window at decode; `/health.llama_cache.spec_bind`.
+- **In-process spec bind** — `LlamaLoadedSession.kv_cache_spec` + `_prepare_seq_for_decode` demotes resume to clear when SWA/draft-spec blocks reuse (`spec_bind_swa_block`).
+
+### Decode graph invalidation — vLLM breakable-graph bind (Jun 2026)
+
+**Why:** L3 prefix cache clears KV slots on SWA block, owner change, or `cache_prompt=false`, but ggml-cuda reuses captured decode graphs keyed by compute-graph topology — not by sequence id. Without invalidation, a stale CUDA graph can replay after KV changed (wrong logits / silent corruption). vLLM bumps an epoch and breaks graphs; zerollama wires the same pattern: Python epoch for future capture keys + native ggml clear today.
+
+- **`decode_graph_policy.py`** — per-slot + global epoch; `graph_capture_key(slot)` → `slot:slot_epoch:global_epoch`. **Why global epoch:** model swap / session close must invalidate slots that were never individually bumped.
+- **`llama_context_cuda_graph_invalidate`** (sibling `../llama.cpp`) — iterates context sched CUDA backends → `ggml_backend_cuda_invalidate_graphs` (stream sync + `cuda_graphs.clear()`). **Why sibling patch:** ggml graph cache is internal; no upstream per-slot API yet.
+- **`runtime/kv/cuda_graph_invalidate.py`** — native extension first, ctypes fallback; `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0` kill-switch. **Why two paths:** Phase 15 CI builds may lack native link; ctypes still works when libllama is rebuilt.
+- **`libllama_ctypes._prepare_seq_for_decode`** — passes `ctx_ptr` on `cache_prompt_disabled`, `spec_bind_swa_block`, `slot_clear`; session `close()` → `bump_all_decode_graph_epochs`. **Why ctx on bump:** epoch alone does not reach ggml’s map.
+- **`DecodeGraphCache` stub** — `lookup()` always misses; health exposes epochs + `llama_cpp_probe` (CUDA graph compile flags, pin drift). **Why stub:** capture handles deferred until llama.cpp export exists.
+- **`llama_cpp_probe.py`** — probes sibling `LLAMA_CPP_ROOT` for `GGML_CUDA_GRAPHS`, `libllama` path, git pin vs `LLAMA_CPP_VERSION`.
+- **`scripts/build_llama_server.sh`** — `-DGGML_CUDA_GRAPHS=ON` on CUDA builds. **Why explicit:** graphs are off by default on some cmake presets; invalidation is useless without capture enabled.
+- **Tests:** `test_decode_graph_policy.py`, `test_decode_graph_cache.py`, `test_cuda_graph_invalidate.py`, `test_llama_cpp_probe.py`.
+- **Metal note:** invalidate API compiles but returns `0` backends cleared (`GGML_CUDA=OFF`); L3 epoch + policy still apply for trace and future capture scaffold.
+
+**Docs:** [docs/decode-graph-invalidation.md](docs/decode-graph-invalidation.md).
+
 ### MLX imagegen — Z-Image Turbo on CUDA 16GB (Jun 2026)
 
 **Why:** RTX 5080-class hosts need `x/z-image-turbo` working alongside the existing three VRAM consumers (ggml, Python runtime, training). Upstream MLX imagegen targets Apple Metal; this fork adds CUDA survival tactics, scheduler/VRAM integration, and operator docs — without a second public scheduling system.
@@ -95,6 +505,8 @@ All notable changes to this project are documented in this file. The format is b
 - **`scripts/phase15_llama_kv_ext_pin_check.sh`** — CI gate: patch + in-tree files + upstream `llama.h` deps at pin.
 - **`runtime/native/kv_tensor_probe.c`** — exports `memory_kind` / `memory_kind_name` on probe.
 - **Docs:** [phase15-llama-kv-ext-upstream.md](docs/phase15-llama-kv-ext-upstream.md).
+- **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` **PASS** (RTX 5080, CT 1564, Jun 2026) — native decode + batch decode + multiseq; see [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md#phase-15-cuda-libllama--sign-off).
+- **`scripts/phase15_inprocess_multiseq_smoke.sh`** — sets `ZEROLLAMA_GPU_PROFILE=0` on serve (parity with Metal sign-off; rtx-5080 L1 otherwise overrides `llama_parallel_slots: 2` → `n_parallel: 4`).
 
 **Still blocked:** writable cross-allocator PA→tensor page bind (needs upstream page-handle API); pure recurrent-only models.
 

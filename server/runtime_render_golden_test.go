@@ -52,8 +52,8 @@ func TestGoldenRenderChatMatchesChatPromptNoTruncate(t *testing.T) {
 	prep := prepareRenderMessages(m, raw)
 	opts := api.Options{Runner: api.Runner{NumCtx: 8192}}
 
-	promptChat, _, _, err := chatPrompt(
-		context.Background(), m, goldenTokenize, &opts, prep, nil, nil, false,
+	promptChat, _, _, _, err := chatPrompt(
+		context.Background(), m, goldenTokenize, &opts, prep, nil, nil, false, 0, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -94,8 +94,8 @@ func TestGoldenRenderChatTokenizedTruncationMatchesChatPrompt(t *testing.T) {
 	numPredict := 28
 	opts := api.Options{Runner: api.Runner{NumCtx: numCtx}, NumPredict: numPredict}
 
-	promptChat, _, _, err := chatPrompt(
-		context.Background(), m, goldenTokenize, &opts, prep, nil, nil, true,
+	promptChat, _, _, _, err := chatPrompt(
+		context.Background(), m, goldenTokenize, &opts, prep, nil, nil, true, 0, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -19,6 +19,10 @@ func QuantizationParams(quantization string) (groupSize, bits int, mode string) 
 		return 32, 8, "mxfp8"
 	case "FP8", "Q8", "INT8":
 		return 64, 8, "affine"
+	case "FP6", "Q6", "INT6":
+		return 64, 6, "affine"
+	case "FP3", "Q3", "INT3":
+		return 64, 3, "affine"
 	case "":
 		return 0, 0, ""
 	default:
@@ -66,7 +70,7 @@ func ResolveLinearQuantParams(
 
 	if mode == "affine" {
 		if inferredGroupSize, inferredBits, ok := InferAffineQuantParamsFromShapes(weight, scales, bits); ok {
-			if !fromTensor || groupSize == 0 || bits == 0 {
+			if !fromTensor || groupSize == 0 || bits == 0 || !affinePackedShapeMatches(weight, scales, groupSize, bits) {
 				groupSize = inferredGroupSize
 				bits = inferredBits
 			}
@@ -74,6 +78,27 @@ func ResolveLinearQuantParams(
 	}
 
 	return groupSize, bits, mode
+}
+
+// affinePackedShapeMatches reports whether weight/scales shapes match the
+// packed column count implied by (groupSize, bits).
+func affinePackedShapeMatches(weight, scales *mlx.Array, groupSize, bits int) bool {
+	if weight == nil || scales == nil || groupSize <= 0 || bits <= 0 {
+		return false
+	}
+	weightShape := weight.Dims()
+	scaleShape := scales.Dims()
+	if len(weightShape) == 0 || len(scaleShape) == 0 {
+		return false
+	}
+	weightCols := int(weightShape[len(weightShape)-1])
+	scalesCols := int(scaleShape[len(scaleShape)-1])
+	if weightCols <= 0 || scalesCols <= 0 {
+		return false
+	}
+	inFeatures := scalesCols * groupSize
+	expectedCols := inFeatures * bits / 32
+	return weightCols == expectedCols
 }
 
 // InferAffineQuantParamsFromShapes infers (groupSize,bits) for affine quantized
@@ -109,6 +134,18 @@ func InferAffineQuantParamsFromShapes(weight, scales *mlx.Array, hintBits int) (
 		}
 		if hintBits == 4 {
 			return 64, 4, true
+		}
+	}
+
+	for _, gs := range []int{64, 32, 128, 16} {
+		inFeatures := scalesCols * gs
+		if inFeatures <= 0 {
+			continue
+		}
+		for _, bits := range []int{3, 4, 6, 8} {
+			if weightCols == inFeatures*bits/32 {
+				return gs, bits, true
+			}
 		}
 	}
 

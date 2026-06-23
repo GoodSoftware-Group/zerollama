@@ -18,7 +18,7 @@ import (
 )
 
 func prefillChunkSize() int {
-	return 2 << 10
+	return loadPrefillConfig().chunkSize
 }
 
 // Prepare tokenizes the prompt and validates it against the model's
@@ -29,9 +29,40 @@ func (r *Runner) Prepare(request *Request) error {
 		return errors.New("model not loaded")
 	}
 
-	tokens := r.Tokenizer.Encode(request.Prompt, r.Tokenizer.AddBOS())
+	var tokens []int32
+	if len(request.Tokens) > 0 {
+		tokens = append([]int32(nil), request.Tokens...)
+	} else {
+		tokens = r.Tokenizer.Encode(request.Prompt, r.Tokenizer.AddBOS())
+	}
 	if len(tokens) == 0 {
 		return errors.New("empty prompt")
+	}
+
+	reserve := 256
+	if request.Options.NumPredict > 0 {
+		reserve = request.Options.NumPredict
+	}
+	maxReserve := r.contextLength / 2
+	if maxReserve < 32 {
+		maxReserve = 32
+	}
+	if reserve > maxReserve {
+		reserve = maxReserve
+	}
+	maxPrompt := r.contextLength - reserve
+	if maxPrompt < 1 {
+		maxPrompt = r.contextLength - 1
+	}
+	if len(tokens) > maxPrompt {
+		dropped := len(tokens) - maxPrompt
+		tokens = tokens[dropped:]
+		slog.Warn("mlx prepare tail-truncated prompt to fit context",
+			"dropped_tokens", dropped,
+			"kept_tokens", len(tokens),
+			"context_length", r.contextLength,
+			"reserve", reserve,
+		)
 	}
 
 	if len(tokens) >= r.contextLength {
@@ -78,21 +109,32 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 
 	caches := session.caches
 	tokens := session.remaining
-	prefillChunk := prefillChunkSize()
-
-	// Request periodic snapshots during prefill and near the end of the
-	// prompt so that long prompts can be partially restored and
-	// thinking/generation can be retried without full reprocessing.
-	const snapshotInterval = 8192
-	var snapshotOffsets []int
-	for offset := snapshotInterval; offset < len(inputs); offset += snapshotInterval {
-		snapshotOffsets = append(snapshotOffsets, offset)
+	pcfg := effectivePrefillConfig(len(inputs), loadPrefillConfig())
+	prefillChunk := pcfg.chunkSize
+	if len(inputs) > defaultMTPMaxPromptTokens {
+		slog.Info("long mlx prefill memory policy",
+			"prompt_tokens", len(inputs),
+			"chunk_size", prefillChunk,
+			"clear_cache_every", pcfg.clearCacheEvery,
+			"materialize_every", pcfg.materializeEvery,
+		)
+	}
+	snapshotInterval := trieSnapshotInterval(pcfg, len(inputs))
+	snapshotOffsets := prefillSnapshotOffsets(len(inputs), snapshotInterval)
+	if snapshotInterval == 0 && pcfg.snapshotInterval > 0 && len(inputs) > defaultMTPMaxPromptTokens {
+		slog.Info("prefill snapshots disabled for long prompt",
+			"prompt_tokens", len(inputs),
+			"threshold", defaultMTPMaxPromptTokens,
+		)
+	} else if len(inputs) > defaultMTPMaxPromptTokens && snapshotInterval > 0 {
+		slog.Info("trie prefix snapshots enabled for long prompt",
+			"prompt_tokens", len(inputs),
+			"interval", snapshotInterval,
+			"offsets", len(snapshotOffsets),
+		)
 	}
 
-	const preThinking = 4
-	if end := len(inputs) - preThinking; end > 0 {
-		snapshotOffsets = append(snapshotOffsets, end)
-	}
+	cachedPrefix := session.cachedPrefix
 
 	materializeCaches := func() {
 		state := make([]*mlx.Array, 0, 2*len(caches))
@@ -107,11 +149,30 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 
 	session.schedulePrefillSnapshots(snapshotOffsets)
 
-	now := time.Now()
+	prefillStart := time.Now()
+	lastHeartbeat := prefillStart
+	now := prefillStart
 	total, processed := len(tokens), 0
 	position := len(inputs) - len(tokens)
+	chunkNum := 0
+	logProgressEvery := max(1, total/prefillChunk/10) // ~10 progress lines for long prompts
+	emitPrefillHeartbeat := func() {
+		if time.Since(lastHeartbeat) < 30*time.Second {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case request.Responses <- CompletionResponse{
+			PrefillProcessed: processed,
+			PrefillTotal:     total,
+		}:
+			lastHeartbeat = time.Now()
+		default:
+		}
+	}
 	for total-processed > 1 {
 		if err := ctx.Err(); err != nil {
+			slog.Warn("mlx prefill canceled", "processed", processed, "total", total, "error", err)
 			return err
 		}
 
@@ -123,24 +184,54 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 			SeqQueryLens: []int32{int32(n)},
 		}, caches)
 		mlx.Sweep()
-		materializeCaches()
+		if pcfg.materializeEvery <= 1 || chunkNum%pcfg.materializeEvery == 0 || processed+n >= total-1 {
+			materializeCaches()
+		}
 		processed += n
 		position += n
-		slog.Info("Prompt processing progress", "processed", processed, "total", total)
+		chunkNum++
+		if chunkNum%logProgressEvery == 0 || processed >= total-1 {
+			slog.Info("Prompt processing progress",
+				"processed", processed,
+				"total", total,
+				"chunk", prefillChunk,
+				"active_memory", mlx.PrettyBytes(mlx.ActiveMemory()),
+				"peak_memory", mlx.PrettyBytes(mlx.PeakMemory()),
+			)
+		}
+		emitPrefillHeartbeat()
 		logutil.TraceContext(ctx, "mlx prompt forward", "processed", processed, "total", total, "tokens", n, "memory", mlx.Memory{})
 
-		mlx.ClearCache()
+		if pcfg.clearCacheEvery > 0 && chunkNum%pcfg.clearCacheEvery == 0 {
+			mlx.Sweep()
+			mlx.ClearCache()
+		}
 	}
 
 	// Attach the snapshots captured during prefill to the trie.
 	session.attachPrefillSnapshots()
 
+	slog.Info("prefill complete",
+		"prompt_tokens", len(inputs),
+		"cached_tokens", len(inputs)-len(tokens),
+		"prefill_tokens", total,
+		"elapsed", time.Since(prefillStart).Round(time.Millisecond),
+		"tok_per_sec", float64(total)/max(time.Since(prefillStart).Seconds(), 0.001),
+	)
+
 	// Register the sampler after prefill completes.
 	r.Sampler.Add(pipelineSlot, request.SamplerOpts, inputs)
-	if r.useGreedyMTP(request.SamplerOpts) {
+	useMTP := len(inputs) <= mtpMaxPromptTokens()
+	if !useMTP && r.Draft != nil {
+		slog.Info("MTP disabled for long prompt; using standard decode",
+			"prompt_tokens", len(inputs),
+			"max_mtp_prompt_tokens", mtpMaxPromptTokens(),
+		)
+	}
+	if useMTP && r.useGreedyMTP(request.SamplerOpts) {
 		return r.runGreedyMTPDecode(ctx, request, session, caches, tokens[processed:], &position, now)
 	}
-	if r.useSampleMTP(request.SamplerOpts) {
+	if useMTP && r.useSampleMTP(request.SamplerOpts) {
 		return r.runSampleMTPDecode(ctx, request, session, caches, tokens[processed:], &position, now)
 	}
 
@@ -170,7 +261,13 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 		wantTopLogprobs: request.SamplerOpts.TopLogprobs,
 	}
 
-	final := CompletionResponse{Done: true, PromptEvalCount: len(inputs), EvalCount: request.Options.NumPredict, DoneReason: 1}
+	final := CompletionResponse{
+		Done:                  true,
+		PromptEvalCount:       len(inputs),
+		PromptEvalCachedCount: cachedPrefix,
+		EvalCount:             request.Options.NumPredict,
+		DoneReason:            1,
+	}
 	for i := range request.Options.NumPredict {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -187,6 +284,10 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 		output := int32(sample.Token.Int())
 		session.outputs = append(session.outputs, output)
 		if i == 0 {
+			slog.Info("mlx decode first token",
+				"token_id", output,
+				"prompt_eval_ms", final.PromptEvalDuration.Milliseconds(),
+			)
 			logutil.TraceContext(ctx, "mlx decode first token", "memory", mlx.Memory{})
 		}
 
@@ -213,6 +314,13 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 	}
 
 	final.EvalDuration = time.Since(now)
+	if tail, ok := dec.flush(); ok {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case request.Responses <- tail:
+		}
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -242,6 +350,17 @@ func (d *decoder) decode(res sampler.Result) (CompletionResponse, bool) {
 	if content == "" {
 		return CompletionResponse{}, false
 	}
+	resp := CompletionResponse{Content: content, Logprobs: d.logprobs}
+	d.logprobs = nil
+	return resp, true
+}
+
+func (d *decoder) flush() (CompletionResponse, bool) {
+	if d.buf.Len() == 0 {
+		return CompletionResponse{}, false
+	}
+	content := d.buf.String()
+	d.buf.Reset()
 	resp := CompletionResponse{Content: content, Logprobs: d.logprobs}
 	d.logprobs = nil
 	return resp, true

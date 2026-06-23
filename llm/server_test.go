@@ -1,7 +1,10 @@
+//go:build !edge
+
 package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -278,4 +281,22 @@ func TestLLMServerCompletionFormat(t *testing.T) {
 		Format:  nil, // missing format
 	}, nil)
 	checkValid(err)
+}
+
+func TestCompletionResponseUnmarshalCachedPromptTokensAlias(t *testing.T) {
+	var resp CompletionResponse
+	if err := json.Unmarshal([]byte(`{
+		"done": true,
+		"prompt_eval_count": 128,
+		"cached_prompt_tokens": 120,
+		"eval_count": 16
+	}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PromptEvalCachedCount != 120 {
+		t.Fatalf("PromptEvalCachedCount=%d, want 120", resp.PromptEvalCachedCount)
+	}
+	if resp.PromptEvalCount != 128 {
+		t.Fatalf("PromptEvalCount=%d, want 128", resp.PromptEvalCount)
+	}
 }

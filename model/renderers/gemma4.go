@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/server/modality"
 )
 
 // Gemma4Renderer renders prompts using Gemma 4's chat format with
@@ -14,6 +15,10 @@ import (
 type Gemma4Renderer struct {
 	useImgTags          bool
 	emptyBlockOnNothink bool
+}
+
+func (r *Gemma4Renderer) LeadingBOS() string {
+	return "<bos>"
 }
 
 const (
@@ -109,10 +114,10 @@ func (r *Gemma4Renderer) Render(messages []api.Message, tools []api.Tool, thinkV
 		case "model":
 			if message.Content != "" || len(message.Images) > 0 {
 				message.Content = stripThinking(message.Content)
-				r.renderContent(&sb, message, &imageOffset, false)
+				r.renderContent(&sb, loopMessages, i, message, &imageOffset, false)
 			}
 		default:
-			r.renderContent(&sb, message, &imageOffset, true)
+			r.renderContent(&sb, loopMessages, i, message, &imageOffset, true)
 		}
 
 		if prevMessageType == "tool_call" && !toolResponsesEmitted {
@@ -153,21 +158,67 @@ func stripThinking(text string) string {
 	return strings.TrimSpace(result.String())
 }
 
-// renderContent writes a message's content, interleaving [img-N] tags for images.
-// When trim is true, leading/trailing whitespace is stripped (matching the Jinja2
-// template's | trim filter applied to non-model content).
-func (r *Gemma4Renderer) renderContent(sb *strings.Builder, msg api.Message, imageOffset *int, trim bool) {
-	if len(msg.Images) > 0 && r.useImgTags {
-		for range msg.Images {
-			sb.WriteString(fmt.Sprintf("[img-%d]", *imageOffset))
-			*imageOffset++
-		}
-	}
+// renderContent writes a message's content, interleaving multimodal placeholders.
+//
+// Frame-list path (useImgTags): one [img-N] per raster in Images (including ffmpeg-expanded
+// video frames) plus audio clips appended at prompt time — matches the flat runner list.
+//
+// HF path (!useImgTags): <|image|> for stills, one <|video|> per VideoSpans clip, <|audio|>
+// per AudioClips — matches Gemma 4 Jinja when video is not expanded to per-frame tags.
+func (r *Gemma4Renderer) renderContent(sb *strings.Builder, msgs []api.Message, msgIdx int, msg api.Message, imageOffset *int, trim bool) {
+	r.writeMultimodalPlaceholders(sb, msgs, msgIdx, msg, imageOffset)
 	content := msg.Content
 	if trim {
 		content = strings.TrimSpace(content)
 	}
 	sb.WriteString(content)
+}
+
+func (r *Gemma4Renderer) writeMultimodalPlaceholders(sb *strings.Builder, msgs []api.Message, msgIdx int, msg api.Message, imageOffset *int) {
+	// SGLang preprocessed path: padded_input_ids carries soft tokens; skip duplicate
+	// [img-N] / <|image|> when inject will consume the layout (same gate as Qwen3-VL).
+	if modality.MessageSkipsVisionPlaceholdersForChat(msgs, msgIdx, r.useImgTags) {
+		return
+	}
+	if len(msg.VideoSpans) > 0 && !r.useImgTags {
+		videoFrames := 0
+		for _, sp := range msg.VideoSpans {
+			videoFrames += sp.FrameCount
+		}
+		stillImages := len(msg.Images) - videoFrames
+		if stillImages < 0 {
+			stillImages = 0
+		}
+		for range stillImages {
+			sb.WriteString("<|image|>")
+		}
+		for _, sp := range msg.VideoSpans {
+			if sp.FrameCount > 0 {
+				sb.WriteString("<|video|>")
+			}
+		}
+		for range msg.AudioClips {
+			sb.WriteString("<|audio|>")
+		}
+		return
+	}
+
+	for range msg.Images {
+		if r.useImgTags {
+			sb.WriteString(fmt.Sprintf("[img-%d]", *imageOffset))
+			*imageOffset++
+		} else {
+			sb.WriteString("<|image|>")
+		}
+	}
+	for range msg.AudioClips {
+		if r.useImgTags {
+			sb.WriteString(fmt.Sprintf("[img-%d]", *imageOffset))
+			*imageOffset++
+		} else {
+			sb.WriteString("<|audio|>")
+		}
+	}
 }
 
 func (r *Gemma4Renderer) previousNonToolRole(messages []api.Message, idx int) string {
@@ -180,7 +231,7 @@ func (r *Gemma4Renderer) previousNonToolRole(messages []api.Message, idx int) st
 }
 
 func (r *Gemma4Renderer) messageHasContent(message api.Message) bool {
-	return message.Content != "" || len(message.Images) > 0
+	return message.Content != "" || len(message.Images) > 0 || len(message.AudioClips) > 0
 }
 
 func (r *Gemma4Renderer) toolResponseName(message api.Message, toolCalls []api.ToolCall) string {

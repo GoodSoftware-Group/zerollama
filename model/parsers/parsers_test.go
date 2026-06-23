@@ -27,6 +27,10 @@ func (m *mockParser) HasThinkingSupport() bool {
 	return false
 }
 
+func (m *mockParser) PreservedTokens() []string {
+	return nil
+}
+
 func TestRegisterCustomParser(t *testing.T) {
 	// Register a custom parser
 	Register("custom-parser", func() Parser {

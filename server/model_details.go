@@ -7,7 +7,6 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
-	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/types/model"
 	xserver "github.com/ollama/ollama/x/server"
 )
@@ -22,11 +21,13 @@ func enrichModelDetailsFromPath(details *api.ModelDetails, modelPath string) {
 		}
 	}()
 
-	data, err := llm.LoadModel(modelPath, 0)
+	data, err := loadGGUFMetadataAt(modelPath)
 	if err != nil {
 		return
 	}
 
+	// DecodeMetadata reads tensor names/shapes (not weights) so MoE active-param
+	// estimation in enrichModelDetailsFromGGML still works without a full GGUF walk.
 	enrichModelDetailsFromGGML(details, data.KV(), data.Tensors())
 }
 
@@ -37,6 +38,15 @@ func enrichModelDetailsFromGGML(details *api.ModelDetails, kv ggml.KV, tensors g
 
 	if architecture := kv.Architecture(); architecture != "" && architecture != "unknown" && details.Family == "" {
 		details.Family = architecture
+	}
+
+	// ContextLength/EmbeddingLength on /api/tags → cmd/launch LaunchModel (agent
+	// contextWindow without per-model /api/show). WHY GGUF kv: cheap at list time.
+	if train := int(kv.ContextLength()); train > 0 {
+		details.ContextLength = train
+	}
+	if embed := int(kv.EmbeddingLength()); embed > 0 {
+		details.EmbeddingLength = embed
 	}
 
 	if total := kv.ParameterCount(); total > 0 {

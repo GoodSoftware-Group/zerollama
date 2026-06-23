@@ -1,3 +1,9 @@
+//go:build !edge
+
+// server.go implements the ggml / ollama-engine subprocess runner path (Load, Completion, Embedding).
+// WHY !edge: Phase 16 v2 edge builds route all GGUF through llama-server only; linking this file
+// would pull llama.cpp CGO into edge artifacts. Shared types live in server_shared.go; edge entry
+// is server_edge.go.
 package llm
 
 import (
@@ -17,7 +23,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,52 +41,6 @@ import (
 	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/tokenizer"
 )
-
-type filteredEnv []string
-
-func (e filteredEnv) LogValue() slog.Value {
-	var attrs []slog.Attr
-	for _, env := range e {
-		if key, value, ok := strings.Cut(env, "="); ok {
-			switch {
-			case strings.HasPrefix(key, "OLLAMA_"),
-				strings.HasPrefix(key, "CUDA_"),
-				strings.HasPrefix(key, "ROCR_"),
-				strings.HasPrefix(key, "ROCM_"),
-				strings.HasPrefix(key, "HIP_"),
-				strings.HasPrefix(key, "GPU_"),
-				strings.HasPrefix(key, "HSA_"),
-				strings.HasPrefix(key, "GGML_"),
-				slices.Contains([]string{
-					"PATH",
-					"LD_LIBRARY_PATH",
-					"DYLD_LIBRARY_PATH",
-				}, key):
-				attrs = append(attrs, slog.String(key, value))
-			}
-		}
-	}
-	return slog.GroupValue(attrs...)
-}
-
-type LlamaServer interface {
-	ModelPath() string
-	Load(ctx context.Context, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error)
-	Ping(ctx context.Context) error
-	WaitUntilRunning(ctx context.Context) error
-	Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error
-	Embedding(ctx context.Context, input string) ([]float32, int, error)
-	Tokenize(ctx context.Context, content string) ([]int, error)
-	Detokenize(ctx context.Context, tokens []int) (string, error)
-	Close() error
-	MemorySize() (total, vram uint64)
-	VRAMByGPU(id ml.DeviceID) uint64
-	Pid() int
-	GetPort() int
-	GetDeviceInfos(ctx context.Context) []ml.DeviceInfo
-	HasExited() bool
-	ContextLength() int
-}
 
 // llmServer is an instance of a runner hosting a single model
 type llmServer struct {
@@ -120,54 +79,12 @@ type ollamaServer struct {
 	tokenizer tokenizer.Tokenizer // tokenizer handles text encoding/decoding
 }
 
-// LoadModel will load a model from disk. The model must be in the GGML format.
-//
-// It collects array values for arrays with a size less than or equal to
-// maxArraySize. If maxArraySize is 0, the default value of 1024 is used. If
-// the maxArraySize is negative, all arrays are collected.
-func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
-	if _, err := os.Stat(model); err != nil {
-		return nil, err
-	}
-
-	f, err := os.Open(model)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	ggml, err := ggml.Decode(f, maxArraySize)
-	return ggml, err
-}
-
-// useOllamaEngine picks the Go ggml inference engine (model.NewTextProcessor ->
-// ml/backend/ggml) vs the legacy CGO llamarunner (llama.cpp + Metal).
-func useOllamaEngine(f *ggml.GGML) bool {
-	return pickOllamaEngine(f.KV().Architecture(), envconfig.NewEngine(), f.KV().OllamaEngineRequired())
-}
-
-var warnNewEngineOnce sync.Once
-
-func pickOllamaEngine(arch string, newEngine, ollamaRequired bool) bool {
-	if newEngine {
-		warnNewEngineOnce.Do(func() {
-			slog.Warn("OLLAMA_NEW_ENGINE is deprecated; prefer --llama-server-backend or Linux plain-text auto-default (Phase 17)")
-		})
-		return true
-	}
-	// OllamaEngineRequired() architectures (qwen35*, qwen3next, …) use the Go
-	// ollama-engine path on all OSes including darwin. Why no darwin gate: Jun 2026
-	// sched_reserve fix (defer graph tensor alloc; Persistent KV contexts) removed
-	// the Metal abort that previously forced legacy llamarunner for qwen35 on Mac.
-	if !ollamaRequired {
-		return false
-	}
-	return true
-}
-
 // NewLlamaServer will run a server for the given GPUs.
 // When ZEROLLAMA_LLAMA_SERVER=1, eligible models use upstream-style Go → llama-server.
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int, config LlamaServerConfig) (LlamaServer, error) {
+	if err := ggmlRunnerRequired(projectors); err != nil {
+		return nil, err
+	}
 	if useLlamaServerBackend(projectors) {
 		trainCtx := f.KV().ContextLength()
 		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {
@@ -491,58 +408,6 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 func (s *llmServer) ModelPath() string {
 	return s.modelPath
 }
-
-type LoadOperation int
-
-// The order of these constants are significant because we iterate over the operations. They
-// should be in order of increasingly loading the model.
-const (
-	LoadOperationFit    LoadOperation = iota // Return memory requirements but do not allocate
-	LoadOperationAlloc                       // Allocate memory but do not load the weights
-	LoadOperationCommit                      // Load weights - further changes cannot be made after this
-	LoadOperationClose                       // Close model and free memory
-)
-
-func (o LoadOperation) String() string {
-	switch o {
-	case LoadOperationFit:
-		return "fit"
-	case LoadOperationAlloc:
-		return "alloc"
-	case LoadOperationCommit:
-		return "commit"
-	case LoadOperationClose:
-		return "close"
-	default:
-		return "unknown"
-	}
-}
-
-type LoadRequest struct {
-	Operation LoadOperation
-
-	LoraPath       []string
-	Parallel       int
-	BatchSize      int
-	FlashAttention ml.FlashAttentionType
-	KvSize         int
-	KvCacheType    string
-	NumThreads     int
-	GPULayers      ml.GPULayersList
-	MultiUserCache bool
-
-	// Legacy fields - not used with the Ollama engine
-	ProjectorPath string
-	MainGPU       int
-	UseMmap       bool
-}
-
-type LoadResponse struct {
-	Success bool
-	Memory  ml.BackendMemory
-}
-
-var ErrLoadRequiredFull = errors.New("unable to load full model on GPU")
 
 func (s *llamaServer) Load(ctx context.Context, systemInfo ml.SystemInfo, systemGPUs []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error) {
 	slog.Info("loading model", "model layers", s.totalLayers, "requested", s.options.NumGPU)
@@ -1298,39 +1163,6 @@ func (s *llmServer) initModel(ctx context.Context, req LoadRequest, operation Lo
 	return &llmResp, nil
 }
 
-type ServerStatus int
-
-const ( // iota is reset to 0
-	ServerStatusReady ServerStatus = iota
-	ServerStatusNoSlotsAvailable
-	ServerStatusLaunched
-	ServerStatusLoadingModel
-	ServerStatusNotResponding
-	ServerStatusError
-)
-
-func (s ServerStatus) String() string {
-	switch s {
-	case ServerStatusReady:
-		return "llm server ready"
-	case ServerStatusNoSlotsAvailable:
-		return "llm busy - no slots available"
-	case ServerStatusLaunched:
-		return "llm server launched"
-	case ServerStatusLoadingModel:
-		return "llm server loading model"
-	case ServerStatusNotResponding:
-		return "llm server not responding"
-	default:
-		return "llm server error"
-	}
-}
-
-type ServerStatusResponse struct {
-	Status   ServerStatus `json:"status"`
-	Progress float32      `json:"progress"`
-}
-
 func (s *llmServer) getServerStatus(ctx context.Context) (ServerStatus, error) {
 	// Fail fast if its exited
 	if s.cmd.ProcessState != nil {
@@ -1563,127 +1395,6 @@ func (s *llmServer) HasExited() bool {
 	return false
 }
 
-var grammarJSON = `
-root   ::= object
-value  ::= object | array | string | number | ("true" | "false" | "null") ws
-object ::=
-  "{" ws (
-         string ":" ws value
-    ("," ws string ":" ws value)*
-  )? ws "}" 
-array  ::=
-  "[" ws (
-            value
-    ("," ws value)*
-  )? ws "]" 
-string ::=
-  "\"" (
-    [^"\\\x7F\x00-\x1F] |
-    "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) # escapes
-  )* "\"" 
-number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? 
-# Optional space: by convention, applied in this grammar after literal chars when allowed
-ws ::= ([ \t\n] ws)?
-`
-
-const maxBufferSize = 512 * format.KiloByte
-
-type ImageData struct {
-	Data []byte `json:"data"`
-	ID   int    `json:"id"`
-}
-
-type CompletionRequest struct {
-	Prompt  string
-	Format  json.RawMessage
-	Images  []ImageData
-	Media   []MediaData // llama-server path; populated from Images when empty
-	Options *api.Options
-
-	Grammar         string // set before sending the request to the subprocess
-	Shift           bool
-	Truncate        bool
-	PreservedTokens []string // llama-server: parser tokens to render as text
-	ToolCallTag     string   // llama-server: generic tool parser tag
-	LeadingBOS      string   // llama-server: textual BOS from Go rendering
-
-	// Logprobs specifies whether to include log probabilities in the response
-	Logprobs bool
-
-	// TopLogprobs specifies the number of most likely alternative tokens to return (0-20)
-	TopLogprobs int
-
-	// Image generation fields
-	Width       int32  `json:"width,omitempty"`
-	Height      int32  `json:"height,omitempty"`
-	AspectRatio string `json:"aspect_ratio,omitempty"`
-	Steps       int32  `json:"steps,omitempty"`
-	Seed        int64  `json:"seed,omitempty"`
-}
-
-// DoneReason represents the reason why a completion response is done
-type DoneReason int
-
-const (
-	// DoneReasonStop indicates the completion stopped naturally
-	DoneReasonStop DoneReason = iota
-	// DoneReasonLength indicates the completion stopped due to length limits
-	DoneReasonLength
-	// DoneReasonConnectionClosed indicates the completion stopped due to the connection being closed
-	DoneReasonConnectionClosed
-)
-
-func (d DoneReason) String() string {
-	switch d {
-	case DoneReasonLength:
-		return "length"
-	case DoneReasonStop:
-		return "stop"
-	default:
-		return "" // closed
-	}
-}
-
-// TokenLogprob represents log probability information for a single token alternative.
-type TokenLogprob struct {
-	Token   string  `json:"token"`
-	Logprob float64 `json:"logprob"`
-}
-
-// Logprob contains log probability information for a generated token.
-type Logprob struct {
-	TokenLogprob
-	TopLogprobs []TokenLogprob `json:"top_logprobs,omitempty"`
-}
-
-type CompletionResponse struct {
-	Content            string        `json:"content"`
-	DoneReason         DoneReason    `json:"done_reason"`
-	Done               bool          `json:"done"`
-	PromptEvalCount    int           `json:"prompt_eval_count"`
-	PromptEvalDuration time.Duration `json:"prompt_eval_duration"`
-	EvalCount          int           `json:"eval_count"`
-	EvalDuration       time.Duration `json:"eval_duration"`
-
-	// PromptTruncated is true when the tokenized prompt exceeded num_ctx and was
-	// shortened to fit (see runner NewSequence). OriginalPromptTokens is the
-	// pre-truncation token count when PromptTruncated is set.
-	PromptTruncated      bool `json:"prompt_truncated,omitempty"`
-	OriginalPromptTokens int  `json:"original_prompt_tokens,omitempty"`
-
-	// Logprobs contains log probability information if requested
-	Logprobs []Logprob `json:"logprobs,omitempty"`
-
-	// Image contains base64-encoded image data for image generation
-	Image string `json:"image,omitempty"`
-
-	// Step is the current step in image generation
-	Step int `json:"step,omitempty"`
-
-	// TotalSteps is the total number of steps for image generation
-	TotalSteps int `json:"total_steps,omitempty"`
-}
-
 func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error {
 	slog.Debug("completion request", "images", len(req.Images), "prompt", len(req.Prompt), "format", string(req.Format))
 	logutil.Trace("completion request", "prompt", req.Prompt)
@@ -1865,15 +1576,6 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 	}
 
 	return nil
-}
-
-type EmbeddingRequest struct {
-	Content string `json:"content"`
-}
-
-type EmbeddingResponse struct {
-	Embedding       []float32 `json:"embedding"`
-	PromptEvalCount int       `json:"prompt_eval_count"`
 }
 
 func (s *llmServer) Embedding(ctx context.Context, input string) ([]float32, int, error) {

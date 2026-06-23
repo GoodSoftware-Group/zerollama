@@ -24,7 +24,6 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/fs/gguf"
-	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/parser"
@@ -33,6 +32,7 @@ import (
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/version"
 	"github.com/ollama/ollama/x/imagegen/transfer"
+	"golang.org/x/sync/singleflight"
 )
 
 // Blobs newer than this may belong to another process that has not written its
@@ -55,11 +55,14 @@ var (
 	errInsecureProtocol     = errors.New("insecure protocol http")
 )
 
+var pullModelGroup singleflight.Group
+
 type registryOptions struct {
 	Insecure bool
 	Username string
 	Password string
 	Token    string
+	HFSource string // huggingface:// URI when pull name is a local tag
 
 	CheckRedirect func(req *http.Request, via []*http.Request) error
 }
@@ -151,7 +154,10 @@ func (m *Model) Capabilities() []model.Capability {
 	if err != nil {
 		slog.Warn("model template contains errors", "error", err)
 	}
-	if slices.Contains(v, "tools") || (builtinParser != nil && builtinParser.HasToolSupport()) {
+	family := m.PrimaryFamily()
+	if isGptOSSFamily(family) || isGptOSSFamily(m.Config.ModelFamily) {
+		capabilities = append(capabilities, model.CapabilityTools)
+	} else if slices.Contains(v, "tools") || (builtinParser != nil && builtinParser.HasToolSupport()) {
 		capabilities = append(capabilities, model.CapabilityTools)
 	}
 
@@ -176,8 +182,7 @@ func (m *Model) Capabilities() []model.Capability {
 	// Check for thinking capability
 	openingTag, closingTag := thinking.InferTags(m.Template.Template)
 	hasTags := openingTag != "" && closingTag != ""
-	family := m.PrimaryFamily()
-	isGptoss := slices.Contains([]string{"gptoss", "gpt-oss"}, family)
+	isGptoss := isGptOSSFamily(family) || isGptOSSFamily(m.Config.ModelFamily)
 	isQwen35 := slices.Contains([]string{"qwen35", "qwen35moe"}, family)
 	if hasTags || isGptoss || isQwen35 || (builtinParser != nil && builtinParser.HasThinkingSupport()) {
 		capabilities = append(capabilities, model.CapabilityThinking)
@@ -364,6 +369,8 @@ func GetModel(name string) (*Model, error) {
 		}
 	}
 
+	enrichMLXModelConfig(m)
+
 	for _, layer := range mf.Layers {
 		filename, err := manifest.BlobsPath(layer.Digest)
 		if err != nil {
@@ -433,13 +440,8 @@ func GetModel(name string) (*Model, error) {
 	}
 
 	if m.ModelPath != "" {
-		if f, err := llm.LoadModel(m.ModelPath, 1024); err == nil {
-			m.EmbeddedMTP = llm.HasMTPDraft(f)
-			if m.Config.ModelFamily == "" {
-				if arch := f.KV().Architecture(); arch != "" {
-					m.Config.ModelFamily = arch
-				}
-			}
+		if f, err := loadGGUFMetadataAt(m.ModelPath); err == nil {
+			applyGGUFGuessToModel(m, f)
 		}
 	}
 
@@ -642,22 +644,61 @@ func PushModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 
 func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn func(api.ProgressResponse)) error {
 	n := model.ParseName(name)
+	key := n.DisplayShortest()
+	if key == "" {
+		key = name
+	}
+	_, err, _ := pullModelGroup.Do(key, func() (any, error) {
+		return nil, pullModelOnce(ctx, name, regOpts, fn)
+	})
+	return err
+}
 
-	// build deleteMap to prune unused layers
+func buildPullDeleteMap(n model.Name) map[string]struct{} {
 	deleteMap := make(map[string]struct{})
 	existingMf, err := manifest.ParseNamedManifest(n)
 	if errors.Is(err, os.ErrNotExist) {
-		// noop
-	} else if err != nil {
-		slog.Warn("pulling model with bad existing manifest", "name", name, "error", err)
-	} else {
-		for _, l := range existingMf.Layers {
-			deleteMap[l.Digest] = struct{}{}
+		return deleteMap
+	}
+	if err != nil {
+		slog.Warn("pulling model with bad existing manifest", "name", n.DisplayShortest(), "error", err)
+		return deleteMap
+	}
+	for _, l := range existingMf.Layers {
+		deleteMap[l.Digest] = struct{}{}
+	}
+	if existingMf.Config.Digest != "" {
+		deleteMap[existingMf.Config.Digest] = struct{}{}
+	}
+	return deleteMap
+}
+
+func pullModelOnce(ctx context.Context, name string, regOpts *registryOptions, fn func(api.ProgressResponse)) error {
+	if regOpts == nil {
+		regOpts = &registryOptions{}
+	}
+
+	if IsHFPull(name) || strings.TrimSpace(regOpts.HFSource) != "" {
+		local := model.ParseName(name)
+		if IsHFPull(name) {
+			if ref, err := ParseHFSource(name); err == nil {
+				local = hfLocalName(ref)
+			}
 		}
-		if existingMf.Config.Digest != "" {
-			deleteMap[existingMf.Config.Digest] = struct{}{}
+		deleteMap := buildPullDeleteMap(local)
+		imported, err := tryPullHuggingFace(ctx, name, local, regOpts, deleteMap, fn)
+		if err != nil {
+			return err
+		}
+		if imported {
+			return nil
 		}
 	}
+
+	n := model.ParseName(name)
+
+	// build deleteMap to prune unused layers
+	deleteMap := buildPullDeleteMap(n)
 
 	if n.ProtocolScheme == "http" && !regOpts.Insecure {
 		return errInsecureProtocol
@@ -689,6 +730,7 @@ func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 		if err := pullWithTransfer(ctx, n, layers, manifestData, regOpts, fn); err != nil {
 			return err
 		}
+		EnrichManifestAfterPull(n, fn)
 		fn(api.ProgressResponse{Status: "success"})
 		return nil
 	}
@@ -757,6 +799,7 @@ func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 		}
 	}
 
+	EnrichManifestAfterPull(n, fn)
 	fn(api.ProgressResponse{Status: "success"})
 
 	return nil

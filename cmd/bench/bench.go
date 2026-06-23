@@ -321,7 +321,8 @@ func BenchmarkModel(fOpt flagOptions) error {
 			var warmupMetrics *api.Metrics
 			err = client.Generate(ctx, req, func(resp api.GenerateResponse) error {
 				if resp.Done {
-					warmupMetrics = &resp.Metrics
+					m := resp.Metrics
+					warmupMetrics = &m
 				}
 				return nil
 			})
@@ -387,7 +388,8 @@ func BenchmarkModel(fOpt flagOptions) error {
 					})
 
 					if resp.Done {
-						responseMetrics = &resp.Metrics
+						m := resp.Metrics
+						responseMetrics = &m
 					}
 					return nil
 				})

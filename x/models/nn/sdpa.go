@@ -19,6 +19,9 @@ type sdpaConfig struct {
 
 	// Optional model-supplied logical mask.
 	mask AttentionMask
+
+	// Optional attention sinks (one per query head).
+	sinks *mlx.Array
 }
 
 // WithKVHistory supplies a cache's per-layer view of K and V. The
@@ -45,6 +48,11 @@ func WithKV(k, v *mlx.Array, kLens []int32) SDPAOption {
 // WithMask supplies the model's logical-coordinate mask.
 func WithMask(m AttentionMask) SDPAOption {
 	return func(c *sdpaConfig) { c.mask = m }
+}
+
+// WithSinks supplies per-head attention sinks for models such as GPT-OSS.
+func WithSinks(sinks *mlx.Array) SDPAOption {
+	return func(c *sdpaConfig) { c.sinks = sinks }
 }
 
 // ScaledDotProductAttention runs the fast SDPA kernel against q and
@@ -83,13 +91,19 @@ func ScaledDotProductAttention(b *batch.Batch, q *mlx.Array, scale float32, opts
 		kLens:   newKLensKey(cfg.kLens),
 	}
 
-	if cached, ok := b.Memo.Get(inputs); ok {
+	if cached, ok := b.Memo.Get(inputs); ok && cfg.sinks == nil {
 		d := cached.(sdpaDispatch)
 		return mlx.FastScaledDotProductAttention(q, k, v, scale, d.mode, d.arr)
 	}
 
 	d := inputs.resolve()
-	b.Memo.Put(inputs, d)
+	if cfg.sinks == nil {
+		b.Memo.Put(inputs, d)
+	}
+	if cfg.sinks != nil {
+		// TODO: Metal fast SDPA+sinks panics on GQA; reference path still WIP.
+		return mlx.FastScaledDotProductAttentionWithSinks(q, k, v, cfg.sinks, scale, d.mode, d.arr)
+	}
 	return mlx.FastScaledDotProductAttention(q, k, v, scale, d.mode, d.arr)
 }
 

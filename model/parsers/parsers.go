@@ -18,6 +18,9 @@ type Parser interface {
 	Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error)
 	HasToolSupport() bool
 	HasThinkingSupport() bool
+	// PreservedTokens returns parser grammar tokens that must remain visible in
+	// llama-server completions (passed via CompletionRequest.PreservedTokens).
+	PreservedTokens() []string
 }
 
 type ParserConstructor func() Parser
@@ -87,6 +90,8 @@ func ParserForName(name string) Parser {
 		return &LFM2Parser{hasThinkingSupport: false}
 	case "lfm2-thinking":
 		return &LFM2Parser{hasThinkingSupport: true}
+	case "cohere":
+		return &CohereParser{}
 	default:
 		return nil
 	}
@@ -109,6 +114,10 @@ func (p *PassthroughParser) HasToolSupport() bool {
 
 func (p *PassthroughParser) HasThinkingSupport() bool {
 	return false
+}
+
+func (p *PassthroughParser) PreservedTokens() []string {
+	return nil
 }
 
 func splitAtTag(sb *strings.Builder, tag string, trimAfter bool) (string, string) {

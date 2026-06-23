@@ -8,6 +8,10 @@ import (
 
 type Renderer interface {
 	Render(messages []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error)
+	// LeadingBOS returns the textual BOS token Go renderers already embed in the
+	// prompt. llama-server with DisableJinja uses this to avoid prepending BOS
+	// twice (see CompletionRequest.LeadingBOS in server/routes.go).
+	LeadingBOS() string
 }
 
 type (
@@ -40,6 +44,17 @@ func RenderWithRenderer(name string, msgs []api.Message, tools []api.Tool, think
 		return "", fmt.Errorf("unknown renderer %q", name)
 	}
 	return renderer.Render(msgs, tools, think)
+}
+
+// LeadingBOSForRenderer returns the BOS text llama-server must not re-emit when
+// DisableJinja is set for renderer-backed models.
+func LeadingBOSForRenderer(name string) string {
+	renderer := rendererForName(name)
+	if renderer == nil {
+		return ""
+	}
+
+	return renderer.LeadingBOS()
 }
 
 func rendererForName(name string) Renderer {
@@ -95,6 +110,10 @@ func rendererForName(name string) Renderer {
 		return &LFM2Renderer{IsThinking: false, useImgTags: RenderImgTags}
 	case "lfm2-thinking":
 		return &LFM2Renderer{IsThinking: true, useImgTags: RenderImgTags}
+	case "cohere":
+		return &CohereRenderer{}
+	case "harmony":
+		return &HarmonyRenderer{}
 	default:
 		return nil
 	}

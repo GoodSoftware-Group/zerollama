@@ -552,8 +552,6 @@ llama_model_loader::llama_model_loader(
         }
 
         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
-        // Ollama compat: translate published GGUF metadata (qwen35 M-RoPE sections,
-        // embedded vision/MTP, etc.) before hparams are read. See llama/compat/README.md.
         if (llama_ollama_compat::translate_metadata(this, metadata, ctx, arch_name, fname.c_str())) use_mmap = false;
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
 

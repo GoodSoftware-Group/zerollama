@@ -1,0 +1,3 @@
+FROM /Users/user1/.cache/zerollama/gemma-4-26B-A4B-it-OptiQ-4bit
+RENDERER gemma4
+PARSER gemma4

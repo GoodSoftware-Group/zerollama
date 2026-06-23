@@ -6,18 +6,25 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/server/modality"
 )
 
 type GlmOcrRenderer struct {
 	useImgTags bool
 }
 
-func (r *GlmOcrRenderer) renderContent(message api.Message, imageOffset int) (string, int) {
+func (r *GlmOcrRenderer) LeadingBOS() string {
+	return ""
+}
+
+func (r *GlmOcrRenderer) renderContent(msgs []api.Message, msgIdx int, message api.Message, imageOffset int) (string, int) {
 	var sb strings.Builder
-	for range message.Images {
-		if r.useImgTags {
-			sb.WriteString(fmt.Sprintf("[img-%d]", imageOffset))
-			imageOffset++
+	if !modality.MessageSkipsVisionPlaceholdersForChat(msgs, msgIdx, r.useImgTags) {
+		for range message.Images {
+			if r.useImgTags {
+				sb.WriteString(fmt.Sprintf("[img-%d]", imageOffset))
+				imageOffset++
+			}
 		}
 	}
 	sb.WriteString(message.Content)
@@ -57,7 +64,7 @@ func (r *GlmOcrRenderer) Render(messages []api.Message, tools []api.Tool, thinkV
 		switch message.Role {
 		case "user":
 			sb.WriteString("<|user|>\n")
-			content, nextOffset := r.renderContent(message, imageOffset)
+			content, nextOffset := r.renderContent(messages, i, message, imageOffset)
 			imageOffset = nextOffset
 			sb.WriteString(content)
 			if thinkingExplicitlySet && !enableThinking && !strings.HasSuffix(message.Content, "/nothink") {

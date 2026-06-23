@@ -77,3 +77,22 @@ func CalculateLogprobs(logits []float32, selectedToken int, topK int, decoder To
 
 	return []llm.Logprob{result}
 }
+
+// LogprobForTokenID returns the log probability of a specific token from raw logits.
+func LogprobForTokenID(logits []float32, tokenID int) float64 {
+	if len(logits) == 0 || tokenID < 0 || tokenID >= len(logits) {
+		return math.Inf(-1)
+	}
+	maxLogit := logits[0]
+	for _, logit := range logits[1:] {
+		if logit > maxLogit {
+			maxLogit = logit
+		}
+	}
+	var sumExp float64
+	for _, logit := range logits {
+		sumExp += math.Exp(float64(logit - maxLogit))
+	}
+	logSumExp := float32(math.Log(sumExp))
+	return float64((logits[tokenID] - maxLogit) - logSumExp)
+}

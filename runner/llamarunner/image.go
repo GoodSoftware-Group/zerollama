@@ -5,13 +5,31 @@ import (
 	"fmt"
 	"hash/maphash"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llama"
 )
 
-const imageCacheSize = 4
+const (
+	// sessionEmbedMaxSessions bounds per-agent ViT overlay maps on a long-lived runner.
+	// WHY: complements the small global LRU — a fleet can evict frames globally while
+	// the same eliza thread (prompt_cache_key) still hits session embeds on turn 2+.
+	sessionEmbedMaxSessions = 32
+	sessionEmbedTTL         = 30 * time.Minute
+)
+
+// defaultImageCacheSize is the embed cache size used when the caller does not
+// specify one. Matches the historical constant; operators running video agents
+// should raise this via OLLAMA_IMAGE_EMBED_CACHE_SIZE.
+const defaultImageCacheSize = 4
+
+type sessionEmbedState struct {
+	byHash    map[uint64][]llama.MtmdChunk
+	updatedAt time.Time
+}
 
 type ImageContext struct {
 	// mu is required to be held when generating embeddings or accessing the cache
@@ -22,9 +40,15 @@ type ImageContext struct {
 	// cache of images to embeddings
 	images    []imageCache
 	imageHash maphash.Hash
+
+	// session overlay keyed by prompt_cache_key (agent thread id)
+	sessionEmbeds   map[string]sessionEmbedState
+	sessionEmbedLRU []string
 }
 
-func NewImageContext(llamaContext *llama.Context, modelPath string) (*ImageContext, error) {
+// NewImageContext creates the vision embed context. cacheSize controls how many
+// distinct image embeddings are kept in the LRU; pass ≤0 to use defaultImageCacheSize.
+func NewImageContext(llamaContext *llama.Context, modelPath string, cacheSize int) (*ImageContext, error) {
 	arch, err := llama.GetModelArch(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to determine vision architecture: %w (%s)", err, modelPath)
@@ -41,7 +65,10 @@ func NewImageContext(llamaContext *llama.Context, modelPath string) (*ImageConte
 		return nil, err
 	}
 
-	c.images = make([]imageCache, imageCacheSize)
+	if cacheSize <= 0 {
+		cacheSize = defaultImageCacheSize
+	}
+	c.images = make([]imageCache, cacheSize)
 
 	return &c, nil
 }
@@ -56,7 +83,18 @@ func (c *ImageContext) Free(modelPath string) {
 	}
 }
 
-func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []byte) ([]llama.MtmdChunk, error) {
+func normalizeSessionKey(sessionKey string) string {
+	return strings.TrimSpace(sessionKey)
+}
+
+// MultimodalTokenize returns ViT chunks for image bytes. sessionKey (prompt_cache_key)
+// enables a per-agent overlay that survives global LRU eviction between agent turns.
+//
+// gridTHW is optional [1,H,W] from video_spans (per-frame after expansion). Passed through
+// to mtmd when upstream accepts client patch grids; today used for debug compare only.
+// WHY cache ignores gridTHW: embeds are keyed by raster bytes — same PNG → same ViT output
+// regardless of whether the client attached a layout hint.
+func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []byte, sessionKey string, gridTHW []int) ([]llama.MtmdChunk, error) {
 	if c == nil {
 		return nil, nil
 	}
@@ -66,14 +104,19 @@ func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []by
 	}
 
 	hash := c.hashImage(data)
+	sessionKey = normalizeSessionKey(sessionKey)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if chunks, ok := c.findSessionEmbedLocked(sessionKey, hash); ok {
+		return chunks, nil
+	}
+
 	chunks, err := c.findImage(hash)
 	if err != nil {
 		if c.mtmd != nil {
-			chunks, err = c.mtmd.MultimodalTokenize(llamaContext, data)
+			chunks, err = c.mtmd.MultimodalTokenize(llamaContext, data, gridTHW)
 			if err != nil {
 				return nil, err
 			}
@@ -83,6 +126,7 @@ func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []by
 
 		c.addImage(hash, chunks)
 	}
+	c.storeSessionEmbedLocked(sessionKey, hash, chunks)
 
 	return chunks, nil
 }
@@ -146,4 +190,97 @@ func (c *ImageContext) addImage(hash uint64, embed []llama.MtmdChunk) {
 	c.images[bestImage].key = hash
 	c.images[bestImage].val = embed
 	c.images[bestImage].lastUsed = time.Now()
+}
+
+// growCacheForDistinctFrames expands the embed LRU when a multimodal turn has more
+// rasters than initial slots. WHY: SGLang prefix-mm cache keeps all clip frames hot;
+// operators should not have to restart runners or raise OLLAMA_IMAGE_EMBED_CACHE_SIZE
+// before the first 32-frame video request.
+func (c *ImageContext) growCacheForDistinctFrames(frameCount int) {
+	if c == nil || frameCount <= len(c.images) {
+		return
+	}
+	want := frameCount
+	if max := envconfig.ImageEmbedCacheMax(); want > max {
+		want = max
+	}
+	if want <= len(c.images) {
+		return
+	}
+	next := make([]imageCache, want)
+	copy(next, c.images)
+	c.images = next
+	slog.Info("vision embed cache auto-grown for multimodal turn",
+		"slots", want,
+		"frames", frameCount,
+	)
+}
+
+func (c *ImageContext) findSessionEmbedLocked(sessionKey string, hash uint64) ([]llama.MtmdChunk, bool) {
+	if c == nil || sessionKey == "" {
+		return nil, false
+	}
+	st, ok := c.sessionEmbeds[sessionKey]
+	if !ok {
+		return nil, false
+	}
+	if sessionEmbedTTL > 0 && time.Since(st.updatedAt) > sessionEmbedTTL {
+		c.evictSessionEmbedLocked(sessionKey)
+		return nil, false
+	}
+	chunks, ok := st.byHash[hash]
+	if !ok {
+		return nil, false
+	}
+	st.updatedAt = time.Now()
+	c.sessionEmbeds[sessionKey] = st
+	c.bumpSessionEmbedLRULocked(sessionKey)
+	slog.Info("vision embed session cache hit", "session_key", sessionKey)
+	return chunks, true
+}
+
+func (c *ImageContext) storeSessionEmbedLocked(sessionKey string, hash uint64, chunks []llama.MtmdChunk) {
+	if c == nil || sessionKey == "" || len(chunks) == 0 {
+		return
+	}
+	if c.sessionEmbeds == nil {
+		c.sessionEmbeds = make(map[string]sessionEmbedState)
+	}
+	st, ok := c.sessionEmbeds[sessionKey]
+	if !ok {
+		if len(c.sessionEmbedLRU) >= sessionEmbedMaxSessions {
+			c.evictSessionEmbedLocked(c.sessionEmbedLRU[0])
+		}
+		st = sessionEmbedState{byHash: make(map[uint64][]llama.MtmdChunk)}
+		// Key is new: append to tail. No bump needed — it is already at the tail.
+		c.sessionEmbedLRU = append(c.sessionEmbedLRU, sessionKey)
+	} else {
+		if st.byHash == nil {
+			st.byHash = make(map[uint64][]llama.MtmdChunk)
+		}
+		// Existing session: move to tail so it is evicted last.
+		c.bumpSessionEmbedLRULocked(sessionKey)
+	}
+	st.byHash[hash] = chunks
+	st.updatedAt = time.Now()
+	c.sessionEmbeds[sessionKey] = st
+}
+
+func (c *ImageContext) bumpSessionEmbedLRULocked(key string) {
+	for i, k := range c.sessionEmbedLRU {
+		if k == key {
+			c.sessionEmbedLRU = append(append(c.sessionEmbedLRU[:i], c.sessionEmbedLRU[i+1:]...), key)
+			return
+		}
+	}
+}
+
+func (c *ImageContext) evictSessionEmbedLocked(key string) {
+	delete(c.sessionEmbeds, key)
+	for i, k := range c.sessionEmbedLRU {
+		if k == key {
+			c.sessionEmbedLRU = append(c.sessionEmbedLRU[:i], c.sessionEmbedLRU[i+1:]...)
+			return
+		}
+	}
 }

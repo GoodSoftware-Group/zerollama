@@ -133,7 +133,7 @@ def create_app(
         return out
 
     @app.post("/api/generate")
-    def api_generate(req: OllamaGenerateRequest = Body()):
+    async def api_generate(request: Request, req: OllamaGenerateRequest = Body()):
         started = log_request_in(
             "/api/generate",
             model=req.model,
@@ -145,12 +145,12 @@ def create_app(
         n_predict = _n_predict(opts)
         num_ctx = _request_num_ctx(opts, gguf)
         if req.stream:
-            import json
+            from runtime.server.disconnect_stream import ndjson_stream_on_disconnect
 
-            def _gen():
-                status = 200
-                done_reason = ""
-                queue_in = runtime_queue_snapshot(eng)
+            queue_in = runtime_queue_snapshot(eng)
+            meta: dict[str, Any] = {"status": 200, "done_reason": "", "error": ""}
+
+            def _iter(cancel):
                 try:
                     for chunk in eng.stream_generate(
                         req.prompt,
@@ -159,22 +159,32 @@ def create_app(
                         gguf=gguf,
                         num_ctx=num_ctx,
                         options=opts,
+                        prefill_cancel=cancel,
                     ):
                         if chunk.get("done"):
-                            done_reason = str(chunk.get("done_reason") or "stop")
-                        yield json.dumps(chunk) + "\n"
+                            meta["done_reason"] = str(
+                                chunk.get("done_reason") or "stop"
+                            )
+                        yield chunk
                 except LlamaServerError as e:
-                    status = _llama_error_status(e)
-                    yield json.dumps({"error": str(e)}) + "\n"
+                    meta["status"] = _llama_error_status(e)
+                    meta["error"] = "llama error"
+                    yield {"error": str(e)}
+
+            async def _gen():
+                try:
+                    async for line in ndjson_stream_on_disconnect(request, _iter):
+                        yield line
                 finally:
                     log_response_out(
                         "/api/generate",
                         started,
                         model=req.model,
                         stream=True,
-                        status=status,
-                        done_reason=done_reason or ("stop" if status == 200 else ""),
-                        error="" if status == 200 else "llama error",
+                        status=meta["status"],
+                        done_reason=meta["done_reason"]
+                        or ("stop" if meta["status"] == 200 else ""),
+                        error=meta["error"],
                         queue=runtime_queue_snapshot(eng),
                         queue_in=queue_in,
                     )
@@ -183,12 +193,19 @@ def create_app(
                 _gen(), media_type="application/x-ndjson"
             )
         try:
-            result = eng.generate(
-                req.prompt,
-                n_predict=n_predict,
-                gguf=gguf,
-                num_ctx=num_ctx,
-                options=opts,
+            from runtime.kv.native_decode_loop import PrefillAbortedError
+            from runtime.server.disconnect_stream import run_sync_on_disconnect
+
+            result = await run_sync_on_disconnect(
+                request,
+                lambda cancel: eng.generate(
+                    req.prompt,
+                    n_predict=n_predict,
+                    gguf=gguf,
+                    num_ctx=num_ctx,
+                    options=opts,
+                    prefill_cancel=cancel,
+                ),
             )
             log_response_out(
                 "/api/generate",
@@ -208,6 +225,18 @@ def create_app(
                 vram_num_ctx=result.vram_num_ctx,
                 kv_decode_steps=result.kv_decode_steps,
             )
+        except PrefillAbortedError:
+            log_response_out(
+                "/api/generate",
+                started,
+                model=req.model,
+                stream=False,
+                status=499,
+                done_reason="cancelled",
+                queue=runtime_queue_snapshot(eng),
+                queue_in=runtime_queue_snapshot(eng),
+            )
+            raise HTTPException(status_code=499, detail="request cancelled") from None
         except LlamaServerError as e:
             status = (
                 503
@@ -238,7 +267,7 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.post("/api/chat")
-    def api_chat(req: OllamaChatRequest = Body()):
+    async def api_chat(request: Request, req: OllamaChatRequest = Body()):
         from runtime.server.chat_tools import (
             ToolParseUnavailableError,
             normalize_tools,
@@ -286,12 +315,12 @@ def create_app(
         if not prompt:
             raise HTTPException(status_code=400, detail="empty messages")
         if req.stream:
-            import json
+            from runtime.server.disconnect_stream import ndjson_stream_on_disconnect
 
-            def _gen():
-                status = 200
-                done_reason = ""
-                queue_in = runtime_queue_snapshot(eng)
+            queue_in = runtime_queue_snapshot(eng)
+            meta: dict[str, Any] = {"status": 200, "done_reason": "", "error": ""}
+
+            def _iter(cancel):
                 try:
                     if tools:
                         it = stream_tool_chat_chunks(
@@ -307,6 +336,7 @@ def create_app(
                             messages=list(req.messages),
                             think=req.think,
                             tools_meta=tools_meta,
+                            prefill_cancel=cancel,
                         )
                     else:
                         it = eng.stream_chat(
@@ -316,26 +346,37 @@ def create_app(
                             gguf=gguf,
                             num_ctx=num_ctx,
                             options=opts,
+                            prefill_cancel=cancel,
                         )
                     for chunk in it:
                         if isinstance(chunk, dict) and chunk.get("done"):
-                            done_reason = str(chunk.get("done_reason") or "stop")
-                        yield json.dumps(chunk) + "\n"
+                            meta["done_reason"] = str(
+                                chunk.get("done_reason") or "stop"
+                            )
+                        yield chunk
                 except ToolParseUnavailableError as e:
-                    status = 503
-                    yield json.dumps({"error": str(e)}) + "\n"
+                    meta["status"] = 503
+                    meta["error"] = str(e)
+                    yield {"error": str(e)}
                 except LlamaServerError as e:
-                    status = _llama_error_status(e)
-                    yield json.dumps({"error": str(e)}) + "\n"
+                    meta["status"] = _llama_error_status(e)
+                    meta["error"] = "inference error"
+                    yield {"error": str(e)}
+
+            async def _gen():
+                try:
+                    async for line in ndjson_stream_on_disconnect(request, _iter):
+                        yield line
                 finally:
                     log_response_out(
                         "/api/chat",
                         started,
                         model=req.model,
                         stream=True,
-                        status=status,
-                        done_reason=done_reason or ("stop" if status == 200 else ""),
-                        error="" if status == 200 else "inference error",
+                        status=meta["status"],
+                        done_reason=meta["done_reason"]
+                        or ("stop" if meta["status"] == 200 else ""),
+                        error=meta["error"],
                         queue=runtime_queue_snapshot(eng),
                         queue_in=queue_in,
                     )
@@ -344,12 +385,19 @@ def create_app(
                 _gen(), media_type="application/x-ndjson"
             )
         try:
-            result = eng.generate(
-                prompt,
-                n_predict=n_predict,
-                gguf=gguf,
-                num_ctx=num_ctx,
-                options=opts,
+            from runtime.kv.native_decode_loop import PrefillAbortedError
+            from runtime.server.disconnect_stream import run_sync_on_disconnect
+
+            result = await run_sync_on_disconnect(
+                request,
+                lambda cancel: eng.generate(
+                    prompt,
+                    n_predict=n_predict,
+                    gguf=gguf,
+                    num_ctx=num_ctx,
+                    options=opts,
+                    prefill_cancel=cancel,
+                ),
             )
             msg: dict[str, Any] = {"role": "assistant", "content": result.content}
             done_reason = "stop"
@@ -388,6 +436,18 @@ def create_app(
                 queue_in=runtime_queue_snapshot(eng),
             )
             return out
+        except PrefillAbortedError:
+            log_response_out(
+                "/api/chat",
+                started,
+                model=req.model,
+                stream=False,
+                status=499,
+                done_reason="cancelled",
+                queue=runtime_queue_snapshot(eng),
+                queue_in=runtime_queue_snapshot(eng),
+            )
+            raise HTTPException(status_code=499, detail="request cancelled") from None
         except ToolParseUnavailableError as e:
             log_response_out(
                 "/api/chat",
@@ -411,8 +471,9 @@ def create_app(
             raise HTTPException(status_code=status, detail=str(e)) from e
 
     @app.post("/v1/chat/completions")
-    def v1_chat_completions(payload: dict[str, Any] = Body()):
+    async def v1_chat_completions(request: Request, payload: dict[str, Any] = Body()):
         from runtime.server.chat_tools import ToolParseUnavailableError
+        from runtime.server.disconnect_stream import sse_stream_on_disconnect
         from runtime.server.openai_v1 import (
             run_v1_chat_completion,
             stream_openai_sse,
@@ -425,12 +486,31 @@ def create_app(
                 detail="request requires legacy runner (vision/logprobs/think)",
             )
         if payload.get("stream"):
+
+            async def _sse():
+                async for line in sse_stream_on_disconnect(
+                    request,
+                    lambda cancel: stream_openai_sse(
+                        eng, payload, prefill_cancel=cancel
+                    ),
+                ):
+                    yield line
+
             return StreamingResponse(
-                stream_openai_sse(eng, payload),
-                media_type="text/event-stream",
+                _sse(), media_type="text/event-stream"
             )
         try:
-            return run_v1_chat_completion(eng, payload)
+            from runtime.kv.native_decode_loop import PrefillAbortedError
+            from runtime.server.disconnect_stream import run_sync_on_disconnect
+
+            return await run_sync_on_disconnect(
+                request,
+                lambda cancel: run_v1_chat_completion(
+                    eng, payload, prefill_cancel=cancel
+                ),
+            )
+        except PrefillAbortedError:
+            raise HTTPException(status_code=499, detail="request cancelled") from None
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except ToolParseUnavailableError as e:

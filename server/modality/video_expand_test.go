@@ -10,7 +10,7 @@ import (
 )
 
 func TestExpandVideosInChatRequest_usesPolicyAndSpans(t *testing.T) {
-	t.Parallel()
+	resetVideoExpandCache()
 	policy := ResolveVideoPolicy(model.ConfigV2{})
 	orig := ExternalVideoDecodeHook
 	defer func() { ExternalVideoDecodeHook = orig }()

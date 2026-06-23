@@ -8,20 +8,23 @@ import (
 
 // AssignRequest is POST /api/fleet/assign.
 type AssignRequest struct {
-	Model      string   `json:"model"`
-	PreferWarm *bool    `json:"prefer_warm,omitempty"` // nil = true; cold load on busy fleet is the expensive path.
-	WarmOnly   bool     `json:"warm_only,omitempty"`   // SLA: reject when no loaded peer (404).
-	Exclude    []string `json:"exclude,omitempty"`     // Retry after F1 cancel-while-queued without re-picking same node.
+	Model           string   `json:"model"`
+	PreferWarm      *bool    `json:"prefer_warm,omitempty"` // nil = true; cold load on busy fleet is the expensive path.
+	WarmOnly        bool     `json:"warm_only,omitempty"`   // SLA: reject when no loaded peer (404).
+	Exclude         []string `json:"exclude,omitempty"`     // Retry after F1 cancel-while-queued without re-picking same node.
+	SessionKey      string   `json:"session_key,omitempty"` // L3 / agent thread id (eliza.conversationId, prompt_cache_key, …).
+	PromptCacheKey  string   `json:"prompt_cache_key,omitempty"` // alias for SessionKey when agents send OpenAI-style options only to the node
 }
 
 // AssignResponse tells an agent which node to call directly.
 // Why url + node_id: agents need the base URL for ollama client; node_id for exclude on retry.
 type AssignResponse struct {
-	URL         string `json:"url"`
-	NodeID      string `json:"node_id"`
-	Warm        bool   `json:"warm"`
-	QueueDepth  int    `json:"queue_depth"`
-	Loading     bool   `json:"loading,omitempty"`
+	URL         string    `json:"url"`
+	NodeID      string    `json:"node_id"`
+	Warm        bool      `json:"warm"`
+	QueueDepth  int       `json:"queue_depth"`
+	Loading     bool      `json:"loading,omitempty"`
+	Score       float64   `json:"score,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
 }
 

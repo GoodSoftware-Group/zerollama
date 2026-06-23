@@ -5,8 +5,9 @@
 # asserts /health kv_inprocess_n_seq_max and a successful generate (num_ctx capped
 # for PA block pool — default autoconfig budget can exceed num_blocks*block_size).
 #
-# WHY ZEROLLAMA_GPU_PROFILE=0 on serve: L1 rtx-5080 (and Mac 128g) override YAML
-# n_parallel — sign-off requires kv_inprocess_n_seq_max=2 (see phase15_metal_signoff.sh).
+# WHY ZEROLLAMA_GPU_PROFILE=0 on serve: L1 rtx-5080 (n_parallel=2) and Mac 128g override
+# YAML llama_parallel_slots — sign-off requires kv_inprocess_n_seq_max=2
+# (see phase15_metal_signoff.sh).
 #
 #   export LLAMA_MODEL=/path/to/small.q8_0.gguf
 #   export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so

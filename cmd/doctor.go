@@ -16,6 +16,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/modelhealth"
+	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/version"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/trainingworker"
 )
@@ -37,6 +40,7 @@ type doctorReport struct {
 func NewDoctorCommand() *cobra.Command {
 	var jsonOut bool
 	var fix bool
+	var modelsOnly bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
@@ -47,8 +51,21 @@ func NewDoctorCommand() *cobra.Command {
 				if err := runDoctorFix(repo); err != nil {
 					return err
 				}
+				if modelsOnly {
+					if err := runDoctorModelsFix(); err != nil {
+						return err
+					}
+				}
 			}
-			report := buildDoctorReport(repo)
+			var report doctorReport
+			if modelsOnly {
+				report = buildDoctorModelsReport()
+			} else {
+				report = buildDoctorReport(repo)
+				if !fix {
+					report = mergeDoctorReports(report, buildDoctorModelsReport())
+				}
+			}
 			if jsonOut {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -65,6 +82,7 @@ func NewDoctorCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print results as JSON")
 	cmd.Flags().BoolVar(&fix, "fix", false, "Run safe auto-fixes (uv venv; on Darwin build Metal llama.cpp when missing)")
+	cmd.Flags().BoolVar(&modelsOnly, "models", false, "Check local model blob integrity (missing/orphaned registrations)")
 	return cmd
 }
 
@@ -81,6 +99,79 @@ func buildDoctorReport(repo string) doctorReport {
 	}
 	report.OK = report.Failures == 0
 	return report
+}
+
+func mergeDoctorReports(base, extra doctorReport) doctorReport {
+	base.Checks = append(base.Checks, extra.Checks...)
+	base.Failures += extra.Failures
+	base.Warnings += extra.Warnings
+	base.OK = base.Failures == 0
+	return base
+}
+
+func buildDoctorModelsReport() doctorReport {
+	reports, err := modelhealth.CheckAll()
+	if err != nil {
+		return doctorReport{
+			Checks: []doctorCheck{{
+				Name:   "model health",
+				Status: "fail",
+				Detail: err.Error(),
+			}},
+			Failures: 1,
+		}
+	}
+
+	var checks []doctorCheck
+	for _, r := range reports {
+		status := "ok"
+		switch r.Status {
+		case modelhealth.StatusRepairable:
+			status = "warn"
+		case modelhealth.StatusOrphaned, modelhealth.StatusBroken:
+			status = "fail"
+		}
+		checks = append(checks, doctorCheck{
+			Name:    "model " + r.Name,
+			Status:  status,
+			Detail:  modelhealth.FormatSummary(r),
+			FixHint: r.FixHint,
+		})
+	}
+
+	report := doctorReport{Checks: checks}
+	for _, c := range checks {
+		switch c.Status {
+		case "fail":
+			report.Failures++
+		case "warn":
+			report.Warnings++
+		}
+	}
+	report.OK = report.Failures == 0
+	return report
+}
+
+func runDoctorModelsFix() error {
+	reports, err := modelhealth.CheckAll()
+	if err != nil {
+		return err
+	}
+	var removed int
+	for _, r := range reports {
+		if r.Status != modelhealth.StatusOrphaned {
+			continue
+		}
+		fmt.Printf("== removing orphaned model %s ==\n", r.Name)
+		if err := modelhealth.RemoveManifest(r.Name); err != nil {
+			return fmt.Errorf("remove %s: %w", r.Name, err)
+		}
+		removed++
+	}
+	if removed > 0 {
+		fmt.Printf("removed %d orphaned model registration(s)\n", removed)
+	}
+	return nil
 }
 
 func printDoctorHuman(report doctorReport) error {
@@ -180,6 +271,9 @@ func runDoctorChecks(repo string) []doctorCheck {
 	var out []doctorCheck
 
 	out = append(out, doctorCheckGo())
+	out = append(out, doctorCheckEdgeBuild())
+	out = append(out, doctorCheckGgmlRunner())
+	out = append(out, doctorCheckLlamaServer(repo))
 	if runtime.GOOS == "darwin" {
 		out = append(out, doctorCheckMacCGO(repo))
 	}
@@ -195,6 +289,8 @@ func runDoctorChecks(repo string) []doctorCheck {
 		out = append(out, doctorCheckTrainingVenv(repo))
 		out = append(out, doctorCheckSidecarHealth())
 		out = append(out, doctorCheckTextGGUF(repo))
+		out = append(out, doctorCheckANE(repo))
+		out = append(out, doctorCheckFlashMoE(repo))
 	} else {
 		out = append(out, doctorCheck{
 			Name:   "darwin runtime smoke",
@@ -578,6 +674,89 @@ func doctorProbeRuntimeSidecar() (baseURL string, tcpOnly []string) {
 	return "", tcpOnly
 }
 
+func doctorCheckEdgeBuild() doctorCheck {
+	if version.IsEdgeBuild() {
+		detail := "edge-marked binary — serve applies --edge defaults unless ZEROLLAMA_EDGE=0"
+		if !envconfig.GgmlRunnerLinked() {
+			detail += "; ggml subprocess unlinked (v1)"
+		}
+		return doctorCheck{
+			Name:   "edge build",
+			Status: "ok",
+			Detail: detail,
+		}
+	}
+	detail := "full daemon"
+	if envconfig.EdgeMode() {
+		detail += " (ZEROLLAMA_EDGE=1)"
+	} else if envconfig.LlamaServerBackendAuto() {
+		detail += " (Linux llama-server auto)"
+	} else if envconfig.LlamaServerBackendExplicit() {
+		detail += " (llama-server explicit)"
+	}
+	return doctorCheck{
+		Name:   "edge build",
+		Status: "ok",
+		Detail: detail + "; use zerollama serve --edge for upstream-shaped GGUF",
+	}
+}
+
+func doctorCheckGgmlRunner() doctorCheck {
+	if envconfig.GgmlRunnerLinked() {
+		return doctorCheck{
+			Name:   "ggml runner",
+			Status: "ok",
+			Detail: "linked (default build)",
+		}
+	}
+	return doctorCheck{
+		Name:   "ggml runner",
+		Status: "ok",
+		Detail: "not linked (edge build); GGUF requires llama-server",
+	}
+}
+
+func doctorCheckLlamaServer(repo string) doctorCheck {
+	_ = repo
+	path, err := llm.FindLlamaServer()
+	if err == nil {
+		detail := path
+		switch {
+		case envconfig.LlamaServerBackendAuto():
+			detail += " (Linux auto routes GGUF here)"
+		case envconfig.EdgeMode() || envconfig.LlamaServerBackendExplicit():
+			detail += " (required for current backend policy)"
+		default:
+			detail += " (optional; Mac default uses ggml Metal)"
+		}
+		return doctorCheck{
+			Name:   "llama-server",
+			Status: "ok",
+			Detail: detail,
+		}
+	}
+
+	status := "ok"
+	fix := ""
+	detail := err.Error()
+	switch {
+	case envconfig.EdgeMode() || envconfig.LlamaServerBackendExplicit():
+		status = "fail"
+		fix = "./scripts/build_llama_server.sh (Linux CUDA) or build_ollama_llama_server_darwin.sh; or set LLAMA_SERVER_BIN"
+	case runtime.GOOS == "linux" && !envconfig.LlamaServerBackendDisabled():
+		status = "warn"
+		fix = "./scripts/build_llama_server.sh — plain Linux serve sets ZEROLLAMA_LLAMA_SERVER=auto when discoverable"
+	default:
+		detail = "not discovered (Mac default uses ggml; use --llama-server-backend or ./scripts/serve_llama_server_backend.sh)"
+	}
+	return doctorCheck{
+		Name:    "llama-server",
+		Status:  status,
+		Detail:  detail,
+		FixHint: fix,
+	}
+}
+
 func doctorCheckServeModes() doctorCheck {
 	goBase, goTCP := doctorProbeGoAPI()
 	sidecarBase, sidecarTCP := doctorProbeRuntimeSidecar()
@@ -609,10 +788,13 @@ func doctorCheckServeModes() doctorCheck {
 	case goBase != "" && strings.Contains(goBase, ":8080") && sidecarBase != "":
 		detail += " (CI/smoke layout: Go :8080 + sidecar :8081)"
 	case (goBase != "" || len(goTCP) > 0) && sidecarBase == "" && len(sidecarTCP) == 0:
-		status = "warn"
-		if runtime.GOOS == "darwin" {
+		if envconfig.EdgeMode() || !envconfig.RuntimeDefaultOn() {
+			detail += " (runtime chat off — expected for edge or ZEROLLAMA_RUNTIME=0)"
+		} else if runtime.GOOS == "darwin" {
+			status = "warn"
 			fixes = append(fixes, "runtime sidecar missing — check serve logs for darwin sidecar bootstrap; sidecar log: "+doctorSidecarLogHint())
 		} else {
+			status = "warn"
 			fixes = append(fixes, "start runtime sidecar or set ZEROLLAMA_RUNTIME_URL")
 		}
 	case sidecarBase != "" && goBase == "" && len(goTCP) == 0:

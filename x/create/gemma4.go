@@ -14,8 +14,14 @@ import (
 )
 
 type gemma4ImportTransform struct {
-	numLayers  int
-	numExperts int
+	numLayers     int
+	numExperts    int
+	optiqPerLayer map[string]gemma4OptiqLayerQuant
+}
+
+type gemma4OptiqLayerQuant struct {
+	Bits      int `json:"bits"`
+	GroupSize int `json:"group_size"`
 }
 
 // gemma4Config is a minimal subset of the Gemma 4 config.json used for quant decisions.
@@ -47,7 +53,65 @@ func newGemma4ImportTransform(modelDir string, _ sourceModelConfig) (tensorImpor
 		numExperts = cfg.TextConfig.NumExperts
 	}
 
-	return gemma4ImportTransform{numLayers: numLayers, numExperts: numExperts}, nil
+	return gemma4ImportTransform{
+		numLayers:     numLayers,
+		numExperts:    numExperts,
+		optiqPerLayer: loadGemma4OptiqMetadata(modelDir),
+	}, nil
+}
+
+func loadGemma4OptiqMetadata(modelDir string) map[string]gemma4OptiqLayerQuant {
+	data, err := os.ReadFile(filepath.Join(modelDir, "optiq_metadata.json"))
+	if err != nil {
+		return nil
+	}
+	var meta struct {
+		PerLayer map[string]gemma4OptiqLayerQuant `json:"per_layer"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil
+	}
+	return meta.PerLayer
+}
+
+func (t gemma4ImportTransform) prequantizedMetadataForTensor(tensorName string) map[string]string {
+	if len(t.optiqPerLayer) == 0 {
+		return nil
+	}
+	key := gemma4OptiqTensorKey(tensorName)
+	if key == "" {
+		return nil
+	}
+	entry, ok := t.optiqPerLayer[key]
+	if !ok {
+		return nil
+	}
+	quantType := "int4"
+	if entry.Bits == 8 {
+		quantType = "int8"
+	}
+	groupSize := entry.GroupSize
+	if groupSize == 0 {
+		groupSize = 64
+	}
+	return map[string]string{
+		"quant_type": quantType,
+		"group_size": strconv.Itoa(groupSize),
+	}
+}
+
+func gemma4OptiqTensorKey(tensorName string) string {
+	name := strings.TrimSuffix(tensorName, ".weight")
+	if idx := strings.Index(name, ".moe.experts."); idx >= 0 {
+		rest := name[idx+len(".moe.experts."):]
+		dot := strings.Index(rest, ".")
+		if dot < 0 {
+			return ""
+		}
+		proj := rest[dot+1:]
+		return name[:idx] + ".experts.switch_glu." + proj
+	}
+	return name
 }
 
 func (t gemma4ImportTransform) skipTensor(name string) bool {
@@ -188,6 +252,13 @@ func (t gemma4ImportTransform) transformTensor(td *safetensors.TensorData) ([]*s
 		return nil, nil
 	}
 
+	// mlx-optiq Gemma-4 MoE packs experts under experts.switch_glu.* as 3D
+	// [num_experts, out, in] tensors (weight/scales/biases). Split before the
+	// generic stacked-MoE path, which would emit the wrong expert prefix.
+	if isGemma4SwitchGluStackedTensor(td.Name, td.Shape) {
+		return splitSwitchGluStackedTensor(td)
+	}
+
 	// Split pre-stacked MoE expert tensors [N, out, in] into per-expert
 	// [out, in] tensors so they go through the standard expert packing and
 	// quantization flow (ExpertGroupPrefix matching, per-expert quantize).
@@ -196,6 +267,41 @@ func (t gemma4ImportTransform) transformTensor(td *safetensors.TensorData) ([]*s
 	}
 
 	return []*safetensors.TensorData{td}, nil
+}
+
+const gemma4SwitchGluMarker = ".experts.switch_glu."
+
+func isGemma4SwitchGluStackedTensor(name string, shape []int32) bool {
+	if len(shape) != 3 || !strings.Contains(name, gemma4SwitchGluMarker) {
+		return false
+	}
+	return strings.HasSuffix(name, ".weight") ||
+		strings.HasSuffix(name, ".scales") ||
+		strings.HasSuffix(name, ".biases")
+}
+
+func splitSwitchGluStackedTensor(td *safetensors.TensorData) ([]*safetensors.TensorData, error) {
+	var suffix string
+	switch {
+	case strings.HasSuffix(td.Name, ".weight"):
+		suffix = ".weight"
+	case strings.HasSuffix(td.Name, ".scales"):
+		suffix = ".scales"
+	case strings.HasSuffix(td.Name, ".biases"):
+		suffix = ".biases"
+	default:
+		return nil, fmt.Errorf("tensor %s: unexpected switch_glu tensor suffix", td.Name)
+	}
+
+	base := strings.TrimSuffix(td.Name, suffix)
+	idx := strings.Index(base, gemma4SwitchGluMarker)
+	if idx < 0 {
+		return nil, fmt.Errorf("tensor %s: missing %s", td.Name, gemma4SwitchGluMarker)
+	}
+
+	layerPrefix := base[:idx]
+	projName := base[idx+len(gemma4SwitchGluMarker):]
+	return splitExpertStackTensor(td, layerPrefix+".moe", projName, suffix)
 }
 
 // isGemma4StackedMoETensor checks if this is a pre-stacked MoE expert weight.
@@ -209,6 +315,9 @@ func isGemma4StackedMoETensor(name string, shape []int32) bool {
 	if len(shape) != 3 {
 		return false
 	}
+	if strings.Contains(name, gemma4SwitchGluMarker) {
+		return false
+	}
 	if strings.Contains(name, ".moe.") || strings.Contains(name, ".experts.") {
 		return strings.HasSuffix(name, "_proj") || strings.HasSuffix(name, "_proj.weight")
 	}
@@ -219,34 +328,14 @@ func isGemma4StackedMoETensor(name string, shape []int32) bool {
 // N individual [out, in] tensors named with the per-expert convention that
 // ExpertGroupPrefix expects: prefix.moe.experts.{E}.{proj}.weight
 func splitStackedMoETensor(td *safetensors.TensorData) ([]*safetensors.TensorData, error) {
-	raw, err := io.ReadAll(td.Reader())
-	if err != nil {
-		return nil, fmt.Errorf("failed to read tensor %s: %w", td.Name, err)
-	}
-
-	numExperts := int(td.Shape[0])
-	rows := int(td.Shape[1]) // out_features in HF layout
-	cols := int(td.Shape[2]) // in_features in HF layout
-
-	elemSize, err := DTypeSize(td.Dtype)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get dtype size for %s: %w", td.Dtype, err)
-	}
-
-	perExpertBytes := rows * cols * elemSize
-	if len(raw) != numExperts*perExpertBytes {
-		return nil, fmt.Errorf("tensor %s: raw byte length %d does not match shape %v and dtype %s",
-			td.Name, len(raw), td.Shape, td.Dtype)
-	}
-
-	// Determine the per-expert name pattern.
-	// Two source layouts:
-	//   Old: model.language_model.layers.N.moe.gate_proj
-	//     -> model.language_model.layers.N.moe.experts.E.gate_proj.weight
-	//   New: model.language_model.layers.N.experts.gate_up_proj
-	//     -> model.language_model.layers.N.moe.experts.E.gate_up_proj.weight
+	suffix := ".weight"
 	baseName := td.Name
-	baseName = strings.TrimSuffix(baseName, ".weight")
+	if strings.HasSuffix(baseName, ".weight") {
+		baseName = strings.TrimSuffix(baseName, ".weight")
+	} else {
+		suffix = ""
+	}
+
 	lastDot := strings.LastIndex(baseName, ".")
 	if lastDot < 0 {
 		return nil, fmt.Errorf("tensor %s: unexpected name format", td.Name)
@@ -263,15 +352,103 @@ func splitStackedMoETensor(td *safetensors.TensorData) ([]*safetensors.TensorDat
 		moePrefix = parentPrefix
 	}
 
+	if suffix == "" {
+		suffix = ".weight"
+	}
+	return splitExpertStackTensor(td, moePrefix, projName, suffix)
+}
+
+func splitExpertStackTensor(td *safetensors.TensorData, moePrefix, projName, suffix string) ([]*safetensors.TensorData, error) {
+	raw, err := io.ReadAll(td.Reader())
+	if err != nil {
+		return nil, fmt.Errorf("failed to read tensor %s: %w", td.Name, err)
+	}
+
+	numExperts := int(td.Shape[0])
+	rows := int(td.Shape[1])
+	cols := int(td.Shape[2])
+
+	elemSize, err := DTypeSize(td.Dtype)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dtype size for %s: %w", td.Dtype, err)
+	}
+
+	perExpertBytes := rows * cols * elemSize
+	if len(raw) != numExperts*perExpertBytes {
+		return nil, fmt.Errorf("tensor %s: raw byte length %d does not match shape %v and dtype %s",
+			td.Name, len(raw), td.Shape, td.Dtype)
+	}
+
 	transposedShape := []int32{td.Shape[1], td.Shape[2]}
 
 	results := make([]*safetensors.TensorData, numExperts)
 	for e := range numExperts {
-		expertName := fmt.Sprintf("%s.experts.%d.%s.weight", moePrefix, e, projName)
+		expertName := fmt.Sprintf("%s.experts.%d.%s%s", moePrefix, e, projName, suffix)
 		start := e * perExpertBytes
 		end := start + perExpertBytes
 		results[e] = safetensors.NewTensorDataFromBytes(expertName, td.Dtype, transposedShape, raw[start:end])
 	}
 
 	return results, nil
+}
+
+func (t gemma4ImportTransform) tryImportSwitchGluPrequantized(
+	extractor *safetensors.TensorExtractor,
+	td *safetensors.TensorData,
+	tensorName string,
+	_ map[string]struct{},
+	createLayer LayerCreator,
+) ([]LayerInfo, bool, error) {
+	if !isGemma4SwitchGluStackedTensor(tensorName, td.Shape) || !strings.HasSuffix(tensorName, ".weight") {
+		return nil, false, nil
+	}
+
+	base := strings.TrimSuffix(tensorName, ".weight")
+	idx := strings.Index(base, gemma4SwitchGluMarker)
+	if idx < 0 {
+		return nil, false, nil
+	}
+	layerPrefix := base[:idx]
+	projName := base[idx+len(gemma4SwitchGluMarker):]
+	moePrefix := layerPrefix + ".moe"
+
+	scaleTD, err := extractor.GetTensor(base + ".scales")
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to get switch_glu scales for %s: %w", tensorName, err)
+	}
+	biasTD, err := extractor.GetTensor(base + ".biases")
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to get switch_glu biases for %s: %w", tensorName, err)
+	}
+
+	weightSplits, err := splitExpertStackTensor(td, moePrefix, projName, ".weight")
+	if err != nil {
+		return nil, true, err
+	}
+	scaleSplits, err := splitExpertStackTensor(scaleTD, moePrefix, projName, ".scales")
+	if err != nil {
+		return nil, true, err
+	}
+	biasSplits, err := splitExpertStackTensor(biasTD, moePrefix, projName, ".biases")
+	if err != nil {
+		return nil, true, err
+	}
+	if len(weightSplits) != len(scaleSplits) || len(weightSplits) != len(biasSplits) {
+		return nil, true, fmt.Errorf("switch_glu %s: mismatched expert splits (%d weights, %d scales, %d biases)",
+			tensorName, len(weightSplits), len(scaleSplits), len(biasSplits))
+	}
+
+	layers := make([]LayerInfo, 0, len(weightSplits))
+	for i := range weightSplits {
+		layer, err := createPrequantizedLayerFromTensors(
+			weightSplits[i], scaleSplits[i], biasSplits[i],
+			t.prequantizedMetadataForTensor(weightSplits[i].Name),
+			createLayer,
+		)
+		if err != nil {
+			return nil, true, err
+		}
+		layers = append(layers, layer)
+	}
+	return layers, true, nil
 }

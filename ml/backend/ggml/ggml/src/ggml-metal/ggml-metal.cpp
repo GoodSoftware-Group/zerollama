@@ -729,6 +729,33 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
     return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
 }
 
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+        ggml_backend_dev_t dev,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size,
+        size_t surface_offset) {
+    if (!dev || !dev->context || surface_id == 0 || size == 0) {
+        return NULL;
+    }
+
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) dev->context;
+
+    ggml_metal_buffer_t res = ggml_metal_buffer_map_iosurface(
+        ctx_dev, surface_id, size, max_tensor_size, surface_offset);
+    if (!res) {
+        return NULL;
+    }
+
+    const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx_dev);
+
+    return ggml_backend_buffer_init(
+        ggml_backend_metal_buffer_type_mapped(props_dev->device),
+        ggml_backend_metal_buffer_shared_i,
+        res,
+        size);
+}
+
 static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
 

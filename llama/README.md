@@ -7,7 +7,15 @@
 | **In-process ggml** (`llamarunner`) | `ml/backend/ggml/ggml/` + `llama/llama.cpp/` | `llama/patches/` + **`llama/compat/` (CGO)** | Mac default runner; compat translates published GGUF at load time |
 | **llama-server** (Phase 17 / Python runtime) | Sibling `../llama.cpp` | `llama/compat/` at CMake fetch | Subprocess GGUF path; upstream-shaped |
 
-Both pins must stay aligned on **`LLAMA_CPP_VERSION`** (`b9509`). For ggml vendor sync, patch series, and Ollama deltas see [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
+Both pins must stay aligned on **`LLAMA_CPP_VERSION`** (`b9672` target; vendor tree may lag — see [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md)). For ggml vendor sync, patch series, and Ollama deltas see [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
+
+**Why pin file can lead vendor tree:** bumping `LLAMA_CPP_VERSION` documents upstream intent immediately; `./scripts/sync_vendor_llama.sh` and Metal sign-off run on a separate cadence so daily Mac dev is not blocked on every upstream tag.
+
+### CGO link (`-lc++`)
+
+`llama.go` sets `#cgo darwin|linux LDFLAGS: -lc++` because **common/** (jinja) is C++. Plain `go test ./discover/` links that object graph without `build_production_mac.sh` `CGO_LDFLAGS`. **Why:** dev/CI unit tests must not require a full Metal release build.
+
+Phase 17 operator doc: [docs/phase17-llama-server.md](../docs/phase17-llama-server.md).
 
 ### In-process compat (Mac llamarunner)
 
@@ -78,7 +86,7 @@ For build prerequisites, platform notes, and backend selection, see the
 
 ### Compatibility patches
 
-**In-tree ggml (b9611):** patches live in `llama/patches/` (**16** format-patches; 0007 retired → compat). Materialize with `make -f Makefile.sync apply-patches`, then `./scripts/sync_vendor_llama.sh`. Do **not** edit synced trees directly — regenerate patches from vendor.
+**In-tree ggml (b9672):** patches live in `llama/patches/` (**16** format-patches). Materialize with `make -f Makefile.sync apply-patches`, then `./scripts/sync_vendor_llama.sh`. Do **not** edit synced trees directly — regenerate patches from vendor.
 
 **llama-server (compat):** patches under `llama/compat/` are applied during CMake configure. If a patch
 insertion point moved, regenerate the patch against a fresh checkout of the new

@@ -66,10 +66,18 @@ type CompleteChunkChoice struct {
 	Logprobs     *ChoiceLogprobs `json:"logprobs,omitempty"`
 }
 
+type PromptTokensDetails struct {
+	CachedTokens *int `json:"cached_tokens,omitempty"`
+	ImageTokens  *int `json:"image_tokens,omitempty"`
+	AudioTokens  *int `json:"audio_tokens,omitempty"`
+	VideoTokens  *int `json:"video_tokens,omitempty"`
+}
+
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type ResponseFormat struct {
@@ -115,6 +123,13 @@ type ChatCompletionRequest struct {
 	Logprobs         *bool           `json:"logprobs"`
 	TopLogprobs      int             `json:"top_logprobs"`
 	DebugRenderOnly  bool            `json:"_debug_render_only"`
+	// PromptCacheKey pins L3 prefix cache + session video expansion (same semantics as /api/chat
+	// options.prompt_cache_key). Why on OpenAI surface: repeat video_url agent loops need per-thread
+	// ffmpeg cache without forcing clients to use the native /api/chat JSON shape.
+	PromptCacheKey *string `json:"prompt_cache_key,omitempty"`
+	// Options passes Ollama-native request options (eliza.conversationId, num_ctx, …). Merged after
+	// standard OpenAI fields so operators can set L3 keys and ctx without a second HTTP API.
+	Options map[string]any `json:"options,omitempty"`
 }
 
 type ChatCompletion struct {
@@ -232,11 +247,49 @@ func NewError(code int, message string) ErrorResponse {
 
 // ToUsage converts an api.ChatResponse to Usage
 func ToUsage(r api.ChatResponse) Usage {
-	return Usage{
-		PromptTokens:     r.Metrics.PromptEvalCount,
-		CompletionTokens: r.Metrics.EvalCount,
-		TotalTokens:      r.Metrics.PromptEvalCount + r.Metrics.EvalCount,
+	return usageFromMetrics(r.Metrics)
+}
+
+// ToUsageGenerate converts an api.GenerateResponse to Usage
+func ToUsageGenerate(r api.GenerateResponse) Usage {
+	return usageFromMetrics(r.Metrics)
+}
+
+func usageFromMetrics(m api.Metrics) Usage {
+	u := Usage{
+		PromptTokens:     m.PromptEvalCount,
+		CompletionTokens: m.EvalCount,
+		TotalTokens:      m.PromptEvalCount + m.EvalCount,
 	}
+	if d := promptTokensDetailsFromMetrics(m); d != nil {
+		u.PromptTokensDetails = d
+	}
+	return u
+}
+
+func promptTokensDetailsFromMetrics(m api.Metrics) *PromptTokensDetails {
+	// OpenAI-shaped breakdown; zeros omitted so clients see a sparse object only when useful.
+	if m.ImageTokens == 0 && m.VideoTokens == 0 && m.AudioTokens == 0 && m.CachedPromptTokens == 0 {
+		return nil
+	}
+	d := &PromptTokensDetails{}
+	if m.CachedPromptTokens > 0 {
+		v := m.CachedPromptTokens
+		d.CachedTokens = &v
+	}
+	if m.ImageTokens > 0 {
+		v := m.ImageTokens
+		d.ImageTokens = &v
+	}
+	if m.VideoTokens > 0 {
+		v := m.VideoTokens
+		d.VideoTokens = &v
+	}
+	if m.AudioTokens > 0 {
+		v := m.AudioTokens
+		d.AudioTokens = &v
+	}
+	return d
 }
 
 // ToToolCalls converts api.ToolCall to OpenAI ToolCall format
@@ -353,12 +406,33 @@ func ToChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 	return toChunk(id, r, toolCallSent)
 }
 
-// ToUsageGenerate converts an api.GenerateResponse to Usage
-func ToUsageGenerate(r api.GenerateResponse) Usage {
-	return Usage{
-		PromptTokens:     r.Metrics.PromptEvalCount,
-		CompletionTokens: r.Metrics.EvalCount,
-		TotalTokens:      r.Metrics.PromptEvalCount + r.Metrics.EvalCount,
+// KeepaliveChunk is an OpenAI-compatible SSE heartbeat with an empty delta and no
+// finish_reason. Strict clients (Mercury, Hermes) ignore SSE comment frames.
+func KeepaliveChunk(id, model string) ChatCompletionChunk {
+	return ChatCompletionChunk{
+		Id:                id,
+		Object:            "chat.completion.chunk",
+		Created:           time.Now().Unix(),
+		Model:             model,
+		SystemFingerprint: "fp_ollama",
+		Choices: []ChunkChoice{{
+			Index: 0,
+			Delta: Message{Role: "assistant"},
+		}},
+	}
+}
+
+// CompletionKeepaliveChunk is the text-completion SSE heartbeat analogue of KeepaliveChunk.
+func CompletionKeepaliveChunk(id, model string) CompletionChunk {
+	return CompletionChunk{
+		Id:                id,
+		Object:            "text_completion",
+		Created:           time.Now().Unix(),
+		Model:             model,
+		SystemFingerprint: "fp_ollama",
+		Choices: []CompleteChunkChoice{{
+			Index: 0,
+		}},
 	}
 }
 
@@ -409,11 +483,16 @@ func ToCompleteChunk(id string, r api.GenerateResponse) CompletionChunk {
 func ToListCompletion(r api.ListResponse) ListCompletion {
 	var data []Model
 	for _, m := range r.Models {
+		id := m.Model
+		if id == "" {
+			id = m.Name
+		}
+
 		data = append(data, Model{
-			Id:      m.Name,
+			Id:      id,
 			Object:  "model",
 			Created: m.ModifiedAt.Unix(),
-			OwnedBy: model.ParseName(m.Name).Namespace,
+			OwnedBy: model.ParseName(id).Namespace,
 		})
 	}
 
@@ -504,6 +583,7 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 			var textParts []string
 			var images []api.ImageData
 			var videos []api.VideoData
+			var audioClips []api.AudioData
 			for _, c := range content {
 				data, ok := c.(map[string]any)
 				if !ok {
@@ -563,17 +643,18 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 					if err != nil {
 						return nil, fmt.Errorf("invalid input_audio base64 data: %w", err)
 					}
-					images = append(images, audioBytes)
+					audioClips = append(audioClips, audioBytes)
 				default:
 					return nil, errors.New("invalid message format")
 				}
 			}
 			contentJoined := strings.Join(textParts, "\n")
 			messages = append(messages, api.Message{
-				Role:    msg.Role,
-				Content: contentJoined,
-				Images:  images,
-				Videos:  videos,
+				Role:       msg.Role,
+				Content:    contentJoined,
+				Images:     images,
+				AudioClips: audioClips,
+				Videos:     videos,
 			})
 			if len(msg.ToolCalls) > 0 {
 				toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
@@ -640,6 +721,16 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		options["top_p"] = *r.TopP
 	} else {
 		options["top_p"] = 1.0
+	}
+
+	if r.Options != nil {
+		for k, v := range r.Options {
+			options[k] = v
+		}
+	}
+	// Top-level prompt_cache_key wins over options map — explicit agent thread id for caches.
+	if r.PromptCacheKey != nil && strings.TrimSpace(*r.PromptCacheKey) != "" {
+		options["prompt_cache_key"] = strings.TrimSpace(*r.PromptCacheKey)
 	}
 
 	var format json.RawMessage

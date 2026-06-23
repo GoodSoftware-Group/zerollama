@@ -43,6 +43,14 @@ func NewParserWithTag(tools []api.Tool, tag string) *Parser {
 	}
 }
 
+// Tag returns the tool-call delimiter configured for this parser.
+func (p *Parser) Tag() string {
+	if p == nil {
+		return ""
+	}
+	return p.tag
+}
+
 // Add processes a string input to parse tool calls and content that
 // should be sent back to the user.
 func (p *Parser) Add(s string) (calls []api.ToolCall, content string) {

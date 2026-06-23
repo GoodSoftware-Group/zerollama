@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +16,16 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 )
+
+// videoFetchTransport is shared across remote video_url GETs; per-request deadlines use context.
+// Why pooled: agent threads repeat the same HTTPS clip; cloning DefaultTransport preserves
+// proxy/TLS behavior while MaxIdleConnsPerHost reuses connections.
+var videoFetchTransport = func() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 60 * time.Second
+	tr.MaxIdleConnsPerHost = 8
+	return tr
+}()
 
 // Remote video fetch policy (HTTPS default, SSRF checks, transport cloning) lives in this file
 // so it stays co-located and testable instead of spreading across the OpenAI mapper.
@@ -108,21 +119,24 @@ func fetchVideoURL(ctx context.Context, rawURL string) (api.VideoData, error) {
 		return nil, err
 	}
 
-	// Clone DefaultTransport so TLS/HTTP2/proxy env match the process; set ResponseHeaderTimeout so a
-	// dead upstream fails before body read; Client.Timeout caps the whole GET including large bodies.
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = 60 * time.Second
-	client := &http.Client{
-		Transport: tr,
-		Timeout:   envconfig.VideoFetchTimeout(),
+	if body, ok := lookupVideoURLFetchCache(rawURL); ok {
+		slog.Info("video url fetch cache hit", "url_host", u.Hostname())
+		return body, nil
 	}
+
+	if deadline := envconfig.VideoFetchTimeout(); deadline > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, deadline)
+		defer cancel()
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "video/*,*/*")
 
-	resp, err := client.Do(req)
+	resp, err := (&http.Client{Transport: videoFetchTransport}).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +154,7 @@ func fetchVideoURL(ctx context.Context, rawURL string) (api.VideoData, error) {
 	if int64(len(body)) > envconfig.VideoMaxBytes() {
 		return nil, fmt.Errorf("video exceeds max size (%d bytes)", envconfig.VideoMaxBytes())
 	}
+	rememberVideoURLFetchCache(rawURL, body)
 	return body, nil
 }
 

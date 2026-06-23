@@ -51,6 +51,8 @@ cd /root/zerollama && ./scripts/gpu_5080_session.sh
 | `phase14_5080_signoff.sh` (optional) | When `RUN_E2E_PHASE14_SIGNOFF=1` — both backends + YAML config + Phase 15 multi-seq (`LLAMA_CPP_LIB` required). |
 | `phase15_inprocess_signoff.sh` (optional) | When `RUN_E2E_PHASE15=1` — KV decode hook + multi-seq (`LLAMA_CPP_LIB` required). |
 | `phase15_inprocess_multiseq_smoke.sh` (optional) | Multi-seq only (included in signoff). |
+| `phase17_llama_server_smoke.sh` (optional) | When `RUN_E2E_P17=1` — Go → llama-server generate (`LLAMA_SERVER_BIN` + pulled tag). |
+| `phase16_edge_smoke.sh` (optional) | When `RUN_E2E_EDGE=1` — `serve --edge`, runtime chat off (`LLAMA_SERVER_BIN` + pulled tag). |
 
 **Pass criteria:** `PASS: gpu_5080_session` and snapshot file written. Smoke GGUF calibration (e.g. ~1.20× for OuteTTS Q8) is **smoke evidence only** until you run the same flow on your **production** GGUF (e.g. supernova fp16).
 
@@ -94,6 +96,18 @@ RUN_E2E_PHASE15=1 ./scripts/gpu_5080_session.sh
 ./scripts/phase15_inprocess_signoff.sh
 ```
 
+**Optional Phase 17 / Phase 16 edge (Go → llama-server, upstream shape):**
+
+```bash
+export LLAMA_SERVER_BIN=/path/to/llama-server
+export RUN_E2E_PROXY_MODEL=llama3.2:3b
+RUN_E2E_P17=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_EDGE=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_P17_LINUX_AUTO=1 ./scripts/gpu_5080_session.sh   # plain serve, asserts backend.llama_server=auto
+RUN_E2E_UPSTREAM_GGUF=1 ./scripts/gpu_5080_session.sh    # bundle P17 + P17_LINUX_AUTO + EDGE
+RUN_E2E_P17_VISION=1 P17_VISION_MODEL=llava:latest ./scripts/gpu_5080_session.sh  # opt-in vision (heavy)
+```
+
 ---
 
 ## Phase 15 CUDA libllama + sign-off
@@ -112,8 +126,8 @@ apt install cuda-nvcc-12-8   # or equivalent for your image
 export PATH=/usr/local/cuda-12.8/bin:$PATH
 export CUDACXX=/usr/local/cuda-12.8/bin/nvcc
 
-cd ~/llama.cpp && git checkout b9611   # zerollama pin
-# Patch 0015 may not apply cleanly to stock b9611 alone — copy from zerollama tree:
+cd ~/llama.cpp && git checkout b9672   # zerollama pin
+# Patch 0014 may not apply cleanly to stock b9672 alone — copy from zerollama tree:
 #   include/llama-kv-ext.h, src/llama-memory-kv-ext.cpp, kv-cache cell_index changes, CMakeLists
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120-real
 cmake --build build -j
@@ -169,7 +183,7 @@ CGO_ENABLED=1 go build -o zerollama .
 sudo cp zerollama /usr/bin/zerollama   # if serve uses /usr/bin/zerollama
 ```
 
-**Fix (full vendor sync):** clone `vendor/llama-cpp-b9611`, `make -f Makefile.sync apply-patches`, `./scripts/sync_vendor_llama.sh` — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
+**Fix (full vendor sync):** clone `vendor/llama-cpp-b9672`, `make -f Makefile.sync apply-patches`, `./scripts/sync_vendor_llama.sh` — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
 
 **Why `RUN_E2E_PREFLIGHT=0` on GPU gate:** `gpu_5080_session.sh` can skip `phase12_golden_ci.sh` when httplib is missing; CI and full dev hosts still run Go golden tests. GPU smokes should not fail on parser compile in a tree that only ships inference.
 
@@ -441,19 +455,19 @@ pct exec 1564 -- bash -lc 'cd /root/zerollama && …'
 |------|------|
 | Host mount | `/var/lib/vz/private/1564/root/zerollama` (optional) |
 | Inside CT | `/root/zerollama` — **use this in scripts** |
-| Sibling llama.cpp | `/root/llama.cpp` (pin **b9611** + patch **0015**) |
+| Sibling llama.cpp | `/root/llama.cpp` (pin **b9672** + patch **0014**) |
 | Smoke GGUF | e.g. `/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf` (~1B Q8 fits 16 GB) |
 
 **One-time CT setup (WHY each step):**
 
 1. **`cuda-nvcc-12-8`** in the CT — host CUDA 12.3 rejects `compute_120`; 5080 Blackwell needs 12.8+.
-2. **Reset sibling `llama.cpp` to tag `b9611`** — copying kv-ext onto `master` breaks `llama-kv-cache.h` vs the rest of the tree.
-3. **Apply fork files from zerollama** (patch 0015 may not apply cleanly to stock b9611 alone):
+2. **Reset sibling `llama.cpp` to tag `b9672`** — copying kv-ext onto `master` breaks `llama-kv-cache.h` vs the rest of the tree.
+3. **Apply fork files from zerollama** (patch 0014 may not apply cleanly to stock b9672 alone):
 
 ```bash
 ZROOT=/root/zerollama
 L=/root/llama.cpp
-git -C "$L" checkout -f b9611
+git -C "$L" checkout -f b9672
 cp "$ZROOT/llama/llama.cpp/include/llama-kv-ext.h" "$L/include/"
 cp "$ZROOT/llama/llama.cpp/src/llama-memory-kv-ext.cpp" "$L/src/"
 cp "$ZROOT/llama/llama.cpp/src/llama-kv-cache.{h,cpp}" "$L/src/"
@@ -478,6 +492,7 @@ grep -q llama-memory-kv-ext.cpp "$L/src/CMakeLists.txt" || \
 | 2 L2 CUDA | `l2_cuda_full_gate.sh` | **FAIL merge** — 8k stock wins (1B **79.3** / fork **56.9**; 9B **18.6** / **14.4**); **27k** same (~−22%); **131k fork** blocked (9B VRAM; 1B QJL head) |
 | 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **STRICT PASS** on eliza-1 9B @ 8k (`L3_PREFIX_REPEAT=150`, cached turn2 **0.66s** vs no-cache **1.13s**); 1B Q8 SOFT PASS |
 | 3b L3 production | `l3_production_gate.sh` | **PASS** on eliza-1 9B @ 27k — cached **0.72s** vs no-cache **1.48s**; strict ratio **1.02** (open on supernova) |
+| 3c L3 spec × cache | `l3_spec_cache_smoke.sh` | Policy leg — `L3_SPEC_METHOD=ngram` → `allow_cache_prompt=true`; eagle3 + draft → disabled. Optional: `L3_RUN_SPEC_CACHE=1` on full gate |
 | 4 L1 concurrent | `l1_cuda_concurrent_bench.sh` | **PASS** — `L1C_N=2`: ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**) |
 
 ### Gate 1 — Phase 15 in-process (CUDA)

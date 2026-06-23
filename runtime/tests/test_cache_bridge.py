@@ -227,10 +227,13 @@ def test_llama_server_cache_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert Path(argv[1]).is_dir()
 
 
-def test_cache_health_before_model_download(tmp_path: Path):
+def test_cache_health_before_model_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE_DISK", raising=False)
     missing = tmp_path / "not-yet-pulled.gguf"
     out = cache_health(missing, ["--cache-type-k", "q8_0"])
     assert out["model_loaded"] is False
+    assert out["inprocess_disk_cache"] is False
     assert out["model_path"] == str(missing)
     assert "model_hash" in out
     assert out["file_count"] == 0

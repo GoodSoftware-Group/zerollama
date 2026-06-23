@@ -318,6 +318,7 @@ def stream_tool_chat_chunks(
     messages: list[dict[str, Any]] | None = None,
     think: Any = None,
     tools_meta: dict[str, Any] | None = None,
+    prefill_cancel: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield Ollama /api/chat NDJSON chunks with optional tool_calls."""
     meta = tools_meta or {}
@@ -351,6 +352,7 @@ def stream_tool_chat_chunks(
             gguf=gguf,
             num_ctx=num_ctx,
             options=options,
+            prefill_cancel=prefill_cancel,
         ):
             if vram_api is None and chunk.get("vram_num_ctx"):
                 vram_api = chunk["vram_num_ctx"]

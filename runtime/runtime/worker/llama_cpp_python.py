@@ -255,10 +255,28 @@ class LlamaCppPythonWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
+        prefill_cancel: Any | None = None,
     ) -> dict[str, Any]:
         # L3 engine passes cache_prompt for subprocess; wheel backend has no slot bridge yet.
         del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt, current_pos
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
+        # WHY stream internally: wheel create_completion(stream=False) blocks through
+        # prefill+decode with no cancel hook; streaming checks prefill_cancel per chunk.
+        if prefill_cancel is not None:
+            parts: list[str] = []
+            for chunk in self.completion_stream(
+                prompt,
+                n_predict=n_gen,
+                sampler=sampler,
+                prefill_cancel=prefill_cancel,
+            ):
+                if chunk.get("stop"):
+                    break
+                piece = chunk.get("content") or chunk.get("response") or ""
+                if piece:
+                    parts.append(piece)
+            text = "".join(parts)
+            return {"content": text, "response": text, "stop": True}
         with self._lock:
             out = self._require_llama().create_completion(
                 prompt,
@@ -281,12 +299,15 @@ class LlamaCppPythonWorker:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
+        prefill_cancel: Any | None = None,
     ) -> Iterator[dict[str, Any]]:
         # L3 engine passes cache_prompt for subprocess; wheel backend has no slot bridge yet.
         del id_slot, kv_token_budget, kv_bind_req, kv_block_size, cache_prompt, current_pos
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 
         def _gen() -> Iterator[dict[str, Any]]:
+            from runtime.kv.native_decode_loop import PrefillAbortedError
+
             with self._lock:
                 stream = self._require_llama().create_completion(
                     prompt,
@@ -295,6 +316,10 @@ class LlamaCppPythonWorker:
                     **sampler_to_llama_cpp_kwargs(sampler),
                 )
                 for chunk in stream:
+                    if prefill_cancel is not None and prefill_cancel.is_cancelled():
+                        raise PrefillAbortedError(
+                            "KV prefill aborted (client disconnect)"
+                        )
                     piece = chunk["choices"][0].get("text") or ""
                     if piece:
                         yield {"content": piece, "response": piece, "stop": False}

@@ -299,3 +299,17 @@ func TestHeadCount(t *testing.T) {
 		}
 	}
 }
+
+func TestUintOrArrayValueEmptyArray(t *testing.T) {
+	kv := KV{
+		"general.architecture":          "qwen35",
+		"qwen35.attention.head_count_kv": &array[uint32]{values: []uint32{}, size: 0},
+	}
+	min, max := kv.UintOrArrayValue("attention.head_count_kv", 1)
+	if min != 1 || max != 1 {
+		t.Fatalf("UintOrArrayValue empty array: got min=%d max=%d want 1,1", min, max)
+	}
+	if got := kv.HeadCountKVMax(); got != 1 {
+		t.Fatalf("HeadCountKVMax empty array: got=%d want=1", got)
+	}
+}

@@ -215,6 +215,9 @@ func (kv KV) UintOrMinArrayValue(key string, defaultValue uint32) uint32 {
 
 func (kv KV) UintOrArrayValue(key string, defaultValue uint32) (uint32, uint32) {
 	arrVal := kv.UintOrArrayValueAsArray(key, defaultValue)
+	if len(arrVal) == 0 {
+		return defaultValue, defaultValue
+	}
 	return slices.Min(arrVal), slices.Max(arrVal)
 }
 
@@ -222,8 +225,14 @@ func (kv KV) UintOrArrayValueAsArray(key string, defaultValue uint32) []uint32 {
 	if u32, ok := keyValue(kv, key, uint32(0)); ok {
 		return []uint32{u32}
 	} else if u32s, ok := keyValue(kv, key, &array[uint32]{}); ok {
+		if len(u32s.values) == 0 {
+			return []uint32{defaultValue}
+		}
 		return u32s.values
 	} else if i32s, ok := keyValue(kv, key, &array[int32]{}); ok {
+		if len(i32s.values) == 0 {
+			return []uint32{defaultValue}
+		}
 		dst := make([]uint32, len(i32s.values))
 		for i, v := range i32s.values {
 			if v < 0 {
@@ -559,8 +568,20 @@ func DetectContentType(b []byte) string {
 // Decode decodes a GGML model from the given reader.
 //
 // It collects array values for arrays with a size less than or equal to
-// maxArraySize. If the maxArraySize is negative, all arrays are collected.
+// maxArraySize. When maxArraySize is zero, array contents are skipped (lengths
+// remain populated). When maxArraySize is negative, all arrays are collected.
 func Decode(rs io.ReadSeeker, maxArraySize int) (*GGML, error) {
+	return decode(rs, maxArraySize, false)
+}
+
+// DecodeMetadata reads GGUF KV and tensor headers only — skips large tokenizer
+// arrays and does not walk tensor weight regions. Safe for VRAM estimates and
+// manifest guessing on slow storage.
+func DecodeMetadata(rs io.ReadSeeker) (*GGML, error) {
+	return decode(rs, 0, true)
+}
+
+func decode(rs io.ReadSeeker, maxArraySize int, metadataOnly bool) (*GGML, error) {
 	rs = bufioutil.NewBufferedSeeker(rs, 32<<10)
 
 	var magic uint32
@@ -571,9 +592,9 @@ func Decode(rs io.ReadSeeker, maxArraySize int) (*GGML, error) {
 	var c container
 	switch magic {
 	case FILE_MAGIC_GGUF_LE:
-		c = &containerGGUF{ByteOrder: binary.LittleEndian, maxArraySize: maxArraySize}
+		c = &containerGGUF{ByteOrder: binary.LittleEndian, maxArraySize: maxArraySize, metadataOnly: metadataOnly}
 	case FILE_MAGIC_GGUF_BE:
-		c = &containerGGUF{ByteOrder: binary.BigEndian, maxArraySize: maxArraySize}
+		c = &containerGGUF{ByteOrder: binary.BigEndian, maxArraySize: maxArraySize, metadataOnly: metadataOnly}
 	default:
 		return nil, errors.New("invalid file magic")
 	}

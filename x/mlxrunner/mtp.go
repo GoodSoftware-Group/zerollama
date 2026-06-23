@@ -186,7 +186,7 @@ func (r *Runner) runGreedyMTPDecode(ctx context.Context, request Request, sessio
 	}()
 
 	dec := decoder{tokenizer: r.Tokenizer}
-	final := CompletionResponse{Done: true, PromptEvalCount: len(request.Tokens), DoneReason: 1}
+	final := CompletionResponse{Done: true, PromptEvalCount: len(request.Tokens), PromptEvalCachedCount: session.cachedPrefix, DoneReason: 1}
 	now := started
 
 	generated := 0
@@ -326,7 +326,7 @@ func (r *Runner) runSampleMTPDecode(ctx context.Context, request Request, sessio
 	}()
 
 	dec := decoder{tokenizer: r.Tokenizer}
-	final := CompletionResponse{Done: true, PromptEvalCount: len(request.Tokens), DoneReason: 1}
+	final := CompletionResponse{Done: true, PromptEvalCount: len(request.Tokens), PromptEvalCachedCount: session.cachedPrefix, DoneReason: 1}
 	now := started
 
 	generated := 0

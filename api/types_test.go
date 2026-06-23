@@ -911,6 +911,17 @@ func TestToolPropertiesMap_NestedProperties(t *testing.T) {
 	})
 }
 
+func TestFromMapGuessedParameters(t *testing.T) {
+	// GGUF guess paths store native Go types (int, []string), not JSON-decoded types.
+	opts := DefaultOptions()
+	require.NoError(t, opts.FromMap(map[string]any{
+		"num_ctx": 8192,
+		"stop":    []string{"<|im_end|>"},
+	}))
+	assert.Equal(t, 8192, opts.NumCtx)
+	assert.Equal(t, []string{"<|im_end|>"}, opts.Stop)
+}
+
 func TestGgmlVRAMRequestOptions(t *testing.T) {
 	t.Setenv("OLLAMA_KV_CACHE_TYPE", "f16")
 

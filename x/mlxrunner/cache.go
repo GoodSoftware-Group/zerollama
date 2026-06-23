@@ -54,6 +54,7 @@ type cacheSession struct {
 
 	caches    []cache.Cache
 	remaining []int32
+	cachedPrefix int // tokens restored from trie before prefill
 
 	// pendingSnapshots lists offsets where snapshots should be captured
 	// during prefill, sorted by offset. Entries are scheduled on the caches
@@ -107,10 +108,11 @@ func (c *kvCache) begin(m base.Model, inputs []int32) *cacheSession {
 	remaining := inputs[prefix:]
 
 	session := &cacheSession{
-		cache:     c,
-		inputs:    inputs,
-		caches:    c.caches,
-		remaining: remaining,
+		cache:        c,
+		inputs:       inputs,
+		caches:       c.caches,
+		remaining:    remaining,
+		cachedPrefix: prefix,
 	}
 
 	// Schedule a snapshot at the branch point during prefill so future
@@ -123,7 +125,24 @@ func (c *kvCache) begin(m base.Model, inputs []int32) *cacheSession {
 	if prefix == 0 {
 		msg = "cache miss"
 	}
-	slog.Info(msg, "total", len(inputs), "matched", originalMatched, "cached", prefix, "left", len(remaining))
+	utilPct := 0.0
+	if len(inputs) > 0 {
+		utilPct = float64(prefix) / float64(len(inputs)) * 100
+	}
+	attrs := []any{
+		"total", len(inputs),
+		"matched", originalMatched,
+		"cached", prefix,
+		"left", len(remaining),
+		"utilization_pct", utilPct,
+	}
+	if originalMatched > 0 && prefix == 0 {
+		slog.Warn("mlx prefix trie match but KV restore missed; full prefill required",
+			"matched", originalMatched,
+			"total", len(inputs),
+		)
+	}
+	slog.Info(msg, attrs...)
 
 	return session
 }

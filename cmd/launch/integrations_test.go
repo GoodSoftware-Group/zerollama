@@ -23,7 +23,7 @@ type stubEditorRunner struct {
 	editErr  error
 }
 
-func (s *stubEditorRunner) Run(model string, args []string) error {
+func (s *stubEditorRunner) Run(model string, _ []LaunchModel, args []string) error {
 	s.ranModel = model
 	return nil
 }
@@ -32,11 +32,11 @@ func (s *stubEditorRunner) String() string { return "StubEditor" }
 
 func (s *stubEditorRunner) Paths() []string { return nil }
 
-func (s *stubEditorRunner) Edit(models []string) error {
+func (s *stubEditorRunner) Edit(models []LaunchModel) error {
 	if s.editErr != nil {
 		return s.editErr
 	}
-	cloned := append([]string(nil), models...)
+	cloned := launchModelNames(models)
 	s.edited = append(s.edited, cloned)
 	return nil
 }
@@ -74,7 +74,7 @@ func TestIntegrationLookup(t *testing.T) {
 }
 
 func TestIntegrationRegistry(t *testing.T) {
-	expectedIntegrations := []string{"claude", "codex", "droid", "eliza", "hermes", "openclaw", "opencode", "pi", "zoey"}
+	expectedIntegrations := []string{"claude", "cline", "codex", "copilot", "droid", "eliza", "hermes", "omp", "openclaw", "opencode", "pi", "pool", "qwen", "zoey"}
 
 	for _, name := range expectedIntegrations {
 		t.Run(name, func(t *testing.T) {
@@ -172,7 +172,7 @@ func TestAllIntegrations_HaveRequiredMethods(t *testing.T) {
 			if displayName == "" {
 				t.Error("String() should not return empty")
 			}
-			var _ func(string, []string) error = r.Run
+			var _ func(string, []LaunchModel, []string) error = r.Run
 		})
 	}
 }
@@ -338,7 +338,7 @@ func TestBuildModelList_OnlyLocalModels_RecsFirst(t *testing.T) {
 	}
 }
 
-func TestBuildModelList_RemoteInventorySkipped(t *testing.T) {
+func TestBuildModelList_RemoteInventoryIncluded(t *testing.T) {
 	existing := []modelInfo{
 		{Name: "llama3.2:latest", Remote: false},
 		{Name: "glm-5.1:cloud", Remote: true},
@@ -347,9 +347,9 @@ func TestBuildModelList_RemoteInventorySkipped(t *testing.T) {
 	items, _, _, _ := buildModelList(existing, nil, "")
 	got := names(items)
 
-	want := []string{"gemma4", "qwen3.5", "llama3.2"}
+	want := []string{"gemma4", "qwen3.5", "glm-5.1:cloud", "llama3.2"}
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("remote entries omitted from list (-want +got):\n%s", diff)
+		t.Errorf("remote inventory included in list (-want +got):\n%s", diff)
 	}
 }
 
@@ -430,8 +430,8 @@ func TestBuildModelList_ExistingCloudModelsNotPushedToBottom(t *testing.T) {
 	items, _, _, _ := buildModelList(existing, nil, "")
 	got := names(items)
 
-	// Remote inventory is omitted; gemma4 is installed, qwen3.5 is recommended but not installed.
-	want := []string{"gemma4", "qwen3.5"}
+	// Installed local and remote models appear before not-downloaded recommendations.
+	want := []string{"gemma4", "qwen3.5", "glm-5.1:cloud"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("expected only local recs in order (-want +got):\n%s", diff)
 	}
@@ -446,20 +446,24 @@ func TestBuildModelList_RemoteRecommendedSkippedWithLocal(t *testing.T) {
 	items, _, _, _ := buildModelList(existing, nil, "")
 	got := names(items)
 
-	want := []string{"gemma4", "qwen3.5", "llama3.2"}
+	want := []string{"gemma4", "qwen3.5", "kimi-k2.5:cloud", "llama3.2"}
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("remote-only inventory omitted (-want +got):\n%s", diff)
+		t.Errorf("remote inventory included (-want +got):\n%s", diff)
 	}
 
 	for _, item := range items {
-		isInstalled := item.Name == "llama3.2"
-		if isInstalled {
+		switch item.Name {
+		case "llama3.2":
 			if strings.HasSuffix(item.Description, "(not downloaded)") {
 				t.Errorf("installed model %q should not have '(not downloaded)' suffix, got %q", item.Name, item.Description)
 			}
-		} else {
+		case "gemma4", "qwen3.5":
 			if !strings.HasSuffix(item.Description, "(not downloaded)") {
 				t.Errorf("non-installed %q should have '(not downloaded)' suffix, got %q", item.Name, item.Description)
+			}
+		case "kimi-k2.5:cloud":
+			if strings.HasSuffix(item.Description, "(not downloaded)") {
+				t.Errorf("remote inventory %q should not have '(not downloaded)' suffix, got %q", item.Name, item.Description)
 			}
 		}
 	}
@@ -509,15 +513,14 @@ func TestBuildModelList_ReturnsExistingAndCloudMaps(t *testing.T) {
 	if !existingModels["llama3.2"] {
 		t.Error("llama3.2 should be in existingModels")
 	}
-	if existingModels["glm-5.1:cloud"] {
-		t.Error("remote inventory should not be in existingModels")
+	if !existingModels["glm-5.1:cloud"] {
+		t.Error("remote inventory should be in existingModels")
+	}
+	if !cloudModels["glm-5.1:cloud"] {
+		t.Error("glm-5.1:cloud should be in cloudModels")
 	}
 	if existingModels["gemma4"] {
 		t.Error("gemma4 should not be in existingModels (it's a recommendation)")
-	}
-
-	if len(cloudModels) != 0 {
-		t.Errorf("cloudModels should be empty without cloud recommendations, got %v", cloudModels)
 	}
 }
 
@@ -754,7 +757,7 @@ func TestPrepareEditorIntegration_SavesOnlyAfterSuccessfulEdit(t *testing.T) {
 	}
 
 	editor := &stubEditorRunner{editErr: errors.New("boom")}
-	err := prepareEditorIntegration("droid", editor, editor, []string{"new-model"})
+	err := prepareEditorIntegration("droid", editor, editor, testLaunchModels("new-model"))
 	if err == nil || !strings.Contains(err.Error(), "setup failed") {
 		t.Fatalf("expected setup failure, got %v", err)
 	}
@@ -1500,7 +1503,7 @@ func TestListIntegrationInfos(t *testing.T) {
 	})
 
 	t.Run("includes known integrations", func(t *testing.T) {
-		known := map[string]bool{"hermes": false, "openclaw": false, "opencode": false}
+		known := map[string]bool{"hermes": false, "openclaw": false, "opencode": false, "omp": false}
 		for _, info := range infos {
 			if _, ok := known[info.Name]; ok {
 				known[info.Name] = true

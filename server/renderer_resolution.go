@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/format"
+	"github.com/ollama/ollama/model/renderers"
 )
 
 const (
@@ -47,6 +48,9 @@ func defaultRendererForFamily(m *Model) string {
 	case "qwen35", "qwen35moe":
 		return "qwen3.5"
 	default:
+		if isGptOSSFamily(m.PrimaryFamily()) || isGptOSSFamily(m.Config.ModelFamily) {
+			return "harmony"
+		}
 		return ""
 	}
 }
@@ -127,4 +131,14 @@ func isGemma4Renderer(renderer string) bool {
 	default:
 		return false
 	}
+}
+
+// leadingBOSForModel supplies llama-server with the BOS token Go already rendered.
+// Empty when the model uses template/Jinja path instead of a Go renderer.
+func leadingBOSForModel(m *Model) string {
+	if m == nil || m.Config.Renderer == "" {
+		return ""
+	}
+
+	return renderers.LeadingBOSForRenderer(resolveRendererName(m))
 }

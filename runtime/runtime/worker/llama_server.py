@@ -19,6 +19,11 @@ from runtime.worker.sampler_options import (
     apply_sampler_to_completion_payload,
 )
 from runtime.worker.llama_stream import iter_llama_sse_lines
+from runtime.worker.llama_server_http import (
+    cancellable_http_post,
+    iter_response_chunks,
+    read_response_body,
+)
 
 logger = get_logger("llama_server")
 
@@ -137,6 +142,7 @@ class LlamaServerProcess:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
+        prefill_cancel: Any | None = None,
     ) -> dict[str, Any]:
         del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
@@ -154,24 +160,32 @@ class LlamaServerProcess:
             payload["cache_prompt"] = cache_prompt
         apply_sampler_to_completion_payload(payload, sampler)
         body = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            f"{self.base_url}/completion",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        headers = {"Content-Type": "application/json"}
         try:
-            with urllib.request.urlopen(req, timeout=600.0) as resp:
-                raw = resp.read().decode(errors="replace")
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode(errors="replace") if e.fp else ""
-            raise LlamaServerError(
-                f"llama-server /completion HTTP {e.code}: {err_body[:500]}"
-            ) from e
-        except urllib.error.URLError as e:
+            conn, resp = cancellable_http_post(
+                self.base_url,
+                "/completion",
+                body,
+                headers,
+                prefill_cancel=prefill_cancel,
+            )
+            if resp.status >= 400:
+                raw = read_response_body(conn, resp, prefill_cancel=prefill_cancel)
+                raise LlamaServerError(
+                    f"llama-server /completion HTTP {resp.status}: "
+                    f"{raw.decode(errors='replace')[:500]}"
+                )
+            raw = read_response_body(conn, resp, prefill_cancel=prefill_cancel)
+        except LlamaServerError:
+            raise
+        except Exception as e:
+            from runtime.kv.native_decode_loop import PrefillAbortedError
+
+            if isinstance(e, PrefillAbortedError):
+                raise
             raise LlamaServerError(f"llama-server /completion: {e}") from e
         try:
-            data: dict[str, Any] = json.loads(raw)
+            data: dict[str, Any] = json.loads(raw.decode(errors="replace"))
         except json.JSONDecodeError as e:
             raise LlamaServerError(
                 f"llama-server /completion returned non-JSON: {raw[:500]!r}"
@@ -192,6 +206,7 @@ class LlamaServerProcess:
         sampler: SamplerOptions | None = None,
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
+        prefill_cancel: Any | None = None,
     ) -> Iterator[dict[str, Any]]:
         del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
@@ -209,17 +224,30 @@ class LlamaServerProcess:
             payload["cache_prompt"] = cache_prompt
         apply_sampler_to_completion_payload(payload, sampler)
         body = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            f"{self.base_url}/completion",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        headers = {"Content-Type": "application/json"}
+        conn, resp = cancellable_http_post(
+            self.base_url,
+            "/completion",
+            body,
+            headers,
+            prefill_cancel=prefill_cancel,
         )
-        resp = urllib.request.urlopen(req, timeout=600.0)
+        if resp.status >= 400:
+            raw = read_response_body(conn, resp, prefill_cancel=prefill_cancel)
+            raise LlamaServerError(
+                f"llama-server /completion HTTP {resp.status}: "
+                f"{raw.decode(errors='replace')[:500]}"
+            )
         try:
-            yield from iter_llama_sse_lines(resp)
-        finally:
-            resp.close()
+            yield from iter_llama_sse_lines(
+                iter_response_chunks(conn, resp, prefill_cancel=prefill_cancel)
+            )
+        except Exception as e:
+            from runtime.kv.native_decode_loop import PrefillAbortedError
+
+            if isinstance(e, PrefillAbortedError):
+                raise
+            raise LlamaServerError(f"llama-server /completion stream: {e}") from e
 
     def completions_parallel(
         self,

@@ -47,6 +47,26 @@ var SoftplusF32 = Compile1(
 	Shapeless(),
 )
 
+// SwiGLUOAI returns the GPT-OSS / OpenAI SwiGLU variant:
+// clip(gate,0,limit) * sigmoid(1.702*gate) * (clip(up,-limit,limit)+1).
+var SwiGLUOAI = Compile2(
+	"SwiGLUOAI",
+	func(gate, up *Array) *Array {
+		dt := gate.DType()
+		zero := FromValue[float32](0).AsType(dt)
+		limit := FromValue[float32](7.0).AsType(dt)
+		negLimit := FromValue[float32](-7.0).AsType(dt)
+		one := FromValue[float32](1.0).AsType(dt)
+		alpha := FromValue[float32](1.702).AsType(dt)
+
+		gateClipped := Clip(gate, zero, limit)
+		upClipped := Clip(up, negLimit, limit)
+		outGlu := gateClipped.Multiply(gateClipped.Multiply(alpha).Sigmoid())
+		return outGlu.Multiply(upClipped.Add(one))
+	},
+	Shapeless(),
+)
+
 // SwiGLU returns silu(gate) * up as a fused kernel.
 var SwiGLU = Compile2(
 	"SwiGLU",

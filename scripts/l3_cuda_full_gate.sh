@@ -14,6 +14,7 @@
 #   L3_GATE_OUT                     — merged JSON (default ${L3_GATE_DIR}/gate.json)
 #   L3_SKIP_SMOKE=1                 — 27k production-only re-run
 #   L3_SKIP_PRODUCTION=1            — 8k smoke-only
+#   L3_RUN_SPEC_CACHE=1             — also run l3_spec_cache_smoke (policy leg; ngram default)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,6 +65,14 @@ if [[ "${L3_RAN_PRODUCTION}" == "1" ]]; then
     "${ROOT}/scripts/l3_production_gate.sh"
 fi
 
+SPEC_JSON="${L3_GATE_DIR}/spec-cache-policy.json"
+if [[ "${L3_RUN_SPEC_CACHE:-0}" == "1" ]]; then
+  CUDA_LLAMA_MODEL="${LLAMA_MODEL}" \
+  L3_SPEC_METHOD="${L3_SPEC_METHOD:-ngram}" \
+  L3_OUT="${SPEC_JSON}" \
+    "${ROOT}/scripts/l3_spec_cache_smoke.sh"
+fi
+
 python3 <<PY
 import json
 from pathlib import Path
@@ -71,6 +80,7 @@ from pathlib import Path
 gate_dir = Path("${L3_GATE_DIR}")
 smoke_path = Path("${SMOKE_JSON}")
 prod_path = Path("${PROD_JSON}")
+spec_path = Path("${SPEC_JSON}")
 
 def load(path):
     if path.is_file():
@@ -82,9 +92,11 @@ report = {
     "legs": {
         "smoke_8k": ${L3_RAN_SMOKE} == 1,
         "production_27k": ${L3_RAN_PRODUCTION} == 1,
+        "spec_cache_policy": ${L3_RUN_SPEC_CACHE:-0} == 1,
     },
     "smoke_8k": load(smoke_path),
     "production_27k": load(prod_path),
+    "spec_cache_policy": load(spec_path),
 }
 Path("${L3_GATE_OUT}").write_text(json.dumps(report, indent=2) + "\n")
 print(f"wrote ${L3_GATE_OUT}")

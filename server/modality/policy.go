@@ -27,6 +27,11 @@ type VideoSamplingPolicy struct {
 	// see server/prompt.go TODO). Manifest may override to match a family’s real vision cost.
 	TokensPerImage int
 
+	// VisionPatchSize and VisionSpatialMergeSize tune grid_thw estimates (Qwen/SGLang layout).
+	// Zero values use Qwen3-VL defaults (14 / 2).
+	VisionPatchSize        int
+	VisionSpatialMergeSize int
+
 	// ManifestOverride is true when the model manifest influenced sampling or tokens_per_image—used
 	// for observability (whether tuning came from env defaults or the published model config).
 	ManifestOverride bool
@@ -54,6 +59,14 @@ func ResolveVideoPolicy(cfg model.ConfigV2) VideoSamplingPolicy {
 	}
 	if cfg.TokensPerImage > 0 {
 		p.TokensPerImage = cfg.TokensPerImage
+		p.ManifestOverride = true
+	}
+	if cfg.VisionPatchSize > 0 {
+		p.VisionPatchSize = cfg.VisionPatchSize
+		p.ManifestOverride = true
+	}
+	if cfg.VisionSpatialMergeSize > 0 {
+		p.VisionSpatialMergeSize = cfg.VisionSpatialMergeSize
 		p.ManifestOverride = true
 	}
 	if cfg.VideoSampling == nil {

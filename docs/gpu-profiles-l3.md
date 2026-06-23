@@ -185,6 +185,61 @@ On llama-server start, `evict_orphaned_cache_dirs(keep_model_hash=…)` TTL-swee
 
 **Why `model_loaded`:** operators configure `LLAMA_MODEL` before pull completes; `model_hash` and `slot_save_path` still appear so cache layout is predictable pre-download.
 
+### Prefix cache policy (spec × SWA)
+
+**Why:** vLLM-inspired selective retention — not all GGUF architectures or speculative configs can safely reuse KV slots.
+
+Check `GET /health` → `llama_cache.policy`:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | `standard` \| `sliding_window` \| `hybrid` from GGUF attention metadata |
+| `allow_cache_prompt` | Whether RAM `cache_prompt` is safe for this model + spec config |
+| `allow_disk_persist` | Whether disk slot blobs may be written |
+| `effective_window` | SWA token window for prefix matching (pure SWA models) |
+| `speculative_draft` | `true` when eagle3/mtp/dflash draft spec is active — disables cache |
+
+**Rules (Jun 2026):**
+
+- **Draft spec** (`ZEROLLAMA_SPEC_METHOD=eagle3|mtp|dflash`, …): `allow_cache_prompt=false`, `allow_disk_persist=false`. Generate with `prompt_cache_key` still works — cache is simply skipped.
+- **Pure sliding-window:** `cache_prompt` disabled when prompt length exceeds `effective_window`. **Hybrid** models keep cache enabled (full-attention layers still benefit).
+- **Ngram / none spec:** prefix cache remains enabled when `ZEROLLAMA_LLAMA_CACHE=1`.
+
+Smoke: `./scripts/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py`.
+
+**Trace replay (Jun 2026):** set `ZEROLLAMA_PREFIX_CACHE_TRACE=1` to record per-request `(cache_prompt, resume_pos, seq_pos)` JSONL under `~/.cache/zerollama/prefix-cache-traces/`. Replay offline with `prefix_cache_trace.replay_trace_file()` or `./scripts/l3_prefix_cache_trace_replay.sh` (golden fixture, no GPU).
+
+**Health fields (Jun 2026):** `/health.llama_cache.kv_cache_spec`, `.spec_bind`, `.decode_graph.global_epoch`; `/health.kv_resume.prefix_cache_spec`.
+
+**In-process defense-in-depth (Jun 2026):** even if `cache_prompt=true` reaches libllama with a stale owner match, `_prepare_seq_for_decode` re-checks `KVCacheSpec` and clears the slot when SWA window is exceeded (`spec_bind_swa_block` trace + decode graph epoch bump).
+
+### Decode graph invalidation (CUDA)
+
+**Why:** clearing a slot changes KV contents but ggml-cuda may still hold a captured decode graph keyed by compute topology (not sequence id). Stale graph replay after L3 prefix invalidation is a correctness bug on CUDA; vLLM breaks graphs on KV change — zerollama does the same via epoch bumps + native ggml clear.
+
+On each slot clear (`cache_prompt_disabled`, `spec_bind_swa_block`, `slot_clear`) or session close:
+
+1. **`decode_graph_policy.bump_decode_graph_epoch`** — increments slot + global epoch (future capture key: `slot:slot_epoch:global_epoch`).
+2. **`llama_context_cuda_graph_invalidate(ctx)`** — when in-process `ctx_ptr` is wired, clears ggml’s per-backend CUDA graph map.
+
+Check health:
+
+```bash
+curl -s :8081/health | jq '.llama_cache.decode_graph'
+```
+
+| Field | Meaning |
+|-------|---------|
+| `global_epoch` / `slot_epochs` | Invalidation generation counters |
+| `capture_ready` | `false` until native graph capture is linked |
+| `llama_cpp.graphs_runtime_ready` | Sibling build has CUDA + graphs enabled and env not disabled |
+
+**Operator:** rebuild sibling `../llama.cpp` after pull — `./scripts/build_llama_server.sh` (CUDA: `-DGGML_CUDA_GRAPHS=ON`). Kill-switch: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. **Metal:** invalidate API returns 0 backends; epoch still bumps for trace/future scaffold.
+
+Full guide: [decode-graph-invalidation.md](./decode-graph-invalidation.md).
+
+**Subprocess SWA (Jun 2026):** without in-process `llama_memory_seq_pos_max`, the engine records each pinned-slot completion's `timings.cache_n + prompt_n + predicted_n` and uses that as `seq_pos` on the next turn's `cache_prompt` decision. After runtime restart, a one-shot `GET /slots` backfill restores `seq_pos` from llama-server's retained KV. Check `/health.kv_resume.subprocess_slot_seq_pos` after multi-turn smokes.
+
 ---
 
 ## Example request options
@@ -249,6 +304,7 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 | `scripts/l3_gate_report.sh` | PASS/FAIL from smoke JSON or merged full-gate JSON |
 | `scripts/l3_production_gate.sh` | Strict gate on production GGUF @ 27k ctx (`L3_PREFIX_REPEAT=150`) |
 | `scripts/l3_cuda_full_gate.sh` | **Production gate** — 8k smoke + 27k production + merged `gate.json` |
+| `scripts/l3_spec_cache_smoke.sh` | Spec decode × prefix cache policy (`/health.llama_cache.policy`); `L3_SPEC_METHOD=ngram` default |
 | `scripts/l3_full_gate.sh` | Platform dispatcher (CUDA full gate / Darwin smoke) |
 | `RUN_E2E_L3=1` in `gpu_5080_session.sh` or `m3_metal_signoff.sh` | Sign-off hooks |
 
@@ -274,9 +330,13 @@ export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
 # Or inside full 5080 session:
 RUN_E2E_L3=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/gpu_5080_session.sh
 
+# Optional spec × cache policy leg (ngram default; eagle3 needs LLAMA_DRAFT_MODEL):
+L3_RUN_SPEC_CACHE=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l3_cuda_full_gate.sh
+
 # Individual legs:
 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_PREFIX_REPEAT=150 L3_COMPARE_NO_CACHE=1 ./scripts/l3_cache_smoke.sh
 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l3_production_gate.sh
+L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh
 ```
 
 **Pass criteria (ship bar):**

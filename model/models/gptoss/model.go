@@ -2,6 +2,8 @@ package gptoss
 
 import (
 	"cmp"
+	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 
@@ -85,8 +87,9 @@ func (o Options) headDim() int {
 }
 
 type TransformerBlock struct {
-	Attention *AttentionBlock
-	MLP       *MLPBlock
+	Attention         *AttentionBlock
+	PostAttentionNorm *nn.RMSNorm `gguf:"post_attention_norm,alt:ffn_norm"`
+	MLP               *MLPBlock
 }
 
 func (d *TransformerBlock) Forward(ctx ml.Context, hiddenStates, positions, outputs ml.Tensor, cache kvcache.Cache, opts *Options) ml.Tensor {
@@ -95,8 +98,11 @@ func (d *TransformerBlock) Forward(ctx ml.Context, hiddenStates, positions, outp
 		hiddenStates = hiddenStates.Rows(ctx, outputs)
 	}
 
-	hiddenStates = d.MLP.Forward(ctx, hiddenStates, opts)
-	return hiddenStates
+	residual := hiddenStates
+	if d.PostAttentionNorm != nil {
+		hiddenStates = d.PostAttentionNorm.Forward(ctx, hiddenStates, opts.eps)
+	}
+	return d.MLP.Forward(ctx, hiddenStates, residual, opts)
 }
 
 type AttentionBlock struct {
@@ -144,8 +150,7 @@ func (attn *AttentionBlock) Forward(ctx ml.Context, hiddenStates, positions ml.T
 }
 
 type MLPBlock struct {
-	Norm   *nn.RMSNorm `gguf:"ffn_norm,alt:post_attention_norm"`
-	Router *nn.Linear  `gguf:"ffn_gate_inp"`
+	Router *nn.Linear `gguf:"ffn_gate_inp"`
 
 	GateUp *nn.LinearBatch `gguf:"ffn_gate_up_exps"`
 
@@ -155,11 +160,8 @@ type MLPBlock struct {
 	Down *nn.LinearBatch `gguf:"ffn_down_exps"`
 }
 
-func (mlp *MLPBlock) Forward(ctx ml.Context, hiddenStates ml.Tensor, opts *Options) ml.Tensor {
+func (mlp *MLPBlock) Forward(ctx ml.Context, hiddenStates, residual ml.Tensor, opts *Options) ml.Tensor {
 	hiddenDim, sequenceLength, batchSize := hiddenStates.Dim(0), hiddenStates.Dim(1), hiddenStates.Dim(2)
-
-	residual := hiddenStates
-	hiddenStates = mlp.Norm.Forward(ctx, hiddenStates, opts.eps)
 
 	hiddenStates = hiddenStates.Reshape(ctx, hiddenDim, sequenceLength*batchSize)
 	routingWeights := mlp.Router.Forward(ctx, hiddenStates)
@@ -240,6 +242,48 @@ func New(c fs.Config) (model.Model, error) {
 		kvcache.NewCausalCache(m.Shift),
 	)
 	return &m, nil
+}
+
+// PostLoad trims to layers with complete weights. Some GGUF exports (e.g. LM Studio
+// mxfp4) omit post_attention_norm on upper layers or ship fewer blk.* tensors than
+// block_count in metadata.
+func (m *Transformer) PostLoad() error {
+	metaBlocks := len(m.TransformerBlocks)
+	loaded := 0
+	for i, b := range m.TransformerBlocks {
+		if !blockHasAttention(b) || !blockHasMoE(b) {
+			break
+		}
+		loaded = i + 1
+	}
+	if loaded == 0 {
+		return fmt.Errorf("gpt-oss: no complete layer weights in GGUF")
+	}
+	if loaded < metaBlocks {
+		slog.Warn("gpt-oss: GGUF has fewer layers than block_count metadata",
+			"loaded_layers", loaded,
+			"block_count", metaBlocks,
+		)
+		m.TransformerBlocks = m.TransformerBlocks[:loaded]
+	}
+	return nil
+}
+
+func blockHasAttention(b TransformerBlock) bool {
+	if b.Attention == nil || b.Attention.Query == nil || b.Attention.Output == nil {
+		return false
+	}
+	return b.Attention.Query.Weight != nil && b.Attention.Output.Weight != nil
+}
+
+func blockHasMoE(b TransformerBlock) bool {
+	if b.MLP == nil || b.MLP.Router == nil || b.MLP.Gate == nil || b.MLP.Up == nil || b.MLP.Down == nil {
+		return false
+	}
+	return b.MLP.Router.Weight != nil &&
+		b.MLP.Gate.Weight != nil &&
+		b.MLP.Up.Weight != nil &&
+		b.MLP.Down.Weight != nil
 }
 
 func init() {

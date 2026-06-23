@@ -14,11 +14,15 @@
  * v26: kv_decode_loop_run_batch_step — N single-token rows, one llama_decode.
  * v30: smpl_ptrs[] — one sampler per row so llama_sampler_sample uses logit
  *      index i and accept state does not bleed across sequences (v27 audit).
+ * v31: chunked-prefill abort flag — process-global atomic_int checked between
+ *      page-aligned chunks; Python calls kv_decode_loop_abort_set() while the
+ *      GIL is released; returns KV_DECODE_LOOP_ERR_ABORT (-3) on cancel.
  */
 
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "llama.h"
@@ -29,6 +33,35 @@
 /* WHY -2 for page bind: distinct from llama_decode failure (-1) so Python can
  * surface the same LlamaServerError as ctypes page-bind validation. */
 #define KV_DECODE_LOOP_ERR_BIND -2
+/* KV_DECODE_LOOP_ERR_ABORT defined in header (-3): abort between prefill chunks. */
+
+/*
+ * Process-global abort flag (v31).
+ *
+ * WHY atomic_int: the GIL is released during prefill (Py_BEGIN_ALLOW_THREADS);
+ * a Python signal-handler or cancellation thread calls kv_decode_loop_abort_set
+ * concurrently.  atomic_int with RELAXED ordering is sufficient — we only need
+ * visibility within one prefill call, not cross-thread ordering of llama state.
+ */
+static atomic_int _kv_prefill_abort = 0;
+
+void
+kv_decode_loop_abort_set(void)
+{
+    atomic_store_explicit(&_kv_prefill_abort, 1, memory_order_relaxed);
+}
+
+void
+kv_decode_loop_abort_clear(void)
+{
+    atomic_store_explicit(&_kv_prefill_abort, 0, memory_order_relaxed);
+}
+
+int
+kv_decode_loop_abort_check(void)
+{
+    return atomic_load_explicit(&_kv_prefill_abort, memory_order_relaxed);
+}
 
 size_t
 kv_decode_loop_llama_max_devices(void)
@@ -160,6 +193,12 @@ kv_decode_loop_run_prefill(
     int32_t tok_off = 0;
     int32_t remaining = n_tokens;
     while (remaining > 0) {
+        /* v31: check abort flag between chunks so a Python cancellation thread
+         * can interrupt long prefill without waiting for the next llama_decode. */
+        if (kv_decode_loop_abort_check()) {
+            kv_batch_free(b, chunk_sz);
+            return KV_DECODE_LOOP_ERR_ABORT;
+        }
         int32_t n = remaining < chunk_sz ? remaining : chunk_sz;
         /* WHY validate each chunk: long prefill may span multiple pages; fail
          * before llama_decode writes past the PA-reserved page table. */
@@ -302,6 +341,17 @@ kv_decode_loop_sample(void *smpl, void *ctx)
     if (!smpl || !ctx) return -1;
     return (int32_t)llama_sampler_sample(
         (struct llama_sampler *)smpl, (struct llama_context *)ctx, -1);
+}
+
+int
+kv_decode_loop_invalidate_cuda_graphs(void *ctx)
+{
+    /* WHY: L3 slot clear changes KV while ggml-cuda may reuse a captured graph
+     * keyed by cgraph topology. Delegate to llama.cpp public API when linked. */
+    if (!ctx) {
+        return 0;
+    }
+    return (int)llama_context_cuda_graph_invalidate((struct llama_context *)ctx);
 }
 
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */

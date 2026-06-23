@@ -670,7 +670,7 @@ func TestCreateSafetensorsModel_RejectsRequantizingQuantizedSources(t *testing.T
 				st.NewTensorDataFromBytes("linear.weight", "F8_E4M3", []int32{2, 2}, []byte{1, 2, 3, 4}),
 				st.NewTensorDataFromBytes("linear.weight_scale_inv", "BF16", []int32{1, 1}, make([]byte, 2)),
 			},
-			wantErr: `cannot requantize already-quantized fp8 source model with --quantize "int4"`,
+			wantErr: `cannot convert already-quantized fp8 source model with --quantize "int4"`,
 		},
 	}
 
@@ -849,8 +849,8 @@ func TestCreateSafetensorsModel_Qwen35Transforms(t *testing.T) {
 		t.Fatalf("CreateSafetensorsModel failed: %v", err)
 	}
 
-	if _, ok := calls["mtp.layers.0.foo.weight"]; ok {
-		t.Fatal("mtp tensor should have been dropped")
+	if _, ok := calls["mtp.layers.0.foo.weight"]; !ok {
+		t.Fatal("mtp tensor should have been preserved")
 	}
 
 	layerNorm := calls["language_model.model.layers.0.input_layernorm.weight"]

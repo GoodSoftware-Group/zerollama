@@ -42,6 +42,7 @@ type Client struct {
 	status        *llm.StatusWriter
 	mu            sync.Mutex
 	cmd           *exec.Cmd
+	tokenizeCache tokenizeCache
 }
 
 // NewClient prepares a new MLX runner client for LLM models.
@@ -96,25 +97,29 @@ func (c *Client) WaitUntilRunning(ctx context.Context) error {
 }
 
 type CompletionRequest struct {
-	Prompt      string
-	Options     api.Options
-	Logprobs    bool
-	TopLogprobs int
+	Prompt      string       `json:"prompt"`
+	Tokens      []int32      `json:"tokens,omitempty"`
+	Options     api.Options  `json:"options"`
+	Logprobs    bool         `json:"logprobs,omitempty"`
+	TopLogprobs int          `json:"top_logprobs,omitempty"`
 }
 
 type CompletionResponse struct {
-	Content    string
-	Done       bool
-	DoneReason int
+	Content          string `json:"content,omitempty"`
+	Done             bool   `json:"done,omitempty"`
+	DoneReason       int    `json:"done_reason,omitempty"`
+	PrefillProcessed int    `json:"prefill_processed,omitempty"`
+	PrefillTotal     int    `json:"prefill_total,omitempty"`
 
-	PromptEvalCount    int
-	PromptEvalDuration time.Duration
+	PromptEvalCount       int
+	PromptEvalCachedCount int `json:"prompt_eval_cached_count,omitempty"`
+	PromptEvalDuration    time.Duration
 	EvalCount          int
 	EvalDuration       time.Duration
 
 	Logprobs []llm.Logprob
 
-	Error *api.StatusError
+	Error *api.StatusError `json:"error,omitempty"`
 }
 
 // Close terminates the subprocess.
@@ -146,13 +151,19 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 	if req.Options != nil {
 		creq.Options = *req.Options
 	}
+	if len(req.PromptTokens) > 0 {
+		creq.Tokens = make([]int32, len(req.PromptTokens))
+		for i, t := range req.PromptTokens {
+			creq.Tokens[i] = int32(t)
+		}
+	}
 
 	body, err := json.Marshal(creq)
 	if err != nil {
 		return err
 	}
 
-	httpURL := fmt.Sprintf("http://127.0.0.1:%d/completion", c.port)
+	httpURL := fmt.Sprintf("http://127.0.0.1:%d/v1/completions", c.port)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", httpURL, strings.NewReader(string(body)))
 	if err != nil {
 		return err
@@ -161,10 +172,7 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		if errMsg := c.status.LastError(); errMsg != "" {
-			return fmt.Errorf("mlx runner failed: %s", errMsg)
-		}
-		return err
+		return c.runnerFailureErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -173,6 +181,7 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 		return api.StatusError{StatusCode: resp.StatusCode, ErrorMessage: strings.TrimSpace(string(respBody))}
 	}
 
+	gotDone := false
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		var raw CompletionResponse
@@ -189,7 +198,10 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 			Content:            raw.Content,
 			Done:               raw.Done,
 			DoneReason:         llm.DoneReason(raw.DoneReason),
-			PromptEvalCount:    raw.PromptEvalCount,
+			PrefillProcessed:      raw.PrefillProcessed,
+			PrefillTotal:          raw.PrefillTotal,
+			PromptEvalCount:       raw.PromptEvalCount,
+			PromptEvalCachedCount: raw.PromptEvalCachedCount,
 			PromptEvalDuration: raw.PromptEvalDuration,
 			EvalCount:          raw.EvalCount,
 			EvalDuration:       raw.EvalDuration,
@@ -198,15 +210,20 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 
 		fn(cresp)
 		if cresp.Done {
+			gotDone = true
 			return nil
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		if errMsg := c.status.LastError(); errMsg != "" {
-			return fmt.Errorf("mlx runner failed: %s", errMsg)
+		return c.runnerFailureErr(err)
+	}
+	if !gotDone {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		return err
+		slog.Error("mlx completion stream ended without done chunk", "model", c.modelName)
+		return errors.New("mlx completion stream ended without done chunk")
 	}
 	return nil
 }
@@ -372,6 +389,22 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	// Reap subprocess when it exits
 	go func() {
 		c.doneErr = cmd.Wait()
+		if c.doneErr != nil {
+			if msg := c.status.LastError(); msg != "" {
+				slog.Error("mlx runner subprocess exited",
+					"model", c.modelName,
+					"pid", cmd.Process.Pid,
+					"exit", c.doneErr,
+					"stderr", msg,
+				)
+			} else {
+				slog.Error("mlx runner subprocess exited",
+					"model", c.modelName,
+					"pid", cmd.Process.Pid,
+					"exit", c.doneErr,
+				)
+			}
+		}
 		close(c.done)
 	}()
 
@@ -428,7 +461,14 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // Tokenize implements llm.LlamaServer.
+// Uses tokenizeCache to avoid duplicate HTTP encode for identical strings within
+// one request (message search + tail truncate) and across agent turns.
 func (c *Client) Tokenize(ctx context.Context, content string) ([]int, error) {
+	if tokens, ok := c.tokenizeCache.lookup(content); ok {
+		slog.Debug("mlx tokenize cache hit", "prompt_len", len(content), "tokens", len(tokens))
+		return tokens, nil
+	}
+
 	reqURL := fmt.Sprintf("http://127.0.0.1:%d/v1/tokenize", c.port)
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(content))
 	if err != nil {
@@ -447,6 +487,7 @@ func (c *Client) Tokenize(ctx context.Context, content string) ([]int, error) {
 		return nil, err
 	}
 
+	c.tokenizeCache.remember(content, tokens)
 	return tokens, nil
 }
 
@@ -469,6 +510,27 @@ func (c *Client) VRAMByGPU(id ml.DeviceID) uint64 {
 }
 
 var _ llm.LlamaServer = (*Client)(nil)
+
+func (c *Client) runnerFailureErr(fallback error) error {
+	select {
+	case <-c.done:
+	default:
+		select {
+		case <-c.done:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if msg := c.status.LastError(); msg != "" {
+		if c.doneErr != nil {
+			return fmt.Errorf("mlx runner failed: %s (exit: %v)", msg, c.doneErr)
+		}
+		return fmt.Errorf("mlx runner failed: %s", msg)
+	}
+	if c.HasExited() && c.doneErr != nil {
+		return fmt.Errorf("mlx runner exited during request: %w", c.doneErr)
+	}
+	return fallback
+}
 
 // setEnv sets or replaces an environment variable in cmd.Env.
 func setEnv(cmd *exec.Cmd, key, value string) {

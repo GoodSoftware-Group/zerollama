@@ -145,3 +145,42 @@ func TestServerAssignEndpoint(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
+
+func TestServerScoreEndpointLoopback(t *testing.T) {
+	m, err := NewManager(Config{
+		Peers: []string{"http://a:11434"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.setNode(NodeSnapshot{
+		ID:           "a:11434",
+		URL:          "http://a:11434",
+		Available:    true,
+		LoadedModels: []string{"llama3"},
+		QueueDepth:   0,
+	})
+	srv := httptest.NewServer(NewServer(m).Handler())
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/internal/score", strings.NewReader(`{"model":"llama3"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var out ScoreResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Best == nil || out.Best.ID != "a:11434" {
+		t.Fatalf("best=%+v", out.Best)
+	}
+}

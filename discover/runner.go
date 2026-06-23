@@ -66,6 +66,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 
 		slog.Info("discovering available GPUs...")
 		detectIncompatibleLibraries()
+		detectOldAMDDriverWindows()
 
 		// Warn if any user-overrides are set which could lead to incorrect GPU discovery
 		overrideWarnings()
@@ -102,8 +103,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				} else if jetpack == "" && strings.Contains(filepath.Base(dir), "cuda_jetpack") {
 					slog.Debug("jetpack not detected (set JETSON_JETPACK or OLLAMA_LLM_LIBRARY to override), skipping", "libDir", dir)
 					continue
-				} else if !envconfig.EnableVulkan() && strings.Contains(filepath.Base(dir), "vulkan") {
-					slog.Info("experimental Vulkan support disabled.  To enable, set OLLAMA_VULKAN=1")
+				} else if !envconfig.EnableVulkan(true) && strings.Contains(filepath.Base(dir), "vulkan") {
 					continue
 				}
 				dirs = []string{ml.LibOllamaPath, dir}
@@ -112,11 +112,15 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			}
 
 			ctx1stPass, cancel := context.WithTimeout(ctx, bootstrapTimeout)
-			defer cancel()
-
-			// For this pass, we retain duplicates in case any are incompatible with some libraries
-			devices = append(devices, bootstrapDevices(ctx1stPass, dirs, nil)...)
+			discovered := bootstrapDevicesWithMetalRetry(ctx1stPass, ctx, bootstrapTimeout, dirs, nil)
+			if dir != "" && filepath.Base(dir) == "cuda_v12" {
+				discovered = filterOldCUDADriver(ctx1stPass, discovered)
+			}
+			devices = append(devices, discovered...)
+			cancel()
 		}
+
+		devices = filterIntegratedGPUs(devices)
 
 		// In the second pass, we more deeply initialize the GPUs to weed out devices that
 		// aren't supported by a given library.  We run this phase in parallel to speed up discovery.
@@ -147,9 +151,9 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				extraEnvs := ml.GetVisibleDevicesEnv(devices[i:i+1], true)
+				extraEnvs := ml.GetDevicesEnv(devices[i : i+1])
 				devices[i].AddInitValidation(extraEnvs)
-				if len(bootstrapDevices(ctx2ndPass, devices[i].LibraryPath, extraEnvs)) == 0 {
+				if len(bootstrapDevicesWithMetalRetry(ctx2ndPass, ctx, 30*time.Second, devices[i].LibraryPath, extraEnvs)) == 0 {
 					slog.Debug("filtering device which didn't fully initialize",
 						"id", devices[i].ID,
 						"libdir", devices[i].LibraryPath[len(devices[i].LibraryPath)-1],
@@ -194,6 +198,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 					devices[i].FilterID = devices[i].ID
 					devices[i].ID = strconv.Itoa(postFilteredID[devices[i].Library])
 				}
+				remapFilterIDForUserVisibleDevices(&devices[i])
 				postFilteredID[devices[i].Library]++
 			}
 		}
@@ -332,7 +337,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			devFilter := ml.GetVisibleDevicesEnv(devices, false)
 
 			for dir := range libDirs {
-				updatedDevices := bootstrapDevices(ctx, []string{ml.LibOllamaPath, dir}, devFilter)
+				updatedDevices := bootstrapDevicesWithMetalRetry(ctx, ctx, 3*time.Second, []string{ml.LibOllamaPath, dir}, devFilter)
 				for _, u := range updatedDevices {
 					for i := range devices {
 						if u.DeviceID == devices[i].DeviceID && u.PCIID == devices[i].PCIID {
@@ -429,7 +434,10 @@ func (r *bootstrapRunner) HasExited() bool {
 }
 
 func bootstrapDevices(ctx context.Context, ollamaLibDirs []string, extraEnvs map[string]string) []ml.DeviceInfo {
-	// Spawns a short-lived ollama-engine runner and reads GET /info.
+	return bootstrapDevicesWithMetalRetry(ctx, ctx, 15*time.Second, ollamaLibDirs, extraEnvs)
+}
+
+func bootstrapGgmlDevices(ctx context.Context, ollamaLibDirs []string, extraEnvs map[string]string) []ml.DeviceInfo {
 	// Why ollama-engine: enumerates ggml backends (Metal on darwin) without loading
 	// a real model. The /info handler must call DiscoverBackendDevices() when unloaded
 	// — see ml/backend/ggml/ggml.go ensureDevices(false) and runner/ollamarunner /info.

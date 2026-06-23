@@ -291,6 +291,59 @@ func TestQwen3ParserToolCallIndexingStreaming(t *testing.T) {
 	}
 }
 
+// Regression: '<' inside JSON tool arguments must not be treated as a tag opener
+// when streaming chunks split on '<' (vLLM-class partial JSON bug).
+func TestQwen3ParserToolCallAngleBracketsInArgumentsStreaming(t *testing.T) {
+	parser := &Qwen3Parser{hasThinkingSupport: false, defaultThinking: false}
+	parser.Init(nil, nil, &api.ThinkValue{Value: false})
+
+	var all []api.ToolCall
+
+	_, _, calls, err := parser.Add(
+		`<tool_call>{"name":"exec","arguments":{"command":"ls && echo \"a > b and a `,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("step 1 parse failed: %v", err)
+	}
+	all = append(all, calls...)
+
+	_, _, calls, err = parser.Add(`< b\""}}</tool_call>`, true)
+	if err != nil {
+		t.Fatalf("step 2 parse failed: %v", err)
+	}
+	all = append(all, calls...)
+
+	if len(all) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(all))
+	}
+	if all[0].Function.Name != "exec" {
+		t.Fatalf("expected tool name exec, got %q", all[0].Function.Name)
+	}
+	cmd, ok := all[0].Function.Arguments.Get("command")
+	if !ok || cmd != `ls && echo "a > b and a < b"` {
+		t.Fatalf("expected command with angle brackets, got %v ok=%v", cmd, ok)
+	}
+}
+
+func TestQwen3ParserAngleBracketsInPlainContentStreaming(t *testing.T) {
+	parser := &Qwen3Parser{hasThinkingSupport: false, defaultThinking: false}
+	parser.Init(nil, nil, &api.ThinkValue{Value: false})
+
+	chunks := []string{"a ", "<", "b", ">", " c"}
+	var content string
+	for i, ch := range chunks {
+		c, _, _, err := parser.Add(ch, i == len(chunks)-1)
+		if err != nil {
+			t.Fatalf("chunk %d failed: %v", i, err)
+		}
+		content += c
+	}
+	if content != "a <b> c" {
+		t.Fatalf("expected %q, got %q", "a <b> c", content)
+	}
+}
+
 func TestQwen3ParserToolCallIndexResetOnInit(t *testing.T) {
 	parser := &Qwen3Parser{hasThinkingSupport: false, defaultThinking: false}
 	parser.Init(nil, nil, &api.ThinkValue{Value: false})

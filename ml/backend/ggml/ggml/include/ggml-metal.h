@@ -56,6 +56,14 @@ GGML_BACKEND_API void ggml_backend_metal_capture_next_compute(ggml_backend_t bac
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);
 
+// Map an ANE IOSurface (same process) as a shared Metal buffer — ZEROLLAMA_ANE_DRAFT handoff path.
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+        ggml_backend_dev_t device,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size,
+        size_t surface_offset);
+
 #ifdef __cplusplus
 }
 #endif

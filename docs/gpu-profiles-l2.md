@@ -179,6 +179,8 @@ JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PAS
 
 JSON: `/tmp/l2-cuda-gate/bench-8k.json` (1B), `/tmp/l2-cuda-gate-long/bench-{8k,27k}.json` (9B). **131k:** needs `ZEROLLAMA_KV_NUM_BLOCKS=8192` + GGUF compatible with QJL head dims; 9B needs >16 GiB VRAM at 131k.
 
+**Fork build footgun (container):** eliza sibling may need `-DLLAMA_BUILD_WEBUI=OFF` — default WebUI asset download fails headless.
+
 **Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Pin `96dd1a8`; profile checkpoint argv uses `--checkpoint-every-n-tokens` (not deprecated `--ctx-checkpoint-interval`).
 
 ---

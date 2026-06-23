@@ -12,6 +12,8 @@ v15: ``run_sample`` + ``run_step(..., smpl_ptr=)`` call ``llama_sampler_sample``
 v27: ``native_batch_decode_available()`` gates engine ``complete_parallel`` wiring.
 v29: ``complete_parallel_stream`` + ``_decode_parallel_stream`` for tagged batch streaming.
 v30: ``run_batch_step(..., smpl_ptrs=)`` — per-row C sampling after batch decode.
+v31: ``prefill_abort_set`` / ``prefill_abort_clear`` — chunked-prefill ctx cancellation.
+     ``run_prefill`` raises ``PrefillAbortedError`` when the C loop returns ERR_ABORT.
 v32: ``ZEROLLAMA_KV_AUTO_BATCH=1`` — opt-in coordinator coalesces concurrent
      ``generate()`` into ``completions_parallel`` (in-process multiseq only).
 
@@ -25,6 +27,15 @@ from __future__ import annotations
 
 import os
 from typing import Any
+
+
+class PrefillAbortedError(RuntimeError):
+    """Raised when a chunked prefill was cancelled via ``prefill_abort_set``.
+
+    WHY separate exception class: callers (engine, greedy_decode_tokens) need to
+    distinguish abort from llama_decode failure (-1) and page-bind failure (-2)
+    without inspecting string messages.
+    """
 
 
 def native_decode_loop_available() -> bool:
@@ -73,6 +84,38 @@ def decode_loop_status() -> dict[str, Any]:
     }
 
 
+def prefill_abort_set() -> None:
+    """Signal the C prefill loop to abort after the current chunk (v31).
+
+    Safe to call from any Python thread while ``run_prefill`` holds the GIL
+    released.  The C atomic write is visible to the prefill thread before the
+    next chunk boundary check.
+
+    After the aborted prefill raises ``PrefillAbortedError``, the caller must
+    call ``prefill_abort_clear()`` before the next ``run_prefill``.
+    """
+    try:
+        from runtime.kv._kv_native import decode_loop_abort_set
+
+        decode_loop_abort_set()
+    except ImportError:
+        pass
+
+
+def prefill_abort_clear() -> None:
+    """Reset the C prefill abort flag (v31).
+
+    Must be called before the next ``run_prefill`` when a previous call was
+    aborted, or before arming a new cancellation timeout.
+    """
+    try:
+        from runtime.kv._kv_native import decode_loop_abort_clear
+
+        decode_loop_abort_clear()
+    except ImportError:
+        pass
+
+
 def run_prefill(
     ctx_ptr: int,
     tokens: list[int],
@@ -86,6 +129,12 @@ def run_prefill(
 
     WHY page-bind check here: ctypes path validates in ``build_batch_from_tokens``;
     C path must fail fast with the same ``LlamaServerError`` before touching llama.
+
+    WHY abort_clear before call: ensures a stale abort flag from a previous
+    cancelled request does not immediately abort the new prefill (v31).
+
+    Raises ``PrefillAbortedError`` when the C loop returns KV_DECODE_LOOP_ERR_ABORT
+    (-3), i.e. ``prefill_abort_set()`` was called from another thread between chunks.
     """
     if not native_decode_loop_available():
         return None
@@ -93,6 +142,7 @@ def run_prefill(
         from runtime.kv.page_bind import validate_token_positions
 
         validate_token_positions(int(kv_slot), int(pos_start), len(tokens))
+    prefill_abort_clear()
     try:
         from runtime.kv._kv_native import decode_loop_prefill
 
@@ -102,10 +152,13 @@ def run_prefill(
             )
         )
     except ValueError as e:
-        from runtime.worker.llama_server import LlamaServerError
+        msg = str(e)
+        if "KV prefill aborted" in msg:
+            raise PrefillAbortedError(msg) from e
+        if "KV page bind" in msg:
+            from runtime.worker.llama_server import LlamaServerError
 
-        if "KV page bind" in str(e):
-            raise LlamaServerError(str(e)) from e
+            raise LlamaServerError(msg) from e
         raise
 
 

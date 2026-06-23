@@ -82,8 +82,9 @@ type ChatResponse struct {
 	Message            api.Message   `json:"message"`
 	DoneReason         DoneReason    `json:"done_reason"`
 	Done               bool          `json:"done"`
-	PromptEvalCount    int           `json:"prompt_eval_count"`
-	PromptEvalDuration time.Duration `json:"prompt_eval_duration"`
+	PromptEvalCount       int           `json:"prompt_eval_count"`
+	PromptEvalCachedCount int           `json:"prompt_eval_cached_count,omitempty"`
+	PromptEvalDuration    time.Duration `json:"prompt_eval_duration"`
 	EvalCount          int           `json:"eval_count"`
 	EvalDuration       time.Duration `json:"eval_duration"`
 	Logprobs           []Logprob     `json:"logprobs,omitempty"`

@@ -22,6 +22,7 @@ func canonicalQuantType(quantType string) string {
 type modelTextConfig struct {
 	HiddenSize            int `json:"hidden_size"`
 	MaxPositionEmbeddings int `json:"max_position_embeddings"`
+	VocabSize             int `json:"vocab_size"`
 	NumHiddenLayers       int `json:"num_hidden_layers"`
 	NumExperts            int `json:"num_experts"`
 	NumLocalExperts       int `json:"num_local_experts"`
@@ -102,21 +103,45 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 		arch = strings.TrimSuffix(arch, "forconditionalgeneration")
 	}
 
-	// Use text_config values if they exist (for multimodal models)
+	// Use text_config values if they exist (for multimodal models).
+	// Exception: some multimodal HF exports (e.g. Gemma4) store vocab_size in
+	// text_config.max_position_embeddings rather than the actual context window.
+	// When text_config.max_position_embeddings equals vocab_size it is not a
+	// context length — fall back to the top-level max_position_embeddings.
+	// Why: agent megaprompts with num_ctx=262144 never tail-truncated when this
+	// field was treated as ctx; see docs/mlx-agent-prompts.md.
 	hiddenSize := config.HiddenSize
 	maxPosEmbed := config.MaxPositionEmbeddings
 	numLayers := config.NumHiddenLayers
+	vocabSize := config.VocabSize
 
 	if config.TextConfig != nil {
 		if config.TextConfig.HiddenSize > 0 {
 			hiddenSize = config.TextConfig.HiddenSize
 		}
-		if config.TextConfig.MaxPositionEmbeddings > 0 {
-			maxPosEmbed = config.TextConfig.MaxPositionEmbeddings
+		tcMaxPos := config.TextConfig.MaxPositionEmbeddings
+		tcVocab := config.TextConfig.VocabSize
+		if tcVocab > 0 {
+			vocabSize = tcVocab
+		}
+		// Only use text_config max_position_embeddings if it is plausibly a context
+		// window: positive, different from vocab_size, and a power-of-two-ish value
+		// that is smaller than vocab_size (context windows are < 1M; vocab sizes
+		// for large models sit at 32k–262k).
+		if tcMaxPos > 0 && (tcVocab == 0 || tcMaxPos != tcVocab) {
+			maxPosEmbed = tcMaxPos
 		}
 		if config.TextConfig.NumHiddenLayers > 0 {
 			numLayers = config.TextConfig.NumHiddenLayers
 		}
+	}
+
+	// Top-level max_position_embeddings can also equal vocab_size on multimodal exports.
+	if maxPosEmbed > 0 && vocabSize > 0 && maxPosEmbed >= vocabSize {
+		maxPosEmbed = 0
+	}
+	if maxPosEmbed == 0 && arch == "gemma4" {
+		maxPosEmbed = 131072
 	}
 
 	expertCount := firstPositive(config.NumLocalExperts, config.NumExperts, config.NRoutedExperts)
@@ -182,8 +207,8 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 		info[fmt.Sprintf("%s.expert_used_count", arch)] = uint32(expertUsedCount)
 	}
 
-	if config.VocabSize > 0 {
-		info[fmt.Sprintf("%s.vocab_size", arch)] = config.VocabSize
+	if vocabSize > 0 {
+		info[fmt.Sprintf("%s.vocab_size", arch)] = vocabSize
 	}
 
 	if paramCount > 0 {

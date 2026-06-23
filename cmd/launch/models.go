@@ -204,7 +204,7 @@ func pullMissingModel(ctx context.Context, client *api.Client, model string) err
 }
 
 // prepareEditorIntegration persists models and applies editor-managed config files.
-func prepareEditorIntegration(name string, runner Runner, editor Editor, models []string) error {
+func prepareEditorIntegration(name string, runner Runner, editor Editor, models []LaunchModel) error {
 	if ok, err := confirmConfigEdit(runner, editor.Paths()); err != nil {
 		return err
 	} else if !ok {
@@ -213,19 +213,25 @@ func prepareEditorIntegration(name string, runner Runner, editor Editor, models 
 	if err := editor.Edit(models); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
-	if err := config.SaveIntegration(name, models); err != nil {
+	if err := config.SaveIntegration(name, launchModelNames(models)); err != nil {
 		return fmt.Errorf("failed to save: %w", err)
 	}
 	return nil
 }
 
-func prepareManagedSingleIntegration(name string, runner Runner, managed ManagedSingleModel, model string) error {
+func prepareManagedSingleIntegration(name string, runner Runner, managed ManagedSingleModel, model string, models []LaunchModel) error {
 	if ok, err := confirmConfigEdit(runner, managed.Paths()); err != nil {
 		return err
 	} else if !ok {
 		return errCancelled
 	}
-	if err := managed.Configure(model); err != nil {
+	var err error
+	if withModels, ok := managed.(ManagedModelListConfigurer); ok {
+		err = withModels.ConfigureWithModels(model, models)
+	} else {
+		err = managed.Configure(model)
+	}
+	if err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
 	if err := config.SaveIntegration(name, []string{model}); err != nil {
@@ -249,7 +255,7 @@ func confirmConfigEdit(runner Runner, paths []string) (bool, error) {
 }
 
 // buildModelList merges existing models with recommendations for selection UIs.
-func buildModelList(existing []modelInfo, preChecked []string, current string) (items []ModelItem, orderedChecked []string, existingModels, cloudModels map[string]bool) {
+func buildModelList(existing []LaunchModel, preChecked []string, current string) (items []ModelItem, orderedChecked []string, existingModels, cloudModels map[string]bool) {
 	existingModels = make(map[string]bool)
 	cloudModels = make(map[string]bool)
 	recommended := make(map[string]bool)
@@ -262,13 +268,13 @@ func buildModelList(existing []modelInfo, preChecked []string, current string) (
 
 	for _, m := range existing {
 		if m.Remote {
-			continue
+			cloudModels[m.Name] = true
 		}
 		existingModels[m.Name] = true
 		displayName := strings.TrimSuffix(m.Name, ":latest")
 		existingModels[displayName] = true
 		item := ModelItem{Name: displayName, Recommended: recommended[displayName], Description: recDesc[displayName]}
-		items = append(items, item)
+		items = append(items, modelItemFromInventory(displayName, m, item))
 	}
 
 	for _, rec := range recommendedModels {
@@ -388,7 +394,7 @@ func isCloudModelName(name string) bool {
 }
 
 // filterCloudModels drops remote-only models from the given inventory.
-func filterCloudModels(existing []modelInfo) []modelInfo {
+func filterCloudModels(existing []LaunchModel) []LaunchModel {
 	filtered := existing[:0]
 	for _, m := range existing {
 		if !m.Remote {
@@ -396,6 +402,15 @@ func filterCloudModels(existing []modelInfo) []modelInfo {
 		}
 	}
 	return filtered
+}
+
+func modelItemFromInventory(name string, info LaunchModel, item ModelItem) ModelItem {
+	item.Name = name
+	item.ToolCapable = info.ToolCapable
+	item.Capabilities = slices.Clone(info.Capabilities)
+	item.Size = info.Size
+	item.Details = info.Details
+	return item
 }
 
 // filterCloudItems removes cloud models from selection items.

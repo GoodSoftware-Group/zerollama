@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -33,7 +34,7 @@ type IntegrationInfo struct {
 	Description string
 }
 
-var launcherIntegrationOrder = []string{"zoey", "eliza", "hermes", "opencode", "copilot", "droid", "pi", "openclaw"}
+var launcherIntegrationOrder = []string{"zoey", "eliza", "hermes", "opencode", "omp", "copilot", "droid", "pi", "openclaw", "qwen", "pool"}
 
 var integrationSpecs = []*IntegrationSpec{
 	{
@@ -147,6 +148,18 @@ var integrationSpecs = []*IntegrationSpec{
 		},
 	},
 	{
+		Name:        "omp",
+		Runner:      &OMP{},
+		Description: "AI coding agent with IDE integration",
+		Install: IntegrationInstallSpec{
+			CheckInstalled: func() bool {
+				_, err := (&OMP{}).findPath()
+				return err == nil
+			},
+			URL: "https://omp.sh",
+		},
+	},
+	{
 		Name:        "openclaw",
 		Runner:      &Openclaw{},
 		Aliases:     []string{"clawdbot", "moltbot"},
@@ -182,6 +195,34 @@ var integrationSpecs = []*IntegrationSpec{
 				return err
 			},
 			Command: []string{"npm", "install", "-g", "@mariozechner/pi-coding-agent@latest"},
+		},
+	},
+	{
+		Name:        "pool",
+		Runner:      &Poolside{},
+		Description: "Poolside's software agent for enterprise development",
+		Install: IntegrationInstallSpec{
+			CheckInstalled: func() bool {
+				_, err := exec.LookPath("pool")
+				return err == nil
+			},
+			URL: "https://github.com/poolsideai/pool",
+		},
+	},
+	{
+		Name:        "qwen",
+		Runner:      &Qwen{},
+		Description: "Qwen's AI coding agent with tool use",
+		Install: IntegrationInstallSpec{
+			CheckInstalled: func() bool {
+				_, err := (&Qwen{}).findPath()
+				return err == nil
+			},
+			EnsureInstalled: func() error {
+				_, err := ensureQwenInstalled()
+				return err
+			},
+			URL: "https://qwen.ai/qwencode",
 		},
 	},
 	{
@@ -303,6 +344,9 @@ func ListVisibleIntegrationSpecs() []IntegrationSpec {
 		if spec.Hidden {
 			continue
 		}
+		if spec.Name == "pool" && runtime.GOOS == "windows" {
+			continue
+		}
 		visible = append(visible, *spec)
 	}
 
@@ -419,6 +463,9 @@ func EnsureIntegrationInstalled(name string, runner Runner) error {
 
 	if integration.installed {
 		return nil
+	}
+	if integration.spec.Name == "pool" && poolsideGOOS == "windows" {
+		return poolsideUnsupportedError()
 	}
 	if integration.autoInstallable {
 		return integration.spec.Install.EnsureInstalled()

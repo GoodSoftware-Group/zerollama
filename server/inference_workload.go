@@ -190,6 +190,13 @@ func fetchRuntimeInferenceHealth(ctx context.Context, base string) runtimeHealth
 	}
 }
 
+// runtimeSidecarModelLoaded reports whether the Python sidecar currently holds a loaded
+// llama model (inprocess or llama-server subprocess). Used to skip redundant handoffs.
+func runtimeSidecarModelLoaded(ctx context.Context) bool {
+	h := runtimeInferenceHealth(ctx)
+	return h.ok && h.llamaLoaded
+}
+
 // TrainingSubmitConflict reports whether err should map to HTTP 409 for training submit.
 func TrainingSubmitConflict(err error) bool {
 	return errors.Is(err, ErrInferenceBacklogActive) ||

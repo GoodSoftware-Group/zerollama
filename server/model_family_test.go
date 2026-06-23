@@ -1,8 +1,10 @@
 package server
 
 import (
+	"slices"
 	"testing"
 
+	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -62,5 +64,47 @@ func TestPrimaryModelFamilyFromModelFamilyOnlyClip(t *testing.T) {
 	}
 	if got := primaryModelFamily(cfg); got != "" {
 		t.Fatalf("primaryModelFamily() = %q, want empty when only ModelFamily is clip", got)
+	}
+}
+
+func TestIsGptOSSFamily(t *testing.T) {
+	for _, arch := range []string{"gpt_oss", "gptoss", "gpt-oss", "GPT_OSS"} {
+		if !isGptOSSFamily(arch) {
+			t.Fatalf("isGptOSSFamily(%q) = false, want true", arch)
+		}
+	}
+	if isGptOSSFamily("llama3") {
+		t.Fatal("isGptOSSFamily(llama3) = true, want false")
+	}
+}
+
+func TestResolveParserNameForGptOSSMLX(t *testing.T) {
+	m := &Model{Config: model.ConfigV2{ModelFamily: "gpt_oss", ModelFormat: "safetensors"}}
+	if got := resolveParserName(m); got != "harmony" {
+		t.Fatalf("resolveParserName() = %q, want harmony", got)
+	}
+}
+
+func TestCapabilitiesGptOSSMLX(t *testing.T) {
+	tmpl, err := template.Parse("{{ .Prompt }}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Model{
+		Config: model.ConfigV2{
+			ModelFamily: "gpt_oss",
+			ModelFormat: "safetensors",
+			Capabilities: []string{"completion"},
+		},
+		Template: tmpl,
+	}
+	caps := m.Capabilities()
+	for _, want := range []model.Capability{model.CapabilityTools, model.CapabilityThinking} {
+		if !slices.Contains(caps, want) {
+			t.Fatalf("Capabilities() missing %q, got %v", want, caps)
+		}
+	}
+	if err := m.CheckCapabilities(model.CapabilityTools, model.CapabilityThinking); err != nil {
+		t.Fatalf("CheckCapabilities() = %v", err)
 	}
 }

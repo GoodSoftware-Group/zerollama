@@ -26,8 +26,14 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 	if req == nil {
 		return nil
 	}
+	sessionKey := ExtractPromptCacheKey(req.Options)
+	lastUser := lastUserMessageIndex(req.Messages)
 	for i := range req.Messages {
 		if len(req.Messages[i].Videos) == 0 {
+			if err := validatePreexpandedVideoMessage(req.Messages[i]); err != nil {
+				return err
+			}
+			maybeRestorePreprocessedLayout(sessionKey, i, lastUser, &req.Messages[i])
 			continue
 		}
 		maxV := policy.MaxVideosPerMessage
@@ -35,18 +41,34 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 			return fmt.Errorf("too many videos in one message (max %d)", maxV)
 		}
 		var spans []api.VideoSpan
+		singleClip := len(req.Messages[i].Videos) == 1
+		paddedForClip := req.Messages[i].PaddedInputIDs
+		if !singleClip {
+			paddedForClip = nil // layout cache is per single-clip agent messages only
+		}
+		var cachedPadded []int
 		for _, vid := range req.Messages[i].Videos {
-			frames, err := sampleVideoToPNGs(ctx, policy, vid)
+			sample, err := sampleVideoToPNGs(ctx, policy, sessionKey, vid, paddedForClip)
 			if err != nil {
 				return err
 			}
-			spans = append(spans, api.VideoSpan{FrameCount: len(frames)})
-			for _, f := range frames {
+			if len(sample.paddedInputIDs) > 0 {
+				cachedPadded = sample.paddedInputIDs
+			}
+			spans = append(spans, videoSpanFromExpand(sample.frames, sample.gridTHW, policy))
+			for _, f := range sample.frames {
 				req.Messages[i].Images = append(req.Messages[i].Images, f)
 			}
 		}
 		req.Messages[i].Videos = nil
 		req.Messages[i].VideoSpans = spans
+		if singleClip && sessionKey != "" && len(req.Messages[i].PaddedInputIDs) == 0 && len(cachedPadded) > 0 {
+			req.Messages[i].PaddedInputIDs = append([]int(nil), cachedPadded...)
+			slog.Info("video layout session cache hit",
+				"session_key", sessionKey,
+				"padded_input_ids_len", len(cachedPadded),
+			)
+		}
 		if len(req.Messages[i].Images) > policy.MaxImagesAfterExpand {
 			return fmt.Errorf("too many images after video expansion (max %d)", policy.MaxImagesAfterExpand)
 		}
@@ -54,35 +76,92 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 	return nil
 }
 
-func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, data []byte) ([]api.ImageData, error) {
+func validatePreexpandedVideoMessage(msg api.Message) error {
+	// SGLang-style fast path: client already expanded video into images + spans.
+	// Why validate: inconsistent spans would mis-render or blow num_ctx silently.
+	if len(msg.VideoSpans) == 0 {
+		return nil
+	}
+	frames := 0
+	for _, sp := range msg.VideoSpans {
+		if err := validateVideoSpanGridTHW(sp); err != nil {
+			return err
+		}
+		frames += sp.FrameCount
+	}
+	if err := validatePaddedInputIDs(msg.PaddedInputIDs); err != nil {
+		return err
+	}
+	if frames > len(msg.Images) {
+		return fmt.Errorf("video_spans claim %d frames but message has %d images", frames, len(msg.Images))
+	}
+	return nil
+}
+
+func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionKey string, data []byte, paddedInputIDs []int) (videoExpandEntry, error) {
+	var empty videoExpandEntry
+	if err := validatePaddedInputIDs(paddedInputIDs); err != nil {
+		return empty, err
+	}
 	// Enforce empty/size invariants before ExternalVideoDecodeHook so custom decoders match ffmpeg’s contract.
 	if len(data) == 0 {
-		return nil, errors.New("empty video data")
+		return empty, errors.New("empty video data")
 	}
 	if int64(len(data)) > policy.MaxBytes {
-		return nil, fmt.Errorf("video exceeds max size (%d bytes)", policy.MaxBytes)
+		return empty, fmt.Errorf("video exceeds max size (%d bytes)", policy.MaxBytes)
+	}
+	// Lookup order: session (agent thread) → global (any client) → ffmpeg.
+	// Why session first: global LRU may have evicted this clip under fleet load.
+	if entry, ok := lookupSessionVideoExpand(sessionKey, policy, data); ok {
+		slog.Info("video sample session cache hit",
+			"session_key", sessionKey,
+			"mode", policy.Mode,
+			"frame_count", len(entry.frames),
+		)
+		return entry, nil
+	}
+	if entry, ok := lookupVideoExpandCache(policy, data); ok {
+		slog.Info("video sample global cache hit",
+			"session_key", sessionKey,
+			"mode", policy.Mode,
+			"frame_count", len(entry.frames),
+		)
+		// Promote frames+grid to session cache but do not clobber any layout
+		// the session already has for this clip (paddedInputIDs is session-specific).
+		rememberSessionVideoExpand(sessionKey, policy, data, entry.frames, entry.gridTHW, nil)
+		if ids, ok := lookupSessionVideoLayout(sessionKey, policy, data); ok {
+			entry.paddedInputIDs = ids
+		}
+		return entry, nil
 	}
 	if ExternalVideoDecodeHook != nil {
-		return ExternalVideoDecodeHook(ctx, policy, data)
+		frames, err := ExternalVideoDecodeHook(ctx, policy, data)
+		if err != nil {
+			return empty, err
+		}
+		grid := computeVideoGridTHWFromFrames(frames, policy)
+		rememberVideoExpandCache(policy, data, frames, grid)
+		rememberSessionVideoExpand(sessionKey, policy, data, frames, grid, paddedInputIDs)
+		return videoExpandEntry{frames: frames, gridTHW: grid, paddedInputIDs: cloneIntSlice(paddedInputIDs)}, nil
 	}
 	tmp, err := os.CreateTemp("", "ollama-vid-*."+sniffVideoExt(data))
 	if err != nil {
-		return nil, err
+		return empty, err
 	}
 	path := tmp.Name()
 	defer os.Remove(path)
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return nil, err
+		return empty, err
 	}
 	if err := tmp.Close(); err != nil {
-		return nil, err
+		return empty, err
 	}
 
 	outDir, err := os.MkdirTemp("", "ollama-vframes-*")
 	if err != nil {
-		return nil, err
+		return empty, err
 	}
 	defer os.RemoveAll(outDir)
 
@@ -110,14 +189,14 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, data []b
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
-			return nil, fmt.Errorf("ffmpeg: %w: %s", err, msg)
+			return empty, fmt.Errorf("ffmpeg: %w: %s", err, msg)
 		}
-		return nil, fmt.Errorf("ffmpeg failed: %w (is ffmpeg installed and on PATH?)", err)
+		return empty, fmt.Errorf("ffmpeg failed: %w (is ffmpeg installed and on PATH?)", err)
 	}
 
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
-		return nil, err
+		return empty, err
 	}
 	var names []string
 	for _, e := range entries {
@@ -127,7 +206,7 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, data []b
 		names = append(names, e.Name())
 	}
 	if len(names) == 0 {
-		return nil, errors.New("ffmpeg produced no frames (unsupported or empty video?)")
+		return empty, errors.New("ffmpeg produced no frames (unsupported or empty video?)")
 	}
 	sort.Strings(names)
 
@@ -135,7 +214,7 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, data []b
 	for _, name := range names {
 		b, err := os.ReadFile(filepath.Join(outDir, name))
 		if err != nil {
-			return nil, err
+			return empty, err
 		}
 		out = append(out, b)
 	}
@@ -149,7 +228,17 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, data []b
 		"frame_count", len(out),
 		"manifest_override", policy.ManifestOverride,
 	)
-	return out, nil
+	grid := computeVideoGridTHWFromFrames(out, policy)
+	rememberVideoExpandCache(policy, data, out, grid)
+	rememberSessionVideoExpand(sessionKey, policy, data, out, grid, paddedInputIDs)
+	return videoExpandEntry{frames: out, gridTHW: grid, paddedInputIDs: cloneIntSlice(paddedInputIDs)}, nil
+}
+
+func cloneIntSlice(in []int) []int {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]int(nil), in...)
 }
 
 func sniffVideoExt(data []byte) string {

@@ -55,6 +55,20 @@ type EmbedWriter struct {
 	encodingFormat string
 }
 
+func writeSSEData(w http.ResponseWriter, payload any) error {
+	d, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", d))); err != nil {
+		return err
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return nil
+}
+
 func (w *BaseWriter) writeError(data []byte) (int, error) {
 	var serr api.StatusError
 	if err := json.Unmarshal(data, &serr); err != nil {
@@ -76,6 +90,16 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 	err := json.Unmarshal(data, &chatResponse)
 	if err != nil {
 		return 0, err
+	}
+
+	// Ollama status keepalive chunks (not OpenAI content). Emit valid data: frames so
+	// strict clients (Mercury) count activity; SSE comment frames alone are ignored.
+	if w.stream && chatResponse.Status != "" && chatResponse.Message.Content == "" && !chatResponse.Done {
+		w.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+		if err := writeSSEData(w.ResponseWriter, openai.KeepaliveChunk(w.id, chatResponse.Model)); err != nil {
+			return 0, err
+		}
+		return len(data), nil
 	}
 
 	// chat chunk
@@ -149,6 +173,15 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 	err := json.Unmarshal(data, &generateResponse)
 	if err != nil {
 		return 0, err
+	}
+
+	// Ollama status keepalive / prefill progress (empty text, not done).
+	if w.stream && generateResponse.Status != "" && generateResponse.Response == "" && !generateResponse.Done {
+		w.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+		if err := writeSSEData(w.ResponseWriter, openai.CompletionKeepaliveChunk(w.id, generateResponse.Model)); err != nil {
+			return 0, err
+		}
+		return len(data), nil
 	}
 
 	// completion chunk

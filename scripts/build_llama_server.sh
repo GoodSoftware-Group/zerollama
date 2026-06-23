@@ -88,9 +88,12 @@ CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
 
 rm -rf "${BUILD}"
 # WHY LLAMA_BUILD_WEBUI: eliza fork defaults ON; headless Linux builds fail without WebUI assets.
+# WHY GGML_CUDA_GRAPHS: L3 prefix cache clears KV slots; zerollama calls
+# llama_context_cuda_graph_invalidate to drop stale captured graphs on CUDA.
 cmake -S "${ROOT}" -B "${BUILD}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA="${GGML_CUDA:-ON}" \
+  -DGGML_CUDA_GRAPHS=ON \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
   -DLLAMA_CURL=ON \
   -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-ON}"

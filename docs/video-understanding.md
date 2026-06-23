@@ -61,6 +61,24 @@ When `modality_backends.video_understanding` is **`sglang`** and `OLLAMA_SGLANG_
 
 **Why** both: `vision` means the model can consume image tensors; `video` signals that the manifest/stack is intended for **video-understanding** flows (including expanded frame count). A model without vision cannot use video frames; failing early returns **400** with a clear error instead of obscure runtime failures.
 
+Checks run when a message carries raw **`videos`** or pre-expanded **`video_spans`** (SGLang-style clients that skip ffmpeg).
+
+## Preflight and multi-turn history
+
+Vision budget preflight counts **raw `videos` on any message** (about to expand) and **pre-expanded `video_spans` / audio only on the latest user message**. **Why:** agents often echo full chat history; counting old expanded frames would false-reject valid follow-up turns. Text-only history is unaffected.
+
+## Session cache keys (OpenAI + native)
+
+Session video expansion cache and L3 prefix reuse need a stable thread id:
+
+| API | How to pass |
+|-----|-------------|
+| `/api/chat` | `options.prompt_cache_key` or `options.eliza.conversationId` |
+| `/v1/chat/completions` | top-level `prompt_cache_key` or `options.prompt_cache_key` |
+| Responses API | `prompt_cache_key` field (existing) |
+
+Without a key, global expansion LRU still helps; per-thread session cache does not.
+
 ## Why policy is resolved once on the server
 
 Sampling limits are merged from **env** (fleet-wide defaults) and the model **`config.json`** (per-artifact tuning). Resolution happens in the HTTP handler so **`server/modality`** does not import `server.Model`: that keeps import cycles out and makes policy easy to test. The same **VideoSamplingPolicy** value is used for preflight and expansion so behavior cannot drift between checks.
@@ -86,23 +104,86 @@ Server defaults come from environment variables; **per-model** overrides live in
 | `ffmpeg produced no frames` | Empty stream, no decodable video track, or filters removed every frame. |
 | `video exceeds max size` | Raise `OLLAMA_VIDEO_MAX_BYTES` or shrink the input. |
 | `too many images after video expansion` | Lower `OLLAMA_VIDEO_MAX_FRAMES` / `OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE` or use fewer clips. |
-| `estimated vision tokens ... exceed num_ctx` | **Preflight** upper bound **only for messages that include `videos`**: still images on those turns plus `videos × max_frames × tokens_per_image` (default **768** per frame; override with manifest **`tokens_per_image`**). Earlier turns with images but no video are not counted here. Increase **`num_ctx`**, reduce frames, or remove images. |
+| `estimated vision tokens ... exceed num_ctx` | **Preflight** upper bound: raw **`videos`** on any message (stills + `videos × max_frames × tokens_per_image`); pre-expanded **`video_spans`** / **audio** on the **latest user** message only (default **768** per frame; manifest **`tokens_per_image`**). Increase **`num_ctx`**, reduce frames, or remove clips. |
 
-**Why preflight ignores older turns’ images:** Full prompt budgeting would require duplicating truncate/shift logic. Counting only turns that contain **video** catches “this request will obviously blow the window” after expansion without rejecting long chats that only added images in the past (those turns may be truncated away).
+**Why preflight scopes history:** Full prompt budgeting would duplicate truncate/shift. Raw video on this request always counts. Pre-expanded spans on old user turns are skipped — agents echo history and would otherwise false-reject innocent follow-ups.
+
+**Why preflight ignores older turns’ still images:** Same as above; historical stills may be truncated away before render.
 
 **Why preflight does not count text tokens:** The goal is a **cheap** fail before ffmpeg and disk; tokenizing the whole history here would add latency. Text can still push you over `num_ctx`; use truncate/shift or raise `num_ctx` as usual.
 
 ## mllama / single-image models
 
-Some **mllama** vision stacks accept **only one image per message**. After expansion, **multiple sampled frames** count as multiple images, so chat may fail with an error from prompt construction. Prefer **one short clip**, **lower max frames**, or a model that supports multi-image / video layouts. Automatic downsampling is not implied—treat this as a **policy** decision for your deployment.
+Some **mllama** vision stacks accept **only one image per message**. **Preflight** rejects raw video that would expand to multiple frames before ffmpeg runs. Historical user turns with echoed multi-frame expansions are skipped when only the latest turn is text-only; if history still carries multiple images per message, prompt construction fails as before. Prefer **one short clip**, **`max_frames=1`**, or a multi-image VLM.
 
 ## Why successful sampling is logged at Info
 
 After ffmpeg runs, the server logs effective **mode**, **fps/stride**, **max_frames**, **frame_count**, and whether the manifest overrode defaults. **Why Info (not only Debug):** operators troubleshooting production need to see what actually ran without enabling verbose logging for the whole server.
 
+Cache hits log separately:
+
+| Event | Why it matters |
+|-------|----------------|
+| `video url fetch cache hit` | Same HTTPS URL — container bytes reused (hostname only in logs) |
+| `video sample session cache hit` | Same `prompt_cache_key` + clip — ffmpeg skipped for this agent thread |
+| `video sample global cache hit` | Same policy + video digest — ffmpeg skipped (any client) |
+| `video sample` | ffmpeg actually ran |
+
+**Why three expansion layers:** URL cache saves network; global cache shares wins across users; session cache keeps clips warm for one agent when the global LRU (32 entries) evicts under fleet load. Session cache requires a stable thread key — `options.prompt_cache_key`, eliza `conversationId` / `promptCacheKey`, or OpenAI `/v1/chat/completions` **`prompt_cache_key`** — same semantics as [L3 prefix cache](gpu-profiles-l3.md). See [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md).
+
+## OpenAI usage: modality breakdown and `cached_tokens`
+
+Streaming and final chat/generate responses can include:
+
+```json
+"usage": {
+  "prompt_tokens": 1280,
+  "completion_tokens": 42,
+  "prompt_tokens_details": {
+    "image_tokens": 768,
+    "video_tokens": 2304,
+    "cached_tokens": 120
+  }
+}
+```
+
+**Why `image_tokens` / `video_tokens`:** OpenAI and SGLang expose per-modality prompt estimates for billing and debugging. Zerollama computes an **upper-bound heuristic** after video expansion (`tokens_per_image` from manifest, default 768 per still frame / sampled frame / audio clip). These are not exact vision-tower counts.
+
+**Why `cached_tokens`:** L3 `cache_prompt` and llama-server slot reuse report `timings.cache_n`. Without surfacing it, prefix KV hits are invisible in the API and access logs (`cached_prompt_tokens` on `inference response out`).
+
+**Live gate:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` — two-turn VLM inference with the same `prompt_cache_key`; strict pass requires turn-2 `cached_prompt_tokens` ≥ 1 on `/api/chat` (L3 KV on llama-server subprocess, **or ollama-engine input-cache hits** on Mac Metal). OpenAI `/v1/chat/completions` in the same script is advisory (single-turn, different prefix). Use `VIDEO_AGENT_INFER_SOFT=1` on MLX-only or when both `llama_cache.enabled` and runner KV cache are off. Optional `VIDEO_AGENT_INFER_PREPROC=1` adds a third leg: pre-expanded `images` + `video_spans` + `padded_input_ids` with real inference (not render-only). Grep `VIDEO_AGENT_GO_LOG` for `vision embed session cache hit` (`engine=ollama`) and `vision grid hints`. Report: `./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json`.
+
+**Fleet logs:** the same `inference response out` line includes `image_tokens`, `video_tokens`, and `audio_tokens` when post-expand heuristics are non-zero — mirrors `prompt_tokens_details` without parsing JSON bodies.
+
+## Preprocessed messages (`video_spans` without `videos`)
+
+If a client sends **`images` + `video_spans`** and no raw **`videos`**, expansion is skipped — the message is treated as already processed (SGLang-style fast path). **Why:** double ffmpeg on the same frames wastes CPU and disk.
+
+**Validation:** the sum of `video_spans[].frame_count` must not exceed `len(images)`; otherwise the handler returns **400** before render.
+
 ## `video_spans` on `api.Message`
 
 After expansion, **`video_spans`** lists **`frame_count` per original `videos[]` entry** (in order). **Still images** come first in **`images`**, then frames for each video in order. Renderers that need to distinguish “N frames from one clip” from unrelated images can use this metadata; token layout may still match a flat image list (see Qwen3-VL renderer notes).
+
+### Optional `grid_thw` (SGLang preprocessed metadata)
+
+Pre-expanded clients may attach **`grid_thw`: `[T, H, W]`** on each `video_spans[]` entry (Qwen/SGLang patch grid). **Why:** the flat `768 × frame_count` heuristic over-estimates or under-estimates vs real vision towers; `grid_thw` lets preflight and `usage.prompt_tokens_details` use `T×H×W / spatial_merge²` (default merge 2) without running the vision processor in Go.
+
+**Validation:** `len(grid_thw) == 3`, all positive, and `grid_thw[0]` must equal `frame_count` when both are set. Invalid grids return **400** before render.
+
+### Optional `padded_input_ids` (SGLang pretokenized layout — partial runner consume)
+
+Pre-expanded clients may send **`padded_input_ids`** on the latest user message alongside **`images` + `video_spans`**, or on a single-clip message with raw **`videos[]`** (turn 1). **Why:** SGLang clients already have the full pretokenized prompt slice; zerollama uses `len(padded_input_ids)` for **preflight** and **usage** on that turn instead of frame×768 heuristics. **Layout cache:** on single-clip messages with `options.prompt_cache_key`, `padded_input_ids` is stored in the **session** expansion LRU (not global — layout is client-specific). Restore paths: (1) raw `videos[]` resend on turn 2 (`video layout session cache hit`); (2) pre-expanded `images` + `video_spans` on turn 2 (`preprocessed layout session cache hit`, fingerprinted by frame bytes + span metadata). **Runner (Qwen3-VL):** routes splice **each** user turn's `padded_input_ids` into matching `<|im_start|>user` blocks when template alignment holds (multi-turn agent). Tool results render as pseudo `<|im_start|>user\n<tool_response>…` blocks — they are **excluded** from splice span counting so tool-calling agents do not break alignment. Renderer skips duplicate vision placeholders or `[img-N]` tags on the latest padded user; prior padded users keep placeholders when `role=tool` exists (safe fallback). llamarunner injects full mtmd chunks per `<|vision_start|>…<|vision_end|>` block; llama-server maps vision blocks to media markers (`layout_consume=qwen3vl_hf_runner_inject`). On splice failure: `deferred_multimodal_history` + warn log `padded_input_ids splice failed`. See [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) §25.
+
+**Validation:** non-negative ids, max length 1M. Invalid values return **400** before render.
+
+### Native ffmpeg `grid_thw`
+
+Native ffmpeg expansion **populates `grid_thw`** when sampled PNG frames decode: first-frame dimensions → Qwen3-VL-style smart resize (patch 14, merge 2 by default) → `[frame_count, H_patch, W_patch]`. Override via manifest `vision_patch_size` / `vision_spatial_merge_size`. **Layout cache:** `grid_thw` is stored in global + session expansion LRU with frames — agent turn 2 skips PNG re-decode for grid estimates.
+
+**Runner hints (Jun 2026):** each expanded frame may carry `[1,H,W]` on `llm.ImageData.GridTHW` into the ggml runner. Debug logs compare hints vs embed counts (`vision grid hint`) on **llamarunner** (mtmd) and **ollama-engine** (Mac default, post-`PostTokenize`). **Engine still encodes from pixels** — hints do not override vision forward yet.
+
+**Why:** native path token estimates should match preprocessed clients without requiring SGLang upstream. Other vision families may differ; estimates are heuristic only (not fed to vision forward yet).
 
 ## Optional external decode hook (Phase E)
 
@@ -115,4 +196,5 @@ See **[video-parity.md](./video-parity.md)** for reference workloads and a nativ
 ## Related documentation
 
 - [multimodal-backends.md](./multimodal-backends.md) — env vars and `modality_backends` keys.
+- [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) — what was ported from SGLang and why.
 - [ROADMAP.md](./ROADMAP.md) — **Option 2:** in-tree milestones to narrow parity with external stacks **without** SGLang; [Wan T2V](./wan-t2v.md) (generation) vs this doc (understanding); hardening.

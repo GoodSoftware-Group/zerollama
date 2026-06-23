@@ -239,9 +239,115 @@ func (s *llamaServerRunner) tokenizerAddsBOS() bool {
 	return kv.Bool("tokenizer.ggml.add_bos_token")
 }
 
+func (s *llamaServerRunner) gemma4SoftTokens(ctx context.Context) (Gemma4SoftTokens, error) {
+	imageSlot, err := s.gemma4SlotToken(ctx, gemma4ImagePlaceholder)
+	if err != nil {
+		return Gemma4SoftTokens{}, err
+	}
+	videoSlot, err := s.gemma4SlotToken(ctx, gemma4VideoPlaceholder)
+	if err != nil {
+		return Gemma4SoftTokens{}, err
+	}
+	audioSlot, err := s.gemma4SlotToken(ctx, gemma4AudioPlaceholder)
+	if err != nil {
+		return Gemma4SoftTokens{}, err
+	}
+	return Gemma4SoftTokens{Image: imageSlot, Video: videoSlot, Audio: audioSlot}, nil
+}
+
+func (s *llamaServerRunner) gemma4SlotToken(ctx context.Context, placeholder string) (int, error) {
+	parseSpecial := true
+	toks, err := s.tokenize(ctx, placeholder, false, &parseSpecial)
+	if err != nil {
+		return 0, fmt.Errorf("tokenize gemma4 placeholder %q: %w", placeholder, err)
+	}
+	if len(toks) == 0 {
+		return 0, fmt.Errorf("gemma4 placeholder %q tokenized to empty ids", placeholder)
+	}
+	return toks[len(toks)-1], nil
+}
+
 func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req CompletionRequest) (prompt any, truncated bool, originalTokens int, err error) {
+	media := completionMediaFromRequest(req)
+
+	if len(req.PromptTokens) > 0 {
+		tokens := req.PromptTokens
+		// WHY truncate with media: pretokenized multimodal layouts can exceed num_ctx;
+		// skipping truncate when images were attached left oversized prompts on llama-server.
+		// truncateCompletionTokens keeps vision_start…vision_end blocks intact.
+		if req.Truncate && s.options.NumCtx > 1 {
+			limit := s.options.NumCtx - 1
+			if len(tokens) > limit {
+				if !s.launch.config.ContextShift {
+					return nil, false, 0, api.StatusError{
+						StatusCode:   http.StatusBadRequest,
+						ErrorMessage: "the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length",
+					}
+				}
+				nKeep := req.Options.NumKeep
+				tokens, truncated, originalTokens = truncateCompletionTokens(tokens, limit, nKeep)
+				if truncated {
+					slog.Warn("truncating pretokenized prompt", "limit", limit, "prompt", originalTokens, "keep", min(nKeep, limit), "new", len(tokens), "media", len(media))
+				}
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeQwen3VLHFRunner {
+			if qwen3VLPromptHasVisionBlocks(tokens) {
+				promptStr, mediaCount, err := buildLlamaServerPaddedMultimodalPrompt(ctx, s.Detokenize, tokens, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				// WHY detokenize fallback: client sent rasters but pretokenized ids lack
+				// vision_start — token-only path would drop multimodal_data entirely.
+				slog.Warn("padded_input_ids runner_inject without vision blocks; using detokenized prompt + media markers",
+					"media", len(media),
+					"prompt_tokens", len(tokens),
+				)
+				promptStr, err := s.Detokenize(ctx, tokens)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeGemma4ImgRunner {
+			slots, err := s.gemma4SoftTokens(ctx)
+			if err != nil {
+				return nil, false, 0, err
+			}
+			if gemma4PromptHasSoftSlots(tokens, slots) {
+				promptStr, mediaCount, err := buildLlamaServerGemma4PaddedMultimodalPrompt(ctx, s.Detokenize, tokens, slots, req.Gemma4PaddedMedia, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				slog.Warn("padded_input_ids gemma4 inject without multimodal soft tokens; using detokenized prompt + media markers",
+					"media", len(media),
+					"prompt_tokens", len(tokens),
+					"image_slot", slots.Image,
+					"video_slot", slots.Video,
+					"audio_slot", slots.Audio,
+				)
+				promptStr, err := s.Detokenize(ctx, tokens)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		return tokens, truncated, originalTokens, nil
+	}
+
 	promptVal := s.completionPrompt(req.Prompt, req.LeadingBOS)
-	if !req.Truncate || len(req.Media) > 0 || s.options.NumCtx <= 1 || len(promptVal) < s.options.NumCtx {
+	if !req.Truncate || len(media) > 0 || s.options.NumCtx <= 1 || len(promptVal) < s.options.NumCtx {
 		return promptVal, false, 0, nil
 	}
 
@@ -277,7 +383,7 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	truncatedTokens = append(truncatedTokens, tokens[:nKeep]...)
 	truncatedTokens = append(truncatedTokens, tokens[nKeep+discard:]...)
 
-	slog.Warn("truncating input prompt", "limit", s.options.NumCtx, "prompt", len(tokens), "keep", nKeep, "new", len(truncatedTokens))
+	slog.Warn("truncating input prompt", "limit", limit, "prompt", len(tokens), "keep", nKeep, "new", len(truncatedTokens))
 	return truncatedTokens, true, len(tokens), nil
 }
 
@@ -293,6 +399,11 @@ func FindLlamaServer() (string, error) {
 			return override, nil
 		}
 		return "", fmt.Errorf("llama-server binary not found at LLAMA_SERVER_BIN=%s", override)
+	}
+	if preferFlashMoELlamaServer() {
+		if bin, err := FindFlashMoELlamaServer(); err == nil {
+			return bin, nil
+		}
 	}
 	path, candidates, err := findLlamaCppBinary("llama-server", defaultLlamaCppBinarySearch())
 	if err != nil {
@@ -378,6 +489,8 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	params = appendMainGPUArgs(params, launch.opts)
 
 	params = appendContextShiftArgs(params, launch.opts, launch.config.ContextShift)
+
+	params = appendFlashMoEArgs(params, launch.opts)
 
 	// Set up library paths for GPU backend discovery
 	cmd = exec.Command(exe, params...)
@@ -1291,6 +1404,7 @@ type llamaServerCompletionRequest struct {
 	Grammar         string          `json:"grammar,omitempty"`
 	JsonSchema      json.RawMessage `json:"json_schema,omitempty"`
 	NProbs          int             `json:"n_probs,omitempty"`
+	IDSlot          int             `json:"id_slot,omitempty"`
 	PreservedTokens []string        `json:"preserved_tokens,omitempty"`
 }
 
@@ -1398,6 +1512,7 @@ type llamaServerApplyTemplateResponse struct {
 }
 
 type llamaServerTokenProb struct {
+	ID          int                    `json:"id"`
 	Token       string                 `json:"token"`
 	Logprob     float64                `json:"logprob"`
 	Prob        float64                `json:"prob"`
@@ -1406,7 +1521,8 @@ type llamaServerTokenProb struct {
 }
 
 func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error {
-	slog.Debug("llama-server completion request", "media", len(req.Media), "prompt_len", len(req.Prompt))
+	req.Media = completionMediaFromRequest(req)
+	slog.Debug("llama-server completion request", "media", len(req.Media), "prompt_len", len(req.Prompt), "prompt_tokens", len(req.PromptTokens), "padded_layout_consume", req.PaddedLayoutConsume)
 
 	if req.Options == nil {
 		opts := api.DefaultOptions()
@@ -1478,19 +1594,36 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		lsReq.Grammar = req.Grammar
 	}
 
-	// Convert media: replace Ollama's stable [img-N] markers with the per-process
-	// llama-server media marker and package the matching payloads as base64.
-	if len(req.Media) > 0 {
-		promptStr := lsReq.Prompt.(string)
-		var mediaData []string
-		for _, media := range req.Media {
-			marker := fmt.Sprintf("[img-%d]", media.ID)
-			promptStr = strings.Replace(promptStr, marker, s.llamaServerMediaMarker(), 1)
-			mediaData = append(mediaData, base64.StdEncoding.EncodeToString(media.Data))
+	// Convert media: padded inject uses pretokenized vision blocks; otherwise
+	// replace Ollama's stable [img-N] markers with the per-process llama-server marker.
+	switch p := lsReq.Prompt.(type) {
+	case llamaServerPaddedInjectPrompt:
+		mediaData, err := paddedInjectMediaPayloads(req.Media, p.MediaCount)
+		if err != nil {
+			return err
 		}
 		lsReq.Prompt = llamaServerMultimodalPrompt{
-			PromptString:   promptStr,
+			PromptString:   p.PromptString,
 			MultimodalData: mediaData,
+		}
+		slog.Info("padded_input_ids llama-server inject",
+			"prompt_tokens", len(req.PromptTokens),
+			"media", p.MediaCount,
+			"prompt_string_len", len(p.PromptString),
+		)
+	case string:
+		if len(req.Media) > 0 {
+			promptStr := p
+			var mediaData []string
+			for _, media := range req.Media {
+				marker := fmt.Sprintf("[img-%d]", media.ID)
+				promptStr = strings.Replace(promptStr, marker, s.llamaServerMediaMarker(), 1)
+				mediaData = append(mediaData, base64.StdEncoding.EncodeToString(media.Data))
+			}
+			lsReq.Prompt = llamaServerMultimodalPrompt{
+				PromptString:   promptStr,
+				MultimodalData: mediaData,
+			}
 		}
 	}
 
@@ -1593,15 +1726,16 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 				}
 
 				finalResp = CompletionResponse{
-					Content:              lsResp.Content,
-					Done:                 true,
-					DoneReason:           doneReason,
-					PromptEvalCount:      lsResp.Timings.promptEvalCount(),
-					PromptEvalDuration:   time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
-					EvalCount:            lsResp.Timings.PredictN,
-					EvalDuration:         time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
-					PromptTruncated:      promptTruncated,
-					OriginalPromptTokens: originalPromptTokens,
+					Content:               lsResp.Content,
+					Done:                  true,
+					DoneReason:            doneReason,
+					PromptEvalCount:       lsResp.Timings.promptEvalCount(),
+					PromptEvalCachedCount: lsResp.Timings.CacheN,
+					PromptEvalDuration:    time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
+					EvalCount:             lsResp.Timings.PredictN,
+					EvalDuration:          time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
+					PromptTruncated:       promptTruncated,
+					OriginalPromptTokens:  originalPromptTokens,
 				}
 				hasFinalResp = true
 			}
@@ -1898,6 +2032,7 @@ func (s *llamaServerRunner) Chat(ctx context.Context, req ChatRequest, fn func(C
 				resp.Done = true
 				resp.DoneReason = doneReason
 				resp.PromptEvalCount = lsResp.Timings.promptEvalCount()
+				resp.PromptEvalCachedCount = lsResp.Timings.CacheN
 				resp.PromptEvalDuration = time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond))
 				resp.EvalCount = lsResp.Timings.PredictN
 				resp.EvalDuration = time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond))

@@ -1629,6 +1629,98 @@ func TestResponsesMiddlewareZstd(t *testing.T) {
 	}
 }
 
+func TestChatWriter_StatusKeepaliveEmitsSSEDataFrame(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+
+	writer := &ChatWriter{
+		stream:     true,
+		id:         "chatcmpl-keepalive",
+		BaseWriter: BaseWriter{ResponseWriter: context.Writer},
+	}
+
+	response := api.ChatResponse{
+		Model:  "test-model",
+		Status: "keepalive",
+		Detail: "processing",
+		Message: api.Message{
+			Role: "assistant",
+		},
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if _, err = writer.Write(data); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", got)
+	}
+
+	frames := sseDataFrames(recorder.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 SSE data frame, got %d:\n%s", len(frames), recorder.Body.String())
+	}
+
+	var chunk openai.ChatCompletionChunk
+	if err := json.Unmarshal([]byte(frames[0]), &chunk); err != nil {
+		t.Fatalf("unmarshal keepalive chunk: %v", err)
+	}
+	if chunk.Object != "chat.completion.chunk" {
+		t.Fatalf("expected chat.completion.chunk object, got %q", chunk.Object)
+	}
+	if len(chunk.Choices) != 1 {
+		t.Fatalf("expected 1 choice, got %d", len(chunk.Choices))
+	}
+	if chunk.Choices[0].FinishReason != nil {
+		t.Fatalf("expected nil finish_reason on keepalive, got %v", chunk.Choices[0].FinishReason)
+	}
+	if strings.Contains(recorder.Body.String(), ": keepalive") {
+		t.Fatalf("expected data frame keepalive, not SSE comment:\n%s", recorder.Body.String())
+	}
+}
+
+func TestCompleteWriter_StatusKeepaliveEmitsSSEDataFrame(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+
+	writer := &CompleteWriter{
+		stream:     true,
+		id:         "cmpl-keepalive",
+		BaseWriter: BaseWriter{ResponseWriter: context.Writer},
+	}
+
+	response := api.GenerateResponse{
+		Model:  "test-model",
+		Status: "prefill",
+		Detail: "8192/65536 tokens",
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if _, err = writer.Write(data); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	frames := sseDataFrames(recorder.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 SSE data frame, got %d:\n%s", len(frames), recorder.Body.String())
+	}
+
+	var chunk openai.CompletionChunk
+	if err := json.Unmarshal([]byte(frames[0]), &chunk); err != nil {
+		t.Fatalf("unmarshal keepalive chunk: %v", err)
+	}
+	if chunk.Object != "text_completion" {
+		t.Fatalf("expected text_completion object, got %q", chunk.Object)
+	}
+}
+
 func TestSpeechMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

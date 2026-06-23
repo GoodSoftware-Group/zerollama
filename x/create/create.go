@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -662,6 +663,7 @@ var tensorImportTransformRegistry = map[string]tensorImportTransformFactory{
 	"Qwen3NextMoeForConditionalGeneration": newQwen35ImportTransform,
 	"Gemma4ForCausalLM":                    newGemma4ImportTransform,
 	"Gemma4ForConditionalGeneration":       newGemma4ImportTransform,
+	"Cohere2MoeForCausalLM":                newCohere2MoeImportTransform,
 }
 
 func newTensorImportTransform(modelDir string, cfg sourceModelConfig) (tensorImportTransform, error) {
@@ -756,7 +758,7 @@ func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer La
 			if importTransform.skipTensor(tensorName) {
 				continue
 			}
-			if shouldSkipSourceCompanion(tensorName, tensorSet) {
+			if shouldSkipSourceCompanion(tensorName, tensorSet) || shouldSkipGemma4SwitchGluCompanion(tensorName, tensorSet) {
 				continue
 			}
 			sourceFP8ScaleName, hasSourceFP8Scale := sourceFP8Companion(tensorName, tensorSet)
@@ -768,8 +770,39 @@ func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer La
 				return fmt.Errorf("failed to get tensor %s: %w", tensorName, err)
 			}
 
+			if sg, ok := importTransform.(switchGluPrequantizedImporter); ok {
+				sgLayers, done, err := sg.tryImportSwitchGluPrequantized(extractor, td, tensorName, tensorSet, createLayer)
+				if err != nil {
+					extractor.Close()
+					closeExtractors()
+					return err
+				}
+				if done {
+					layers = append(layers, sgLayers...)
+					continue
+				}
+			}
+
 			if effectiveQuantize == "" {
-				layer, ok, err := createPrequantizedLayer(extractor, td, tensorName, tensorSet, sourceQuantMetadata, createLayer)
+				pqMeta := sourceQuantMetadata
+				if r, ok := importTransform.(prequantizedMetadataResolver); ok {
+					if m := r.prequantizedMetadataForTensor(tensorName); m != nil {
+						pqMeta = m
+					}
+				}
+				if pqMeta == nil {
+					pqMeta = map[string]string{}
+				} else {
+					pqMeta = maps.Clone(pqMeta)
+				}
+				baseQuant := normalizeQuantType(pqMeta["quant_type"])
+				if override := importTransform.quantizationType(tensorName, td.Shape, baseQuant); override != "" {
+					pqMeta["quant_type"] = override
+					if pqMeta["group_size"] == "" {
+						pqMeta["group_size"] = "64"
+					}
+				}
+				layer, ok, err := createPrequantizedLayer(extractor, td, tensorName, tensorSet, pqMeta, createLayer)
 				if err != nil {
 					extractor.Close()
 					closeExtractors()
@@ -946,6 +979,38 @@ func shouldSkipSourceCompanion(name string, tensorSet map[string]struct{}) bool 
 	}
 }
 
+// switchGluPrequantizedImporter handles mlx-optiq Gemma-4 MoE tensors that ship
+// as stacked [experts, out, in] weight/scales/biases under experts.switch_glu.
+type switchGluPrequantizedImporter interface {
+	tryImportSwitchGluPrequantized(
+		extractor *safetensors.TensorExtractor,
+		td *safetensors.TensorData,
+		tensorName string,
+		tensorSet map[string]struct{},
+		createLayer LayerCreator,
+	) ([]LayerInfo, bool, error)
+}
+
+type prequantizedMetadataResolver interface {
+	prequantizedMetadataForTensor(tensorName string) map[string]string
+}
+
+func shouldSkipGemma4SwitchGluCompanion(name string, tensorSet map[string]struct{}) bool {
+	if !strings.Contains(name, ".experts.switch_glu.") {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(name, ".scales"):
+		_, ok := tensorSet[strings.TrimSuffix(name, ".scales")+".weight"]
+		return ok
+	case strings.HasSuffix(name, ".biases"):
+		_, ok := tensorSet[strings.TrimSuffix(name, ".biases")+".weight"]
+		return ok
+	default:
+		return false
+	}
+}
+
 func sourceFP8Companion(weightName string, tensorSet map[string]struct{}) (scaleName string, ok bool) {
 	if !strings.HasSuffix(weightName, ".weight") {
 		return "", false
@@ -998,6 +1063,27 @@ func createPrequantizedLayer(
 		return LayerInfo{}, false, fmt.Errorf("failed to create prequantized layer for %s: %w", tensorName, err)
 	}
 	return layer, true, nil
+}
+
+func createPrequantizedLayerFromTensors(
+	weight, scale, bias *safetensors.TensorData,
+	metadata map[string]string,
+	createLayer LayerCreator,
+) (LayerInfo, error) {
+	tensors := []*safetensors.TensorData{weight}
+	tensors = append(tensors, scale.WithName(weight.Name+".scale"))
+	if bias != nil {
+		tensors = append(tensors, bias.WithName(weight.Name+".bias"))
+	}
+	layer, err := createLayer(
+		safetensors.BuildPackedSafetensorsReaderWithMetadata(tensors, metadata),
+		"application/vnd.ollama.image.tensor",
+		weight.Name,
+	)
+	if err != nil {
+		return LayerInfo{}, fmt.Errorf("failed to create prequantized layer for %s: %w", weight.Name, err)
+	}
+	return layer, nil
 }
 
 func prequantizedCompanions(weightName string, tensorSet map[string]struct{}) (scaleName, biasName string, ok bool) {

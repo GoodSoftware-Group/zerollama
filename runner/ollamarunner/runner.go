@@ -112,6 +112,7 @@ type Sequence struct {
 	samplingDuration         time.Duration
 	numPredicted             int
 	numPromptInputs          int
+	cachedPromptInputs       int
 
 	promptTruncated      bool
 	originalPromptTokens int
@@ -127,6 +128,15 @@ type NewSequenceParams struct {
 	truncate    bool
 	logprobs    bool
 	topLogprobs int
+
+	promptTokens        []int
+	paddedLayoutConsume string
+	promptCacheKey      string
+	gemma4Slots         Gemma4SoftTokens
+	gemma4PaddedMedia   Gemma4PaddedMediaSchedule
+	lfm2Slots           Lfm2VisionTokens
+	mistral3Slots       Mistral3VisionTokens
+	deepseekOcrSlots    DeepseekOcrVisionTokens
 }
 
 var errorInputTooLong = errors.New("the input length exceeds the context length")
@@ -134,10 +144,38 @@ var errorInputTooLong = errors.New("the input length exceeds the context length"
 func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSequenceParams) (*Sequence, error) {
 	s.ready.Wait()
 
-	inputs, ctxs, mmStore, err := s.inputs(prompt, images)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process inputs: %w", err)
-	} else if len(inputs) == 0 {
+	if s.visionCache != nil && len(images) > 0 {
+		s.visionCache.growCacheForDistinctFrames(len(images))
+	}
+
+	var inputs []*input.Input
+	var ctxs []ml.Context
+	var mmStore multimodalStore
+	var err error
+
+	switch {
+	case len(params.promptTokens) > 0 && params.paddedLayoutConsume != "":
+		inputs, ctxs, mmStore, err = s.inputsFromPaddedPromptTokens(
+			params.promptTokens, images, params.paddedLayoutConsume,
+			params.gemma4Slots, params.gemma4PaddedMedia, params.lfm2Slots, params.mistral3Slots, params.deepseekOcrSlots, params.promptCacheKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process padded prompt tokens: %w", err)
+		}
+		slog.Info("padded_input_ids runner inject",
+			"prompt_tokens", len(params.promptTokens),
+			"images", len(images),
+			"inputs", len(inputs),
+			"consume", params.paddedLayoutConsume,
+			"engine", "ollama",
+		)
+	default:
+		inputs, ctxs, mmStore, err = s.inputs(prompt, images, params.promptCacheKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process inputs: %w", err)
+		}
+	}
+	if len(inputs) == 0 {
 		return nil, errors.New("no input provided")
 	}
 
@@ -227,10 +265,21 @@ func calculateLogprobs(logits []float32, selectedToken int32, topK int, tok toke
 	return common.CalculateLogprobs(logits, int(selectedToken), topK, decoder)
 }
 
+func (s *Server) encodeMultimodalCached(ctx ml.Context, data []byte, sessionKey string) ([]input.Multimodal, error) {
+	mp, ok := s.model.(model.MultimodalProcessor)
+	if !ok {
+		return nil, errors.New("model does not support multimodal encoding")
+	}
+	if s.visionCache != nil {
+		return s.visionCache.GetOrEncode(mp, s.model.Backend(), ctx, data, sessionKey)
+	}
+	return mp.EncodeMultimodal(ctx, data)
+}
+
 // inputs processes the prompt and images into a list of inputs
 // by splitting the prompt on [img-<n>] tags, tokenizing text and
 // decoding images
-func (s *Server) inputs(prompt string, images []llm.ImageData) ([]*input.Input, []ml.Context, multimodalStore, error) {
+func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string) ([]*input.Input, []ml.Context, multimodalStore, error) {
 	var inputs []*input.Input
 	var ctxs []ml.Context
 	var mmStore multimodalStore
@@ -279,7 +328,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData) ([]*input.Input, 
 			ctx := s.model.Backend().NewContext()
 			runtime.SetFinalizer(ctx, func(c ml.Context) { c.Close() })
 			ctxs = append(ctxs, ctx)
-			imageEmbeddings, err := multimodalProcessor.EncodeMultimodal(ctx, images[imageIndex].Data)
+			imageEmbeddings, err := s.encodeMultimodalCached(ctx, images[imageIndex].Data, sessionKey)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -300,6 +349,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData) ([]*input.Input, 
 		if err != nil {
 			return nil, nil, nil, err
 		}
+		logVisionGridHintsFromInputs(images, inputs)
 	}
 
 	return inputs, ctxs, mmStore, nil
@@ -393,6 +443,9 @@ type Server struct {
 	// multimodalHash generates hashes for comparing equality
 	// of non-text data
 	multimodalHash maphash.Hash
+
+	// vision embed LRU + session overlay (SGLang prefix-mm analogue)
+	visionCache *VisionEmbedCache
 }
 
 func (s *Server) allNil() bool {
@@ -904,7 +957,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		grammar,
 	)
 
-	seq, err := s.NewSequence(req.Prompt, req.Images, NewSequenceParams{
+	params := NewSequenceParams{
 		numPredict:  req.Options.NumPredict,
 		stop:        req.Options.Stop,
 		numKeep:     int32(req.Options.NumKeep),
@@ -914,7 +967,57 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		truncate:    req.Truncate,
 		logprobs:    req.Logprobs,
 		topLogprobs: req.TopLogprobs,
-	})
+		promptTokens:        req.PromptTokens,
+		paddedLayoutConsume: req.PaddedLayoutConsume,
+		promptCacheKey:      req.PromptCacheKey,
+		gemma4PaddedMedia: Gemma4PaddedMediaSchedule{
+			StillImageCount:  req.Gemma4PaddedMedia.StillImageCount,
+			VideoFrameCounts: req.Gemma4PaddedMedia.VideoFrameCounts,
+			AudioClipCount:   req.Gemma4PaddedMedia.AudioClipCount,
+		},
+	}
+	if req.PaddedLayoutConsume == PaddedLayoutConsumeGemma4ImgRunner {
+		slots, err := s.gemma4SoftTokens()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("gemma4 padded inject: %v", err), http.StatusInternalServerError)
+			return
+		}
+		params.gemma4Slots = slots
+	}
+	if req.PaddedLayoutConsume == PaddedLayoutConsumeLfm2ImgRunner {
+		slots, err := s.lfm2VisionTokens()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("lfm2 padded inject: %v", err), http.StatusInternalServerError)
+			return
+		}
+		params.lfm2Slots = slots
+	}
+	if req.PaddedLayoutConsume == PaddedLayoutConsumeGlmocrImgRunner {
+		slots, err := s.glmocrVisionTokens()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("glmocr padded inject: %v", err), http.StatusInternalServerError)
+			return
+		}
+		params.lfm2Slots = slots
+	}
+	if req.PaddedLayoutConsume == PaddedLayoutConsumeMistral3ImgRunner {
+		slots, err := s.mistral3VisionTokens()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("mistral3 padded inject: %v", err), http.StatusInternalServerError)
+			return
+		}
+		params.mistral3Slots = slots
+	}
+	if req.PaddedLayoutConsume == PaddedLayoutConsumeDeepseekOcrImgRunner {
+		slots, err := s.deepseekOcrVisionTokens()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("deepseekocr padded inject: %v", err), http.StatusInternalServerError)
+			return
+		}
+		params.deepseekOcrSlots = slots
+	}
+
+	seq, err := s.NewSequence(req.Prompt, req.Images, params)
 	if err != nil {
 		if errors.Is(err, errorInputTooLong) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -944,6 +1047,9 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				s.seqsSem.Release(1)
 				http.Error(w, fmt.Sprintf("Failed to load cache: %v", err), http.StatusInternalServerError)
 				return
+			}
+			if seq.cache != nil {
+				seq.cachedPromptInputs = len(seq.cache.Inputs)
 			}
 
 			s.seqs[i] = seq
@@ -979,10 +1085,11 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 			} else {
 				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
-					Done:                 true,
-					DoneReason:           seq.doneReason,
-					PromptEvalCount:      seq.numPromptInputs,
-					PromptEvalDuration:   seq.processingDuration,
+					Done:                   true,
+					DoneReason:             seq.doneReason,
+					PromptEvalCount:        seq.numPromptInputs,
+					PromptEvalCachedCount:  seq.cachedPromptInputs,
+					PromptEvalDuration:     seq.processingDuration,
 					EvalCount:            seq.numPredicted,
 					EvalDuration:         seq.lastUpdatedAt.Sub(seq.startedAt) - seq.samplingDuration,
 					PromptTruncated:      seq.promptTruncated,
@@ -1217,6 +1324,12 @@ func (s *Server) allocModel(
 		return err
 	}
 
+	if postLoader, ok := s.model.(model.PostLoader); ok {
+		if err := postLoader.PostLoad(); err != nil {
+			return err
+		}
+	}
+
 	// TODO(jessegross): LoRA loading
 	if len(loraPath) > 0 {
 		return errors.New("loras are not yet implemented")
@@ -1238,6 +1351,10 @@ func (s *Server) allocModel(
 		return err
 	}
 
+	if _, ok := s.model.(model.MultimodalProcessor); ok {
+		s.visionCache = NewVisionEmbedCache(envconfig.ImageEmbedCacheSize())
+	}
+
 	s.parallel = parallel
 	s.seqs = make([]*Sequence, s.parallel)
 	s.seqsSem = semaphore.NewWeighted(int64(s.parallel))
@@ -1254,6 +1371,7 @@ func (s *Server) allocModel(
 func (s *Server) closeModel() {
 	s.cache.Close()
 	s.cache = nil
+	s.visionCache = nil
 	if s.model != nil {
 		s.model.Backend().Close()
 		s.model = nil
@@ -1436,6 +1554,7 @@ func Execute(args []string) error {
 	mux.HandleFunc("GET /info", server.info)
 	mux.HandleFunc("POST /load", server.load)
 	mux.HandleFunc("POST /embedding", server.embeddings)
+	mux.HandleFunc("POST /score", server.score)
 	mux.HandleFunc("POST /completion", server.completion)
 	mux.HandleFunc("GET /health", server.health)
 

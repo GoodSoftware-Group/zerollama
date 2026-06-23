@@ -36,9 +36,11 @@ type DarwinSidecar struct {
 	stopOnce sync.Once
 }
 
-// Stop terminates a sidecar process started by BootstrapDarwinSidecar.
+// Stop terminates a child sidecar process started by BootstrapDarwinSidecar when
+// ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=managed. Default (persist) leaves the sidecar running
+// so the next zerollama serve can reuse it without a cold Python startup.
 func (s *DarwinSidecar) Stop() {
-	if s == nil {
+	if s == nil || !envconfig.DarwinSidecarKillOnServeExit() {
 		return
 	}
 	s.stopOnce.Do(func() {
@@ -189,6 +191,14 @@ func applyDarwinServeDefaults(repoRoot string) {
 	}
 	envconfig.ApplyLlamaCppBackendDefaults()
 	applyDarwinLlamaCppEnv(repoRoot)
+	if !envconfig.LlamaCppBackend() {
+		lib := strings.TrimSpace(os.Getenv("LLAMA_CPP_LIB"))
+		if lib != "" {
+			if st, err := os.Stat(lib); err == nil && !st.IsDir() {
+				_ = os.Setenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", "inprocess")
+			}
+		}
+	}
 }
 
 func applyDarwinLlamaCppEnv(repoRoot string) {

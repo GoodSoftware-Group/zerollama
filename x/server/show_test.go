@@ -89,6 +89,27 @@ func TestBuildModelInfo(t *testing.T) {
 			wantParamCount:   4_300_000_000,
 		},
 		{
+			name: "multimodal text_config max_position_embeddings equals vocab_size (bogus field)",
+			config: modelConfig{
+				ModelType:             "somemodel",
+				MaxPositionEmbeddings: 131072,
+				TextConfig: &modelTextConfig{
+					MaxPositionEmbeddings: 262144, // same as vocab_size — not a context window
+					VocabSize:             262144,
+					NumHiddenLayers:       30,
+					HiddenSize:            2816,
+				},
+				TorchDtype: "bfloat16",
+			},
+			totalTensorBytes: 8_600_000_150,
+			tensorCount:      1,
+			wantArch:         "somemodel",
+			wantContextLen:   131072, // falls back to top-level max_position_embeddings
+			wantEmbedLen:     2816,
+			wantBlockCount:   30,
+			wantParamCount:   4_300_000_000,
+		},
+		{
 			name: "float32 model",
 			config: modelConfig{
 				ModelType:             "test",

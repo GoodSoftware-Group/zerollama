@@ -33,17 +33,26 @@ Document the exact model tag and clip source in your issue or PR when changing s
 | Behavior | Native (today) | Native (after M1) | Optional SGLang | Target |
 |----------|----------------|-------------------|-----------------|--------|
 | Time-uniform sampling (fps) | `OLLAMA_VIDEO_SAMPLE_FPS` + max frames | + per-model `video_sampling.mode=fps` | Upstream stack | |
-| Stride / nth-frame sampling | env-only (if added) | `mode=stride` + stride | Upstream stack | |
+| Stride / nth-frame sampling | env + manifest | `mode=stride` + stride | Upstream stack | |
 | Max frames cap | `OLLAMA_VIDEO_MAX_FRAMES` | + manifest `max_frames` | Upstream stack | |
 | Byte / message limits | `OLLAMA_VIDEO_*` env | unchanged | proxy body limits | |
 | Failure modes (corrupt video, no frames) | ffmpeg error → 400 | documented + logs | upstream | |
-| Context budget before decode | heuristic (M3) | preflight vs `num_ctx` (messages **with** video only; stills on those turns + max frames) | upstream scheduler | |
-| Template: flat images vs video spans | flat `images` only | optional `video_spans` metadata (M2) | upstream | |
-| mllama single-image constraint | error if >1 image in a message | documented; same or downsample (policy) | n/a | |
+| Context budget before decode | preflight vs `num_ctx`; raw `videos` any message; pre-expanded spans on **latest user** only | + `tokens_per_image` manifest | upstream scheduler | |
+| Capability gate | raw `videos` **or** `video_spans` | vision + video caps | upstream | |
+| mllama single-image constraint | preflight before ffmpeg + post-expand prompt check | documented; same or downsample (policy) | n/a | |
+| Template: flat images vs video spans | flat `images` + `video_spans` metadata | Gemma4 HF placeholders (`!RenderImgTags`) | upstream | |
+| Repeat `video_url` fetch | pooled HTTP + URL body LRU (32 / 30 m) | — | upstream CDN cache | |
+| Repeat clip ffmpeg skip | global expand LRU + session LRU w/ `prompt_cache_key` | — | upstream preprocessor cache | |
+| Preprocessed frames (no raw video) | skip ffmpeg when `video_spans` set | span validation | `processor_output` path | |
+| OpenAI usage modality breakdown | `image_tokens`, `video_tokens`, `audio_tokens` (heuristic) | — | upstream | |
+| OpenAI session cache key | `/v1/chat/completions` `prompt_cache_key` + `options`; `/api/chat` `options` | — | Responses API field | |
+| Prefix KV visibility | `cached_tokens` in `prompt_tokens_details` | access log `cached_prompt_tokens` | upstream | |
+| Modality token visibility | `image_tokens`, `video_tokens`, `audio_tokens` (heuristic) | access log same fields on `inference response out` | upstream | |
+| Full `grid_thw` / pretokenized layout cache | `grid_thw` global+session LRU; `padded_input_ids` session LRU; Qwen3-VL **multi-turn** runner inject + tool-span splice | full processor consume | upstream |
 
 ## How to use this in PRs
 
 - For native-path changes, update the **Native (after M1)** column or add a footnote when behavior is intentional.
 - Do not claim full parity with **every** SGLang model; the **Optional SGLang** column is for comparison only.
 
-See also [video-understanding.md](./video-understanding.md) and [multimodal-backends.md](./multimodal-backends.md).
+See also [video-understanding.md](./video-understanding.md), [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md), and [multimodal-backends.md](./multimodal-backends.md).

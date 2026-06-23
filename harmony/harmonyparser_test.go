@@ -536,3 +536,19 @@ func TestFunctionConvertAndAdd(t *testing.T) {
 		})
 	}
 }
+
+func TestHarmonyParserFlushRemainderMalformedAssistant(t *testing.T) {
+	handler := NewHarmonyMessageHandler()
+	handler.Init(nil, nil, nil)
+
+	content, thinking, _, err := handler.Add("\n\n , the", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thinking != "" {
+		t.Fatalf("thinking = %q, want empty", thinking)
+	}
+	if content != ", the" {
+		t.Fatalf("content = %q, want %q", content, ", the")
+	}
+}

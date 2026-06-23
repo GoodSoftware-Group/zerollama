@@ -193,6 +193,37 @@ func TestDeferInferenceToRuntimeWithToolsBackend(t *testing.T) {
 	}
 }
 
+func TestModelUsesRuntimeInferenceEdgeMode(t *testing.T) {
+	t.Setenv("ZEROLLAMA_EDGE", "1")
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	t.Setenv("ZEROLLAMA_RUNTIME", "0")
+	t.Setenv("ZEROLLAMA_LLAMA_CPP_BACKEND", "1")
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
+
+	explicit := &Model{
+		ModelPath: "/tmp/x.gguf",
+		Config: model.ConfigV2{
+			Capabilities: []string{string(model.CapabilityCompletion)},
+			ModalityBackends: map[string]string{
+				model.ModalityInference: model.BackendZerollamaRuntime,
+			},
+		},
+	}
+	if modelUsesRuntimeInference(explicit) {
+		t.Fatal("edge mode must not route to Python runtime")
+	}
+
+	text := &Model{
+		ModelPath: "/tmp/m.gguf",
+		Config: model.ConfigV2{
+			Capabilities: []string{string(model.CapabilityCompletion)},
+		},
+	}
+	if modelUsesRuntimeInference(text) {
+		t.Fatal("edge mode must not use runtime default-on")
+	}
+}
+
 func TestRuntimeProxyActiveNotDefaultOn(t *testing.T) {
 	t.Setenv("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081")
 	t.Setenv("ZEROLLAMA_RUNTIME", "1")

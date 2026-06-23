@@ -397,6 +397,11 @@ func parseTextConfig(configData []byte) (TextConfig, error) {
 	if cfg.MaxPositionEmbeddings == 0 {
 		cfg.MaxPositionEmbeddings = 131072
 	}
+	// HF exports (Gemma4 multimodal) store vocab_size in max_position_embeddings (262144).
+	// The real text context window is 131072 tokens.
+	if cfg.VocabSize > 0 && cfg.MaxPositionEmbeddings >= cfg.VocabSize {
+		cfg.MaxPositionEmbeddings = 131072
+	}
 
 	// Gemma 4 uses scaling=1.0 (no 1/sqrt(head_dim) scaling); the Q/K norms
 	// handle magnitude control. This differs from Gemma 3 which uses

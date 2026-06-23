@@ -86,6 +86,14 @@ Discovery (directional): mDNS / DNS-SD (_zerollama._tcp) or static config + hear
       "running": 0,
       "llama_loaded": true,
       "state": "idle"
+    },
+    "backend": {
+      "edge": false,
+      "edge_build": false,
+      "ggml_linked": true,
+      "llama_server": "auto",
+      "runtime_chat": "on",
+      "gguf_path": "llama-server"
     }
   }
 }
@@ -101,13 +109,19 @@ When the sidecar is configured but `/health` fails, runtime queue fields are **o
 |-------|---------|
 | `inference.ggml.pending` | Requests waiting in the Go scheduler FIFO |
 | `inference.ggml.active` | In-flight ggml work (refs + active load) |
-| `inference.ggml.loaded` | Resident runner count (same snapshot as `loaded_models`) |
-| `inference.ggml.loaded_models` | Short names of loaded models (warm routing); `len` equals `loaded` when names resolve |
+| `inference.ggml.loaded` | Ready runner count (`len` matches `loaded_models`; excludes in-map runners still loading) |
+| `inference.ggml.loaded_models` | Short names of ready loaded models (warm routing) |
+| `inference.ggml.loaded_model_details` | Per-model metadata probed after load (`num_ctx`, `manifest_num_ctx`, `train_context_length`, `num_parallel`, `num_gpu`, `backend`, `parser`, `supports_thinking`, `supports_tools`, `has_chat_template`) |
 | `inference.ggml.loading` | Scheduler is loading or evicting for a pending request |
 | `inference.runtime.enabled` | `ZEROLLAMA_RUNTIME_URL` (or sidecar) is configured |
 | `inference.runtime.available` | Runtime `/health` probe succeeded — **check this before using queue fields** |
 | `inference.runtime.waiting` / `running` | Python runtime scheduler queues (omitted when `available` is false) |
 | `inference.runtime.llama_loaded` | Runtime has an active llama-server (omitted when `available` is false) |
+| `inference.backend.llama_server` | Phase 17 routing: `off`, `auto` (Linux serve), or `explicit` (`--llama-server-backend` / `--edge`) |
+| `inference.backend.gguf_path` | Effective GGUF hot path: `ggml`, `llama-server`, or `runtime` (harness) |
+| `inference.backend.edge` | Phase 16 edge mode active (`ZEROLLAMA_EDGE=1` or edge-marked binary default) |
+| `inference.backend.ggml_linked` | Compile-time: `false` for `-tags edge` binaries (subprocess runner stubbed) |
+| `inference.backend.runtime_chat` | Python runtime chat proxy: `on` or `off` |
 
 Poll interval for fleet management: **1–5s** is typical; combine with stream progress for in-request updates.
 
@@ -127,8 +141,23 @@ ZEROLLAMA_FLEET_PEERS=http://192.168.1.10:11434,http://192.168.1.11:11434 \
 | `/health` | GET | Liveness |
 | `/api/fleet/status` | GET | All peer snapshots + **warm_models** map |
 | `/api/fleet/assign` | POST | Pick `{url, node_id}` for a model |
+| `/internal/score` | POST | Loopback-only ranked candidates + scores (tuning/debug) |
 
 **Assign request:**
+
+```json
+{
+  "model": "llama3:latest",
+  "prefer_warm": true,
+  "warm_only": false,
+  "exclude": ["192.168.1.10:11434"],
+  "session_key": "eliza-conversation-abc"
+}
+```
+
+`session_key` (or `prompt_cache_key`) biases assign toward the node that recently served the same agent thread when that node still has the model warm — pairs with per-node L3 `prompt_cache_key` / `eliza.conversationId` pinning. TTL defaults to 30m (`ZEROLLAMA_FLEET_PREFIX_CACHE_TTL`); disable with `ZEROLLAMA_FLEET_PREFIX_CACHE=0`.
+
+**Assign request (minimal):**
 
 ```json
 {
@@ -151,9 +180,9 @@ ZEROLLAMA_FLEET_PEERS=http://192.168.1.10:11434,http://192.168.1.11:11434 \
 }
 ```
 
-**Routing (v0):** Prefer nodes with the model in `inference.ggml.loaded_models` and lowest combined queue (`pending + active` + runtime `waiting + running` when runtime probe is available). Cold route picks lowest queue among available peers. Management **does not** load models or evict on remote nodes.
+**Routing (v0):** Filter-then-score over peer snapshots: warm model loaded (−10k), session affinity (−5k), queue depth (+100/req), loading (+500), other residents (+300/model), effective ctx pressure (+5 per 1k ctx from non-request models). Prefer warm when `prefer_warm` (default); `warm_only` rejects cold nodes. When `session_key` is set, affinity applies within the warm set. Management **does not** load models or evict on remote nodes.
 
-**Env:** `ZEROLLAMA_FLEET_PEERS`, `ZEROLLAMA_FLEET_LISTEN` (default `0.0.0.0:11450`), `ZEROLLAMA_FLEET_POLL_INTERVAL` (default `3s`).
+**Env:** `ZEROLLAMA_FLEET_PEERS`, `ZEROLLAMA_FLEET_LISTEN` (default `0.0.0.0:11450`), `ZEROLLAMA_FLEET_POLL_INTERVAL` (default `3s`), `ZEROLLAMA_FLEET_PREFIX_CACHE` (default on), `ZEROLLAMA_FLEET_PREFIX_CACHE_TTL` (default `30m`), `ZEROLLAMA_FLEET_PROBE_CACHE_TTL` (default `1s`, `0`=off).
 
 ### Shipped (streaming progress)
 

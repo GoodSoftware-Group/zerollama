@@ -31,7 +31,8 @@ package webview
 #cgo CXXFLAGS: -I${SRCDIR}/libs/webview/include -DWEBVIEW_STATIC
 
 #cgo darwin CXXFLAGS: -DWEBVIEW_COCOA -std=c++11
-#cgo darwin LDFLAGS: -framework WebKit -ldl
+// webview.h is header-only C++; Darwin must link libc++ or Xcode toolchains fail with undefined std:: symbols.
+#cgo darwin LDFLAGS: -framework WebKit -ldl -lc++
 
 #cgo windows CXXFLAGS: -DWEBVIEW_EDGE -std=c++14 -I${SRCDIR}/libs/mswebview2/include
 #cgo windows LDFLAGS: -static -ladvapi32 -lole32 -lshell32 -lshlwapi -luser32 -lversion

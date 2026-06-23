@@ -1,0 +1,2 @@
+{"ts_ms": 1, "event": "cache_decision", "kind": "sliding_window", "prompt_cache_key": "agent-1", "seq_pos": 0, "prompt_tokens": 512, "cache_prompt": true, "resume_pos": 0, "spec_method": "none", "effective_window": 1024, "speculative_draft": false}
+{"ts_ms": 2, "event": "cache_decision", "kind": "sliding_window", "prompt_cache_key": "agent-1", "seq_pos": 900, "prompt_tokens": 200, "cache_prompt": false, "resume_pos": null, "spec_method": "none", "effective_window": 1024, "speculative_draft": false}

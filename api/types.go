@@ -61,11 +61,18 @@ type ImageData []byte
 // before inference so limits and errors stay centralized (see docs/video-understanding.md).
 type VideoData []byte
 
+// AudioData is a raw audio clip (e.g. OpenAI input_audio). Runners still receive these via
+// the flat Images list until a dedicated audio projector path exists.
+type AudioData []byte
+
 // VideoSpan records how many raster frames came from one original video blob after expansion.
 // When non-empty, Images are ordered as: any still images first, then frames for each Videos[] entry in order.
 // See docs/video-understanding.md and model/renderers/qwen3vl.go.
 type VideoSpan struct {
 	FrameCount int `json:"frame_count"`
+	// GridTHW is optional SGLang/Qwen-style [T,H,W] patch grid for this clip (preprocessed clients).
+	// When set, token estimates use T×H×W / spatial_merge² instead of frame_count × tokens_per_image.
+	GridTHW []int `json:"grid_thw,omitempty"`
 }
 
 // GenerateRequest describes a request sent by [Client.Generate]. While you
@@ -231,6 +238,8 @@ type Message struct {
 	// original model output when ChatRequest.Think is enabled.
 	Thinking string      `json:"thinking,omitempty"`
 	Images   []ImageData `json:"images,omitempty"`
+	// AudioClips holds raw audio blobs (OpenAI input_audio). Appended to Images at prompt time.
+	AudioClips []AudioData `json:"audio_clips,omitempty"`
 	// Videos holds undecoded video blobs (e.g. OpenAI video_url or /api/chat).
 	// They are expanded to frames on Images before inference—see docs/video-understanding.md.
 	Videos []VideoData `json:"videos,omitempty"`
@@ -238,6 +247,9 @@ type Message struct {
 	// Why: templates still receive a flat Images list; spans preserve provenance for renderers that
 	// must distinguish video-derived frames from unrelated stills (optional; see model/renderers).
 	VideoSpans []VideoSpan `json:"video_spans,omitempty"`
+	// PaddedInputIDs is optional SGLang-style pretokenized layout for pre-expanded multimodal turns.
+	// Accepted for preflight and usage estimates; native render still uses images until wired.
+	PaddedInputIDs []int `json:"padded_input_ids,omitempty"`
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 	ToolName   string      `json:"tool_name,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"`
@@ -607,6 +619,10 @@ type ChatResponse struct {
 type DebugInfo struct {
 	RenderedTemplate string `json:"rendered_template"`
 	ImageCount       int    `json:"image_count,omitempty"`
+	// PaddedInputIDsLen is latest-user pretokenized layout length when client sent padded_input_ids.
+	PaddedInputIDsLen int `json:"padded_input_ids_len,omitempty"`
+	// PaddedLayoutConsume is "deferred" when layout is acknowledged but native render still uses images.
+	PaddedLayoutConsume string `json:"padded_layout_consume,omitempty"`
 }
 
 type Metrics struct {
@@ -616,6 +632,13 @@ type Metrics struct {
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration,omitempty"`
 	EvalCount          int           `json:"eval_count,omitempty"`
 	EvalDuration       time.Duration `json:"eval_duration,omitempty"`
+	// Multimodal token estimates (vision preflight heuristic; OpenAI usage.prompt_tokens_details).
+	ImageTokens int `json:"image_tokens,omitempty"`
+	VideoTokens int `json:"video_tokens,omitempty"`
+	AudioTokens int `json:"audio_tokens,omitempty"`
+	// CachedPromptTokens is prefix KV reused from llama-server cache_n / L3 cache_prompt.
+	// Why separate from PromptEvalCount: OpenAI reports cached prefix in prompt_tokens_details.cached_tokens.
+	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
 }
 
 // Options specified in [GenerateRequest].  If you add a new option here, also
@@ -652,9 +675,9 @@ type Runner struct {
 	// SpecType selects llama-server speculative decoding (e.g. ngram-simple, draft-mtp, draft-eagle3).
 	SpecType string `json:"spec_type,omitempty"`
 	// N-gram speculative tuning (--spec-ngram-simple-*).
-	SpecNgramSizeN    int `json:"spec_ngram_size_n,omitempty"`
-	SpecNgramSizeM    int `json:"spec_ngram_size_m,omitempty"`
-	SpecNgramMinHits  int `json:"spec_ngram_min_hits,omitempty"`
+	SpecNgramSizeN   int `json:"spec_ngram_size_n,omitempty"`
+	SpecNgramSizeM   int `json:"spec_ngram_size_m,omitempty"`
+	SpecNgramMinHits int `json:"spec_ngram_min_hits,omitempty"`
 
 	// KvCacheType sets KV cache quantization for this load (e.g. f16, q8_0, q4_0).
 	// Overrides OLLAMA_KV_CACHE_TYPE when set. Different requests may use different types.
@@ -663,6 +686,13 @@ type Runner struct {
 	GgmlClampNumCtx *bool `json:"ggml_clamp_num_ctx,omitempty"`
 	// GgmlAutoKVQuant downgrades KV cache type (f16→q8_0→q4_0) when the load would exceed memory.
 	GgmlAutoKVQuant *bool `json:"ggml_auto_kv_quant,omitempty"`
+
+	// Flash-MoE (anemll-flash-llama.cpp): streamed routed experts via sidecar directory.
+	MoeMode             string `json:"moe_mode,omitempty"`
+	MoeSidecar          string `json:"moe_sidecar,omitempty"`
+	MoeSlotBank         int    `json:"moe_slot_bank,omitempty"`
+	MoeTopK             int    `json:"moe_topk,omitempty"`
+	MoePrefetchTemporal *bool  `json:"moe_prefetch_temporal,omitempty"`
 }
 
 // KvCacheTypeEffective returns the KV cache type for load/estimate: request option, then
@@ -717,6 +747,46 @@ type EmbedResponse struct {
 	TotalDuration   time.Duration `json:"total_duration,omitempty"`
 	LoadDuration    time.Duration `json:"load_duration,omitempty"`
 	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+}
+
+// ScoreRequest scores fixed candidate continuations against a shared prompt.
+// Why: agent routing / classifier models without full generation (LocalAI Score RPC pattern).
+type ScoreRequest struct {
+	// Model is the model name.
+	Model string `json:"model"`
+
+	// Prompt is the shared prefix; candidate strings are scored as continuations.
+	Prompt string `json:"prompt"`
+
+	// Candidates are the continuation strings to score (at least one required).
+	Candidates []string `json:"candidates"`
+
+	// LengthNormalize divides joint log-prob by candidate token count when true.
+	LengthNormalize bool `json:"length_normalize,omitempty"`
+
+	// IncludeTokenLogprobs returns per-token logprobs for each candidate.
+	IncludeTokenLogprobs bool `json:"include_token_logprobs,omitempty"`
+
+	// KeepAlive controls how long the model stays loaded after this request.
+	KeepAlive *Duration `json:"keep_alive,omitempty"`
+
+	// Options lists model-specific options.
+	Options map[string]any `json:"options"`
+}
+
+// CandidateScore is one scored continuation.
+type CandidateScore struct {
+	Candidate               string         `json:"candidate"`
+	LogProb                 float64        `json:"log_prob"`
+	LengthNormalizedLogProb float64        `json:"length_normalized_log_prob,omitempty"`
+	NumTokens               int            `json:"num_tokens"`
+	Tokens                  []TokenLogprob `json:"tokens,omitempty"`
+}
+
+// ScoreResponse is the response from POST /api/score.
+type ScoreResponse struct {
+	Model      string           `json:"model"`
+	Candidates []CandidateScore `json:"candidates"`
 }
 
 // EmbeddingRequest is the request passed to [Client.Embeddings].
@@ -842,7 +912,7 @@ type ShowResponse struct {
 	ModifiedAt    time.Time          `json:"modified_at,omitempty"`
 	Requires      string             `json:"requires,omitempty"`
 	// GgmlNumCtx is VRAM suggest for ggml models (M12); see scheduling-vram-policy.md.
-	GgmlNumCtx    *GgmlNumCtx        `json:"ggml_num_ctx,omitempty"`
+	GgmlNumCtx *GgmlNumCtx `json:"ggml_num_ctx,omitempty"`
 }
 
 // CopyRequest is the request passed to [Client.Copy].
@@ -851,9 +921,39 @@ type CopyRequest struct {
 	Destination string `json:"destination"`
 }
 
+// RepairRequest is the request for POST /api/repair.
+type RepairRequest struct {
+	Model  string   `json:"model,omitempty"`
+	Models []string `json:"models,omitempty"`
+	All    bool     `json:"all,omitempty"`
+	Write  bool     `json:"write,omitempty"`
+}
+
+// RepairChange is one proposed manifest metadata update.
+type RepairChange struct {
+	Field string `json:"field"`
+	From  string `json:"from,omitempty"`
+	To    string `json:"to,omitempty"`
+}
+
+// RepairResult summarizes repair for one model tag.
+type RepairResult struct {
+	Name    string         `json:"name"`
+	Skipped bool           `json:"skipped,omitempty"`
+	Reason  string         `json:"reason,omitempty"`
+	Changes []RepairChange `json:"changes,omitempty"`
+	Written bool           `json:"written,omitempty"`
+}
+
+// RepairResponse is the response from POST /api/repair.
+type RepairResponse struct {
+	Results []RepairResult `json:"results"`
+}
+
 // PullRequest is the request passed to [Client.Pull].
 type PullRequest struct {
 	Model    string `json:"model"`
+	Source   string `json:"source,omitempty"` // huggingface:// URI; Model is the local tag name
 	Insecure bool   `json:"insecure,omitempty"` // Deprecated: ignored
 	Username string `json:"username"`           // Deprecated: ignored
 	Password string `json:"password"`           // Deprecated: ignored
@@ -896,26 +996,45 @@ type ProcessResponse struct {
 
 // ListModelResponse is a single model description in [ListResponse].
 type ListModelResponse struct {
-	Name        string       `json:"name"`
-	Model       string       `json:"model"`
-	RemoteModel string       `json:"remote_model,omitempty"`
-	RemoteHost  string       `json:"remote_host,omitempty"`
-	ModifiedAt  time.Time    `json:"modified_at"`
-	Size        int64        `json:"size"`
-	Digest      string       `json:"digest"`
-	Details     ModelDetails `json:"details,omitempty"`
+	Name         string             `json:"name"`
+	Model        string             `json:"model"`
+	RemoteModel  string             `json:"remote_model,omitempty"`
+	RemoteHost   string             `json:"remote_host,omitempty"`
+	ModifiedAt   time.Time          `json:"modified_at"`
+	Size         int64              `json:"size"`
+	Digest       string             `json:"digest"`
+	Details      ModelDetails       `json:"details,omitempty"`
+	Capabilities []model.Capability `json:"capabilities,omitempty"`
 }
 
 // ProcessModelResponse is a single model description in [ProcessResponse].
 type ProcessModelResponse struct {
-	Name          string       `json:"name"`
-	Model         string       `json:"model"`
-	Size          int64        `json:"size"`
-	Digest        string       `json:"digest"`
-	Details       ModelDetails `json:"details,omitempty"`
-	ExpiresAt     time.Time    `json:"expires_at"`
-	SizeVRAM      int64        `json:"size_vram"`
-	ContextLength int          `json:"context_length"`
+	Name           string               `json:"name"`
+	Model          string               `json:"model"`
+	Size           int64                `json:"size"`
+	Digest         string               `json:"digest"`
+	Details        ModelDetails         `json:"details,omitempty"`
+	ExpiresAt      time.Time            `json:"expires_at"`
+	SizeVRAM       int64                `json:"size_vram"`
+	ContextLength  int                  `json:"context_length"`
+	LoadedMetadata *LoadedModelMetadata `json:"loaded_metadata,omitempty"`
+}
+
+// LoadedModelMetadata is probed from the runner after load (ground truth vs manifest).
+// Why: manifest num_ctx and parser often drift; fleet and /api/ps expose effective
+// values without re-reading weights on every request. See docs/localai-borrowings.md.
+type LoadedModelMetadata struct {
+	NumCtx             int       `json:"num_ctx"`
+	TrainContextLength int       `json:"train_context_length,omitempty"`
+	ManifestNumCtx     int       `json:"manifest_num_ctx,omitempty"`
+	NumParallel        int       `json:"num_parallel,omitempty"`
+	NumGPU             int       `json:"num_gpu,omitempty"`
+	Backend            string    `json:"backend,omitempty"`
+	Parser             string    `json:"parser,omitempty"`
+	SupportsThinking   bool      `json:"supports_thinking,omitempty"`
+	SupportsTools      bool      `json:"supports_tools,omitempty"`
+	HasChatTemplate    bool      `json:"has_chat_template,omitempty"`
+	ProbedAt           time.Time `json:"probed_at"`
 }
 
 type TokenResponse struct {
@@ -929,12 +1048,19 @@ type CloudStatus struct {
 
 // GgmlStatus is the ggml scheduler snapshot on GET /api/status (fleet polling).
 type GgmlStatus struct {
-	Pending      int      `json:"pending"`
-	Active       int      `json:"active"`
-	Loaded       int      `json:"loaded"`
-	LoadsPaused  bool     `json:"loads_paused"`
-	Loading      bool     `json:"loading"`
-	LoadedModels []string `json:"loaded_models,omitempty"`
+	Pending            int                     `json:"pending"`
+	Active             int                     `json:"active"`
+	Loaded             int                     `json:"loaded"`
+	LoadsPaused        bool                    `json:"loads_paused"`
+	Loading            bool                    `json:"loading"`
+	LoadedModels       []string                `json:"loaded_models,omitempty"`
+	LoadedModelDetails []GgmlLoadedModelStatus `json:"loaded_model_details,omitempty"`
+}
+
+// GgmlLoadedModelStatus is per-resident-runner metadata for fleet routing and ops.
+type GgmlLoadedModelStatus struct {
+	Name string `json:"name"`
+	LoadedModelMetadata
 }
 
 // RuntimeStatus is the Python runtime sidecar snapshot on GET /api/status.
@@ -952,6 +1078,18 @@ type RuntimeStatus struct {
 type InferenceStatus struct {
 	Ggml    GgmlStatus    `json:"ggml"`
 	Runtime RuntimeStatus `json:"runtime"`
+	Backend BackendPolicy `json:"backend"`
+}
+
+// BackendPolicy describes Phase 16/17 local GGUF routing for GET /api/status.
+type BackendPolicy struct {
+	Edge            bool   `json:"edge"`
+	EdgeBuild       bool   `json:"edge_build"`
+	GgmlLinked      bool   `json:"ggml_linked"`
+	LlamaServer     string `json:"llama_server"` // off | auto | explicit
+	LlamaCppHarness bool   `json:"llama_cpp_harness,omitempty"`
+	RuntimeChat     string `json:"runtime_chat"` // on | off
+	GgufPath        string `json:"gguf_path"`    // ggml | llama-server | runtime
 }
 
 // StatusResponse is the response from GET /api/status.
@@ -1041,7 +1179,7 @@ type GgmlNumCtx struct {
 	SuggestedMaxNumCtx int `json:"suggested_max_num_ctx,omitempty"`
 	// MergedNumCtx is the merged server/manifest default when it exceeds SuggestedMaxNumCtx (show only).
 	// Why separate from NumCtx: NumCtx on load means effective after clamp, not "requested default".
-	MergedNumCtx int `json:"merged_num_ctx,omitempty"`
+	MergedNumCtx      int  `json:"merged_num_ctx,omitempty"`
 	NumCtxClamped     bool `json:"num_ctx_clamped,omitempty"`
 	NumCtxClampedFrom int  `json:"num_ctx_clamped_from,omitempty"`
 	// NumCtx is effective context after opt-in clamp (chat/generate when clamped).
@@ -1071,6 +1209,8 @@ type ModelDetails struct {
 	Families             []string `json:"families"`
 	ParameterSize        string   `json:"parameter_size"`
 	QuantizationLevel    string   `json:"quantization_level"`
+	ContextLength        int      `json:"context_length,omitempty"`
+	EmbeddingLength      int      `json:"embedding_length,omitempty"`
 	ArchitectureType     string   `json:"architecture_type,omitempty"`
 	ParameterCount       uint64   `json:"parameter_count,omitempty"`
 	ActiveParameterCount uint64   `json:"active_parameter_count,omitempty"`
@@ -1125,6 +1265,58 @@ func (m *Metrics) Summary() {
 	}
 }
 
+func coerceInt(val any) (int64, bool) {
+	switch t := val.(type) {
+	case int:
+		return int64(t), true
+	case int32:
+		return int64(t), true
+	case int64:
+		return t, true
+	case float64:
+		// JSON unmarshals numbers as float64.
+		return int64(t), true
+	case float32:
+		return int64(t), true
+	default:
+		return 0, false
+	}
+}
+
+func coerceFloat64(val any) (float64, bool) {
+	switch t := val.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	default:
+		return 0, false
+	}
+}
+
+func coerceStringSlice(val any) ([]string, error) {
+	switch t := val.(type) {
+	case []string:
+		return t, nil
+	case []any:
+		slice := make([]string, len(t))
+		for i, item := range t {
+			str, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("option must be of an array of strings")
+			}
+			slice[i] = str
+		}
+		return slice, nil
+	default:
+		return nil, fmt.Errorf("option must be of type array")
+	}
+}
+
 func (opts *Options) FromMap(m map[string]any) error {
 	valueOpts := reflect.ValueOf(opts).Elem() // names of the fields in the options struct
 	typeOpts := reflect.TypeOf(opts).Elem()   // types of the fields in the options struct
@@ -1153,15 +1345,11 @@ func (opts *Options) FromMap(m map[string]any) error {
 
 			switch field.Kind() {
 			case reflect.Int:
-				switch t := val.(type) {
-				case int64:
-					field.SetInt(t)
-				case float64:
-					// when JSON unmarshals numbers, it uses float64, not int
-					field.SetInt(int64(t))
-				default:
+				n, ok := coerceInt(val)
+				if !ok {
 					return fmt.Errorf("option %q must be of type integer", key)
 				}
+				field.SetInt(n)
 			case reflect.Bool:
 				val, ok := val.(bool)
 				if !ok {
@@ -1169,12 +1357,11 @@ func (opts *Options) FromMap(m map[string]any) error {
 				}
 				field.SetBool(val)
 			case reflect.Float32:
-				// JSON unmarshals to float64
-				val, ok := val.(float64)
+				f, ok := coerceFloat64(val)
 				if !ok {
 					return fmt.Errorf("option %q must be of type float32", key)
 				}
-				field.SetFloat(val)
+				field.SetFloat(f)
 			case reflect.String:
 				val, ok := val.(string)
 				if !ok {
@@ -1182,19 +1369,9 @@ func (opts *Options) FromMap(m map[string]any) error {
 				}
 				field.SetString(val)
 			case reflect.Slice:
-				// JSON unmarshals to []any, not []string
-				val, ok := val.([]any)
-				if !ok {
+				slice, err := coerceStringSlice(val)
+				if err != nil {
 					return fmt.Errorf("option %q must be of type array", key)
-				}
-				// convert []any to []string
-				slice := make([]string, len(val))
-				for i, item := range val {
-					str, ok := item.(string)
-					if !ok {
-						return fmt.Errorf("option %q must be of an array of strings", key)
-					}
-					slice[i] = str
 				}
 				field.Set(reflect.ValueOf(slice))
 			case reflect.Pointer:

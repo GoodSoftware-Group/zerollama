@@ -43,6 +43,7 @@ else
   echo ">>> warning: llama-server not found; run ./scripts/build_ollama_llama_server_darwin.sh" >&2
 fi
 
-echo ">>> eligible GGUF text → Go → llama-server (upstream shape)" >&2
-echo ">>> vision/thinking/embed still use ggml when required" >&2
+echo ">>> eligible GGUF → Go → llama-server when --llama-server-backend (text + vision + thinking)" >&2
+echo ">>> Linux serve auto: ZEROLLAMA_LLAMA_SERVER=auto when llama-server on disk" >&2
+echo ">>> Phase 16 edge (runtime chat off): ./scripts/serve_edge.sh" >&2
 exec "${BIN}" serve --llama-server-backend "$@"

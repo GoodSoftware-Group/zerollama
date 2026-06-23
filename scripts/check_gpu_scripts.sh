@@ -48,6 +48,8 @@ scripts=(
   l2_cuda_full_gate.sh
   linux_runtime_serve_lib.sh
   l3_cache_smoke.sh
+  l3_spec_cache_smoke.sh
+  l3_prefix_cache_trace_replay.sh
   l3_gate_report.sh
   l3_production_gate.sh
   l3_cuda_full_gate.sh
@@ -57,6 +59,19 @@ scripts=(
   build_eliza_llama_server.sh
   phase14_backend_smoke.sh
   phase17_llama_server_smoke.sh
+  flash_moe_smoke.sh
+  ane_probe_build.sh
+  ane_probe_smoke.sh
+  build_flash_moe_llama_server.sh
+  flash_moe_extract_sidecar.sh
+  phase16_edge_smoke.sh
+  phase16_edge_build_smoke.sh
+  phase17_linux_auto_smoke.sh
+  phase17_l2_pin_status.sh
+  phase15_upstream_kv_watch.sh
+  build_zerollama_edge.sh
+  serve_edge.sh
+  serve_linux_auto.sh
   phase14_inprocess_smoke.sh
   phase14_wheel_cpu_smoke.sh
   phase14_yaml_config_smoke.sh
@@ -163,6 +178,7 @@ grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.
 grep -q 'l2_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'l2_cuda_runtime_compat_smoke' "${ROOT}/scripts/l2_cuda_full_gate.sh"
 grep -q 'l3_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
+grep -q 'l3_spec_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
 grep -q 'l3-cuda-full-gate' "${ROOT}/docs/gpu-profiles-l3.md"
 grep -q 'RUN_E2E_L3' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'prompt_cache_keys' "${ROOT}/runtime/runtime/cache_bridge.py"
@@ -247,6 +263,33 @@ grep -q 'record_decode_step' "${ROOT}/runtime/runtime/worker/libllama_ctypes.py"
 grep -q 'kv_slot' "${ROOT}/runtime/runtime/scheduler/scheduler.py"
 grep -q 'resolve_parallel_slots' "${ROOT}/runtime/runtime/llama_args.py"
 grep -q '_effective_llama_parallel_slots' "${ROOT}/runtime/runtime/engine.py"
+grep -q 'P17_SERVE_EXTRA' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
+grep -q 'P17_ASSERT_RUNTIME_OFF' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
+grep -q 'phase17_llama_server_smoke.sh' "${ROOT}/scripts/phase16_edge_smoke.sh"
+grep -q 'ApplyServeBackendEnv' "${ROOT}/cmd/cmd.go"
+grep -q 'LinuxLlamaServerAutoEnv' "${ROOT}/envconfig/serve_backend.go"
+grep -q 'EdgeMode()' "${ROOT}/envconfig/config.go"
+grep -q 'ZEROLLAMA_RUNTIME_EMBED' "${ROOT}/envconfig/config.go"
+grep -q 'build_zerollama_edge.sh' "${ROOT}/docs/phase16-thin-edge.md"
+grep -q 'RUN_E2E_EDGE' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'RUN_E2E_P17' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'doctorCheckEdgeBuild' "${ROOT}/cmd/doctor.go"
+grep -q 'inference.backend' "${ROOT}/api/types.go"
+grep -q 'P17_LINUX_AUTO' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
+grep -q 'RUN_E2E_P17_LINUX_AUTO' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'RUN_E2E_UPSTREAM_GGUF' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'RUN_E2E_P17_VISION' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'serve_linux_auto.sh' "${ROOT}/docs/phase17-llama-server.md"
+grep -q 'P15_PIN_JSON' "${ROOT}/scripts/phase15_llama_kv_ext_pin_check.sh"
+grep -q 'phase16_edge_build_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'run_upstream_gguf' "${ROOT}/.github/workflows/zerollama-gpu-smoke.yaml"
+grep -q 'GgmlRunnerLinked' "${ROOT}/envconfig/ggml_runner.go"
+grep -q 'phase15_llama_kv_ext_pin_check.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'doctorCheckGgmlRunner' "${ROOT}/cmd/doctor.go"
+grep -q 'schedSkipGgmlRunnerLoad' "${ROOT}/server/sched.go"
+grep -q 'phase17_l2_pin_status.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'phase15_upstream_kv_watch.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'Operator troubleshooting' "${ROOT}/docs/phase17-llama-server.md"
 echo "ok: e2e_runtime_smoke tools markers"
 
 echo "PASS: check_gpu_scripts"

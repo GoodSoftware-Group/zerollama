@@ -269,6 +269,12 @@ func newModel(root *model.Root) (base.Model, error) {
 		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams("")
 	}
 	cfg.TensorQuant = root.AllTensorQuant()
+	model.ApplyQuantizationFromConfig(configData, &model.QuantConfigFields{
+		QuantGroupSize: &cfg.QuantGroupSize,
+		QuantBits:      &cfg.QuantBits,
+		QuantMode:      &cfg.QuantMode,
+		TensorQuant:    cfg.TensorQuant,
+	})
 
 	tokData, err := root.Manifest.ReadConfig("tokenizer.json")
 	if err != nil {

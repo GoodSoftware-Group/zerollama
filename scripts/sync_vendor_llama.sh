@@ -55,6 +55,14 @@ rm -f \
   "${ROOT}/llama/llama.cpp/tools/mtmd/deprecation-warning.cpp" \
   "${ROOT}/llama/llama.cpp/tools/mtmd/debug/mtmd-debug.cpp"
 
+echo ">>> regenerate build-info.cpp" >&2
+BUILD_NUMBER="${FETCH_HEAD#b}"
+sed -e "s|@FETCH_HEAD@|${FETCH_HEAD}|" \
+    -e "s|@LLAMA_BUILD_NUMBER@|${BUILD_NUMBER}|" \
+    -e 's|@BUILD_COMPILER@||' \
+    -e 's|@BUILD_TARGET@||' \
+    "${ROOT}/llama/build-info.cpp.in" >"${ROOT}/llama/build-info.cpp"
+
 echo ">>> regenerate metal embed" >&2
 cd "${ROOT}"
 GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src

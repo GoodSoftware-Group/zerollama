@@ -102,6 +102,23 @@ Code: `internal/lmstudio/lmstudio.go` (`ImportCopyBytes`), `server/lmstudio_cata
 2. **Tools on runtime-routed text:** ensure runtime embed + Phase 12 path; see [apple-silicon-metal.md](./apple-silicon-metal.md).
 3. **safetensors / MLX create:** build MLX component; model uses `IsMLX()` path automatically.
 4. **Session gate:** `./scripts/gpu_metal_session.sh` (smoke + snapshot); optional `RUN_E2E_PHASE14=1` for inprocess Metal.
+5. **Agent megaprompts (MLX):** see [mlx-agent-prompts.md](./mlx-agent-prompts.md) — context cap, truncate, tokenize cache, keepalive logs.
+
+---
+
+## MLX agent prompts (Jun 2026)
+
+**Why separate from routing:** `IsMLX()` picks the subprocess; **M15** hardening fixes what happens **inside** that path when clients send 100k+ tokens every turn.
+
+| Symptom | Likely cause | Log / fix |
+|---------|--------------|-----------|
+| `num_ctx=262144`, no truncate | Bogus HF `text_config.max_position_embeddings` | Rebuild; expect `num_ctx capped to mlx model maximum` |
+| Two `/v1/tokenize` per request | Budget search + tail truncate | Tokenize LRU + `PromptTokens` passthrough |
+| Cold reload every ~5m | Default keep_alive | MLX 30m floor when unset; or set explicit `keep_alive` |
+| Client empty-stream timeout | Long prefill, no SSE bytes | `OLLAMA_STREAM_KEEPALIVE_INTERVAL=15` (default) |
+| 8 min to first token @ 131k | No truncate + full prefill | Client: shrink context; server: `prompt tail-truncated` |
+
+Full guide: [mlx-agent-prompts.md](./mlx-agent-prompts.md).
 
 ---
 

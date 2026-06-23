@@ -219,6 +219,8 @@ def _openai_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def stream_openai_sse(
     engine: Any,
     body: dict[str, Any],
+    *,
+    prefill_cancel: Any | None = None,
 ) -> Iterator[str]:
     prep = prepare_v1_chat(engine, body)
     cid = _completion_id()
@@ -256,6 +258,7 @@ def stream_openai_sse(
                 messages=prep.messages,
                 think=body.get("think"),
                 tools_meta=prep.tools_meta,
+                prefill_cancel=prefill_cancel,
             )
         else:
             parts = engine.stream_chat(
@@ -265,6 +268,7 @@ def stream_openai_sse(
                 gguf=prep.gguf,
                 num_ctx=prep.num_ctx,
                 options=prep.options,
+                prefill_cancel=prefill_cancel,
             )
 
         for part in parts:
@@ -283,7 +287,9 @@ def stream_openai_sse(
                 reason = part.get("done_reason") or "stop"
                 if reason == "tool_calls":
                     reason = "tool_calls"
-                else:
+                # WHY preserve cancelled: HTTP disconnect prefill abort is not a normal
+                # stop — agents use finish_reason to retry or adjust context.
+                elif reason not in ("stop", "length", "cancelled"):
                     reason = "stop"
                 yield chunk({}, finish=reason)
                 break
@@ -298,7 +304,12 @@ def stream_openai_sse(
     yield "data: [DONE]\n\n"
 
 
-def run_v1_chat_completion(engine: Any, body: dict[str, Any]) -> dict[str, Any]:
+def run_v1_chat_completion(
+    engine: Any,
+    body: dict[str, Any],
+    *,
+    prefill_cancel: Any | None = None,
+) -> dict[str, Any]:
     """Non-stream v1 chat completion (tools + Phase 13 ctx)."""
     prep = prepare_v1_chat(engine, body)
     if not prep.prompt:
@@ -309,6 +320,7 @@ def run_v1_chat_completion(engine: Any, body: dict[str, Any]) -> dict[str, Any]:
         gguf=prep.gguf,
         num_ctx=prep.num_ctx,
         options=prep.options,
+        prefill_cancel=prefill_cancel,
     )
     if prep.tools:
         calls, content = parse_completion_tool_calls(

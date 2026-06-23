@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -114,6 +115,50 @@ func TestStatusHandlerIncludesInference(t *testing.T) {
 	if resp.Inference.Ggml.Loaded != 0 {
 		t.Fatalf("expected ggml.loaded 0, got %d", resp.Inference.Ggml.Loaded)
 	}
+	if resp.Inference.Backend.LlamaServer == "" {
+		t.Fatal("expected inference.backend.llama_server set")
+	}
+	if resp.Inference.Backend.GgufPath == "" {
+		t.Fatal("expected inference.backend.gguf_path set")
+	}
+	if resp.Inference.Backend.RuntimeChat == "" {
+		t.Fatal("expected inference.backend.runtime_chat set")
+	}
+	if !resp.Inference.Backend.GgmlLinked {
+		t.Fatal("expected ggml_linked true in default build test")
+	}
+}
+
+func TestStatusHandlerIncludesBackendEdge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setTestHome(t, t.TempDir())
+	t.Setenv("OLLAMA_NO_CLOUD", "1")
+	t.Setenv("ZEROLLAMA_EDGE", "1")
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	t.Setenv("ZEROLLAMA_RUNTIME", "0")
+
+	s := Server{}
+	w := createRequest(t, s.StatusHandler, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+
+	var resp api.StatusResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Inference.Backend.Edge {
+		t.Fatal("expected backend.edge true")
+	}
+	if resp.Inference.Backend.LlamaServer != "explicit" {
+		t.Fatalf("llama_server=%q", resp.Inference.Backend.LlamaServer)
+	}
+	if resp.Inference.Backend.RuntimeChat != "off" {
+		t.Fatalf("runtime_chat=%q", resp.Inference.Backend.RuntimeChat)
+	}
+	if resp.Inference.Backend.GgufPath != "llama-server" {
+		t.Fatalf("gguf_path=%q", resp.Inference.Backend.GgufPath)
+	}
 }
 
 func TestInferenceFleetSnapshotLoadedModelsMatchCount(t *testing.T) {
@@ -123,6 +168,11 @@ func TestInferenceFleetSnapshotLoadedModelsMatchCount(t *testing.T) {
 	runner := &runnerRef{
 		model:    &Model{ShortName: "llama3:latest"},
 		modelKey: "test-key",
+		llama:    &mockLlm{},
+		loadedMeta: api.LoadedModelMetadata{
+			NumCtx:   4096,
+			ProbedAt: time.Now().UTC(),
+		},
 	}
 	sched.loadedMu.Lock()
 	sched.loaded["test-key"] = runner
@@ -140,6 +190,39 @@ func TestInferenceFleetSnapshotLoadedModelsMatchCount(t *testing.T) {
 	}
 }
 
+func TestInferenceFleetSnapshotExcludesLoadingRunners(t *testing.T) {
+	ctx := t.Context()
+	sched := InitScheduler(ctx)
+
+	ready := &runnerRef{
+		model:    &Model{ShortName: "ready:latest"},
+		modelKey: "ready-key",
+		llama:    &mockLlm{},
+		loadedMeta: api.LoadedModelMetadata{
+			NumCtx:   4096,
+			ProbedAt: time.Now().UTC(),
+		},
+	}
+	loading := &runnerRef{
+		model:    &Model{ShortName: "loading:latest"},
+		modelKey: "loading-key",
+		loading:  true,
+		llama:    &mockLlm{},
+	}
+	sched.loadedMu.Lock()
+	sched.loaded["ready-key"] = ready
+	sched.loaded["loading-key"] = loading
+	sched.loadedMu.Unlock()
+
+	snap := sched.InferenceFleetSnapshot()
+	if snap.Loaded != 1 {
+		t.Fatalf("loaded=%d want 1 (loading runner excluded)", snap.Loaded)
+	}
+	if len(snap.LoadedModels) != 1 || snap.LoadedModels[0] != "ready:latest" {
+		t.Fatalf("loaded_models=%v", snap.LoadedModels)
+	}
+}
+
 func TestInferenceStatusLoadedModelNames(t *testing.T) {
 	ctx := t.Context()
 	s := InitScheduler(ctx)
@@ -147,6 +230,11 @@ func TestInferenceStatusLoadedModelNames(t *testing.T) {
 	runner := &runnerRef{
 		model:    &Model{ShortName: "llama3:latest"},
 		modelKey: "test-key",
+		llama:    &mockLlm{},
+		loadedMeta: api.LoadedModelMetadata{
+			NumCtx:   4096,
+			ProbedAt: time.Now().UTC(),
+		},
 	}
 	s.loadedMu.Lock()
 	s.loaded["test-key"] = runner
@@ -161,5 +249,14 @@ func TestInferenceStatusLoadedModelNames(t *testing.T) {
 	}
 	if st.Ggml.LoadedModels[0] != "llama3:latest" {
 		t.Fatalf("loaded_models=%v", st.Ggml.LoadedModels)
+	}
+	if len(st.Ggml.LoadedModelDetails) != 1 {
+		t.Fatalf("loaded_model_details=%+v", st.Ggml.LoadedModelDetails)
+	}
+	if st.Ggml.LoadedModelDetails[0].Name != "llama3:latest" {
+		t.Fatalf("detail name=%q", st.Ggml.LoadedModelDetails[0].Name)
+	}
+	if st.Ggml.LoadedModelDetails[0].NumCtx != 4096 {
+		t.Fatalf("detail num_ctx=%d", st.Ggml.LoadedModelDetails[0].NumCtx)
 	}
 }

@@ -23,6 +23,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `video_generation` (T2V): `wan` runs [Wan](../scripts/wan_video_generate.py) via the training job queue; capability `video_gen`. See [wan-t2v.md](./wan-t2v.md).
 - **`video_sampling`** (optional, native path only): per-model overrides for ffmpeg—`mode` (`fps` or `stride`), `fps`, `stride`, `max_frames`. Omitted fields use server env defaults (see below).
 - **`tokens_per_image`** (optional): vision-token budget **per raster frame** for **context preflight** only (default `768` until projector metadata is wired through).
+- **`vision_patch_size`** / **`vision_spatial_merge_size`** (optional): tune native **`grid_thw`** estimates on ffmpeg-expanded clips (Qwen3-VL defaults: 14 / 2).
 - **`backend_paths`**: map of string keys → filesystem paths for weights/config:
   - `whisper_model`: GGML weights for Whisper.
   - `piper_model`: Piper ONNX file.

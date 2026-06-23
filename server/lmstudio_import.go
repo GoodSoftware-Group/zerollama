@@ -41,6 +41,9 @@ func tryImportFromLMStudio(ctx context.Context, n typesmodel.Name, deleteMap map
 	if !ok {
 		return false, nil
 	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 
 	slog.Info("using LM Studio model files instead of registry download", "model", n.DisplayShortest(), "dir", dir)
 	fn(api.ProgressResponse{Status: fmt.Sprintf("using LM Studio cache: %s", dir)})

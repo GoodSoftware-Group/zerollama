@@ -1,0 +1,309 @@
+// Package qwen2 provides the Qwen2 text model implementation for MLX.
+package qwen2
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+
+	"github.com/ollama/ollama/x/mlxrunner/batch"
+	"github.com/ollama/ollama/x/mlxrunner/cache"
+	"github.com/ollama/ollama/x/mlxrunner/mlx"
+	"github.com/ollama/ollama/x/mlxrunner/model"
+	"github.com/ollama/ollama/x/mlxrunner/model/base"
+	"github.com/ollama/ollama/x/models/nn"
+	"github.com/ollama/ollama/x/tokenizer"
+)
+
+func init() {
+	base.Register("Qwen2ForCausalLM", newModel)
+}
+
+// Config holds Qwen2 model configuration.
+type Config struct {
+	HiddenSize            int32   `json:"hidden_size"`
+	NumHiddenLayers       int32   `json:"num_hidden_layers"`
+	IntermediateSize      int32   `json:"intermediate_size"`
+	NumAttentionHeads     int32   `json:"num_attention_heads"`
+	NumKeyValueHeads      int32   `json:"num_key_value_heads"`
+	VocabSize             int32   `json:"vocab_size"`
+	RMSNormEps            float32 `json:"rms_norm_eps"`
+	RopeTheta             float32 `json:"rope_theta"`
+	HeadDim               int32   `json:"head_dim"`
+	MaxPositionEmbeddings int32   `json:"max_position_embeddings"`
+	TieWordEmbeddings     bool    `json:"tie_word_embeddings"`
+
+	QuantGroupSize int                               `json:"-"`
+	QuantBits      int                               `json:"-"`
+	QuantMode      string                            `json:"-"`
+	TensorQuant    map[string]*model.TensorQuantInfo `json:"-"`
+
+	Scale float32 `json:"-"`
+}
+
+// Model is the Qwen2 text-only model.
+type Model struct {
+	EmbedTokens nn.EmbeddingLayer
+	Layers      []*Layer
+	Norm        *nn.RMSNorm
+	LMHead      nn.LinearLayer
+
+	tok *tokenizer.Tokenizer
+	*Config
+
+	weightPrefix string
+}
+
+// Layer is a single Qwen2 decoder block.
+type Layer struct {
+	Attention     *Attention
+	MLP           *MLP
+	AttentionNorm *nn.RMSNorm
+	MLPNorm       *nn.RMSNorm
+}
+
+// Attention implements Qwen2 attention (no Q/K norms).
+type Attention struct {
+	QProj nn.LinearLayer
+	KProj nn.LinearLayer
+	VProj nn.LinearLayer
+	OProj nn.LinearLayer
+}
+
+// MLP is the feed-forward network with SwiGLU activation.
+type MLP struct {
+	GateProj nn.LinearLayer
+	UpProj   nn.LinearLayer
+	DownProj nn.LinearLayer
+}
+
+func resolveWeightPrefix(tensors map[string]*mlx.Array) string {
+	for _, prefix := range []string{"", "language_model."} {
+		if tensors[prefix+"model.embed_tokens.weight"] != nil {
+			return prefix
+		}
+	}
+	return ""
+}
+
+func parseConfig(configData []byte) (Config, error) {
+	var cfg Config
+	if err := json.Unmarshal(configData, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.HiddenSize <= 0 {
+		return Config{}, fmt.Errorf("invalid hidden_size: %d", cfg.HiddenSize)
+	}
+	if cfg.NumAttentionHeads <= 0 {
+		return Config{}, fmt.Errorf("invalid num_attention_heads: %d", cfg.NumAttentionHeads)
+	}
+	if cfg.NumKeyValueHeads <= 0 {
+		cfg.NumKeyValueHeads = cfg.NumAttentionHeads
+	}
+	if cfg.HeadDim == 0 {
+		if cfg.HiddenSize%cfg.NumAttentionHeads != 0 {
+			return Config{}, fmt.Errorf("hidden_size (%d) must be divisible by num_attention_heads (%d)", cfg.HiddenSize, cfg.NumAttentionHeads)
+		}
+		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
+	}
+	if cfg.RMSNormEps == 0 {
+		cfg.RMSNormEps = 1e-6
+	}
+	if cfg.RopeTheta == 0 {
+		cfg.RopeTheta = 1000000
+	}
+	cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
+	return cfg, nil
+}
+
+func newModel(root *model.Root) (base.Model, error) {
+	configData, err := root.Manifest.ReadConfig("config.json")
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg, err := parseConfig(configData)
+	if err != nil {
+		return nil, err
+	}
+
+	if qt := root.QuantType(); qt != "" {
+		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams(qt)
+		if gs := root.GroupSize(); gs > 0 {
+			cfg.QuantGroupSize = gs
+		}
+	} else {
+		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams("")
+	}
+	cfg.TensorQuant = root.AllTensorQuant()
+	model.ApplyQuantizationFromConfig(configData, &model.QuantConfigFields{
+		QuantGroupSize: &cfg.QuantGroupSize,
+		QuantBits:      &cfg.QuantBits,
+		QuantMode:      &cfg.QuantMode,
+		TensorQuant:    cfg.TensorQuant,
+	})
+
+	tokData, err := root.Manifest.ReadConfig("tokenizer.json")
+	if err != nil {
+		return nil, fmt.Errorf("load tokenizer config: %w", err)
+	}
+
+	tokConfig := &tokenizer.TokenizerConfig{ConfigJSON: configData}
+	if genConfigData, err := root.Manifest.ReadConfig("generation_config.json"); err == nil {
+		tokConfig.GenerationConfigJSON = genConfigData
+	}
+	if tokConfigData, err := root.Manifest.ReadConfig("tokenizer_config.json"); err == nil {
+		tokConfig.TokenizerConfigJSON = tokConfigData
+	}
+
+	tok, err := tokenizer.LoadFromBytesWithConfig(tokData, tokConfig)
+	if err != nil {
+		return nil, fmt.Errorf("parse tokenizer: %w", err)
+	}
+
+	return &Model{
+		Layers: make([]*Layer, cfg.NumHiddenLayers),
+		Config: &cfg,
+		tok:    tok,
+	}, nil
+}
+
+func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
+	m.weightPrefix = resolveWeightPrefix(tensors)
+	prefix := m.weightPrefix
+	linears := model.NewLinearFactory(tensors, m.QuantGroupSize, m.QuantBits, m.QuantMode, m.TensorQuant)
+
+	embedTokens := model.MakeEmbeddingLayer(tensors, prefix+"model.embed_tokens", m.QuantGroupSize, m.QuantBits, m.QuantMode, m.TensorQuant)
+	if embedTokens == nil {
+		return fmt.Errorf("missing embedding weight: %smodel.embed_tokens.weight", prefix)
+	}
+	m.EmbedTokens = embedTokens
+
+	normWeight := tensors[prefix+"model.norm.weight"]
+	if normWeight == nil {
+		return fmt.Errorf("missing final norm weight: %smodel.norm.weight", prefix)
+	}
+	m.Norm = nn.NewRMSNorm(normWeight, m.RMSNormEps)
+
+	if m.TieWordEmbeddings {
+		m.LMHead = m.EmbedTokens.AsLinear()
+	} else if lmHead := linears.Make(prefix + "lm_head"); lmHead != nil {
+		m.LMHead = lmHead
+	} else if lmHead := linears.Make("lm_head"); lmHead != nil {
+		m.LMHead = lmHead
+	} else {
+		m.LMHead = m.EmbedTokens.AsLinear()
+	}
+
+	for i := range m.NumHiddenLayers {
+		layerPrefix := fmt.Sprintf("%smodel.layers.%d", prefix, i)
+		layer := &Layer{Attention: &Attention{}, MLP: &MLP{}}
+
+		if w := tensors[layerPrefix+".input_layernorm.weight"]; w != nil {
+			layer.AttentionNorm = nn.NewRMSNorm(w, m.RMSNormEps)
+		}
+		if w := tensors[layerPrefix+".post_attention_layernorm.weight"]; w != nil {
+			layer.MLPNorm = nn.NewRMSNorm(w, m.RMSNormEps)
+		}
+
+		layer.Attention.QProj = linears.Make(layerPrefix + ".self_attn.q_proj")
+		layer.Attention.KProj = linears.Make(layerPrefix + ".self_attn.k_proj")
+		layer.Attention.VProj = linears.Make(layerPrefix + ".self_attn.v_proj")
+		layer.Attention.OProj = linears.Make(layerPrefix + ".self_attn.o_proj")
+
+		layer.MLP.GateProj = linears.Make(layerPrefix + ".mlp.gate_proj")
+		layer.MLP.UpProj = linears.Make(layerPrefix + ".mlp.up_proj")
+		layer.MLP.DownProj = linears.Make(layerPrefix + ".mlp.down_proj")
+
+		if layer.AttentionNorm == nil || layer.MLPNorm == nil {
+			return fmt.Errorf("layer %d: missing layernorm", i)
+		}
+		if layer.Attention.QProj == nil || layer.Attention.KProj == nil || layer.Attention.VProj == nil || layer.Attention.OProj == nil {
+			return fmt.Errorf("layer %d: missing attention projections", i)
+		}
+		if layer.MLP.GateProj == nil || layer.MLP.UpProj == nil || layer.MLP.DownProj == nil {
+			return fmt.Errorf("layer %d: missing mlp projections", i)
+		}
+
+		m.Layers[i] = layer
+	}
+
+	return nil
+}
+
+func (m *Model) Forward(b *batch.Batch, caches []cache.Cache) *mlx.Array {
+	dims := b.InputIDs.Dims()
+	B, L := int32(dims[0]), int32(dims[1])
+	positions := mlx.FromValues(b.SeqOffsets, len(b.SeqOffsets))
+
+	h := m.EmbedTokens.Forward(b.InputIDs)
+	for i, layer := range m.Layers {
+		var c cache.Cache
+		if caches != nil && i < len(caches) {
+			c = caches[i]
+		}
+		h = layer.Forward(h, b, c, positions, B, L, m.Config)
+	}
+
+	return m.Norm.Forward(h, m.RMSNormEps)
+}
+
+func (m *Model) Unembed(x *mlx.Array) *mlx.Array {
+	return m.LMHead.Forward(x)
+}
+
+func (m *Model) NumLayers() int {
+	return len(m.Layers)
+}
+
+func (m *Model) MaxContextLength() int {
+	if m.MaxPositionEmbeddings > 0 {
+		return int(m.MaxPositionEmbeddings)
+	}
+	return 32768
+}
+
+func (m *Model) Tokenizer() *tokenizer.Tokenizer {
+	return m.tok
+}
+
+func (m *Model) NewCaches() []cache.Cache {
+	caches := make([]cache.Cache, len(m.Layers))
+	for i := range caches {
+		caches[i] = cache.NewKVCache()
+	}
+	return caches
+}
+
+func (l *Layer) Forward(x *mlx.Array, b *batch.Batch, c cache.Cache, positions *mlx.Array, B, L int32, cfg *Config) *mlx.Array {
+	h := mlx.Add(x, l.Attention.Forward(l.AttentionNorm.Forward(x, cfg.RMSNormEps), b, c, positions, B, L, cfg))
+	return mlx.Add(h, l.MLP.Forward(l.MLPNorm.Forward(h, cfg.RMSNormEps)))
+}
+
+func (a *Attention) Forward(x *mlx.Array, b *batch.Batch, c cache.Cache, positions *mlx.Array, B, L int32, cfg *Config) *mlx.Array {
+	q := a.QProj.Forward(x)
+	k := a.KProj.Forward(x)
+	v := a.VProj.Forward(x)
+
+	q = mlx.Transpose(mlx.Reshape(q, B, L, cfg.NumAttentionHeads, cfg.HeadDim), 0, 2, 1, 3)
+	k = mlx.Transpose(mlx.Reshape(k, B, L, cfg.NumKeyValueHeads, cfg.HeadDim), 0, 2, 1, 3)
+	v = mlx.Transpose(mlx.Reshape(v, B, L, cfg.NumKeyValueHeads, cfg.HeadDim), 0, 2, 1, 3)
+
+	q = mlx.RoPEWithBase(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, positions)
+	k = mlx.RoPEWithBase(k, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, positions)
+
+	var kv nn.SDPAOption
+	if c != nil {
+		history := c.(cache.Attention).Update(b, k, v)
+		kv = nn.WithKVHistory(history)
+	} else {
+		kv = nn.WithKV(k, v, b.SeqQueryLens)
+	}
+	out := nn.ScaledDotProductAttention(b, q, cfg.Scale, kv, nn.WithMask(nn.CausalMask()))
+	out = mlx.Reshape(mlx.Transpose(out, 0, 2, 1, 3), B, L, cfg.NumAttentionHeads*cfg.HeadDim)
+	return a.OProj.Forward(out)
+}
+
+func (m *MLP) Forward(x *mlx.Array) *mlx.Array {
+	return m.DownProj.Forward(mlx.SwiGLU(m.GateProj.Forward(x), m.UpProj.Forward(x)))
+}

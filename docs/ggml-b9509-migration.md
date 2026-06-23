@@ -1,8 +1,8 @@
 # ggml @ llama.cpp — vendor migration guide
 
-> **Current pin:** `b9611` (`LLAMA_CPP_VERSION`, `Makefile.sync` `FETCH_HEAD`). Vanilla upstream Ollama still pins `b9509`; zerollama tracks latest llama.cpp tag for ggml/Metal.
+> **Current pin:** `b9672` (`LLAMA_CPP_VERSION`, `Makefile.sync` `FETCH_HEAD`). Matches upstream Ollama @ v0.30.10 (`07ed7523`).
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then bumped to **`b9611`** with formal patches 0011–0014.
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then **`b9611`**, then **`b9672`** (Jun 2026) with **16** formal patches that apply cleanly on the upstream tag.
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -43,19 +43,19 @@ zerollama serve
 
 | File | Purpose |
 |------|---------|
-| `LLAMA_CPP_VERSION` | Human pin (`b9611`) |
-| `Makefile.sync` | `FETCH_HEAD=b9611`, `WORKDIR=vendor/llama-cpp-b9611` |
-| `vendor/llama-cpp-b9611/` | Fresh clone + Ollama patch commits (gitignored) |
-| `llama/patches/` | **16** format-patches on b9611 (0007 retired → compat) |
+| `LLAMA_CPP_VERSION` | Human pin (`b9672`) |
+| `Makefile.sync` | `FETCH_HEAD=b9672`, `WORKDIR=vendor/llama-cpp-b9672` |
+| `vendor/llama-cpp-b9672/` | Fresh clone + Ollama patch commits (gitignored) |
+| `llama/patches/` | **16** format-patches on b9672 (0007 retired → compat) |
 | `llama/patches.pre-b9509-20260612/` | Backup of pre-migration patch series |
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
 
 ---
 
-## Patch series (b9611)
+## Patch series (b9672)
 
-Applied on top of upstream `b9611` (vendor HEAD after patches: `1aefee58`):
+Applied on top of upstream `b9672` (vendor HEAD after patches: `ab8e55fa`):
 
 | # | Subject | Why Ollama still needs it on b9509 |
 |---|---------|-----------------------------------|
@@ -129,8 +129,8 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 
 ```bash
 # 1. Ensure vendor exists (once)
-git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9611
-cd vendor/llama-cpp-b9611 && git checkout b9611
+git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9672
+cd vendor/llama-cpp-b9672 && git checkout b9672
 
 # 2. Apply Ollama patches into vendor
 make -f Makefile.sync clean apply-patches
@@ -138,7 +138,12 @@ make -f Makefile.sync clean apply-patches
 # 3. Rsync into in-tree vendored trees (preserves zerollama-only files)
 ./scripts/sync_vendor_llama.sh
 
-# 4. Build
+# 4. Regenerate build-info + build
+sed -e 's|@FETCH_HEAD@|b9672|' \
+    -e 's|@LLAMA_BUILD_NUMBER@|9672|' \
+    -e 's|@BUILD_COMPILER@||' \
+    -e 's|@BUILD_TARGET@||' \
+    llama/build-info.cpp.in > llama/build-info.cpp
 eval "$(./scripts/mac_cgo_env.sh --export)"
 ./scripts/build_zerollama_mac.sh
 ./zerollama doctor
@@ -148,7 +153,7 @@ eval "$(./scripts/mac_cgo_env.sh --export)"
 
 **Why `GOFLAGS=-mod=mod` in `build_zerollama_mac.sh`:** `go build` must not fail on inconsistent `vendor/` when only CGO trees are synced; module mode uses `go.mod` sum files instead.
 
-**Legacy shim:** `./scripts/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin is now b9611 in `Makefile.sync`.
+**Legacy shim:** `./scripts/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin tracks `Makefile.sync` `FETCH_HEAD`.
 
 ### cpp-httplib on CUDA / Proxmox CT (CGO build)
 

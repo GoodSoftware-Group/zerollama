@@ -271,3 +271,29 @@ func TestModelForArch(t *testing.T) {
 		})
 	}
 }
+
+func TestPopulateFieldsPostAttentionNormOnBlock(t *testing.T) {
+	type block struct {
+		PostAttentionNorm *nn.RMSNorm `gguf:"post_attention_norm,alt:ffn_norm"`
+		MLP               *struct {
+			Router *nn.Linear `gguf:"ffn_gate_inp"`
+		}
+	}
+	type fake struct {
+		Blocks []block `gguf:"blk"`
+	}
+
+	var m fake
+	m.Blocks = make([]block, 1)
+	v := reflect.ValueOf(&m)
+	v.Elem().Set(populateFields(Base{b: &fakeBackend{
+		names: []string{
+			"blk.0.post_attention_norm.weight",
+			"blk.0.ffn_gate_inp.weight",
+		},
+	}}, v.Elem()))
+
+	if m.Blocks[0].PostAttentionNorm == nil || m.Blocks[0].PostAttentionNorm.Weight == nil {
+		t.Fatal("expected blk.0.post_attention_norm.weight on block")
+	}
+}

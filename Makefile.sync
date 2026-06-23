@@ -1,6 +1,13 @@
 UPSTREAM=https://github.com/ggml-org/llama.cpp.git
-WORKDIR=vendor/llama-cpp-b9611
-FETCH_HEAD=b9611
+WORKDIR=vendor/llama-cpp-b9672
+FETCH_HEAD=b9672
+BUILD_NUMBER=$(shell echo $(FETCH_HEAD) | sed 's/^b//')
+
+# WHY sync order matters: build-info.cpp only stamps FETCH_HEAD/BUILD_NUMBER via sed.
+# If rsync from vendor/ is skipped, binaries report the new pin while in-tree
+# llama/llama.cpp and ggml still reflect an older checkout — Phase 17 smoke,
+# native KV, and operator `llama_print_build_info()` all lie. Prefer the full
+# gated workflow: ./scripts/sync_vendor_llama.sh (checkout → rsync → build-info → metal embed).
 
 .PHONY: help
 help:
@@ -15,21 +22,25 @@ help:
 	@echo "    make -f $(lastword $(MAKEFILE_LIST)) clean apply-patches sync"
 
 .PHONY: sync
-sync: llama/build-info.cpp ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-embed.metal
+sync: llama/llama.cpp ml/backend/ggml/ggml llama/build-info.cpp ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-embed.metal
 
 llama/build-info.cpp: llama/build-info.cpp.in llama/llama.cpp
-	sed -e 's|@FETCH_HEAD@|$(FETCH_HEAD)|' <$< >$@
+	sed -e 's|@FETCH_HEAD@|$(FETCH_HEAD)|' \
+	    -e 's|@LLAMA_BUILD_NUMBER@|$(BUILD_NUMBER)|' \
+	    -e 's|@BUILD_COMPILER@||' \
+	    -e 's|@BUILD_TARGET@||' \
+	    <$< >$@
 
 ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-embed.metal: ml/backend/ggml/ggml
 	go generate ./$(@D)
 
 .PHONY: llama/llama.cpp
-llama/llama.cpp: llama/vendor
-	rsync -arvzc --delete -f "include LICENSE" -f "merge $@/.rsync-filter" $(addprefix $<,/LICENSE /) $@
+llama/llama.cpp: checkout
+	rsync -arvzc --delete -f "include LICENSE" -f "merge $@/.rsync-filter" $(addprefix $(WORKDIR),/LICENSE /) $@
 
 .PHONY: ml/backend/ggml/ggml
-ml/backend/ggml/ggml: llama/vendor
-	rsync -arvzc --delete -f "include LICENSE" -f "merge $@/.rsync-filter" $(addprefix $<,/LICENSE /ggml/) $@
+ml/backend/ggml/ggml: checkout
+	rsync -arvzc --delete -f "include LICENSE" -f "merge $@/.rsync-filter" $(addprefix $(WORKDIR),/LICENSE /ggml/) $@
 
 PATCHES=$(wildcard llama/patches/*.patch)
 PATCHED=$(join $(dir $(PATCHES)), $(addsuffix ed, $(addprefix ., $(notdir $(PATCHES)))))

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from runtime.kv.decode_plan import kv_decode_work_plan
 from runtime.kv.native_decode_loop import (
+    PrefillAbortedError,
     decode_loop_status,
     greedy_decode_tokens,
     native_decode_loop_available,
+    prefill_abort_clear,
+    prefill_abort_set,
     run_prefill,
     run_step,
 )
@@ -114,6 +117,52 @@ def test_run_step_returns_none_when_not_linked():
         return
     result = run_step(0, 42, seq_id=0, current_pos=5)
     assert result is None
+
+
+def test_prefill_abort_helpers_no_op_when_not_linked():
+    """prefill_abort_set/clear must not raise even when the ext is not built."""
+    if native_decode_loop_available():
+        return  # skip: only test the ImportError-swallowed path
+    prefill_abort_set()   # should silently swallow ImportError
+    prefill_abort_clear()  # same
+
+
+def _patched_run_prefill_with_error(err: Exception) -> object:
+    """Helper: patch the inner ``decode_loop_prefill`` import inside run_prefill."""
+    import sys
+    from unittest.mock import MagicMock, patch
+
+    # Inject a fake _kv_native module so the ``from runtime.kv._kv_native import …``
+    # inside run_prefill resolves without loading the real (unlinked) .so.
+    fake_native = MagicMock()
+    fake_native.decode_loop_prefill = MagicMock(side_effect=err)
+    fake_native.decode_loop_abort_clear = MagicMock()
+
+    with patch.dict(sys.modules, {"runtime.kv._kv_native": fake_native}):
+        with patch(
+            "runtime.kv.native_decode_loop.native_decode_loop_available",
+            return_value=True,
+        ):
+            try:
+                run_prefill(0, [1, 2, 3], seq_id=0, block_size=16)
+                return None  # no exception
+            except Exception as exc:
+                return exc
+
+
+def test_run_prefill_raises_prefill_aborted_error_on_minus_three():
+    """run_prefill must raise PrefillAbortedError when C raises 'KV prefill aborted'."""
+    abort_err = ValueError("KV prefill aborted: cancel flag set between chunks")
+    exc = _patched_run_prefill_with_error(abort_err)
+    assert isinstance(exc, PrefillAbortedError), f"expected PrefillAbortedError, got {exc!r}"
+
+
+def test_run_prefill_page_bind_error_still_raises_on_minus_two():
+    """KV page bind errors must still raise (not be swallowed by abort check)."""
+    bind_err = ValueError("KV page bind: token position out of range for kv_slot")
+    exc = _patched_run_prefill_with_error(bind_err)
+    assert exc is not None, "expected an exception"
+    assert "page bind" in str(exc).lower(), f"unexpected exception: {exc!r}"
 
 
 def test_greedy_decode_tokens_zero_predict_returns_empty():

@@ -202,7 +202,6 @@ int32_t llama_memory_kv_ext_writable_bind_probe(
     }
 
 #ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
-    /* Staging writable page-map shipped in this libllama build. */
     *out_available = 1;
     if (out_api_name && name_cap > 0) {
         std::snprintf(out_api_name, name_cap, "llama_memory_kv_page_map");

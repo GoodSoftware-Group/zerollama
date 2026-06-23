@@ -74,6 +74,17 @@ func TestRuntimeDarwinSidecarLikely(t *testing.T) {
 	}
 }
 
+func TestDarwinSidecarKillOnServeExit(t *testing.T) {
+	t.Setenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", "")
+	if DarwinSidecarKillOnServeExit() {
+		t.Fatal("default should persist sidecar across serve restarts")
+	}
+	t.Setenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", "managed")
+	if !DarwinSidecarKillOnServeExit() {
+		t.Fatal("managed should kill sidecar with serve")
+	}
+}
+
 func TestLlamaCppBackend(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LLAMA_CPP_BACKEND", "")
 	if LlamaCppBackend() {
@@ -117,6 +128,19 @@ func TestLlamaServerBackend(t *testing.T) {
 	if !LlamaServerBackend() {
 		t.Fatal("explicit on")
 	}
+	if !LlamaServerBackendExplicit() {
+		t.Fatal("1 should be explicit")
+	}
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "auto")
+	if !LlamaServerBackend() {
+		t.Fatal("auto should enable backend")
+	}
+	if LlamaServerBackendExplicit() {
+		t.Fatal("auto should not be explicit")
+	}
+	if !LlamaServerBackendAuto() {
+		t.Fatal("auto should be detected")
+	}
 	t.Setenv("ZEROLLAMA_LEGACY_RUNNER", "")
 	ApplyLlamaServerBackendDefaults()
 	if Var("ZEROLLAMA_LEGACY_RUNNER") != "1" {
@@ -126,5 +150,45 @@ func TestLlamaServerBackend(t *testing.T) {
 	ApplyLlamaServerBackendDefaults()
 	if Var("ZEROLLAMA_LEGACY_RUNNER") != "1" {
 		t.Fatal("should not clear explicit legacy runner when flag off")
+	}
+}
+
+func TestEdgeModeDefaults(t *testing.T) {
+	t.Setenv("ZEROLLAMA_EDGE", "1")
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "")
+	t.Setenv("ZEROLLAMA_LEGACY_RUNNER", "")
+	t.Setenv("ZEROLLAMA_RUNTIME", "")
+	t.Setenv("ZEROLLAMA_RUNTIME_EMBED", "")
+	t.Setenv("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", "")
+	ApplyEdgeModeDefaults()
+	if Var("ZEROLLAMA_LLAMA_SERVER") != "1" {
+		t.Fatalf("llama_server=%q", Var("ZEROLLAMA_LLAMA_SERVER"))
+	}
+	if Var("ZEROLLAMA_LEGACY_RUNNER") != "1" {
+		t.Fatalf("legacy_runner=%q", Var("ZEROLLAMA_LEGACY_RUNNER"))
+	}
+	if Var("ZEROLLAMA_RUNTIME") != "0" {
+		t.Fatalf("runtime=%q", Var("ZEROLLAMA_RUNTIME"))
+	}
+	if Var("ZEROLLAMA_RUNTIME_EMBED") != "0" {
+		t.Fatalf("runtime_embed=%q", Var("ZEROLLAMA_RUNTIME_EMBED"))
+	}
+	if Var("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR") != "0" {
+		t.Fatalf("darwin_sidecar=%q", Var("ZEROLLAMA_RUNTIME_DARWIN_SIDECAR"))
+	}
+	if RuntimeEmbedEnabled() {
+		t.Fatal("embedded runtime must be off in edge mode")
+	}
+}
+
+func TestEdgeModeDefaultsForcesLlamaServer(t *testing.T) {
+	// Operator set ZEROLLAMA_LLAMA_SERVER=0 before --edge. Edge must override it
+	// because disabling llama-server while also disabling the Python runtime would
+	// leave no local inference backend at all.
+	t.Setenv("ZEROLLAMA_EDGE", "1")
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "0")
+	ApplyEdgeModeDefaults()
+	if Var("ZEROLLAMA_LLAMA_SERVER") != "1" {
+		t.Fatalf("edge must force llama-server=1 even when operator set 0; got %q", Var("ZEROLLAMA_LLAMA_SERVER"))
 	}
 }

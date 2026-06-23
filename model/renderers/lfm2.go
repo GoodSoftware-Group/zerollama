@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/server/modality"
 )
 
 type LFM2Renderer struct {
@@ -18,6 +19,8 @@ type LFM2Renderer struct {
 const lfm2BOSToken = "<|startoftext|>"
 
 const (
+	lfm2ThinkingOpenTag      = "<think>"
+	lfm2ThinkingCloseTag     = "</think>"
 	lfm2ToolListStartTag     = "<|tool_list_start|>"
 	lfm2ToolListEndTag       = "<|tool_list_end|>"
 	lfm2ToolCallStartTag     = "<|tool_call_start|>"
@@ -25,6 +28,10 @@ const (
 	lfm2ToolResponseStartTag = "<|tool_response_start|>"
 	lfm2ToolResponseEndTag   = "<|tool_response_end|>"
 )
+
+func (r *LFM2Renderer) LeadingBOS() string {
+	return lfm2BOSToken
+}
 
 func lfm2RenderSystemContent(content any) string {
 	switch v := content.(type) {
@@ -193,9 +200,12 @@ func lfm2RenderToolCalls(calls []api.ToolCall) string {
 	return sb.String()
 }
 
-func (r *LFM2Renderer) renderMessageContent(message api.Message, imageOffset int) string {
+func (r *LFM2Renderer) renderMessageContent(msgs []api.Message, msgIdx int, message api.Message, imageOffset int) string {
 	content := lfm2RenderContent(message.Content, r.useImgTags)
 	if len(message.Images) == 0 {
+		return content
+	}
+	if modality.MessageSkipsVisionPlaceholdersForChat(msgs, msgIdx, r.useImgTags) {
 		return content
 	}
 
@@ -281,11 +291,23 @@ func (r *LFM2Renderer) Render(messages []api.Message, tools []api.Tool, thinkVal
 		sb.WriteString(message.Role)
 		sb.WriteString("\n")
 
-		content := r.renderMessageContent(message, imageOffset)
+		content := r.renderMessageContent(messages, i, message, imageOffset)
 		imageOffset += len(message.Images)
+		// Reconstruct the inline <think>...</think> block from the separate
+		// Thinking field so reasoning turns round-trip in the model's own format:
+		// thinking precedes any tool calls and content. A direct answer carries no
+		// Thinking, so nothing is added. Only the thinking variant emits these tags;
+		// the non-thinking renderer must never send them, including for a trailing
+		// assistant prefill (which is exempt from the stripping below).
+		if r.IsThinking && message.Role == "assistant" && message.Thinking != "" && !strings.Contains(content, lfm2ThinkingCloseTag) {
+			content = lfm2ThinkingOpenTag + message.Thinking + lfm2ThinkingCloseTag + content
+		}
+		// Drop reasoning from earlier assistant turns unless thinking is kept; the
+		// <think>...</think> block is a clean prefix, so everything after the close
+		// tag (tool calls and content) is preserved.
 		if message.Role == "assistant" && !keepPastThinking && i != lastAssistantIndex {
-			if idx := strings.LastIndex(content, "</think>"); idx >= 0 {
-				content = strings.TrimSpace(content[idx+len("</think>"):])
+			if idx := strings.LastIndex(content, lfm2ThinkingCloseTag); idx >= 0 {
+				content = strings.TrimSpace(content[idx+len(lfm2ThinkingCloseTag):])
 			}
 		}
 		if message.Role == "assistant" && len(message.ToolCalls) > 0 && !strings.Contains(content, lfm2ToolCallStartTag) {

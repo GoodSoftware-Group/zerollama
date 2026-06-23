@@ -67,7 +67,12 @@ def slot_cache_file_path(model_hash: str, slot_id: int, seq: int = 0) -> Path:
     return slot_save_path(model_hash) / slot_cache_filename(slot_id, seq)
 
 
-def prepare_slot_cache_dir(model_hash: str, *, evict: bool = False) -> Path:
+def prepare_slot_cache_dir(
+    model_hash: str,
+    *,
+    evict: bool = False,
+    slot_bin_ttl_ms: int | None = None,
+) -> Path:
     """Ensure save dir exists.
 
     ``evict=True`` sweeps expired blobs — pass this only on session start, not on
@@ -76,7 +81,7 @@ def prepare_slot_cache_dir(model_hash: str, *, evict: bool = False) -> Path:
     save_dir = slot_save_path(model_hash)
     save_dir.mkdir(parents=True, exist_ok=True)
     if evict:
-        evict_expired(save_dir)
+        evict_expired(save_dir, slot_bin_ttl_ms=slot_bin_ttl_ms)
     return save_dir
 
 
@@ -212,10 +217,13 @@ def evict_ttl_ms_for_file(
     file_name: str,
     *,
     ttls: dict[str, int] | None = None,
+    slot_bin_ttl_ms: int | None = None,
 ) -> int:
     ttl_class = parse_slot_cache_ttl_class(file_name)
     if ttl_class is not None:
         return ttl_ms_for_key(ttl_class, ttls)
+    if slot_bin_ttl_ms is not None:
+        return slot_bin_ttl_ms
     return default_slot_ttl_ms()
 
 
@@ -224,6 +232,7 @@ def evict_expired(
     *,
     ttls: dict[str, int] | None = None,
     now_ms: float | None = None,
+    slot_bin_ttl_ms: int | None = None,
 ) -> int:
     """Delete slot files older than TTL (mtime).
 
@@ -239,7 +248,9 @@ def evict_expired(
     for entry in root.iterdir():
         if not entry.is_file():
             continue
-        horizon = evict_ttl_ms_for_file(entry.name, ttls=ttls)
+        horizon = evict_ttl_ms_for_file(
+            entry.name, ttls=ttls, slot_bin_ttl_ms=slot_bin_ttl_ms
+        )
         try:
             mtime_ms = entry.stat().st_mtime * 1000
         except OSError:
@@ -408,8 +419,26 @@ def resolve_local_cache_key(provider_options: Any) -> str | None:
     return extract_prompt_cache_key(provider_options)
 
 
-def cache_prompt_for_request(prompt_cache_key: str | None) -> bool:
-    return bool(prompt_cache_key) and llama_cache_enabled()
+def cache_prompt_for_request(
+    prompt_cache_key: str | None,
+    policy: Any | None = None,
+    *,
+    seq_pos: int | None = None,
+    prompt_tokens: int | None = None,
+) -> bool:
+    """Whether to pass ``cache_prompt: true`` to llama-server / resume pinned slots."""
+    from runtime.prefix_cache_policy import (
+        PrefixCachePolicy,
+        cache_prompt_for_request as policy_cache_prompt,
+    )
+
+    pol: PrefixCachePolicy | None = policy if isinstance(policy, PrefixCachePolicy) else None
+    return policy_cache_prompt(
+        prompt_cache_key,
+        pol,
+        seq_pos=seq_pos,
+        prompt_tokens=prompt_tokens,
+    )
 
 
 def resolve_cache_key_from_options(options: dict[str, Any] | None) -> str | None:
@@ -505,6 +534,8 @@ def llama_server_cache_argv(
     llama_server_args: list[str],
     *,
     draft_model: Path | None = None,
+    spec_method: str = "none",
+    num_ctx: int | None = None,
 ) -> list[str]:
     """``--slot-save-path`` argv when disk cache is enabled.
 
@@ -512,6 +543,18 @@ def llama_server_cache_argv(
     Sync scan is acceptable on cold llama-server boot — not on hot request path.
     """
     if not llama_cache_enabled():
+        return []
+    from runtime.prefix_cache_policy import (
+        effective_disk_cache_enabled,
+        resolve_prefix_cache_policy,
+    )
+
+    policy = resolve_prefix_cache_policy(
+        gguf=model_path,
+        num_ctx=num_ctx,
+        spec_method=spec_method,
+    )
+    if not effective_disk_cache_enabled(policy):
         return []
     ck, cv = cache_type_from_llama_argv(llama_server_args)
     model_hash = build_model_hash(
@@ -526,7 +569,7 @@ def llama_server_cache_argv(
     # should not accumulate expired slot blobs under ~/.cache/zerollama/llama-cache/.
     evict_orphaned_cache_dirs(keep_model_hash=model_hash)
     # Sync scan before llama-server start; small dir expected (one entry per slot).
-    evict_expired(save_dir)
+    evict_expired(save_dir, slot_bin_ttl_ms=policy.disk_ttl_ms)
     return ["--slot-save-path", str(save_dir)]
 
 
@@ -535,6 +578,8 @@ def cache_health(
     llama_server_args: list[str],
     *,
     draft_model: Path | None = None,
+    num_ctx: int | None = None,
+    spec_method: str = "none",
 ) -> dict[str, Any]:
     """``/health.llama_cache`` snapshot.
 
@@ -542,16 +587,46 @@ def cache_health(
     layout should be stable for pre-warm and monitoring.
     """
     enabled = llama_cache_enabled()
+    from runtime.prefix_cache_policy import (
+        effective_disk_cache_enabled,
+        policy_to_health,
+        resolve_prefix_cache_policy,
+    )
+
+    model_loaded = model_path is not None and model_path.is_file()
+    policy = resolve_prefix_cache_policy(
+        gguf=model_path if model_loaded else None,
+        num_ctx=num_ctx,
+        spec_method=spec_method,
+    )
+    inprocess_disk = (
+        enabled
+        and model_loaded
+        and effective_disk_cache_enabled(policy)
+    )
     out: dict[str, Any] = {
         "enabled": enabled,
-        "inprocess_disk_cache": enabled and inprocess_disk_cache_enabled(),
+        "inprocess_disk_cache": inprocess_disk,
         "root": str(llama_cache_root()),
         "default_ttl_ms": default_slot_ttl_ms(),
+        "policy": policy_to_health(policy),
     }
+    from runtime.kv.spec_bind import spec_bind_health
+    from runtime.kv_cache_spec import resolve_kv_cache_spec
+    from runtime.decode_graph_cache import decode_graph_cache
+
+    spec = resolve_kv_cache_spec(
+        gguf=model_path if model_loaded else None,
+        num_ctx=num_ctx,
+        spec_method=spec_method,
+    )
+    out["kv_cache_spec"] = spec.to_health()
+    out["spec_bind"] = spec_bind_health(spec)
+    out["decode_graph"] = decode_graph_cache().health()
     if not enabled or model_path is None:
         return out
     out["model_path"] = str(model_path)
-    out["model_loaded"] = model_path.is_file()
+    out["model_loaded"] = model_loaded
     ck, cv = cache_type_from_llama_argv(llama_server_args)
     model_hash = build_model_hash(
         target_model_path=model_path,

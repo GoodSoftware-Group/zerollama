@@ -3,6 +3,10 @@
 # Copy to ~/bin/serve.sh and adjust paths. Why each block is documented inline.
 set -euo pipefail
 
+_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/sched_watchdog_env.sh
+source "${_ROOT}/scripts/sched_watchdog_env.sh"
+
 # Repo root: training.py + optional runtime/ checkout.
 # Auto-detect now checks $HOME/zerollama; set explicitly if your layout differs.
 export OLLAMA_TRAINING_PYTHONPATH="${OLLAMA_TRAINING_PYTHONPATH:-$HOME/zerollama}"

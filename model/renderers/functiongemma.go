@@ -10,6 +10,10 @@ import (
 
 type FunctionGemmaRenderer struct{}
 
+func (r *FunctionGemmaRenderer) LeadingBOS() string {
+	return "<bos>"
+}
+
 const defaultSystemMessage = "You can do function calling with the following functions:"
 
 func (r *FunctionGemmaRenderer) Render(messages []api.Message, tools []api.Tool, thinkValue *api.ThinkValue) (string, error) {

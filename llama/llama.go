@@ -4,6 +4,10 @@ package llama
 #cgo CFLAGS: -std=c11
 #cgo windows CFLAGS: -Wno-dll-attribute-on-redeclaration
 #cgo CXXFLAGS: -std=c++17
+// Link libstdc++/libc++ when Go tests pull in llama.cpp common (jinja). Production
+// scripts also set CGO_LDFLAGS, but plain `go test ./discover/` must link without them.
+#cgo darwin LDFLAGS: -lc++
+#cgo linux LDFLAGS: -lc++
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/include
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/common
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/vendor
@@ -570,7 +574,18 @@ type MtmdChunk struct {
 	Tokens []int
 }
 
-func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte) ([]MtmdChunk, error) {
+func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gridTHW []int) ([]MtmdChunk, error) {
+	// gridTHW is an upstream handoff seam (docs/mtmd-grid-thw-handoff.md).
+	// WHY accept it now: SGLang clients attach [1,H,W] per frame on video_spans; llamarunner
+	// already threads img.GridTHW here. When mtmd_bitmap_set_grid_hint lands, only this bind
+	// changes — callers and llm.ImageData stay stable. Until then mtmd still patchifies from
+	// decoded PNG dimensions; we log at Debug so operators can compare hint vs embed count.
+	if len(gridTHW) == 3 {
+		slog.Debug("mtmd grid_thw hint not forwarded to upstream",
+			"grid_thw", gridTHW,
+			"note", "pixel-derived layout until mtmd_bitmap_set_grid_hint lands",
+		)
+	}
 	// Initialize the input chunks pointer
 	ic := C.mtmd_input_chunks_init()
 	defer C.mtmd_input_chunks_free(ic)

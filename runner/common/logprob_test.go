@@ -496,3 +496,15 @@ func TestLogprobsWithStopSequences(t *testing.T) {
 		})
 	}
 }
+
+func TestLogprobForTokenIDInvalid(t *testing.T) {
+	requireInf := func(t *testing.T, got float64) {
+		t.Helper()
+		if !math.IsInf(got, -1) {
+			t.Fatalf("expected -Inf, got %v", got)
+		}
+	}
+	requireInf(t, LogprobForTokenID(nil, 0))
+	requireInf(t, LogprobForTokenID([]float32{0}, -1))
+	requireInf(t, LogprobForTokenID([]float32{0}, 1))
+}

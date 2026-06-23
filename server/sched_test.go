@@ -852,8 +852,9 @@ func TestSchedNeedsReload(t *testing.T) {
 	runner.loading = true
 	req.opts.NumBatch = 1234
 	resp = runner.needsReload(ctx, req)
-	require.True(t, resp)
+	require.False(t, resp) // coalesce while loading; opts apply on next load after current finishes
 	req.opts.NumBatch = runner.Options.NumBatch
+	runner.loading = false
 	llm.pingResp = errors.New("foo")
 	resp = runner.needsReload(ctx, req)
 	require.True(t, resp)

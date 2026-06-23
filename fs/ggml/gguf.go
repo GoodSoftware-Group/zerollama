@@ -38,6 +38,10 @@ type containerGGUF struct {
 	}
 
 	maxArraySize int
+
+	// metadataOnly stops after reading tensor headers (no weight-region seek walk).
+	// Why: metadata probes on large GGUFs should not scan the full blob (LocalAI #9790 pattern).
+	metadataOnly bool
 }
 
 func (c *containerGGUF) Name() string {
@@ -234,6 +238,10 @@ func (llm *gguf) Decode(rs io.ReadSeeker) error {
 
 	// patch KV with parameter count
 	llm.kv["general.parameter_count"] = llm.parameters
+
+	if llm.metadataOnly {
+		return nil
+	}
 
 	alignment := llm.kv.Uint("general.alignment", 32)
 

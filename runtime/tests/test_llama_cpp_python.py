@@ -95,3 +95,32 @@ def test_llama_cpp_python_generate():
         assert len(toks) >= 1
     finally:
         worker.stop()
+
+
+def test_llama_cpp_python_non_stream_honors_prefill_cancel():
+    from runtime.kv.native_decode_loop import PrefillAbortedError
+    from runtime.kv.prefill_cancel import PrefillCancelToken
+
+    class FakeLlama:
+        def create_completion(self, prompt, max_tokens, stream=False, **kwargs):
+            del prompt, max_tokens, kwargs
+
+            def _chunks():
+                yield {"choices": [{"text": "a"}]}
+                yield {"choices": [{"text": "b"}]}
+                yield {"choices": [{"text": ""}]}
+
+            if stream:
+                return _chunks()
+            return {"choices": [{"text": "ab"}]}
+
+    worker = LlamaCppPythonWorker(model=Path("/tmp/x.gguf"))
+    worker._llama = FakeLlama()
+
+    cancel = PrefillCancelToken()
+    out = worker.completion("hi", n_predict=8, prefill_cancel=cancel)
+    assert out["content"] == "ab"
+
+    cancel.cancel()
+    with pytest.raises(PrefillAbortedError):
+        worker.completion("hi", n_predict=8, prefill_cancel=cancel)

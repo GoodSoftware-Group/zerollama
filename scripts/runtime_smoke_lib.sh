@@ -68,6 +68,27 @@ smoke_resolve_zerollama_bin() {
   return 1
 }
 
+# Resolve Flash-MoE GGUF + sidecar + tag from zerollama local model store.
+# Prints three lines: gguf_path, sidecar_dir, model_tag. Returns 1 when none found.
+smoke_flash_moe_autoresolve() {
+  local root="${1:-.}"
+  local preferred="${FLASH_MOE_MODEL:-${P17_MODEL:-}}"
+  local bin json
+  bin="$(smoke_resolve_zerollama_bin "${root}")" || return 1
+  if [[ -n "${preferred}" ]]; then
+    json="$("${bin}" flash-moe-resolve --json --model "${preferred}" 2>/dev/null)" || return 1
+  else
+    json="$("${bin}" flash-moe-resolve --json 2>/dev/null)" || return 1
+  fi
+  python3 - <<'PY' "${json}"
+import json, sys
+entry = json.loads(sys.argv[1])
+print(entry.get("gguf_path", ""))
+print(entry.get("sidecar", ""))
+print(entry.get("tag", ""))
+PY
+}
+
 # Map local GGUF blob to pulled model tag (render-chat smoke), or empty.
 smoke_m3_proxy_tag_for_gguf() {
   local gguf="$1"
@@ -155,6 +176,73 @@ smoke_m3_resolve_signoff_model() {
     else
       echo "warn: could not resolve pulled tag for ${model}; render-chat tokenize check skipped" >&2
     fi
+  fi
+}
+
+# Pick smallest local vision GGUF (manifest with projector layer).
+# Prints two lines: main model blob path, model tag (may be empty).
+smoke_m3_pick_vision_gguf() {
+  python3 <<'PY'
+import json
+from pathlib import Path
+
+root = Path.home() / ".ollama/models/manifests/registry.ollama.ai/library"
+best = None
+for mf in sorted(root.rglob("latest")):
+    try:
+        m = json.loads(mf.read_text())
+        if not any(
+            "projector" in (layer.get("mediaType") or "")
+            for layer in m.get("layers", [])
+        ):
+            continue
+        for layer in m.get("layers", []):
+            if layer.get("mediaType") != "application/vnd.ollama.image.model":
+                continue
+            d = layer["digest"].replace("sha256:", "sha256-")
+            path = Path.home() / ".ollama/models/blobs" / d
+            size = int(layer.get("size") or 0)
+            if not path.is_file():
+                continue
+            if best is None or size < best[0]:
+                best = (size, str(path), mf.parent.name)
+            break
+    except Exception:
+        pass
+if best:
+    print(best[1])
+    print(best[2])
+PY
+}
+
+# Resolve vision sign-off GGUF + tag. Uses P17_VISION_GGUF or auto-pick; tag from P17_VISION_MODEL or manifest.
+smoke_m3_resolve_vision_signoff_model() {
+  local model="${P17_VISION_GGUF:-${M3_VISION_LLAMA_MODEL:-}}"
+  local tag="${P17_VISION_MODEL:-}"
+  if [[ -z "$model" ]]; then
+    local pick
+    pick="$(smoke_m3_pick_vision_gguf)"
+    model="$(echo "$pick" | sed -n '1p')"
+    if [[ -z "$tag" ]]; then
+      tag="$(echo "$pick" | sed -n '2p')"
+    fi
+  fi
+  if [[ -z "$model" || ! -f "$model" ]]; then
+    echo "Set P17_VISION_MODEL (pulled tag) or P17_VISION_GGUF / M3_VISION_LLAMA_MODEL to a local vision GGUF blob" >&2
+    return 1
+  fi
+  export LLAMA_MODEL="$model" RUN_E2E_GGUF="$model"
+  if [[ -z "$tag" ]]; then
+    tag="$(smoke_m3_proxy_tag_for_gguf "$model")"
+  fi
+  if [[ -z "$tag" ]]; then
+    echo "Could not resolve pulled tag for vision blob ${model}; set P17_VISION_MODEL=your-tag:latest" >&2
+    return 1
+  fi
+  if [[ "$tag" == *:* ]]; then
+    export P17_VISION_MODEL="$tag"
+  else
+    export P17_VISION_MODEL="${tag}:latest"
   fi
 }
 

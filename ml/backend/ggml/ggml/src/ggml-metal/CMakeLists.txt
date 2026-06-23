@@ -19,6 +19,11 @@ target_link_libraries(ggml-metal PRIVATE
                       ${METALKIT_FRAMEWORK}
                       )
 
+find_library(IOSURFACE_FRAMEWORK IOSurface)
+if (IOSURFACE_FRAMEWORK)
+    target_link_libraries(ggml-metal PRIVATE ${IOSURFACE_FRAMEWORK})
+endif()
+
 if (GGML_METAL_NDEBUG)
     add_compile_definitions(GGML_METAL_NDEBUG)
 endif()

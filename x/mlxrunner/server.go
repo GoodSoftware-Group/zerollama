@@ -125,6 +125,9 @@ func Execute(args []string) error {
 			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
+		if len(request.CompletionRequest.Tokens) > 0 {
+			request.Tokens = request.CompletionRequest.Tokens
+		}
 
 		request.Pipeline = runner.TextGenerationPipeline
 		request.SamplerOpts = sample.Options{

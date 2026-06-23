@@ -3,7 +3,6 @@ package llm
 import (
 	"bytes"
 	"io"
-	"os"
 	"strings"
 	"sync/atomic"
 )
@@ -20,7 +19,7 @@ type StatusWriter struct {
 
 const maxCapturedErrorBytes = 8 * 1024
 
-func NewStatusWriter(out *os.File) *StatusWriter {
+func NewStatusWriter(out io.Writer) *StatusWriter {
 	return &StatusWriter{
 		out: out,
 	}

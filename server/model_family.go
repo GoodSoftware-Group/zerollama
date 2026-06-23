@@ -1,5 +1,7 @@
 package server
 
+import "strings"
+
 // Model family routing for VL and multi-arch manifests.
 //
 // Why: createModel processes GGUF layers in file order. Vision-language blobs often
@@ -28,7 +30,17 @@ func isProjectorArchitecture(arch string) bool {
 // ModelFamilies (e.g. clip + qwen35 on VL manifests).
 var llmFamilyPreference = []string{
 	"qwen35moe", "qwen35", "qwen3next", "qwen3vlmoe", "qwen3vl", "qwen3",
-	"gemma4", "gemma3", "llama4", "llama3", "gptoss", "gpt-oss", "mistral3",
+	"gemma4", "gemma3", "llama4", "llama3", "gpt_oss", "gptoss", "gpt-oss", "mistral3",
+}
+
+// isGptOSSFamily reports whether arch names a GPT-OSS model (GGUF gptoss, HF gpt_oss, etc.).
+func isGptOSSFamily(arch string) bool {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "gpt_oss", "gptoss", "gpt-oss":
+		return true
+	default:
+		return false
+	}
 }
 
 // PrimaryFamily returns the LLM architecture for routing renderers, parsers, and
@@ -68,6 +80,9 @@ func defaultParserForFamily(m *Model) string {
 	case "qwen35", "qwen35moe":
 		return "qwen3.5"
 	default:
+		if isGptOSSFamily(m.PrimaryFamily()) || isGptOSSFamily(m.Config.ModelFamily) {
+			return "harmony"
+		}
 		return ""
 	}
 }

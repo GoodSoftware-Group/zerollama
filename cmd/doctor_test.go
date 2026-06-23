@@ -111,6 +111,42 @@ func TestDoctorCheckServeModesNoServers(t *testing.T) {
 	}
 }
 
+func TestDoctorCheckGgmlRunnerDefault(t *testing.T) {
+	c := doctorCheckGgmlRunner()
+	if c.Status != "ok" {
+		t.Fatalf("status=%q", c.Status)
+	}
+	if !strings.Contains(c.Detail, "linked") {
+		t.Fatalf("detail=%q", c.Detail)
+	}
+}
+
+func TestDoctorCheckLlamaServerEdgeRequiresBinary(t *testing.T) {
+	t.Setenv("ZEROLLAMA_EDGE", "1")
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
+	t.Setenv("LLAMA_SERVER_BIN", "/nonexistent/llama-server-phase16-test")
+	c := doctorCheckLlamaServer(".")
+	if c.Status != "fail" {
+		t.Fatalf("status=%q detail=%q", c.Status, c.Detail)
+	}
+	if c.FixHint == "" {
+		t.Fatal("expected fix hint")
+	}
+}
+
+func TestDoctorCheckLlamaServerLinuxAutoWarnsWhenMissing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only")
+	}
+	t.Setenv("ZEROLLAMA_EDGE", "0")
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "auto")
+	t.Setenv("LLAMA_SERVER_BIN", "/nonexistent/llama-server-linux-auto-test")
+	c := doctorCheckLlamaServer(".")
+	if c.Status != "warn" {
+		t.Fatalf("status=%q detail=%q", c.Status, c.Detail)
+	}
+}
+
 func TestDoctorIsStaleFlatMLXPath(t *testing.T) {
 	repo := t.TempDir()
 	build := filepath.Join(repo, "build")
@@ -155,5 +191,25 @@ func TestDoctorEnsureLlamaCppSiblingScript(t *testing.T) {
 	script := filepath.Join(repo, "scripts", "ensure_llama_cpp_sibling.sh")
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("missing ensure script: %v", err)
+	}
+}
+
+func TestDoctorCheckANE(t *testing.T) {
+	c := doctorCheckANE(doctorRepoRoot())
+	if c.Name == "" {
+		t.Fatal("empty check name")
+	}
+	if c.Status != "ok" && c.Status != "warn" {
+		t.Fatalf("unexpected status %q detail=%q", c.Status, c.Detail)
+	}
+}
+
+func TestDoctorCheckFlashMoE(t *testing.T) {
+	c := doctorCheckFlashMoE("")
+	if c.Name == "" {
+		t.Fatal("empty check name")
+	}
+	if c.Status != "ok" && c.Status != "warn" {
+		t.Fatalf("unexpected status %q detail=%q", c.Status, c.Detail)
 	}
 }
