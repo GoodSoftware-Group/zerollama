@@ -10,6 +10,7 @@ scripts=(
   gpu_health_report.sh
   runtime_vram_estimate.sh
   serve_gpu_example.sh
+  serve_production_wrapper.sh
   phase12_golden_ci.sh
   runtime_smoke_lib.sh
   runtime_uv_venv.sh
@@ -295,6 +296,9 @@ grep -q 'P17_LINUX_AUTO' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
 grep -q 'RUN_E2E_P17_LINUX_AUTO' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'RUN_E2E_UPSTREAM_GGUF' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'upstream bundle: restart serve' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'serve_production_wrapper' "${ROOT}/scripts/serve_production_wrapper.sh"
+grep -q 'WHY this wrapper exists' "${ROOT}/scripts/serve_production_wrapper.sh"
+grep -q 'cannot find zerollama repo' "${ROOT}/scripts/serve_gpu_example.sh"
 grep -q 'RUN_E2E_P17_VISION' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'serve_linux_auto.sh' "${ROOT}/docs/phase17-llama-server.md"
 grep -q 'P15_PIN_JSON' "${ROOT}/scripts/phase15_llama_kv_ext_pin_check.sh"

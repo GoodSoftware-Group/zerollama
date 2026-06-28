@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Production serve wrapper (`~/bin/serve.sh`) — Jun 2026
+
+**Why:** CT 1564 operators copied `scripts/serve_gpu_example.sh` verbatim to `~/bin/serve.sh`. That script resolves repo root as `dirname(BASH_SOURCE)/..`, which becomes **`$HOME`** when the file lives in `~/bin` — not `~/zerollama`. Result: `sched_watchdog_env.sh`, `training_uv_venv.sh`, and `PYTHONPATH` never load; `zerollama serve` exits immediately or embed fails with `ModuleNotFoundError: uvicorn` while the operator sees an idle screen (logs go nowhere unless `SERVE_LOG` is set).
+
+**Resolution:** keep **`serve_gpu_example.sh` in-repo only**; install **`scripts/serve_production_wrapper.sh`** as `~/bin/serve.sh`. The wrapper sets `ZEROLLAMA_REPO` and `exec`s the in-repo example. **`serve_gpu_example.sh`** now resolves repo via `$ZEROLLAMA_REPO` / `~/zerollama` when not under `scripts/`, and auto-picks vendor `llama-server` when built (fork QJL + Radix `/kv/seq-copy`).
+
+- **`scripts/serve_production_wrapper.sh`** — thin `~/bin` installer; default `SERVE_LOG=/tmp/zerollama-serve.log`.
+- **`scripts/serve_gpu_example.sh`** — repo-root detection fix; vendor `LLAMA_SERVER_BIN` when `vendor/llama-cpp-*` is built.
+- **Doc:** [5080-runbook.md](docs/5080-runbook.md#production-serve-binserve-sh), [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md#production-serve-binserve-sh), [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter), [runtime-embed.md](docs/runtime-embed.md).
+
 ### Training venv ABI + serve scripts (Jun 2026)
 
 **Why:** CT 1564 operators saw `training worker not started` when `.venv-training` was built for Python 3.11 but the installed `zerollama` embeds `libpython3.10`. PyTorch wheels are ABI-specific; pointing `PYTHONPATH` at the wrong `pythonX.Y/site-packages` fails before torch imports. Legacy repo-root `venv-training/` and pkg-config-only detection made serve scripts pick the wrong path or version.
@@ -12,7 +22,7 @@ All notable changes to this project are documented in this file. The format is b
 
 - **`scripts/training_uv_venv.sh`** — always uses `$REPO/.venv-training` (drops auto-pick of legacy `venv-training/`); `embedded_training_python_ver()` prefers `ldd zerollama` over `pkg-config python3-embed`; new `--embed-py` flag for serve/5080 scripts.
 - **`scripts/training_embed_build_env.sh`** — PKG_CONFIG overlay so `go build` links `libpython3.11` (or chosen version) when distro `python3-embed` is still 3.10. **`5080_build_zerollama`** sources it when `python-3.11-embed` exists.
-- **`scripts/serve_gpu_example.sh`** / **`/root/bin/serve.sh` (CT 1564)** — set `TRAINING_UV_SITE_PACKAGES` from linked libpython before `zerollama serve`; auto-run `training_uv_venv.sh --verify` when site-packages missing.
+- **`scripts/serve_gpu_example.sh`** — in-repo production env only; **`scripts/serve_production_wrapper.sh`** → `~/bin/serve.sh` (do **not** copy the example verbatim — breaks `_ROOT`). Sets `TRAINING_UV_SITE_PACKAGES` from linked libpython before `zerollama serve`; auto-run `training_uv_venv.sh --verify` when site-packages missing.
 - **`x/trainingworker/pyembed/training_shim.c`** — clearer operator error: `embedded Python X.Y requires .venv-training/lib/pythonX.Y/site-packages`.
 - **`.gitignore`** — `venv-training/` (legacy duplicate venv; only `.venv-training/` is canonical).
 - **Doc:** [gpu-training.md](docs/gpu-training.md) (ABI matching, 3.11 build, cleanup), [5080-runbook.md](docs/5080-runbook.md), [development.md](docs/development.md) (Linux CGO embed build).
@@ -734,7 +744,7 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 - **`scripts/l3_full_gate.sh`** — dispatches CUDA vs Mac smoke paths.
 - **`gpu_5080_session.sh`** — optional `RUN_E2E_L1=1`, `RUN_E2E_L3=1` (need `CUDA_LLAMA_MODEL` or `LLAMA_MODEL`).
 - **CGO build on minimal checkout** — root `.gitignore` `vendor/` excludes `llama/llama.cpp/vendor/cpp-httplib/`; copy from sibling `llama.cpp` or run `./scripts/sync_vendor_llama.sh` after full vendor clone. Doc: [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md#building-zerollama-cgo-on-proxmox-ct).
-- **Production serve** — `OLLAMA_HOST=0.0.0.0:8080` for remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, `OLLAMA_HOST`); embedded runtime stays `127.0.0.1:8081`. Example: `scripts/serve_gpu_example.sh`; CT 1564 uses `~/bin/serve.sh` with log redirect to `/tmp/zerollama-serve.log`.
+- **Production serve** — `OLLAMA_HOST=0.0.0.0:8080` for remote clients; embed `127.0.0.1:8081`. **`scripts/serve_production_wrapper.sh`** → `~/bin/serve.sh` (in-repo `serve_gpu_example.sh` only — do not copy to `~/bin`); logs `/tmp/zerollama-serve.log`.
 - **`linux_runtime_serve_lib.sh`** — `LINUX_RT_CURL_TIMEOUT=15` (cold `/health` ~9s on 5080); kill `llama-server` on `runtime_port+1` when stopping sidecar. **Why:** 2s curl timeout caused false “runtime failed to start”; orphan llama-server held VRAM across A/B legs.
 
 ### Phase 15 v32 — scheduler-driven auto-batch (Jun 2026)

@@ -197,7 +197,7 @@ TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify
 ldd $(which zerollama) | grep libpython        # expect libpython3.11
 ```
 
-**Production serve:** copy [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) to `~/bin/serve.sh` — it sets `TRAINING_UV_SITE_PACKAGES` from `ldd zerollama` before `zerollama serve`. CT 1564 operators use `/root/bin/serve.sh`.
+**Production serve:** install [`scripts/serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh) as `~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh` verbatim:** `~/bin` breaks repo-root detection (`_ROOT=$HOME`); embed/training env never loads. The wrapper `exec`s the in-repo example, which sets `TRAINING_UV_SITE_PACKAGES` from `ldd zerollama` before `zerollama serve`. CT 1564: `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh && chmod +x ~/bin/serve.sh`.
 
 **After migrating to 3.11 (disk cleanup):** once `ldd zerollama` shows `libpython3.11` and `./scripts/training_uv_venv.sh --verify` passes, remove duplicate 3.10 trees — each full torch+CUDA venv is ~7 GiB.
 
@@ -248,7 +248,7 @@ When `OLLAMA_HOST` binds `0.0.0.0`, set `ZEROLLAMA_GO_URL=http://127.0.0.1:8080`
 |---------|----------------|
 | `Python.h: No such file` at build | Install `python3-dev` / `python3-devel` and `pkg-config`. |
 | `does not contain training.py` | `OLLAMA_TRAINING_PYTHONPATH` or `ZEROLLAMA_REPO` is set but wrong—fix the path (no auto-fallback). |
-| `set OLLAMA_TRAINING_PYTHONPATH` | No `training.py` found via discovery (binary walk, cwd walk, `$HOME/zerollama`). Example: [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh). |
+| `set OLLAMA_TRAINING_PYTHONPATH` | No `training.py` found via discovery (binary walk, cwd walk, `$HOME/zerollama`). Example: [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) via [`serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh). |
 | `training_init failed` / import errors | Missing Python deps (`torch`, …). Run [`./scripts/training_uv_venv.sh --verify`](../scripts/training_uv_venv.sh). |
 | `training worker not started` / `embedded Python X.Y requires .venv-training/lib/pythonX.Y/site-packages` | **ABI mismatch or missing venv:** binary embeds one libpython, `.venv-training` has another (e.g. 3.11 venv, 3.10 binary). **Fix:** `TRAINING_UV_PYTHON_VER="$(./scripts/training_uv_venv.sh --embed-py)" TRAINING_UV_VENV=$REPO/.venv-training ./scripts/training_uv_venv.sh --verify`, restart serve. **Why not `venv-training/`:** legacy path; shim and serve scripts expect `.venv-training`. |
 | `No module named 'torch'` with `(.venv)` active | Training uses `PYTHONPATH` from `.venv-training`, not an activated shell venv. Run `./scripts/training_uv_venv.sh --export` before `serve`. |

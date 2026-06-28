@@ -18,6 +18,8 @@ ldd ./zerollama | grep libpython   # expect 3.11
 
 See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). **`5080_build_zerollama`** in [`scripts/5080_env.sh`](../scripts/5080_env.sh) sources the embed overlay automatically when `python-3.11-embed` is installed.
 
+**5080 production serve:** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh` to `~/bin`:** breaks repo-root detection (`_ROOT=$HOME`). See [5080-runbook.md](./5080-runbook.md#production-serve-binserve-sh).
+
 Then build and run Ollama from the root directory of the repository:
 
 ```shell

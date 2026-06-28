@@ -34,7 +34,8 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `gpu_health_report.sh` | `/health` tuning summary (Python `runtime.gpu_health_report`) |
 | `runtime_vram_estimate.sh` | Pre-load VRAM budget for a GGUF + `num_ctx` |
 | `e2e_coordination_smoke.sh` | Go↔runtime mirror fields only |
-| `serve_gpu_example.sh` | Example env for 5080-class single-GPU serve |
+| `serve_gpu_example.sh` | In-repo production env for 5080-class single-GPU serve (`OLLAMA_HOST`, PYTHONPATH, vendor llama-server) |
+| `serve_production_wrapper.sh` | Install as `~/bin/serve.sh` — **WHY:** do not copy `serve_gpu_example.sh` to `~/bin` (breaks repo root) |
 | `check_gpu_scripts.sh` | `bash -n` GPU scripts + import `runtime.gpu_health_report` (no GPU) |
 | `phase12_golden_ci.sh` | `check_gpu_scripts` + `go test -run Golden` + tools meta pytest (no GPU); also run in CI |
 | `gpu_phase13_snapshot.sh` | JSON snapshot of `/health` + optional `/internal/vram-estimate` for 5080 calibration |
@@ -291,8 +292,9 @@ GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD
 | `/health missing llama_backend_source` | Stale serve binary | Rebuild `zerollama` from current tree; restart serve |
 | `RUN_E2E_LLAMA_BACKEND_SOURCE=config` fails | Env still set on serve | Unset `ZEROLLAMA_RUNTIME_LLAMA_BACKEND`; uncomment `llama_backend` in YAML; restart serve |
 | `llama_backend_source=default` on subprocess serve | Expected when autoconfig YAML has no `llama_backend` key | Set env or uncomment YAML key; use `RUN_E2E_LLAMA_BACKEND_SOURCE=default` only to assert packaged default |
-| `address already in use` on `:8081` / embed warns then stale `/health` | Previous `zerollama serve` or `zerollama-runtime` sidecar still listening | `ss -tlnp \| grep 8081`; `pkill -f 'zerollama serve'`; unset `ZEROLLAMA_RUNTIME_URL`; use `scripts/serve_gpu_example.sh` or `phase14_serve_env.sh` |
-| `embedded runtime not started` (port in use) | Go preflight blocked embed (fixed vs silent stale attach) | Free `:8081` before `./serve.sh`; only one embed listener per host |
+| `address already in use` on `:8081` / embed warns then stale `/health` | Previous `zerollama serve` or `zerollama-runtime` sidecar still listening | `ss -tlnp \| grep 8081`; `5080_stop_serve` or `pkill -f 'zerollama serve'`; unset `ZEROLLAMA_RUNTIME_URL`; use `~/bin/serve.sh` (wrapper) or `scripts/serve_gpu_example.sh` in-repo |
+| `embedded runtime not started` (port in use) | Go preflight blocked embed (fixed vs silent stale attach) | Free `:8081` before `~/bin/serve.sh`; only one embed listener per host |
+| Serve exits / no `:8080` after `~/bin/serve.sh` | Copied `serve_gpu_example.sh` to `~/bin` — `_ROOT=$HOME` | `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh`; `tail -f /tmp/zerollama-serve.log` |
 | Remote client cannot reach API | `OLLAMA_HOST` default `127.0.0.1:11434` (localhost only) | Set `OLLAMA_HOST=0.0.0.0:8080`; verify `ss -tlnp \| grep 8080`; clients use Go `:8080`, not embedded `:8081` |
 | `go build` fails `cpp-httplib/httplib.h` | httplib not vendored in minimal checkout | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` — [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#building-zerollama-cgo-on-proxmox-ct) |
 | Screen shows no serve output | `exec zerollama serve >> /tmp/zerollama-serve.log` | `tail -f /tmp/zerollama-serve.log` — **why:** log redirect keeps screen quiet |

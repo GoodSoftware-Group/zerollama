@@ -206,10 +206,34 @@ sudo cp zerollama /usr/bin/zerollama   # if serve uses /usr/bin/zerollama
 
 **Why not default `127.0.0.1:11434`:** upstream Ollama binds localhost on port 11434. Remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, ruby-trivia `OLLAMA_HOST`, Open WebUI, etc.) cannot reach localhost on the GPU box. CT 1564 listens on **`192.168.255.164:8080`** (`eth0` on `vmbr253`).
 
+**Why a wrapper instead of copying `serve_gpu_example.sh`:** the example script assumes it lives in `scripts/` and sets `_ROOT=$(dirname "$0")/..`. Installed as `~/bin/serve.sh`, `..` resolves to **`$HOME`**, not the zerollama checkout — `source scripts/training_uv_venv.sh` fails, `PYTHONPATH` is empty, and serve dies before binding `:8080` (worse when logs redirect to `/tmp/zerollama-serve.log` and the screen looks idle).
+
+**Install (once):**
+
+```bash
+cd ~/zerollama
+cp scripts/serve_production_wrapper.sh ~/bin/serve.sh
+chmod +x ~/bin/serve.sh
+```
+
+**Start:**
+
+```bash
+~/bin/serve.sh
+tail -f /tmp/zerollama-serve.log
+```
+
+The wrapper sets `ZEROLLAMA_REPO=${HOME}/zerollama`, `SERVE_LOG=/tmp/zerollama-serve.log`, and `exec`s [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) in-repo. That example sets:
+
+- `OLLAMA_HOST=0.0.0.0:8080` — remote clients
+- `ZEROLLAMA_GO_URL=http://127.0.0.1:8080` — embed → Go `/internal/*` on loopback
+- **`PYTHONPATH`** — `runtime/.venv/.../site-packages` **before** `.venv-training` (uvicorn + torch ABI)
+- vendor **`LLAMA_SERVER_BIN`** when `vendor/llama-cpp-*` is built (fork QJL + Radix seq-copy)
+
 **Required for remote inference:**
 
 ```bash
-export OLLAMA_HOST=0.0.0.0:8080   # or http://0.0.0.0:8080
+export OLLAMA_HOST=0.0.0.0:8080   # set by serve_gpu_example.sh
 zerollama serve
 ```
 
@@ -217,21 +241,23 @@ Log line should show `Listening on [::]:8080` or `0.0.0.0:8080` — **not** `127
 
 **Embedded runtime stays loopback:** Go embeds Python runtime on `127.0.0.1:8081` (`ZEROLLAMA_RUNTIME_EMBED_PORT`). Remote clients talk to **`:8080` only**; they must not point at `:8081`.
 
-**Example wrapper:** `scripts/serve_gpu_example.sh` — copy to `~/bin/serve.sh` and adjust paths. Set **`PYTHONPATH`** to `runtime/.venv/.../site-packages` (and training venv if embedded training is on) — see [5080-runbook.md](./5080-runbook.md). CT 1564 production script adds:
+**Why log redirect:** screen/tmux sessions stay quiet; GIN + runner logs accumulate in one file. **Watch live:** `tail -f /tmp/zerollama-serve.log`. **Trade-off:** no stdout in the screen — set `SERVE_LOG=` empty and use `tee` if you want both (see comment in `serve_gpu_example.sh`).
 
-```bash
-exec zerollama serve >> /tmp/zerollama-serve.log 2>&1
-```
-
-**Why log redirect:** screen/tmux sessions stay quiet; GIN + runner logs accumulate in one file. **Watch live:** `tail -f /tmp/zerollama-serve.log`. **Trade-off:** no stdout in the screen — use `tee` if you want both (see comment in `serve_gpu_example.sh`).
-
-**After `git pull` + rebuild:** restart serve so `/usr/bin/zerollama` picks up the new binary.
+**After `git pull` + rebuild:** restart `~/bin/serve.sh` so `/usr/bin/zerollama` picks up the new binary.
 
 **Smoke from another host:**
 
 ```bash
 curl -s http://192.168.255.164:8080/api/tags
 curl -s http://192.168.255.164:8080/v1/models
+```
+
+**Production sanity (on the GPU box):**
+
+```bash
+curl -s http://127.0.0.1:8080/api/version | jq .
+curl -s http://127.0.0.1:8081/health | jq '{status, profile: .gpu_profile.id, backend: .llama_backend}'
+curl -s http://127.0.0.1:8080/api/train/status | jq .
 ```
 
 ---
@@ -633,7 +659,9 @@ sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 
 **Why three patches:** they touch two source packages (`mlx-src` vs `mlx-c-src`) and have distinct roles. All are idempotent — safe to re-run after a clean cmake configure.
 
-### Serve env (included in `serve_gpu_example.sh`)
+### Serve env (included in `serve_gpu_example.sh` via `~/bin/serve.sh` wrapper)
+
+**WHY wrapper:** production installs `serve_production_wrapper.sh` as `~/bin/serve.sh`; it `exec`s the in-repo example below. Do not copy the example file itself to `~/bin`.
 
 ```bash
 export OLLAMA_LIBRARY_PATH=/usr/lib/ollama:/usr/lib/ollama/mlx_cuda_v12

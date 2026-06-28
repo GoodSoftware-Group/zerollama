@@ -31,7 +31,8 @@ source ./scripts/5080_env.sh
 | [`scripts/5080_resignoff.sh`](../scripts/5080_resignoff.sh) | Full re-sign-off driver (`--tier N`, `--radix`, `--vendor`, `--build`) |
 | [`scripts/gpu_5080_session.sh`](../scripts/gpu_5080_session.sh) | Tier 1 only (Phase 11–13 + snapshot) when serve already up |
 | [`scripts/llama_patch_doctor.sh`](../scripts/llama_patch_doctor.sh) | Vendor / `/kv/seq-copy` before Radix live |
-| [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) | Production `OLLAMA_HOST=0.0.0.0:8080` template |
+| [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) | In-repo production env (`OLLAMA_HOST=0.0.0.0:8080`, PYTHONPATH, vendor llama-server) |
+| [`scripts/serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh) | Install as `~/bin/serve.sh` — **WHY:** copying the example to `~/bin` breaks repo-root detection |
 
 **Deep dives (only when debugging):** [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) (VRAM, MLX, code map) · [testing-smoke.md](./testing-smoke.md) (full script catalog) · [gpu-profiles-l3.md](./gpu-profiles-l3.md) (L3/Radix policy)
 
@@ -68,7 +69,7 @@ pct exec 1564 -- bash -lc 'cd /root/zerollama && …'
 | **Production GGUF (L1/L3)** | eliza-1 9B @ 8k/27k | L1 concurrent + L3 strict/production gates — not 1B smoke. |
 | **Pulled tag** | `zerollama pull llama3.2:3b` | Phase 17 / edge smokes need a local manifest name. |
 | **Runtime venv** | `RUNTIME_UV_SYNC=1 ./scripts/runtime_uv_venv.sh` | Embed needs `uvicorn` on `PYTHONPATH`; Phase 15 `_kv_native` build needs `setuptools>=75`. |
-| **Training venv + embed** | `sudo apt install python3.11-dev`; `source ./scripts/training_embed_build_env.sh 3.11 && CGO_ENABLED=1 go build -o zerollama .`; `TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify` | **WHY 3.11 on 5080/CT 1564:** runtime `.venv` is already 3.11; default `python3-embed` on Ubuntu 22.04 is 3.10 — without `training_embed_build_env.sh` the binary and venv diverge. Production: `/root/bin/serve.sh`. |
+| **Training venv + embed** | `sudo apt install python3.11-dev`; `source ./scripts/training_embed_build_env.sh 3.11 && CGO_ENABLED=1 go build -o zerollama .`; `TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify` | **WHY 3.11 on 5080/CT 1564:** runtime `.venv` is already 3.11; default `python3-embed` on Ubuntu 22.04 is 3.10 — without `training_embed_build_env.sh` the binary and venv diverge. **Production:** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh` (not a verbatim copy of `serve_gpu_example.sh`). |
 | **Legacy 3.10 cleanup** | After both binary and `.venv-training` are 3.11: `rm -rf venv-training/ .venv-training-py310.bak` | **WHY:** duplicate torch stacks ~7 GiB each; legacy `venv-training/` is ignored by scripts. See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). |
 | **NVML (Proxmox passthrough)** | `libnvidia-ml1` must match host kernel module | CT 1564: host **590.48.01** — if `nvidia-smi` reports driver/library mismatch: `nvidia-driver-pinning-590.48.01` + `libnvidia-ml1=590.48.01-1` (`--allow-downgrades`). |
 
@@ -118,12 +119,43 @@ source ./scripts/5080_env.sh
 
 **Why:** `gpu_5080_session.sh` runs smokes against **already running** embed on `:8081` + Go on `:8080`. Stale listeners or missing `PYTHONPATH` cause false FAILs before any gate runs.
 
+**Gate / dev (loopback, from `5080_env.sh`):**
+
 ```bash
 source ./scripts/5080_env.sh
 5080_start_serve    # 5080_stop_serve + zerollama serve + /health wait
 ```
 
-Production template (bind `0.0.0.0:8080`): [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh).
+---
+
+## Production serve (`~/bin/serve.sh`)
+
+**Why a separate path from `5080_start_serve`:** sign-off uses loopback `:8080` and may set `ZEROLLAMA_GPU_PROFILE=0` for 1B smoke. Production binds **`0.0.0.0:8080`** for remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, Open WebUI, etc.) and keeps the **L1 `rtx-5080` profile** on (`n_parallel=2`, vendor fork KV). Embedded runtime stays **`127.0.0.1:8081`** — remote clients must not point at `:8081`.
+
+**WHY not copy `serve_gpu_example.sh` to `~/bin`:** that script lives in `scripts/` and resolves repo root as `dirname/..`. In `~/bin/serve.sh`, `..` is **`$HOME`**, not `~/zerollama` — helper scripts and `PYTHONPATH` never load; serve exits or embed fails silently when stdout is redirected.
+
+**Install (once after pull):**
+
+```bash
+cd ~/zerollama
+cp scripts/serve_production_wrapper.sh ~/bin/serve.sh
+chmod +x ~/bin/serve.sh
+```
+
+**Start + verify:**
+
+```bash
+~/bin/serve.sh                    # blocks; logs → /tmp/zerollama-serve.log
+tail -f /tmp/zerollama-serve.log
+
+curl -s http://127.0.0.1:8080/api/version | jq .
+curl -s http://127.0.0.1:8081/health | jq '{status, profile: .gpu_profile.id, backend: .llama_backend}'
+curl -s http://127.0.0.1:8080/api/train/status | jq .
+```
+
+**Remote smoke (CT 1564 example):** `curl -s http://192.168.255.164:8080/api/tags`
+
+In-repo reference (same env, for debugging): [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh).
 
 **VRAM prep during smokes:** scripts call `smoke_unload_ggml_runners` (API `keep_alive:0`) before runtime load — **why:** 503 before the broker can leave stale ggml runners holding VRAM. Do not `pkill` runners during gates.
 
@@ -392,8 +424,9 @@ Full table: [testing-smoke.md](./testing-smoke.md).
 | `cpp-httplib/httplib.h: No such file` | Minimal checkout, no vendor httplib | `rsync` from sibling `llama.cpp`; or `RUN_E2E_PREFLIGHT=0` for GPU-only gate |
 | `cannot find -lc++` | Debian uses libstdc++ | Rebuild with `-lstdc++` in `llama/llama.go` LDFLAGS |
 | `nvidia-smi` driver/library mismatch | CT userspace ≠ host kernel module | Pin `libnvidia-ml1=590.48.01-1` (CT 1564) |
-| `ModuleNotFoundError: uvicorn` | Embed without runtime venv on `PYTHONPATH` | [Start serve](#start-serve-required-before-tier-1) env block |
-| `training worker not started` / `.venv-training/lib/python3.10/…` | Training venv ABI ≠ embedded libpython | Rebuild with [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) **or** recreate venv for `$(./scripts/training_uv_venv.sh --embed-py)`; restart `/root/bin/serve.sh`. Doc: [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter) |
+| Serve exits immediately / no `:8080` listener | Copied `serve_gpu_example.sh` to `~/bin` — `_ROOT=$HOME` | `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh`; tail `/tmp/zerollama-serve.log` |
+| `ModuleNotFoundError: uvicorn` | Embed without runtime venv on `PYTHONPATH` | Use `~/bin/serve.sh` (wrapper → in-repo example sets `runtime/.venv/...` before training site-packages). `RUNTIME_UV_SYNC=1 ./scripts/runtime_uv_venv.sh` |
+| `training worker not started` / `.venv-training/lib/python3.10/…` | Training venv ABI ≠ embedded libpython | Rebuild with [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) **or** recreate venv for `$(./scripts/training_uv_venv.sh --embed-py)`; restart `~/bin/serve.sh`. Doc: [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter) |
 | Duplicate training venvs eating disk | Legacy `venv-training/` + `.venv-training-py310.bak` after 3.11 migration | `rm -rf venv-training/ .venv-training-py310.bak`; keep only `.venv-training/` (~7 GiB saved per removed tree) |
 | `/health` timeout / serve “failed to start” | Cold CUDA health ~9s; old 2s curl | Wait with `curl -m 15`; see `LINUX_RT_CURL_TIMEOUT` |
 | 502/503 runtime smokes, ggml still in `/api/ps` | Broker never ran; stale runner | Smokes retry API unload (`keep_alive:0`); free ports and restart serve |

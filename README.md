@@ -261,6 +261,8 @@ cd ~/zerollama && source ./scripts/5080_env.sh
 
 Long reference (VRAM, remote serve, MLX): [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
 
+**Production serve (remote `:8080`):** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh && ~/bin/serve.sh` — **WHY wrapper:** `serve_gpu_example.sh` in `~/bin` resolves repo as `$HOME`, not `~/zerollama`. See [5080-runbook — Production serve](docs/5080-runbook.md#production-serve-binserve-sh).
+
 **Why a separate section:** CUDA hosts use discrete VRAM (`single_gpu.yaml`, `nvidia-smi`), **sm_120** needs CUDA **12.8+** `nvcc`, and Proxmox operators often land on the **host** while GPU passthrough lives in an **LXC** — run gates **inside** the CT (`pct exec 1564 -- …`), not on the host with stale CUDA 12.3.
 
 ```bash
@@ -349,7 +351,7 @@ Smoke: `./scripts/video_expand_cache_smoke.sh` (unit), `./scripts/video_agent_ca
 OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
 ```
 
-**GPU training venv (when `OLLAMA_TRAINING=true`):** packages live in `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y must match** the libpython linked into your `zerollama` binary (`ldd $(which zerollama) | grep libpython`). **Why:** embedded CPython loads torch from `PYTHONPATH`, not the venv interpreter — ABI mismatch fails at startup with `training worker not started`. **Linux 5080:** prefer **3.11** embed + venv (same as `runtime/.venv`) via [`scripts/training_embed_build_env.sh`](scripts/training_embed_build_env.sh) before `go build`. Setup: [`scripts/training_uv_venv.sh`](scripts/training_uv_venv.sh) (`--embed-py`, `--verify`); production serve: [`scripts/serve_gpu_example.sh`](scripts/serve_gpu_example.sh). After migration, remove legacy `venv-training/` (~7 GiB). Details: [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter).
+**GPU training venv (when `OLLAMA_TRAINING=true`):** packages live in `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y must match** the libpython linked into your `zerollama` binary (`ldd $(which zerollama) | grep libpython`). **Why:** embedded CPython loads torch from `PYTHONPATH`, not the venv interpreter — ABI mismatch fails at startup with `training worker not started`. **Linux 5080:** prefer **3.11** embed + venv (same as `runtime/.venv`) via [`scripts/training_embed_build_env.sh`](scripts/training_embed_build_env.sh) before `go build`. Setup: [`scripts/training_uv_venv.sh`](scripts/training_uv_venv.sh) (`--embed-py`, `--verify`); **production serve:** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh` (do **not** copy `serve_gpu_example.sh` to `~/bin` — breaks repo root). After migration, remove legacy `venv-training/` (~7 GiB). Details: [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter).
 
 ### LM Studio cache (reuse local downloads)
 

@@ -154,7 +154,7 @@ Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (
 
 ### Phase 8 — shipped
 
-See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked); Phase **17** L2 pin merge. **Done on 5080 (Jun 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4 + Radix live.
+See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked); Phase **17** L2 pin merge. **Done on 5080 (Jun 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF` bundle. **Production serve:** [`serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh) → `~/bin/serve.sh` (WHY: in-repo `serve_gpu_example.sh` must not be copied verbatim to `~/bin`).
 
 ---
 
@@ -365,7 +365,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 
 **Shipped direction:** Go embeds **CPython** (`x/trainingworker/pyembed`), serves **`/api/train/*`** and legacy **TCP `:9500`** (newline JSON), and coordinates VRAM with the scheduler on CUDA OOM (pause new inference loads → unload runners → ack Python). Training logic stays in repo-root **`training.py`**, loaded in-process—not a second public listener on 9500.
 
-**5080 / CUDA operator default (Jun 2026):** link **`zerollama` against `libpython3.11`** and one **`.venv-training`** on 3.11 (matches `runtime/.venv`). **Why:** single Python generation per host; duplicate 3.10 `venv-training/` trees wasted ~15 GiB and caused ABI footguns. Build: [`scripts/training_embed_build_env.sh`](../scripts/training_embed_build_env.sh).
+**5080 / CUDA operator default (Jun 2026):** link **`zerollama` against `libpython3.11`** and one **`.venv-training`** on 3.11 (matches `runtime/.venv`). **Why:** single Python generation per host; duplicate 3.10 `venv-training/` trees wasted ~15 GiB and caused ABI footguns. Build: [`scripts/training_embed_build_env.sh`](../scripts/training_embed_build_env.sh). **Production serve:** [`scripts/serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh) → `~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh`:** `~/bin` breaks `_ROOT` resolution.
 
 **Why this track exists:** Fine-tuning stacks (Transformers, PEFT, bitsandbytes) are Python-native; Ollama’s control plane is Go. Embedding Python keeps **public wire** in Go while avoiding a second process and gRPC for every deployment.
 

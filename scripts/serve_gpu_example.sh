@@ -1,16 +1,34 @@
 #!/usr/bin/env bash
 # Example zerollama serve for a GPU host (e.g. cudallama with RTX 5080).
-# Copy to ~/bin/serve.sh and adjust paths. Why each block is documented inline.
+#
+# WHY this file stays in scripts/: it sources repo helpers via _ROOT. Do NOT copy
+# verbatim to ~/bin/serve.sh — dirname/.. becomes $HOME and breaks PYTHONPATH.
+# Install: cp scripts/serve_production_wrapper.sh ~/bin/serve.sh
+#
+# In-repo debug: SERVE_LOG=/tmp/zerollama-serve.log bash scripts/serve_gpu_example.sh
+# Doc: docs/5080-runbook.md#production-serve-binserve-sh
 set -euo pipefail
 
-_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve repo root: this file normally lives in scripts/; ~/bin/serve.sh wraps it.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/../runtime/runtime/server/app.py" ]]; then
+  _ROOT="$(cd "${_SCRIPT_DIR}/.." && pwd)"
+elif [[ -n "${ZEROLLAMA_REPO:-}" && -f "${ZEROLLAMA_REPO}/runtime/runtime/server/app.py" ]]; then
+  _ROOT="${ZEROLLAMA_REPO}"
+elif [[ -f "${HOME}/zerollama/runtime/runtime/server/app.py" ]]; then
+  _ROOT="${HOME}/zerollama"
+else
+  echo "serve_gpu_example: cannot find zerollama repo; set ZEROLLAMA_REPO" >&2
+  exit 1
+fi
+export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${_ROOT}}"
 # shellcheck source=scripts/sched_watchdog_env.sh
 source "${_ROOT}/scripts/sched_watchdog_env.sh"
 
 # Repo root: training.py + optional runtime/ checkout.
 # Auto-detect now checks $HOME/zerollama; set explicitly if your layout differs.
-export OLLAMA_TRAINING_PYTHONPATH="${OLLAMA_TRAINING_PYTHONPATH:-$HOME/zerollama}"
-export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-$OLLAMA_TRAINING_PYTHONPATH}"
+export OLLAMA_TRAINING_PYTHONPATH="${OLLAMA_TRAINING_PYTHONPATH:-${ZEROLLAMA_REPO}}"
+export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${OLLAMA_TRAINING_PYTHONPATH}}"
 
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:8080}"
 # Runtime → Go /internal/* (cross-queue-seq, render-chat) must use loopback, not the bind address.
@@ -32,25 +50,37 @@ export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE="${ZEROLLAMA_RUNTIME_VRAM
 export OLLAMA_TRAINING="${OLLAMA_TRAINING:-true}"
 export OLLAMA_TRAINING_TCP="${OLLAMA_TRAINING_TCP:-:9500}"
 
-# WHY .venv-training + ldd: embedded libpython ABI is fixed at zerollama link time; pkg-config
-# alone can disagree (CT 1564: binary 3.10 vs dev headers 3.11). See docs/gpu-training.md.
+# WHY embed PYTHONPATH: training + runtime share one CPython; uvicorn in runtime/.venv,
+# torch in .venv-training (same order as scripts/5080_env.sh). See docs/gpu-training.md.
+# shellcheck source=scripts/training_uv_venv.sh disable=SC1091
+source "${_ROOT}/scripts/training_uv_venv.sh"
+_EMBED_PY="$(embedded_training_python_ver)"
+_RT_SITE="${ZEROLLAMA_REPO}/runtime/.venv/lib/python${_EMBED_PY}/site-packages"
+if [[ ! -d "${_RT_SITE}" ]]; then
+  echo "runtime: missing ${_RT_SITE} — run RUNTIME_UV_SYNC=1 ${_ROOT}/scripts/runtime_uv_venv.sh" >&2
+  RUNTIME_UV_SYNC=1 "${_ROOT}/scripts/runtime_uv_venv.sh" >&2 || true
+fi
+_PYPP=""
+if [[ -d "${_RT_SITE}" ]]; then
+  _PYPP="${_RT_SITE}"
+fi
 if [[ "${OLLAMA_TRAINING}" == "true" ]]; then
-  # shellcheck source=scripts/training_uv_venv.sh disable=SC1091
-  source "${_ROOT}/scripts/training_uv_venv.sh"
-  _TRAIN_EMBED_PY="$(embedded_training_python_ver)"
   _TRAIN_VENV="${ZEROLLAMA_REPO}/.venv-training"
-  _TRAIN_SITE="${_TRAIN_VENV}/lib/python${_TRAIN_EMBED_PY}/site-packages"
+  _TRAIN_SITE="${_TRAIN_VENV}/lib/python${_EMBED_PY}/site-packages"
   if [[ ! -d "${_TRAIN_SITE}" ]]; then
     echo "training: missing ${_TRAIN_SITE} — run:" >&2
-    echo "  TRAINING_UV_VENV=${_TRAIN_VENV} TRAINING_UV_PYTHON_VER=${_TRAIN_EMBED_PY} ${_ROOT}/scripts/training_uv_venv.sh --verify" >&2
-    TRAINING_UV_VENV="${_TRAIN_VENV}" TRAINING_UV_PYTHON_VER="${_TRAIN_EMBED_PY}" \
+    echo "  TRAINING_UV_VENV=${_TRAIN_VENV} TRAINING_UV_PYTHON_VER=${_EMBED_PY} ${_ROOT}/scripts/training_uv_venv.sh --verify" >&2
+    TRAINING_UV_VENV="${_TRAIN_VENV}" TRAINING_UV_PYTHON_VER="${_EMBED_PY}" \
       "${_ROOT}/scripts/training_uv_venv.sh" --verify >&2 || true
   fi
   if [[ -d "${_TRAIN_SITE}" ]]; then
     export TRAINING_UV_VENV="${_TRAIN_VENV}"
     export TRAINING_UV_SITE_PACKAGES="${_TRAIN_SITE}"
-    export PYTHONPATH="${_TRAIN_SITE}${PYTHONPATH:+:${PYTHONPATH}}"
+    _PYPP="${_PYPP}${_PYPP:+:}${_TRAIN_SITE}"
   fi
+fi
+if [[ -n "${_PYPP}" ]]; then
+  export PYTHONPATH="${_PYPP}${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 
 # Stability on new GPU architectures (optional).
@@ -65,6 +95,18 @@ export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/hostlibs:/usr/local/cuda-12.6/ta
 # ggml CUDA backend (chat/completion runners) — without /usr/lib/ollama + cuda_v12, ggml falls back to CPU-only.
 export OLLAMA_LIBRARY_PATH="${OLLAMA_LIBRARY_PATH:-/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12}"
 export LD_LIBRARY_PATH="/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12:${LD_LIBRARY_PATH}"
+
+# Prefer built vendor llama-server (fork QJL + Radix /kv/seq-copy) when present.
+# WHY: 5080 production uses vendor pin for L1 fork profile + seq-copy; sibling b9781 lacks both.
+_VENDOR_PIN="${Z5080_VENDOR_PIN:-c84b3020}"
+_VENDOR_ROOT="${ZEROLLAMA_VENDOR_ROOT:-${ZEROLLAMA_REPO}/vendor/llama-cpp-${_VENDOR_PIN}}"
+if [[ -z "${LLAMA_SERVER_BIN:-}" && -x "${_VENDOR_ROOT}/build/bin/llama-server" ]]; then
+  export LLAMA_CPP_ROOT="${_VENDOR_ROOT}"
+  export LLAMA_CPP_BIN="${_VENDOR_ROOT}/build/bin"
+  export LLAMA_SERVER_BIN="${LLAMA_CPP_BIN}/llama-server"
+  export LLAMA_CPP_LIB="${LLAMA_CPP_BIN}/libllama.so"
+  export LD_LIBRARY_PATH="${LLAMA_CPP_BIN}:${LD_LIBRARY_PATH}"
+fi
 
 # MLX imagegen (x/z-image-turbo, etc.) — requires libmlxc.so from a one-time cmake MLX build.
 # WHY separate dir: imagegen uses MLX-C CUDA backend, not ggml cuda_v12 runners.
