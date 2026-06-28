@@ -1,5 +1,7 @@
 # RTX 5080 runbook — what to run (Jun 2026)
 
+**Status (CT 1564, Jun 28 2026):** **Full re-sign-off PASS** — tiers 1–4 (Phase 11–13 base, L1/L3, Phase 15, Phase 16/17 individual smokes). Only **Radix cross-slot live** (tier 5) and **L2 fork merge** remain open / informational.
+
 **Audience:** Operators on **16 GiB CUDA** hosts (RTX 5080-class, e.g. Proxmox CT 1564) validating zerollama after pull or before release.
 
 **Mac counterpart:** [apple-silicon-metal.md](./apple-silicon-metal.md) — `./scripts/metal_signoff.sh` + optional `eliza-1-2b:latest` qwen35; ordered Phase 11→13→15 via `./scripts/phase11_13_15_metal_signoff.sh`.

@@ -215,6 +215,15 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 - **`docs/5080-runbook.md`** — ordered tiers 0–5: base `gpu_5080_session.sh` → L1/L3 production → Phase 15 → upstream GGUF bundle; `RUN_E2E_*` table; CT 1564 status matrix; full re-sign-off script block.
 - **Cross-links** — [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [docs/README.md](docs/README.md), [README.md](README.md), [ROADMAP.md](docs/ROADMAP.md) operator ladder.
 
+### 5080 full re-sign-off PASS — CT 1564 (Jun 28 2026)
+
+**Why:** Mac `metal_signoff.sh` closed M9; CUDA needed the same evidence on ship hardware after `fd7042bc` + NVML 590.48.01 fix + embed `PYTHONPATH`/`LD_LIBRARY_PATH` hygiene.
+
+- **Tier 1–3 PASS** — `gpu_5080_session.sh`, L1 (+58% / +10% on eliza-1 9B @ 8k), L3 8k + 27k, `phase15_inprocess_signoff.sh`.
+- **Tier 4 PASS (individual smokes)** — `phase17_llama_server_smoke.sh`, `phase17_linux_auto_smoke.sh`, `phase16_edge_smoke.sh` (`P17_NUM_PREDICT=32`); artifacts under `/tmp/phase17-*`, `/tmp/phase16-edge-smoke.json`.
+- **Still open:** Radix `L3_RADIX_LIVE=1` on 5080; L2 fork merge @ 8k (stock wins); bundled `RUN_E2E_UPSTREAM_GGUF=1` may fail on fork-cache × stock `llama-server` — use individual smokes or `ZEROLLAMA_GPU_PROFILE=0`.
+- **Doc:** [5080-runbook.md](docs/5080-runbook.md) status matrix; [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) gate summary.
+
 ### Upstream Ollama — launch model inventory (v0.30.10)
 
 **Why:** Each integration used to call `/api/show` per model when writing agent configs — slow, easy to timeout, and inconsistent with the model picker (`/api/tags`). Upstream loads tags once per launch run and passes rich `LaunchModel` structs to every integration. Zerollama ports that pattern for mergeability and faster `zerollama launch`.

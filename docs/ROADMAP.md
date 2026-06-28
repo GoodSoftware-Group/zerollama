@@ -154,7 +154,7 @@ Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (
 
 ### Phase 8 — shipped
 
-See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next:** Phase **11** admission tuning, **Phase 15** native KV tensor bind, **Phase 16/17** edge + llama-server operator sign-off on ship hardware.
+See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked); **Radix L3-R1** live gate on 5080; Phase **17** L2 pin merge. **Done on 5080 (Jun 28 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4.
 
 ---
 

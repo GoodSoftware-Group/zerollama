@@ -153,16 +153,22 @@ See also: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-nativ
 
 ---
 
-## 5080 gate summary (CT 1564, Jun 2026)
+## 5080 gate summary (CT 1564, Jun 28 2026 re-sign-off)
 
 | Gate | Result | Notes |
 |------|--------|-------|
-| Phase 15 in-process | **PASS** | Native decode + multiseq + batch decode; OuteTTS 1B Q8 |
-| L2 CUDA (8k) | **FAIL merge** | Stock **79.7** vs fork **55.9 tok/s** — expected; long-ctx legs optional |
-| L3 cache (subprocess) | **PASS** | 8k strict on eliza-1 9B; **27k production gate** cached **51%** vs no-cache |
-| L1 autotune | **PASS** | Single-stream +0.5%/+0.7%; **concurrent N=2 +10.5%** agg tok/s |
+| Phase 11–13 base | **PASS** | `gpu_5080_session.sh`, `RUN_E2E_PREFLIGHT=0` |
+| Phase 15 in-process | **PASS** | KV hook + multiseq + batch decode; OuteTTS 1B Q8 |
+| Phase 17 llama-server | **PASS** | `phase17_llama_server_smoke.sh` |
+| Phase 17 Linux auto | **PASS** | `phase17_linux_auto_smoke.sh` |
+| Phase 16 edge CUDA | **PASS** | `phase16_edge_smoke.sh` (`P17_NUM_PREDICT=32`) |
+| L1 autotune | **PASS** | eliza-1 9B @ 8k: **+58%** single-stream; **+10%** concurrent N=2 |
+| L3 cache (subprocess) | **PASS** | 8k strict + 27k production on eliza-1 9B |
+| L2 CUDA (8k) | **FAIL merge** | Stock wins decode — expected; fork profiles opt-in |
+| Radix cross-slot live | **Pending** | `L3_RADIX_LIVE=1` — Mac PASS; 5080 not run yet |
+| `RUN_E2E_UPSTREAM_GGUF=1` bundle | **Partial** | Individual P17/edge smokes PASS; bundled base leg may clash fork cache × stock `llama-server` |
 
-Individual scripts: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
+Full checklist: [5080-runbook.md](./5080-runbook.md). Individual L2/L3: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
 
 ---
 
