@@ -10,7 +10,7 @@
 #
 # Env:
 #   CUDA_LLAMA_MODEL      — GGUF path (required)
-#   L2_BUILD_FORK=1       — build ../eliza-llama.cpp first
+#   L2_BUILD=1 / L2_BUILD_FORK=1 — build ../llama.cpp first
 #   L2_SKIP_BENCH=1       — skip tok/s A/B
 #   L2_RUN_27K=1          — also bench at L2_NUM_CTX=26624 (needs ~16G+ model)
 #   L2_RUN_131K_FORK=1    — fork-only leg at 131072 (long-ctx VRAM gate)
@@ -21,8 +21,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${L2_OUT_DIR:-/tmp/l2-cuda-gate}"
 mkdir -p "${OUT_DIR}"
 
-export STOCK_LLAMA_CPP_ROOT="${STOCK_LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
-export ELIZA_LLAMA_CPP_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${ROOT}/../eliza-llama.cpp}"
+export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
+export STOCK_LLAMA_CPP_ROOT="${STOCK_LLAMA_CPP_ROOT:-${LLAMA_CPP_ROOT}}"
+export ELIZA_LLAMA_CPP_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${LLAMA_CPP_ROOT}}"
 
 if [[ -z "${CUDA_LLAMA_MODEL:-}" && -z "${LLAMA_MODEL:-}" ]]; then
   echo "Set CUDA_LLAMA_MODEL (small GGUF for 16 GB VRAM, e.g. 3B Q8)" >&2
@@ -34,7 +35,7 @@ echo "== L2 fork eval =="
 if [[ "${L2_BUILD_FORK:-0}" == "1" ]]; then
   L2_BUILD_FORK=1 "${ROOT}/scripts/l2_fork_eval.sh"
 else
-  export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${ELIZA_LLAMA_CPP_ROOT}/build/bin/llama-server}"
+  export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_ROOT}/build/bin/llama-server}"
   "${ROOT}/scripts/l2_fork_eval.sh"
 fi
 

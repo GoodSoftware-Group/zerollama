@@ -17,7 +17,7 @@ METHOD_ALIASES: dict[str, str] = {
     "draft-simple": "draft-simple",
     "eagle3": "draft-eagle3",
     "draft-eagle3": "draft-eagle3",
-    "dflash": "draft-eagle3",
+    "dflash": "dflash",
     "mtp": "draft-mtp",
     "draft-mtp": "draft-mtp",
 }

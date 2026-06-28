@@ -2,15 +2,27 @@
 
 The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree (GGUF forward, quant kernels). Phase 17 targets upstream-style **Go → llama-server** integration as well — see [docs/upstream-ollama-diff.md](../docs/upstream-ollama-diff.md).
 
+## Unified runtime binary (one tree)
+
 | Field | Value |
 |-------|--------|
-| **Recommended tree** | `../../llama.cpp` (sibling of `zerollama` on the host) |
-| **Zerollama in-process ggml pin** | **`b9611`** — repo-root `LLAMA_CPP_VERSION`, vendor `vendor/llama-cpp-b9611/` |
-| **Sibling `../llama.cpp` (runtime)** | **`b9611`** @ `02182fc5` — rebuild with `./scripts/build_llama_server.sh` |
-| **Upstream Ollama pin** | **`b9509`** (vanilla Ollama lags zerollama ggml pin) |
-| **In-tree ggml commit (patched)** | `1aefee58` — see `llama/build-info.cpp` |
-| **Binary** | `build/bin/llama-server` (use `./scripts/build_llama_server.sh` from zerollama) |
-| **CUDA arch (4090)** | `CMAKE_CUDA_ARCHITECTURES=89-real` (script default; override if needed) |
+| **Recommended build tree** | `vendor/llama-cpp-c84b3020/` (patched) — `./scripts/build_llama_server.sh` |
+| **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched eliza only; prefer vendor) |
+| **Upstream repo** | `https://github.com/elizaOS/llama.cpp.git` |
+| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `c84b30200c8d512c00c9d61c96bed078f1c0024d` |
+| **Binary** | `build/bin/llama-server` — `./scripts/build_llama_server.sh` |
+| **Why eliza base** | Superset of ggml-org: `dflash-draft`, QJL/Polar/TBQ KV, `--checkpoint-every-n-tokens`, upstream checkpoints. One binary; L1 vs fork GPU profiles are runtime flags (`ZEROLLAMA_LLAMA_FORK`), not separate builds. |
+
+## In-process ggml (Go CGO) — unified with runtime
+
+| Field | Value |
+|-------|--------|
+| **Vendor pin** | **`c84b3020`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-c84b3020/` |
+| **Upstream repo** | `https://github.com/elizaOS/llama.cpp.git` (same as runtime sibling) |
+| **Ollama patches** | `llama/patches/0001–0016` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` |
+| **Rebase helper** | `./scripts/rebase_vendor_unified.sh --sync` |
+
+Runtime `llama-server` and in-process ggml now share **one elizaOS base commit** + zerollama patches.
 
 Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake fetch time for **llama-server**. In-process **ggml** uses `llama/patches/` on a vendored tree synced via [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
 
@@ -40,17 +52,25 @@ See [docs/apple-silicon-metal.md](../docs/apple-silicon-metal.md#mlx-engine-opti
 
 | Variable | Purpose |
 |----------|---------|
-| `LLAMA_CPP_ROOT` | Root of llama.cpp checkout (default: `../../llama.cpp` relative to repo) |
+| `LLAMA_CPP_ROOT` | Root of llama.cpp checkout (default: `../llama.cpp` relative to repo) |
 | `LLAMA_SERVER_BIN` | Override path to `llama-server` executable |
+| `LLAMA_CPP_REPO` | Override clone URL (default: elizaOS/llama.cpp) |
+| `ZEROLLAMA_LLAMA_FORK` | `0` = L1 q8_0 profiles; unset/`1` = auto-probe fork KV types |
 | `OLLAMA_MLX_SOURCE` / `OLLAMA_MLX_C_SOURCE` | Override MLX sibling paths |
 
-Rebuild llama.cpp when bumping this commit; run runtime integration tests on dual-GPU hosts.
+Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests on dual-GPU hosts.
 
-## Bump checklist
+## Bump checklist (runtime sibling)
 
-1. Update `LLAMA_CPP_VERSION` + `Makefile.sync` `FETCH_HEAD`
-2. `make -f Makefile.sync clean checkout apply-patches` (fix conflicts in vendor)
+1. Update `LLAMA_CPP_COMMIT` (and tag file `LLAMA_CPP_VERSION` if tagging)
+2. `./scripts/build_llama_server.sh` — probes QJL + checkpoint flags in `--help`
+3. `./scripts/l2_fork_eval.sh` — profile argv smoke
+4. `./scripts/l2_full_gate.sh` or `./scripts/l2_cuda_full_gate.sh` on GPU hosts
+
+## Bump checklist (in-process vendor — when rebasing)
+
+1. Update `LLAMA_CPP_VERSION` + `Makefile.sync` `FETCH_HEAD` / upstream URL
+2. `make -f Makefile.sync clean apply-patches` (fix conflicts in vendor)
 3. `./scripts/sync_vendor_llama.sh` → fix CGO breaks → `format-patch` if needed
 4. Update `llama/build-info.cpp` BUILD_NUMBER/COMMIT
 5. `./scripts/build_zerollama_mac.sh` && `./zerollama doctor`
-6. For runtime sibling: `LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh`

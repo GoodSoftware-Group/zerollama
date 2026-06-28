@@ -31,8 +31,7 @@ func visionTokensFromGridTHW(grid []int, spatialMerge int) int {
 	return (grid[0] * grid[1] * grid[2]) / merge
 }
 
-// logVisionGridHint compares client grid_thw hints with mtmd embed count (observability only).
-// mtmd still derives patch layout from pixels until llama.cpp exposes grid overrides.
+// logVisionGridHint compares client grid_thw hints with mtmd embed count after encode.
 func logVisionGridHint(imageID int, gridTHW []int, chunks []visionChunk) visionGridHintStats {
 	if len(gridTHW) != 3 {
 		return visionGridHintStats{}
@@ -50,7 +49,7 @@ func logVisionGridHint(imageID int, gridTHW []int, chunks []visionChunk) visionG
 	}
 	if estimate != got {
 		stats.Mismatched = 1
-		slog.Debug("vision grid hint mismatch (mtmd uses pixel-derived layout)",
+		slog.Debug("vision grid hint mismatch",
 			"image_id", imageID,
 			"grid_thw", gridTHW,
 			"hint_tokens", estimate,
@@ -59,7 +58,7 @@ func logVisionGridHint(imageID int, gridTHW []int, chunks []visionChunk) visionG
 		return stats
 	}
 	stats.Matched = 1
-	slog.Debug("vision grid hint match",
+	slog.Info("vision grid hint match",
 		"image_id", imageID,
 		"grid_thw", gridTHW,
 		"embed_tokens", got,

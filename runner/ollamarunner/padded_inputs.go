@@ -54,6 +54,7 @@ func (s *Server) inputsFromPaddedPromptTokens(
 	mistral3Slots Mistral3VisionTokens,
 	deepseekOcrSlots DeepseekOcrVisionTokens,
 	sessionKey string,
+	sessionViTOverlay bool,
 ) ([]*input.Input, []ml.Context, multimodalStore, error) {
 	mp, ok := s.model.(model.MultimodalProcessor)
 	if !ok {
@@ -71,8 +72,14 @@ func (s *Server) inputsFromPaddedPromptTokens(
 		}
 		img := images[imageIdx]
 		imageIdx++
+		if img.HasPrecomputedEmbedding() {
+			return s.appendPaddedPrecomputedImage(&raw, &mmStore, &ctxs, img, consume, sessionKey, sessionViTOverlay)
+		}
+		if img.HasProcessorOutput() {
+			return s.appendPaddedProcessorOutputImage(&raw, &mmStore, &ctxs, img, consume, sessionKey, sessionViTOverlay)
+		}
 		ctx := s.model.Backend().NewContext()
-		mm, err := s.encodeMultimodalCached(ctx, img.Data, sessionKey)
+		mm, err := s.encodeMultimodalCached(ctx, img.Data, sessionKey, sessionViTOverlay)
 		if err != nil {
 			ctx.Close()
 			return err

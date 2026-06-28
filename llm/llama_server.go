@@ -93,9 +93,11 @@ type llamaServerRunner struct {
 	doneErr          error
 	client           *http.Client
 	memoryMu         sync.RWMutex
-	memTotal         uint64 // actual total buffer size parsed from llama-server logs (bytes)
-	memGPU           uint64 // actual GPU buffer size parsed from llama-server logs (bytes)
-	gpuLayers        uint64 // model layers loaded on GPU, parsed from llama-server logs
+	memTotal           uint64 // actual total buffer size parsed from llama-server logs (bytes)
+	memGPU             uint64 // actual GPU buffer size parsed from llama-server logs (bytes)
+	memModelFileBacked uint64 // model weight bytes mirroring on-disk file (mmap + device copies)
+	memCPUMappedModel  uint64 // mmap-backed CPU model buffers (e.g. CPU_Mapped)
+	gpuLayers          uint64 // model layers loaded on GPU, parsed from llama-server logs
 	gpuLayerOverflow int    // number of GPU-selected layers partially overflowed to CPU
 	status           *StatusWriter
 	options          api.Options
@@ -137,6 +139,7 @@ type llamaServerLaunchConfig struct {
 	modelPath            string
 	modelArch            string
 	projectors           []string
+	mmprojMemory         uint64
 	modelLayers          uint64
 	adapters             []string
 	opts                 api.Options
@@ -267,8 +270,99 @@ func (s *llamaServerRunner) gemma4SlotToken(ctx context.Context, placeholder str
 	return toks[len(toks)-1], nil
 }
 
+func (s *llamaServerRunner) placeholderToken(ctx context.Context, placeholder string) (int, error) {
+	parseSpecial := true
+	toks, err := s.tokenize(ctx, placeholder, false, &parseSpecial)
+	if err != nil {
+		return 0, err
+	}
+	if len(toks) == 0 {
+		return 0, nil
+	}
+	return toks[len(toks)-1], nil
+}
+
+func (s *llamaServerRunner) lfm2VisionTokens(ctx context.Context) (Lfm2VisionTokens, error) {
+	slots := Lfm2VisionTokens{Image: 396}
+	if id, err := s.placeholderToken(ctx, "<image>"); err == nil && id != 0 {
+		slots.Image = id
+	}
+	start, err := s.placeholderToken(ctx, "<|image_start|>")
+	if err != nil {
+		return Lfm2VisionTokens{}, err
+	}
+	end, err := s.placeholderToken(ctx, "<|image_end|>")
+	if err != nil {
+		return Lfm2VisionTokens{}, err
+	}
+	slots.Start = start
+	slots.End = end
+	slots.UseBlock = start != 0 && end != 0
+	return slots, nil
+}
+
+func (s *llamaServerRunner) glmocrVisionTokens(ctx context.Context) (Lfm2VisionTokens, error) {
+	slots := Lfm2VisionTokens{Image: 59280, Start: 59256, End: 59257}
+	if id, err := s.placeholderToken(ctx, "<|image_start|>"); err == nil && id != 0 {
+		slots.Start = id
+	}
+	if id, err := s.placeholderToken(ctx, "<|image_end|>"); err == nil && id != 0 {
+		slots.End = id
+	}
+	if id, err := s.placeholderToken(ctx, "<|image|>"); err == nil && id != 0 {
+		slots.Image = id
+	}
+	slots.UseBlock = slots.Start != 0 && slots.End != 0
+	return slots, nil
+}
+
+func (s *llamaServerRunner) mistral3VisionTokens(ctx context.Context) (Mistral3VisionTokens, error) {
+	slots := Mistral3VisionTokens{Img: 10, Break: 12, End: 13}
+	if id, err := s.placeholderToken(ctx, "[IMG]"); err == nil && id != 0 {
+		slots.Img = id
+	}
+	if id, err := s.placeholderToken(ctx, "[IMG_BREAK]"); err == nil && id != 0 {
+		slots.Break = id
+	}
+	if id, err := s.placeholderToken(ctx, "[IMG_END]"); err == nil && id != 0 {
+		slots.End = id
+	}
+	return slots, nil
+}
+
+func (s *llamaServerRunner) deepseekOcrVisionTokens(ctx context.Context) (DeepseekOcrVisionTokens, error) {
+	slots := DeepseekOcrVisionTokens{Image: 128815}
+	if id, err := s.placeholderToken(ctx, "<image>"); err == nil && id != 0 {
+		slots.Image = id
+	}
+	return slots, nil
+}
+
+func (s *llamaServerRunner) paddedInjectDetokenizeFallback(ctx context.Context, tokens []int, media []MediaData, reason string, attrs ...any) (string, error) {
+	if len(media) == 0 {
+		return "", fmt.Errorf("padded inject layout mismatch")
+	}
+	args := append([]any{"media", len(media), "prompt_tokens", len(tokens)}, attrs...)
+	slog.Warn(reason, args...)
+	return s.Detokenize(ctx, tokens)
+}
+
 func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req CompletionRequest) (prompt any, truncated bool, originalTokens int, err error) {
 	media := completionMediaFromRequest(req)
+	for _, img := range req.Images {
+		if img.HasPrecomputedEmbedding() {
+			return nil, false, 0, api.StatusError{
+				StatusCode:   http.StatusBadRequest,
+				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine for Qwen3-VL",
+			}
+		}
+		if img.HasProcessorOutput() {
+			return nil, false, 0, api.StatusError{
+				StatusCode:   http.StatusBadRequest,
+				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine for Qwen3-VL",
+			}
+		}
+	}
 
 	if len(req.PromptTokens) > 0 {
 		tokens := req.PromptTokens
@@ -276,8 +370,8 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 		// skipping truncate when images were attached left oversized prompts on llama-server.
 		// truncateCompletionTokens keeps vision_start…vision_end blocks intact.
 		if req.Truncate && s.options.NumCtx > 1 {
-			limit := s.options.NumCtx - 1
-			if len(tokens) > limit {
+			fullPromptLimit := s.options.NumCtx - 1
+			if len(tokens) > fullPromptLimit {
 				if !s.launch.config.ContextShift {
 					return nil, false, 0, api.StatusError{
 						StatusCode:   http.StatusBadRequest,
@@ -285,9 +379,17 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 					}
 				}
 				nKeep := req.Options.NumKeep
+				if nKeep < 0 {
+					nKeep = len(tokens)
+				}
+				if s.tokenizerAddsBOS() {
+					nKeep++
+				}
+				nKeep = min(nKeep, fullPromptLimit)
+				limit := contextShiftPromptLimit(s.options.NumCtx, nKeep)
 				tokens, truncated, originalTokens = truncateCompletionTokens(tokens, limit, nKeep)
 				if truncated {
-					slog.Warn("truncating pretokenized prompt", "limit", limit, "prompt", originalTokens, "keep", min(nKeep, limit), "new", len(tokens), "media", len(media))
+					slog.Warn("truncating pretokenized prompt", "limit", limit, "prompt", originalTokens, "keep", nKeep, "new", len(tokens), "media", len(media))
 				}
 			}
 		}
@@ -303,11 +405,8 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 			if len(media) > 0 {
 				// WHY detokenize fallback: client sent rasters but pretokenized ids lack
 				// vision_start — token-only path would drop multimodal_data entirely.
-				slog.Warn("padded_input_ids runner_inject without vision blocks; using detokenized prompt + media markers",
-					"media", len(media),
-					"prompt_tokens", len(tokens),
-				)
-				promptStr, err := s.Detokenize(ctx, tokens)
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids runner_inject without vision blocks; using detokenized prompt + media markers")
 				if err != nil {
 					return nil, false, 0, err
 				}
@@ -328,14 +427,148 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
 			}
 			if len(media) > 0 {
-				slog.Warn("padded_input_ids gemma4 inject without multimodal soft tokens; using detokenized prompt + media markers",
-					"media", len(media),
-					"prompt_tokens", len(tokens),
-					"image_slot", slots.Image,
-					"video_slot", slots.Video,
-					"audio_slot", slots.Audio,
-				)
-				promptStr, err := s.Detokenize(ctx, tokens)
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids gemma4 inject without multimodal soft tokens; using detokenized prompt + media markers",
+					"image_slot", slots.Image, "video_slot", slots.Video, "audio_slot", slots.Audio)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeMllamaImgRunner {
+			slot := mllamaImageSlotTokenDefault
+			if id, err := s.placeholderToken(ctx, "<|image|>"); err == nil && id != 0 {
+				slot = id
+			}
+			if promptHasSlotToken(tokens, slot) {
+				promptStr, mediaCount, err := buildLlamaServerSlotPaddedMultimodalPrompt(ctx, s.Detokenize, tokens, slot, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids mllama inject without image slot; using detokenized prompt + media markers",
+					"image_slot", slot)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeGemma3ImgRunner {
+			slot := gemma3ImageSlotTokenDefault
+			if id, err := s.placeholderToken(ctx, "<start_of_image>"); err == nil && id != 0 {
+				slot = id
+			}
+			if promptHasSlotToken(tokens, slot) {
+				promptStr, mediaCount, err := buildLlamaServerSlotPaddedMultimodalPrompt(ctx, s.Detokenize, tokens, slot, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids gemma3 inject without start_of_image slot; using detokenized prompt + media markers",
+					"image_slot", slot)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeLlama4ImgRunner {
+			if llama4PromptHasVisionBlocks(tokens) {
+				promptStr, mediaCount, err := buildLlamaServerLlama4PaddedMultimodalPrompt(ctx, s.Detokenize, tokens, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids llama4 inject without image blocks; using detokenized prompt + media markers")
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeLfm2ImgRunner || req.PaddedLayoutConsume == PaddedLayoutConsumeGlmocrImgRunner {
+			var slots Lfm2VisionTokens
+			var err error
+			if req.PaddedLayoutConsume == PaddedLayoutConsumeGlmocrImgRunner {
+				slots, err = s.glmocrVisionTokens(ctx)
+			} else {
+				slots, err = s.lfm2VisionTokens(ctx)
+			}
+			if err != nil {
+				return nil, false, 0, err
+			}
+			if lfm2PromptHasVisionSlots(tokens, slots) {
+				promptStr, mediaCount, err := buildLlamaServerLfm2PaddedMultimodalPrompt(ctx, s.Detokenize, tokens, slots, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids lfm2/glmocr inject without vision slots; using detokenized prompt + media markers",
+					"use_block", slots.UseBlock, "image", slots.Image, "start", slots.Start, "end", slots.End)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeMistral3ImgRunner {
+			slots, err := s.mistral3VisionTokens(ctx)
+			if err != nil {
+				return nil, false, 0, err
+			}
+			if mistral3PromptHasVisionBlocks(tokens, slots) {
+				promptStr, mediaCount, err := buildLlamaServerMistral3PaddedMultimodalPrompt(ctx, s.Detokenize, tokens, slots, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids mistral3 inject without IMG blocks; using detokenized prompt + media markers",
+					"img", slots.Img, "end", slots.End)
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return promptStr, truncated, originalTokens, nil
+			}
+		}
+
+		if req.PaddedLayoutConsume == PaddedLayoutConsumeDeepseekOcrImgRunner {
+			slots, err := s.deepseekOcrVisionTokens(ctx)
+			if err != nil {
+				return nil, false, 0, err
+			}
+			if deepseekOcrPromptHasImageRuns(tokens, slots.Image) {
+				promptStr, mediaCount, err := buildLlamaServerDeepseekOcrPaddedMultimodalPrompt(ctx, s.Detokenize, tokens, slots.Image, s.llamaServerMediaMarker())
+				if err != nil {
+					return nil, false, 0, err
+				}
+				return llamaServerPaddedInjectPrompt{PromptString: promptStr, MediaCount: mediaCount}, truncated, originalTokens, nil
+			}
+			if len(media) > 0 {
+				promptStr, err := s.paddedInjectDetokenizeFallback(ctx, tokens, media,
+					"padded_input_ids deepseekocr inject without image runs; using detokenized prompt + media markers",
+					"image", slots.Image)
 				if err != nil {
 					return nil, false, 0, err
 				}
@@ -360,8 +593,8 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	// old runner could accept exactly num_ctx prompt tokens. Keep one token of
 	// headroom so token-level truncation preserves old behavior as closely as
 	// llama-server allows.
-	limit := s.options.NumCtx - 1
-	if len(tokens) <= limit {
+	fullPromptLimit := s.options.NumCtx - 1
+	if len(tokens) <= fullPromptLimit {
 		return promptVal, false, 0, nil
 	}
 
@@ -376,8 +609,12 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	if nKeep < 0 {
 		nKeep = len(tokens)
 	}
-	nKeep = min(nKeep, limit)
+	if s.tokenizerAddsBOS() {
+		nKeep++
+	}
+	nKeep = min(nKeep, fullPromptLimit)
 
+	limit := contextShiftPromptLimit(s.options.NumCtx, nKeep)
 	discard := len(tokens) - limit
 	truncatedTokens := make([]int, 0, limit)
 	truncatedTokens = append(truncatedTokens, tokens[:nKeep]...)
@@ -387,18 +624,36 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	return truncatedTokens, true, len(tokens), nil
 }
 
+func contextShiftPromptLimit(numCtx, numKeep int) int {
+	if numCtx <= 1 {
+		return 0
+	}
+
+	numKeep = max(0, min(numKeep, numCtx-1))
+
+	// Match the old runners' first context shift: preserve num_keep, then free
+	// roughly half of the remaining context before generation needs the slot.
+	return numCtx - max((numCtx-numKeep)/2, 1)
+}
+
 func (s *llamaServerRunner) ContextLength() int {
 	return s.options.NumCtx
 }
 
 // FindLlamaServer locates the llama-server binary in lib/ollama/.
 // There is a single binary that dynamically loads GPU backends at runtime.
+//
+// Discovery order: LLAMA_SERVER_BIN → unified ../llama.cpp build → Flash-MoE → packaged layouts.
+// WHY unified second: one elizaOS @ LLAMA_CPP_COMMIT tree; avoid stale eliza-llama.cpp siblings.
 func FindLlamaServer() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("LLAMA_SERVER_BIN")); override != "" {
 		if _, err := os.Stat(override); err == nil {
 			return override, nil
 		}
 		return "", fmt.Errorf("llama-server binary not found at LLAMA_SERVER_BIN=%s", override)
+	}
+	if path, ok := unifiedLlamaServerBinExists(); ok {
+		return path, nil
 	}
 	if preferFlashMoELlamaServer() {
 		if bin, err := FindFlashMoELlamaServer(); err == nil {
@@ -447,7 +702,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	params = appendJinjaArgs(params, launch.config)
 
 	params = appendMMProjArgs(params, launch)
-	params = appendSpeculativeArgs(params, launch.config, launch.opts)
+	params = appendSpeculativeArgs(params, exe, launch.config, launch.opts)
 
 	params = append(params, qwenVLServerArgs(launch.modelArch)...)
 
@@ -702,7 +957,10 @@ func appendMainGPUArgs(params []string, opts api.Options) []string {
 	return append(params, "--split-mode", "none", "--main-gpu", strconv.Itoa(opts.MainGPU))
 }
 
-const limitedMMProjOffloadMemory = 10 << 30
+const (
+	// mmprojOffloadHeadroom leaves 1 GiB for backend buffers beyond projector weights.
+	mmprojOffloadHeadroom = 1 << 30
+)
 
 func appendMMProjArgs(params []string, launch llamaServerLaunchConfig) []string {
 	if len(launch.projectors) == 0 {
@@ -722,16 +980,18 @@ func (launch llamaServerLaunchConfig) mmprojOffloadDisabled() (bool, string) {
 	if launch.forceNoMMProjOffload {
 		return true, "startup-oom-retry"
 	}
-	return shouldDisableMMProjOffload(launch.opts, launch.gpus, launch.modelLayers)
+	return shouldDisableMMProjOffload(launch.opts, launch.gpus, launch.modelLayers, launch.mmprojMemory)
 }
 
-func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLayers uint64) (bool, string) {
+func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLayers, mmprojMemory uint64) (bool, string) {
 	if opts.NumGPU == 0 {
 		return true, "cpu-only"
 	}
 	if opts.NumGPU > 0 && modelLayers > 0 && uint64(opts.NumGPU) < modelLayers {
 		return true, "partial-text-offload"
 	}
+
+	requiredMemory := mmprojMemory + mmprojOffloadHeadroom
 
 	for _, gpu := range gpus {
 		if gpu.Integrated && gpu.Library != "Metal" {
@@ -741,12 +1001,54 @@ func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLay
 		if memory == 0 || (gpu.TotalMemory > 0 && gpu.TotalMemory < memory) {
 			memory = gpu.TotalMemory
 		}
-		if memory > 0 && memory <= limitedMMProjOffloadMemory {
+		if memory > 0 && memory < requiredMemory {
 			return true, "limited-vram"
 		}
 	}
 
 	return false, ""
+}
+
+// mmprojMemoryRequirement is a stopgap until fit accounts for mmproj memory directly.
+func mmprojMemoryRequirement(modelPath string, f *ggml.GGML, projectors []string) (uint64, error) {
+	if len(projectors) == 0 {
+		return 0, nil
+	}
+
+	if projectors[0] == modelPath {
+		if f == nil {
+			return 0, errors.New("read inline mmproj metadata: missing model metadata")
+		}
+		var size uint64
+		for _, prefix := range []string{"v.", "mm.", "a."} {
+			for _, tensor := range f.Tensors().Items(prefix) {
+				size += tensor.Size()
+			}
+		}
+		if size == 0 {
+			return 0, errors.New("read inline mmproj metadata: no projector tensors found")
+		}
+		return size, nil
+	}
+
+	file, err := os.Open(projectors[0])
+	if err != nil {
+		return 0, fmt.Errorf("read mmproj metadata %q: %w", projectors[0], err)
+	}
+	defer file.Close()
+
+	projector, err := ggml.Decode(file, 1024)
+	if err != nil {
+		return 0, fmt.Errorf("read mmproj metadata %q: %w", projectors[0], err)
+	}
+	var size uint64
+	for _, tensor := range projector.Tensors().Items() {
+		size += tensor.Size()
+	}
+	if size == 0 {
+		return 0, fmt.Errorf("read mmproj metadata %q: no projector tensors found", projectors[0])
+	}
+	return size, nil
 }
 
 func appendJinjaArgs(params []string, config LlamaServerConfig) []string {
@@ -775,7 +1077,7 @@ func appendContextShiftArgs(params []string, opts api.Options, enabled bool) []s
 	return params
 }
 
-func appendSpeculativeArgs(params []string, config LlamaServerConfig, opts api.Options) []string {
+func appendSpeculativeArgs(params []string, serverBin string, config LlamaServerConfig, opts api.Options) []string {
 	specType := strings.ToLower(strings.TrimSpace(config.SpecType))
 	switch specType {
 	case "ngram", "ngram-simple":
@@ -797,7 +1099,7 @@ func appendSpeculativeArgs(params []string, config LlamaServerConfig, opts api.O
 			"--spec-ngram-simple-size-m", strconv.Itoa(sizeM),
 			"--spec-ngram-simple-min-hits", strconv.Itoa(minHits),
 		)
-	case "draft-eagle3", "eagle3", "dflash":
+	case "dflash":
 		if config.DraftModelPath == "" {
 			return params
 		}
@@ -805,17 +1107,31 @@ func appendSpeculativeArgs(params []string, config LlamaServerConfig, opts api.O
 		if nMax <= 0 {
 			nMax = 4
 		}
-		return append(params,
+		params = append(params,
+			"--spec-type", "dflash",
+			"--spec-draft-model", config.DraftModelPath,
+			"--spec-draft-n-max", strconv.Itoa(nMax),
+		)
+		return appendSpecDraftBackendSamplingArg(params, serverBin)
+	case "draft-eagle3", "eagle3":
+		if config.DraftModelPath == "" {
+			return params
+		}
+		nMax := opts.DraftNumPredict
+		if nMax <= 0 {
+			nMax = 4
+		}
+		params = append(params,
 			"--spec-type", "draft-eagle3",
 			"--spec-draft-model", config.DraftModelPath,
 			"--spec-draft-n-max", strconv.Itoa(nMax),
-			"--spec-draft-backend-sampling",
 		)
+		return appendSpecDraftBackendSamplingArg(params, serverBin)
 	case "draft-mtp", "mtp":
-		return appendMTPDraftArgs(params, config, opts)
+		return appendMTPDraftArgs(params, serverBin, config, opts)
 	case "":
 		if config.EnableMTP {
-			return appendMTPDraftArgs(params, config, opts)
+			return appendMTPDraftArgs(params, serverBin, config, opts)
 		}
 		return params
 	default:
@@ -824,7 +1140,7 @@ func appendSpeculativeArgs(params []string, config LlamaServerConfig, opts api.O
 	}
 }
 
-func appendMTPDraftArgs(params []string, config LlamaServerConfig, opts api.Options) []string {
+func appendMTPDraftArgs(params []string, serverBin string, config LlamaServerConfig, opts api.Options) []string {
 	if !config.EnableMTP && config.DraftModelPath == "" {
 		return params
 	}
@@ -834,7 +1150,7 @@ func appendMTPDraftArgs(params []string, config LlamaServerConfig, opts api.Opti
 
 	params = append(params, "--spec-type", "draft-mtp")
 	params = append(params, "--spec-draft-n-max", strconv.Itoa(opts.DraftNumPredict))
-	params = append(params, "--spec-draft-backend-sampling")
+	params = appendSpecDraftBackendSamplingArg(params, serverBin)
 	if config.DraftModelPath != "" {
 		params = append(params, "--spec-draft-model", config.DraftModelPath)
 	}
@@ -906,6 +1222,10 @@ func NewLlamaServerRunner(
 		compatClipArches[arch] {
 		projectors = []string{modelPath}
 	}
+	mmprojMemory, err := mmprojMemoryRequirement(modelPath, f, projectors)
+	if err != nil {
+		return nil, err
+	}
 	if config.DraftModelPath == "" && hasMTPDraft(f) {
 		config.EnableMTP = true
 	}
@@ -925,10 +1245,11 @@ func NewLlamaServerRunner(
 	serverEnvs["LLAMA_MEDIA_MARKER"] = mediaMarker
 
 	launch := llamaServerLaunchConfig{
-		modelPath:   modelPath,
-		modelArch:   arch,
-		projectors:  slices.Clone(projectors),
-		modelLayers: f.KV().BlockCount() + 1,
+		modelPath:    modelPath,
+		modelArch:    arch,
+		projectors:   slices.Clone(projectors),
+		mmprojMemory: mmprojMemory,
+		modelLayers:  f.KV().BlockCount() + 1,
 		adapters:    slices.Clone(adapters),
 		opts:        opts,
 		numParallel: numParallel,
@@ -1115,6 +1436,8 @@ func (s *llamaServerRunner) resetLoadAccounting() {
 
 	s.memTotal = 0
 	s.memGPU = 0
+	s.memModelFileBacked = 0
+	s.memCPUMappedModel = 0
 	s.gpuLayers = 0
 	s.gpuLayerOverflow = 0
 	for k := range s.vramByDevice {
@@ -2628,6 +2951,8 @@ func (s *llamaServerRunner) MemorySize() (total, vram uint64) {
 	s.memoryMu.RLock()
 	memTotal := s.memTotal
 	memGPU := s.memGPU
+	memModelFileBacked := s.memModelFileBacked
+	memCPUMappedModel := s.memCPUMappedModel
 	totalLayers := s.totalLayers
 	gpuLayers := s.gpuLayers
 	gpuLayerOverflow := s.gpuLayerOverflow
@@ -2635,6 +2960,11 @@ func (s *llamaServerRunner) MemorySize() (total, vram uint64) {
 
 	if memTotal > 0 {
 		total, vram = memTotal, memGPU
+		if memCPUMappedModel > 0 {
+			if info, err := os.Stat(s.modelPath); err == nil && memModelFileBacked > uint64(info.Size()) {
+				total -= min(memCPUMappedModel, memModelFileBacked-uint64(info.Size()))
+			}
+		}
 		if totalLayers > 0 && gpuLayers >= totalLayers && gpuLayerOverflow == 0 {
 			total = vram
 		}
@@ -2793,11 +3123,21 @@ func (w *memoryParsingWriter) Write(b []byte) (int, error) {
 }
 
 func (w *memoryParsingWriter) updateRunnerMemoryLocked() {
-	var total, gpu uint64
+	var total, gpu, modelFileBacked, cpuMappedModel uint64
 	byDevice := make(map[string]uint64)
 
 	for key, buffer := range w.buffers {
 		total += buffer.bytes
+		if key.kind == "model" {
+			onGPU := isGPUBuffer(key.backend)
+			mmapBacked := strings.HasSuffix(key.backend, "_Mapped")
+			if onGPU || mmapBacked {
+				modelFileBacked += buffer.bytes
+			}
+			if !onGPU && mmapBacked {
+				cpuMappedModel += buffer.bytes
+			}
+		}
 		if isGPUBuffer(key.backend) {
 			gpu += buffer.bytes
 			byDevice[deviceName(key.backend)] += buffer.bytes
@@ -2806,6 +3146,8 @@ func (w *memoryParsingWriter) updateRunnerMemoryLocked() {
 
 	w.runner.memTotal = total
 	w.runner.memGPU = gpu
+	w.runner.memModelFileBacked = modelFileBacked
+	w.runner.memCPUMappedModel = cpuMappedModel
 	w.runner.vramByDevice = byDevice
 }
 

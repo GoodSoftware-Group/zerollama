@@ -42,20 +42,21 @@ DEFAULT_CACHE_TTLS: dict[str, int] = {
 
 
 def llama_cache_enabled() -> bool:
-    raw = os.environ.get("ZEROLLAMA_LLAMA_CACHE", "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    from runtime.env import llama_cache_enabled as _enabled
+
+    return _enabled()
 
 
-def inprocess_disk_cache_enabled() -> bool:
+def inprocess_disk_cache_enabled(*, backend: str | None = None) -> bool:
     """In-process slot save/load under ``llama_cache_root/<modelHash>/``.
 
     WHY separate from ``llama_cache_enabled``: operators can keep RAM prefix reuse
     (Phase 15 v17) while disabling disk I/O on latency-sensitive Metal paths.
+    When env is unset, default follows platform + backend (see ``runtime.env``).
     """
-    if not llama_cache_enabled():
-        return False
-    raw = os.environ.get("ZEROLLAMA_LLAMA_CACHE_DISK", "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    from runtime.env import llama_cache_disk_enabled
+
+    return llama_cache_disk_enabled(backend=backend)
 
 
 def slot_cache_filename(slot_id: int, seq: int = 0) -> str:
@@ -86,13 +87,9 @@ def prepare_slot_cache_dir(
 
 
 def llama_cache_root() -> Path:
-    override = os.environ.get("ZEROLLAMA_LLAMA_CACHE_ROOT", "").strip()
-    if override:
-        return Path(override).expanduser()
-    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
-    if xdg:
-        return Path(xdg) / "zerollama" / "llama-cache"
-    return Path.home() / ".cache" / "zerollama" / "llama-cache"
+    from runtime.env import llama_cache_root as _root
+
+    return _root()
 
 
 def cache_root(model_hash: str) -> Path:
@@ -147,11 +144,17 @@ def build_model_hash(
     return h.hexdigest()[:16]
 
 
-def derive_slot_id(prompt_cache_key: str, parallel: int) -> int:
+def derive_slot_id(
+    prompt_cache_key: str,
+    parallel: int,
+    *,
+    cache_salt: str | None = None,
+) -> int:
     """Map cache key → llama-server slot in [0, parallel); -1 when disabled.
 
     WHY hash mod parallel: O(1), no registry, matches eliza-v3. Same key always
     lands on the same slot so llama-server can reuse prefix KV across turns.
+    ``cache_salt`` prevents cross-tenant slot collisions when keys collide.
     """
     if not llama_cache_enabled():
         return -1
@@ -163,7 +166,8 @@ def derive_slot_id(prompt_cache_key: str, parallel: int) -> int:
         return -1
     if n == 1:
         return 0
-    digest = hashlib.sha256(prompt_cache_key.encode()).digest()
+    material = prefix_cache_hash_material(prompt_cache_key, cache_salt)
+    digest = hashlib.sha256(material.encode()).digest()
     value = int.from_bytes(digest[:4], "big")
     return value % n
 
@@ -175,13 +179,9 @@ def default_slot_ttl_ms() -> int:
     embed short/long class in those names. One operator-tunable horizon is enough
     for idle session cleanup; eliza-style ``*.short.bin`` names still use class TTLs.
     """
-    raw = os.environ.get("ZEROLLAMA_LLAMA_CACHE_TTL_MS", "").strip()
-    if raw:
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            pass
-    return DEFAULT_CACHE_TTLS["long"]
+    from runtime.env import default_slot_ttl_ms as _ttl
+
+    return _ttl(default_ms=DEFAULT_CACHE_TTLS["long"])
 
 
 def ttl_ms_for_key(
@@ -316,6 +316,34 @@ def read_cache_stats(root_dir: Path | str, *, now_ms: float | None = None) -> li
             }
         )
     return out
+
+
+def extract_cache_salt(provider_options: Any) -> str | None:
+    """Tenant isolation salt for L3 slot derivation (vLLM ``cache_salt`` analog)."""
+    from runtime.env import default_cache_salt
+
+    env = default_cache_salt()
+    if not isinstance(provider_options, dict):
+        return env or None
+    eliza = provider_options.get("eliza")
+    if isinstance(eliza, dict):
+        raw = eliza.get("cacheSalt")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    raw = provider_options.get("cache_salt")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return env or None
+
+
+def prefix_cache_hash_material(
+    prompt_cache_key: str,
+    cache_salt: str | None = None,
+) -> str:
+    """Hash input for ``derive_slot_id`` — isolates tenants sharing the same thread key."""
+    if cache_salt:
+        return f"{cache_salt}\0{prompt_cache_key}"
+    return prompt_cache_key
 
 
 def extract_prompt_cache_key(provider_options: Any) -> str | None:
@@ -475,8 +503,8 @@ def cache_pin_from_options(
     *,
     parallel: int,
     batch_index: int | None = None,
-) -> tuple[str | None, int | None, bool]:
-    """Return ``(prompt_cache_key, kv_slot, slot_pinned)`` for admission.
+) -> tuple[str | None, int | None, bool, str | None]:
+    """Return ``(prompt_cache_key, kv_slot, slot_pinned, cache_salt)`` for admission.
 
     WHY at admit (not at HTTP forward): llama-server ``id_slot`` must be stable
     before ``/completion``; scheduler ``try_acquire`` serializes same-slot traffic.
@@ -485,14 +513,15 @@ def cache_pin_from_options(
         key = resolve_cache_key_for_batch(options, batch_index)
     else:
         key = resolve_cache_key_from_options(options)
+    cache_salt = extract_cache_salt(options or {})
     kv_slot: int | None = None
     slot_pinned = False
     if key:
-        derived = derive_slot_id(key, parallel)
+        derived = derive_slot_id(key, parallel, cache_salt=cache_salt)
         if derived >= 0:
             kv_slot = derived
             slot_pinned = True
-    return key, kv_slot, slot_pinned
+    return key, kv_slot, slot_pinned, cache_salt
 
 
 def slot_resume_owner_key(kv_bind_req: Any | None) -> str | None:
@@ -503,7 +532,8 @@ def slot_resume_owner_key(kv_bind_req: Any | None) -> str | None:
     v16b keyed only on ``request_id``, so multi-turn agent chat always cleared
     good prefix KV and re-prefilled from scratch.
 
-    Pinned → ``cache:{prompt_cache_key}``; otherwise → ``request_id`` string.
+    Pinned → ``cache:{salt}:{prompt_cache_key}`` when salt set, else ``cache:{key}``;
+    otherwise → ``request_id`` string.
 
     If ``slot_pinned`` is set but ``prompt_cache_key`` is missing (should not
     happen via ``cache_pin_from_options``, which only pins when key is truthy),
@@ -514,6 +544,9 @@ def slot_resume_owner_key(kv_bind_req: Any | None) -> str | None:
     if getattr(kv_bind_req, "slot_pinned", False):
         cache_key = getattr(kv_bind_req, "prompt_cache_key", None)
         if cache_key:
+            salt = getattr(kv_bind_req, "cache_salt", None)
+            if isinstance(salt, str) and salt.strip():
+                return f"cache:{salt.strip()}:{cache_key}"
             return f"cache:{cache_key}"
     rid = getattr(kv_bind_req, "request_id", None)
     return str(rid) if rid else None
@@ -623,6 +656,25 @@ def cache_health(
     out["kv_cache_spec"] = spec.to_health()
     out["spec_bind"] = spec_bind_health(spec)
     out["decode_graph"] = decode_graph_cache().health()
+    from runtime.kv.prefix_block_pool import build_model_scope, prefix_block_pool_health
+
+    scope = None
+    if enabled and model_path is not None and model_loaded:
+        ck, cv = cache_type_from_llama_argv(llama_server_args)
+        mh = build_model_hash(
+            target_model_path=model_path,
+            drafter_model_path=draft_model,
+            cache_type_k=ck,
+            cache_type_v=cv,
+        )
+        scope = build_model_scope(model_hash=mh)
+    out["prefix_block_pool"] = prefix_block_pool_health(model_scope=scope)
+    from runtime.kv.radix_prefix_share import radix_share_health
+
+    out["prefix_block_pool"]["radix_share"] = radix_share_health(model_scope=scope)
+    from runtime.env import runtime_env_health
+
+    out["runtime_env"] = runtime_env_health()
     if not enabled or model_path is None:
         return out
     out["model_path"] = str(model_path)

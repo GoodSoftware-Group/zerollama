@@ -114,10 +114,8 @@ linux_runtime_start_sidecar() {
   fi
 
   runtime_uv_venv
-  # WHY default LLAMA_CPP_ROOT to ../llama.cpp (sibling of zerollama repo):
-  # the fork sits at ../eliza-llama.cpp; stock at ../llama.cpp.  Callers
-  # override via STOCK_LLAMA_CPP_ROOT / ELIZA_LLAMA_CPP_ROOT env when running
-  # A/B bench legs — this default covers the "just start a runtime" use case.
+  # WHY default LLAMA_CPP_ROOT to ../llama.cpp (unified elizaOS sibling):
+  # one llama-server binary; L2 bench legs differ by ZEROLLAMA_LLAMA_FORK only.
   export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${_LINUX_RT_ROOT}/../llama.cpp}"
   [[ -n "${require_model}" ]] && export LLAMA_MODEL="${require_model}"
   linux_runtime_log_paths

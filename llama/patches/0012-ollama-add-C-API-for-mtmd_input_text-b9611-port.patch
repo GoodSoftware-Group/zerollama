@@ -1,20 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Odilitime <janesmith@airmail.cc>
-Date: Fri, 12 Jun 2026 14:09:54 -0700
+Date: Sat, 27 Jun 2026 21:56:34 -0700
 Subject: [PATCH] ollama: add C API for mtmd_input_text (b9611 port)
 
-CGO multimodal path constructs mtmd prompts without stack-allocating C++
-structs from Go.
 ---
  tools/mtmd/mtmd.cpp | 10 ++++++++++
  tools/mtmd/mtmd.h   |  3 +++
  2 files changed, 13 insertions(+)
 
 diff --git a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
-index ad709227f..d2006f54a 100644
+index e217fe7..878dd25 100644
 --- a/tools/mtmd/mtmd.cpp
 +++ b/tools/mtmd/mtmd.cpp
-@@ -228,6 +228,16 @@ const char * mtmd_default_marker() {
+@@ -110,6 +110,16 @@ const char * mtmd_default_marker() {
      return "<__media__>";
  }
  
@@ -32,12 +30,12 @@ index ad709227f..d2006f54a 100644
      switch (flash_attn_type) {
          case LLAMA_FLASH_ATTN_TYPE_AUTO:     return CLIP_FLASH_ATTN_TYPE_AUTO;
 diff --git a/tools/mtmd/mtmd.h b/tools/mtmd/mtmd.h
-index 2fd149e48..feb8c8c36 100644
+index 54b9515..9f6b143 100644
 --- a/tools/mtmd/mtmd.h
 +++ b/tools/mtmd/mtmd.h
-@@ -83,6 +83,9 @@ typedef struct mtmd_input_chunks mtmd_input_chunks;
+@@ -80,6 +80,9 @@ typedef struct mtmd_input_chunk  mtmd_input_chunk;
+ typedef struct mtmd_input_chunks mtmd_input_chunks;
  typedef struct mtmd_input_text   mtmd_input_text;
- typedef struct mtmd_batch        mtmd_batch;
  
 +MTMD_API mtmd_input_text * mtmd_input_text_init(const char * text, bool add_special, bool parse_special);
 +MTMD_API void                mtmd_input_text_free(mtmd_input_text * input_text);

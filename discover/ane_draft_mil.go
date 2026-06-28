@@ -15,12 +15,13 @@ import (
 
 const sidecarTensorSampleMax = 12
 
-// ANEDraftMILStatus reports Eagle3 sidecar → MIL compile readiness and blockers.
+// ANEDraftMILStatus reports draft sidecar → MIL compile readiness and blockers.
 type ANEDraftMILStatus struct {
 	OK                   bool                    `json:"ok"`
 	Mode                 string                  `json:"mode"`
 	Tag                  string                  `json:"tag,omitempty"`
 	SpecType             string                  `json:"spec_type,omitempty"`
+	SidecarArchitecture  string                  `json:"sidecar_architecture,omitempty"`
 	DraftSidecarPresent  bool                    `json:"draft_sidecar_present"`
 	DraftGGUF            string                  `json:"draft_gguf,omitempty"`
 	BaseGGUF             string                  `json:"base_gguf,omitempty"`
@@ -115,9 +116,12 @@ func ProbeANEDraftMILStatus(_ context.Context, preferred string) (ANEDraftMILSta
 	}
 	if !entry.DraftSidecarPresent {
 		short := strings.SplitN(entry.Tag, ":", 2)[0]
-		out.Blockers = append(out.Blockers, "eagle3 drafter GGUF missing")
+		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
 		out.NextStep = "download drafter (scripts/setup_mtp_models.sh) or place at " + strings.Join(ANEDraftSidecarCandidates(short), " | ")
 	} else if entry.DraftGGUF != "" {
+		if arch, err := ProbeSidecarArchitecture(entry.DraftGGUF); err == nil {
+			out.SidecarArchitecture = arch
+		}
 		count, sample, err := ProbeANEDraftSidecarTensors(entry.DraftGGUF)
 		if err != nil {
 			out.Blockers = append(out.Blockers, "sidecar tensor inspect: "+err.Error())
@@ -160,7 +164,7 @@ func draftMILBlockers(sidecarPresent, labBins, ggmlHook bool) []string {
 		blockers = append(blockers, "ggml IOSurface hook not built")
 	}
 	if !sidecarPresent {
-		blockers = append(blockers, "eagle3 drafter GGUF missing")
+		blockers = append(blockers, "draft sidecar GGUF missing")
 	}
 	return blockers
 }

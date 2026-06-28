@@ -37,6 +37,8 @@ def test_health_llama_backend_from_config(engine: InferenceEngine):
     assert body["llama_backend_requested"] == "inprocess"
     assert body["llama_backend_fallback"] is False
     assert "llama_cpp" not in body
+    assert body["llama_patches"]["status"] == "pass"
+    assert body["llama_patches"]["required_patches_ok"] is True
 
 
 def test_health_llama_backend_fallback_flag(engine: InferenceEngine):

@@ -249,6 +249,7 @@ zerollama serve
 ```bash
 ./scripts/phase12_golden_ci.sh          # CI parity (no GPU)
 ./scripts/macos_metal_smoke.sh          # coordination + /health metal fields
+./scripts/phase11_13_15_metal_signoff.sh  # Phase 11 admission → 13 VRAM → 15 KV (METAL_SELF_START=1)
 ./scripts/m3_metal_signoff.sh           # M3 gate: Phase 13 snapshot + Phase 14 inprocess Metal
 ./scripts/metal_signoff.sh              # Full gate: M3 + Phase 15 (recommended one-shot)
 ./scripts/phase15_metal_signoff.sh      # Phase 15 KV hook + multi-seq only (sidecar)

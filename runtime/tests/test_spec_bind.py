@@ -63,6 +63,22 @@ def test_validate_decode_prefix_raises_on_swa_violation():
         )
 
 
+def _hybrid_spec(window: int = 2048) -> KVCacheSpec:
+    return KVCacheSpec(
+        kind="hybrid",
+        effective_window=window,
+        allow_cache_prompt_base=True,
+        allow_disk_persist=True,
+        disk_ttl_ms=3600000,
+        speculative_draft=False,
+    )
+
+
+def test_prefix_within_spec_blocks_hybrid_beyond_window():
+    assert prefix_within_spec(_hybrid_spec(), seq_pos=2048, prompt_tokens=1) is False
+    assert prefix_within_spec(_hybrid_spec(), seq_pos=1000, prompt_tokens=500) is True
+
+
 def test_resume_allowed_by_spec_blocks_swa_resume():
     from runtime.kv.spec_bind import resume_allowed_by_spec
 

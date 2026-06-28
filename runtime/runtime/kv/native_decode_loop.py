@@ -44,9 +44,11 @@ def native_decode_loop_available() -> bool:
 
 def native_batch_decode_available() -> bool:
     """True when v26 batch decode is linked and not disabled by env (v27)."""
-    if os.environ.get("ZEROLLAMA_KV_NATIVE_BATCH", "1") == "0":
+    from runtime.env import kv_native_batch_enabled, kv_native_decode_enabled
+
+    if not kv_native_batch_enabled():
         return False
-    if os.environ.get("ZEROLLAMA_KV_NATIVE_DECODE", "1") == "0":
+    if not kv_native_decode_enabled():
         return False
     st = decode_loop_status()
     return bool(st.get("available") and st.get("batch_decode_in_c"))

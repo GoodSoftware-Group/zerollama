@@ -1,13 +1,24 @@
-UPSTREAM=https://github.com/ggml-org/llama.cpp.git
-WORKDIR=vendor/llama-cpp-b9672
-FETCH_HEAD=b9672
-BUILD_NUMBER=$(shell echo $(FETCH_HEAD) | sed 's/^b//')
+# Unified llama.cpp vendor sync (elizaOS base + Ollama patches).
+# Runtime sibling and in-process ggml share LLAMA_CPP_COMMIT.
+UPSTREAM=https://github.com/elizaOS/llama.cpp.git
+WORKDIR=vendor/llama-cpp-c84b3020
+FETCH_HEAD=c84b3020
+# Full git ref for checkout / rev-list (see repo-root LLAMA_CPP_COMMIT).
+FETCH_REF=c84b30200c8d512c00c9d61c96bed078f1c0024d
+# build-info.cpp int field (symbolic id for unified pin; not ggml-org tag number).
+BUILD_NUMBER=8430220
 
 # WHY sync order matters: build-info.cpp only stamps FETCH_HEAD/BUILD_NUMBER via sed.
 # If rsync from vendor/ is skipped, binaries report the new pin while in-tree
 # llama/llama.cpp and ggml still reflect an older checkout — Phase 17 smoke,
-# native KV, and operator `llama_print_build_info()` all lie. Prefer the full
-# gated workflow: ./scripts/sync_vendor_llama.sh (checkout → rsync → build-info → metal embed).
+# native KV, and operator `llama_print_build_info()` all lie.
+#
+# WHY `make sync` does NOT run `checkout`: `checkout` resets vendor/ to bare
+# FETCH_REF and destroys Ollama patch commits before rsync — you would ship an
+# unpatch tree while build-info still says c84b3020. Use:
+#   make -f Makefile.sync clean apply-patches   # once per pin bump
+#   ./scripts/sync_vendor_llama.sh              # after every vendor edit
+# `make sync` is a thin alias for the script (no git checkout).
 
 .PHONY: help
 help:
@@ -21,9 +32,11 @@ help:
 	@echo "Example:"
 	@echo "    make -f $(lastword $(MAKEFILE_LIST)) clean apply-patches sync"
 
-.PHONY: sync
-sync: llama/llama.cpp ml/backend/ggml/ggml llama/build-info.cpp ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-embed.metal
+.PHONY: sync sync-from-vendor
+sync sync-from-vendor:
+	./scripts/sync_vendor_llama.sh
 
+# Legacy granular targets (rsync only — never reset vendor checkout)
 llama/build-info.cpp: llama/build-info.cpp.in llama/llama.cpp
 	sed -e 's|@FETCH_HEAD@|$(FETCH_HEAD)|' \
 	    -e 's|@LLAMA_BUILD_NUMBER@|$(BUILD_NUMBER)|' \
@@ -35,11 +48,11 @@ ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-embed.metal: ml/backend/ggml/ggml
 	go generate ./$(@D)
 
 .PHONY: llama/llama.cpp
-llama/llama.cpp: checkout
+llama/llama.cpp: $(WORKDIR)
 	rsync -arvzc --delete -f "include LICENSE" -f "merge $@/.rsync-filter" $(addprefix $(WORKDIR),/LICENSE /) $@
 
 .PHONY: ml/backend/ggml/ggml
-ml/backend/ggml/ggml: checkout
+ml/backend/ggml/ggml: $(WORKDIR)
 	rsync -arvzc --delete -f "include LICENSE" -f "merge $@/.rsync-filter" $(addprefix $(WORKDIR),/LICENSE /ggml/) $@
 
 PATCHES=$(wildcard llama/patches/*.patch)
@@ -63,10 +76,11 @@ llama/patches/.%.patched: llama/patches/%.patch
 .PHONY: checkout
 checkout: $(WORKDIR)
 	git -C $(WORKDIR) fetch
-	git -C $(WORKDIR) checkout -f $(FETCH_HEAD)
+	git -C $(WORKDIR) checkout -f $(FETCH_REF)
 
 $(WORKDIR):
 	git clone $(UPSTREAM) $(WORKDIR)
+	git -C $(WORKDIR) checkout -f $(FETCH_REF)
 
 .PHONY: format-patches
 format-patches: llama/patches
@@ -75,7 +89,7 @@ format-patches: llama/patches
 		--no-numbered \
 		--zero-commit \
 		-o $(realpath $<) \
-		$(FETCH_HEAD)
+		$(FETCH_REF)
 
 .PHONY: clean
 clean: checkout
@@ -84,4 +98,4 @@ clean: checkout
 
 .PHONY: print-base
 print-base:
-	@echo $(FETCH_HEAD)
+	@echo $(FETCH_REF)

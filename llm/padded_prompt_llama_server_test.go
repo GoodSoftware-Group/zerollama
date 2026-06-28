@@ -161,3 +161,80 @@ func TestCompletionMediaFromRequest_images(t *testing.T) {
 		t.Fatalf("got %+v", media)
 	}
 }
+
+func TestBuildLlamaServerLfm2PaddedMultimodalPrompt_block(t *testing.T) {
+	const start, end = 500, 501
+	slots := Lfm2VisionTokens{Start: start, End: end, UseBlock: true}
+	tokens := []int{10, start, 502, 503, end, 20}
+	got, n, err := buildLlamaServerLfm2PaddedMultimodalPrompt(context.Background(), fakeDetokenize, tokens, slots, "<M>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || got != "10<M>20" {
+		t.Fatalf("n=%d got=%q", n, got)
+	}
+}
+
+func TestBuildLlamaServerLfm2PaddedMultimodalPrompt_flatImageRun(t *testing.T) {
+	const imageTok = 396
+	slots := Lfm2VisionTokens{Image: imageTok, UseBlock: false}
+	tokens := []int{1, imageTok, imageTok, imageTok, 2}
+	got, n, err := buildLlamaServerLfm2PaddedMultimodalPrompt(context.Background(), fakeDetokenize, tokens, slots, "<M>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || got != "1<M>2" {
+		t.Fatalf("n=%d got=%q", n, got)
+	}
+}
+
+func TestBuildLlamaServerMistral3PaddedMultimodalPrompt(t *testing.T) {
+	slots := Mistral3VisionTokens{Img: 10, Break: 12, End: 13}
+	tokens := []int{1, 10, 11, 12, 11, 13, 2}
+	got, n, err := buildLlamaServerMistral3PaddedMultimodalPrompt(context.Background(), fakeDetokenize, tokens, slots, "<M>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || got != "1<M>2" {
+		t.Fatalf("n=%d got=%q", n, got)
+	}
+}
+
+func TestBuildLlamaServerDeepseekOcrPaddedMultimodalPrompt(t *testing.T) {
+	const imageTok = 128815
+	tokens := []int{5, imageTok, imageTok, 6, imageTok, 7}
+	got, n, err := buildLlamaServerDeepseekOcrPaddedMultimodalPrompt(context.Background(), fakeDetokenize, tokens, imageTok, "<M>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || got != "5<M>6<M>7" {
+		t.Fatalf("n=%d got=%q", n, got)
+	}
+}
+
+func TestBuildLlamaServerSlotPaddedMultimodalPrompt(t *testing.T) {
+	const slot = 128256
+	tokens := []int{1, slot, 2, slot, 3}
+	got, n, err := buildLlamaServerSlotPaddedMultimodalPrompt(context.Background(), fakeDetokenize, tokens, slot, "<M>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || got != "1<M>2<M>3" {
+		t.Fatalf("n=%d got=%q", n, got)
+	}
+}
+
+func TestBuildLlamaServerLlama4PaddedMultimodalPrompt(t *testing.T) {
+	tokens := []int{
+		1,
+		llama4ImageBoundary, llama4ImageToken, llama4PatchToken, llama4ImageBoundary,
+		2,
+	}
+	got, n, err := buildLlamaServerLlama4PaddedMultimodalPrompt(context.Background(), fakeDetokenize, tokens, "<M>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || got != "1<M>2" {
+		t.Fatalf("n=%d got=%q", n, got)
+	}
+}

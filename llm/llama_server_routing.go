@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/ollama/ollama/envconfig"
@@ -22,22 +24,58 @@ func LlamaServerDiscoverable() bool {
 	return llamaServerProbeOK
 }
 
-// useLlamaServerBackend picks upstream-shaped Go → llama-server for eligible GGUF loads.
-//
-// Explicit: ZEROLLAMA_LLAMA_SERVER=1 or --llama-server-backend — all GGUF including
-// vision (split mmproj or inline v.* tensors) and thinking templates (enable_thinking).
-// Linux auto: ZEROLLAMA_LLAMA_SERVER=auto (set by serve on Linux when binary found) —
-// all GGUF on Linux, matching upstream default shape.
-// Darwin: opt-in only — M7 bench keeps ggml Metal default (~164 vs ~158 tok/s).
-func useLlamaServerBackend(projectors []string) bool {
-	return useLlamaServerBackendGOOS(runtime.GOOS, projectors, LlamaServerDiscoverable())
+// ModelNeedsLlamaServerSpec reports whether a model manifest requires llama-server for
+// speculative decoding (Eagle3/DFlash, MTP, n-gram). Plain GGUF stays on ggml Metal on Mac.
+func ModelNeedsLlamaServerSpec(config LlamaServerConfig) bool {
+	if config.EnableMTP {
+		return true
+	}
+	if strings.TrimSpace(config.DraftModelPath) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(config.SpecType)) {
+	case "ngram", "ngram-simple",
+		"draft-eagle3", "eagle3", "dflash",
+		"draft-mtp", "mtp":
+		return true
+	default:
+		return false
+	}
 }
 
-func useLlamaServerBackendGOOS(goos string, projectors []string, discoverable bool) bool {
+// useLlamaServerBackend picks upstream-shaped Go → llama-server for eligible GGUF loads
+// when no per-model config is available (legacy callers).
+func useLlamaServerBackend(projectors []string) bool {
+	return useLlamaServerBackendForModel(projectors, LlamaServerConfig{})
+}
+
+// useLlamaServerBackendForModel decides engine routing for one model load.
+//
+// Explicit: ZEROLLAMA_LLAMA_SERVER=1 or --llama-server-backend — all GGUF.
+// Linux auto: all GGUF when llama-server is discoverable.
+// Darwin spec auto: speculative tags only (plain GGUF keeps ggml Metal default).
+// Vision split mmproj on Darwin still requires explicit opt-in (Linux auto includes vision).
+func useLlamaServerBackendForModel(projectors []string, config LlamaServerConfig) bool {
+	return useLlamaServerBackendForModelGOOS(runtime.GOOS, projectors, LlamaServerDiscoverable(), config)
+}
+
+func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discoverable bool, config LlamaServerConfig) bool {
 	if envconfig.LlamaServerBackendDisabled() {
 		return false
 	}
 	if envconfig.LlamaServerBackendExplicit() {
+		return true
+	}
+	if len(projectors) > 0 && goos != "linux" {
+		return false
+	}
+	if ModelNeedsLlamaServerSpec(config) && discoverable {
+		if goos == "darwin" {
+			slog.Debug("Phase 17: routing speculative model through llama-server (Darwin spec auto)",
+				"spec_type", config.SpecType,
+				"draft_model", config.DraftModelPath != "",
+			)
+		}
 		return true
 	}
 	if !envconfig.LlamaServerBackendAuto() {
@@ -49,7 +87,25 @@ func useLlamaServerBackendGOOS(goos string, projectors []string, discoverable bo
 	if !discoverable {
 		return false
 	}
-	_ = projectors // Linux auto routes all GGUF (text, vision, thinking) like upstream.
+	_ = projectors
 	slog.Debug("Phase 17: routing GGUF through llama-server (Linux auto-default)")
 	return true
+}
+
+// SpecModelRequiresLlamaServerError is returned when a spec-tagged model cannot load on ggml.
+func SpecModelRequiresLlamaServerError(config LlamaServerConfig) error {
+	if !ModelNeedsLlamaServerSpec(config) {
+		return nil
+	}
+	spec := strings.TrimSpace(config.SpecType)
+	if spec == "" {
+		spec = "speculative"
+	}
+	if envconfig.LlamaServerBackendDisabled() {
+		return fmt.Errorf("model requires llama-server for %s but ZEROLLAMA_LLAMA_SERVER=0", spec)
+	}
+	if !LlamaServerDiscoverable() {
+		return fmt.Errorf("model requires llama-server for %s; build llama-server (./scripts/build_ollama_llama_server_darwin.sh) or set LLAMA_SERVER_BIN", spec)
+	}
+	return nil
 }

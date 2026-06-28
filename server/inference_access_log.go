@@ -33,6 +33,9 @@ type inferenceAccessMeta struct {
 	promptEvalCount    int
 	evalCount          int
 	cachedPromptTokens int // L3 / llama-server cache_n; logged on inference response out
+	cachedTokensHost   int
+	cachedTokensStorage int
+	cachedTokensStorageBackend string
 	// Prompt sizing — set by routes after chatPrompt/tailTruncate.
 	promptTokens    int // tokens actually sent to runner (post-truncation)
 	originalTokens  int // tokens before truncation (0 if no truncation occurred)
@@ -163,6 +166,10 @@ func recordInferencePromptSize(c *gin.Context, promptTokens, originalTokens, mes
 }
 
 func recordInferenceCompletion(c *gin.Context, doneReason string, promptEvalCount, evalCount, cachedPromptTokens int) {
+	recordInferenceCompletionDetails(c, doneReason, promptEvalCount, evalCount, cachedPromptTokens, 0, 0, "")
+}
+
+func recordInferenceCompletionDetails(c *gin.Context, doneReason string, promptEvalCount, evalCount, cachedPromptTokens, cachedHost, cachedStorage int, storageBackend string) {
 	v, ok := c.Get(inferenceAccessLogKey)
 	if !ok {
 		return
@@ -175,6 +182,9 @@ func recordInferenceCompletion(c *gin.Context, doneReason string, promptEvalCoun
 	meta.promptEvalCount = promptEvalCount
 	meta.evalCount = evalCount
 	meta.cachedPromptTokens = cachedPromptTokens
+	meta.cachedTokensHost = cachedHost
+	meta.cachedTokensStorage = cachedStorage
+	meta.cachedTokensStorageBackend = storageBackend
 }
 
 // recordInferenceMultimodalEstimate stores post-expand modality token heuristics on the
@@ -257,6 +267,16 @@ func (m *inferenceAccessMeta) logResponseOut(status int, queueOut inferenceQueue
 	}
 	if m.cachedPromptTokens > 0 {
 		attrs = append(attrs, "cached_prompt_tokens", m.cachedPromptTokens)
+		attrs = append(attrs, "cached_tokens_device", m.cachedPromptTokens)
+	}
+	if m.cachedTokensHost > 0 {
+		attrs = append(attrs, "cached_tokens_host", m.cachedTokensHost)
+	}
+	if m.cachedTokensStorage > 0 {
+		attrs = append(attrs, "cached_tokens_storage", m.cachedTokensStorage)
+		if m.cachedTokensStorageBackend != "" {
+			attrs = append(attrs, "cached_tokens_storage_backend", m.cachedTokensStorageBackend)
+		}
 	}
 	if m.imageTokens > 0 {
 		attrs = append(attrs, "image_tokens", m.imageTokens)

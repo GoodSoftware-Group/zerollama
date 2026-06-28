@@ -67,6 +67,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_base(ggml
     switch (op) {
         case GGML_OP_ADD_ID: op_str = "add_id"; break;
         case GGML_OP_CONCAT: op_str = "concat"; break;
+        case GGML_OP_ROLL:   op_str = "roll";   break;
         default: GGML_ABORT("fatal error");
     };
 
@@ -582,6 +583,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
     return res;
 }
 
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char name[256];
+
+    const int64_t C = op->ne[0];
+    const int64_t H = op->src[0]->ne[1];
+    const int64_t head_size = C / H;
+
+    GGML_ASSERT(op->src[4]->type == GGML_TYPE_F32);
+    GGML_ASSERT(C % H == 0);
+    GGML_ASSERT(head_size == 64 || head_size == 128);
+
+    snprintf(name, 256, "kernel_gla_f32_hs%d", (int)head_size);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(ggml_metal_library_t lib, const ggml_tensor * op) {
     char base[256];
     char name[256];
@@ -590,8 +612,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(
     const int ne20 = op->src[2]->ne[0]; // S_v
     const int ne21 = op->src[2]->ne[1]; // H
     const int ne30 = op->src[3]->ne[0]; // G
-    // state is src[5], 4D [S_v, S_v, H_v, n_seqs] (s0 only); K is op param 0.
-    const int K = ggml_get_op_params_i32(op, 0);
+    // state is src[5], 3D (S_v*S_v*H, K, n_seqs); K is the snapshot slot count.
+    const int K = op->src[5]->ne[1];
 
     const int nsg = op->src[2]->ne[0]/32;
 
@@ -787,6 +809,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
                 nsg = N_SG_Q1_0;
                 nr0 = N_R0_Q1_0;
             } break;
+        case GGML_TYPE_Q1_0_g128:
+            {
+                nsg = N_SG_Q1_0_g128;
+                nr0 = N_R0_Q1_0_g128;
+            } break;
         case GGML_TYPE_Q4_0:
             {
                 nsg = N_SG_Q4_0;
@@ -818,6 +845,12 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
                 nsg = N_SG_MXFP4;
                 nr0 = N_R0_MXFP4;
                 smem = 32*sizeof(float);
+            } break;
+        case GGML_TYPE_NVFP4:
+            {
+                nsg = N_SG_NVFP4;
+                nr0 = N_R0_NVFP4;
+                smem = (32 + 128)*sizeof(float);
             } break;
         case GGML_TYPE_Q2_K:
             {
@@ -1011,6 +1044,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
                 nsg = N_SG_Q1_0;
                 nr0 = N_R0_Q1_0;
             } break;
+        case GGML_TYPE_Q1_0_g128:
+            {
+                nsg = N_SG_Q1_0_g128;
+                nr0 = N_R0_Q1_0_g128;
+            } break;
         case GGML_TYPE_Q4_0:
             {
                 nsg = N_SG_Q4_0;
@@ -1042,6 +1080,12 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
                 nsg = N_SG_MXFP4;
                 nr0 = N_R0_MXFP4;
                 smem = 32*sizeof(float);
+            } break;
+        case GGML_TYPE_NVFP4:
+            {
+                nsg = N_SG_NVFP4;
+                nr0 = N_R0_NVFP4;
+                smem = (32 + 128)*sizeof(float);
             } break;
         case GGML_TYPE_Q2_K:
             {
@@ -1372,6 +1416,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
         bool    has_bias,
         bool    has_scap,
         bool    has_kvpad,
+        int32_t nqptg,
         int32_t nsg) {
     assert(op->op == GGML_OP_FLASH_ATTN_EXT);
 
@@ -1385,13 +1430,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
     const int32_t ns20 = op->src[2]->nb[1]/op->src[2]->nb[0];
 
     // do bounds checks for the mask?
-    const bool bc_mask = op->src[3] && (op->src[3]->ne[1] % 8 != 0);
+    const bool bc_mask = op->src[3] && (op->src[3]->ne[1] % nqptg != 0);
 
-    snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d",
+    snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d%s",
             "flash_attn_ext",
             ggml_type_name(op->src[1]->type),
             dk,
-            dv);
+            dv,
+            nqptg == OP_FLASH_ATTN_EXT_NQPSG_16 ? "_q16" : "");
 
     snprintf(name, 256, "%s_mask=%d_sinks=%d_bias=%d_scap=%d_kvpad=%d_bcm=%d_ns10=%d_ns20=%d_nsg=%d",
             base,
@@ -1518,6 +1564,104 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_v
     return res;
 
     GGML_UNUSED(op);
+}
+
+// ELIZA-QJL-ATTN-DISPATCH-V1
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_qjl(ggml_metal_library_t lib) {
+    const char * name = "kernel_attn_score_qjl1_256_multi";
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        // Standalone shipped shader: it declares no Metal function constants,
+        // so compile by direct symbol name with a null constants table.
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    if (!res.pipeline) {
+        GGML_LOG_ERROR("attn_score_qjl: kernel '%s' missing from default.metallib\n", name);
+        GGML_ABORT("attn_score_qjl: pipeline compile failed");
+    }
+    res.nr0 = 1;
+    res.nr1 = 1;
+    res.nsg = 1;
+    res.smem = 0;
+    return res;
+}
+
+// ELIZA-TBQ-POLAR-ATTN-DISPATCH-V1
+static const char * eliza_metal_tbq_kernel_name(ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_TBQ3_0:   return "kernel_turbo3_dot_multi";
+        case GGML_TYPE_TBQ4_0:   return "kernel_turbo4_dot_multi";
+        case GGML_TYPE_TBQ3_TCQ: return "kernel_turbo3_tcq_dot_multi";
+        default: GGML_ABORT("unsupported TurboQuant attention score type");
+    }
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_tbq(ggml_metal_library_t lib, ggml_type type) {
+    const char * name = eliza_metal_tbq_kernel_name(type);
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    if (!res.pipeline) {
+        GGML_LOG_ERROR("attn_score_tbq: kernel '%s' missing from default.metallib\n", name);
+        GGML_ABORT("attn_score_tbq: pipeline compile failed");
+    }
+    res.nr0 = 1;
+    res.nr1 = 1;
+    res.nsg = 1;
+    res.smem = 0;
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_polar(ggml_metal_library_t lib) {
+    const char * name = "kernel_mul_mv_q4_polar_f32";
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    if (!res.pipeline) {
+        GGML_LOG_ERROR("attn_score_polar: kernel '%s' missing from default.metallib\n", name);
+        GGML_ABORT("attn_score_polar: pipeline compile failed");
+    }
+    res.nr0 = 1;
+    res.nr1 = 1;
+    res.nsg = 1;
+    res.smem = 0;
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_polar_preht(ggml_metal_library_t lib) {
+    const char * name = "kernel_attn_score_q4_polar_preht_f32";
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    if (!res.pipeline) {
+        GGML_LOG_ERROR("attn_score_polar_preht: kernel '%s' missing from default.metallib\n", name);
+        GGML_ABORT("attn_score_polar_preht: pipeline compile failed");
+    }
+    res.nr0 = 1;
+    res.nr1 = 1;
+    res.nsg = 1;
+    res.smem = 0;
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fused_attn_qjl_tbq(ggml_metal_library_t lib) {
+    const char * name = "kernel_fused_attn_qjl_tbq3_f32";
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    if (!res.pipeline) {
+        GGML_LOG_ERROR("fused_attn_qjl_tbq: kernel '%s' missing from default.metallib\n", name);
+        GGML_ABORT("fused_attn_qjl_tbq: pipeline compile failed");
+    }
+    res.nr0 = 1;
+    res.nr1 = 1;
+    res.nsg = 1;
+    res.smem = 0;
+    return res;
 }
 
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_bin(ggml_metal_library_t lib, const ggml_tensor * op, int32_t n_fuse) {
@@ -1732,24 +1876,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rope(ggml_metal_
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_im2col(ggml_metal_library_t lib, const ggml_tensor * op) {
     assert(op->op == GGML_OP_IM2COL);
 
-    GGML_TENSOR_LOCALS(int64_t, ne0, op->src[0], ne);
-
     GGML_ASSERT(ggml_is_contiguous(op->src[1]));
     GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
     GGML_ASSERT(op->type         == GGML_TYPE_F16 || op->type == GGML_TYPE_F32);
 
-    const bool is_2D = ((const int32_t *)(op->op_params))[6] == 1;
-    const int64_t KH = is_2D ? ne01 : 1;
-    const int64_t KW = ne00;
-
     char base[256];
     char name[256];
 
-    if (KH*KW <= 1024) {
-        snprintf(base, 256, "kernel_im2col_%s", ggml_type_name(op->type));
-    } else {
-        snprintf(base, 256, "kernel_im2col_ext_%s", ggml_type_name(op->type));
-    }
+    snprintf(base, 256, "kernel_im2col_%s", ggml_type_name(op->type));
     snprintf(name, 256, "%s", base);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
@@ -1818,6 +1952,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d(ggml_met
     char name[256];
 
     snprintf(base, 256, "kernel_conv_2d_%s_%s", ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d_dw(ggml_metal_library_t lib, const ggml_tensor * op) {
+    assert(op->op == GGML_OP_CONV_2D_DW);
+
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F16 || op->src[0]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->type         == GGML_TYPE_F32);
+
+    char base[256];
+    char name[256];
+
+    snprintf(base, 256, "kernel_conv_2d_dw_%s_%s", ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
     snprintf(name, 256, "%s", base);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
@@ -1907,11 +2062,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad(ggml_metal_l
     char base[256];
     char name[256];
 
-    // note: this is slower
-    //const bool is_c4 = op->src[0]->ne[0] % 4 == 0 && op->ne[0] % 4 == 0;
-    const bool is_c4 = false;
-
-    snprintf(base, 256, "kernel_pad_%s%s", ggml_type_name(op->src[0]->type), is_c4 ? "_4" : "");
+    snprintf(base, 256, "kernel_pad_%s", ggml_type_name(op->src[0]->type));
     snprintf(name, 256, "%s", base);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
@@ -1920,8 +2071,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad(ggml_metal_l
     }
 
     res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
-
-    res.c4 = is_c4;
 
     return res;
 }
@@ -1967,6 +2116,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_timestep_embeddi
     char name[256];
 
     snprintf(base, 256, "kernel_timestep_embedding_%s", ggml_type_name(op->src[0]->type));
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
+// # ELIZA-ISTFT-DISPATCH-V1 — pipeline lookup for GGML_OP_ISTFT.
+// Source kernel lives in eliza-shipped/istft.metal (compiled into default.metallib).
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_istft(ggml_metal_library_t lib, const ggml_tensor * op) {
+    assert(op->op == GGML_OP_ISTFT);
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->type         == GGML_TYPE_F32);
+
+    char base[256];
+    char name[256];
+
+    snprintf(base, 256, "kernel_istft_f32");
     snprintf(name, 256, "%s", base);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);

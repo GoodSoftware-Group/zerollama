@@ -47,7 +47,7 @@ func ExtractProxyConvWeightBlob(ggufPath, tensorName string, channels int) ([]by
 		return nil, nil, err
 	}
 
-	fp16, err := ExtractTopLeftSquareFP16(raw, tensor, channels)
+	fp16, err := ExtractTopLeftSquareFP16(raw, tensor, channels, convTransposeFromGGUF(tensor))
 	if err != nil {
 		return nil, tensor, err
 	}
@@ -59,16 +59,12 @@ func ExtractProxyConvWeightBlob(ggufPath, tensorName string, channels int) ([]by
 	return blob, tensor, nil
 }
 
-// ProbeANEDraftMILExtract builds the proxy conv weight blob from an Eagle3 sidecar GGUF.
+// ProbeANEDraftMILExtract builds the proxy conv weight blob from a draft sidecar GGUF.
 func ProbeANEDraftMILExtract(_ context.Context, preferred, tensorName, outputPath string) (ANEDraftMILExtractResult, error) {
 	out := ANEDraftMILExtractResult{
 		Mode:         "draft_mil_extract",
-		SourceTensor: strings.TrimSpace(tensorName),
 		WeightSource: "sidecar",
 		Note:         "top-left channels×channels slice → maderix BLOBFILE layout for ane-draft-daemon --weight-file",
-	}
-	if out.SourceTensor == "" {
-		out.SourceTensor = DefaultProxyConvTensor()
 	}
 
 	if runtime.GOOS != "darwin" {
@@ -96,9 +92,19 @@ func ProbeANEDraftMILExtract(_ context.Context, preferred, tensorName, outputPat
 	out.DraftGGUF = draftPath
 	out.DraftSidecarPresent = present
 	if !present || draftPath == "" {
-		out.Blockers = append(out.Blockers, "eagle3 drafter GGUF missing")
+		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
 		out.NextStep = "download drafter (scripts/setup_mtp_models.sh) then re-run extract"
-		return out, fmt.Errorf("eagle3 drafter GGUF missing")
+		return out, fmt.Errorf("draft sidecar GGUF missing")
+	}
+
+	if strings.TrimSpace(tensorName) == "" {
+		if t, _, err := DefaultProxyConvTensorForSidecar(draftPath); err == nil {
+			out.SourceTensor = t
+		} else {
+			out.SourceTensor = DefaultProxyConvTensor()
+		}
+	} else {
+		out.SourceTensor = strings.TrimSpace(tensorName)
 	}
 
 	blob, tensor, err := ExtractProxyConvWeightBlob(draftPath, out.SourceTensor, entry.ProxyChannels)

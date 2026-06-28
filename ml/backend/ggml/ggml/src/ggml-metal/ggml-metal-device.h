@@ -127,6 +127,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv 
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv_batched  (ggml_metal_library_t lib, const struct ggml_tensor * op, int ssm_conv_bs);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan          (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv              (ggml_metal_library_t lib, const struct ggml_tensor * op);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla               (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net   (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
@@ -150,6 +151,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_im2col   
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_transpose_1d (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_transpose_2d (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d           (ggml_metal_library_t lib, const struct ggml_tensor * op);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d_dw        (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_3d           (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_upscale           (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad               (ggml_metal_library_t lib, const struct ggml_tensor * op);
@@ -157,6 +159,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad_refle
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_roll              (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_arange            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_timestep_embedding(ggml_metal_library_t lib, const struct ggml_tensor * op);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_istft              (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_opt_step_adamw    (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_opt_step_sgd      (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_memset            (ggml_metal_library_t lib, const struct ggml_tensor * op);
@@ -182,7 +185,26 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att
         bool    has_bias,
         bool    has_scap,
         bool    has_kvpad,
+        int32_t nqptg,
         int32_t nsg);
+
+// ELIZA-QJL-ATTN-DISPATCH-V1
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_qjl(
+        ggml_metal_library_t lib);
+
+// ELIZA-TBQ-POLAR-ATTN-DISPATCH-V1
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_tbq(
+        ggml_metal_library_t lib,
+        enum ggml_type        type);
+
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_polar(
+        ggml_metal_library_t lib);
+
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_attn_score_polar_preht(
+        ggml_metal_library_t lib);
+
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fused_attn_qjl_tbq(
+        ggml_metal_library_t lib);
 
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_vec(
         ggml_metal_library_t lib,
@@ -215,30 +237,6 @@ void ggml_metal_rsets_free(ggml_metal_rsets_t rsets);
 // device
 //
 
-enum ggml_metal_device_id {
-    GGML_METAL_DEVICE_GENERIC = 0,
-
-    GGML_METAL_DEVICE_M1,
-    GGML_METAL_DEVICE_M1_PRO,
-    GGML_METAL_DEVICE_M1_MAX,
-    GGML_METAL_DEVICE_M1_ULTRA,
-    GGML_METAL_DEVICE_M2,
-    GGML_METAL_DEVICE_M2_PRO,
-    GGML_METAL_DEVICE_M2_MAX,
-    GGML_METAL_DEVICE_M2_ULTRA,
-    GGML_METAL_DEVICE_M3,
-    GGML_METAL_DEVICE_M3_PRO,
-    GGML_METAL_DEVICE_M3_MAX,
-    GGML_METAL_DEVICE_M3_ULTRA,
-    GGML_METAL_DEVICE_M4,
-    GGML_METAL_DEVICE_M4_PRO,
-    GGML_METAL_DEVICE_M4_MAX,
-    GGML_METAL_DEVICE_M5,
-    GGML_METAL_DEVICE_M5_PRO,
-    GGML_METAL_DEVICE_M5_MAX,
-    GGML_METAL_DEVICE_M5_ULTRA,
-};
-
 struct ggml_metal_device_props {
     int device;
     char name[128];
@@ -255,10 +253,9 @@ struct ggml_metal_device_props {
     bool has_tensor;
     bool use_residency_sets;
     bool use_shared_buffers;
+    bool use_managed_buffers;  // Use Managed mode for discrete GPUs
 
     bool supports_gpu_family_apple7;
-
-    enum ggml_metal_device_id device_id;
 
     int op_offload_min_batch_size;
 };
@@ -300,7 +297,7 @@ typedef struct ggml_metal_buffer * ggml_metal_buffer_t;
 
 ggml_metal_buffer_t ggml_metal_buffer_init(ggml_metal_device_t dev, size_t size, bool shared);
 ggml_metal_buffer_t ggml_metal_buffer_map (ggml_metal_device_t dev, void * ptr, size_t size, size_t max_tensor_size);
-ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(ggml_metal_device_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size, size_t surface_offset);
+ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(ggml_metal_device_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size);
 
 void   ggml_metal_buffer_free     (ggml_metal_buffer_t buf);
 void * ggml_metal_buffer_get_base (ggml_metal_buffer_t buf);

@@ -17,9 +17,15 @@ struct mtmd_image_preprocessor {
     virtual ~mtmd_image_preprocessor() = default;
     virtual bool preprocess(const clip_image_u8 & img, clip_image_f32_batch & output) = 0;
 
+    // Encode already-resized RGB u8 into f32 batch (used when client grid_thw hint fixed pixel size).
+    bool encode_u8_f32(const clip_image_u8 & img, clip_image_f32_batch & output);
+
     void img_u8_to_f32(const clip_image_u8 & src, clip_image_f32 & dst, const float mean[3], const float std[3]);
     void img_u8_to_f32(const clip_image_u8 & src, clip_image_f32 & dst);
 };
+
+// Resize img to W*patch x H*patch for SGLang grid_thw [1,H,W]; returns false if hint invalid.
+bool mtmd_image_apply_grid_hint_resize(clip_image_u8 & img, const int32_t grid_thw[3], int patch_size);
 
 /**
  * implementation of LLaVA-UHD:
@@ -142,26 +148,6 @@ struct mtmd_image_preprocessor_internvl : mtmd_image_preprocessor_llava_uhd {
 struct mtmd_image_preprocessor_deepseekocr : mtmd_image_preprocessor {
     mtmd_image_preprocessor_deepseekocr(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
     bool preprocess(const clip_image_u8 & img, clip_image_f32_batch & output) override;
-};
-
-// DeepSeek-OCR-2: a 1024x1024 global view, plus InternVL-style 768x768 local
-// tiles when the image is larger than a tile in either dimension.
-struct mtmd_image_preprocessor_deepseekocr2 : mtmd_image_preprocessor {
-    static constexpr int base_size = 1024; // global view
-    static constexpr int tile_size = 768;  // local tile
-    static constexpr int min_tiles = 2;
-    static constexpr int max_tiles = 6;
-
-    mtmd_image_preprocessor_deepseekocr2(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
-    bool preprocess(const clip_image_u8 & img, clip_image_f32_batch & output) override;
-
-private:
-    static std::vector<clip_image_size> get_target_ratios();
-    static clip_image_size              find_closest_aspect_ratio(
-        float                                aspect_ratio,
-        const std::vector<clip_image_size> & target_ratios,
-        int                                  width,
-        int                                  height);
 };
 
 // custom image preprocessing for Step3VL

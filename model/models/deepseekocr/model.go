@@ -28,6 +28,8 @@ type Model struct {
 	Projector *nn.Linear `gguf:"mm.layers"`
 }
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
 func (m *Model) EncodeMultimodal(ctx ml.Context, bts []byte) ([]input.Multimodal, error) {
 	patches, original, crop, err := ProcessImage(ctx, bts)
 	if err != nil {

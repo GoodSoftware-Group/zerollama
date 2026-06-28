@@ -115,6 +115,15 @@ class SubprocessSlotState:
                 continue
             self._seq_by_slot[int(sid)] = pos
 
+    def seed_seq_pos(self, slot_id: int, pos: int) -> None:
+        """Pre-completion seq hint after cross-slot Radix KV seed.
+
+        WHY: subprocess ``/slots`` backfill runs after first completion; SWA and
+        draft-spec policy need ``seq_pos`` before that to avoid false SWA deny.
+        """
+        if slot_id >= 0 and pos > 0:
+            self._seq_by_slot[slot_id] = int(pos)
+
     def record_completion(self, slot_id: int, result: dict[str, Any]) -> int | None:
         if slot_id < 0:
             return None

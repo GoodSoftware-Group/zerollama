@@ -99,6 +99,10 @@ type Model struct {
 
 var _ model.MultimodalProcessor = (*Model)(nil)
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 type imageGridPos struct {
 	row int
 	col int

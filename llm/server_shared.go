@@ -68,6 +68,7 @@ type LlamaServer interface {
 	Ping(ctx context.Context) error
 	WaitUntilRunning(ctx context.Context) error
 	Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error
+	ApplyChatTemplate(ctx context.Context, req ChatRequest) (string, error)
 	Embedding(ctx context.Context, input string) ([]float32, int, error)
 	Tokenize(ctx context.Context, content string) ([]int, error)
 	Detokenize(ctx context.Context, tokens []int) (string, error)
@@ -126,8 +127,8 @@ func pickOllamaEngine(ollamaRequired bool) bool {
 // ErrGgmlRunnerUnlinked is returned when an edge build cannot load GGUF without llama-server.
 var ErrGgmlRunnerUnlinked = errors.New("ggml runner not linked in edge build")
 
-func ggmlRunnerRequired(projectors []string) error {
-	if envconfig.GgmlRunnerLinked() || useLlamaServerBackend(projectors) {
+func ggmlRunnerRequired(projectors []string, config LlamaServerConfig) error {
+	if envconfig.GgmlRunnerLinked() || useLlamaServerBackendForModel(projectors, config) {
 		return nil
 	}
 	return fmt.Errorf("%w; use llama-server (ZEROLLAMA_LLAMA_SERVER=1/auto, --edge, or --llama-server-backend)", ErrGgmlRunnerUnlinked)
@@ -221,6 +222,21 @@ type ImageData struct {
 	Data    []byte `json:"data"`
 	ID      int    `json:"id"`
 	GridTHW []int  `json:"grid_thw,omitempty"`
+	// PrecomputedFeature is SGLang precomputed_embedding rows ([vision_tokens][hidden]).
+	// When set, runners skip ViT encode and inject these embeds at padded layout slots.
+	PrecomputedFeature [][]float32 `json:"precomputed_feature,omitempty"`
+	// ProcessorPixelValues is SGLang processor_output pixel_values (HF patch tensor, flat).
+	ProcessorPixelValues []float32 `json:"processor_pixel_values,omitempty"`
+}
+
+// HasPrecomputedEmbedding reports whether this attachment carries client-supplied ViT rows.
+func (img ImageData) HasPrecomputedEmbedding() bool {
+	return len(img.PrecomputedFeature) > 0
+}
+
+// HasProcessorOutput reports whether this attachment carries HF processor pixel_values.
+func (img ImageData) HasProcessorOutput() bool {
+	return len(img.ProcessorPixelValues) > 0
 }
 
 type CompletionRequest struct {
@@ -233,6 +249,8 @@ type CompletionRequest struct {
 	PromptTokens        []int  `json:"prompt_tokens,omitempty"`
 	PaddedLayoutConsume string `json:"padded_layout_consume,omitempty"`
 	PromptCacheKey      string `json:"prompt_cache_key,omitempty"`
+	// SessionViTOverlay enables SGLang-style per-thread ViT embed pinning (see modality.SessionViTOverlayEnabled).
+	SessionViTOverlay   bool `json:"session_vit_overlay,omitempty"`
 	Gemma4PaddedMedia   Gemma4PaddedMediaSchedule `json:"gemma4_padded_media,omitempty"`
 
 	Grammar         string

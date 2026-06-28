@@ -122,6 +122,7 @@ type NewSequenceParams struct {
 	promptTokens        []int
 	paddedLayoutConsume string
 	promptCacheKey      string
+	sessionViTOverlay   bool
 	gemma4PaddedMedia   Gemma4PaddedMediaSchedule
 }
 
@@ -133,8 +134,15 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 	var inputs []input
 	var err error
 	switch {
-	case len(params.promptTokens) > 0 && params.paddedLayoutConsume == PaddedLayoutConsumeQwen3VLHFRunner:
-		inputs, err = s.inputsFromPaddedPromptTokens(params.promptTokens, images, params.promptCacheKey)
+	case len(params.promptTokens) > 0 && supportsPaddedLayoutConsume(params.paddedLayoutConsume):
+		inputs, err = s.inputsFromPaddedLayoutConsume(
+			params.promptTokens,
+			images,
+			params.paddedLayoutConsume,
+			params.promptCacheKey,
+			params.sessionViTOverlay,
+			params.gemma4PaddedMedia,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process padded prompt tokens: %w", err)
 		}
@@ -144,19 +152,8 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 			"inputs", len(inputs),
 			"consume", params.paddedLayoutConsume,
 		)
-	case len(params.promptTokens) > 0 && params.paddedLayoutConsume == PaddedLayoutConsumeGemma4ImgRunner:
-		inputs, err = s.inputsFromGemma4PaddedPromptTokens(params.promptTokens, images, params.promptCacheKey, params.gemma4PaddedMedia)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process gemma4 padded prompt tokens: %w", err)
-		}
-		slog.Info("padded_input_ids runner inject",
-			"prompt_tokens", len(params.promptTokens),
-			"images", len(images),
-			"inputs", len(inputs),
-			"consume", params.paddedLayoutConsume,
-		)
 	default:
-		inputs, err = s.inputs(prompt, images, params.promptCacheKey)
+		inputs, err = s.inputs(prompt, images, params.promptCacheKey, params.sessionViTOverlay)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process inputs: %w", err)
 		}
@@ -231,33 +228,6 @@ func calculateLogprobsLlama(logits []float32, selectedToken int, topK int, model
 	return common.CalculateLogprobs(logits, selectedToken, topK, model.TokenToPiece)
 }
 
-// inputsFromGemma4PaddedPromptTokens builds runner inputs from pretokenized Gemma4 layout,
-// injecting mtmd chunks at <|image|>, <|video|>, and <|audio|> soft token ids.
-func (s *Server) inputsFromGemma4PaddedPromptTokens(promptTokens []int, images []llm.ImageData, sessionKey string, media Gemma4PaddedMediaSchedule) ([]input, error) {
-	if s.image == nil {
-		return nil, errors.New("padded prompt tokens require a vision model")
-	}
-	slots, err := s.gemma4SoftTokens()
-	if err != nil {
-		return nil, err
-	}
-	s.image.growCacheForDistinctFrames(len(images))
-	imageChunks, _, err := s.encodeImageChunks(images, sessionKey)
-	if err != nil {
-		return nil, err
-	}
-	schedule := Gemma4PaddedMediaSchedule{
-		StillImageCount:  media.StillImageCount,
-		VideoFrameCounts: media.VideoFrameCounts,
-		AudioClipCount:   media.AudioClipCount,
-	}
-	inputs := inputsFromGemma4PromptTokens(promptTokens, imageChunks, slots, schedule)
-	if len(inputs) == 0 {
-		return nil, errors.New("no input provided")
-	}
-	return inputs, nil
-}
-
 func (s *Server) gemma4SoftTokens() (Gemma4SoftTokens, error) {
 	imageSlot, err := s.gemma4SlotToken(gemma4ImagePlaceholder)
 	if err != nil {
@@ -287,11 +257,25 @@ func (s *Server) gemma4SlotToken(placeholder string) (int, error) {
 
 // encodeImageChunks runs mtmd per raster and logs grid_thw hint vs embed-count stats.
 // WHY separate from inputs(): padded inject and [img-N] paths share encode + hint compare.
-func (s *Server) encodeImageChunks(images []llm.ImageData, sessionKey string) ([][]visionChunk, visionGridHintStats, error) {
+func (s *Server) encodeImageChunks(images []llm.ImageData, sessionKey string, sessionOverlay bool) ([][]visionChunk, visionGridHintStats, error) {
 	var imageChunks [][]visionChunk
 	var stats visionGridHintStats
 	for _, img := range images {
-		chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW)
+		if img.HasPrecomputedEmbedding() {
+			vc, err := s.image.GetPrecomputedChunks(img.PrecomputedFeature, sessionKey, sessionOverlay)
+			if err != nil {
+				return nil, stats, fmt.Errorf("precomputed embedding for image %d: %w", img.ID, err)
+			}
+			if len(vc) == 0 {
+				return nil, stats, fmt.Errorf("precomputed embedding for image %d has no rows", img.ID)
+			}
+			imageChunks = append(imageChunks, vc)
+			continue
+		}
+		if img.HasProcessorOutput() {
+			return nil, stats, fmt.Errorf("processor_output is not supported on ggml llamarunner (mtmd requires PNG bytes); use ollama-engine for Qwen3-VL")
+		}
+		chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW, sessionOverlay)
 		if err != nil {
 			return nil, stats, err
 		}
@@ -313,28 +297,10 @@ func (s *Server) encodeImageChunks(images []llm.ImageData, sessionKey string) ([
 	return imageChunks, stats, nil
 }
 
-// inputsFromPaddedPromptTokens builds runner inputs from pretokenized ids, injecting
-// ViT embeds at each Qwen3-VL <|image_pad|> token (SGLang padded_input_ids path).
-func (s *Server) inputsFromPaddedPromptTokens(promptTokens []int, images []llm.ImageData, sessionKey string) ([]input, error) {
-	if s.image == nil {
-		return nil, errors.New("padded prompt tokens require a vision model")
-	}
-	s.image.growCacheForDistinctFrames(len(images))
-	imageChunks, _, err := s.encodeImageChunks(images, sessionKey)
-	if err != nil {
-		return nil, err
-	}
-	inputs := inputsFromQwen3VLPromptTokens(promptTokens, imageChunks)
-	if len(inputs) == 0 {
-		return nil, errors.New("no input provided")
-	}
-	return inputs, nil
-}
-
 // inputs processes the prompt and images into a list of inputs
 // by splitting the prompt on [img-<n>] tags, tokenizing text and
 // generating image embeddings for each image
-func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string) ([]input, error) {
+func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string, sessionOverlay bool) ([]input, error) {
 	var inputs []input
 	var parts []string
 	var matches [][]string
@@ -375,17 +341,36 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 				return nil, fmt.Errorf("invalid image index: %d", n)
 			}
 
-			chunks, err := s.image.MultimodalTokenize(s.lc, images[imageIndex].Data, sessionKey, images[imageIndex].GridTHW)
-			if err != nil {
-				return nil, err
-			}
-
-			for _, c := range chunks {
-				if len(c.Embed) != 0 {
-					inputs = append(inputs, input{embed: c.Embed})
-				} else {
-					for _, t := range c.Tokens {
-						inputs = append(inputs, input{token: t})
+			img := images[imageIndex]
+			switch {
+			case img.HasPrecomputedEmbedding():
+				vc, err := s.image.GetPrecomputedChunks(img.PrecomputedFeature, sessionKey, sessionOverlay)
+				if err != nil {
+					return nil, err
+				}
+				for _, c := range vc {
+					if len(c.embed) != 0 {
+						inputs = append(inputs, input{embed: c.embed})
+					} else {
+						for _, t := range c.tokens {
+							inputs = append(inputs, input{token: t})
+						}
+					}
+				}
+			case img.HasProcessorOutput():
+				return nil, fmt.Errorf("processor_output is not supported on ggml llamarunner (mtmd requires PNG bytes); use ollama-engine for Qwen3-VL")
+			default:
+				chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW, sessionOverlay)
+				if err != nil {
+					return nil, err
+				}
+				for _, c := range chunks {
+					if len(c.Embed) != 0 {
+						inputs = append(inputs, input{embed: c.Embed})
+					} else {
+						for _, t := range c.Tokens {
+							inputs = append(inputs, input{token: t})
+						}
 					}
 				}
 			}
@@ -811,6 +796,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		promptTokens:        req.PromptTokens,
 		paddedLayoutConsume: req.PaddedLayoutConsume,
 		promptCacheKey:      req.PromptCacheKey,
+		sessionViTOverlay:   req.SessionViTOverlay,
 		gemma4PaddedMedia: Gemma4PaddedMediaSchedule{
 			StillImageCount:  req.Gemma4PaddedMedia.StillImageCount,
 			VideoFrameCounts: req.Gemma4PaddedMedia.VideoFrameCounts,

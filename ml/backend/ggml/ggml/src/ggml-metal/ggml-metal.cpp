@@ -729,31 +729,22 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
     return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
 }
 
-GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
-        ggml_backend_dev_t dev,
-        uint32_t surface_id,
-        size_t size,
-        size_t max_tensor_size,
-        size_t surface_offset) {
-    if (!dev || !dev->context || surface_id == 0 || size == 0) {
-        return NULL;
-    }
-
+static ggml_backend_buffer_t ggml_backend_metal_device_buffer_from_iosurface(
+        ggml_backend_dev_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size) {
     ggml_metal_device_t ctx_dev = (ggml_metal_device_t) dev->context;
 
-    ggml_metal_buffer_t res = ggml_metal_buffer_map_iosurface(
-        ctx_dev, surface_id, size, max_tensor_size, surface_offset);
+    ggml_metal_buffer_t res = ggml_metal_buffer_map_iosurface(ctx_dev, surface_id, size, max_tensor_size);
     if (!res) {
-        return NULL;
+        return nullptr;
     }
 
     const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx_dev);
 
     return ggml_backend_buffer_init(
-        ggml_backend_metal_buffer_type_mapped(props_dev->device),
-        ggml_backend_metal_buffer_shared_i,
-        res,
-        size);
+            ggml_backend_metal_buffer_type_mapped(props_dev->device),
+            ggml_backend_metal_buffer_shared_i,
+            res,
+            size);
 }
 
 static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
@@ -902,6 +893,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_metal_get_features;
     }
+    if (strcmp(name, "ggml_backend_dev_buffer_from_iosurface") == 0) {
+        return (void *)ggml_backend_dev_buffer_from_iosurface;
+    }
 
     return NULL;
 
@@ -975,6 +969,24 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
     }
 
     return &reg;
+}
+
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+        ggml_backend_dev_t device,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size) {
+    if (!device || !device->iface.get_name) {
+        return nullptr;
+    }
+
+    const char * name = device->iface.get_name(device);
+    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal (name=%s)\n", __func__, name ? name : "null");
+        return nullptr;
+    }
+
+    return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)

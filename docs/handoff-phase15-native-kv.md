@@ -309,11 +309,11 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 47. **`POST /internal/generate-batch`** — loopback-only; **why:** batch APIs are engine-internal until public NDJSON contract is settled.
 48. **`phase15_batch_decode_smoke.sh`** — asserts `batch_decode_in_c`, non-stream + stream batch for two prompts.
 49. **`phase15_metal_signoff.sh` PASS (M4 Max)** — step 3/5 batch decode; `phase15_runtime_kv_env.sh` prefers sibling `../llama.cpp` + venv Python build.
-50. **`phase15_inprocess_signoff.sh` PASS (RTX 5080, CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8; `kv_decode_steps=56`, `batch_decode_in_c=True`; multiseq + batch decode PASS. Build notes: host CUDA 12.3 cannot compile **sm_120** — install **cuda-nvcc-12-8** and `-DCMAKE_CUDA_ARCHITECTURES=120-real`; patch **0014** may not apply cleanly to stock sibling b9672 alone — copy kv-ext files from zerollama tree; kill stale `zerollama serve` on `:8080`/`:8081` before embed start. **`ZEROLLAMA_GPU_PROFILE=0`** on multiseq serve (rtx-5080 L1 sets `n_parallel=4` otherwise) — now baked into `phase15_inprocess_multiseq_smoke.sh`.
+50. **`phase15_inprocess_signoff.sh` PASS (RTX 5080, CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8; `kv_decode_steps=56`, `batch_decode_in_c=True`; multiseq + batch decode PASS. Build notes: host CUDA 12.3 cannot compile **sm_120** — install **cuda-nvcc-12-8** and `-DCMAKE_CUDA_ARCHITECTURES=120-real`; patch **0014** may not apply cleanly to stock sibling b9781 alone — copy kv-ext files from zerollama tree; kill stale `zerollama serve` on `:8080`/`:8081` before embed start. **`ZEROLLAMA_GPU_PROFILE=0`** on multiseq serve (rtx-5080 L1 sets `n_parallel=4` otherwise) — now baked into `phase15_inprocess_multiseq_smoke.sh`.
 
 ### v31 — llama-kv-ext pin tracking + hybrid/iSWA resolve (shipped)
 
-50. **`llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch`** — formal b9672 patch so vendor sync preserves kv-ext.
+50. **`llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch`** — formal b9781 patch so vendor sync preserves kv-ext.
 51. **`llama_memory_kv_ext_classify`** — resolve hybrid/iSWA to attn base cache; `memory_kind_name` on probe.
 52. **`scripts/phase15_llama_kv_ext_pin_check.sh`** — pin gate in `phase15_kv_native_ci.sh`.
 

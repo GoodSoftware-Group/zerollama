@@ -126,8 +126,8 @@ apt install cuda-nvcc-12-8   # or equivalent for your image
 export PATH=/usr/local/cuda-12.8/bin:$PATH
 export CUDACXX=/usr/local/cuda-12.8/bin/nvcc
 
-cd ~/llama.cpp && git checkout b9672   # zerollama pin
-# Patch 0014 may not apply cleanly to stock b9672 alone — copy from zerollama tree:
+cd ~/llama.cpp && git checkout b9781   # zerollama pin
+# Patch 0014 may not apply cleanly to stock b9781 alone — copy from zerollama tree:
 #   include/llama-kv-ext.h, src/llama-memory-kv-ext.cpp, kv-cache cell_index changes, CMakeLists
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120-real
 cmake --build build -j
@@ -183,7 +183,7 @@ CGO_ENABLED=1 go build -o zerollama .
 sudo cp zerollama /usr/bin/zerollama   # if serve uses /usr/bin/zerollama
 ```
 
-**Fix (full vendor sync):** clone `vendor/llama-cpp-b9672`, `make -f Makefile.sync apply-patches`, `./scripts/sync_vendor_llama.sh` — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
+**Fix (full vendor sync):** clone `vendor/llama-cpp-b9781`, `make -f Makefile.sync apply-patches`, `./scripts/sync_vendor_llama.sh` — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
 
 **Why `RUN_E2E_PREFLIGHT=0` on GPU gate:** `gpu_5080_session.sh` can skip `phase12_golden_ci.sh` when httplib is missing; CI and full dev hosts still run Go golden tests. GPU smokes should not fail on parser compile in a tree that only ships inference.
 
@@ -455,19 +455,19 @@ pct exec 1564 -- bash -lc 'cd /root/zerollama && …'
 |------|------|
 | Host mount | `/var/lib/vz/private/1564/root/zerollama` (optional) |
 | Inside CT | `/root/zerollama` — **use this in scripts** |
-| Sibling llama.cpp | `/root/llama.cpp` (pin **b9672** + patch **0014**) |
+| Sibling llama.cpp | `/root/llama.cpp` (pin **b9781** + patch **0014**) |
 | Smoke GGUF | e.g. `/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf` (~1B Q8 fits 16 GB) |
 
 **One-time CT setup (WHY each step):**
 
 1. **`cuda-nvcc-12-8`** in the CT — host CUDA 12.3 rejects `compute_120`; 5080 Blackwell needs 12.8+.
-2. **Reset sibling `llama.cpp` to tag `b9672`** — copying kv-ext onto `master` breaks `llama-kv-cache.h` vs the rest of the tree.
-3. **Apply fork files from zerollama** (patch 0014 may not apply cleanly to stock b9672 alone):
+2. **Reset sibling `llama.cpp` to tag `b9781`** — copying kv-ext onto `master` breaks `llama-kv-cache.h` vs the rest of the tree.
+3. **Apply fork files from zerollama** (patch 0014 may not apply cleanly to stock b9781 alone):
 
 ```bash
 ZROOT=/root/zerollama
 L=/root/llama.cpp
-git -C "$L" checkout -f b9672
+git -C "$L" checkout -f b9781
 cp "$ZROOT/llama/llama.cpp/include/llama-kv-ext.h" "$L/include/"
 cp "$ZROOT/llama/llama.cpp/src/llama-memory-kv-ext.cpp" "$L/src/"
 cp "$ZROOT/llama/llama.cpp/src/llama-kv-cache.{h,cpp}" "$L/src/"

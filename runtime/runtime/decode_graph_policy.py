@@ -22,11 +22,9 @@ _GLOBAL_EPOCH = 0
 
 
 def decode_graph_trace_enabled() -> bool:
-    return os.environ.get("ZEROLLAMA_DECODE_GRAPH_TRACE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    from runtime.env import decode_graph_trace_enabled as _enabled
+
+    return _enabled()
 
 
 def decode_graph_epoch(slot_id: int = -1) -> int:
@@ -42,12 +40,16 @@ def bump_decode_graph_epoch(
     *,
     reason: str,
     ctx_ptr: int | None = None,
+    base_url: str | None = None,
 ) -> int:
     """Invalidate captured decode graphs for ``slot_id`` (+ global counter).
 
     WHY two steps: (1) epoch for future ``DecodeGraphCache.lookup`` keys and trace
-    replay; (2) ``invalidate_cuda_graphs(ctx_ptr)`` clears ggml's actual CUDA graph
-    map today — ggml does not read our epoch counter.
+    replay; (2) ``invalidate_cuda_graphs`` clears ggml's actual CUDA graph map —
+    ggml does not read our epoch counter.
+
+    WHY ``base_url``: subprocess llama-server owns ``ctx_tgt``; POST
+    ``/cuda-graph/invalidate`` when ``ctx_ptr`` is unavailable.
     """
     global _GLOBAL_EPOCH
     with _LOCK:
@@ -63,14 +65,19 @@ def bump_decode_graph_epoch(
                 _GLOBAL_EPOCH,
                 reason,
             )
-    if ctx_ptr is not None:
+    if ctx_ptr is not None or base_url:
         from runtime.kv.cuda_graph_invalidate import invalidate_cuda_graphs
 
-        invalidate_cuda_graphs(ctx_ptr, reason=reason)
+        invalidate_cuda_graphs(ctx_ptr, reason=reason, base_url=base_url)
     return new
 
 
-def bump_all_decode_graph_epochs(*, reason: str, ctx_ptr: int | None = None) -> int:
+def bump_all_decode_graph_epochs(
+    *,
+    reason: str,
+    ctx_ptr: int | None = None,
+    base_url: str | None = None,
+) -> int:
     """Model swap / teardown — invalidate every slot.
 
     WHY bump every known slot + global: session close and model swap must poison
@@ -88,10 +95,10 @@ def bump_all_decode_graph_epochs(*, reason: str, ctx_ptr: int | None = None) -> 
                 g,
                 reason,
             )
-    if ctx_ptr is not None:
+    if ctx_ptr is not None or base_url:
         from runtime.kv.cuda_graph_invalidate import invalidate_cuda_graphs
 
-        invalidate_cuda_graphs(ctx_ptr, reason=reason)
+        invalidate_cuda_graphs(ctx_ptr, reason=reason, base_url=base_url)
     return g
 
 
@@ -104,7 +111,7 @@ def decode_graph_health() -> dict[str, Any]:
             "capture_key_format": "slot_id:slot_epoch:global_epoch",
             "note": (
                 "epoch + ggml invalidation — ``llama_context_cuda_graph_invalidate`` "
-                "clears ggml CUDA graph cache on prefix cache clear when ctx is wired"
+                "(in-process) or ``POST /cuda-graph/invalidate`` (subprocess) on prefix cache clear"
             ),
         }
 

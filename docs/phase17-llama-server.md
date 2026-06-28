@@ -34,7 +34,7 @@ Zerollama harness:     Client → Go → Python runtime → llama-server  (--lla
 | `discover/llama_server.go` | **Done** | CUDA arch + ROCm gfx filtering matches upstream scheduler inputs |
 | Linux auto-default | **Done** | Plain text + vision GGUF when `ZEROLLAMA_LLAMA_SERVER=auto` (Linux serve default) |
 | Mac default | **Unchanged (ggml)** | M7 bench: ggml ~166 vs llama-server ~155 tok/s @ 4k ctx |
-| `LLAMA_CPP_VERSION=b9672` | **Done** | Vendor + in-tree sync complete (Jun 2026) |
+| `LLAMA_CPP_VERSION=b9781` | **Done** | Vendor + in-tree sync @ b9781 (Jun 2026) |
 | Native `gpu-discover` | **Done** | Enriches llama-server probe with PCI/CC/gfx from crash-isolated subprocess |
 | Integrated GPU (`gfx1151`) | **Done** | Strix Halo 8060S on allowlist; `OLLAMA_IGPU_ENABLE` for others |
 | Metal discovery retry | **Done** | Retries with `GGML_METAL_TENSOR_DISABLE=1`; persists via `RunnerEnvOverrides` |
@@ -198,6 +198,8 @@ Code: `llm/padded_prompt_llama_server.go`, `llm/llama_server.go` (`completionPro
 
 **Gemma4 (`gemma4_img_runner_inject`):** same splice as ggml runner (`BuildGemma4PaddedCompletionPromptTokens`). llama-server resolves `<|image|>`, `<|video|>`, and `<|audio|>` soft token ids via subprocess `/tokenize`; maps each slot to `prompt_string` media marker(s) + `multimodal_data` (`<|video|>` → one marker per frame in the clip). **Fallback:** pretokenized ids without multimodal soft tokens but with `Media` → detokenize + standard marker replacement (same pattern as Qwen3-VL).
 
+**All native VLM families (Jun 2026):** llama-server subprocess now mirrors ollama-engine padded inject for `mllama_img_runner_inject`, `gemma3_img_runner_inject`, `llama4_img_runner_inject`, `lfm2_img_runner_inject`, `glmocr_img_runner_inject`, `mistral3_img_runner_inject`, and `deepseekocr_img_runner_inject`. Each maps pretokenized vision blocks or soft tokens to `prompt_string` media markers + ordered `multimodal_data`; partial layouts fall back to detokenize + `[img-N]` replacement when `Media` is present.
+
 **Ollama-engine (Mac default):** all native Go multimodal families below run padded inject in-process via `runner/ollamarunner/padded_inputs.go` (`EncodeMultimodal` + `PostTokenize`):
 
 | Consume mode | Families |
@@ -228,11 +230,15 @@ Env `OLLAMA_STREAM_KEEPALIVE_INTERVAL` (default `15`, `0` = off). Emits `status:
 
 ---
 
-## llama.cpp pin (`b9672`)
+## llama.cpp pin (`b9781`)
 
-Upstream Ollama @ `07ed7523` pins **`b9672`**. Zerollama updated the root `LLAMA_CPP_VERSION` file to match.
+Upstream Ollama @ **v0.30.11** (`32a97b74`) pins **`b9781`**. Zerollama matches the root `LLAMA_CPP_VERSION` file.
 
-**Vendor tree:** `vendor/llama-cpp-b9672/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
+**Why match upstream’s pin, not llama.cpp HEAD:** Phase 17 cherry-picks come from `ollama/ollama` release tags; drifting ahead of upstream’s pin makes every diff audit ambiguous. Zerollama adds **16 Ollama patches** on top — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
+
+**Vendor tree:** `vendor/llama-cpp-b9781/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
+
+**Why `sync_vendor_llama.sh` checks patch count:** syncing bare `b9781` (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports `b9781` — CGO then misses `ggml_backend_dev_reset`, no-alloc scheduler, and kv-ext.
 
 Workflow: [llama/README.md](../llama/README.md) · [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md)
 
@@ -260,7 +266,7 @@ Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
 2. ~~`llama/compat/` vs `llama/patches/` dedup~~ — 0016 hooks, 0017 ggml deltas
 3. ~~Port `discover/llama_server.go`~~ — hybrid bootstrap shipped
 4. ~~LeadingBOS + PreservedTokens~~ — wired for llama-server renderers/parsers
-5. ~~**Vendor sync to b9672**~~ — done; sibling rebuild + Metal sign-off optional
+5. ~~**Vendor sync to b9781**~~ — done; sibling rebuild + Metal sign-off optional
 6. ~~**Policy:** Mac default stays ggml (M7 bench); Linux `auto` routes all GGUF~~
 7. ~~**Cohere2 MoE MLX**~~ — done (#16670)
 8. ~~**Cline providers.json**~~ — done (#16402)

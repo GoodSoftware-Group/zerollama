@@ -73,6 +73,20 @@ type PromptTokensDetails struct {
 	VideoTokens  *int `json:"video_tokens,omitempty"`
 }
 
+// CachedTokensDetails breaks down prefix-cache hits by tier (SGLang sglext shape).
+// Native path maps L3 / llama-server cache_n to device until host/storage tiers land.
+type CachedTokensDetails struct {
+	Device int  `json:"device,omitempty"`
+	Host   int  `json:"host,omitempty"`
+	Storage *int `json:"storage,omitempty"`
+	StorageBackend *string `json:"storage_backend,omitempty"`
+}
+
+// SglExt carries SGLang-compatible response extensions for agent clients.
+type SglExt struct {
+	CachedTokensDetails *CachedTokensDetails `json:"cached_tokens_details,omitempty"`
+}
+
 type Usage struct {
 	PromptTokens        int                  `json:"prompt_tokens"`
 	CompletionTokens    int                  `json:"completion_tokens"`
@@ -127,6 +141,12 @@ type ChatCompletionRequest struct {
 	// options.prompt_cache_key). Why on OpenAI surface: repeat video_url agent loops need per-thread
 	// ffmpeg cache without forcing clients to use the native /api/chat JSON shape.
 	PromptCacheKey *string `json:"prompt_cache_key,omitempty"`
+	// EnablePrefixMMCache mirrors SGLang server flag. WHY top-level field: OpenAI clients
+	// send this beside prompt_cache_key without nesting in options. Session ViT overlay
+	// still requires prompt_cache_key — flag alone logs a hint on /api/chat (see prefix_mm_cache.go).
+	EnablePrefixMMCache *bool `json:"enable_prefix_mm_cache,omitempty"`
+	// CacheSalt isolates L3 slot hashing across tenants (vLLM cache_salt analog).
+	CacheSalt *string `json:"cache_salt,omitempty"`
 	// Options passes Ollama-native request options (eliza.conversationId, num_ctx, …). Merged after
 	// standard OpenAI fields so operators can set L3 keys and ctx without a second HTTP API.
 	Options map[string]any `json:"options,omitempty"`
@@ -140,6 +160,7 @@ type ChatCompletion struct {
 	SystemFingerprint string         `json:"system_fingerprint"`
 	Choices           []Choice       `json:"choices"`
 	Usage             Usage          `json:"usage,omitempty"`
+	Sglext            *SglExt        `json:"sglext,omitempty"`
 	DebugInfo         *api.DebugInfo `json:"_debug_info,omitempty"`
 }
 
@@ -151,6 +172,7 @@ type ChatCompletionChunk struct {
 	SystemFingerprint string        `json:"system_fingerprint"`
 	Choices           []ChunkChoice `json:"choices"`
 	Usage             *Usage        `json:"usage,omitempty"`
+	Sglext            *SglExt       `json:"sglext,omitempty"`
 }
 
 // TODO (https://github.com/ollama/ollama/issues/5259): support []string, []int and [][]int
@@ -267,6 +289,33 @@ func usageFromMetrics(m api.Metrics) Usage {
 	return u
 }
 
+// SglExtFromMetrics builds SGLang-compatible sglext when prefix cache hits are present.
+func SglExtFromMetrics(m api.Metrics) *SglExt {
+	if d := cachedTokensDetailsFromMetrics(m); d != nil {
+		return &SglExt{CachedTokensDetails: d}
+	}
+	return nil
+}
+
+func cachedTokensDetailsFromMetrics(m api.Metrics) *CachedTokensDetails {
+	if m.CachedPromptTokens <= 0 && m.CachedTokensHost <= 0 && m.CachedTokensStorage <= 0 {
+		return nil
+	}
+	d := &CachedTokensDetails{
+		Device: m.CachedPromptTokens,
+		Host:   m.CachedTokensHost,
+	}
+	if m.CachedTokensStorage > 0 {
+		v := m.CachedTokensStorage
+		d.Storage = &v
+		if m.CachedTokensStorageBackend != "" {
+			b := m.CachedTokensStorageBackend
+			d.StorageBackend = &b
+		}
+	}
+	return d
+}
+
 func promptTokensDetailsFromMetrics(m api.Metrics) *PromptTokensDetails {
 	// OpenAI-shaped breakdown; zeros omitted so clients see a sparse object only when useful.
 	if m.ImageTokens == 0 && m.VideoTokens == 0 && m.AudioTokens == 0 && m.CachedPromptTokens == 0 {
@@ -340,7 +389,9 @@ func ToChatCompletion(id string, r api.ChatResponse) ChatCompletion {
 				return nil
 			}(r.DoneReason),
 			Logprobs: logprobs,
-		}}, Usage: ToUsage(r),
+		}},
+		Usage:     ToUsage(r),
+		Sglext:    SglExtFromMetrics(r.Metrics),
 		DebugInfo: r.DebugInfo,
 	}
 }
@@ -731,6 +782,12 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 	// Top-level prompt_cache_key wins over options map — explicit agent thread id for caches.
 	if r.PromptCacheKey != nil && strings.TrimSpace(*r.PromptCacheKey) != "" {
 		options["prompt_cache_key"] = strings.TrimSpace(*r.PromptCacheKey)
+	}
+	if r.EnablePrefixMMCache != nil && *r.EnablePrefixMMCache {
+		options["enable_prefix_mm_cache"] = true
+	}
+	if r.CacheSalt != nil && strings.TrimSpace(*r.CacheSalt) != "" {
+		options["cache_salt"] = strings.TrimSpace(*r.CacheSalt)
 	}
 
 	var format json.RawMessage

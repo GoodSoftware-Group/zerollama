@@ -3,6 +3,7 @@ package modality
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/ollama/ollama/api"
 )
@@ -56,10 +57,7 @@ func LogPaddedLayoutRunnerStub(model string, stub PaddedLayoutRunnerStub, mode P
 	if mode == PaddedLayoutConsumeDeferred || mode == PaddedLayoutConsumeDeferredHistory {
 		attrs = append(attrs, "render_path", "images")
 	}
-	if mode == PaddedLayoutConsumeQwen3VLHFRunner {
-		attrs = append(attrs, "render_path", "prompt_tokens_inject")
-	}
-	if mode == PaddedLayoutConsumeGemma4ImgRunner {
+	if strings.HasSuffix(string(mode), "_runner_inject") {
 		attrs = append(attrs, "render_path", "prompt_tokens_inject")
 	}
 	slog.Info("padded_input_ids runner stub", attrs...)

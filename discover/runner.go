@@ -31,6 +31,19 @@ var (
 	bootstrapped bool
 )
 
+// isDiscoverableRunnerLib returns true for ggml runner plugin shared libraries.
+// Dev trees may contain ANE lab binaries like tools/ane-ggml-map-smoke that
+// match *ggml-* but are not loadable backends — skip them to avoid discovery timeouts.
+func isDiscoverableRunnerLib(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".so", ".dylib", ".dll":
+	default:
+		return false
+	}
+	return strings.Contains(filepath.Base(path), "ggml")
+}
+
 func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo {
 	deviceMu.Lock()
 	defer deviceMu.Unlock()
@@ -57,6 +70,9 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			slog.Debug("unable to lookup runner library directories", "error", err)
 		}
 		for _, file := range files {
+			if !isDiscoverableRunnerLib(file) {
+				continue
+			}
 			libDirs[filepath.Dir(file)] = struct{}{}
 		}
 

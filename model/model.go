@@ -85,6 +85,18 @@ type MultimodalProcessor interface {
 	PostTokenize([]*input.Input) ([]*input.Input, error)
 }
 
+// PrecomputedMultimodalIngest is optional: models that accept SGLang precomputed_embedding rows.
+type PrecomputedMultimodalIngest interface {
+	MultimodalProcessor
+	MultimodalFromPrecomputed(ctx ml.Context, rows [][]float32, gridTHW []int) ([]input.Multimodal, error)
+}
+
+// ProcessorOutputMultimodalIngest is optional: models that accept SGLang processor_output tensors.
+type ProcessorOutputMultimodalIngest interface {
+	MultimodalProcessor
+	MultimodalFromProcessorOutput(ctx ml.Context, pixelValues []float32, gridTHW []int) ([]input.Multimodal, error)
+}
+
 // Base implements the common fields and methods for all models
 type Base struct {
 	b ml.Backend

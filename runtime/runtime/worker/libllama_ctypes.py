@@ -252,6 +252,15 @@ def _bind(lib: ctypes.CDLL) -> None:
         ctypes.c_int32,
     ]
     lib.llama_memory_seq_rm.restype = ctypes.c_bool
+    if hasattr(lib, "llama_memory_seq_cp"):
+        lib.llama_memory_seq_cp.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+        ]
+        lib.llama_memory_seq_cp.restype = None
     lib.llama_memory_seq_pos_min.argtypes = [ctypes.c_void_p, ctypes.c_int32]
     lib.llama_memory_seq_pos_min.restype = ctypes.c_int32
     lib.llama_memory_seq_pos_max.argtypes = [ctypes.c_void_p, ctypes.c_int32]
@@ -485,6 +494,26 @@ def _clear_sequence(lib: ctypes.CDLL, ctx: ctypes.c_void_p, seq_id: int) -> None
     if not mem:
         return
     lib.llama_memory_seq_rm(mem, ctypes.c_int32(seq_id), ctypes.c_int32(-1), ctypes.c_int32(-1))
+
+
+def _trim_sequence_from(
+    lib: ctypes.CDLL,
+    ctx: ctypes.c_void_p,
+    seq_id: int,
+    pos_start: int,
+) -> None:
+    """Drop KV from ``pos_start`` onward (vLLM drop-last-block in-process)."""
+    if pos_start < 0:
+        return
+    mem = lib.llama_get_memory(ctx)
+    if not mem:
+        return
+    lib.llama_memory_seq_rm(
+        mem,
+        ctypes.c_int32(seq_id),
+        ctypes.c_int32(pos_start),
+        ctypes.c_int32(-1),
+    )
 
 
 def _ctx_ptr(ctx: ctypes.c_void_p | None) -> int | None:
@@ -934,6 +963,10 @@ class LlamaLoadedSession:
                         decode_pos=decode_pos,
                     )
         if is_resume:
+            live_pos = self._resolve_decode_current_pos(ctx, sid, None)
+            if live_pos > decode_pos:
+                _trim_sequence_from(self._lib, ctx, sid, decode_pos)
+                decode_pos = self._resolve_decode_current_pos(ctx, sid, None)
             spec = getattr(self, "kv_cache_spec", None)
             cache_key = (
                 getattr(kv_bind_req, "prompt_cache_key", None) if kv_bind_req else None
@@ -1610,7 +1643,9 @@ def _decode_stream(
     bind_slot = kv_slot if kv_slot is not None else seq_id
     start_pos = max(0, int(current_pos))
     ctx_int = ctypes.cast(ctx, ctypes.c_void_p).value or 0
-    native_decode = os.environ.get("ZEROLLAMA_KV_NATIVE_DECODE", "1") != "0"
+    from runtime.env import kv_native_decode_enabled, kv_native_sample_enabled
+
+    native_decode = kv_native_decode_enabled()
     use_native_step = bool(
         ctx_int and not lib.llama_model_has_encoder(model) and native_decode
     )
@@ -1618,7 +1653,7 @@ def _decode_stream(
     use_native_sample = bool(
         use_native_step
         and smpl_int
-        and os.environ.get("ZEROLLAMA_KV_NATIVE_SAMPLE", "1") != "0"
+        and kv_native_sample_enabled()
     )
     from runtime.infer_trace import infer_trace
     from runtime.decode_graph_policy import decode_graph_epoch, graph_capture_key
@@ -1944,7 +1979,9 @@ def _decode_parallel_stream(
     from runtime.kv.native_decode_loop import run_sample as _native_sample
 
     ctx_int = int(ctypes.cast(ctx, ctypes.c_void_p).value or 0)
-    native_decode = os.environ.get("ZEROLLAMA_KV_NATIVE_DECODE", "1") != "0"
+    from runtime.env import kv_native_decode_enabled, kv_native_sample_enabled
+
+    native_decode = kv_native_decode_enabled()
     use_native = bool(
         ctx_int and not lib.llama_model_has_encoder(model) and native_decode
     )
@@ -1954,7 +1991,7 @@ def _decode_parallel_stream(
     use_native_sample = bool(
         use_native
         and _first_smpl_int
-        and os.environ.get("ZEROLLAMA_KV_NATIVE_SAMPLE", "1") != "0"
+        and kv_native_sample_enabled()
     )
     infer_trace(
         "decode.parallel.stream.begin",

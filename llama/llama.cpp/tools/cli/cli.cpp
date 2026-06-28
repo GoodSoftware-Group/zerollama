@@ -12,17 +12,21 @@
 #include <array>
 #include <atomic>
 #include <algorithm>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <thread>
-#include <signal.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #   define NOMINMAX
 #endif
+#include <io.h>
+#include <stdio.h>
 #include <windows.h>
+#elif defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
+#include <unistd.h>
 #endif
 
 const char * LLAMA_ASCII_LOGO = R"(
@@ -37,19 +41,26 @@ const char * LLAMA_ASCII_LOGO = R"(
 
 static std::atomic<bool> g_is_interrupted = false;
 static bool should_stop() {
-    return g_is_interrupted.load();
+    return g_is_interrupted.load(std::memory_order_acquire);
+}
+static void reset_stop() {
+    g_is_interrupted.store(false, std::memory_order_release);
 }
 
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__)) || defined (_WIN32)
 static void signal_handler(int) {
-    if (g_is_interrupted.load()) {
+    const bool already_interrupted = g_is_interrupted.exchange(true, std::memory_order_acq_rel);
+    if (already_interrupted) {
         // second Ctrl+C - exit immediately
         // make sure to clear colors before exiting (not using LOG or console.cpp here to avoid deadlock)
-        fprintf(stdout, "\033[0m\n");
-        fflush(stdout);
-        std::exit(130);
+        static constexpr char color_reset[] = "\033[0m\n";
+#if defined(_WIN32)
+        _write(_fileno(stdout), color_reset, sizeof(color_reset) - 1);
+#else
+        [[maybe_unused]] ssize_t ret = write(STDOUT_FILENO, color_reset, sizeof(color_reset) - 1);
+#endif
+        _exit(128 + SIGINT);
     }
-    g_is_interrupted.store(true);
 }
 #endif
 
@@ -59,9 +70,6 @@ struct cli_context {
     std::vector<raw_buffer> input_files;
     task_params defaults;
     bool verbose_prompt;
-
-    // thread for showing "loading" animation
-    std::atomic<bool> loading_show;
 
     cli_context(const common_params & params) {
         defaults.sampling    = params.sampling;
@@ -97,18 +105,11 @@ struct cli_context {
                 task.params.chat_parser_params.parser.load(chat_params.parser);
             }
 
-            // Copy the preserved tokens into the sampling params
-            const llama_vocab * vocab = llama_model_get_vocab(
-                llama_get_model(ctx_server.get_llama_context()));
-            for (const auto & token : chat_params.preserved_tokens) {
-                auto ids = common_tokenize(vocab, token, false, true);
-                if (ids.size() == 1) {
-                    task.params.sampling.preserved_tokens.insert(ids[0]);
-                }
-            }
-
             // reasoning budget sampler
             if (!chat_params.thinking_end_tag.empty()) {
+                const llama_vocab * vocab = llama_model_get_vocab(
+                    llama_get_model(ctx_server.get_llama_context()));
+
                 task.params.sampling.reasoning_budget_tokens = defaults.sampling.reasoning_budget_tokens;
                 task.params.sampling.generation_prompt = chat_params.generation_prompt;
 
@@ -135,25 +136,11 @@ struct cli_context {
         console::spinner::start();
         server_task_result_ptr result = rd.next(should_stop);
 
-        while (true) {
-            auto res_partial = dynamic_cast<server_task_result_cmpl_partial *>(result.get());
-            if (res_partial && res_partial->is_begin) {
-                // this is the "send 200 status to client" signal in streaming mode
-                // skip, do not stop the spinner
-                result = rd.next(should_stop);
-            } else {
-                console::spinner::stop();
-                break;
-            }
-        }
-
+        console::spinner::stop();
         std::string curr_content;
         bool is_thinking = false;
 
-        while (result) {
-            if (should_stop()) {
-                break;
-            }
+        while (result && !should_stop()) {
             if (result->is_error()) {
                 json err_data = result->to_json();
                 if (err_data.contains("message")) {
@@ -195,7 +182,7 @@ struct cli_context {
             }
             result = rd.next(should_stop);
         }
-        g_is_interrupted.store(false);
+        reset_stop();
         // server_response_reader automatically cancels pending tasks upon destruction
         return curr_content;
     }
@@ -242,7 +229,7 @@ struct cli_context {
 };
 
 // TODO?: Make this reusable, enums, docs
-static const std::array<std::string_view, 8> cmds = {
+static const std::array<std::string_view, 7> cmds = {
     "/audio ",
     "/clear",
     "/exit",
@@ -250,7 +237,6 @@ static const std::array<std::string_view, 8> cmds = {
     "/image ",
     "/read ",
     "/regen",
-    "/video ",
 };
 
 static std::vector<std::pair<std::string, size_t>> auto_completion_callback(std::string_view line, size_t cursor_byte_pos) {
@@ -361,10 +347,7 @@ static std::vector<std::pair<std::string, size_t>> auto_completion_callback(std:
 
 static constexpr size_t FILE_GLOB_MAX_RESULTS = 100;
 
-// satisfies -Wmissing-declarations
-int llama_cli(int argc, char ** argv);
-
-int llama_cli(int argc, char ** argv) {
+int main(int argc, char ** argv) {
     common_params params;
 
     params.verbosity = LOG_LEVEL_ERROR; // by default, less verbose logs
@@ -416,8 +399,6 @@ int llama_cli(int argc, char ** argv) {
         return 1;
     }
 
-    ctx_cli.defaults.sampling = params.sampling;
-
     console::spinner::stop();
     console::log("\n");
 
@@ -464,9 +445,6 @@ int llama_cli(int argc, char ** argv) {
     }
     if (inf.has_inp_audio) {
         console::log("  /audio <file>       add an audio file\n");
-    }
-    if (inf.has_inp_video) {
-        console::log("  /video <file>       add a video file\n");
     }
     console::log("\n");
 
@@ -527,7 +505,7 @@ int llama_cli(int argc, char ** argv) {
         console::log("\n");
 
         if (should_stop()) {
-            g_is_interrupted.store(false);
+            reset_stop();
             break;
         }
 
@@ -564,8 +542,7 @@ int llama_cli(int argc, char ** argv) {
             continue;
         } else if (
                 (string_starts_with(buffer, "/image ") && inf.has_inp_image) ||
-                (string_starts_with(buffer, "/audio ") && inf.has_inp_audio) ||
-                (string_starts_with(buffer, "/video ") && inf.has_inp_video)) {
+                (string_starts_with(buffer, "/audio ") && inf.has_inp_audio)) {
             // just in case (bad copy-paste for example), we strip all trailing/leading spaces
             std::string fname = string_strip(buffer.substr(7));
             std::string marker = ctx_cli.load_input_file(fname, true);

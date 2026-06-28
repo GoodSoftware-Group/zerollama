@@ -12,16 +12,21 @@ from runtime.llama_cpp_probe import (
 )
 
 
-def test_default_llama_cpp_root_is_sibling():
+def test_default_llama_cpp_root_prefers_vendor():
+    repo = Path(__file__).resolve().parents[2]
+    pin = pinned_llama_cpp_version(repo)
+    vendor = repo / "vendor" / f"llama-cpp-{pin}"
     root = default_llama_cpp_root()
-    assert root.name == "llama.cpp"
-    assert root.parent.name == "inference" or root.parent.exists()
+    if (vendor / "CMakeLists.txt").is_file():
+        assert root == vendor.resolve()
+    else:
+        assert root.name == "llama.cpp"
 
 
 def test_pinned_version_from_repo():
     pin = pinned_llama_cpp_version()
     assert pin is not None
-    assert pin.startswith("b")
+    assert pin.startswith("c84b3020")
 
 
 def test_read_cmake_cache_bool(tmp_path: Path):
@@ -35,7 +40,7 @@ def test_read_cmake_cache_bool(tmp_path: Path):
 def test_probe_llama_cpp_local_checkout():
     info = probe_llama_cpp()
     assert info["present"] is True
-    assert info["root"].endswith("llama.cpp")
+    assert "llama.cpp" in info["root"] or "llama-cpp-" in info["root"]
     assert info["pin_file"] is not None
     assert info["git_describe"] is not None
     assert "epoch_bind_status" in info

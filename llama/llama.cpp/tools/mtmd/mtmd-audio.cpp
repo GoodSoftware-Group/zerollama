@@ -684,11 +684,11 @@ bool mtmd_audio_preprocessor_qwen3a::preprocess(const float *                 sa
     const int n_eff = std::min(mel_full.n_len,
                                (int)(n_samples / hparams.audio_hop_len) + 1);
 
-    // Split into inference windows matching n_window_infer=800 from model config.
-    // Each window is padded to the next multiple of chunk_size for the cgraph.
+    // Split into ≤30s windows (3000 mel frames at hop=160, sr=16000).
+    // Each window is padded to the next multiple of 200 frames for the cgraph.
     // The mtmd caller loops over output entries, so long audio is handled automatically.
-    const int chunk_size  = 100; // conv sub-chunk size (n_window * 2, n_window=50)
-    const int window_size = 800; // mel frames per forward pass (n_window_infer=800)
+    const int chunk_size  = 200;  // conv sub-chunk size (n_window * 2)
+    const int window_size = 3000; // max frames per forward pass (~30s)
 
     for (int off = 0; off < n_eff; off += window_size) {
         const int win_eff    = std::min(window_size, n_eff - off);
@@ -939,44 +939,6 @@ bool mtmd_audio_preprocessor_gemma4a::preprocess(const float *                 s
         output.push_back(std::move(out_chunk));
     }
 
-    return true;
-}
-
-//
-// mtmd_audio_preprocessor_gemma4ua
-//
-
-void mtmd_audio_preprocessor_gemma4ua::initialize() {
-    // no-op: no FFT or filterbank needed
-}
-
-bool mtmd_audio_preprocessor_gemma4ua::preprocess(const float *                 samples,
-                                                   size_t                        n_samples,
-                                                   std::vector<mtmd_audio_mel> & output) {
-    if (n_samples == 0) {
-        return false;
-    }
-
-    const int frame_size = hparams.n_mel_bins; // 640 samples per token @ 16 kHz = 40 ms
-    const int n_tokens   = ((int)n_samples + frame_size - 1) / frame_size;
-
-    mtmd_audio_mel mel;
-    mel.n_len     = n_tokens;
-    mel.n_len_org = n_tokens;
-    mel.n_mel     = frame_size;
-    mel.data.assign((size_t)frame_size * n_tokens, 0.0f);
-
-    // Store mel-major (data[f * n_tokens + t]) so the ggml tensor loads as
-    // [n_tokens, frame_size] with ne[0]=n_tokens, ne[1]=frame_size.
-    // The graph builder transposes before RMSNorm so normalization is over frame_size.
-    for (int t = 0; t < n_tokens; t++) {
-        for (int f = 0; f < frame_size; f++) {
-            size_t src = (size_t)t * frame_size + f;
-            mel.data[(size_t)f * n_tokens + t] = (src < n_samples) ? samples[src] : 0.0f;
-        }
-    }
-
-    output.push_back(std::move(mel));
     return true;
 }
 

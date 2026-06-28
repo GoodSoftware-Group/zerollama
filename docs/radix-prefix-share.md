@@ -1,0 +1,172 @@
+# Cross-slot Radix prefix share (L3)
+
+**Audience:** Operators running multi-session agent workloads with L3 prompt cache (`-np > 1`).
+
+**Related:** [gpu-profiles-l3.md](./gpu-profiles-l3.md), [vllm-borrowings.md](./vllm-borrowings.md), [decode-graph-invalidation.md](./decode-graph-invalidation.md), [phase17-llama-server.md](./phase17-llama-server.md).
+
+---
+
+## Why this exists
+
+### The problem L3 creates for shared system prompts
+
+L3 maps each `prompt_cache_key` to a **fixed llama-server slot** via `SHA256(key) mod n_parallel`. That design is intentional: one agent thread always lands on the same slot so turn 2+ can skip repeat prefill.
+
+Two different agents with the **same system prompt** but **different cache keys** hash to **different slots**. Without cross-slot sharing, each cold slot pays full prefill even when another slot already holds identical prefix KV.
+
+vLLM’s **RadixAttention** solves this with a content-addressed block pool and ref-counted KV blocks across requests. Zerollama ports a **narrow v1**: hash-chained prefix blocks + one donor slot → one target slot KV seed before decode.
+
+### Why not full RadixAttention yet
+
+| Full Radix (deferred) | Zerollama v1 (shipped) |
+|-----------------------|-------------------------|
+| Ref-counted block DAG across arbitrary request overlap | Single contiguous donor chain per target |
+| Remote LMCache / Mooncake tiers | Local `file://` metadata tier only |
+| Partial block copy on all memory types | Full-sequence `seq_cp` on llama-server; hybrid memory skipped in engine |
+
+**Why v1 is enough for agents:** most agent fleets repeat one large system prompt across many conversation IDs. Donor→target seed removes the dominant prefill cost without a full scheduler rewrite.
+
+---
+
+## Architecture
+
+```text
+Turn 1 — Agent A (key A → slot 0)
+  prefill → complete → register_prefix_block_pool(slot=0)
+
+Turn 2 — Agent B (key B → slot 2), same token prefix, cold slot
+  prefix_cache_admission()
+        │
+        ├─ prefix_block_pool.find_donor_slot_prefix() → donor slot 0
+        ├─ execute_radix_share_plan() → llama_memory_seq_cp or POST /kv/seq-copy
+        ├─ bump_decode_graph_epoch(target, reason=radix_cross_slot_seed)
+        ├─ record_radix_share() → JSONL trace event radix_seed
+        └─ resume_pos = copy_tokens → decode only the suffix
+```
+
+**WHY block pool first:** Radix seed without hash verification would copy stale KV when the client silently changes the system prompt. The pool denies `cache_prompt` on `prefix_block_hash_mismatch` before any cross-slot copy is considered.
+
+**WHY decode-graph bump after copy:** ggml CUDA graphs key by topology, not sequence id. Seeding slot 2 from slot 0 changes KV without clearing captured graphs → wrong logits on CUDA. See [decode-graph-invalidation.md](./decode-graph-invalidation.md).
+
+---
+
+## Enable
+
+**One-liner (agents):** `ZEROLLAMA_L3_PROFILE=agent` loads `runtime/configs/l3_agent_subprocess.yaml` (`n_parallel=4`, `l3.radix_share=true`). Env overrides any YAML field. Live smoke: `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh`.
+
+| Variable | Default | WHY |
+|----------|---------|-----|
+| `ZEROLLAMA_RADIX_PREFIX_SHARE` | `0` | Master switch; auto-enables prefix block pool |
+| `ZEROLLAMA_PREFIX_BLOCK_POOL` | `0` (or implied by radix) | Hash-chained block index + verification |
+| `ZEROLLAMA_PREFIX_CACHE_BLOCK_SIZE` | `512` | Block granularity; use `64` in smokes so short prompts register blocks |
+| `ZEROLLAMA_PREFIX_CACHE_TRACE` | off | Records `radix_seed` JSONL events |
+| `ZEROLLAMA_LMCACHE_TIER` | `0` | Optional `file://` metadata tier (not remote LMCache) |
+
+**Prerequisites:**
+
+1. L3 enabled (`ZEROLLAMA_LLAMA_CACHE=1`).
+2. **`n_parallel > 1`** (L1 GPU profile or YAML `llama_parallel_slots`).
+3. **Patched vendor llama-server** with `POST /kv/seq-copy` (subprocess path). **WHY vendor, not bare sibling `../llama.cpp`:** seq-copy ships in zerollama patch **0017** on the pinned vendor tree only.
+
+```bash
+# Rebuild from vendor (not sibling unless patched)
+LLAMA_CPP_ROOT=vendor/llama-cpp-$(grep FETCH_HEAD= Makefile.sync | cut -d= -f2) \
+  ./scripts/build_llama_server.sh
+```
+
+4. Runtime must use that binary — live smoke forces `LLAMA_CPP_ROOT` to vendor (ignores stale shell `LLAMA_CPP_ROOT=../llama.cpp`).
+
+---
+
+## Subprocess endpoint (`POST /kv/seq-copy`)
+
+**Body:** `{"src_slot": 0, "dst_slot": 2, "pos_end": 128}`
+
+| Field | Role |
+|-------|------|
+| `src_slot` | Donor llama sequence id (pinned session with prefix KV) |
+| `dst_slot` | Cold target sequence id |
+| `pos_end` | Tokens copied (metadata; server uses full-sequence copy internally — **WHY:** partial `p1` aborts on several KV backends) |
+
+**Response:** `{"ok": true, "src_slot": 0, "id_slot": 2, "pos_end": N, "n_tokens_copied": M}`
+
+Patch: `llama/patches/0017-ollama-kv-seq-copy-endpoint.patch`
+
+Probe (endpoint exists, no KV mutation):
+
+```bash
+curl -s -X POST http://127.0.0.1:8082/kv/seq-copy \
+  -H 'Content-Type: application/json' -d '{}'
+# 400 = route present; 404 = rebuild llama-server
+```
+
+---
+
+## Health and trace
+
+```bash
+curl -s :8081/health | jq '.llama_cache.prefix_block_pool, .kv_resume.prefix_block_pool'
+```
+
+| Field | Meaning |
+|-------|---------|
+| `prefix_block_pool.enabled` | Block index active |
+| `prefix_block_pool.entry_count` | Registered hash blocks |
+| `prefix_block_pool.radix_share.enabled` | Radix env gate |
+| `llama_cpp_unified.llama_server_bin` | Must point at **vendor** build for subprocess |
+
+**Trace (`ZEROLLAMA_PREFIX_CACHE_TRACE=1`):**
+
+| Event | When |
+|-------|------|
+| `cache_decision` | Policy admit (before decode) |
+| `radix_seed` | After successful cross-slot copy |
+
+`radix_seed` fields: `radix_source_slot`, `radix_copy_tokens`, `resume_pos`, `id_slot` (target).
+
+---
+
+## Hybrid / recurrent models
+
+**WHY skip:** `llama_memory_seq_cp` on hybrid/recurrent layouts (e.g. some LFM2 paths) can abort or corrupt logits. The engine returns `{"skipped": "hybrid_memory_seq_cp_unsupported"}` when `KVCacheSpec.kind == hybrid`.
+
+Block pool verification still runs; only the KV seed step is skipped. Use a **full-KV transformer** GGUF to gate `radix_seed` in live smokes.
+
+---
+
+## Smoke and CI
+
+| Script | Mode |
+|--------|------|
+| `./scripts/l3_radix_prefix_smoke.sh` | Offline pytest + plan replay (no GPU) |
+| `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` | Two-key live gate (donor + target slots, block pool + `radix_seed`) |
+| `./scripts/l3_prefix_block_pool_smoke.sh` | Block pool policy only |
+| `./scripts/l3_cache_smoke.sh` | Same-key L3 slot pinning |
+
+Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, probes `/kv/seq-copy` after donor generate.
+
+---
+
+## Code map
+
+| Path | Role |
+|------|------|
+| `runtime/runtime/kv/radix_prefix_share.py` | Donor plan from block pool |
+| `runtime/runtime/kv/radix_seq_copy.py` | in-process ctypes + subprocess HTTP |
+| `runtime/runtime/kv/prefix_block_pool.py` | Hash chain + `find_donor_slot_prefix()` |
+| `runtime/runtime/engine.py` | `_prefix_cache_admission()` → `_apply_radix_prefix_share()` |
+| `runtime/runtime/prefix_cache_trace.py` | `record_radix_share()` |
+| `runtime/runtime/subprocess_slot_state.py` | `seed_seq_pos()` after subprocess copy |
+| `llama/patches/0017-ollama-kv-seq-copy-endpoint.patch` | llama-server route |
+| `scripts/l3_radix_prefix_smoke.sh` | Operator gate |
+
+---
+
+## Deferred
+
+| Item | WHY deferred |
+|------|----------------|
+| Full RadixAttention ref-count pool | Needs scheduler + block DAG; v1 proves donor seed value |
+| Remote LMCache / Mooncake | Local `file://` tier only today |
+| Partial-range seq_cp on hybrid memory | Upstream llama.cpp assert on non-full buffers |
+| In-process multiseq + LFM2 Radix | Metal crash on partial copy; prefer subprocess + full-KV models |

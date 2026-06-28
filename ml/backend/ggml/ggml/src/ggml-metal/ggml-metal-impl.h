@@ -24,6 +24,10 @@
 #define N_R0_Q1_0 8
 #define N_SG_Q1_0 2
 
+#define N_R0_Q1_0_g128 4
+#define N_SG_Q1_0_g128 2
+
+
 #define N_R0_Q4_0 4
 #define N_SG_Q4_0 2
 
@@ -41,6 +45,9 @@
 
 #define N_R0_MXFP4 2
 #define N_SG_MXFP4 2
+
+#define N_R0_NVFP4 2
+#define N_SG_NVFP4 2
 
 #define N_R0_Q2_K 4
 #define N_SG_Q2_K 2
@@ -104,6 +111,7 @@
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
+#define OP_FLASH_ATTN_EXT_NQPSG_16 16
 #define OP_FLASH_ATTN_EXT_NCPSG 64
 
 #define OP_FLASH_ATTN_EXT_VEC_NQPSG 1
@@ -647,6 +655,34 @@ typedef struct {
 } ggml_metal_kargs_conv_2d;
 
 typedef struct {
+    uint64_t nb00;  // kernel strides
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb10;  // input strides
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    uint64_t nb0;   // output strides
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+    int32_t  IW;    // input width
+    int32_t  IH;    // input height
+    int32_t  KW;    // kernel width
+    int32_t  KH;    // kernel height
+    int32_t  C;     // channels (IC == OC for depthwise)
+    int32_t  OW;    // output width
+    int32_t  OH;    // output height
+    int32_t  N;     // batch size
+    int32_t  s0;    // stride x
+    int32_t  s1;    // stride y
+    int32_t  p0;    // padding x
+    int32_t  p1;    // padding y
+    int32_t  d0;    // dilation x
+    int32_t  d1;    // dilation y
+} ggml_metal_kargs_conv_2d_dw;
+
+typedef struct {
     uint64_t  ofs0;
     uint64_t  ofs1;
     int32_t  IW;
@@ -1058,6 +1094,17 @@ typedef struct {
     int      dim;
     int      max_period;
 } ggml_metal_kargs_timestep_embedding;
+
+// # ELIZA-ISTFT-DISPATCH-V1 — kargs for GGML_OP_ISTFT (must mirror IstftParams
+// in eliza-shipped/istft.metal).
+typedef struct {
+    uint32_t n_fft;
+    uint32_t hop_length;
+    uint32_t win_length;
+    uint32_t T;
+    uint32_t n_out;
+    uint32_t use_window;
+} ggml_metal_kargs_istft;
 
 typedef struct {
     int32_t  ne00;

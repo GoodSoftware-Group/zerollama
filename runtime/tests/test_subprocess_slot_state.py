@@ -21,6 +21,17 @@ def test_seq_pos_missing_timings():
     assert seq_pos_from_llama_result({"content": "x"}) is None
 
 
+def test_seed_seq_pos_before_completion():
+    state = SubprocessSlotState()
+    state.seed_seq_pos(4, 512)
+    assert state.seq_pos(4) == 512
+    state.record_completion(
+        4,
+        {"timings": {"cache_n": 512, "prompt_n": 100, "predicted_n": 8}},
+    )
+    assert state.seq_pos(4) == 620
+
+
 def test_subprocess_slot_state_tracks_per_slot():
     state = SubprocessSlotState()
     assert state.seq_pos(2) is None

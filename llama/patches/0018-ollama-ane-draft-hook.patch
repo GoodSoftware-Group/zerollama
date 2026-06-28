@@ -1,0 +1,1735 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 28 Jun 2026 02:07:34 -0700
+Subject: [PATCH] =?UTF-8?q?ollama:=20ANE=20in-process=20dflash=20draft=20h?=
+ =?UTF-8?q?ook=20(B1=E2=80=93B7=20lab)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In-process ANE session, ggml IOSurface handoff, sidecar conv proxy,
+optional B7 tied-embed drive (shadow/force). Lab port only.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ common/CMakeLists.txt                   |  32 ++
+ common/ane_draft_hook.cpp               | 656 ++++++++++++++++++++++++
+ common/ane_draft_hook.h                 |  35 ++
+ common/ane_draft_session.h              |  47 ++
+ common/ane_draft_session.mm             | 500 ++++++++++++++++++
+ common/ane_draft_session_stub.cpp       |  52 ++
+ common/ane_iosurface_map.h              |  49 ++
+ common/speculative.cpp                  |  40 +-
+ ggml/include/ggml-metal.h               |   7 +
+ ggml/src/ggml-metal/CMakeLists.txt      |   2 +
+ ggml/src/ggml-metal/ggml-metal-device.h |   1 +
+ ggml/src/ggml-metal/ggml-metal-device.m |  41 ++
+ ggml/src/ggml-metal/ggml-metal.cpp      |  38 ++
+ 13 files changed, 1497 insertions(+), 3 deletions(-)
+ create mode 100644 common/ane_draft_hook.cpp
+ create mode 100644 common/ane_draft_hook.h
+ create mode 100644 common/ane_draft_session.h
+ create mode 100644 common/ane_draft_session.mm
+ create mode 100644 common/ane_draft_session_stub.cpp
+ create mode 100644 common/ane_iosurface_map.h
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index c42320c..824eb07 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -56,6 +56,8 @@ set(TARGET llama-common)
+ add_library(${TARGET}
+     arg.cpp
+     arg.h
++    ane_draft_hook.cpp
++    ane_draft_hook.h
+     base64.hpp
+     chat-auto-parser-generator.cpp
+     chat-auto-parser-helpers.cpp
+@@ -172,3 +174,33 @@ if (LLAMA_LLGUIDANCE)
+ endif()
+ 
+ target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
++# B1: in-process ANE draft session (Darwin + libane_bridge only).
++set(_ZEROLLAMA_ANE_REPO "$ENV{HOME}/Sites/inference/ane")
++if (DEFINED ENV{ANE_REPO})
++    set(_ZEROLLAMA_ANE_REPO "$ENV{ANE_REPO}")
++endif()
++set(_ZEROLLAMA_ANE_BRIDGE "${_ZEROLLAMA_ANE_REPO}/bridge/libane_bridge.dylib")
++
++if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
++    target_sources(${TARGET} PRIVATE
++        ane_draft_session.mm
++        ane_draft_session.h
++        ane_iosurface_map.h)
++    target_compile_definitions(${TARGET} PRIVATE LLAMA_ANE_DRAFT_SESSION=1)
++    target_include_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
++    target_link_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
++    target_link_libraries(${TARGET} PRIVATE
++        ane_bridge
++        "-framework Foundation"
++        "-framework IOSurface"
++        "-framework Metal")
++    message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
++else()
++    target_sources(${TARGET} PRIVATE
++        ane_draft_session_stub.cpp
++        ane_draft_session.h)
++    if (APPLE)
++        message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
++    endif()
++endif()
++
+diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
+new file mode 100644
+index 0000000..e6b1586
+--- /dev/null
++++ b/common/ane_draft_hook.cpp
+@@ -0,0 +1,656 @@
++// ANE dflash draft hook — packs Metal draft activations into in-process ANE IOSurface (lab).
++// See docs/ane-draft-inprocess.md. Env-gated: ZEROLLAMA_ANE_DRAFT=1 (default off).
++#include "ane_draft_hook.h"
++
++#include "ane_draft_session.h"
++#include "log.h"
++
++#include "ggml-backend.h"
++#include "llama.h"
++#include "../src/llama-ext.h"
++
++#if defined(__APPLE__)
++#include "ggml-metal.h"
++#endif
++
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#if defined(__APPLE__)
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++static bool env_truthy(const char * v) {
++    if (!v || !v[0]) {
++        return false;
++    }
++    return strcmp(v, "1") == 0 ||
++           strcmp(v, "true") == 0 ||
++           strcmp(v, "yes") == 0 ||
++           strcmp(v, "on") == 0;
++}
++
++static int env_int_or(const char * name, int def) {
++    const char * v = std::getenv(name);
++    if (!v || !v[0]) {
++        return def;
++    }
++    return std::atoi(v);
++}
++
++bool common_ane_draft_enabled() {
++    return env_truthy(std::getenv("ZEROLLAMA_ANE_DRAFT"));
++}
++
++static bool ane_draft_telemetry_enabled() {
++    return env_truthy(std::getenv("ZEROLLAMA_ANE_DRAFT_TELEMETRY"));
++}
++
++static int ane_handoff_stride() {
++    const int s = env_int_or("ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE", 1);
++    return s > 0 ? s : 1;
++}
++
++common_ane_draft_drive_mode common_ane_draft_get_drive_mode() {
++    const char * v = std::getenv("ZEROLLAMA_ANE_DRAFT_DRIVE");
++    if (!v || !v[0]) {
++        return COMMON_ANE_DRAFT_DRIVE_OFF;
++    }
++    if (strcmp(v, "shadow") == 0) {
++        return COMMON_ANE_DRAFT_DRIVE_SHADOW;
++    }
++    if (strcmp(v, "force") == 0 || env_truthy(v)) {
++        return COMMON_ANE_DRAFT_DRIVE_FORCE;
++    }
++    return COMMON_ANE_DRAFT_DRIVE_OFF;
++}
++
++#if defined(__APPLE__)
++static float fp16_bits_to_float32(uint16_t h);
++
++static std::atomic<bool> g_ane_output_ready { false };
++static std::atomic<int>  g_handoff_step { 0 };
++#endif
++
++void common_ane_draft_reset_handoff(void) {
++#if defined(__APPLE__)
++    g_ane_output_ready.store(false);
++    g_handoff_step.store(0);
++#endif
++}
++
++#if defined(__APPLE__)
++struct ane_drive_head {
++    const uint16_t * embed_fp16 = nullptr;
++    const float    * out_norm   = nullptr;
++    size_t           embed_bytes = 0;
++    int              n_embd      = 0;
++    int              n_vocab     = 0;
++    void *           embed_map   = nullptr;
++    size_t           embed_map_sz = 0;
++    std::vector<float> out_norm_owned;
++    bool             ok = false;
++};
++
++static ane_drive_head g_drive_head;
++
++static bool drive_head_load(const char * embd_path, const char * norm_path) {
++    if (!embd_path || !embd_path[0]) {
++        LOG_WRN("%s: TOKEN_EMBD_FILE missing\n", __func__);
++        return false;
++    }
++    if (g_drive_head.ok) {
++        return true;
++    }
++
++    const int n_embd  = env_int_or("ZEROLLAMA_ANE_DRAFT_N_EMBD", 0);
++    const int n_vocab = env_int_or("ZEROLLAMA_ANE_DRAFT_N_VOCAB", 0);
++    if (n_embd <= 0 || n_vocab <= 0) {
++        LOG_WRN("%s: N_EMBD/N_VOCAB env missing (need ZEROLLAMA_ANE_DRAFT_N_EMBD/N_VOCAB)\n", __func__);
++        return false;
++    }
++
++    const int fd = open(embd_path, O_RDONLY);
++    if (fd < 0) {
++        return false;
++    }
++    struct stat st {};
++    if (fstat(fd, &st) != 0 || st.st_size <= 16) {
++        close(fd);
++        return false;
++    }
++    void * map = mmap(nullptr, (size_t) st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
++    close(fd);
++    if (map == MAP_FAILED) {
++        return false;
++    }
++    const uint8_t * hdr = (const uint8_t *) map;
++    if (memcmp(hdr, "ZANE1", 5) != 0) {
++        LOG_WRN("%s: embed magic mismatch\n", __func__);
++        munmap(map, (size_t) st.st_size);
++        return false;
++    }
++    const size_t payload = (size_t) st.st_size - 16;
++    const size_t need = (size_t) n_embd * (size_t) n_vocab * 2;
++    if (payload < need) {
++        LOG_WRN("%s: embed size %zu < need %zu\n", __func__, payload, need);
++        munmap(map, (size_t) st.st_size);
++        return false;
++    }
++
++    g_drive_head.embed_map    = map;
++    g_drive_head.embed_map_sz = (size_t) st.st_size;
++    g_drive_head.embed_fp16   = (const uint16_t *) (hdr + 16);
++    g_drive_head.embed_bytes  = need;
++    g_drive_head.n_embd       = n_embd;
++    g_drive_head.n_vocab      = n_vocab;
++
++    if (norm_path && norm_path[0]) {
++        FILE * nf = std::fopen(norm_path, "rb");
++        if (nf) {
++            g_drive_head.out_norm_owned.resize((size_t) n_embd);
++            const size_t nread = std::fread(g_drive_head.out_norm_owned.data(), sizeof(float), (size_t) n_embd, nf);
++            std::fclose(nf);
++            if (nread == (size_t) n_embd) {
++                g_drive_head.out_norm = g_drive_head.out_norm_owned.data();
++            }
++        }
++    }
++
++    g_drive_head.ok = true;
++    LOG_INF("%s: B7 drive head loaded n_embd=%d n_vocab=%d embed=%s norm=%s\n",
++            __func__, n_embd, n_vocab, embd_path, norm_path && norm_path[0] ? norm_path : "(none)");
++    return true;
++}
++
++static void drive_apply_rms_norm(std::vector<float> & h, const float * norm_w, float eps) {
++    double sumsq = 0.0;
++    for (float v : h) {
++        sumsq += (double) v * (double) v;
++    }
++    const float rms = (float) std::sqrt(sumsq / (double) h.size() + (double) eps);
++    if (rms <= 0.f) {
++        return;
++    }
++    for (size_t i = 0; i < h.size(); ++i) {
++        h[i] = h[i] / rms * (norm_w ? norm_w[i] : 1.f);
++    }
++}
++
++static llama_token drive_argmax_tied(const std::vector<float> & h) {
++    if (!g_drive_head.ok || !g_drive_head.embed_fp16) {
++        return 0;
++    }
++    const int n_embd  = g_drive_head.n_embd;
++    const int n_vocab = g_drive_head.n_vocab;
++    const uint16_t * W = g_drive_head.embed_fp16;
++
++    llama_token best_id = 0;
++    double best_logit = -INFINITY;
++
++    int n_vocab_scan = n_vocab;
++    const int cap_default = (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) ? 8192 : 0;
++    if (const int cap = env_int_or("ZEROLLAMA_ANE_DRAFT_DRIVE_VOCAB_CAP", cap_default); cap > 0 && cap < n_vocab_scan) {
++        n_vocab_scan = cap;
++    }
++
++    constexpr int k_chunk = 4096;
++    for (int v0 = 0; v0 < n_vocab_scan; v0 += k_chunk) {
++        const int vend = v0 + k_chunk < n_vocab_scan ? v0 + k_chunk : n_vocab_scan;
++        for (int v = v0; v < vend; ++v) {
++            double dot = 0.0;
++            for (int e = 0; e < n_embd; ++e) {
++                const uint16_t bits = W[(size_t) e * (size_t) n_vocab + (size_t) v];
++                dot += (double) h[(size_t) e] * (double) fp16_bits_to_float32(bits);
++            }
++            if (dot > best_logit) {
++                best_logit = dot;
++                best_id = (llama_token) v;
++            }
++        }
++    }
++    return best_id;
++}
++
++bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t /*i_batch*/, llama_token * out_id, float * out_p) {
++    if (!out_id || !out_p || !common_ane_draft_enabled()) {
++        return false;
++    }
++    if (common_ane_draft_get_drive_mode() == COMMON_ANE_DRAFT_DRIVE_OFF) {
++        return false;
++    }
++    if (!g_ane_output_ready.load() || !ane_draft_session_ready()) {
++        LOG_DBG("%s: ANE output not ready\n", __func__);
++        return false;
++    }
++
++    const char * embd_path = std::getenv("ZEROLLAMA_ANE_DRAFT_TOKEN_EMBD_FILE");
++    const char * norm_path = std::getenv("ZEROLLAMA_ANE_DRAFT_OUTPUT_NORM_FILE");
++    if (!drive_head_load(embd_path, norm_path)) {
++        return false;
++    }
++
++    const int ch = ane_draft_session_channels();
++    const int sp = ane_draft_session_spatial();
++    const size_t nfloats = (size_t) ch * (size_t) sp;
++    std::vector<float> ane_out(nfloats);
++    if (ane_draft_session_read_output(ane_out.data(), nfloats) == 0) {
++        return false;
++    }
++
++    const int n_embd = g_drive_head.n_embd;
++    std::vector<float> h((size_t) n_embd, 0.f);
++    for (int c = 0; c < ch && c < n_embd; ++c) {
++        double sum = 0.0;
++        for (int s = 0; s < sp; ++s) {
++            sum += (double) ane_out[(size_t) c * (size_t) sp + (size_t) s];
++        }
++        h[(size_t) c] = (float) (sum / (double) (sp > 0 ? sp : 1));
++    }
++
++    const float eps = 1e-6f;
++    drive_apply_rms_norm(h, g_drive_head.out_norm, eps);
++
++    const llama_token id = drive_argmax_tied(h);
++    *out_id = id;
++    *out_p  = 0.95f; // lab proxy confidence — not full softmax over vocab
++    GGML_UNUSED(ctx_dft);
++    return true;
++}
++#else
++bool common_ane_draft_try_drive_token(struct llama_context *, int32_t, llama_token *, float *) {
++    return false;
++}
++#endif
++
++#if defined(__APPLE__)
++static float fp16_bits_to_float32(uint16_t h) {
++    const uint32_t sign = (uint32_t) (h & 0x8000) << 16;
++    const uint32_t exp  = (h >> 10) & 0x1f;
++    const uint32_t mant = h & 0x3ff;
++    if (exp == 0) {
++        if (mant == 0) {
++            return sign ? -0.f : 0.f;
++        }
++        const float f = (float) mant / 1024.f * std::pow(2.f, -14.f);
++        return sign ? -f : f;
++    }
++    if (exp == 31) {
++        if (mant) {
++            return std::nanf("");
++        }
++        return sign ? -INFINITY : INFINITY;
++    }
++    const float f = std::ldexp(1.f + (float) mant / 1024.f, (int) exp - 15);
++    return sign ? -f : f;
++}
++
++static bool load_gamma_scales(const char * path, int channels, std::vector<float> & out);
++
++static bool load_conv_golden_weights(const char * path, int ch, std::vector<float> & W) {
++    if (!path || !path[0] || ch <= 0) {
++        return false;
++    }
++    FILE * f = std::fopen(path, "rb");
++    if (!f) {
++        return false;
++    }
++    const size_t expected = 64 + 64 + (size_t) ch * (size_t) ch * 2;
++    std::fseek(f, 0, SEEK_END);
++    const long sz = std::ftell(f);
++    std::rewind(f);
++    if (sz < 0 || (size_t) sz != expected) {
++        std::fclose(f);
++        return false;
++    }
++    std::vector<uint8_t> buf(expected);
++    if (std::fread(buf.data(), 1, expected, f) != expected) {
++        std::fclose(f);
++        return false;
++    }
++    std::fclose(f);
++
++    W.resize((size_t) ch * (size_t) ch);
++    const uint8_t * fp16 = buf.data() + 128;
++    for (int oc = 0; oc < ch; ++oc) {
++        for (int ic = 0; ic < ch; ++ic) {
++            const size_t idx = (size_t) oc * (size_t) ch + (size_t) ic;
++            uint16_t bits = (uint16_t) fp16[idx * 2] | ((uint16_t) fp16[idx * 2 + 1] << 8);
++            W[idx] = fp16_bits_to_float32(bits);
++        }
++    }
++    return true;
++}
++
++static void conv_golden_reference(const float * input, int ch, const std::vector<float> & W, std::vector<float> & ref) {
++    ref.assign((size_t) ch, 0.f);
++    if (!input || (int) W.size() < ch * ch) {
++        return;
++    }
++    for (int oc = 0; oc < ch; ++oc) {
++        double sum = 0.0;
++        for (int ic = 0; ic < ch; ++ic) {
++            sum += (double) W[(size_t) oc * (size_t) ch + (size_t) ic] * (double) input[ic];
++        }
++        ref[(size_t) oc] = (float) sum;
++    }
++}
++
++static void log_ane_golden_telemetry(const float * input, int ch, int sp, int step) {
++    if (!ane_draft_telemetry_enabled() || !input || ch <= 0 || sp <= 0) {
++        return;
++    }
++
++    static std::vector<float> golden_w;
++    static std::vector<float> golden_w2;
++    static std::atomic<bool> golden_loaded { false };
++    static std::atomic<bool> golden_ok { false };
++    if (!golden_loaded.exchange(true)) {
++        const char * wpath = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE");
++        golden_ok.store(load_conv_golden_weights(wpath, ch, golden_w));
++        const char * w2path = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2");
++        if (w2path && w2path[0]) {
++            golden_ok.store(golden_ok.load() && load_conv_golden_weights(w2path, ch, golden_w2));
++        }
++    }
++    if (!golden_ok.load()) {
++        return;
++    }
++
++    std::vector<float> ref;
++    std::vector<float> mid;
++    std::vector<float> inp((size_t) ch);
++    for (int c = 0; c < ch; ++c) {
++        inp[(size_t) c] = input[c];
++    }
++    std::vector<float> gamma;
++    const char * gamma_path = std::getenv("ZEROLLAMA_ANE_DRAFT_GAMMA_FILE");
++    if (load_gamma_scales(gamma_path, ch, gamma)) {
++        for (int c = 0; c < ch && c < (int) gamma.size(); ++c) {
++            inp[(size_t) c] *= gamma[(size_t) c];
++        }
++    }
++    conv_golden_reference(inp.data(), ch, golden_w, mid);
++    if (!golden_w2.empty()) {
++        conv_golden_reference(mid.data(), ch, golden_w2, ref);
++    } else {
++        ref = mid;
++    }
++    if (!golden_w2.empty() && !ane_draft_session_using_conv2()) {
++        ref = mid;
++    }
++
++    const size_t out_floats = (size_t) ch * (size_t) sp;
++    std::vector<float> out(out_floats);
++    if (ane_draft_session_read_output(out.data(), out_floats) == 0) {
++        return;
++    }
++
++    double mse = 0.0;
++    double dot_ref = 0.0;
++    double dot_out = 0.0;
++    double dot_cross = 0.0;
++    for (int c = 0; c < ch; ++c) {
++        const float r = ref[(size_t) c];
++        float o_sum = 0.f;
++        for (int s = 0; s < sp; ++s) {
++            o_sum += out[(size_t) c * (size_t) sp + (size_t) s];
++        }
++        const float o = o_sum / (float) sp;
++        mse += (double) (o - r) * (o - r);
++        dot_ref += (double) r * r;
++        dot_out += (double) o * o;
++        dot_cross += (double) r * o;
++    }
++    mse /= ch > 0 ? ch : 1;
++    double cosine = 0.0;
++    if (dot_ref > 0.0 && dot_out > 0.0) {
++        cosine = dot_cross / (std::sqrt(dot_ref) * std::sqrt(dot_out));
++    }
++
++    const char * mode = ane_draft_session_using_conv2() ? "conv2" : "conv1";
++    LOG_INF("%s: B6 golden step=%d mode=%s mse_ref_vs_ane=%.6f cosine=%.4f ane_steps=%d\n",
++            __func__, step, mode, mse, cosine, ane_draft_session_step_count());
++}
++#endif
++
++void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
++    if (!common_ane_draft_enabled()) {
++        return;
++    }
++
++    static std::atomic<bool> logged { false };
++    if (logged.exchange(true)) {
++        return;
++    }
++
++    LOG_INF("%s: ZEROLLAMA_ANE_DRAFT=1 — lab hook active for %s draft (n_embd=%d)\n",
++            __func__,
++            common_speculative_type_to_str(type).c_str(),
++            draft_n_embd);
++
++    if (!ane_draft_session_supported()) {
++        LOG_WRN("%s: in-process ANE session unavailable (build without libane_bridge)\n", __func__);
++        return;
++    }
++
++    const char * weight = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE");
++    const char * gamma  = std::getenv("ZEROLLAMA_ANE_DRAFT_GAMMA_FILE");
++    const int init_ch = env_int_or("ZEROLLAMA_ANE_DRAFT_CHANNELS", 64);
++    const int init_sp = env_int_or("ZEROLLAMA_ANE_DRAFT_SPATIAL", 16);
++
++    if (ane_draft_session_init(init_ch, init_sp, weight, gamma)) {
++        const char * weight2 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2");
++        LOG_INF("%s: in-process ANE session ready channels=%d spatial=%d surface_id=%u bytes=%zu weight=%s weight2=%s gamma=%s\n",
++                __func__,
++                ane_draft_session_channels(),
++                ane_draft_session_spatial(),
++                ane_draft_session_surface_id(),
++                ane_draft_session_surface_bytes(),
++                weight && weight[0] ? weight : "(synthetic)",
++                weight2 && weight2[0] ? weight2 : "(none)",
++                gamma && gamma[0] ? gamma : "(none)");
++        if (ane_draft_session_using_conv2()) {
++            LOG_INF("%s: B6 dual conv1 chain active (WEIGHT_FILE2)\n", __func__);
++        }
++    } else {
++        LOG_WRN("%s: in-process ANE session init failed (channels=%d spatial=%d weight=%s)\n",
++                __func__,
++                init_ch,
++                init_sp,
++                weight && weight[0] ? weight : "(synthetic)");
++    }
++
++    LOG_INF("%s: B6 handoff stride=%d — IOSurface each %d decode step(s); TELEMETRY=1 for golden ref vs ANE\n",
++            __func__, ane_handoff_stride(), ane_handoff_stride());
++
++    const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
++    if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
++        LOG_INF("%s: B7 drive mode=%s — TOKEN_EMBD_FILE + OUTPUT_NORM_FILE for tied-embed argmax\n",
++                __func__,
++                drive == COMMON_ANE_DRAFT_DRIVE_FORCE ? "force" : "shadow");
++    }
++}
++
++#if defined(__APPLE__)
++static bool load_gamma_scales(const char * path, int channels, std::vector<float> & out) {
++    if (!path || !path[0] || channels <= 0) {
++        return false;
++    }
++    static std::vector<float> cached;
++    static std::string cached_path;
++    static int cached_ch = 0;
++    if (cached_path == path && cached_ch == channels && !cached.empty()) {
++        out = cached;
++        return true;
++    }
++    FILE * f = std::fopen(path, "rb");
++    if (!f) {
++        return false;
++    }
++    const size_t expected = 64 + 64 + (size_t) channels * 2;
++    std::fseek(f, 0, SEEK_END);
++    const long sz = std::ftell(f);
++    std::rewind(f);
++    if (sz < 0 || (size_t) sz != expected) {
++        std::fclose(f);
++        return false;
++    }
++    std::vector<uint8_t> buf(expected);
++    if (std::fread(buf.data(), 1, expected, f) != expected) {
++        std::fclose(f);
++        return false;
++    }
++    std::fclose(f);
++    out.resize((size_t) channels);
++    const uint8_t * fp16 = buf.data() + 128;
++    for (int i = 0; i < channels; ++i) {
++        uint16_t bits = (uint16_t) fp16[i * 2] | ((uint16_t) fp16[i * 2 + 1] << 8);
++        out[(size_t) i] = fp16_bits_to_float32(bits);
++    }
++    cached = out;
++    cached_path = path;
++    cached_ch = channels;
++    return true;
++}
++
++static bool pack_draft_hidden_into_iosurface(const float * src, int src_len) {
++    const uint32_t surface_id = ane_draft_session_surface_id();
++    const size_t surface_bytes = ane_draft_session_surface_bytes();
++    const int ch = ane_draft_session_channels();
++    const int sp = ane_draft_session_spatial();
++    if (surface_id == 0 || surface_bytes == 0 || ch <= 0 || sp <= 0 || !src) {
++        return false;
++    }
++
++    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
++    if (!dev) {
++        LOG_WRN("%s: no GPU backend device for iosurface handoff\n", __func__);
++        return false;
++    }
++
++    // Reuse ggml IOSurface map across handoffs — why: alloc/free each step added e2e overhead.
++    struct cached_iosurface_buf {
++        uint32_t sid = 0;
++        size_t bytes = 0;
++        ggml_backend_buffer_t buf = nullptr;
++    };
++    static cached_iosurface_buf cache;
++
++    if (!cache.buf || cache.sid != surface_id || cache.bytes != surface_bytes) {
++        if (cache.buf) {
++            ggml_backend_buffer_free(cache.buf);
++            cache.buf = nullptr;
++        }
++        cache.buf = ggml_backend_dev_buffer_from_iosurface(
++                dev, surface_id, surface_bytes, surface_bytes);
++        cache.sid = surface_id;
++        cache.bytes = surface_bytes;
++    }
++    ggml_backend_buffer_t buf = cache.buf;
++    if (!buf) {
++        LOG_WRN("%s: ggml_backend_dev_buffer_from_iosurface failed surface_id=%u\n", __func__, surface_id);
++        return false;
++    }
++
++    float * dst = (float *) ggml_backend_buffer_get_base(buf);
++    if (!dst) {
++        LOG_WRN("%s: iosurface buffer base is null\n", __func__);
++        return false;
++    }
++
++    // Proxy layout [1, ch, 1, sp]: channel-major; optional B3 sidecar norm gamma scales activations.
++    std::vector<float> gamma;
++    const char * gamma_path = std::getenv("ZEROLLAMA_ANE_DRAFT_GAMMA_FILE");
++    const bool have_gamma = load_gamma_scales(gamma_path, ch, gamma);
++
++    for (int c = 0; c < ch; ++c) {
++        float v = (c < src_len) ? src[c] : 0.f;
++        if (have_gamma && c < (int) gamma.size()) {
++            v *= gamma[(size_t) c];
++        }
++        for (int s = 0; s < sp; ++s) {
++            dst[(size_t) c * (size_t) sp + (size_t) s] = v;
++        }
++    }
++
++    return true;
++}
++#endif
++
++void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32_t i_batch) {
++    if (!common_ane_draft_enabled() || !ane_draft_session_ready() || !ctx_dft) {
++        return;
++    }
++
++    const int step = g_handoff_step.fetch_add(1) + 1;
++    const int stride = ane_handoff_stride();
++    if ((step - 1) % stride != 0) {
++        return;
++    }
++    const bool log_info = step <= 3 || ane_draft_telemetry_enabled();
++
++    const float * emb = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch);
++    if (!emb) {
++        emb = llama_get_embeddings_ith(ctx_dft, i_batch);
++    }
++    if (!emb) {
++        if (log_info) {
++            LOG_WRN("%s: step=%d draft hidden unavailable at i_batch=%d — stub ANE fill\n",
++                    __func__, step, i_batch);
++        }
++        if (ane_draft_session_step_once(0.01f)) {
++            LOG_INF("%s: stub ANE step ok (no draft hidden state)\n", __func__);
++        }
++        return;
++    }
++
++    const int n_embd = llama_model_n_embd(llama_get_model(ctx_dft));
++
++#if defined(__APPLE__)
++    if (!pack_draft_hidden_into_iosurface(emb, n_embd)) {
++        if (log_info) {
++            LOG_WRN("%s: step=%d iosurface pack failed — stub ANE fill\n", __func__, step);
++        }
++        if (ane_draft_session_step_once(0.01f)) {
++            LOG_INF("%s: stub ANE step ok after handoff failure\n", __func__);
++        }
++        return;
++    }
++
++    if (!ane_draft_session_eval()) {
++        LOG_WRN("%s: step=%d ANE eval failed after ggml iosurface handoff\n", __func__, step);
++        return;
++    }
++
++    g_ane_output_ready.store(true);
++
++    log_ane_golden_telemetry(emb, ane_draft_session_channels(), ane_draft_session_spatial(), step);
++
++    if (log_info) {
++        LOG_INF("%s: step=%d ggml iosurface handoff ok — n_embd=%d surface %ux%u%s, eval ok\n",
++                __func__,
++                step,
++                n_embd,
++                (unsigned) ane_draft_session_channels(),
++                (unsigned) ane_draft_session_spatial(),
++                (std::getenv("ZEROLLAMA_ANE_DRAFT_GAMMA_FILE") ? " (sidecar gamma)" : ""));
++    } else {
++        LOG_DBG("%s: step=%d handoff+eval ok\n", __func__, step);
++    }
++#else
++    GGML_UNUSED(step);
++    GGML_UNUSED(log_info);
++    GGML_UNUSED(emb);
++    GGML_UNUSED(n_embd);
++    LOG_WRN("%s: handoff skipped (not Apple platform)\n", __func__);
++#endif
++}
+diff --git a/common/ane_draft_hook.h b/common/ane_draft_hook.h
+new file mode 100644
+index 0000000..ec36250
+--- /dev/null
++++ b/common/ane_draft_hook.h
+@@ -0,0 +1,35 @@
++#pragma once
++
++#include "speculative.h"
++
++struct llama_context;
++
++// Lab-only hooks for ZEROLLAMA_ANE_DRAFT hybrid draft-on-ANE research (see docs/ane-draft-inprocess.md).
++//
++// Why default off: production dflash must not pay ANE map+eval overhead or depend on libane_bridge
++// until B7 routes draft tokens from ANE. IOSurface handoff requires same PID as ane_draft_session.
++//
++// Why pre-norm handoff: draft hidden state before norm matches sidecar proxy extract geometry;
++// post-norm/logits path is the wrong tensor for conv MIL input.
++
++bool common_ane_draft_enabled();
++
++void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd);
++
++// After each draft-model decode: pack hidden state into ANE IOSurface via ggml map + eval.
++// B5: called on every draft decode step (not once). B7: optional drive samples token from ANE output.
++void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32_t i_batch);
++
++// B7 lab: reset per draft() call handoff counter and cached ANE output state.
++void common_ane_draft_reset_handoff(void);
++
++enum common_ane_draft_drive_mode {
++    COMMON_ANE_DRAFT_DRIVE_OFF    = 0,
++    COMMON_ANE_DRAFT_DRIVE_SHADOW = 1, // log ANE vs Metal token; still sample Metal
++    COMMON_ANE_DRAFT_DRIVE_FORCE  = 2, // use ANE tied-embed argmax token when ready
++};
++
++enum common_ane_draft_drive_mode common_ane_draft_get_drive_mode(void);
++
++// Sample draft token from last ANE eval + host tied-embed argmax. Returns false when drive off or head missing.
++bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_batch, llama_token * out_id, float * out_p);
+diff --git a/common/ane_draft_session.h b/common/ane_draft_session.h
+new file mode 100644
+index 0000000..e85e510
+--- /dev/null
++++ b/common/ane_draft_session.h
+@@ -0,0 +1,47 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++#include <stdbool.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// In-process ANE draft session for llama-server (B1+).
++// Why in-process: ANE bridge IOSurface IDs are not IOSurfaceLookup-able from another PID;
++// ggml handoff must map the same surface the kernel compiled against.
++
++// True when compiled with Apple ANE bridge (libane_bridge) available.
++bool ane_draft_session_supported(void);
++
++// Compile ANE draft kernel once; holds IOSurface input for process lifetime.
++// weight_path may be NULL for synthetic weights; gamma_path optional (B3 ffn norm mul).
++bool ane_draft_session_init(int channels, int spatial, const char * weight_path, const char * gamma_path);
++
++bool ane_draft_session_ready(void);
++
++uint32_t ane_draft_session_surface_id(void);
++size_t   ane_draft_session_surface_bytes(void);
++int      ane_draft_session_channels(void);
++int      ane_draft_session_spatial(void);
++
++// Metal stub fill + ANE eval (B1 smoke path when no draft activations available).
++bool ane_draft_session_step_once(float fill_val);
++
++// ANE eval only — caller must populate input IOSurface first (ggml handoff path).
++bool ane_draft_session_eval(void);
++
++// Copy last ANE output (fp32, channel-major × spatial) into dst; returns bytes copied.
++size_t ane_draft_session_read_output(float * dst, size_t dst_floats);
++
++int ane_draft_session_step_count(void);
++
++// True when B6 two-conv MIL compiled successfully (not conv1 fallback).
++bool ane_draft_session_using_conv2(void);
++
++void ane_draft_session_shutdown(void);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
+new file mode 100644
+index 0000000..dbe1433
+--- /dev/null
++++ b/common/ane_draft_session.mm
+@@ -0,0 +1,500 @@
++// In-process ANE draft session for llama-server (B1).
++// Compile-once at dflash init; IOSurface owned in same PID as ggml Metal backend.
++// Why conv2 fallback: chained conv MIL may fail compile on device; conv1 keeps lab unblocked.
++
++#import <Foundation/Foundation.h>
++#import <IOSurface/IOSurface.h>
++#import <Metal/Metal.h>
++#import <mach/mach_time.h>
++
++#include "ane_draft_session.h"
++#include "ane_iosurface_map.h"
++#include "ane_bridge.h"
++
++#include <cstdlib>
++#include <stdlib.h>
++#include <string.h>
++
++static mach_timebase_info_data_t g_tb;
++static bool                      g_tb_init = false;
++
++static double ane_ticks_to_ms(uint64_t t) {
++    if (!g_tb_init) {
++        mach_timebase_info(&g_tb);
++        g_tb_init = true;
++    }
++    return (double) t * g_tb.numer / g_tb.denom / 1e6;
++}
++
++static NSString * ane_gen_conv_mil(int ch, int sp) {
++    return [NSString stringWithFormat:
++        @"program(1.3)\n"
++        @"[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}})]\n"
++        @"{\n"
++        @"    func main<ios18>(tensor<fp32, [1, %d, 1, %d]> x) {\n"
++        @"            string c_pad_type_0 = const()[name = string(\"c_pad_type_0\"), val = string(\"valid\")];\n"
++        @"            tensor<int32, [2]> c_strides_0 = const()[name = string(\"c_strides_0\"), val = tensor<int32, [2]>([1, 1])];\n"
++        @"            tensor<int32, [4]> c_pad_0 = const()[name = string(\"c_pad_0\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n"
++        @"            tensor<int32, [2]> c_dilations_0 = const()[name = string(\"c_dilations_0\"), val = tensor<int32, [2]>([1, 1])];\n"
++        @"            int32 c_groups_0 = const()[name = string(\"c_groups_0\"), val = int32(1)];\n"
++        @"            string x_to_fp16_dtype_0 = const()[name = string(\"x_to_fp16_dtype_0\"), val = string(\"fp16\")];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> x_to_fp16 = cast(dtype = x_to_fp16_dtype_0, x = x)[name = string(\"cast_in\")];\n"
++        @"            tensor<fp16, [%d, %d, 1, 1]> W0 = const()[name = string(\"W0\"), val = tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> c0 = conv(dilations = c_dilations_0, groups = c_groups_0, pad = c_pad_0, pad_type = c_pad_type_0, strides = c_strides_0, weight = W0, x = x_to_fp16)[name = string(\"c0\")];\n"
++        @"            string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n"
++        @"            tensor<fp32, [1, %d, 1, %d]> c = cast(dtype = to_fp32, x = c0)[name = string(\"cast_out\")];\n"
++        @"        } -> (c);\n"
++        @"}\n",
++        ch, sp, ch, sp, ch, ch, ch, ch, ch, sp, ch, sp];
++}
++
++static NSString * ane_gen_conv_gamma_mil(int ch, int sp) {
++    return [NSString stringWithFormat:
++        @"program(1.3)\n"
++        @"[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}})]\n"
++        @"{\n"
++        @"    func main<ios18>(tensor<fp32, [1, %d, 1, %d]> x) {\n"
++        @"            string c_pad_type_0 = const()[name = string(\"c_pad_type_0\"), val = string(\"valid\")];\n"
++        @"            tensor<int32, [2]> c_strides_0 = const()[name = string(\"c_strides_0\"), val = tensor<int32, [2]>([1, 1])];\n"
++        @"            tensor<int32, [4]> c_pad_0 = const()[name = string(\"c_pad_0\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n"
++        @"            tensor<int32, [2]> c_dilations_0 = const()[name = string(\"c_dilations_0\"), val = tensor<int32, [2]>([1, 1])];\n"
++        @"            int32 c_groups_0 = const()[name = string(\"c_groups_0\"), val = int32(1)];\n"
++        @"            string x_to_fp16_dtype_0 = const()[name = string(\"x_to_fp16_dtype_0\"), val = string(\"fp16\")];\n"
++        @"            string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> x_to_fp16 = cast(dtype = x_to_fp16_dtype_0, x = x)[name = string(\"cast_in\")];\n"
++        @"            tensor<fp16, [%d, %d, 1, 1]> W0 = const()[name = string(\"W0\"), val = tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n"
++        @"            tensor<fp16, [1, %d, 1, 1]> G0 = const()[name = string(\"G0\"), val = tensor<fp16, [1, %d, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/gamma.bin\"), offset = uint64(64)))];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> c0 = conv(dilations = c_dilations_0, groups = c_groups_0, pad = c_pad_0, pad_type = c_pad_type_0, strides = c_strides_0, weight = W0, x = x_to_fp16)[name = string(\"c0\")];\n"
++        @"            tensor<fp32, [1, %d, 1, %d]> c = cast(dtype = to_fp32, x = c0)[name = string(\"cast_conv\")];\n"
++        @"            tensor<fp16, [1, %d, 1, 1]> g16 = cast(dtype = x_to_fp16_dtype_0, x = G0)[name = string(\"cast_gamma\")];\n"
++        @"            tensor<fp32, [1, %d, 1, 1]> g = cast(dtype = to_fp32, x = g16)[name = string(\"cast_gamma_fp32\")];\n"
++        @"            tensor<fp32, [1, %d, 1, %d]> y = mul(x = c, y = g)[name = string(\"mul_gamma\")];\n"
++        @"        } -> (y);\n"
++        @"}\n",
++        ch, sp, ch, sp, ch, ch, ch, ch, ch, ch, ch, sp, ch, sp, ch, ch, ch, ch, sp];
++}
++
++static NSString * ane_gen_conv2_mil(int ch, int sp) {
++    return [NSString stringWithFormat:
++        @"program(1.3)\n"
++        @"[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}})]\n"
++        @"{\n"
++        @"    func main<ios18>(tensor<fp32, [1, %d, 1, %d]> x) {\n"
++        @"            string pad_type = const()[name = string(\"pad_type\"), val = string(\"valid\")];\n"
++        @"            tensor<int32, [2]> strides = const()[name = string(\"strides\"), val = tensor<int32, [2]>([1, 1])];\n"
++        @"            tensor<int32, [4]> pad = const()[name = string(\"pad\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n"
++        @"            tensor<int32, [2]> dilations = const()[name = string(\"dilations\"), val = tensor<int32, [2]>([1, 1])];\n"
++        @"            int32 groups = const()[name = string(\"groups\"), val = int32(1)];\n"
++        @"            string fp16 = const()[name = string(\"fp16\"), val = string(\"fp16\")];\n"
++        @"            string fp32 = const()[name = string(\"fp32\"), val = string(\"fp32\")];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> x16 = cast(dtype = fp16, x = x)[name = string(\"cast_in\")];\n"
++        @"            tensor<fp16, [%d, %d, 1, 1]> W0 = const()[name = string(\"W0\"), val = tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n"
++        @"            tensor<fp16, [%d, %d, 1, 1]> W1 = const()[name = string(\"W1\"), val = tensor<fp16, [%d, %d, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight2.bin\"), offset = uint64(64)))];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> c0 = conv(dilations = dilations, groups = groups, pad = pad, pad_type = pad_type, strides = strides, weight = W0, x = x16)[name = string(\"c0\")];\n"
++        @"            tensor<fp16, [1, %d, 1, %d]> c1 = conv(dilations = dilations, groups = groups, pad = pad, pad_type = pad_type, strides = strides, weight = W1, x = c0)[name = string(\"c1\")];\n"
++        @"            tensor<fp32, [1, %d, 1, %d]> y = cast(dtype = fp32, x = c1)[name = string(\"cast_out\")];\n"
++        @"        } -> (y);\n"
++        @"}\n",
++        ch, sp, ch, sp, ch, ch, ch, ch, ch, ch, ch, ch, ch, sp, ch, sp, ch, sp];
++}
++
++static NSData * ane_build_weight_blob(int ch) {
++    NSUInteger wsize = (NSUInteger) ch * (NSUInteger) ch * 2;
++    NSUInteger total = 64 + 64 + wsize;
++    uint8_t * buf = (uint8_t *) calloc(total, 1);
++    if (!buf) {
++        return nil;
++    }
++    buf[0] = 0x01;
++    buf[4] = 0x02;
++    uint8_t * chunk = buf + 64;
++    chunk[0] = 0xEF;
++    chunk[1] = 0xBE;
++    chunk[2] = 0xAD;
++    chunk[3] = 0xDE;
++    chunk[4] = 0x01;
++    chunk[10] = 0x08;
++    uint16_t * fp16 = (uint16_t *) (chunk + 64);
++    for (NSUInteger j = 0; j < wsize / 2; j++) {
++        fp16[j] = 0x3400;
++    }
++    return [NSData dataWithBytesNoCopy:buf length:total freeWhenDone:YES];
++}
++
++static NSData * ane_load_weight_blob(const char * path, int ch) {
++    if (!path || !path[0]) {
++        return nil;
++    }
++    NSData * data = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:path]];
++    if (!data) {
++        return nil;
++    }
++    NSUInteger expected = 64 + 64 + (NSUInteger) ch * (NSUInteger) ch * 2;
++    if ([data length] != expected) {
++        return nil;
++    }
++    return data;
++}
++
++static NSData * ane_load_gamma_blob(const char * path, int ch) {
++    if (!path || !path[0]) {
++        return nil;
++    }
++    NSData * data = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:path]];
++    if (!data) {
++        return nil;
++    }
++    NSUInteger expected = 64 + 64 + (NSUInteger) ch * 2;
++    if ([data length] != expected) {
++        return nil;
++    }
++    return data;
++}
++
++static id<MTLComputePipelineState> ane_build_fill_pipeline(id<MTLDevice> device, NSError ** err) {
++    NSString * src = @""
++        "#include <metal_stdlib>\n"
++        "using namespace metal;\n"
++        "kernel void fill_buf(device float *buf [[buffer(0)]], constant float &val [[buffer(1)]], uint gid [[thread_position_in_grid]]) {\n"
++        "    buf[gid] = val;\n"
++        "}\n";
++    id<MTLLibrary> lib = [device newLibraryWithSource:src options:nil error:err];
++    if (!lib) {
++        return nil;
++    }
++    id<MTLFunction> fn = [lib newFunctionWithName:@"fill_buf"];
++    if (!fn) {
++        return nil;
++    }
++    return [device newComputePipelineStateWithFunction:fn error:err];
++}
++
++static BOOL ane_metal_fill(id<MTLDevice> /*device*/,
++                           id<MTLCommandQueue> queue,
++                           id<MTLComputePipelineState> pipeline,
++                           id<MTLBuffer> buffer,
++                           size_t tensorBytes,
++                           size_t tensorOffset,
++                           float value) {
++    if (tensorBytes == 0 || tensorBytes + tensorOffset > buffer.length) {
++        return NO;
++    }
++    size_t nfloats = tensorBytes / sizeof(float);
++    id<MTLCommandBuffer> cmd = [queue commandBuffer];
++    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
++    [enc setComputePipelineState:pipeline];
++    [enc setBuffer:buffer offset:tensorOffset atIndex:0];
++    [enc setBytes:&value length:sizeof(value) atIndex:1];
++    NSUInteger tg = MIN((NSUInteger) 256, nfloats);
++    [enc dispatchThreads:MTLSizeMake(nfloats, 1, 1)
++       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
++    [enc endEncoding];
++    [cmd commit];
++    [cmd waitUntilCompleted];
++    return cmd.status == MTLCommandBufferStatusCompleted;
++}
++
++typedef struct {
++    ANEKernelHandle * kernel;
++    ANEKernelHandle * kernel2; // B6: second conv1 kernel when WEIGHT_FILE2 set (chained eval)
++    uint32_t          inSID;
++    uint32_t          inSID2;
++    size_t            ioBytes;
++    int               ch;
++    int               sp;
++    float *           outBuf;
++    id<MTLDevice>             device;
++    id<MTLCommandQueue>       queue;
++    id<MTLComputePipelineState> pipeline;
++    int               stepCount;
++    bool              conv2Active;
++} ANEDraftSession;
++
++static ANEDraftSession g_session {};
++
++static void ane_session_clear(ANEDraftSession * st) {
++    if (st->kernel) {
++        ane_bridge_free(st->kernel);
++        st->kernel = NULL;
++    }
++    if (st->kernel2) {
++        ane_bridge_free(st->kernel2);
++        st->kernel2 = NULL;
++    }
++    if (st->outBuf) {
++        free(st->outBuf);
++        st->outBuf = NULL;
++    }
++    st->inSID   = 0;
++    st->inSID2  = 0;
++    st->ioBytes = 0;
++    st->ch      = 0;
++    st->sp      = 0;
++    st->device  = nil;
++    st->queue   = nil;
++    st->pipeline = nil;
++    st->stepCount = 0;
++    st->conv2Active = false;
++}
++
++static BOOL ane_compile_conv_kernel(
++        ANEKernelHandle ** out_kernel,
++        NSData * weight_blob,
++        int channels,
++        int spatial,
++        size_t io_bytes) {
++    if (!out_kernel || !weight_blob) {
++        return NO;
++    }
++    NSString * mil = ane_gen_conv_mil(channels, spatial);
++    NSData * milData = [mil dataUsingEncoding:NSUTF8StringEncoding];
++    if (!milData) {
++        return NO;
++    }
++    const char * weightNames[1] = { "@model_path/weights/weight.bin" };
++    const uint8_t * weightDatas[1] = { (const uint8_t *) [weight_blob bytes] };
++    size_t weightLens[1] = { [weight_blob length] };
++    *out_kernel = ane_bridge_compile_multi_weights(
++        (const char *) [milData bytes], [milData length],
++        weightNames, weightDatas, weightLens, 1,
++        1, &io_bytes, 1, &io_bytes);
++    return *out_kernel != NULL;
++}
++
++static bool ane_session_write_surface(uint32_t surface_id, size_t io_bytes, const float * src) {
++    if (surface_id == 0 || !src || io_bytes == 0) {
++        return false;
++    }
++    IOSurfaceRef surface = ane_ggml_surface_from_id(surface_id);
++    if (!surface) {
++        return false;
++    }
++    IOSurfaceLock(surface, 0, NULL);
++    float * base = (float *) IOSurfaceGetBaseAddress(surface);
++    if (!base) {
++        IOSurfaceUnlock(surface, 0, NULL);
++        CFRelease(surface);
++        return false;
++    }
++    memcpy(base, src, io_bytes);
++    IOSurfaceUnlock(surface, 0, NULL);
++    CFRelease(surface);
++    return true;
++}
++
++bool ane_draft_session_supported(void) {
++    return true;
++}
++
++bool ane_draft_session_init(int channels, int spatial, const char * weight_path, const char * gamma_path) {
++    @autoreleasepool {
++        if (g_session.kernel) {
++            return true;
++        }
++        if (channels <= 0 || spatial <= 0) {
++            return false;
++        }
++
++        ane_session_clear(&g_session);
++        g_session.ch = channels;
++        g_session.sp = spatial;
++
++        if (ane_bridge_init() != 0) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++
++        const BOOL use_gamma = NO; // B3: gamma applied in ggml handoff pack (ANE mul broadcast unstable in MIL)
++        const char * weight2_path = getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2");
++        const BOOL want_conv2 = weight2_path && weight2_path[0];
++        NSData * wb = nil;
++        NSData * wb2 = nil;
++        if (weight_path && weight_path[0]) {
++            wb = ane_load_weight_blob(weight_path, channels);
++        } else {
++            wb = ane_build_weight_blob(channels);
++        }
++        if (want_conv2) {
++            wb2 = ane_load_weight_blob(weight2_path, channels);
++        }
++        (void) use_gamma;
++        (void) gamma_path;
++        if (!wb || (want_conv2 && !wb2)) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++
++        g_session.ioBytes = (size_t) channels * (size_t) spatial * sizeof(float);
++
++        // Why dual conv1 kernels: chained conv2 MIL fails ANECCompile on device; two evals match math.
++        if (!ane_compile_conv_kernel(&g_session.kernel, wb, channels, spatial, g_session.ioBytes)) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++        g_session.inSID = ane_bridge_input_surface_id(g_session.kernel, 0);
++        if (g_session.inSID == 0) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++
++        g_session.conv2Active = false;
++        if (want_conv2 && ane_compile_conv_kernel(&g_session.kernel2, wb2, channels, spatial, g_session.ioBytes)) {
++            g_session.inSID2 = ane_bridge_input_surface_id(g_session.kernel2, 0);
++            if (g_session.inSID2 != 0) {
++                g_session.conv2Active = true;
++            } else {
++                ane_bridge_free(g_session.kernel2);
++                g_session.kernel2 = NULL;
++            }
++        }
++
++        g_session.outBuf = (float *) calloc((size_t) channels * (size_t) spatial, sizeof(float));
++        if (!g_session.outBuf) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++
++        g_session.device = MTLCreateSystemDefaultDevice();
++        if (!g_session.device) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++
++        NSError * merr = nil;
++        g_session.pipeline = ane_build_fill_pipeline(g_session.device, &merr);
++        if (!g_session.pipeline) {
++            ane_session_clear(&g_session);
++            return false;
++        }
++        g_session.queue = [g_session.device newCommandQueue];
++        return YES;
++    }
++}
++
++bool ane_draft_session_ready(void) {
++    return g_session.kernel != NULL && g_session.inSID != 0;
++}
++
++uint32_t ane_draft_session_surface_id(void) {
++    return g_session.inSID;
++}
++
++size_t ane_draft_session_surface_bytes(void) {
++    return g_session.ioBytes;
++}
++
++static bool ane_session_map_fill(float fillVal) {
++    IOSurfaceRef surface = ane_ggml_surface_from_id(g_session.inSID);
++    if (!surface) {
++        return false;
++    }
++
++    IOSurfaceLock(surface, 0, NULL);
++    void * base = IOSurfaceGetBaseAddress(surface);
++    if (!base) {
++        IOSurfaceUnlock(surface, 0, NULL);
++        CFRelease(surface);
++        return false;
++    }
++
++    void * mappedBase = NULL;
++    size_t mappedSize = 0;
++    id<MTLBuffer> mapped = ane_ggml_map_iosurface_base(
++        g_session.device, base, g_session.ioBytes, &mappedBase, &mappedSize);
++    if (!mapped) {
++        IOSurfaceUnlock(surface, 0, NULL);
++        CFRelease(surface);
++        return false;
++    }
++
++    size_t pageOffset = (size_t) ((char *) base - (char *) mappedBase);
++    BOOL ok = ane_metal_fill(g_session.device, g_session.queue, g_session.pipeline,
++                             mapped, g_session.ioBytes, pageOffset, fillVal);
++
++    IOSurfaceUnlock(surface, 0, NULL);
++    CFRelease(surface);
++    return ok ? true : false;
++}
++
++static bool ane_session_eval(void) {
++    if (!ane_bridge_eval(g_session.kernel)) {
++        return false;
++    }
++    if (!g_session.kernel2) {
++        ane_bridge_read_output(g_session.kernel, 0, g_session.outBuf, g_session.ioBytes);
++        g_session.stepCount++;
++        return true;
++    }
++    // Chained conv1: W0 then feed output IOSurface into W1 kernel input.
++    float * mid = (float *) malloc(g_session.ioBytes);
++    if (!mid) {
++        return false;
++    }
++    ane_bridge_read_output(g_session.kernel, 0, mid, g_session.ioBytes);
++    if (!ane_session_write_surface(g_session.inSID2, g_session.ioBytes, mid)) {
++        free(mid);
++        return false;
++    }
++    free(mid);
++    if (!ane_bridge_eval(g_session.kernel2)) {
++        return false;
++    }
++    ane_bridge_read_output(g_session.kernel2, 0, g_session.outBuf, g_session.ioBytes);
++    g_session.stepCount++;
++    return true;
++}
++
++int ane_draft_session_channels(void) {
++    return g_session.ch;
++}
++
++int ane_draft_session_spatial(void) {
++    return g_session.sp;
++}
++
++bool ane_draft_session_eval(void) {
++    @autoreleasepool {
++        if (!ane_draft_session_ready()) {
++            return false;
++        }
++        return ane_session_eval();
++    }
++}
++
++size_t ane_draft_session_read_output(float * dst, size_t dst_floats) {
++    if (!g_session.outBuf || g_session.ioBytes == 0) {
++        return 0;
++    }
++    const size_t n = (size_t) g_session.ch * (size_t) g_session.sp;
++    const size_t copy = dst_floats < n ? dst_floats : n;
++    if (dst && copy > 0) {
++        memcpy(dst, g_session.outBuf, copy * sizeof(float));
++    }
++    return copy * sizeof(float);
++}
++
++int ane_draft_session_step_count(void) {
++    return g_session.stepCount;
++}
++
++bool ane_draft_session_using_conv2(void) {
++    return g_session.conv2Active && g_session.kernel2 != NULL;
++}
++
++bool ane_draft_session_step_once(float fill_val) {
++    @autoreleasepool {
++        if (!ane_draft_session_ready()) {
++            return false;
++        }
++        if (!ane_session_map_fill(fill_val)) {
++            return false;
++        }
++        return ane_session_eval();
++    }
++}
++
++void ane_draft_session_shutdown(void) {
++    @autoreleasepool {
++        ane_session_clear(&g_session);
++    }
++}
+diff --git a/common/ane_draft_session_stub.cpp b/common/ane_draft_session_stub.cpp
+new file mode 100644
+index 0000000..c3f9d7d
+--- /dev/null
++++ b/common/ane_draft_session_stub.cpp
+@@ -0,0 +1,52 @@
++#include "ane_draft_session.h"
++
++bool ane_draft_session_supported(void) {
++    return false;
++}
++
++bool ane_draft_session_init(int /*channels*/, int /*spatial*/, const char * /*weight_path*/, const char * /*gamma_path*/) {
++    return false;
++}
++
++bool ane_draft_session_ready(void) {
++    return false;
++}
++
++uint32_t ane_draft_session_surface_id(void) {
++    return 0;
++}
++
++size_t ane_draft_session_surface_bytes(void) {
++    return 0;
++}
++
++int ane_draft_session_channels(void) {
++    return 0;
++}
++
++int ane_draft_session_spatial(void) {
++    return 0;
++}
++
++bool ane_draft_session_step_once(float /*fill_val*/) {
++    return false;
++}
++
++bool ane_draft_session_eval(void) {
++    return false;
++}
++
++size_t ane_draft_session_read_output(float * /*dst*/, size_t /*dst_floats*/) {
++    return 0;
++}
++
++int ane_draft_session_step_count(void) {
++    return 0;
++}
++
++bool ane_draft_session_using_conv2(void) {
++    return false;
++}
++
++void ane_draft_session_shutdown(void) {
++}
+diff --git a/common/ane_iosurface_map.h b/common/ane_iosurface_map.h
+new file mode 100644
+index 0000000..8c0735b
+--- /dev/null
++++ b/common/ane_iosurface_map.h
+@@ -0,0 +1,49 @@
++// IOSurface → MTLBuffer mapping (mirrors ggml_metal_buffer_map_iosurface page alignment).
++#pragma once
++
++#import <IOSurface/IOSurface.h>
++#import <Metal/Metal.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <unistd.h>
++
++static inline id<MTLBuffer> ane_ggml_map_iosurface_base(id<MTLDevice> device,
++                                                        void * ptr,
++                                                        size_t size,
++                                                        void ** mappedBase,
++                                                        size_t * mappedSize) {
++    const size_t size_page = (size_t) sysconf(_SC_PAGESIZE);
++
++    void * alignedPtr = ptr;
++    size_t alignedSize = size;
++
++    {
++        const uintptr_t offs = (uintptr_t) ptr % size_page;
++        alignedPtr = (void *) ((char *) ptr - offs);
++        alignedSize += offs;
++    }
++
++    if ((alignedSize % size_page) != 0) {
++        alignedSize += (size_page - (alignedSize % size_page));
++    }
++
++    if (mappedBase) {
++        *mappedBase = alignedPtr;
++    }
++    if (mappedSize) {
++        *mappedSize = alignedSize;
++    }
++
++    if (alignedSize == 0) {
++        return nil;
++    }
++
++    return [device newBufferWithBytesNoCopy:alignedPtr
++                                     length:alignedSize
++                                    options:MTLResourceStorageModeShared
++                                deallocator:nil];
++}
++
++static inline IOSurfaceRef ane_ggml_surface_from_id(uint32_t surfaceID) {
++    return IOSurfaceLookup(surfaceID);
++}
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 8bd76c1..df75aa2 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1,5 +1,7 @@
+ #include "speculative.h"
+ 
++#include "ane_draft_hook.h"
++
+ #include "common.h"
+ #include "ggml.h"
+ #include "llama.h"
+@@ -231,6 +233,13 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+ 
+             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
+         }
++
++        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
++
++        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
++        if (common_ane_draft_enabled()) {
++            llama_set_embeddings_pre_norm(ctx_dft, true);
++        }
+     }
+ 
+     ~common_speculative_impl_draft_simple() override {
+@@ -258,6 +267,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+     void draft(common_speculative_draft_params_vec & dparams) override {
+         auto & ctx_dft = params.ctx_dft;
+ 
++        common_ane_draft_reset_handoff();
++
+         common_batch_clear(batch);
+ 
+         // keep track of which sequences are still drafting
+@@ -284,6 +295,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+             return;
+         }
+ 
++        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).
++        common_ane_draft_handoff_after_decode(ctx_dft, 0);
++
+         int i = 0;
+ 
+         while (n_drafting > 0) {
+@@ -309,11 +323,28 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+                 }
+ 
+-                // add drafted token for each sequence
+-                const llama_token id = cur_p->data[0].id;
++                llama_token id = cur_p->data[0].id;
++                float pick_p = cur_p->data[0].p;
++
++                // B7: optional ANE tied-embed argmax replaces Metal sampler token (lab).
++                const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
++                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
++                    llama_token ane_id = 0;
++                    float ane_p = 0.f;
++                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p)) {
++                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
++                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d\n",
++                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0);
++                        } else {
++                            id = ane_id;
++                            pick_p = ane_p;
++                            LOG_DBG("%s: B7 force seq=%d ane_tok=%d\n", __func__, (int) seq_id, (int) ane_id);
++                        }
++                    }
++                }
+ 
+                 // only collect very high-confidence draft tokens
+-                if (cur_p->data[0].p < params.p_min) {
++                if (pick_p < params.p_min) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+ 
+@@ -348,6 +379,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+                 break;
+             }
+ 
++            // B5: handoff on each speculative draft decode step (stride via env in hook).
++            common_ane_draft_handoff_after_decode(ctx_dft, 0);
++
+             ++i;
+         }
+ 
+diff --git a/ggml/include/ggml-metal.h b/ggml/include/ggml-metal.h
+index 433838f..eab1e6b 100644
+--- a/ggml/include/ggml-metal.h
++++ b/ggml/include/ggml-metal.h
+@@ -26,6 +26,7 @@
+ 
+ #include <stddef.h>
+ #include <stdbool.h>
++#include <stdint.h>
+ 
+ struct ggml_tensor;
+ struct ggml_cgraph;
+@@ -56,6 +57,12 @@ GGML_BACKEND_API void ggml_backend_metal_capture_next_compute(ggml_backend_t bac
+ 
+ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);
+ 
++GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
++        ggml_backend_dev_t device,
++        uint32_t surface_id,
++        size_t size,
++        size_t max_tensor_size);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
+index 75fd4cf..777a718 100644
+--- a/ggml/src/ggml-metal/CMakeLists.txt
++++ b/ggml/src/ggml-metal/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
+ find_library(METAL_FRAMEWORK    Metal      REQUIRED)
+ find_library(METALKIT_FRAMEWORK MetalKit   REQUIRED)
++find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+ 
+ message(STATUS "Metal framework found")
+ 
+@@ -17,6 +18,7 @@ target_link_libraries(ggml-metal PRIVATE
+                       ${FOUNDATION_LIBRARY}
+                       ${METAL_FRAMEWORK}
+                       ${METALKIT_FRAMEWORK}
++                      ${IOSURFACE_FRAMEWORK}
+                       )
+ 
+ if (GGML_METAL_NDEBUG)
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index e749e77..39dd98b 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -297,6 +297,7 @@ typedef struct ggml_metal_buffer * ggml_metal_buffer_t;
+ 
+ ggml_metal_buffer_t ggml_metal_buffer_init(ggml_metal_device_t dev, size_t size, bool shared);
+ ggml_metal_buffer_t ggml_metal_buffer_map (ggml_metal_device_t dev, void * ptr, size_t size, size_t max_tensor_size);
++ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(ggml_metal_device_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size);
+ 
+ void   ggml_metal_buffer_free     (ggml_metal_buffer_t buf);
+ void * ggml_metal_buffer_get_base (ggml_metal_buffer_t buf);
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index f0da2f4..4cbfc30 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -5,6 +5,8 @@
+ 
+ #include <Foundation/Foundation.h>
+ 
++#import <IOSurface/IOSurface.h>
++
+ #include <Metal/Metal.h>
+ 
+ #include <stdatomic.h>
+@@ -1495,6 +1497,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+ 
+     // pointers to global device
+     ggml_metal_device_t dev;
++
++    // optional IOSurface backing (retained until buffer free)
++    IOSurfaceRef iosurface;
+ };
+ 
+ static void ggml_metal_log_allocated_size(id<MTLDevice> device, size_t size_aligned) {
+@@ -1815,6 +1820,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
+     return res;
+ }
+ 
++ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(ggml_metal_device_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size) {
++    IOSurfaceRef surface = IOSurfaceLookup(surface_id);
++    if (!surface) {
++        GGML_LOG_ERROR("%s: IOSurfaceLookup(%u) failed (same-process only)\n", __func__, surface_id);
++        return NULL;
++    }
++
++    IOSurfaceLock(surface, 0, NULL);
++    void * base = IOSurfaceGetBaseAddress(surface);
++    if (!base) {
++        IOSurfaceUnlock(surface, 0, NULL);
++        CFRelease(surface);
++        GGML_LOG_ERROR("%s: IOSurfaceGetBaseAddress(%u) failed\n", __func__, surface_id);
++        return NULL;
++    }
++
++    ggml_metal_buffer_t res = ggml_metal_buffer_map(dev, base, size, max_tensor_size);
++
++    IOSurfaceUnlock(surface, 0, NULL);
++
++    if (!res) {
++        CFRelease(surface);
++        return NULL;
++    }
++
++    res->iosurface = (IOSurfaceRef) CFRetain(surface);
++    CFRelease(surface);
++
++    return res;
++}
++
+ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
+     ggml_metal_device_rsets_rm(buf->dev, buf->rset);
+ 
+@@ -1832,6 +1868,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
+ #endif
+     }
+ 
++    if (buf->iosurface) {
++        CFRelease(buf->iosurface);
++        buf->iosurface = NULL;
++    }
++
+     free(buf);
+ }
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+index a9d2d89..dd9e804 100644
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -729,6 +729,24 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
+     return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
+ }
+ 
++static ggml_backend_buffer_t ggml_backend_metal_device_buffer_from_iosurface(
++        ggml_backend_dev_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size) {
++    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) dev->context;
++
++    ggml_metal_buffer_t res = ggml_metal_buffer_map_iosurface(ctx_dev, surface_id, size, max_tensor_size);
++    if (!res) {
++        return nullptr;
++    }
++
++    const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx_dev);
++
++    return ggml_backend_buffer_init(
++            ggml_backend_metal_buffer_type_mapped(props_dev->device),
++            ggml_backend_metal_buffer_shared_i,
++            res,
++            size);
++}
++
+ static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+     ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
+ 
+@@ -875,6 +893,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const
+     if (strcmp(name, "ggml_backend_get_features") == 0) {
+         return (void *)ggml_backend_metal_get_features;
+     }
++    if (strcmp(name, "ggml_backend_dev_buffer_from_iosurface") == 0) {
++        return (void *)ggml_backend_dev_buffer_from_iosurface;
++    }
+ 
+     return NULL;
+ 
+@@ -950,4 +971,21 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
+     return &reg;
+ }
+ 
++GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
++        ggml_backend_dev_t device,
++        uint32_t surface_id,
++        size_t size,
++        size_t max_tensor_size) {
++    if (!device || !device->iface.get_name) {
++        return nullptr;
++    }
++
++    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {
++        GGML_LOG_ERROR("%s: device is not Metal\n", __func__);
++        return nullptr;
++    }
++
++    return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);
++}
++
+ GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)

@@ -41,13 +41,14 @@ ggml-metal does not expose an equivalent CUDA graph cache API. On Mac builds (`G
 Prefix cache clear (SWA / owner / cache_prompt=false / session close)
         │
         ▼
-bump_decode_graph_epoch(slot, reason=…, ctx_ptr=…)
+bump_decode_graph_epoch(slot, reason=…, ctx_ptr=…, base_url=…)
         │  ├─ slot_epoch++, global_epoch++
-        │  └─ invalidate_cuda_graphs(ctx_ptr)   [when ctx wired]
+        │  └─ invalidate_cuda_graphs(ctx_ptr | base_url)
         ▼
 runtime/kv/cuda_graph_invalidate.py
-        │  ├─ native: runtime.kv._kv_native.invalidate_cuda_graphs(ptr)
-        │  └─ fallback: ctypes → llama_context_cuda_graph_invalidate
+        │  ├─ in-process native: runtime.kv._kv_native.invalidate_cuda_graphs(ptr)
+        │  ├─ in-process fallback: ctypes → llama_context_cuda_graph_invalidate
+        │  └─ subprocess: POST {base_url}/cuda-graph/invalidate → llama-server task queue
         ▼
 llama.cpp (sibling ../llama.cpp)
         │  iterates ggml_backend_sched CUDA backends
@@ -58,9 +59,9 @@ ggml_backend_cuda_invalidate_graphs(backend)
 Next decode step recaptures graph (ggml internal; GGML_CUDA_GRAPHS=ON)
 ```
 
-**In-process wiring:** `libllama_ctypes._prepare_seq_for_decode` passes `_ctx_ptr(ctx)` on every slot clear path. `LlamaLoadedSession.close()` calls `bump_all_decode_graph_epochs(reason="session_close", ctx_ptr=…)`.
+**Subprocess wiring:** `engine._prefix_cache_request` bumps epoch and POSTs `/cuda-graph/invalidate` on the llama-server child when prefix-cache policy denies resume or draft drop-last-block falls back to `cache_prompt=false`. The endpoint runs on the server task queue (same thread as slot erase) and calls `llama_context_cuda_graph_invalidate(ctx_tgt)`.
 
-**Subprocess path:** epoch bumps still occur from engine policy; native invalidate requires a live `llama_context` (in-process only today). Subprocess llama-server clears KV via HTTP slot APIs — ggml invalidation happens inside that process on its own context when rebuilt with the new API.
+**In-process wiring:** `libllama_ctypes._prepare_seq_for_decode` passes `_ctx_ptr(ctx)` on every slot clear path. `LlamaLoadedSession.close()` calls `bump_all_decode_graph_epochs(reason="session_close", ctx_ptr=…)`.
 
 ---
 
@@ -119,12 +120,59 @@ ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0 zerollama serve
 
 | Reason | Where | WHY |
 |--------|-------|-----|
-| `cache_prompt_disabled` | `_prepare_seq_for_decode` | Client or policy forced full prefill — KV cleared |
+| `cache_prompt_disabled` | `_prepare_seq_for_decode` / subprocess policy | Client or policy forced full prefill — KV cleared |
 | `spec_bind_swa_block` | `_prepare_seq_for_decode` | SWA/hybrid spec says resume would exceed window |
 | `slot_clear` | `_prepare_seq_for_decode` | Owner mismatch or cold slot — new prefix |
+| `subprocess_drop_last_block` | `engine._prefix_cache_request` | Draft spec needs last-block trim; llama-server cannot — full prefill + graph break |
+| `drop_last_prefix_block` | in-process draft resume | EAGLE-style last block dropped — KV shape changed |
 | `session_close` | `LlamaLoadedSession.close()` | Model unload — all slots stale |
+| `radix_cross_slot_seed` | `engine._apply_radix_prefix_share` | Cross-slot Radix KV copy seeded target slot — graph key must refresh |
 
 Each trigger bumps **both** slot epoch and global epoch (conservative: any slot change may affect shared ggml graph keys).
+
+---
+
+## Subprocess endpoint (`POST /cuda-graph/invalidate`)
+
+**Why a dedicated route:** the default zerollama backend is subprocess llama-server. Python epoch bumps do not reach ggml in the child process. vLLM breaks graphs inside the worker that owns KV; zerollama mirrors that by POSTing from `engine._prefix_cache_request` when prefix-cache policy invalidates a pinned slot.
+
+**Implementation (sibling `../llama.cpp`):**
+
+- Handler enqueues `SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE` on the server task queue (same thread as slot erase — avoids racing active decode).
+- Task handler calls `llama_context_cuda_graph_invalidate(ctx_tgt)`.
+- Response: `{"ok": true, "backends_cleared": N}` (`N=0` on Metal or when graphs disabled).
+
+**Graceful degradation:** if llama-server predates the endpoint (HTTP 404), `cuda_graph_invalidate.py` logs at debug and returns `ok: false`; epoch bumps still run for trace and future capture keys.
+
+```bash
+curl -s -X POST http://127.0.0.1:8082/cuda-graph/invalidate \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"smoke"}'
+```
+
+---
+
+## Subprocess endpoint (`POST /kv/seq-copy`)
+
+**Why:** cross-slot Radix prefix share seeds a cold target slot by copying KV from a donor slot that already holds a verified hash chain. Python epoch bumps and subprocess SWA policy need the target slot’s context length before the first completion returns timings.
+
+**Body:** `{"src_slot": 2, "dst_slot": 5, "pos_end": 512}` — copies KV positions `[0, pos_end)` from `src_slot` → `dst_slot`.
+
+**Implementation (sibling `../llama.cpp`):**
+
+- Handler enqueues `SERVER_TASK_TYPE_SLOT_SEQ_COPY` on the server task queue.
+- Task calls `llama_memory_seq_cp` after clearing the target sequence range.
+- Response: `{"ok": true, "pos_end": N}`.
+
+**Enable:** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` (implies prefix block pool). Rebuild llama-server after pull — older binaries return HTTP 404.
+
+```bash
+curl -s -X POST http://127.0.0.1:8082/kv/seq-copy \
+  -H 'Content-Type: application/json' \
+  -d '{"src_slot":0,"dst_slot":1,"pos_end":512}'
+```
+
+Offline gate (no GPU): `./scripts/l3_radix_prefix_smoke.sh`.
 
 ---
 
@@ -143,6 +191,13 @@ Prefix cache golden trace (includes epoch in JSONL when tracing):
 ZEROLLAMA_PREFIX_CACHE_TRACE=1 ./scripts/l3_prefix_cache_trace_replay.sh
 ```
 
+Subprocess policy (no GPU):
+
+```bash
+cd runtime && python3 -m pytest tests/test_prefix_cache_subprocess.py \
+  tests/test_cuda_graph_invalidate.py -v
+```
+
 ---
 
 ## Deferred (non-goals today)
@@ -152,9 +207,9 @@ ZEROLLAMA_PREFIX_CACHE_TRACE=1 ./scripts/l3_prefix_cache_trace_replay.sh
 | `DecodeGraphCache.lookup()` returning a handle | llama.cpp has no per-slot capture export yet; ggml keys graphs internally |
 | Per-slot graph capture in zerollama | Depends on upstream graph handle API or epoch-aware ggml keys |
 | Metal graph invalidation | No ggml-metal equivalent to `cuda_graphs.clear()` |
-| Subprocess epoch → llama-server HTTP invalidate | Separate process owns its own `llama_context`; wire when sidecar exposes hook |
+| Per-slot graph capture in zerollama | Depends on upstream graph handle API or epoch-aware ggml keys |
 
-**Taken (Jun 2026):** epoch scaffold, global epoch in capture key, `llama_context_cuda_graph_invalidate` in sibling llama.cpp, Python/native wiring, health probe, env kill-switch.
+**Taken (Jun 2026):** epoch scaffold, global epoch in capture key, `llama_context_cuda_graph_invalidate` in sibling llama.cpp, in-process Python/native wiring, **`POST /cuda-graph/invalidate`** for subprocess llama-server, health probe, env kill-switch.
 
 ---
 
@@ -164,9 +219,11 @@ ZEROLLAMA_PREFIX_CACHE_TRACE=1 ./scripts/l3_prefix_cache_trace_replay.sh
 |------|------|
 | `runtime/runtime/decode_graph_policy.py` | Epoch counters + bump API |
 | `runtime/runtime/decode_graph_cache.py` | Stub cache + health aggregation |
-| `runtime/runtime/kv/cuda_graph_invalidate.py` | Native/ctypes invalidation entry |
+| `runtime/runtime/kv/cuda_graph_invalidate.py` | Native/ctypes/HTTP invalidation entry |
+| `runtime/runtime/engine.py` | Subprocess `base_url` → POST on prefix-cache deny |
 | `runtime/runtime/llama_cpp_probe.py` | Sibling build flag probe |
 | `runtime/runtime/worker/libllama_ctypes.py` | `_prepare_seq_for_decode` → bump + ctx |
 | `runtime/native/kv_decode_loop.c` | C wrapper → `llama_context_cuda_graph_invalidate` |
+| `../llama.cpp/tools/server/server-context.cpp` | `POST /cuda-graph/invalidate` task handler |
 | `../llama.cpp/include/llama.h` | Public invalidate API |
 | `../llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu` | `ggml_backend_cuda_invalidate_graphs` |

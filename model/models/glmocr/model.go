@@ -32,6 +32,10 @@ type Model struct {
 
 var _ model.MultimodalProcessor = (*Model)(nil)
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 func New(c fs.Config) (model.Model, error) {
 	eosTokenID := int32(c.Uint("tokenizer.ggml.eos_token_id"))
 	eosTokenIDs := c.Ints("tokenizer.ggml.eos_token_ids")

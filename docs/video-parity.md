@@ -43,7 +43,8 @@ Document the exact model tag and clip source in your issue or PR when changing s
 | Template: flat images vs video spans | flat `images` + `video_spans` metadata | Gemma4 HF placeholders (`!RenderImgTags`) | upstream | |
 | Repeat `video_url` fetch | pooled HTTP + URL body LRU (32 / 30 m) | — | upstream CDN cache | |
 | Repeat clip ffmpeg skip | global expand LRU + session LRU w/ `prompt_cache_key` | — | upstream preprocessor cache | |
-| Preprocessed frames (no raw video) | skip ffmpeg when `video_spans` set | span validation | `processor_output` path | |
+| Preprocessed frames (no raw video) | skip ffmpeg when `video_spans` set; `padded_input_ids` runner inject (all native VLMs) | span validation | ollama-engine `precomputed_embedding` / `processor_output` (family matrix in [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) §7c–§7d) | upstream |
+| SGLang `enable_prefix_mm_cache` | session ViT overlay when `prompt_cache_key` set; warns if flag without key | — | server flag | set `prompt_cache_key` on agent threads |
 | OpenAI usage modality breakdown | `image_tokens`, `video_tokens`, `audio_tokens` (heuristic) | — | upstream | |
 | OpenAI session cache key | `/v1/chat/completions` `prompt_cache_key` + `options`; `/api/chat` `options` | — | Responses API field | |
 | Prefix KV visibility | `cached_tokens` in `prompt_tokens_details` | access log `cached_prompt_tokens` | upstream | |

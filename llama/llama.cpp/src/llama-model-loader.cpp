@@ -38,6 +38,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_F16:      return "F16";
         case LLAMA_FTYPE_MOSTLY_BF16:     return "BF16";
         case LLAMA_FTYPE_MOSTLY_Q1_0:     return "Q1_0";
+        case LLAMA_FTYPE_MOSTLY_Q1_0_g128: return "Q1_0_g128";
         case LLAMA_FTYPE_MOSTLY_Q4_0:     return "Q4_0";
         case LLAMA_FTYPE_MOSTLY_Q4_1:     return "Q4_1";
         case LLAMA_FTYPE_MOSTLY_Q5_0:     return "Q5_0";
@@ -147,7 +148,7 @@ namespace GGUFMeta {
             const enum gguf_type arr_type = gguf_get_arr_type(ctx, k);
             return ArrayInfo {
                 arr_type,
-                gguf_get_arr_n(ctx, k),
+                size_t(gguf_get_arr_n(ctx, k)),
                 arr_type == GGUF_TYPE_STRING ? nullptr : gguf_get_arr_data(ctx, k),
             };
         }
@@ -394,8 +395,6 @@ namespace GGUFMeta {
     }
 
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
-    template bool llama_model_loader::get_arr<std::array<int32_t, 512>>(enum llm_kv kid, std::array<int32_t, 512> & result, bool required);
-    template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
 
     template<typename T>
     bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
@@ -448,7 +447,7 @@ namespace GGUFMeta {
         }
 
         if (n > N_MAX) {
-            throw std::runtime_error(format("n > N_MAX: %u > %u for key %s", n, (uint32_t) N_MAX, key.c_str()));
+            throw std::runtime_error(format("n > N_MAX: %u > %u for key %s", (uint32_t) n, (uint32_t) N_MAX, key.c_str()));
         }
 
         if (gguf_get_kv_type(metadata, kid) == GGUF_TYPE_ARRAY) {
@@ -456,7 +455,10 @@ namespace GGUFMeta {
                 GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(metadata, kid);
 
             if (n != arr_info.length) {
-                throw std::runtime_error(format("key %s has wrong array length; expected %u, got %u", key.c_str(), n, (uint32_t) arr_info.length));
+                if (required) {
+                    throw std::runtime_error(format("key %s has wrong array length; expected %u, got %u", key.c_str(), n, (uint32_t) arr_info.length));
+                }
+                return false;
             }
 
             return get_arr(key, result, required);
@@ -505,9 +507,9 @@ namespace GGUFMeta {
     }
 
     // TODO: this is not very clever - figure out something better
-    template bool llama_model_loader::get_key_or_arr<std::array<int,      4>>  (enum llm_kv kid, std::array<int,      4>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int, 4>>(enum llm_kv kid, std::array<int, 4> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
-    template bool llama_model_loader::get_key_or_arr<std::array<float,    512>>(enum llm_kv kid, std::array<float,    512> & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<float, 512>>(enum llm_kv kid, std::array<float, 512> & result, uint32_t n, bool required);
 
 
 llama_model_loader::llama_model_loader(
@@ -528,6 +530,17 @@ llama_model_loader::llama_model_loader(
     if (getenv("LLAMA_TRACE")) {
         trace = atoi(getenv("LLAMA_TRACE"));
     }
+
+    #ifdef _WIN32
+        // Cap at MSVC's hard limit of 8192 - https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/setmaxstdio?view=msvc-160
+        #define _GGML_STDIO_TARGET 2048
+        int _setmaxstdio_ret = _setmaxstdio(_GGML_STDIO_TARGET);
+        if (_setmaxstdio_ret == -1) {
+            LLAMA_LOG_INFO("%s: failed to set max stdio to %d. (setmaxstdio returned -1)\n", __func__, _GGML_STDIO_TARGET);
+        } else {
+            LLAMA_LOG_INFO("%s: max stdio successfully set to %d\n", __func__, _setmaxstdio_ret);
+        }
+    #endif // _WIN32
 
     if (param_overrides_p != nullptr) {
         for (const struct llama_model_kv_override * p = param_overrides_p; p->key[0] != 0; p++) {
@@ -710,7 +723,18 @@ llama_model_loader::llama_model_loader(
     }
 
     n_kv      = gguf_get_n_kv(metadata);
-    n_tensors = weights_map.size();
+    // When loading from an in-memory gguf with no backing files:
+    //   - no_alloc=true (buffer load, e.g. llama_model_init_from_user with a complete gguf
+    //     such as test-model-load-buffer): the gguf metadata enumerates every tensor the arch
+    //     will create, so use gguf_get_n_tensors(metadata) as the expected count.
+    //   - no_alloc=false (sparse-fixture synth path, e.g. test-llama-archs which constructs
+    //     a gguf with a handful of placeholder tensors and lets the loader synthesize the
+    //     remainder): weights_map is empty and the metadata count is unrelated to what the
+    //     arch will actually create — match upstream's legacy behavior of 0 here so the
+    //     done_getting_tensors check is consistent with the no-count synth path below.
+    n_tensors = files.empty()
+        ? (no_alloc ? (int) gguf_get_n_tensors(metadata) : (int) weights_map.size())
+        : (int) weights_map.size();
 
     fver = (enum llama_fver) gguf_get_version(metadata);
 
@@ -771,8 +795,9 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_IQ4_NL:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_NL;  break;
             case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
-            case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;
-            case GGML_TYPE_Q1_0:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0;    break;
+            case GGML_TYPE_NVFP4:        ftype = LLAMA_FTYPE_MOSTLY_NVFP4;        break;
+            case GGML_TYPE_Q1_0:         ftype = LLAMA_FTYPE_MOSTLY_Q1_0;         break;
+            case GGML_TYPE_Q1_0_g128:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0_g128;    break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -1063,10 +1088,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         if (it == ctx_map.end()) {
             // one ggml context per buffer type
             int max_n_tensors = n_tensors;
-            max_n_tensors += 1;                   // duplicated output tensor
-            max_n_tensors += hparams.n_layer()*2; // duplicated rope freq tensors
+            max_n_tensors += 1;                 // duplicated output tensor
+            max_n_tensors += hparams.n_layer*2; // duplicated rope freq tensors
             if (files.empty()) {
-                max_n_tensors += hparams.n_layer()*256; // this should be well above what any model actually uses
+                max_n_tensors += hparams.n_layer*256; // this should be well above what any model actually uses
             }
             const size_t ctx_size = ggml_tensor_overhead()*max_n_tensors;
 
@@ -1231,6 +1256,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         const int64_t tid = gguf_find_tensor(metadata, tn.str().c_str());
         if (tid != -1) {
             type = gguf_get_tensor_type(metadata, tid);
+        } else if (no_alloc) {
+            if (flags & TENSOR_NOT_REQUIRED) {
+                return nullptr;
+            }
+
+            throw std::runtime_error(format("missing tensor '%s'", tn.str().c_str()));
         }
 
         // for tensors that are not required some of the dimensions can be invalid:
@@ -1256,6 +1287,27 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
         GGML_ASSERT(buft != nullptr);
         ggml_context * ctx = ctx_for_buft(buft);
+
+        if (flags & TENSOR_DUPLICATED) {
+            ggml_tensor * t = ggml_get_tensor(ctx, tn.str().c_str());
+            if (t) {
+                return t;
+            }
+        } else if (tid != -1) {
+            // Pair this increment with the n_tensors selection above:
+            //   - no_alloc=true (buffer load): every create_tensor() reaching the synth
+            //     branch must find tid != -1 (otherwise the no_alloc throw above fires),
+            //     so this increment runs for every created tensor and matches
+            //     n_tensors = gguf_get_n_tensors(metadata).
+            //   - no_alloc=false (sparse-fixture path used by test-llama-archs): tid == -1
+            //     for every arch tensor synthesized from the sparse gguf, so this branch
+            //     is skipped and n_created stays at 0 — matching the n_tensors = 0
+            //     legacy value above. Without this gate, the synthesized placeholders
+            //     inflate n_created past gguf_get_n_tensors() and done_getting_tensors
+            //     throws "wrong number of tensors".
+            n_created++;
+        }
+
         ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
         ggml_set_name(ret, tn.str().c_str());
         return ret;

@@ -21,10 +21,13 @@ SGLang/Qwen-VL clients size `padded_input_ids` from a **client-side** patch grid
 | **Preflight / usage** | `VisionTokensFromGridTHW([T,H,W], merge)` on `video_spans` — preflight, OpenAI `prompt_tokens_details` |
 | **Expansion cache** | `grid_thw` stored with PNG frames in global + session LRU |
 | **Runner payload** | `llm.ImageData.GridTHW` optional `[1,H,W]` per raster (`server/modality/grid_thw_raster.go`) |
-| **llamarunner seam** | `MtmdContext.MultimodalTokenize(..., gridTHW)` logs when hint present; **not** forwarded to mtmd C API yet |
-| **Observability** | `vision grid hint match|mismatch` debug logs after encode — llamarunner (mtmd) and **ollama-engine** (post-`PostTokenize` embed counts) |
+| **llamarunner seam** | `MtmdContext.MultimodalTokenize(..., gridTHW)` forwards hint via `mtmd_bitmap_set_grid_hint` |
+| **mtmd forward (Jun 2026)** | M-RoPE models: hint resize to `W*patch x H*patch`, skip `smart_resize`; log `grid_thw hint resize` |
+| **Observability** | `vision grid hints` summary; **`vision grid hint match`** at Info when client grid aligns with mtmd output |
 
-**Not shipped:** mtmd vision **forward** or M-RoPE positions do **not** read client hints. mtmd preprocesses each PNG and derives patch grid internally (`mtmd_tokenize` → clip graph).
+**Client vs server grid:** Only **client-origin** `grid_thw` on pre-expanded `video_spans` is forwarded to mtmd (`VideoSpan.GridTHWExplicit`). Server ffmpeg estimates populate `grid_thw` on spans for **preflight/usage** but do not override ViT resize (Go smart_resize ≠ mtmd smart_resize).
+
+**Not shipped:** M-RoPE **decoder positions** still derived from mtmd output dimensions (aligned when hint matches). Non–M-RoPE families ignore hints. llava-uhd tiling unchanged.
 
 ---
 
@@ -73,7 +76,7 @@ MTMD_API void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bmp, const int32_t grid_th
 ## Zerollama wiring checklist (post-upstream)
 
 1. Bump `LLAMA_CPP_VERSION` + regen Metal embed if needed.
-2. Replace debug log in `llama.MtmdContext.MultimodalTokenize(..., gridTHW)` with `mtmd_bitmap_set_grid_hint` (or equivalent) — **Go signature already accepts `gridTHW`**; llamarunner passes `img.GridTHW` from `encodeImageChunks` / padded inject.
+2. ~~Replace debug log in `llama.MtmdContext.MultimodalTokenize(..., gridTHW)` with `mtmd_bitmap_set_grid_hint`~~ **Done (Jun 2026)** — only **client explicit** grids forwarded via `GridTHWPerRaster` + `VideoSpan.GridTHWExplicit`.
 3. Remove or downgrade `vision grid hint mismatch` logs once hints are authoritative.
 4. E2E: `RUN_E2E_VIDEO_AGENT_INFER=1` with pre-expanded `video_spans` + `grid_thw` on Qwen3-VL; optional `VIDEO_AGENT_INFER_PREPROC=1` for padded infer leg.
 

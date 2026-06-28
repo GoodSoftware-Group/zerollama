@@ -160,9 +160,15 @@ On llama-server start, `evict_orphaned_cache_dirs(keep_model_hash=…)` TTL-swee
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `ZEROLLAMA_LLAMA_CACHE` | `1` | `0` disables key resolution, slot pinning, and `--slot-save-path` |
-| `ZEROLLAMA_LLAMA_CACHE_DISK` | `1` | `0` disables in-process `llama_state_seq_*` disk save/load (RAM resume still works) |
+| `ZEROLLAMA_LLAMA_CACHE_DISK` | smart | Unset: off on Darwin, on for Linux subprocess; `0`/`1` overrides |
 | `ZEROLLAMA_LLAMA_CACHE_ROOT` | (XDG / `~/.cache/...`) | Override slot save root |
 | `ZEROLLAMA_LLAMA_CACHE_TTL_MS` | `3600000` (1h) | Disk slot file TTL for llama-server `slot_*.bin` names |
+
+**YAML profile (preferred for agents):** set `l3:` in runtime config instead of many env vars. Example: `runtime/configs/l3_agent_subprocess.yaml` — `radix_share`, `block_size`, `trace`, `lmcache_uri`. Or one env: **`ZEROLLAMA_L3_PROFILE=agent`** (loads that YAML when `ZEROLLAMA_RUNTIME_CONFIG` unset). Env still overrides any field.
+
+**Debug tier:** **`ZEROLLAMA_DEBUG=l3`** enables prefix-cache JSONL trace + decode-graph trace logging without separate `ZEROLLAMA_PREFIX_CACHE_TRACE` / `ZEROLLAMA_DECODE_GRAPH_TRACE`. Add `infer` for phase-15 infer spans.
+
+**Health:** `curl -s :8081/health | jq .llama_cache.runtime_env` — effective L3 profile, block pool, disk default, `n_parallel` hint.
 
 ---
 
@@ -201,15 +207,20 @@ Check `GET /health` → `llama_cache.policy`:
 
 **Rules (Jun 2026):**
 
-- **Draft spec** (`ZEROLLAMA_SPEC_METHOD=eagle3|mtp|dflash`, …): `allow_cache_prompt=false`, `allow_disk_persist=false`. Generate with `prompt_cache_key` still works — cache is simply skipped.
-- **Pure sliding-window:** `cache_prompt` disabled when prompt length exceeds `effective_window`. **Hybrid** models keep cache enabled (full-attention layers still benefit).
-- **Ngram / none spec:** prefix cache remains enabled when `ZEROLLAMA_LLAMA_CACHE=1`.
+- **Draft spec** (`ZEROLLAMA_SPEC_METHOD=eagle3|mtp|dflash`, …): RAM `cache_prompt` **enabled**; disk slot blobs **disabled**; last prefix block dropped on resume (vLLM `drop_eagle_block`). **Ngram / none spec:** prefix cache remains enabled when `ZEROLLAMA_LLAMA_CACHE=1`.
+- **`cache_salt`:** pass `options.cache_salt` (or `eliza.cacheSalt`, env `ZEROLLAMA_CACHE_SALT`) to isolate tenants sharing the same conversation id.
+- **SWA sparse retention:** `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` — optional aligned checkpoints for pure SWA models (vLLM analog).
+- **Hybrid coordinator (Jun 2026):** Gemma-style full+SWA layer groups; coordinated `cache_prompt` gate via min SWA window (`kv/hybrid_kv_coordinator.py`).
+- **Prefix block pool (Jun 2026):** auto-on when L3 + `n_parallel > 1`, Radix share, or LMCache URI; hash-chained blocks verify prefix integrity before reuse. **`ZEROLLAMA_PREFIX_BLOCK_POOL=0`** disables. Optional **`ZEROLLAMA_LMCACHE_URI=file://…`** persists block metadata for restart hydration.
+- **Cross-slot Radix share (Jun 2026):** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` — cold target slots seed KV from a donor slot with matching prefix block chain (`llama_memory_seq_cp` in-process; `POST /kv/seq-copy` on llama-server). **Why:** L3 pins one slot per cache key; agents sharing a system prompt but different keys otherwise repeat prefill. Requires **vendor** llama-server (patch 0017). Hybrid models skip `seq_cp` in engine. Operator guide: [radix-prefix-share.md](./radix-prefix-share.md).
 
-Smoke: `./scripts/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py`.
+Smoke: `./scripts/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Block pool: `./scripts/l3_prefix_block_pool_smoke.sh`. Radix: `./scripts/l3_radix_prefix_smoke.sh` (`L3_RADIX_LIVE=1` for live gate). Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py` + `kv/prefix_block_pool.py` + `kv/radix_prefix_share.py`.
 
-**Trace replay (Jun 2026):** set `ZEROLLAMA_PREFIX_CACHE_TRACE=1` to record per-request `(cache_prompt, resume_pos, seq_pos)` JSONL under `~/.cache/zerollama/prefix-cache-traces/`. Replay offline with `prefix_cache_trace.replay_trace_file()` or `./scripts/l3_prefix_cache_trace_replay.sh` (golden fixture, no GPU).
+**Trace replay (Jun 2026):** set `ZEROLLAMA_PREFIX_CACHE_TRACE=1` to record per-request `(cache_prompt, resume_pos, seq_pos)` JSONL under `~/.cache/zerollama/prefix-cache-traces/`. Trace rows may include `prefix_block_matched_tokens` when block pool is enabled; **`radix_seed`** after successful cross-slot copy (`radix_source_slot`, `radix_copy_tokens`). Replay offline with `prefix_cache_trace.replay_trace_file()` or `./scripts/l3_prefix_cache_trace_replay.sh` (golden fixture, no GPU).
 
-**Health fields (Jun 2026):** `/health.llama_cache.kv_cache_spec`, `.spec_bind`, `.decode_graph.global_epoch`; `/health.kv_resume.prefix_cache_spec`.
+**Health fields (Jun 2026):** `/health.llama_cache.kv_cache_spec`, `.spec_bind`, `.decode_graph.global_epoch`, `.prefix_block_pool`; `/health.kv_resume.prefix_cache_spec` + `.prefix_block_pool`.
+
+**Subprocess (llama-server):** draft drop-last-block is **in-process only**. When eagle3/mtp/dflash would drop the last KV block, subprocess sets `cache_prompt=false` for that turn, bumps decode-graph epoch, and POSTs **`/cuda-graph/invalidate`** on the llama-server child. **Why HTTP:** zerollama Python cannot ctypes into the server process — ggml graph clear must run where `ctx_tgt` lives.
 
 **In-process defense-in-depth (Jun 2026):** even if `cache_prompt=true` reaches libllama with a stale owner match, `_prepare_seq_for_decode` re-checks `KVCacheSpec` and clears the slot when SWA window is exceeded (`spec_bind_swa_block` trace + decode graph epoch bump).
 
@@ -217,10 +228,12 @@ Smoke: `./scripts/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draf
 
 **Why:** clearing a slot changes KV contents but ggml-cuda may still hold a captured decode graph keyed by compute topology (not sequence id). Stale graph replay after L3 prefix invalidation is a correctness bug on CUDA; vLLM breaks graphs on KV change — zerollama does the same via epoch bumps + native ggml clear.
 
-On each slot clear (`cache_prompt_disabled`, `spec_bind_swa_block`, `slot_clear`) or session close:
+On each slot clear (`cache_prompt_disabled`, `spec_bind_swa_block`, `slot_clear`, subprocess SWA/draft deny) or session close:
 
 1. **`decode_graph_policy.bump_decode_graph_epoch`** — increments slot + global epoch (future capture key: `slot:slot_epoch:global_epoch`).
-2. **`llama_context_cuda_graph_invalidate(ctx)`** — when in-process `ctx_ptr` is wired, clears ggml’s per-backend CUDA graph map.
+2. **ggml CUDA graph clear** — in-process: `llama_context_cuda_graph_invalidate(ctx)` via native/ctypes; subprocess: `POST {llama-server}/cuda-graph/invalidate` (task queue → same API on `ctx_tgt`).
+
+**Why two transports:** epoch is process-local; ggml's graph map lives in whichever process owns the `llama_context` (runtime in-process vs llama-server subprocess).
 
 Check health:
 
@@ -233,6 +246,8 @@ curl -s :8081/health | jq '.llama_cache.decode_graph'
 | `global_epoch` / `slot_epochs` | Invalidation generation counters |
 | `capture_ready` | `false` until native graph capture is linked |
 | `llama_cpp.graphs_runtime_ready` | Sibling build has CUDA + graphs enabled and env not disabled |
+
+**Subprocess smoke (optional):** with llama-server running, `curl -s -X POST http://127.0.0.1:8082/cuda-graph/invalidate` → `{"ok":true,"backends_cleared":N}`. **Why verify:** older llama-server binaries lack the route — epoch bumps still run but ggml graphs are not cleared until rebuild.
 
 **Operator:** rebuild sibling `../llama.cpp` after pull — `./scripts/build_llama_server.sh` (CUDA: `-DGGML_CUDA_GRAPHS=ON`). Kill-switch: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. **Metal:** invalidate API returns 0 backends; epoch still bumps for trace/future scaffold.
 

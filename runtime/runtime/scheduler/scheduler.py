@@ -37,6 +37,8 @@ class Request:
     kv_slot: int | None = None
     # L3: stable session key from request options (eliza conversationId, etc.).
     prompt_cache_key: str | None = None
+    # vLLM cache_salt — tenant isolation for slot hash + in-process owner key.
+    cache_salt: str | None = None
     # When True, kv_slot was derived from prompt_cache_key; llama-server keeps KV
     # after complete() — allocator releases tracking only, not llama slot contents.
     slot_pinned: bool = False

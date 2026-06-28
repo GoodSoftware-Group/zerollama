@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
@@ -202,22 +203,10 @@ func applyDarwinServeDefaults(repoRoot string) {
 }
 
 func applyDarwinLlamaCppEnv(repoRoot string) {
-	if strings.TrimSpace(os.Getenv("LLAMA_CPP_ROOT")) != "" {
-		return
+	for _, msg := range llm.ApplyUnifiedLlamaCppEnv() {
+		slog.Info("darwin sidecar: unified llama.cpp env", "detail", msg)
 	}
-	llamaRoot := filepath.Clean(filepath.Join(repoRoot, "..", "llama.cpp"))
-	if _, err := os.Stat(filepath.Join(llamaRoot, "CMakeLists.txt")); err != nil {
-		return
-	}
-	_ = os.Setenv("LLAMA_CPP_ROOT", llamaRoot)
-	lib := filepath.Join(llamaRoot, "build", "bin", "libllama.dylib")
-	if _, err := os.Stat(lib); err == nil && strings.TrimSpace(os.Getenv("LLAMA_CPP_LIB")) == "" {
-		_ = os.Setenv("LLAMA_CPP_LIB", lib)
-	}
-	serverBin := filepath.Join(llamaRoot, "build", "bin", "llama-server")
-	if _, err := os.Stat(serverBin); err == nil && strings.TrimSpace(os.Getenv("LLAMA_SERVER_BIN")) == "" {
-		_ = os.Setenv("LLAMA_SERVER_BIN", serverBin)
-	}
+	_ = repoRoot // unified root resolves via llm.UnifiedLlamaCppRoot / reporoots
 }
 
 func darwinSidecarListen() (host string, port int) {

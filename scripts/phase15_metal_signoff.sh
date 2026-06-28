@@ -26,8 +26,7 @@ source "${ROOT}/scripts/macos_runtime_serve_lib.sh"
 # shellcheck source=scripts/phase15_runtime_kv_env.sh
 source "${ROOT}/scripts/phase15_runtime_kv_env.sh"
 
-LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
-export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dylib}"
+macos_export_llama_cpp_paths
 export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_ROOT}/build/bin/llama-server}"
 phase15_runtime_kv_env_apply
 

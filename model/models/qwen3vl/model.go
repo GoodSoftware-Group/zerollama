@@ -195,3 +195,7 @@ func init() {
 	model.Register("qwen3vl", New)
 	model.Register("qwen3vlmoe", New)
 }
+
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)

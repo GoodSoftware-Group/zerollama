@@ -8,10 +8,16 @@ cd "${ROOT}/runtime"
 echo "== Phase 15: llama-kv-ext pin check =="
 "${ROOT}/scripts/phase15_llama_kv_ext_pin_check.sh"
 
+echo "== Phase 15: llama.cpp patch doctor =="
+"${ROOT}/scripts/llama_patch_doctor.sh"
+
 echo "== Phase 15: build native extension (in-tree) =="
 # WHY ZEROLLAMA_KV_DECODE_LOOP=0 on CI default: GitHub runners have no libllama;
-# auto-link (v25) is skipped. GPU sign-off scripts build with libllama present.
-ZEROLLAMA_KV_DECODE_LOOP="${ZEROLLAMA_KV_DECODE_LOOP:-0}" python3 setup.py build_ext --inplace >/dev/null
+# auto-link (v25) is skipped. GPU sign-off scripts rebuild linked ext (clean build/).
+(
+  cd "${ROOT}/runtime"
+  ZEROLLAMA_KV_DECODE_LOOP="${ZEROLLAMA_KV_DECODE_LOOP:-0}" python3 setup.py build_ext --inplace >/dev/null
+)
 
 echo "== Phase 15: KV pytest (native + bind + physical + tick) =="
 PYTHONPATH=. python3 -m pytest \
@@ -46,6 +52,10 @@ PYTHONPATH=. python3 -m pytest \
   tests/test_decode_graph_policy.py \
   tests/test_subprocess_slot_state.py \
   tests/test_cache_bridge.py \
+  tests/test_prefix_block_pool.py \
+  tests/test_radix_prefix_share.py \
+  tests/test_radix_seq_copy.py \
+  tests/test_radix_engine_guard.py \
   -q
 
 echo "== Phase 15: health KV smoke =="

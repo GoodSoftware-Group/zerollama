@@ -10,8 +10,8 @@ func TestGridTHWPerRaster_stillsAndVideoFrames(t *testing.T) {
 	msg := api.Message{
 		Images: make([]api.ImageData, 6),
 		VideoSpans: []api.VideoSpan{
-			{FrameCount: 3, GridTHW: []int{3, 24, 32}},
-			{FrameCount: 1, GridTHW: []int{1, 16, 16}},
+			{FrameCount: 3, GridTHW: []int{3, 24, 32}, GridTHWExplicit: true},
+			{FrameCount: 1, GridTHW: []int{1, 16, 16}, GridTHWExplicit: true},
 		},
 	}
 	got := GridTHWPerRaster(msg)
@@ -29,6 +29,19 @@ func TestGridTHWPerRaster_stillsAndVideoFrames(t *testing.T) {
 	}
 	if len(got[5]) != 3 || got[5][1] != 16 || got[5][2] != 16 {
 		t.Fatalf("clip2 frame grid=%v", got[5])
+	}
+}
+
+func TestGridTHWPerRaster_skipsServerEstimate(t *testing.T) {
+	msg := api.Message{
+		Images: make([]api.ImageData, 2),
+		VideoSpans: []api.VideoSpan{
+			{FrameCount: 2, GridTHW: []int{2, 8, 8}}, // ffmpeg estimate, not explicit
+		},
+	}
+	got := GridTHWPerRaster(msg)
+	if got[0] != nil || got[1] != nil {
+		t.Fatalf("server estimate must not forward to runner: %v", got)
 	}
 }
 

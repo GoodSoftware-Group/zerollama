@@ -226,6 +226,12 @@ func runDoctorFix(repo string) error {
 		}
 	}
 	if runtime.GOOS == "darwin" && os.Getenv("DOCTOR_FIX_BUILD") != "0" {
+		specOK, filesOK, _ := doctorANESourceMarkers(doctorLlamaCppRootForANE(repo))
+		if !specOK || !filesOK {
+			if err := doctorSyncANEDraftHook(repo); err != nil {
+				return err
+			}
+		}
 		if doctorFindLibLlama(repo) == "" {
 			if err := doctorEnsureLlamaCppSibling(repo); err != nil {
 				return err
@@ -273,6 +279,7 @@ func runDoctorChecks(repo string) []doctorCheck {
 	out = append(out, doctorCheckGo())
 	out = append(out, doctorCheckEdgeBuild())
 	out = append(out, doctorCheckGgmlRunner())
+	out = append(out, doctorCheckLlamaCppUnified(repo))
 	out = append(out, doctorCheckLlamaServer(repo))
 	if runtime.GOOS == "darwin" {
 		out = append(out, doctorCheckMacCGO(repo))
@@ -290,6 +297,7 @@ func runDoctorChecks(repo string) []doctorCheck {
 		out = append(out, doctorCheckSidecarHealth())
 		out = append(out, doctorCheckTextGGUF(repo))
 		out = append(out, doctorCheckANE(repo))
+		out = append(out, doctorCheckANEDraftHook(repo))
 		out = append(out, doctorCheckFlashMoE(repo))
 	} else {
 		out = append(out, doctorCheck{
@@ -716,6 +724,26 @@ func doctorCheckGgmlRunner() doctorCheck {
 	}
 }
 
+func doctorCheckLlamaCppUnified(repo string) doctorCheck {
+	_ = repo
+	report := llm.LlamaCppUnificationReport()
+	status := "ok"
+	if report.Warn {
+		status = "warn"
+	}
+	if report.UnifiedRoot == "" {
+		status = "warn"
+		report.Detail = "unified llama.cpp not resolved; run ./scripts/rebase_vendor_unified.sh --sync or ./scripts/ensure_llama_cpp_sibling.sh"
+		report.FixHint = "./scripts/build_llama_server.sh"
+	}
+	return doctorCheck{
+		Name:    "llama.cpp unified",
+		Status:  status,
+		Detail:  report.Detail,
+		FixHint: report.FixHint,
+	}
+}
+
 func doctorCheckLlamaServer(repo string) doctorCheck {
 	_ = repo
 	path, err := llm.FindLlamaServer()
@@ -727,7 +755,7 @@ func doctorCheckLlamaServer(repo string) doctorCheck {
 		case envconfig.EdgeMode() || envconfig.LlamaServerBackendExplicit():
 			detail += " (required for current backend policy)"
 		default:
-			detail += " (optional; Mac default uses ggml Metal)"
+			detail += " (optional; Mac default uses ggml Metal; spec tags auto-route when discoverable)"
 		}
 		return doctorCheck{
 			Name:   "llama-server",
@@ -746,8 +774,8 @@ func doctorCheckLlamaServer(repo string) doctorCheck {
 	case runtime.GOOS == "linux" && !envconfig.LlamaServerBackendDisabled():
 		status = "warn"
 		fix = "./scripts/build_llama_server.sh — plain Linux serve sets ZEROLLAMA_LLAMA_SERVER=auto when discoverable"
-	default:
-		detail = "not discovered (Mac default uses ggml; use --llama-server-backend or ./scripts/serve_llama_server_backend.sh)"
+		default:
+		detail = "not discovered (Mac plain GGUF uses ggml; build llama-server for DFlash/MTP/n-gram auto-route)"
 	}
 	return doctorCheck{
 		Name:    "llama-server",

@@ -26,15 +26,25 @@ class DecodeGraphCache:
         """Return a captured graph handle, or ``None`` when not ready."""
         return None
 
-    def invalidate_slot(self, slot_id: int, *, reason: str, ctx_ptr: int | None = None) -> int:
-        """Bump epoch (+ ggml invalidate when ``ctx_ptr`` wired).
+    def invalidate_slot(
+        self,
+        slot_id: int,
+        *,
+        reason: str,
+        ctx_ptr: int | None = None,
+        base_url: str | None = None,
+    ) -> int:
+        """Bump epoch (+ ggml invalidate when ``ctx_ptr`` or ``base_url`` wired).
 
-        WHY ctx_ptr optional: subprocess llama-server owns its own context; in-process
-        Phase 15 passes the live ``llama_context`` pointer from ``libllama_ctypes``.
+        WHY ctx_ptr optional: subprocess llama-server owns its own context; pass
+        ``base_url`` so ``cuda_graph_invalidate`` POSTs to the child process.
+        WHY in-process passes ctx_ptr: Phase 15 calls native invalidate directly.
         """
         from runtime.decode_graph_policy import bump_decode_graph_epoch
 
-        return bump_decode_graph_epoch(slot_id, reason=reason, ctx_ptr=ctx_ptr)
+        return bump_decode_graph_epoch(
+            slot_id, reason=reason, ctx_ptr=ctx_ptr, base_url=base_url
+        )
 
     def is_capture_ready(self) -> bool:
         return False

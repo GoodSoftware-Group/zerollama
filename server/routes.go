@@ -248,6 +248,104 @@ func usesOllamaRenderedChat(m *Model) bool {
 	return m != nil && (m.Config.Renderer != "" || m.Config.Parser != "" || shouldUseHarmony(m))
 }
 
+type chatExecutionMode int
+
+// chatExecutionMode controls whether /api/generate and /api/chat send raw messages
+// to llama-server (native template) or pre-rendered prompts from Go parsers.
+//
+// WHY native mode on llama-server (upstream v0.30.11): upstream dropped the
+// Python middleman and applies chat templates inside llama-server for plain GGUF.
+// Go still renders for parser/renderer/harmony/MLX models; native mode avoids
+// double templating and keeps merge parity with ollama/ollama.
+const (
+	chatExecutionModeNative chatExecutionMode = iota
+	chatExecutionModeRendered
+)
+
+func chatModeForModel(m *Model) chatExecutionMode {
+	if m.IsMLX() || usesOllamaRenderedChat(m) {
+		return chatExecutionModeRendered
+	}
+	return chatExecutionModeNative
+}
+
+func optionsForPrompt(opts *api.Options, runner llm.LlamaServer) *api.Options {
+	if opts == nil || runner == nil {
+		return opts
+	}
+	if ctxLen := runner.ContextLength(); ctxLen > 0 && opts.NumCtx > ctxLen {
+		copied := *opts
+		copied.NumCtx = ctxLen
+		return &copied
+	}
+	return opts
+}
+
+func prepareNativeChatRequest(ctx context.Context, m *Model, r llm.LlamaServer, opts *api.Options, nativeReq llm.ChatRequest, truncate bool) (llm.ChatRequest, error) {
+	var err error
+	nativeReq.Messages, err = truncateNativeChatMessages(ctx, m, r, optionsForPrompt(opts, r), nativeReq, truncate)
+	return nativeReq, err
+}
+
+func truncateNativeChatMessages(ctx context.Context, m *Model, r llm.LlamaServer, opts *api.Options, req llm.ChatRequest, truncate bool) ([]api.Message, error) {
+	if !truncate || opts == nil || opts.NumCtx <= 0 || len(req.Messages) <= 1 {
+		return req.Messages, nil
+	}
+
+	lastMsgIdx := len(req.Messages) - 1
+	currMsgIdx := 0
+	var system []api.Message
+
+	for i := 0; i <= lastMsgIdx; i++ {
+		system = system[:0]
+		for j := range i {
+			if req.Messages[j].Role == "system" {
+				system = append(system, req.Messages[j])
+			}
+		}
+
+		renderReq := req
+		renderReq.Messages = append(slices.Clone(system), req.Messages[i:]...)
+		prompt, err := r.ApplyChatTemplate(ctx, renderReq)
+		if err != nil {
+			return nil, err
+		}
+
+		tokens, err := r.Tokenize(ctx, prompt)
+		if err != nil {
+			return nil, err
+		}
+
+		ctxLen := len(tokens)
+		if m != nil && m.ProjectorPaths != nil {
+			for _, msg := range renderReq.Messages {
+				ctxLen += 768 * len(msg.Images)
+			}
+		}
+
+		if ctxLen <= opts.NumCtx {
+			currMsgIdx = i
+			break
+		}
+		if i == lastMsgIdx {
+			currMsgIdx = lastMsgIdx
+			break
+		}
+	}
+
+	if currMsgIdx > 0 {
+		slog.Debug("truncating native chat messages which exceed context length", "truncated", currMsgIdx)
+	}
+
+	system = system[:0]
+	for j := range currMsgIdx {
+		if req.Messages[j].Role == "system" {
+			system = append(system, req.Messages[j])
+		}
+	}
+	return append(slices.Clone(system), req.Messages[currMsgIdx:]...), nil
+}
+
 // scheduleRunner schedules a runner after validating inputs such as capabilities and model options.
 // It returns the allocated runner, model instance, consolidated options, and optional ggml num_ctx
 // clamp metadata if successful and error otherwise.
@@ -591,18 +689,58 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		// support for generate
 		if values.Messages != nil && values.Suffix == "" && req.Template == "" {
 			genTruncate := req.Truncate == nil || *req.Truncate
-			tokenBudget, detok := chatPromptLimits(m, opts, genTruncate, r.ContextLength(), r.Detokenize)
-			prompt, images, messagesDropped, promptTokens, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
-			if err != nil {
-				abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
-				return
+			if m.HasChatTemplate && chatModeForModel(m) == chatExecutionModeNative {
+				nativeReq, err := prepareNativeChatRequest(c.Request.Context(), m, r, opts, llm.ChatRequest{
+					Messages:    values.Messages,
+					Format:      req.Format,
+					Options:     opts,
+					Think:       req.Think,
+					Shift:       req.Shift == nil || *req.Shift,
+					Logprobs:    req.Logprobs,
+					TopLogprobs: req.TopLogprobs,
+				}, genTruncate)
+				if err != nil {
+					slog.Error("chat template prompt error", "error", err)
+					var serr api.StatusError
+					if errors.As(err, &serr) {
+						abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, serr.StatusCode, serr.ErrorMessage)
+					} else {
+						abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+					}
+					return
+				}
+				nativeReq.Messages, images, err = imageTaggedMessages(m, nativeReq.Messages, 0, true)
+				if err != nil {
+					abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+					return
+				}
+				prompt, err = r.ApplyChatTemplate(c.Request.Context(), nativeReq)
+				if err != nil {
+					var serr api.StatusError
+					if errors.As(err, &serr) {
+						abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, serr.StatusCode, serr.ErrorMessage)
+					} else {
+						abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+					}
+					return
+				}
+				if req.Context != nil {
+					b.WriteString(prompt)
+					prompt = b.String()
+				}
+			} else {
+				tokenBudget, detok := chatPromptLimits(m, opts, genTruncate, r.ContextLength(), r.Detokenize)
+				prompt, images, messagesDropped, promptTokens, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
+				if err != nil {
+					abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+					return
+				}
+				if req.Context != nil {
+					b.WriteString(prompt)
+					prompt = b.String()
+				}
+				leadingBOS = leadingBOSForModel(m)
 			}
-			// TEMP(drifkin): req.Context will be removed very soon, but we're temporarily supporting it in this flow here
-			if req.Context != nil {
-				b.WriteString(prompt)
-				prompt = b.String()
-			}
-			leadingBOS = leadingBOSForModel(m)
 		} else {
 			// legacy flow
 			if err := tmpl.Execute(&b, values); err != nil {
@@ -676,7 +814,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			LeadingBOS:      leadingBOS,
 			Logprobs:        req.Logprobs,
 			TopLogprobs:     req.TopLogprobs,
-			PromptCacheKey:  modality.ExtractPromptCacheKey(req.Options),
+			PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
+			SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
 		}, func(cr llm.CompletionResponse) {
 			if emitMLXPrefillGenerateStatus(ch, req.Model, cr.PrefillProcessed, cr.PrefillTotal, cr.Content, cr.Done) {
 				return
@@ -2682,6 +2821,20 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			return
 		}
 	}
+	imgLim, vidLim, audLim := envconfig.LimitMMDataPerRequest()
+	if err := modality.PreflightLimitMMDataPerRequest(modality.LimitMMDataPerRequest{
+		Image: imgLim, Video: vidLim, Audio: audLim,
+	}, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// WHY before ffmpeg: cheap hint for misconfigured SGLang clients; preprocessed preflight
+	// catches invalid tensor shapes before ViT/subprocess work.
+	modality.WarnPrefixMMCacheWithoutSessionKey(&req)
+	if err := modality.PreflightPreprocessedInputs(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := modality.ExpandVideosInChatRequest(c.Request.Context(), policy, &req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2924,7 +3077,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				LeadingBOS:      leadingBOSForModel(m),
 				Logprobs:        req.Logprobs,
 				TopLogprobs:     req.TopLogprobs,
-				PromptCacheKey:  modality.ExtractPromptCacheKey(req.Options),
+				PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
+				SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
 				Gemma4PaddedMedia: gemma4PaddedMedia,
 			}, func(r llm.CompletionResponse) {
 				if emitMLXPrefillStatus(ch, req.Model, r.PrefillProcessed, r.PrefillTotal, r.Content, r.Done) {

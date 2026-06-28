@@ -7,7 +7,7 @@ cd "$ROOT"
 
 if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
   echo "zerollama server is not running on :11434 — start it first:" >&2
-  echo "  ./zerollama serve --llama-server-backend   # required for GGUF speculation on Mac" >&2
+  echo "  ./zerollama serve   # spec tags auto-route to llama-server when binary present" >&2
   exit 1
 fi
 
@@ -46,10 +46,14 @@ else
 fi
 
 echo ""
-echo "Use with llama-server on Mac:"
+echo "Use with llama-server on Mac (spec models auto-route when binary is built):"
+echo "  ./scripts/build_ollama_llama_server_darwin.sh   # once, if not already on disk"
+echo "  ./zerollama serve"
+echo ""
+echo "Or route all GGUF through llama-server:"
 echo "  ./zerollama serve --llama-server-backend"
 echo ""
 echo "Tags:"
 echo "  qwen3.6-mtp              — embedded MTP"
 echo "  eliza-1-*-ngram          — n-gram (no draft file)"
-echo "  eliza-1-*-dflash         — Eliza DFlash drafter (draft-eagle3)"
+echo "  eliza-1-*-dflash         — Eliza DFlash drafter (spec_type dflash; needs unified llama-server @ LLAMA_CPP_COMMIT)"

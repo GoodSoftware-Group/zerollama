@@ -32,10 +32,11 @@ _macos_wait_http() {
   local label="$1"
   local url="$2"
   local max="${3:-30}"
+  local curl_max="${4:-2}"
   local i
   echo -n "waiting for ${label} (${url})"
   for ((i = 1; i <= max; i++)); do
-    if curl -sf -m 2 "${url}" >/dev/null 2>&1; then
+    if curl -sf -m "${curl_max}" "${url}" >/dev/null 2>&1; then
       echo " ok"
       return 0
     fi
@@ -70,6 +71,33 @@ macos_runtime_urls() {
   export ZEROLLAMA_RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
   _MACOS_RT_HOST="$(runtime_url_host "${ZEROLLAMA_RUNTIME_URL}")"
   _MACOS_RT_PORT="$(runtime_url_port "${ZEROLLAMA_RUNTIME_URL}" 8081)"
+}
+
+macos_resolve_llama_cpp_root() {
+  if [[ -n "${LLAMA_CPP_ROOT:-}" ]]; then
+    echo "${LLAMA_CPP_ROOT}"
+    return 0
+  fi
+  local pin
+  pin="$(grep '^FETCH_HEAD=' "${_MACOS_RT_ROOT}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo c84b3020)"
+  local vendor="${_MACOS_RT_ROOT}/vendor/llama-cpp-${pin}"
+  if [[ -f "${vendor}/CMakeLists.txt" && -f "${vendor}/build/bin/libllama.dylib" ]]; then
+    echo "${vendor}"
+    return 0
+  fi
+  echo "${_MACOS_RT_ROOT}/../llama.cpp"
+}
+
+macos_export_llama_cpp_paths() {
+  export LLAMA_CPP_ROOT="$(macos_resolve_llama_cpp_root)"
+  if [[ -f "${LLAMA_CPP_ROOT}/build/bin/libllama.dylib" ]]; then
+    export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dylib}"
+  elif [[ -f "${LLAMA_CPP_ROOT}/build/bin/libllama.so" ]]; then
+    export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.so}"
+  fi
+  if [[ -z "${LLAMA_SERVER_BIN:-}" && -x "${LLAMA_CPP_ROOT}/build/bin/llama-server" ]]; then
+    export LLAMA_SERVER_BIN="${LLAMA_CPP_ROOT}/build/bin/llama-server"
+  fi
 }
 
 macos_runtime_sidecar_cleanup() {
@@ -123,7 +151,7 @@ macos_runtime_start_sidecar() {
   fi
 
   runtime_uv_venv
-  export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${_MACOS_RT_ROOT}/../llama.cpp}"
+  macos_export_llama_cpp_paths
   [[ -n "${require_model}" ]] && export LLAMA_MODEL="${require_model}"
   macos_runtime_log_paths
   echo "starting Python runtime sidecar on ${ZEROLLAMA_RUNTIME_URL} (log: ${MACOS_RT_LOG})"
@@ -159,7 +187,7 @@ macos_runtime_start_go() {
   local bin
   bin="$(smoke_resolve_zerollama_bin "${_MACOS_RT_ROOT}")"
 
-  if curl -sf -m 2 "${OLLAMA_HOST%/}/api/tags" >/dev/null 2>&1; then
+  if curl -sf -m 15 "${OLLAMA_HOST%/}/api/tags" >/dev/null 2>&1; then
     echo "go api already listening on ${OLLAMA_HOST}"
     return 0
   fi
@@ -170,7 +198,7 @@ macos_runtime_start_go() {
   echo "starting zerollama serve on ${OLLAMA_HOST} (log: ${MACOS_GO_LOG})"
   "${bin}" serve >"${MACOS_GO_LOG}" 2>&1 &
   _MACOS_GO_PID=$!
-  if ! _macos_wait_http "zerollama /api/tags" "${OLLAMA_HOST%/}/api/tags" 20; then
+  if ! _macos_wait_http "zerollama /api/tags" "${OLLAMA_HOST%/}/api/tags" "${MACOS_GO_TAGS_MAX:-30}" 15; then
     tail -20 "${MACOS_GO_LOG}" >&2
     echo "zerollama serve failed to start (${bin})" >&2
     return 1

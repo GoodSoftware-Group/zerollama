@@ -21,6 +21,7 @@ type ANELabBinStatus struct {
 	MetalPrefillBench        bool   `json:"metal_prefill_bench"`
 	MetalMPSPrefillBench     bool   `json:"metal_mps_prefill_bench"`
 	ANEPrefillHandoffSmoke   bool   `json:"ane_prefill_handoff_smoke"`
+	ANEInprocessSmoke        bool   `json:"ane_inprocess_smoke"`
 	BinDir                   string `json:"bin_dir,omitempty"`
 }
 
@@ -60,6 +61,7 @@ func ProbeANELabBins() ANELabBinStatus {
 		MetalPrefillBench:        FindMetalPrefillBenchBin() != "",
 		MetalMPSPrefillBench:     FindMetalMPSPrefillBenchBin() != "",
 		ANEPrefillHandoffSmoke:   FindANEPrefillHandoffSmokeBin() != "",
+		ANEInprocessSmoke:        FindANEInprocessSmokeBin() != "",
 		BinDir:                   HandoffBinDir(),
 	}
 }

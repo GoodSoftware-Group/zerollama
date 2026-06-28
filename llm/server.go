@@ -82,17 +82,20 @@ type ollamaServer struct {
 // NewLlamaServer will run a server for the given GPUs.
 // When ZEROLLAMA_LLAMA_SERVER=1, eligible models use upstream-style Go → llama-server.
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int, config LlamaServerConfig) (LlamaServer, error) {
-	if err := ggmlRunnerRequired(projectors); err != nil {
+	if err := ggmlRunnerRequired(projectors, config); err != nil {
 		return nil, err
 	}
-	if useLlamaServerBackend(projectors) {
+	if err := SpecModelRequiresLlamaServerError(config); err != nil {
+		return nil, err
+	}
+	if useLlamaServerBackendForModel(projectors, config) {
 		trainCtx := f.KV().ContextLength()
 		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {
 			slog.Warn("requested context size too large for model", "num_ctx", opts.NumCtx, "n_ctx_train", trainCtx)
 			opts.NumCtx = int(trainCtx)
 		}
 		kvct := opts.KvCacheTypeEffective()
-		slog.Info("using llama-server subprocess for model", "model", modelPath)
+		slog.Info("using llama-server subprocess for model", "model", modelPath, "spec_type", config.SpecType)
 		return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, config)
 	}
 
@@ -1771,6 +1774,10 @@ func (s *llmServer) VRAMByGPU(id ml.DeviceID) uint64 {
 
 func (s *llmServer) ContextLength() int {
 	return s.options.NumCtx
+}
+
+func (s *llmServer) ApplyChatTemplate(ctx context.Context, req ChatRequest) (string, error) {
+	return "", errors.New("ggml runner does not support native chat templates")
 }
 
 func (s *ollamaServer) GetDeviceInfos(ctx context.Context) []ml.DeviceInfo {

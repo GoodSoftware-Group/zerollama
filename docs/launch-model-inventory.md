@@ -114,7 +114,7 @@ Code: `launcherClient.managedSingleConfigureModels` → `modelInventory().Load()
 
 Bumping `FETCH_HEAD` in `Makefile.sync` must **rsync vendor → in-tree** before regenerating `llama/build-info.cpp`.
 
-**Why:** an earlier rule only re-stamped build-info when `.in` changed, so binaries could report `b9672` while `llama/llama.cpp` still reflected an older pin — confusing Phase 17 smoke and native KV debugging.
+**Why:** an earlier rule only re-stamped build-info when `.in` changed, so binaries could report `b9781` while `llama/llama.cpp` still reflected an older pin — confusing Phase 17 smoke and native KV debugging. **`make sync` no longer runs `git checkout` on vendor** for the same reason.
 
 Correct order: `checkout` → rsync `llama/llama.cpp` + `ml/backend/ggml/ggml` → sed `build-info.cpp`. Prefer **`./scripts/sync_vendor_llama.sh`** for the full gated workflow.
 

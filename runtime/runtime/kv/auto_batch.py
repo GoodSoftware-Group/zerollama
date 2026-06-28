@@ -11,7 +11,6 @@ Opt-in via ``ZEROLLAMA_KV_AUTO_BATCH=1`` (default off — adds up to
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -24,15 +23,16 @@ if TYPE_CHECKING:
 
 
 def auto_batch_window_ms() -> int:
-    try:
-        return max(0, int(os.environ.get("ZEROLLAMA_KV_AUTO_BATCH_MS", "5")))
-    except ValueError:
-        return 5
+    from runtime.env import kv_auto_batch_window_ms
+
+    return kv_auto_batch_window_ms()
 
 
 def native_auto_batch_enabled() -> bool:
     """True when env opt-in + native C batch decode is available."""
-    if os.environ.get("ZEROLLAMA_KV_AUTO_BATCH", "0") != "1":
+    from runtime.env import kv_auto_batch_enabled
+
+    if not kv_auto_batch_enabled():
         return False
     from runtime.kv.native_decode_loop import native_batch_decode_available
 

@@ -7,8 +7,8 @@
 # Expand-only smoke gave false confidence: ffmpeg/session caches can pass while vision
 # prefill and KV reuse are broken.
 #
-# WHY log read is after all HTTP legs: VIDEO_AGENT_INFER_PREPROC=1 appends
-# "preprocessed layout session cache hit" lines; parsing before preproc caused false failures.
+# WHY log read is after all HTTP legs: VIDEO_AGENT_INFER_PREPROC=1 and
+# VIDEO_AGENT_INFER_PREFIX_MM_WARN=1 append serve log lines; parsing before those legs caused false failures.
 #
 # WHY VIDEO_AGENT_INFER_PREPROC requires VIDEO_AGENT_GO_LOG: layout restore is proven
 # by log grep, not response body — without serve log the preproc leg is unverifiable.
@@ -37,6 +37,13 @@
 #   VIDEO_AGENT_INFER_SOFT=1   — pass when inference OK but cache_n is 0 (MLX / cache off)
 #   VIDEO_AGENT_INFER_PREPROC=1 — optional third leg: pre-expanded padded_input_ids + real infer
 #                                 (requires VIDEO_AGENT_GO_LOG for layout cache hit grep)
+#   VIDEO_AGENT_INFER_PREFIX_MM_WARN=1 — optional: POST without prompt_cache_key but
+#                                 enable_prefix_mm_cache; grep serve log for prefix-mm hint
+#                                 (requires VIDEO_AGENT_GO_LOG — hint is log-only, not in response body)
+#   VIDEO_AGENT_INFER_VIT_SESSION=1 — strict: turn-2 must log vision embed session cache hit
+#                                 (requires VIDEO_AGENT_GO_LOG; ggml/ollama-engine ViT overlay)
+#   VIDEO_AGENT_INFER_GRID_THW=1 — strict: preproc leg must log grid_thw hint resize or vision grid hint match
+#                                 (requires VIDEO_AGENT_INFER_PREPROC=1 and VIDEO_AGENT_GO_LOG)
 #   VIDEO_AGENT_INFER_OUT      — JSON report (default /tmp/video-agent-infer-smoke.json)
 #   VIDEO_AGENT_GO_LOG         — optional serve log; grep session cache + access log fields
 set -euo pipefail
@@ -80,9 +87,14 @@ export VIDEO_AGENT_NUM_PREDICT="${VIDEO_AGENT_NUM_PREDICT:-8}"
 export VIDEO_AGENT_INFER_MIN_CACHED="${VIDEO_AGENT_INFER_MIN_CACHED:-1}"
 export VIDEO_AGENT_INFER_SOFT="${VIDEO_AGENT_INFER_SOFT:-0}"
 export VIDEO_AGENT_INFER_PREPROC="${VIDEO_AGENT_INFER_PREPROC:-0}"
+export VIDEO_AGENT_INFER_PREFIX_MM_WARN="${VIDEO_AGENT_INFER_PREFIX_MM_WARN:-0}"
 
 if [[ "${VIDEO_AGENT_INFER_PREPROC}" == "1" && -z "${GO_LOG}" ]]; then
   echo "VIDEO_AGENT_INFER_PREPROC=1 requires VIDEO_AGENT_GO_LOG (preproc layout cache hit grep)" >&2
+  exit 1
+fi
+if [[ "${VIDEO_AGENT_INFER_PREFIX_MM_WARN}" == "1" && -z "${GO_LOG}" ]]; then
+  echo "VIDEO_AGENT_INFER_PREFIX_MM_WARN=1 requires VIDEO_AGENT_GO_LOG (prefix-mm hint grep)" >&2
   exit 1
 fi
 
@@ -115,6 +127,35 @@ run_preproc = os.environ.get("VIDEO_AGENT_INFER_PREPROC", "0").strip().lower() i
     "true",
     "yes",
 )
+run_prefix_mm_warn = os.environ.get("VIDEO_AGENT_INFER_PREFIX_MM_WARN", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+run_vit_session = os.environ.get("VIDEO_AGENT_INFER_VIT_SESSION", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+run_grid_thw = os.environ.get("VIDEO_AGENT_INFER_GRID_THW", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+if run_vit_session and not go_log:
+    raise SystemExit(
+        "VIDEO_AGENT_INFER_VIT_SESSION=1 requires VIDEO_AGENT_GO_LOG "
+        "(vision embed session cache hit is log-only)"
+    )
+if run_grid_thw:
+    if not run_preproc:
+        raise SystemExit("VIDEO_AGENT_INFER_GRID_THW=1 requires VIDEO_AGENT_INFER_PREPROC=1")
+    if not go_log:
+        raise SystemExit(
+            "VIDEO_AGENT_INFER_GRID_THW=1 requires VIDEO_AGENT_GO_LOG "
+            "(grid_thw forward is log-only)"
+        )
 
 tmpdir = tempfile.mkdtemp(prefix="video-agent-infer-")
 import atexit, shutil
@@ -157,7 +198,7 @@ def runtime_health() -> dict:
         return {"_fetch_error": str(exc)}
 
 
-def post_chat(messages, *, debug_render_only: bool = False, cache_key_override: str | None = None) -> dict:
+def post_chat(messages, *, debug_render_only: bool = False, cache_key_override: str | None = None, enable_prefix_mm: bool = True) -> dict:
     payload = {
         "model": model,
         "messages": messages,
@@ -168,6 +209,8 @@ def post_chat(messages, *, debug_render_only: bool = False, cache_key_override: 
             "num_predict": num_predict,
         },
     }
+    if enable_prefix_mm:
+        payload["options"]["enable_prefix_mm_cache"] = True
     if debug_render_only:
         payload["_debug_render_only"] = True
     return http_json("POST", "/api/chat", payload)
@@ -227,6 +270,7 @@ v1_payload = {
     ],
     "stream": False,
     "prompt_cache_key": cache_key,
+    "enable_prefix_mm_cache": True,
     "options": {"num_ctx": 8192, "num_predict": num_predict},
 }
 v1_out = http_json("POST", "/v1/chat/completions", v1_payload)
@@ -295,6 +339,17 @@ if run_preproc:
         "verdict": preproc_verdict,
     }
 
+prefix_mm_warn_report = None
+if run_prefix_mm_warn:
+    warn_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "prefix mm warn probe", "videos": [video_b64]}],
+        "stream": False,
+        "options": {"enable_prefix_mm_cache": True, "num_ctx": 8192, "num_predict": 1},
+    }
+    http_json("POST", "/api/chat", warn_payload)
+    prefix_mm_warn_report = {"sent_without_session_key": True}
+
 log_text = ""
 if go_log:
     try:
@@ -317,11 +372,20 @@ if go_log:
     log_checks = {
         "session_cache_hit": "video sample session cache hit" in log_text,
         "vision_embed_session_cache_hit": "vision embed session cache hit" in log_text,
+        "vision_embed_global_cache_hit": "vision embed global cache hit" in log_text,
         "vision_embed_engine_ollama": "vision embed session cache hit" in log_text
         and "engine=ollama" in log_text,
         "vision_grid_hints": "vision grid hints" in log_text,
         "padded_runner_inject": "padded_input_ids runner inject" in log_text,
         "preprocessed_layout_session_cache_hit": "preprocessed layout session cache hit" in log_text,
+        "precomputed_embedding_runner_inject": "precomputed_embedding runner inject" in log_text,
+        "precomputed_embedding_global_cache_hit": "precomputed_embedding global cache hit" in log_text,
+        "precomputed_embedding_session_cache_hit": "precomputed_embedding session cache hit" in log_text,
+        "processor_output_runner_inject": "processor_output runner inject" in log_text,
+        "processor_output_global_cache_hit": "processor_output global cache hit" in log_text,
+        "prefix_mm_cache_without_session_key": "enable_prefix_mm_cache without prompt_cache_key" in log_text,
+        "grid_thw_hint_resize": "grid_thw hint resize" in log_text,
+        "vision_grid_hint_match": "vision grid hint match" in log_text,
         "access_cached_prompt_tokens": "cached_prompt_tokens" in log_text,
         "access_video_tokens": "video_tokens" in log_text,
     }
@@ -329,6 +393,23 @@ if go_log:
         raise SystemExit(
             "preproc infer OK but VIDEO_AGENT_GO_LOG lacks "
             "'preprocessed layout session cache hit'"
+        )
+    if run_prefix_mm_warn and not log_checks.get("prefix_mm_cache_without_session_key"):
+        raise SystemExit(
+            "prefix-mm warn leg OK but VIDEO_AGENT_GO_LOG lacks "
+            "'enable_prefix_mm_cache without prompt_cache_key'"
+        )
+    if run_vit_session and not log_checks.get("vision_embed_session_cache_hit"):
+        raise SystemExit(
+            "turn2 infer OK but VIDEO_AGENT_GO_LOG lacks "
+            "'vision embed session cache hit' (set prompt_cache_key every turn)"
+        )
+    if run_grid_thw and not (
+        log_checks.get("grid_thw_hint_resize") or log_checks.get("vision_grid_hint_match")
+    ):
+        raise SystemExit(
+            "preproc infer OK but VIDEO_AGENT_GO_LOG lacks "
+            "'grid_thw hint resize' or 'vision grid hint match'"
         )
 
 if run_preproc and preproc_report and preproc_report.get("verdict") == "fail":
@@ -376,6 +457,9 @@ report = {
     "infer_backend": infer_backend,
     "log_checks": log_checks or None,
     "preprocessed_infer": preproc_report,
+    "prefix_mm_warn_probe": prefix_mm_warn_report,
+    "vit_session_required": run_vit_session,
+    "grid_thw_forward_required": run_grid_thw,
     "verdict": verdict,
     "reason": reason,
 }

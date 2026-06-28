@@ -47,7 +47,7 @@ def test_sliding_window_blocks_beyond_window():
     assert spec.resume_pos(req) is None
 
 
-def test_hybrid_spec_ignores_swa_window_for_cache():
+def test_hybrid_spec_blocks_beyond_swa_window():
     spec = KVCacheSpec(
         kind="hybrid",
         effective_window=2048,
@@ -57,8 +57,11 @@ def test_hybrid_spec_ignores_swa_window_for_cache():
         speculative_draft=False,
     )
     req = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=9000, prompt_tokens=9000)
-    assert spec.cache_prompt_allowed(req) is True
-    assert spec.resume_pos(req) == 9000
+    assert spec.cache_prompt_allowed(req) is False
+    assert spec.resume_pos(req) is None
+    req_ok = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=1000, prompt_tokens=500)
+    assert spec.cache_prompt_allowed(req_ok) is True
+    assert spec.resume_pos(req_ok) == 1000
 
 
 def test_disabled_spec_never_caches():
@@ -81,12 +84,41 @@ def test_draft_speculative_active():
     assert draft_speculative_active("eagle3") is True
 
 
-def test_resolve_kv_cache_spec_draft_disables(monkeypatch: pytest.MonkeyPatch):
+def test_resolve_kv_cache_spec_draft_allows_ram_not_disk(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
     spec = resolve_kv_cache_spec(spec_method="mtp")
     assert spec.speculative_draft is True
-    assert spec.allow_cache_prompt_base is False
+    assert spec.allow_cache_prompt_base is True
     assert spec.allow_disk_persist is False
+    assert spec.drop_last_block_on_resume is True
+    req = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=4096, prompt_tokens=32)
+    assert spec.cache_prompt_allowed(req) is True
+    assert spec.resume_pos(req) == 3584  # drop last 512-token block
+
+
+def test_drop_last_prefix_block():
+    from runtime.kv_cache_spec import drop_last_prefix_block
+
+    assert drop_last_prefix_block(4096, block_size=512) == 3584
+    assert drop_last_prefix_block(512, block_size=512) == 0
+    assert drop_last_prefix_block(0, block_size=512) == 0
+
+
+def test_swa_retention_interval_blocks_mid_sequence(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL", "1024")
+    spec = KVCacheSpec(
+        kind="sliding_window",
+        effective_window=8192,
+        allow_cache_prompt_base=True,
+        allow_disk_persist=True,
+        disk_ttl_ms=300000,
+        speculative_draft=False,
+        retention_interval=1024,
+    )
+    req = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=900, prompt_tokens=50)
+    assert spec.cache_prompt_allowed(req) is False
+    req2 = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=1024, prompt_tokens=50)
+    assert spec.cache_prompt_allowed(req2) is True
 
 
 def test_resolve_kv_cache_spec_swa_from_gguf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

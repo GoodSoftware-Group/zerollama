@@ -80,6 +80,17 @@ class InferenceEngine:
     def __init__(self, config: RuntimeConfig | None = None) -> None:
         self.config = config or RuntimeConfig.from_env()
         self._llama_backend_override: LlamaBackendKind | None = None
+        from runtime.env import configure_runtime_env
+        from runtime.kv.live_physical import effective_parallel_slots
+
+        configure_runtime_env(
+            llama_backend=self.config.llama_backend,
+            n_parallel=effective_parallel_slots(
+                self.config.llama_server_args(),
+                default=self.config.llama_parallel_slots,
+                backend=str(self.config.llama_backend or "subprocess"),
+            ),
+        )
         if self.config.llama_model and self.config.llama_model.is_file():
             InferenceEngine._log.info(
                 "runtime configured for model %s (gguf=%s)",
@@ -437,20 +448,59 @@ class InferenceEngine:
         )
 
     def _prefix_cache_request(self, req: Request, policy: Any) -> tuple[bool, int | None]:
-        """Return ``(cache_prompt, resume_pos)`` with one seq_pos read per request."""
+        """Return ``(cache_prompt, resume_pos)`` with one seq_pos read per request.
+
+        WHY subprocess graph invalidate before completion: when policy denies prefix
+        resume (SWA block, draft drop-last-block fallback), KV shape changes in
+        llama-server — ggml CUDA graphs keyed by topology must be cleared in that
+        process via ``POST /cuda-graph/invalidate``, not only epoch-bumped here.
+        """
         from runtime.prefix_cache_trace import record_prefix_cache_decision
-        from runtime.kv_cache_spec import PrefixCacheRequest
+        from runtime.prefix_cache_policy import (
+            decode_graph_invalidation_reason,
+            prefix_block_pool_snapshot,
+            prefix_cache_decision,
+        )
+        from runtime.worker.factory import LlamaBackendKind
 
         spec = policy.to_spec()
         slot = self._id_slot_for_request(req)
         seq_pos = self._decode_current_pos_for_request(req)
-        req_view = PrefixCacheRequest(
-            prompt_cache_key=req.prompt_cache_key,
+        subprocess = self._resolved_llama_backend() == LlamaBackendKind.SUBPROCESS
+        model_hash = self._model_hash_for_cache(req.gguf)
+        allow, resume, deny_reason = prefix_cache_decision(
+            req.prompt_cache_key,
+            policy,
             seq_pos=seq_pos,
             prompt_tokens=req.num_prompt_tokens,
+            prompt_token_ids=req.prompt_tokens,
+            model_hash=model_hash,
+            cache_salt=req.cache_salt,
+            subprocess=subprocess,
         )
-        allow = spec.cache_prompt_allowed(req_view)
-        resume = spec.resume_pos(req_view)
+        block_pool = prefix_block_pool_snapshot(
+            prompt_token_ids=req.prompt_tokens,
+            model_hash=model_hash,
+            cache_salt=req.cache_salt,
+            seq_pos=seq_pos,
+            resume=resume,
+        )
+        inv_reason = decode_graph_invalidation_reason(
+            allow=allow,
+            resume=resume,
+            seq_pos=seq_pos,
+            slot_pinned=bool(req.slot_pinned),
+            deny_reason=deny_reason,
+        )
+        if inv_reason is not None and subprocess and slot >= 0:
+            from runtime.decode_graph_policy import bump_decode_graph_epoch
+
+            bump_decode_graph_epoch(
+                slot,
+                reason=inv_reason,
+                ctx_ptr=None,
+                base_url=self._subprocess_base_url(),
+            )
         record_prefix_cache_decision(
             spec=spec,
             prompt_cache_key=req.prompt_cache_key,
@@ -460,17 +510,137 @@ class InferenceEngine:
             resume_pos=resume,
             spec_method=self.config.speculative.method,
             id_slot=slot if slot >= 0 else None,
+            deny_reason=deny_reason,
+            prefix_block_match=block_pool,
         )
         return allow, resume
 
+    def _is_kv_slot_busy(self, slot: int) -> bool:
+        return self.loop._slots.is_busy(slot)
+
+    def _prefix_cache_admission(
+        self,
+        req: Request,
+        policy: Any,
+    ) -> tuple[bool, int | None]:
+        """Policy decision + optional cross-slot Radix KV seed.
+
+        WHY Radix runs here (not in Go): admission needs live slot occupancy,
+        ``KVCacheSpec`` window, and either ctypes or subprocess HTTP — all owned
+        by the Python engine on the hot decode path.
+        """
+        allow, resume = self._prefix_cache_request(req, policy)
+        if not allow:
+            return allow, resume
+        seq_pos = self._decode_current_pos_for_request(req)
+        if seq_pos is not None and seq_pos > 0:
+            return allow, resume
+        if resume is not None and resume > 0:
+            return allow, resume
+        allow, resume, _trace = self._apply_radix_prefix_share(
+            req,
+            policy,
+            allow=allow,
+            resume_pos=resume,
+        )
+        return allow, resume
+
+    def _apply_radix_prefix_share(
+        self,
+        req: Request,
+        policy: Any,
+        *,
+        allow: bool,
+        resume_pos: int | None,
+    ) -> tuple[bool, int | None, dict[str, Any] | None]:
+        """Seed target slot KV from a donor when block pool finds a hash match.
+
+        WHY skip hybrid: ``llama_memory_seq_cp`` aborts or corrupts logits on
+        hybrid/recurrent memory layouts — block pool still verifies; only copy skipped.
+        WHY bump decode graph after copy: CUDA graphs key by topology; seeded KV
+        invalidates captured decode graphs on the target slot.
+        WHY ``seed_seq_pos`` on subprocess: SWA/draft policy reads slot pos before
+        first completion; seq-copy does not update Python-side slot metadata alone.
+        """
+        from runtime.decode_graph_policy import bump_decode_graph_epoch
+        from runtime.kv.radix_prefix_share import find_radix_share_plan, radix_prefix_share_enabled
+        from runtime.kv.radix_seq_copy import execute_radix_share_plan
+
+        if not allow or not radix_prefix_share_enabled():
+            return allow, resume_pos, None
+        if not req.slot_pinned or req.kv_slot is None or req.kv_slot < 0:
+            return allow, resume_pos, None
+        model_hash = self._model_hash_for_cache(req.gguf)
+        if not model_hash or not req.prompt_tokens:
+            return allow, resume_pos, None
+
+        spec = policy.to_spec()
+        plan = find_radix_share_plan(
+            req.prompt_tokens,
+            target_slot=int(req.kv_slot),
+            model_hash=model_hash,
+            cache_salt=req.cache_salt,
+            seq_pos=0,
+            effective_window=spec.effective_window,
+        )
+        if plan is None:
+            return allow, resume_pos, None
+        if spec.kind == "hybrid":
+            return allow, resume_pos, {"skipped": "hybrid_memory_seq_cp_unsupported"}
+        if self._is_kv_slot_busy(plan.source_slot):
+            return allow, resume_pos, {"skipped": "source_slot_busy"}
+
+        pair = self._inprocess_ctx_for_health()
+        copied = False
+        if pair is not None:
+            copied = execute_radix_share_plan(
+                plan, inprocess_lib=pair[0], inprocess_ctx=pair[1]
+            )
+        else:
+            base = self._subprocess_base_url()
+            if base:
+                copied = execute_radix_share_plan(
+                    plan, subprocess_base_url=base
+                )
+        if not copied:
+            return allow, resume_pos, {"skipped": "seq_copy_failed"}
+
+        from runtime.worker.libllama_ctypes import _ctx_ptr
+
+        bump_decode_graph_epoch(
+            plan.target_slot,
+            reason="radix_cross_slot_seed",
+            ctx_ptr=_ctx_ptr(pair[1]) if pair is not None else None,
+            base_url=self._subprocess_base_url() if pair is None else None,
+        )
+        trace = {
+            "source_slot": plan.source_slot,
+            "target_slot": plan.target_slot,
+            "copy_tokens": plan.copy_tokens,
+            "matched_blocks": plan.matched_blocks,
+        }
+        from runtime.worker.factory import LlamaBackendKind
+
+        if self._resolved_llama_backend() == LlamaBackendKind.SUBPROCESS:
+            self._subprocess_slots.seed_seq_pos(plan.target_slot, plan.copy_tokens)
+        from runtime.prefix_cache_trace import record_radix_share
+
+        record_radix_share(
+            prompt_cache_key=req.prompt_cache_key,
+            id_slot=plan.target_slot,
+            radix_trace=trace,
+            spec_method=self.config.speculative.method,
+        )
+        return True, plan.copy_tokens, trace
+
     def _cache_prompt_for_request(self, req: Request, policy: Any) -> bool:
         """L3 ``cache_prompt`` with SWA window + draft-spec policy enforcement."""
-        allow, _ = self._prefix_cache_request(req, policy)
+        allow, _ = self._prefix_cache_admission(req, policy)
         return allow
 
     def _decode_resume_pos_for_request(self, req: Request, policy: Any) -> int | None:
         """Live seq position for KV resume; ``None`` when prefix cache is blocked."""
-        _, resume_pos = self._prefix_cache_request(req, policy)
+        _, resume_pos = self._prefix_cache_admission(req, policy)
         return resume_pos
 
     def _vram_llama_kwargs(self) -> dict[str, Any]:
@@ -1019,6 +1189,15 @@ class InferenceEngine:
         body["llama_fork"] = fork_health(
             llama_server_bin=self.config.llama_server_bin
         )
+        from runtime.llama_cpp_unified import unified_health
+
+        body["llama_cpp_unified"] = unified_health(
+            llama_cpp_root=self.config.llama_cpp_root,
+            llama_server_bin=self.config.llama_server_bin,
+        )
+        from runtime.llama_patch_health import llama_patch_health_summary
+
+        body["llama_patches"] = llama_patch_health_summary()
         from runtime.cache_bridge import cache_health
         from runtime.speculative import resolve_method
 
@@ -1185,11 +1364,74 @@ class InferenceEngine:
             return req.kv_slot
         return -1
 
+    def _model_hash_for_cache(self, gguf: Path | None = None) -> str | None:
+        path = gguf
+        if path is None and self.config.llama_model:
+            path = Path(self.config.llama_model)
+        if path is None or not Path(path).is_file():
+            return None
+        from runtime.cache_bridge import build_model_hash, cache_type_from_llama_argv
+
+        ck, cv = cache_type_from_llama_argv(self.config.llama_server_args())
+        draft = (
+            Path(self.config.speculative.draft_model)
+            if self.config.speculative.draft_model
+            else None
+        )
+        return build_model_hash(
+            target_model_path=path,
+            drafter_model_path=draft if draft and draft.is_file() else None,
+            cache_type_k=ck,
+            cache_type_v=cv,
+        )
+
+    def _completion_seq_pos(self, req: Request, result: dict[str, Any]) -> int:
+        from runtime.subprocess_slot_state import seq_pos_from_llama_result
+
+        pos = seq_pos_from_llama_result(result)
+        if pos is not None:
+            return pos
+        return max(0, len(req.prompt_tokens) + len(req.generated))
+
     def _record_subprocess_slot(self, req: Request, result: dict[str, Any]) -> None:
-        if self._resolved_llama_backend() != LlamaBackendKind.SUBPROCESS:
+        from runtime.worker.factory import LlamaBackendKind
+
+        if self._resolved_llama_backend() == LlamaBackendKind.SUBPROCESS:
+            self._subprocess_slots.record_completion(
+                self._id_slot_for_request(req), result
+            )
+        self._register_prefix_block_pool(req, result)
+
+    def _register_prefix_block_pool(self, req: Request, result: dict[str, Any]) -> None:
+        from runtime.cache_bridge import slot_cache_file_path
+        from runtime.kv.prefix_block_pool import (
+            build_model_scope,
+            get_prefix_block_pool,
+            prefix_block_pool_enabled,
+        )
+
+        if not prefix_block_pool_enabled():
             return
-        self._subprocess_slots.record_completion(
-            self._id_slot_for_request(req), result
+        if not req.prompt_cache_key or not req.slot_pinned:
+            return
+        model_hash = self._model_hash_for_cache(req.gguf)
+        if not model_hash:
+            return
+        seq_pos = self._completion_seq_pos(req, result)
+        if seq_pos <= 0:
+            return
+        scope = build_model_scope(model_hash=model_hash, cache_salt=req.cache_salt)
+        blob_path: str | None = None
+        slot = self._id_slot_for_request(req)
+        if slot >= 0:
+            blob_path = str(slot_cache_file_path(model_hash, slot, 0))
+        get_prefix_block_pool(model_scope=scope).register_prefix(
+            req.prompt_tokens,
+            scope=scope,
+            seq_pos=seq_pos,
+            session_key=req.prompt_cache_key,
+            slot_id=slot if slot >= 0 else None,
+            blob_path=blob_path,
         )
 
     def _decode_current_pos_for_request(self, req: Request) -> int | None:
@@ -1218,6 +1460,22 @@ class InferenceEngine:
             if base_url:
                 return self._subprocess_slots.seq_pos_with_fallback(slot, base_url)
         return None
+
+    def _subprocess_base_url(self) -> str | None:
+        """llama-server listen URL when subprocess backend is active.
+
+        WHY: ``bump_decode_graph_epoch`` POSTs ``/cuda-graph/invalidate`` here so
+        ggml CUDA graph clear runs in the child that owns ``ctx_tgt`` — not in
+        this Python process.
+        """
+        from runtime.worker.factory import LlamaBackendKind
+
+        if self._resolved_llama_backend() != LlamaBackendKind.SUBPROCESS:
+            return None
+        srv = self._server
+        if srv is None:
+            return None
+        return getattr(srv, "base_url", None)
 
     def _assert_kv_bind(self, req: Request, *, at: str) -> None:
         from runtime.kv.bind import assert_kv_capacity
@@ -1402,6 +1660,13 @@ class InferenceEngine:
         spec_health = self._prefix_cache_policy(
             None, self._loaded_vram_num_ctx
         ).to_spec().to_health()
+        from runtime.kv.prefix_block_pool import build_model_scope, prefix_block_pool_health
+        from runtime.kv.radix_prefix_share import radix_share_health
+
+        model_hash = self._model_hash_for_cache()
+        scope = build_model_scope(model_hash=model_hash) if model_hash else None
+        block_pool_health = prefix_block_pool_health(model_scope=scope)
+        block_pool_health["radix_share"] = radix_share_health(model_scope=scope)
         return {
             "active": active,
             "llama_parallel_slots": parallel,
@@ -1413,6 +1678,7 @@ class InferenceEngine:
             "owner_key_unpinned": "request_id",
             "note": note,
             "prefix_cache_spec": spec_health,
+            "prefix_block_pool": block_pool_health,
         }
 
     def kv_snapshot(self) -> dict[str, Any]:
@@ -1506,7 +1772,7 @@ class InferenceEngine:
         from runtime.cache_bridge import cache_pin_from_options
 
         # L3: pin llama-server slot before tick so /completion sees stable id_slot.
-        prompt_cache_key, kv_slot, slot_pinned = cache_pin_from_options(
+        prompt_cache_key, kv_slot, slot_pinned, cache_salt = cache_pin_from_options(
             options,
             parallel=self._effective_llama_parallel_slots(),
         )
@@ -1520,6 +1786,7 @@ class InferenceEngine:
             vram_options=vram_opts,
             vram_num_ctx_meta=clamp_meta or None,
             prompt_cache_key=prompt_cache_key,
+            cache_salt=cache_salt,
             kv_slot=kv_slot,
             slot_pinned=slot_pinned,
         )
@@ -1606,7 +1873,7 @@ class InferenceEngine:
             from runtime.kv.bind import reserved_token_capacity
 
             policy = self._prefix_cache_policy(gguf, active.num_ctx)
-            cache_ok, resume_pos = self._prefix_cache_request(active, policy)
+            cache_ok, resume_pos = self._prefix_cache_admission(active, policy)
             raw = srv.completion(
                 prompt,
                 n_predict=n_predict,
@@ -1661,7 +1928,7 @@ class InferenceEngine:
             from runtime.kv.bind import reserved_token_capacity
 
             policy = self._prefix_cache_policy(gguf, admitted[0].num_ctx)
-            cache_rows = [self._prefix_cache_request(a, policy) for a in admitted]
+            cache_rows = [self._prefix_cache_admission(a, policy) for a in admitted]
             raws = srv.completions_parallel(
                 prompts,
                 n_predict=n_predict,
@@ -1821,7 +2088,7 @@ class InferenceEngine:
                 from runtime.kv.bind import reserved_token_capacity
 
                 policy = self._prefix_cache_policy(gguf, active.num_ctx)
-                cache_ok, resume_pos = self._prefix_cache_request(active, policy)
+                cache_ok, resume_pos = self._prefix_cache_admission(active, policy)
                 for chunk in srv.completion_stream(
                     prompt,
                     n_predict=n_predict,
@@ -2005,7 +2272,7 @@ class InferenceEngine:
             req_id = uuid.uuid4().hex[:12]
             # L3 batch: per-row key from prompt_cache_keys[i]; strict index semantics
             # (see cache_bridge.resolve_cache_key_for_batch — no flat-key fallback).
-            cache_key, kv_slot, slot_pinned = cache_pin_from_options(
+            cache_key, kv_slot, slot_pinned, cache_salt = cache_pin_from_options(
                 batch_opts,
                 parallel=parallel,
                 batch_index=idx,
@@ -2019,6 +2286,7 @@ class InferenceEngine:
                 num_ctx=batch_num_ctx,
                 vram_options=vram_opts,
                 prompt_cache_key=cache_key,
+                cache_salt=cache_salt,
                 kv_slot=kv_slot,
                 slot_pinned=slot_pinned,
             )
@@ -2055,7 +2323,7 @@ class InferenceEngine:
                 from runtime.kv.bind import reserved_token_capacity
 
                 policy = self._prefix_cache_policy(gguf, batch_num_ctx)
-                cache_rows = [self._prefix_cache_request(a, policy) for a in admitted]
+                cache_rows = [self._prefix_cache_admission(a, policy) for a in admitted]
                 raws = srv.completions_parallel(
                     prompts_ordered,
                     n_predict=n_predict,
@@ -2167,7 +2435,7 @@ class InferenceEngine:
         parallel = self._effective_llama_parallel_slots()
         for idx, prompt in enumerate(prompts):
             req_id = uuid.uuid4().hex[:12]
-            cache_key, kv_slot, slot_pinned = cache_pin_from_options(
+            cache_key, kv_slot, slot_pinned, cache_salt = cache_pin_from_options(
                 batch_opts,
                 parallel=parallel,
                 batch_index=idx,
@@ -2181,6 +2449,7 @@ class InferenceEngine:
                 num_ctx=batch_num_ctx,
                 vram_options=vram_opts,
                 prompt_cache_key=cache_key,
+                cache_salt=cache_salt,
                 kv_slot=kv_slot,
                 slot_pinned=slot_pinned,
             )
@@ -2216,7 +2485,7 @@ class InferenceEngine:
 
             batch_vram = api_vram_num_ctx_meta(batch_clamp_meta, batch_num_ctx)
             policy = self._prefix_cache_policy(gguf, batch_num_ctx)
-            cache_rows = [self._prefix_cache_request(a, policy) for a in admitted]
+            cache_rows = [self._prefix_cache_admission(a, policy) for a in admitted]
             try:
                 with self._model_swap.hold(gguf):
                     srv = self._ensure_gguf_loaded_unlocked(

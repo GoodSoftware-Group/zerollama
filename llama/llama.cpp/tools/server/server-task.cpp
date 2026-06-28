@@ -12,6 +12,33 @@
 
 using json = nlohmann::ordered_json;
 
+// ELIZA-DFLASH-VERIFIER-STREAM-V1
+// Eliza-1 voice swarm (W4): expose the DFlash verifier's reject span on
+// streamed chunks as `{ "verifier": { "rejected": [a, b] } }` so the
+// runtime can drop the not-yet-played TTS audio for the overlapping
+// phrases (docs/porting/dflash-drafter-strategy.md "DFlash↔TTS Rollback
+// Coupling"). `a`/`b` are inclusive token indices in target output order.
+namespace eliza_dflash {
+  // Set by the speculative loop after each verify pass; consumed + cleared
+  // by the next streamed-chunk send. -1 means "no reject this step".
+  static thread_local long long g_reject_from = -1;
+  static thread_local long long g_reject_to   = -1;
+  [[maybe_unused]] static inline void note_reject(long long from, long long to) {
+    if (from < 0 || to < from) { return; }
+    g_reject_from = from; g_reject_to = to;
+  }
+  // Returns the pending reject extension as a JSON fragment string and
+  // clears it, or an empty string when there is nothing pending.
+  [[maybe_unused]] static inline std::string take_reject_json() {
+    if (g_reject_from < 0) { return std::string(); }
+    std::string out = "\"verifier\":{\"rejected\":[" +
+      std::to_string(g_reject_from) + "," + std::to_string(g_reject_to) + "]}";
+    g_reject_from = -1; g_reject_to = -1;
+    return out;
+  }
+}
+
+
 //
 // task_params
 //
@@ -60,6 +87,10 @@ json task_params::to_json(bool only_metrics) const {
             {"dry_base",                  sampling.dry_base},
             {"dry_allowed_length",        sampling.dry_allowed_length},
             {"dry_penalty_last_n",        sampling.dry_penalty_last_n},
+            {"repeat_line_window",        sampling.repeat_line_window},
+            {"repeat_line_min_length",    sampling.repeat_line_min_length},
+            {"repeat_line_delimiters",    sampling.repeat_line_delimiters},
+            {"repeat_line_temp_boost",    sampling.repeat_line_temp_boost},
             {"mirostat",                  sampling.mirostat},
             {"mirostat_tau",              sampling.mirostat_tau},
             {"mirostat_eta",              sampling.mirostat_eta},
@@ -111,6 +142,10 @@ json task_params::to_json(bool only_metrics) const {
         {"dry_allowed_length",        sampling.dry_allowed_length},
         {"dry_penalty_last_n",        sampling.dry_penalty_last_n},
         {"dry_sequence_breakers",     sampling.dry_sequence_breakers},
+        {"repeat_line_window",        sampling.repeat_line_window},
+        {"repeat_line_min_length",    sampling.repeat_line_min_length},
+        {"repeat_line_delimiters",    sampling.repeat_line_delimiters},
+        {"repeat_line_temp_boost",    sampling.repeat_line_temp_boost},
         {"mirostat",                  sampling.mirostat},
         {"mirostat_tau",              sampling.mirostat_tau},
         {"mirostat_eta",              sampling.mirostat_eta},
@@ -144,17 +179,6 @@ json task_params::to_json(bool only_metrics) const {
 //
 // task_result_state
 //
-task_result_state::task_result_state(const common_chat_parser_params & chat_parser_params)
-    : chat_parser_params(chat_parser_params)
-    , oai_resp_id("resp_" + random_string())
-    , oai_resp_reasoning_id("rs_" + random_string())
-    , oai_resp_message_id("msg_" + random_string()) {
-    if (chat_parser_params.is_continuation && !chat_parser_params.echo) {
-        // initialize chat_msg to avoid emitting a delta containing the assistant prefill
-        chat_msg = common_chat_parse("", true, chat_parser_params);
-    }
-}
-
 common_chat_msg task_result_state::update_chat_msg(
         const std::string & text_added,
         bool is_partial,
@@ -290,11 +314,15 @@ task_params server_task::params_from_json_cmpl(
     params.sampling.penalty_repeat     = json_value(data, "repeat_penalty",      defaults.sampling.penalty_repeat);
     params.sampling.penalty_freq       = json_value(data, "frequency_penalty",   defaults.sampling.penalty_freq);
     params.sampling.penalty_present    = json_value(data, "presence_penalty",    defaults.sampling.penalty_present);
-    params.sampling.dry_multiplier     = json_value(data, "dry_multiplier",      defaults.sampling.dry_multiplier);
-    params.sampling.dry_base           = json_value(data, "dry_base",            defaults.sampling.dry_base);
-    params.sampling.dry_allowed_length = json_value(data, "dry_allowed_length",  defaults.sampling.dry_allowed_length);
-    params.sampling.dry_penalty_last_n = json_value(data, "dry_penalty_last_n",  defaults.sampling.dry_penalty_last_n);
-    params.sampling.mirostat           = json_value(data, "mirostat",            defaults.sampling.mirostat);
+    params.sampling.dry_multiplier         = json_value(data, "dry_multiplier",         defaults.sampling.dry_multiplier);
+    params.sampling.dry_base               = json_value(data, "dry_base",               defaults.sampling.dry_base);
+    params.sampling.dry_allowed_length     = json_value(data, "dry_allowed_length",     defaults.sampling.dry_allowed_length);
+    params.sampling.dry_penalty_last_n     = json_value(data, "dry_penalty_last_n",     defaults.sampling.dry_penalty_last_n);
+    params.sampling.repeat_line_window     = json_value(data, "repeat_line_window",     defaults.sampling.repeat_line_window);
+    params.sampling.repeat_line_min_length = json_value(data, "repeat_line_min_length", defaults.sampling.repeat_line_min_length);
+    params.sampling.repeat_line_delimiters = json_value(data, "repeat_line_delimiters", defaults.sampling.repeat_line_delimiters);
+    params.sampling.repeat_line_temp_boost = json_value(data, "repeat_line_temp_boost", defaults.sampling.repeat_line_temp_boost);
+    params.sampling.mirostat               = json_value(data, "mirostat",               defaults.sampling.mirostat);
     params.sampling.mirostat_tau       = json_value(data, "mirostat_tau",        defaults.sampling.mirostat_tau);
     params.sampling.mirostat_eta       = json_value(data, "mirostat_eta",        defaults.sampling.mirostat_eta);
     params.sampling.adaptive_target    = json_value(data, "adaptive_target",     defaults.sampling.adaptive_target);
@@ -325,9 +353,11 @@ task_params server_task::params_from_json_cmpl(
     params.speculative.ngram_size_m     = json_value(data, "speculative.ngram_size_m", defaults.speculative.ngram_size_m);
     params.speculative.ngram_min_hits   = json_value(data, "speculative.ngram_m_hits", defaults.speculative.ngram_min_hits);
 
-    params.speculative.ngram_size_n     = std::max(std::min(1, (int) params.speculative.ngram_size_n),     1024);
-    params.speculative.ngram_size_m     = std::max(std::min(1, (int) params.speculative.ngram_size_m),     1024);
-    params.speculative.ngram_min_hits   = std::max(std::min(1, (int) params.speculative.ngram_min_hits),   1024);
+    // Upstream PR #22432: the previous min/max nesting always returned the
+    // upper bound (max(min(1, x), 1024) == 1024). Want clamp(x, 1, 1024):
+    params.speculative.ngram_size_n     = std::min(std::max(1, (int) params.speculative.ngram_size_n),     1024);
+    params.speculative.ngram_size_m     = std::min(std::max(1, (int) params.speculative.ngram_size_m),     1024);
+    params.speculative.ngram_min_hits   = std::min(std::max(1, (int) params.speculative.ngram_min_hits),   1024);
 #endif
 
     // Use OpenAI API logprobs only if n_probs wasn't provided
@@ -432,11 +462,6 @@ task_params server_task::params_from_json_cmpl(
         if (data.contains("chat_parser")) {
             params.chat_parser_params.parser.load(data.at("chat_parser").get<std::string>());
         }
-        if (data.contains("continue_final_message")) {
-            auto continuation = common_chat_continuation_parse(data.at("continue_final_message"));
-            params.chat_parser_params.is_continuation = continuation != COMMON_CHAT_CONTINUATION_NONE;
-        }
-        params.chat_parser_params.echo = json_value(data, "echo", false);
     }
 
     {
@@ -499,7 +524,6 @@ task_params server_task::params_from_json_cmpl(
         const auto end_tag   = json_value(data, "reasoning_budget_end_tag", std::string());
         const auto message   = json_value(data, "reasoning_budget_message", std::string());
         params.sampling.reasoning_budget_tokens = budget;
-        params.sampling.reasoning_control = json_value(data, "reasoning_control", false);
 
         if (!start_tag.empty()) {
             params.sampling.reasoning_budget_start = common_tokenize(vocab, start_tag, false, true);
@@ -513,6 +537,42 @@ task_params server_task::params_from_json_cmpl(
                 params.sampling.reasoning_budget_start.size(),
                 params.sampling.reasoning_budget_end.size(),
                 params.sampling.reasoning_budget_forced.size());
+        }
+    }
+
+    // Eliza-1 guided-decode forced-token fast-forward (`eliza_prefill_plan`).
+    // Tolerantly parsed: an absent / malformed plan is dropped silently so the
+    // lazy GBNF still drives the bytes. See task_prefill_plan in server-task.h.
+    {
+        const auto plan_it = data.find("eliza_prefill_plan");
+        if (plan_it != data.end() && plan_it->is_object()) {
+            try {
+                const auto & j = *plan_it;
+                params.prefill_plan.prefix     = json_value(j, "prefix", std::string());
+                params.prefill_plan.free_count = json_value(j, "free_count", 0);
+                params.prefill_plan.id         = json_value(j, "id", std::string());
+                const auto runs_it = j.find("runs");
+                if (runs_it != j.end() && runs_it->is_array()) {
+                    for (const auto & r : *runs_it) {
+                        task_prefill_run run;
+                        run.after_free_span = json_value(r, "after_free_span", -1);
+                        run.text            = json_value(r, "text", std::string());
+                        if (!run.text.empty()) {
+                            params.prefill_plan.runs.push_back(std::move(run));
+                        }
+                    }
+                }
+                if (!params.prefill_plan.runs.empty()) {
+                    SRV_DBG("eliza_prefill_plan: id=%s prefix=%zub runs=%zu free_count=%d\n",
+                            params.prefill_plan.id.c_str(),
+                            params.prefill_plan.prefix.size(),
+                            params.prefill_plan.runs.size(),
+                            params.prefill_plan.free_count);
+                }
+            } catch (const std::exception & e) {
+                SRV_WRN("eliza_prefill_plan: malformed (%s) — falling back to grammar-only path\n", e.what());
+                params.prefill_plan = task_prefill_plan{};
+            }
         }
     }
 
@@ -605,7 +665,7 @@ task_params server_task::params_from_json_cmpl(
         const auto samplers = data.find("samplers");
         if (samplers != data.end()) {
             if (samplers->is_array()) {
-                params.sampling.samplers = common_sampler_types_from_names(*samplers);
+                params.sampling.samplers = common_sampler_types_from_names(*samplers, false);
             } else if (samplers->is_string()){
                 params.sampling.samplers = common_sampler_types_from_chars(samplers->get<std::string>());
             }
@@ -616,6 +676,34 @@ task_params server_task::params_from_json_cmpl(
 
     if (params.n_cmpl > params_base.n_parallel) {
         throw std::runtime_error("n_cmpl cannot be greater than the number of slots, please increase -np");
+    }
+
+    const auto message_spans = json_value(data, "message_spans", json::array());
+    if (message_spans.is_array()) {
+        int32_t last_user_pos = -1;
+
+        for (const auto & span : message_spans) {
+            const std::string role = json_value(span, "role", std::string());
+            const int32_t pos      = json_value(span, "pos", -1);
+
+            if (role == "user") {
+                last_user_pos = pos;
+            }
+        }
+
+        if (last_user_pos >= 0) {
+            const std::string prompt = json_value(data, "prompt", std::string());
+
+            if ((size_t) last_user_pos <= prompt.size()) {
+                const std::string prefix = prompt.substr(0, (size_t) last_user_pos);
+                const auto prefix_tokens = common_tokenize(vocab, prefix, true, true);
+
+                SRV_INF("message_spans: last user boundary: byte_pos=%d, token_pos=%zu\n",
+                        last_user_pos, prefix_tokens.size());
+
+                params.checkpoint_before_last_user_token = (int32_t) prefix_tokens.size();
+            }
+        }
     }
 
     return params;
@@ -1296,7 +1384,8 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
                         {"content_block", {
                             {"type", "tool_use"},
                             {"id", full_tool_call.id},
-                            {"name", full_tool_call.name}
+                            {"name", full_tool_call.name},
+                            {"input", json::object()}
                         }}
                     }}
                 });
@@ -1393,9 +1482,6 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
 //
 void server_task_result_cmpl_partial::update(task_result_state & state) {
     is_updated = true;
-    if (is_begin) {
-        return; // begin marker only flushes headers, skip parsing
-    }
     state.update_chat_msg(content, true, oaicompat_msg_diffs);
 
     // Copy current state for use in to_json_*() (reflects state BEFORE this chunk)
@@ -1426,9 +1512,6 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
 
 json server_task_result_cmpl_partial::to_json() {
     GGML_ASSERT(is_updated && "update() must be called before to_json()");
-    if (is_begin) {
-        return nullptr; // simply signal to HTTP handler to send the headers and status code
-    }
     switch (res_type) {
         case TASK_RESPONSE_TYPE_NONE:
             return to_json_non_oaicompat();
@@ -1812,7 +1895,8 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
                         {"content_block", {
                             {"type", "tool_use"},
                             {"id", diff.tool_call_delta.id},
-                            {"name", diff.tool_call_delta.name}
+                            {"name", diff.tool_call_delta.name},
+                            {"input", json::object()}
                         }}
                     }}
                 });
@@ -1909,6 +1993,9 @@ json server_task_result_metrics::to_json() {
         { "n_decode_total",                  n_decode_total },
         { "n_busy_slots_total",              n_busy_slots_total },
 
+        { "n_drafted_total",                 n_drafted_total },
+        { "n_drafted_accepted_total",        n_drafted_accepted_total },
+
         { "slots",                           slots_data },
     };
 }
@@ -1947,6 +2034,19 @@ json server_task_result_slot_erase::to_json() {
     return json {
         { "id_slot",  id_slot },
         { "n_erased", n_erased },
+    };
+}
+
+//
+// server_task_result_slot_seq_copy
+//
+json server_task_result_slot_seq_copy::to_json() {
+    return json {
+        { "ok",               true },
+        { "id_slot",          id_slot },
+        { "src_slot",         id_slot_src },
+        { "pos_end",          pos_end },
+        { "n_tokens_copied",  n_tokens_copied },
     };
 }
 
@@ -2061,12 +2161,12 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
 }
 
 bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
-    const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
+    int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
     float sim_best    = float(lcp_best) / tokens_new.size();
 
-    SRV_INF(" - looking for better prompt, base f_keep = %.3f, sim = %.3f\n", f_keep_best, sim_best);
+    SRV_WRN(" - looking for better prompt, base lcp = %d, f_keep = %.3f, sim = %.3f\n", lcp_best, f_keep_best, sim_best);
 
     auto it_best = states.end();
 
@@ -2082,7 +2182,16 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             continue;
         }
 
-        if (f_keep_best < f_keep_cur && sim_best < sim_cur) {
+        // Prioritize absolute prefix reuse length. This helps promote a newly
+        // joined static prefix (e.g. after truncate-middle) over older cache entries
+        // that keep more of their own state but match fewer request tokens.
+        const bool better_match =
+            lcp_cur > lcp_best ||
+            (lcp_cur == lcp_best && sim_cur > sim_best) ||
+            (lcp_cur == lcp_best && sim_cur == sim_best && f_keep_cur > f_keep_best);
+
+        if (better_match) {
+            lcp_best    = lcp_cur;
             f_keep_best = f_keep_cur;
             sim_best    = sim_cur;
 
@@ -2091,7 +2200,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
     }
 
     if (it_best != states.end()) {
-        SRV_INF(" - found better prompt with f_keep = %.3f, sim = %.3f\n", f_keep_best, sim_best);
+        SRV_WRN(" - found better prompt with lcp = %d, f_keep = %.3f, sim = %.3f\n", lcp_best, f_keep_best, sim_best);
 
         {
             auto & data = it_best->data.main;

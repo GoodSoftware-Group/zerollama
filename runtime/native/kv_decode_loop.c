@@ -30,6 +30,15 @@
 #include "kv_page_bind_internal.h"
 #include "kv_tensor_probe.h"
 
+/* WHY weak stub: patched libllama exports a real invalidator on CUDA builds;
+ * vendor/pinned trees without the hook still link _kv_native for Metal decode. */
+__attribute__((weak)) int
+llama_context_cuda_graph_invalidate(struct llama_context * ctx)
+{
+    (void)ctx;
+    return 0;
+}
+
 /* WHY -2 for page bind: distinct from llama_decode failure (-1) so Python can
  * surface the same LlamaServerError as ctypes page-bind validation. */
 #define KV_DECODE_LOOP_ERR_BIND -2
@@ -347,7 +356,8 @@ int
 kv_decode_loop_invalidate_cuda_graphs(void *ctx)
 {
     /* WHY: L3 slot clear changes KV while ggml-cuda may reuse a captured graph
-     * keyed by cgraph topology. Delegate to llama.cpp public API when linked. */
+     * keyed by cgraph topology. In-process path calls this wrapper; subprocess
+     * uses llama-server POST /cuda-graph/invalidate on ctx_tgt instead. */
     if (!ctx) {
         return 0;
     }

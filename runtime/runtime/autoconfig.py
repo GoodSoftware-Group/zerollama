@@ -71,10 +71,15 @@ def detect_gpu_total_vram_bytes(device_index: int = 0) -> int | None:
 
 
 def resolved_config_path() -> Path:
-    """Config file in use: explicit env or autoconfig default."""
+    """Config file in use: explicit env, L3 profile preset, or autoconfig default."""
     cfg = os.environ.get("ZEROLLAMA_RUNTIME_CONFIG", "").strip()
     if cfg:
         return Path(cfg).expanduser()
+    from runtime.env import resolve_l3_profile_config_path
+
+    profile_path = resolve_l3_profile_config_path()
+    if profile_path is not None:
+        return profile_path
     return resolve_default_config_path()
 
 
@@ -84,7 +89,9 @@ def autoconfig_health(*, main_gpu: int = 0) -> dict[str, object]:
     n = detect_visible_gpu_count()
     pick = "custom"
     name = path.name
-    if name == "single_gpu.yaml":
+    if name == "l3_agent_subprocess.yaml":
+        pick = "l3_agent"
+    elif name == "single_gpu.yaml":
         pick = "single_gpu"
     elif name == "apple_silicon.yaml":
         pick = "apple_silicon"
@@ -101,6 +108,13 @@ def autoconfig_health(*, main_gpu: int = 0) -> dict[str, object]:
         "pick": pick,
         "visible_gpu_count": n,
     }
+    from runtime.env import l3_profile_name, resolve_l3_profile_config_path
+
+    if l3_profile_name():
+        out["l3_profile"] = l3_profile_name()
+        prof = resolve_l3_profile_config_path()
+        if prof is not None:
+            out["l3_profile_config"] = str(prof)
     if total is not None:
         from runtime.host_memory import format_bytes
 

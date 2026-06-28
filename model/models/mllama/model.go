@@ -26,6 +26,8 @@ type Model struct {
 	ImageProcessor
 }
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
 const (
 	crossAttentionLayer = iota
 	selfAttentionLayer

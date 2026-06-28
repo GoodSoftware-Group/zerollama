@@ -40,6 +40,9 @@ class SlotAllocator:
         self._in_use.add(slot)
         return True
 
+    def is_busy(self, slot: int) -> bool:
+        return 0 <= slot < self.num_slots and slot in self._in_use
+
     def release(self, slot: int) -> None:
         if 0 <= slot < self.num_slots:
             self._in_use.discard(slot)

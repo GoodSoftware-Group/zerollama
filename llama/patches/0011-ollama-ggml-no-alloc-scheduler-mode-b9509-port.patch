@@ -13,10 +13,10 @@ the removed sched_set_batch_size fit path; CUDA pool overrides deferred.
  3 files changed, 94 insertions(+), 3 deletions(-)
 
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index c162b1767..37a871121 100644
+index fca3b84..87dcd05 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -323,6 +323,7 @@ extern "C" {
+@@ -337,6 +337,7 @@ extern "C" {
  
      // Initialize a backend scheduler, backends with low index are given priority over backends with high index
      GGML_API ggml_backend_sched_t ggml_backend_sched_new(ggml_backend_t * backends, ggml_backend_buffer_type_t * bufts, int n_backends, size_t graph_size, bool parallel, bool op_offload);
@@ -25,7 +25,7 @@ index c162b1767..37a871121 100644
  
      // Initialize backend buffers from a measure graph
 diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
-index 2c166f96d..d17fc1420 100644
+index d5cc054..06b46e3 100644
 --- a/ggml/src/ggml-backend-impl.h
 +++ b/ggml/src/ggml-backend-impl.h
 @@ -26,12 +26,17 @@ extern "C" {
@@ -54,7 +54,7 @@ index 2c166f96d..d17fc1420 100644
      };
  
      GGML_API ggml_backend_buffer_t ggml_backend_buffer_init(
-@@ -137,6 +143,16 @@ extern "C" {
+@@ -140,6 +146,16 @@ extern "C" {
  
          // (optional) sort/optimize the nodes in the graph
          void                      (*graph_optimize)    (ggml_backend_t backend, struct ggml_cgraph * cgraph);
@@ -72,7 +72,7 @@ index 2c166f96d..d17fc1420 100644
  
      struct ggml_backend {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 93438a980..bace69cf3 100644
+index 876a0b5..41b60f0 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -36,11 +36,27 @@ const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
@@ -127,7 +127,7 @@ index 93438a980..bace69cf3 100644
      void * base = buffer->iface.get_base(buffer);
  
      GGML_ASSERT(base != NULL && "backend buffer base cannot be NULL");
-@@ -833,6 +856,12 @@ struct ggml_backend_sched {
+@@ -897,6 +920,12 @@ struct ggml_backend_sched {
      int debug_realloc;
      int debug_graph_size;
      int debug_prev_graph_size;
@@ -140,7 +140,7 @@ index 93438a980..bace69cf3 100644
  };
  
  #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
-@@ -1739,6 +1768,19 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -1834,6 +1863,19 @@ ggml_backend_sched_t ggml_backend_sched_new(
          size_t graph_size,
          bool parallel,
          bool op_offload) {
@@ -160,7 +160,7 @@ index 93438a980..bace69cf3 100644
      GGML_ASSERT(n_backends > 0);
      GGML_ASSERT(n_backends <= GGML_SCHED_MAX_BACKENDS);
      GGML_ASSERT(ggml_backend_dev_type(ggml_backend_get_device(backends[n_backends - 1])) == GGML_BACKEND_DEVICE_TYPE_CPU);
-@@ -1791,10 +1833,13 @@ ggml_backend_sched_t ggml_backend_sched_new(
+@@ -1893,10 +1935,13 @@ ggml_backend_sched_t ggml_backend_sched_new(
                  sched->events[b][c] = ggml_backend_event_new(backends[b]->device);
              }
          }
@@ -174,7 +174,7 @@ index 93438a980..bace69cf3 100644
  
      ggml_backend_sched_reset(sched);
  
-@@ -1809,6 +1854,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
+@@ -1911,6 +1956,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
          for (int c = 0; c < sched->n_copies; c++) {
              ggml_backend_event_free(sched->events[b][c]);
          }
@@ -185,7 +185,7 @@ index 93438a980..bace69cf3 100644
      }
      ggml_gallocr_free(sched->galloc);
      ggml_free(sched->ctx);
-@@ -1864,6 +1913,25 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
+@@ -1970,6 +2019,25 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
          return false;
      }
  
@@ -211,7 +211,7 @@ index 93438a980..bace69cf3 100644
      ggml_backend_sched_reset(sched);
  
      return true;
-@@ -1969,7 +2037,13 @@ size_t ggml_backend_sched_get_attempted_buffer_size(ggml_backend_sched_t sched,
+@@ -2075,7 +2143,13 @@ size_t ggml_backend_sched_get_attempted_buffer_size(ggml_backend_sched_t sched,
      int backend_index = ggml_backend_sched_backend_id(sched, backend);
      GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);
  

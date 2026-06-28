@@ -9,7 +9,8 @@ One active method per model, implemented via **llama-server** `--spec-type` flag
 | `none` | — | no |
 | `ngram` | `ngram-simple` | no |
 | `draft` / `draft-simple` | `draft-simple` | yes |
-| `eagle3` / `dflash` | `draft-eagle3` | yes |
+| `eagle3` | `draft-eagle3` | yes (eagle3-arch draft GGUF) |
+| `dflash` | `dflash` | yes (`dflash-draft` sidecar; eliza fork llama-server) |
 | `mtp` | `draft-mtp` | yes (often bundled) |
 
 Example: [`configs/dual_4090_ngram.yaml`](../configs/dual_4090_ngram.yaml)

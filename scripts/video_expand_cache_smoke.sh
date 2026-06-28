@@ -19,10 +19,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 echo "== video expand cache unit gate =="
-go test ./server/modality/... -count=1 -run 'Video|Session|Expand|Preflight|Policy|FFmpeg|Agent|Preprocessed|Padded' -short
+go test ./server/modality/... -count=1 -run 'Video|Session|Expand|Preflight|Policy|FFmpeg|Agent|Preprocessed|Padded|GridTHW|SessionViT|PrefixMM' -short
 
-echo "== runner ViT session embed overlay =="
-go test ./runner/llamarunner/... -count=1 -run 'TestSessionEmbed|TestGrowCache' -short
+echo "== runner ViT session embed overlay (ggml) =="
+go test ./runner/llamarunner/... -count=1 -run 'TestSessionEmbed|TestGrowCache|TestGetPrecomputed|TestMultimodalTokenize' -short
+
+echo "== runner ViT session overlay (ollama-engine) =="
+go test ./runner/ollamarunner/... -count=1 -run 'TestLookupCached_precomputed|TestVisionEmbedCache_sessionOverlay' -short
 
 echo "== openai video fetch cache =="
 go test ./openai/... -count=1 -run 'VideoURL' -short

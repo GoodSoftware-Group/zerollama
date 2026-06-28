@@ -1,8 +1,8 @@
 # ggml @ llama.cpp — vendor migration guide
 
-> **Current pin:** `b9672` (`LLAMA_CPP_VERSION`, `Makefile.sync` `FETCH_HEAD`). Matches upstream Ollama @ v0.30.10 (`07ed7523`).
+> **Current pin:** **`b9781`** (`LLAMA_CPP_VERSION`, `Makefile.sync` `FETCH_HEAD`). Matches upstream Ollama @ **v0.30.11** (`32a97b74`).
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then **`b9611`**, then **`b9672`** (Jun 2026) with **16** formal patches that apply cleanly on the upstream tag.
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then **`b9611`**, **`b9672`**, and **`b9781`** with **16** formal patches on the upstream tag.
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -12,10 +12,11 @@ This document explains **what changed**, **why**, and **how to maintain** the ve
 
 | Problem (old state) | Why it hurt | What we did |
 |---------------------|-------------|-------------|
-| ggml pinned to an **old llama.cpp base** (~36 patches on `ec98e2002`) | 27/36 patches **failed** on b9509; merge cost grew every upstream bump | Rebase onto **clean b9509** + **10 small patches** that apply cleanly |
-| One “regenerate” path **overlaid** the entire old `ml/backend/ggml/ggml` tree | Produced **multi‑MB patches** that were a **fork snapshot**, not “real ggml at b9509” | **Vendor clone** → apply patches → **rsync** into `ml/backend/ggml/ggml` and `llama/llama.cpp` |
-| Upstream b9509 **removed/changed** C APIs Ollama Go still calls | Build broke (`sched_new_ext`, device props, LoRA plural API, jinja in common/) | Port **minimal Ollama deltas** in-tree (documented below) |
-| Mac default is **ggml Metal**, not Python llama | We still need **correct Metal build + fit sizing** on unified memory | Keep **no-alloc scheduler** + **device discovery** extensions from old Ollama patches |
+| ggml pinned to an **old llama.cpp base** (~36 patches on `ec98e2002`) | 27/36 patches **failed** on b9509; merge cost grew every upstream bump | Rebase onto **clean upstream tags** + **16 small patches** |
+| One “regenerate” path **overlaid** the entire old `ml/backend/ggml/ggml` tree | Produced **multi‑MB patches** that were a **fork snapshot**, not real upstream ggml | **Vendor clone** → apply patches → **rsync** into in-tree trees |
+| Upstream b9509+ **removed/changed** C APIs Ollama Go still calls | Build broke (`sched_new_ext`, device props, LoRA plural API, jinja in common/) | Port **minimal Ollama deltas** (documented below) |
+| Mac default is **ggml Metal**, not Python llama | We still need **correct Metal build + fit sizing** on unified memory | Keep **no-alloc scheduler** + **device discovery** extensions |
+| **`make sync` ran `git checkout`** on vendor | Reset vendor to bare tag **before rsync** — shipped unpatch ggml while `build-info` reported new pin | **`make sync` → `sync_vendor_llama.sh` only**; script errors if zero patch commits |
 
 **Non-goals of this migration:** replacing ggml with MLX; deleting the Python runtime; full upstream Ollama rebase; CUDA-only no-alloc pool overrides on Mac (Metal uses buft-level dummy buffers).
 
@@ -28,9 +29,9 @@ zerollama serve
     └── Go scheduler (server/sched.go)
             └── runner/ollamarunner  (default text GGUF on Mac)
                     └── ml/backend/ggml  (CGO)
-                            └── ml/backend/ggml/ggml/   ← vendored b9509 ggml + Ollama deltas
+                            └── ml/backend/ggml/ggml/   ← vendored ggml + Ollama deltas
             └── llama/ (llamarunner path)
-                    └── llama/llama.cpp/              ← vendored b9509 llama.cpp + Ollama deltas
+                    └── llama/llama.cpp/              ← vendored llama.cpp + Ollama deltas
 ```
 
 **Why two trees:** Ollama historically split **ggml** (direct backend for `ollamarunner`) and **llama.cpp** (CGO for `llamarunner`). Both must stay on the **same pin** or symbol/layout drift breaks CGO links.
@@ -43,22 +44,24 @@ zerollama serve
 
 | File | Purpose |
 |------|---------|
-| `LLAMA_CPP_VERSION` | Human pin (`b9672`) |
-| `Makefile.sync` | `FETCH_HEAD=b9672`, `WORKDIR=vendor/llama-cpp-b9672` |
-| `vendor/llama-cpp-b9672/` | Fresh clone + Ollama patch commits (gitignored) |
-| `llama/patches/` | **16** format-patches on b9672 (0007 retired → compat) |
+| `LLAMA_CPP_VERSION` | Human pin (`b9781`) — scripts grep this without Make |
+| `Makefile.sync` | `FETCH_HEAD=b9781`, `WORKDIR=vendor/llama-cpp-b9781` |
+| `vendor/llama-cpp-b9781/` | Fresh clone + Ollama patch commits (gitignored) |
+| `llama/patches/` | **16** format-patches on b9781 |
 | `llama/patches.pre-b9509-20260612/` | Backup of pre-migration patch series |
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
 
+**Why pin bumps rebase patches, not chase llama.cpp HEAD:** upstream Ollama pins a tag per release; zerollama matches that tag so cherry-picks from `ollama/ollama` and Phase 17 diffs stay comparable. Chasing HEAD would rewrite all 16 patches weekly.
+
 ---
 
-## Patch series (b9672)
+## Patch series (b9781)
 
-Applied on top of upstream `b9672` (vendor HEAD after patches: `ab8e55fa`):
+Applied on top of upstream tag **`b9781`** (vendor HEAD after full apply: **`b10675c`** — 16 commits):
 
-| # | Subject | Why Ollama still needs it on b9509 |
-|---|---------|-----------------------------------|
+| # | Subject | Why Ollama still needs it |
+|---|---------|---------------------------|
 | 0001 | Grammar rule ordering | Stable grammar sampling for constrained JSON |
 | 0002 | String-arr KV loading | GGUF KV edge cases in loader |
 | 0003 | Graph memory reporting on failure | Actionable OOM errors in runner |
@@ -66,28 +69,39 @@ Applied on top of upstream `b9672` (vendor HEAD after patches: `ab8e55fa`):
 | 0005 | Uncaught exception registration | Safer C++ boundary for CGO |
 | 0006 | CUDA skip large batches | CUDA stability (no-op on Mac) |
 | ~~0007~~ | ~~bakllava regression~~ | **Retired** — `llama/compat/` `handle_missing_llava_projector_type` |
-| 0008 | Win exit instead of abort | Windows runner lifecycle |
-| 0009 | CUDA get_rows q6_k | Quantized op support |
-| 0010 | `ggml_backend_dev_reset` | Go calls reset on device unload — **required** |
-| 0011 | GPU discovery enhancements | Extended `ggml_backend_dev_props`, NVML/HIP VRAM, CUDA/Metal library props |
-| 0012 | No-alloc scheduler mode | `ggml_backend_sched_new_ext` for `LoadOperationFit` VRAM sizing without allocation |
-| 0013 | mtmd C API | `mtmd_input_text_init/free` for CGO multimodal |
-| 0014 | ollama_vocab grammar | Go-side token pieces into C++ grammar without full `llama_model` |
-| 0015 | **llama-kv-ext Phase 15** | Staging KV cell map + tensor introspection for PA page bind; hybrid/iSWA resolve to attn base cache |
-| 0016 | **compat loader hooks** | Call sites for `llama/compat/` — canonical patch; symlinked as `llama/compat/llama-cpp-hooks.patch` for CMake fetch |
-| 0017 | **ggml scheduler + Metal gate** | `GGML_SCHED_MAX_SPLIT_INPUTS 128`, `alloc_buffers` guard for LoadOperationFit, `GGML_DISABLE_METAL` runtime gate |
+| 0008 | CUDA get_rows q6_k | Quantized op support |
+| 0009 | `ggml_backend_dev_reset` | Go calls reset on device unload — **required** |
+| 0010 | GPU discovery enhancements | Extended `ggml_backend_dev_props`, NVML/HIP VRAM, CUDA/Metal library props |
+| 0011 | No-alloc scheduler mode | `ggml_backend_sched_new_ext` for `LoadOperationFit` VRAM sizing without allocation |
+| 0012 | mtmd C API | `mtmd_input_text_init/free` for CGO multimodal |
+| 0013 | ollama_vocab grammar | Go-side token pieces into C++ grammar without full `llama_model` |
+| 0014 | **llama-kv-ext Phase 15** | Staging KV cell map + tensor introspection for PA page bind |
+| 0015 | **compat loader hooks** | Call sites for `llama/compat/` — canonical patch; symlinked as `llama/compat/001-llama-cpp-hooks.patch` |
+| 0016 | **ggml scheduler + Metal gate** | `GGML_SCHED_MAX_SPLIT_INPUTS 128`, `alloc_buffers` guard for LoadOperationFit, `GGML_DISABLE_METAL` runtime gate |
 
 **Patch vs compat ownership:** GGUF translation logic lives in `llama/compat/*.cpp`. Numbered patches carry **ggml/llama.cpp deltas** that compat cannot replace (scheduler, grammar, kv-ext, CGO hooks). Overlap removed: BakLLaVA MLP default (was 0007) is compat-only.
 
 **CGO-only (not patches):** `jinja_wrap.cpp`, `httplib_wrap.cpp`, `llama/build-info.cpp`; exclude mtmd CLI mains after sync.
 
-**Old patches intentionally dropped or deferred:**
+---
 
-| Old patch theme | Why dropped / deferred |
-|-----------------|----------------------|
-| `ggml_backend_sched_set_batch_size` | **Removed upstream**; Go no longer calls it |
-| Full CUDA no-alloc pool (`reserving_graph` memcpy stubs) | **CUDA-only**; Mac fit works via buft `no_alloc` dummy buffers |
-| Some gemma4 / metal kernel patches | Re-evaluate per model after b9509 native support |
+## Pin bump to b9781 (Jun 2026) — conflicts and WHY manual steps
+
+**Why `git am` failed on b9781:** format-patches from the b9672 vendor omit blob SHAs upstream moved (`ggml-cuda.cu` struct relocated ~line 4900 vs ~670 in patch context; `mtmd.h` gained `mtmd_progress_callback`; `clip.cpp` load loop refactored). `git am --3way` cannot build a fake ancestor without index lines.
+
+**Resolution pattern:**
+
+1. `make -f Makefile.sync clean apply-patches` — applies 0001–0009 cleanly; stops on first failure.
+2. For failed patch: `sed '/^index /d' llama/patches/NNNN-*.patch | git -C vendor/llama-cpp-b9781 apply --reject -p1`
+3. Fix `.rej` hunks manually; `git commit` with the patch subject; `touch llama/patches/.NNNN-*.patched`; continue `apply-patches`.
+
+| Patch | b9781 manual fix | Why upstream moved |
+|-------|------------------|-------------------|
+| **0010** | Add struct fields + NVML/HIP in `get_memory`; skip `device_mutex` | b9781 removed per-device mutex; props still need NVML |
+| **0012** | Declare `mtmd_input_text_*` before `mtmd_progress_callback` typedef | b9781 added progress callback between typedefs |
+| **0015** | `maybe_load_tensor` in clip weight loop (~line 2831) | Same logic, different line numbers / `no_alloc` branch |
+
+**Why not copy whole files from b9672 vendor:** b9781 contains upstream fixes (Vulkan batching, mtmd progress, UMA memory) that would be lost.
 
 ---
 
@@ -101,8 +115,8 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 |-------|-----|
 | `ggml_backend_sched_new_ext` + buft `no_alloc` | **`LoadOperationFit`** must size VRAM **without allocating** weights/graph buffers |
 | Extended `ggml_backend_dev_props` (`library`, `compute_*`, `driver_*`, `integrated`) | Go **flash-attention gating**, GPU routing, and `/api/tags` device info |
-| `mem_nvml.cpp`, `mem_hip.cpp` | **Accurate VRAM** on CUDA/ROCm (cudaMemGetInfo lies on some Windows setups) |
-| `ggml_backend_dev_reset` (patch 0010) | Clear backend state between model loads |
+| `mem_nvml.cpp`, `mem_hip.cpp` | **Accurate VRAM** on CUDA/ROCm (`cudaMemGetInfo` lies on some Windows setups) |
+| `ggml_backend_dev_reset` (patch 0009) | Clear backend state between model loads |
 
 ### llama.cpp (`llama/llama.cpp/`)
 
@@ -128,50 +142,46 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 ## Workflow: sync vendor → in-tree
 
 ```bash
-# 1. Ensure vendor exists (once)
-git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9672
-cd vendor/llama-cpp-b9672 && git checkout b9672
+# 1. Ensure vendor exists (once per pin bump)
+git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9781
+cd vendor/llama-cpp-b9781 && git checkout b9781
 
-# 2. Apply Ollama patches into vendor
+# 2. Apply Ollama patches into vendor (resolve conflicts per section above)
 make -f Makefile.sync clean apply-patches
 
 # 3. Rsync into in-tree vendored trees (preserves zerollama-only files)
 ./scripts/sync_vendor_llama.sh
+# or: make -f Makefile.sync sync   # alias — does NOT git checkout vendor
 
-# 4. Regenerate build-info + build
-sed -e 's|@FETCH_HEAD@|b9672|' \
-    -e 's|@LLAMA_BUILD_NUMBER@|9672|' \
-    -e 's|@BUILD_COMPILER@||' \
-    -e 's|@BUILD_TARGET@||' \
-    llama/build-info.cpp.in > llama/build-info.cpp
+# 4. Build + doctor
 eval "$(./scripts/mac_cgo_env.sh --export)"
 ./scripts/build_zerollama_mac.sh
 ./zerollama doctor
 ```
 
-**Why `sync_vendor_llama.sh` excludes certain paths:** rsync `--delete` would otherwise **wipe** Ollama-only files (`mem_nvml.cpp`, CGO wrappers, `build-info.cpp`) that **do not exist** in upstream vendor.
+**Why `sync_vendor_llama.sh` excludes certain paths:** rsync `--delete` would otherwise **wipe** Ollama-only files (`mem_nvml.cpp`, CGO wrappers, `build-info.cpp`) that **do not exist** in upstream vendor — script re-copies them from vendor patch commits into ggml, and preserves CGO wrappers via exclude list.
 
-**Why `GOFLAGS=-mod=mod` in `build_zerollama_mac.sh`:** `go build` must not fail on inconsistent `vendor/` when only CGO trees are synced; module mode uses `go.mod` sum files instead.
+**Why the script checks `rev-list FETCH_HEAD..HEAD`:** syncing bare `b9781` produces a tree missing `dev_reset`, no-alloc scheduler, and kv-ext while `build-info.cpp` still prints `b9781`.
+
+**Why `GOFLAGS=-mod=mod` in `build_zerollama_mac.sh`:** `go build` must not fail on inconsistent `vendor/` when only CGO trees are synced.
 
 **Legacy shim:** `./scripts/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin tracks `Makefile.sync` `FETCH_HEAD`.
 
 ### cpp-httplib on CUDA / Proxmox CT (CGO build)
 
-**Why not in git:** root `.gitignore` has `vendor/` — matches `llama/llama.cpp/vendor/cpp-httplib/` even though `miniaudio` / `nlohmann` / `stb` are tracked. Full upstream llama.cpp vendor includes httplib; minimal rsync checkouts often omit it.
+**Why not in git:** root `.gitignore` has `vendor/` — matches `llama/llama.cpp/vendor/cpp-httplib/` even though `miniaudio` / `nlohmann` / `stb` are tracked.
 
 | Symptom | Fix |
 |---------|-----|
 | `cpp-httplib/httplib.h: No such file or directory` | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` then `CGO_ENABLED=1 go build -o zerollama .` |
-| GPU gate fails on Go golden, not GPU | `RUN_E2E_PREFLIGHT=0 ./scripts/gpu_5080_session.sh` — CI still runs `phase12_golden_ci.sh` |
-
-**Why CGO needs httplib:** b9611 `common/download.cpp` links cpp-httplib. Zerollama wraps it in `common/httplib_wrap.cpp` because CGO does not run CMake `add_subdirectory(vendor/cpp-httplib)`.
+| GPU gate fails on Go golden, not GPU | `RUN_E2E_PREFLIGHT=0 ./scripts/gpu_5080_session.sh` |
 
 ---
 
 ## Regenerating patches (after editing vendor)
 
 ```bash
-# Edit commits in vendor/llama-cpp-b9509 (on top of b9509)
+# Edit commits in vendor/llama-cpp-b9781 (on top of b9781)
 make -f Makefile.sync format-patches   # writes llama/patches/*.patch
 ./scripts/sync_vendor_llama.sh
 # build + smoke
@@ -185,6 +195,7 @@ make -f Makefile.sync format-patches   # writes llama/patches/*.patch
 
 | Check | Why |
 |-------|-----|
+| `git -C vendor/llama-cpp-b9781 rev-list --count b9781..HEAD` = **16** | Patches materialized before sync |
 | `go build` succeeds | CGO + new common/jinja/httplib compile |
 | `zerollama doctor` | Metal ggml loads; sidecar optional |
 | `ZEROLLAMA_LEGACY_RUNNER=1 ./zerollama serve` + small model | **ggml runner** path (not runtime) |
@@ -197,7 +208,7 @@ Known gap: `go test ./ml/backend/ggml/...` may segfault on dummy GGUF fixture �
 
 ## Related docs
 
-- [upstream-ollama-diff.md](./upstream-ollama-diff.md) — Go → llama-server vs ggml vs Python runtime
+- [upstream-ollama-diff.md](./upstream-ollama-diff.md) — Go → llama-server vs ggml vs Python runtime; v0.30.11 cherry-picks
 - [phase17-llama-server.md](./phase17-llama-server.md) — upstream GGUF path scaffold
 - [apple-silicon-metal.md](./apple-silicon-metal.md) — why ggml Metal stays default on Mac
 - [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) — sibling llama.cpp for Python/llama-server

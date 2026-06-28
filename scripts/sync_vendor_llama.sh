@@ -12,14 +12,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FETCH_HEAD="${FETCH_HEAD:-$(grep '^FETCH_HEAD=' "${ROOT}/Makefile.sync" | cut -d= -f2)}"
+FETCH_REF="${FETCH_REF:-$(grep '^FETCH_REF=' "${ROOT}/Makefile.sync" | cut -d= -f2)}"
+if [[ -f "${ROOT}/LLAMA_CPP_COMMIT" ]]; then
+  _commit="$(tr -d '[:space:]' < "${ROOT}/LLAMA_CPP_COMMIT")"
+  [[ -n "${_commit}" ]] && FETCH_REF="${_commit}"
+fi
+BUILD_NUMBER="${BUILD_NUMBER:-$(grep '^BUILD_NUMBER=' "${ROOT}/Makefile.sync" | cut -d= -f2)}"
 VENDOR="${ROOT}/vendor/llama-cpp-${FETCH_HEAD}"
 
 if [[ ! -d "${VENDOR}/.git" ]]; then
   echo "error: missing ${VENDOR}; clone and apply patches first:" >&2
-  echo "  git clone https://github.com/ggml-org/llama.cpp.git ${VENDOR}" >&2
-  echo "  make -f Makefile.sync clean apply-patches" >&2
+  echo "  ./scripts/rebase_vendor_unified.sh" >&2
+  echo "  or: make -f Makefile.sync clean apply-patches" >&2
   exit 1
 fi
+
+# WHY: bare FETCH_REF in vendor means Ollama patches were never applied (or were
+# wiped by `make checkout` / `make clean`). Rsyncing then ships upstream-only ggml
+# while build-info.cpp still reports the pin — CGO misses dev_reset, no-alloc sched, kv-ext.
+PATCH_COUNT="$(git -C "${VENDOR}" rev-list --count "${FETCH_REF}..HEAD" 2>/dev/null || echo 0)"
+if [[ "${PATCH_COUNT}" -eq 0 ]]; then
+  echo "error: ${VENDOR} is at bare ref ${FETCH_REF} with no Ollama patch commits" >&2
+  echo "  ./scripts/rebase_vendor_unified.sh" >&2
+  exit 1
+fi
+echo ">>> vendor HEAD +${PATCH_COUNT} commits on ${FETCH_REF}" >&2
 
 echo ">>> sync ggml → ml/backend/ggml/ggml" >&2
 # Preserve Ollama-only mem_nvml.cpp / mem_hip.cpp (accurate CUDA/ROCm VRAM).
@@ -40,10 +57,14 @@ for dir in common include src tools vendor; do
       --exclude '.rsync-filter' \
       --exclude '*.go' \
       --exclude 'build-info.cpp' \
+      --exclude 'license.cpp' \
       --exclude 'jinja_wrap.cpp' \
       --exclude 'httplib_wrap.cpp' \
       --exclude 'tools/mtmd/mtmd-cli.cpp' \
       --exclude 'tools/mtmd/deprecation-warning.cpp' \
+      --exclude 'ane_draft_hook.*' \
+      --exclude 'ane_draft_session.*' \
+      --exclude 'ane_iosurface_map.h' \
       "${VENDOR}/${dir}/" "${ROOT}/llama/llama.cpp/${dir}/"
   fi
 done
@@ -56,7 +77,7 @@ rm -f \
   "${ROOT}/llama/llama.cpp/tools/mtmd/debug/mtmd-debug.cpp"
 
 echo ">>> regenerate build-info.cpp" >&2
-BUILD_NUMBER="${FETCH_HEAD#b}"
+BUILD_NUMBER="${BUILD_NUMBER:-${FETCH_HEAD#b}}"
 sed -e "s|@FETCH_HEAD@|${FETCH_HEAD}|" \
     -e "s|@LLAMA_BUILD_NUMBER@|${BUILD_NUMBER}|" \
     -e 's|@BUILD_COMPILER@||' \
@@ -66,5 +87,8 @@ sed -e "s|@FETCH_HEAD@|${FETCH_HEAD}|" \
 echo ">>> regenerate metal embed" >&2
 cd "${ROOT}"
 GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src
+
+echo ">>> restore ANE hook in-tree (vendor lacks 0018 until git am)" >&2
+"${ROOT}/scripts/restore_ane_hook_intree.sh"
 
 echo ">>> OK: vendored trees synced from ${VENDOR}" >&2

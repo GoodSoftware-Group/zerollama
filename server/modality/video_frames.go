@@ -30,7 +30,7 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 	lastUser := lastUserMessageIndex(req.Messages)
 	for i := range req.Messages {
 		if len(req.Messages[i].Videos) == 0 {
-			if err := validatePreexpandedVideoMessage(req.Messages[i]); err != nil {
+			if err := validatePreexpandedVideoMessage(&req.Messages[i]); err != nil {
 				return err
 			}
 			maybeRestorePreprocessedLayout(sessionKey, i, lastUser, &req.Messages[i])
@@ -76,18 +76,22 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 	return nil
 }
 
-func validatePreexpandedVideoMessage(msg api.Message) error {
+func validatePreexpandedVideoMessage(msg *api.Message) error {
 	// SGLang-style fast path: client already expanded video into images + spans.
 	// Why validate: inconsistent spans would mis-render or blow num_ctx silently.
-	if len(msg.VideoSpans) == 0 {
+	if msg == nil || len(msg.VideoSpans) == 0 {
 		return nil
 	}
 	frames := 0
-	for _, sp := range msg.VideoSpans {
-		if err := validateVideoSpanGridTHW(sp); err != nil {
+	for i := range msg.VideoSpans {
+		if err := validateVideoSpanGridTHW(msg.VideoSpans[i]); err != nil {
 			return err
 		}
-		frames += sp.FrameCount
+		if len(msg.VideoSpans[i].GridTHW) == 3 {
+			// Client sent grid_thw with pre-expanded frames — safe to forward to mtmd.
+			msg.VideoSpans[i].GridTHWExplicit = true
+		}
+		frames += msg.VideoSpans[i].FrameCount
 	}
 	if err := validatePaddedInputIDs(msg.PaddedInputIDs); err != nil {
 		return err

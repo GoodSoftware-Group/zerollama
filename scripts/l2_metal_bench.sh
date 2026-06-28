@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# L2 Metal A/B — stock vs elizaOS/llama.cpp fork on Darwin runtime subprocess path.
+# L2 Metal A/B — L1 vs fork GPU profiles on unified llama-server (Darwin/CUDA subprocess path).
 #
-# WHY: L2 exit gate needs measured tok/s + memory on M-series before vendor merge.
-# This script restarts the sidecar twice (stock llama-server, fork llama-server),
-# runs warmup + decode benchmark through runtime /api/generate, snapshots /health,
-# and writes a comparison JSON.
+# WHY: L2 exit gate needs measured tok/s + memory on M-series before fork profiles ship default-on.
+# One binary at ../llama.cpp; legs differ by ZEROLLAMA_LLAMA_FORK only.
 #
 # Prerequisite:
-#   ../llama.cpp/build/bin/llama-server          (stock)
-#   ../eliza-llama.cpp/build/bin/llama-server    (fork — build_eliza_llama_server.sh)
+#   ../llama.cpp/build/bin/llama-server    (./scripts/build_llama_server.sh)
 #
 # Usage:
 #   M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_metal_bench.sh
@@ -19,11 +16,11 @@
 #   L2_NUM_CTX               — bench context (default: 8192)
 #   L2_NUM_PREDICT           — decode tokens per run (default: 128)
 #   L2_BENCH_RUNS            — timed runs after warmup (default: 2)
-#   L2_BUILD_FORK=1            — build ../eliza-llama.cpp before fork leg
+#   L2_BUILD=1 / L2_BUILD_FORK=1 — build ../llama.cpp before bench
 #   L2_METAL_BENCH_OUT         — comparison JSON (default: /tmp/l2-metal-bench.json)
 #   apple-silicon-128g profile — sets runtime KV pool 8192×16 for 131072 ctx admission
 #   STOCK_LLAMA_CPP_ROOT       — default ../llama.cpp
-#   ELIZA_LLAMA_CPP_ROOT       — default ../eliza-llama.cpp
+#   ELIZA_LLAMA_CPP_ROOT       — default ../llama.cpp (legacy alias)
 #   L2_SKIP_STOCK=1 / L2_SKIP_FORK=1 — run one leg only (debug)
 set -euo pipefail
 
@@ -42,29 +39,27 @@ fi
 
 runtime_uv_venv
 
-STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-${ZEROLLAMA_PARENT}/llama.cpp}"
-FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${ZEROLLAMA_PARENT}/eliza-llama.cpp}"
+UNIFIED_ROOT="${LLAMA_CPP_ROOT:-${ZEROLLAMA_PARENT}/llama.cpp}"
+STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
+FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
 L2_OUT="${L2_METAL_BENCH_OUT:-/tmp/l2-metal-bench.json}"
 L2_NUM_CTX="${L2_NUM_CTX:-8192}"
 L2_NUM_PREDICT="${L2_NUM_PREDICT:-128}"
 L2_BENCH_RUNS="${L2_BENCH_RUNS:-2}"
 
-if [[ "${L2_BUILD_FORK:-0}" == "1" ]]; then
-  "${ROOT}/scripts/build_eliza_llama_server.sh"
+if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
+  LLAMA_CPP_ROOT="${UNIFIED_ROOT}" "${ROOT}/scripts/build_llama_server.sh"
 fi
 
 smoke_m3_resolve_signoff_model
 
-STOCK_BIN="${STOCK_ROOT}/build/bin/llama-server"
-FORK_BIN="${FORK_ROOT}/build/bin/llama-server"
+SERVER_BIN="${UNIFIED_ROOT}/build/bin/llama-server"
 
-if [[ "${L2_SKIP_STOCK:-0}" != "1" && ! -x "${STOCK_BIN}" ]]; then
-  echo "Missing stock ${STOCK_BIN}; run LLAMA_CPP_ROOT=${STOCK_ROOT} ./scripts/build_llama_server.sh" >&2
-  exit 1
-fi
-if [[ "${L2_SKIP_FORK:-0}" != "1" && ! -x "${FORK_BIN}" ]]; then
-  echo "Missing fork ${FORK_BIN}; run ./scripts/build_eliza_llama_server.sh" >&2
-  exit 1
+if [[ "${L2_SKIP_STOCK:-0}" != "1" || "${L2_SKIP_FORK:-0}" != "1" ]]; then
+  if [[ ! -x "${SERVER_BIN}" ]]; then
+    echo "Missing ${SERVER_BIN}; run ./scripts/build_llama_server.sh" >&2
+    exit 1
+  fi
 fi
 
 export ZEROLLAMA_GPU_PROFILE=1

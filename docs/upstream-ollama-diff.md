@@ -70,8 +70,8 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Python runtime | None | `runtime/` FastAPI sidecar/embed |
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
-| llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9672`** (repo root) | **`b9672`** vendored in-tree via `vendor/llama-cpp-b9672` + 16 patches | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**16** on b9672) + compat hooks via **0015**, ggml deltas via **0016** |
+| llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9781`** (repo root) | **`b9781`** vendored in-tree via `vendor/llama-cpp-b9781` + 16 patches | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
+| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**16** on b9781) + compat hooks via **0015**, ggml deltas via **0016** |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
 | MLX MTP / speculation | Recent commits (draft tokens, KV file split) | Pin behind `MLX_VERSION`; cherry-pick as needed |
 
@@ -81,7 +81,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| llama.cpp tag | `b9672` | `b9672` (`74ade527`) | Vendor sync via `./scripts/sync_vendor_llama.sh` or `make -f Makefile.sync sync` (rsync **before** build-info stamp) |
+| llama.cpp tag | `b9781` | `b9781` | Vendor sync via `./scripts/sync_vendor_llama.sh` (**why not bare `make sync` alone:** script verifies patch commits exist; `make clean` resets vendor for re-apply) |
 | Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build_llama_server.sh` on sibling tree | Align presets when porting |
 | MLX | `MLX_VERSION` / `MLX_C_VERSION` in CMake | Same pattern | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |
@@ -222,13 +222,15 @@ Absent: Python runtime, training API, native KV experiments, Eliza.
 
 ---
 
-## Cherry-pick status (Jun 2026, upstream `07ed7523` / v0.30.10)
+## Cherry-pick status (Jun 2026, upstream `32a97b74` / v0.30.11)
 
 Additive ports that **do not** change zerollama architecture (Mac ggml default, Python sidecar, fleet/training, FIFO scheduler policy):
 
 | Area | Status | Notes |
 |------|--------|-------|
-| **llama-server MTP (GGUF)** | Done | `appendMTPDraftArgs`, draft GGUF layers, `DraftNumPredict`, opt-in `draft_num_predict` |
+| **llama.cpp pin `b9781`** | **Done (Jun 2026)** | 16 patches on `vendor/llama-cpp-b9781`; manual apply for 0010/0012/0015 on b9781 layout; [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
+| **v0.30.11 Go delta** | **Done (partial)** | Native chat generate, CUDA 550+ compat, Vulkan Windows, Ornith/Qwen35, MLX speculate refactor, imagegen compile — **skipped** Claude/OpenCode auto-install, Kimi, desktop launchers |
+| **llama-server MTP (GGUF)** | Done | `appendMTPDraftArgs`, draft GGUF layers, `DraftNumPredict`, opt-in `draft_num_predict`; **`appendSpecDraftBackendSamplingArg`** probes `--help` — **why:** eliza fork / older llama-server reject `--spec-draft-backend-sampling` |
 | **Context shift (llama-server only)** | Done | `resolveContextShift`, `req.Shift` → sched → `LlamaServerConfig.ContextShift`; 400 when disabled |
 | **DisableJinja (llama-server)** | Done | `usesOllamaRenderedChat` → `LlamaServerConfig.DisableJinja` for parser/renderer/harmony models |
 | **LeadingBOS (llama-server)** | Done | `LeadingBOSForRenderer` + generate/chat `CompletionRequest.LeadingBOS` |
@@ -243,7 +245,7 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | **GGUF create `DRAFT`** | Done | `DraftFiles`/`DraftQuantize`, parser `DRAFT`, `server/create.go` draft layers |
 | **Safetensors create `DRAFT`** | Done | `x/create/client`, `--draft-quantize` |
 | **Upstream llama-server tests** | Done | `llm/llama_server_test.go` ported (MTP tests stay in `llama_server_mtp_test.go`) |
-| **llama.cpp pin `b9672`** | Done | Vendor sync + 16 patches; in-tree ggml/llama.cpp @ `74ade527` + `ab8e55fa` |
+| **llama.cpp pin `b9672`** | Superseded | Replaced by **`b9781`** (v0.30.11) — see row above |
 | **Native `gpu-discover` probe** | Done | Hidden subcommand + Linux/Windows CGO probes; enriches llama-server discovery with PCI/CC/gfx |
 | **Integrated GPU policy + gfx1151** | Done | Strix Halo 8060S allowlist; `OLLAMA_IGPU_ENABLE`; Metal tensor retry on discovery |
 | **llama-server unit tests** | Done | Upstream `llama_server_test.go` (minus MTP dupes); SSE ping, load stall, context shift |
@@ -259,7 +261,7 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | **Context shift integration test (#16764)** | Done | Accept llama-server 4xx on oversized initial prompts |
 | **Phase 17 E2E smoke** | Done | `phase17_llama_server_smoke.sh` — pulled tag via `P17_MODEL`; thinking models OK |
 | **Launch model inventory** | Done | `LaunchModel` + `/api/tags` resolve; integration `Edit`/`ConfigureWithModels`; OMP catalog from inventory not picker; Cline stale-state fix; [launch-model-inventory.md](./launch-model-inventory.md) |
-| **Makefile.sync pin guard** | Done | `sync` rsyncs vendor → in-tree before `build-info.cpp`; **why:** avoid reporting new `FETCH_HEAD` on old llama.cpp tree |
+| **Makefile.sync pin guard** | Done | `make sync` → `sync_vendor_llama.sh` only; **why:** `checkout` on sync used to reset vendor and ship unpatch trees |
 | **x/create test alignment** | Done | FP8 error message + Qwen35 MTP preserve expectations match upstream |
 | **Remove CGO runners (#16031)** | **Skipped** | Would break Mac ggml default |
 | **Wholesale `sched.go` replace** | **Skipped** | Keep FIFO / VRAM broker / darwin sidecar gates |

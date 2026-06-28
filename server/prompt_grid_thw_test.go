@@ -24,8 +24,9 @@ func TestChatPrompt_attachesGridTHWPerVideoFrame(t *testing.T) {
 		Content: "describe",
 		Images:  make([]api.ImageData, 4),
 		VideoSpans: []api.VideoSpan{{
-			FrameCount: 4,
-			GridTHW:    []int{4, 24, 32},
+			FrameCount:      4,
+			GridTHW:         []int{4, 24, 32},
+			GridTHWExplicit: true,
 		}},
 	}}
 	_, images, _, _, err := chatPrompt(context.Background(), m, nil, &api.Options{}, msgs, nil, nil, false, 0, nil)

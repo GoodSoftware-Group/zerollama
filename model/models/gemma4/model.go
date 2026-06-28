@@ -41,6 +41,10 @@ type Model struct {
 
 var _ model.MultimodalProcessor = (*Model)(nil)
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 type MultiModalProjector struct {
 	Projection *ClippableLinear `gguf:"input_projection"`
 }

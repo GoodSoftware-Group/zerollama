@@ -575,17 +575,7 @@ type MtmdChunk struct {
 }
 
 func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gridTHW []int) ([]MtmdChunk, error) {
-	// gridTHW is an upstream handoff seam (docs/mtmd-grid-thw-handoff.md).
-	// WHY accept it now: SGLang clients attach [1,H,W] per frame on video_spans; llamarunner
-	// already threads img.GridTHW here. When mtmd_bitmap_set_grid_hint lands, only this bind
-	// changes — callers and llm.ImageData stay stable. Until then mtmd still patchifies from
-	// decoded PNG dimensions; we log at Debug so operators can compare hint vs embed count.
-	if len(gridTHW) == 3 {
-		slog.Debug("mtmd grid_thw hint not forwarded to upstream",
-			"grid_thw", gridTHW,
-			"note", "pixel-derived layout until mtmd_bitmap_set_grid_hint lands",
-		)
-	}
+	// gridTHW: SGLang [1,H,W] per frame — forwarded to mtmd via mtmd_bitmap_set_grid_hint.
 	// Initialize the input chunks pointer
 	ic := C.mtmd_input_chunks_init()
 	defer C.mtmd_input_chunks_free(ic)
@@ -594,14 +584,25 @@ func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gri
 	it := C.mtmd_input_text_init(C.mtmd_default_marker(), true, true)
 	defer C.mtmd_input_text_free(it)
 
-	// Initialize a bitmap with the image data (placeholder=false for real decode)
-	bw := C.mtmd_helper_bitmap_init_from_buf(c.c, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)), C._Bool(false))
-	if bw.bitmap == nil {
+	// Initialize a bitmap with the image data
+	bitmap := C.mtmd_helper_bitmap_init_from_buf(c.c, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+	if bitmap == nil {
 		return nil, errors.New("unable to load mtmd bitmap from image data")
 	}
-	defer C.mtmd_bitmap_free(bw.bitmap)
+	defer C.mtmd_bitmap_free(bitmap)
 
-	bitmaps := [1]*C.mtmd_bitmap{bw.bitmap}
+	if len(gridTHW) == 3 && gridTHW[0] > 0 && gridTHW[1] > 0 && gridTHW[2] > 0 {
+		var gr [3]C.int32_t
+		for i := range 3 {
+			gr[i] = C.int32_t(gridTHW[i])
+		}
+		C.mtmd_bitmap_set_grid_hint(bitmap, &gr[0])
+		slog.Debug("mtmd grid_thw hint forwarded",
+			"grid_thw", gridTHW,
+		)
+	}
+
+	bitmaps := [1]*C.mtmd_bitmap{bitmap}
 
 	// Tokenize the image
 	if C.int32_t(0) != C.mtmd_tokenize(c.c, ic, it, &bitmaps[0], 1) {

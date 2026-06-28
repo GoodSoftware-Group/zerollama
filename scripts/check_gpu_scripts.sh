@@ -50,6 +50,8 @@ scripts=(
   l3_cache_smoke.sh
   l3_spec_cache_smoke.sh
   l3_prefix_cache_trace_replay.sh
+  l3_prefix_block_pool_smoke.sh
+  l3_radix_prefix_smoke.sh
   l3_gate_report.sh
   l3_production_gate.sh
   l3_cuda_full_gate.sh
@@ -66,6 +68,10 @@ scripts=(
   flash_moe_extract_sidecar.sh
   phase16_edge_smoke.sh
   phase16_edge_build_smoke.sh
+  phase16_edge_binary_smoke.sh
+  phase11_metal_admission_smoke.sh
+  phase13_metal_vram_smoke.sh
+  phase11_13_15_metal_signoff.sh
   phase17_linux_auto_smoke.sh
   phase17_l2_pin_status.sh
   phase15_upstream_kv_watch.sh
@@ -89,6 +95,7 @@ scripts=(
   repro_shared_interpreter_health_hang.sh
   phase15_kv_native_ci.sh
   phase15_llama_kv_ext_pin_check.sh
+  llama_patch_doctor.sh
   phase15_health_smoke.sh
 )
 
@@ -175,7 +182,11 @@ grep -q 'l2_cuda_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_cuda_bench.sh"
 grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_bench.sh"
 grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.sh"
-grep -q 'l2_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l2.md"
+grep -q 'c84b30200' "${ROOT}/docs/gpu-profiles-l2.md"
+grep -q 'llama-cpp-c84b3020' "${ROOT}/Makefile.sync"
+grep -q 'stage_llama_compat_for_vendor' "${ROOT}/scripts/build_llama_server.sh"
+grep -q 'rebase_vendor_unified' "${ROOT}/scripts/rebase_vendor_unified.sh"
+grep -q 'checkpoint-every-n-tokens' "${ROOT}/scripts/build_llama_server.sh"
 grep -q 'l2_cuda_runtime_compat_smoke' "${ROOT}/scripts/l2_cuda_full_gate.sh"
 grep -q 'l3_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
 grep -q 'l3_spec_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
@@ -240,6 +251,7 @@ grep -q '/api/train/status' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
 grep -q 'cmd.*ping' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
 grep -q 'ZEROLLAMA_RUNTIME_SHARED_PYTHON' "${ROOT}/runtime/runtime/gpu_vram.py"
 grep -q 'health try' "${ROOT}/scripts/repro_shared_interpreter_health_hang.sh"
+grep -q 'llama_patch_doctor' "${ROOT}/scripts/phase15_kv_native_ci.sh"
 grep -q 'phase15_llama_kv_ext_pin_check' "${ROOT}/scripts/phase15_kv_native_ci.sh"
 grep -q 'test_kv_native_parity' "${ROOT}/scripts/phase15_kv_native_ci.sh"
 grep -q 'test_kv_decode_long_ctx' "${ROOT}/scripts/phase15_kv_native_ci.sh"
@@ -281,10 +293,12 @@ grep -q 'RUN_E2E_UPSTREAM_GGUF' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'RUN_E2E_P17_VISION' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'serve_linux_auto.sh' "${ROOT}/docs/phase17-llama-server.md"
 grep -q 'P15_PIN_JSON' "${ROOT}/scripts/phase15_llama_kv_ext_pin_check.sh"
+grep -q 'phase16_edge_binary_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
 grep -q 'phase16_edge_build_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'run_upstream_gguf' "${ROOT}/.github/workflows/zerollama-gpu-smoke.yaml"
 grep -q 'GgmlRunnerLinked' "${ROOT}/envconfig/ggml_runner.go"
 grep -q 'phase15_llama_kv_ext_pin_check.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'llama_patch_doctor.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'doctorCheckGgmlRunner' "${ROOT}/cmd/doctor.go"
 grep -q 'schedSkipGgmlRunnerLoad' "${ROOT}/server/sched.go"
 grep -q 'phase17_l2_pin_status.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"

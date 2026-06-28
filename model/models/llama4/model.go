@@ -24,6 +24,10 @@ type Model struct {
 	*TextModel
 }
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 type Projector struct {
 	Linear1 *nn.Linear `gguf:"linear_1"`
 }

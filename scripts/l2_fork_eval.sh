@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# L2 fork evaluation smoke — probe binary + runtime profile flags (no full bench).
+# L2 fork evaluation smoke — probe unified llama-server + runtime profile flags (no full bench).
 #
-# WHY: L2 gate needs stock vs fork comparison on 5080 + M-series before vendor
-# replacement. This script validates build + profile emission; tok/s bench is manual.
+# WHY: L2 gate compares L1 (q8_0) vs fork (QJL/Polar) profiles on one binary.
 #
-# Prerequisite (fork build):
-#   ./scripts/build_eliza_llama_server.sh
+# Prerequisite:
+#   ./scripts/build_llama_server.sh
 #
 # Usage:
-#   export LLAMA_SERVER_BIN=../eliza-llama.cpp/build/bin/llama-server
+#   export LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server
 #   ./scripts/l2_fork_eval.sh
 #
 # Optional self-build:
-#   L2_BUILD_FORK=1 ./scripts/l2_fork_eval.sh
+#   L2_BUILD=1 ./scripts/l2_fork_eval.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,14 +19,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/scripts/runtime_uv_venv.sh"
 runtime_uv_venv
 
+ZEROLLAMA_PARENT="$(cd "${ROOT}/.." && pwd)"
+UNIFIED_ROOT="${LLAMA_CPP_ROOT:-${ZEROLLAMA_PARENT}/llama.cpp}"
 BIN="${LLAMA_SERVER_BIN:-}"
-if [[ "${L2_BUILD_FORK:-0}" == "1" ]]; then
-  "${ROOT}/scripts/build_eliza_llama_server.sh"
-  BIN="${LLAMA_SERVER_BIN:-${ROOT}/../eliza-llama.cpp/build/bin/llama-server}"
+if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
+  LLAMA_CPP_ROOT="${UNIFIED_ROOT}" "${ROOT}/scripts/build_llama_server.sh"
+  BIN="${LLAMA_SERVER_BIN:-${UNIFIED_ROOT}/build/bin/llama-server}"
 fi
 
 if [[ -z "${BIN}" || ! -x "${BIN}" ]]; then
-  echo "Set LLAMA_SERVER_BIN to elizaOS/llama.cpp llama-server or L2_BUILD_FORK=1" >&2
+  BIN="${UNIFIED_ROOT}/build/bin/llama-server"
+fi
+if [[ ! -x "${BIN}" ]]; then
+  echo "Set LLAMA_SERVER_BIN or run L2_BUILD=1 ./scripts/l2_fork_eval.sh" >&2
   exit 1
 fi
 
@@ -35,9 +39,9 @@ echo "== fork binary probe =="
 "${BIN}" --version 2>/dev/null || true
 help_text="$("${BIN}" --help 2>&1 || true)"
 if echo "${help_text}" | grep -qE 'ctx-checkpoints|qjl1_256'; then
-  echo "probe: fork llama-server (QJL/Polar/TBQ or ctx-checkpoints)"
+  echo "probe: unified llama-server (QJL/Polar/TBQ or ctx-checkpoints)"
 else
-  echo "probe: stock llama-server (no fork markers in --help)" >&2
+  echo "probe: binary missing fork markers in --help (wrong ref?)" >&2
 fi
 
 echo ""

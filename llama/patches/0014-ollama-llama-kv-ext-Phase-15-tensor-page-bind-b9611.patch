@@ -1,11 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: zerollama <dev@zerollama.local>
-Date: Sat, 13 Jun 2026 12:00:00 -0700
+From: Odilitime <janesmith@airmail.cc>
+Date: Sat, 27 Jun 2026 21:56:47 -0700
 Subject: [PATCH] ollama: llama-kv-ext Phase 15 tensor page bind (b9611)
 
-Staging C API for PA page bind: cell map + K/V tensor introspection.
-Resolves hybrid/iSWA/hybrid-iswa to attn kv_cache base view.
-WHY separate from llama.h: upstream has no stable writable page-handle API yet.
 ---
  include/llama-kv-ext.h      |  96 ++++++++++++++++
  src/CMakeLists.txt          |   1 +
@@ -18,7 +15,7 @@ WHY separate from llama.h: upstream has no stable writable page-handle API yet.
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
 new file mode 100644
-index 000000000..a48661ac9
+index 0000000..a48661a
 --- /dev/null
 +++ b/include/llama-kv-ext.h
 @@ -0,0 +1,96 @@
@@ -119,10 +116,10 @@ index 000000000..a48661ac9
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index d15ccfd99..f506a4bbb 100644
+index b3d0035..e43104a 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -29,6 +29,7 @@ add_library(llama
+@@ -28,6 +28,7 @@ add_library(llama
              llama-memory-hybrid.cpp
              llama-memory-hybrid-iswa.cpp
              llama-memory-recurrent.cpp
@@ -131,10 +128,10 @@ index d15ccfd99..f506a4bbb 100644
              llama-model-loader.cpp
              llama-model-saver.cpp
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 2802103bd..fa653ab2e 100644
+index 0eb9dad..e4bf025 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -691,6 +691,59 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
+@@ -633,6 +633,59 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
      return cells.seq_pos_max(seq_id);
  }
  
@@ -195,10 +192,10 @@ index 2802103bd..fa653ab2e 100644
      std::map<ggml_backend_buffer_type_t, size_t> ret;
      for (const auto & [ctx, buf] : ctxs_bufs) {
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 3d68f98c1..c3a07c8f1 100644
+index 60b33b4..527c7ed 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -161,6 +161,13 @@ public:
+@@ -156,6 +156,13 @@ public:
      ggml_type type_k() const;
      ggml_type type_v() const;
  
@@ -209,12 +206,12 @@ index 3d68f98c1..c3a07c8f1 100644
 +    ggml_tensor * kv_tensor_k(int32_t kv_layer, uint32_t stream = 0) const;
 +    ggml_tensor * kv_tensor_v(int32_t kv_layer, uint32_t stream = 0) const;
 +
-     //
-     // graph_build API
-     //
+     // dynamic resize support
+     bool try_resize();
+     void copy_from(const llama_kv_cache & other);
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
 new file mode 100644
-index 000000000..8b1a271a3
+index 0000000..8b1a271
 --- /dev/null
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -0,0 +1,216 @@

@@ -11,7 +11,7 @@ func TestVisionTokensFromGridTHW_qwenStyle(t *testing.T) {
 
 func TestMultimodalTokenize_nilImageContext(t *testing.T) {
 	var c *ImageContext
-	chunks, err := c.MultimodalTokenize(nil, []byte{1}, "sess", []int{1, 8, 8})
+	chunks, err := c.MultimodalTokenize(nil, []byte{1}, "sess", []int{1, 8, 8}, false)
 	if err != nil || chunks != nil {
 		t.Fatalf("nil context: chunks=%v err=%v", chunks, err)
 	}

@@ -1045,6 +1045,10 @@ func (s *mockLlm) Completion(ctx context.Context, req llm.CompletionRequest, fn 
 	return s.completionResp
 }
 
+func (s *mockLlm) ApplyChatTemplate(ctx context.Context, req llm.ChatRequest) (string, error) {
+	return "", nil
+}
+
 func (s *mockLlm) Embedding(ctx context.Context, input string) ([]float32, int, error) {
 	return s.embeddingResp, 0, s.embeddingRespErr
 }

@@ -53,7 +53,6 @@ static __global__ void k_set_rows_quant(const float * __restrict__ src0,
     const int64_t i11 = fastmodulo((uint32_t) i02, ne11_fd);
     const int64_t i10 = i01;
 
-    ggml_cuda_pdl_sync();
     const int64_t dst_row = *(src1 + i10*s10 + i11*s11 + i12*s12);
 
     const float * src0_row = src0 + i01*s01 + i02*s02 + i03*s03;
@@ -111,9 +110,9 @@ static void set_rows_cuda_quant(
 }
 
 template <typename src_t, typename idx_t, typename dst_t>
-static __global__ void k_set_rows(const src_t * src0_ptr,
-                                  const idx_t * src1_ptr,
-                                  dst_t * dst_ptr,
+static __global__ void k_set_rows(const src_t * __restrict__ src0,
+                                  const idx_t * __restrict__ src1,
+                                  dst_t * __restrict__ dst,
                                   const int64_t ne_total,
                                   const int64_t ne10,
                                   const int64_t ne11,
@@ -133,9 +132,6 @@ static __global__ void k_set_rows(const src_t * src0_ptr,
                                   const uint3   ne02,
                                   const uint3   ne11_fd,
                                   const uint3   ne12_fd) {
-    const src_t * GGML_CUDA_RESTRICT src0 = src0_ptr;
-    const idx_t * GGML_CUDA_RESTRICT src1 = src1_ptr;
-    dst_t       * GGML_CUDA_RESTRICT dst  = dst_ptr;
     const int64_t i = int64_t(blockDim.x) * blockIdx.x + threadIdx.x;
 
     if (i >= ne_total) {
@@ -161,9 +157,7 @@ static __global__ void k_set_rows(const src_t * src0_ptr,
     const int64_t i11 = fastmodulo((uint32_t) i02, ne11_fd);
     const int64_t i10 = i01;
 
-    ggml_cuda_pdl_sync();
     const int64_t dst_row = *(src1 + i10*s10 + i11*s11 + i12*s12);
-    ggml_cuda_pdl_lc();
 
     const src_t * src0_row = src0 + i01*s01 + i02*s02 + i03*s03;
     dst_t * dst_row_ptr    = dst + dst_row*s1 + i02*s2 + i03*s3;
@@ -209,11 +203,9 @@ static void set_rows_cuda(
         const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
         const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
-        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(grid_size, block_size, 0, stream);
-        ggml_cuda_kernel_launch(k_set_rows<src_t, idx_t, dst_t>, launch_params,
-            src0_d, src1_d, dst_d, ne_total, ne10, ne11, ne12, ne13, s01,
-            s02, s03, s10, s11, s12, s1, s2, s3, ne00_fd, ne01_fd, ne02_fd,
-            ne11_fd, ne12_fd);
+        k_set_rows<<<grid_size, block_size, 0, stream>>>(src0_d, src1_d, dst_d, ne_total, ne10, ne11, ne12, ne13, s01,
+                                                         s02, s03, s10, s11, s12, s1, s2, s3, ne00_fd, ne01_fd, ne02_fd,
+                                                         ne11_fd, ne12_fd);
     }
 }
 
@@ -300,6 +292,26 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     } else if (dst->type == GGML_TYPE_Q8_0) {
         set_rows_cuda_quant<idx_t, block_q8_0, QK8_0, quantize_f32_q8_0_block>(
             src0_d, src1_d, (block_q8_0*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_TBQ3_0) {
+        set_rows_cuda_quant<idx_t, block_tbq3_0, QK_TBQ, quantize_f32_tbq3_0_block>(
+            src0_d, src1_d, (block_tbq3_0*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_TBQ4_0) {
+        set_rows_cuda_quant<idx_t, block_tbq4_0, QK_TBQ, quantize_f32_tbq4_0_block>(
+            src0_d, src1_d, (block_tbq4_0*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
             nb01, nb02, nb03,

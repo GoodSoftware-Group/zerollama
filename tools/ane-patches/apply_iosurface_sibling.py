@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Apply ggml IOSurface hook to elizaOS llama.cpp sibling (minimal, idempotent)."""
+from __future__ import annotations
+
+import pathlib
+import sys
+
+
+def patch_once(path: pathlib.Path, needle: str, repl: str, label: str, *, required: bool = True) -> None:
+    text = path.read_text()
+    if repl.strip() in text:
+        print(f"  skip {label} (already applied)")
+        return
+    if needle not in text:
+        if not required:
+            print(f"  skip {label} (anchor missing — optional)")
+            return
+        raise SystemExit(f"anchor missing for {label} in {path}")
+    path.write_text(text.replace(needle, repl, 1))
+    print(f"  patched {label}")
+
+
+def main() -> None:
+    root = pathlib.Path(sys.argv[1])
+
+    device_m = root / "ggml/src/ggml-metal/ggml-metal-device.m"
+    patch_once(
+        device_m,
+        '#include <Foundation/Foundation.h>\n\n#include <Metal/Metal.h>',
+        '#include <Foundation/Foundation.h>\n\n#import <IOSurface/IOSurface.h>\n\n#include <Metal/Metal.h>',
+        "device.m IOSurface import",
+    )
+    patch_once(
+        device_m,
+        "    // pointers to global device\n    ggml_metal_device_t dev;\n};",
+        "    // pointers to global device\n    ggml_metal_device_t dev;\n\n    // optional IOSurface backing (retained until buffer free)\n    IOSurfaceRef iosurface;\n};",
+        "device.m struct iosurface field",
+    )
+    patch_once(
+        device_m,
+        "    return res;\n}\n\nvoid ggml_metal_buffer_free(ggml_metal_buffer_t buf) {",
+        """    return res;
+}
+
+ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(ggml_metal_device_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size) {
+    IOSurfaceRef surface = IOSurfaceLookup(surface_id);
+    if (!surface) {
+        GGML_LOG_ERROR("%s: IOSurfaceLookup(%u) failed (same-process only)\\n", __func__, surface_id);
+        return NULL;
+    }
+
+    IOSurfaceLock(surface, 0, NULL);
+    void * base = IOSurfaceGetBaseAddress(surface);
+    if (!base) {
+        IOSurfaceUnlock(surface, 0, NULL);
+        CFRelease(surface);
+        GGML_LOG_ERROR("%s: IOSurfaceGetBaseAddress(%u) failed\\n", __func__, surface_id);
+        return NULL;
+    }
+
+    ggml_metal_buffer_t res = ggml_metal_buffer_map(dev, base, size, max_tensor_size);
+
+    IOSurfaceUnlock(surface, 0, NULL);
+
+    if (!res) {
+        CFRelease(surface);
+        return NULL;
+    }
+
+    res->iosurface = (IOSurfaceRef) CFRetain(surface);
+    CFRelease(surface);
+
+    return res;
+}
+
+void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {""",
+        "device.m map_iosurface",
+    )
+    patch_once(
+        device_m,
+        "    if (buf->is_shared && buf->owned) {\n#if TARGET_OS_OSX\n        vm_deallocate((vm_map_t)mach_task_self(), (vm_address_t)buf->all_data, buf->all_size);\n#else\n        free(buf->all_data);\n#endif\n    }\n\n    free(buf);\n}",
+        "    if (buf->is_shared && buf->owned) {\n#if TARGET_OS_OSX\n        vm_deallocate((vm_map_t)mach_task_self(), (vm_address_t)buf->all_data, buf->all_size);\n#else\n        free(buf->all_data);\n#endif\n    }\n\n    if (buf->iosurface) {\n        CFRelease(buf->iosurface);\n        buf->iosurface = NULL;\n    }\n\n    free(buf);\n}",
+        "device.m buffer_free iosurface",
+    )
+
+    device_h = root / "ggml/src/ggml-metal/ggml-metal-device.h"
+    patch_once(
+        device_h,
+        "ggml_metal_buffer_t ggml_metal_buffer_map (ggml_metal_device_t dev, void * ptr, size_t size, size_t max_tensor_size);\n",
+        "ggml_metal_buffer_t ggml_metal_buffer_map (ggml_metal_device_t dev, void * ptr, size_t size, size_t max_tensor_size);\n"
+        "ggml_metal_buffer_t ggml_metal_buffer_map_iosurface(ggml_metal_device_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size);\n",
+        "device.h declare",
+    )
+
+    metal_h = root / "ggml/include/ggml-metal.h"
+    patch_once(
+        metal_h,
+        "#include <stdbool.h>\n",
+        "#include <stdbool.h>\n#include <stdint.h>\n",
+        "metal.h stdint",
+    )
+    patch_once(
+        metal_h,
+        "GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);\n\n#ifdef __cplusplus\n}\n#endif",
+        """GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);
+
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+        ggml_backend_dev_t device,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size);
+
+#ifdef __cplusplus
+}
+#endif""",
+        "metal.h public API",
+    )
+
+    metal_cpp = root / "ggml/src/ggml-metal/ggml-metal.cpp"
+    patch_once(
+        metal_cpp,
+        """static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backend_dev_t dev, void * ptr, size_t size, size_t max_tensor_size) {
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
+
+    ggml_metal_buffer_t res = ggml_metal_buffer_map(ctx_dev, ptr, size, max_tensor_size);
+
+    const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx_dev);
+
+    return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
+}
+
+static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {""",
+        """static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backend_dev_t dev, void * ptr, size_t size, size_t max_tensor_size) {
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
+
+    ggml_metal_buffer_t res = ggml_metal_buffer_map(ctx_dev, ptr, size, max_tensor_size);
+
+    const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx_dev);
+
+    return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
+}
+
+static ggml_backend_buffer_t ggml_backend_metal_device_buffer_from_iosurface(
+        ggml_backend_dev_t dev, uint32_t surface_id, size_t size, size_t max_tensor_size) {
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) dev->context;
+
+    ggml_metal_buffer_t res = ggml_metal_buffer_map_iosurface(ctx_dev, surface_id, size, max_tensor_size);
+    if (!res) {
+        return nullptr;
+    }
+
+    const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx_dev);
+
+    return ggml_backend_buffer_init(
+            ggml_backend_metal_buffer_type_mapped(props_dev->device),
+            ggml_backend_metal_buffer_shared_i,
+            res,
+            size);
+}
+
+static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {""",
+        "metal.cpp device buffer_from_iosurface",
+    )
+    patch_once(
+        metal_cpp,
+        """static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_get_features") == 0) {
+        return (void *)ggml_backend_metal_get_features;
+    }
+
+    return NULL;
+
+    GGML_UNUSED(reg);
+}""",
+        """static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_get_features") == 0) {
+        return (void *)ggml_backend_metal_get_features;
+    }
+    if (strcmp(name, "ggml_backend_dev_buffer_from_iosurface") == 0) {
+        return (void *)ggml_backend_dev_buffer_from_iosurface;
+    }
+
+    return NULL;
+
+    GGML_UNUSED(reg);
+}""",
+        "metal.cpp proc address",
+    )
+    if "ggml_backend_dev_buffer_from_iosurface" in metal_cpp.read_text():
+        print("  skip metal.cpp public API (already applied)")
+    else:
+        patch_once(
+            metal_cpp,
+            "    return &reg;\n}\n\nGGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)",
+            """    return &reg;
+}
+
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+        ggml_backend_dev_t device,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size) {
+    if (!device || !device->iface.get_name) {
+        return nullptr;
+    }
+
+    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal\\n", __func__);
+        return nullptr;
+    }
+
+    return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);
+}
+
+GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)""",
+            "metal.cpp public API",
+        )
+
+    cmake = root / "ggml/src/ggml-metal/CMakeLists.txt"
+    patch_once(
+        cmake,
+        "find_library(METALKIT_FRAMEWORK MetalKit   REQUIRED)\n",
+        "find_library(METALKIT_FRAMEWORK MetalKit   REQUIRED)\nfind_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)\n",
+        "CMake IOSurface find",
+    )
+    patch_once(
+        cmake,
+        "                      ${METALKIT_FRAMEWORK}\n                      )",
+        "                      ${METALKIT_FRAMEWORK}\n                      ${IOSURFACE_FRAMEWORK}\n                      )",
+        "CMake IOSurface link",
+    )
+
+
+if __name__ == "__main__":
+    main()

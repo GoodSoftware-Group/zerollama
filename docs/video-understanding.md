@@ -151,7 +151,7 @@ Streaming and final chat/generate responses can include:
 
 **Why `cached_tokens`:** L3 `cache_prompt` and llama-server slot reuse report `timings.cache_n`. Without surfacing it, prefix KV hits are invisible in the API and access logs (`cached_prompt_tokens` on `inference response out`).
 
-**Live gate:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` — two-turn VLM inference with the same `prompt_cache_key`; strict pass requires turn-2 `cached_prompt_tokens` ≥ 1 on `/api/chat` (L3 KV on llama-server subprocess, **or ollama-engine input-cache hits** on Mac Metal). OpenAI `/v1/chat/completions` in the same script is advisory (single-turn, different prefix). Use `VIDEO_AGENT_INFER_SOFT=1` on MLX-only or when both `llama_cache.enabled` and runner KV cache are off. Optional `VIDEO_AGENT_INFER_PREPROC=1` adds a third leg: pre-expanded `images` + `video_spans` + `padded_input_ids` with real inference (not render-only). Grep `VIDEO_AGENT_GO_LOG` for `vision embed session cache hit` (`engine=ollama`) and `vision grid hints`. Report: `./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json`.
+**Live gate:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` — two-turn VLM inference with the same `prompt_cache_key`; strict pass requires turn-2 `cached_prompt_tokens` ≥ 1 on `/api/chat` (L3 KV on llama-server subprocess, **or ollama-engine input-cache hits** on Mac Metal). OpenAI `/v1/chat/completions` in the same script is advisory (single-turn, different prefix). Use `VIDEO_AGENT_INFER_SOFT=1` on MLX-only or when both `llama_cache.enabled` and runner KV cache are off. Optional legs (require `VIDEO_AGENT_GO_LOG`): **`VIDEO_AGENT_INFER_PREPROC=1`** (pre-expanded padded infer; `preprocessed layout session cache hit`); **`VIDEO_AGENT_INFER_PREFIX_MM_WARN=1`** (prefix-mm hint without session key); **`VIDEO_AGENT_INFER_VIT_SESSION=1`** (strict `vision embed session cache hit` on turn 2); **`VIDEO_AGENT_INFER_GRID_THW=1`** (requires preproc; `grid_thw hint resize` or `vision grid hint match`). Grep logs for `vision grid hints`, `precomputed_embedding runner inject`, `processor_output runner inject`. Report: `./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json`.
 
 **Fleet logs:** the same `inference response out` line includes `image_tokens`, `video_tokens`, and `audio_tokens` when post-expand heuristics are non-zero — mirrors `prompt_tokens_details` without parsing JSON bodies.
 
@@ -177,13 +177,29 @@ Pre-expanded clients may send **`padded_input_ids`** on the latest user message 
 
 **Validation:** non-negative ids, max length 1M. Invalid values return **400** before render.
 
+### Optional `precomputed_embedding` (SGLang ViT output rows)
+
+Clients may send **`precomputed_embedding`** (post-projector feature rows) with **`padded_input_ids`** instead of PNG **`images[]`**. **Why:** when the client or a GPU worker already ran the vision tower, the server should splice rows at pretokenized vision slots — not decode PNG and re-encode. **Rules:** exactly one precomputed item per message; cannot mix with raw bytes or `processor_output`; requires `padded_input_ids` on the same message. **ollama-engine** implements all native Go VLMs (Qwen/glmocr need `grid_thw` patch grid; Gemma/mllama/deepseekocr rows only; llama4 optional multi-tile grid; lfm2 single-tile). **ggml llamarunner** accepts embed rows on padded inject paths. **llama-server** rejects (400). Grep `precomputed_embedding runner inject`.
+
+### Optional `processor_output` (SGLang HF processor tensors)
+
+Clients may send **`processor_output`** with **`pixel_values`** and **`image_grid_thw`** plus **`padded_input_ids`**. **Why:** SGLang runs the HF processor locally; zerollama should run only vision tower + projector + LLM — skipping PNG decode and processor CPU work. **Rules:** same exclusivity as precomputed; one item per message. **ollama-engine:** Qwen/glmocr patch grids; Gemma3/4/mistral3/llama4/lfm2 pixel canvases (`[1,H,W]`; llama4/lfm2 single-tile only). **deepseekocr** deferred (SAM pipeline). **llamarunner / llama-server** reject. Grep `processor_output runner inject`.
+
+### `enable_prefix_mm_cache` (session ViT pin)
+
+Set **`prompt_cache_key`** on every agent turn. Session ViT overlay defaults **ON** when the key is set; set **`enable_prefix_mm_cache: false`** to disable session pin and rely on global LRU only. **Why:** ffmpeg and expansion caches can hit while the runner's global ViT LRU (4–64 slots) still evicts embeds between agent turns — SGLang keeps encoder outputs hot per conversation; zerollama's session overlay uses the same key as L3 and session expansion. Without `prompt_cache_key`, overlay stays off (optional warn log when the flag is set alone).
+
+**Logs:** `vision embed session cache hit`, `vision embed global cache hit`, `precomputed_embedding session cache hit` (llamarunner).
+
 ### Native ffmpeg `grid_thw`
 
-Native ffmpeg expansion **populates `grid_thw`** when sampled PNG frames decode: first-frame dimensions → Qwen3-VL-style smart resize (patch 14, merge 2 by default) → `[frame_count, H_patch, W_patch]`. Override via manifest `vision_patch_size` / `vision_spatial_merge_size`. **Layout cache:** `grid_thw` is stored in global + session expansion LRU with frames — agent turn 2 skips PNG re-decode for grid estimates.
+Native ffmpeg expansion **populates `grid_thw`** when sampled PNG frames decode: first-frame dimensions → Qwen3-VL-style smart resize (patch 14, merge 2 by default) → `[frame_count, H_patch, W_patch]`. Override via manifest `vision_patch_size` / `vision_spatial_merge_size`. **Layout cache:** `grid_thw` is stored in global + session expansion LRU with frames — agent turn 2 skips PNG re-decode for grid **estimates**.
 
-**Runner hints (Jun 2026):** each expanded frame may carry `[1,H,W]` on `llm.ImageData.GridTHW` into the ggml runner. Debug logs compare hints vs embed counts (`vision grid hint`) on **llamarunner** (mtmd) and **ollama-engine** (Mac default, post-`PostTokenize`). **Engine still encodes from pixels** — hints do not override vision forward yet.
+**Runner forward (Jun 2026):** only **client-origin** `grid_thw` on pre-expanded `video_spans` is forwarded to mtmd (`GridTHWExplicit`). Server ffmpeg estimates are **preflight/usage only** — Go smart_resize can differ from mtmd. On M-RoPE models (Qwen-VL), explicit `[1,H,W]` per frame triggers `mtmd_bitmap_set_grid_hint` resize (`grid_thw hint resize` in logs). Grep `vision grid hint match` when client grid aligns with mtmd output.
 
-**Why:** native path token estimates should match preprocessed clients without requiring SGLang upstream. Other vision families may differ; estimates are heuristic only (not fed to vision forward yet).
+**precomputed / processor_output:** client `grid_thw` on those payloads always forwards to ollama-engine (no VideoSpan gate).
+
+**Why:** native path token estimates should match preprocessed clients without requiring SGLang upstream. Other vision families may differ; ffmpeg estimates are heuristic only.
 
 ## Optional external decode hook (Phase E)
 

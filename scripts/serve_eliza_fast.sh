@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Serve zerollama with llama-server backend for Eliza speculative decoding.
 #
-# DFlash: create tags from modelfiles/eliza-1-*-dflash.modelfile (DRAFT + spec_type draft-eagle3).
+# DFlash: create tags from modelfiles/eliza-1-*-dflash.modelfile (DRAFT + spec_type dflash).
 # Ngram: set ZEROLLAMA_ELIZA_NGRAM=1 or use modelfiles/eliza-1-*-ngram.modelfile.
 #
 # Usage:

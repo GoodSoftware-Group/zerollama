@@ -130,6 +130,7 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 			if w.streamOptions != nil && w.streamOptions.IncludeUsage {
 				u := openai.ToUsage(chatResponse)
 				c.Usage = &u
+				c.Sglext = openai.SglExtFromMetrics(chatResponse.Metrics)
 				c.Choices = []openai.ChunkChoice{}
 				d, err := json.Marshal(c)
 				if err != nil {

@@ -23,10 +23,13 @@ import (
 // WHY no ggml fallback: edge builds exclude server.go; attempting ggml would require linking
 // llama.cpp CGO we deliberately dropped in v2.
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int, config LlamaServerConfig) (LlamaServer, error) {
-	if err := ggmlRunnerRequired(projectors); err != nil {
+	if err := ggmlRunnerRequired(projectors, config); err != nil {
 		return nil, err
 	}
-	if !useLlamaServerBackend(projectors) {
+	if err := SpecModelRequiresLlamaServerError(config); err != nil {
+		return nil, err
+	}
+	if !useLlamaServerBackendForModel(projectors, config) {
 		return nil, fmt.Errorf("%w; set ZEROLLAMA_LLAMA_SERVER=1/auto or use --edge", ErrGgmlRunnerUnlinked)
 	}
 

@@ -14,7 +14,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <cstring>
-#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <queue>
@@ -160,13 +159,6 @@ void server_model_meta::update_args(common_preset_context & ctx_preset, std::str
     // TODO: maybe validate preset before rendering ?
     // render args
     args = preset.to_args(bin_path);
-
-    // unified binary dispatches by subcommand, re-inject it right after the
-    // binary path so the child starts as 'llama serve ...' not 'llama ...'
-    const char * app_cmd = std::getenv("LLAMA_APP_CMD");
-    if (app_cmd != nullptr && app_cmd[0] != '\0' && !bin_path.empty()) {
-        args.insert(args.begin() + 1, app_cmd);
-    }
 }
 
 void server_model_meta::update_caps() {
@@ -180,8 +172,7 @@ void server_model_meta::update_caps() {
             "LLAMA_ARG_HF_REPO",
             "LLAMA_ARG_HF_REPO_FILE",
         });
-        params.offline = true;
-        // params.skip_download = true; // TODO: ideally, we should validate the model here, but it takes too much time
+        params.offline = true; // avoid any unwanted network call during capability detection
         common_params_handle_models(params, LLAMA_EXAMPLE_SERVER);
         if (params.mmproj.path.empty()) {
             multimodal = { false, false };
@@ -372,19 +363,18 @@ void server_models::load_models() {
         // FIRST LOAD: add all models, then unlock for autoloading
         for (const auto & [name, preset] : final_presets) {
             server_model_meta meta{
-                /* preset        */ preset,
-                /* name          */ name,
-                /* aliases       */ {},
-                /* tags          */ {},
-                /* port          */ 0,
-                /* status        */ SERVER_MODEL_STATUS_UNLOADED,
-                /* last_used     */ 0,
-                /* args          */ std::vector<std::string>(),
-                /* loaded_info   */ {},
-                /* exit_code     */ 0,
-                /* stop_timeout  */ DEFAULT_STOP_TIMEOUT,
-                /* multimodal    */ mtmd_caps{false, false},
-                /* need_download */ false,
+                /* preset       */ preset,
+                /* name         */ name,
+                /* aliases      */ {},
+                /* tags         */ {},
+                /* port         */ 0,
+                /* status       */ SERVER_MODEL_STATUS_UNLOADED,
+                /* last_used    */ 0,
+                /* args         */ std::vector<std::string>(),
+                /* loaded_info  */ {},
+                /* exit_code    */ 0,
+                /* stop_timeout */ DEFAULT_STOP_TIMEOUT,
+                /* multimodal   */ mtmd_caps{false, false},
             };
             add_model(std::move(meta));
         }
@@ -526,19 +516,18 @@ void server_models::load_models() {
         for (const auto & [name, preset] : final_presets) {
             if (mapping.find(name) == mapping.end()) {
                 server_model_meta meta{
-                    /* preset        */ preset,
-                    /* name          */ name,
-                    /* aliases       */ {},
-                    /* tags          */ {},
-                    /* port          */ 0,
-                    /* status        */ SERVER_MODEL_STATUS_UNLOADED,
-                    /* last_used     */ 0,
-                    /* args          */ std::vector<std::string>(),
-                    /* loaded_info   */ {},
-                    /* exit_code     */ 0,
-                    /* stop_timeout  */ DEFAULT_STOP_TIMEOUT,
-                    /* multimodal    */ mtmd_caps{false, false},
-                    /* need_download */ false,
+                    /* preset       */ preset,
+                    /* name         */ name,
+                    /* aliases      */ {},
+                    /* tags         */ {},
+                    /* port         */ 0,
+                    /* status       */ SERVER_MODEL_STATUS_UNLOADED,
+                    /* last_used    */ 0,
+                    /* args         */ std::vector<std::string>(),
+                    /* loaded_info  */ {},
+                    /* exit_code    */ 0,
+                    /* stop_timeout */ DEFAULT_STOP_TIMEOUT,
+                    /* multimodal   */ mtmd_caps{false, false},
                 };
                 add_model(std::move(meta));
                 newly_added.push_back(name);
@@ -828,56 +817,71 @@ void server_models::load(const std::string & name) {
             }
         });
 
+        std::atomic<bool> child_finished(false);
+
         std::thread stopping_thread([&]() {
-            // thread to monitor stopping signal OR child crash
+            // thread to monitor explicit stop requests; child exit is signalled via child_finished
             auto is_stopping = [this, &name]() {
                 return this->stopping_models.find(name) != this->stopping_models.end();
             };
-            auto should_wake = [&]() {
-                return is_stopping() || !subprocess_alive(child_proc.get());
-            };
+
             {
                 std::unique_lock<std::mutex> lk(this->mutex);
-                this->cv_stop.wait(lk, should_wake);
+                this->cv_stop.wait(lk, [&]() {
+                    return is_stopping() || child_finished.load(std::memory_order_acquire);
+                });
+                if (!is_stopping() || child_finished.load(std::memory_order_acquire)) {
+                    return;
+                }
             }
-            // child may have already exited (e.g. crashed) — skip shutdown sequence
-            if (!subprocess_alive(child_proc.get())) {
+
+            // child may have already exited between wake-up and shutdown handling
+            if (subprocess_alive(child_proc.get()) <= 0) {
                 return;
             }
+
             SRV_INF("stopping model instance name=%s\n", name.c_str());
-            // send interrupt to child process
             fprintf(stdin_file, "%s\n", CMD_ROUTER_TO_CHILD_EXIT);
             fflush(stdin_file);
-            // wait to stop gracefully or timeout
+
             int64_t start_time = ggml_time_ms();
             while (true) {
-                std::unique_lock<std::mutex> lk(this->mutex);
-                if (!is_stopping()) {
-                    return; // already stopped
+                if (subprocess_alive(child_proc.get()) <= 0) {
+                    return;
                 }
+
+                std::unique_lock<std::mutex> lk(this->mutex);
+                if (!is_stopping() || child_finished.load(std::memory_order_acquire)) {
+                    return;
+                }
+
                 int64_t elapsed = ggml_time_ms() - start_time;
                 if (elapsed >= stop_timeout * 1000) {
-                    // timeout, force kill
+                    lk.unlock();
                     SRV_WRN("force-killing model instance name=%s after %d seconds timeout\n", name.c_str(), stop_timeout);
                     subprocess_terminate(child_proc.get());
                     return;
                 }
-                this->cv_stop.wait_for(lk, std::chrono::seconds(1));
+
+                this->cv_stop.wait_for(lk, std::chrono::seconds(1), [&]() {
+                    return !is_stopping() || child_finished.load(std::memory_order_acquire);
+                });
             }
         });
 
-        // we reach here when the child process exits
+
         // note: we cannot join() prior to this point because it will close stdin_file
         if (log_thread.joinable()) {
             log_thread.join();
         }
 
-        // stop the timeout monitoring thread
+        child_finished.store(true, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lk(this->mutex);
             stopping_models.erase(name);
             cv_stop.notify_all();
         }
+
         if (stopping_thread.joinable()) {
             stopping_thread.join();
         }
@@ -1164,19 +1168,15 @@ void server_models_routes::init_routes() {
                 {"role",          "router"},
                 {"max_instances", params.models_max},
                 {"models_autoload", params.models_autoload},
-                // this is a dummy response to make sure the UI doesn't break
+                // this is a dummy response to make sure webui doesn't break
                 {"model_alias", "llama-server"},
                 {"model_path",  "none"},
                 {"default_generation_settings", {
                     {"params", json{}},
                     {"n_ctx",  0},
                 }},
-                // New key
-                {"ui_settings",     ui_settings},
-                // Deprecated: use ui_settings instead (kept for backward compat)
-                {"webui_settings",  webui_settings},
+                {"webui_settings", webui_settings},
                 {"build_info",     std::string(llama_build_info())},
-                {"cors_proxy_enabled", params.ui_mcp_proxy || params.webui_mcp_proxy},
             });
             return res;
         }
@@ -1266,15 +1266,14 @@ void server_models_routes::init_routes() {
             };
 
             json model_info = json {
-                {"id",            meta.name},
-                {"aliases",       meta.aliases},
-                {"tags",          meta.tags},
-                {"object",        "model"},    // for OAI-compat
-                {"owned_by",      "llamacpp"}, // for OAI-compat
-                {"created",       t},          // for OAI-compat
-                {"status",        status},
-                {"architecture",  architecture},
-                {"need_download", meta.need_download},
+                {"id",           meta.name},
+                {"aliases",      meta.aliases},
+                {"tags",         meta.tags},
+                {"object",       "model"},    // for OAI-compat
+                {"owned_by",     "llamacpp"}, // for OAI-compat
+                {"created",      t},          // for OAI-compat
+                {"status",       status},
+                {"architecture", architecture},
                 // TODO: add other fields, may require reading GGUF metadata
             };
 

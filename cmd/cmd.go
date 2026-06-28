@@ -1853,6 +1853,9 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 		Edge:                    edge,
 		LlamaServerDiscoverable: llm.LlamaServerDiscoverable(),
 	})
+	for _, msg := range llm.ApplyUnifiedLlamaCppEnv() {
+		log.Printf("unified llama.cpp: %s", msg)
+	}
 
 	if err := checkConnectableHostAvailable(envconfig.Host(), envconfig.ConnectableHost()); err != nil {
 		return err
@@ -2371,11 +2374,14 @@ func NewCLI() *cobra.Command {
 	aneDraftSurfaceCmd := NewANEDraftSurfaceSmokeCommand()
 	aneDraftDaemonCmd := NewANEDraftDaemonSmokeCommand()
 	aneDraftRouterCmd := NewANEDraftRouterSmokeCommand()
+	aneInprocessCmd := NewANEInprocessSmokeCommand()
 	aneGGMLMapCmd := NewANEGGMLMapSmokeCommand()
 	aneGGMLHookCmd := NewANEGGMLHookStatusCommand()
 	aneDraftMILCmd := NewANEDraftMILStatusCommand()
 	aneDraftMILMapCmd := NewANEDraftMILMapCommand()
 	aneDraftMILExtractCmd := NewANEDraftMILExtractCommand()
+	aneDraftMILBundleCmd := NewANEDraftMILBundleCommand()
+	aneDraftABCmd := NewANEDraftABCommand()
 	anePrefillBenchCmd := NewANEPrefillBenchCommand()
 	anePrefillHandoffCmd := NewANEPrefillHandoffSmokeCommand()
 	aneModelResolveCmd := NewANEModelResolveCommand()
@@ -2463,11 +2469,14 @@ func NewCLI() *cobra.Command {
 		aneDraftSurfaceCmd,
 		aneDraftDaemonCmd,
 		aneDraftRouterCmd,
+		aneInprocessCmd,
 		aneGGMLMapCmd,
 		aneGGMLHookCmd,
 		aneDraftMILCmd,
 		aneDraftMILMapCmd,
 		aneDraftMILExtractCmd,
+		aneDraftMILBundleCmd,
+		aneDraftABCmd,
 		anePrefillBenchCmd,
 		anePrefillHandoffCmd,
 		aneModelResolveCmd,

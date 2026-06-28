@@ -62,6 +62,7 @@ func aneToolBin(name string) string {
 
 	candidates := []string{
 		filepath.Join("build", "ane-probe-darwin", "bin", name),
+		filepath.Join("tools", "ane-inprocess", name),
 		filepath.Join("tools", "ane-metal", name),
 		filepath.Join("tools", "ane-ggml-map", name),
 		filepath.Join("tools", "ane-prefill", name),

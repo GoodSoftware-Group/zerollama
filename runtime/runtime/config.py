@@ -10,6 +10,9 @@ from typing import Any
 from runtime.speculative import SpeculativeConfig, llama_server_args_for
 
 
+from runtime.llama_cpp_unified import resolve_llama_cpp_root, resolve_llama_server_bin
+
+
 def _zerollama_root() -> Path:
     # runtime/runtime/config.py -> zerollama repo root
     return Path(__file__).resolve().parents[3]
@@ -101,16 +104,16 @@ class RuntimeConfig:
 
     @classmethod
     def from_env(cls) -> RuntimeConfig:
-        cfg_path = os.environ.get("ZEROLLAMA_RUNTIME_CONFIG", "").strip()
-        if cfg_path:
-            return cls.from_file(Path(cfg_path))
-        from runtime.autoconfig import resolve_default_config_path
+        from runtime.autoconfig import resolved_config_path
 
-        return cls.from_file(resolve_default_config_path())
+        return cls.from_file(resolved_config_path())
 
     @classmethod
     def from_file(cls, path: Path) -> RuntimeConfig:
         data = _load_yaml(path)
+        from runtime.env import configure_l3_settings
+
+        configure_l3_settings(data.get("l3"))
         cfg = cls._from_mapping(data, config_path=path)._apply_env_overrides()
         # WHY after env: fork probe and profile emit read LLAMA_SERVER_BIN / ZEROLLAMA_* env.
         from runtime.gpu_profiles import maybe_apply_gpu_profile
@@ -120,14 +123,12 @@ class RuntimeConfig:
 
     @classmethod
     def _defaults_from_env_only(cls) -> RuntimeConfig:
-        root = Path(
-            os.environ.get("LLAMA_CPP_ROOT", _zerollama_root().parent / "llama.cpp")
-        )
+        root = resolve_llama_cpp_root()
         return cls(
             host=os.environ.get("ZEROLLAMA_RUNTIME_HOST", "127.0.0.1"),
             port=int(os.environ.get("ZEROLLAMA_RUNTIME_PORT", "8081")),
             llama_cpp_root=root,
-            llama_server_bin=_resolve_llama_bin(root),
+            llama_server_bin=resolve_llama_server_bin(root),
             llama_model=_resolve_model(),
             num_blocks=int(os.environ.get("ZEROLLAMA_KV_NUM_BLOCKS", "4096")),
             block_size=int(os.environ.get("ZEROLLAMA_KV_BLOCK_SIZE", "16")),
@@ -141,9 +142,7 @@ class RuntimeConfig:
     ) -> RuntimeConfig:
         kv = data.get("kv") or {}
         spec = data.get("speculative") or {}
-        root = Path(
-            os.environ.get("LLAMA_CPP_ROOT", _zerollama_root().parent / "llama.cpp")
-        )
+        root = resolve_llama_cpp_root()
         device_count = int(data.get("device_count", 2))
         tp = int(data.get("tensor_parallel", 1))
         split_mode = str(data.get("split_mode", "tensor" if tp > 1 else "layer"))
@@ -165,7 +164,7 @@ class RuntimeConfig:
             host=str(data.get("host", "127.0.0.1")),
             port=int(data.get("port", 8081)),
             llama_cpp_root=root,
-            llama_server_bin=_resolve_llama_bin(root),
+            llama_server_bin=resolve_llama_server_bin(root),
             llama_model=_resolve_model(data.get("llama_model")),
             num_blocks=int(
                 kv.get(
@@ -207,10 +206,17 @@ class RuntimeConfig:
         lib_env = os.environ.get("LLAMA_CPP_LIB", "").strip()
         if lib_env:
             self.llama_cpp_lib = Path(lib_env)
-        root = self.llama_cpp_root
-        bin_p = _resolve_llama_bin(root)
+        from runtime.llama_cpp_unified import resolve_llama_cpp_lib
+
+        root = resolve_llama_cpp_root()
+        self.llama_cpp_root = root
+        bin_p = resolve_llama_server_bin(root)
         if bin_p is not None:
             self.llama_server_bin = bin_p
+        if self.llama_cpp_lib is None:
+            lib_p = resolve_llama_cpp_lib(root)
+            if lib_p is not None:
+                self.llama_cpp_lib = lib_p
         model = _resolve_model()
         if model is not None:
             self.llama_model = model
@@ -224,14 +230,6 @@ class RuntimeConfig:
                 self.draft_model = p
                 self.speculative.draft_model = p
         return self
-
-
-def _resolve_llama_bin(root: Path) -> Path | None:
-    override = os.environ.get("LLAMA_SERVER_BIN", "").strip()
-    candidate = Path(override) if override else root / "build" / "bin" / "llama-server"
-    if not candidate.is_absolute():
-        candidate = candidate.resolve()
-    return candidate if candidate.is_file() else None
 
 
 def _resolve_model(yaml_path: Any = None) -> Path | None:

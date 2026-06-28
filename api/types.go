@@ -73,6 +73,68 @@ type VideoSpan struct {
 	// GridTHW is optional SGLang/Qwen-style [T,H,W] patch grid for this clip (preprocessed clients).
 	// When set, token estimates use T×H×W / spatial_merge² instead of frame_count × tokens_per_image.
 	GridTHW []int `json:"grid_thw,omitempty"`
+	// GridTHWExplicit marks client-origin grid (forward to ViT/mtmd). Server ffmpeg estimates
+	// may set GridTHW for preflight only with GridTHWExplicit=false.
+	GridTHWExplicit bool `json:"-"`
+}
+
+// PrecomputedEmbedding is SGLang format=precomputed_embedding (ViT output rows, not raw pixels).
+// Use with padded_input_ids on the same message; one item per modality list when preprocessed.
+type PrecomputedEmbedding struct {
+	Format  string      `json:"format,omitempty"`
+	Feature [][]float32 `json:"feature,omitempty"`
+	// GridTHW is optional [T,H,W] patch grid (required on ollama-engine precomputed ingest).
+	GridTHW []int `json:"grid_thw,omitempty"`
+}
+
+const PrecomputedEmbeddingFormat = "precomputed_embedding"
+
+// ProcessorOutput is SGLang format=processor_output (HF pixel_values + grid, no raw PNG).
+type ProcessorOutput struct {
+	Format       string    `json:"format,omitempty"`
+	PixelValues  []float32 `json:"pixel_values,omitempty"`
+	ImageGridTHW []int     `json:"image_grid_thw,omitempty"`
+	// GridTHW alias for clients that send grid_thw instead of image_grid_thw.
+	GridTHW []int `json:"grid_thw,omitempty"`
+}
+
+const ProcessorOutputFormat = "processor_output"
+
+// UnmarshalJSON accepts SGLang/HF tensor shapes for pixel_values and image_grid_thw.
+func (p *ProcessorOutput) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		Format         string          `json:"format,omitempty"`
+		PixelValuesRaw json.RawMessage `json:"pixel_values"`
+		ImageGridRaw   json.RawMessage `json:"image_grid_thw"`
+		GridTHWRaw     json.RawMessage `json:"grid_thw"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	p.Format = aux.Format
+	if len(aux.PixelValuesRaw) > 0 {
+		pv, err := FlattenJSONFloats(aux.PixelValuesRaw)
+		if err != nil {
+			return err
+		}
+		p.PixelValues = pv
+	}
+	if len(aux.ImageGridRaw) > 0 || len(aux.GridTHWRaw) > 0 {
+		thw, err := ParseGridTHW(aux.ImageGridRaw, aux.GridTHWRaw)
+		if err != nil {
+			return err
+		}
+		p.ImageGridTHW = thw
+	}
+	return nil
+}
+
+// GridTHWForProcessor returns [T,H,W] for runner ingest.
+func (p ProcessorOutput) GridTHWForProcessor() []int {
+	if len(p.ImageGridTHW) == 3 {
+		return p.ImageGridTHW
+	}
+	return p.GridTHW
 }
 
 // GenerateRequest describes a request sent by [Client.Generate]. While you
@@ -250,20 +312,123 @@ type Message struct {
 	// PaddedInputIDs is optional SGLang-style pretokenized layout for pre-expanded multimodal turns.
 	// Accepted for preflight and usage estimates; native render still uses images until wired.
 	PaddedInputIDs []int `json:"padded_input_ids,omitempty"`
+	// PrecomputedEmbeddings holds SGLang precomputed_embedding payloads (ViT rows). Populated from
+	// images[] objects or precomputed_embeddings on the message. Mutually exclusive with raw Images bytes.
+	PrecomputedEmbeddings []PrecomputedEmbedding `json:"precomputed_embeddings,omitempty"`
+	// ProcessorOutputs holds SGLang processor_output payloads (pixel_values + grid). Populated from
+	// images[] objects or processor_outputs on the message.
+	ProcessorOutputs []ProcessorOutput `json:"processor_outputs,omitempty"`
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 	ToolName   string      `json:"tool_name,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"`
 }
 
 func (m *Message) UnmarshalJSON(b []byte) error {
-	type Alias Message
-	var a Alias
-	if err := json.Unmarshal(b, &a); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
 
-	*m = Message(a)
+	var imagesRaw json.RawMessage
+	if v, ok := raw["images"]; ok {
+		imagesRaw = v
+		delete(raw, "images")
+	}
+
+	rest, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	type messageAlias Message
+	var aux messageAlias
+	if err := json.Unmarshal(rest, &aux); err != nil {
+		return err
+	}
+	*m = Message(aux)
 	m.Role = strings.ToLower(m.Role)
+
+	if len(imagesRaw) == 0 {
+		return nil
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(imagesRaw, &items); err != nil {
+		// tolerate a single image payload not wrapped in an array
+		items = []json.RawMessage{imagesRaw}
+	}
+
+	m.Images = nil
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		if item[0] == '{' {
+			var probe struct {
+				Format string `json:"format"`
+			}
+			if err := json.Unmarshal(item, &probe); err != nil {
+				return err
+			}
+			switch probe.Format {
+			case ProcessorOutputFormat:
+				var po ProcessorOutput
+				if err := json.Unmarshal(item, &po); err != nil {
+					return err
+				}
+				if len(po.PixelValues) == 0 {
+					return fmt.Errorf("processor_output requires pixel_values")
+				}
+				if po.Format == "" {
+					po.Format = ProcessorOutputFormat
+				}
+				m.ProcessorOutputs = append(m.ProcessorOutputs, po)
+				continue
+			case PrecomputedEmbeddingFormat:
+				fallthrough
+			case "":
+				var generic map[string]json.RawMessage
+				if err := json.Unmarshal(item, &generic); err != nil {
+					return err
+				}
+				if _, ok := generic["pixel_values"]; ok && probe.Format == "" {
+					var po ProcessorOutput
+					if err := json.Unmarshal(item, &po); err != nil {
+						return err
+					}
+					if len(po.PixelValues) == 0 {
+						return fmt.Errorf("processor_output requires pixel_values")
+					}
+					po.Format = ProcessorOutputFormat
+					m.ProcessorOutputs = append(m.ProcessorOutputs, po)
+					continue
+				}
+				var pe PrecomputedEmbedding
+				if err := json.Unmarshal(item, &pe); err != nil {
+					return err
+				}
+				if pe.Format != "" && pe.Format != PrecomputedEmbeddingFormat {
+					return fmt.Errorf("unsupported image format %q", pe.Format)
+				}
+				if len(pe.Feature) == 0 {
+					return fmt.Errorf("precomputed_embedding requires non-empty feature")
+				}
+				if pe.Format == "" {
+					pe.Format = PrecomputedEmbeddingFormat
+				}
+				m.PrecomputedEmbeddings = append(m.PrecomputedEmbeddings, pe)
+				continue
+			default:
+				return fmt.Errorf("unsupported image format %q", probe.Format)
+			}
+		}
+		var img ImageData
+		if err := json.Unmarshal(item, &img); err != nil {
+			return err
+		}
+		if len(img) > 0 {
+			m.Images = append(m.Images, img)
+		}
+	}
 	return nil
 }
 
@@ -639,6 +804,11 @@ type Metrics struct {
 	// CachedPromptTokens is prefix KV reused from llama-server cache_n / L3 cache_prompt.
 	// Why separate from PromptEvalCount: OpenAI reports cached prefix in prompt_tokens_details.cached_tokens.
 	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
+	// CachedTokensHost is prefix KV served from host-tier cache (HiCache); 0 on native-only paths.
+	CachedTokensHost int `json:"cached_tokens_host,omitempty"`
+	// CachedTokensStorage is prefix KV served from L3 storage backend when wired.
+	CachedTokensStorage int `json:"cached_tokens_storage,omitempty"`
+	CachedTokensStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
 }
 
 // Options specified in [GenerateRequest].  If you add a new option here, also
@@ -1087,9 +1257,10 @@ type BackendPolicy struct {
 	EdgeBuild       bool   `json:"edge_build"`
 	GgmlLinked      bool   `json:"ggml_linked"`
 	LlamaServer     string `json:"llama_server"` // off | auto | explicit
+	SpecAutoRoute   bool   `json:"spec_auto_route,omitempty"` // Darwin: spec tags → llama-server when binary present
 	LlamaCppHarness bool   `json:"llama_cpp_harness,omitempty"`
 	RuntimeChat     string `json:"runtime_chat"` // on | off
-	GgufPath        string `json:"gguf_path"`    // ggml | llama-server | runtime
+	GgufPath        string `json:"gguf_path"`    // ggml | llama-server | runtime | mixed
 }
 
 // StatusResponse is the response from GET /api/status.

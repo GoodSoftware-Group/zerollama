@@ -55,8 +55,15 @@ phase15_runtime_kv_ext_build() {
     fi
   fi
   local py="${RUNTIME_UV_PYTHON:-python3}"
+  if [[ -z "${LLAMA_CPP_LIB:-}" ]]; then
+    if [[ -f "${llama_root}/build/bin/libllama.dylib" ]]; then
+      export LLAMA_CPP_LIB="${llama_root}/build/bin/libllama.dylib"
+    elif [[ -f "${llama_root}/build/bin/libllama.so" ]]; then
+      export LLAMA_CPP_LIB="${llama_root}/build/bin/libllama.so"
+    fi
+  fi
   echo "== Phase 15: build _kv_native (block pool + page bind) LLAMA_CPP_ROOT=${LLAMA_CPP_ROOT} =="
-  (cd "${root}" && LLAMA_CPP_ROOT="${llama_root}" "${py}" setup.py build_ext --inplace)
+  (cd "${root}" && rm -rf build && LLAMA_CPP_ROOT="${llama_root}" LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-}" "${py}" setup.py build_ext --inplace)
   echo "== Phase 15: verify linked decode loop =="
   (cd "${root}" && PYTHONPATH=. LLAMA_CPP_ROOT="${llama_root}" "${py}" -c "
 from runtime.kv.native_decode_loop import decode_loop_status, native_decode_loop_available

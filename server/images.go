@@ -75,6 +75,9 @@ type Model struct {
 	DraftPath      string
 	EmbeddedMTP    bool
 	ParentModel    string
+	HasChatTemplate    bool
+	HasGoTemplate      bool
+	PreferChatTemplate bool
 	AdapterPaths   []string
 	ProjectorPaths []string
 	System         string
@@ -381,6 +384,10 @@ func GetModel(name string) (*Model, error) {
 		case "application/vnd.ollama.image.model":
 			m.ModelPath = filename
 			m.ParentModel = layer.From
+			if f, err := gguf.Open(filename); err == nil {
+				m.HasChatTemplate = f.KeyValue("tokenizer.chat_template").String() != ""
+				f.Close()
+			}
 		case manifest.MediaTypeImageDraft:
 			m.DraftPath = filename
 		case "application/vnd.ollama.image.embed":
@@ -393,6 +400,7 @@ func GetModel(name string) (*Model, error) {
 			m.ProjectorPaths = append(m.ProjectorPaths, filename)
 		case "application/vnd.ollama.image.prompt",
 			"application/vnd.ollama.image.template":
+			m.HasGoTemplate = true
 			bts, err := os.ReadFile(filename)
 			if err != nil {
 				return nil, err

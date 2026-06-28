@@ -126,7 +126,7 @@ func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraft
 	}
 
 	isDraft := strings.Contains(strings.ToLower(short), "dflash") ||
-		specType == "draft-eagle3" || specType == "draft-mtp"
+		specType == "draft-eagle3" || specType == "draft-mtp" || specType == "dflash"
 	if !isDraft || basePath == "" {
 		return ANEDraftEntry{}, false, nil
 	}
@@ -143,6 +143,10 @@ func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraft
 		candidates := ANEDraftSidecarCandidates(short)
 		if len(candidates) > 0 {
 			draftPath = candidates[0]
+		}
+	} else if st, err := os.Stat(draftPath); err != nil || st.IsDir() {
+		if alt := FindANEDraftSidecarPath(short); alt != "" {
+			draftPath = alt
 		}
 	}
 

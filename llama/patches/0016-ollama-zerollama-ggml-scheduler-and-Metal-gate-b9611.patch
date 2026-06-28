@@ -13,7 +13,7 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
  2 files changed, 12 insertions(+), 4 deletions(-)
 
 diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
-index 8165ae2c8..6852e03e2 100644
+index 8165ae2..6852e03 100644
 --- a/ggml/src/ggml-backend-reg.cpp
 +++ b/ggml/src/ggml-backend-reg.cpp
 @@ -117,7 +117,13 @@ struct ggml_backend_registry {
@@ -32,10 +32,10 @@ index 8165ae2c8..6852e03e2 100644
  #ifdef GGML_USE_SYCL
          register_backend(ggml_backend_sycl_reg());
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index bace69cf3..01a919d10 100644
+index 41b60f0..3a664a4 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -785,7 +785,7 @@ static bool ggml_is_view_op(enum ggml_op op) {
+@@ -847,7 +847,7 @@ static bool ggml_is_view_op(enum ggml_op op) {
  #endif
  
  #ifndef GGML_SCHED_MAX_SPLIT_INPUTS
@@ -44,7 +44,7 @@ index bace69cf3..01a919d10 100644
  #endif
  
  #ifndef GGML_SCHED_MAX_COPIES
-@@ -1913,8 +1913,10 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
+@@ -2019,8 +2019,10 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
          return false;
      }
  

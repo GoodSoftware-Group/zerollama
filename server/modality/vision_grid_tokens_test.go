@@ -129,6 +129,15 @@ func TestExpandVideosInChatRequest_setsGridTHWFromHook(t *testing.T) {
 	if len(sp.GridTHW) != 3 || sp.GridTHW[0] != 2 {
 		t.Fatalf("grid_thw=%v", sp.GridTHW)
 	}
+	if sp.GridTHWExplicit {
+		t.Fatal("ffmpeg expand must not mark grid as client-explicit")
+	}
+	got := GridTHWPerRaster(req.Messages[0])
+	for _, g := range got {
+		if g != nil {
+			t.Fatalf("server estimate must not forward to runner: %v", got)
+		}
+	}
 }
 
 func TestVideoExpandCache_preservesGridTHW(t *testing.T) {
@@ -200,14 +209,17 @@ func TestValidatePreexpandedVideoMessage_gridTHW(t *testing.T) {
 		Images:     make([]api.ImageData, 4),
 		VideoSpans: []api.VideoSpan{{FrameCount: 4, GridTHW: []int{4, 24, 32}}},
 	}
-	if err := validatePreexpandedVideoMessage(msg); err != nil {
+	if err := validatePreexpandedVideoMessage(&msg); err != nil {
 		t.Fatal(err)
+	}
+	if !msg.VideoSpans[0].GridTHWExplicit {
+		t.Fatal("expected GridTHWExplicit after client pre-expanded validate")
 	}
 	bad := api.Message{
 		Images:     make([]api.ImageData, 4),
 		VideoSpans: []api.VideoSpan{{FrameCount: 4, GridTHW: []int{3, 24, 32}}},
 	}
-	if err := validatePreexpandedVideoMessage(bad); err == nil {
+	if err := validatePreexpandedVideoMessage(&bad); err == nil {
 		t.Fatal("expected grid/frame mismatch")
 	}
 }

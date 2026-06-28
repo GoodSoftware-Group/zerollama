@@ -56,6 +56,8 @@ set(TARGET llama-common)
 add_library(${TARGET}
     arg.cpp
     arg.h
+    ane_draft_hook.cpp
+    ane_draft_hook.h
     base64.hpp
     chat-auto-parser-generator.cpp
     chat-auto-parser-helpers.cpp
@@ -172,3 +174,33 @@ if (LLAMA_LLGUIDANCE)
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
+
+# B1: in-process ANE draft session (Darwin + libane_bridge only).
+set(_ZEROLLAMA_ANE_REPO "$ENV{HOME}/Sites/inference/ane")
+if (DEFINED ENV{ANE_REPO})
+    set(_ZEROLLAMA_ANE_REPO "$ENV{ANE_REPO}")
+endif()
+set(_ZEROLLAMA_ANE_BRIDGE "${_ZEROLLAMA_ANE_REPO}/bridge/libane_bridge.dylib")
+
+if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
+    target_sources(${TARGET} PRIVATE
+        ane_draft_session.mm
+        ane_draft_session.h
+        ane_iosurface_map.h)
+    target_compile_definitions(${TARGET} PRIVATE LLAMA_ANE_DRAFT_SESSION=1)
+    target_include_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
+    target_link_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
+    target_link_libraries(${TARGET} PRIVATE
+        ane_bridge
+        "-framework Foundation"
+        "-framework IOSurface"
+        "-framework Metal")
+    message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
+else()
+    target_sources(${TARGET} PRIVATE
+        ane_draft_session_stub.cpp
+        ane_draft_session.h)
+    if (APPLE)
+        message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
+    endif()
+endif()

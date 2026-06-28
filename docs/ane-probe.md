@@ -2,7 +2,7 @@
 
 **Audience:** Mac operators evaluating **Apple Neural Engine (ANE)** access for future hybrid inference — separate from the ggml Metal hot path and from Flash-MoE.
 
-**Related:** [flash-moe.md](./flash-moe.md) (RAM-busting MoE via llama-server), [apple-silicon-metal.md](./apple-silicon-metal.md), [phase17-llama-server.md](./phase17-llama-server.md).
+**Related:** [flash-moe.md](./flash-moe.md) (RAM-busting MoE via llama-server), [apple-silicon-metal.md](./apple-silicon-metal.md), [phase17-llama-server.md](./phase17-llama-server.md), [ane-draft-inprocess.md](./ane-draft-inprocess.md) (B1–B6 in-process dflash hook — **why not this probe binary:** IOSurface handoff requires same PID as llama-server).
 
 ---
 
@@ -102,7 +102,9 @@ git clone https://github.com/maderix/ane ~/Sites/inference/ane
 ./zerollama ane-ggml-hook-status                             # in-tree ggml IOSurface API readiness
 ./zerollama ane-draft-mil-status --model eliza-1-2b-dflash   # Eagle3 sidecar / MIL blockers
 ./zerollama ane-draft-mil-map --model eliza-1-2b-dflash      # tensor → MIL slot plan
-ZEROLLAMA_ANE_DRAFT=1 ./zerollama ane-draft-router-smoke --model eliza-1-2b --quick
+./zerollama ane-draft-mil-extract --model eliza-1-2b-dflash --out /tmp/ane-draft-weight.bin
+ZEROLLAMA_ANE_DRAFT=1 ./zerollama ane-draft-router-smoke --model eliza-1-2b-dflash --quick  # auto sidecar weight cache
+./zerollama ane-inprocess-smoke --model eliza-1-27b-256k-dflash --quick  # same-PID ggml map + ANE eval (B1)
 ./zerollama ane-hybrid-smoke --model eliza-1-2b --quick     # any GGUF tag (not only -dflash)
 ./scripts/ane_crossover_report.sh                           # ANE vs MPS crossover table
 ./zerollama ane-prefill-handoff-smoke --model eliza-1-2b --tokens 128 --quick

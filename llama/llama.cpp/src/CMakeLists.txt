@@ -24,7 +24,6 @@ add_library(llama
             llama-io.cpp
             llama-kv-cache.cpp
             llama-kv-cache-iswa.cpp
-            llama-kv-cache-dsa.cpp
             llama-memory.cpp
             llama-memory-hybrid.cpp
             llama-memory-hybrid-iswa.cpp
@@ -39,8 +38,14 @@ add_library(llama
             llama-vocab.cpp
             unicode-data.cpp
             unicode.cpp
+            ollama-compat/llama-ollama-compat.cpp
+            ollama-compat/llama-ollama-compat-util.cpp
             unicode.h
             ${LLAMA_MODELS_SOURCES}
+            # milady: DFlash draft model
+            models/dflash-draft.cpp
+            # EAGLE3 speculative-decoding scaffolding (upstream PR #18039)
+            llama-eagle3.cpp
             )
 
 set_target_properties(llama PROPERTIES
@@ -50,6 +55,7 @@ set_target_properties(llama PROPERTIES
 )
 
 target_include_directories(llama PRIVATE .)
+target_include_directories(llama PRIVATE ollama-compat)
 target_include_directories(llama PUBLIC ../include)
 target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
 

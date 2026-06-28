@@ -111,9 +111,25 @@ endif()
 
 include(FetchContent)
 
-# Read pinned llama.cpp commit from version file (shared with Dockerfile)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_VERSION" LLAMA_CPP_GIT_TAG)
+# Read pinned llama.cpp commit (unified elizaOS tree + Ollama patches).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_COMMIT")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_COMMIT" LLAMA_CPP_GIT_TAG)
+else()
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_VERSION" LLAMA_CPP_GIT_TAG)
+endif()
 string(STRIP "${LLAMA_CPP_GIT_TAG}" LLAMA_CPP_GIT_TAG)
+
+# Default to patched vendor checkout (avoid FetchContent against ggml-org with eliza-only tag).
+if(NOT DEFINED ENV{OLLAMA_LLAMA_CPP_SOURCE})
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_VERSION" _ollama_llama_cpp_pin)
+    string(STRIP "${_ollama_llama_cpp_pin}" _ollama_llama_cpp_pin)
+    set(_ollama_vendor_dir "${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/llama-cpp-${_ollama_llama_cpp_pin}")
+    if(EXISTS "${_ollama_vendor_dir}/CMakeLists.txt")
+        get_filename_component(_ollama_vendor_dir "${_ollama_vendor_dir}" ABSOLUTE BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+        set(FETCHCONTENT_SOURCE_DIR_LLAMA_CPP "${_ollama_vendor_dir}" CACHE PATH "" FORCE)
+        message(STATUS "Using unified vendor llama.cpp: ${_ollama_vendor_dir}")
+    endif()
+endif()
 
 # Allow local source override via environment variable (like OLLAMA_MLX_SOURCE)
 if(DEFINED ENV{OLLAMA_LLAMA_CPP_SOURCE})
@@ -179,7 +195,7 @@ set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     llama_cpp
-    GIT_REPOSITORY "https://github.com/ggml-org/llama.cpp.git"
+    GIT_REPOSITORY "https://github.com/elizaOS/llama.cpp.git"
     GIT_TAG ${LLAMA_CPP_GIT_TAG}
     GIT_SHALLOW TRUE
     ${_ollama_compat_patch_cmd}
@@ -501,26 +517,6 @@ if(OLLAMA_RUNNER_DIR)
                 RUNTIME DESTINATION "${_base_dest}/${OLLAMA_RUNNER_DIR}" COMPONENT llama-server
                 LIBRARY DESTINATION "${_base_dest}/${OLLAMA_RUNNER_DIR}" COMPONENT llama-server
             )
-            if(WIN32)
-                # Bundle the system Vulkan loader, not an arbitrary SDK copy.
-                # The loader is supplied by the installed Vulkan runtime or
-                # GPU driver; using that copy avoids PATH-dependent SDK drift.
-                if(DEFINED ENV{SystemRoot})
-                    file(TO_CMAKE_PATH "$ENV{SystemRoot}" _ollama_windows_root)
-                else()
-                    set(_ollama_windows_root "C:/Windows")
-                endif()
-                find_file(_vulkan_loader_dll
-                    NAMES vulkan-1.dll
-                    HINTS "${_ollama_windows_root}/System32"
-                    NO_DEFAULT_PATH)
-                if(NOT _vulkan_loader_dll)
-                    message(FATAL_ERROR "Could not find vulkan-1.dll in the Windows Vulkan runtime. Install the Vulkan runtime from the GPU driver or VULKAN_SDK/Helpers/VulkanRT.exe.")
-                endif()
-                install(FILES "${_vulkan_loader_dll}"
-                    DESTINATION "${_base_dest}/${OLLAMA_RUNNER_DIR}"
-                    COMPONENT llama-server)
-            endif()
         endif()
     endif()
 else()

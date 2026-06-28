@@ -1,3 +1,5 @@
+//go:build !edge
+
 package envconfig
 
 import (

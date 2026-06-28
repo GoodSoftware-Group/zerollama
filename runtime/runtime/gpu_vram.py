@@ -48,7 +48,9 @@ def shared_interpreter_embedded() -> bool:
 
 
 def _vram_probe_env_raw() -> str:
-    return os.environ.get("ZEROLLAMA_RUNTIME_VRAM_PROBE", "auto").strip().lower()
+    from runtime.env import vram_probe_mode_raw
+
+    return vram_probe_mode_raw()
 
 
 def _shared_auto_without_smi() -> bool:
@@ -124,12 +126,9 @@ _CTX_BASELINE = 4096
 
 
 def _nvml_unified_fallback_enabled() -> bool:
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_UNIFIED_FALLBACK", "").strip().lower()
-    if v in ("0", "false", "no"):
-        return False
-    if v in ("1", "true", "yes"):
-        return True
-    return True
+    from runtime.env import vram_nvml_unified_fallback_enabled
+
+    return vram_nvml_unified_fallback_enabled()
 
 
 def _is_nvml_not_supported(exc: BaseException) -> bool:
@@ -823,10 +822,12 @@ def estimate_gguf_vram_bytes(
 
 
 def gpu_vram_check_enabled() -> bool:
-    v = os.environ.get("ZEROLLAMA_RUNTIME_CHECK_GPU_VRAM", "").strip().lower()
-    if v in ("0", "false", "no"):
+    from runtime.env import vram_check_gpu_explicit
+
+    explicit = vram_check_gpu_explicit()
+    if explicit is False:
         return False
-    if v in ("1", "true", "yes"):
+    if explicit is True:
         return True
     mode = vram_probe_mode()
     if mode == "nvml":
@@ -990,7 +991,9 @@ def vram_budget_health(
     req = vram_estimate.get("required_per_gpu_bytes")
     if not isinstance(req, int) or req <= 0:
         return None
-    margin = float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_MARGIN", "1.0"))
+    from runtime.env import vram_margin
+
+    margin = vram_margin()
     req_margin = int(req * margin)
     headroom = gpu_free_bottleneck - req
     headroom_margin = gpu_free_bottleneck - req_margin
@@ -1162,7 +1165,9 @@ def check_gguf_vram_budget(
             )
         return
     if margin is None:
-        margin = float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_MARGIN", "1.0"))
+        from runtime.env import vram_margin
+
+        margin = vram_margin()
     required_per_gpu = int(
         estimate_gguf_vram_bytes(
             gguf,

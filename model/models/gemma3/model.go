@@ -29,6 +29,10 @@ type Model struct {
 
 var _ model.MultimodalProcessor = (*Model)(nil)
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 type MultiModalProjector struct {
 	SoftEmbNorm     *nn.RMSNorm `gguf:"mm_soft_emb_norm"`
 	InputProjection *nn.Linear  `gguf:"mm_input_projection"`

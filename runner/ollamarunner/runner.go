@@ -132,6 +132,7 @@ type NewSequenceParams struct {
 	promptTokens        []int
 	paddedLayoutConsume string
 	promptCacheKey      string
+	sessionViTOverlay   bool
 	gemma4Slots         Gemma4SoftTokens
 	gemma4PaddedMedia   Gemma4PaddedMediaSchedule
 	lfm2Slots           Lfm2VisionTokens
@@ -157,7 +158,8 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 	case len(params.promptTokens) > 0 && params.paddedLayoutConsume != "":
 		inputs, ctxs, mmStore, err = s.inputsFromPaddedPromptTokens(
 			params.promptTokens, images, params.paddedLayoutConsume,
-			params.gemma4Slots, params.gemma4PaddedMedia, params.lfm2Slots, params.mistral3Slots, params.deepseekOcrSlots, params.promptCacheKey,
+			params.gemma4Slots, params.gemma4PaddedMedia, params.lfm2Slots, params.mistral3Slots, params.deepseekOcrSlots,
+			params.promptCacheKey, params.sessionViTOverlay,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process padded prompt tokens: %w", err)
@@ -170,7 +172,7 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 			"engine", "ollama",
 		)
 	default:
-		inputs, ctxs, mmStore, err = s.inputs(prompt, images, params.promptCacheKey)
+		inputs, ctxs, mmStore, err = s.inputs(prompt, images, params.promptCacheKey, params.sessionViTOverlay)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process inputs: %w", err)
 		}
@@ -265,13 +267,13 @@ func calculateLogprobs(logits []float32, selectedToken int32, topK int, tok toke
 	return common.CalculateLogprobs(logits, int(selectedToken), topK, decoder)
 }
 
-func (s *Server) encodeMultimodalCached(ctx ml.Context, data []byte, sessionKey string) ([]input.Multimodal, error) {
+func (s *Server) encodeMultimodalCached(ctx ml.Context, data []byte, sessionKey string, sessionOverlay bool) ([]input.Multimodal, error) {
 	mp, ok := s.model.(model.MultimodalProcessor)
 	if !ok {
 		return nil, errors.New("model does not support multimodal encoding")
 	}
 	if s.visionCache != nil {
-		return s.visionCache.GetOrEncode(mp, s.model.Backend(), ctx, data, sessionKey)
+		return s.visionCache.GetOrEncode(mp, s.model.Backend(), ctx, data, sessionKey, sessionOverlay)
 	}
 	return mp.EncodeMultimodal(ctx, data)
 }
@@ -279,7 +281,7 @@ func (s *Server) encodeMultimodalCached(ctx ml.Context, data []byte, sessionKey 
 // inputs processes the prompt and images into a list of inputs
 // by splitting the prompt on [img-<n>] tags, tokenizing text and
 // decoding images
-func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string) ([]*input.Input, []ml.Context, multimodalStore, error) {
+func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string, sessionOverlay bool) ([]*input.Input, []ml.Context, multimodalStore, error) {
 	var inputs []*input.Input
 	var ctxs []ml.Context
 	var mmStore multimodalStore
@@ -328,14 +330,66 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 			ctx := s.model.Backend().NewContext()
 			runtime.SetFinalizer(ctx, func(c ml.Context) { c.Close() })
 			ctxs = append(ctxs, ctx)
-			imageEmbeddings, err := s.encodeMultimodalCached(ctx, images[imageIndex].Data, sessionKey)
+
+			img := images[imageIndex]
+			var imageEmbeddings []input.Multimodal
+			var err error
+			switch {
+			case img.HasPrecomputedEmbedding():
+				ingest, ok := s.model.(model.PrecomputedMultimodalIngest)
+				if !ok {
+					return nil, nil, nil, fmt.Errorf("precomputed_embedding is not supported for this model on ollama-engine")
+				}
+				if s.visionCache != nil {
+					imageEmbeddings, err = s.visionCache.GetOrEncodePrecomputed(ingest, s.model.Backend(), ctx, img, sessionKey, sessionOverlay)
+				} else {
+					imageEmbeddings, err = ingest.MultimodalFromPrecomputed(ctx, img.PrecomputedFeature, img.GridTHW)
+					if err == nil {
+						slog.Info("precomputed_embedding runner inject",
+							"image", img.ID,
+							"rows", len(img.PrecomputedFeature),
+							"engine", "ollama",
+							"consume", "img_tag",
+						)
+					}
+				}
+			case img.HasProcessorOutput():
+				ingest, ok := s.model.(model.ProcessorOutputMultimodalIngest)
+				if !ok {
+					return nil, nil, nil, fmt.Errorf("processor_output is not supported for this model on ollama-engine")
+				}
+				if s.visionCache != nil {
+					imageEmbeddings, err = s.visionCache.GetOrEncodeProcessorOutput(ingest, s.model.Backend(), ctx, img, sessionKey, sessionOverlay)
+				} else {
+					imageEmbeddings, err = ingest.MultimodalFromProcessorOutput(ctx, img.ProcessorPixelValues, img.GridTHW)
+					if err == nil {
+						slog.Info("processor_output runner inject",
+							"image", img.ID,
+							"pixel_values", len(img.ProcessorPixelValues),
+							"grid_thw", img.GridTHW,
+							"engine", "ollama",
+							"consume", "img_tag",
+						)
+					}
+				}
+			default:
+				imageEmbeddings, err = s.encodeMultimodalCached(ctx, img.Data, sessionKey, sessionOverlay)
+			}
 			if err != nil {
 				return nil, nil, nil, err
 			}
 
-			s.multimodalHash.Reset()
-			_, _ = s.multimodalHash.Write(images[imageIndex].Data)
-			imageHash := s.multimodalHash.Sum64()
+			var imageHash uint64
+			switch {
+			case img.HasPrecomputedEmbedding():
+				imageHash = hashPrecomputedFeature(img.PrecomputedFeature)
+			case img.HasProcessorOutput():
+				imageHash = hashProcessorPixelValues(img.ProcessorPixelValues)
+			default:
+				s.multimodalHash.Reset()
+				_, _ = s.multimodalHash.Write(img.Data)
+				imageHash = s.multimodalHash.Sum64()
+			}
 
 			mmStore.addMultimodal(imageEmbeddings)
 
@@ -970,6 +1024,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		promptTokens:        req.PromptTokens,
 		paddedLayoutConsume: req.PaddedLayoutConsume,
 		promptCacheKey:      req.PromptCacheKey,
+		sessionViTOverlay:   req.SessionViTOverlay,
 		gemma4PaddedMedia: Gemma4PaddedMediaSchedule{
 			StillImageCount:  req.Gemma4PaddedMedia.StillImageCount,
 			VideoFrameCounts: req.Gemma4PaddedMedia.VideoFrameCounts,

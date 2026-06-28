@@ -8,6 +8,11 @@ on:
       - 'envconfig/**'
       - 'runtime/**'
       - 'scripts/**'
+      - 'llama/patches/**'
+      - 'llama/llama.cpp/**'
+      - 'Makefile.sync'
+      - 'LLAMA_CPP_VERSION'
+      - 'LLAMA_CPP_COMMIT'
       - 'x/trainingworker/**'
       - 'x/runtimeworker/**'
       - '.github/workflows/zerollama-regression.yaml'
@@ -19,6 +24,11 @@ on:
       - 'envconfig/**'
       - 'runtime/**'
       - 'scripts/**'
+      - 'llama/patches/**'
+      - 'llama/llama.cpp/**'
+      - 'Makefile.sync'
+      - 'LLAMA_CPP_VERSION'
+      - 'LLAMA_CPP_COMMIT'
       - 'x/trainingworker/**'
       - 'x/runtimeworker/**'
       - '.github/workflows/zerollama-regression.yaml'
@@ -53,6 +63,11 @@ jobs:
         env:
           P15_PIN_JSON: /tmp/phase15-kv-ext-pin-check.json
         run: ./scripts/phase15_llama_kv_ext_pin_check.sh
+
+      - name: llama.cpp patch doctor (in-tree + vendor)
+        env:
+          LLAMA_PATCH_JSON: /tmp/llama-patch-doctor.json
+        run: ./scripts/llama_patch_doctor.sh
 
       - name: Phase 17 L2 pin status report
         env:

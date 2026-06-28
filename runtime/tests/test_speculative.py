@@ -6,7 +6,7 @@ from runtime.speculative import SpeculativeConfig, llama_server_args_for, resolv
 
 def test_resolve_method_aliases():
     assert resolve_method("ngram") == "ngram-simple"
-    assert resolve_method("dflash") == "draft-eagle3"
+    assert resolve_method("dflash") == "dflash"
 
 
 def test_ngram_llama_args():

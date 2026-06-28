@@ -21,26 +21,33 @@
 These live in-repo (not only on docs.ollama.com) because they explain **design rationale**—API shape, limits, and optional backends:
 
 * [Video understanding (VLM)](./video-understanding.md) — **why** `video_url` / `videos` → ffmpeg → vision pipeline; **why** preflight and `video_spans` exist.
-* [SGLang multimodal borrowings](./sglang-multimodal-borrowings.md) — **why** native path adopted agent caches, usage breakdown, and audit fixes without requiring SGLang.
+* [SGLang multimodal borrowings](./sglang-multimodal-borrowings.md) — **why** native path adopted agent caches, padded inject, precomputed/processor ingest, usage breakdown, and audit fixes without requiring SGLang.
 * [mtmd `grid_thw` handoff](./mtmd-grid-thw-handoff.md) — **why** client patch grids are hints-only until llama.cpp mtmd accepts them; Go seam + operator signals.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts.
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers.
 * [Roadmap — local voice & llama borrowings (eliza-v3)](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3) — **inference first:** GPU autotune profiles (**L1**), fork kernels (**L2**), KV prefix cache (**L3**); voice **L5+** later.
 * [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; **`l1_cuda_full_gate.sh`**; NVIDIA + Apple tiers; operator env.
-* [L2 elizaOS/llama.cpp fork evaluation](./gpu-profiles-l2.md) — **why** QJL/Polar/TurboQuant need fork build; `l2_full_gate.sh` A/B; Metal sign-off table; vendor merge gate.
-* [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation on slot clear.
-* [Decode graph invalidation](./decode-graph-invalidation.md) — **why** ggml CUDA graphs survive KV slot clears unless explicitly broken; vLLM-inspired epoch + `llama_context_cuda_graph_invalidate`; operator rebuild + health probe.
+* [llama.cpp backend unification](./llama-cpp-unification.md) — **why** one elizaOS tree @ `LLAMA_CPP_COMMIT` replaces stock + eliza-llama siblings; discovery, doctor, vendor rebase plan.
+* [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
+* [Runtime env reference](./runtime-env.md) — **why** profiles/YAML/smart defaults beat dozens of `ZEROLLAMA_*` exports; L3, KV, VRAM; `./scripts/runtime_env_doctor.sh`.
+* [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation (in-process + subprocess HTTP).
+* [Cross-slot Radix prefix share](./radix-prefix-share.md) — **why** L3 one-slot-per-key leaves duplicate prefills for shared system prompts; donor slot KV seed via block pool + `POST /kv/seq-copy`; vendor binary + live smoke.
+* [Decode graph invalidation](./decode-graph-invalidation.md) — **why** L3 slot clears must break ggml CUDA graphs; epoch + native invalidate + `POST /cuda-graph/invalidate` for subprocess llama-server.
+* [vLLM borrowings (L3)](./vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; env + `cache_salt` / drop-last-block / SWA retention / subprocess graph clear.
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — **why** upstream GGUF path is cherry-picked for mergeability; Mac keeps ggml default (M7 bench).
 * [Flash-MoE (anemll)](./flash-moe.md) — **why** slot-bank + SSD sidecar for MoE models larger than unified RAM; Phase 17 llama-server passthrough (not ggml Metal default).
 * [ANE probe (maderix)](./ane-probe.md) — **why** subprocess smoke for private ANE APIs before hybrid inference; not on hot path.
+* [ANE dflash in-process (B1–B6)](./ane-draft-inprocess.md) — **why** same-PID IOSurface handoff on llama-server dflash draft decode; lab port 11435; draft tokens still Metal until B7.
+* [ANE hybrid path (lab)](./ane-hybrid-path.md) — crossover sweeps, prefill proxy, operator tooling index.
+* [ggml IOSurface hook](./ane-ggml-iosurface-hook.md) — Metal buffer API + speculative integration points.
 * [Phase 16 — thin edge daemon](./phase16-thin-edge.md) — **why** `--edge` / `-tags edge` for upstream-shaped deploys (runtime chat off, llama-server only) without dropping training/Eliza/fleet.
 * [Launch model inventory](./launch-model-inventory.md) — **why** `zerollama launch` loads `/api/tags` once and passes `LaunchModel` metadata to agent configs (no N× Show).
 * [Model bench cache](./bench-cache.md) — **why** `zerollama bench` caches decode tok/s by digest and **`zerollama ls`** shows **TOK/S** without re-running inference.
-* [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream b9509; patches, sync workflow, Ollama deltas; **cpp-httplib CGO vendoring on CUDA CT**.
+* [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream tags (**current: b9781 / v0.30.11**); 16 patches; sync workflow; **why `make sync` must not reset vendor**.
 * [llama.cpp backend (experimental)](./llama-cpp-backend.md) — route text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml.
 
 ### Apple Silicon (repo)

@@ -210,4 +210,4 @@ Optional supernova-class re-validation when that GGUF is on host — not blockin
 
 ## L2 pointer
 
-When `ZEROLLAMA_LLAMA_FORK=1` or the `llama-server` binary advertises `--ctx-checkpoints`, profiles merge `_eliza_fork_llama_server_flags` (QJL/Polar cache types) and emit checkpoint argv. Build the fork with `./scripts/build_eliza_llama_server.sh`. Full evaluation gate: [gpu-profiles-l2.md](./gpu-profiles-l2.md).
+When `ZEROLLAMA_LLAMA_FORK=1` or the `llama-server` binary advertises `--ctx-checkpoints`, profiles merge `_eliza_fork_llama_server_flags` (QJL/Polar cache types) and emit checkpoint argv. Build with `./scripts/build_llama_server.sh` (unified elizaOS tree). Full evaluation gate: [gpu-profiles-l2.md](./gpu-profiles-l2.md).

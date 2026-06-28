@@ -1,26 +1,48 @@
 # L2 — elizaOS/llama.cpp fork evaluation
 
-**Audience:** Contributors evaluating TurboQuant / QJL / PolarQuant vs stock `ggml-org/llama.cpp` (zerollama pin **b9611**).
+**Audience:** Contributors evaluating TurboQuant / QJL / PolarQuant profile wins on the **unified** `llama-server` binary.
 
-**Related:** [gpu-profiles-l1.md](./gpu-profiles-l1.md), [ROADMAP — L2](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), [phase17-llama-server.md](./phase17-llama-server.md), eliza reference `~/Sites/eliza-v3/plugins/plugin-local-inference/native/configs/gpu/SPECS.md`.
-
----
-
-## Why L2 exists
-
-L1 ships **tuned flags on stock cache types** (`q8_0`). Eliza-v3’s largest wins — **QJL K-cache**, **PolarQuant V-cache**, **TurboQuant**, fused MTP — live in **`elizaOS/llama.cpp`**, not upstream.
-
-**Why not replace vendor immediately:** zerollama’s in-process ggml carries **14 Ollama patches** on `vendor/llama-cpp-b9611/` (GPU discovery, no-alloc, compat overlay, mtmd C API). Blind vendor swap risks qwen35 compat, Metal sign-off, and Phase 15 ctypes layout. L2 is a **gated spike**: measure on 5080 + M-series before merge.
+**Related:** [gpu-profiles-l1.md](./gpu-profiles-l1.md), [ROADMAP — L2](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), [phase17-llama-server.md](./phase17-llama-server.md), [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
 
 ---
 
-## Fork pin (evaluation)
+## One binary, two profile modes
+
+Zerollama builds **one** `llama-server` from **`elizaOS/llama.cpp`** @ `LLAMA_CPP_COMMIT`. That tree is a superset of stock ggml-org: dflash-draft, QJL/Polar/TBQ, checkpoints, and upstream fixes.
+
+L2 gates compare **profile modes on the same binary**, not stock vs fork siblings:
+
+| Leg | `ZEROLLAMA_LLAMA_FORK` | Cache types |
+|-----|------------------------|-------------|
+| L1 (stock profile) | `0` | `q8_0` / tuned flags |
+| Fork profile | auto or `1` | `qjl1_256`, `q4_polar`, TBQ, checkpoints |
+
+**Deprecated:** separate `../eliza-llama.cpp` checkout and `build_eliza_llama_server.sh` (now wraps `build_llama_server.sh`).
+
+---
+
+## Why L2 still exists
+
+L1 ships **tuned flags on q8_0** by default. Eliza-v3’s largest wins — **QJL K-cache**, **PolarQuant V-cache**, **TurboQuant** — need fork cache types enabled at runtime. L2 measures whether fork profiles beat L1 on your GPU before we flip defaults.
+
+**In-process ggml** uses the same **elizaOS base + 16 Ollama patches** as the runtime sibling (`vendor/llama-cpp-c84b3020/` → sync). Rebase: `./scripts/rebase_vendor_unified.sh --sync`.
+
+---
+
+## Unified runtime pin
 
 | Field | Value |
 |-------|--------|
 | Repo | `https://github.com/elizaOS/llama.cpp.git` |
-| Ref (Jun 2026) | `96dd1a8466c84bdd419faf3866425260623fb6b0` |
-| Sibling tree | `../eliza-llama.cpp` (default) |
+| Ref (Jun 2026) | `c84b30200c8d512c00c9d61c96bed078f1c0024d` (`LLAMA_CPP_COMMIT`) |
+| Sibling tree | `../llama.cpp` (default) |
+| Build | `./scripts/build_llama_server.sh` |
+
+**Delta `96dd1a8` → `c84b302` (35 commits):** mostly voice/mobile (Kokoro TTS, OmniVoice FFI, Silero VAD, Android Vulkan). **No changes** to QJL/Polar/TBQ kernels or `dflash-draft` in that range — L2 bench numbers should match prior pin unless Vulkan shader paths matter on your host.
+
+**Already on stock b9781 (no fork patch needed):** `--ctx-checkpoints` ([ggml-org#15293](https://github.com/ggml-org/llama.cpp/pull/15293)), SWA checkpoint cell filter ([ggml-org#23981](https://github.com/ggml-org/llama.cpp/pull/23981)).
+
+**Still fork-only vs stock b9781:** `--checkpoint-every-n-tokens`, QJL/Polar/TBQ KV types, `dflash-draft` architecture (required for `eliza-1-*-dflash` models).
 
 ---
 
@@ -54,7 +76,7 @@ Stored in `runtime/configs/gpu/*.json` under `_eliza_fork_llama_server_flags` (a
 | `--ctx-checkpoints N` | Voice optimistic-rollback snapshots (eliza duplex); optional for text-only zerollama |
 | `--checkpoint-every-n-tokens N` | Token interval between ctx checkpoints (fork; was `--ctx-checkpoint-interval` in eliza JSON key) |
 
-**Detection:** fork `llama-server --help` includes `ctx-checkpoints`. Stock b9611 does not.
+**Detection:** fork `llama-server --help` includes `--checkpoint-every-n-tokens` and custom cache types (`qjl1_256`, …). Stock **b9781** has `--ctx-checkpoints` upstream but not `--checkpoint-every-n-tokens`.
 
 ---
 
@@ -63,23 +85,23 @@ Stored in `runtime/configs/gpu/*.json` under `_eliza_fork_llama_server_flags` (a
 ### macOS / Metal
 
 ```bash
-# 1. Build fork sibling (Metal)
-./scripts/build_eliza_llama_server.sh
+# 1. Build unified sibling (Metal)
+./scripts/build_llama_server.sh
 
-# 2. Point runtime at fork binary + enable fork profile merge
-export LLAMA_CPP_ROOT=$PWD/../eliza-llama.cpp
+# 2. Point runtime at binary; fork profiles auto-probe from --help
+export LLAMA_CPP_ROOT=$PWD/../llama.cpp
 export LLAMA_SERVER_BIN=$LLAMA_CPP_ROOT/build/bin/llama-server
 export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.dylib
-export ZEROLLAMA_LLAMA_FORK=1   # or omit: auto-probes --help when binary set
+export ZEROLLAMA_LLAMA_FORK=1   # or omit: auto-probes when binary set
 
 # 3. Smoke probe + profile argv
 ./scripts/l2_fork_eval.sh
 
-# 4. Metal A/B benchmark (stock vs fork decode tok/s + VRAM estimate)
+# 4. Metal A/B benchmark (L1 vs fork profiles, same binary)
 M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_metal_bench.sh
 # Output: L2_METAL_BENCH_OUT=/tmp/l2-metal-bench.json (default)
 
-# 5. Runtime subprocess compat (load + generate both binaries)
+# 5. Runtime subprocess compat (L1 + fork profile legs)
 ./scripts/l2_runtime_compat_smoke.sh
 
 # 6. Full gate (eval + compat + bench + verdict)
@@ -93,13 +115,12 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh
 ### Linux / CUDA (RTX 5080-class)
 
 ```bash
-# 1. Build fork sibling (CUDA)
-./scripts/build_eliza_llama_server.sh
-# Headless container: if WebUI asset download fails, rebuild with
-#   cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_WEBUI=OFF ...
+# 1. Build unified sibling (CUDA)
+./scripts/build_llama_server.sh
+# Headless container: LLAMA_BUILD_WEBUI=OFF (default on Linux via build script)
 
-# 2. Point runtime at fork binary
-export LLAMA_CPP_ROOT=$PWD/../eliza-llama.cpp
+# 2. Point runtime at binary
+export LLAMA_CPP_ROOT=$PWD/../llama.cpp
 export LLAMA_SERVER_BIN=$LLAMA_CPP_ROOT/build/bin/llama-server
 export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.so    # .so on Linux
 export ZEROLLAMA_LLAMA_FORK=1
@@ -107,7 +128,7 @@ export ZEROLLAMA_LLAMA_FORK=1
 # 3. Smoke probe + profile argv
 ./scripts/l2_fork_eval.sh
 
-# 4. CUDA A/B benchmark (stock vs fork decode tok/s + VRAM)
+# 4. CUDA A/B benchmark (L1 vs fork profiles, same binary)
 CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_bench.sh
 # Output: L2_CUDA_BENCH_OUT=/tmp/l2-cuda-bench.json (default)
 
@@ -129,7 +150,7 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 | `ZEROLLAMA_LLAMA_FORK=1` | Force fork profile merge (QJL/Polar, checkpoints) |
 | `ZEROLLAMA_LLAMA_FORK=0` | Force stock sanitize (L1 default) |
 | *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for `--ctx-checkpoints` |
-| `ELIZA_LLAMA_CPP_ROOT` / `ELIZA_LLAMA_CPP_REF` | Override clone path / commit for build script |
+| `LLAMA_CPP_ROOT` / `LLAMA_CPP_COMMIT` | Override clone path / commit (`ensure_llama_cpp_sibling.sh`) |
 
 ---
 
@@ -140,18 +161,19 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 | `runtime/llama_fork.py` | Fork detection (env + binary probe) |
 | `runtime/gpu_profiles.py` | `_eliza_fork_llama_server_flags` merge; emit `--ctx-checkpoints` when present |
 | `/health` | `llama_fork` object + `gpu_profile.llama_fork` |
-| `scripts/build_eliza_llama_server.sh` | Isolated fork build |
+| `scripts/build_llama_server.sh` | Unified runtime build (elizaOS base @ LLAMA_CPP_COMMIT) |
+| `scripts/build_eliza_llama_server.sh` | Deprecated alias → `build_llama_server.sh` |
 | `scripts/l2_fork_eval.sh` | Probe + pytest smoke |
-| `scripts/l2_metal_bench.sh` | Darwin A/B: stock vs fork decode tok/s + VRAM JSON |
-| `scripts/l2_cuda_bench.sh` | Linux/CUDA A/B: stock vs fork decode tok/s + VRAM JSON |
-| `scripts/l2_runtime_compat_smoke.sh` | Darwin subprocess compat: load+generate on stock vs fork |
+| `scripts/l2_metal_bench.sh` | Darwin A/B: L1 vs fork profiles (same binary) |
+| `scripts/l2_cuda_bench.sh` | Linux/CUDA A/B: L1 vs fork profiles (same binary) |
+| `scripts/l2_runtime_compat_smoke.sh` | Darwin subprocess compat: L1 + fork profile legs |
 | `scripts/l2_cuda_runtime_compat_smoke.sh` | Linux subprocess compat: mirrors compat smoke with `.so` + `linux_runtime_serve_lib` |
 | `scripts/l2_gate_report.sh` | Verdict from one or more bench JSON files |
 | `scripts/l2_full_gate.sh` | Darwin gate orchestrator: eval + compat + bench legs + report |
 | `scripts/l2_cuda_full_gate.sh` | CUDA gate orchestrator: same structure as Metal gate |
 | `scripts/linux_runtime_serve_lib.sh` | Shared sidecar start/stop helpers for Linux (mirrors `macos_runtime_serve_lib.sh`) |
 
-**WHY sibling tree first:** `vendor/llama-cpp-b9611/` + `llama/patches/` stay on b9611 until the gate passes.
+**WHY sibling tree first:** `vendor/llama-cpp-b9781/` + `llama/patches/` stay on b9781 until the gate passes.
 
 ---
 
@@ -181,7 +203,7 @@ JSON: `/tmp/l2-cuda-gate/bench-8k.json` (1B), `/tmp/l2-cuda-gate-long/bench-{8k,
 
 **Fork build footgun (container):** eliza sibling may need `-DLLAMA_BUILD_WEBUI=OFF` — default WebUI asset download fails headless.
 
-**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Pin `96dd1a8`; profile checkpoint argv uses `--checkpoint-every-n-tokens` (not deprecated `--ctx-checkpoint-interval`).
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Fork pin **`c84b302`**; profile checkpoint argv uses `--checkpoint-every-n-tokens` (not deprecated `--ctx-checkpoint-interval`).
 
 ---
 
@@ -204,7 +226,7 @@ Compare **same model**, **same `num_ctx`**, stock vs fork:
 2. CPU QJL + Polar decode (`ggml-cpu/qjl/*`, `quants-polar.c`)
 3. CUDA kernels (`ggml-cuda/qjl.*`, `polarquant.*`, `turboquant.*`)
 4. Metal `eliza-shipped/` kernels
-5. `--ctx-checkpoints` server hooks
+5. `--checkpoint-every-n-tokens` + `--ctx-checkpoints` server hooks (ctx-checkpoints already in b9781; interval flag is fork-only)
 6. MTP / fused attn (optional; overlaps voice L7)
 
 Re-apply or drop zerollama **Ollama patches** per file conflict — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).

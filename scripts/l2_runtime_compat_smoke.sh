@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# L2 runtime subprocess compat — stock vs fork llama-server load + generate.
+# L2 runtime subprocess compat — L1 vs fork profiles on unified llama-server.
 #
-# WHY: qwen35 Go ggml smoke does not exercise fork llama-server. This validates
-# the runtime subprocess path (Phase 14/17 target) loads GGUF and decodes on both
-# binaries with profile argv (QJL/TBQ when fork probe succeeds).
+# WHY: qwen35 Go ggml smoke does not exercise llama-server. This validates the runtime
+# subprocess path loads GGUF and decodes with stock cache types and fork (QJL/TBQ) argv.
 #
 # Usage:
 #   M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_runtime_compat_smoke.sh
@@ -20,11 +19,12 @@ source "${ROOT}/scripts/macos_runtime_serve_lib.sh"
 
 runtime_uv_venv
 
-STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/llama.cpp}"
-FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/eliza-llama.cpp}"
+UNIFIED_ROOT="${LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/llama.cpp}"
+STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
+FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
 
-if [[ "${L2_BUILD_FORK:-0}" == "1" ]]; then
-  "${ROOT}/scripts/build_eliza_llama_server.sh"
+if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
+  LLAMA_CPP_ROOT="${UNIFIED_ROOT}" "${ROOT}/scripts/build_llama_server.sh"
 fi
 
 smoke_m3_resolve_signoff_model

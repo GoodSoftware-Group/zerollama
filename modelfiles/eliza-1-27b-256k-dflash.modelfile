@@ -1,4 +1,4 @@
 FROM eliza-1-27b-256k:latest
 DRAFT /Users/user1/.cache/zerollama/eliza-1/bundles/27b-256k/dflash/drafter-27b-256k.gguf
-PARAMETER spec_type draft-eagle3
+PARAMETER spec_type dflash
 PARAMETER draft_num_predict 4

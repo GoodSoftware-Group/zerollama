@@ -104,6 +104,7 @@ func (c *VisionEmbedCache) GetOrEncode(
 	ctx ml.Context,
 	data []byte,
 	sessionKey string,
+	sessionOverlay bool,
 ) ([]input.Multimodal, error) {
 	if c == nil {
 		return mp.EncodeMultimodal(ctx, data)
@@ -116,13 +117,18 @@ func (c *VisionEmbedCache) GetOrEncode(
 	sessionKey = normalizeSessionKey(sessionKey)
 
 	c.mu.Lock()
-	if cached, ok := c.findSessionEmbedLocked(sessionKey, hash); ok {
-		c.mu.Unlock()
-		return restoreMultimodal(ctx, cached), nil
+	if sessionOverlay && sessionKey != "" {
+		if cached, ok := c.findSessionEmbedLocked(sessionKey, hash); ok {
+			c.mu.Unlock()
+			return restoreMultimodal(ctx, cached), nil
+		}
 	}
 	if cached, err := c.findGlobalLocked(hash); err == nil {
-		c.storeSessionEmbedLocked(sessionKey, hash, cached)
+		if sessionOverlay && sessionKey != "" {
+			c.storeSessionEmbedLocked(sessionKey, hash, cached)
+		}
 		c.mu.Unlock()
+		slog.Info("vision embed global cache hit", "engine", "ollama")
 		return restoreMultimodal(ctx, cached), nil
 	}
 	c.mu.Unlock()
@@ -141,7 +147,9 @@ func (c *VisionEmbedCache) GetOrEncode(
 
 	c.mu.Lock()
 	c.addGlobalLocked(hash, cached)
-	c.storeSessionEmbedLocked(sessionKey, hash, cached)
+	if sessionOverlay && sessionKey != "" {
+		c.storeSessionEmbedLocked(sessionKey, hash, cached)
+	}
 	c.mu.Unlock()
 
 	return restoreMultimodal(ctx, cached), nil

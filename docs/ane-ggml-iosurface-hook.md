@@ -1,153 +1,128 @@
 # ggml Metal → IOSurface → ANE hook (design)
 
-**Audience:** contributors wiring hybrid Metal+ANE inference. Lab-validated; **not implemented** in ggml/llama-server yet.
+**Audience:** contributors wiring hybrid Metal+ANE inference. **Implemented (lab)** in llama-common + dflash speculative path when `ZEROLLAMA_ANE_DRAFT=1`.
 
-**Related:** [ane-hybrid-path.md](./ane-hybrid-path.md), [ane-probe.md](./ane-probe.md), [phase17-llama-server.md](./phase17-llama-server.md).
+**Related:** [ane-draft-inprocess.md](./ane-draft-inprocess.md), [ane-hybrid-path.md](./ane-hybrid-path.md), [ane-probe.md](./ane-probe.md).
 
 ---
 
 ## Goal
 
-After ggml Metal runs a decode/prefill op, **ANE consumes the same activation bytes** without a CPU memcpy. ANE I/O is IOSurface-bound (maderix bridge); Metal already uses **`newBufferWithBytesNoCopy`** on host-visible memory — the hook aligns those two alloc paths.
+After ggml Metal runs a decode step, **ANE consumes the same activation bytes** without a CPU memcpy. **Why:** ANE I/O is IOSurface-bound (maderix bridge); copying activations to CPU and back would erase ANE latency wins and add unified-memory pressure.
 
 ```text
-ggml graph (Metal)                ANE subprocess / bridge
-  MUL_MAT / FFN  ──writes──►  IOSurface base  ──eval──►  draft conv / fused MIL
-         ▲                           │
-         └── MTLBuffer (StorageModeShared, no-copy)
+llama-server (single PID)
+  draft llama_decode (Metal)
+       │
+       ▼
+  common_ane_draft_handoff_after_decode()
+       │ llama_get_embeddings_pre_norm_ith
+       ▼
+  ggml_backend_dev_buffer_from_iosurface(device, surface_id, …)
+       │ pack [1, ch, 1, sp] (+ optional gamma on host)
+       ▼
+  ane_draft_session_eval()  →  libane_bridge
 ```
 
 ---
 
-## What lab already proves
+## Why same-process only
 
-| Lab binary | Pattern |
-|------------|---------|
-| `ane-metal-handoff-smoke` | Metal fill → `IOSurfaceLookup(id)` → `newBufferWithBytesNoCopy` → ANE eval |
-| `ane-prefill-handoff-smoke` | Metal writes **activations** into ANE input surface; weights static on surface |
+Lab proved:
 
-Bridge API (patched maderix):
+| Pattern | Result |
+|---------|--------|
+| Subprocess daemon exports `surface_id` | Parent `IOSurfaceLookup(id)` → **fail** |
+| In-process `ane-inprocess-smoke` | Map + eval **ok** |
+| In-process llama-server + `ZEROLLAMA_ANE_DRAFT=1` | Handoff + eval **ok** on lab port |
+
+**Implication:** `ane-draft-daemon` remains a scheduling prototype; production wiring is **`ane_draft_session.mm` inside llama-common**, not a Go-spawned child.
+
+---
+
+## Public ggml API (Jun 2026)
 
 ```c
-uint32_t ane_bridge_input_surface_id(ANEKernelHandle *kernel, int idx);
-size_t   ane_bridge_input_surface_bytes(ANEKernelHandle *kernel, int idx);
+// ggml-metal.h — why: stable entry for llama-common without including Metal internals
+ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+    ggml_backend_dev_t device,
+    uint32_t surface_id,
+    size_t size,
+    size_t max_tensor_size);
 ```
 
----
+**Why map via backend device:** handoff runs in speculative code with GPU device already selected; IOSurface is owned by ANE bridge in the same process.
 
-## ggml-metal touch points (zerollama tree)
-
-### 1. Shared buffer allocation — primary hook site
-
-`ggml_metal_buffer_init()` in `ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-device.m`:
-
-- Host memory: `ggml_metal_host_malloc(size_aligned)`
-- Metal view: `[device newBufferWithBytesNoCopy:res->all_data length:… options:MTLResourceStorageModeShared]`
-
-**Hook option A (ANE-owned surface):** For tensors tagged `ane_eligible`, allocate IOSurface via bridge at compile time, map with `newBufferWithBytesNoCopy` on `IOSurfaceGetBaseAddress` instead of `ggml_metal_host_malloc`. Metal kernels unchanged; ANE reads same bytes after `waitUntilCompleted`.
-
-**Hook option B (map external):** Use existing `ggml_metal_buffer_map()` / `ggml_backend_metal_device_buffer_mapped()` (`ggml-metal.cpp` ~722) to wrap a **pre-allocated IOSurface base** as a mapped shared buffer (`owned = false`). Lab: `tools/ane-metal/ggml_iosurface_map.h` mirrors the page-align + `newBufferWithBytesNoCopy` path.
-
-**Same-process requirement:** ANE bridge IOSurface IDs are **not** `IOSurfaceLookup`-able from a separate process. Production ggml hook and lab daemon `map_fill` run **in-process** with the compiled kernel (subprocess daemon today; in-process CGO optional later).
-
-### 2. Buffer type selection
-
-`ggml_backend_metal_device_get_buffer_type()` picks **shared vs private** based on `use_shared_buffers` (unified memory on Apple Silicon). ANE handoff requires **shared** — already default on M-series.
-
-### 3. Tensor → MTLBuffer at encode time
-
-`ggml_metal_encoder_set_buffer()` uses `ggml_metal_buffer_id { metal, offs }`. ANE hook must preserve **stable base + offset** for the surface-backed allocation for the tensor lifetime of one draft step.
-
-### 4. Synchronization
-
-Before `ane_bridge_eval()`:
-
-1. Metal command buffer **`waitUntilCompleted`**
-2. `IOSurfaceLock` / `Unlock` if CPU touches the same surface
-3. ANE eval (subprocess or in-process bridge when wired)
-
-Lab order validated in `tools/ane-prefill/prefill_handoff_smoke.m`.
+Implementation: `ggml_metal_buffer_map_iosurface()` in `ggml-metal-device.m` — page-aligned `newBufferWithBytesNoCopy`, retains `IOSurfaceRef` until buffer free.
 
 ---
 
-## Scheduler integration (llama-server)
+## Speculative integration
 
-**Env:** `ZEROLLAMA_ANE_DRAFT=1` (default off; lab only today).
+**Files:** `common/ane_draft_hook.cpp`, `common/speculative.cpp`
 
-**Candidate hot paths** (do **not** enable for full 2048² FFN — MPS wins above ~720 IC):
+**When:** `ZEROLLAMA_ANE_DRAFT=1` at dflash / draft-simple init:
 
-| Subgraph | IC×OC proxy | ANE viable? |
-|----------|-------------|-------------|
-| Eagle3 / dflash **draft head** | ~256×16 conv | Yes (lab) |
-| Full FFN matmul | 2048²+ | No (MPS faster) |
-| Vision front-end | model-specific | TBD |
+1. `common_ane_draft_log_init()` → `ane_draft_session_init(ch, sp, weight, gamma)`
+2. `llama_set_embeddings_pre_norm(ctx_dft, true)` — **why:** handoff reads pre-norm hidden, not post-norm logits path
+3. After each draft `llama_decode`: `common_ane_draft_handoff_after_decode(ctx_dft, i_batch)`
 
-**Draft wiring** (when Eagle3 sidecar exists):
+**Why draft tokens stay Metal:** hook runs ANE conv **telemetry**; token IDs still come from `common_sampler_sample` on Metal until B7 routes logits from ANE subgraph.
 
-1. `common_speculative_draft()` / server speculative path generates draft tokens on GPU today.
-2. With `ZEROLLAMA_ANE_DRAFT=1`, route **draft conv** to ANE MIL compiled from sidecar weights.
-3. Base model stays on ggml Metal; IOSurface handoff on draft input only.
+---
 
-References: `llama/llama.cpp/common/speculative.cpp`, `common_speculative_draft()`, server `--spec-draft-model`.
+## Weight / MIL path
+
+| Stage | Source | Why |
+|-------|--------|-----|
+| Sidecar GGUF | `drafter-*.gguf` on disk | eliza `-dflash` tags ship drafter blob separately from base |
+| Extract | `discover/ane_mil_weight_blob.go` | Top-left `ch×ch` slice → maderix BLOBFILE layout |
+| Bundle | `ane-draft-mil-bundle` | Manifest + env for server init |
+| MIL | `ane_gen_conv_mil` / `ane_gen_conv2_mil` | Lab proxy; phase3 slots in `ane-draft-mil-map` |
+
+**Why host gamma multiply:** MIL `conv × gamma` broadcast failed compile on ANE; scaling activations in handoff pack preserves sidecar norm intent without blocking B2.
 
 ---
 
 ## Phased rollout
 
-### Phase 1 — Lab (done)
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1 Lab subprocess probes | Done | crossover, handoff smokes |
+| 2 Sidecar extract + daemon | Done | daemon superseded for serve |
+| 3 ggml API + hook scaffold | Done | iosurface map, log init |
+| **4 In-process B1–B6** | **Partial (lab)** | session, handoff, bundle, A/B — [ane-draft-inprocess.md](./ane-draft-inprocess.md) |
+| 5 ANE-driven draft tokens | Not started | B7+ full subgraph |
 
-- Subprocess probes, crossover sweeps, IOSurface handoff smokes
-- `ane-prefill-crossover` for width/SEQ decisions
+---
 
-### Phase 2 — Sidecar ANE draft (in progress)
+## Build / sync
 
-- `ane-draft-surface-smoke --model …` — Metal fill → IOSurface → ANE draft conv; JSON includes `handoff.surface_id` for ggml parent wiring
-- Eagle3 drafter GGUF → MIL weight extract: `ane-draft-mil-map` lists tensor slots (`fc.weight`, `blk.0.*`); blocked until sidecar on disk
-- Subprocess eval protocol: compile in child, export `surface_id`, parent fills via Metal, child `ane_bridge_eval`
-- **`ane-draft-daemon`** — persistent child: compile once, JSON stdin/stdout for repeated eval/bench (`zerollama ane-draft-daemon-smoke`)
-- **`ane-draft-router-smoke`** — multi-step scheduler prototype (`ZEROLLAMA_ANE_DRAFT=1`); `discover.ANEDraftRouter` is the serve integration hook
-
-### Phase 3 — ggml buffer backend (API landed)
-
-- **`ggml_metal_buffer_map_iosurface()`** — page-aligned `newBufferWithBytesNoCopy` on IOSurface base (mirrors host-ptr map); retains `IOSurfaceRef` until buffer free
-- **`ggml_backend_dev_buffer_from_iosurface()`** — public backend entry in `ggml-metal.h`
-- Lab: **`ane-ggml-map-smoke`** + **`ane-draft-router-smoke`**; status: `zerollama ane-ggml-hook-status`
-- **Same-process only** — ANE bridge IOSurface IDs are not visible cross-process; llama-server / ggml parent must map in-process
-- Guard: only map draft tensors under `DraftANEProxyDims()` (≤512 ch × spatial 16); log when `ZEROLLAMA_ANE_DRAFT=1`
-- **Next:** call `ggml_backend_dev_buffer_from_iosurface` from `common_speculative_impl_draft_eagle3` when sidecar weights exist (constructor logs when `ZEROLLAMA_ANE_DRAFT=1`)
-
-### Phase 4 — In-process (optional)
-
-- CGO link `libane_bridge` behind `-tags zerollama_ane` — higher risk on macOS updates
+```bash
+./scripts/sync_ane_hook_to_llama_cpp.sh   # unified ../llama.cpp @ c84b3020
+./scripts/build_llama_server.sh           # copies libane_bridge.dylib
+# Why manual step sometimes needed after build:
+install_name_tool -change libane_bridge.dylib @loader_path/libane_bridge.dylib \
+  ../llama.cpp/build/bin/libllama-common.0.0.1.dylib
+```
 
 ---
 
 ## Non-goals
 
-- No IOSurface export for every ggml tensor (memory overhead, ANE compile limits)
-- No ANE prefill for eliza 2048 FFN (crossover ~720; see `ane-prefill-crossover`)
-- No production serve restart from doctor or lab commands
-- MLX models — separate runtime; not this hook
+- IOSurface on every ggml tensor (memory + compile limits)
+- ANE prefill at eliza 2048² FFN
+- Cross-process draft daemon in production
+- MLX models (separate runtime)
 
 ---
 
-## Verification commands
+## Verification
 
 ```bash
-./scripts/ane_probe_build.sh
-./zerollama ane-prefill-crossover --quick
-./zerollama ane-prefill-crossover --model tiny-agent --quick
-./zerollama ane-prefill-handoff-smoke --model eliza-1-2b-dflash --tokens 128 --quick
-./zerollama ane-handoff-smoke --metal --quick
-./zerollama ane-ggml-map-smoke --model eliza-1-2b-dflash --quick
-ZEROLLAMA_ANE_DRAFT=1 ./zerollama ane-draft-router-smoke --model eliza-1-2b --quick
-./zerollama ane-draft-mil-extract --model eliza-1-2b-dflash --out /tmp/ane-draft-weight.bin
-# then: ane-draft-daemon --channels 256 --spatial 16 --weight-file /tmp/ane-draft-weight.bin --bench
+./zerollama ane-inprocess-smoke --model eliza-1-2b-dflash --quick
+LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
+  ./zerollama ane-draft-ab-smoke --model eliza-1-2b-dflash --quick --e2e
 ```
 
----
-
-## See also
-
-- maderix/ane bridge patch: `tools/ane-patches/0001-bridge-iosurface-export.patch`
-- Crossover data: [ane-hybrid-path.md](./ane-hybrid-path.md#ane-vs-mps-crossover-m4-max-jun-2026)
+See also: maderix patch `tools/ane-patches/0001-bridge-iosurface-export.patch`

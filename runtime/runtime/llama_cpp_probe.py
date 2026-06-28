@@ -17,12 +17,39 @@ from typing import Any
 _PIN_FILE = "LLAMA_CPP_VERSION"
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _sibling_llama_cpp_root(repo: Path | None = None) -> Path:
+    return ((repo or _repo_root()).parent / "llama.cpp").resolve()
+
+
+def _vendor_llama_cpp_root(repo: Path | None = None) -> Path | None:
+    pin = pinned_llama_cpp_version(repo) or ""
+    if not pin:
+        return None
+    vendor = (repo or _repo_root()) / "vendor" / f"llama-cpp-{pin}"
+    if (vendor / "CMakeLists.txt").is_file():
+        return vendor.resolve()
+    return None
+
+
 def default_llama_cpp_root() -> Path:
     raw = os.environ.get("LLAMA_CPP_ROOT", "").strip()
+    repo = _repo_root()
+    vendor = _vendor_llama_cpp_root(repo)
     if raw:
-        return Path(raw).expanduser().resolve()
-    repo = Path(__file__).resolve().parents[2]
-    return (repo.parent / "llama.cpp").resolve()
+        p = Path(raw).expanduser().resolve()
+        # WHY: stale shell ``LLAMA_CPP_ROOT=../llama.cpp`` must not beat patched vendor.
+        if vendor is not None and (
+            p == _sibling_llama_cpp_root(repo) or not (p / "CMakeLists.txt").is_file()
+        ):
+            return vendor
+        return p
+    if vendor is not None:
+        return vendor
+    return _sibling_llama_cpp_root(repo)
 
 
 def pinned_llama_cpp_version(repo_root: Path | None = None) -> str | None:
@@ -100,7 +127,7 @@ def probe_llama_cpp(
         "graphs_compile_ready": graphs_compile_ready,
         "graphs_runtime_ready": graphs_runtime_ready,
         "epoch_bind_status": (
-            "wired — bump_decode_graph_epoch calls llama_context_cuda_graph_invalidate "
-            "when ctx_ptr is available (rebuild libllama after pull)"
+            "wired — in-process: llama_context_cuda_graph_invalidate when ctx_ptr set; "
+            "subprocess: POST /cuda-graph/invalidate on llama-server (rebuild after pull)"
         ),
     }

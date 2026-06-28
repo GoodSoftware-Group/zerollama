@@ -55,7 +55,8 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	}
 
 	for cnt, msg := range msgs[currMsgIdx:] {
-		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(msg.Images) > 1 {
+		mmCount := len(msg.Images) + len(msg.PrecomputedEmbeddings) + len(msg.ProcessorOutputs)
+		if slices.Contains(m.Config.ModelFamilies, "mllama") && mmCount > 1 {
 			return "", nil, 0, nil, errors.New("this model only supports one image; more than one was requested (including multiple frames sampled from video)")
 		}
 
@@ -64,6 +65,8 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 
 		grids := modality.GridTHWPerRaster(msg)
 		skipImgTags := modality.MessageSkipsVisionPlaceholdersForChat(msgs, currMsgIdx+cnt, true)
+		images = modality.AppendPrecomputedImagesToLLM(msg, images)
+		images = modality.AppendProcessorOutputsToLLM(msg, images)
 		for idx, i := range msg.Images {
 			imgData := llm.ImageData{
 				ID:   len(images),
@@ -276,4 +279,46 @@ func renderPrompt(m *Model, msgs []api.Message, tools []api.Tool, think *api.Thi
 		return "", err
 	}
 	return b.String(), nil
+}
+
+func imageTaggedMessages(m *Model, msgs []api.Message, start int, clearImages bool) ([]api.Message, []llm.ImageData, error) {
+	renderMsgs := slices.Clone(msgs)
+	var images []llm.ImageData
+
+	for cnt, msg := range renderMsgs[start:] {
+		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(msg.Images) > 1 {
+			return nil, nil, errors.New("this model only supports one image while more than one image requested")
+		}
+
+		var prefix string
+		prompt := msg.Content
+
+		for _, i := range msg.Images {
+			imgData := llm.ImageData{
+				ID:   len(images),
+				Data: i,
+			}
+			images = append(images, imgData)
+
+			if m.Config.Renderer != "" {
+				continue
+			}
+
+			imgTag := fmt.Sprintf("[img-%d]", imgData.ID)
+			if !strings.Contains(prompt, "[img]") {
+				prefix += imgTag
+			} else {
+				prompt = strings.Replace(prompt, "[img]", imgTag, 1)
+			}
+		}
+
+		if m.Config.Renderer == "" {
+			renderMsgs[start+cnt].Content = prefix + prompt
+		}
+		if clearImages {
+			renderMsgs[start+cnt].Images = nil
+		}
+	}
+
+	return renderMsgs, images, nil
 }

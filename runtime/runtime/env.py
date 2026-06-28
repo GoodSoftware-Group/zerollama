@@ -1,0 +1,432 @@
+"""Centralized runtime env parsing with platform/backend smart defaults.
+
+WHY: L3 and cache modules each called ``os.environ.get`` with different default
+semantics — operator shells (e.g. ``ZEROLLAMA_LLAMA_CACHE_DISK=0`` from Metal)
+leaked into unrelated CUDA smokes. One module owns tri-state bools, hints from
+``RuntimeConfig``, and test reset.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+TriState = Optional[bool]  # None = env unset → use smart default
+
+
+@dataclass(frozen=True)
+class L3Settings:
+    """YAML ``l3:`` block; env overrides individual fields."""
+
+    radix_share: bool = False
+    block_size: int = 512
+    trace: bool = False
+    trace_dir: str | None = None
+    lmcache_uri: str | None = None
+    retention_interval: int | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeEnvHints:
+    """Process hints set once from ``RuntimeConfig`` (engine init)."""
+
+    llama_backend: str = "subprocess"
+    n_parallel: int = 1
+
+
+_hints: RuntimeEnvHints | None = None
+_l3: L3Settings | None = None
+
+
+def configure_l3_settings(raw: dict[str, object] | None) -> None:
+    """Load ``l3:`` from runtime YAML (called from ``RuntimeConfig.from_file``)."""
+    global _l3
+    if not raw or not isinstance(raw, dict):
+        _l3 = L3Settings()
+        return
+    block_size = 512
+    if (bs := raw.get("block_size")) is not None:
+        try:
+            block_size = max(1, int(bs))
+        except (TypeError, ValueError):
+            pass
+    retention = raw.get("retention_interval")
+    ri: int | None = None
+    if retention is not None:
+        try:
+            ri = int(retention)
+        except (TypeError, ValueError):
+            ri = None
+    trace_dir = raw.get("trace_dir")
+    lmcache_uri = raw.get("lmcache_uri")
+    _l3 = L3Settings(
+        radix_share=bool(raw.get("radix_share", False)),
+        block_size=block_size,
+        trace=bool(raw.get("trace", False)),
+        trace_dir=str(trace_dir).strip() if trace_dir else None,
+        lmcache_uri=str(lmcache_uri).strip() if lmcache_uri else None,
+        retention_interval=ri,
+    )
+
+
+def l3_settings() -> L3Settings:
+    return _l3 or L3Settings()
+
+
+def configure_runtime_env(
+    *,
+    llama_backend: str | None = None,
+    n_parallel: int | None = None,
+) -> None:
+    """Wire YAML/GPU profile context for smart env defaults."""
+    global _hints
+    backend = (llama_backend or os.environ.get("ZEROLLAMA_RUNTIME_LLAMA_BACKEND") or "subprocess").strip().lower()
+    parallel = n_parallel
+    if parallel is None:
+        raw = os.environ.get("ZEROLLAMA_LLAMA_PARALLEL_SLOTS", "").strip()
+        parallel = int(raw) if raw.isdigit() else 1
+    _hints = RuntimeEnvHints(llama_backend=backend, n_parallel=max(1, int(parallel)))
+
+
+def reset_runtime_env_for_tests() -> None:
+    """Test helper: drop engine hints."""
+    global _hints, _l3
+    _hints = None
+    _l3 = None
+
+
+def runtime_hints() -> RuntimeEnvHints:
+    if _hints is not None:
+        return _hints
+    return RuntimeEnvHints(
+        llama_backend=(os.environ.get("ZEROLLAMA_RUNTIME_LLAMA_BACKEND") or "subprocess").strip().lower(),
+        n_parallel=_int_env("ZEROLLAMA_LLAMA_PARALLEL_SLOTS", default=1, minimum=1),
+    )
+
+
+def _int_env(name: str, *, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def env_tri_state(name: str) -> TriState:
+    """Parse ``1/on/yes`` → True, ``0/off/no`` → False, unset → None."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    v = raw.strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return None
+
+
+def env_bool(name: str, *, default: bool) -> bool:
+    t = env_tri_state(name)
+    return default if t is None else t
+
+
+def llama_cache_enabled() -> bool:
+    return env_bool("ZEROLLAMA_LLAMA_CACHE", default=True)
+
+
+def llama_cache_disk_default(*, backend: str | None = None) -> bool:
+    """Smart default when ``ZEROLLAMA_LLAMA_CACHE_DISK`` is unset.
+
+    WHY: Metal/in-process paths are latency-sensitive (disk off); Linux CUDA
+    subprocess uses ``--slot-save-path`` (disk on). Explicit env always wins.
+    """
+    plat = sys.platform
+    bk = (backend or runtime_hints().llama_backend).strip().lower()
+    if plat == "darwin":
+        return False
+    if bk == "inprocess":
+        return plat.startswith("linux")
+    return True
+
+
+def llama_cache_disk_enabled(*, backend: str | None = None) -> bool:
+    if not llama_cache_enabled():
+        return False
+    explicit = env_tri_state("ZEROLLAMA_LLAMA_CACHE_DISK")
+    if explicit is not None:
+        return explicit
+    return llama_cache_disk_default(backend=backend)
+
+
+def radix_prefix_share_enabled() -> bool:
+    explicit = env_tri_state("ZEROLLAMA_RADIX_PREFIX_SHARE")
+    if explicit is not None:
+        return explicit
+    return l3_settings().radix_share
+
+
+def lmcache_tier_enabled() -> bool:
+    """LMCache metadata tier: on when ``ZEROLLAMA_LMCACHE_URI`` or YAML ``l3.lmcache_uri`` set."""
+    if os.environ.get("ZEROLLAMA_LMCACHE_URI", "").strip():
+        return True
+    if l3_settings().lmcache_uri:
+        return True
+    return env_bool("ZEROLLAMA_LMCACHE_TIER", default=False)
+
+
+def lmcache_uri() -> str:
+    raw = os.environ.get("ZEROLLAMA_LMCACHE_URI", "").strip()
+    if raw:
+        return raw
+    yaml_uri = l3_settings().lmcache_uri
+    if yaml_uri:
+        return yaml_uri
+    return "file://~/.cache/zerollama/lmcache"
+
+
+def prefix_cache_block_size() -> int:
+    raw = os.environ.get("ZEROLLAMA_PREFIX_CACHE_BLOCK_SIZE", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return max(1, l3_settings().block_size)
+
+
+def prefix_cache_retention_interval() -> int | None:
+    raw = os.environ.get("ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL", "").strip()
+    if raw:
+        if raw.lower() in ("0", "false", "no", "off"):
+            return 0
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return l3_settings().retention_interval
+
+
+def prefix_cache_trace_enabled() -> bool:
+    explicit = env_tri_state("ZEROLLAMA_PREFIX_CACHE_TRACE")
+    if explicit is not None:
+        return explicit
+    if "l3" in debug_tags():
+        return True
+    return l3_settings().trace
+
+
+def prefix_cache_trace_dir() -> Path:
+    raw = os.environ.get("ZEROLLAMA_PREFIX_CACHE_TRACE_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    yaml_dir = l3_settings().trace_dir
+    if yaml_dir:
+        return Path(yaml_dir).expanduser()
+    return Path.home() / ".cache" / "zerollama" / "prefix-cache-traces"
+
+
+def decode_graph_invalidate_enabled() -> bool:
+    return env_bool("ZEROLLAMA_DECODE_GRAPH_INVALIDATE", default=True)
+
+
+def decode_graph_trace_enabled() -> bool:
+    if env_bool("ZEROLLAMA_DECODE_GRAPH_TRACE", default=False):
+        return True
+    return "l3" in debug_tags()
+
+
+def prefix_block_pool_enabled(*, n_parallel: int | None = None) -> bool:
+    """Hash-chained prefix blocks for L3 verification / Radix donor lookup.
+
+    Auto-on when: Radix share, LMCache URI, explicit ``PREFIX_BLOCK_POOL=1``,
+    or L3 cache + ``n_parallel > 1`` (multi-slot agent workloads).
+    """
+    explicit = env_tri_state("ZEROLLAMA_PREFIX_BLOCK_POOL")
+    if explicit is False:
+        return False
+    if radix_prefix_share_enabled():
+        return True
+    if lmcache_tier_enabled():
+        return True
+    if explicit is True:
+        return True
+    if not llama_cache_enabled():
+        return False
+    slots = n_parallel if n_parallel is not None else runtime_hints().n_parallel
+    return slots > 1
+
+
+def prefix_block_pool_max_entries() -> int:
+    return _int_env("ZEROLLAMA_PREFIX_BLOCK_POOL_MAX", default=8192, minimum=64)
+
+
+# --- L3 profile presets (YAML bundles; env overrides fields) ---
+
+_L3_PROFILE_CONFIGS: dict[str, str] = {
+    "agent": "l3_agent_subprocess.yaml",
+}
+
+
+def l3_profile_name() -> str | None:
+    raw = os.environ.get("ZEROLLAMA_L3_PROFILE", "").strip().lower()
+    return raw or None
+
+
+def resolve_l3_profile_config_path() -> Path | None:
+    """``ZEROLLAMA_L3_PROFILE=agent`` → ``runtime/configs/l3_agent_subprocess.yaml``."""
+    name = l3_profile_name()
+    if not name:
+        return None
+    fname = _L3_PROFILE_CONFIGS.get(name)
+    if not fname:
+        return None
+    path = Path(__file__).resolve().parents[1] / "configs" / fname
+    return path if path.is_file() else None
+
+
+def debug_tags() -> frozenset[str]:
+    """``ZEROLLAMA_DEBUG=l3,infer`` — comma/space separated debug tiers."""
+    raw = os.environ.get("ZEROLLAMA_DEBUG", "").strip().lower()
+    if not raw:
+        return frozenset()
+    return frozenset(part for part in raw.replace(",", " ").split() if part)
+
+
+def infer_trace_enabled() -> bool:
+    if env_bool("ZEROLLAMA_INFER_TRACE", default=False):
+        return True
+    tags = debug_tags()
+    return "infer" in tags or "trace" in tags
+
+
+def llama_cache_root() -> Path:
+    override = os.environ.get("ZEROLLAMA_LLAMA_CACHE_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg:
+        return Path(xdg) / "zerollama" / "llama-cache"
+    return Path.home() / ".cache" / "zerollama" / "llama-cache"
+
+
+def default_slot_ttl_ms(*, default_ms: int = 3_600_000) -> int:
+    raw = os.environ.get("ZEROLLAMA_LLAMA_CACHE_TTL_MS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return default_ms
+
+
+def default_cache_salt() -> str | None:
+    raw = os.environ.get("ZEROLLAMA_CACHE_SALT", "").strip()
+    return raw or None
+
+
+def runtime_env_health() -> dict[str, object]:
+    """Operator snapshot for ``/health`` — effective L3/env without shell archaeology."""
+    hints = runtime_hints()
+    l3 = l3_settings()
+    from runtime.vram_yaml_defaults import apply_status
+
+    return {
+        "l3_profile": l3_profile_name(),
+        "l3_profile_config": str(resolve_l3_profile_config_path() or ""),
+        "debug_tags": sorted(debug_tags()),
+        "llama_cache_disk": llama_cache_disk_enabled(backend=hints.llama_backend),
+        "llama_cache_disk_explicit": env_tri_state("ZEROLLAMA_LLAMA_CACHE_DISK"),
+        "prefix_block_pool": prefix_block_pool_enabled(),
+        "radix_share": radix_prefix_share_enabled(),
+        "lmcache_tier": lmcache_tier_enabled(),
+        "n_parallel_hint": hints.n_parallel,
+        "llama_backend_hint": hints.llama_backend,
+        "l3_yaml": {
+            "radix_share": l3.radix_share,
+            "block_size": l3.block_size,
+            "trace": l3.trace,
+        },
+        "kv": kv_env_health(),
+        "vram": vram_env_health(),
+        "vram_yaml_apply": apply_status(),
+    }
+
+
+# --- VRAM / admission (YAML may pre-fill via vram_yaml_defaults) ---
+
+
+def vram_probe_mode_raw() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_VRAM_PROBE", "auto").strip().lower()
+
+
+def vram_nvml_unified_fallback_enabled() -> bool:
+    explicit = env_tri_state("ZEROLLAMA_RUNTIME_VRAM_UNIFIED_FALLBACK")
+    return True if explicit is None else explicit
+
+
+def vram_check_gpu_explicit() -> TriState:
+    return env_tri_state("ZEROLLAMA_RUNTIME_CHECK_GPU_VRAM")
+
+
+def vram_margin() -> float:
+    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_MARGIN", "").strip()
+    if not raw:
+        return 1.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 1.0
+
+
+def vram_inference_policy() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_INFERENCE_POLICY", "inference-first").strip().lower()
+
+
+def vram_env_health() -> dict[str, object]:
+    """Effective VRAM env for ``/health`` (YAML-applied values visible after engine init)."""
+    return {
+        "probe": vram_probe_mode_raw(),
+        "check_gpu_vram_explicit": vram_check_gpu_explicit(),
+        "margin": vram_margin(),
+        "inference_policy": vram_inference_policy(),
+        "nvml_unified_fallback": vram_nvml_unified_fallback_enabled(),
+    }
+
+
+# --- Phase 15 KV native decode / auto-batch (default-on except auto-batch) ---
+
+
+def kv_native_decode_enabled() -> bool:
+    return env_bool("ZEROLLAMA_KV_NATIVE_DECODE", default=True)
+
+
+def kv_native_batch_enabled() -> bool:
+    return env_bool("ZEROLLAMA_KV_NATIVE_BATCH", default=True)
+
+
+def kv_native_sample_enabled() -> bool:
+    return env_bool("ZEROLLAMA_KV_NATIVE_SAMPLE", default=True)
+
+
+def kv_auto_batch_enabled() -> bool:
+    """Opt-in: coalesce concurrent in-process ``generate()`` within a short window."""
+    return env_bool("ZEROLLAMA_KV_AUTO_BATCH", default=False)
+
+
+def kv_auto_batch_window_ms() -> int:
+    return _int_env("ZEROLLAMA_KV_AUTO_BATCH_MS", default=5, minimum=0)
+
+
+def kv_env_health() -> dict[str, object]:
+    return {
+        "native_decode": kv_native_decode_enabled(),
+        "native_batch": kv_native_batch_enabled(),
+        "native_sample": kv_native_sample_enabled(),
+        "auto_batch": kv_auto_batch_enabled(),
+        "auto_batch_ms": kv_auto_batch_window_ms(),
+    }

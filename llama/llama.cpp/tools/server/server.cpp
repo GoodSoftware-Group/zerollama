@@ -11,6 +11,24 @@
 #include "llama.h"
 #include "log.h"
 
+// ELIZA-OMNIVOICE-AUDIO-SPEECH-ROUTE-V1 — the route handler used to live
+// here as a large inline `#ifdef ELIZA_FUSE_OMNIVOICE` block. H2.c moved
+// it into `tools/omnivoice/src/server-mount.cpp` so a fresh checkout of
+// the fork carries the production route without any build-time patcher.
+#ifdef ELIZA_FUSE_OMNIVOICE
+#include "server-mount.h"
+#endif // ELIZA_FUSE_OMNIVOICE
+// end // ELIZA-OMNIVOICE-AUDIO-SPEECH-ROUTE-V1
+
+// ELIZA-KOKORO-AUDIO-SPEECH-ROUTE-V1 — J2 (2026-05-15). When
+// LLAMA_BUILD_KOKORO=ON, the Kokoro fork-side TTS pipeline owns
+// `/v1/audio/speech` whenever --kokoro-model is set. Falls back to the
+// OmniVoice handler otherwise. The dispatcher lives in main() below.
+#ifdef LLAMA_BUILD_KOKORO
+#include "kokoro-server-mount.h"
+#endif // LLAMA_BUILD_KOKORO
+// end // ELIZA-KOKORO-AUDIO-SPEECH-ROUTE-V1
+
 #include <atomic>
 #include <clocale>
 #include <exception>
@@ -71,16 +89,45 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t 
     };
 }
 
-// satisfies -Wmissing-declarations
-int llama_server(int argc, char ** argv);
-
-int llama_server(int argc, char ** argv) {
+int main(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
 
     // own arguments required by this example
     common_params params;
 
     common_init();
+
+#if defined(ELIZA_FUSE_OMNIVOICE) || defined(LLAMA_BUILD_KOKORO)
+    // Strip fused-TTS-only flags before common_params_parse so the upstream
+    // parser doesn't reject them. Values feed the lazily-created OmniVoice
+    // and Kokoro contexts (see the eliza_omnivoice / eliza_kokoro
+    // namespaces).
+    {
+        std::vector<char *> filtered;
+        filtered.reserve((size_t)argc);
+        for (int i = 0; i < argc; ++i) {
+            const std::string a = argv[i];
+#ifdef ELIZA_FUSE_OMNIVOICE
+            if ((a == "--omnivoice-model" || a == "--omnivoice-codec") && i + 1 < argc) {
+                if (a == "--omnivoice-model") eliza_omnivoice::g_model_path = argv[++i];
+                else                          eliza_omnivoice::g_codec_path = argv[++i];
+                continue;
+            }
+#endif
+#ifdef LLAMA_BUILD_KOKORO
+            if ((a == "--kokoro-model" || a == "--kokoro-voices-dir") && i + 1 < argc) {
+                if (a == "--kokoro-model")       eliza_kokoro::g_model_path = argv[++i];
+                else                             eliza_kokoro::g_voices_dir = argv[++i];
+                continue;
+            }
+#endif
+            filtered.push_back(argv[i]);
+        }
+        static std::vector<char *> s_filtered = filtered;
+        argc = (int) s_filtered.size();
+        argv = s_filtered.data();
+    }
+#endif
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
@@ -94,22 +141,20 @@ int llama_server(int argc, char ** argv) {
     const bool is_router_server = params.model.path.empty();
     common_params_print_info(params, !is_router_server);
 
-    if (!is_router_server) {
-        // validate batch size for embeddings
-        // embeddings require all tokens to be processed in a single ubatch
-        // see https://github.com/ggml-org/llama.cpp/issues/12836
-        if (params.embedding && params.n_batch > params.n_ubatch) {
-            SRV_WRN("embeddings enabled with n_batch (%d) > n_ubatch (%d)\n", params.n_batch, params.n_ubatch);
-            SRV_WRN("setting n_batch = n_ubatch = %d to avoid assertion failure\n", params.n_ubatch);
-            params.n_batch = params.n_ubatch;
-        }
+    // validate batch size for embeddings
+    // embeddings require all tokens to be processed in a single ubatch
+    // see https://github.com/ggml-org/llama.cpp/issues/12836
+    if (params.embedding && params.n_batch > params.n_ubatch) {
+        SRV_WRN("embeddings enabled with n_batch (%d) > n_ubatch (%d)\n", params.n_batch, params.n_ubatch);
+        SRV_WRN("setting n_batch = n_ubatch = %d to avoid assertion failure\n", params.n_ubatch);
+        params.n_batch = params.n_ubatch;
+    }
 
-        if (params.n_parallel < 0) {
-            SRV_INF("%s", "n_parallel is set to auto, using n_parallel = 4 and kv_unified = true\n");
+    if (params.n_parallel < 0) {
+        SRV_INF("%s", "n_parallel is set to auto, using n_parallel = 4 and kv_unified = true\n");
 
-            params.n_parallel = 4;
-            params.kv_unified = true;
-        }
+        params.n_parallel = 4;
+        params.kv_unified = true;
     }
 
     // for consistency between server router mode and single-model mode, we set the same model name as alias
@@ -151,7 +196,6 @@ int llama_server(int argc, char ** argv) {
         routes.post_completions            = models_routes->proxy_post;
         routes.post_completions_oai        = models_routes->proxy_post;
         routes.post_chat_completions       = models_routes->proxy_post;
-        routes.post_control                = models_routes->proxy_post;
         routes.post_responses_oai          = models_routes->proxy_post;
         routes.post_transcriptions_oai     = models_routes->proxy_post;
         routes.post_anthropic_messages     = models_routes->proxy_post;
@@ -163,8 +207,6 @@ int llama_server(int argc, char ** argv) {
         routes.post_tokenize               = models_routes->proxy_post;
         routes.post_detokenize             = models_routes->proxy_post;
         routes.post_apply_template         = models_routes->proxy_post;
-        routes.post_chat_completions_tok   = models_routes->proxy_post;
-        routes.post_responses_tok_oai      = models_routes->proxy_post;
         routes.get_lora_adapters           = models_routes->proxy_get;
         routes.post_lora_adapters          = models_routes->proxy_post;
         routes.get_slots                   = models_routes->proxy_get;
@@ -190,12 +232,30 @@ int llama_server(int argc, char ** argv) {
     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));
     ctx_http.post("/chat/completions",         ex_wrapper(routes.post_chat_completions));
     ctx_http.post("/v1/chat/completions",      ex_wrapper(routes.post_chat_completions));
-    ctx_http.post("/v1/chat/completions/control", ex_wrapper(routes.post_control));
     ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
+    // Fused TTS — /v1/audio/speech dispatcher. When --kokoro-model is set
+    // and LLAMA_BUILD_KOKORO=ON, the Kokoro path owns the route; otherwise
+    // (and when LLAMA_BUILD_KOKORO=OFF), the OmniVoice path takes it.
+    // Picking the handler at registration time (vs per-request) keeps the
+    // route's hot path branch-free and lets each handler own its own
+    // server-mount mutex / context.
+#ifdef LLAMA_BUILD_KOKORO
+    if (eliza_kokoro::is_enabled()) {
+        ctx_http.post("/v1/audio/speech",      ex_wrapper(eliza_kokoro::audio_speech_handler()));
+        ctx_http.post("/audio/speech",         ex_wrapper(eliza_kokoro::audio_speech_handler()));
+    } else
+#endif
+    {
+#ifdef ELIZA_FUSE_OMNIVOICE
+        ctx_http.post("/v1/audio/speech",      ex_wrapper(eliza_omnivoice::audio_speech_handler()));
+        ctx_http.post("/audio/speech",         ex_wrapper(eliza_omnivoice::audio_speech_handler()));
+#endif
+    }
     ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
+    ctx_http.post("/v1/messages/count_tokens", ex_wrapper(routes.post_anthropic_count_tokens)); // anthropic token counting
     ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy
     ctx_http.post("/embeddings",               ex_wrapper(routes.post_embeddings));
@@ -207,25 +267,19 @@ int llama_server(int argc, char ** argv) {
     ctx_http.post("/tokenize",                 ex_wrapper(routes.post_tokenize));
     ctx_http.post("/detokenize",               ex_wrapper(routes.post_detokenize));
     ctx_http.post("/apply-template",           ex_wrapper(routes.post_apply_template));
-    // token counting
-    ctx_http.post("/chat/completions/input_tokens",    ex_wrapper(routes.post_chat_completions_tok));
-    ctx_http.post("/v1/chat/completions/input_tokens", ex_wrapper(routes.post_chat_completions_tok));
-    ctx_http.post("/responses/input_tokens",           ex_wrapper(routes.post_responses_tok_oai));
-    ctx_http.post("/v1/responses/input_tokens",        ex_wrapper(routes.post_responses_tok_oai));
-    ctx_http.post("/v1/messages/count_tokens",         ex_wrapper(routes.post_anthropic_count_tokens)); // anthropic token counting
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",            ex_wrapper(routes.post_lora_adapters));
     // Save & load slots
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
+    ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
 
     // Google Cloud Platform (Vertex AI) compat
     ctx_http.register_gcp_compat();
 
     // CORS proxy (EXPERIMENTAL, only used by the Web UI for MCP)
-    // Supports both new ui_mcp_proxy and deprecated webui_mcp_proxy fields
-    if (params.ui_mcp_proxy || params.webui_mcp_proxy) {
+    if (params.webui_mcp_proxy) {
         SRV_WRN("%s", "-----------------\n");
         SRV_WRN("%s", "CORS proxy is enabled, do not expose server to untrusted environments\n");
         SRV_WRN("%s", "This feature is EXPERIMENTAL and may be removed or changed in future versions\n");
@@ -356,6 +410,16 @@ int llama_server(int argc, char ** argv) {
             json model_info = routes.get_model_info();
             monitor_thread = server_models::setup_child_server(shutdown_handler, model_info);
         }
+
+        // TODO(dflash-native-events): after verifier batch completes, emit:
+        // { "type": "dflash_event", "native": true, "draft_tokens": [...],
+        //   "accept_count": N, "reject_range": [s,e]|null,
+        //   "accept_tokens": [...], "timing": { "proposal_ms": X, "verify_ms": Y } }
+        // Use send_event(slot_id, json_str) which already exists in this file.
+        // Flag: --dflash-emit-events (default on when drafter loaded).
+        // The speculative-decode slot loop (server-context.h) is the emission
+        // point: hook into the post-verify step where llama_speculative_decode
+        // returns the accepted token mask and corrected token.
 
         // this call blocks the main thread until queue_tasks.terminate() is called
         ctx_server.start_loop();

@@ -26,6 +26,10 @@ type Model struct {
 // Implement MultimodalProcessor interface
 var _ model.MultimodalProcessor = (*Model)(nil)
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 func New(c fs.Config) (model.Model, error) {
 	m := &Model{
 		Tokenizer: tokenizer.NewBytePairEncoding(

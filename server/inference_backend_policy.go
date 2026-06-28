@@ -1,8 +1,11 @@
 package server
 
 import (
+	"runtime"
+
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/version"
 )
 
@@ -26,6 +29,9 @@ func inferenceBackendPolicy() api.BackendPolicy {
 	default:
 		p.LlamaServer = "off"
 	}
+	if runtime.GOOS == "darwin" && !envconfig.LlamaServerBackendDisabled() && llm.LlamaServerDiscoverable() {
+		p.SpecAutoRoute = true
+	}
 	if envconfig.LlamaCppBackend() {
 		p.LlamaCppHarness = true
 	}
@@ -34,6 +40,8 @@ func inferenceBackendPolicy() api.BackendPolicy {
 		p.GgufPath = "runtime"
 	case envconfig.LlamaServerBackend() && !envconfig.LlamaServerBackendDisabled():
 		p.GgufPath = "llama-server"
+	case p.SpecAutoRoute:
+		p.GgufPath = "mixed"
 	default:
 		p.GgufPath = "ggml"
 	}

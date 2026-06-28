@@ -53,24 +53,43 @@ def test_resolve_cache_key_for_batch_flat_fallback():
 
 
 def test_cache_pin_from_options():
-    key, slot, pinned = cache_pin_from_options(
+    key, slot, pinned, salt = cache_pin_from_options(
         {"prompt_cache_key": "sess-1"},
         parallel=4,
     )
     assert key == "sess-1"
     assert pinned is True
+    assert salt is None
     assert slot == derive_slot_id("sess-1", 4)
 
 
 def test_cache_pin_from_options_batch_index():
-    key, slot, pinned = cache_pin_from_options(
+    key, slot, pinned, salt = cache_pin_from_options(
         {"prompt_cache_keys": ["a", "b"]},
         parallel=4,
         batch_index=1,
     )
     assert key == "b"
     assert pinned is True
+    assert salt is None
     assert slot == derive_slot_id("b", 4)
+
+
+def test_cache_salt_changes_derived_slot():
+    a = derive_slot_id("thread-1", 8, cache_salt="tenant-a")
+    b = derive_slot_id("thread-1", 8, cache_salt="tenant-b")
+    plain = derive_slot_id("thread-1", 8)
+    assert a != b
+    assert a != plain
+
+
+def test_cache_pin_from_options_with_salt():
+    key, slot, pinned, salt = cache_pin_from_options(
+        {"prompt_cache_key": "sess-1", "cache_salt": "org-9"},
+        parallel=8,
+    )
+    assert salt == "org-9"
+    assert slot == derive_slot_id("sess-1", 8, cache_salt="org-9")
 
 
 def test_derive_slot_id_stable_and_bounded():
@@ -93,8 +112,10 @@ def test_slot_cache_filename_and_path():
 
 
 def test_inprocess_disk_cache_respects_env(monkeypatch: pytest.MonkeyPatch):
+    from runtime.env import llama_cache_disk_default
+
     monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE_DISK", raising=False)
-    assert inprocess_disk_cache_enabled() is True
+    assert inprocess_disk_cache_enabled() is llama_cache_disk_default()
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "0")
     assert inprocess_disk_cache_enabled() is False
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE", "0")
@@ -102,6 +123,8 @@ def test_inprocess_disk_cache_respects_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_cache_health_inprocess_disk_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "1")
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_ROOT", str(tmp_path))
     gguf = tmp_path / "m.gguf"
     gguf.write_bytes(b"x")
@@ -110,6 +133,17 @@ def test_cache_health_inprocess_disk_flag(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "0")
     h2 = cache_health(gguf, [])
     assert h2["inprocess_disk_cache"] is False
+
+
+def test_cache_health_prefix_block_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"x")
+    h = cache_health(gguf, [])
+    pool = h.get("prefix_block_pool") or {}
+    assert pool.get("enabled") is True
+    assert pool.get("block_size") == 512
 
 
 def test_resolve_cache_key_precedence():
@@ -219,6 +253,8 @@ def test_evict_expired_class_suffix(tmp_path: Path):
 
 
 def test_llama_server_cache_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "1")
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_ROOT", str(tmp_path))
     model = tmp_path / "m.gguf"
     model.write_bytes(b"gguf")

@@ -1,0 +1,24 @@
+# Multi-slot agent L3 (subprocess llama-server). Autoconfig does not pick this by default —
+# copy into ZEROLLAMA_RUNTIME_CONFIG or merge keys into your host YAML.
+#
+# WHY YAML over six env vars: Radix/block_size/trace belong with llama_parallel_slots;
+# env still overrides any key at launch (see runtime/env.py).
+device_count: 1
+tensor_parallel: 1
+split_mode: layer
+main_gpu: 0
+llama_parallel_slots: 4
+llama_backend: subprocess
+kv:
+  block_size: 16
+  num_blocks_per_device: 2048
+speculative:
+  method: none
+l3:
+  radix_share: true
+  block_size: 512
+  trace: false
+vram:
+  min_free: 1GiB
+  training_reserve: 2GiB
+  clamp_num_ctx: "0"

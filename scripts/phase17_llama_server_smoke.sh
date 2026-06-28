@@ -42,8 +42,12 @@ if [[ -z "${P17_MODEL}" ]]; then
   exit 1
 fi
 
-BIN="${ROOT}/zerollama"
+BIN="${P17_BIN:-${ROOT}/zerollama}"
 if [[ ! -x "${BIN}" ]]; then
+  if [[ -n "${P17_BIN:-}" ]]; then
+    echo "P17_BIN is not executable: ${BIN}" >&2
+    exit 1
+  fi
   echo ">>> building zerollama" >&2
   if [[ "$(uname -s)" == "Darwin" ]]; then
     "${ROOT}/scripts/build_zerollama_mac.sh" "${BIN}"
@@ -78,6 +82,7 @@ P17_HOST="${P17_HOST:-${HOST}}"
 export OLLAMA_HOST="${P17_HOST}"
 P17_LINUX_AUTO="${P17_LINUX_AUTO:-0}"
 P17_ASSERT_RUNTIME_OFF="${P17_ASSERT_RUNTIME_OFF:-0}"
+P17_ASSERT_EDGE_BUILD="${P17_ASSERT_EDGE_BUILD:-0}"
 
 if [[ "${P17_LINUX_AUTO}" == "1" ]]; then
   P17_MODE="${P17_MODE:-linux-auto}"
@@ -156,7 +161,7 @@ if [[ "${P17_ASSERT_RUNTIME_OFF}" == "1" ]]; then
   fi
 fi
 
-export P17_HOST LLAMA_MODEL P17_MODEL P17_NUM_PREDICT P17_OUT P17_MODE P17_SERVE_EXTRA P17_LINUX_AUTO LOG
+export P17_HOST LLAMA_MODEL P17_MODEL P17_NUM_PREDICT P17_OUT P17_MODE P17_SERVE_EXTRA P17_LINUX_AUTO P17_ASSERT_EDGE_BUILD LOG
 python3 <<'PY'
 import json
 import os
@@ -236,6 +241,10 @@ if mode == "edge":
     version = http_json("GET", "/api/version")
     if version.get("edge_build") not in (True, False):
         raise SystemExit(f"edge: expected /api/version edge_build bool, got {version!r}")
+    if os.environ.get("P17_ASSERT_EDGE_BUILD") == "1" and version.get("edge_build") is not True:
+        raise SystemExit(
+            f"edge binary: expected /api/version edge_build true, got {version!r}"
+        )
 
 ps = http_json("GET", "/api/ps")
 running = ps.get("models") or []

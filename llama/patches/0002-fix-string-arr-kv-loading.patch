@@ -13,10 +13,10 @@ such as vocab fields
  3 files changed, 7 insertions(+), 5 deletions(-)
 
 diff --git a/ggml/include/gguf.h b/ggml/include/gguf.h
-index 67851ba6f..41b5d55fa 100644
+index ce43c5f..ac093ef 100644
 --- a/ggml/include/gguf.h
 +++ b/ggml/include/gguf.h
-@@ -121,6 +121,7 @@ extern "C" {
+@@ -115,6 +115,7 @@ extern "C" {
      // get raw pointer to the first element of the array with the given key_id
      // for bool arrays, note that they are always stored as int8 on all platforms (usually this makes no difference)
      GGML_API const void * gguf_get_arr_data(const struct gguf_context * ctx, int64_t key_id);
@@ -25,10 +25,10 @@ index 67851ba6f..41b5d55fa 100644
      // get ith C string from array with given key_id
      GGML_API const char * gguf_get_arr_str (const struct gguf_context * ctx, int64_t key_id, size_t i);
 diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
-index 5e1986182..6d7868771 100644
+index 79e3e05..3280f34 100644
 --- a/ggml/src/gguf.cpp
 +++ b/ggml/src/gguf.cpp
-@@ -1051,10 +1051,14 @@ enum gguf_type gguf_get_arr_type(const struct gguf_context * ctx, int64_t key_id
+@@ -1000,10 +1000,14 @@ enum gguf_type gguf_get_arr_type(const struct gguf_context * ctx, int64_t key_id
  
  const void * gguf_get_arr_data(const struct gguf_context * ctx, int64_t key_id) {
      GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
@@ -44,7 +44,7 @@ index 5e1986182..6d7868771 100644
  const char * gguf_get_arr_str(const struct gguf_context * ctx, int64_t key_id, size_t i) {
      GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
      GGML_ASSERT(ctx->kv[key_id].get_type() == GGUF_TYPE_STRING);
-@@ -1148,7 +1152,6 @@ const char * gguf_get_val_str(const struct gguf_context * ctx, int64_t key_id) {
+@@ -1097,7 +1101,6 @@ const char * gguf_get_val_str(const struct gguf_context * ctx, int64_t key_id) {
  const void * gguf_get_val_data(const struct gguf_context * ctx, int64_t key_id) {
      GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
      GGML_ASSERT(ctx->kv[key_id].get_ne() == 1);
@@ -53,10 +53,10 @@ index 5e1986182..6d7868771 100644
  }
  
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 6e78a3f6c..5c2c60110 100644
+index 8341327..9877477 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -2013,9 +2013,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+@@ -1863,9 +1863,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
              const int precompiled_charsmap_keyidx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str());
              if (precompiled_charsmap_keyidx != -1) {
                  const gguf_type pc_type = gguf_get_arr_type(ctx, precompiled_charsmap_keyidx);

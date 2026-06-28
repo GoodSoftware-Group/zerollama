@@ -13,7 +13,7 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 )
 
-// ANEDraftMILSlot maps an Eagle3 GGUF tensor role to a future ANE MIL weight slot.
+// ANEDraftMILSlot maps a draft sidecar GGUF tensor role to a future ANE MIL weight slot.
 type ANEDraftMILSlot struct {
 	Slot           string   `json:"slot"`
 	Role           string   `json:"role"`
@@ -25,12 +25,13 @@ type ANEDraftMILSlot struct {
 	Note           string   `json:"note,omitempty"`
 }
 
-// ANEDraftMILMapResult is the Eagle3 tensor → MIL compile plan.
+// ANEDraftMILMapResult is the sidecar tensor → MIL compile plan.
 type ANEDraftMILMapResult struct {
 	OK                  bool               `json:"ok"`
 	Mode                string             `json:"mode"`
 	Tag                 string             `json:"tag,omitempty"`
 	SpecType            string             `json:"spec_type,omitempty"`
+	SidecarArchitecture string             `json:"sidecar_architecture,omitempty"`
 	DraftSidecarPresent bool               `json:"draft_sidecar_present"`
 	DraftGGUF           string             `json:"draft_gguf,omitempty"`
 	DraftSearchPaths    []string           `json:"draft_search_paths,omitempty"`
@@ -72,6 +73,67 @@ var eagle3MILSlotSpec = []ANEDraftMILSlot{
 		TensorPatterns: []string{},
 		MILPhase:       "phase2_proxy",
 		Note:           "synthetic fp16 or sidecar extract via ane-draft-mil-extract → --weight-file",
+	},
+}
+
+// dflashMILSlotSpec maps dflash-draft sidecar tensors (llama.cpp dflash-draft.cpp).
+// Why phase2_proxy vs phase3_subgraph: lab conv extract proves ANE latency today; full
+// dflash_fc + attn slots await B7 MIL compile (see docs/ane-draft-inprocess.md).
+var dflashMILSlotSpec = []ANEDraftMILSlot{
+	{
+		Slot:           "dflash_fc",
+		Role:           "fuse target layer hiddens → draft hidden (build_lora_mm dflash_fc)",
+		TensorPatterns: []string{"dflash_fc.weight"},
+		MILPhase:       "phase3_subgraph",
+		Note:           "matmul [n_target_features × n_embd]; not the lab conv proxy",
+	},
+	{
+		Slot:           "dflash_hidden_norm",
+		Role:           "RMS norm on fused target hidden",
+		TensorPatterns: []string{"dflash_hidden_norm.weight"},
+		MILPhase:       "phase3_subgraph",
+	},
+	{
+		Slot:           "decoder_attn_q",
+		Role:           "draft decoder attention Q projection",
+		TensorPatterns: []string{"blk.0.attn_q.weight"},
+		MILPhase:       "phase3_subgraph",
+	},
+	{
+		Slot:           "decoder_ffn_gate",
+		Role:           "draft decoder FFN gate (lab proxy extract source)",
+		TensorPatterns: []string{"blk.0.ffn_gate.weight"},
+		MILPhase:       "phase3_subgraph",
+	},
+	{
+		Slot:           "proxy_conv_w0",
+		Role:           "lab ANE conv proxy (latency stand-in for full draft step)",
+		TensorPatterns: []string{},
+		MILPhase:       "phase2_proxy",
+		Note:           "top-left slice of blk.0.ffn_gate.weight via ane-draft-mil-extract",
+	},
+}
+
+// qwen35DrafterMILSlotSpec maps full qwen35 drafter GGUFs used as eliza dflash sidecars.
+var qwen35DrafterMILSlotSpec = []ANEDraftMILSlot{
+	{
+		Slot:           "decoder_ffn_gate",
+		Role:           "draft block0 FFN gate (conv proxy extract source)",
+		TensorPatterns: []string{"blk.0.ffn_gate.weight"},
+		MILPhase:       "phase3_subgraph",
+	},
+	{
+		Slot:           "decoder_ffn_norm",
+		Role:           "draft block0 FFN RMS norm gamma (B3 mul-after-conv)",
+		TensorPatterns: []string{"blk.0.ffn_norm.weight", "blk.0.attn_norm.weight"},
+		MILPhase:       "phase3_subgraph",
+	},
+	{
+		Slot:           "proxy_conv_w0",
+		Role:           "lab ANE conv proxy (latency stand-in for full draft step)",
+		TensorPatterns: []string{},
+		MILPhase:       "phase2_proxy",
+		Note:           "sidecar extract + optional gamma via ane-draft-mil-bundle",
 	},
 }
 
@@ -124,41 +186,7 @@ func draftMILWeightBlobBytes(channels int) int {
 	return 64 + 64 + channels*channels*2
 }
 
-func matchEagle3MILSlots(tensors []*ggml.Tensor, proxyReady bool) (slots []ANEDraftMILSlot, matched, required int) {
-	byName := make(map[string]*ggml.Tensor, len(tensors))
-	for _, t := range tensors {
-		if t != nil && t.Name != "" {
-			byName[t.Name] = t
-		}
-	}
-
-	out := make([]ANEDraftMILSlot, 0, len(eagle3MILSlotSpec))
-	for _, spec := range eagle3MILSlotSpec {
-		slot := spec
-		if slot.MILPhase == "phase2_proxy" {
-			slot.Ready = proxyReady
-			if proxyReady {
-				matched++
-			}
-			out = append(out, slot)
-			continue
-		}
-		required++
-		for _, pat := range slot.TensorPatterns {
-			if t, ok := byName[pat]; ok {
-				slot.Ready = true
-				slot.MatchedTensor = t.Name
-				slot.Shape = append([]uint64(nil), t.Shape...)
-				matched++
-				break
-			}
-		}
-		out = append(out, slot)
-	}
-	return out, matched, required
-}
-
-// ProbeANEDraftMILMap builds the Eagle3 tensor → MIL slot plan for a draft tag.
+// ProbeANEDraftMILMap builds the sidecar tensor → MIL slot plan for a draft tag.
 func ProbeANEDraftMILMap(_ context.Context, preferred string) (ANEDraftMILMapResult, error) {
 	out := ANEDraftMILMapResult{
 		Mode: "draft_mil_map",
@@ -209,11 +237,20 @@ func ProbeANEDraftMILMap(_ context.Context, preferred string) (ANEDraftMILMapRes
 			}
 		}
 	} else {
-		out.Blockers = append(out.Blockers, "eagle3 drafter GGUF missing")
+		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
 		out.NextStep = "download eliza drafter: see scripts/setup_mtp_models.sh"
 	}
 
-	slots, matched, phase3Required := matchEagle3MILSlots(tensors, proxyReady)
+	sidecarArch := ""
+	if present && draftPath != "" {
+		if arch, err := ProbeSidecarArchitecture(draftPath); err == nil {
+			sidecarArch = arch
+			out.SidecarArchitecture = arch
+		}
+	}
+
+	slotSpec := milSlotSpecForDraft(entry.SpecType, sidecarArch)
+	slots, matched, phase3Required := matchMILSlots(slotSpec, tensors, proxyReady)
 	out.Slots = slots
 	out.MatchedCount = matched
 	out.RequiredCount = phase3Required + 1
@@ -226,7 +263,11 @@ func ProbeANEDraftMILMap(_ context.Context, preferred string) (ANEDraftMILMapRes
 			}
 		}
 		if phase3Matched < phase3Required {
-			out.Blockers = append(out.Blockers, fmt.Sprintf("eagle3 tensors %d/%d matched for MIL extract", phase3Matched, phase3Required))
+			label := sidecarArch
+			if label == "" {
+				label = "draft"
+			}
+			out.Blockers = append(out.Blockers, fmt.Sprintf("%s tensors %d/%d matched for MIL extract", label, phase3Matched, phase3Required))
 		}
 	}
 

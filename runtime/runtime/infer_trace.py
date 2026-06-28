@@ -10,7 +10,6 @@ without touching decode logic.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from typing import Any
@@ -19,11 +18,9 @@ _log = logging.getLogger("zerollama-runtime")
 
 
 def infer_trace_enabled() -> bool:
-    return os.environ.get("ZEROLLAMA_INFER_TRACE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    from runtime.env import infer_trace_enabled as _enabled
+
+    return _enabled()
 
 
 def infer_trace(event: str, **fields: Any) -> None:

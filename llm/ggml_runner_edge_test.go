@@ -15,14 +15,14 @@ func TestGgmlRunnerRequiredEdgeWithoutLlamaServer(t *testing.T) {
 	if envconfig.GgmlRunnerLinked() {
 		t.Fatal("edge build should not link ggml runner")
 	}
-	if err := ggmlRunnerRequired(nil); !errors.Is(err, ErrGgmlRunnerUnlinked) {
+	if err := ggmlRunnerRequired(nil, LlamaServerConfig{}); !errors.Is(err, ErrGgmlRunnerUnlinked) {
 		t.Fatalf("err=%v", err)
 	}
 }
 
 func TestGgmlRunnerRequiredEdgeWithExplicitLlamaServer(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
-	if err := ggmlRunnerRequired(nil); err != nil {
+	if err := ggmlRunnerRequired(nil, LlamaServerConfig{}); err != nil {
 		t.Fatalf("explicit llama-server should bypass ggml requirement: %v", err)
 	}
 }

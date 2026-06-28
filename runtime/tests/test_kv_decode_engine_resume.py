@@ -65,6 +65,18 @@ def test_slot_resume_owner_key_unpinned_uses_request_id():
     assert slot_resume_owner_key(req) == "req-xyz"
 
 
+def test_slot_resume_owner_key_with_cache_salt():
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(
+        slot_pinned=True,
+        prompt_cache_key="sess-abc",
+        cache_salt="tenant-1",
+        request_id="req-xyz",
+    )
+    assert slot_resume_owner_key(req) == "cache:tenant-1:sess-abc"
+
+
 def test_slot_resume_owner_key_pinned_without_cache_key_falls_back():
     """Defensive: pinned without key should not happen from admit; uses request_id."""
     req = MagicMock()
@@ -641,7 +653,7 @@ def test_generate_l3_second_turn_passes_current_pos(engine, monkeypatch):
             with patch.object(
                 engine,
                 "_decode_current_pos_for_request",
-                side_effect=[None, 55],
+                side_effect=[None, None, 55, 55],
             ):
                 engine.generate(
                     "turn one",

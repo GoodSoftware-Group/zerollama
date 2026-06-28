@@ -2,7 +2,8 @@
 # Video agent infer gate verdict from video_agent_infer_smoke.json.
 #
 # WHY: operators need a one-line PASS/FAIL like l3_gate_report.sh after live VLM smoke;
-# JSON report holds main verdict + optional preproc leg verdict separately.
+# JSON report holds main verdict + optional preproc / prefix-mm legs separately.
+# Log checks (precomputed/processor inject, prefix-mm hint) are advisory — proof lives in serve log.
 #
 # Usage:
 #   ./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
@@ -41,10 +42,21 @@ log_checks = data.get("log_checks") or {}
 if log_checks:
     print(f"log session_cache_hit: {log_checks.get('session_cache_hit')}")
     print(f"log vision_embed_session_cache_hit: {log_checks.get('vision_embed_session_cache_hit')}")
+    print(f"log vision_embed_global_cache_hit: {log_checks.get('vision_embed_global_cache_hit')}")
     print(f"log vision_embed_engine_ollama: {log_checks.get('vision_embed_engine_ollama')}")
     print(f"log vision_grid_hints: {log_checks.get('vision_grid_hints')}")
     print(f"log padded_runner_inject: {log_checks.get('padded_runner_inject')}")
     print(f"log preprocessed_layout_session_cache_hit: {log_checks.get('preprocessed_layout_session_cache_hit')}")
+    print(f"log precomputed_embedding_runner_inject: {log_checks.get('precomputed_embedding_runner_inject')}")
+    print(f"log precomputed_embedding_global_cache_hit: {log_checks.get('precomputed_embedding_global_cache_hit')}")
+    print(f"log precomputed_embedding_session_cache_hit: {log_checks.get('precomputed_embedding_session_cache_hit')}")
+    print(f"log processor_output_runner_inject: {log_checks.get('processor_output_runner_inject')}")
+    print(f"log processor_output_global_cache_hit: {log_checks.get('processor_output_global_cache_hit')}")
+    print(f"log prefix_mm_cache_without_session_key: {log_checks.get('prefix_mm_cache_without_session_key')}")
+    print(f"log vit_session_required: {data.get('vit_session_required')}")
+    print(f"log grid_thw_forward_required: {data.get('grid_thw_forward_required')}")
+    print(f"log grid_thw_hint_resize: {log_checks.get('grid_thw_hint_resize')}")
+    print(f"log vision_grid_hint_match: {log_checks.get('vision_grid_hint_match')}")
     print(f"log access_cached_prompt_tokens: {log_checks.get('access_cached_prompt_tokens')}")
     print(f"log access_video_tokens: {log_checks.get('access_video_tokens')}")
 pre = data.get("preprocessed_infer")

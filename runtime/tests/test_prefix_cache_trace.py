@@ -12,6 +12,7 @@ from runtime.prefix_cache_trace import (
     iter_trace_file,
     prefix_cache_trace_enabled,
     record_prefix_cache_decision,
+    record_radix_share,
     replay_trace_file,
     replay_trace_line,
 )
@@ -66,6 +67,24 @@ def test_record_and_replay_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     mismatches = replay_trace_file(files[0], spec=spec)
     assert mismatches == []
+
+
+def test_record_radix_share_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_CACHE_TRACE", "1")
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_CACHE_TRACE_DIR", str(tmp_path))
+
+    record_radix_share(
+        prompt_cache_key="agent-2",
+        id_slot=5,
+        radix_trace={"source_slot": 2, "copy_tokens": 512, "matched_blocks": 1},
+    )
+
+    rows = list(iter_trace_file(next(tmp_path.glob("trace-*.jsonl"))))
+    assert len(rows) == 1
+    assert rows[0]["event"] == "radix_seed"
+    assert rows[0]["radix_source_slot"] == 2
+    assert rows[0]["radix_copy_tokens"] == 512
+    assert rows[0]["resume_pos"] == 512
 
 
 def test_replay_detects_mismatch():

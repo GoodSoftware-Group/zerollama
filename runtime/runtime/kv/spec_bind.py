@@ -81,9 +81,13 @@ def spec_bind_health(spec: KVCacheSpec) -> dict[str, Any]:
     return {
         "kind": spec.kind,
         "effective_window": spec.effective_window,
-        "swa_enforced": spec.kind == "sliding_window",
-        "hybrid_full_layers": spec.kind == "hybrid",
-        "draft_spec_blocks_cache": spec.speculative_draft,
+        "swa_enforced": spec.kind in ("sliding_window", "hybrid")
+        and spec.effective_window is not None,
+        "hybrid_coordinator": (
+            spec.coordinator.to_health() if spec.coordinator is not None else None
+        ),
+        "draft_spec_drop_last_block": spec.drop_last_block_on_resume,
+        "swa_retention_interval": spec.retention_interval,
     }
 
 

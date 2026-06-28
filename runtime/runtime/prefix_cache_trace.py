@@ -23,26 +23,24 @@ _TRACE_PATH: Path | None = None
 
 
 def prefix_cache_trace_enabled() -> bool:
-    return os.environ.get("ZEROLLAMA_PREFIX_CACHE_TRACE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    from runtime.env import prefix_cache_trace_enabled as _enabled
+
+    return _enabled()
 
 
 def _trace_dir() -> Path:
-    root = os.environ.get("ZEROLLAMA_PREFIX_CACHE_TRACE_DIR", "").strip()
-    if root:
-        return Path(root).expanduser()
-    return Path.home() / ".cache" / "zerollama" / "prefix-cache-traces"
+    from runtime.env import prefix_cache_trace_dir
+
+    return prefix_cache_trace_dir()
 
 
 def trace_path() -> Path | None:
     global _TRACE_PATH
     if not prefix_cache_trace_enabled():
         return None
-    if _TRACE_PATH is None:
-        _TRACE_PATH = _trace_dir() / f"trace-{int(time.time())}.jsonl"
+    trace_dir = _trace_dir()
+    if _TRACE_PATH is None or _TRACE_PATH.parent != trace_dir:
+        _TRACE_PATH = trace_dir / f"trace-{int(time.time())}.jsonl"
     return _TRACE_PATH
 
 
@@ -61,6 +59,12 @@ class PrefixCacheTraceEntry:
     speculative_draft: bool
     id_slot: int | None = None
     decode_graph_epoch: int | None = None
+    deny_reason: str | None = None
+    drop_last_block: bool | None = None
+    prefix_block_pool_enabled: bool | None = None
+    prefix_block_matched_tokens: int | None = None
+    radix_source_slot: int | None = None
+    radix_copy_tokens: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -78,6 +82,8 @@ def record_prefix_cache_decision(
     spec_method: str,
     id_slot: int | None = None,
     decode_graph_epoch: int | None = None,
+    deny_reason: str | None = None,
+    prefix_block_match: Any | None = None,
 ) -> None:
     if not prefix_cache_trace_enabled():
         return
@@ -86,6 +92,14 @@ def record_prefix_cache_decision(
         return
     if decode_graph_epoch is None and id_slot is not None:
         decode_graph_epoch = slot_decode_graph_epoch(id_slot)
+    drop_last = None
+    if (
+        seq_pos is not None
+        and resume_pos is not None
+        and resume_pos < seq_pos
+        and cache_prompt
+    ):
+        drop_last = True
     entry = PrefixCacheTraceEntry(
         ts_ms=int(time.time() * 1000),
         event="cache_decision",
@@ -100,6 +114,56 @@ def record_prefix_cache_decision(
         speculative_draft=spec.speculative_draft,
         id_slot=id_slot,
         decode_graph_epoch=decode_graph_epoch,
+        deny_reason=deny_reason,
+        drop_last_block=drop_last,
+        prefix_block_pool_enabled=(
+            prefix_block_match.get("enabled")
+            if isinstance(prefix_block_match, dict)
+            else None
+        ),
+        prefix_block_matched_tokens=(
+            prefix_block_match.get("matched_tokens")
+            if isinstance(prefix_block_match, dict)
+            else None
+        ),
+    )
+    line = json.dumps(entry.to_dict(), sort_keys=True)
+    with _TRACE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+def record_radix_share(
+    *,
+    prompt_cache_key: str | None,
+    id_slot: int | None,
+    radix_trace: dict[str, Any],
+    spec_method: str = "none",
+) -> None:
+    """Emit ``radix_seed`` JSONL — WHY separate from ``cache_decision``: copy happens
+    after policy admit; operators need donor slot + token count to prove cross-key wins."""
+    if not prefix_cache_trace_enabled():
+        return
+    path = trace_path()
+    if path is None:
+        return
+    entry = PrefixCacheTraceEntry(
+        ts_ms=int(time.time() * 1000),
+        event="radix_seed",
+        kind="radix",
+        prompt_cache_key=prompt_cache_key,
+        seq_pos=None,
+        prompt_tokens=None,
+        cache_prompt=True,
+        resume_pos=radix_trace.get("copy_tokens"),
+        spec_method=spec_method,
+        effective_window=None,
+        speculative_draft=False,
+        id_slot=id_slot,
+        decode_graph_epoch=slot_decode_graph_epoch(id_slot) if id_slot is not None else None,
+        radix_source_slot=radix_trace.get("source_slot"),
+        radix_copy_tokens=radix_trace.get("copy_tokens"),
     )
     line = json.dumps(entry.to_dict(), sort_keys=True)
     with _TRACE_LOCK:

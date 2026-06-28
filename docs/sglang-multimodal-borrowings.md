@@ -69,6 +69,34 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 **Wire note:** Python subprocess emits both `prompt_eval_cached_count` (Go `CompletionResponse`) and `cached_prompt_tokens` (API alias). Go unmarshaling accepts either.
 
+**SGLang `sglext` (Jun 2026):** When prefix cache hits are present, OpenAI `/v1/chat/completions` responses also include `sglext.cached_tokens_details` with `device` (GPU/slot cache), optional `host` (HiCache tier), and optional `storage` + `storage_backend` (L3). Streaming with `stream_options.include_usage` attaches the same object on the final usage chunk. Access log mirrors `cached_tokens_device`, `cached_tokens_host`, `cached_tokens_storage` when wired.
+
+### 7b. `limit_mm_data_per_request`
+
+**Where:** `OLLAMA_LIMIT_MM_DATA_PER_REQUEST` JSON (e.g. `{"image":4,"video":1,"audio":1}`) → `server/modality/limit_mm_data.go` preflight on `/api/chat` before ffmpeg expand.
+
+**Why:** SGLang rejects oversized MM attachments on the active turn before ViT work. Zerollama counts only the **latest user message** (agent history echoes are excluded); pre-expanded `video_spans` count as videos, not still images.
+
+**Gating:** No-op when env unset or all caps zero. Runs for image-only turns when `image` cap is set (not tied to video preflight).
+
+### 7c. `precomputed_embedding` ingest (partial)
+
+**Where:** `/api/chat` message `images` JSON object `{format:"precomputed_embedding", feature:[[...],...]}` or `precomputed_embeddings` array; requires `padded_input_ids` on the same message.
+
+**Why:** SGLang clients that already ran the ViT on the client/GPU can skip server-side encode when pretokenized layout is supplied. Zerollama maps each feature row to a llamarunner embed chunk at padded vision slots.
+
+**Limits:** Exactly one precomputed item per message (SGLang rule); cannot mix raw image bytes and precomputed on the same turn. Requires **`padded_input_ids`** on that message. **ollama-engine** supports Qwen3-VL / qwen25vl / **glmocr** (+ `grid_thw` patch grid); **Gemma3 / Gemma4 / mllama / deepseekocr** (rows, no grid); **mistral3** (per-row strips); **llama4** (optional `grid_thw` `[1,tile_h,tile_w]` for multi-tile + global chunk); **lfm2** (single-tile rows only). **llama-server** rejects precomputed (base64 rasters only).
+
+**Observability:** grep `precomputed_embedding runner inject` or `processor_output runner inject` (`engine=ollama` on ollama-engine). Set **`enable_prefix_mm_cache: true`** in options with **`prompt_cache_key`** to pin session ViT overlay (logs a hint if the flag is set without a session key).
+
+### 7d. `processor_output` ingest (partial)
+
+**Where:** `/api/chat` message `images` object `{format:"processor_output", pixel_values:..., image_grid_thw:[T,H,W]}` or `processor_outputs` array; requires `padded_input_ids`.
+
+**Why:** SGLang clients run the HF processor locally and send patch tensors so the server skips PNG decode + processor — only vision tower + LLM prefill run on ollama-engine.
+
+**Limits:** Exactly one item per message; cannot mix with raw bytes or precomputed_embedding. **ollama-engine:** Qwen3-VL / qwen25vl / **glmocr** (patch grid `[T,H,W]`); **Gemma3 / Gemma4 / mistral3 / llama4 / lfm2** (`[1, H, W]` pixels; Gemma3 H=W=`vision.image_size`; llama4/lfm2 single-tile only); **mistral3** precomputed uses per-row strips. **deepseekocr** processor_output deferred (SAM pipeline). **ggml llamarunner** and **llama-server** reject processor_output (mtmd/subprocess need rasters).
+
 ### 8. Gemma4 video span placeholders
 
 **Where:** `model/renderers/gemma4.go` — HF-style `<|video|>` / `<|image|>` when `RenderImgTags` is false (tests / HF path). Production chat sets `RenderImgTags=true` → per-frame `[img-N]` tags.
@@ -165,7 +193,7 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 ### 23. Qwen3-VL partial layout consume (HF path + runner inject)
 
-**Where:** `model/renderers/qwen3vl.go`, `server/modality/padded_layout_consume.go`, `server/modality/build_padded_prompt.go`, `server/routes.go`, `runner/llamarunner/padded_inputs.go`, `llm/padded_prompt_llama_server.go`.
+**Where:** `model/renderers/qwen3vl.go`, `server/modality/padded_layout_consume.go`, `server/modality/build_padded_prompt.go`, `server/routes.go`, `runner/llamarunner/padded_inputs.go`, `runner/llamarunner/padded_families.go`, `llm/padded_prompt_llama_server.go`.
 
 **Why:** SGLang `padded_input_ids` already includes vision placeholder token positions. **Runner inject (Jun 2026):** routes splice latest-user `padded_input_ids` into the rendered template (`BuildPaddedCompletionPromptTokens` uses **last** `<|im_start|>user` block — works with multimodal chat history). Renderer skips duplicate `<|vision_start|>…` blocks **or** `[img-N]` tags when padded layout is present. llamarunner replaces each `<|vision_start|>…<|vision_end|>` block with full mtmd chunks for the next image. **llama-server subprocess (Jun 2026):** maps each vision block to a media marker + `multimodal_data`. Deferred when an **earlier** turn also sent `padded_input_ids`.
 
@@ -216,13 +244,15 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 ### 29. Session-keyed ViT embed overlay (`enable_prefix_mm_cache` session pin)
 
-**Where:** `runner/llamarunner/image.go` (`MultimodalTokenize` session overlay), `runner/ollamarunner/vision_embed_cache.go`, `runner/ollamarunner/runner.go`, `llm/server.go` (`PromptCacheKey`), `server/routes.go`.
+**Where:** `runner/llamarunner/image.go` (`MultimodalTokenize` + `GetPrecomputedChunks` session overlay), `runner/ollamarunner/vision_embed_cache.go`, `vision_embed_preprocessed.go`, `runner/ollamarunner/runner.go`, `runner/llamarunner/runner.go`, `llm/server_shared.go` (`SessionViTOverlay`), `server/modality/prefix_mm_cache.go` (`SessionViTOverlayEnabled`), `server/routes.go`, `openai/openai.go`.
 
 **Why:** Server-side session video LRU already pins expanded frames per `prompt_cache_key`; the runner global ViT LRU (4–64 slots) can still evict clip frames between agent turns under fleet load. SGLang's `enable_prefix_mm_cache` keeps encoder outputs hot per conversation — zerollama mirrors that with a per-runner session overlay (32 sessions, 30m TTL) keyed by the same `ExtractPromptCacheKey` string as expansion/layout caches.
 
-**Operator:** set `options.prompt_cache_key` (or `eliza.conversationId`) on every agent turn — same checklist as §24 session video expand.
+**Operator:** set `prompt_cache_key` on every agent turn. Session overlay defaults **ON** when the key is set; set `enable_prefix_mm_cache: false` to disable session pin and rely on global LRU only. Without a session key, `/api/chat` logs a hint and overlay stays off.
 
-**What differs:** overlay is per loaded model runner (not cross-runner radix); llamarunner stores `MtmdChunk` embed slices; ollama-engine stores materialized float32 vision tensors + metadata.
+**Cache layers (turn 2+):** PNG bytes → global LRU + session overlay on both runners; `precomputed_embedding` → global + session on ollama-engine and ggml llamarunner; `processor_output` → global + session on ollama-engine only (llamarunner still requires PNG/mtmd).
+
+**What differs:** overlay is per loaded model runner (not cross-runner radix); llamarunner stores `MtmdChunk` / `visionChunk` slices; ollama-engine stores materialized float32 vision tensors + metadata.
 
 ### 30. Gemma4 `padded_input_ids` runner inject
 
@@ -370,6 +400,10 @@ VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
 | `video sample` | ffmpeg actually ran (mode, fps, frame_count) |
 | `vision embed cache auto-grown for multimodal turn` | Runner expanded ViT LRU slots for this turn (≤ `OLLAMA_IMAGE_EMBED_CACHE_MAX`) |
 | `vision embed session cache hit` | ViT encoder skipped — frame embed restored from `prompt_cache_key` overlay |
+| `vision embed global cache hit` | ViT encoder skipped — embed restored from per-runner global LRU (PNG on llamarunner; PNG/preprocessed/processor on ollama-engine) |
+| `precomputed_embedding global cache hit` | Precomputed rows skipped — materialized from global LRU (ollama-engine + llamarunner) |
+| `precomputed_embedding session cache hit` | Precomputed rows skipped — restored from session overlay (llamarunner; ollama-engine uses `vision embed session cache hit`) |
+| `processor_output global cache hit` | HF pixels skipped — vision tower output from global LRU (ollama-engine) |
 | `vision grid hints` | Info summary after multimodal encode (`hinted`, `matched`, `mismatched`) |
 | `vision grid hint match` | Client `grid_thw` embed count matches mtmd output for that frame |
 | `vision grid hint mismatch` | Hint vs mtmd differ — expected until mtmd accepts grid overrides |
@@ -382,9 +416,13 @@ VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
 
 | SGLang pattern | Why deferred |
 |----------------|--------------|
-| ViT encoder cache (cross-request / radix-level) | **Partial (Jun 2026):** per-runner embed LRU + auto-grow + session overlay per `prompt_cache_key` on llamarunner and **ollama-engine**; radix/block-level sharing deferred |
-| Non–Qwen3-VL `padded_input_ids` runner inject | **Shipped (Jun 2026)** on ollama-engine for all native Go VLMs above; llamarunner/llama-server for Qwen3-VL/Gemma4. Still `deferred_non_qwen3vl` for text-only families (gemma3n, glm4moelite) and mtmd-only qwen2vl when not routed through family gate |
-| `grid_thw` → vision forward | **Partial (Jun 2026):** per-frame hints on `llm.ImageData`; runner debug compare; `MultimodalTokenize(..., gridTHW)` Go seam; mtmd forward override deferred |
+| ViT / encoder cache | **Partial (Jun 2026):** global LRU + auto-grow + **session overlay** (default ON with `prompt_cache_key`; opt out via `enable_prefix_mm_cache: false`); precomputed/processor global+session on both runners; radix sharing deferred |
+| Non–Qwen3-VL `padded_input_ids` runner inject | **Shipped (Jun 2026)** on ollama-engine, **llama-server subprocess**, and **ggml llamarunner** for all native Go VLMs above. Still `deferred_non_qwen3vl` for text-only families (gemma3n, glm4moelite) and mtmd-only qwen2vl when not routed through family gate |
+| `grid_thw` → vision forward | **Partial (Jun 2026):** client explicit `[1,H,W]` via `GridTHWExplicit`; **`mtmd_bitmap_set_grid_hint`** on M-RoPE (Qwen-VL); server ffmpeg estimates preflight-only; non-M-RoPE families deferred |
+| HiCache host/storage cache breakdown | **Partial (Jun 2026):** `sglext.cached_tokens_details` + access-log fields wired; host/storage counts populate when L3/HiCache backends report them (device-only on native paths today) |
+| `limit_mm_data_per_request` | **Shipped (Jun 2026):** `OLLAMA_LIMIT_MM_DATA_PER_REQUEST` on `/api/chat` latest-user preflight |
+| `precomputed_embedding` ingest | **Partial (Jun 2026):** all native ollama-engine VLMs above except glmocr requires `grid_thw`; llamarunner embed-chunk path; llama-server rejects |
+| `processor_output` ingest | **Partial (Jun 2026):** Qwen3-VL/qwen25vl/glmocr/mistral3 + Gemma3/Gemma4/llama4/**lfm2** (single-tile); llamarunner/llama-server reject |
 | Non-stream prefill cancel (subprocess backends) | **Shipped (Jun 2026):** ctypes + llama-server HTTP close + wheel non-stream via internal stream |
 | int8 linear-attn checkpoint pool | Phase 15 / model-specific |
 | Breakable CUDA graphs | Phase 15 / upstream llama.cpp |
@@ -393,17 +431,18 @@ VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
 
 ## Operator checklist
 
-1. **Agent thread with repeat video:** set `options.prompt_cache_key` (or `eliza.conversationId`) on every turn — enables session expansion cache **and** L3 KV reuse. OpenAI clients: `prompt_cache_key` on `/v1/chat/completions` or `options` on `/api/chat`.
-2. **OpenAI clients:** inspect `usage.prompt_tokens_details` for `image_tokens`, `video_tokens`, `cached_tokens`.
-3. **Fleet logs:** grep `inference response out` for `image_tokens`, `video_tokens`, `audio_tokens`, `cached_prompt_tokens`.
+1. **Agent thread with repeat video:** set `options.prompt_cache_key` (or `eliza.conversationId`) on every turn — enables session expansion cache **and** L3 KV reuse. OpenAI clients: `prompt_cache_key` on `/v1/chat/completions` or `options` on `/api/chat`. Add **`enable_prefix_mm_cache: true`** when you want SGLang-compatible session ViT pinning (overlay still requires the session key).
+2. **OpenAI clients:** inspect `usage.prompt_tokens_details` for `image_tokens`, `video_tokens`, `cached_tokens`; optional SGLang clients may read `sglext.cached_tokens_details`.
+3. **Fleet logs:** grep `inference response out` for `image_tokens`, `video_tokens`, `audio_tokens`, `cached_prompt_tokens`, `cached_tokens_device`.
 4. **L3 path:** `curl -s :8081/health | jq .llama_cache` — prefix policy and slot stats.
 5. **Optional SGLang:** unchanged — full-body proxy when `video_understanding=sglang`; native path does not require it.
 
 6. **CI gate:** `./scripts/video_expand_cache_smoke.sh` — unit tests for expansion/session/URL caches and preflight (no GPU).
 7. **Agent loop:** `./scripts/video_agent_cache_smoke.sh` — two-turn resend-clip test; live E2E with `RUN_E2E_VIDEO_AGENT=1` + `VIDEO_SMOKE_MODEL`.
 8. **Video + L3 gate:** `./scripts/video_l3_agent_gate.sh`; add `RUN_E2E_L3=1` for L3 text smoke on GPU hosts.
-9. **Video + inference cache:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` — real VLM prefill; strict pass needs turn-2 `/api/chat` `cached_prompt_tokens` (L3 subprocess or ollama-engine input cache). Optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded preproc infer (§37). `./scripts/video_agent_infer_gate_report.sh` for sign-off. Grep logs: `vision embed session cache hit`, `vision grid hints`, `preprocessed layout session cache hit`.
+9. **Video + inference cache:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` — real VLM prefill; strict pass needs turn-2 `/api/chat` `cached_prompt_tokens` (L3 subprocess or ollama-engine input cache). Optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded preproc infer (§37). Optional `VIDEO_AGENT_INFER_PREFIX_MM_WARN=1` + `VIDEO_AGENT_GO_LOG` greps prefix-mm hint without session key. `./scripts/video_agent_infer_gate_report.sh` for sign-off. Grep logs: `vision embed session cache hit`, `vision grid hints`, `preprocessed layout session cache hit`, `precomputed_embedding runner inject`, `processor_output runner inject`.
 10. **Pre-expanded layout:** live `RUN_E2E_VIDEO_AGENT=1` also checks turn-2 `images` + `video_spans` restore (`preprocessed layout session cache hit` in `VIDEO_AGENT_GO_LOG`).
+11. **Preprocessed ingest:** send `precomputed_embedding` or `processor_output` with `padded_input_ids` on ollama-engine VLMs; grep inject log lines above. llama-server and llamarunner processor paths reject — use PNG or precomputed embed chunks on ggml path.
 
 ---
 
@@ -426,10 +465,12 @@ VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
 | Agent smoke | `scripts/video_agent_cache_smoke.sh` |
 | OpenAI agent session test | `openai/video_agent_session_test.go` |
 | Qwen3-VL span render tests | `model/renderers/qwen3vl_video_test.go` |
-| Padded prompt splice + runner inject | `server/modality/build_padded_prompt.go`, `server/modality/padded_layout_consume.go`, `runner/llamarunner/padded_inputs.go`, `runner/ollamarunner/padded_inputs.go`, `runner/ollamarunner/padded_{lfm2,glmocr,mistral3,deepseekocr}.go`, `llm/padded_prompt_llama_server.go` |
+| Padded prompt splice + runner inject | `server/modality/build_padded_prompt.go`, `server/modality/padded_layout_consume.go`, `runner/llamarunner/padded_inputs.go`, `runner/llamarunner/padded_families.go`, `runner/ollamarunner/padded_inputs.go`, `runner/ollamarunner/padded_{lfm2,glmocr,mistral3,deepseekocr}.go`, `llm/padded_prompt_llama_server.go` |
 | Padded inject audit (tool spans, fallback) | `server/ggml_padded_prompt.go`, `model/renderers/qwen3vl.go`, `server/routes.go` |
 | ViT embed cache | `runner/llamarunner/image.go`, `envconfig/config.go` (`ImageEmbedCacheSize`), `server/modality/vit_embed_cache.go` |
-| Session ViT embed overlay | `runner/llamarunner/image.go` (`MultimodalTokenize`), `runner/ollamarunner/vision_embed_cache.go`, `llm/server.go` (`PromptCacheKey`), `server/modality/session_video_cache.go` (`ExtractPromptCacheKey`) |
+| Session ViT embed overlay | `runner/llamarunner/image.go` (`MultimodalTokenize`), `runner/ollamarunner/vision_embed_cache.go`, `llm/server.go` (`PromptCacheKey`), `server/modality/session_video_cache.go` (`ExtractPromptCacheKey`), `server/modality/prefix_mm_cache.go` |
+| Precomputed ingest | `server/modality/precomputed_embedding.go`, `api/preprocessed_parse.go`, `runner/ollamarunner/precomputed_embedding.go`, `runner/llamarunner/precomputed_embedding.go`, `model/models/*/precomputed.go` |
+| Processor output ingest | `server/modality/processor_output.go`, `api/types.go` (`ProcessorOutput`), `runner/ollamarunner/precomputed_embedding.go` (`appendPaddedProcessorOutputImage`), `model/models/*/processor_output.go` |
 | llama-server HTTP cancel | `runtime/runtime/worker/llama_server_http.py`, `runtime/runtime/worker/llama_server.py` |
 | Chat wiring | `server/routes.go` |
 | OpenAI usage | `openai/openai.go` |

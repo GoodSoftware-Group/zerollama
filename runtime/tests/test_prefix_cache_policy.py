@@ -86,17 +86,18 @@ def test_draft_speculative_active():
     assert draft_speculative_active("mtp") is True
 
 
-def test_resolve_policy_disables_disk_for_draft_spec(monkeypatch: pytest.MonkeyPatch):
+def test_resolve_policy_draft_drop_last_block_not_disk(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
     monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE_DISK", raising=False)
     policy = resolve_prefix_cache_policy(spec_method="eagle3")
-    assert policy.allow_cache_prompt is False
+    assert policy.allow_cache_prompt is True
     assert policy.allow_disk_persist is False
+    assert policy.drop_last_block_on_resume is True
     assert "disk_disabled_draft_speculative" in policy.notes
-    assert "cache_prompt_disabled_draft_speculative" in policy.notes
+    assert "drop_last_block_on_resume_draft_speculative" in policy.notes
 
 
-def test_swa_cache_prompt_allowed_hybrid_always():
+def test_swa_cache_prompt_allowed_hybrid_enforces_window():
     policy = PrefixCachePolicy(
         kind="hybrid",
         allow_cache_prompt=True,
@@ -105,7 +106,8 @@ def test_swa_cache_prompt_allowed_hybrid_always():
         disk_ttl_ms=3600000,
         speculative_draft=False,
     )
-    assert swa_cache_prompt_allowed(policy, seq_pos=5000, prompt_tokens=9000) is True
+    assert swa_cache_prompt_allowed(policy, seq_pos=1000, prompt_tokens=500) is True
+    assert swa_cache_prompt_allowed(policy, seq_pos=5000, prompt_tokens=9000) is False
 
 
 def test_swa_cache_prompt_blocks_beyond_window():
@@ -138,7 +140,7 @@ def test_cache_prompt_for_request_swa_enforcement(monkeypatch: pytest.MonkeyPatc
 
 
 def test_effective_disk_cache_respects_policy_and_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE_DISK", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "1")
     draft = resolve_prefix_cache_policy(spec_method="mtp")
     assert effective_disk_cache_enabled(draft) is False
     std = resolve_prefix_cache_policy(spec_method="none")

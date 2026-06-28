@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # L3 prefix cache × speculative decode policy smoke.
 #
-# WHY: draft-based spec (eagle3/mtp/dflash) must disable RAM cache_prompt and disk
+# WHY: draft-based spec (eagle3/mtp/dflash) must disable disk slot blobs and drop the
+# last prefix block on resume (vLLM drop_eagle_block) while keeping RAM cache_prompt.
 # slot persistence; ngram/none must keep prefix cache enabled. Generate with
 # prompt_cache_key must still succeed when cache is policy-disabled.
 #
@@ -173,13 +174,15 @@ if expect_draft:
         errors.append(
             f"expected policy.speculative_draft=true for {spec_method}, got {policy!r}"
         )
-    if policy.get("allow_cache_prompt"):
-        errors.append("draft spec must set allow_cache_prompt=false")
+    if not policy.get("allow_cache_prompt"):
+        errors.append("draft spec must keep allow_cache_prompt=true (drop-last-block)")
     if policy.get("allow_disk_persist"):
         errors.append("draft spec must set allow_disk_persist=false")
+    if not policy.get("drop_last_block_on_resume"):
+        errors.append("draft spec must set drop_last_block_on_resume=true")
     notes = policy.get("notes") or []
-    if "cache_prompt_disabled_draft_speculative" not in notes:
-        errors.append("expected cache_prompt_disabled_draft_speculative in policy.notes")
+    if "drop_last_block_on_resume_draft_speculative" not in notes:
+        errors.append("expected drop_last_block_on_resume_draft_speculative in policy.notes")
 else:
     if policy.get("speculative_draft"):
         errors.append(

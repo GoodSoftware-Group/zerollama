@@ -431,6 +431,10 @@ func (s *Server) Detokenize(ctx context.Context, tokens []int) (string, error) {
 	return "", errors.New("detokenization not supported for MLX models")
 }
 
+func (s *Server) ApplyChatTemplate(ctx context.Context, req llm.ChatRequest) (string, error) {
+	return "", errors.New("image generation models do not support chat templates")
+}
+
 // Pid returns the process ID of the subprocess.
 func (s *Server) Pid() int {
 	s.mu.Lock()

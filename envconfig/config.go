@@ -454,6 +454,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":         {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
 		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":    {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
 		"OLLAMA_VIDEO_FETCH_TIMEOUT":          {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
+		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":    {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
 		"OLLAMA_IMAGE_EMBED_CACHE_SIZE":       {"OLLAMA_IMAGE_EMBED_CACHE_SIZE", ImageEmbedCacheSize(), "Per-runner vision embed (ViT) LRU cache slots (default 4; set 32–64 for video agents)"},
 		"OLLAMA_IMAGE_EMBED_CACHE_MAX":        {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64)"},
 
@@ -728,6 +729,11 @@ func runtimeEnvDisplay() string {
 // RuntimeEmbedEnabled starts inference runtime inside the zerollama process (CGO).
 // Default: on when ZEROLLAMA_RUNTIME_URL is unset; set 0 to use an external sidecar only.
 func RuntimeEmbedEnabled() bool {
+	// WHY EdgeBuildTag: edge artifacts must not link/spawn runtime embed even when
+	// operator sets ZEROLLAMA_EDGE=0 on an edge-marked binary.
+	if EdgeBuildTag {
+		return false
+	}
 	if EdgeMode() {
 		return false
 	}
@@ -900,6 +906,9 @@ func WanVideoTimeoutSec() int {
 
 // RuntimeDarwinSidecarLikely reports whether macOS serve will start or attach to a uv sidecar.
 func RuntimeDarwinSidecarLikely() bool {
+	if EdgeBuildTag {
+		return false
+	}
 	if runtime.GOOS != "darwin" {
 		return false
 	}
@@ -1138,6 +1147,23 @@ func VideoAllowInsecureHTTP() bool {
 // VideoFetchTimeout bounds the entire remote GET for video_url (connect + response headers + body read, default 10m).
 func VideoFetchTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_VIDEO_FETCH_TIMEOUT", 10*time.Minute)
+}
+
+// LimitMMDataPerRequest parses OLLAMA_LIMIT_MM_DATA_PER_REQUEST JSON, e.g.
+// {"image":4,"video":1,"audio":1}. Matches SGLang limit_mm_data_per_request; zero
+// or missing keys mean no cap for that modality. Why env JSON: operators tune per
+// deployment without recompiling; same shape as SGLang server args.
+func LimitMMDataPerRequest() (image, video, audio int) {
+	raw := strings.TrimSpace(Var("OLLAMA_LIMIT_MM_DATA_PER_REQUEST"))
+	if raw == "" {
+		return 0, 0, 0
+	}
+	var m map[string]int
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		slog.Warn("OLLAMA_LIMIT_MM_DATA_PER_REQUEST invalid JSON; ignoring", "error", err)
+		return 0, 0, 0
+	}
+	return m["image"], m["video"], m["audio"]
 }
 
 // ImageEmbedCacheSize is the number of LRU slots in the per-runner vision embed cache.

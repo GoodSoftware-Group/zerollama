@@ -64,7 +64,7 @@ func logVisionGridHint(imageID int, gridTHW []int, embedTokens int) visionGridHi
 	}
 	if estimate != embedTokens {
 		stats.Mismatched = 1
-		slog.Debug("vision grid hint mismatch (engine uses pixel-derived layout)",
+		slog.Debug("vision grid hint mismatch",
 			"image_id", imageID,
 			"grid_thw", gridTHW,
 			"hint_tokens", estimate,
@@ -74,7 +74,7 @@ func logVisionGridHint(imageID int, gridTHW []int, embedTokens int) visionGridHi
 		return stats
 	}
 	stats.Matched = 1
-	slog.Debug("vision grid hint match",
+	slog.Info("vision grid hint match",
 		"image_id", imageID,
 		"grid_thw", gridTHW,
 		"embed_tokens", embedTokens,

@@ -203,3 +203,21 @@ func assertDeviceIDs(t *testing.T, got []ml.DeviceInfo, want []ml.DeviceID) {
 		}
 	}
 }
+
+func TestIsDiscoverableRunnerLib(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"tools/ane-ggml-map/ane-ggml-map-smoke", false},
+		{"build/arm64-cpu/lib/ollama/libggml-base.dylib", true},
+		{"lib/ollama/cuda_v12/libggml-cuda.so", true},
+		{"lib/ollama/cuda_v12/libggml-cuda.dll", true},
+		{"notes/ggml-b9509-migration.md", false},
+	}
+	for _, tc := range cases {
+		if got := isDiscoverableRunnerLib(tc.path); got != tc.want {
+			t.Fatalf("isDiscoverableRunnerLib(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}

@@ -92,7 +92,7 @@ func ProbeANEDraftGGUF(path, sidecarPath string) (ANEDraftGGUFInfo, error) {
 	}
 
 	if info.DraftSidecarPresent {
-		info.Note = "eagle3 sidecar GGUF present — weight extract + MIL compile is follow-on"
+		info.Note = "draft sidecar GGUF present — weight extract + MIL compile is follow-on"
 	} else {
 		info.Note = "draft-eagle3 uses separate drafter GGUF (--spec-draft-model); eliza tags embed spec_type only"
 	}

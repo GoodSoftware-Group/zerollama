@@ -1,0 +1,4 @@
+FROM qwen3.5-122b-a10b:q6_k
+PARSER qwen3.5
+RENDERER qwen3.5
+PARAMETER num_ctx 32768

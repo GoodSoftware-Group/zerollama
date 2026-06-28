@@ -1,6 +1,6 @@
 # Phase 15 — `llama-kv-ext.h` upstream tracking
 
-**Why this doc exists:** Tensor page bind (Phase 15 exit criterion #5) needs cell-index and K/V tensor introspection that upstream llama.cpp does not expose as a stable public API. Zerollama ships a **staging extension** (`llama-kv-ext.h`) as **patch 0014** on the b9672 pin. This document tracks what is unblocked, what remains blocked, and how to refresh on pin bumps.
+**Why this doc exists:** Tensor page bind (Phase 15 exit criterion #5) needs cell-index and K/V tensor introspection that upstream llama.cpp does not expose as a stable public API. Zerollama ships a **staging extension** (`llama-kv-ext.h`) as **patch 0014** on the **b9781** pin. This document tracks what is unblocked, what remains blocked, and how to refresh on pin bumps.
 
 ---
 
@@ -8,9 +8,9 @@
 
 | Source | Pin / path |
 |--------|------------|
-| `LLAMA_CPP_VERSION` | `b9672` |
-| `Makefile.sync` `FETCH_HEAD` | `b9672` |
-| In-tree vendored tree | `llama/llama.cpp/` (synced from `vendor/llama-cpp-b9672` + patches) |
+| `LLAMA_CPP_VERSION` | `b9781` |
+| `Makefile.sync` `FETCH_HEAD` | `b9781` |
+| In-tree vendored tree | `llama/llama.cpp/` (synced from `vendor/llama-cpp-b9781` + patches) |
 | Runtime sibling build | `../llama.cpp` via `LLAMA_CPP_ROOT` |
 | Staging patch | `llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` |
 | CI pin gate | `./scripts/phase15_llama_kv_ext_pin_check.sh` |
@@ -68,7 +68,7 @@ python3 -c "from runtime.kv.tensor_probe import writable_bind_probe; print(writa
 
 ---
 
-## Upstream dependencies (stable at b9672)
+## Upstream dependencies (stable at b9781)
 
 These **must** remain in `include/llama.h` — pin check verifies them:
 

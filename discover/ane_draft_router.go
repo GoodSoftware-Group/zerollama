@@ -12,14 +12,16 @@ import (
 // ANEDraftRouter manages a long-lived ane-draft-daemon session for repeated draft steps.
 // Lab-only today; future scheduler hook when ZEROLLAMA_ANE_DRAFT=1 and ggml map lands in-process.
 type ANEDraftRouter struct {
-	mu      sync.Mutex
-	sess    *draftDaemonSession
-	ready   ANEDraftDaemonReady
-	tag     string
-	ch      int
-	sp      int
-	steps   int
-	started bool
+	mu           sync.Mutex
+	sess         *draftDaemonSession
+	ready        ANEDraftDaemonReady
+	tag          string
+	ch           int
+	sp           int
+	weightFile   string
+	weightSource string
+	steps        int
+	started      bool
 }
 
 // ANEDraftStepResult is one map_fill + eval_ane cycle on a warm daemon session.
@@ -36,6 +38,9 @@ type ANEDraftRouterSmokeResult struct {
 	Tag           string                `json:"tag,omitempty"`
 	ProxyChannels int                   `json:"proxy_channels"`
 	ProxySpatial  int                   `json:"proxy_spatial"`
+	WeightFile    string                `json:"weight_file,omitempty"`
+	WeightSource  string                `json:"weight_source,omitempty"`
+	WeightCached  bool                  `json:"weight_cached,omitempty"`
 	Ready         ANEDraftDaemonReady   `json:"ready"`
 	Steps         []ANEDraftStepResult  `json:"steps"`
 	AvgEvalMS     float64               `json:"avg_eval_ms"`
@@ -68,7 +73,32 @@ func (r *ANEDraftRouter) Start(ctx context.Context, preferred string) (ANEDraftD
 
 	ch, sp := 64, 16
 	tag := ""
-	if preferred != "" {
+	weightFile := ""
+	weightSource := "synthetic"
+
+	if entries, err := ListANEDraftInventory(); err == nil {
+		if entry, ok := SelectANEDraftModel(entries, preferred); ok {
+			if entry.ProxyChannels > 0 {
+				ch = entry.ProxyChannels
+			}
+			if entry.ProxySpatial > 0 {
+				sp = entry.ProxySpatial
+			}
+			tag = entry.Tag
+			draftPath, sidecarPresent := resolveDraftGGUFPath(entry)
+			if sidecarPresent {
+				entry.DraftGGUF = draftPath
+				entry.DraftSidecarPresent = true
+				path, _, err := MaterializeANEDraftWeightFile(entry, "")
+				if err != nil {
+					return ANEDraftDaemonReady{}, fmt.Errorf("sidecar weight extract: %w", err)
+				}
+				weightFile = path
+				weightSource = "sidecar_extract"
+			}
+		}
+	}
+	if tag == "" && preferred != "" {
 		proxy, err := ResolveANEModelProxyDims(preferred)
 		if err != nil {
 			return ANEDraftDaemonReady{}, err
@@ -77,7 +107,7 @@ func (r *ANEDraftRouter) Start(ctx context.Context, preferred string) (ANEDraftD
 		tag = proxy.Tag
 	}
 
-	sess, ready, err := startDraftDaemonSessionLongLived(ctx, ch, sp)
+	sess, ready, err := startDraftDaemonSessionLongLivedWeight(ctx, ch, sp, weightFile)
 	if err != nil {
 		return ready, err
 	}
@@ -87,6 +117,13 @@ func (r *ANEDraftRouter) Start(ctx context.Context, preferred string) (ANEDraftD
 	r.tag = tag
 	r.ch = ch
 	r.sp = sp
+	r.weightFile = weightFile
+	r.weightSource = weightSource
+	if ready.WeightSource != "" {
+		r.weightSource = ready.WeightSource
+	} else if weightFile != "" {
+		r.weightSource = "sidecar_extract"
+	}
 	r.started = true
 	return ready, nil
 }
@@ -150,6 +187,8 @@ func (r *ANEDraftRouter) Status() map[string]any {
 		"tag":            r.tag,
 		"proxy_channels": r.ch,
 		"proxy_spatial":  r.sp,
+		"weight_file":    r.weightFile,
+		"weight_source":  r.weightSource,
 		"steps":          r.steps,
 		"surface_id":     r.ready.SurfaceID,
 		"compile_count":  r.ready.CompileCount,
@@ -177,6 +216,8 @@ func ProbeANEDraftRouterSmoke(ctx context.Context, preferred string, steps int, 
 		ProxyChannels: router.ch,
 		ProxySpatial:  router.sp,
 		Tag:           router.tag,
+		WeightFile:    router.weightFile,
+		WeightSource:  router.weightSource,
 		Ready:         ready,
 		Note:          "scheduler hook prototype — long-lived daemon, map_fill + eval_ane per draft step",
 	}

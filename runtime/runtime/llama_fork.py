@@ -35,8 +35,8 @@ CACHE_TYPE_ALIASES: dict[str, str] = {
     "turbo3_tcq": "tbq3_tcq",
 }
 
-# Pin documented for L2 spike builds (eliza-v3 submodule HEAD, Jun 2026).
-ELIZA_LLAMA_CPP_DEFAULT_REF = "96dd1a8466c84bdd419faf3866425260623fb6b0"
+# Pin documented for unified runtime builds (elizaOS/llama.cpp, Jun 2026).
+ELIZA_LLAMA_CPP_DEFAULT_REF = "c84b30200c8d512c00c9d61c96bed078f1c0024d"
 ELIZA_LLAMA_CPP_REPO = "https://github.com/elizaOS/llama.cpp.git"
 
 

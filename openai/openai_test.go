@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -196,12 +197,16 @@ func TestChatCompletionRequestHasVideoURL(t *testing.T) {
 
 func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
 	key := "agent-thread-42"
+	salt := "tenant-9"
+	enablePrefix := true
 	req := ChatCompletionRequest{
 		Model: "m",
 		Messages: []Message{
 			{Role: "user", Content: "hi"},
 		},
-		PromptCacheKey: &key,
+		PromptCacheKey:        &key,
+		CacheSalt:             &salt,
+		EnablePrefixMMCache:   &enablePrefix,
 		Options: map[string]any{
 			"num_ctx": float64(8192),
 		},
@@ -212,6 +217,12 @@ func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
 	}
 	if out.Options["prompt_cache_key"] != key {
 		t.Fatalf("prompt_cache_key=%v", out.Options["prompt_cache_key"])
+	}
+	if out.Options["cache_salt"] != salt {
+		t.Fatalf("cache_salt=%v", out.Options["cache_salt"])
+	}
+	if out.Options["enable_prefix_mm_cache"] != true {
+		t.Fatalf("enable_prefix_mm_cache=%v", out.Options["enable_prefix_mm_cache"])
 	}
 	if out.Options["num_ctx"] != float64(8192) {
 		t.Fatalf("num_ctx=%v", out.Options["num_ctx"])
@@ -321,6 +332,40 @@ func TestToUsage_cachedPromptTokens(t *testing.T) {
 	}
 	if *usage.PromptTokensDetails.CachedTokens != 150 {
 		t.Fatalf("cached_tokens=%d, want 150", *usage.PromptTokensDetails.CachedTokens)
+	}
+}
+
+func TestSglExtFromMetrics(t *testing.T) {
+	ext := SglExtFromMetrics(api.Metrics{
+		CachedPromptTokens:         100,
+		CachedTokensHost:           40,
+		CachedTokensStorage:        10,
+		CachedTokensStorageBackend: "file",
+	})
+	if ext == nil || ext.CachedTokensDetails == nil {
+		t.Fatal("expected sglext")
+	}
+	if ext.CachedTokensDetails.Device != 100 || ext.CachedTokensDetails.Host != 40 {
+		t.Fatalf("device/host=%d/%d", ext.CachedTokensDetails.Device, ext.CachedTokensDetails.Host)
+	}
+	if ext.CachedTokensDetails.Storage == nil || *ext.CachedTokensDetails.Storage != 10 {
+		t.Fatal("expected storage")
+	}
+	if ext.CachedTokensDetails.StorageBackend == nil || *ext.CachedTokensDetails.StorageBackend != "file" {
+		t.Fatal("expected storage_backend")
+	}
+	b, err := json.Marshal(ext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"cached_tokens_details"`) || !strings.Contains(string(b), `"device":100`) {
+		t.Fatalf("json=%s", b)
+	}
+}
+
+func TestSglExtFromMetrics_nilWhenEmpty(t *testing.T) {
+	if SglExtFromMetrics(api.Metrics{}) != nil {
+		t.Fatal("expected nil sglext for empty metrics")
 	}
 }
 

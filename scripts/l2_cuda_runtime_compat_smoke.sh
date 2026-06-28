@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L2 CUDA runtime subprocess compat — stock vs fork llama-server load + generate on Linux.
+# L2 CUDA runtime subprocess compat — L1 vs fork profiles on unified llama-server (Linux).
 #
 # WHY: mirrors l2_runtime_compat_smoke.sh for Linux/CUDA hosts; that script sources
 # macos_runtime_serve_lib.sh directly (lsof + .dylib) and cannot run on Linux.
@@ -15,11 +15,12 @@ source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
 
 runtime_uv_venv
 
-STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/llama.cpp}"
-FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/eliza-llama.cpp}"
+UNIFIED_ROOT="${LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/llama.cpp}"
+STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
+FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
 
-if [[ "${L2_BUILD_FORK:-0}" == "1" ]]; then
-  "${ROOT}/scripts/build_eliza_llama_server.sh"
+if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
+  LLAMA_CPP_ROOT="${UNIFIED_ROOT}" "${ROOT}/scripts/build_llama_server.sh"
 fi
 
 # WHY M3_LLAMA_MODEL alias: l2_cuda_full_gate.sh may export M3_LLAMA_MODEL

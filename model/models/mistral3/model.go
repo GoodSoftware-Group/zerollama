@@ -28,6 +28,10 @@ type Model struct {
 // Implement MultimodalProcessor interface
 var _ model.MultimodalProcessor = (*Model)(nil)
 
+var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
+
+var _ model.ProcessorOutputMultimodalIngest = (*Model)(nil)
+
 // Implement TextProcessor interface
 var _ tokenizer.Tokenizer = (*Model)(nil)
 

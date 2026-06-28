@@ -19,12 +19,12 @@ enum server_task_type {
     SERVER_TASK_TYPE_RERANK,
     SERVER_TASK_TYPE_INFILL,
     SERVER_TASK_TYPE_CANCEL,
-    SERVER_TASK_TYPE_CONTROL,
     SERVER_TASK_TYPE_NEXT_RESPONSE,
     SERVER_TASK_TYPE_METRICS,
     SERVER_TASK_TYPE_SLOT_SAVE,
     SERVER_TASK_TYPE_SLOT_RESTORE,
     SERVER_TASK_TYPE_SLOT_ERASE,
+    SERVER_TASK_TYPE_SLOT_SEQ_COPY,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
 };
@@ -47,8 +47,28 @@ enum stop_type {
     STOP_TYPE_LIMIT,
 };
 
+// Eliza-1 guided-decode forced-token fast-forward (`eliza_prefill_plan`).
+// See structured-output.ts ElizaPrefillPlan in @elizaos/app-core. Each run is
+// a sequence of deterministic bytes anchored by the index of the free span it
+// follows (-1 = leading assistant-turn prefill, 0..N = run after free span N).
+// A request without a plan still produces byte-identical output via the lazy
+// GBNF — the plan only skips the per-token sampling overhead for forced runs.
+struct task_prefill_run {
+    int32_t after_free_span = -1;
+    std::string text;
+};
+
+struct task_prefill_plan {
+    std::string                   prefix;       // mirror of runs[0].text when after_free_span == -1
+    std::vector<task_prefill_run> runs;
+    int32_t                       free_count = 0;
+    std::string                   id;           // opaque cache key
+
+    bool empty() const { return runs.empty(); }
+};
+
 struct task_params {
-    bool stream          = false;
+    bool stream          = true;
     bool include_usage   = false;
     bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
     bool return_tokens   = false;
@@ -61,9 +81,6 @@ struct task_params {
     int32_t n_cmpl    =  1; // number of completions to generate from this prompt
 
     int32_t n_cache_reuse = 0; // min chunk size to attempt reusing from the cache via KV shifting (0 = disabled)
-
-    // number of prompt tokens before the latest user message
-    int32_t n_before_user = -1;
 
     int64_t t_max_prompt_ms  = -1; // TODO: implement
     int64_t t_max_predict_ms = -1; // if positive, limit the generation phase to this time limit
@@ -85,18 +102,20 @@ struct task_params {
     std::string        oaicompat_model;
     std::string        oaicompat_cmpl_id;
 
-    // realtime control (SERVER_TASK_TYPE_CONTROL)
-    std::string        control_action;
-    std::string        control_cmpl_id;
-
     // per-request parameters for chat parsing
     common_chat_parser_params chat_parser_params;
+
+    // Eliza-1 forced-token fast-forward (off by default). See task_prefill_plan
+    // above; when empty the lazy GBNF still forces the same bytes.
+    task_prefill_plan prefill_plan;
 
     // Embeddings
     int32_t embd_normalize = 2; // (-1=none, 0=max absolute int16, 1=taxicab, 2=Euclidean/L2, >2=p-norm)
 
     json format_logit_bias(const std::vector<llama_logit_bias> & logit_bias) const;
     json to_json(bool only_metrics = false) const;
+
+    int32_t checkpoint_before_last_user_token = -1;
 };
 
 // struct for tracking the state of a task (e.g., for streaming)
@@ -120,7 +139,11 @@ struct task_result_state {
     const std::string oai_resp_message_id;
     std::string oai_resp_fc_id; // function call ID for current args delta
 
-    task_result_state(const common_chat_parser_params & chat_parser_params);
+    task_result_state(const common_chat_parser_params & chat_parser_params)
+        : chat_parser_params(chat_parser_params)
+        , oai_resp_id("resp_" + random_string())
+        , oai_resp_reasoning_id("rs_" + random_string())
+        , oai_resp_message_id("msg_" + random_string()) {}
 
     // parse partial tool calls and update the internal state
     common_chat_msg update_chat_msg(
@@ -161,6 +184,8 @@ struct server_task {
     // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE
     struct slot_action {
         int id_slot;
+        int id_slot_src = -1;
+        llama_pos pos_end = 0;
         std::string filename;
         std::string filepath;
     };
@@ -423,8 +448,6 @@ struct server_task_result_cmpl_partial : server_task_result {
 
     bool post_sampling_probs;
     bool is_progress = false;
-    bool is_begin = false; // whether to send 200 status to HTTP client (begin of SSE stream)
-                           // ref: https://github.com/ggml-org/llama.cpp/pull/23884
     completion_token_output prob_output;
     result_timings timings;
     result_prompt_progress progress;
@@ -532,6 +555,13 @@ struct server_task_result_metrics : server_task_result {
     uint64_t n_decode_total     = 0;
     uint64_t n_busy_slots_total = 0;
 
+    // Speculative decoding totals (Eliza DFlash port). Mirrors fields on
+    // `server_metrics` in server-context.cpp; surfaced through to_json() and
+    // the Prometheus /metrics endpoint so consumers can verify the drafter is
+    // actually engaged.
+    uint64_t n_drafted_total          = 0;
+    uint64_t n_drafted_accepted_total = 0;
+
     // while we can also use std::vector<server_slot> this requires copying the slot object which can be quite messy
     // therefore, we use json to temporarily store the slot.to_json() result
     json slots_data = json::array();
@@ -556,17 +586,12 @@ struct server_task_result_slot_erase : server_task_result {
     virtual json to_json() override;
 };
 
-struct server_task_result_control : server_task_result {
-    bool        success = false;
-    std::string message; // optional detail when success is false
+struct server_task_result_slot_seq_copy : server_task_result {
+    int id_slot_src;
+    llama_pos pos_end;
+    size_t n_tokens_copied;
 
-    virtual json to_json() override {
-        json out = json { { "success", success } };
-        if (!message.empty()) {
-            out["message"] = message;
-        }
-        return out;
-    }
+    virtual json to_json() override;
 };
 
 struct server_task_result_get_lora : server_task_result {

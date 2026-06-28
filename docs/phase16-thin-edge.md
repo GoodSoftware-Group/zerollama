@@ -33,7 +33,7 @@ Phase 16 north star:     Same API surface; inference hot path not owned by ggml 
 | Linux auto (`ZEROLLAMA_LLAMA_SERVER=auto`) | **Done** | Serve sets `auto` when llama-server on disk; routes **all** GGUF (text + vision) |
 | Mac default unchanged | **Done** | M7 bench: ggml Metal still faster; edge is explicit opt-in |
 | Separate edge binary / build tag | **Done (v1 marker + v2 CGO drop)** — `./scripts/build_zerollama_edge.sh` (`-tags edge`); v2 excludes `llm/server.go` ggml CGO from edge link |
-| Drop ggml runner from build | **Partial (v2)** — edge build: no in-process ggml CGO; subprocess `zerollama runner` stubbed (v1); Python embed + MLX CGO remain |
+| Drop ggml runner from build | **Partial (v2)** — edge build: no in-process ggml CGO; subprocess `zerollama runner` stubbed (v1); Python embed/MLX CGO remain in link (v3 disables runtime embed/sidecar at compile time via `EdgeBuildTag`) |
 | Training embed without runtime chat | **Partial** | Edge disables runtime chat; pyembed training path unchanged |
 
 ---
@@ -91,14 +91,14 @@ Training (`/api/train/*`), Eliza cloud, fleet, and launch integrations **stay in
 | 1 | `--edge` + env disable runtime chat; route GGUF via llama-server | Go | **Done (v0)** |
 | 2 | Linux serve auto (`auto`) routes all GGUF without explicit flag | Go | **Done (Jun 2026)** |
 | 3 | Operator doc + env table | Docs | **Done** — this file |
-| 4 | Edge smoke: pull tag → generate via llama-server, no runtime on :8081 | Repo | **Done (script)** — `./scripts/phase16_edge_smoke.sh` (opt-in live; wraps Phase 17 with `--edge`) |
+| 4 | Edge smoke: pull tag → generate via llama-server, no runtime on :8081 | Repo | **Done (Mac Jun 2026)** — `./scripts/phase16_edge_smoke.sh` (`--edge`); `./scripts/phase16_edge_binary_smoke.sh` (`-tags edge` artifact); Linux CUDA via `RUN_E2E_UPSTREAM_GGUF=1` pending |
 | 5 | `/api/status` `inference.backend` policy snapshot | Go | **Done (Jun 2026)** |
 | 5b | `/api/version` `edge_build` compile marker | Go | **Done (Jun 2026)** |
 | 6 | Build tag excluding ggml runner subprocess | Go | **Done (v1)** — `-tags edge` sets `GgmlRunnerLinked=false`, stubs `zerollama runner`, fail-fast without llama-server |
 | 7 | Drop in-process ggml from edge binary | Go | **Partial (v2)** — `server.go`/`server_score.go` excluded with `//go:build !edge`; edge `NewLlamaServer` is llama-server-only; no `llama`/`model` in edge dep tree |
 | 8 | Inference control plane “Go gone” | Go | **Not started** — sched loads llama-server + MLX only |
 
-Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (`./scripts/phase16_edge_smoke.sh`). Edge smoke asserts `/api/status` `inference.backend` (`edge`, `runtime_chat=off`, `gguf_path=llama-server`) and `/api/version` `edge_build`.
+Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (`./scripts/phase16_edge_smoke.sh`). Mac sign-off **Done** Jun 2026 (`driaforall/tiny-agent-a-0.5b:q8_0`, isolated port). Edge smoke asserts `/api/status` `inference.backend` (`edge`, `runtime_chat=off`, `gguf_path=llama-server`) and `/api/version` `edge_build`. Compile marker: `./scripts/phase16_edge_build_smoke.sh` (CI regression; no GPU).
 
 **Scheduler guard (v1):** when edge policy is active without llama-server routing, `schedSkipGgmlRunnerLoad` returns HTTP 400 instead of spawning ggml. Edge builds (`-tags edge`) fail fast with `ErrGgmlRunnerUnlinked` unless `ZEROLLAMA_LLAMA_SERVER` is on.
 
@@ -136,7 +136,7 @@ Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (
 
 ## Relationship to Phase 17
 
-Phase 17 ports upstream integration (`llm/llama_server.go`, discovery, LeadingBOS, pin `b9672`). Phase 16 **uses** that path as the default local inference shape when `--edge` is set (or on Linux via `auto`).
+Phase 17 ports upstream integration (`llm/llama_server.go`, discovery, LeadingBOS, pin **`b9781`**). Phase 16 **uses** that path as the default local inference shape when `--edge` is set (or on Linux via `auto`).
 
 | Mode | GGUF path | Python runtime chat |
 |------|-----------|---------------------|

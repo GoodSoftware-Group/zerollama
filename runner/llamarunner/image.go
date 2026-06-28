@@ -27,8 +27,9 @@ const (
 const defaultImageCacheSize = 4
 
 type sessionEmbedState struct {
-	byHash    map[uint64][]llama.MtmdChunk
-	updatedAt time.Time
+	byHash            map[uint64][]llama.MtmdChunk
+	precomputedByHash map[uint64][]visionChunk
+	updatedAt         time.Time
 }
 
 type ImageContext struct {
@@ -40,6 +41,9 @@ type ImageContext struct {
 	// cache of images to embeddings
 	images    []imageCache
 	imageHash maphash.Hash
+
+	// cache of precomputed embedding rows (SGLang precomputed_embedding path)
+	precomputed []precomputedCache
 
 	// session overlay keyed by prompt_cache_key (agent thread id)
 	sessionEmbeds   map[string]sessionEmbedState
@@ -69,6 +73,7 @@ func NewImageContext(llamaContext *llama.Context, modelPath string, cacheSize in
 		cacheSize = defaultImageCacheSize
 	}
 	c.images = make([]imageCache, cacheSize)
+	c.precomputed = make([]precomputedCache, cacheSize)
 
 	return &c, nil
 }
@@ -94,7 +99,7 @@ func normalizeSessionKey(sessionKey string) string {
 // to mtmd when upstream accepts client patch grids; today used for debug compare only.
 // WHY cache ignores gridTHW: embeds are keyed by raster bytes — same PNG → same ViT output
 // regardless of whether the client attached a layout hint.
-func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []byte, sessionKey string, gridTHW []int) ([]llama.MtmdChunk, error) {
+func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []byte, sessionKey string, gridTHW []int, sessionOverlay bool) ([]llama.MtmdChunk, error) {
 	if c == nil {
 		return nil, nil
 	}
@@ -109,8 +114,10 @@ func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []by
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if chunks, ok := c.findSessionEmbedLocked(sessionKey, hash); ok {
-		return chunks, nil
+	if sessionOverlay {
+		if chunks, ok := c.findSessionEmbedLocked(sessionKey, hash); ok {
+			return chunks, nil
+		}
 	}
 
 	chunks, err := c.findImage(hash)
@@ -125,8 +132,12 @@ func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []by
 		}
 
 		c.addImage(hash, chunks)
+	} else {
+		slog.Info("vision embed global cache hit")
 	}
-	c.storeSessionEmbedLocked(sessionKey, hash, chunks)
+	if sessionOverlay {
+		c.storeSessionEmbedLocked(sessionKey, hash, chunks)
+	}
 
 	return chunks, nil
 }
@@ -210,6 +221,11 @@ func (c *ImageContext) growCacheForDistinctFrames(frameCount int) {
 	next := make([]imageCache, want)
 	copy(next, c.images)
 	c.images = next
+	if len(c.precomputed) < want {
+		pc := make([]precomputedCache, want)
+		copy(pc, c.precomputed)
+		c.precomputed = pc
+	}
 	slog.Info("vision embed cache auto-grown for multimodal turn",
 		"slots", want,
 		"frames", frameCount,
@@ -251,12 +267,18 @@ func (c *ImageContext) storeSessionEmbedLocked(sessionKey string, hash uint64, c
 		if len(c.sessionEmbedLRU) >= sessionEmbedMaxSessions {
 			c.evictSessionEmbedLocked(c.sessionEmbedLRU[0])
 		}
-		st = sessionEmbedState{byHash: make(map[uint64][]llama.MtmdChunk)}
+		st = sessionEmbedState{
+			byHash:            make(map[uint64][]llama.MtmdChunk),
+			precomputedByHash: make(map[uint64][]visionChunk),
+		}
 		// Key is new: append to tail. No bump needed — it is already at the tail.
 		c.sessionEmbedLRU = append(c.sessionEmbedLRU, sessionKey)
 	} else {
 		if st.byHash == nil {
 			st.byHash = make(map[uint64][]llama.MtmdChunk)
+		}
+		if st.precomputedByHash == nil {
+			st.precomputedByHash = make(map[uint64][]visionChunk)
 		}
 		// Existing session: move to tail so it is evicted last.
 		c.bumpSessionEmbedLRULocked(sessionKey)
@@ -283,4 +305,55 @@ func (c *ImageContext) evictSessionEmbedLocked(key string) {
 			return
 		}
 	}
+}
+
+func (c *ImageContext) findSessionPrecomputedLocked(sessionKey string, hash uint64) ([]visionChunk, bool) {
+	if c == nil || sessionKey == "" {
+		return nil, false
+	}
+	st, ok := c.sessionEmbeds[sessionKey]
+	if !ok {
+		return nil, false
+	}
+	if sessionEmbedTTL > 0 && time.Since(st.updatedAt) > sessionEmbedTTL {
+		c.evictSessionEmbedLocked(sessionKey)
+		return nil, false
+	}
+	vc, ok := st.precomputedByHash[hash]
+	if !ok {
+		return nil, false
+	}
+	st.updatedAt = time.Now()
+	c.sessionEmbeds[sessionKey] = st
+	c.bumpSessionEmbedLRULocked(sessionKey)
+	slog.Info("precomputed_embedding session cache hit", "session_key", sessionKey)
+	return cloneVisionChunks(vc), true
+}
+
+func (c *ImageContext) storeSessionPrecomputedLocked(sessionKey string, hash uint64, chunks []visionChunk) {
+	if c == nil || sessionKey == "" || len(chunks) == 0 {
+		return
+	}
+	if c.sessionEmbeds == nil {
+		c.sessionEmbeds = make(map[string]sessionEmbedState)
+	}
+	st, ok := c.sessionEmbeds[sessionKey]
+	if !ok {
+		if len(c.sessionEmbedLRU) >= sessionEmbedMaxSessions {
+			c.evictSessionEmbedLocked(c.sessionEmbedLRU[0])
+		}
+		st = sessionEmbedState{
+			byHash:            make(map[uint64][]llama.MtmdChunk),
+			precomputedByHash: make(map[uint64][]visionChunk),
+		}
+		c.sessionEmbedLRU = append(c.sessionEmbedLRU, sessionKey)
+	} else {
+		if st.precomputedByHash == nil {
+			st.precomputedByHash = make(map[uint64][]visionChunk)
+		}
+		c.bumpSessionEmbedLRULocked(sessionKey)
+	}
+	st.precomputedByHash[hash] = cloneVisionChunks(chunks)
+	st.updatedAt = time.Now()
+	c.sessionEmbeds[sessionKey] = st
 }
