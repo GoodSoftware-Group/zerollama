@@ -176,6 +176,7 @@ static int repo_training_site_packages(
 	char pydir[64];
 	char libroot[4096];
 	char site[4096];
+	/* WHY .venv-training first: canonical operator path (uv); venv-training is legacy fallback only. */
 	static const char *venv_names[] = {".venv-training", "venv-training", NULL};
 	size_t i;
 

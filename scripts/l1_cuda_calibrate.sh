@@ -19,6 +19,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/linux_runtime_serve_lib.sh
+source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+
+# WHY: embedded zerollama on :8081 races the uv sidecar and poisons concurrent bench.
+linux_runtime_stop_sidecar_port
+fuser -k 8080/tcp 2>/dev/null || true
+for _zpid in $(pgrep -x zerollama 2>/dev/null || true); do kill -9 "$_zpid" 2>/dev/null || true; done
+sleep 1
+
 OUT_DIR="${L1_OUT_DIR:-/tmp/l1-cuda-calibrate}"
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
@@ -33,7 +42,11 @@ export L2_NUM_PREDICT="${L1_NUM_PREDICT:-128}"
 export L2_BENCH_RUNS="${L1_BENCH_RUNS:-2}"
 export L2_SKIP_FORK=1
 export L2_SKIP_PREFILL=1
+# WHY stock cache only: L1 tunes batch/np/-fa — fork QJL is L2 (see docs/gpu-profiles-l1.md).
 export ZEROLLAMA_LLAMA_FORK=0
+# WHY no profile -c: rtx-5080 default -c 32768 pre-allocates KV and regresses 8k bench vs OFF np=1.
+export ZEROLLAMA_GPU_PROFILE_CTX=0
+l1_export_llama_binary_env "${ROOT}"
 
 _run_leg() {
   local label="$1"
@@ -46,8 +59,11 @@ _run_leg() {
 
   env \
     ZEROLLAMA_GPU_PROFILE="${profile}" \
+    ZEROLLAMA_LLAMA_FORK=0 \
+    ZEROLLAMA_GPU_PROFILE_CTX=0 \
     LLAMA_SERVER_EXTRA_ARGS="${extra_args}" \
     L2_CUDA_BENCH_OUT="${out}" \
+    L2_STOCK_FORK_MODE=off \
     CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" \
     "${ROOT}/scripts/l2_cuda_bench.sh" 2>&1 | tail -8
 

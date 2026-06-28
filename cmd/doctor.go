@@ -922,7 +922,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "missing (optional for /api/train MPS LoRA)",
-			FixHint: "./scripts/training_uv_venv.sh --verify or MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh",
+			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
 		}
 	}
 	cmd := exec.Command(py, "-c", "import torch, peft")
@@ -931,7 +931,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "torch/peft import failed",
-			FixHint: "TRAINING_UV_SYNC=1 ./scripts/training_uv_venv.sh --verify",
+			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify",
 		}
 	}
 	return doctorCheck{

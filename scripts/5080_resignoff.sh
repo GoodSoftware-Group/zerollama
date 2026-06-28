@@ -74,26 +74,44 @@ if run_tier 0; then
   fi
 fi
 
-if run_tier 1 || run_tier 2 || run_tier 4; then
-  if [[ "${NO_SERVE}" -eq 0 ]]; then
-    echo "== start serve =="
-    5080_start_serve
+5080_start_serve_with_profile() {
+  local profile="${1:-auto}"
+  if [[ "${profile}" == "0" ]]; then
+    echo "== start serve (ZEROLLAMA_GPU_PROFILE=0) =="
+    5080_stop_serve
+    ZEROLLAMA_GPU_PROFILE=0 5080_start_serve
   else
-    echo "== --no-serve: skipping serve start =="
+    echo "== start serve (L1 GPU profile auto) =="
+    5080_stop_serve
+    unset ZEROLLAMA_GPU_PROFILE
+    5080_start_serve
+  fi
+}
+
+if run_tier 1; then
+  if [[ "${NO_SERVE}" -eq 0 ]]; then
+    # WHY: embedded runtime reads profile at serve start; rtx-5080 qjl1_256 breaks 1B smoke GGUF.
+    5080_start_serve_with_profile 0
+  else
     5080_wait_health || {
       echo "serve not healthy on :8081 — drop --no-serve or run 5080_start_serve" >&2
       exit 1
     }
   fi
-fi
-
-if run_tier 1; then
   echo "== tier 1: Phase 11–13 base =="
   5080_cd_repo
   "${ROOT}/scripts/gpu_5080_session.sh"
 fi
 
 if run_tier 2; then
+  if [[ "${NO_SERVE}" -eq 0 ]]; then
+    5080_start_serve_with_profile auto
+  else
+    5080_wait_health || {
+      echo "serve not healthy on :8081 — drop --no-serve or run 5080_start_serve" >&2
+      exit 1
+    }
+  fi
   echo "== tier 2: L1 + L3 production =="
   5080_cd_repo
   RUN_E2E_L1=1 RUN_E2E_L3=1 CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" \

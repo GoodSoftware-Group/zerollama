@@ -1,5 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 28 Jun 2026 12:00:00 -0700
+Subject: [PATCH] ollama: kv seq-copy endpoint (Radix L3 v1)
+
+POST /kv/seq-copy — cross-slot KV seed for Radix prefix share (L3 v1).
+Runtime subprocess path calls this when donor slot KV must copy to a cold target.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ tools/server/server-context.cpp | 90 +++++++++++++++++++++++++++++++++
+ tools/server/server-context.h   |  2 +
+ tools/server/server-task.cpp    | 13 +++++
+ tools/server/server-task.h      | 11 ++++
+ tools/server/server.cpp         |  1 +
+ 5 files changed, 117 insertions(+)
+
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index cf87539..e930cbb 100644
+index cf875391f..e930cbb88 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -2357,6 +2357,53 @@ private:
@@ -114,7 +131,7 @@ index cf87539..e930cbb 100644
      auto res = create_response();
      if (!params.embedding) {
 diff --git a/tools/server/server-context.h b/tools/server/server-context.h
-index 58dda89..ec66eb6 100644
+index 58dda8914..ec66eb651 100644
 --- a/tools/server/server-context.h
 +++ b/tools/server/server-context.h
 @@ -103,6 +103,7 @@ struct server_routes {
@@ -134,7 +151,7 @@ index 58dda89..ec66eb6 100644
  
      // using unique_ptr to allow late initialization of const
 diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
-index b95a127..3db46b6 100644
+index b95a127e5..3db46b614 100644
 --- a/tools/server/server-task.cpp
 +++ b/tools/server/server-task.cpp
 @@ -2037,6 +2037,19 @@ json server_task_result_slot_erase::to_json() {
@@ -158,7 +175,7 @@ index b95a127..3db46b6 100644
  // server_task_result_get_lora
  //
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
-index 1f00304..6e844ca 100644
+index 1f0030450..6e844cac9 100644
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
 @@ -24,6 +24,7 @@ enum server_task_type {
@@ -194,7 +211,7 @@ index 1f00304..6e844ca 100644
      struct lora {
          common_adapter_lora_info info;
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 375d391..a765acd 100644
+index 375d3919d..a765acd52 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
 @@ -273,6 +273,7 @@ int main(int argc, char ** argv) {

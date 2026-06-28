@@ -39,7 +39,13 @@ fi
 
 runtime_uv_venv
 
-UNIFIED_ROOT="${LLAMA_CPP_ROOT:-${ZEROLLAMA_PARENT}/llama.cpp}"
+if [[ -n "${LLAMA_CPP_ROOT:-}" && -x "${LLAMA_CPP_ROOT}/build/bin/llama-server" ]]; then
+  UNIFIED_ROOT="${LLAMA_CPP_ROOT}"
+elif [[ -n "${LLAMA_SERVER_BIN:-}" && -x "${LLAMA_SERVER_BIN}" ]]; then
+  UNIFIED_ROOT="$(cd "$(dirname "${LLAMA_SERVER_BIN}")/../.." && pwd)"
+else
+  UNIFIED_ROOT="${ZEROLLAMA_PARENT}/llama.cpp"
+fi
 STOCK_ROOT="${STOCK_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
 FORK_ROOT="${ELIZA_LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
 L2_OUT="${L2_CUDA_BENCH_OUT:-/tmp/l2-cuda-bench.json}"
@@ -181,19 +187,14 @@ estimate = http_json(
     {"gguf": gguf, "num_ctx": num_ctx},
 )
 
-# Profile argv: prefer live gpu_profile.llama_server_args from /health when present
-# (populated if runtime ships that field); otherwise fall back to reading single_gpu.yaml.
-# WHY fallback: this is metadata for the report only — bench execution uses the live sidecar.
+# Profile argv for the report: rebuild RuntimeConfig with the same env as the live sidecar.
+# WHY not gpu_profile.llama_server_args: /health exposes profile metadata, not merged argv.
+from runtime.config import RuntimeConfig
+
+cfg_path = Path("configs/single_gpu.yaml")
+cfg = RuntimeConfig.from_file(cfg_path) if cfg_path.exists() else None
+llama_args = cfg.llama_server_args() if cfg else []
 gp_live = health.get("gpu_profile") or {}
-llama_args = gp_live.get("llama_server_args") or []
-if not llama_args:
-    from runtime.config import RuntimeConfig
-    cfg_path = Path("configs/single_gpu.yaml")
-    if cfg_path.exists():
-        cfg = RuntimeConfig.from_file(cfg_path)
-        llama_args = cfg.llama_server_args()
-    else:
-        cfg = None
 
 # Warmup.
 _, warmup_s = generate(decode_prompt, n_predict=min(16, num_predict))
@@ -279,7 +280,7 @@ PY
 }
 
 if [[ "${L2_SKIP_STOCK:-0}" != "1" ]]; then
-  _l2_run_leg "stock" "${STOCK_ROOT}" "off"
+  _l2_run_leg "stock" "${STOCK_ROOT}" "${L2_STOCK_FORK_MODE:-off}"
 fi
 if [[ "${L2_SKIP_FORK:-0}" != "1" ]]; then
   _l2_run_leg "fork" "${FORK_ROOT}" "auto"

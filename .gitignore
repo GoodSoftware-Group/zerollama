@@ -21,6 +21,7 @@ llama/patches.pre-*/
 /zerollama
 /lib/
 .venv-training/
+venv-training/
 integration/testdata/models/
 
 # Python bytecode

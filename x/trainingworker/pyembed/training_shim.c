@@ -244,14 +244,12 @@ int training_init(const char *repo_root, const char *bootstrap_py, char **err_ou
 		}
 		if (!resolve_training_site_packages(repo_root, py_major, py_minor, site, sizeof(site))) {
 			char msg[640];
+			/* WHY .venv-training in the message: canonical venv path; ABI must match embedded libpython. */
 			snprintf(msg, sizeof(msg),
-				"embedded Python %d.%d: no site-packages found "
-				"(checked TRAINING_UV_SITE_PACKAGES, TRAINING_UV_VENV, "
-				"$repo/.venv-training, $repo/venv-training, PYTHONPATH). "
-				"Recreate: TRAINING_UV_PYTHON_VER=%d.%d TRAINING_UV_VENV=%s/venv-training "
-				"./scripts/training_uv_venv.sh --verify (see docs/gpu-training.md)",
-				py_major, py_minor, py_major, py_minor,
-				repo_root ? repo_root : "$OLLAMA_TRAINING_PYTHONPATH");
+				"embedded Python %d.%d requires .venv-training/lib/python%d.%d/site-packages; "
+				"recreate with TRAINING_UV_PYTHON_VER=%d.%d ./scripts/training_uv_venv.sh --verify "
+				"(see docs/gpu-training.md)",
+				py_major, py_minor, py_major, py_minor, py_major, py_minor);
 			set_err(err_out, msg);
 			goto fail_early;
 		}

@@ -161,11 +161,11 @@ See also: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-nativ
 | Phase 17 llama-server | **PASS** | `phase17_llama_server_smoke.sh` |
 | Phase 17 Linux auto | **PASS** | `phase17_linux_auto_smoke.sh` |
 | Phase 16 edge CUDA | **PASS** | `phase16_edge_smoke.sh` (`P17_NUM_PREDICT=32`) |
-| L1 autotune | **PASS** | eliza-1 9B @ 8k: **+58%** single-stream; **+10%** concurrent N=2 |
+| L1 autotune | **PASS (concurrent)** | eliza-1 9B @ 8k: concurrent **+~16–20%**; single-stream **−5%** (np=2 overhead) |
 | L3 cache (subprocess) | **PASS** | 8k strict + 27k production on eliza-1 9B |
 | L2 CUDA (8k) | **FAIL merge** | Stock wins decode — expected; fork profiles opt-in |
-| Radix cross-slot live | **Mac PASS** / **5080 pending** | `RUN_E2E_L3_RADIX=1` or `L3_RADIX_LIVE=1` — vendor binary; Mac: donor 8.2s → target 0.58s, `radix_seed` 128 tok |
-| `RUN_E2E_UPSTREAM_GGUF=1` bundle | **Partial** | Individual P17/edge smokes PASS; bundled base leg may clash fork cache × stock `llama-server` |
+| Radix cross-slot live | **PASS** | `L3_RADIX_LIVE=1` on eliza-1 9B — donor **10.6s** → target **0.66s**; vendor `/kv/seq-copy` |
+| `RUN_E2E_UPSTREAM_GGUF=1` bundle | **PASS** | Auto-restarts serve profile-off before base smokes; then P17 + Linux auto + edge |
 
 Full checklist: [5080-runbook.md](./5080-runbook.md). Individual L2/L3: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
 
@@ -257,8 +257,8 @@ curl -s http://127.0.0.1:8081/health | jq '.gpu_profile, .llama_args'
 | Profile detection | **PASS** — `rtx-5080`, `n_parallel=2`, `source=match` |
 | `test_gpu_profiles.py` | **PASS** |
 | `gpu_smoke_all` + snapshot | **PASS** |
-| Single-stream A/B @ 8k | **PASS** — 1B Q8 ON **+0.5%**; eliza-1 9B ON **+0.7%** vs OFF |
-| Concurrent A/B @ 8k (`L1C_N=2`) | **PASS** — ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**) |
+| Single-stream A/B @ 8k | **−5%** (informational) — eliza-1 9B OFF **~90** vs ON **~85** tok/s (`np=1` vs `np=2`; calibrate uses `ZEROLLAMA_GPU_PROFILE_CTX=0`) |
+| Concurrent A/B @ 8k (`L1C_N=2`) | **PASS** — ON **~65** vs OFF **~55** agg tok/s (**+~16–20%**) |
 
 **Tune workflow:** `./scripts/l1_cuda_full_gate.sh` (calibrate + concurrent + verdict), or run `./scripts/l1_cuda_calibrate.sh` and `./scripts/l1_cuda_concurrent_bench.sh` separately; edit `runtime/configs/gpu/rtx-5080.json`; rerun. **Session wrapper:** `RUN_E2E_L1=1 ./scripts/gpu_5080_session.sh`. **Why `np=2`:** L3 agent cache needs ≥2 slots; `np=4` wasted KV on single-stream / 1B smoke.
 
@@ -506,7 +506,7 @@ grep -q llama-memory-kv-ext.cpp "$L/src/CMakeLists.txt" || \
 | 3 L3 cache | `l3_cache_smoke.sh` + `l3_gate_report.sh` | **STRICT PASS** on eliza-1 9B @ 8k (`L3_PREFIX_REPEAT=150`, cached turn2 **0.66s** vs no-cache **1.13s**); 1B Q8 SOFT PASS |
 | 3b L3 production | `l3_production_gate.sh` | **PASS** on eliza-1 9B @ 27k — cached **0.72s** vs no-cache **1.48s**; strict ratio **1.02** (open on supernova) |
 | 3c L3 spec × cache | `l3_spec_cache_smoke.sh` | Policy leg — `L3_SPEC_METHOD=ngram` → `allow_cache_prompt=true`; eagle3 + draft → disabled. Optional: `L3_RUN_SPEC_CACHE=1` on full gate |
-| 4 L1 concurrent | `l1_cuda_concurrent_bench.sh` | **PASS** — `L1C_N=2`: ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**) |
+| 4 L1 concurrent | `l1_cuda_concurrent_bench.sh` | **PASS** — `L1C_N=2`: ON **~65** vs OFF **~55** agg tok/s (**+~16–20%** @ 8k) |
 
 ### Gate 1 — Phase 15 in-process (CUDA)
 
@@ -561,7 +561,7 @@ export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
 ```bash
 export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
 ./scripts/l1_cuda_concurrent_bench.sh
-# PASS: profile ON +10.5% aggregate tok/s vs OFF at L1C_N=2 (Jun 2026)
+# PASS: profile ON +~16–20% aggregate tok/s vs OFF at L1C_N=2 (Jun 2026 re-measure)
 ```
 
 Folded into session: `RUN_E2E_PHASE15=1` or `RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh`.

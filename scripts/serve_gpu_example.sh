@@ -32,6 +32,27 @@ export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE="${ZEROLLAMA_RUNTIME_VRAM
 export OLLAMA_TRAINING="${OLLAMA_TRAINING:-true}"
 export OLLAMA_TRAINING_TCP="${OLLAMA_TRAINING_TCP:-:9500}"
 
+# WHY .venv-training + ldd: embedded libpython ABI is fixed at zerollama link time; pkg-config
+# alone can disagree (CT 1564: binary 3.10 vs dev headers 3.11). See docs/gpu-training.md.
+if [[ "${OLLAMA_TRAINING}" == "true" ]]; then
+  # shellcheck source=scripts/training_uv_venv.sh disable=SC1091
+  source "${_ROOT}/scripts/training_uv_venv.sh"
+  _TRAIN_EMBED_PY="$(embedded_training_python_ver)"
+  _TRAIN_VENV="${ZEROLLAMA_REPO}/.venv-training"
+  _TRAIN_SITE="${_TRAIN_VENV}/lib/python${_TRAIN_EMBED_PY}/site-packages"
+  if [[ ! -d "${_TRAIN_SITE}" ]]; then
+    echo "training: missing ${_TRAIN_SITE} — run:" >&2
+    echo "  TRAINING_UV_VENV=${_TRAIN_VENV} TRAINING_UV_PYTHON_VER=${_TRAIN_EMBED_PY} ${_ROOT}/scripts/training_uv_venv.sh --verify" >&2
+    TRAINING_UV_VENV="${_TRAIN_VENV}" TRAINING_UV_PYTHON_VER="${_TRAIN_EMBED_PY}" \
+      "${_ROOT}/scripts/training_uv_venv.sh" --verify >&2 || true
+  fi
+  if [[ -d "${_TRAIN_SITE}" ]]; then
+    export TRAINING_UV_VENV="${_TRAIN_VENV}"
+    export TRAINING_UV_SITE_PACKAGES="${_TRAIN_SITE}"
+    export PYTHONPATH="${_TRAIN_SITE}${PYTHONPATH:+:${PYTHONPATH}}"
+  fi
+fi
+
 # Stability on new GPU architectures (optional).
 export GGML_CUDA_USE_GRAPHS="${GGML_CUDA_USE_GRAPHS:-0}"
 export GGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS:-1}"

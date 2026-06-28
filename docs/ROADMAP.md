@@ -144,7 +144,7 @@ Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial unti
 | 1 | `--edge` routes GGUF via llama-server; runtime chat off | Go | **Done (v0)** |
 | 2 | Linux serve `auto` routes all GGUF | Go | **Done (Jun 2026)** |
 | 3 | Operator doc + env table | Docs | **Done** — [phase16-thin-edge.md](./phase16-thin-edge.md) |
-| 4 | Edge smoke (`phase16_edge_smoke.sh`) | Repo | **Done (Mac + CUDA 5080 Jun 2026)** — individual smokes PASS on CT 1564; full `RUN_E2E_UPSTREAM_GGUF=1` bundle may fail on fork-cache × stock `llama-server` — **runbook:** [5080-runbook.md](./5080-runbook.md#tier-4--phase-16--17-upstream-gguf-path) |
+| 4 | Edge smoke (`phase16_edge_smoke.sh`) | Repo | **Done (Mac + CUDA 5080 Jun 2026)** — `RUN_E2E_UPSTREAM_GGUF=1` bundle PASS on CT 1564 (serve profile-off restart before base smokes) — **runbook:** [5080-runbook.md](./5080-runbook.md#tier-4--phase-16--17-upstream-gguf-path) |
 | 5 | `/api/status` `inference.backend` policy snapshot | Go | **Done (Jun 2026)** — fleet + operator visibility |
 | 6 | Edge compile marker (`-tags edge`) | Go | **Done (v1)** — `build_zerollama_edge.sh`; subprocess runner stub; `ggml_linked=false` in `/api/status` |
 | 7 | Drop in-process ggml from edge binary | Go | **Partial (v2)** — `server.go` excluded with `//go:build !edge`; edge dep tree has no `llama`/`model` CGO; Python embed/MLX remain |
@@ -154,7 +154,7 @@ Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (
 
 ### Phase 8 — shipped
 
-See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked); **Radix L3-R1** live gate on 5080; Phase **17** L2 pin merge. **Done on 5080 (Jun 28 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4.
+See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked); Phase **17** L2 pin merge. **Done on 5080 (Jun 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4 + Radix live.
 
 ---
 
@@ -242,7 +242,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 
 | Milestone | Goal | Owner | Exit criteria |
 |-----------|------|--------|----------------|
-| **L1** | **Per-GPU llama profiles (CUDA + Metal)** | Python | **Done (Jun 2026)** — **Apple:** RAM tiers; M4 Max 128g; `l1_metal_gate.sh`. **NVIDIA 5080:** `rtx-5080.json` (`n_parallel=2`, `batch_size=1024`, `ubatch_size=256`); single-stream 9B **+58%**; **concurrent N=2** **+10%** (`l1_cuda_full_gate.sh` on eliza-1 9B, Jun 28 2026 re-sign-off). Optional supernova GGUF re-run. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md). |
+| **L1** | **Per-GPU llama profiles (CUDA + Metal)** | Python | **Done (Jun 2026)** — **Apple:** RAM tiers; M4 Max 128g; `l1_metal_gate.sh`. **NVIDIA 5080:** `rtx-5080.json` (`n_parallel=2`, `batch_size=1024`, `ubatch_size=256`); **concurrent N=2 +~16–20%** on eliza-1 9B (`l1_cuda_full_gate.sh`, Jun 2026); single-stream **−5%** @ 8k (np=2 overhead — informational). Optional supernova GGUF re-run. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md). |
 | **L2** | **Unified `llama-server` (elizaOS base)** | Repo + C | **Partial (Jun 2026)** — vendor + runtime @ **`c84b3020`**; 16 Ollama patches rebased (`vendor/llama-cpp-c84b3020/`). L2 gates compare L1 vs fork **profiles**. **U3 done:** in-process ggml syncs from same eliza base + patches. Fork profiles stay opt-in until gate passes. Doc: [llama-cpp-unification.md](./llama-cpp-unification.md), [gpu-profiles-l2.md](./gpu-profiles-l2.md). |
 | **L3** | **Prompt cache key → slot bridge** | Go + Python | **Done (Jun 2026)** — pinned slots, subprocess + in-process RAM/disk, batch keys, `/health.llama_cache`. **vLLM spike (Jun 2026):** selective-retention policy (`prefix_cache_policy.py`) — SWA/hybrid GGUF classification, draft-spec disables `cache_prompt`+disk, subprocess `seq_pos` from timings + `GET /slots` fallback. **Decode graph invalidation (Jun 2026):** epoch + `llama_context_cuda_graph_invalidate` (in-process) + `POST /cuda-graph/invalidate` (subprocess llama-server); doc [decode-graph-invalidation.md](./decode-graph-invalidation.md). Smokes: `l3_cache_smoke.sh`, `l3_spec_cache_smoke.sh` (`L3_RUN_SPEC_CACHE=1` on full gate). **5080:** `l3_cuda_full_gate.sh` PASS on eliza-1 9B — 8k cached **−42%** vs no-cache; 27k cached **0.72s** vs **1.48s**. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md). |
 
@@ -281,7 +281,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | Milestone | Goal | WHY | Exit criteria |
 |-----------|------|-----|---------------|
 | **L3-R0** | **Radix v1 shipped** | L3 slot-per-key leaves duplicate prefills across keys | `l3_radix_prefix_smoke.sh` offline PASS; Mac `L3_RADIX_LIVE=1` PASS; doc [radix-prefix-share.md](./radix-prefix-share.md) |
-| **L3-R1** | **5080 live Radix gate** | Same-key L3 signed off on CUDA; cross-slot unproven on ship hardware | `L3_RADIX_LIVE=1` on 5080 session; row in [gpu-profiles-l3.md](./gpu-profiles-l3.md) sign-off table |
+| **L3-R1** | **5080 live Radix gate** | Cross-slot seed on ship CUDA hardware | **Done (Jun 2026)** — `L3_RADIX_LIVE=1` on eliza-1 9B @ CT 1564: donor **10.6s** → target **0.66s**, `radix_seed` 128 tok; row in [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
 | **L3-R2** | **Warm-target catch-up** | Agents sometimes warm a slot then extend prefix; v1 skips when `seq_pos > 0` | `find_radix_share_plan` + admission copy when target behind donor on shared prefix |
 | **L3-R3** | **Ref-count block DAG** | v1 = one contiguous donor chain; vLLM shares blocks across arbitrary overlap | Block allocator + admission in Python; optional Go mirror for queue policy |
 | **L3-R4** | **Remote LMCache tier** | Local `file://` metadata only; fleet restarts / cross-node need blob paths | Redis/NIXL or Mooncake connector; hydrate block pool from remote metadata |
@@ -365,6 +365,8 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 
 **Shipped direction:** Go embeds **CPython** (`x/trainingworker/pyembed`), serves **`/api/train/*`** and legacy **TCP `:9500`** (newline JSON), and coordinates VRAM with the scheduler on CUDA OOM (pause new inference loads → unload runners → ack Python). Training logic stays in repo-root **`training.py`**, loaded in-process—not a second public listener on 9500.
 
+**5080 / CUDA operator default (Jun 2026):** link **`zerollama` against `libpython3.11`** and one **`.venv-training`** on 3.11 (matches `runtime/.venv`). **Why:** single Python generation per host; duplicate 3.10 `venv-training/` trees wasted ~15 GiB and caused ABI footguns. Build: [`scripts/training_embed_build_env.sh`](../scripts/training_embed_build_env.sh).
+
 **Why this track exists:** Fine-tuning stacks (Transformers, PEFT, bitsandbytes) are Python-native; Ollama’s control plane is Go. Embedding Python keeps **public wire** in Go while avoiding a second process and gRPC for every deployment.
 
 ### Phases (training track)
@@ -374,7 +376,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **T1** | **Proactive VRAM (with inference Phase 8)** | **Done** — broker before `load_model` and on inference/runtime paths; OOM path remains safety net. |
 | **T2** | **Auth on `/api/train` and `:9500`** | Same threat model as main HTTP API. |
 | **T3** | **Progress over HTTP** | SSE or WebSocket; reduce poll-only UX. |
-| **T4** | **CPU CI smoke** | **Partial** — Go tests register `/api/train/*` and exercise `GET /api/train/status` (502 without embed is OK in CI). Full embedded-python health still needs integration. |
+| **T4** | **CPU CI smoke** | **Partial** — Go tests register `/api/train/*` and exercise `GET /api/train/status` (502 without embed is OK in CI). Full embedded-python health still needs integration. **Operator hygiene (Jun 2026):** `.venv-training` ABI must match `ldd zerollama` libpython; 5080 ships **3.11 embed + venv** via [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) — see [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). |
 | **T5** | **Native training (optional)** | Rust/libtorch only if Python embed becomes a bottleneck—default stay on PyTorch. |
 | **T6** | **Unified queue policy (directional)** | **Partial** — idle-wait; `priority`; defer queue; **allowed window**; **cross-queue FIFO** (global tickets, Go↔Python mirror). **Next:** richer SLO classes, stricter training/inference class separation. |
 

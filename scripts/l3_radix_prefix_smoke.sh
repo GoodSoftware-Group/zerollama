@@ -125,6 +125,10 @@ server = resolve_llama_server_bin(root)
 lib = resolve_llama_cpp_lib(root)
 if server is None:
     raise SystemExit(f"llama-server not found (root={root}); run ./scripts/build_llama_server.sh")
+# WHY pair .so with chosen binary: 5080_env may leave sibling libllama while vendor server wins.
+vendor_lib = server.parent / "libllama.so"
+if vendor_lib.is_file():
+    lib = vendor_lib
 print(f"export LLAMA_CPP_ROOT={root}")
 print(f"export LLAMA_SERVER_BIN={server}")
 if lib is not None:

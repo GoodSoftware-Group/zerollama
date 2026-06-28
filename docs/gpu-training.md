@@ -159,14 +159,55 @@ Submit jobs the same way as on Linux (`POST /api/train/jobs` with `kind: train`)
 
 ### Installing Python deps (embedded interpreter)
 
-`zerollama` embeds **system** `libpython3` (check with `otool -L` on Mac or `ldd` on Linux). Training packages are loaded via **`PYTHONPATH`** pointing at the uv venv site-packages — not by replacing the embedded interpreter.
+`zerollama` embeds **system** `libpython3` at **link time** (check with `otool -L` on Mac or `ldd $(which zerollama) | grep libpython` on Linux). Training packages are loaded via **`PYTHONPATH`** pointing at the uv venv site-packages — not by replacing the embedded interpreter.
+
+**Why ABI must match:** PyTorch wheels are built for a specific CPython `X.Y`. If the binary embeds `libpython3.10` but `.venv-training` only has `lib/python3.11/site-packages`, `training_init` fails before torch imports — often with `embedded Python 3.10 requires .venv-training/lib/python3.10/site-packages`.
+
+**Why `ldd zerollama` beats pkg-config alone:** `pkg-config python3-embed` reports dev headers on the build host; the installed binary may still link an older `libpython` (common on Debian CTs after partial upgrades). Scripts default to the binary when detectable.
+
+**Canonical venv path:** `$REPO/.venv-training` only. Legacy repo-root `venv-training/` is not used by `training_uv_venv.sh` or serve templates.
 
 **Recommended (uv):**
 
 ```bash
-./scripts/training_uv_venv.sh --verify
-eval "$(./scripts/training_uv_venv.sh --export)"
+# Detect linked libpython (or pass TRAINING_UV_PYTHON_VER explicitly)
+TRAINING_UV_PYTHON_VER="$(./scripts/training_uv_venv.sh --embed-py)"
+TRAINING_UV_VENV="$PWD/.venv-training" TRAINING_UV_PYTHON_VER="${TRAINING_UV_PYTHON_VER}" \
+  ./scripts/training_uv_venv.sh --verify
+eval "$(TRAINING_UV_VENV=$PWD/.venv-training ./scripts/training_uv_venv.sh --export)"
 ```
+
+**Recreate after ABI mismatch** (e.g. venv was 3.11, binary is 3.10):
+
+```bash
+mv .venv-training .venv-training.bak   # optional backup
+TRAINING_UV_VENV=$PWD/.venv-training \
+TRAINING_UV_PYTHON_VER="$(ldd $(which zerollama) | sed -n 's/.*libpython\([0-9.]*\)\.so.*/\1/p' | head -1)" \
+  ./scripts/training_uv_venv.sh --verify
+```
+
+**Prefer Python 3.11 on Linux (recommended when runtime venv is already 3.11):** link `zerollama` against `libpython3.11` at build time so training and runtime share one uv/Python generation. **Why:** avoids maintaining two ABIs on one host; `python3-embed` on Ubuntu 22.04 defaults to 3.10 even after `python3.11-dev` is installed.
+
+```bash
+sudo apt install python3.11-dev pkg-config   # provides python-3.11-embed.pc
+source ./scripts/training_embed_build_env.sh 3.11
+CGO_ENABLED=1 go build -o zerollama .
+cp zerollama /usr/bin/zerollama                # when appropriate
+TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify
+ldd $(which zerollama) | grep libpython        # expect libpython3.11
+```
+
+**Production serve:** copy [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) to `~/bin/serve.sh` — it sets `TRAINING_UV_SITE_PACKAGES` from `ldd zerollama` before `zerollama serve`. CT 1564 operators use `/root/bin/serve.sh`.
+
+**After migrating to 3.11 (disk cleanup):** once `ldd zerollama` shows `libpython3.11` and `./scripts/training_uv_venv.sh --verify` passes, remove duplicate 3.10 trees — each full torch+CUDA venv is ~7 GiB.
+
+```bash
+# Safe when binary + .venv-training are both 3.11:
+rm -rf venv-training/ .venv-training-py310.bak .venv-training.bak
+uv cache prune    # optional; drops orphaned wheel links
+```
+
+**Why delete `venv-training/`:** pre-uv legacy path at repo root; scripts and pyembed no longer read it. Keeping it wastes disk and confuses operators (`git status` showed `?? venv-training/`). **Do not** remove `python3.10-dev` apt packages unless you know nothing else on the host needs system `python3` 3.10.
 
 **Env:**
 
@@ -174,6 +215,8 @@ eval "$(./scripts/training_uv_venv.sh --export)"
 |----------|---------|
 | `UV_BIN` | Which `uv` to use when several copies are installed |
 | `TRAINING_UV_VENV` | Override venv path (default: `$REPO/.venv-training`) |
+| `TRAINING_UV_PYTHON_VER` | uv `--python` spec (default: `ldd zerollama` libpython, else `pkg-config python3-embed`, else `3.11`). **Why not pkg-config alone:** may disagree with the linked binary on partial upgrades. Print only: `./scripts/training_uv_venv.sh --embed-py`. |
+| `TRAINING_EMBED_PY` | Set by [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) when sourcing before `go build` |
 | `TRAINING_UV_AUTO=1` | `serve_mac_runtime.sh` creates the venv on first start if missing |
 
 **Linux + NVIDIA** (CUDA index passed by the script on non-Darwin):
@@ -207,8 +250,9 @@ When `OLLAMA_HOST` binds `0.0.0.0`, set `ZEROLLAMA_GO_URL=http://127.0.0.1:8080`
 | `does not contain training.py` | `OLLAMA_TRAINING_PYTHONPATH` or `ZEROLLAMA_REPO` is set but wrong—fix the path (no auto-fallback). |
 | `set OLLAMA_TRAINING_PYTHONPATH` | No `training.py` found via discovery (binary walk, cwd walk, `$HOME/zerollama`). Example: [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh). |
 | `training_init failed` / import errors | Missing Python deps (`torch`, …). Run [`./scripts/training_uv_venv.sh --verify`](../scripts/training_uv_venv.sh). |
+| `training worker not started` / `embedded Python X.Y requires .venv-training/lib/pythonX.Y/site-packages` | **ABI mismatch or missing venv:** binary embeds one libpython, `.venv-training` has another (e.g. 3.11 venv, 3.10 binary). **Fix:** `TRAINING_UV_PYTHON_VER="$(./scripts/training_uv_venv.sh --embed-py)" TRAINING_UV_VENV=$REPO/.venv-training ./scripts/training_uv_venv.sh --verify`, restart serve. **Why not `venv-training/`:** legacy path; shim and serve scripts expect `.venv-training`. |
 | `No module named 'torch'` with `(.venv)` active | Training uses `PYTHONPATH` from `.venv-training`, not an activated shell venv. Run `./scripts/training_uv_venv.sh --export` before `serve`. |
-| `Failed to load PyTorch C extensions` / `torch/_C` folder | **Python ABI mismatch:** Go embeds system `libpython3-embed` (often 3.10) but `.venv-training` was built for 3.11. Recreate: `TRAINING_UV_PYTHON_VER="$(pkg-config --modversion python3-embed)" ./scripts/training_uv_venv.sh --verify` then rebuild/restart. Shim auto-picks `.venv-training/lib/pythonX.Y/site-packages` matching embedded version. |
+| `Failed to load PyTorch C extensions` / `torch/_C` folder | **Python ABI mismatch:** Go embeds `libpython3.X` but `.venv-training` was built for `3.Y`. Recreate: `TRAINING_UV_PYTHON_VER="$(./scripts/training_uv_venv.sh --embed-py)" ./scripts/training_uv_venv.sh --verify` then restart (rebuild zerollama only if you changed which libpython you link against). |
 | `embedded Python failed to start earlier; restart the process` | A prior `training_init` failed after `Py_Initialize`; `g_init_aborted` is set. **Why:** we do not `Py_Finalize` a half-started interpreter (unsafe with torch). |
 | Port 9500 in use | Set `OLLAMA_TRAINING_TCP` to another address or disable with `0`. |
 | Embedded runtime `GET /health` hangs (training on) | Known shared-interpreter issue: [`docs/bugs/shared-interpreter-health-hang.md`](bugs/shared-interpreter-health-hang.md), repro [`scripts/repro_shared_interpreter_health_hang.sh`](../scripts/repro_shared_interpreter_health_hang.sh). Workaround: `OLLAMA_TRAINING=false` or external runtime (`ZEROLLAMA_RUNTIME_URL` + `ZEROLLAMA_RUNTIME_EMBED=0`). |
@@ -220,6 +264,8 @@ When `OLLAMA_HOST` binds `0.0.0.0`, set `ZEROLLAMA_GO_URL=http://127.0.0.1:8080`
 
 | Area | Location |
 |------|----------|
+| Training venv (uv) | [`scripts/training_uv_venv.sh`](../scripts/training_uv_venv.sh) — `--embed-py`, `--verify`, `--export` |
+| CGO embed version (Linux) | [`scripts/training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) — PKG_CONFIG overlay for `libpython3.11` |
 | Go training client + TCP bridge | `x/trainingworker/client.go` — see [`x/trainingworker/README.md`](../x/trainingworker/README.md) |
 | CGO + C shim + bootstrap | `x/trainingworker/pyembed/` — see [`pyembed/README.md`](../x/trainingworker/pyembed/README.md) |
 | Shared-interpreter `/health` hang | [`docs/bugs/shared-interpreter-health-hang.md`](bugs/shared-interpreter-health-hang.md) |

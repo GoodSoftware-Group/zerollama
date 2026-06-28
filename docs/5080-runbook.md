@@ -1,6 +1,6 @@
 # RTX 5080 runbook — what to run (Jun 2026)
 
-**Status (CT 1564, Jun 28 2026):** **Full re-sign-off PASS** — tiers 1–4 (Phase 11–13 base, L1/L3, Phase 15, Phase 16/17 individual smokes). Only **Radix cross-slot live** (tier 2b) and **L2 fork merge** remain open / informational.
+**Status (CT 1564, Jun 2026):** **Full re-sign-off PASS** — tiers 1–4 (Phase 11–13 base, L1/L3, Phase 15, Phase 16/17 + `RUN_E2E_UPSTREAM_GGUF=1` bundle) + **Radix cross-slot live** on 5080. Only **L2 fork merge** remains open / informational.
 
 **Audience:** Operators on **16 GiB CUDA** hosts (RTX 5080-class, e.g. Proxmox CT 1564) validating zerollama after pull or before release.
 
@@ -68,7 +68,8 @@ pct exec 1564 -- bash -lc 'cd /root/zerollama && …'
 | **Production GGUF (L1/L3)** | eliza-1 9B @ 8k/27k | L1 concurrent + L3 strict/production gates — not 1B smoke. |
 | **Pulled tag** | `zerollama pull llama3.2:3b` | Phase 17 / edge smokes need a local manifest name. |
 | **Runtime venv** | `RUNTIME_UV_SYNC=1 ./scripts/runtime_uv_venv.sh` | Embed needs `uvicorn` on `PYTHONPATH`; Phase 15 `_kv_native` build needs `setuptools>=75`. |
-| **Training venv (optional)** | `./scripts/training_uv_venv.sh` | Embedded training when `OLLAMA_TRAINING=true`. |
+| **Training venv + embed** | `sudo apt install python3.11-dev`; `source ./scripts/training_embed_build_env.sh 3.11 && CGO_ENABLED=1 go build -o zerollama .`; `TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify` | **WHY 3.11 on 5080/CT 1564:** runtime `.venv` is already 3.11; default `python3-embed` on Ubuntu 22.04 is 3.10 — without `training_embed_build_env.sh` the binary and venv diverge. Production: `/root/bin/serve.sh`. |
+| **Legacy 3.10 cleanup** | After both binary and `.venv-training` are 3.11: `rm -rf venv-training/ .venv-training-py310.bak` | **WHY:** duplicate torch stacks ~7 GiB each; legacy `venv-training/` is ignored by scripts. See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). |
 | **NVML (Proxmox passthrough)** | `libnvidia-ml1` must match host kernel module | CT 1564: host **590.48.01** — if `nvidia-smi` reports driver/library mismatch: `nvidia-driver-pinning-590.48.01` + `libnvidia-ml1=590.48.01-1` (`--allow-downgrades`). |
 
 **CT 1564 build + serve (after pull):**
@@ -181,11 +182,11 @@ RUN_E2E_PREFLIGHT=0 RUN_E2E_L1=1 RUN_E2E_L3=1 \
 
 | Gate | Status (CT 1564, Jun 28 2026) | Notes |
 |------|-------------------------------|--------|
-| **L1** single-stream | **PASS** | eliza-1 9B @ 8k: profile ON **+58%** vs OFF (88.7 vs 56.1 tok/s) |
-| **L1** concurrent N=2 | **PASS** | +10.0% agg tok/s (63.5 vs 57.7) — **why `np=2`:** L3 needs ≥2 slots |
+| **L1** single-stream | **−5% @ 8k** (informational) | eliza-1 9B: OFF **~90** tok/s (`np=1`) vs ON **~85** (`rtx-5080`, `np=2`, stock `q8_0`) — expected single-request cost of `n_parallel=2`; calibrate sets `ZEROLLAMA_GPU_PROFILE_CTX=0` (no profile `-c` during 8k bench) |
+| **L1** concurrent N=2 | **PASS** | **+~16–20%** agg tok/s (ON **~65** vs OFF **~55** @ 8k) — **why `np=2`:** L3 needs ≥2 slots; OFF leg may show 1×502 on 2nd thread (expected at `np=1`) |
 | **L3** 8k strict | **PASS** | cached turn2 faster than turn1 and no-cache control |
 | **L3** 27k production | **PASS** | cached faster than no-cache; strict turn2/turn1 ratio may exceed 0.75 on 9B |
-| **Radix cross-slot live** | **Pending (5080)** / **PASS (Mac)** | `RUN_E2E_L3_RADIX=1` or `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — needs **vendor** llama-server (patch 0017). Mac Jun 2026: donor **8.2s** → target **0.58s**, `radix_seed` 128 tokens. 5080: run after L3 same-key PASS on eliza-1 9B. |
+| **Radix cross-slot live** | **PASS** | eliza-1 9B @ 8k, vendor `llama-server` (patch 0017): donor **10.6s** → target **0.66s**; `radix_seed` **128** tokens; `/tmp/l3-radix-prefix-smoke-live.json`. Mac Jun 2026: donor **8.2s** → target **0.58s**. |
 
 Optional spec-decode × L3 policy leg:
 
@@ -240,7 +241,7 @@ RUN_E2E_PREFLIGHT=0 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh
 
 **Why:** Mac edge binary smoke PASS; **Linux CUDA** Phase 16/17 operator sign-off on ship hardware ([ROADMAP Phase 16 #4](./ROADMAP.md#phase-16--exit-criteria-partial)).
 
-**Re-sign-off (CT 1564, Jun 28 2026):** individual P17 / Linux auto / edge smokes **PASS** (`/tmp/phase17-llama-server-smoke.json`, `/tmp/phase17-linux-auto-smoke.json`, `/tmp/phase16-edge-smoke.json`). Full `RUN_E2E_UPSTREAM_GGUF=1` bundle **may FAIL** on the bundled base runtime leg if fork cache types (`qjl1_256`) reach stock `llama-server` after L1/L2 — run individual smokes below, or set `ZEROLLAMA_GPU_PROFILE=0` before the bundle.
+**Re-sign-off (CT 1564, Jun 2026):** `RUN_E2E_UPSTREAM_GGUF=1` bundle **PASS** after `gpu_5080_session.sh` auto-restarts serve with `ZEROLLAMA_GPU_PROFILE=0` (1B smoke + P17 + Linux auto + edge). Individual smokes still valid standalone.
 
 ```bash
 export LLAMA_SERVER_BIN="$HOME/llama.cpp/build/bin/llama-server"
@@ -368,16 +369,16 @@ Full table: [testing-smoke.md](./testing-smoke.md).
 | Track | Gate | Status |
 |-------|------|--------|
 | Phase 11–13 | `gpu_5080_session.sh` | **PASS** |
-| L1 | `l1_cuda_full_gate.sh` | **PASS** (+58% single-stream, +10% concurrent @ 8k) |
+| L1 | `l1_cuda_full_gate.sh` | **PASS (concurrent)** — single-stream **−5%** @ 8k (np=2 overhead); concurrent **+~16–20%** @ 8k |
 | L3 | `l3_cuda_full_gate.sh` / production @ 27k | **PASS** |
 | Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** |
 | Phase 14 | `phase14_5080_signoff.sh` | **PASS** (historical) |
 | L2 @ 8k | `l2_full_gate.sh` | **FAIL merge** (stock wins — expected) |
-| Radix live | `l3_radix_prefix_smoke.sh` | **Mac PASS** (Jun 2026); **5080 pending** — use `RUN_E2E_L3_RADIX=1` |
+| Radix live | `l3_radix_prefix_smoke.sh` | **PASS** (Mac + 5080 Jun 2026) — donor **10.6s** → target **0.66s** on CT 1564; `RUN_E2E_L3_RADIX=1` |
 | Phase 17 P17 | `phase17_llama_server_smoke.sh` | **PASS** |
 | Phase 17 Linux auto | `phase17_linux_auto_smoke.sh` | **PASS** |
 | Phase 16 edge CUDA | `phase16_edge_smoke.sh` | **PASS** (`P17_NUM_PREDICT=32`) |
-| `RUN_E2E_UPSTREAM_GGUF=1` bundle | full session wrapper | **Partial** — base runtime leg may fail after L1/L2 fork cache on stock `llama-server`; use individual smokes |
+| `RUN_E2E_UPSTREAM_GGUF=1` bundle | full session wrapper | **PASS** — auto-restarts serve profile-off before base smokes (fixes qjl1_256 × 1B after L1/L2) |
 | Phase 17 L2 pin merge | criterion #7 | **Partial** |
 
 **Not required on 5080:** `gpt-oss:20b` harmony real-weight (~40+ GiB host RAM); Mac `metal_signoff.sh`.
@@ -392,6 +393,8 @@ Full table: [testing-smoke.md](./testing-smoke.md).
 | `cannot find -lc++` | Debian uses libstdc++ | Rebuild with `-lstdc++` in `llama/llama.go` LDFLAGS |
 | `nvidia-smi` driver/library mismatch | CT userspace ≠ host kernel module | Pin `libnvidia-ml1=590.48.01-1` (CT 1564) |
 | `ModuleNotFoundError: uvicorn` | Embed without runtime venv on `PYTHONPATH` | [Start serve](#start-serve-required-before-tier-1) env block |
+| `training worker not started` / `.venv-training/lib/python3.10/…` | Training venv ABI ≠ embedded libpython | Rebuild with [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) **or** recreate venv for `$(./scripts/training_uv_venv.sh --embed-py)`; restart `/root/bin/serve.sh`. Doc: [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter) |
+| Duplicate training venvs eating disk | Legacy `venv-training/` + `.venv-training-py310.bak` after 3.11 migration | `rm -rf venv-training/ .venv-training-py310.bak`; keep only `.venv-training/` (~7 GiB saved per removed tree) |
 | `/health` timeout / serve “failed to start” | Cold CUDA health ~9s; old 2s curl | Wait with `curl -m 15`; see `LINUX_RT_CURL_TIMEOUT` |
 | 502/503 runtime smokes, ggml still in `/api/ps` | Broker never ran; stale runner | Smokes retry API unload (`keep_alive:0`); free ports and restart serve |
 | Phase 15 multiseq hang | Stale `:8081` after serve restart | `kill $(pgrep -xo zerollama)` + `fuser -k 8080/tcp 8081/tcp` before sign-off |
@@ -400,7 +403,10 @@ Full table: [testing-smoke.md](./testing-smoke.md).
 | Phase 15 `kv_inprocess_n_seq_max=4` not 2 | L1 profile overrides yaml slots | Multiseq smoke sets `ZEROLLAMA_GPU_PROFILE=0` — if manual serve, export it |
 | `free(): invalid pointer` wheel GPU | pip wheel vs pinned libllama skew | Use **inprocess** for CUDA GPU, not wheel GPU |
 | Edge smoke `empty response` | Default `num_predict=8` too short | `P17_NUM_PREDICT=32` |
-| `RUN_E2E_UPSTREAM_GGUF=1` bundle FAIL | L1 fork cache types on stock `llama-server` | Individual P17/edge smokes; or `ZEROLLAMA_GPU_PROFILE=0` before bundle |
+| `RUN_E2E_UPSTREAM_GGUF=1` bundle FAIL | Stale serve still on rtx-5080 fork KV | `gpu_5080_session.sh` restarts profile-off when bundled; or manual `ZEROLLAMA_GPU_PROFILE=0 ZEROLLAMA_LLAMA_FORK=0 5080_start_serve` |
+| L1 single-stream **−39%** false FAIL | Profile ON emitted `-c 32768` during 8k calibrate | `l1_cuda_calibrate.sh` sets `ZEROLLAMA_GPU_PROFILE_CTX=0`; rerun gate |
+| L1 concurrent **0 tok/s** / `llama-server exited early` | `LLAMA_CPP_LIB` sibling `.so` with vendor `llama-server` | Scripts call `l1_export_llama_binary_env` — vendor bin + matching `libllama.so`; `5080_stop_serve` before L1 |
+| L1 sidecar 502 + `go-coordination` spam | Embedded `zerollama serve` still on `:8081` | `5080_stop_serve` (SIGKILL + `:8082`) before `l1_cuda_full_gate.sh` |
 | `/health` hang with training + embed | Shared CPython GIL | `ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`; see [shared-interpreter-health-hang.md](./bugs/shared-interpreter-health-hang.md) |
 
 ---

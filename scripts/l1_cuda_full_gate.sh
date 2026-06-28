@@ -23,6 +23,15 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   echo "warn: l1_cuda_full_gate targets Linux CUDA; continuing anyway" >&2
 fi
 
+# WHY: production serve embed binds :8081/:8082 — kill before sidecar L1 legs.
+if [[ -f "${ROOT}/scripts/5080_env.sh" ]]; then
+  # shellcheck source=scripts/5080_env.sh disable=SC1091
+  source "${ROOT}/scripts/5080_env.sh"
+  5080_stop_serve
+else
+  fuser -k 8080/tcp 8081/tcp 8082/tcp 2>/dev/null || true
+fi
+
 LLAMA_MODEL="${CUDA_LLAMA_MODEL:-${LLAMA_MODEL:-}}"
 if [[ -z "${LLAMA_MODEL:-}" ]]; then
   echo "Set CUDA_LLAMA_MODEL to a production GGUF (7B–9B class on 16GB; eliza-1 9B is ship proxy)" >&2
@@ -43,6 +52,13 @@ echo ""
 if [[ "${L1_SKIP_CALIBRATE:-0}" != "1" ]]; then
   L1_OUT_DIR="${L1_GATE_DIR}/calibrate" \
     "${ROOT}/scripts/l1_cuda_calibrate.sh"
+  # WHY: calibrate loads 9B on GPU; release sidecar + VRAM before concurrent leg.
+  if declare -F 5080_stop_serve >/dev/null 2>&1; then
+    5080_stop_serve
+  else
+    fuser -k 8081/tcp 8082/tcp 2>/dev/null || true
+  fi
+  sleep 3
 fi
 
 if [[ "${L1_SKIP_CONCURRENT:-0}" != "1" ]]; then

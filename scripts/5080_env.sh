@@ -27,9 +27,12 @@ export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-/root/eliza-1-9b-256k.gguf}"
 export RUN_E2E_GGUF="${RUN_E2E_GGUF:-$LLAMA_MODEL}"
 export RUN_E2E_PROXY_MODEL="${RUN_E2E_PROXY_MODEL:-llama3.2:3b}"
 
-# --- Binaries (sibling default; Radix needs vendor — see 5080_build_vendor_llama_server) ---
-export LLAMA_CPP_BIN="${LLAMA_CPP_BIN:-${Z5080_LLAMA_CPP}/build/bin}"
+# --- Binaries: prefer patched vendor (fork QJL + /kv/seq-copy) when built ---
+if [[ -z "${LLAMA_CPP_ROOT:-}" && -x "${Z5080_VENDOR_ROOT}/build/bin/llama-server" ]]; then
+  export LLAMA_CPP_ROOT="${Z5080_VENDOR_ROOT}"
+fi
 export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${Z5080_LLAMA_CPP}}"
+export LLAMA_CPP_BIN="${LLAMA_CPP_BIN:-${LLAMA_CPP_ROOT}/build/bin}"
 export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_BIN}/libllama.so}"
 export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_BIN}/llama-server}"
 export LD_LIBRARY_PATH="${LLAMA_CPP_BIN}:${LD_LIBRARY_PATH:-}"
@@ -43,9 +46,13 @@ export ZEROLLAMA_RUNTIME_CONFIG="${ZEROLLAMA_RUNTIME_CONFIG:-${Z5080_REPO}/runti
 export ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE="${ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE:-auto}"
 export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE="${ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE:-auto}"
 
-# --- Python embed (WHY: ModuleNotFoundError: uvicorn without this) ---
+# --- Python embed (WHY: ModuleNotFoundError: uvicorn without runtime site-packages) ---
+# Training site-packages ABI must match libpython linked into zerollama — see training_uv_venv.sh.
+# shellcheck source=scripts/training_uv_venv.sh disable=SC1091
+source "${Z5080_REPO}/scripts/training_uv_venv.sh"
+_Z5080_EMBED_PY="$(embedded_training_python_ver)"
 export RT_SITE="${RT_SITE:-${Z5080_REPO}/runtime/.venv/lib/python3.11/site-packages}"
-export TRAIN_SITE="${TRAIN_SITE:-${Z5080_REPO}/.venv-training/lib/python3.11/site-packages}"
+export TRAIN_SITE="${TRAIN_SITE:-${Z5080_REPO}/.venv-training/lib/python${_Z5080_EMBED_PY}/site-packages}"
 export PYTHONPATH="${RT_SITE}:${TRAIN_SITE}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # --- Gate defaults (CT minimal tree) ---
@@ -79,11 +86,18 @@ export P17_MODEL="${P17_MODEL:-${RUN_E2E_PROXY_MODEL}}"
   if [[ ! -d runtime/.venv ]]; then
     RUNTIME_UV_SYNC=1 "${Z5080_REPO}/scripts/runtime_uv_venv.sh"
   fi
-  if [[ "${OLLAMA_TRAINING:-false}" == "true" && ! -d .venv-training ]]; then
-    "${Z5080_REPO}/scripts/training_uv_venv.sh"
+  if [[ "${OLLAMA_TRAINING:-false}" == "true" ]]; then
+    local embed_py site
+    embed_py="$(embedded_training_python_ver)"
+    site="${Z5080_REPO}/.venv-training/lib/python${embed_py}/site-packages"
+    if [[ ! -d "$site" ]]; then
+      TRAINING_UV_VENV="${Z5080_REPO}/.venv-training" TRAINING_UV_PYTHON_VER="${embed_py}" \
+        "${Z5080_REPO}/scripts/training_uv_venv.sh" --verify
+    fi
   fi
   export RT_SITE="${Z5080_REPO}/runtime/.venv/lib/python3.11/site-packages"
-  export TRAIN_SITE="${Z5080_REPO}/.venv-training/lib/python3.11/site-packages"
+  embed_py="$(embedded_training_python_ver)"
+  export TRAIN_SITE="${Z5080_REPO}/.venv-training/lib/python${embed_py}/site-packages"
   export PYTHONPATH="${RT_SITE}:${TRAIN_SITE}${PYTHONPATH:+:${PYTHONPATH}}"
 }
 
@@ -123,7 +137,15 @@ export P17_MODEL="${P17_MODEL:-${RUN_E2E_PROXY_MODEL}}"
 }
 
 5080_stop_serve() {
-  kill "$(pgrep -xo zerollama)" 2>/dev/null || fuser -k 8080/tcp 8081/tcp 2>/dev/null || true
+  local pid
+  for pid in $(pgrep -x zerollama 2>/dev/null || true); do
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in $(pgrep -x zerollama 2>/dev/null || true); do
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  fuser -k 8080/tcp 8081/tcp 8082/tcp 2>/dev/null || true
   sleep 1
 }
 
@@ -151,6 +173,11 @@ export P17_MODEL="${P17_MODEL:-${RUN_E2E_PROXY_MODEL}}"
   if [[ ! -d llama/llama.cpp/vendor/cpp-httplib ]] && [[ -d "${Z5080_LLAMA_CPP}/vendor/cpp-httplib" ]]; then
     echo "5080: rsync cpp-httplib from sibling llama.cpp"
     rsync -a "${Z5080_LLAMA_CPP}/vendor/cpp-httplib/" llama/llama.cpp/vendor/cpp-httplib/
+  fi
+  # WHY 3.11 embed: runtime/.venv is 3.11; training .venv-training should match (see training_embed_build_env.sh).
+  if [[ -f "${Z5080_REPO}/scripts/training_embed_build_env.sh" ]] && pkg-config --exists python-3.11-embed 2>/dev/null; then
+    # shellcheck source=scripts/training_embed_build_env.sh disable=SC1091
+    source "${Z5080_REPO}/scripts/training_embed_build_env.sh" 3.11
   fi
   go build -o zerollama .
   if [[ -w /usr/bin ]] || [[ "$(id -u)" -eq 0 ]]; then

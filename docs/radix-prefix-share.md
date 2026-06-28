@@ -179,7 +179,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 | Partial-range seq_cp on hybrid memory | Upstream llama.cpp assert on non-full buffers |
 | In-process multiseq + LFM2 Radix | Metal crash on partial copy; prefer subprocess + full-KV models |
 | Warm-target partial catch-up | v1 only seeds **cold** targets (`seq_pos == 0`); warm slots skip Radix plan |
-| 5080 live Radix gate | Same-key L3 signed off on 5080; cross-slot live smoke validated on Mac only (Jun 2026) |
+| 5080 live Radix gate | **PASS (Jun 2026)** — eliza-1 9B @ CT 1564: donor **10.6s** → target **0.66s**, `radix_seed` 128 tok |
 | Fleet / cross-node donor | Donor must live in the **same** llama-server process (`n_parallel` slots) |
 
 ---
@@ -237,7 +237,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 
 See [ROADMAP — Radix v2 (L3-R)](./ROADMAP.md#radix-v2-l3-r--product-gaps). Suggested order:
 
-1. **L3-R1** — 5080 live Radix gate in sign-off table
+1. **L3-R1** — ~~5080 live Radix gate in sign-off table~~ **Done (Jun 2026)**
 2. **L3-R2** — Warm-target partial catch-up when `0 < seq_pos < donor_matched`
 3. **L3-R3** — Ref-count block pool + scheduler hooks (full RadixAttention parity)
 4. **L3-R4** — Remote LMCache connector + fleet prefix metadata

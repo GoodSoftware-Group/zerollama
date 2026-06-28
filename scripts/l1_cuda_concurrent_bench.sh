@@ -50,26 +50,29 @@ OUT_DIR="${L1C_OUT_DIR:-/tmp/l1-cuda-concurrent}"
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
+# WHY: embedded zerollama on :8081 races uv sidecar (go-coordination + 502 on generate).
+linux_runtime_stop_sidecar_port
+fuser -k 8080/tcp 2>/dev/null || true
+for _zpid in $(pgrep -x zerollama 2>/dev/null || true); do kill -9 "$_zpid" 2>/dev/null || true; done
+sleep 2
+
 L1C_N="${L1C_N:-2}"
 L1C_NUM_CTX="${L1C_NUM_CTX:-8192}"
 L1C_NUM_PREDICT="${L1C_NUM_PREDICT:-128}"
 L1C_BENCH_RUNS="${L1C_BENCH_RUNS:-2}"
 
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess
-export ZEROLLAMA_LLAMA_FORK=0
 export ZEROLLAMA_AUTO_CONFIG=1
 export ZEROLLAMA_GPU_PROFILE_CTX=1
 unset ZEROLLAMA_RUNTIME_CONFIG
 export LINUX_RT_HEALTH_MAX="${LINUX_RT_HEALTH_MAX:-120}"
 
-export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-$(cd "${ROOT}/.." && pwd)/llama.cpp}"
-export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_ROOT}/build/bin/llama-server}"
-export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.so}"
+l1_export_llama_binary_env "${ROOT}"
 
 linux_runtime_urls
 trap linux_runtime_sidecar_cleanup EXIT
 
-_run_concurrent_leg() {
+  _run_concurrent_leg() {
   local label="$1"
   local profile="$2"    # 0 | 1
   local extra_args="${3:-}"
@@ -79,8 +82,11 @@ _run_concurrent_leg() {
   echo "== L1 concurrent: ${label} (profile=${profile} n=${L1C_N} extra='${extra_args}') =="
 
   linux_runtime_stop_sidecar_port
+  # WHY fork=0: L1 concurrent validates n_parallel/batch with stock q8_0 KV (L2 owns QJL/Polar).
+  export ZEROLLAMA_LLAMA_FORK=0
 
   ZEROLLAMA_GPU_PROFILE="${profile}" \
+  ZEROLLAMA_LLAMA_FORK=0 \
   LLAMA_SERVER_EXTRA_ARGS="${extra_args}" \
   linux_runtime_start_sidecar "${LLAMA_MODEL}" ""
 

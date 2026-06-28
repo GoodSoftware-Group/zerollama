@@ -349,6 +349,8 @@ Smoke: `./scripts/video_expand_cache_smoke.sh` (unit), `./scripts/video_agent_ca
 OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
 ```
 
+**GPU training venv (when `OLLAMA_TRAINING=true`):** packages live in `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y must match** the libpython linked into your `zerollama` binary (`ldd $(which zerollama) | grep libpython`). **Why:** embedded CPython loads torch from `PYTHONPATH`, not the venv interpreter — ABI mismatch fails at startup with `training worker not started`. **Linux 5080:** prefer **3.11** embed + venv (same as `runtime/.venv`) via [`scripts/training_embed_build_env.sh`](scripts/training_embed_build_env.sh) before `go build`. Setup: [`scripts/training_uv_venv.sh`](scripts/training_uv_venv.sh) (`--embed-py`, `--verify`); production serve: [`scripts/serve_gpu_example.sh`](scripts/serve_gpu_example.sh). After migration, remove legacy `venv-training/` (~7 GiB). Details: [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter).
+
 ### LM Studio cache (reuse local downloads)
 
 **Why:** LM Studio and zerollama often share a Mac; re-downloading 30–70 GB weights from the registry wastes time and disk when `~/.lmstudio/models` already has them.
@@ -417,7 +419,7 @@ Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models.
 - [Decode graph invalidation](docs/decode-graph-invalidation.md) — **why** L3 slot clears must break ggml CUDA graphs; epoch scaffold + in-process invalidate + subprocess `POST /cuda-graph/invalidate`; rebuild sibling llama-server; Metal no-op note.
 - [vLLM borrowings (L3)](docs/vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; `cache_salt`, drop-last-block, SWA retention, subprocess graph HTTP.
 - [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **L1 GPU profiles** (RAM tiers); Darwin Metal contention policy; scheduler 400/503 errors; **GPU bootstrap discovery**; **Go engine sched_reserve** (qwen35moe); **Jun 2026 sign-off** (`metal_signoff.sh` + **`eliza-1-2b:latest`** qwen35; `qwen35_mac_smoke.sh`).
-- [L1 GPU profiles (autotune)](docs/gpu-profiles-l1.md) — **why** Phase 13 ≠ throughput tuning; **`l1_cuda_full_gate.sh`** PASS on 5080 (+10.5% concurrent); NVIDIA buckets; Apple RAM tiers.
+- [L1 GPU profiles (autotune)](docs/gpu-profiles-l1.md) — **why** Phase 13 ≠ throughput tuning; **`l1_cuda_full_gate.sh`** concurrent **PASS** on 5080 (+~16–20%); NVIDIA buckets; Apple RAM tiers.
 - [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits compat metadata + Metal embed layers; **Go ollama-engine default on Mac** (Jun 2026); `PrimaryFamily()` for VL; thinking-model API fields; opt-in `qwen35_mac_smoke.sh`.
 - [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards; LM Studio MLX disk import policy.
 - [MLX agent prompts](docs/mlx-agent-prompts.md) — **why** agent megaprompts need context cap, tail truncate, single tokenize, tokenize cache, keep-alive floor, and SSE keepalive; operator log field guide.

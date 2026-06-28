@@ -53,6 +53,20 @@ if [[ "${RUN_E2E_UPSTREAM_GGUF:-0}" == "1" ]]; then
   export RUN_E2E_P17=1
   export RUN_E2E_P17_LINUX_AUTO=1
   export RUN_E2E_EDGE=1
+  # WHY restart before gpu_smoke_all: tier-2 L1/L3 leaves serve on rtx-5080 fork KV (qjl1_256),
+  # which breaks the bundled 1B base runtime leg on stock or mismatched llama-server.
+  if ! declare -F 5080_start_serve >/dev/null 2>&1; then
+    if [[ -f "${ROOT}/scripts/5080_env.sh" ]]; then
+      # shellcheck source=scripts/5080_env.sh
+      source "${ROOT}/scripts/5080_env.sh"
+    fi
+  fi
+  if declare -F 5080_start_serve >/dev/null 2>&1; then
+    echo "== upstream bundle: restart serve (ZEROLLAMA_GPU_PROFILE=0) for base smokes =="
+    ZEROLLAMA_GPU_PROFILE=0 ZEROLLAMA_LLAMA_FORK=0 5080_start_serve
+  else
+    echo "warn: RUN_E2E_UPSTREAM_GGUF=1 — source scripts/5080_env.sh so base smokes use profile-off serve" >&2
+  fi
 fi
 export GPU_PHASE13_SNAPSHOT_OUT="${GPU_PHASE13_SNAPSHOT_OUT:-/tmp/5080-session.json}"
 

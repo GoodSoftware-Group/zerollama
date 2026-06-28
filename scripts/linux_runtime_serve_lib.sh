@@ -147,3 +147,65 @@ linux_runtime_resume_if_needed() {
     sleep 1
   fi
 }
+
+# L1 CUDA gates — prefer patched vendor llama-server (fork QJL/Polar) when built.
+l1_vendor_llama_cpp_root() {
+  local repo="${1:?}"
+  local pin vendor
+  pin="$(grep '^FETCH_HEAD=' "${repo}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo c84b3020)"
+  vendor="${repo}/vendor/llama-cpp-${pin}"
+  if [[ -x "${vendor}/build/bin/llama-server" ]]; then
+    echo "${vendor}"
+    return 0
+  fi
+  return 1
+}
+
+l1_export_llama_binary_env() {
+  local repo="${1:?}"
+  local root parent
+  parent="$(cd "${repo}/.." && pwd)"
+  if [[ -n "${LLAMA_CPP_ROOT:-}" && -x "${LLAMA_CPP_ROOT}/build/bin/llama-server" ]]; then
+    root="${LLAMA_CPP_ROOT}"
+  elif root="$(l1_vendor_llama_cpp_root "${repo}")"; then
+    :
+  elif [[ -x "${parent}/llama.cpp/build/bin/llama-server" ]]; then
+    root="${parent}/llama.cpp"
+  else
+    echo "L1: no llama-server — run: make -f Makefile.sync apply-patches && ./scripts/build_llama_server.sh" >&2
+    return 1
+  fi
+  export LLAMA_CPP_ROOT="${root}"
+  export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${root}/build/bin/llama-server}"
+  # WHY always match .so to binary: 5080_env may set sibling libllama while bin is vendor.
+  export LLAMA_CPP_LIB="${root}/build/bin/libllama.so"
+}
+
+llama_server_supports_fork() {
+  local bin="${1:-${LLAMA_SERVER_BIN:-}}"
+  [[ -x "${bin}" ]] || return 1
+  "${bin}" --help 2>&1 | grep -qE 'qjl1_256|ctx-checkpoints'
+}
+
+# profile: 0 = OFF baseline (stock q8_0); 1 = ON leg (fork auto when binary supports it).
+l1_apply_fork_env() {
+  local profile="${1:-1}"
+  case "${L1_LLAMA_FORK:-auto}" in
+    0|off|false|no|stock)
+      export ZEROLLAMA_LLAMA_FORK=0
+      ;;
+    1|on|fork|eliza)
+      export ZEROLLAMA_LLAMA_FORK=1
+      ;;
+    auto|*)
+      if [[ "${profile}" == "0" ]]; then
+        export ZEROLLAMA_LLAMA_FORK=0
+      else
+        unset ZEROLLAMA_LLAMA_FORK
+        if ! llama_server_supports_fork "${LLAMA_SERVER_BIN:-}"; then
+          export ZEROLLAMA_LLAMA_FORK=0
+        fi
+      fi
+      ;;
+  esac
+}

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Training venv ABI + serve scripts (Jun 2026)
+
+**Why:** CT 1564 operators saw `training worker not started` when `.venv-training` was built for Python 3.11 but the installed `zerollama` embeds `libpython3.10`. PyTorch wheels are ABI-specific; pointing `PYTHONPATH` at the wrong `pythonX.Y/site-packages` fails before torch imports. Legacy repo-root `venv-training/` and pkg-config-only detection made serve scripts pick the wrong path or version.
+
+**Resolution on 5080/CT 1564:** rebuild `zerollama` with **`libpython3.11`** (matches `runtime/.venv` and uv defaults), keep a single `.venv-training` on 3.11, delete legacy 3.10 trees (~15 GiB).
+
+- **`scripts/training_uv_venv.sh`** — always uses `$REPO/.venv-training` (drops auto-pick of legacy `venv-training/`); `embedded_training_python_ver()` prefers `ldd zerollama` over `pkg-config python3-embed`; new `--embed-py` flag for serve/5080 scripts.
+- **`scripts/training_embed_build_env.sh`** — PKG_CONFIG overlay so `go build` links `libpython3.11` (or chosen version) when distro `python3-embed` is still 3.10. **`5080_build_zerollama`** sources it when `python-3.11-embed` exists.
+- **`scripts/serve_gpu_example.sh`** / **`/root/bin/serve.sh` (CT 1564)** — set `TRAINING_UV_SITE_PACKAGES` from linked libpython before `zerollama serve`; auto-run `training_uv_venv.sh --verify` when site-packages missing.
+- **`x/trainingworker/pyembed/training_shim.c`** — clearer operator error: `embedded Python X.Y requires .venv-training/lib/pythonX.Y/site-packages`.
+- **`.gitignore`** — `venv-training/` (legacy duplicate venv; only `.venv-training/` is canonical).
+- **Doc:** [gpu-training.md](docs/gpu-training.md) (ABI matching, 3.11 build, cleanup), [5080-runbook.md](docs/5080-runbook.md), [development.md](docs/development.md) (Linux CGO embed build).
+
 ### ANE in-process dflash draft — B1–B6 lab track (Jun 2026)
 
 **Why:** maderix ANE bridge requires **IOSurface in the same PID** as ggml Metal; subprocess draft daemons proved compile-once scheduling but cannot hand off activations to llama-server. In-process hook on **dflash speculative decode** validates map+eval latency and sidecar weight extract **before** routing draft tokens from ANE (B7+). **Why not production `:11434`:** hook adds measurable e2e overhead and draft tokens remain Metal ggml until full subgraph MIL lands.
@@ -219,9 +232,9 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 
 **Why:** Mac `metal_signoff.sh` closed M9; CUDA needed the same evidence on ship hardware after `fd7042bc` + NVML 590.48.01 fix + embed `PYTHONPATH`/`LD_LIBRARY_PATH` hygiene.
 
-- **Tier 1–3 PASS** — `gpu_5080_session.sh`, L1 (+58% / +10% on eliza-1 9B @ 8k), L3 8k + 27k, `phase15_inprocess_signoff.sh`.
+- **Tier 1–3 PASS** — `gpu_5080_session.sh`, L1 concurrent **+~16–20%** / single-stream **−5%** @ 8k on eliza-1 9B, L3 8k + 27k, `phase15_inprocess_signoff.sh`.
 - **Tier 4 PASS (individual smokes)** — `phase17_llama_server_smoke.sh`, `phase17_linux_auto_smoke.sh`, `phase16_edge_smoke.sh` (`P17_NUM_PREDICT=32`); artifacts under `/tmp/phase17-*`, `/tmp/phase16-edge-smoke.json`.
-- **Still open:** Radix `L3_RADIX_LIVE=1` on 5080; L2 fork merge @ 8k (stock wins); bundled `RUN_E2E_UPSTREAM_GGUF=1` may fail on fork-cache × stock `llama-server` — use individual smokes or `ZEROLLAMA_GPU_PROFILE=0`.
+- **Still open:** L2 fork merge @ 8k/27k (stock wins — fork profiles opt-in). Radix live and `RUN_E2E_UPSTREAM_GGUF=1` bundle PASS on 5080 Jun 2026.
 - **Doc:** [5080-runbook.md](docs/5080-runbook.md) — now **self-contained** (serve startup, sm_120 libllama build, troubleshooting); operator guide = extended reference.
 
 ### 5080 runbook self-contained expansion (Jun 2026)
@@ -715,7 +728,7 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 
 **Why:** L1/L3 exit criteria need one-shot orchestrators (not three manual scripts). Proxmox CT 1564 ships inference to remote Ruby clients but minimal checkouts cannot `go build` without vendored `cpp-httplib`; default `OLLAMA_HOST` binds localhost only.
 
-- **`scripts/l1_cuda_full_gate.sh`** + **`l1_gate_report.sh`** — calibrate + concurrent bench → merged `gate.json` + PASS/REGRESS verdict. **Why:** single-stream can be flat (+0.7%); concurrent N=2 is the ship bar (+10.5% on eliza-1 9B).
+- **`scripts/l1_cuda_full_gate.sh`** + **`l1_gate_report.sh`** — calibrate + concurrent bench → merged `gate.json` + PASS/REGRESS verdict. **Why:** single-stream may show **−5%** np overhead @ 8k; concurrent N=2 is the ship bar (**+~16–20%** on eliza-1 9B).
 - **`scripts/l1_full_gate.sh`** / **`l1_metal_gate.sh`** — platform wrappers (CUDA vs Metal).
 - **`scripts/l3_cuda_full_gate.sh`** + **`l3_gate_report.sh`** — 8k smoke + 27k production gate → merged verdict. **Why:** wiring @ 8k ≠ agent-scale win @ 27k.
 - **`scripts/l3_full_gate.sh`** — dispatches CUDA vs Mac smoke paths.
@@ -738,9 +751,9 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 
 ### L1 concurrent + L3 production gates — 5080 CT 1564 (Jun 2026)
 
-**Why:** Single-stream L1 calibration showed only +0.5%/+0.7%; `n_parallel=2` must win under concurrent agent load. L3 @ 8k strict PASS did not prove cache at production ctx (27k).
+**Why:** Single-stream L1 calibration: 1B **+0.5%**; 9B **−5%** @ 8k with `np=2` (expected on one stream). `n_parallel=2` must win under concurrent agent load. L3 @ 8k strict PASS did not prove cache at production ctx (27k).
 
-- **`l1_cuda_concurrent_bench.sh` PASS** — eliza-1 9B, `L1C_N=2` @ 8k: profile ON **102.7** vs OFF **92.9** agg tok/s (**+10.5%**); ON leg 0 errors; OFF leg 1×502 (expected at `n_parallel=1`).
+- **`l1_cuda_concurrent_bench.sh` PASS** — eliza-1 9B, `L1C_N=2` @ 8k: profile ON **~65** vs OFF **~55** agg tok/s (**+~16–20%**); ON leg 0 errors; OFF leg 1×502 (expected at `n_parallel=1`). Re-measure after vendor `libllama.so` pairing fix (Jun 2026).
 - **`l3_production_gate.sh` PASS** — eliza-1 9B @ `L3_NUM_CTX=26624`, `L3_PREFIX_REPEAT=150`: cached turn2 **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met — decode-bound after warm prefill).
 - **`linux_runtime_serve_lib.sh`** — `curl -m` 15s on `/health` wait (WHY: cold health probe ~9s on 5080); kill llama-server on `runtime_port+1` on stop.
 - **Docs:** [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-profiles-l3.md](docs/gpu-profiles-l3.md), [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [ROADMAP.md](docs/ROADMAP.md).
@@ -757,9 +770,9 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 
 **Why:** Eliza-ported profile (`-np 4 -b 2048`) regressed single-stream on 1B Q8 (−12.5%); production 9B only −1% — slot overhead dominates on tiny models.
 
-- **`scripts/l1_cuda_calibrate.sh`** — OFF vs ON (+ `L1_SWEEP_NP`) through `l2_cuda_bench.sh`; cleans `${L1_OUT_DIR}` each run.
+- **`scripts/l1_cuda_calibrate.sh`** — OFF vs ON (+ `L1_SWEEP_NP`) through `l2_cuda_bench.sh`; sets `ZEROLLAMA_GPU_PROFILE_CTX=0` + `ZEROLLAMA_LLAMA_FORK=0`; cleans `${L1_OUT_DIR}` each run.
 - **`scripts/l2_cuda_bench.sh`** — `ZEROLLAMA_GPU_PROFILE` overridable (default `1`) for L1 OFF baseline.
-- **`runtime/configs/gpu/rtx-5080.json`** — `n_parallel=2`, `batch_size=1024`, `ubatch_size=256` (half 4090 batch for 16 GiB). Measured: 1B **+0.5%**, 9B **+0.7%** vs OFF @ 8k.
+- **`runtime/configs/gpu/rtx-5080.json`** — `n_parallel=2`, `batch_size=1024`, `ubatch_size=256` (half 4090 batch for 16 GiB). Measured @ 8k: 1B **+0.5%** single-stream; 9B **−5%** single-stream / **+~16–20%** concurrent (`L1C_N=2`).
 - **Docs:** [gpu-profiles-l1.md](docs/gpu-profiles-l1.md), [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [ROADMAP.md](docs/ROADMAP.md).
 
 ### RTX 5080 CUDA gates — Phase 15 PASS, L2 FAIL merge, L3 STRICT PASS (Jun 2026)

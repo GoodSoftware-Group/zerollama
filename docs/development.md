@@ -6,6 +6,18 @@ Install prerequisites:
 - C/C++ Compiler e.g. Clang on macOS, [TDM-GCC](https://github.com/jmeubank/tdm-gcc/releases/latest) (Windows amd64) or [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Windows arm64), GCC/Clang on Linux.
 - **Linux:** `python3-dev` (or `python3-devel`) and `pkg-config` — required so CGO can link **embedded CPython** for GPU training (`pkg-config python3-embed`, used by `x/trainingworker/pyembed`). Example: `sudo apt install python3-dev pkg-config`. **Why:** the Go binary embeds the interpreter for `training.py`; without headers and `libpython3`, the link step fails early instead of shipping a binary that cannot load PyTorch at runtime.
 
+**Linux training embed (5080 / Ubuntu 22.04):** default `python3-embed` is **3.10** even when `runtime/.venv` uses **3.11**. To align training with runtime on one Python generation:
+
+```bash
+sudo apt install python3.11-dev pkg-config
+source ./scripts/training_embed_build_env.sh 3.11   # WHY: overlay pkg-config before go build
+CGO_ENABLED=1 go build -o zerollama .
+TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify
+ldd ./zerollama | grep libpython   # expect 3.11
+```
+
+See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). **`5080_build_zerollama`** in [`scripts/5080_env.sh`](../scripts/5080_env.sh) sources the embed overlay automatically when `python-3.11-embed` is installed.
+
 Then build and run Ollama from the root directory of the repository:
 
 ```shell

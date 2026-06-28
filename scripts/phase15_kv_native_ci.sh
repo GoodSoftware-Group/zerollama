@@ -20,7 +20,7 @@ echo "== Phase 15: build native extension (in-tree) =="
 )
 
 echo "== Phase 15: KV pytest (native + bind + physical + tick) =="
-PYTHONPATH=. python3 -m pytest \
+PYTHONPATH=.:${PYTHONPATH:-} python3 -m pytest \
   tests/test_kv_native_parity.py \
   tests/test_block_pool.py \
   tests/test_kv_bind.py \
@@ -62,7 +62,7 @@ echo "== Phase 15: health KV smoke =="
 "${ROOT}/scripts/phase15_health_smoke.sh"
 
 echo "== Phase 15: backend factory (native) =="
-PYTHONPATH=. ZEROLLAMA_RUNTIME_KV_NATIVE=1 python3 -c "
+PYTHONPATH=.:${PYTHONPATH:-} ZEROLLAMA_RUNTIME_KV_NATIVE=1 python3 -c "
 from runtime.kv.backend import kv_backend_health, create_block_pool
 h = kv_backend_health()
 assert h['backend'] == 'native' and h['native_available']
