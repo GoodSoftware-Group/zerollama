@@ -11,7 +11,7 @@ extern "C" {
 /* Call once before Py_Initialize. Registers the native extension module. */
 void training_preinit_native_module(void);
 
-/* repo_root: directory containing training.py (must be on sys.path first).
+/* repo_root: directory containing training.py (appended to sys.path for import training).
  * err_out: malloc'd UTF-8 string on failure; caller must free().
  * Returns 0 on success.
  */

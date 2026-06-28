@@ -1,3 +1,5 @@
+//go:build darwin
+
 // ANE probe integration — subprocess smoke test for maderix/ANE libane_bridge.
 //
 // Why not CGO in zerollama: private _ANEClient APIs break across macOS updates;

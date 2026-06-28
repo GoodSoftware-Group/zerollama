@@ -144,13 +144,13 @@ Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial unti
 | 1 | `--edge` routes GGUF via llama-server; runtime chat off | Go | **Done (v0)** |
 | 2 | Linux serve `auto` routes all GGUF | Go | **Done (Jun 2026)** |
 | 3 | Operator doc + env table | Docs | **Done** — [phase16-thin-edge.md](./phase16-thin-edge.md) |
-| 4 | Edge smoke (`phase16_edge_smoke.sh`) | Repo | **Done (Mac Jun 2026)** — Linux CUDA via `RUN_E2E_UPSTREAM_GGUF=1` — **runbook:** [5080-runbook.md](./5080-runbook.md#tier-4--phase-16--17-upstream-gguf-path-open-on-5080) |
+| 4 | Edge smoke (`phase16_edge_smoke.sh`) | Repo | **Done (Mac + CUDA 5080 Jun 2026)** — individual smokes PASS on CT 1564; full `RUN_E2E_UPSTREAM_GGUF=1` bundle may fail on fork-cache × stock `llama-server` — **runbook:** [5080-runbook.md](./5080-runbook.md#tier-4--phase-16--17-upstream-gguf-path) |
 | 5 | `/api/status` `inference.backend` policy snapshot | Go | **Done (Jun 2026)** — fleet + operator visibility |
 | 6 | Edge compile marker (`-tags edge`) | Go | **Done (v1)** — `build_zerollama_edge.sh`; subprocess runner stub; `ggml_linked=false` in `/api/status` |
 | 7 | Drop in-process ggml from edge binary | Go | **Partial (v2)** — `server.go` excluded with `//go:build !edge`; edge dep tree has no `llama`/`model` CGO; Python embed/MLX remain |
 | 8 | Inference control plane “Go gone” | Go | **Not started** — sched loads llama-server + MLX only |
 
-Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (Mac **Done** Jun 2026; Linux CUDA pending).
+Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (Mac **Done** Jun 2026; Linux CUDA **Done** Jun 28 2026 on CT 1564 via individual P17/edge smokes).
 
 ### Phase 8 — shipped
 
@@ -242,7 +242,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next:** Phase **
 
 | Milestone | Goal | Owner | Exit criteria |
 |-----------|------|--------|----------------|
-| **L1** | **Per-GPU llama profiles (CUDA + Metal)** | Python | **Done (Jun 2026)** — **Apple:** RAM tiers; M4 Max 128g; `l1_metal_gate.sh`. **NVIDIA 5080:** `rtx-5080.json` (`n_parallel=2`, `batch_size=1024`, `ubatch_size=256`); single-stream 9B **+0.7%**; **concurrent N=2** **+10.5%** (`l1_cuda_full_gate.sh` on eliza-1 9B). Optional supernova GGUF re-run. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md). |
+| **L1** | **Per-GPU llama profiles (CUDA + Metal)** | Python | **Done (Jun 2026)** — **Apple:** RAM tiers; M4 Max 128g; `l1_metal_gate.sh`. **NVIDIA 5080:** `rtx-5080.json` (`n_parallel=2`, `batch_size=1024`, `ubatch_size=256`); single-stream 9B **+58%**; **concurrent N=2** **+10%** (`l1_cuda_full_gate.sh` on eliza-1 9B, Jun 28 2026 re-sign-off). Optional supernova GGUF re-run. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md). |
 | **L2** | **Unified `llama-server` (elizaOS base)** | Repo + C | **Partial (Jun 2026)** — vendor + runtime @ **`c84b3020`**; 16 Ollama patches rebased (`vendor/llama-cpp-c84b3020/`). L2 gates compare L1 vs fork **profiles**. **U3 done:** in-process ggml syncs from same eliza base + patches. Fork profiles stay opt-in until gate passes. Doc: [llama-cpp-unification.md](./llama-cpp-unification.md), [gpu-profiles-l2.md](./gpu-profiles-l2.md). |
 | **L3** | **Prompt cache key → slot bridge** | Go + Python | **Done (Jun 2026)** — pinned slots, subprocess + in-process RAM/disk, batch keys, `/health.llama_cache`. **vLLM spike (Jun 2026):** selective-retention policy (`prefix_cache_policy.py`) — SWA/hybrid GGUF classification, draft-spec disables `cache_prompt`+disk, subprocess `seq_pos` from timings + `GET /slots` fallback. **Decode graph invalidation (Jun 2026):** epoch + `llama_context_cuda_graph_invalidate` (in-process) + `POST /cuda-graph/invalidate` (subprocess llama-server); doc [decode-graph-invalidation.md](./decode-graph-invalidation.md). Smokes: `l3_cache_smoke.sh`, `l3_spec_cache_smoke.sh` (`L3_RUN_SPEC_CACHE=1` on full gate). **5080:** `l3_cuda_full_gate.sh` PASS on eliza-1 9B — 8k cached **−42%** vs no-cache; 27k cached **0.72s** vs **1.48s**. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md). |
 

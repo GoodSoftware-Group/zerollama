@@ -208,9 +208,11 @@ When `OLLAMA_HOST` binds `0.0.0.0`, set `ZEROLLAMA_GO_URL=http://127.0.0.1:8080`
 | `set OLLAMA_TRAINING_PYTHONPATH` | No `training.py` found via discovery (binary walk, cwd walk, `$HOME/zerollama`). Example: [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh). |
 | `training_init failed` / import errors | Missing Python deps (`torch`, …). Run [`./scripts/training_uv_venv.sh --verify`](../scripts/training_uv_venv.sh). |
 | `No module named 'torch'` with `(.venv)` active | Training uses `PYTHONPATH` from `.venv-training`, not an activated shell venv. Run `./scripts/training_uv_venv.sh --export` before `serve`. |
+| `Failed to load PyTorch C extensions` / `torch/_C` folder | **Python ABI mismatch:** Go embeds system `libpython3-embed` (often 3.10) but `.venv-training` was built for 3.11. Recreate: `TRAINING_UV_PYTHON_VER="$(pkg-config --modversion python3-embed)" ./scripts/training_uv_venv.sh --verify` then rebuild/restart. Shim auto-picks `.venv-training/lib/pythonX.Y/site-packages` matching embedded version. |
 | `embedded Python failed to start earlier; restart the process` | A prior `training_init` failed after `Py_Initialize`; `g_init_aborted` is set. **Why:** we do not `Py_Finalize` a half-started interpreter (unsafe with torch). |
 | Port 9500 in use | Set `OLLAMA_TRAINING_TCP` to another address or disable with `0`. |
 | Embedded runtime `GET /health` hangs (training on) | Known shared-interpreter issue: [`docs/bugs/shared-interpreter-health-hang.md`](bugs/shared-interpreter-health-hang.md), repro [`scripts/repro_shared_interpreter_health_hang.sh`](../scripts/repro_shared_interpreter_health_hang.sh). Workaround: `OLLAMA_TRAINING=false` or external runtime (`ZEROLLAMA_RUNTIME_URL` + `ZEROLLAMA_RUNTIME_EMBED=0`). |
+| `free(): invalid pointer` at training step 0 (5080) | Mismatched libcudnn: serve sets `/usr/hostlibs` for ggml while embedded torch needs bundled cuDNN in `.venv-training/.../torch/lib`. **Fix:** rebuild `zerollama` so `training_shim.c` runs `embedded_prepare_pytorch_ld_path()` before `Py_Initialize` ([`x/pyembed_common/embedded_pytorch_env.c`](../x/pyembed_common/embedded_pytorch_env.c)). Confirm log line `prepended .../torch/lib to LD_LIBRARY_PATH`. Ensure `eval "$(./scripts/training_uv_venv.sh --export)"` before serve. |
 
 ---
 

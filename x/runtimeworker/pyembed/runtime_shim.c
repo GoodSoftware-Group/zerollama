@@ -10,6 +10,10 @@
 
 #include "runtime_shim.h"
 
+#define embedded_prepare_pytorch_ld_path_ex ollama_runtime_prepare_pytorch_ld_path_ex
+#include "../../pyembed_common/embedded_pytorch_env.c"
+#undef embedded_prepare_pytorch_ld_path_ex
+
 static void set_err(char **err_out, const char *msg) {
 	if (!err_out)
 		return;
@@ -65,6 +69,11 @@ int runtime_embed_start(
 
 	int self_init = 0;
 	if (!Py_IsInitialized()) {
+		int py_major = 3, py_minor = 10;
+		const char *ver = Py_GetVersion();
+		if (ver)
+			sscanf(ver, "%d.%d", &py_major, &py_minor);
+		ollama_runtime_prepare_pytorch_ld_path_ex(repo_root, py_major, py_minor);
 		Py_Initialize();
 		if (!Py_IsInitialized()) {
 			set_err(err_out, "Py_Initialize failed");

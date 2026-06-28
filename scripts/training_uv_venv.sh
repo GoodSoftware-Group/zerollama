@@ -16,7 +16,22 @@
 set -euo pipefail
 
 TRAINING_UV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TRAINING_UV_VENV="${TRAINING_UV_VENV:-${TRAINING_UV_ROOT}/.venv-training}"
+if [[ -z "${TRAINING_UV_VENV:-}" ]]; then
+  if [[ -d "${TRAINING_UV_ROOT}/venv-training" ]]; then
+    TRAINING_UV_VENV="${TRAINING_UV_ROOT}/venv-training"
+  else
+    TRAINING_UV_VENV="${TRAINING_UV_ROOT}/.venv-training"
+  fi
+fi
+
+_embedded_python_spec() {
+  if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists python3-embed 2>/dev/null; then
+    pkg-config --modversion python3-embed 2>/dev/null || true
+  fi
+}
+
+# Match libpython3-embed (Go CGO) — default 3.11 only when pkg-config is unavailable (e.g. Mac Xcode).
+TRAINING_UV_PYTHON_VER="${TRAINING_UV_PYTHON_VER:-$(_embedded_python_spec)}"
 TRAINING_UV_PYTHON_VER="${TRAINING_UV_PYTHON_VER:-3.11}"
 
 _training_uv_bin() {

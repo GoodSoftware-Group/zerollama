@@ -7,7 +7,7 @@ package llama
 // Link libstdc++/libc++ when Go tests pull in llama.cpp common (jinja). Production
 // scripts also set CGO_LDFLAGS, but plain `go test ./discover/` must link without them.
 #cgo darwin LDFLAGS: -lc++
-#cgo linux LDFLAGS: -lc++
+#cgo linux LDFLAGS: -lstdc++
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/include
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/common
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/vendor

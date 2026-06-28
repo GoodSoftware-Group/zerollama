@@ -21,6 +21,10 @@
 
 #include "training_shim.h"
 
+#define embedded_prepare_pytorch_ld_path_ex ollama_training_prepare_pytorch_ld_path_ex
+#include "../../pyembed_common/embedded_pytorch_env.c"
+#undef embedded_prepare_pytorch_ld_path_ex
+
 /* Implemented in Go (cgo export). */
 extern void go_training_oom_hook(const char *job_id, const char *message);
 
@@ -105,7 +109,7 @@ int training_init_aborted(void) {
 	return g_init_aborted;
 }
 
-static int append_sys_path(const char *dir, char **err_out) {
+static int append_sys_path_head(const char *dir, char **err_out) {
 	PyObject *sys_path = PySys_GetObject("path");
 	if (!sys_path || !PyList_Check(sys_path)) {
 		set_err(err_out, "sys.path not a list");
@@ -123,7 +127,32 @@ static int append_sys_path(const char *dir, char **err_out) {
 	return 0;
 }
 
-static int append_pythonpath_from_env(char **err_out) {
+static int append_sys_path_tail(const char *dir, char **err_out) {
+	PyObject *sys_path = PySys_GetObject("path");
+	if (!sys_path || !PyList_Check(sys_path)) {
+		set_err(err_out, "sys.path not a list");
+		return -1;
+	}
+	PyObject *p = PyUnicode_FromString(dir);
+	if (!p)
+		return -1;
+	if (PyList_Append(sys_path, p) != 0) {
+		Py_DECREF(p);
+		set_err(err_out, "PyList_Append(sys.path) failed");
+		return -1;
+	}
+	Py_DECREF(p);
+	return 0;
+}
+
+static int embedded_python_version(int *major, int *minor) {
+	const char *ver = Py_GetVersion();
+	if (!ver || sscanf(ver, "%d.%d", major, minor) != 2)
+		return -1;
+	return 0;
+}
+
+static int append_pythonpath_from_env(int py_major, int py_minor, char **err_out) {
 	const char *pp = getenv("PYTHONPATH");
 	if (!pp || !*pp)
 		return 0;
@@ -143,7 +172,9 @@ static int append_pythonpath_from_env(char **err_out) {
 	for (char *entry = strtok(copy, delim); entry; entry = strtok(NULL, delim)) {
 		if (!*entry)
 			continue;
-		if (append_sys_path(entry, err_out) != 0) {
+		if (!path_matches_python_version(entry, py_major, py_minor))
+			continue;
+		if (append_sys_path_head(entry, err_out) != 0) {
 			free(copy);
 			return -1;
 		}
@@ -185,6 +216,15 @@ int training_init(const char *repo_root, const char *bootstrap_py, char **err_ou
 		return -1;
 	}
 
+	{
+		int py_major = 3, py_minor = 10;
+		if (embedded_python_version(&py_major, &py_minor) != 0) {
+			set_err(err_out, "embedded Python version unavailable");
+			return -1;
+		}
+		ollama_training_prepare_pytorch_ld_path_ex(repo_root, py_major, py_minor);
+	}
+
 	Py_Initialize();
 	if (!Py_IsInitialized()) {
 		set_err(err_out, "Py_Initialize failed");
@@ -194,10 +234,34 @@ int training_init(const char *repo_root, const char *bootstrap_py, char **err_ou
 	if (check_embedded_python_version(err_out) != 0)
 		goto fail_early;
 
-	if (append_pythonpath_from_env(err_out) != 0)
-		goto fail_early;
+	{
+		int py_major = 3, py_minor = 10;
+		char site[4096];
 
-	if (append_sys_path(repo_root, err_out) != 0)
+		if (embedded_python_version(&py_major, &py_minor) != 0) {
+			set_err(err_out, "embedded Python version unavailable");
+			goto fail_early;
+		}
+		if (!resolve_training_site_packages(repo_root, py_major, py_minor, site, sizeof(site))) {
+			char msg[640];
+			snprintf(msg, sizeof(msg),
+				"embedded Python %d.%d: no site-packages found "
+				"(checked TRAINING_UV_SITE_PACKAGES, TRAINING_UV_VENV, "
+				"$repo/.venv-training, $repo/venv-training, PYTHONPATH). "
+				"Recreate: TRAINING_UV_PYTHON_VER=%d.%d TRAINING_UV_VENV=%s/venv-training "
+				"./scripts/training_uv_venv.sh --verify (see docs/gpu-training.md)",
+				py_major, py_minor, py_major, py_minor,
+				repo_root ? repo_root : "$OLLAMA_TRAINING_PYTHONPATH");
+			set_err(err_out, msg);
+			goto fail_early;
+		}
+		if (append_sys_path_head(site, err_out) != 0)
+			goto fail_early;
+		if (append_pythonpath_from_env(py_major, py_minor, err_out) != 0)
+			goto fail_early;
+	}
+
+	if (append_sys_path_tail(repo_root, err_out) != 0)
 		goto fail_early;
 
 	PyObject *bs = Py_CompileString(bootstrap_py, "<ollama_training_bootstrap>", Py_file_input);

@@ -189,6 +189,12 @@ sudo cp zerollama /usr/bin/zerollama   # if serve uses /usr/bin/zerollama
 
 **Why `RUN_E2E_PREFLIGHT=0` on GPU gate:** `gpu_5080_session.sh` can skip `phase12_golden_ci.sh` when httplib is missing; CI and full dev hosts still run Go golden tests. GPU smokes should not fail on parser compile in a tree that only ships inference.
 
+**Linux link (`cannot find -lc++`):** Debian CTs link libstdc++, not libc++. Use `-lstdc++` in `llama/llama.go` `#cgo linux LDFLAGS` (not `-lc++`).
+
+**NVML mismatch (Proxmox GPU passthrough):** if `nvidia-smi` reports driver/library version mismatch, align userspace `libnvidia-ml1` with the host kernel module (CT 1564: **590.48.01**). See [5080-runbook.md](./5080-runbook.md#one-time-host-setup).
+
+**Embedded runtime (`ModuleNotFoundError: uvicorn`):** export `PYTHONPATH` to include `runtime/.venv/.../site-packages` before `zerollama serve`. Full build + re-sign-off checklist: [5080-runbook.md](./5080-runbook.md).
+
 ---
 
 ## Production serve (`~/bin/serve.sh`)
@@ -206,7 +212,7 @@ Log line should show `Listening on [::]:8080` or `0.0.0.0:8080` — **not** `127
 
 **Embedded runtime stays loopback:** Go embeds Python runtime on `127.0.0.1:8081` (`ZEROLLAMA_RUNTIME_EMBED_PORT`). Remote clients talk to **`:8080` only**; they must not point at `:8081`.
 
-**Example wrapper:** `scripts/serve_gpu_example.sh` — copy to `~/bin/serve.sh` and adjust paths. CT 1564 production script adds:
+**Example wrapper:** `scripts/serve_gpu_example.sh` — copy to `~/bin/serve.sh` and adjust paths. Set **`PYTHONPATH`** to `runtime/.venv/.../site-packages` (and training venv if embedded training is on) — see [5080-runbook.md](./5080-runbook.md). CT 1564 production script adds:
 
 ```bash
 exec zerollama serve >> /tmp/zerollama-serve.log 2>&1
