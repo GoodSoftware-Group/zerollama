@@ -222,7 +222,14 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
 - **Tier 1–3 PASS** — `gpu_5080_session.sh`, L1 (+58% / +10% on eliza-1 9B @ 8k), L3 8k + 27k, `phase15_inprocess_signoff.sh`.
 - **Tier 4 PASS (individual smokes)** — `phase17_llama_server_smoke.sh`, `phase17_linux_auto_smoke.sh`, `phase16_edge_smoke.sh` (`P17_NUM_PREDICT=32`); artifacts under `/tmp/phase17-*`, `/tmp/phase16-edge-smoke.json`.
 - **Still open:** Radix `L3_RADIX_LIVE=1` on 5080; L2 fork merge @ 8k (stock wins); bundled `RUN_E2E_UPSTREAM_GGUF=1` may fail on fork-cache × stock `llama-server` — use individual smokes or `ZEROLLAMA_GPU_PROFILE=0`.
-- **Doc:** [5080-runbook.md](docs/5080-runbook.md) status matrix; [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) gate summary.
+- **Doc:** [5080-runbook.md](docs/5080-runbook.md) — now **self-contained** (serve startup, sm_120 libllama build, troubleshooting); operator guide = extended reference.
+
+### 5080 runbook self-contained expansion (Jun 2026)
+
+**Why:** Re-sign-off on CT 1564 exposed a gap — the runbook listed tiers but said “serve must already be up” without copy/paste serve env, and duplicated footguns lived only in the operator guide.
+
+- **`docs/5080-runbook.md`** — added: Proxmox/CT layout; cpp-httplib / `-lstdc++` fixes; **Build patched libllama (sm_120)**; **Start serve** (PYTHONPATH, health wait, `serve_gpu_example.sh` pointer); **Troubleshooting** table; **After green re-sign-off**; full sequence no longer uses `# … start serve …` placeholder.
+- **`docs/gpu-5080-operator-guide.md`** — defers primary re-sign-off path to runbook; remains MLX/L2/code-map reference.
 
 ### Upstream Ollama — launch model inventory (v0.30.10)
 

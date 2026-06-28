@@ -1,8 +1,9 @@
 # GPU operator guide — 5080-class single-GPU hosts
 
-**Quick checklist:** [5080-runbook.md](./5080-runbook.md) — ordered tiers + copy/paste commands (what to run after pull).
+> **Daily re-sign-off:** `source scripts/5080_env.sh` → `./scripts/5080_resignoff.sh` — see **[5080-runbook.md](./5080-runbook.md)**.  
+> **This file:** extended reference only (VRAM, MLX, production serve, code map).
 
-**Audience:** Operators on one consumer GPU (e.g. RTX 5080 ~16 GB VRAM, ~19 GiB host RAM) running embedded or sidecar Python runtime + optional ggml runners + training.
+**Quick checklist (primary):** [5080-runbook.md](./5080-runbook.md) — build, serve, tiers 0–5, troubleshooting.
 
 **Related:** [testing-smoke.md](./testing-smoke.md) (script reference), [phase11-runtime-admission.md](./phase11-runtime-admission.md) (who gets the GPU when busy), [phase13-runtime-vram.md](./phase13-runtime-vram.md) (estimate/clamp/autotune), [scheduling-vram-policy.md](./scheduling-vram-policy.md) (full stack), [upstream-ollama-diff.md](./upstream-ollama-diff.md) (upstream default is Go→llama-server, no Python runtime).
 
@@ -28,18 +29,17 @@ This guide documents the **5080 session** workflow and the **why** behind each s
 
 ## Official gate: `gpu_5080_session.sh`
 
-**Why one script:** CI covers Go Golden + pytest without a GPU; a single GPU host needs a repeatable preflight → smoke → snapshot → recommendations loop so Phase 11/13 tuning is evidence-based, not guesswork.
+**On CT 1564:** `source scripts/5080_env.sh` first (or `./scripts/5080_resignoff.sh` for the full driver). Env, build, and tier order live in [`5080-runbook.md`](./5080-runbook.md) — not here.
 
 ```bash
-export OLLAMA_HOST=http://127.0.0.1:8080
-export LLAMA_SERVER_BIN=/usr/bin/llama-server
-export LLAMA_MODEL=/path/to/small-smoke.gguf    # e.g. 1B Q8 for smoke
-export RUN_E2E_GGUF=$LLAMA_MODEL
-export RUN_E2E_PROXY_MODEL=llama3.2:3B          # optional manifest proxy checks
-# Optional: embedded training HTTP/TCP (serve must have OLLAMA_TRAINING=true)
-# RUN_E2E_TRAINING_OPS=1 RUN_E2E_TRAINING_TCP=1
-cd /root/zerollama && ./scripts/gpu_5080_session.sh
+source ./scripts/5080_env.sh
+5080_start_serve
+./scripts/gpu_5080_session.sh
 ```
+
+**Why one script:** CI covers Go Golden + pytest without a GPU; a single GPU host needs a repeatable preflight → smoke → snapshot → recommendations loop so Phase 11/13 tuning is evidence-based, not guesswork.
+
+Override paths after `source ./scripts/5080_env.sh` if your GGUF or `llama-server` differ from CT 1564 defaults.
 
 **What it runs (in order):**
 
@@ -58,23 +58,20 @@ cd /root/zerollama && ./scripts/gpu_5080_session.sh
 
 **Pass criteria:** `PASS: gpu_5080_session` and snapshot file written. Smoke GGUF calibration (e.g. ~1.20× for OuteTTS Q8) is **smoke evidence only** until you run the same flow on your **production** GGUF (e.g. supernova fp16).
 
-Optional L1/L3 production gates (need `CUDA_LLAMA_MODEL` or `LLAMA_MODEL` — 7B–9B class):
+Optional L1/L3 production gates (defaults from `5080_env.sh` — override `CUDA_LLAMA_MODEL` if needed):
 
 ```bash
-RUN_E2E_L1=1 RUN_E2E_L3=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/gpu_5080_session.sh
+source ./scripts/5080_env.sh
+RUN_E2E_L1=1 RUN_E2E_L3=1 ./scripts/gpu_5080_session.sh
+# Radix cross-slot (vendor llama-server — 5080_build_vendor_llama_server first):
+RUN_E2E_L3_RADIX=1 ./scripts/gpu_5080_session.sh
 # Or standalone:
 ./scripts/l1_cuda_full_gate.sh
 ./scripts/l3_cuda_full_gate.sh
+L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh
 ```
 
-**Proxmox CT / minimal checkout — skip Go preflight:**
-
-```bash
-# WHY: CT 1564 lacks vendored cpp-httplib; `go test` CGO fails before any GPU step runs.
-RUN_E2E_PREFLIGHT=0 ./scripts/gpu_5080_session.sh
-```
-
-`gpu_5080_session.sh` defaults `RUN_E2E_PREFLIGHT=1` but **honors** `RUN_E2E_PREFLIGHT=0` from the environment. Run `./scripts/phase12_golden_ci.sh` on a full dev host or in CI — the GPU gate does not replace parser golden tests.
+**Proxmox CT / minimal checkout — skip Go preflight:** already set by `5080_env.sh` (`RUN_E2E_PREFLIGHT=0`). On non-CT hosts without sourcing, export it explicitly.
 
 **Optional Phase 14 in one session** (after ctypes smoke passes on serve):
 
@@ -85,8 +82,10 @@ RUN_E2E_PHASE14=1 RUN_E2E_INPROCESS=1 ./scripts/gpu_5080_session.sh
 **Full Phase 14/15 sign-off** (self-contained serve restarts; ~15–20 min):
 
 ```bash
-export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
+source ./scripts/5080_env.sh
+5080_build_patched_libllama   # if nm lacks kv-ext symbols
 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh
+```
 ```
 
 **Phase 15 in-process sign-off** (KV decode hook + multi-seq; self-contained restarts):
@@ -165,7 +164,7 @@ See also: [phase15-native-kv.md](./phase15-native-kv.md), [handoff-phase15-nativ
 | L1 autotune | **PASS** | eliza-1 9B @ 8k: **+58%** single-stream; **+10%** concurrent N=2 |
 | L3 cache (subprocess) | **PASS** | 8k strict + 27k production on eliza-1 9B |
 | L2 CUDA (8k) | **FAIL merge** | Stock wins decode — expected; fork profiles opt-in |
-| Radix cross-slot live | **Pending** | `L3_RADIX_LIVE=1` — Mac PASS; 5080 not run yet |
+| Radix cross-slot live | **Mac PASS** / **5080 pending** | `RUN_E2E_L3_RADIX=1` or `L3_RADIX_LIVE=1` — vendor binary; Mac: donor 8.2s → target 0.58s, `radix_seed` 128 tok |
 | `RUN_E2E_UPSTREAM_GGUF=1` bundle | **Partial** | Individual P17/edge smokes PASS; bundled base leg may clash fork cache × stock `llama-server` |
 
 Full checklist: [5080-runbook.md](./5080-runbook.md). Individual L2/L3: [gpu-profiles-l2.md](./gpu-profiles-l2.md), [gpu-profiles-l3.md](./gpu-profiles-l3.md).
