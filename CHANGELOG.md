@@ -190,6 +190,31 @@ All notable changes to this project are documented in this file. The format is b
 
 **Not in scope:** replacing `metal_signoff.sh` / qwen35 gate; CUDA Phase 11/13 tuning on 5080 (still `gpu_5080_session.sh`).
 
+### M9 `metal_signoff.sh` full gate — eliza-1 qwen35 + linked tensor bind (Jun 2026)
+
+**Why:** the ordered Phase 11→13→15 script validates admission/VRAM/KV in isolation; operators still need one **daily Mac gate** that runs M3 + optional qwen35 Go ggml + Phase 15 on the same Metal device. After vendor `llama-kv-ext` linked builds, GPU smokes must accept **`status=bound` + `bind_level=tensor`** — not only pre-ext **`partial` + `seq_position`** — or sign-off false-fails despite a healthy decode path.
+
+- **`./scripts/metal_signoff.sh`** — M4 Max **PASS** (~2.6 min): coordination → Phase 13 snapshot → Phase 14 inprocess → qwen35 → Phase 15 (5 steps incl. `batch_decode_in_c=True`, tensor bind probe).
+- **Canonical qwen35 tag:** **`eliza-1-2b:latest`** via `RUN_E2E_QWEN35_MODEL=…` — **why:** `eliza-1-*` is the ship qwen35 family in this repo (2B is fast enough for CI handoff/resume); `qwen3.6:latest` remains valid but heavier and not required for the gate.
+- **`smoke_runtime_assert_kv_snapshot()`** — accepts `partial`+`seq_position` **or** `bound`+`tensor`/`seq_position` on `/health` and `partial`/`bound` on `/internal/kv-snapshot`; still asserts `physical_pages_bound=false` until upstream writable page-map API lands.
+- **Vendor libllama:** `macos_export_llama_cpp_paths()` → `vendor/llama-cpp-c84b3020` for linked `_kv_native`; weak CUDA graph invalidate in `kv_decode_loop.c` for Metal vendor builds without zerollama’s CUDA hook.
+- **Doc sync:** ROADMAP M9/M10, README Mac tier-2, [apple-silicon-metal.md](docs/apple-silicon-metal.md), [testing-smoke.md](docs/testing-smoke.md).
+
+**Example (text sign-off blob + eliza qwen35):**
+
+```bash
+M3_LLAMA_MODEL=~/.ollama/models/blobs/sha256-… \
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest \
+./scripts/metal_signoff.sh
+```
+
+### 5080 operator runbook (Jun 2026)
+
+**Why:** Mac sign-off is consolidated in `metal_signoff.sh`; CUDA operators had the same story split across gpu-5080-operator-guide, L1/L3 profiles, Phase 15, and Phase 17 docs — easy to miss **`RUN_E2E_UPSTREAM_GGUF=1`** (open Phase 16/17 gate on ship hardware).
+
+- **`docs/5080-runbook.md`** — ordered tiers 0–5: base `gpu_5080_session.sh` → L1/L3 production → Phase 15 → upstream GGUF bundle; `RUN_E2E_*` table; CT 1564 status matrix; full re-sign-off script block.
+- **Cross-links** — [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md), [docs/README.md](docs/README.md), [README.md](README.md), [ROADMAP.md](docs/ROADMAP.md) operator ladder.
+
 ### Upstream Ollama — launch model inventory (v0.30.10)
 
 **Why:** Each integration used to call `/api/show` per model when writing agent configs — slow, easy to timeout, and inconsistent with the model picker (`/api/tags`). Upstream loads tags once per launch run and passes rich `LaunchModel` structs to every integration. Zerollama ports that pattern for mergeability and faster `zerollama launch`.

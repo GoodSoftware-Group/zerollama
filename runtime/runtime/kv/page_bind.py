@@ -1,8 +1,10 @@
-"""Phase 15 v8 — PA block pool → llama KV page bind (seq-position partial).
+"""Phase 15 v8 — PA block pool → llama KV page bind (seq-position → tensor).
 
 v0–v7 export logical page tables (`kv_forward_plans`) and bind llama sequence/slot ids.
 v8 registers PA ``block_ids`` per ``kv_slot`` in native C for seq-position validation
-before decode. Full tensor page mapping still requires a stable llama.cpp paged KV API.
+before decode. v20+ with linked ``llama-kv-ext`` reports ``status=bound`` +
+``bind_level=tensor`` after K/V tensor verify — GPU smokes accept that as success.
+Writable cross-allocator bind (PA block_ids → mutable tensor pages) remains upstream-blocked.
 """
 
 from __future__ import annotations
@@ -125,7 +127,12 @@ def page_bind_health(
     tensor_probe: dict[str, Any] | None = None,
     writable_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Operator-facing status for tensor/page bind readiness."""
+    """Operator-facing status for tensor/page bind readiness.
+
+    WHY status escalates partial → bound: seq-position bind proves PA accounting;
+    cell_index adds llama cell map; tensor adds K/V backing verify via linked kv-ext.
+    Smokes treat bound+tensor as the linked-build success path (see runtime_smoke_lib).
+    """
     from runtime.kv.tensor_probe import writable_bind_probe as default_writable_probe
 
     stats = page_bind_stats()

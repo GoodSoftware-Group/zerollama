@@ -461,6 +461,12 @@ smoke_runtime_require_phase14_endpoints() {
 }
 
 # Phase 15 v7/v8: assert KV export keys on /health and GET /internal/kv-snapshot.
+#
+# WHY two acceptable page_bind shapes:
+#   - partial + seq_position: PA block_ids registered in C before llama-kv-ext tensor verify.
+#   - bound + tensor: linked vendor kv-ext ran decode + K/V tensor backing probe (Mac/5080 sign-off).
+# Smokes must not require partial-only after linked _kv_native builds — that false-fails healthy Metal gates.
+# physical_pages_bound stays false until upstream writable page-map API (Phase 15 criterion #5).
 smoke_runtime_assert_kv_snapshot() {
   local runtime_url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
   runtime_url="${runtime_url%/}"

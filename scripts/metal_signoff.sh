@@ -9,7 +9,8 @@
 #
 # Usage:
 #   ./scripts/metal_signoff.sh
-#   RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+#   RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
+#   # eliza-1-* = ship qwen35 family; qwen3.6:latest also valid but heavier
 #
 # Same as: RUN_E2E_PHASE15=1 ./scripts/m3_metal_signoff.sh
 # Override sign-off text model: M3_LLAMA_MODEL=/path/to/text.gguf ./scripts/metal_signoff.sh

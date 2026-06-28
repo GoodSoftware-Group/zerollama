@@ -125,7 +125,7 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | `phase15_inprocess_signoff.sh` | Linux embed | End of `phase15_inprocess_multiseq_smoke.sh` |
 | `phase15_batch_decode_smoke.sh` | Either (sidecar must be up, `n_seq_max≥2`) | Standalone |
 
-**Jun 2026:** `./scripts/phase15_metal_signoff.sh` **PASS** on M4 Max — `batch_decode_in_c=True`, non-stream + stream batch returned content for both rows, `kv_decode_steps` incremented.
+**Jun 2026:** `./scripts/phase15_metal_signoff.sh` **PASS** on M4 Max — `batch_decode_in_c=True`, non-stream + stream batch returned content for both rows, `kv_decode_steps` incremented, **`kv_page_bind.status=bound`** + **`bind_level=tensor`** on linked vendor kv-ext (full gate via `./scripts/metal_signoff.sh` + `eliza-1-2b:latest` qwen35).
 
 ---
 
@@ -643,7 +643,7 @@ Phase 14 **inprocess** per-request `llama_context` remains default when `llama_p
 | `kv_decode_steps` | Cumulative in-process decode count or `{active: false, reason}` |
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | List of forward-plan objects (waiting + running) |
-| `kv_page_bind` | v8 bind status: `partial` + `bind_level=seq_position` when native ext built; `not_implemented` when ext missing; `tensor_pages_bound` always false until llama API exists |
+| `kv_page_bind` | v8 bind status: `partial` + `bind_level=seq_position` when native ext built without linked tensor probe; **`bound` + `bind_level=tensor`** after linked `llama-kv-ext` decode (GPU sign-off success path); `not_implemented` when ext missing. **`physical_pages_bound` stays false** until upstream writable page-map API (criterion #5). GPU smokes: `smoke_runtime_assert_kv_snapshot()` accepts partial or bound — **why:** requiring partial-only false-fails linked vendor builds. |
 | `kv_live_physical` | Opt-in bump to multi-seq in-process ctx (`ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL`) |
 
 `kv_bind.physical_bind_level` is `seq_position` whenever in-process weights are loaded (not only multi-seq). `kv_physical` may include a `note` when `llama_parallel_slots==1` (no shared ctx for live positions).

@@ -27,7 +27,7 @@ Optional: **Homebrew** `python@3.12 pkg-config` if you want to link against Home
 | **0** | Build + daily serve | `./scripts/dev_bootstrap.sh` | Xcode CLI, Go, uv |
 | **1** | Pull a model + chat | `./zerollama serve` then `./zerollama pull llama3.2:3b` | Tier 0 |
 | **2** | Metal sign-off (CI regression) | `MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh` | Tier 1 (local text GGUF) |
-| **3** | qwen35 ggml smoke | `RUN_E2E_QWEN35_MODEL=your:tag ./scripts/qwen35_mac_smoke.sh` | Pulled qwen tag + serve |
+| **3** | qwen35 ggml smoke | `RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh` | Pulled eliza-1 / qwen tag + serve — **why eliza-1-2b:** ship qwen35 family, fast sign-off handoff |
 
 **Why tiers:** sign-off and qwen smokes used to run inside default `mac_setup` and failed on fresh clones with no models. Tier 0 is the only required path for another developer.
 
@@ -174,6 +174,8 @@ These use **`OLLAMA_HOST=:8080`** + **`ZEROLLAMA_RUNTIME_URL=:8081`** — not th
 - `./scripts/serve_mac_runtime.sh`
 - `./scripts/macos_metal_smoke.sh`
 - `./scripts/metal_signoff.sh`
+
+Full gate with qwen35 (M4 Max PASS Jun 2026): `RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh` — **why eliza-1-2b:** ship qwen35 family; qwen35 runs before Phase 15 inside the script (Phase 15 stops `:8081`).
 
 ---
 

@@ -18,6 +18,8 @@
 #
 # Multiseq step: temp YAML llama_parallel_slots=2 + ZEROLLAMA_GPU_PROFILE=0 — why: L1 128g
 # profile sets n_parallel=8 and breaks kv_inprocess_n_seq_max=2 assertions.
+# KV snapshot (step 1): smoke_runtime_assert_kv_snapshot accepts bound+tensor when vendor kv-ext
+# is linked — why: linked _kv_native builds report status=bound after decode, not partial-only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

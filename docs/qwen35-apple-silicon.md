@@ -267,10 +267,12 @@ init: embeddings required but some input tokens were not marked as outputs -> ov
 **Opt-in smoke** (handoffs runtime Metal, validates Go ollama-engine + generate):
 
 ```bash
-RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+# Canonical sign-off tag: eliza-1-* is the ship qwen35 family (2B is fast for handoff/resume).
+RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
+# Alternate (full MoE/dense): RUN_E2E_QWEN35_MODEL=qwen3.6:latest
 ```
 
-**Why thinking models need special assertion:** `qwen3.6:latest` may put one-word replies in `thinking` with an empty `response` — the smoke accepts either field.
+**Why thinking models need special assertion:** `qwen3.6:latest` and some eliza-1 variants may put one-word replies in `thinking` with an empty `response` — the smoke accepts either field.
 
 ---
 
@@ -280,17 +282,20 @@ RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
 
 ```bash
 LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
-RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
+# Alternate: RUN_E2E_QWEN35_MODEL=qwen3.6:latest
 ```
+
+**Why eliza-1-2b for the gate:** same qwen35 compat/routing as production Eliza bundles; 2B completes the ggml handoff leg quickly. **`qwen3.6:latest`** remains valid for full-size MoE checks (41/41 GPU layers on M4 Max).
 
 **Order inside the script:** qwen35 runs **after Phase 14** and **before Phase 15**. **Why:** Phase 15 stops the runtime sidecar on exit; qwen35 needs `:8081` for training-handoff and resume after ggml unload.
 
-**M4 Max PASS (Jun 2026):** coordination, Phase 13 snapshot, Phase 14 inprocess, qwen35 generate + unload, Phase 15 KV + multiseq.
+**M4 Max PASS (Jun 2026):** coordination, Phase 13 snapshot, Phase 14 inprocess, qwen35 generate + unload (`eliza-1-2b:latest`), Phase 15 KV (5 steps: hook, multiseq, batch decode, L3 two-turn, tensor bind probe). Linked vendor kv-ext reports **`kv_page_bind.status=bound`**, **`bind_level=tensor`** — GPU smokes accept that path via `smoke_runtime_assert_kv_snapshot()`.
 
 Standalone qwen35 only (when you already have `:8080`/`:8081` up):
 
 ```bash
-RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
 ```
 
 ---

@@ -270,8 +270,12 @@ zerollama serve
 
 ```bash
 LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
-RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+# eliza-1-* is the ship qwen35 family; 2B is the canonical sign-off tag (fast handoff/resume).
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
+# Alternate (heavier): RUN_E2E_QWEN35_MODEL=qwen3.6:latest
 ```
+
+**Why eliza-1-2b for sign-off:** same qwen35 routing/compat path as production Eliza bundles; 2B finishes the ggml handoff leg quickly on unified memory. **`qwen3.6:latest`** remains valid for full-size MoE/dense checks but is not required for the gate.
 
 **Why qwen35 runs before Phase 15 inside the script:** Phase 15’s cleanup stops the runtime sidecar; qwen35 needs `:8081` alive for training-handoff and `runtime_resume_if_needed` after ggml unload.
 
@@ -398,7 +402,7 @@ First request after listen still pays model load unless the model is already war
 | No qwen35 reserve skip | `runner/ollamarunner/runner.go` → `reserveWorstCaseGraph` | Arch blocklist masked the assert; removed after root fix |
 | Darwin routing | `llm/server.go` → `pickOllamaEngine` | qwen35\* uses Go engine when `OllamaEngineRequired()` — no darwin legacy gate |
 
-**Verify:** load `qwen3.6:latest` → runner `--ollama-engine`, `offloaded N/N layers to GPU`, generate 200. Opt-in: `./scripts/qwen35_mac_smoke.sh`.
+**Verify:** load `eliza-1-2b:latest` or `qwen3.6:latest` → runner `--ollama-engine`, `offloaded N/N layers to GPU`, generate 200. Opt-in: `./scripts/qwen35_mac_smoke.sh`.
 
 See also [qwen35-apple-silicon.md — sched_reserve](./qwen35-apple-silicon.md#go-engine-sched_reserve-fix-jun-2026).
 
@@ -499,9 +503,9 @@ When a request tries to load the **ggml runner** but Darwin policy blocks it, th
 **Qwen 3.5/3.6 opt-in smoke:** after `./scripts/build_zerollama_mac.sh` and pulling a local tag:
 
 ```bash
-RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
 # Full gate (Phase 13–15 + qwen35 — qwen35 runs before Phase 15 in script):
-RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
 ```
 
 See [qwen35-apple-silicon.md](./qwen35-apple-silicon.md).

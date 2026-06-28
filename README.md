@@ -289,11 +289,13 @@ L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh   # optional: prefix-cache
 
 # Tier 2 — sign-off (after pull; uses :8080/:8081 smoke layout)
 # MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh
-# Full gate + qwen35 (M4 Max, Jun 2026):
-# RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
+# Full gate + qwen35 (M4 Max, Jun 2026 PASS):
+# eliza-1-* is the ship qwen35 family — 2B is the default sign-off tag (fast handoff/resume).
+# RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
+# Alternate: RUN_E2E_QWEN35_MODEL=qwen3.6:latest (heavier; same gate shape)
 
 # Optional: qwen35 ggml smoke only (needs :8080/:8081 stack or run via metal_signoff)
-# RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
+# RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
 ```
 
 **Daily serve:** `zerollama serve` — Go `:11434` (or `:8080` in dev) + uv sidecar `:8081` with `apple_silicon.yaml` inprocess backend.
@@ -396,13 +398,14 @@ Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models.
 - [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500`; embedded CPython; inference-first VRAM on OOM; defer queue env vars. Code map: [`x/trainingworker/pyembed/README.md`](x/trainingworker/pyembed/README.md).
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
+- [5080 runbook — what to run](docs/5080-runbook.md) — **ordered CUDA gate tiers** after pull (base → L1/L3 → Phase 15 → `RUN_E2E_UPSTREAM_GGUF=1`); CT 1564 status; Mac counterpart `metal_signoff.sh`.
 - [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; Proxmox CT layout; **`OLLAMA_HOST=0.0.0.0:8080`** for remote clients; **CGO `cpp-httplib` vendoring**; **`RUN_E2E_PREFLIGHT=0`** when httplib missing; L1/L3 full gates; Phase 15 + L2 sign-off sequence.
 - [L2 eliza fork evaluation](docs/gpu-profiles-l2.md) — **why** QJL/Polar/TBQ via **one** `../llama.cpp` @ `LLAMA_CPP_COMMIT`; L1 vs fork = profile argv (`ZEROLLAMA_LLAMA_FORK`), not separate siblings. Doc: [llama-cpp-unification.md](docs/llama-cpp-unification.md).
 - [L3 prompt cache → slot bridge](docs/gpu-profiles-l3.md) — **why** stable session keys skip repeat prefill; pinned `id_slot` + disk TTL; batch `prompt_cache_keys`; SWA/draft-spec policy; **5080 Jun 2026:** STRICT PASS @ 8k + production gate PASS @ 27k on eliza-1 9B.
 - [Cross-slot Radix prefix share](docs/radix-prefix-share.md) — **why** same system prompt across different cache keys; donor slot KV seed + block pool verification; vendor `POST /kv/seq-copy`; live smoke `l3_radix_prefix_smoke.sh`; **[product gaps](docs/radix-prefix-share.md#product-gaps)** (v1 vs full RadixAttention).
 - [Decode graph invalidation](docs/decode-graph-invalidation.md) — **why** L3 slot clears must break ggml CUDA graphs; epoch scaffold + in-process invalidate + subprocess `POST /cuda-graph/invalidate`; rebuild sibling llama-server; Metal no-op note.
 - [vLLM borrowings (L3)](docs/vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; `cache_salt`, drop-last-block, SWA retention, subprocess graph HTTP.
-- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **L1 GPU profiles** (RAM tiers); Darwin Metal contention policy; scheduler 400/503 errors; **GPU bootstrap discovery**; **Go engine sched_reserve** (qwen35moe); **Jun 2026 sign-off** (`metal_signoff.sh`, `qwen35_mac_smoke.sh`).
+- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **L1 GPU profiles** (RAM tiers); Darwin Metal contention policy; scheduler 400/503 errors; **GPU bootstrap discovery**; **Go engine sched_reserve** (qwen35moe); **Jun 2026 sign-off** (`metal_signoff.sh` + **`eliza-1-2b:latest`** qwen35; `qwen35_mac_smoke.sh`).
 - [L1 GPU profiles (autotune)](docs/gpu-profiles-l1.md) — **why** Phase 13 ≠ throughput tuning; **`l1_cuda_full_gate.sh`** PASS on 5080 (+10.5% concurrent); NVIDIA buckets; Apple RAM tiers.
 - [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits compat metadata + Metal embed layers; **Go ollama-engine default on Mac** (Jun 2026); `PrimaryFamily()` for VL; thinking-model API fields; opt-in `qwen35_mac_smoke.sh`.
 - [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards; LM Studio MLX disk import policy.

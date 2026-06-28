@@ -15,7 +15,7 @@
 #   RUN_E2E_PROXY_MODEL  — pulled tag for render-chat (auto from blob when possible)
 #   M3_SKIP_START=1      — assume OLLAMA_HOST / ZEROLLAMA_RUNTIME_URL already up
 #   RUN_E2E_PHASE15=1    — also run ./scripts/phase15_metal_signoff.sh (sidecar path)
-#   RUN_E2E_QWEN35=1     — also run ./scripts/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL)
+#   RUN_E2E_QWEN35=1     — also run ./scripts/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL, e.g. eliza-1-2b:latest)
 #                          Why before Phase 15: Phase 15 stops :8081; qwen35 needs handoff/resume.
 #   RUN_E2E_L2=1         — also run ./scripts/l2_full_gate.sh (fork eval + compat + bench)
 #   RUN_E2E_L3=1         — also run ./scripts/l3_cache_smoke.sh + gate report

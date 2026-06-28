@@ -4,13 +4,15 @@
 # Why separate from runtime smokes: qwen35* loads via Go ollama-engine (OllamaEngineRequired).
 # Runtime Metal must be released before ggml can load on the same device.
 # Why accept thinking OR response: qwen3.6 thinking models may return text only in `thinking`.
+# Why eliza-1-2b in docs: eliza-1-* is the ship qwen35 family; 2B is fast for sign-off handoff/resume.
 #
 # Daily serve uses OLLAMA_HOST=:11434; this script defaults :8080 (CI smoke layout).
 # Override: OLLAMA_HOST=http://127.0.0.1:11434 ./scripts/qwen35_mac_smoke.sh
 #
 # Usage:
-#   RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/qwen35_mac_smoke.sh
-#   RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=... ./scripts/m3_metal_signoff.sh
+#   RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
+#   RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/m3_metal_signoff.sh
+#   # Alternate: RUN_E2E_QWEN35_MODEL=qwen3.6:latest
 #
 # Prerequisite: fresh ./scripts/build_zerollama_mac.sh; model pulled locally.
 set -euo pipefail
@@ -31,7 +33,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if [[ -z "$QWEN_MODEL" ]]; then
-  echo "Set RUN_E2E_QWEN35_MODEL (local pulled tag, e.g. qwen3.6:latest)" >&2
+  echo "Set RUN_E2E_QWEN35_MODEL (local pulled tag, e.g. eliza-1-2b:latest or qwen3.6:latest)" >&2
   exit 1
 fi
 
