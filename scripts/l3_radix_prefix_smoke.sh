@@ -3,8 +3,10 @@
 #
 # Usage:
 #   ./scripts/l3_radix_prefix_smoke.sh
-# Live (needs local GGUF + patched llama-server with POST /kv/seq-copy):
+# Live (needs local GGUF + patched vendor llama-server with POST /kv/seq-copy):
 #   M3_LLAMA_MODEL=/path/model.gguf L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh
+# 5080 / CUDA (CUDA_LLAMA_MODEL alias — same as l3_cache_smoke):
+#   CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -90,6 +92,10 @@ else
 fi
 
 runtime_uv_venv
+# WHY CUDA alias: 5080 operator guide uses CUDA_LLAMA_MODEL; Metal uses M3_LLAMA_MODEL.
+if [[ -n "${CUDA_LLAMA_MODEL:-}" ]]; then
+  export M3_LLAMA_MODEL="${CUDA_LLAMA_MODEL}"
+fi
 smoke_m3_resolve_signoff_model
 
 _radix_kill_llama_server() {

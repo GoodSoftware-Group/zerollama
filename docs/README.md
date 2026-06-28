@@ -76,8 +76,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.
-* [5080 runbook — what to run](./5080-runbook.md) — **ordered tiers** (base session → L1/L3 → Phase 15 → upstream GGUF bundle); **why** each `RUN_E2E_*` flag; CT 1564 status matrix; Mac counterpart `metal_signoff.sh`.
-* [GPU 5080 operator guide](./gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh`; Proxmox CT; **CGO `cpp-httplib` vendoring**; **`OLLAMA_HOST=0.0.0.0:8080`** for remote clients; L1/L3 full gates; Phase 15 + L2 sign-off.
+* [5080 runbook — start here](./5080-runbook.md) — **`source scripts/5080_env.sh`** + **`./scripts/5080_resignoff.sh`**; ordered tiers; CT 1564 status; Radix vendor build.
+* [GPU 5080 operator guide](./gpu-5080-operator-guide.md) — extended reference (VRAM, MLX, production serve) — use runbook for daily gates.
 * [Embedded Python runtime](./runtime-embed.md) — **why** embed vs sidecar; **remote clients use Go `:8080` only**; port conflicts; log redirect pattern.
 
 ### Upstream Ollama (compare, don't merge)

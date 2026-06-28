@@ -250,6 +250,17 @@ console.log(response.message.content);
 
 ### Building zerollama on CUDA (RTX 5080-class / Proxmox CT)
 
+**Start here:** [5080-runbook.md](docs/5080-runbook.md) + `source scripts/5080_env.sh` + `./scripts/5080_resignoff.sh --build`
+
+```bash
+# Inside CT 1564
+cd ~/zerollama && source ./scripts/5080_env.sh
+./scripts/5080_resignoff.sh --build          # full tiers 0–4
+./scripts/5080_resignoff.sh --tier 2 --radix --vendor   # Radix live (optional)
+```
+
+Long reference (VRAM, remote serve, MLX): [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
+
 **Why a separate section:** CUDA hosts use discrete VRAM (`single_gpu.yaml`, `nvidia-smi`), **sm_120** needs CUDA **12.8+** `nvcc`, and Proxmox operators often land on the **host** while GPU passthrough lives in an **LXC** — run gates **inside** the CT (`pct exec 1564 -- …`), not on the host with stale CUDA 12.3.
 
 ```bash

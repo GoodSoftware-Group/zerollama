@@ -17,6 +17,8 @@ scripts=(
   gpu_clamp_smoke.sh
   phase12_capture_tool_transcript.sh
   gpu_5080_session.sh
+  5080_env.sh
+  5080_resignoff.sh
   gpu_harmony_capture.sh
   macos_metal_smoke.sh
   gpu_metal_session.sh
@@ -161,7 +163,7 @@ grep -q 'mac-dev-setup.md' "${ROOT}/docs/development.md"
 grep -q 'build_zerollama_mac' "${ROOT}/cmd/doctor.go"
 grep -q 'build_production_mac' "${ROOT}/docs/mac-dev-setup.md"
 grep -q 'BUILD_MLX' "${ROOT}/scripts/build_zerollama_mac.sh"
-grep -q 'pickOllamaEngine' "${ROOT}/llm/server.go"
+grep -q 'pickOllamaEngine' "${ROOT}/llm/server_shared.go"
 grep -q 'Persistent()' "${ROOT}/kvcache/causal.go"
 grep -q 'darwinSidecarEnabled' "${ROOT}/server/darwin_sidecar.go"
 grep -q 'zerollama serve' "${ROOT}/docs/development.md"
@@ -249,7 +251,7 @@ grep -q 'ZEROLLAMA_RUNTIME_CONFIG' "${ROOT}/scripts/phase14_yaml_config_full_smo
 grep -q 'phase14_yaml_config_smoke.sh' "${ROOT}/scripts/phase14_yaml_config_full_smoke.sh"
 grep -q '/api/train/status' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
 grep -q 'cmd.*ping' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
-grep -q 'ZEROLLAMA_RUNTIME_SHARED_PYTHON' "${ROOT}/runtime/runtime/gpu_vram.py"
+grep -q 'ZEROLLAMA_RUNTIME_SHARED_PYTHON' "${ROOT}/runtime/runtime/env.py"
 grep -q 'health try' "${ROOT}/scripts/repro_shared_interpreter_health_hang.sh"
 grep -q 'llama_patch_doctor' "${ROOT}/scripts/phase15_kv_native_ci.sh"
 grep -q 'phase15_llama_kv_ext_pin_check' "${ROOT}/scripts/phase15_kv_native_ci.sh"
@@ -286,7 +288,7 @@ grep -q 'build_zerollama_edge.sh' "${ROOT}/docs/phase16-thin-edge.md"
 grep -q 'RUN_E2E_EDGE' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'RUN_E2E_P17' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'doctorCheckEdgeBuild' "${ROOT}/cmd/doctor.go"
-grep -q 'inference.backend' "${ROOT}/api/types.go"
+grep -q 'BackendPolicy' "${ROOT}/api/types.go"
 grep -q 'P17_LINUX_AUTO' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
 grep -q 'RUN_E2E_P17_LINUX_AUTO' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'RUN_E2E_UPSTREAM_GGUF' "${ROOT}/scripts/gpu_5080_session.sh"
@@ -305,6 +307,11 @@ grep -q 'schedSkipGgmlRunnerLoad' "${ROOT}/server/sched.go"
 grep -q 'phase17_l2_pin_status.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'phase15_upstream_kv_watch.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'Operator troubleshooting' "${ROOT}/docs/phase17-llama-server.md"
+grep -q '5080_build_vendor_llama_server' "${ROOT}/scripts/5080_env.sh"
+grep -q '5080_resignoff' "${ROOT}/docs/5080-runbook.md"
+grep -q 'RUN_E2E_L3_RADIX' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'L3_RUN_RADIX' "${ROOT}/scripts/l3_cuda_full_gate.sh"
+grep -q 'CUDA_LLAMA_MODEL' "${ROOT}/scripts/l3_radix_prefix_smoke.sh"
 echo "ok: e2e_runtime_smoke tools markers"
 
 echo "PASS: check_gpu_scripts"

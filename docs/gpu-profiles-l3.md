@@ -333,8 +333,8 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 | CUDA 5080 (CT 1564) | OuteTTS 1B Q8 @ 8k | **SOFT PASS** | Bridge wired: `llama_cache.enabled=true`, `derived_slot=3`, `n_parallel=2`; turn2 wall 1.384s vs turn1 1.379s (ratio 0.996 — no measurable win on tiny prefix). Artifacts: `/tmp/l3-cache-smoke.json`. |
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **STRICT PASS** | `l3_cache_smoke.sh`: cached turn2 **0.66s** vs no-cache **1.13s** (`L3_PREFIX_REPEAT=150`). |
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 27k | **PASS** | `l3_production_gate.sh`: cached **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met). Artifact: `/tmp/l3-production-gate.json`. |
-| Metal (M4 Max) | vendor llama-server | **PASS (Radix live)** | `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — cross-slot donor→target, `radix_seed` trace. **Why separate from same-key L3:** Radix needs two keys + block pool; same-key gate does not exercise `POST /kv/seq-copy`. |
-| CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **Pending (Radix live)** | Same-key L3 PASS; cross-slot `L3_RADIX_LIVE=1` not yet in sign-off table — run when vendor binary on 5080 host. |
+| Metal (M4 Max) | vendor llama-server | **PASS (Radix live)** | `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — donor slot 0 → target 2; target **0.58s** vs donor **8.2s**; `radix_seed` 128 tokens; artifact `/tmp/l3-radix-prefix-smoke-live.json` |
+| CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **Pending (Radix live)** | Same-key L3 **PASS**; run `RUN_E2E_L3_RADIX=1` or `CUDA_LLAMA_MODEL=… L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` after vendor rebuild |
 
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 

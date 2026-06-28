@@ -69,9 +69,15 @@ Turn 2 — Agent B (key B → slot 2), same token prefix, cold slot
 3. **Patched vendor llama-server** with `POST /kv/seq-copy` (subprocess path). **WHY vendor, not bare sibling `../llama.cpp`:** seq-copy ships in zerollama patch **0017** on the pinned vendor tree only.
 
 ```bash
-# Rebuild from vendor (not sibling unless patched)
-LLAMA_CPP_ROOT=vendor/llama-cpp-$(grep FETCH_HEAD= Makefile.sync | cut -d= -f2) \
+# 5080 / CT 1564 (preferred)
+source ./scripts/5080_env.sh
+5080_build_vendor_llama_server
+
+# Manual (any host)
+make -f Makefile.sync vendor
+LLAMA_CPP_ROOT=vendor/llama-cpp-$(grep '^FETCH_HEAD=' Makefile.sync | cut -d= -f2) \
   ./scripts/build_llama_server.sh
+./scripts/llama_patch_doctor.sh
 ```
 
 4. Runtime must use that binary — live smoke forces `LLAMA_CPP_ROOT` to vendor (ignores stale shell `LLAMA_CPP_ROOT=../llama.cpp`).

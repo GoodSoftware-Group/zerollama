@@ -18,6 +18,7 @@
 #   RUN_E2E_L1=1                                            # l1_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 7B–9B)
 #   RUN_E2E_L3=1                                            # l3_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 9B+)
 #   RUN_E2E_L3_SPEC=1                                       # also L3_RUN_SPEC_CACHE=1 on l3_cuda_full_gate (ngram policy leg)
+#   RUN_E2E_L3_RADIX=1                                      # l3_radix_prefix_smoke live (vendor /kv/seq-copy; needs 9B+ GGUF)
 #   RUN_E2E_LLAMA_BACKEND_SOURCE=config                      # with phase14_yaml_config_smoke prerequisites
 #   RUN_E2E_LLAMA_CPP_PYTHON_GPU=1                           # wheel GPU (with RUN_E2E_LLAMA_CPP_PYTHON=1)
 #   RUN_E2E_PREFLIGHT=0                                      # skip Go golden in CT/minimal trees (see below)
@@ -32,6 +33,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/sched_watchdog_env.sh
 source "${ROOT}/scripts/sched_watchdog_env.sh"
+# CT 1564: source scripts/5080_env.sh once per shell (paths, PYTHONPATH, RUN_E2E_PREFLIGHT=0).
+# When resignoff or the operator already sourced it, honor those exports.
+if [[ -n "${Z5080_ENV_LOADED:-}" ]]; then
+  :
+elif [[ -f "${ROOT}/scripts/5080_env.sh" && "${Z5080_AUTO_ENV:-0}" == "1" ]]; then
+  # shellcheck source=scripts/5080_env.sh
+  source "${ROOT}/scripts/5080_env.sh"
+fi
 export ZEROLLAMA_REPO_ROOT="${ZEROLLAMA_REPO_ROOT:-$ROOT}"
 # WHY default-on but overridable: full hosts should run phase12_golden_ci before GPU smokes.
 # Proxmox CT 1564 (and other minimal checkouts) often lack vendored cpp-httplib for CGO
@@ -131,7 +140,23 @@ if [[ "${RUN_E2E_L3:-0}" == "1" ]]; then
   echo ""
   echo "== L3 CUDA full gate =="
   L3_RUN_SPEC_CACHE="${RUN_E2E_L3_SPEC:-0}" \
+  L3_RUN_RADIX="${RUN_E2E_L3_RADIX:-0}" \
   CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" "${ROOT}/scripts/l3_cuda_full_gate.sh"
+fi
+
+if [[ "${RUN_E2E_L3_RADIX:-0}" == "1" && "${RUN_E2E_L3:-0}" != "1" ]]; then
+  export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-${LLAMA_MODEL:-}}"
+  if [[ -z "${CUDA_LLAMA_MODEL:-}" ]]; then
+    echo "RUN_E2E_L3_RADIX=1 requires CUDA_LLAMA_MODEL or LLAMA_MODEL (9B+ production GGUF)" >&2
+    exit 1
+  fi
+  echo ""
+  echo "== L3 Radix cross-slot live gate =="
+  # WHY vendor binary: bare sibling ../llama.cpp lacks POST /kv/seq-copy (patch 0017).
+  L3_RADIX_LIVE=1 \
+  L3_RADIX_OUT="${L3_RADIX_OUT:-/tmp/l3-radix-prefix-smoke-live.json}" \
+  CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL}" \
+    "${ROOT}/scripts/l3_radix_prefix_smoke.sh"
 fi
 
 if [[ "${RUN_E2E_P17:-0}" == "1" ]]; then
