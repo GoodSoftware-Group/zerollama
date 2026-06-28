@@ -78,8 +78,9 @@ _backpressure_lock = threading.Lock()
 
 
 def inference_first_enabled() -> bool:
-    v = os.environ.get("ZEROLLAMA_RUNTIME_INFERENCE_POLICY", "inference-first").strip().lower()
-    return v not in ("off", "0", "false", "no", "disabled")
+    from runtime.env import inference_first_policy_enabled
+
+    return inference_first_policy_enabled()
 
 
 def backpressure_snapshot(

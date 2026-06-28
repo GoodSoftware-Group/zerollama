@@ -162,7 +162,9 @@ Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, p
 
 ---
 
-## Deferred
+## Deferred (product gaps)
+
+Full gap matrix with validation status: see **[Product gaps](#product-gaps)** below.
 
 | Item | WHY deferred |
 |------|----------------|
@@ -170,3 +172,68 @@ Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, p
 | Remote LMCache / Mooncake | Local `file://` tier only today |
 | Partial-range seq_cp on hybrid memory | Upstream llama.cpp assert on non-full buffers |
 | In-process multiseq + LFM2 Radix | Metal crash on partial copy; prefer subprocess + full-KV models |
+| Warm-target partial catch-up | v1 only seeds **cold** targets (`seq_pos == 0`); warm slots skip Radix plan |
+| 5080 live Radix gate | Same-key L3 signed off on 5080; cross-slot live smoke validated on Mac only (Jun 2026) |
+| Fleet / cross-node donor | Donor must live in the **same** llama-server process (`n_parallel` slots) |
+
+---
+
+## Product gaps
+
+**Why document gaps explicitly:** operators comparing zerollama to vLLM RadixAttention or LMCache need to know what v1 **does not** do — not just what shipped. v1 targets agent fleets with one shared system prompt and distinct conversation keys; it is not a drop-in RadixAttention scheduler.
+
+### Scope: what v1 ships
+
+| Capability | v1 behavior | WHY this shape |
+|------------|---------------|----------------|
+| Donor selection | Longest hash-matched **contiguous** chain from prompt start | Matches dominant agent pattern (shared system prompt prefix); avoids scheduler rewrite |
+| Target state | **Cold slot only** (`seq_pos == 0`, no resume) | Copy semantics are “seed empty KV”; warm partial merge needs ref-count DAG (v2) |
+| Process boundary | Same llama-server / in-process ctx only | `seq_cp` is in-process memory; no cross-node KV handoff without remote tier |
+| Verification | Prefix block pool **before** copy | Without hash chain, silent prompt drift would copy stale logits |
+| Post-copy | Decode-graph epoch bump on target | ggml CUDA graphs ignore sequence id — seeded KV without invalidation → wrong logits |
+| Default | **Off** (`ZEROLLAMA_RADIX_PREFIX_SHARE=0`) | Surprises operators who did not opt into cross-slot copy; agent profile turns it on |
+
+### Scope: what v1 does not ship
+
+| Gap | User impact | WHY deferred |
+|-----|-------------|--------------|
+| **Ref-count block DAG** | No arbitrary partial overlap across many concurrent requests; one donor chain per cold target | Full RadixAttention needs block allocator + scheduler integration in Go and Python |
+| **Warm-target catch-up** | Target slot with partial KV cannot “sync up” to shared prefix via Radix | Requires merge policy + partial `seq_cp` semantics not defined in v1 |
+| **Hybrid / recurrent GGUF** | Block pool verifies; **`seq_cp` skipped** | `llama_memory_seq_cp` aborts or corrupts on hybrid layouts (LFM2, etc.) |
+| **Partial-range copy** | API `pos_end` is metadata; server copies **full sequence** | Partial `p1` ranges abort on several llama.cpp KV backends today |
+| **Remote LMCache / Mooncake / NIXL** | Only local `file://` block **metadata** tier | Remote blob federation needs connector + fleet routing — not agent-local v1 |
+| **Fleet Radix** | Management node does not route by shared-prefix residency | Session-key affinity + L3 slots cover most single-node agent threads; fleet layer is warm-model first |
+| **Cross-node donor** | Donor on node A cannot seed target on node B | KV lives in process VRAM; remote tier would need blob pull + load path |
+| **Go-side Radix** | All logic in Python engine admission | Go scheduler lacks block pool + live slot KV visibility on decode path |
+| **Per-slot CUDA graph capture** | Invalidation after Radix works; capture stub remains | ggml internal capture API not exposed; invalidation is correctness minimum |
+
+### Validation status (Jun 2026)
+
+| Gate | Platform | Status | Notes |
+|------|----------|--------|-------|
+| Offline pytest + plan replay | CI / any host | **PASS** | Default `./scripts/l3_radix_prefix_smoke.sh` |
+| Live two-key smoke | **Mac Metal** (vendor llama-server) | **PASS** | `L3_RADIX_LIVE=1`; donor slot 0 → target 2; `radix_seed` 128 tokens; target ~0.52s vs donor ~8.83s |
+| Live two-key smoke | **CUDA 5080** | **Pending** | Same-key L3 signed off; add `L3_RADIX_LIVE=1` to 5080 session when operator runs cross-slot gate |
+| Hybrid model live | — | **N/A** | Use full-KV transformer GGUF for Radix gates |
+
+**WHY Mac live first:** agent profile + vendor subprocess path was debugged on Darwin (`cli.py` L3 profile fix, patch doctor). 5080 re-run is operational validation, not new architecture.
+
+### Operator checklist (avoid footguns)
+
+1. **`ZEROLLAMA_L3_PROFILE=agent`** or `ZEROLLAMA_RADIX_PREFIX_SHARE=1`
+2. **`n_parallel > 1`** — Radix needs multiple slots in one server
+3. **Vendor llama-server** with patch **0017** — `./scripts/llama_patch_doctor.sh`
+4. **Full-KV transformer** for live smokes — hybrid models skip copy
+5. **Distinct cache keys, same system prompt** — same key uses same-slot L3, not Radix
+6. **Cold second thread** — turn 1 on key B after turn 1 on key A completed on donor slot
+
+### Roadmap (next milestones)
+
+See [ROADMAP — Radix v2 (L3-R)](./ROADMAP.md#radix-v2-l3-r--product-gaps). Suggested order:
+
+1. **L3-R1** — 5080 live Radix gate in sign-off table
+2. **L3-R2** — Warm-target partial catch-up when `0 < seq_pos < donor_matched`
+3. **L3-R3** — Ref-count block pool + scheduler hooks (full RadixAttention parity)
+4. **L3-R4** — Remote LMCache connector + fleet prefix metadata
+5. **L3-R5** — Hybrid-memory copy path (upstream or model-specific)
+

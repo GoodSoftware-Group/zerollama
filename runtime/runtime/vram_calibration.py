@@ -7,7 +7,6 @@ Persisted via ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST when enabled.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from pathlib import Path
@@ -19,14 +18,9 @@ _last_sample: dict[str, Any] | None = None
 
 def vram_probe_calibrate_enabled() -> bool:
     """auto: on when GPU VRAM check is enabled."""
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE", "auto").strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return False
-    if v in ("1", "true", "yes", "on"):
-        return True
-    from runtime.gpu_vram import gpu_vram_check_enabled
+    from runtime.env import vram_probe_calibrate_enabled as _enabled
 
-    return gpu_vram_check_enabled()
+    return _enabled()
 
 
 def record_vram_load_sample(

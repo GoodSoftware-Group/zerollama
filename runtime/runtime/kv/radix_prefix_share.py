@@ -1,11 +1,16 @@
 """Cross-slot Radix-style prefix sharing (vLLM RadixAttention-inspired, slot-level).
 
-WHY: L3 pins each session to ``hash(key) mod parallel``, so two agents with the
-same system prompt land on different slots and repeat prefill. The prefix block
-pool already content-addresses token blocks; this module finds a *donor slot*
-holding a matching hash chain and copies KV into the target slot before decode.
+WHY this module exists (not full RadixAttention):
+  L3 pins each session to ``hash(key) mod parallel``. Two agents with the same
+  system prompt but different keys land on different slots and repeat prefill.
+  v1 copies one contiguous donor chain into a *cold* target before decode — enough
+  for agent fleets without a ref-count block DAG or scheduler rewrite.
 
-Requires prefix block pool (auto-enabled with Radix share or ``n_parallel > 1``).
+WHY block pool is required:
+  Content-addressed hash chains verify the prompt before copy. Seeding without
+  verification would reuse stale KV when clients silently change the system prompt.
+
+Product gaps (warm target, hybrid skip, remote tier): docs/radix-prefix-share.md
 """
 
 from __future__ import annotations
@@ -36,7 +41,11 @@ def find_radix_share_plan(
     seq_pos: int | None = None,
     effective_window: int | None = None,
 ) -> RadixSharePlan | None:
-    """Plan a donor→target KV seed when target is cold or behind shared prefix."""
+    """Plan a donor→target KV seed when target is cold or behind shared prefix.
+
+    WHY ``seq_pos > 0`` returns None (v1): copy semantics seed *empty* target KV.
+    Warm-target partial catch-up needs merge policy + ref-count blocks (L3-R2).
+    """
     if not radix_prefix_share_enabled():
         return None
     if target_slot < 0 or not tokens or not model_hash:

@@ -58,9 +58,11 @@ def _serve(args: argparse.Namespace) -> None:
     if args.config:
         os.environ["ZEROLLAMA_RUNTIME_CONFIG"] = args.config
     elif not os.environ.get("ZEROLLAMA_RUNTIME_CONFIG"):
-        from runtime.autoconfig import resolve_default_config_path
+        # WHY resolved_config_path (not resolve_default_config_path): ZEROLLAMA_L3_PROFILE=agent
+        # must win when unset; blindly pinning apple_silicon on Darwin broke Radix live smokes.
+        from runtime.autoconfig import resolved_config_path
 
-        os.environ["ZEROLLAMA_RUNTIME_CONFIG"] = str(resolve_default_config_path())
+        os.environ["ZEROLLAMA_RUNTIME_CONFIG"] = str(resolved_config_path())
     # WHY order: single_gpu.yaml vram: defaults, then optional exported factor file.
     apply_vram_defaults_from_config()
     apply_exported_vram_env()

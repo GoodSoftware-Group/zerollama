@@ -197,8 +197,10 @@ static BOOL ane_metal_fill(id<MTLDevice> /*device*/,
 typedef struct {
     ANEKernelHandle * kernel;
     ANEKernelHandle * kernel2; // B6: second conv1 kernel when WEIGHT_FILE2 set (chained eval)
+    ANEKernelHandle * kernel3; // B8: third conv1 kernel when WEIGHT_FILE3 set (attn_q proxy)
     uint32_t          inSID;
     uint32_t          inSID2;
+    uint32_t          inSID3;
     size_t            ioBytes;
     int               ch;
     int               sp;
@@ -208,6 +210,7 @@ typedef struct {
     id<MTLComputePipelineState> pipeline;
     int               stepCount;
     bool              conv2Active;
+    bool              conv3Active;
 } ANEDraftSession;
 
 static ANEDraftSession g_session {};
@@ -221,12 +224,17 @@ static void ane_session_clear(ANEDraftSession * st) {
         ane_bridge_free(st->kernel2);
         st->kernel2 = NULL;
     }
+    if (st->kernel3) {
+        ane_bridge_free(st->kernel3);
+        st->kernel3 = NULL;
+    }
     if (st->outBuf) {
         free(st->outBuf);
         st->outBuf = NULL;
     }
     st->inSID   = 0;
     st->inSID2  = 0;
+    st->inSID3  = 0;
     st->ioBytes = 0;
     st->ch      = 0;
     st->sp      = 0;
@@ -235,6 +243,7 @@ static void ane_session_clear(ANEDraftSession * st) {
     st->pipeline = nil;
     st->stepCount = 0;
     st->conv2Active = false;
+    st->conv3Active = false;
 }
 
 static BOOL ane_compile_conv_kernel(
@@ -306,9 +315,12 @@ bool ane_draft_session_init(int channels, int spatial, const char * weight_path,
 
         const BOOL use_gamma = NO; // B3: gamma applied in ggml handoff pack (ANE mul broadcast unstable in MIL)
         const char * weight2_path = getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2");
+        const char * weight3_path = getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3");
         const BOOL want_conv2 = weight2_path && weight2_path[0];
+        const BOOL want_conv3 = weight3_path && weight3_path[0];
         NSData * wb = nil;
         NSData * wb2 = nil;
+        NSData * wb3 = nil;
         if (weight_path && weight_path[0]) {
             wb = ane_load_weight_blob(weight_path, channels);
         } else {
@@ -317,9 +329,12 @@ bool ane_draft_session_init(int channels, int spatial, const char * weight_path,
         if (want_conv2) {
             wb2 = ane_load_weight_blob(weight2_path, channels);
         }
+        if (want_conv3) {
+            wb3 = ane_load_weight_blob(weight3_path, channels);
+        }
         (void) use_gamma;
         (void) gamma_path;
-        if (!wb || (want_conv2 && !wb2)) {
+        if (!wb || (want_conv2 && !wb2) || (want_conv3 && !wb3)) {
             ane_session_clear(&g_session);
             return false;
         }
@@ -345,6 +360,17 @@ bool ane_draft_session_init(int channels, int spatial, const char * weight_path,
             } else {
                 ane_bridge_free(g_session.kernel2);
                 g_session.kernel2 = NULL;
+            }
+        }
+
+        g_session.conv3Active = false;
+        if (want_conv3 && ane_compile_conv_kernel(&g_session.kernel3, wb3, channels, spatial, g_session.ioBytes)) {
+            g_session.inSID3 = ane_bridge_input_surface_id(g_session.kernel3, 0);
+            if (g_session.inSID3 != 0) {
+                g_session.conv3Active = true;
+            } else {
+                ane_bridge_free(g_session.kernel3);
+                g_session.kernel3 = NULL;
             }
         }
 
@@ -425,7 +451,6 @@ static bool ane_session_eval(void) {
         g_session.stepCount++;
         return true;
     }
-    // Chained conv1: W0 then feed output IOSurface into W1 kernel input.
     float * mid = (float *) malloc(g_session.ioBytes);
     if (!mid) {
         return false;
@@ -439,7 +464,25 @@ static bool ane_session_eval(void) {
     if (!ane_bridge_eval(g_session.kernel2)) {
         return false;
     }
-    ane_bridge_read_output(g_session.kernel2, 0, g_session.outBuf, g_session.ioBytes);
+    if (!g_session.kernel3) {
+        ane_bridge_read_output(g_session.kernel2, 0, g_session.outBuf, g_session.ioBytes);
+        g_session.stepCount++;
+        return true;
+    }
+    mid = (float *) malloc(g_session.ioBytes);
+    if (!mid) {
+        return false;
+    }
+    ane_bridge_read_output(g_session.kernel2, 0, mid, g_session.ioBytes);
+    if (!ane_session_write_surface(g_session.inSID3, g_session.ioBytes, mid)) {
+        free(mid);
+        return false;
+    }
+    free(mid);
+    if (!ane_bridge_eval(g_session.kernel3)) {
+        return false;
+    }
+    ane_bridge_read_output(g_session.kernel3, 0, g_session.outBuf, g_session.ioBytes);
     g_session.stepCount++;
     return true;
 }
@@ -478,7 +521,8 @@ int ane_draft_session_step_count(void) {
 }
 
 bool ane_draft_session_using_conv2(void) {
-    return g_session.conv2Active && g_session.kernel2 != NULL;
+    return (g_session.conv2Active && g_session.kernel2 != NULL) ||
+           (g_session.conv3Active && g_session.kernel3 != NULL);
 }
 
 bool ane_draft_session_step_once(float fill_val) {

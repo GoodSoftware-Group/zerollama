@@ -12,14 +12,15 @@ _APPLY_RESULT: dict[str, Any] | None = None
 
 def vram_apply_exported_env_enabled() -> bool:
     """Only when ZEROLLAMA_RUNTIME_VRAM_APPLY_EXPORTED_ENV=1 (not auto)."""
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_APPLY_EXPORTED_ENV", "").strip().lower()
-    return v in ("1", "true", "yes", "on")
+    from runtime.env import vram_apply_exported_env_enabled as _enabled
+
+    return _enabled()
 
 
 def apply_export_path() -> Path:
-    override = os.environ.get(
-        "ZEROLLAMA_RUNTIME_VRAM_APPLY_EXPORTED_ENV_PATH", ""
-    ).strip()
+    from runtime.env import vram_apply_exported_env_path
+
+    override = vram_apply_exported_env_path()
     if override:
         return Path(override).expanduser()
     from runtime.vram_factor_export import export_last_factor_path

@@ -28,9 +28,11 @@
 
 | vLLM feature | WHY not in zerollama L3 |
 |--------------|-------------------------|
-| Full RadixAttention ref-count block DAG | v1 ships donor→target seed only; see [radix-prefix-share.md](./radix-prefix-share.md) |
-| LMCache / Mooncake **remote** connectors | Optional local `file://` tier only; Redis/NIXL deferred |
-| `CUDAGraphDispatcher` + capture handles | ggml internal capture; stub `DecodeGraphCache.lookup` until upstream API |
+| Full RadixAttention ref-count block DAG | v1 ships donor→target seed only; gap matrix in [radix-prefix-share.md](./radix-prefix-share.md#product-gaps); milestones [ROADMAP L3-R](./ROADMAP.md#radix-v2-l3-r--product-gaps) |
+| LMCache / Mooncake **remote** connectors | Optional local `file://` tier only; Redis/NIXL deferred — **why:** agent-local v1 proves block verification + donor seed before fleet blob federation |
+| Warm-target Radix catch-up | v1 seeds **cold** slots only (`seq_pos == 0`) — **why:** partial merge needs ref-count semantics (L3-R2) |
+| Fleet / cross-node Radix donor | Donor must be same llama-server process — **why:** KV in VRAM; fleet layer routes warm model, not shared-prefix residency |
+| `CUDAGraphDispatcher` + capture handles | ggml internal capture; stub `DecodeGraphCache.lookup` until upstream API — invalidation after Radix seed is wired |
 | Scheduler KV preemption loop | LocalAI watchdog + slot allocator; not vLLM-style block preempt yet |
 
 ---

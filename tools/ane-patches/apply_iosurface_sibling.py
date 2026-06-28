@@ -20,6 +20,23 @@ def patch_once(path: pathlib.Path, needle: str, repl: str, label: str, *, requir
     print(f"  patched {label}")
 
 
+def fix_metal_device_name_check(metal_cpp: pathlib.Path) -> None:
+    """Upgrade early IOSurface patches that used strcmp(MTL) — device names are MTL0, MTL1, …"""
+    text = metal_cpp.read_text()
+    old = (
+        '    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {\n'
+        '        GGML_LOG_ERROR("%s: device is not Metal\\n", __func__);'
+    )
+    new = (
+        '    const char * name = device->iface.get_name(device);\n'
+        '    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {\n'
+        '        GGML_LOG_ERROR("%s: device is not Metal (name=%s)\\n", __func__, name ? name : "null");'
+    )
+    if old in text:
+        metal_cpp.write_text(text.replace(old, new, 1))
+        print("  fixed metal.cpp IOSurface device name check (strcmp → strncmp)")
+
+
 def main() -> None:
     root = pathlib.Path(sys.argv[1])
 
@@ -204,8 +221,9 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
         return nullptr;
     }
 
-    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {
-        GGML_LOG_ERROR("%s: device is not Metal\\n", __func__);
+    const char * name = device->iface.get_name(device);
+    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal (name=%s)\\n", __func__, name ? name : "null");
         return nullptr;
     }
 
@@ -229,6 +247,8 @@ GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)""",
         "                      ${METALKIT_FRAMEWORK}\n                      ${IOSURFACE_FRAMEWORK}\n                      )",
         "CMake IOSurface link",
     )
+
+    fix_metal_device_name_check(root / "ggml/src/ggml-metal/ggml-metal.cpp")
 
 
 if __name__ == "__main__":

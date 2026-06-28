@@ -280,6 +280,7 @@ func runDoctorChecks(repo string) []doctorCheck {
 	out = append(out, doctorCheckEdgeBuild())
 	out = append(out, doctorCheckGgmlRunner())
 	out = append(out, doctorCheckLlamaCppUnified(repo))
+	out = append(out, doctorCheckLlamaPatches(repo))
 	out = append(out, doctorCheckLlamaServer(repo))
 	if runtime.GOOS == "darwin" {
 		out = append(out, doctorCheckMacCGO(repo))

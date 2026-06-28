@@ -15,23 +15,24 @@ _state_cache_mtime: float | None = None
 
 def vram_autotune_persist_enabled() -> bool:
     """On with autotune; disable only via VRAM_AUTOTUNE_PERSIST=0."""
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST", "").strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return False
-    from runtime.gpu_vram import vram_estimate_autotune_enabled
+    from runtime.env import vram_autotune_persist_enabled as _enabled
 
-    return vram_estimate_autotune_enabled()
+    return _enabled()
 
 
 def autotune_state_dir() -> Path:
-    raw = os.environ.get("ZEROLLAMA_RUNTIME_STATE_DIR", "").strip()
+    from runtime.env import vram_runtime_state_dir
+
+    raw = vram_runtime_state_dir()
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".cache" / "zerollama"
 
 
 def autotune_state_path() -> Path:
-    override = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_STATE", "").strip()
+    from runtime.env import vram_autotune_state_path_override
+
+    override = vram_autotune_state_path_override()
     if override:
         return Path(override).expanduser()
     return autotune_state_dir() / "vram_autotune.json"

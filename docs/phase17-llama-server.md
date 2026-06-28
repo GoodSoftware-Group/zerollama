@@ -230,15 +230,17 @@ Env `OLLAMA_STREAM_KEEPALIVE_INTERVAL` (default `15`, `0` = off). Emits `status:
 
 ---
 
-## llama.cpp pin (`b9781`)
+## llama.cpp pin (`c84b3020`)
 
-Upstream Ollama @ **v0.30.11** (`32a97b74`) pins **`b9781`**. Zerollama matches the root `LLAMA_CPP_VERSION` file.
+Zerollama pins **elizaOS/llama.cpp** @ **`c84b3020`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`). This supersedes upstream Ollama v0.30.11 tag **`b9781`** while keeping mergeability with Phase 17.
 
-**Why match upstream’s pin, not llama.cpp HEAD:** Phase 17 cherry-picks come from `ollama/ollama` release tags; drifting ahead of upstream’s pin makes every diff audit ambiguous. Zerollama adds **16 Ollama patches** on top — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
+**Why elizaOS unified base:** one sibling/runtime tree with dflash/QJL/checkpoint features; zerollama adds **19 Ollama/zerollama patches** on top — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
 
-**Vendor tree:** `vendor/llama-cpp-b9781/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
+**Vendor tree:** `vendor/llama-cpp-c84b3020/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
 
-**Why `sync_vendor_llama.sh` checks patch count:** syncing bare `b9781` (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports `b9781` — CGO then misses `ggml_backend_dev_reset`, no-alloc scheduler, and kv-ext.
+**Why `sync_vendor_llama.sh` checks patch count:** syncing bare pin (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports `c84b3020` — CGO then misses `ggml_backend_dev_reset`, no-alloc scheduler, kv-ext, and `/kv/seq-copy`.
+
+**Patch doctor:** `./scripts/llama_patch_doctor.sh` · `/health.llama_patches` · `zerollama doctor` (llama.cpp patches check)
 
 Workflow: [llama/README.md](../llama/README.md) · [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md)
 

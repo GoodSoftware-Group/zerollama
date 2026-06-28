@@ -48,6 +48,13 @@ echo "== Phase 16 edge binary build =="
 
 echo ""
 echo "== Phase 16 edge binary E2E (plain serve, no --edge flag) =="
+# WHY: stale sidecar from prior smokes breaks P17_ASSERT_RUNTIME_OFF.
+_embed_port="${ZEROLLAMA_RUNTIME_EMBED_PORT:-8081}"
+if curl -sf -m 2 "http://127.0.0.1:${_embed_port}/health" >/dev/null 2>&1; then
+  echo "stopping stale runtime on :${_embed_port} (edge expects runtime off)"
+  lsof -ti ":${_embed_port}" | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
 P17_HOST="${P17_HOST:-127.0.0.1:11438}" \
 P17_BIN="${OUT}" \
 P17_SERVE_EXTRA="" \

@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
+	"strings"
 
 	"github.com/ollama/ollama/fs/ggml"
 )
@@ -250,6 +252,66 @@ func DefaultProxyConvTensor() string {
 // DefaultProxyConv2Tensor is the second conv in the B6 two-layer proxy subgraph.
 func DefaultProxyConv2Tensor() string {
 	return "blk.0.ffn_up.weight"
+}
+
+// DefaultProxyConv3Tensor is the third conv in the B8 attn-gate proxy expansion.
+func DefaultProxyConv3Tensor() string {
+	return "blk.0.attn_gate.weight"
+}
+
+// DefaultProxyConv3TensorForArch picks B8 third conv tensor for a sidecar architecture.
+func DefaultProxyConv3TensorForArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "dflash-draft", "qwen35", "qwen3", "eagle3":
+		return "blk.0.attn_gate.weight"
+	default:
+		return DefaultProxyConv3Tensor()
+	}
+}
+
+// proxyConv3TensorCandidates returns preferred B8 conv3 tensors, most specific first.
+func proxyConv3TensorCandidates(arch string) []string {
+	primary := DefaultProxyConv3TensorForArch(arch)
+	return []string{
+		primary,
+		"blk.0.attn_gate.weight",
+		"blk.0.attn_q.weight",
+	}
+}
+
+// ResolveProxyConv3TensorForSidecar picks the first B8 conv3 tensor present in the sidecar GGUF.
+func ResolveProxyConv3TensorForSidecar(sidecarPath string) (tensor string, arch string, err error) {
+	arch, err = ProbeSidecarArchitecture(sidecarPath)
+	if err != nil {
+		return DefaultProxyConv3Tensor(), "", err
+	}
+	f, err := os.Open(sidecarPath)
+	if err != nil {
+		return DefaultProxyConv3TensorForArch(arch), arch, err
+	}
+	defer f.Close()
+	meta, err := ggml.DecodeMetadata(f)
+	if err != nil {
+		return DefaultProxyConv3TensorForArch(arch), arch, err
+	}
+	byName := make(map[string]struct{}, len(meta.Tensors().Items()))
+	for _, t := range meta.Tensors().Items() {
+		if t != nil && t.Name != "" {
+			byName[t.Name] = struct{}{}
+		}
+	}
+	for _, cand := range proxyConv3TensorCandidates(arch) {
+		if _, ok := byName[cand]; ok {
+			return cand, arch, nil
+		}
+	}
+	return "", arch, fmt.Errorf("no B8 conv3 proxy tensor in %s (arch=%s)", sidecarPath, arch)
+}
+
+// DefaultProxyConv3TensorForSidecar resolves B8 conv3 tensor from sidecar architecture.
+func DefaultProxyConv3TensorForSidecar(sidecarPath string) (tensor string, err error) {
+	tensor, _, err = ResolveProxyConv3TensorForSidecar(sidecarPath)
+	return tensor, err
 }
 
 // ExtractNormVectorWeightBlob packs the first channels elements of a 1D norm weight.

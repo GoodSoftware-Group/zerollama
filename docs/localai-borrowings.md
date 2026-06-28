@@ -222,7 +222,7 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 
 | Item | Why deferred |
 |------|----------------|
-| **Radix prefix cache (fleet)** | Session-key affinity + L3 slots cover most agent threads |
+| **Radix prefix cache (fleet)** | Session-key affinity + L3 slots cover most agent threads; cross-node donor needs L3-R4 — see [radix-prefix-share.md — Product gaps](./radix-prefix-share.md#product-gaps) |
 | **Full gallery + gRPC backends** | Architecture mismatch with Phase 15/17 |
 
 ---

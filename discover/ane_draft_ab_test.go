@@ -17,6 +17,12 @@ func TestParseDflashStatistics(t *testing.T) {
 	if draftAcceptance(gt, at) != 0.25 {
 		t.Fatalf("acceptance = %v", draftAcceptance(gt, at))
 	}
+
+	multi := log + "\nstatistics dflash: #calls(b,g,a) = 2 6 5, #gen drafts = 20, #acc drafts = 8, #gen tokens = 26, #acc tokens = 7, dur(b,g,a) = 2.0, 4.0, 5.0 ms"
+	_, _, gt2, at2, ok := ParseDflashStatisticsFromLog(multi)
+	if !ok || gt2 != 26 || at2 != 7 {
+		t.Fatalf("last stats gt/at=%d/%d ok=%v", gt2, at2, ok)
+	}
 }
 
 func TestFillServerRunFromCompletion(t *testing.T) {
@@ -70,5 +76,17 @@ func TestAcceptanceClose(t *testing.T) {
 	}
 	if acceptanceClose(0.25, 0.10) {
 		t.Fatal("expected not close")
+	}
+}
+
+func TestAcceptanceParity(t *testing.T) {
+	if !acceptanceParity(ANEDraftServerRun{}, ANEDraftServerRun{GenTokens: 10}) {
+		t.Fatal("incomparable legs should not fail parity")
+	}
+	if !acceptanceParity(
+		ANEDraftServerRun{GenTokens: 10, AccTokens: 3, DraftAcceptance: 0.3},
+		ANEDraftServerRun{GenTokens: 10, AccTokens: 3, DraftAcceptance: 0.29},
+	) {
+		t.Fatal("comparable close legs should pass")
 	}
 }

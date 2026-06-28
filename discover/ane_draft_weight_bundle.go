@@ -54,6 +54,16 @@ func (m ANEDraftWeightManifest) Conv2WeightPath() string {
 	return ""
 }
 
+// Conv3WeightPath returns the optional third conv proxy (B8 attn_gate on dflash-draft) when present.
+func (m ANEDraftWeightManifest) Conv3WeightPath() string {
+	for _, w := range m.Weights {
+		if w.Slot == "proxy_conv_w2" || w.Role == "conv_w2" {
+			return w.Path
+		}
+	}
+	return ""
+}
+
 // GammaWeightPath returns the optional RMS-norm gamma blob for conv output scaling.
 func (m ANEDraftWeightManifest) GammaWeightPath() string {
 	for _, w := range m.Weights {
@@ -94,10 +104,8 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 		if !manifestStat.ModTime().Before(sidecarStat.ModTime()) {
 			var cached ANEDraftWeightManifest
 			data, err := os.ReadFile(manifestPath)
-			if err == nil && json.Unmarshal(data, &cached) == nil && cached.ConvWeightPath() != "" {
-				if cached.Conv2WeightPath() != "" && cached.Version >= 3 {
-					return cached, true, nil
-				}
+			if err == nil && json.Unmarshal(data, &cached) == nil && cached.ConvWeightPath() != "" && cached.Version >= 5 {
+				return cached, true, nil
 			}
 		}
 	}
@@ -139,6 +147,18 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 		})
 		manifest.Version = 3
 		manifest.Note = "B6 v3: convT [out,in] from GGUF FFN + maderix blob header (wsize@72, payload@128)"
+	}
+
+	if conv3Path, _, err := MaterializeANEDraftWeightFile(entry, conv3TensorForEntry(entry)); err == nil && conv3Path != "" {
+		manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
+			Slot:   "proxy_conv_w2",
+			Role:   "conv_w2",
+			Tensor: conv3TensorForEntry(entry),
+			Path:   conv3Path,
+			Bytes:  draftMILWeightBlobBytes(ch),
+		})
+		manifest.Version = 5
+		manifest.Note = "B8 v5: gate+up+attn_gate triple conv1 chain (lab proxy toward block0)"
 	}
 
 	for _, normTensor := range []string{"blk.0.ffn_norm.weight", "blk.0.attn_norm.weight"} {
@@ -215,8 +235,13 @@ func MaterializeANEDraftWeightBundleWithDrive(entry ANEDraftEntry, forceDrive bo
 	if err != nil {
 		return manifest, cached, err
 	}
-	manifest.Version = 4
-	manifest.Note = "B7: conv proxy + optional drive token_embd argmax head"
+	if manifest.Conv3WeightPath() != "" {
+		manifest.Version = 5
+		manifest.Note = "B8 v5 + B7 drive token_embd argmax head"
+	} else {
+		manifest.Version = 4
+		manifest.Note = "B7: conv proxy + optional drive token_embd argmax head"
+	}
 	manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
 		Slot:   "drive_token_embd",
 		Role:   "token_embd",
@@ -247,6 +272,17 @@ func draftPathFromEntry(entry ANEDraftEntry) string {
 	return p
 }
 
+func conv3TensorForEntry(entry ANEDraftEntry) string {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return DefaultProxyConv3Tensor()
+	}
+	if t, _, err := ResolveProxyConv3TensorForSidecar(draftPath); err == nil {
+		return t
+	}
+	return DefaultProxyConv3Tensor()
+}
+
 func envTruthy(v string) bool {
 	v = strings.TrimSpace(strings.ToLower(v))
 	return v == "1" || v == "true" || v == "yes" || v == "on" || v == "force" || v == "shadow"
@@ -267,6 +303,9 @@ func ExportEnvForManifest(m ANEDraftWeightManifest, manifestPath string) map[str
 	}
 	if conv2 := m.Conv2WeightPath(); conv2 != "" {
 		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2"] = conv2
+	}
+	if conv3 := m.Conv3WeightPath(); conv3 != "" {
+		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3"] = conv3
 	}
 	if gamma := m.GammaWeightPath(); gamma != "" {
 		out["ZEROLLAMA_ANE_DRAFT_GAMMA_FILE"] = gamma

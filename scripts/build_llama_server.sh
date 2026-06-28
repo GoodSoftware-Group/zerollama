@@ -83,6 +83,27 @@ _probe_llama_server_capabilities() {
   fi
 }
 
+_probe_seq_copy_route() {
+  local bin="$1"
+  local root="$2"
+  # WHY: Radix cross-slot seed requires patch 0017 on vendor tree only.
+  if [[ "${root}" != "${_VENDOR_ROOT}" && "${root}" != "${_VENDOR_ROOT}/" ]]; then
+    if strings "${bin}" 2>/dev/null | grep -q 'kv/seq-copy'; then
+      echo "OK: ${bin} embeds /kv/seq-copy (non-vendor build)"
+    else
+      echo "warn: ${bin} missing /kv/seq-copy (expected for bare sibling builds)" >&2
+    fi
+    return 0
+  fi
+  if strings "${bin}" 2>/dev/null | grep -q 'kv/seq-copy'; then
+    echo "OK: ${bin} embeds POST /kv/seq-copy (patch 0017)"
+  else
+    echo "error: ${bin} missing /kv/seq-copy — rebuild from patched vendor" >&2
+    echo "  ./scripts/rebase_vendor_unified.sh --apply --sync && ./scripts/build_llama_server.sh" >&2
+    exit 1
+  fi
+}
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
   ZEROLLAMA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
   # shellcheck source=scripts/mac_cgo_env.sh
@@ -124,6 +145,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "OK: ${LIB}"
     "${BIN}" --version 2>/dev/null || true
     _probe_llama_server_capabilities "${BIN}"
+    _probe_seq_copy_route "${BIN}" "${ROOT}"
   else
     echo "Build finished but ${BIN} or ${LIB} missing" >&2
     exit 1
@@ -189,6 +211,7 @@ if [[ -x "${BIN}" ]]; then
   echo "OK: ${BIN}"
   "${BIN}" --version 2>/dev/null || true
   _probe_llama_server_capabilities "${BIN}"
+  _probe_seq_copy_route "${BIN}" "${ROOT}"
 else
   echo "Build finished but ${BIN} missing" >&2
   exit 1

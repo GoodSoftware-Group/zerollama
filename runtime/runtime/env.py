@@ -164,6 +164,11 @@ def llama_cache_disk_enabled(*, backend: str | None = None) -> bool:
 
 
 def radix_prefix_share_enabled() -> bool:
+    """Cross-slot Radix seed (v1). Default off — WHY: opt-in cross-slot KV copy.
+
+    Auto-enables prefix block pool when on. Prefer ``ZEROLLAMA_L3_PROFILE=agent``
+    over raw env; explicit ``ZEROLLAMA_RADIX_PREFIX_SHARE=0/1`` wins over YAML.
+    """
     explicit = env_tri_state("ZEROLLAMA_RADIX_PREFIX_SHARE")
     if explicit is not None:
         return explicit
@@ -387,6 +392,214 @@ def vram_inference_policy() -> str:
     return os.environ.get("ZEROLLAMA_RUNTIME_INFERENCE_POLICY", "inference-first").strip().lower()
 
 
+def inference_first_policy_enabled() -> bool:
+    return vram_inference_policy() not in ("off", "0", "false", "no", "disabled")
+
+
+def runtime_shared_python_embedded() -> bool:
+    """True when training and runtime share one in-process CPython."""
+    v = os.environ.get("ZEROLLAMA_RUNTIME_SHARED_PYTHON", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    import sys
+
+    return "ollama_training_native" in sys.modules
+
+
+def vram_ram_overhead() -> float:
+    return _float_env("ZEROLLAMA_RUNTIME_RAM_OVERHEAD", default=1.12, minimum=1.0)
+
+
+def vram_ram_margin() -> float:
+    return _float_env("ZEROLLAMA_RUNTIME_RAM_MARGIN", default=1.0, minimum=0.0)
+
+
+def vram_weight_tensor_mode() -> str:
+    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_WEIGHT_TENSOR", "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return "off"
+    if raw in ("1", "true", "yes", "on"):
+        return "on"
+    return "auto"
+
+
+def vram_weight_tensor_use_per_tensor(n_gpu_layers: int | None) -> bool:
+    mode = vram_weight_tensor_mode()
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    return n_gpu_layers is not None and n_gpu_layers >= 0
+
+
+def vram_suggest_ctx_max_cap() -> int:
+    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_SUGGEST_CTX_MAX", "131072").strip()
+    try:
+        return max(512, int(raw))
+    except ValueError:
+        return 131072
+
+
+def vram_clamp_num_ctx_raw() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX", "0").strip()
+
+
+def vram_num_ctx_clamp_enabled() -> bool:
+    v = vram_clamp_num_ctx_raw().lower()
+    if v in ("0", "false", "no", "off", ""):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    from runtime.gpu_vram import gpu_vram_check_enabled
+
+    return gpu_vram_check_enabled()
+
+
+def vram_probe_calibrate_raw() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE", "auto").strip().lower()
+
+
+def vram_probe_calibrate_enabled() -> bool:
+    v = vram_probe_calibrate_raw()
+    if v in ("0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    from runtime.gpu_vram import gpu_vram_check_enabled
+
+    return gpu_vram_check_enabled()
+
+
+def vram_estimate_autotune_enabled() -> bool:
+    explicit = vram_estimate_autotune_explicit()
+    if explicit is False:
+        return False
+    if explicit is True:
+        return True
+    return vram_probe_calibrate_enabled()
+
+
+def vram_apply_exported_env_enabled() -> bool:
+    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_APPLY_EXPORTED_ENV", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def vram_apply_exported_env_path() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_VRAM_APPLY_EXPORTED_ENV_PATH", "").strip()
+
+
+def vram_autotune_persist_explicit() -> TriState:
+    return env_tri_state("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST")
+
+
+def vram_autotune_persist_enabled() -> bool:
+    explicit = vram_autotune_persist_explicit()
+    if explicit is False:
+        return False
+    return vram_estimate_autotune_enabled()
+
+
+def vram_runtime_state_dir() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_STATE_DIR", "").strip()
+
+
+def vram_autotune_state_path_override() -> str:
+    return os.environ.get("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_STATE", "").strip()
+
+
+def vram_kv_block_layout_enabled() -> bool:
+    return env_bool("ZEROLLAMA_RUNTIME_VRAM_KV_BLOCK_LAYOUT", default=True)
+
+
+def vram_weight_block_layout_enabled() -> bool:
+    return env_bool("ZEROLLAMA_RUNTIME_VRAM_WEIGHT_BLOCK_LAYOUT", default=True)
+
+
+def vram_kv_elem_bytes() -> int:
+    return _int_env("ZEROLLAMA_RUNTIME_VRAM_KV_ELEM_BYTES", default=2, minimum=1)
+
+
+def _float_env(
+    name: str,
+    *,
+    default: float,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        value = default
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def vram_num_ctx_override() -> int | None:
+    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_NUM_CTX", "").strip()
+    if not raw:
+        return None
+    try:
+        v = int(raw)
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+def vram_mmap_factor() -> float:
+    return _float_env("ZEROLLAMA_RUNTIME_VRAM_MMAP_FACTOR", default=1.0, minimum=0.0, maximum=1.0)
+
+
+def vram_layer_scale_enabled() -> bool:
+    return env_bool("ZEROLLAMA_RUNTIME_VRAM_LAYER_SCALE", default=True)
+
+
+def vram_layer_base() -> int:
+    return _int_env("ZEROLLAMA_RUNTIME_VRAM_LAYER_BASE", default=32, minimum=1)
+
+
+def vram_kv_exact_enabled() -> bool:
+    return env_bool("ZEROLLAMA_RUNTIME_VRAM_KV_EXACT", default=True)
+
+
+def vram_ngram_scratch_bytes_default() -> int:
+    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_NGRAM_SCRATCH_BYTES", "").strip()
+    if not raw:
+        return 128 * 1024 * 1024
+    try:
+        from runtime.gpu.admission import parse_size_bytes
+
+        parsed = parse_size_bytes(raw)
+        return parsed if parsed is not None and parsed > 0 else 128 * 1024 * 1024
+    except Exception:
+        return 128 * 1024 * 1024
+
+
+def vram_scratch_factor() -> float:
+    return _float_env("ZEROLLAMA_RUNTIME_VRAM_SCRATCH_FACTOR", default=1.05, minimum=1.0)
+
+
+def vram_estimate_factor() -> float:
+    return _float_env("ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR", default=1.0, minimum=0.1)
+
+
+def vram_estimate_autotune_explicit() -> TriState:
+    return env_tri_state("ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE")
+
+
+def vram_kv_factor(*, kv_exact: bool) -> float:
+    default = 1.10 if kv_exact else 1.15
+    return _float_env("ZEROLLAMA_RUNTIME_VRAM_KV_FACTOR", default=default, minimum=0.1)
+
+
 def vram_env_health() -> dict[str, object]:
     """Effective VRAM env for ``/health`` (YAML-applied values visible after engine init)."""
     return {
@@ -394,7 +607,33 @@ def vram_env_health() -> dict[str, object]:
         "check_gpu_vram_explicit": vram_check_gpu_explicit(),
         "margin": vram_margin(),
         "inference_policy": vram_inference_policy(),
+        "inference_first": inference_first_policy_enabled(),
         "nvml_unified_fallback": vram_nvml_unified_fallback_enabled(),
+        "num_ctx_override": vram_num_ctx_override(),
+        "mmap_factor": vram_mmap_factor(),
+        "kv_exact": vram_kv_exact_enabled(),
+        "kv_factor": vram_kv_factor(kv_exact=True),
+        "estimate_factor": vram_estimate_factor(),
+        "estimate_autotune_explicit": vram_estimate_autotune_explicit(),
+        "estimate_autotune": vram_estimate_autotune_enabled(),
+        "scratch_factor": vram_scratch_factor(),
+        "layer_scale": vram_layer_scale_enabled(),
+        "layer_base": vram_layer_base(),
+        "weight_tensor_mode": vram_weight_tensor_mode(),
+        "kv_block_layout": vram_kv_block_layout_enabled(),
+        "weight_block_layout": vram_weight_block_layout_enabled(),
+        "kv_elem_bytes": vram_kv_elem_bytes(),
+        "ngram_scratch_bytes": vram_ngram_scratch_bytes_default(),
+        "ram_overhead": vram_ram_overhead(),
+        "ram_margin": vram_ram_margin(),
+        "suggest_ctx_max": vram_suggest_ctx_max_cap(),
+        "clamp_num_ctx": vram_clamp_num_ctx_raw(),
+        "clamp_num_ctx_enabled": vram_num_ctx_clamp_enabled(),
+        "probe_calibrate": vram_probe_calibrate_raw(),
+        "probe_calibrate_enabled": vram_probe_calibrate_enabled(),
+        "apply_exported_env": vram_apply_exported_env_enabled(),
+        "autotune_persist": vram_autotune_persist_enabled(),
+        "shared_python_embedded": runtime_shared_python_embedded(),
     }
 
 

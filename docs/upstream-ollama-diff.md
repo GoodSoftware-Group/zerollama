@@ -70,8 +70,8 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Python runtime | None | `runtime/` FastAPI sidecar/embed |
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
-| llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9781`** (repo root) | **`b9781`** vendored in-tree via `vendor/llama-cpp-b9781` + 16 patches | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**16** on b9781) + compat hooks via **0015**, ggml deltas via **0016** |
+| llama.cpp pin | `LLAMA_CPP_VERSION` = **`c84b3020`** | **`c84b3020`** vendored via `vendor/llama-cpp-c84b3020` + **19** patches | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
+| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**19** on c84b3020) + compat hooks via **0015**, ggml deltas via **0016**, **0017** seq-copy |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
 | MLX MTP / speculation | Recent commits (draft tokens, KV file split) | Pin behind `MLX_VERSION`; cherry-pick as needed |
 
@@ -81,7 +81,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| llama.cpp tag | `b9781` | `b9781` | Vendor sync via `./scripts/sync_vendor_llama.sh` (**why not bare `make sync` alone:** script verifies patch commits exist; `make clean` resets vendor for re-apply) |
+| llama.cpp tag | `b9781` (upstream v0.30.11) | **`c84b3020`** (elizaOS unified) | Vendor sync via `./scripts/sync_vendor_llama.sh`; patch doctor: `./scripts/llama_patch_doctor.sh` |
 | Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build_llama_server.sh` on sibling tree | Align presets when porting |
 | MLX | `MLX_VERSION` / `MLX_C_VERSION` in CMake | Same pattern | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |

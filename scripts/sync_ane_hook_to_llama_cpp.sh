@@ -8,7 +8,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FETCH_HEAD="$(grep '^FETCH_HEAD=' "${ROOT}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo c84b3020)"
-LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
+_VENDOR_ROOT="${ROOT}/vendor/llama-cpp-${FETCH_HEAD}"
+_SIBLING_ROOT="${ROOT}/../llama.cpp"
+LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${_VENDOR_ROOT}}"
+if [[ ! -f "${LLAMA_CPP_ROOT}/CMakeLists.txt" ]]; then
+  LLAMA_CPP_ROOT="${_SIBLING_ROOT}"
+fi
 CANON="${ROOT}/tools/ane-patches/canonical/common"
 
 if [[ ! -f "${LLAMA_CPP_ROOT}/CMakeLists.txt" ]]; then

@@ -311,8 +311,9 @@ _FLAT_KV_BYTES_TABLE: dict[int, int] = {
 
 
 def _kv_block_layout_enabled() -> bool:
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_KV_BLOCK_LAYOUT", "1").strip().lower()
-    return v not in ("0", "false", "no", "off")
+    from runtime.env import vram_kv_block_layout_enabled
+
+    return vram_kv_block_layout_enabled()
 
 
 def ggml_type_kv_bytes(type_id: int) -> int:
@@ -419,11 +420,9 @@ def estimate_kv_cache_bytes(
         return None
     k_dim, v_dim = dims
     if elem_bytes is None:
-        raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_KV_ELEM_BYTES", "2").strip()
-        try:
-            elem_bytes = max(1, int(raw))
-        except ValueError:
-            elem_bytes = 2
+        from runtime.env import vram_kv_elem_bytes
+
+        elem_bytes = vram_kv_elem_bytes()
     k_b, v_b = kv_bytes_k_and_v(arch, default_elem=elem_bytes)
 
     total = 0
@@ -499,8 +498,9 @@ def _kv_bytes_from_block_layout(type_id: int) -> int | None:
 
 
 def _vram_block_layout_enabled() -> bool:
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_WEIGHT_BLOCK_LAYOUT", "1").strip().lower()
-    return v not in ("0", "false", "no", "off")
+    from runtime.env import vram_weight_block_layout_enabled
+
+    return vram_weight_block_layout_enabled()
 
 
 def ggml_tensor_storage_bytes(ne: int, type_id: int) -> int:

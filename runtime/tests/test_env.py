@@ -129,12 +129,36 @@ def test_kv_env_defaults(monkeypatch: pytest.MonkeyPatch):
 def test_vram_env_helpers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_MARGIN", "1.25")
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_CHECK_GPU_VRAM", "0")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_KV_FACTOR", "1.2")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_RAM_OVERHEAD", "1.15")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_WEIGHT_TENSOR", "auto")
     from runtime.env import (
+        inference_first_policy_enabled,
+        runtime_shared_python_embedded,
         vram_check_gpu_explicit,
         vram_env_health,
+        vram_kv_factor,
         vram_margin,
+        vram_probe_calibrate_enabled,
+        vram_ram_overhead,
+        vram_scratch_factor,
+        vram_weight_tensor_mode,
+        vram_weight_tensor_use_per_tensor,
     )
 
     assert vram_margin() == 1.25
     assert vram_check_gpu_explicit() is False
-    assert vram_env_health()["margin"] == 1.25
+    assert vram_kv_factor(kv_exact=True) == 1.2
+    assert vram_scratch_factor() == 1.05
+    assert vram_ram_overhead() == 1.15
+    assert vram_weight_tensor_mode() == "auto"
+    assert vram_weight_tensor_use_per_tensor(8) is True
+    assert vram_weight_tensor_use_per_tensor(None) is False
+    assert inference_first_policy_enabled() is True
+    assert vram_probe_calibrate_enabled() is False
+    health = vram_env_health()
+    assert health["margin"] == 1.25
+    assert health["weight_tensor_mode"] == "auto"
+    assert health["ram_overhead"] == 1.15
+    assert health["probe_calibrate_enabled"] is False
+    assert isinstance(runtime_shared_python_embedded(), bool)

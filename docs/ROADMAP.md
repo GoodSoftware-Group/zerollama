@@ -274,6 +274,23 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next:** Phase **
 
 **Suggested order (Tier A):** **L1** → **L3** (low friction, immediate wins) → **L2** (fork spike in parallel with L1 measurement; merge when gated).
 
+### Radix v2 (L3-R) — product gaps
+
+**Why a separate track:** [Cross-slot Radix v1](./radix-prefix-share.md) shipped donor→target KV seed for agent fleets (shared system prompt, different cache keys). v1 intentionally stops short of vLLM RadixAttention — operators need a published gap list and ordered milestones, not “Radix” marketing without scope.
+
+| Milestone | Goal | WHY | Exit criteria |
+|-----------|------|-----|---------------|
+| **L3-R0** | **Radix v1 shipped** | L3 slot-per-key leaves duplicate prefills across keys | `l3_radix_prefix_smoke.sh` offline PASS; Mac `L3_RADIX_LIVE=1` PASS; doc [radix-prefix-share.md](./radix-prefix-share.md) |
+| **L3-R1** | **5080 live Radix gate** | Same-key L3 signed off on CUDA; cross-slot unproven on ship hardware | `L3_RADIX_LIVE=1` on 5080 session; row in [gpu-profiles-l3.md](./gpu-profiles-l3.md) sign-off table |
+| **L3-R2** | **Warm-target catch-up** | Agents sometimes warm a slot then extend prefix; v1 skips when `seq_pos > 0` | `find_radix_share_plan` + admission copy when target behind donor on shared prefix |
+| **L3-R3** | **Ref-count block DAG** | v1 = one contiguous donor chain; vLLM shares blocks across arbitrary overlap | Block allocator + admission in Python; optional Go mirror for queue policy |
+| **L3-R4** | **Remote LMCache tier** | Local `file://` metadata only; fleet restarts / cross-node need blob paths | Redis/NIXL or Mooncake connector; hydrate block pool from remote metadata |
+| **L3-R5** | **Hybrid-memory Radix** | SWA/hybrid GGUF skips `seq_cp` today | Upstream partial copy or per-arch copy path; gated on LFM2/hybrid smokes |
+
+**Non-goals (Radix track):** HTTP-to-vLLM; required SGLang sidecar; replacing L3 slot pinning with global Radix-only scheduling.
+
+**Doc:** [radix-prefix-share.md](./radix-prefix-share.md) — architecture, env, product gaps, validation status.
+
 ### Tier B — voice (after Tier A baseline)
 
 | Milestone | Goal | Owner | Exit criteria |

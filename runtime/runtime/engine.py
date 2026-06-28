@@ -533,6 +533,8 @@ class InferenceEngine:
         if not allow:
             return allow, resume
         seq_pos = self._decode_current_pos_for_request(req)
+        # WHY skip when seq_pos/resume > 0: Radix v1 seeds cold targets only.
+        # Warm slots already hold partial KV; merge is L3-R2 (docs/radix-prefix-share.md).
         if seq_pos is not None and seq_pos > 0:
             return allow, resume
         if resume is not None and resume > 0:

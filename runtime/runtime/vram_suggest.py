@@ -9,7 +9,6 @@ by silent context reduction — see ``vram_num_ctx_policy_health`` and API ``vra
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +18,9 @@ _log = logging.getLogger(__name__)
 
 
 def _suggest_ctx_max_cap() -> int:
-    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_SUGGEST_CTX_MAX", "131072").strip()
-    try:
-        return max(512, int(raw))
-    except ValueError:
-        return 131072
+    from runtime.env import vram_suggest_ctx_max_cap
+
+    return vram_suggest_ctx_max_cap()
 
 
 def build_suggest_profile(
@@ -123,7 +120,9 @@ def suggest_max_num_ctx(
     if effective_free_bytes <= 0:
         return None
     if margin is None:
-        margin = float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_MARGIN", "1.0"))
+        from runtime.env import vram_margin
+
+        margin = vram_margin()
     margin = max(1.0, margin)
     if priority is None:
         priority = priority_from_options(options)
@@ -250,18 +249,15 @@ def vram_num_ctx_clamp_enabled() -> bool:
     Default ``0`` (off). ``auto`` follows ``CHECK_GPU_VRAM`` — why: silent clamp broke
     operator trust; single-GPU smoke can opt in with ``auto`` or ``1``.
     """
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX", "0").strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return False
-    if v in ("1", "true", "yes", "on"):
-        return True
-    from runtime.gpu_vram import gpu_vram_check_enabled
+    from runtime.env import vram_num_ctx_clamp_enabled as _enabled
 
-    return gpu_vram_check_enabled()
+    return _enabled()
 
 
 def vram_num_ctx_policy_health() -> dict[str, Any]:
-    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX", "0").strip()
+    from runtime.env import vram_clamp_num_ctx_raw
+
+    raw = vram_clamp_num_ctx_raw()
     return {
         "clamp_enabled": vram_num_ctx_clamp_enabled(),
         "env": raw or "0",

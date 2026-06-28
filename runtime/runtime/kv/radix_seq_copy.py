@@ -113,7 +113,11 @@ def execute_radix_share_plan(
     inprocess_ctx: Any | None = None,
     subprocess_base_url: str | None = None,
 ) -> bool:
-    """Execute a RadixSharePlan on whichever backend is active."""
+    """Execute a RadixSharePlan on whichever backend is active.
+
+    WHY in-process vs subprocess: default backend runs llama-server in a child;
+    only one path has live ggml memory. Both clear target slot before copy.
+    """
     if inprocess_lib is not None and inprocess_ctx is not None:
         return copy_sequence_prefix_inprocess(
             inprocess_lib,

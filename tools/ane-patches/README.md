@@ -6,7 +6,7 @@ Canonical ANE hook **sources** live in `canonical/common/` so vendor rsync canno
 |----------|------|
 | `canonical/common/ane_draft_*` | Source of truth copied to sibling + in-tree |
 | `apply_speculative_ane_hook.py` | Idempotent speculative.cpp + CMakeLists wiring (B1–B7) |
-| `apply_iosurface_sibling.py` | ggml Metal IOSurface export API |
+| `apply_iosurface_sibling.py` | ggml Metal IOSurface export API (`strncmp` on `MTL*` device names) |
 | `regenerate_0018_patch.sh` | Commit hook on `vendor/llama-cpp-*` → `llama/patches/0018-*.patch` |
 
 ## Operator flow
@@ -15,7 +15,7 @@ Canonical ANE hook **sources** live in `canonical/common/` so vendor rsync canno
 # Automatic on Darwin build (after pin checkout):
 ./scripts/build_llama_server.sh
 
-# Manual sync to sibling:
+# Manual sync (defaults to vendor/llama-cpp-<pin>, falls back to ../llama.cpp):
 ./scripts/sync_ane_hook_to_llama_cpp.sh
 
 # After vendor rebase (--sync restores in-tree ANE):

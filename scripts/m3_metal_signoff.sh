@@ -26,9 +26,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/macos_runtime_serve_lib.sh
 source "${ROOT}/scripts/macos_runtime_serve_lib.sh"
 
-LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
-export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-${LLAMA_CPP_ROOT}/build/bin/libllama.dylib}"
-export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${LLAMA_CPP_ROOT}/build/bin/llama-server}"
+macos_export_llama_cpp_paths
+export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${ROOT}/build/llama-server-darwin/bin/llama-server}"
+if [[ ! -x "${LLAMA_SERVER_BIN}" && -x "${LLAMA_CPP_ROOT}/build/bin/llama-server" ]]; then
+  export LLAMA_SERVER_BIN="${LLAMA_CPP_ROOT}/build/bin/llama-server"
+fi
 export GPU_PHASE13_SNAPSHOT_OUT="${GPU_PHASE13_SNAPSHOT_OUT:-/tmp/metal-session.json}"
 
 smoke_m3_resolve_signoff_model

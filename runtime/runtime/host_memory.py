@@ -132,16 +132,18 @@ def format_bytes(n: int) -> str:
 
 def estimate_gguf_ram_bytes(gguf: Path) -> int:
     """Best-effort RAM needed for weights (tensor payload, not full file size)."""
+    from runtime.env import vram_ram_overhead
     from runtime.gguf_estimate import gguf_weight_bytes
 
     weights = gguf_weight_bytes(gguf)
     base = weights if weights is not None else gguf.stat().st_size
-    overhead = float(os.environ.get("ZEROLLAMA_RUNTIME_RAM_OVERHEAD", "1.12"))
-    return int(base * overhead)
+    return int(base * vram_ram_overhead())
 
 
 def host_ram_margin() -> float:
-    return float(os.environ.get("ZEROLLAMA_RUNTIME_RAM_MARGIN", "1.0"))
+    from runtime.env import vram_ram_margin
+
+    return vram_ram_margin()
 
 
 def host_ram_budget_snapshot(

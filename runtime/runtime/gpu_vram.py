@@ -39,12 +39,9 @@ _shared_no_smi_warn_lock = threading.Lock()
 
 def shared_interpreter_embedded() -> bool:
     """True when training and runtime share one in-process CPython (see docs/bugs/)."""
-    v = os.environ.get("ZEROLLAMA_RUNTIME_SHARED_PYTHON", "").strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        return True
-    if v in ("0", "false", "no", "off"):
-        return False
-    return "ollama_training_native" in sys.modules
+    from runtime.env import runtime_shared_python_embedded
+
+    return runtime_shared_python_embedded()
 
 
 def _vram_probe_env_raw() -> str:
@@ -338,14 +335,11 @@ def resolve_vram_num_ctx(
     n = resolve_num_ctx(options)
     if n is not None:
         return n
-    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_NUM_CTX", "").strip()
-    if raw:
-        try:
-            v = int(raw)
-            if v > 0:
-                return v
-        except ValueError:
-            pass
+    from runtime.env import vram_num_ctx_override
+
+    override = vram_num_ctx_override()
+    if override is not None:
+        return override
     from runtime.llama_args import parse_llama_server_args
 
     cli_ctx = parse_llama_server_args(llama_args).num_ctx
@@ -365,13 +359,9 @@ def resolve_vram_num_ctx(
 
 def _vram_mmap_weight_scale() -> float:
     """Scale weight bytes when GGUF is mmap'd (llama.cpp may not resident all tensors on GPU)."""
-    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_MMAP_FACTOR", "").strip()
-    if not raw:
-        return 1.0
-    try:
-        return max(0.0, min(1.0, float(raw)))
-    except ValueError:
-        return 1.0
+    from runtime.env import vram_mmap_factor
+
+    return vram_mmap_factor()
 
 
 def _gpu_weight_scale(block_count: int | None, n_gpu_layers: int | None) -> float:
@@ -392,13 +382,9 @@ def _vram_weight_block_layout_enabled() -> bool:
 
 def _vram_weight_tensor_enabled(n_gpu_layers: int | None) -> bool:
     """Use per-tensor GGUF sums when partial offload is configured."""
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_WEIGHT_TENSOR", "1").strip().lower()
-    if v in ("0", "false", "no"):
-        return False
-    if v in ("1", "true", "yes", "on"):
-        return True
-    # auto: tensor path only when -ngl is explicit (0 or partial), not full -1 default.
-    return n_gpu_layers is not None and n_gpu_layers >= 0
+    from runtime.env import vram_weight_tensor_use_per_tensor
+
+    return vram_weight_tensor_use_per_tensor(n_gpu_layers)
 
 
 def _vram_kv_gpu_fraction(
@@ -431,9 +417,10 @@ def _weight_bytes_for_vram(
     block_count: int | None,
 ) -> tuple[int, str]:
     """Return (weight bytes, estimate path: tensor | linear)."""
+    from runtime.env import vram_ram_overhead
     from runtime.host_memory import estimate_gguf_ram_bytes
 
-    overhead = float(os.environ.get("ZEROLLAMA_RUNTIME_RAM_OVERHEAD", "1.12"))
+    overhead = vram_ram_overhead()
     mmap = _vram_mmap_weight_scale()
     if _vram_weight_tensor_enabled(n_gpu_layers) and n_gpu_layers is not None:
         raw = _estimate_gpu_weight_bytes(gguf, n_gpu_layers)
@@ -493,11 +480,9 @@ def gguf_layer_kv_scale(
     hints: dict[str, int] | None = None,
 ) -> float:
     """Scale KV headroom from GGUF layer count vs a 32-layer baseline."""
-    if os.environ.get("ZEROLLAMA_RUNTIME_VRAM_LAYER_SCALE", "1").strip().lower() in (
-        "0",
-        "false",
-        "no",
-    ):
+    from runtime.env import vram_layer_base, vram_layer_scale_enabled
+
+    if not vram_layer_scale_enabled():
         return 1.0
     if hints is None:
         from runtime.gguf_estimate import gguf_model_hints
@@ -506,15 +491,14 @@ def gguf_layer_kv_scale(
     blocks = hints.get("block_count")
     if not blocks or blocks <= 0:
         return 1.0
-    baseline = int(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_LAYER_BASE", "32"))
-    if baseline <= 0:
-        baseline = 32
+    baseline = vram_layer_base()
     return max(1.0, blocks / baseline)
 
 
 def _vram_kv_exact_enabled() -> bool:
-    v = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_KV_EXACT", "1").strip().lower()
-    return v not in ("0", "false", "no")
+    from runtime.env import vram_kv_exact_enabled
+
+    return vram_kv_exact_enabled()
 
 
 def _ngram_scratch_bytes(llama_args: list[str] | None) -> int:
@@ -524,44 +508,30 @@ def _ngram_scratch_bytes(llama_args: list[str] | None) -> int:
     spec = parse_llama_server_args(llama_args).spec_type
     if not spec or not spec.startswith("ngram"):
         return 0
-    raw = os.environ.get("ZEROLLAMA_RUNTIME_VRAM_NGRAM_SCRATCH_BYTES", "").strip()
-    if not raw:
-        return 128 * 1024 * 1024
-    try:
-        from runtime.gpu.admission import parse_size_bytes
+    from runtime.env import vram_ngram_scratch_bytes_default
 
-        parsed = parse_size_bytes(raw)
-        return parsed if parsed is not None and parsed > 0 else 128 * 1024 * 1024
-    except Exception:
-        return 128 * 1024 * 1024
+    return vram_ngram_scratch_bytes_default()
 
 
 def _vram_scratch_factor() -> float:
     """Headroom for activations / CUDA context beyond weights+KV (exact path)."""
-    try:
-        return max(1.0, float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_SCRATCH_FACTOR", "1.05")))
-    except ValueError:
-        return 1.05
+    from runtime.env import vram_scratch_factor
+
+    return vram_scratch_factor()
 
 
 def _vram_estimate_factor() -> float:
     """Operator calibration multiplier on the final VRAM estimate (default 1.0)."""
-    try:
-        return max(0.1, float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR", "1.0")))
-    except ValueError:
-        return 1.0
+    from runtime.env import vram_estimate_factor
+
+    return vram_estimate_factor()
 
 
 def vram_estimate_autotune_enabled() -> bool:
     """On when GPU VRAM checks run; per-model calibration persists automatically."""
-    v = os.environ.get(
-        "ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE", ""
-    ).strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return False
-    from runtime.vram_calibration import vram_probe_calibrate_enabled
+    from runtime.env import vram_estimate_autotune_enabled as _enabled
 
-    return vram_probe_calibrate_enabled()
+    return _enabled()
 
 
 def _model_autotune_key(model: str | Path) -> str:
@@ -663,8 +633,8 @@ def vram_estimate_factor_source(*, gguf: Path | str | None = None) -> str:
 
 def vram_estimate_autotune_status() -> dict[str, Any]:
     """/health summary: autotune needs PROBE_CALIBRATE + at least one load."""
+    from runtime.env import vram_probe_calibrate_enabled
     from runtime.vram_autotune_persist import persist_status
-    from runtime.vram_calibration import vram_probe_calibrate_enabled
     from runtime.vram_factor_export import export_status
     from runtime.vram_env_apply import apply_status
 
@@ -770,11 +740,15 @@ def estimate_gguf_vram_bytes(
 
     if kv_exact is not None:
         # Weights + explicit K/V; avoid multiplying ctx/layer heuristics again.
-        kv_factor = float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_KV_FACTOR", "1.10"))
+        from runtime.env import vram_kv_factor
+
+        kv_factor = vram_kv_factor(kv_exact=True)
         kv_term = int(kv_exact * kv_factor)
         total = int((base + kv_term) * _vram_scratch_factor())
     else:
-        kv_factor = float(os.environ.get("ZEROLLAMA_RUNTIME_VRAM_KV_FACTOR", "1.15"))
+        from runtime.env import vram_kv_factor
+
+        kv_factor = vram_kv_factor(kv_exact=False)
         ctx_layer = (
             vram_ctx_scale(
                 ctx,

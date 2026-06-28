@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from runtime.autoconfig import resolve_default_config_path
+from runtime.autoconfig import resolve_default_config_path, resolved_config_path
+
+
+def test_resolved_config_path_prefers_l3_profile_over_darwin_default(monkeypatch):
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_CONFIG", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_L3_PROFILE", "agent")
+    monkeypatch.setattr("runtime.autoconfig.sys.platform", "darwin")
+    path = resolved_config_path()
+    assert path.name == "l3_agent_subprocess.yaml"
 
 
 def test_resolve_single_gpu_when_one_visible(monkeypatch):

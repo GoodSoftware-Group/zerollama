@@ -173,6 +173,34 @@ def _path_under(child: Path | None, parent: Path | None) -> bool | None:
         return False
 
 
+def expected_vendor_head(repo: Path | None = None) -> str | None:
+    root = _repo_root(repo)
+    head_file = root / "LLAMA_CPP_VENDOR_HEAD"
+    if not head_file.is_file():
+        return None
+    for line in head_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and len(line) >= 40:
+            return line
+    return None
+
+
+def vendor_head_matches(repo: Path | None = None) -> dict[str, Any]:
+    vendor = vendor_patch_stats(repo)
+    expected = expected_vendor_head(repo)
+    head = vendor.get("head")
+    if not vendor.get("present"):
+        return {"expected": expected, "head": head, "matches": None, "skipped": True}
+    if not expected or not head:
+        return {"expected": expected, "head": head, "matches": None, "skipped": False}
+    return {
+        "expected": expected,
+        "head": head,
+        "matches": head == expected,
+        "skipped": False,
+    }
+
+
 def llama_patch_health(
     repo: Path | None = None,
     *,
@@ -211,6 +239,12 @@ def llama_patch_health(
             issues.append(
                 f"vendor at bare pin with zero patch commits — run "
                 f"./scripts/rebase_vendor_unified.sh --apply --sync"
+            )
+        head_check = vendor_head_matches(root)
+        if head_check.get("matches") is False:
+            warnings.append(
+                f"vendor HEAD {head_check.get('head', '')[:12]} != "
+                f"LLAMA_CPP_VENDOR_HEAD {str(head_check.get('expected', ''))[:12]}"
             )
     else:
         warnings.append(
@@ -253,6 +287,7 @@ def llama_patch_health(
         "required_patches_ok": not missing_required,
         "in_tree_markers": in_tree,
         "vendor": vendor,
+        "vendor_head_check": vendor_head_matches(root),
         "resolved_llama_cpp_root": str(cpp_root),
         "resolved_llama_server_bin": str(server_path) if server_path else None,
         "resolved_llama_cpp_lib": str(cpp_lib) if cpp_lib else None,

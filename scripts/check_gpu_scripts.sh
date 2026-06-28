@@ -298,6 +298,7 @@ grep -q 'phase16_edge_build_smoke.sh' "${ROOT}/.github/workflows/zerollama-regre
 grep -q 'run_upstream_gguf' "${ROOT}/.github/workflows/zerollama-gpu-smoke.yaml"
 grep -q 'GgmlRunnerLinked' "${ROOT}/envconfig/ggml_runner.go"
 grep -q 'phase15_llama_kv_ext_pin_check.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'doctorCheckLlamaPatches' "${ROOT}/cmd/doctor.go"
 grep -q 'llama_patch_doctor.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'doctorCheckGgmlRunner' "${ROOT}/cmd/doctor.go"
 grep -q 'schedSkipGgmlRunnerLoad' "${ROOT}/server/sched.go"

@@ -71,8 +71,19 @@ Common overrides (env wins):
 |----------|----------|------|
 | `ZEROLLAMA_RUNTIME_VRAM_MIN_FREE` | `min_free` | Admission headroom |
 | `ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE` | `training_reserve` | Training queue reserve |
-| `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX` | `clamp_num_ctx` | Opt-in ctx clamp |
 | `ZEROLLAMA_RUNTIME_INFERENCE_POLICY` | `inference_policy` | `inference-first` default |
+| `ZEROLLAMA_RUNTIME_VRAM_MARGIN` | `margin` | Estimate × margin floor |
+| `ZEROLLAMA_RUNTIME_VRAM_PROBE` | (env) | `auto` \| `nvml` \| `smi` |
+| `ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE` | `probe_calibrate` | Post-load observed vs estimate |
+| `ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE` | `estimate_factor_autotune` | Per-GGUF calibration |
+| `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX` | `clamp_num_ctx` | Opt-in ctx clamp |
+| `ZEROLLAMA_RUNTIME_RAM_OVERHEAD` / `RAM_MARGIN` | — | Host weight / budget multipliers |
+| `ZEROLLAMA_RUNTIME_VRAM_WEIGHT_TENSOR` | — | `on` \| `off` \| `auto` (partial `-ngl`) |
+| `ZEROLLAMA_RUNTIME_VRAM_KV_BLOCK_LAYOUT` | — | GGUF block layout for KV bytes |
+| `ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST` | — | Persist calibrated factors |
+| `ZEROLLAMA_RUNTIME_SHARED_PYTHON` | — | Embedded training+runtime interpreter |
+
+Effective values (including YAML-applied knobs) appear on `/health` under `llama_cache.runtime_env.vram`.
 
 Doc: [phase13-runtime-vram.md](./phase13-runtime-vram.md), [scheduling-vram-policy.md](./scheduling-vram-policy.md).
 

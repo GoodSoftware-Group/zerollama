@@ -1,9 +1,12 @@
 """Hash-chained prefix block pool for L3 cache_prompt (vLLM BlockPool-inspired).
 
-Tracks content-addressed prefix blocks per model scope. Used to:
-- verify stored KV still matches the incoming prompt token prefix;
-- optionally persist block metadata to the LMCache tier;
-- expose operator stats on shared prefix blocks across sessions.
+WHY this pool exists:
+  - Same-key L3: verify stored KV still matches incoming tokens before ``cache_prompt``.
+  - Radix v1: find a *donor slot* whose registered blocks match the target's prefix
+    hash chain so we can ``seq_cp`` live RAM KV (disk blobs alone are per-key).
+
+WHY ref_count on entries: v1 increments on lookup for stats; full RadixAttention
+  ref-count DAG across requests is deferred (see docs/radix-prefix-share.md).
 """
 
 from __future__ import annotations
@@ -145,6 +148,8 @@ class PrefixBlockPool:
                 if donor_slot is None:
                     donor_slot = donor
                 elif donor != donor_slot:
+                    # WHY break: v1 requires one contiguous chain from a single donor
+                    # slot; mixed donors need ref-count block DAG (Radix v2).
                     break
                 matched = end
                 blocks += 1

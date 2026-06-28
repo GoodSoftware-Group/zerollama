@@ -471,7 +471,14 @@ import json, sys
 h = json.loads(sys.argv[1])
 pb = h.get('kv_page_bind') or {}
 if pb.get('available'):
-    assert pb.get('status') == 'partial' and pb.get('bind_level') == 'seq_position', pb
+    st = pb.get('status')
+    lvl = pb.get('bind_level')
+    # seq_position/partial: pre-kv-ext staging; bound/tensor: linked llama-kv-ext verify path.
+    ok = (
+        (st == 'partial' and lvl == 'seq_position')
+        or (st == 'bound' and lvl in ('tensor', 'seq_position'))
+    )
+    assert ok, pb
 else:
     assert pb.get('status') == 'not_implemented' and pb.get('available') is False, pb
 bind = h.get('kv_bind') or {}
@@ -480,7 +487,7 @@ assert isinstance(h.get('kv_forward_plans'), list)
 kd = h.get('kv_decode_steps') or {}
 if kd.get('active') is True:
     assert int(kd.get('value') or 0) >= 0
-print('kv /health ok: page_bind=', pb.get('status'))
+print('kv /health ok: page_bind=', pb.get('status'), 'bind_level=', pb.get('bind_level'))
 " "$health_json"
   curl -sf "${runtime_url}/internal/kv-snapshot" -o /tmp/zerollama-kv-snapshot.json
   python3 -c "
@@ -490,7 +497,7 @@ for key in ('kv_forward_plans', 'kv_page_bind', 'kv_decode_steps', 'kv_bind'):
     assert key in b, sorted(b.keys())
 pb = b['kv_page_bind']
 if pb.get('available'):
-    assert pb['status'] == 'partial'
+    assert pb['status'] in ('partial', 'bound'), pb
 else:
     assert pb['status'] == 'not_implemented'
 print('kv-snapshot ok')

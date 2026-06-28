@@ -1,8 +1,8 @@
 # ggml @ llama.cpp — vendor migration guide
 
-> **Current pin:** **`b9781`** (`LLAMA_CPP_VERSION`, `Makefile.sync` `FETCH_HEAD`). Matches upstream Ollama @ **v0.30.11** (`32a97b74`).
+> **Current pin:** **`c84b3020`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). Unified **elizaOS/llama.cpp** @ `c84b30200c8d512c00c9d61c96bed078f1c0024d` (supersedes upstream Ollama tag **`b9781`** / v0.30.11).
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then **`b9611`**, **`b9672`**, and **`b9781`** with **16** formal patches on the upstream tag.
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then **`b9611`**, **`b9672`**, **`b9781`**, and **`c84b3020`** (elizaOS unified) with **19** formal patches on the pin.
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -44,24 +44,28 @@ zerollama serve
 
 | File | Purpose |
 |------|---------|
-| `LLAMA_CPP_VERSION` | Human pin (`b9781`) — scripts grep this without Make |
-| `Makefile.sync` | `FETCH_HEAD=b9781`, `WORKDIR=vendor/llama-cpp-b9781` |
-| `vendor/llama-cpp-b9781/` | Fresh clone + Ollama patch commits (gitignored) |
-| `llama/patches/` | **16** format-patches on b9781 |
+| `LLAMA_CPP_VERSION` | Human pin (`c84b3020`) — scripts grep this without Make |
+| `LLAMA_CPP_COMMIT` | Full git ref for vendor checkout |
+| `LLAMA_CPP_VENDOR_HEAD` | Expected vendor HEAD after full patch apply (CI/doctor) |
+| `Makefile.sync` | `FETCH_HEAD=c84b3020`, `WORKDIR=vendor/llama-cpp-c84b3020` |
+| `vendor/llama-cpp-c84b3020/` | Fresh clone + Ollama patch commits (gitignored) |
+| `llama/patches/` | **19** format-patches on `c84b3020` |
 | `llama/patches.pre-b9509-20260612/` | Backup of pre-migration patch series |
+
+**Patch drift:** `./scripts/llama_patch_doctor.sh` · `./scripts/runtime_env_doctor.sh` (`llama_patches`) · `/health.llama_patches`
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
 
-**Why pin bumps rebase patches, not chase llama.cpp HEAD:** upstream Ollama pins a tag per release; zerollama matches that tag so cherry-picks from `ollama/ollama` and Phase 17 diffs stay comparable. Chasing HEAD would rewrite all 16 patches weekly.
+**Why pin bumps rebase patches, not chase llama.cpp HEAD:** upstream Ollama pins a tag per release; zerollama matches elizaOS unified @ `LLAMA_CPP_COMMIT` so Phase 17 diffs and zerollama-only routes (`POST /kv/seq-copy`) stay reviewable. Chasing HEAD would rewrite the patch series weekly.
 
 ---
 
-## Patch series (b9781)
+## Patch series (current pin)
 
-Applied on top of upstream tag **`b9781`** (vendor HEAD after full apply: **`b10675c`** — 16 commits):
+Applied on top of **`c84b3020`** via `llama/patches/*.patch` (includes historical b9781 series + zerollama deltas **0017** seq-copy, **0018** ANE lab hook). See `./scripts/llama_patch_doctor.sh` for live file list.
 
-| # | Subject | Why Ollama still needs it |
-|---|---------|---------------------------|
+| # | Subject | Why Ollama/zerollama still needs it |
+|---|---------|-------------------------------------|
 | 0001 | Grammar rule ordering | Stable grammar sampling for constrained JSON |
 | 0002 | String-arr KV loading | GGUF KV edge cases in loader |
 | 0003 | Graph memory reporting on failure | Actionable OOM errors in runner |
@@ -78,6 +82,8 @@ Applied on top of upstream tag **`b9781`** (vendor HEAD after full apply: **`b10
 | 0014 | **llama-kv-ext Phase 15** | Staging KV cell map + tensor introspection for PA page bind |
 | 0015 | **compat loader hooks** | Call sites for `llama/compat/` — canonical patch; symlinked as `llama/compat/001-llama-cpp-hooks.patch` |
 | 0016 | **ggml scheduler + Metal gate** | `GGML_SCHED_MAX_SPLIT_INPUTS 128`, `alloc_buffers` guard for LoadOperationFit, `GGML_DISABLE_METAL` runtime gate |
+| 0017 | **kv seq-copy endpoint** | Radix cross-slot KV seed (`POST /kv/seq-copy`) |
+| 0018 | **ANE dflash hook (lab)** | In-process IOSurface draft hook — optional Mac lab build |
 
 **Patch vs compat ownership:** GGUF translation logic lives in `llama/compat/*.cpp`. Numbered patches carry **ggml/llama.cpp deltas** that compat cannot replace (scheduler, grammar, kv-ext, CGO hooks). Overlap removed: BakLLaVA MLP default (was 0007) is compat-only.
 
@@ -143,13 +149,13 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 
 ```bash
 # 1. Ensure vendor exists (once per pin bump)
-git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b9781
-cd vendor/llama-cpp-b9781 && git checkout b9781
+./scripts/rebase_vendor_unified.sh --apply --sync
+# or manually:
+# git clone https://github.com/elizaOS/llama.cpp.git vendor/llama-cpp-c84b3020
+# cd vendor/llama-cpp-c84b3020 && git checkout c84b3020
+# make -f Makefile.sync clean apply-patches
 
-# 2. Apply Ollama patches into vendor (resolve conflicts per section above)
-make -f Makefile.sync clean apply-patches
-
-# 3. Rsync into in-tree vendored trees (preserves zerollama-only files)
+# 2. Rsync into in-tree vendored trees (preserves zerollama-only files)
 ./scripts/sync_vendor_llama.sh
 # or: make -f Makefile.sync sync   # alias — does NOT git checkout vendor
 

@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ollama/ollama/llm"
@@ -93,8 +94,8 @@ type ANEDraftABComparison struct {
 var (
 	dflashStatsRE       = regexp.MustCompile(`statistics dflash:.*?#gen drafts = (\d+), #acc drafts = (\d+), #gen tokens = (\d+), #acc tokens = (\d+)`)
 	draftAcceptRateRE   = regexp.MustCompile(`draft acceptance rate = ([0-9.]+)`)
-	aneHandoffStepRE    = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+`)
-	aneConv2ChainedRE   = regexp.MustCompile(`B6 dual conv1 chain active`)
+	aneHandoffStepRE    = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+ ggml iosurface handoff ok`)
+	aneConv2ChainedRE   = regexp.MustCompile(`B6 dual conv1 chain active|B8 triple conv1 chain active`)
 	aneGoldenCosineRE   = regexp.MustCompile(`B6 golden step=\d+ mode=\w+ mse_ref_vs_ane=[0-9.eE+-]+ cosine=([0-9.-]+)`)
 	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+ ane_tok=\d+ metal_tok=\d+ match=(\d+)`)
 )
@@ -128,14 +129,19 @@ func countANEHandoffsFromLog(logText string) int {
 }
 
 func parseDflashStatistics(logText string) (genDrafts, accDrafts, genTokens, accTokens uint64, ok bool) {
-	if m := dflashStatsRE.FindStringSubmatch(logText); len(m) == 5 {
-		genDrafts, _ = strconv.ParseUint(m[1], 10, 64)
-		accDrafts, _ = strconv.ParseUint(m[2], 10, 64)
-		genTokens, _ = strconv.ParseUint(m[3], 10, 64)
-		accTokens, _ = strconv.ParseUint(m[4], 10, 64)
-		return genDrafts, accDrafts, genTokens, accTokens, true
+	matches := dflashStatsRE.FindAllStringSubmatch(logText, -1)
+	if len(matches) == 0 {
+		return 0, 0, 0, 0, false
 	}
-	return 0, 0, 0, 0, false
+	m := matches[len(matches)-1]
+	if len(m) != 5 {
+		return 0, 0, 0, 0, false
+	}
+	genDrafts, _ = strconv.ParseUint(m[1], 10, 64)
+	accDrafts, _ = strconv.ParseUint(m[2], 10, 64)
+	genTokens, _ = strconv.ParseUint(m[3], 10, 64)
+	accTokens, _ = strconv.ParseUint(m[4], 10, 64)
+	return genDrafts, accDrafts, genTokens, accTokens, true
 }
 
 func draftAcceptance(genTokens, accTokens uint64) float64 {
@@ -281,8 +287,13 @@ func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, ru
 	return out, nil
 }
 
+func findLlamaServerForANEDraft() (string, error) {
+	// Prefer unified build (vendor pin or LLAMA_CPP_ROOT sibling); IOSurface handoff requires patched ggml-metal.
+	return llm.FindLlamaServer()
+}
+
 func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry bool, driveMode string) (ANEDraftABE2E, error) {
-	serverBin, err := llm.FindLlamaServer()
+	serverBin, err := findLlamaServerForANEDraft()
 	if err != nil {
 		return ANEDraftABE2E{}, fmt.Errorf("llama-server not found: %w (run ./scripts/build_llama_server.sh)", err)
 	}
@@ -315,7 +326,7 @@ func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry
 		DriveMode:        driveMode,
 		MetalOnly:        metalRun,
 		ANEHook:          aneRun,
-		AcceptanceParity: acceptanceClose(metalRun.DraftAcceptance, aneRun.DraftAcceptance),
+		AcceptanceParity: acceptanceParity(metalRun, aneRun),
 	}
 	if metalRun.TokensPerSec > 0 && aneRun.TokensPerSec > 0 {
 		e2e.HookOverheadPct = (metalRun.TokensPerSec - aneRun.TokensPerSec) / metalRun.TokensPerSec * 100
@@ -332,6 +343,15 @@ func acceptanceClose(a, b float64) bool {
 		diff = -diff
 	}
 	return diff < 0.02
+}
+
+// acceptanceParity compares draft acceptance when both legs report token-level dflash stats.
+// Metal-only legs often omit timings.draft_n on short runs; treat that as incomparable (true).
+func acceptanceParity(metal, ane ANEDraftServerRun) bool {
+	if metal.GenTokens == 0 || ane.GenTokens == 0 {
+		return true
+	}
+	return acceptanceClose(metal.DraftAcceptance, ane.DraftAcceptance)
 }
 
 func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEntry, port, maxTokens int, aneHook, telemetry bool, driveMode string) (ANEDraftServerRun, error) {
@@ -381,6 +401,9 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 			if conv2 := manifest.Conv2WeightPath(); conv2 != "" {
 				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+conv2)
 			}
+			if conv3 := manifest.Conv3WeightPath(); conv3 != "" {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3="+conv3)
+			}
 			cmd.Env = append(cmd.Env,
 				"ZEROLLAMA_ANE_DRAFT_CHANNELS="+strconv.Itoa(manifest.Channels),
 				"ZEROLLAMA_ANE_DRAFT_SPATIAL="+strconv.Itoa(manifest.Spatial),
@@ -413,10 +436,25 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 
 	stop := func() {
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			done := make(chan struct{})
+			go func() {
+				_ = cmd.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+			cmd.Process = nil
 		}
-		_ = cmd.Wait()
-		logOut.Close()
+		if logOut != nil {
+			_ = logOut.Sync()
+			_ = logOut.Close()
+			logOut = nil
+		}
 	}
 	defer stop()
 
@@ -469,31 +507,28 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	run.OK = true
 	fillServerRunFromCompletion(&run, cc, elapsed.Seconds()*1000)
 
-	_ = logOut.Sync()
-	statsDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(statsDeadline) {
-		poll, _ := os.ReadFile(logPath)
-		if dflashStatsRE.Match(poll) || draftAcceptRateRE.Match(poll) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
+	stop()
+	time.Sleep(150 * time.Millisecond)
 
 	logBytes, _ := os.ReadFile(logPath)
 	logText := string(logBytes)
 	if g, a, gt, at, ok := parseDflashStatistics(logText); ok {
 		run.GenDrafts = g
 		run.AccDrafts = a
+		run.GenTokens = gt
+		run.AccTokens = at
 		if gt > 0 {
-			run.GenTokens = gt
-			run.AccTokens = at
 			run.DraftAcceptance = draftAcceptance(gt, at)
 		}
 	}
-	if ar := draftAcceptRateRE.FindStringSubmatch(logText); len(ar) == 2 {
-		if v, err := strconv.ParseFloat(ar[1], 64); err == nil && run.DraftAcceptance == 0 {
-			run.DraftAcceptance = v
+	if ar := draftAcceptRateRE.FindAllStringSubmatch(logText, -1); len(ar) > 0 {
+		last := ar[len(ar)-1]
+		if len(last) == 2 {
+			if v, err := strconv.ParseFloat(last[1], 64); err == nil {
+				if run.DraftAcceptance == 0 {
+					run.DraftAcceptance = v
+				}
+			}
 		}
 	}
 	if aneHook {

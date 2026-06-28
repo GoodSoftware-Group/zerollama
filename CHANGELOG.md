@@ -38,8 +38,13 @@ All notable changes to this project are documented in this file. The format is b
 - **KV env helpers** — `ZEROLLAMA_KV_NATIVE_*` / `ZEROLLAMA_KV_AUTO_BATCH*` centralized in `env.py`.
 - **`./scripts/runtime_env_doctor.sh`** — offline effective env report (no server).
 - **`./scripts/llama_patch_doctor.sh`** — patch file + in-tree + vendor commit count + resolved llama-server binary checks; fails on stale sibling builds missing `/kv/seq-copy`. **Why:** patches live in git but binaries often come from unpatch `../llama.cpp`.
+- **`LLAMA_CPP_VENDOR_HEAD`** — tracked expected vendor git SHA after full patch apply; doctor + patch doctor warn on drift.
 - **`/health.llama_patches`** — compact patch doctor snapshot on live sidecar.
-- **VRAM env helpers** in `env.py` — `vram_margin()`, `vram_check_gpu_explicit()`, `vram_probe_mode_raw()`; exposed on `/health.llama_cache.runtime_env.vram`.
+- **`zerollama doctor`** — `llama.cpp patches` check (in-tree seq-copy, patch files, binary probe).
+- **`build_llama_server.sh`** — fails vendor builds when binary lacks `/kv/seq-copy`.
+- **VRAM env migration (complete)** — all `ZEROLLAMA_RUNTIME_VRAM_*`, RAM overhead/margin, weight-tensor auto mode, clamp/suggest/probe-calibrate/autotune/persist, GGUF layout flags, and `INFERENCE_POLICY` / `SHARED_PYTHON` read via `env.py`; consumers delegate (`gpu_vram`, `host_memory`, `vram_suggest`, `vram_calibration`, `vram_autotune_persist`, `vram_env_apply`, `gguf_estimate`, `gpu/inference_policy`). Expanded `/health.llama_cache.runtime_env.vram`.
+- **Doc pin sync** — `c84b3020` / elizaOS unified as current pin in ggml migration + Phase 17 docs (supersedes b9781 tables).
+- **`runtime/cli.py` fix** — `serve` used `resolve_default_config_path()` (Darwin → `apple_silicon.yaml`) and ignored `ZEROLLAMA_L3_PROFILE=agent`; Radix live smokes now load `l3_agent_subprocess.yaml`. **Live gate (Jun 2026):** donor slot 0 → target slot 2, `radix_seed` 128 tokens, target wall **0.52s** vs donor **8.83s**, `POST /kv/seq-copy` OK on vendor llama-server.
 - **Doc:** [docs/runtime-env.md](docs/runtime-env.md) — operator env reference (profiles, L3, KV, VRAM).
 
 ### L3 prefix cache — hybrid coordinator, block pool, LMCache tier (Jun 2026)
@@ -54,6 +59,16 @@ All notable changes to this project are documented in this file. The format is b
 - **Health/trace** — `/health.llama_cache.prefix_block_pool`, `/health.kv_resume.prefix_block_pool`; trace rows include `prefix_block_matched_tokens` and `radix_seed` events.
 - **Smoke** — `./scripts/l3_prefix_block_pool_smoke.sh`; `./scripts/l3_radix_prefix_smoke.sh` (offline + optional live).
 - **Doc** — [docs/radix-prefix-share.md](docs/radix-prefix-share.md).
+
+### Radix product gaps — documentation (Jun 2026)
+
+**Why:** v1 Radix shipped without a published gap matrix; operators comparing to vLLM RadixAttention needed explicit scope (cold target only, no ref-count DAG, no remote tier, hybrid skip).
+
+- **`docs/radix-prefix-share.md`** — **Product gaps** section: scope table, validation status (Mac live PASS, 5080 pending), operator checklist, roadmap pointers.
+- **`docs/ROADMAP.md`** — **Radix v2 (L3-R)** milestones L3-R0…L3-R5 with WHY + exit criteria.
+- **`docs/gpu-profiles-l3.md`** — Radix live gate row in sign-off table; link to product gaps.
+- **README** — expanded WHY for Radix vs same-key L3; explicit non-goals pointer.
+- **Code comments** — `radix_prefix_share.py`, `prefix_block_pool.py`, `env.radix_prefix_share_enabled`, `engine._apply_radix_prefix_share` — WHY cold-only, block pool first, hybrid skip.
 
 ### llama.cpp pin bump — `b9781` (upstream Ollama v0.30.11)
 
