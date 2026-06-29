@@ -533,17 +533,12 @@ class InferenceEngine:
         if not allow:
             return allow, resume
         seq_pos = self._decode_current_pos_for_request(req)
-        # WHY skip when seq_pos/resume > 0: Radix v1 seeds cold targets only.
-        # Warm slots already hold partial KV; merge is L3-R2 (docs/radix-prefix-share.md).
-        if seq_pos is not None and seq_pos > 0:
-            return allow, resume
-        if resume is not None and resume > 0:
-            return allow, resume
         allow, resume, _trace = self._apply_radix_prefix_share(
             req,
             policy,
             allow=allow,
             resume_pos=resume,
+            seq_pos=seq_pos,
         )
         return allow, resume
 
@@ -554,11 +549,15 @@ class InferenceEngine:
         *,
         allow: bool,
         resume_pos: int | None,
+        seq_pos: int | None = None,
     ) -> tuple[bool, int | None, dict[str, Any] | None]:
         """Seed target slot KV from a donor when block pool finds a hash match.
 
-        WHY skip hybrid: ``llama_memory_seq_cp`` aborts or corrupts logits on
-        hybrid/recurrent memory layouts — block pool still verifies; only copy skipped.
+        WHY skip some hybrid layouts: attn+recurrent memory (some LFM2) can abort
+        ``seq_cp``; Gemma-style hybrid (full+SWA layers) is allowed when copy fits
+        SWA window — see ``radix_seq_copy_policy`` (L3-R5).
+        WHY warm catch-up (L3-R2): agent threads extend shared prefix on a warm slot
+        while another slot already prefilled further — full seq-copy after verify.
         WHY bump decode graph after copy: CUDA graphs key by topology; seeded KV
         invalidates captured decode graphs on the target slot.
         WHY ``seed_seq_pos`` on subprocess: SWA/draft policy reads slot pos before
@@ -567,6 +566,7 @@ class InferenceEngine:
         from runtime.decode_graph_policy import bump_decode_graph_epoch
         from runtime.kv.radix_prefix_share import find_radix_share_plan, radix_prefix_share_enabled
         from runtime.kv.radix_seq_copy import execute_radix_share_plan
+        from runtime.kv.radix_seq_copy_policy import radix_seq_copy_allowed
 
         if not allow or not radix_prefix_share_enabled():
             return allow, resume_pos, None
@@ -582,13 +582,14 @@ class InferenceEngine:
             target_slot=int(req.kv_slot),
             model_hash=model_hash,
             cache_salt=req.cache_salt,
-            seq_pos=0,
+            seq_pos=seq_pos,
             effective_window=spec.effective_window,
         )
         if plan is None:
             return allow, resume_pos, None
-        if spec.kind == "hybrid":
-            return allow, resume_pos, {"skipped": "hybrid_memory_seq_cp_unsupported"}
+        copy_ok, skip_reason = radix_seq_copy_allowed(spec, plan)
+        if not copy_ok:
+            return allow, resume_pos, {"skipped": skip_reason or "seq_copy_denied"}
         if self._is_kv_slot_busy(plan.source_slot):
             return allow, resume_pos, {"skipped": "source_slot_busy"}
 
@@ -620,6 +621,8 @@ class InferenceEngine:
             "target_slot": plan.target_slot,
             "copy_tokens": plan.copy_tokens,
             "matched_blocks": plan.matched_blocks,
+            "warm_catchup": plan.warm_catchup,
+            "target_seq_pos_before": plan.target_seq_pos_before,
         }
         from runtime.worker.factory import LlamaBackendKind
 

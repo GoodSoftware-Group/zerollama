@@ -30,6 +30,7 @@ type ANEDraftABResult struct {
 	SpecType      string                 `json:"spec_type,omitempty"`
 	ProxyChannels int                    `json:"proxy_channels"`
 	ProxySpatial  int                    `json:"proxy_spatial"`
+	ConvDepth     int                    `json:"conv_depth,omitempty"`
 	Micro         ANEDraftABMicro        `json:"micro"`
 	E2E           *ANEDraftABE2E         `json:"e2e,omitempty"`
 	Comparison    ANEDraftABComparison   `json:"comparison"`
@@ -72,11 +73,17 @@ type ANEDraftServerRun struct {
 	AccTokens          uint64  `json:"acc_tokens,omitempty"`
 	DraftAcceptance    float64 `json:"draft_acceptance,omitempty"`
 	HandoffSteps       int     `json:"handoff_steps,omitempty"`
+	HandoffStride      int     `json:"handoff_stride,omitempty"`
 	Conv2Chained       bool    `json:"conv2_chained,omitempty"`
+	ConvDepthCap       int     `json:"conv_depth_cap,omitempty"`
+	ActiveConvDepth    int     `json:"active_conv_depth,omitempty"`
 	GoldenCosine       float64 `json:"golden_cosine,omitempty"`
 	GoldenSteps        int     `json:"golden_steps,omitempty"`
-	DriveShadowSteps   int     `json:"drive_shadow_steps,omitempty"`
-	DriveShadowMatches int     `json:"drive_shadow_matches,omitempty"`
+	DriveShadowSteps       int     `json:"drive_shadow_steps,omitempty"`
+	DriveShadowMatches     int     `json:"drive_shadow_matches,omitempty"`
+	DriveShadowHiddenCos   float64 `json:"drive_shadow_hidden_cos,omitempty"`
+	DriveShadowHiddenSteps int     `json:"drive_shadow_hidden_steps,omitempty"`
+	MatmulChain            int     `json:"matmul_chain,omitempty"`
 	Error              string  `json:"error,omitempty"`
 }
 
@@ -95,21 +102,32 @@ var (
 	dflashStatsRE       = regexp.MustCompile(`statistics dflash:.*?#gen drafts = (\d+), #acc drafts = (\d+), #gen tokens = (\d+), #acc tokens = (\d+)`)
 	draftAcceptRateRE   = regexp.MustCompile(`draft acceptance rate = ([0-9.]+)`)
 	aneHandoffStepRE    = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+ ggml iosurface handoff ok`)
-	aneConv2ChainedRE   = regexp.MustCompile(`B6 dual conv1 chain active|B8 triple conv1 chain active`)
+	aneConv2ChainedRE   = regexp.MustCompile(`B6 dual conv1 chain active|B8 triple conv1 chain active|B9 quad conv1 chain active|B10 pent conv1 chain active|B11 hex conv1 chain active|B12 hept conv1 chain active|B13 oct conv1 chain active`)
+	aneConvDepthRE      = regexp.MustCompile(`conv depth cap=(\d+) active_convs=(\d+)`)
 	aneGoldenCosineRE   = regexp.MustCompile(`B6 golden step=\d+ mode=\w+ mse_ref_vs_ane=[0-9.eE+-]+ cosine=([0-9.-]+)`)
-	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+ ane_tok=\d+ metal_tok=\d+ match=(\d+)`)
+	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+ ane_tok=\d+ metal_tok=\d+ match=(\d+)(?: hidden_cos=([0-9.eE+-]+))?`)
+	aneMatmulChain4RE   = regexp.MustCompile(`chain4=swiglu\+down\+attn_gate|mode=matmul_chain4`)
+	aneMatmulChain5RE   = regexp.MustCompile(`chain5=swiglu\+down\+attn_gate\+ssm_out|mode=matmul_chain5`)
+	aneMatmulChain3RE   = regexp.MustCompile(`chain3=swiglu\+down|mode=matmul_chain3`)
+	aneMatmulChain2RE   = regexp.MustCompile(`chain2=gate\+silu\+up|mode=matmul_chain2`)
 )
 
-func parseB7ShadowFromLog(logText string) (steps, matches int) {
+func parseB7ShadowFromLog(logText string) (steps, matches int, hiddenCosSum float64, hiddenCosN int) {
 	for _, m := range aneB7ShadowRE.FindAllStringSubmatch(logText, -1) {
-		if len(m) == 2 {
+		if len(m) >= 2 {
 			steps++
 			if m[1] == "1" {
 				matches++
 			}
+			if len(m) >= 3 && m[2] != "" {
+				if v, err := strconv.ParseFloat(m[2], 64); err == nil {
+					hiddenCosSum += v
+					hiddenCosN++
+				}
+			}
 		}
 	}
-	return steps, matches
+	return steps, matches, hiddenCosSum, hiddenCosN
 }
 
 func parseGoldenCosineFromLog(logText string) (last float64, count int) {
@@ -122,6 +140,47 @@ func parseGoldenCosineFromLog(logText string) (last float64, count int) {
 		}
 	}
 	return last, count
+}
+
+// parseMatmulChainFromLog reads runtime chain depth from P1 init / B6 golden lines.
+func parseMatmulChainFromLog(logText string) int {
+	if aneMatmulChain5RE.MatchString(logText) {
+		return 5
+	}
+	if aneMatmulChain4RE.MatchString(logText) {
+		return 4
+	}
+	if aneMatmulChain3RE.MatchString(logText) {
+		return 3
+	}
+	if aneMatmulChain2RE.MatchString(logText) {
+		return 2
+	}
+	if strings.Contains(logText, "P1 matmul kernel active") {
+		return 1
+	}
+	return 0
+}
+
+func inferActiveConvDepthFromLog(logText string) int {
+	switch {
+	case strings.Contains(logText, "B13 oct conv1 chain active"):
+		return 8
+	case strings.Contains(logText, "B12 hept conv1 chain active"):
+		return 7
+	case strings.Contains(logText, "B11 hex conv1 chain active"):
+		return 6
+	case strings.Contains(logText, "B10 pent conv1 chain active"):
+		return 5
+	case strings.Contains(logText, "B9 quad conv1 chain active"):
+		return 4
+	case strings.Contains(logText, "B8 triple conv1 chain active"):
+		return 3
+	case strings.Contains(logText, "B6 dual conv1 chain active"):
+		return 2
+	default:
+		return 0
+	}
 }
 
 func countANEHandoffsFromLog(logText string) int {
@@ -210,10 +269,13 @@ func fillServerRunFromCompletion(run *ANEDraftServerRun, cc chatCompletionResp, 
 
 // ProbeANEDraftAB runs micro ANE bench and optional llama-server Metal vs ANE-hook e2e.
 // driveMode: "" (off), "shadow", or "force" when runE2E && ANE hook leg uses B7 drive.
-func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, runE2E, e2eTelemetry bool, driveMode string) (ANEDraftABResult, error) {
+// convDepth: cap active conv kernels (0 = use full manifest chain).
+// kernel: "conv" (default) or "matmul" for blk.0 ffn_gate matmul proxy.
+func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, runE2E, e2eTelemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftABResult, error) {
 	out := ANEDraftABResult{
-		Mode: "draft_ab_smoke",
-		Note: "B4: micro ANE in-process step vs Metal dflash e2e; hook is telemetry-only until ANE drives draft tokens",
+		Mode:      "draft_ab_smoke",
+		ConvDepth: convDepth,
+		Note:      "B4: micro ANE in-process step vs Metal dflash e2e; hook is telemetry-only until ANE drives draft tokens",
 	}
 	if runtime.GOOS != "darwin" {
 		return out, fmt.Errorf("ane draft ab: darwin only")
@@ -241,7 +303,7 @@ func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, ru
 		}
 	}
 
-	bundle, _, berr := MaterializeANEDraftWeightBundleWithDrive(entry, driveMode != "")
+	bundle, _, berr := MaterializeANEDraftWeightBundleWithDrive(entry, ANEDraftNeedsDriveHeadWithMetrics(kernel, driveMode, driveMetrics))
 	if berr == nil {
 		out.WeightBundle = &bundle
 	}
@@ -269,7 +331,7 @@ func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, ru
 	out.Comparison.ANEMicroStepMS = out.Micro.InprocessAvgStepMS
 
 	if runE2E {
-		e2e, e2eErr := probeANEDraftE2E(ctx, entry, quick, e2eTelemetry, driveMode)
+		e2e, e2eErr := probeANEDraftE2E(ctx, entry, quick, e2eTelemetry, driveMode, driveMetrics, convDepth, kernel)
 		if e2eErr != nil {
 			out.Error = e2eErr.Error()
 			return out, e2eErr
@@ -292,7 +354,7 @@ func findLlamaServerForANEDraft() (string, error) {
 	return llm.FindLlamaServer()
 }
 
-func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry bool, driveMode string) (ANEDraftABE2E, error) {
+func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftABE2E, error) {
 	serverBin, err := findLlamaServerForANEDraft()
 	if err != nil {
 		return ANEDraftABE2E{}, fmt.Errorf("llama-server not found: %w (run ./scripts/build_llama_server.sh)", err)
@@ -311,11 +373,11 @@ func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry
 		maxTokens = 16
 	}
 
-	metalRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, false, false, "")
+	metalRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, false, false, "", "", 0, "")
 	if err != nil {
 		return ANEDraftABE2E{}, err
 	}
-	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, true, telemetry, driveMode)
+	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, true, telemetry, driveMode, driveMetrics, convDepth, kernel)
 	if err != nil {
 		return ANEDraftABE2E{}, err
 	}
@@ -329,9 +391,37 @@ func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry
 		AcceptanceParity: acceptanceParity(metalRun, aneRun),
 	}
 	if metalRun.TokensPerSec > 0 && aneRun.TokensPerSec > 0 {
-		e2e.HookOverheadPct = (metalRun.TokensPerSec - aneRun.TokensPerSec) / metalRun.TokensPerSec * 100
+		e2e.HookOverheadPct = calcHookOverheadPct(metalRun.TokensPerSec, aneRun.TokensPerSec)
 	}
 	return e2e, nil
+}
+
+func calcHookOverheadPct(metalTPS, aneTPS float64) float64 {
+	if metalTPS <= 0 || aneTPS <= 0 {
+		return 0
+	}
+	return (metalTPS - aneTPS) / metalTPS * 100
+}
+
+// probeANEDraftHookOverhead runs ANE hook e2e without B7 shadow drive (handoff+eval only).
+func probeANEDraftHookOverhead(ctx context.Context, entry ANEDraftEntry, quick bool, convDepth int, kernel string, metalRun ANEDraftServerRun) (overheadPct, aneTPS float64, run ANEDraftServerRun, err error) {
+	serverBin, err := findLlamaServerForANEDraft()
+	if err != nil {
+		return 0, 0, run, err
+	}
+	port := aneLabPort()
+	maxTokens := 32
+	if quick {
+		maxTokens = 16
+	}
+	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, true, false, "", "", convDepth, kernel)
+	if err != nil {
+		return 0, 0, run, err
+	}
+	if metalRun.TokensPerSec > 0 && aneRun.TokensPerSec > 0 {
+		overheadPct = calcHookOverheadPct(metalRun.TokensPerSec, aneRun.TokensPerSec)
+	}
+	return overheadPct, aneRun.TokensPerSec, aneRun, nil
 }
 
 func acceptanceClose(a, b float64) bool {
@@ -354,7 +444,7 @@ func acceptanceParity(metal, ane ANEDraftServerRun) bool {
 	return acceptanceClose(metal.DraftAcceptance, ane.DraftAcceptance)
 }
 
-func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEntry, port, maxTokens int, aneHook, telemetry bool, driveMode string) (ANEDraftServerRun, error) {
+func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEntry, port, maxTokens int, aneHook, telemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftServerRun, error) {
 	run := ANEDraftServerRun{}
 	if ctx == nil {
 		ctx = context.Background()
@@ -372,7 +462,9 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	}
 	logPath := logFile.Name()
 	_ = logFile.Close()
-	defer os.Remove(logPath)
+	if os.Getenv("ZEROLLAMA_ANE_KEEP_AB_LOG") == "" {
+		defer os.Remove(logPath)
+	}
 
 	runCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
@@ -390,34 +482,182 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	cmd := exec.CommandContext(runCtx, serverBin, args...)
 	cmd.Env = os.Environ()
 	if aneHook {
-		cmd.Env = append(os.Environ(), "ZEROLLAMA_ANE_DRAFT=1")
-		if manifest, _, err := MaterializeANEDraftWeightBundleWithDrive(entry, driveMode != ""); err == nil {
-			if conv := manifest.ConvWeightPath(); conv != "" {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE="+conv)
-			}
-			if gamma := manifest.GammaWeightPath(); gamma != "" {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_GAMMA_FILE="+gamma)
-			}
-			if conv2 := manifest.Conv2WeightPath(); conv2 != "" {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+conv2)
-			}
-			if conv3 := manifest.Conv3WeightPath(); conv3 != "" {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3="+conv3)
-			}
+		kernel = strings.ToLower(strings.TrimSpace(kernel))
+		if kernel == "" {
+			kernel = "conv"
+		}
+		ch := entry.ProxyChannels
+		if ch <= 0 {
+			ch, _ = DraftANEProxyDims(entry.EmbeddingLength)
+		}
+		sp := entry.ProxySpatial
+		if sp <= 0 {
+			sp = 16
+		}
+		matmulIC, matmulOC, matmulSeq := DraftANEMatmulDims(entry)
+		matmulChain := 0
+
+		cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT=1")
+		needDriveHead := ANEDraftNeedsDriveHeadWithMetrics(kernel, driveMode, driveMetrics)
+		manifest, _, _ := MaterializeANEDraftWeightBundleWithDrive(entry, needDriveHead)
+		if kernel == "matmul" {
+			cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+				return strings.HasPrefix(k, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE")
+			})
 			cmd.Env = append(cmd.Env,
-				"ZEROLLAMA_ANE_DRAFT_CHANNELS="+strconv.Itoa(manifest.Channels),
-				"ZEROLLAMA_ANE_DRAFT_SPATIAL="+strconv.Itoa(manifest.Spatial),
-				"ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE=2",
+				"ZEROLLAMA_ANE_DRAFT_KERNEL=matmul",
+				"ZEROLLAMA_ANE_DRAFT_MATMUL_SEQ="+strconv.Itoa(matmulSeq),
+				"ZEROLLAMA_ANE_DRAFT_MATMUL_OC="+strconv.Itoa(matmulOC),
 			)
-			if telemetry {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TELEMETRY=1")
+			sp = matmulSeq
+			if wpath, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", matmulIC, matmulOC); err == nil && wpath != "" {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE="+wpath)
 			}
-			if driveMode != "" {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE="+driveMode)
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE_VOCAB_CAP=8192")
-				for k, v := range ExportEnvForManifest(manifest, "") {
-					cmd.Env = append(cmd.Env, k+"="+v)
+			icUp, ocUp := DraftANEMatmulChain3UpDims(matmulIC, matmulOC)
+			icDown, ocDown := DraftANEMatmulChain3DownDims(matmulOC, matmulIC)
+			forceChain := 0
+			if v, ok := aneDraftEnvValue(os.Environ(), "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN"); ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+					forceChain = n
 				}
+			}
+			matmulChain = 1
+			chain3 := false
+			if forceChain != 1 && forceChain != 2 {
+				if w3, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_down.weight", icDown, ocDown); err == nil && w3 != "" {
+					if w2, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_up.weight", icUp, ocUp); err == nil && w2 != "" {
+						cmd.Env = append(cmd.Env,
+							"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+w2,
+							"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3="+w3,
+							"ZEROLLAMA_ANE_DRAFT_MATMUL_OC2="+strconv.Itoa(ocUp),
+							"ZEROLLAMA_ANE_DRAFT_MATMUL_OC3="+strconv.Itoa(ocDown),
+						)
+						chain3 = true
+						matmulChain = 3
+						if forceChain != 3 && forceChain != 4 {
+							ic4, oc4 := DraftANEMatmulChain4AttnGateDims(matmulIC, matmulOC)
+							if w4, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_gate.weight", ic4, oc4); err == nil && w4 != "" {
+								cmd.Env = append(cmd.Env,
+									"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4="+w4,
+									"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4="+strconv.Itoa(oc4),
+								)
+								matmulChain = 4
+								ic5, oc5 := DraftANEMatmulChain5SSMOutDims(matmulIC, matmulOC)
+								if w5, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ssm_out.weight", ic5, oc5); err == nil && w5 != "" {
+									cmd.Env = append(cmd.Env,
+										"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5="+w5,
+										"ZEROLLAMA_ANE_DRAFT_MATMUL_OC5="+strconv.Itoa(oc5),
+									)
+									matmulChain = 5
+								}
+							}
+						}
+						switch matmulChain {
+						case 5:
+							cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=5")
+						case 4:
+							cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=4")
+						default:
+							cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=3")
+						}
+					}
+				}
+			}
+			if forceChain == 4 {
+				ic4, oc4 := DraftANEMatmulChain4AttnGateDims(matmulIC, matmulOC)
+				if w4, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_gate.weight", ic4, oc4); err == nil && w4 != "" {
+					cmd.Env = append(cmd.Env,
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4="+w4,
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4="+strconv.Itoa(oc4),
+					)
+				}
+			}
+			if !chain3 && forceChain != 1 {
+				ic2, oc2 := DraftANEMatmulChain2Dims(matmulIC, matmulOC)
+				if w2, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_up.weight", ic2, oc2); err == nil && w2 != "" {
+					cmd.Env = append(cmd.Env,
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+w2,
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC2="+strconv.Itoa(oc2),
+					)
+					matmulChain = 2
+				}
+			}
+			if forceChain == 1 {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=1")
+				matmulChain = 1
+			} else if forceChain == 2 {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2")
+				matmulChain = 2
+			} else if forceChain == 3 {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=3")
+				matmulChain = 3
+			} else if forceChain == 4 {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=4")
+				matmulChain = 4
+			} else if forceChain == 5 {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=5")
+				matmulChain = 5
+			}
+			ch = matmulIC
+		} else {
+			applyConvManifestEnv(&cmd.Env, manifest, convDepth)
+		}
+		if gamma := manifest.GammaWeightPath(); gamma != "" {
+			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_GAMMA_FILE="+gamma)
+		}
+		cmd.Env = append(cmd.Env,
+			"ZEROLLAMA_ANE_DRAFT_CHANNELS="+strconv.Itoa(ch),
+			"ZEROLLAMA_ANE_DRAFT_SPATIAL="+strconv.Itoa(sp),
+		)
+		matmulChainForStride := 0
+		if kernel == "matmul" {
+			matmulChainForStride = matmulChain
+		}
+		stride := DraftANEHandoffStride(kernel, matmulChainForStride)
+		if !aneDraftEnvHasKey(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE") {
+			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE="+strconv.Itoa(stride))
+		}
+		run.HandoffStride = stride
+		if v, ok := aneDraftEnvValue(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE"); ok {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				run.HandoffStride = n
+			}
+		}
+		if convDepth > 0 && kernel != "matmul" {
+			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_CONV_DEPTH="+strconv.Itoa(convDepth))
+		}
+		if telemetry {
+			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TELEMETRY=1")
+		}
+		if driveMode != "" {
+			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE="+driveMode)
+			if needDriveHead {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE_VOCAB_CAP=8192")
+				if headManifest, _, err := MaterializeANEDraftWeightBundleWithDrive(entry, true); err == nil {
+					for k, v := range ExportEnvForManifest(headManifest, "") {
+						if strings.HasPrefix(k, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE") && kernel == "matmul" {
+							continue
+						}
+						if k == "ZEROLLAMA_ANE_DRAFT" || k == "ZEROLLAMA_ANE_DRAFT_CHANNELS" || k == "ZEROLLAMA_ANE_DRAFT_SPATIAL" {
+							continue
+						}
+						cmd.Env = append(cmd.Env, k+"="+v)
+					}
+				}
+				if driveMode == "shadow" {
+					metrics := strings.TrimSpace(strings.ToLower(driveMetrics))
+					if metrics == "" {
+						metrics = "tokens"
+					}
+					cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE_METRICS="+metrics)
+				}
+			} else if kernel == "matmul" {
+				metrics := strings.TrimSpace(strings.ToLower(driveMetrics))
+				if metrics == "" {
+					metrics = "hidden"
+				}
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE_METRICS="+metrics)
 			}
 		}
 	}
@@ -512,6 +752,13 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 
 	logBytes, _ := os.ReadFile(logPath)
 	logText := string(logBytes)
+	if keep := os.Getenv("ZEROLLAMA_ANE_KEEP_AB_LOG"); keep != "" {
+		dst := keep
+		if keep == "1" {
+			dst = "/tmp/zerollama-ane-ab-last.log"
+		}
+		_ = os.WriteFile(dst, logBytes, 0o644)
+	}
 	if g, a, gt, at, ok := parseDflashStatistics(logText); ok {
 		run.GenDrafts = g
 		run.AccDrafts = a
@@ -534,11 +781,35 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	if aneHook {
 		run.HandoffSteps = countANEHandoffsFromLog(logText)
 		run.Conv2Chained = aneConv2ChainedRE.MatchString(logText)
+		if m := aneConvDepthRE.FindStringSubmatch(logText); len(m) == 3 {
+			if cap, err := strconv.Atoi(m[1]); err == nil {
+				run.ConvDepthCap = cap
+			}
+			if active, err := strconv.Atoi(m[2]); err == nil {
+				run.ActiveConvDepth = active
+			}
+		} else if convDepth > 0 {
+			run.ConvDepthCap = convDepth
+			active := inferActiveConvDepthFromLog(logText)
+			if active == 0 || active > convDepth {
+				active = convDepth
+			}
+			run.ActiveConvDepth = active
+		}
 		if telemetry {
 			run.GoldenCosine, run.GoldenSteps = parseGoldenCosineFromLog(logText)
 		}
+		if kernel == "matmul" {
+			run.MatmulChain = parseMatmulChainFromLog(logText)
+		}
 		if driveMode == "shadow" {
-			run.DriveShadowSteps, run.DriveShadowMatches = parseB7ShadowFromLog(logText)
+			var cosSum float64
+			var cosN int
+			run.DriveShadowSteps, run.DriveShadowMatches, cosSum, cosN = parseB7ShadowFromLog(logText)
+			if cosN > 0 {
+				run.DriveShadowHiddenCos = cosSum / float64(cosN)
+				run.DriveShadowHiddenSteps = cosN
+			}
 		}
 	}
 
@@ -553,8 +824,8 @@ func truncate(s string, n int) string {
 }
 
 // RunANEDraftABJSON writes B4 A/B JSON to w.
-func RunANEDraftABJSON(ctx context.Context, w io.Writer, preferred string, steps int, quick, e2e, e2eTelemetry bool, driveMode string) error {
-	res, err := ProbeANEDraftAB(ctx, preferred, steps, quick, e2e, e2eTelemetry, driveMode)
+func RunANEDraftABJSON(ctx context.Context, w io.Writer, preferred string, steps int, quick, e2e, e2eTelemetry bool, driveMode string, convDepth int) error {
+	res, err := ProbeANEDraftAB(ctx, preferred, steps, quick, e2e, e2eTelemetry, driveMode, "", convDepth, "conv")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err != nil {

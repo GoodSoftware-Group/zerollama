@@ -260,3 +260,54 @@ func TestInferenceStatusLoadedModelNames(t *testing.T) {
 		t.Fatalf("detail num_ctx=%d", st.Ggml.LoadedModelDetails[0].NumCtx)
 	}
 }
+
+func TestInferenceStatusTrainingQueuePolicy(t *testing.T) {
+	t.Setenv("ZEROLLAMA_TRAINING_WAIT_INFERENCE_IDLE", "1")
+	t.Setenv("ZEROLLAMA_TRAINING_QUEUE_ON_BUSY", "1")
+	t.Setenv("ZEROLLAMA_TRAINING_ALLOWED_WINDOW", "22:00-06:00")
+
+	s := &Server{trainingDefer: newTrainingDeferQueue(&Server{})}
+	_, _ = s.trainingDefer.enqueue("train", []byte(`{}`))
+
+	st := s.inferenceStatus(context.Background())
+	if st.Training == nil {
+		t.Fatal("expected training status")
+	}
+	p := st.Training.QueuePolicy
+	if !p.WaitInferenceIdle || !p.QueueOnBusy || !p.CrossQueueFifo {
+		t.Fatalf("policy=%+v", p)
+	}
+	if !p.AllowedWindowEnabled || p.AllowedWindow == "" {
+		t.Fatalf("window=%q enabled=%v", p.AllowedWindow, p.AllowedWindowEnabled)
+	}
+	if p.DeferWaiting != 1 || p.DeferTracked != 1 {
+		t.Fatalf("defer waiting=%d tracked=%d", p.DeferWaiting, p.DeferTracked)
+	}
+}
+
+func TestStatusHandlerIncludesTrainingQueuePolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setTestHome(t, t.TempDir())
+	t.Setenv("OLLAMA_NO_CLOUD", "1")
+	t.Setenv("ZEROLLAMA_TRAINING_WAIT_INFERENCE_IDLE", "1")
+
+	s := Server{}
+	w := createRequest(t, s.StatusHandler, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+
+	var resp api.StatusResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Inference.Training == nil {
+		t.Fatal("expected inference.training")
+	}
+	if !resp.Inference.Training.QueuePolicy.CrossQueueFifo {
+		t.Fatal("expected cross_queue_fifo true")
+	}
+	if !resp.Inference.Training.QueuePolicy.WaitInferenceIdle {
+		t.Fatal("expected wait_inference_idle from env")
+	}
+}

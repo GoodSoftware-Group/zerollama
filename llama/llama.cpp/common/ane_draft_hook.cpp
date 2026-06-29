@@ -357,6 +357,8 @@ static void log_ane_golden_telemetry(const float * input, int ch, int sp, int st
     static std::vector<float> golden_w;
     static std::vector<float> golden_w2;
     static std::vector<float> golden_w3;
+    static std::vector<float> golden_w4;
+    static std::vector<float> golden_w5;
     static std::atomic<bool> golden_loaded { false };
     static std::atomic<bool> golden_ok { false };
     if (!golden_loaded.exchange(true)) {
@@ -369,6 +371,14 @@ static void log_ane_golden_telemetry(const float * input, int ch, int sp, int st
         const char * w3path = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3");
         if (w3path && w3path[0]) {
             golden_ok.store(golden_ok.load() && load_conv_golden_weights(w3path, ch, golden_w3));
+        }
+        const char * w4path = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4");
+        if (w4path && w4path[0]) {
+            golden_ok.store(golden_ok.load() && load_conv_golden_weights(w4path, ch, golden_w4));
+        }
+        const char * w5path = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5");
+        if (w5path && w5path[0]) {
+            golden_ok.store(golden_ok.load() && load_conv_golden_weights(w5path, ch, golden_w5));
         }
     }
     if (!golden_ok.load()) {
@@ -396,6 +406,14 @@ static void log_ane_golden_telemetry(const float * input, int ch, int sp, int st
     }
     if (!golden_w3.empty()) {
         conv_golden_reference(ref.data(), ch, golden_w3, mid);
+        ref = mid;
+    }
+    if (!golden_w4.empty()) {
+        conv_golden_reference(ref.data(), ch, golden_w4, mid);
+        ref = mid;
+    }
+    if (!golden_w5.empty()) {
+        conv_golden_reference(ref.data(), ch, golden_w5, mid);
         ref = mid;
     }
     if (!golden_w2.empty() && !ane_draft_session_using_conv2()) {
@@ -430,7 +448,16 @@ static void log_ane_golden_telemetry(const float * input, int ch, int sp, int st
         cosine = dot_cross / (std::sqrt(dot_ref) * std::sqrt(dot_out));
     }
 
-    const char * mode = golden_w3.empty() ? (ane_draft_session_using_conv2() ? "conv2" : "conv1") : "conv3";
+    const char * mode = "conv1";
+    if (!golden_w5.empty()) {
+        mode = "conv5";
+    } else if (!golden_w4.empty()) {
+        mode = "conv4";
+    } else if (!golden_w3.empty()) {
+        mode = "conv3";
+    } else if (ane_draft_session_using_conv2()) {
+        mode = "conv2";
+    }
     LOG_INF("%s: B6 golden step=%d mode=%s mse_ref_vs_ane=%.6f cosine=%.4f ane_steps=%d\n",
             __func__, step, mode, mse, cosine, ane_draft_session_step_count());
 }
@@ -464,7 +491,9 @@ void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
     if (ane_draft_session_init(init_ch, init_sp, weight, gamma)) {
         const char * weight2 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2");
         const char * weight3 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3");
-        LOG_INF("%s: in-process ANE session ready channels=%d spatial=%d surface_id=%u bytes=%zu weight=%s weight2=%s weight3=%s gamma=%s\n",
+        const char * weight4 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4");
+        const char * weight5 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5");
+        LOG_INF("%s: in-process ANE session ready channels=%d spatial=%d surface_id=%u bytes=%zu weight=%s weight2=%s weight3=%s weight4=%s weight5=%s gamma=%s\n",
                 __func__,
                 ane_draft_session_channels(),
                 ane_draft_session_spatial(),
@@ -473,8 +502,14 @@ void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
                 weight && weight[0] ? weight : "(synthetic)",
                 weight2 && weight2[0] ? weight2 : "(none)",
                 weight3 && weight3[0] ? weight3 : "(none)",
+                weight4 && weight4[0] ? weight4 : "(none)",
+                weight5 && weight5[0] ? weight5 : "(none)",
                 gamma && gamma[0] ? gamma : "(none)");
-        if (weight3 && weight3[0] && ane_draft_session_using_conv2()) {
+        if (weight5 && weight5[0] && ane_draft_session_using_conv2()) {
+            LOG_INF("%s: B10 pent conv1 chain active (block0 quad + blk.1 ffn_gate)\n", __func__);
+        } else if (weight4 && weight4[0] && ane_draft_session_using_conv2()) {
+            LOG_INF("%s: B9 quad conv1 chain active (WEIGHT_FILE2..4 — gate/up/attn_gate/ffn_down proxy)\n", __func__);
+        } else if (weight3 && weight3[0] && ane_draft_session_using_conv2()) {
             LOG_INF("%s: B8 triple conv1 chain active (WEIGHT_FILE2 + WEIGHT_FILE3)\n", __func__);
         } else if (ane_draft_session_using_conv2()) {
             LOG_INF("%s: B6 dual conv1 chain active (WEIGHT_FILE2)\n", __func__);

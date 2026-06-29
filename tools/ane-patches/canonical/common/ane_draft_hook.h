@@ -32,4 +32,5 @@ enum common_ane_draft_drive_mode {
 enum common_ane_draft_drive_mode common_ane_draft_get_drive_mode(void);
 
 // Sample draft token from last ANE eval + host tied-embed argmax. Returns false when drive off or head missing.
-bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_batch, llama_token * out_id, float * out_p);
+// out_hidden_cos optional: cosine(ANE drive hidden, Metal draft hidden) on first oc dims when shadow mode.
+bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_batch, llama_token * out_id, float * out_p, float * out_hidden_cos);

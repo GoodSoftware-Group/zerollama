@@ -33,6 +33,29 @@ type ANEDraftMILExtractResult struct {
 	Note                string   `json:"note,omitempty"`
 }
 
+// ExtractProxyMatmulWeightBlob packs a top-left [inCh×outCh] slice for ANE draft matmul (h @ W).
+func ExtractProxyMatmulWeightBlob(ggufPath, tensorName string, inChannels, outChannels int) ([]byte, *ggml.Tensor, error) {
+	if inChannels <= 0 || outChannels <= 0 {
+		return nil, nil, fmt.Errorf("in/out channels must be positive")
+	}
+	if tensorName == "" {
+		tensorName = DefaultProxyConvTensor()
+	}
+	raw, tensor, err := ggml.ReadTensorBytes(ggufPath, tensorName)
+	if err != nil {
+		return nil, nil, err
+	}
+	fp16, err := ExtractMatmulRectFP16(raw, tensor, inChannels, outChannels)
+	if err != nil {
+		return nil, tensor, err
+	}
+	blob, err := PackANEMILWeightBlob(fp16)
+	if err != nil {
+		return nil, tensor, err
+	}
+	return blob, tensor, nil
+}
+
 // ExtractProxyConvWeightBlob reads a sidecar GGUF tensor and packs the ANE MIL weight blob.
 func ExtractProxyConvWeightBlob(ggufPath, tensorName string, channels int) ([]byte, *ggml.Tensor, error) {
 	if channels <= 0 {

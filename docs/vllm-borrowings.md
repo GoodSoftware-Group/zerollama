@@ -19,8 +19,11 @@
 | Breakable CUDA graphs (invalidation) | Epoch + `llama_context_cuda_graph_invalidate` (in-process) + `POST /cuda-graph/invalidate` (subprocess) | ggml graph keys ignore sequence id; child process owns its own ctx |
 | Prefix trace replay | `ZEROLLAMA_PREFIX_CACHE_TRACE` + golden JSONL | Offline policy regression without GPU |
 | Hash-chained **prefix block pool** | `kv/prefix_block_pool.py` + `prefix_block_hash.py` | Content-addressed prefix verification before `cache_prompt` |
-| Optional **LMCache tier** | `kv/lmcache_tier.py` (`ZEROLLAMA_LMCACHE_TIER`) | Filesystem metadata tier for block index across restarts |
+| Optional **LMCache tier** | `kv/lmcache_tier.py` + `kv/lmcache_redis.py` | `file://` or `redis://` metadata; block index hydration across restarts / fleet nodes |
 | **Cross-slot Radix prefix share (v1)** | `kv/radix_prefix_share.py` + `POST /kv/seq-copy` | Same system prompt, different keys → donor slot KV seed; see [radix-prefix-share.md](./radix-prefix-share.md) |
+| **Warm-target Radix catch-up (L3-R2)** | `verify_target_slot_prefix` + donor search past target blocks | Agent thread extended shared prefix while donor already holds longer KV |
+| **Ref-count block DAG (L3-R3)** | `holder_slots` + `release_slot_holders` + `_best_donor_from_chain` | Overlapping slot registrations; pick longest donor chain from token 0 |
+| **Hybrid Radix gate (L3-R5)** | `radix_seq_copy_policy.py` + `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | v1 skipped all hybrid; Gemma full+SWA safe when copy ≤ window; attn+recurrent keeps kill-switch |
 
 ---
 
@@ -28,9 +31,8 @@
 
 | vLLM feature | WHY not in zerollama L3 |
 |--------------|-------------------------|
-| Full RadixAttention ref-count block DAG | v1 ships donor→target seed only; gap matrix in [radix-prefix-share.md](./radix-prefix-share.md#product-gaps); milestones [ROADMAP L3-R](./ROADMAP.md#radix-v2-l3-r--product-gaps) |
-| LMCache / Mooncake **remote** connectors | Optional local `file://` tier only; Redis/NIXL deferred — **why:** agent-local v1 proves block verification + donor seed before fleet blob federation |
-| Warm-target Radix catch-up | v1 seeds **cold** slots only (`seq_pos == 0`) — **why:** partial merge needs ref-count semantics (L3-R2) |
+| Full RadixAttention ref-count block DAG | Metadata multi-holder + best donor shipped (L3-R3); llama-level shared KV pages + Go scheduler mirror still deferred — [radix-prefix-share.md](./radix-prefix-share.md#product-gaps) |
+| LMCache / Mooncake **remote blob** connectors | **`redis://` metadata shipped (L3-R4)** — NIXL/Mooncake KV blob pull still deferred |
 | Fleet / cross-node Radix donor | Donor must be same llama-server process — **why:** KV in VRAM; fleet layer routes warm model, not shared-prefix residency |
 | `CUDAGraphDispatcher` + capture handles | ggml internal capture; stub `DecodeGraphCache.lookup` until upstream API — invalidation after Radix seed is wired |
 | Scheduler KV preemption loop | LocalAI watchdog + slot allocator; not vLLM-style block preempt yet |
@@ -47,15 +49,17 @@
 | `ZEROLLAMA_CACHE_SALT` | — | Operator default tenant salt |
 | `ZEROLLAMA_PREFIX_CACHE_BLOCK_SIZE` | `512` | EAGLE drop-last-block granularity |
 | `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` | — | SWA sparse retention (`0`, `N`, unset=dense) |
-| `ZEROLLAMA_LMCACHE_URI` | — | Set `file://…` to enable LMCache metadata tier (unset = off) |
+| `ZEROLLAMA_LMCACHE_URI` | — | `file://…` or `redis://host:6379/db` — metadata tier (L3-R4) |
+| `ZEROLLAMA_LMCACHE_TTL_SEC` | — | Redis key TTL (optional) |
 | `ZEROLLAMA_LMCACHE_TIER` | *(deprecated)* | Alias for URI-only enable; prefer `ZEROLLAMA_LMCACHE_URI` |
 | `ZEROLLAMA_PREFIX_BLOCK_POOL` | auto | Auto-on when Radix, LMCache URI, or `n_parallel > 1`; `=0` to disable |
 | `ZEROLLAMA_PREFIX_BLOCK_POOL_MAX` | `8192` | Max in-memory block entries per model scope |
 | `ZEROLLAMA_LLAMA_CACHE_DISK` | smart | Unset: off on Darwin, on for Linux subprocess; explicit `0`/`1` overrides |
 | `ZEROLLAMA_RADIX_PREFIX_SHARE` | `0` | Cross-slot Radix prefix seed (implies block pool) |
+| `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | `1` | Allow hybrid GGUF Radix `seq_cp` when prefix ≤ SWA window (L3-R5); `0` = skip all hybrid copy |
 | `ZEROLLAMA_DECODE_GRAPH_INVALIDATE` | `1` | ggml CUDA graph clear on slot invalidation (in-process native/ctypes or subprocess HTTP) |
 
-**Radix operator guide:** [radix-prefix-share.md](./radix-prefix-share.md) — **why** vendor llama-server, live smoke, hybrid skip, trace events.
+**Radix operator guide:** [radix-prefix-share.md](./radix-prefix-share.md) — **why** vendor llama-server, live smoke, hybrid SWA gate, trace events.
 
 ---
 

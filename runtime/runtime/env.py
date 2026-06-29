@@ -175,6 +175,17 @@ def radix_prefix_share_enabled() -> bool:
     return l3_settings().radix_share
 
 
+def radix_hybrid_seq_copy_enabled() -> bool:
+    """Allow Radix ``seq_cp`` on Gemma-style hybrid when prefix fits SWA window (L3-R5).
+
+    WHY default on: ``kind=hybrid`` in GGUF metadata usually means full+SWA layers
+    (Gemma), not attn+recurrent — v1's blanket skip blocked those models.
+    WHY env exists: LFM2 / true recurrent memory may still abort ``seq_cp``; set
+    ``ZEROLLAMA_RADIX_HYBRID_SEQ_COPY=0`` until a model-specific live gate passes.
+    """
+    return env_bool("ZEROLLAMA_RADIX_HYBRID_SEQ_COPY", default=True)
+
+
 def lmcache_tier_enabled() -> bool:
     """LMCache metadata tier: on when ``ZEROLLAMA_LMCACHE_URI`` or YAML ``l3.lmcache_uri`` set."""
     if os.environ.get("ZEROLLAMA_LMCACHE_URI", "").strip():
@@ -192,6 +203,17 @@ def lmcache_uri() -> str:
     if yaml_uri:
         return yaml_uri
     return "file://~/.cache/zerollama/lmcache"
+
+
+def lmcache_ttl_sec() -> int | None:
+    raw = os.environ.get("ZEROLLAMA_LMCACHE_TTL_SEC", "").strip()
+    if not raw:
+        return None
+    try:
+        sec = int(raw)
+        return sec if sec > 0 else None
+    except ValueError:
+        return None
 
 
 def prefix_cache_block_size() -> int:

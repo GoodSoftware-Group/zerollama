@@ -38,6 +38,86 @@ func DraftANEProxyDims(embedding int) (channels, spatial int) {
 	return ch, spatial
 }
 
+// DraftANEMatmulDims picks matmul ic×oc for blk.0 ffn_gate.
+// ic uses full draft n_embd; static BLOBFILE MIL may fail at ic>256 — session falls back to dynamic MIL.
+func DraftANEMatmulDims(entry ANEDraftEntry) (ic, oc, seq int) {
+	seq = entry.ProxySpatial
+	if seq < 16 {
+		seq = 16
+	}
+	oc = entry.ProxyChannels
+	if oc <= 0 {
+		oc, _ = DraftANEProxyDims(entry.EmbeddingLength)
+	}
+	ic = entry.EmbeddingLength
+	if ic <= 0 {
+		ic = oc
+	}
+	return ic, oc, seq
+}
+
+// DraftANEHandoffStride picks IOSurface handoff frequency per decode step for e2e A/B.
+// P3 matmul runs 3 ANE evals per handoff; async eval overlaps with Metal decode, so stride 8
+// cuts handoff rate without blocking the draft loop. P1/P2 stay at stride 4.
+func DraftANEHandoffStride(kernel string, matmulChain int) int {
+	if strings.EqualFold(strings.TrimSpace(kernel), "matmul") {
+		if matmulChain >= 5 {
+			return 12
+		}
+		if matmulChain >= 3 {
+			return 8
+		}
+		return 4
+	}
+	return 2
+}
+
+// DraftANEMatmulChain2Dims returns ic×oc for silu(gate) @ ffn_up after gate matmul (P2 legacy).
+func DraftANEMatmulChain2Dims(gateIC, gateOC int) (ic2, oc2 int) {
+	return gateOC, gateIC
+}
+
+// DraftANEMatmulChain3UpDims returns ic×oc for h @ ffn_up in SwiGLU chain (same ff width as gate).
+func DraftANEMatmulChain3UpDims(gateIC, gateOC int) (ic2, oc2 int) {
+	return gateIC, gateOC
+}
+
+// DraftANEMatmulChain3DownDims returns ic×oc for swiglu @ ffn_down.
+func DraftANEMatmulChain3DownDims(gateOC, gateIC int) (ic3, oc3 int) {
+	return gateOC, gateIC
+}
+
+// DraftANEMatmulChain4AttnGateDims returns ic×oc for ffn_down @ attn_gate (P4 B8 matmul).
+func DraftANEMatmulChain4AttnGateDims(ffnEmbd, ffWidth int) (ic4, oc4 int) {
+	return ffnEmbd, ffWidth
+}
+
+// DraftANEMatmulChain5SSMOutDims returns ic×oc for ffn_down @ ssm_out (P5 hybrid block).
+func DraftANEMatmulChain5SSMOutDims(ffnEmbd, ffWidth int) (ic5, oc5 int) {
+	return ffnEmbd, ffWidth
+}
+
+// ANEDraftNeedsDriveHead is true when B7 must mmap tied-embed for token argmax (force, or conv shadow).
+func ANEDraftNeedsDriveHead(kernel, driveMode string) bool {
+	return ANEDraftNeedsDriveHeadWithMetrics(kernel, driveMode, "")
+}
+
+// ANEDraftNeedsDriveHeadWithMetrics extends drive-head detection for matmul shadow token parity.
+func ANEDraftNeedsDriveHeadWithMetrics(kernel, driveMode, driveMetrics string) bool {
+	driveMode = strings.TrimSpace(driveMode)
+	driveMetrics = strings.TrimSpace(strings.ToLower(driveMetrics))
+	if driveMode == "" {
+		return false
+	}
+	if driveMode == "force" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(kernel), "matmul") {
+		return driveMetrics == "tokens" || driveMetrics == "both"
+	}
+	return true
+}
+
 // ProbeANEDraftGGUF reads GGUF metadata and sidecar presence for ANE draft wiring.
 func ProbeANEDraftGGUF(path, sidecarPath string) (ANEDraftGGUFInfo, error) {
 	path = strings.TrimSpace(path)

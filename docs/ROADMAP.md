@@ -214,7 +214,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **M15** | **MLX agent prompt hardening** | Go + mlxrunner + docs | **Done (Jun 2026)** — bogus HF `text_config.max_position_embeddings` fix; `capMLXScheduleOptions` + tail truncate; `PromptTokens` single-tokenize passthrough; tokenize LRU; 30m MLX keep-alive floor; SSE keepalive during prefill; reload/prefill/prompt-size operator logs. **Why:** agent megaprompts (131k tokens) caused multi-minute prefill, cold reload every 5m, double tokenize, empty client streams; Gemma4 config exported vocab_size as ctx. Doc: [mlx-agent-prompts.md](./mlx-agent-prompts.md). |
 | **M16** | **Flash-MoE (anemll) via llama-server** | Go + fork build | **Partial (Jun 2026)** — `--moe-*` passthrough, Modelfile options, `build_flash_moe_llama_server.sh`, **`flash_moe_smoke.sh` tier 0–2**, doctor check, envconfig; **why:** Qwen3.5-class MoE exceeds unified RAM; ggml Metal path cannot slot-bank stream from SSD. **Open:** `pull` sidecar extract, vendor pin merge. Doc: [flash-moe.md](./flash-moe.md). |
 | **M17** | **ANE probe (maderix/ANE)** | Repo + subprocess | **Partial (Jun 2026)** — `tools/ane-probe`, `libane_bridge` smoke, doctor + hidden CLI; **why:** validate ANE reachability before hybrid inference research without linking private APIs into Go. Doc: [ane-probe.md](./ane-probe.md). |
-| **M18** | **ANE in-process dflash draft (B1–B6)** | llama-common + discover | **Partial (Jun 2026, lab)** — in-process ANE session in llama-server, ggml IOSurface handoff on dflash draft decode, sidecar weight bundle (manifest v2), micro+e2e A/B on port **11435**; **why:** IOSurface IDs are same-PID only — subprocess daemons cannot feed llama-server activations; conv proxy validates ANE step latency before B7 token routing. **Open:** conv2 MIL compile, golden weight layout, full dflash subgraph, production opt-in policy. Doc: [ane-draft-inprocess.md](./ane-draft-inprocess.md). |
+| **M18** | **ANE in-process dflash draft (B1–B7, P1–P5 matmul)** | llama-common + discover | **Partial (Jun 2026, lab)** — P3–**P5** blk.0 matmul (FFN+attn_gate+ssm_out), `golden_cosine`≈1.0. Async eval + stride **8/12** by chain depth. Force drive uses ffn_down stash. **Open:** full attn QKV + lm_head. Doc: [ane-draft-inprocess.md](./ane-draft-inprocess.md). |
 
 **Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
 
@@ -283,11 +283,11 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | `llama_cpp_probe.py` — sibling `../llama.cpp` CUDA graph flags | Remote object-store KV (LMCache/Mooncake) |
 | **`llama_context_cuda_graph_invalidate` + epoch bump wiring** — ggml graph clear on KV slot invalidation (CUDA); in-process native/ctypes + subprocess `POST /cuda-graph/invalidate`; doc [decode-graph-invalidation.md](./decode-graph-invalidation.md) | Per-slot CUDA graph **capture** |
 | vLLM Jun 2026: `drop_eagle_block` (draft RAM cache + drop-last-block) | |
-| **Cross-slot Radix prefix share (v1)** — `radix_prefix_share.py`, `POST /kv/seq-copy`, `l3_radix_prefix_smoke.sh`; doc [radix-prefix-share.md](./radix-prefix-share.md) | Full RadixAttention block pool + remote tiers |
-| `cache_salt` tenant slot isolation | Remote LMCache / Mooncake connectors |
+| **Cross-slot Radix prefix share (v1 + v2)** — `radix_prefix_share.py`, L3-R2…R5, `POST /kv/seq-copy`, `l3_radix_prefix_smoke.sh`; doc [radix-prefix-share.md](./radix-prefix-share.md) | llama-level shared KV pages + NIXL/Mooncake blob pull |
+| `cache_salt` tenant slot isolation | Cross-node KV VRAM donor (same process only today) |
 | `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` (SWA sparse retention) | |
-| **Hybrid KV coordinator** (`kv/hybrid_kv_coordinator.py`) | Radix on hybrid memory (`seq_cp` unsupported) |
-| **Hash-chained prefix block pool** + optional local LMCache tier (`kv/prefix_block_pool.py`, `l3_prefix_block_pool_smoke.sh`) | |
+| **Hybrid KV coordinator** (`kv/hybrid_kv_coordinator.py`) + **hybrid Radix gate** (`radix_seq_copy_policy.py`, L3-R5) | attn+recurrent hybrid `seq_cp` live probe (LFM2) |
+| **Hash-chained prefix block pool** + LMCache tier (`file://` + `redis://`, L3-R4) | |
 | `l3_prefix_cache_trace_replay.sh` golden replay | |
 
 **Suggested order (Tier A):** **L1** → **L3** (low friction, immediate wins) → **L2** (fork spike in parallel with L1 measurement; merge when gated).
@@ -300,12 +300,14 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 |-----------|------|-----|---------------|
 | **L3-R0** | **Radix v1 shipped** | L3 slot-per-key leaves duplicate prefills across keys | `l3_radix_prefix_smoke.sh` offline PASS; Mac `L3_RADIX_LIVE=1` PASS; doc [radix-prefix-share.md](./radix-prefix-share.md) |
 | **L3-R1** | **5080 live Radix gate** | Cross-slot seed on ship CUDA hardware | **Done (Jun 2026)** — `L3_RADIX_LIVE=1` on eliza-1 9B @ CT 1564: donor **10.6s** → target **0.66s**, `radix_seed` 128 tok; row in [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
-| **L3-R2** | **Warm-target catch-up** | Agents sometimes warm a slot then extend prefix; v1 skips when `seq_pos > 0` | `find_radix_share_plan` + admission copy when target behind donor on shared prefix |
-| **L3-R3** | **Ref-count block DAG** | v1 = one contiguous donor chain; vLLM shares blocks across arbitrary overlap | Block allocator + admission in Python; optional Go mirror for queue policy |
-| **L3-R4** | **Remote LMCache tier** | Local `file://` metadata only; fleet restarts / cross-node need blob paths | Redis/NIXL or Mooncake connector; hydrate block pool from remote metadata |
-| **L3-R5** | **Hybrid-memory Radix** | SWA/hybrid GGUF skips `seq_cp` today | Upstream partial copy or per-arch copy path; gated on LFM2/hybrid smokes |
+| **L3-R2** | **Warm-target catch-up** | Agents sometimes warm a slot then extend prefix; v1 skipped when `seq_pos > 0` | **Done (Jun 2026)** — `verify_target_slot_prefix` + donor search past target-owned blocks; full seq-copy when donor matched > target `seq_pos` |
+| **L3-R3** | **Ref-count block DAG** | v1 = one contiguous donor chain; vLLM shares blocks across arbitrary overlap | **Done (Jun 2026)** — multi-holder block entries, `release_slot_holders`, best-donor selection across overlapping slots |
+| **L3-R4** | **Remote LMCache tier** | Local `file://` metadata only; fleet restarts / cross-node need blob paths | **Done (Jun 2026)** — `redis://` metadata backend (stdlib RESP); `ZEROLLAMA_LMCACHE_TTL_SEC`; hydrates block pool cross-node (blobs still local) |
+| **L3-R5** | **Hybrid-memory Radix** | SWA/hybrid GGUF skipped all `seq_cp` in v1 | **Done (Jun 2026)** — `radix_seq_copy_policy`: Gemma-style hybrid allowed when copy ≤ SWA window; env `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY=0`; attn+recurrent still operator-gated |
 
 **Non-goals (Radix track):** HTTP-to-vLLM; required SGLang sidecar; replacing L3 slot pinning with global Radix-only scheduling.
+
+**Track status (Jun 2026):** L3-R0…L3-R5 **complete** in-tree. Next Radix work is **physical** KV sharing (llama.cpp pages), **blob** federation (NIXL/Mooncake), and Go scheduler visibility — not another admission-layer milestone.
 
 **Doc:** [radix-prefix-share.md](./radix-prefix-share.md) — architecture, env, product gaps, validation status.
 
@@ -396,7 +398,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **T3** | **Progress over HTTP** | SSE or WebSocket; reduce poll-only UX. |
 | **T4** | **CPU CI smoke** | **Partial** — Go tests register `/api/train/*` and exercise `GET /api/train/status` (502 without embed is OK in CI). Full embedded-python health still needs integration. **Operator hygiene (Jun 2026):** `.venv-training` ABI must match `ldd zerollama` libpython; 5080 ships **3.11 embed + venv** via [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) — see [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). |
 | **T5** | **Native training (optional)** | Rust/libtorch only if Python embed becomes a bottleneck—default stay on PyTorch. |
-| **T6** | **Unified queue policy (directional)** | **Partial** — idle-wait; `priority`; defer queue; **allowed window**; **cross-queue FIFO** (global tickets, Go↔Python mirror). **Next:** richer SLO classes, stricter training/inference class separation. |
+| **T6** | **Unified queue policy (directional)** | **Partial** — idle-wait; `priority`; defer queue; **allowed window**; **cross-queue FIFO** (global tickets, Go↔Python mirror). Operator guide: [t6-unified-queue.md](./t6-unified-queue.md); smoke: `./scripts/e2e_t6_queue_smoke.sh`. **Next:** richer SLO classes, stricter training/inference class separation. |
 
 ### Non-goals (for this track)
 

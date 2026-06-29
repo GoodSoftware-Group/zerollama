@@ -3,14 +3,19 @@
 WHY this module exists (not full RadixAttention):
   L3 pins each session to ``hash(key) mod parallel``. Two agents with the same
   system prompt but different keys land on different slots and repeat prefill.
-  v1 copies one contiguous donor chain into a *cold* target before decode — enough
-  for agent fleets without a ref-count block DAG or scheduler rewrite.
+  v1 copies one contiguous donor chain into a target before decode — cold seed or
+  warm catch-up (L3-R2) — enough for agent fleets without llama-level shared KV
+  pages or a scheduler rewrite.
 
 WHY block pool is required:
   Content-addressed hash chains verify the prompt before copy. Seeding without
   verification would reuse stale KV when clients silently change the system prompt.
 
-Product gaps (warm target, hybrid skip, remote tier): docs/radix-prefix-share.md
+WHY seq-copy policy is separate (L3-R5): block-pool planning is layout-agnostic;
+Gemma-style hybrid (full+SWA layers) is safe when copy fits the SWA window.
+Attn+recurrent layouts keep an env kill-switch until probed live.
+
+Product gaps (physical KV pages, blob federation): docs/radix-prefix-share.md
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ class RadixSharePlan:
     copy_tokens: int
     matched_blocks: int
     tail_block_hash: str | None
+    target_seq_pos_before: int = 0
+    warm_catchup: bool = False
 
 
 def find_radix_share_plan(
@@ -41,24 +48,41 @@ def find_radix_share_plan(
     seq_pos: int | None = None,
     effective_window: int | None = None,
 ) -> RadixSharePlan | None:
-    """Plan a donor→target KV seed when target is cold or behind shared prefix.
+    """Plan donor→target KV seed for cold slots or warm catch-up behind donor.
 
-    WHY ``seq_pos > 0`` returns None (v1): copy semantics seed *empty* target KV.
-    Warm-target partial catch-up needs merge policy + ref-count blocks (L3-R2).
+    Cold (``seq_pos == 0``): copy full matched donor prefix into empty target.
+
+    Warm catch-up (L3-R2): when target already holds verified KV for
+    ``[0, seq_pos)`` but donor matched further, copy ``[0, donor_matched)`` —
+    seq-copy clears target first (redundant re-copy of shared tail is OK).
+
+    WHY verify target before warm copy: without ``verify_target_slot_prefix``,
+    a stale partial slot could seed from a donor whose hash chain diverged earlier.
     """
     if not radix_prefix_share_enabled():
         return None
     if target_slot < 0 or not tokens or not model_hash:
         return None
-    if seq_pos is not None and seq_pos > 0:
-        return None
+    target_pos = max(0, int(seq_pos or 0))
     scope = build_model_scope(model_hash=model_hash, cache_salt=cache_salt)
     pool = get_prefix_block_pool(model_scope=scope)
+
+    if target_pos > 0:
+        if not pool.verify_target_slot_prefix(
+            tokens,
+            scope=scope,
+            target_slot=target_slot,
+            seq_pos=target_pos,
+        ):
+            return None
+
     found = pool.find_donor_slot_prefix(
         tokens,
         scope=scope,
         target_slot=target_slot,
         max_tokens=len(tokens),
+        exclude_slot=target_slot,
+        min_matched=target_pos,
     )
     if found is None:
         return None
@@ -68,12 +92,17 @@ def find_radix_share_plan(
         if matched <= 0:
             return None
         blocks = matched // max(1, prefix_cache_block_size())
+    if matched <= target_pos:
+        return None
+    warm = target_pos > 0
     return RadixSharePlan(
         source_slot=source_slot,
         target_slot=target_slot,
         copy_tokens=matched,
         matched_blocks=blocks,
         tail_block_hash=None,
+        target_seq_pos_before=target_pos,
+        warm_catchup=warm,
     )
 
 

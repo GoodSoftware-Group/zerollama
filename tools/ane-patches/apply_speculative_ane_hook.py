@@ -37,6 +37,9 @@ def patch_draft_simple_ctor(spec: pathlib.Path) -> None:
         "        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).\n"
         "        if (common_ane_draft_enabled()) {\n"
         "            llama_set_embeddings_pre_norm(ctx_dft, true);\n"
+        "            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {\n"
+        "                llama_set_embeddings(ctx_dft, true);\n"
+        "            }\n"
         "        }\n"
         "    }"
     )
@@ -91,10 +94,11 @@ def patch_draft_simple_draft(spec: pathlib.Path) -> None:
         "                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {\n"
         "                    llama_token ane_id = 0;\n"
         "                    float ane_p = 0.f;\n"
-        "                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p)) {\n"
+        "                    float hidden_cos = 0.f;\n"
+        "                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {\n"
         "                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {\n"
-        '                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d\\n",\n'
-        "                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0);\n"
+        '                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\\n",\n'
+        "                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);\n"
         "                        } else {\n"
         "                            id = ane_id;\n"
         "                            pick_p = ane_p;\n"
@@ -110,6 +114,47 @@ def patch_draft_simple_draft(spec: pathlib.Path) -> None:
         patch_once(spec, b7_needle, b7_repl, "speculative.cpp B7 drive token (shadow/force)")
     elif "pick_p < params.p_min" not in text and "cur_p->data[0].p < params.p_min" in text:
         patch_once(spec, b7_needle, b7_repl, "speculative.cpp B7 drive token (shadow/force)")
+    elif "hidden_cos" not in text:
+        old_b7 = (
+            "                    llama_token ane_id = 0;\n"
+            "                    float ane_p = 0.f;\n"
+            "                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p)) {\n"
+            "                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {\n"
+            '                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d\\n",\n'
+            "                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0);\n"
+        )
+        if old_b7 in text:
+            new_b7 = (
+                "                    llama_token ane_id = 0;\n"
+                "                    float ane_p = 0.f;\n"
+                "                    float hidden_cos = 0.f;\n"
+                "                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {\n"
+                "                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {\n"
+                '                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\\n",\n'
+                "                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);\n"
+            )
+            spec.write_text(text.replace(old_b7, new_b7, 1))
+            print("  patched speculative.cpp B7 hidden_cos upgrade")
+        else:
+            print("  skip B7 hidden_cos upgrade (anchor drift)")
+
+    # Enable post-norm embeddings for B7 hidden cosine when drive is on.
+    emb_old = (
+        "        if (common_ane_draft_enabled()) {\n"
+        "            llama_set_embeddings_pre_norm(ctx_dft, true);\n"
+        "        }\n"
+    )
+    emb_new = (
+        "        if (common_ane_draft_enabled()) {\n"
+        "            llama_set_embeddings_pre_norm(ctx_dft, true);\n"
+        "            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {\n"
+        "                llama_set_embeddings(ctx_dft, true);\n"
+        "            }\n"
+        "        }\n"
+    )
+    if emb_old in text and emb_new not in text:
+        spec.write_text(spec.read_text().replace(emb_old, emb_new, 1))
+        print("  patched speculative.cpp B7 llama_set_embeddings for shadow cosine")
 
     patch_once(
         spec,

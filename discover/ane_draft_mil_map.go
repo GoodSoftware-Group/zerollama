@@ -186,6 +186,16 @@ func draftMILWeightBlobBytes(channels int) int {
 	return 64 + 64 + channels*channels*2
 }
 
+func draftMILMatmulWeightBlobBytes(inChannels, outChannels int) int {
+	if inChannels <= 0 {
+		inChannels = 64
+	}
+	if outChannels <= 0 {
+		outChannels = inChannels
+	}
+	return 64 + 64 + inChannels*outChannels*2
+}
+
 // ProbeANEDraftMILMap builds the sidecar tensor → MIL slot plan for a draft tag.
 func ProbeANEDraftMILMap(_ context.Context, preferred string) (ANEDraftMILMapResult, error) {
 	out := ANEDraftMILMapResult{

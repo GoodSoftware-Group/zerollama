@@ -18,6 +18,8 @@ l3:
   radix_share: true
   block_size: 512
   trace: false
+  # WHY Redis (L3-R4): fleet-shared prefix block index; KV blobs stay local per node
+  # lmcache_uri: redis://127.0.0.1:6379/0
 vram:
   min_free: 1GiB
   training_reserve: 2GiB

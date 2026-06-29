@@ -211,8 +211,8 @@ Check `GET /health` → `llama_cache.policy`:
 - **`cache_salt`:** pass `options.cache_salt` (or `eliza.cacheSalt`, env `ZEROLLAMA_CACHE_SALT`) to isolate tenants sharing the same conversation id.
 - **SWA sparse retention:** `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` — optional aligned checkpoints for pure SWA models (vLLM analog).
 - **Hybrid coordinator (Jun 2026):** Gemma-style full+SWA layer groups; coordinated `cache_prompt` gate via min SWA window (`kv/hybrid_kv_coordinator.py`).
-- **Prefix block pool (Jun 2026):** auto-on when L3 + `n_parallel > 1`, Radix share, or LMCache URI; hash-chained blocks verify prefix integrity before reuse. **`ZEROLLAMA_PREFIX_BLOCK_POOL=0`** disables. Optional **`ZEROLLAMA_LMCACHE_URI=file://…`** persists block metadata for restart hydration.
-- **Cross-slot Radix share (Jun 2026):** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` — cold target slots seed KV from a donor slot with matching prefix block chain (`llama_memory_seq_cp` in-process; `POST /kv/seq-copy` on llama-server). **Why:** L3 pins one slot per cache key; agents sharing a system prompt but different keys otherwise repeat prefill. Requires **vendor** llama-server (patch 0017). Hybrid models skip `seq_cp` in engine. Operator guide: [radix-prefix-share.md](./radix-prefix-share.md).
+- **Prefix block pool (Jun 2026):** auto-on when L3 + `n_parallel > 1`, Radix share, or LMCache URI; hash-chained blocks verify prefix integrity before reuse. **`ZEROLLAMA_PREFIX_BLOCK_POOL=0`** disables. **`ZEROLLAMA_LMCACHE_URI=file://…`** or **`redis://host:6379/0`** (L3-R4 fleet metadata) persists block index for restart/cold-node hydration.
+- **Cross-slot Radix share (Jun 2026):** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` — target slots seed or **catch up** KV from a donor with a longer matching prefix block chain (`llama_memory_seq_cp` in-process; `POST /kv/seq-copy` on llama-server). **Why:** L3 pins one slot per cache key; agents sharing a system prompt but different keys otherwise repeat prefill. **v2 (L3-R2–R5):** warm catch-up on partial targets; ref-count block metadata; optional `redis://` LMCache; Gemma-style hybrid `seq_cp` when prefix ≤ SWA window (`ZEROLLAMA_RADIX_HYBRID_SEQ_COPY`, default on). Requires **vendor** llama-server (patch 0017). Operator guide: [radix-prefix-share.md](./radix-prefix-share.md).
 
 Smoke: `./scripts/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Block pool: `./scripts/l3_prefix_block_pool_smoke.sh`. Radix: `./scripts/l3_radix_prefix_smoke.sh` (`L3_RADIX_LIVE=1` for live gate). Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py` + `kv/prefix_block_pool.py` + `kv/radix_prefix_share.py`.
 
@@ -338,7 +338,7 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
-**Radix product gaps:** v1 is donor→cold-target seed only — not full RadixAttention, not hybrid copy, not fleet cross-node. See [radix-prefix-share.md — Product gaps](./radix-prefix-share.md#product-gaps) and [ROADMAP L3-R](./ROADMAP.md#radix-v2-l3-r--product-gaps).
+**Radix product gaps (Jun 2026):** L3-R0…R5 shipped — donor seed, warm catch-up, ref-count metadata, Redis block index, hybrid SWA gate. **Still deferred:** llama-level shared KV pages, cross-node KV blob pull, Go scheduler Radix mirror. See [radix-prefix-share.md — Product gaps](./radix-prefix-share.md#product-gaps) and [ROADMAP L3-R](./ROADMAP.md#radix-v2-l3-r--product-gaps).
 
 ```bash
 # CUDA production gate (5080) — recommended:

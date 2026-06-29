@@ -18,6 +18,7 @@ func NewANEDraftABCommand() *cobra.Command {
 	var e2eTelemetry bool
 	var e2eDrive bool
 	var e2eDriveMode string
+	var convDepth int
 
 	cmd := &cobra.Command{
 		Use:    "ane-draft-ab-smoke",
@@ -36,7 +37,7 @@ func NewANEDraftABCommand() *cobra.Command {
 					return fmt.Errorf("invalid --e2e-drive-mode %q (use shadow or force)", e2eDriveMode)
 				}
 			}
-			return discover.RunANEDraftABJSON(c.Context(), os.Stdout, preferred, steps, quick, e2e, e2eTelemetry, driveMode)
+			return discover.RunANEDraftABJSON(c.Context(), os.Stdout, preferred, steps, quick, e2e, e2eTelemetry, driveMode, convDepth)
 		},
 	}
 	cmd.Flags().StringVar(&preferred, "model", "", "Prefer tag or name (e.g. eliza-1-2b-dflash)")
@@ -46,5 +47,6 @@ func NewANEDraftABCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&e2eTelemetry, "e2e-telemetry", false, "Enable B6 golden telemetry on ANE e2e leg (adds overhead)")
 	cmd.Flags().BoolVar(&e2eDrive, "e2e-drive", false, "B7: extract token_embd cache and enable drive mode (default shadow)")
 	cmd.Flags().StringVar(&e2eDriveMode, "e2e-drive-mode", "", "B7 drive mode: shadow (log parity) or force (ANE token replaces Metal sampler)")
+	cmd.Flags().IntVar(&convDepth, "conv-depth", 0, "Cap active ANE conv kernels (1=WEIGHT_FILE only; 0=full manifest chain)")
 	return cmd
 }

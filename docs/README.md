@@ -32,7 +32,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
 * [Runtime env reference](./runtime-env.md) — **why** profiles/YAML/smart defaults beat dozens of `ZEROLLAMA_*` exports; L3, KV, VRAM; `./scripts/runtime_env_doctor.sh`.
 * [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation (in-process + subprocess HTTP).
-* [Cross-slot Radix prefix share](./radix-prefix-share.md) — **why** L3 one-slot-per-key leaves duplicate prefills for shared system prompts; donor slot KV seed via block pool + `POST /kv/seq-copy`; vendor binary + live smoke; **[product gaps](./radix-prefix-share.md#product-gaps)** (v1 vs full RadixAttention).
+* [Cross-slot Radix prefix share](./radix-prefix-share.md) — **why** L3 one-slot-per-key leaves duplicate prefills for shared system prompts; donor KV seed + v2 milestones (warm catch-up, ref-count metadata, Redis LMCache, hybrid SWA gate); vendor `POST /kv/seq-copy`; live smoke; **[product gaps](./radix-prefix-share.md#product-gaps)** (v2 vs full RadixAttention).
 * [Decode graph invalidation](./decode-graph-invalidation.md) — **why** L3 slot clears must break ggml CUDA graphs; epoch + native invalidate + `POST /cuda-graph/invalidate` for subprocess llama-server.
 * [vLLM borrowings (L3)](./vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; env + `cache_salt` / drop-last-block / SWA retention / subprocess graph clear.
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
@@ -62,6 +62,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 ### GPU training & scheduling (repo)
 
 * [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; prompt truncation API fields.
+* [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
 * [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** fast GGUF metadata, manifest guess hooks, scheduler watchdog, concurrency groups, fleet score, manifest hygiene for existing tags; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.

@@ -28,7 +28,7 @@ A single global optimizer (“drain chat, then train all night”) is **roadmap*
 
 1. **VRAM broker** (Go) — proactive unload before loads
 2. **Training GPU monitor** — block/evict inference while training holds the card
-3. **T6 idle-wait + defer queue** — optional “do not start training until inference is quiet”
+3. **T6 idle-wait + defer queue** — optional “do not start training until inference is quiet” ([operator guide](./t6-unified-queue.md))
 
 **Why document this:** operators on a 16 GB card often expect one knob (`OLLAMA_MAX_LOADED_MODELS=1`) to fix everything; these layers address different failure modes (OOM vs 409 vs silent defer).
 

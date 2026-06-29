@@ -49,9 +49,37 @@ def test_find_radix_share_plan_cross_slot(monkeypatch: pytest.MonkeyPatch):
     assert plan.target_slot == 5
     assert plan.copy_tokens == 1024
     assert plan.matched_blocks == 2
+    assert plan.warm_catchup is False
 
 
-def test_find_radix_share_skips_when_target_warm(monkeypatch: pytest.MonkeyPatch):
+def test_find_radix_share_warm_catchup(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
+    scope = build_model_scope(model_hash="m1")
+    pool = get_prefix_block_pool(model_scope=scope)
+    tokens = _tokens(1024)
+    pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=1024,
+        session_key="donor",
+        slot_id=1,
+    )
+    pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=512,
+        session_key="target",
+        slot_id=3,
+    )
+    plan = find_radix_share_plan(tokens, target_slot=3, model_hash="m1", seq_pos=512)
+    assert plan is not None
+    assert plan.warm_catchup is True
+    assert plan.target_seq_pos_before == 512
+    assert plan.copy_tokens == 1024
+    assert plan.source_slot == 1
+
+
+def test_find_radix_share_warm_skips_when_caught_up(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
     scope = build_model_scope(model_hash="m1")
     pool = get_prefix_block_pool(model_scope=scope)
@@ -63,7 +91,39 @@ def test_find_radix_share_skips_when_target_warm(monkeypatch: pytest.MonkeyPatch
         session_key="a",
         slot_id=1,
     )
+    pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=512,
+        session_key="b",
+        slot_id=3,
+    )
     assert find_radix_share_plan(tokens, target_slot=3, model_hash="m1", seq_pos=512) is None
+
+
+def test_find_radix_share_warm_skips_unverified_prefix(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
+    scope = build_model_scope(model_hash="m1")
+    pool = get_prefix_block_pool(model_scope=scope)
+    donor = _tokens(1024)
+    target_partial = _tokens(512, base=2000)
+    pool.register_prefix(
+        donor,
+        scope=scope,
+        seq_pos=1024,
+        session_key="donor",
+        slot_id=1,
+    )
+    pool.register_prefix(
+        target_partial,
+        scope=scope,
+        seq_pos=512,
+        session_key="target",
+        slot_id=3,
+    )
+    assert (
+        find_radix_share_plan(donor, target_slot=3, model_hash="m1", seq_pos=512) is None
+    )
 
 
 def test_find_radix_share_same_slot_no_plan(monkeypatch: pytest.MonkeyPatch):

@@ -31,10 +31,14 @@ func (s *Server) inferenceStatus(ctx context.Context) api.InferenceStatus {
 		ggml.LoadedModelDetails = snap.LoadedModelDetails
 	}
 
+	training := &api.TrainingStatus{
+		QueuePolicy: trainingQueuePolicy(s),
+	}
 	return api.InferenceStatus{
-		Ggml:    ggml,
-		Runtime: runtimeStatusFromHealth(ctx, runtimeHealthProbeRequired()),
-		Backend: inferenceBackendPolicy(),
+		Ggml:     ggml,
+		Runtime:  runtimeStatusFromHealth(ctx, runtimeHealthProbeRequired()),
+		Backend:  inferenceBackendPolicy(),
+		Training: training,
 	}
 }
 

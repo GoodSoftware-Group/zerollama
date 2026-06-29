@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from runtime.env import lmcache_tier_enabled, lmcache_uri
+from runtime.env import lmcache_tier_enabled, lmcache_ttl_sec, lmcache_uri
 
 
 @dataclass(frozen=True)
@@ -129,7 +129,7 @@ class NoOpLMCacheTier:
 
 
 _TIER_LOCK = threading.Lock()
-_TIER: LMCacheTierStore | NoOpLMCacheTier | None = None
+_TIER: LMCacheTierStore | NoOpLMCacheTier | Any | None = None
 
 
 def _safe_dir_name(scope: str) -> str:
@@ -148,7 +148,27 @@ def _resolve_file_root(uri: str) -> Path:
     raise ValueError(f"unsupported LMCache URI scheme: {parsed.scheme}")
 
 
-def lmcache_tier() -> LMCacheTierStore | NoOpLMCacheTier:
+def _create_tier_store(uri: str) -> Any:
+    parsed = urlparse(uri)
+    scheme = parsed.scheme or "file"
+    if scheme in ("", "file"):
+        return LMCacheTierStore(_resolve_file_root(uri))
+    if scheme in ("redis", "rediss"):
+        # WHY Redis (L3-R4): fleet nodes share block index without NFS; KV blobs
+        # remain on each host's llama-server slot files — metadata-only tier.
+        from dataclasses import replace
+
+        from runtime.kv.lmcache_redis import RedisLMCacheTierStore, parse_redis_uri
+
+        cfg = parse_redis_uri(uri)
+        ttl = lmcache_ttl_sec()
+        if ttl is not None:
+            cfg = replace(cfg, ttl_sec=ttl)
+        return RedisLMCacheTierStore(cfg, uri=uri)
+    raise ValueError(f"unsupported LMCache URI scheme: {scheme}")
+
+
+def lmcache_tier() -> Any:
     global _TIER
     if _TIER is not None:
         return _TIER
@@ -158,7 +178,7 @@ def lmcache_tier() -> LMCacheTierStore | NoOpLMCacheTier:
         if not lmcache_tier_enabled():
             _TIER = NoOpLMCacheTier()
         else:
-            _TIER = LMCacheTierStore(_resolve_file_root(lmcache_uri()))
+            _TIER = _create_tier_store(lmcache_uri())
         return _TIER
 
 

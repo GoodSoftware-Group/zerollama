@@ -65,6 +65,56 @@ func MaterializeANEDraftWeightFile(entry ANEDraftEntry, tensorName string) (path
 	return cachePath, false, nil
 }
 
+// MaterializeANEDraftMatmulWeightFile extracts blk.0 ffn_gate [inCh×outCh] for ANE draft matmul kernel.
+func MaterializeANEDraftMatmulWeightFile(entry ANEDraftEntry, tensorName string, inCh, outCh int) (path string, cached bool, err error) {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return "", false, fmt.Errorf("draft sidecar GGUF missing for %s", entry.Tag)
+	}
+	if strings.TrimSpace(tensorName) == "" {
+		tensorName = "blk.0.ffn_gate.weight"
+	}
+	if inCh <= 0 {
+		inCh, _ = DraftANEProxyDims(entry.EmbeddingLength)
+	}
+	if outCh <= 0 {
+		outCh = inCh
+	}
+	cachePath := aneDraftWeightCachePath(draftPath, inCh, tensorName) + fmt.Sprintf(".mm%dx%d.v2.bin", inCh, outCh)
+	wantSize := int64(draftMILMatmulWeightBlobBytes(inCh, outCh))
+
+	sidecarStat, err := os.Stat(draftPath)
+	if err != nil {
+		return "", false, err
+	}
+	if cacheStat, err := os.Stat(cachePath); err == nil {
+		if cacheStat.Size() == wantSize && !cacheStat.ModTime().Before(sidecarStat.ModTime()) {
+			return cachePath, true, nil
+		}
+	}
+
+	blob, _, err := ExtractProxyMatmulWeightBlob(draftPath, tensorName, inCh, outCh)
+	if err != nil {
+		return "", false, err
+	}
+	if int64(len(blob)) != wantSize {
+		return "", false, fmt.Errorf("matmul blob size %d != expected %d", len(blob), wantSize)
+	}
+	dir := filepath.Dir(cachePath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", false, err
+	}
+	tmp := cachePath + ".tmp"
+	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
+		return "", false, err
+	}
+	if err := os.Rename(tmp, cachePath); err != nil {
+		_ = os.Remove(tmp)
+		return "", false, err
+	}
+	return cachePath, false, nil
+}
+
 func aneDraftWeightCacheDir() string {
 	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_CACHE")); v != "" {
 		return v

@@ -20,9 +20,9 @@ vLLM’s **RadixAttention** solves this with a content-addressed block pool and 
 
 | Full Radix (deferred) | Zerollama v1 (shipped) |
 |-----------------------|-------------------------|
-| Ref-counted block DAG across arbitrary request overlap | Single contiguous donor chain per target |
-| Remote LMCache / Mooncake tiers | Local `file://` metadata tier only |
-| Partial block copy on all memory types | Full-sequence `seq_cp` on llama-server; hybrid memory skipped in engine |
+| Ref-count block DAG | **Partial (L3-R3)** — multi-holder metadata + best donor; physical KV still one `seq_cp` per seed |
+| Remote LMCache / Mooncake tiers | **`redis://` metadata (L3-R4)**; blob federation still local slot files |
+| Partial block copy on all memory types | Full-sequence `seq_cp`; **Gemma-style hybrid (L3-R5)** when prefix ≤ SWA window; attn+recurrent still conservative |
 
 **Why v1 is enough for agents:** most agent fleets repeat one large system prompt across many conversation IDs. Donor→target seed removes the dominant prefill cost without a full scheduler rewrite.
 
@@ -34,33 +34,51 @@ vLLM’s **RadixAttention** solves this with a content-addressed block pool and 
 Turn 1 — Agent A (key A → slot 0)
   prefill → complete → register_prefix_block_pool(slot=0)
 
-Turn 2 — Agent B (key B → slot 2), same token prefix, cold slot
+Turn 2 — Agent B (key B → slot 2), same token prefix
   prefix_cache_admission()
         │
         ├─ prefix_block_pool.find_donor_slot_prefix() → donor slot 0
+        ├─ radix_seq_copy_allowed() — hybrid/SWA gate (L3-R5)
         ├─ execute_radix_share_plan() → llama_memory_seq_cp or POST /kv/seq-copy
         ├─ bump_decode_graph_epoch(target, reason=radix_cross_slot_seed)
         ├─ record_radix_share() → JSONL trace event radix_seed
         └─ resume_pos = copy_tokens → decode only the suffix
+
+Warm target (L3-R2): when slot 2 already holds ``[0, seq_pos)`` but donor matched
+further, ``verify_target_slot_prefix`` then copy ``[0, donor_matched)`` (full
+seq-copy clears target first — redundant tail re-copy is acceptable).
 ```
 
 **WHY block pool first:** Radix seed without hash verification would copy stale KV when the client silently changes the system prompt. The pool denies `cache_prompt` on `prefix_block_hash_mismatch` before any cross-slot copy is considered.
 
-**WHY decode-graph bump after copy:** ggml CUDA graphs key by topology, not sequence id. Seeding slot 2 from slot 0 changes KV without clearing captured graphs → wrong logits on CUDA. See [decode-graph-invalidation.md](./decode-graph-invalidation.md).
+### Radix v2 track (L3-R2–R5) — Jun 2026
+
+**Why a v2 track:** v1 Radix solved the dominant agent case (cold target, same system prompt, different cache keys) but left four operator-visible gaps vs vLLM RadixAttention. Each milestone closes one gap without rewriting the Go scheduler or llama.cpp KV allocator.
+
+| Milestone | What shipped | WHY it mattered |
+|-----------|--------------|-----------------|
+| **L3-R2** Warm catch-up | `verify_target_slot_prefix`, donor search with `min_matched=target_pos` | Agent threads often extend a shared prefix on a warm slot while another slot already prefilled further — v1 skipped all `seq_pos > 0` targets |
+| **L3-R3** Ref-count metadata | `holder_slots`, `release_slot_holders`, `_best_donor_from_chain` | Two slots registering the same block hash broke donor pick (short vs full overlap); vLLM ref-counts blocks — we ref-count metadata first |
+| **L3-R4** Redis LMCache | `lmcache_redis.py` (stdlib RESP), `ZEROLLAMA_LMCACHE_URI=redis://…` | Fleet restarts and cold nodes lost block index on local disk only; Redis federates **metadata** (KV blobs still per-host slot files) |
+| **L3-R5** Hybrid Radix | `radix_seq_copy_policy.py`, `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | v1 blanket-skipped all `kind=hybrid`; Gemma-style full+SWA layouts are safe when copy ≤ SWA window — attn+recurrent (LFM2) keeps operator kill-switch |
+
+**Still deferred after L3-R5:** llama-level shared KV pages (not metadata-only), NIXL/Mooncake blob pull, Go scheduler Radix mirror, `DecodeGraphCache.lookup` capture stub. See [Product gaps](#product-gaps).
 
 ---
 
-## Enable
 
 **One-liner (agents):** `ZEROLLAMA_L3_PROFILE=agent` loads `runtime/configs/l3_agent_subprocess.yaml` (`n_parallel=4`, `l3.radix_share=true`). Env overrides any YAML field. Live smoke: `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh`.
 
 | Variable | Default | WHY |
 |----------|---------|-----|
 | `ZEROLLAMA_RADIX_PREFIX_SHARE` | `0` | Master switch; auto-enables prefix block pool |
+| `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | `1` | Allow hybrid GGUF `seq_cp` when copy fits SWA window (L3-R5); `0` = conservative skip |
 | `ZEROLLAMA_PREFIX_BLOCK_POOL` | `0` (or implied by radix) | Hash-chained block index + verification |
 | `ZEROLLAMA_PREFIX_CACHE_BLOCK_SIZE` | `512` | Block granularity; use `64` in smokes so short prompts register blocks |
 | `ZEROLLAMA_PREFIX_CACHE_TRACE` | off | Records `radix_seed` JSONL events |
-| `ZEROLLAMA_LMCACHE_TIER` | `0` | Optional `file://` metadata tier (not remote LMCache) |
+| `ZEROLLAMA_LMCACHE_URI` | — | `file://…` or `redis://host:6379/0` — prefix block metadata tier |
+| `ZEROLLAMA_LMCACHE_TTL_SEC` | — | Optional Redis key TTL (seconds) |
+| `ZEROLLAMA_LMCACHE_TIER` | *(deprecated)* | Alias for URI-only enable; prefer `ZEROLLAMA_LMCACHE_URI` |
 
 **Prerequisites:**
 
@@ -132,11 +150,17 @@ curl -s :8081/health | jq '.llama_cache.prefix_block_pool, .kv_resume.prefix_blo
 
 ---
 
-## Hybrid / recurrent models
+## Hybrid / SWA models (L3-R5)
 
-**WHY skip:** `llama_memory_seq_cp` on hybrid/recurrent layouts (e.g. some LFM2 paths) can abort or corrupt logits. The engine returns `{"skipped": "hybrid_memory_seq_cp_unsupported"}` when `KVCacheSpec.kind == hybrid`.
+**WHY gated:** True attn+recurrent memory (some LFM2 paths) can abort or corrupt `llama_memory_seq_cp`. Gemma-style **hybrid** GGUF layouts (full + SWA layers) are allowed when the donor copy fits the coordinated SWA window.
 
-Block pool verification still runs; only the KV seed step is skipped. Use a **full-KV transformer** GGUF to gate `radix_seed` in live smokes.
+| Skip reason | Meaning |
+|-------------|---------|
+| `hybrid_seq_copy_disabled` | `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY=0` |
+| `hybrid_prefix_exceeds_swa_window` | `copy_tokens` > `effective_window` |
+| `hybrid_swa_denied` | Coordinator/window policy rejects prompt at target position |
+
+Block pool verification still runs when copy is skipped. Live smokes warn (soft-pass) when a hybrid model produces no `radix_seed`; full-KV models hard-gate `radix_seed`.
 
 ---
 
@@ -159,6 +183,7 @@ Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, p
 |------|------|
 | `runtime/runtime/kv/radix_prefix_share.py` | Donor plan from block pool |
 | `runtime/runtime/kv/radix_seq_copy.py` | in-process ctypes + subprocess HTTP |
+| `runtime/runtime/kv/radix_seq_copy_policy.py` | Hybrid/SWA `seq_cp` admission (L3-R5) |
 | `runtime/runtime/kv/prefix_block_pool.py` | Hash chain + `find_donor_slot_prefix()` |
 | `runtime/runtime/engine.py` | `_prefix_cache_admission()` → `_apply_radix_prefix_share()` |
 | `runtime/runtime/prefix_cache_trace.py` | `record_radix_share()` |
@@ -175,10 +200,10 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 | Item | WHY deferred |
 |------|----------------|
 | Full RadixAttention ref-count pool | Needs scheduler + block DAG; v1 proves donor seed value |
-| Remote LMCache / Mooncake | Local `file://` tier only today |
+| Remote LMCache / Mooncake | **`redis://` metadata (L3-R4)**; KV blobs remain per-node slot files |
 | Partial-range seq_cp on hybrid memory | Upstream llama.cpp assert on non-full buffers |
 | In-process multiseq + LFM2 Radix | Metal crash on partial copy; prefer subprocess + full-KV models |
-| Warm-target partial catch-up | v1 only seeds **cold** targets (`seq_pos == 0`); warm slots skip Radix plan |
+| Warm-target partial catch-up | **Done (L3-R2)** — target with verified partial KV catches up when donor matched > `seq_pos`; full seq-copy (clear+recopy) |
 | 5080 live Radix gate | **PASS (Jun 2026)** — eliza-1 9B @ CT 1564: donor **10.6s** → target **0.66s**, `radix_seed` 128 tok |
 | Fleet / cross-node donor | Donor must live in the **same** llama-server process (`n_parallel` slots) |
 
@@ -193,7 +218,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 | Capability | v1 behavior | WHY this shape |
 |------------|---------------|----------------|
 | Donor selection | Longest hash-matched **contiguous** chain from prompt start | Matches dominant agent pattern (shared system prompt prefix); avoids scheduler rewrite |
-| Target state | **Cold slot only** (`seq_pos == 0`, no resume) | Copy semantics are “seed empty KV”; warm partial merge needs ref-count DAG (v2) |
+| Target state | **Cold** or **warm behind donor** | Cold: seed empty KV. Warm (L3-R2): verify target slot owns prefix blocks, copy when donor matched > `seq_pos` |
 | Process boundary | Same llama-server / in-process ctx only | `seq_cp` is in-process memory; no cross-node KV handoff without remote tier |
 | Verification | Prefix block pool **before** copy | Without hash chain, silent prompt drift would copy stale logits |
 | Post-copy | Decode-graph epoch bump on target | ggml CUDA graphs ignore sequence id — seeded KV without invalidation → wrong logits |
@@ -203,11 +228,11 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 
 | Gap | User impact | WHY deferred |
 |-----|-------------|--------------|
-| **Ref-count block DAG** | No arbitrary partial overlap across many concurrent requests; one donor chain per cold target | Full RadixAttention needs block allocator + scheduler integration in Go and Python |
-| **Warm-target catch-up** | Target slot with partial KV cannot “sync up” to shared prefix via Radix | Requires merge policy + partial `seq_cp` semantics not defined in v1 |
-| **Hybrid / recurrent GGUF** | Block pool verifies; **`seq_cp` skipped** | `llama_memory_seq_cp` aborts or corrupts on hybrid layouts (LFM2, etc.) |
+| **Ref-count block DAG** | Multiple slots can reference the same block hash | **Done (L3-R3 metadata)** — `holder_slots`, `release_slot_holders`, best-donor pick; not llama-level shared KV pages |
+| **Warm-target catch-up** | Target with partial KV syncs when donor has longer shared prefix | **Done (L3-R2)** — `verify_target_slot_prefix` + skip target-owned blocks in donor search |
+| **Hybrid / recurrent GGUF** | **Gemma-style hybrid (L3-R5):** `seq_cp` when copy ≤ SWA window; attn+recurrent: set `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY=0` | True recurrent memory can still abort `seq_cp`; operator kill-switch retained |
 | **Partial-range copy** | API `pos_end` is metadata; server copies **full sequence** | Partial `p1` ranges abort on several llama.cpp KV backends today |
-| **Remote LMCache / Mooncake / NIXL** | Only local `file://` block **metadata** tier | Remote blob federation needs connector + fleet routing — not agent-local v1 |
+| **Remote LMCache / NIXL blobs** | **`redis://` block index (L3-R4)** | Cross-node KV blob pull + Mooncake/NIXL still deferred |
 | **Fleet Radix** | Management node does not route by shared-prefix residency | Session-key affinity + L3 slots cover most single-node agent threads; fleet layer is warm-model first |
 | **Cross-node donor** | Donor on node A cannot seed target on node B | KV lives in process VRAM; remote tier would need blob pull + load path |
 | **Go-side Radix** | All logic in Python engine admission | Go scheduler lacks block pool + live slot KV visibility on decode path |
@@ -220,7 +245,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 | Offline pytest + plan replay | CI / any host | **PASS** | Default `./scripts/l3_radix_prefix_smoke.sh` |
 | Live two-key smoke | **Mac Metal** (vendor llama-server) | **PASS** | `L3_RADIX_LIVE=1`; donor slot 0 → target 2; `radix_seed` 128 tokens; target ~0.52s vs donor ~8.83s |
 | Live two-key smoke | **CUDA 5080** | **Pending** | Same-key L3 signed off; add `L3_RADIX_LIVE=1` to 5080 session when operator runs cross-slot gate |
-| Hybrid model live | — | **N/A** | Use full-KV transformer GGUF for Radix gates |
+| Hybrid model live | — | **Soft-pass** | Short prompts within SWA window may `radix_seed`; smoke warns when absent |
 
 **WHY Mac live first:** agent profile + vendor subprocess path was debugged on Darwin (`cli.py` L3 profile fix, patch doctor). 5080 re-run is operational validation, not new architecture.
 
@@ -229,7 +254,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 1. **`ZEROLLAMA_L3_PROFILE=agent`** or `ZEROLLAMA_RADIX_PREFIX_SHARE=1`
 2. **`n_parallel > 1`** — Radix needs multiple slots in one server
 3. **Vendor llama-server** with patch **0017** — `./scripts/llama_patch_doctor.sh`
-4. **Full-KV transformer** for live smokes — hybrid models skip copy
+4. **Hybrid GGUF** — Radix may seed when prefix ≤ SWA window; full-KV still hard-gates `radix_seed` in smokes
 5. **Distinct cache keys, same system prompt** — same key uses same-slot L3, not Radix
 6. **Cold second thread** — turn 1 on key B after turn 1 on key A completed on donor slot
 
@@ -238,8 +263,8 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 See [ROADMAP — Radix v2 (L3-R)](./ROADMAP.md#radix-v2-l3-r--product-gaps). Suggested order:
 
 1. **L3-R1** — ~~5080 live Radix gate in sign-off table~~ **Done (Jun 2026)**
-2. **L3-R2** — Warm-target partial catch-up when `0 < seq_pos < donor_matched`
-3. **L3-R3** — Ref-count block pool + scheduler hooks (full RadixAttention parity)
-4. **L3-R4** — Remote LMCache connector + fleet prefix metadata
-5. **L3-R5** — Hybrid-memory copy path (upstream or model-specific)
+2. **L3-R2** — ~~Warm-target partial catch-up~~ **Done (Jun 2026)**
+3. **L3-R3** — ~~Ref-count block pool + best donor~~ **Done (Jun 2026)** — multi-holder metadata; llama-level shared KV pages still deferred
+4. **L3-R4** — ~~Remote LMCache connector~~ **Done (Jun 2026)** — `redis://` metadata
+5. **L3-R5** — ~~Hybrid-memory copy path~~ **Done (Jun 2026)** — `radix_seq_copy_policy`; SWA-window gated `seq_cp`
 

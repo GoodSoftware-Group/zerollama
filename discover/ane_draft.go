@@ -169,6 +169,14 @@ func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraft
 		entry.ProxyChannels = info.ProxyChannels
 		entry.ProxySpatial = info.ProxySpatial
 	}
+	if entry.DraftSidecarPresent && draftPath != "" {
+		if dinfo, err := ProbeANEDraftGGUF(draftPath, ""); err == nil && dinfo.EmbeddingLength > 0 {
+			entry.EmbeddingLength = dinfo.EmbeddingLength
+			if entry.Architecture == "" {
+				entry.Architecture = dinfo.Architecture
+			}
+		}
+	}
 	return entry, true, nil
 }
 

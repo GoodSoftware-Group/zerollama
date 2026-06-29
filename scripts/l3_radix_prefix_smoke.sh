@@ -360,8 +360,8 @@ if pool2.get("entry_count", 0) <= 0:
 if not radix_events:
     if hybrid_model:
         print(
-            "warn: hybrid KV model — radix seq_cp skipped by policy "
-            "(block pool live OK; use a full-KV model to gate radix_seed)",
+            "warn: hybrid KV model — no radix_seed "
+            "(seq_cp may be denied by SWA window or donor mismatch; block pool live OK)",
             flush=True,
         )
     else:

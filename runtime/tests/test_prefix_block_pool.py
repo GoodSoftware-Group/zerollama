@@ -141,3 +141,47 @@ def test_lmcache_tier_persists_and_hydrates(tmp_path, monkeypatch: pytest.Monkey
 
 def test_prefix_block_pool_disabled_by_default():
     assert prefix_block_pool_enabled() is False
+
+
+def test_multi_holder_ref_count(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    scope = build_model_scope(model_hash="model1")
+    pool = get_prefix_block_pool(model_scope=scope)
+    tokens = _tokens(1024)
+    pool.register_prefix(
+        tokens, scope=scope, seq_pos=1024, session_key="a", slot_id=1
+    )
+    pool.register_prefix(
+        tokens, scope=scope, seq_pos=1024, session_key="b", slot_id=2
+    )
+    h = pool.health(scope=scope)
+    assert h["multi_holder_blocks"] == 2
+    assert pool.release_slot_holders(1) == 0
+    assert pool.health(scope=scope)["multi_holder_blocks"] == 0
+    found = pool.find_donor_slot_prefix(
+        tokens, scope=scope, target_slot=5, min_matched=0
+    )
+    assert found is not None
+    assert found[0] == 2
+    assert found[1] == 1024
+
+
+def test_best_donor_picks_longest_chain(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
+    scope = build_model_scope(model_hash="m1")
+    pool = get_prefix_block_pool(model_scope=scope)
+    tokens = _tokens(1024)
+    pool.register_prefix(
+        tokens, scope=scope, seq_pos=512, session_key="short", slot_id=1
+    )
+    pool.register_prefix(
+        tokens, scope=scope, seq_pos=1024, session_key="full", slot_id=2
+    )
+    from runtime.kv.radix_prefix_share import find_radix_share_plan
+
+    plan = find_radix_share_plan(tokens, target_slot=5, model_hash="m1", seq_pos=0)
+    assert plan is not None
+    assert plan.source_slot == 2
+    assert plan.copy_tokens == 1024
+

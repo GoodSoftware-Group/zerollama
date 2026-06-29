@@ -2417,6 +2417,7 @@ func NewCLI() *cobra.Command {
 	aneDraftMILExtractCmd := NewANEDraftMILExtractCommand()
 	aneDraftMILBundleCmd := NewANEDraftMILBundleCommand()
 	aneDraftABCmd := NewANEDraftABCommand()
+	aneDraftParityCmd := NewANEDraftParityCommand()
 	anePrefillBenchCmd := NewANEPrefillBenchCommand()
 	anePrefillHandoffCmd := NewANEPrefillHandoffSmokeCommand()
 	aneModelResolveCmd := NewANEModelResolveCommand()
@@ -2512,6 +2513,7 @@ func NewCLI() *cobra.Command {
 		aneDraftMILExtractCmd,
 		aneDraftMILBundleCmd,
 		aneDraftABCmd,
+		aneDraftParityCmd,
 		anePrefillBenchCmd,
 		anePrefillHandoffCmd,
 		aneModelResolveCmd,

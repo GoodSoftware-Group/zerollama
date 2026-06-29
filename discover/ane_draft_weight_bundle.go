@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -64,6 +65,56 @@ func (m ANEDraftWeightManifest) Conv3WeightPath() string {
 	return ""
 }
 
+// Conv4WeightPath returns the optional fourth conv proxy (B9 ffn_down) when present.
+func (m ANEDraftWeightManifest) Conv4WeightPath() string {
+	for _, w := range m.Weights {
+		if w.Slot == "proxy_conv_w3" || w.Role == "conv_w3" {
+			return w.Path
+		}
+	}
+	return ""
+}
+
+// Conv5WeightPath returns the optional fifth conv proxy (B10 blk.1 ffn_gate) when present.
+func (m ANEDraftWeightManifest) Conv5WeightPath() string {
+	for _, w := range m.Weights {
+		if w.Slot == "proxy_conv_w4" || w.Role == "conv_w4" {
+			return w.Path
+		}
+	}
+	return ""
+}
+
+// Conv6WeightPath returns the optional sixth conv proxy (B11 blk.1 ffn_up) when present.
+func (m ANEDraftWeightManifest) Conv6WeightPath() string {
+	for _, w := range m.Weights {
+		if w.Slot == "proxy_conv_w5" || w.Role == "conv_w5" {
+			return w.Path
+		}
+	}
+	return ""
+}
+
+// Conv7WeightPath returns the optional seventh conv proxy (B12 blk.1 attn_gate) when present.
+func (m ANEDraftWeightManifest) Conv7WeightPath() string {
+	for _, w := range m.Weights {
+		if w.Slot == "proxy_conv_w6" || w.Role == "conv_w6" {
+			return w.Path
+		}
+	}
+	return ""
+}
+
+// Conv8WeightPath returns the optional eighth conv proxy (B13 blk.1 ffn_down) when present.
+func (m ANEDraftWeightManifest) Conv8WeightPath() string {
+	for _, w := range m.Weights {
+		if w.Slot == "proxy_conv_w7" || w.Role == "conv_w7" {
+			return w.Path
+		}
+	}
+	return ""
+}
+
 // GammaWeightPath returns the optional RMS-norm gamma blob for conv output scaling.
 func (m ANEDraftWeightManifest) GammaWeightPath() string {
 	for _, w := range m.Weights {
@@ -104,7 +155,7 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 		if !manifestStat.ModTime().Before(sidecarStat.ModTime()) {
 			var cached ANEDraftWeightManifest
 			data, err := os.ReadFile(manifestPath)
-			if err == nil && json.Unmarshal(data, &cached) == nil && cached.ConvWeightPath() != "" && cached.Version >= 5 {
+			if err == nil && json.Unmarshal(data, &cached) == nil && cached.ConvWeightPath() != "" && cached.Version >= 10 {
 				return cached, true, nil
 			}
 		}
@@ -159,6 +210,66 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 		})
 		manifest.Version = 5
 		manifest.Note = "B8 v5: gate+up+attn_gate triple conv1 chain (lab proxy toward block0)"
+	}
+
+	if conv4Path, _, err := MaterializeANEDraftWeightFile(entry, conv4TensorForEntry(entry)); err == nil && conv4Path != "" {
+		manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
+			Slot:   "proxy_conv_w3",
+			Role:   "conv_w3",
+			Tensor: conv4TensorForEntry(entry),
+			Path:   conv4Path,
+			Bytes:  draftMILWeightBlobBytes(ch),
+		})
+		manifest.Version = 6
+		manifest.Note = "B9 v6: gate+up+attn_gate+ffn_down quad conv1 chain (block0 lab proxy)"
+	}
+
+	if conv5Path, _, err := MaterializeANEDraftWeightFile(entry, conv5TensorForEntry(entry)); err == nil && conv5Path != "" {
+		manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
+			Slot:   "proxy_conv_w4",
+			Role:   "conv_w4",
+			Tensor: conv5TensorForEntry(entry),
+			Path:   conv5Path,
+			Bytes:  draftMILWeightBlobBytes(ch),
+		})
+		manifest.Version = 7
+		manifest.Note = "B10 v7: block0 quad + blk.1 ffn_gate pent conv1 chain"
+	}
+
+	if conv6Path, _, err := MaterializeANEDraftWeightFile(entry, conv6TensorForEntry(entry)); err == nil && conv6Path != "" {
+		manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
+			Slot:   "proxy_conv_w5",
+			Role:   "conv_w5",
+			Tensor: conv6TensorForEntry(entry),
+			Path:   conv6Path,
+			Bytes:  draftMILWeightBlobBytes(ch),
+		})
+		manifest.Version = 8
+		manifest.Note = "B11 v8: block0 quad + blk.1 gate/up hex conv1 chain"
+	}
+
+	if conv7Path, _, err := MaterializeANEDraftWeightFile(entry, conv7TensorForEntry(entry)); err == nil && conv7Path != "" {
+		manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
+			Slot:   "proxy_conv_w6",
+			Role:   "conv_w6",
+			Tensor: conv7TensorForEntry(entry),
+			Path:   conv7Path,
+			Bytes:  draftMILWeightBlobBytes(ch),
+		})
+		manifest.Version = 9
+		manifest.Note = "B12 v9: block0 quad + blk.1 gate/up/attn_gate hept conv1 chain"
+	}
+
+	if conv8Path, _, err := MaterializeANEDraftWeightFile(entry, conv8TensorForEntry(entry)); err == nil && conv8Path != "" {
+		manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
+			Slot:   "proxy_conv_w7",
+			Role:   "conv_w7",
+			Tensor: conv8TensorForEntry(entry),
+			Path:   conv8Path,
+			Bytes:  draftMILWeightBlobBytes(ch),
+		})
+		manifest.Version = 10
+		manifest.Note = "B13 v10: block0 quad + blk.1 full quad oct conv1 chain"
 	}
 
 	for _, normTensor := range []string{"blk.0.ffn_norm.weight", "blk.0.attn_norm.weight"} {
@@ -235,7 +346,22 @@ func MaterializeANEDraftWeightBundleWithDrive(entry ANEDraftEntry, forceDrive bo
 	if err != nil {
 		return manifest, cached, err
 	}
-	if manifest.Conv3WeightPath() != "" {
+	if manifest.Conv8WeightPath() != "" {
+		manifest.Version = 10
+		manifest.Note = "B13 v10 + B7 drive token_embd argmax head"
+	} else if manifest.Conv7WeightPath() != "" {
+		manifest.Version = 9
+		manifest.Note = "B12 v9 + B7 drive token_embd argmax head"
+	} else if manifest.Conv6WeightPath() != "" {
+		manifest.Version = 8
+		manifest.Note = "B11 v8 + B7 drive token_embd argmax head"
+	} else if manifest.Conv5WeightPath() != "" {
+		manifest.Version = 7
+		manifest.Note = "B10 v7 + B7 drive token_embd argmax head"
+	} else if manifest.Conv4WeightPath() != "" {
+		manifest.Version = 6
+		manifest.Note = "B9 v6 + B7 drive token_embd argmax head"
+	} else if manifest.Conv3WeightPath() != "" {
 		manifest.Version = 5
 		manifest.Note = "B8 v5 + B7 drive token_embd argmax head"
 	} else {
@@ -283,9 +409,85 @@ func conv3TensorForEntry(entry ANEDraftEntry) string {
 	return DefaultProxyConv3Tensor()
 }
 
+func conv4TensorForEntry(entry ANEDraftEntry) string {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return DefaultProxyConv4Tensor()
+	}
+	if t, _, err := ResolveProxyConv4TensorForSidecar(draftPath); err == nil {
+		return t
+	}
+	return DefaultProxyConv4Tensor()
+}
+
+func conv5TensorForEntry(entry ANEDraftEntry) string {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return DefaultProxyConv5Tensor()
+	}
+	if t, _, err := ResolveProxyConv5TensorForSidecar(draftPath); err == nil {
+		return t
+	}
+	return DefaultProxyConv5Tensor()
+}
+
+func conv6TensorForEntry(entry ANEDraftEntry) string {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return DefaultProxyConv6Tensor()
+	}
+	if t, _, err := ResolveProxyConv6TensorForSidecar(draftPath); err == nil {
+		return t
+	}
+	return DefaultProxyConv6Tensor()
+}
+
+func conv7TensorForEntry(entry ANEDraftEntry) string {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return DefaultProxyConv7Tensor()
+	}
+	if t, _, err := ResolveProxyConv7TensorForSidecar(draftPath); err == nil {
+		return t
+	}
+	return DefaultProxyConv7Tensor()
+}
+
+func conv8TensorForEntry(entry ANEDraftEntry) string {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return DefaultProxyConv8Tensor()
+	}
+	if t, _, err := ResolveProxyConv8TensorForSidecar(draftPath); err == nil {
+		return t
+	}
+	return DefaultProxyConv8Tensor()
+}
+
 func envTruthy(v string) bool {
 	v = strings.TrimSpace(strings.ToLower(v))
 	return v == "1" || v == "true" || v == "yes" || v == "on" || v == "force" || v == "shadow"
+}
+
+// ManifestConvCount returns how many conv proxy weights are in the manifest (1..7).
+func ManifestConvCount(m ANEDraftWeightManifest) int {
+	n := 0
+	for _, fn := range []func() string{
+		m.ConvWeightPath, m.Conv2WeightPath, m.Conv3WeightPath, m.Conv4WeightPath,
+		m.Conv5WeightPath, m.Conv6WeightPath, m.Conv7WeightPath, m.Conv8WeightPath,
+	} {
+		if fn() != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// ApplyConvDepthEnv sets ZEROLLAMA_ANE_DRAFT_CONV_DEPTH when depth > 0 (cap active ANE kernels).
+func ApplyConvDepthEnv(out map[string]string, depth int) {
+	if depth > 0 {
+		out["ZEROLLAMA_ANE_DRAFT_CONV_DEPTH"] = strconv.Itoa(depth)
+	}
 }
 
 // ExportEnvForManifest returns env vars for llama-server in-process ANE session init.
@@ -306,6 +508,21 @@ func ExportEnvForManifest(m ANEDraftWeightManifest, manifestPath string) map[str
 	}
 	if conv3 := m.Conv3WeightPath(); conv3 != "" {
 		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3"] = conv3
+	}
+	if conv4 := m.Conv4WeightPath(); conv4 != "" {
+		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4"] = conv4
+	}
+	if conv5 := m.Conv5WeightPath(); conv5 != "" {
+		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5"] = conv5
+	}
+	if conv6 := m.Conv6WeightPath(); conv6 != "" {
+		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6"] = conv6
+	}
+	if conv7 := m.Conv7WeightPath(); conv7 != "" {
+		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7"] = conv7
+	}
+	if conv8 := m.Conv8WeightPath(); conv8 != "" {
+		out["ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8"] = conv8
 	}
 	if gamma := m.GammaWeightPath(); gamma != "" {
 		out["ZEROLLAMA_ANE_DRAFT_GAMMA_FILE"] = gamma

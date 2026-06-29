@@ -145,6 +145,81 @@ func float32ToFloat16BitsToFloat32(h uint16) uint32 {
 	}
 }
 
+func TestExtractMatmulRectLayout(t *testing.T) {
+	// GGUF ffn_gate [in=4, out=6]: y[o] = sum_i x[i]*W[i,o]
+	rows, cols, inCh, outCh := 4, 6, 3, 3
+	raw := make([]byte, rows*cols*4)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			v := float32(float64(r*10+c) + 0.5)
+			binary.LittleEndian.PutUint32(raw[(r*cols+c)*4:], math.Float32bits(v))
+		}
+	}
+	tensor := &ggml.Tensor{
+		Name:  "blk.0.ffn_gate.weight",
+		Kind:  uint32(ggml.TensorTypeF32),
+		Shape: []uint64{uint64(rows), uint64(cols)},
+	}
+	out, err := ExtractMatmulRectFP16(raw, tensor, inCh, outCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// MIL layout W[ic,oc] at ic*outCh+oc: W[0,0]=gguf[0,0]
+	want := float32(0.5)
+	got := math.Float32frombits(float32ToFloat16BitsToFloat32(binary.LittleEndian.Uint16(out[0:2])))
+	if math.Abs(float64(got-want)) > 1e-3 {
+		t.Fatalf("W[0,0] = %v want %v", got, want)
+	}
+	// W[0,1]=gguf[0,1]=1.5 at index 0*3+1
+	want = float32(1.5)
+	got = math.Float32frombits(float32ToFloat16BitsToFloat32(binary.LittleEndian.Uint16(out[(0*outCh+1)*2 : (0*outCh+1)*2+2])))
+	if math.Abs(float64(got-want)) > 1e-2 {
+		t.Fatalf("W[0,1] = %v want %v", got, want)
+	}
+	// W[1,0]=gguf[1,0]=10.5 at index 1*3+0
+	want = float32(10.5)
+	got = math.Float32frombits(float32ToFloat16BitsToFloat32(binary.LittleEndian.Uint16(out[(1*outCh+0)*2 : (1*outCh+0)*2+2])))
+	if math.Abs(float64(got-want)) > 1e-2 {
+		t.Fatalf("W[1,0] = %v want %v", got, want)
+	}
+}
+
+func TestExtractMatmulRectFFNDown(t *testing.T) {
+	// Llama ffn_down [n_ff, n_embd] — must not use shape[0]<=shape[1] transpose heuristic.
+	rows, cols, inCh, outCh := 2688, 768, 256, 768
+	raw := make([]byte, rows*cols*4)
+	for r := 0; r < inCh; r++ {
+		for c := 0; c < outCh; c++ {
+			v := float32(float64(r)*0.01 + float64(c)*0.001)
+			binary.LittleEndian.PutUint32(raw[(r*cols+c)*4:], math.Float32bits(v))
+		}
+	}
+	tensor := &ggml.Tensor{
+		Name:  "blk.0.ffn_down.weight",
+		Kind:  uint32(ggml.TensorTypeF32),
+		Shape: []uint64{uint64(rows), uint64(cols)},
+	}
+	out, err := ExtractMatmulRectFP16(raw, tensor, inCh, outCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := float32(0.0)
+	got := math.Float32frombits(float32ToFloat16BitsToFloat32(binary.LittleEndian.Uint16(out[0:2])))
+	if math.Abs(float64(got-want)) > 1e-3 {
+		t.Fatalf("W[0,0] = %v want %v", got, want)
+	}
+	want = float32(0.001)
+	got = math.Float32frombits(float32ToFloat16BitsToFloat32(binary.LittleEndian.Uint16(out[(0*outCh+1)*2 : (0*outCh+1)*2+2])))
+	if math.Abs(float64(got-want)) > 1e-3 {
+		t.Fatalf("W[0,1] = %v want %v", got, want)
+	}
+	want = float32(0.01)
+	got = math.Float32frombits(float32ToFloat16BitsToFloat32(binary.LittleEndian.Uint16(out[(1*outCh+0)*2 : (1*outCh+0)*2+2])))
+	if math.Abs(float64(got-want)) > 1e-3 {
+		t.Fatalf("W[1,0] = %v want %v", got, want)
+	}
+}
+
 func TestExtractTopLeftSquareBF16(t *testing.T) {
 	rows, cols, ch := 4, 6, 3
 	raw := make([]byte, rows*cols*2)

@@ -62,6 +62,38 @@
 
 **Open (B7):** `ZEROLLAMA_ANE_DRAFT_DRIVE=shadow|force` — ANE conv output → host tied-embed argmax → draft token (`shadow` logs parity, `force` replaces Metal sampler). **Force baseline (2B, Jun 2026):** ~27% draft token acceptance vs Metal, ~35–68% e2e overhead — conv proxy is not dflash; B8 subgraph expansion required.
 
+**Matmul path (P1–P3, Jun 2026):** Prefer `ane-draft-parity-smoke` over the 8-conv chain — lower overhead, real FFN weights.
+
+| Phase | ANE chain | CPU step | Parity metric |
+|-------|-----------|----------|---------------|
+| **P1** | `h @ ffn_gate` (768→256) | — | `golden_cosine` / `hidden_cos` ≈ 1.0 |
+| **P2** | gate → SiLU → `silu(g) @ ffn_up` (256→768) | SiLU on gate | same |
+| **P3** | gate + up from `h`, CPU `silu(g)*u`, then `@ ffn_down` (256→768) | SwiGLU multiply | same; **3 ANE evals** per handoff |
+| **P4** | P3 + `@ attn_gate` (768→256) | — | `mode=matmul_chain4` golden cos; **4 ANE evals**; B7 drive still uses ffn_down 768-d stash |
+| **P5** | P4 + `@ ssm_out` from ffn_down (768→256) | — | `mode=matmul_chain5`; **5 ANE evals**; stride **12** default |
+
+```bash
+# P3 parity (default matmul kernel, shadow hidden metrics only)
+LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
+  ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
+
+# P3 token shadow (tied-embed argmax on ffn_down out + hidden_cos)
+LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
+  ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --token-shadow
+
+# P3 force drive (ANE token replaces Metal sampler)
+LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
+  ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --force
+
+# P1/P2 baseline (explicit chain; skips auto P3 when FILE3 materialized)
+ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=1 ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
+ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2 ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
+```
+
+**P3 lab (M4 Max, stride=8 default, async eval):** `shadow_hidden_cos=1.0`, `golden_cosine=1.0`, hook+shadow overhead ~**0–7%** vs Metal-only dflash (quick runs are noisy; use `--telemetry` for golden_cos).
+
+**P3 at stride=4** (override `ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE=4`): hook ~**7%** — use when validating per-step handoff parity.
+
 ---
 
 ## Operator commands
@@ -112,11 +144,25 @@ LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
 | `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2` | — | B6 second conv (`ffn_up` slice); **dual conv1 kernels** when set (chained conv2 MIL fails compile). |
 | `ZEROLLAMA_ANE_DRAFT_GAMMA_FILE` | — | Host-side norm gamma multiply before ANE — **why:** MIL `conv×gamma` broadcast failed compile. |
 | `ZEROLLAMA_ANE_DRAFT_WEIGHT_MANIFEST` | — | JSON manifest from `ane-draft-mil-bundle`. |
-| `ZEROLLAMA_ANE_DRAFT_DRIVE` | `0` | B7 lab: `shadow` logs ANE vs Metal token; `force` uses ANE tied-embed argmax token. |
+| `ZEROLLAMA_ANE_DRAFT_DRIVE` | `0` | B7 lab: `shadow` logs ANE vs Metal token; `force` uses ANE tied-embed argmax token. Matmul+shadow skips tied-embed (see `DRIVE_METRICS`). |
+| `ZEROLLAMA_ANE_DRAFT_DRIVE_METRICS` | — | `hidden` (default matmul shadow) — `hidden_cos` only, no embed mmap. `tokens` or `both` — load tied-embed for token shadow/force on P3 `ffn_down` output. |
 | `ZEROLLAMA_ANE_DRAFT_DRIVE_VOCAB_CAP` | `8192` (when drive on) | Limit host argmax scan for lab speed (full vocab ~248k is slow). |
 | `ZEROLLAMA_ANE_DRAFT_TOKEN_EMBD_FILE` | — | B7 mmap tied-embed cache from `ane-draft-mil-bundle` manifest v4. |
 | `ZEROLLAMA_ANE_DRAFT_TELEMETRY` | `0` | Log CPU golden vs ANE output per step — validates bridge, not draft quality yet. |
-| `ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE` | `1` | Run handoff every N decode steps — **why:** per-step ANE adds ~10–22% e2e overhead on 2B; stride 2 for A/B legs. |
+| `ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE` | `2` conv / `4` P1–P2 / `8` P3–P4 / `12` P5 matmul | Handoff every N decode steps (Go A/B default per chain depth). |
+| `ZEROLLAMA_ANE_DRAFT_CONV_DEPTH` | `0` (unlimited) | Cap compiled conv kernels (`1` = `WEIGHT_FILE` only). **Why:** faster A/B when full v9 chain is materialized but you only want B8/B9 depth. |
+| `ZEROLLAMA_ANE_DRAFT_KERNEL` | `conv` | `matmul` — gate (+ optional chain2 up). Static MIL may fail; auto-falls back to **dynamic MIL**. |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN` | auto | `1`–`5`; P5 auto when `WEIGHT_FILE5` (`ssm_out`) materialized. `3`/`4` pin P3/P4. |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5` | — | P5 matmul: `blk.0.ssm_out.weight` (768×256 slice). Conv path uses FILE5 for blk.1 gate. |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_OC5` | — | P5 ssm_out output channels. |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4` | — | P4 matmul: `blk.0.attn_gate.weight` (768×256). Conv path uses FILE4 for `ffn_down` — do not mix. |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_OC4` | — | P4 attn_gate output channels (Go A/B sets from sidecar dims). |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2` | — | P2/P3: `blk.0.ffn_up.weight` matmul blob. |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3` | — | P3: `blk.0.ffn_down.weight` matmul blob (256×768). |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_OC2` / `OC3` | — | Up/down output channels (Go A/B sets from sidecar dims). |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_SEQ` | `16` | Matmul spatial; **min 16** at ic=oc=256 (ANE MIL eval floor). |
+| `ZEROLLAMA_ANE_DRAFT_EVAL_ASYNC` | matmul on | After IOSurface pack, queue P1–P3 ANE eval on a serial GCD queue (overlaps with next Metal decode). `eval_sync()` before the next pack or force-drive read. Set `0` to block in handoff (~2× hook overhead on M4 Max lab). |
+| `ane-draft-parity-smoke` | — | Hidden CLI: matmul + shadow metrics on lab port 11435. JSON: **`hook_overhead_pct`** (handoff+eval only) vs **`shadow_overhead_pct`** (includes B7 tied-embed scan). |
 | `ZEROLLAMA_ANE_LAB_PORT` | `11435` | Keeps e2e A/B off production `:11434`. |
 | `ANE_REPO` | `~/Sites/inference/ane` | maderix bridge checkout for `libane_bridge.dylib`. |
 | `LLAMA_SERVER_BIN` | auto | **Why set explicitly:** vendor tree binary may be wrong arch; sibling build has ANE hook. |
@@ -131,6 +177,9 @@ Default: `~/.cache/zerollama/ane-draft-weights/`
 |--------------|---------------|-----|
 | `drafter-*-{ch}-blk_0_ffn_gate_weight.v3.weight.bin` | `blk.0.ffn_gate.weight` | Lab conv proxy — top-left block transposed `[out,in]` + maderix blob header. |
 | `drafter-*-{ch}-blk_0_ffn_up_weight.v3.weight.bin` | `blk.0.ffn_up.weight` | B6 second conv in subgraph expansion. |
+| `drafter-*-768-blk_0_ffn_gate_weight.v3.weight.bin.mm768x256.v2.bin` | `blk.0.ffn_gate.weight` | P1–P3 matmul gate (768×256 FP16 blob). |
+| `drafter-*-768-blk_0_ffn_up_weight.v3.weight.bin.mm768x256.v2.bin` | `blk.0.ffn_up.weight` | P3 matmul up (768×256). |
+| `drafter-*-256-blk_0_ffn_down_weight.v3.weight.bin.mm256x768.v2.bin` | `blk.0.ffn_down.weight` | P3 matmul down (256×768). |
 | `drafter-*-{ch}-blk_0_attn_norm_weight.v3.weight.bin` | norm gamma | B3 host-side scale before conv. |
 | `drafter-*-{ch}-manifest.json` | — | Bundle version + paths for `ExportEnvForManifest`. |
 

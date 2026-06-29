@@ -19,6 +19,52 @@ All notable changes to this project are documented in this file. The format is b
 - **Scripts** — `install_stable_diffusion.sh`, `sd_external_image.sh`, `register_sd_models.sh`; `install_openvino_diffusion.sh`, `ov_image_generate.py`, `ov_external_image.sh`, `register_ov_models.sh`; `build_zerollama_a380.sh`, `install_a380_llama_server.sh`, `zerollama-a380.service`.
 - **Doc:** [sd-vulkan-a380.md](docs/sd-vulkan-a380.md), [sd-openvino-a380.md](docs/sd-openvino-a380.md), [a380-runbook.md](docs/a380-runbook.md), [bench-cache.md](docs/bench-cache.md), [multimodal-backends.md](docs/multimodal-backends.md).
 
+### Radix v2 track (L3-R2–L3-R5) — Jun 2026
+
+**Why:** Cross-slot Radix v1 (donor→cold target) closed the main agent-fleet prefill gap but left four vLLM RadixAttention gaps: warm targets behind donors, overlapping block registrations, fleet metadata federation, and Gemma-style hybrid models. Each milestone adds admission-layer logic only — physical KV pages and cross-node blobs stay deferred.
+
+Doc: [radix-prefix-share.md](docs/radix-prefix-share.md), [ROADMAP L3-R](docs/ROADMAP.md#radix-v2-l3-r--product-gaps).
+
+### Radix warm-target catch-up (L3-R2) — Jun 2026
+
+**Why:** Agent threads sometimes hold partial KV on a cache key while another slot already prefilled the full shared system prompt. v1 Radix skipped any target with `seq_pos > 0`, forcing redundant prefill on the tail.
+
+- **`find_radix_share_plan`** — warm catch-up when donor matched > target `seq_pos`; `verify_target_slot_prefix` ensures target slot owns prefix block metadata.
+- **`PrefixBlockPool.find_donor_slot_prefix`** — skip target-owned block entries while walking hash chain to find a longer donor.
+- **`engine._prefix_cache_admission`** — Radix runs on warm slots; trace adds `warm_catchup` / `target_seq_pos_before`.
+
+### Radix ref-count block DAG (L3-R3) — Jun 2026
+
+**Why:** Two slots can register the same prefix block hash after independent prefills. v1 stored a single `slot_id` per entry — donor search picked the wrong chain when overlaps were partial (short donor vs full donor) and eviction could drop metadata another slot still needed.
+
+- **`PrefixBlockEntry.holder_slots`** — ref-counted multi-slot holders per block hash; `release_slot_holders()` for slot teardown.
+- **`_best_donor_from_chain`** — picks donor with longest contiguous prefix from token 0 across holder sets (warm skip segments still count).
+- **Eviction** — prefer removing entries with zero holders; health exposes `multi_holder_blocks`.
+
+### Remote LMCache tier (L3-R4) — Jun 2026
+
+**Why:** Fleet nodes need a shared prefix block index after restart or on a cold node — local `file://` does not federate across hosts. KV blobs remain on each host's llama-server slot files; Redis carries **metadata only** until NIXL/Mooncake blob pull ships.
+
+- **`redis://` LMCache backend** — `runtime/kv/lmcache_redis.py` (stdlib RESP GET/SET/PING; no redis-py dependency).
+- **`ZEROLLAMA_LMCACHE_URI=redis://host:6379/0`** — optional **`ZEROLLAMA_LMCACHE_TTL_SEC`** for key expiry.
+- **Block pool** — hydrates donor metadata from Redis on lookup (same contract as file tier).
+
+### Hybrid-memory Radix (L3-R5) — Jun 2026
+
+**Why:** v1 skipped all hybrid `seq_cp`, blocking Gemma-style SWA models whose copied prefix fits the coordinated window. True attn+recurrent memory (some LFM2 paths) can still abort `seq_cp` — operators keep `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY=0` until live-probed.
+
+- **`radix_seq_copy_policy.py`** — `radix_seq_copy_allowed(spec, plan)`; hybrid allowed when copy ≤ SWA window and `swa_allows_cache_prompt` passes.
+- **`ZEROLLAMA_RADIX_HYBRID_SEQ_COPY`** — default on; set `0` for conservative skip on attn+recurrent probes.
+- **Engine** — policy-driven skip reasons replace blanket `hybrid_memory_seq_cp_unsupported`.
+
+### T6 unified queue — operator smoke + status (Jun 2026)
+
+**Why:** T6 policy (idle-wait, defer queue, allowed window, cross-queue FIFO) was implemented but lacked a single operator runbook and regression smoke.
+
+- **`docs/t6-unified-queue.md`** — env table, priority matrix, defer/window/FIFO, production checklist, code map.
+- **`scripts/e2e_t6_queue_smoke.sh`** — offline Go + pytest; optional live `/api/status` + runtime `/health` fifo fields.
+- **`GET /api/status`** — `inference.training.queue_policy` exposes configured T6 gates and live defer depth.
+
 ### Production serve wrapper (`~/bin/serve.sh`) — Jun 2026
 
 **Why:** CT 1564 operators copied `scripts/serve_gpu_example.sh` verbatim to `~/bin/serve.sh`. That script resolves repo root as `dirname(BASH_SOURCE)/..`, which becomes **`$HOME`** when the file lives in `~/bin` — not `~/zerollama`. Result: `sched_watchdog_env.sh`, `training_uv_venv.sh`, and `PYTHONPATH` never load; `zerollama serve` exits immediately or embed fails with `ModuleNotFoundError: uvicorn` while the operator sees an idle screen (logs go nowhere unless `SERVE_LOG` is set).

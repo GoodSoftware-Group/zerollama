@@ -1244,11 +1244,31 @@ type RuntimeStatus struct {
 	State       string `json:"state,omitempty"`
 }
 
+// TrainingQueuePolicy summarizes T6 training submit gates on GET /api/status.
+type TrainingQueuePolicy struct {
+	WaitInferenceIdle       bool   `json:"wait_inference_idle"`
+	WaitGgmlLoaded          bool   `json:"wait_ggml_loaded"`
+	WaitFailClosed          bool   `json:"wait_fail_closed"`
+	QueueOnBusy             bool   `json:"queue_on_busy"`
+	AllowedWindow           string `json:"allowed_window,omitempty"`
+	AllowedWindowEnabled    bool   `json:"allowed_window_enabled"`
+	AllowedWindowMisconfigured bool  `json:"allowed_window_misconfigured,omitempty"`
+	CrossQueueFifo          bool   `json:"cross_queue_fifo"`
+	DeferWaiting            int    `json:"defer_waiting,omitempty"`
+	DeferTracked            int    `json:"defer_tracked,omitempty"`
+}
+
+// TrainingStatus is the training-side snapshot on GET /api/status.
+type TrainingStatus struct {
+	QueuePolicy TrainingQueuePolicy `json:"queue_policy"`
+}
+
 // InferenceStatus summarizes local inference load for fleet management polling.
 type InferenceStatus struct {
-	Ggml    GgmlStatus    `json:"ggml"`
-	Runtime RuntimeStatus `json:"runtime"`
-	Backend BackendPolicy `json:"backend"`
+	Ggml     GgmlStatus     `json:"ggml"`
+	Runtime  RuntimeStatus  `json:"runtime"`
+	Backend  BackendPolicy  `json:"backend"`
+	Training *TrainingStatus `json:"training,omitempty"`
 }
 
 // BackendPolicy describes Phase 16/17 local GGUF routing for GET /api/status.
