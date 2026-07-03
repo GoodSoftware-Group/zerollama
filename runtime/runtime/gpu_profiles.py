@@ -13,6 +13,7 @@ Loads JSON under ``runtime/configs/gpu/``, selects a profile by:
 
 - **NVIDIA** — ``nvidia-smi`` name or VRAM bucket (``single_gpu.yaml`` /
   ``dual_4090.yaml`` only).
+- **Intel Arc (Vulkan)** — ``vulkaninfo`` device name or ``ZEROLLAMA_GPU_PROFILE_ID``.
 - **Apple Silicon** — ``hw.memsize`` tier (``apple_silicon.yaml`` only).
 
 Merges sanitized flags into ``RuntimeConfig`` and ``llama_server_args()``.
@@ -28,6 +29,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -297,6 +301,52 @@ def select_apple_silicon_profile(*, fork_enabled: bool = False) -> SelectedGpuPr
     )
 
 
+def detect_vulkan_gpu_name(main_gpu: int = 0) -> str | None:
+    """Best-effort Vulkan device name (Intel Arc, etc.) via vulkaninfo."""
+    if not shutil.which("vulkaninfo"):
+        return None
+    try:
+        out = subprocess.check_output(
+            ["vulkaninfo", "--summary"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names: list[str] = []
+    for line in out.splitlines():
+        m = re.search(r"deviceName\s*=\s*(.+)", line)
+        if not m:
+            continue
+        name = m.group(1).strip()
+        if "llvmpipe" in name.lower() or "lavapipe" in name.lower():
+            continue
+        names.append(name)
+    if not names:
+        return None
+    idx = max(0, min(main_gpu, len(names) - 1))
+    return names[idx]
+
+
+def select_vulkan_gpu_profile(*, main_gpu: int = 0, fork_enabled: bool = False) -> SelectedGpuProfile | None:
+    name = detect_vulkan_gpu_name(main_gpu)
+    if not name:
+        return None
+    matched = match_gpu_config_by_name(name)
+    if matched is None:
+        return None
+    flags, cache_fb = flags_from_gpu_config(matched, fork_enabled=fork_enabled)
+    return SelectedGpuProfile(
+        id=str(matched.get("id", "vulkan")),
+        name=str(matched.get("name", name)),
+        source="match",
+        flags=flags,
+        cache_types_fallback=cache_fb,
+        runtime_kv=_runtime_kv_from_config(matched),
+    )
+
+
 def select_nvidia_gpu_profile(*, main_gpu: int = 0, fork_enabled: bool = False) -> SelectedGpuProfile | None:
     """Match NVIDIA GPU by name or VRAM bucket (no Apple Silicon fallback)."""
     name = detect_nvidia_gpu_name(main_gpu)
@@ -344,6 +394,10 @@ def select_gpu_profile(*, main_gpu: int = 0, fork_enabled: bool = False) -> Sele
     if profile is not None:
         return profile
 
+    profile = select_vulkan_gpu_profile(main_gpu=main_gpu, fork_enabled=fork_enabled)
+    if profile is not None:
+        return profile
+
     if sys.platform == "darwin":
         return select_apple_silicon_profile(fork_enabled=fork_enabled)
     return None
@@ -363,6 +417,39 @@ def _select_profile_for_config(
         return select_apple_silicon_profile(fork_enabled=fork_enabled)
     if name in ("single_gpu.yaml", "dual_4090.yaml"):
         return select_nvidia_gpu_profile(main_gpu=main_gpu, fork_enabled=fork_enabled)
+    if name == "arc_a380.yaml":
+        forced = os.environ.get("ZEROLLAMA_GPU_PROFILE_ID", "").strip()
+        if forced:
+            try:
+                cfg = load_gpu_config(forced)
+            except KeyError:
+                cfg = None
+            if cfg is not None:
+                flags, cache_fb = flags_from_gpu_config(cfg, fork_enabled=fork_enabled)
+                return SelectedGpuProfile(
+                    id=str(cfg.get("id", forced)),
+                    name=str(cfg.get("name", forced)),
+                    source="env",
+                    flags=flags,
+                    cache_types_fallback=cache_fb,
+                    runtime_kv=_runtime_kv_from_config(cfg),
+                )
+        profile = select_vulkan_gpu_profile(main_gpu=main_gpu, fork_enabled=fork_enabled)
+        if profile is not None:
+            return profile
+        try:
+            cfg = load_gpu_config("arc-a380")
+            flags, cache_fb = flags_from_gpu_config(cfg, fork_enabled=fork_enabled)
+            return SelectedGpuProfile(
+                id=str(cfg.get("id", "arc-a380")),
+                name=str(cfg.get("name", "Intel Arc A380")),
+                source="platform",
+                flags=flags,
+                cache_types_fallback=cache_fb,
+                runtime_kv=_runtime_kv_from_config(cfg),
+            )
+        except KeyError:
+            return None
     return select_gpu_profile(main_gpu=main_gpu, fork_enabled=fork_enabled)
 
 
@@ -492,6 +579,23 @@ def maybe_apply_gpu_profile(
     main_gpu = int(getattr(config, "main_gpu", 0) or 0)
     bin_path = _resolve_llama_server_bin(config)
     fork_on = llama_fork_enabled(llama_server_bin=bin_path)
+    forced_id = os.environ.get("ZEROLLAMA_GPU_PROFILE_ID", "").strip()
+    if forced_id:
+        try:
+            cfg = load_gpu_config(forced_id)
+            flags, cache_fb = flags_from_gpu_config(cfg, fork_enabled=fork_on)
+            selected = SelectedGpuProfile(
+                id=str(cfg.get("id", forced_id)),
+                name=str(cfg.get("name", forced_id)),
+                source="env",
+                flags=flags,
+                cache_types_fallback=cache_fb,
+                runtime_kv=_runtime_kv_from_config(cfg),
+            )
+            apply_profile_to_config(config, selected, emit=emit, fork_enabled=fork_on)
+            return
+        except KeyError:
+            pass
     selected = _select_profile_for_config(
         config_path, main_gpu=main_gpu, fork_enabled=fork_on
     )

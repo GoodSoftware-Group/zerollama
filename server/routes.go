@@ -3342,7 +3342,7 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 }
 
 // handleExternalImageGenerate runs modality_backends.image=external-image via OLLAMA_EXTERNAL_IMAGE_BIN.
-func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateRequest, checkpointStart time.Time) {
+func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateRequest, cfg model.ConfigV2, checkpointStart time.Time) {
 	if req.Prompt == "" {
 		c.JSON(http.StatusOK, api.GenerateResponse{
 			Model:      req.Model,
@@ -3353,6 +3353,14 @@ func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateReq
 		return
 	}
 	w, h := req.Width, req.Height
+	if ig := cfg.ImageGeneration; ig != nil {
+		if w <= 0 && ig.Width > 0 {
+			w = int32(ig.Width)
+		}
+		if h <= 0 && ig.Height > 0 {
+			h = int32(ig.Height)
+		}
+	}
 	if w <= 0 {
 		w = 512
 	}
@@ -3371,7 +3379,7 @@ func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateReq
 		}
 	}
 	loadStart := time.Now()
-	pngData, err := modality.GenerateExternalImage(c.Request.Context(), req.Prompt, w, h, seed)
+	pngData, err := modality.GenerateExternalImage(c.Request.Context(), cfg, req.Prompt, w, h, seed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3428,8 +3436,8 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 		return
 	}
 
-	if modality.BackendFor(m.Config, model.ModalityImage) == model.BackendExternalImage {
-		s.handleExternalImageGenerate(c, req, checkpointStart)
+	if modality.IsExternalImageBackend(modality.BackendFor(m.Config, model.ModalityImage)) {
+		s.handleExternalImageGenerate(c, req, m.Config, checkpointStart)
 		return
 	}
 

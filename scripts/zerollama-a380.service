@@ -1,0 +1,36 @@
+# Install on Intel Arc A380 hosts (systemd):
+#   ./scripts/build_zerollama_a380.sh
+#   sudo cp zerollama /usr/bin/zerollama
+#   sudo ./scripts/install_a380_llama_server.sh
+#   sudo cp scripts/zerollama-a380.service /etc/systemd/system/zerollama.service
+#   sudo ln -sf /usr/bin/zerollama /usr/bin/ollama
+#   sudo systemctl daemon-reload && sudo systemctl enable --now zerollama
+#   sudo systemctl disable --now ollama
+#
+# WHY two trees: zerollama (Go) + vendor llama-server (eliza @ LLAMA_CPP_COMMIT + patches).
+# Upstream /usr/lib/ollama lacks fork KV types (TBQ/QJL); install uses /usr/lib/ollama-zerollama.
+[Unit]
+Description=Zerollama Service (Ollama-compatible, Vulkan)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/zerollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+EnvironmentFile=-/etc/zerollama/a380-llama.env
+Environment="PATH=/sbin:/bin:/usr/sbin:/usr/bin"
+Environment="OLLAMA_MODELS=/usr/share/ollama/.ollama/models"
+Environment="OLLAMA_VULKAN=1"
+Environment="GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1"
+Environment="OLLAMA_LLM_LIBRARY=vulkan"
+Environment="OLLAMA_HOST=192.168.255.105:11434"
+Environment="OLLAMA_TRAINING=false"
+Environment="ZEROLLAMA_RUNTIME_EMBED=off"
+Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_CONTEXT_LENGTH=4096"
+
+[Install]
+WantedBy=multi-user.target

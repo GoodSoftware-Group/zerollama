@@ -1,0 +1,23 @@
+# Intel Arc A380 (6 GB GDDR6, Vulkan / Mesa ANV). Autoconfig when ZEROLLAMA_RUNTIME_CONFIG points here.
+# WHY separate from single_gpu.yaml: no NVIDIA NVML; production inference is ggml Vulkan, not CUDA llama-server.
+# Research: ~/bmtl/asm_lab/lanes/arc-a380 — partial num_gpu / -ngl cliff, load_ms tax, Q8_0 fixtures.
+# Disable L1: ZEROLLAMA_GPU_PROFILE=0. Force profile: ZEROLLAMA_GPU_PROFILE_ID=arc-a380.
+# Doc: docs/a380-runbook.md
+device_count: 1
+tensor_parallel: 1
+split_mode: layer
+main_gpu: 0
+llama_parallel_slots: 1
+llama_profile:
+  enabled: true
+kv:
+  block_size: 16
+  num_blocks_per_device: 512
+speculative:
+  method: none
+vram:
+  min_free: 512MiB
+  training_reserve: 0GiB
+  estimate_factor_autotune: auto
+  probe_calibrate: auto
+  clamp_num_ctx: auto

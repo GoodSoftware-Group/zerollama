@@ -17,9 +17,44 @@ import (
 
 // Entry is one benchmark result keyed by model digest.
 type Entry struct {
-	Model     string    `json:"model"`      // display name at bench time; not used for lookup
-	TokPerSec float64   `json:"tok_per_sec"` // generation decode only (EvalCount/EvalDuration)
-	BenchedAt time.Time `json:"benched_at"`  // audit; future TTL could use this
+	Model     string    `json:"model"`                 // display name at bench time; not used for lookup
+	Kind      string    `json:"kind,omitempty"`        // completion | image | video_gen
+	TokPerSec float64   `json:"tok_per_sec,omitempty"` // completion decode only (EvalCount/EvalDuration)
+	GenSec    float64   `json:"gen_sec,omitempty"`     // image/video wall seconds per generation
+	BenchedAt time.Time `json:"benched_at"`            // audit; future TTL could use this
+}
+
+// PerfString formats the ls/bench summary metric for this entry.
+// WHY one formatter: ListHandler uses a single PERF column; kind selects tok/s vs seconds.
+func (e Entry) PerfString() string {
+	switch e.Kind {
+	case "image", "video_gen":
+		if e.GenSec > 0 {
+			return fmt.Sprintf("%.0fs", e.GenSec)
+		}
+	default:
+		if e.TokPerSec > 0 {
+			return fmt.Sprintf("%.1f", e.TokPerSec)
+		}
+	}
+	// Legacy entries without kind
+	if e.GenSec > 0 {
+		return fmt.Sprintf("%.0fs", e.GenSec)
+	}
+	if e.TokPerSec > 0 {
+		return fmt.Sprintf("%.1f", e.TokPerSec)
+	}
+	return "--"
+}
+
+// Cached returns true when this entry has a usable benchmark for its kind.
+func (e Entry) Cached() bool {
+	switch e.Kind {
+	case "image", "video_gen":
+		return e.GenSec > 0
+	default:
+		return e.TokPerSec > 0 || e.GenSec > 0
+	}
 }
 
 // Cache maps model digest to benchmark entry.

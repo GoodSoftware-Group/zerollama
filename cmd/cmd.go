@@ -896,6 +896,8 @@ func PushHandler(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// ListHandler prints the model table with a PERF column from ~/.ollama/bench.json.
+// PERF shows tok/s (completion) or seconds (image/video_gen); "--" when never benched.
 func ListHandler(cmd *cobra.Command, args []string) error {
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
@@ -913,29 +915,32 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 	benchEntries, _ := benchcache.Load()
 
 	for _, m := range models.Models {
-		// Hide remote catalog stubs (e.g. Eliza cloud); LM Studio caches are local.
-		if m.RemoteModel != "" && !strings.EqualFold(m.RemoteHost, "lmstudio") {
+		// Hide remote completion-only catalog stubs (Eliza cloud); keep image/video_gen routes
+		// and LM Studio caches visible. WHY: operators need zerollama ls to show sd15-vulkan
+		// plus cloud image backends without dumping the full cloud catalog.
+		if !listShowsRemoteCatalogEntry(m) {
 			continue
 		}
-		if len(args) == 0 || strings.HasPrefix(strings.ToLower(m.Name), strings.ToLower(args[0])) {
-			size := format.HumanBytes(m.Size)
-
-			digest := m.Digest
-			if len(digest) > 12 {
-				digest = digest[:12]
-			}
-
-			tokStr := "--"
-			if e, ok := benchEntries[m.Digest]; ok && e.TokPerSec > 0 {
-				tokStr = fmt.Sprintf("%.1f", e.TokPerSec)
-			}
-
-			data = append(data, []string{m.Name, digest, size, listParameterSummary(m.Details), tokStr, format.HumanTime(m.ModifiedAt, "Never")})
+		if !listMatchesFilter(m, args) {
+			continue
 		}
+		size := format.HumanBytes(m.Size)
+
+		digest := m.Digest
+		if len(digest) > 12 {
+			digest = digest[:12]
+		}
+
+		tokStr := "--"
+		if e, ok := benchEntries[m.Digest]; ok {
+			tokStr = e.PerfString()
+		}
+
+		data = append(data, []string{m.Name, digest, size, listParameterSummary(m.Details), tokStr, format.HumanTime(m.ModifiedAt, "Never")})
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "ID", "SIZE", "PARAMS", "TOK/S", "MODIFIED"})
+	table.SetHeader([]string{"NAME", "ID", "SIZE", "PARAMS", "PERF", "MODIFIED"})
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 	table.SetAlignment(tablewriter.ALIGN_LEFT)
 	table.SetHeaderLine(false)
@@ -946,6 +951,36 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 	table.Render()
 
 	return nil
+}
+
+// listShowsRemoteCatalogEntry filters Eliza cloud catalog noise from zerollama ls.
+// WHY: hundreds of remote completion stubs clutter operator view; local sd15-vulkan and
+// cloud image/video routes must remain visible. LM Studio imports always show.
+func listShowsRemoteCatalogEntry(m api.ListModelResponse) bool {
+	if m.RemoteModel == "" {
+		return true
+	}
+	if strings.EqualFold(m.RemoteHost, "lmstudio") {
+		return true
+	}
+	return slices.Contains(m.Capabilities, model.CapabilityImage) ||
+		slices.Contains(m.Capabilities, model.CapabilityVideoGen)
+}
+
+// listMatchesFilter supports name prefix or capability keywords (image, video_gen).
+// WHY capability filter: zerollama ls image lists local Vulkan/OpenVINO tags plus cloud image routes.
+func listMatchesFilter(m api.ListModelResponse, args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	arg := strings.ToLower(args[0])
+	switch arg {
+	case string(model.CapabilityImage):
+		return slices.Contains(m.Capabilities, model.CapabilityImage)
+	case "video_gen", "video-gen":
+		return slices.Contains(m.Capabilities, model.CapabilityVideoGen)
+	}
+	return strings.HasPrefix(strings.ToLower(m.Name), arg)
 }
 
 func listParameterSummary(details api.ModelDetails) string {

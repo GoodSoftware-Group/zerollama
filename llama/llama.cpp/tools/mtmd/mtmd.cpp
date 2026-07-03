@@ -32,7 +32,7 @@ struct mtmd_bitmap {
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
     bool has_grid_hint = false;
-    int32_t grid_thw[3] = {0, 0, 0}; // optional SGLang patch grid [T,H,W] per frame
+    int32_t grid_thw[3] = {0, 0, 0};
 };
 
 // position indexing for decoder model
@@ -666,38 +666,6 @@ void mtmd_free(mtmd_context * ctx) {
     delete ctx;
 }
 
-// Apply SGLang grid_thw [1,H,W]: resize to W*patch x H*patch and skip smart_resize.
-static bool mtmd_try_grid_hint_preprocess(
-        mtmd_context * ctx,
-        clip_image_u8 & img_u8,
-        const mtmd_bitmap * bitmap,
-        clip_image_f32_batch & batch_f32) {
-    if (ctx == nullptr || bitmap == nullptr || !bitmap->has_grid_hint) {
-        return false;
-    }
-    if (ctx->pos_type != MTMD_POS_TYPE_MROPE || ctx->ctx_v == nullptr || ctx->image_preproc == nullptr) {
-        return false;
-    }
-    const int T = bitmap->grid_thw[0];
-    const int H = bitmap->grid_thw[1];
-    const int W = bitmap->grid_thw[2];
-    if (T != 1 || H <= 0 || W <= 0) {
-        return false;
-    }
-    const int patch = clip_get_patch_size(ctx->ctx_v);
-    if (patch <= 0) {
-        return false;
-    }
-    if (!mtmd_image_apply_grid_hint_resize(img_u8, bitmap->grid_thw, patch)) {
-        return false;
-    }
-    LOG_INF("%s: grid_thw hint resize (patch=%d grid=[%d,%d,%d]) -> %dx%d\n",
-            __func__,
-            patch, T, H, W,
-            img_u8.nx, img_u8.ny);
-    return ctx->image_preproc->encode_u8_f32(img_u8, batch_f32);
-}
-
 struct mtmd_tokenizer {
     mtmd_context * ctx;
     std::vector<const mtmd_bitmap *> bitmaps;
@@ -829,12 +797,9 @@ struct mtmd_tokenizer {
             img_u8->buf.resize(bitmap->data.size());
             std::memcpy(img_u8->buf.data(), bitmap->data.data(), img_u8->nx * img_u8->ny * 3);
 
-            // preprocess image (grid_thw hint bypasses smart_resize on M-RoPE models)
+            // preprocess image
             clip_image_f32_batch batch_f32;
-            bool ok = mtmd_try_grid_hint_preprocess(ctx, *img_u8, bitmap, batch_f32);
-            if (!ok) {
-                ok = ctx->image_preproc->preprocess(*img_u8, batch_f32);
-            }
+            bool ok = ctx->image_preproc->preprocess(*img_u8, batch_f32);
             if (!ok) {
                 LOG_ERR("Unable to preprocess image\n");
                 return 2;
@@ -1261,27 +1226,13 @@ void mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id) {
 }
 
 void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t grid_thw[3]) {
-    if (bitmap == nullptr || grid_thw == nullptr) {
+    if (!bitmap || !grid_thw) {
         return;
     }
     bitmap->grid_thw[0] = grid_thw[0];
     bitmap->grid_thw[1] = grid_thw[1];
     bitmap->grid_thw[2] = grid_thw[2];
-    bitmap->has_grid_hint = grid_thw[0] > 0 && grid_thw[1] > 0 && grid_thw[2] > 0;
-}
-
-bool mtmd_bitmap_has_grid_hint(const mtmd_bitmap * bitmap) {
-    return bitmap != nullptr && bitmap->has_grid_hint;
-}
-
-bool mtmd_bitmap_get_grid_hint(const mtmd_bitmap * bitmap, int32_t grid_thw[3]) {
-    if (bitmap == nullptr || grid_thw == nullptr || !bitmap->has_grid_hint) {
-        return false;
-    }
-    grid_thw[0] = bitmap->grid_thw[0];
-    grid_thw[1] = bitmap->grid_thw[1];
-    grid_thw[2] = bitmap->grid_thw[2];
-    return true;
+    bitmap->has_grid_hint = true;
 }
 
 void mtmd_bitmap_free(mtmd_bitmap * bitmap) {

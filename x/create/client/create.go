@@ -27,7 +27,7 @@ import (
 )
 
 // MinOllamaVersion is the minimum Ollama version required for safetensors models.
-const MinOllamaVersion = "0.19.0"
+const MinOllamaVersion = "0.30.11"
 
 // ModelfileConfig holds configuration extracted from a Modelfile.
 type ModelfileConfig struct {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/types/model"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -55,6 +56,38 @@ func elizaCloudDisplayName(id string) string {
 		return id + "-cloud"
 	}
 	return id + ":cloud"
+}
+
+// inferElizaCloudCapabilities tags remote catalog rows so CLI can surface image/video routes
+// without listing every completion-only cloud stub in zerollama ls.
+//
+// WHY heuristic on model id: Eliza catalog returns hundreds of chat models; operators on
+// local-only plans still need to discover cloud image endpoints (e.g. *-image) when enabled.
+// Local sd15-vulkan tags use manifest capabilities — this path is for remote catalog merge only.
+func inferElizaCloudCapabilities(id string) []model.Capability {
+	lower := strings.ToLower(id)
+	var caps []model.Capability
+	if isElizaCloudImageGenID(lower) {
+		caps = append(caps, model.CapabilityImage)
+	}
+	return caps
+}
+
+func isElizaCloudImageGenID(id string) bool {
+	markers := []string{
+		"-image",
+		"/lyria-",
+		"dall-e",
+		"stable-diffusion",
+		"/flux-",
+		"z-image",
+	}
+	for _, m := range markers {
+		if strings.Contains(id, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeElizaCloudModels appends remote Eliza models to local listings when cloud is enabled.
@@ -172,14 +205,15 @@ func fetchElizaModelListFromNetwork(ctx context.Context) ([]api.ListModelRespons
 		}
 		display := elizaCloudDisplayName(id)
 		out = append(out, api.ListModelResponse{
-			Name:        display,
-			Model:       display,
-			RemoteModel: id,
-			RemoteHost:  strings.TrimSuffix(cloudProxyBaseURL, "/"),
-			ModifiedAt:  now,
-			Size:        0,
-			Digest:      "",
-			Details:     api.ModelDetails{Family: "cloud"},
+			Name:         display,
+			Model:        display,
+			RemoteModel:  id,
+			RemoteHost:   strings.TrimSuffix(cloudProxyBaseURL, "/"),
+			ModifiedAt:   now,
+			Size:         0,
+			Digest:       "",
+			Details:      api.ModelDetails{Family: "cloud"},
+			Capabilities: inferElizaCloudCapabilities(id),
 		})
 	}
 

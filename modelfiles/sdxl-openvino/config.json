@@ -1,0 +1,19 @@
+{
+  "capabilities": ["image"],
+  "modality_backends": { "image": "openvino-image" },
+  "concurrency_groups": ["imagegen"],
+  "image_generation": {
+    "width": 768,
+    "height": 768,
+    "steps": 20,
+    "cfg_scale": 7.5
+  },
+  "backend_paths": {
+    "external_image_bin": "/usr/lib/ollama-zerollama/ov_external_image.sh",
+    "ov_model_dir": "/usr/share/zerollama/openvino-genai/models/sdxl-int8-ov",
+    "ov_python": "/usr/share/zerollama/openvino-genai/venv/bin/python"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

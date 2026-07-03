@@ -1,6 +1,7 @@
 {
   "comment": "Per-GPU llama-server autotune (eliza-v3 L1). WHY JSON not YAML: eliza ships per-card files; index.json holds bucket tables separate from runtime host YAML.",
   "configs": [
+    { "id": "arc-a380", "file": "arc-a380.json" },
     { "id": "rtx-5080", "file": "rtx-5080.json" },
     { "id": "rtx-3090", "file": "3090.json" },
     { "id": "rtx-4090", "file": "4090.json" },
@@ -13,6 +14,7 @@
     { "id": "apple-silicon-128g", "file": "apple_silicon_128g.json" }
   ],
   "fallback_buckets": [
+    { "max_vram_gb": 8, "config_id": "arc-a380", "label": "arc-6g" },
     { "max_vram_gb": 12, "config_id": null, "label": "tiny" },
     { "max_vram_gb": 18, "config_id": "rtx-5080", "label": "small" },
     { "max_vram_gb": 28, "config_id": "rtx-3090", "label": "mid" },

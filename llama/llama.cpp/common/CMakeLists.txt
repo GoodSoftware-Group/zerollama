@@ -174,7 +174,6 @@ if (LLAMA_LLGUIDANCE)
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
-
 # B1: in-process ANE draft session (Darwin + libane_bridge only).
 set(_ZEROLLAMA_ANE_REPO "$ENV{HOME}/Sites/inference/ane")
 if (DEFINED ENV{ANE_REPO})
@@ -204,3 +203,4 @@ else()
         message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
     endif()
 endif()
+

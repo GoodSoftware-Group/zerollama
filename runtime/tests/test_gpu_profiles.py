@@ -268,3 +268,30 @@ def test_gpu_profile_disabled(monkeypatch):
     cfg = RuntimeConfig.from_file(path)
     assert cfg.gpu_profile is None
     assert cfg.llama_parallel_slots == 1
+
+
+def test_arc_a380_profile_json():
+    cfg = load_gpu_config("arc-a380")
+    assert cfg["vram_gb"] == 6
+    flags, _ = sanitize_llama_flags(cfg["llama_server_flags"])
+    assert flags["n_parallel"] == 1
+    assert flags["ctx_size"] == 4096
+    assert flags.get("flash_attn") is False
+
+
+def test_forced_gpu_profile_id_arc_a380(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_GPU_PROFILE", "1")
+    monkeypatch.setenv("ZEROLLAMA_GPU_PROFILE_ID", "arc-a380")
+    path = Path(__file__).resolve().parents[1] / "configs" / "arc_a380.yaml"
+    cfg = RuntimeConfig.from_file(path)
+    assert cfg.gpu_profile is not None
+    assert cfg.gpu_profile["id"] == "arc-a380"
+    assert cfg.gpu_profile["source"] == "env"
+
+
+def test_match_arc_a380_by_name():
+    from runtime.gpu_profiles import match_gpu_config_by_name
+
+    matched = match_gpu_config_by_name("Intel(R) Arc(tm) A380 Graphics (DG2)")
+    assert matched is not None
+    assert matched["id"] == "arc-a380"

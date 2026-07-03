@@ -35,6 +35,10 @@ type Report struct {
 
 // MissingBlobPaths returns blob paths referenced by mf that are absent or broken symlinks.
 func MissingBlobPaths(mf *manifest.Manifest) ([]string, error) {
+	return missingBlobPathsIn(envconfig.Models(), mf)
+}
+
+func missingBlobPathsIn(modelsDir string, mf *manifest.Manifest) ([]string, error) {
 	if mf == nil {
 		return nil, fmt.Errorf("nil manifest")
 	}
@@ -44,7 +48,7 @@ func MissingBlobPaths(mf *manifest.Manifest) ([]string, error) {
 		if digest == "" {
 			return nil
 		}
-		path, err := manifest.BlobsPath(digest)
+		path, err := manifest.BlobsPathIn(modelsDir, digest)
 		if err != nil {
 			return err
 		}
@@ -95,49 +99,53 @@ func CheckName(name string) (Report, error) {
 
 func checkParsedName(n model.Name) (Report, error) {
 	display := n.DisplayShortest()
-	mf, err := manifest.ParseNamedManifest(n)
-	if err != nil {
+	for _, modelsDir := range envconfig.ModelsSearchDirs() {
+		mf, err := manifest.ParseNamedManifestIn(modelsDir, n)
 		if errors.Is(err, os.ErrNotExist) {
-			return Report{
-				Name:    display,
-				Status:  StatusBroken,
-				Detail:  "manifest not found",
-				FixHint: "zerollama pull " + display,
-			}, nil
+			continue
 		}
-		return Report{}, err
+		if err != nil {
+			return Report{}, err
+		}
+
+		missing, err := missingBlobPathsIn(modelsDir, mf)
+		if err != nil {
+			return Report{}, err
+		}
+		if len(missing) == 0 {
+			return Report{Name: display, Status: StatusOK}, nil
+		}
+
+		detail := fmt.Sprintf("%d missing blob(s), e.g. %s", len(missing), filepath.Base(missing[0]))
+		if envconfig.LMStudioImport(true) {
+			if _, _, ok := lmstudio.MatchSelection(n); ok {
+				return Report{
+					Name:    display,
+					Status:  StatusRepairable,
+					Detail:  detail + " (LM Studio cache match)",
+					FixHint: "zerollama list or zerollama pull " + display + " to re-import from LM Studio",
+				}, nil
+			}
+		}
+		return Report{
+			Name:    display,
+			Status:  StatusOrphaned,
+			Detail:  detail + " (no LM Studio source)",
+			FixHint: "zerollama rm " + display + " then re-pull or re-download in LM Studio",
+		}, nil
 	}
 
-	missing, err := MissingBlobPaths(mf)
-	if err != nil {
-		return Report{}, err
-	}
-	if len(missing) == 0 {
-		return Report{Name: display, Status: StatusOK}, nil
-	}
-
-	detail := fmt.Sprintf("%d missing blob(s), e.g. %s", len(missing), filepath.Base(missing[0]))
-	if envconfig.LMStudioImport(true) {
-		if _, _, ok := lmstudio.MatchSelection(n); ok {
-			return Report{
-				Name:    display,
-				Status:  StatusRepairable,
-				Detail:  detail + " (LM Studio cache match)",
-				FixHint: "zerollama list or zerollama pull " + display + " to re-import from LM Studio",
-			}, nil
-		}
-	}
 	return Report{
 		Name:    display,
-		Status:  StatusOrphaned,
-		Detail:  detail + " (no LM Studio source)",
-		FixHint: "zerollama rm " + display + " then re-pull or re-download in LM Studio",
+		Status:  StatusBroken,
+		Detail:  "manifest not found",
+		FixHint: "zerollama pull " + display,
 	}, nil
 }
 
-// CheckAll walks every local manifest tag under OLLAMA_MODELS.
+// CheckAll walks every local manifest tag under OLLAMA_MODELS search paths.
 func CheckAll() ([]Report, error) {
-	mfs, err := manifest.Manifests(true)
+	mfs, err := manifest.ManifestsSearch(envconfig.ModelsSearchDirs(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -186,11 +194,17 @@ func RemoveManifest(name string) error {
 	if !n.IsValid() {
 		return fmt.Errorf("invalid model name %q", name)
 	}
-	mf, err := manifest.ParseNamedManifest(n)
-	if err != nil {
-		return err
+	for _, modelsDir := range envconfig.ModelsSearchDirs() {
+		mf, err := manifest.ParseNamedManifestIn(modelsDir, n)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		return mf.Remove()
 	}
-	return mf.Remove()
+	return os.ErrNotExist
 }
 
 // FilterHealthy returns reports that are not OK for display/fix.

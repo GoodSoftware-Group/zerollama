@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Local image generation on Intel Arc A380 (Vulkan + OpenVINO) — Jul 2026
+
+**Why:** MLX imagegen (Z-Image, Flux) needs **16 GB CUDA/Metal** and does not run on 6 GB Arc. Operators still need **local text-to-image** on the same zerollama API (`POST /api/generate`, `zerollama run`) without a second server. Two subprocess backends reuse the existing **`external-image` hook** — one global env for Vulkan sd.cpp, per-manifest wrapper override for OpenVINO so stacks coexist.
+
+**Why two stacks on one GPU class:** stable-diffusion.cpp shares the ggml/Vulkan toolchain with llama.cpp (one operator mental model); OpenVINO GenAI ships Intel-tuned INT8 IR models that can beat sd.cpp on Arc for some checkpoints. Bench both via **`zerollama ls` PERF** after `zerollama bench sd15 --force`.
+
+- **Vulkan (stable-diffusion.cpp)** — `sd15-vulkan`, `sd15-q8-vulkan`, `sd15-turbo-vulkan`, `sdxl-vulkan` (experimental); manifest `modality_backends.image=external-image`; `backend_paths.sd_cli` / `sd_model`; **`diffusion_fa: true`** required on Mesa ANV (noise without it).
+- **OpenVINO GenAI** — `sd15-openvino`, `sdxl-openvino`; `modality_backends.image=openvino-image`; `backend_paths.ov_model_dir` + per-model `external_image_bin` → `ov_external_image.sh` (no global env change vs Vulkan).
+- **`ImageGenerationConfig`** — per-model width/height/steps/cfg/sampler and SD flags in manifest `image_generation` (env `OLLAMA_SD_*` / `OLLAMA_OV_*` at subprocess boundary).
+- **`zerollama ls`** — **PERF** column (was TOK/S): tok/s for chat, seconds for image/video; filter `zerollama ls image`; cloud **image** routes visible, completion-only Eliza stubs hidden.
+- **`zerollama bench`** — image models: non-stream `/api/generate`, `TotalDuration` → `gen_sec`; capped at 2 timed epochs; **`effectiveMin` clamped** to cap so `--min-epochs 3` does not always fail on image tags; video_gen: `POST /v1/videos` poll.
+- **Bench health / manifest search** — `envconfig.ModelsSearchDirs()` prefers `/usr/share/ollama/.ollama/models` when `OLLAMA_MODELS` unset so root/service installs match `zerollama bench` skips.
+- **Scripts** — `install_stable_diffusion.sh`, `sd_external_image.sh`, `register_sd_models.sh`; `install_openvino_diffusion.sh`, `ov_image_generate.py`, `ov_external_image.sh`, `register_ov_models.sh`; `build_zerollama_a380.sh`, `install_a380_llama_server.sh`, `zerollama-a380.service`.
+- **Doc:** [sd-vulkan-a380.md](docs/sd-vulkan-a380.md), [sd-openvino-a380.md](docs/sd-openvino-a380.md), [a380-runbook.md](docs/a380-runbook.md), [bench-cache.md](docs/bench-cache.md), [multimodal-backends.md](docs/multimodal-backends.md).
+
 ### Production serve wrapper (`~/bin/serve.sh`) — Jun 2026
 
 **Why:** CT 1564 operators copied `scripts/serve_gpu_example.sh` verbatim to `~/bin/serve.sh`. That script resolves repo root as `dirname(BASH_SOURCE)/..`, which becomes **`$HOME`** when the file lives in `~/bin` — not `~/zerollama`. Result: `sched_watchdog_env.sh`, `training_uv_venv.sh`, and `PYTHONPATH` never load; `zerollama serve` exits immediately or embed fails with `ModuleNotFoundError: uvicorn` while the operator sees an idle screen (logs go nowhere unless `SERVE_LOG` is set).

@@ -1,0 +1,26 @@
+{
+  "id": "arc-a380",
+  "name": "Intel Arc A380",
+  "match_names": ["Arc A380", "Arc(tm) A380", "DG2", "Intel(R) Arc"],
+  "vram_gb": 6,
+  "llama_server_flags": {
+    "n_gpu_layers": 999,
+    "ctx_size": 4096,
+    "batch_size": 256,
+    "ubatch_size": 64,
+    "n_parallel": 1,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "flash_attn": false,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "mlock": false,
+    "no_mmap": false,
+    "no_kv_offload": false
+  },
+  "runtime_kv": {
+    "block_size": 16,
+    "num_blocks_per_device": 512
+  },
+  "_provenance": "asm_lab lanes/arc-a380 Jun 2026: 6GB GDDR6 Vulkan ANV; full GPU offload only (partial num_gpu timeouts); conservative ctx/batch; flash_attn off on Vulkan"
+}

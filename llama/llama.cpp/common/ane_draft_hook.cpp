@@ -21,6 +21,11 @@
 #include <string>
 #include <vector>
 
+#if !defined(__APPLE__)
+// ZEROLLAMA_LINUX_HANDOFF_STEP
+static std::atomic<int> g_handoff_step { 0 };
+#endif
+
 #if defined(__APPLE__)
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -600,12 +605,6 @@ static bool pack_draft_hidden_into_iosurface(const float * src, int src_len) {
 #endif
 
 void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32_t i_batch) {
-#if !defined(__APPLE__)
-    // WHY: ANE iosurface handoff is Apple-only; g_handoff_step lives under __APPLE__ guard.
-    GGML_UNUSED(ctx_dft);
-    GGML_UNUSED(i_batch);
-    return;
-#else
     if (!common_ane_draft_enabled() || !ane_draft_session_ready() || !ctx_dft) {
         return;
     }
@@ -634,6 +633,7 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
 
     const int n_embd = llama_model_n_embd(llama_get_model(ctx_dft));
 
+#if defined(__APPLE__)
     if (!pack_draft_hidden_into_iosurface(emb, n_embd)) {
         if (log_info) {
             LOG_WRN("%s: step=%d iosurface pack failed — stub ANE fill\n", __func__, step);
@@ -664,5 +664,11 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
     } else {
         LOG_DBG("%s: step=%d handoff+eval ok\n", __func__, step);
     }
+#else
+    GGML_UNUSED(step);
+    GGML_UNUSED(log_info);
+    GGML_UNUSED(emb);
+    GGML_UNUSED(n_embd);
+    LOG_WRN("%s: handoff skipped (not Apple platform)\n", __func__);
 #endif
 }

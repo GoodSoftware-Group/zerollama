@@ -17,6 +17,12 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
+const (
+	benchKindCompletion = "completion"
+	benchKindImage      = "image"
+	benchKindVideoGen   = "video_gen"
+)
+
 var benchPromptWords = []string{
 	"the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
 	"a", "bright", "sunny", "day", "in", "the", "meadow", "where",
@@ -39,29 +45,37 @@ func benchPromptForEpoch(epoch int) string {
 	return strings.Join(words, " ")
 }
 
-func isBenchableModel(m api.ListModelResponse) bool {
-	// WHY same remote filter as ls: cloud catalog stubs are not local generate targets.
+// benchModelKind picks bench cache kind from manifest capabilities.
+// WHY skip remote (non-LM Studio): cloud models are not local inference; bench measures this host.
+func benchModelKind(m api.ListModelResponse) string {
 	if m.RemoteModel != "" && !strings.EqualFold(m.RemoteHost, "lmstudio") {
-		return false
+		return ""
 	}
 	if m.Digest == "" {
-		return false // WHY: cannot key cache without stable digest
+		return ""
 	}
 	caps := m.Capabilities
+	if slices.Contains(caps, model.CapabilityImage) {
+		return benchKindImage
+	}
+	if slices.Contains(caps, model.CapabilityVideoGen) {
+		return benchKindVideoGen
+	}
 	if len(caps) == 0 {
-		return true // legacy tags default to completion
+		return benchKindCompletion
 	}
 	if slices.Contains(caps, model.CapabilityCompletion) {
-		return true
+		return benchKindCompletion
 	}
-	// WHY skip non-chat models: generate bench is meaningless on embed/image/video_gen/speech-only tags.
 	if slices.Contains(caps, model.CapabilityEmbedding) ||
-		slices.Contains(caps, model.CapabilityImage) ||
-		slices.Contains(caps, model.CapabilityVideoGen) ||
 		slices.Contains(caps, model.CapabilitySpeech) {
-		return false
+		return ""
 	}
-	return true
+	return ""
+}
+
+func isBenchableModel(m api.ListModelResponse) bool {
+	return benchModelKind(m) != ""
 }
 
 func matchesBenchFilter(name string, filters []string) bool {
@@ -159,10 +173,12 @@ func benchUnloadModel(client *api.Client, modelName string, timeout time.Duratio
 }
 
 type benchModelResult struct {
-	rate       float64
-	epochsOK   int
+	kind        string
+	rate        float64
+	genSec      float64
+	epochsOK    int
 	epochsTotal int
-	partial    bool
+	partial     bool
 }
 
 func benchModel(ctx context.Context, client *api.Client, m api.ListModelResponse, warmup, epochs, maxTokens int, loadTimeout, genTimeout time.Duration, minEpochs int) (benchModelResult, error) {
@@ -187,7 +203,7 @@ func benchModel(ctx context.Context, client *api.Client, m api.ListModelResponse
 	}
 
 	if len(rates) < minEpochs {
-		return benchModelResult{epochsTotal: epochs}, fmt.Errorf("only %d/%d epochs produced metrics (need %d)", len(rates), epochs, minEpochs)
+		return benchModelResult{kind: benchKindCompletion, epochsTotal: epochs}, fmt.Errorf("only %d/%d epochs produced metrics (need %d)", len(rates), epochs, minEpochs)
 	}
 
 	var sum float64
@@ -195,6 +211,7 @@ func benchModel(ctx context.Context, client *api.Client, m api.ListModelResponse
 		sum += rate
 	}
 	return benchModelResult{
+		kind:        benchKindCompletion,
 		rate:        sum / float64(len(rates)),
 		epochsOK:    len(rates),
 		epochsTotal: epochs,
@@ -226,8 +243,11 @@ func runBench(cmd *cobra.Command, args []string) error {
 	minEpochs, _ := cmd.Flags().GetInt("min-epochs")
 	skipHealth, _ := cmd.Flags().GetBool("skip-health-check")
 
+	videoTimeoutSec, _ := cmd.Flags().GetInt("video-timeout")
+
 	genTimeout := time.Duration(timeoutSec) * time.Second
 	loadTimeout := time.Duration(loadTimeoutSec) * time.Second
+	videoTimeout := time.Duration(videoTimeoutSec) * time.Second
 	if minEpochs < 1 {
 		minEpochs = 1
 	}
@@ -256,56 +276,74 @@ func runBench(cmd *cobra.Command, args []string) error {
 	}
 
 	type result struct {
-		name      string
-		tokPerSec float64
-		skipped   bool
-		partial   bool
-		err       error
+		name    string
+		kind    string
+		perf    string
+		skipped bool
+		partial bool
+		err     error
 	}
 	results := make([]result, 0, len(models))
 
 	for _, m := range models {
+		kind := benchModelKind(m)
+
 		if detail, skip := benchPreflightSkip(m.Name, skipHealth); skip {
 			fmt.Fprintf(os.Stderr, "skip %s (unhealthy: %s)\n", m.Name, detail)
-			results = append(results, result{name: m.Name, err: fmt.Errorf("unhealthy")})
+			results = append(results, result{name: m.Name, kind: kind, err: fmt.Errorf("unhealthy")})
 			continue
 		}
 
 		if !force {
-			if entry, ok := cache[m.Digest]; ok && entry.TokPerSec > 0 {
-				// WHY digest lookup: name may change via cp; weights unchanged → skip re-bench unless --force.
-				fmt.Fprintf(os.Stderr, "skip %s (cached %.1f tok/s, use --force to re-bench)\n", m.Name, entry.TokPerSec)
-				results = append(results, result{name: m.Name, tokPerSec: entry.TokPerSec, skipped: true})
+			if entry, ok := cache[m.Digest]; ok && entry.Cached() {
+				fmt.Fprintf(os.Stderr, "skip %s (cached %s, use --force to re-bench)\n", m.Name, entry.PerfString())
+				results = append(results, result{name: m.Name, kind: kind, perf: entry.PerfString(), skipped: true})
 				continue
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "benching %s...\n", m.Name)
-		br, err := benchModel(cmd.Context(), client, m, warmup, epochs, maxTokens, loadTimeout, genTimeout, minEpochs)
+		fmt.Fprintf(os.Stderr, "benching %s (%s)...\n", m.Name, kind)
+		var br benchModelResult
+		var err error
+		switch kind {
+		case benchKindImage:
+			br, err = benchImageModel(cmd.Context(), client, m, warmup, epochs, loadTimeout, genTimeout, minEpochs)
+		case benchKindVideoGen:
+			br, err = benchVideoModel(cmd.Context(), m, videoTimeout)
+		default:
+			br, err = benchModel(cmd.Context(), client, m, warmup, epochs, maxTokens, loadTimeout, genTimeout, minEpochs)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", m.Name, err)
-			results = append(results, result{name: m.Name, err: err})
-			benchUnloadModel(client, m.Name, genTimeout)
+			results = append(results, result{name: m.Name, kind: kind, err: err})
+			if kind != benchKindVideoGen {
+				benchUnloadModel(client, m.Name, genTimeout)
+			}
 			continue
 		}
 
-		cache[m.Digest] = benchcache.Entry{
+		entry := benchcache.Entry{
 			Model:     m.Name,
+			Kind:      br.kind,
 			TokPerSec: br.rate,
+			GenSec:    br.genSec,
 			BenchedAt: time.Now().UTC(),
 		}
-		// WHY save per model: multi-model bench can take tens of minutes; preserve progress on interrupt.
+		cache[m.Digest] = entry
 		if err := cache.Save(); err != nil {
 			return fmt.Errorf("save bench cache: %w", err)
 		}
 
+		perf := entry.PerfString()
 		if br.partial {
-			fmt.Fprintf(os.Stderr, "%s  %.1f tok/s (%d/%d epochs)\n", m.Name, br.rate, br.epochsOK, br.epochsTotal)
+			fmt.Fprintf(os.Stderr, "%s  %s (%d/%d epochs)\n", m.Name, perf, br.epochsOK, br.epochsTotal)
 		} else {
-			fmt.Fprintf(os.Stderr, "%s  %.1f tok/s\n", m.Name, br.rate)
+			fmt.Fprintf(os.Stderr, "%s  %s\n", m.Name, perf)
 		}
-		results = append(results, result{name: m.Name, tokPerSec: br.rate, partial: br.partial})
-		benchUnloadModel(client, m.Name, genTimeout)
+		results = append(results, result{name: m.Name, kind: kind, perf: perf, partial: br.partial})
+		if kind != benchKindVideoGen {
+			benchUnloadModel(client, m.Name, genTimeout)
+		}
 	}
 
 	var tableData [][]string
@@ -314,16 +352,16 @@ func runBench(cmd *cobra.Command, args []string) error {
 			tableData = append(tableData, []string{r.name, "error"})
 			continue
 		}
-		rateStr := fmt.Sprintf("%.1f", r.tokPerSec)
+		perfStr := r.perf
 		if r.partial {
-			rateStr += "*"
+			perfStr += "*"
 		}
-		tableData = append(tableData, []string{r.name, rateStr})
+		tableData = append(tableData, []string{r.name, perfStr})
 	}
 
 	if len(tableData) > 0 {
 		table := tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"NAME", "TOK/S"})
+		table.SetHeader([]string{"NAME", "PERF"})
 		table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 		table.SetAlignment(tablewriter.ALIGN_LEFT)
 		table.SetHeaderLine(false)
@@ -342,12 +380,14 @@ func runBench(cmd *cobra.Command, args []string) error {
 func NewBenchCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "bench [MODEL...]",
-		Short:   "Benchmark local models and cache tok/s for ls",
-		Long: `Run a short generation benchmark for local models and save estimated tok/s
-to ~/.ollama/bench.json. Results appear in the TOK/S column of zerollama ls.
+		Short:   "Benchmark local models and cache perf for ls",
+		Long: `Run a short generation benchmark for local models and save results
+to ~/.ollama/bench.json. Text models cache decode tok/s; image and video_gen
+models cache average wall seconds per generation. Results appear in the PERF
+column of zerollama ls.
 
-With no model names, benchmarks all local text models. Cached results are skipped
-unless --force is set. Models with missing blobs are skipped unless --skip-health-check.`,
+With no model names, benchmarks all local models (completion, image, video_gen).
+Cached results are skipped unless --force is set.`,
 		Args:    cobra.ArbitraryArgs,
 		PreRunE: checkServerHeartbeat,
 		RunE:    runBench,
@@ -357,8 +397,9 @@ unless --force is set. Models with missing blobs are skipped unless --skip-healt
 	cmd.Flags().Int("tokens", 128, "Maximum output tokens per epoch")
 	cmd.Flags().Int("warmup", 1, "Warmup runs before timing")
 	cmd.Flags().Bool("force", false, "Re-bench models that already have cached results")
-	cmd.Flags().Int("timeout", 600, "Per-request generation timeout in seconds")
+	cmd.Flags().Int("timeout", 600, "Per-request generation timeout in seconds (image models)")
 	cmd.Flags().Int("load-timeout", 900, "Warmup timeout in seconds (includes model load)")
+	cmd.Flags().Int("video-timeout", 7200, "Video generation poll timeout in seconds")
 	cmd.Flags().Int("min-epochs", 1, "Minimum successful epochs required (allows partial results)")
 	cmd.Flags().Bool("skip-health-check", false, "Benchmark even when local blob health check fails")
 

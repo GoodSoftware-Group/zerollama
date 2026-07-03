@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -110,16 +111,15 @@ func (m *Manifest) RemoveLayers() error {
 }
 
 func ParseNamedManifest(n model.Name) (*Manifest, error) {
+	return ParseNamedManifestIn(envconfig.Models(), n)
+}
+
+func ParseNamedManifestIn(modelsDir string, n model.Name) (*Manifest, error) {
 	if !n.IsFullyQualified() {
 		return nil, model.Unqualified(n)
 	}
 
-	manifests, err := Path()
-	if err != nil {
-		return nil, err
-	}
-
-	p := filepath.Join(manifests, n.Filepath())
+	p := filepath.Join(modelsDir, "manifests", n.Filepath())
 
 	var m Manifest
 	f, err := os.Open(p)
@@ -173,10 +173,27 @@ func WriteManifest(name model.Name, config Layer, layers []Layer) error {
 }
 
 func Manifests(continueOnError bool) (map[model.Name]*Manifest, error) {
-	manifests, err := Path()
-	if err != nil {
-		return nil, err
+	return ManifestsIn(envconfig.Models(), continueOnError)
+}
+
+func ManifestsSearch(dirs []string, continueOnError bool) (map[model.Name]*Manifest, error) {
+	ms := make(map[model.Name]*Manifest)
+	for _, dir := range dirs {
+		part, err := ManifestsIn(dir, continueOnError)
+		if err != nil {
+			return nil, err
+		}
+		for n, m := range part {
+			if _, ok := ms[n]; !ok {
+				ms[n] = m
+			}
+		}
 	}
+	return ms, nil
+}
+
+func ManifestsIn(modelsDir string, continueOnError bool) (map[model.Name]*Manifest, error) {
+	manifests := filepath.Join(modelsDir, "manifests")
 
 	// TODO(mxyng): use something less brittle
 	matches, err := filepath.Glob(filepath.Join(manifests, "*", "*", "*", "*"))
@@ -210,7 +227,7 @@ func Manifests(continueOnError bool) (map[model.Name]*Manifest, error) {
 				continue
 			}
 
-			m, err := ParseNamedManifest(n)
+			m, err := ParseNamedManifestIn(modelsDir, n)
 			if err != nil {
 				if !continueOnError {
 					return nil, fmt.Errorf("%s %w", n, err)

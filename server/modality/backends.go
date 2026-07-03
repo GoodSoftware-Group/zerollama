@@ -10,6 +10,12 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
+// IsExternalImageBackend reports subprocess image backends (stable-diffusion.cpp, OpenVINO GenAI, etc.).
+// WHY distinct backend names: OpenVINO resolves a different default wrapper when external_image_bin unset.
+func IsExternalImageBackend(name string) bool {
+	return name == model.BackendExternalImage || name == model.BackendOpenVINOImage
+}
+
 // BackendFor returns the configured backend name for a modality key ([model.ModalityImage], etc.).
 // An empty string means use the default built-in implementation.
 func BackendFor(cfg model.ConfigV2, key string) string {

@@ -28,7 +28,7 @@ func TestSampleVideoToPNGs_ffmpegGolden(t *testing.T) {
 	mp4 := filepath.Join(dir, "lavfi.mp4")
 	cmd := exec.Command(ffmpeg,
 		"-hide_banner", "-loglevel", "error", "-y",
-		"-f", "lavfi", "-i", "testsrc=duration=2:size=64x64:rate=10",
+		"-f", "lavfi", "-i", "testsrc=duration=3:size=64x64:rate=10",
 		"-pix_fmt", "yuv420p", mp4,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -40,18 +40,20 @@ func TestSampleVideoToPNGs_ffmpegGolden(t *testing.T) {
 	}
 
 	policy := VideoSamplingPolicy{
-		Mode:          model.VideoSampleModeFPS,
-		FPS:           1,
-		MaxFrames:     3,
-		MaxBytes:      1 << 20,
-		FFmpegTimeout: 30 * time.Second,
+		Mode:                 model.VideoSampleModeFPS,
+		FPS:                  1,
+		MaxFrames:            3,
+		MaxBytes:             1 << 20,
+		MaxVideosPerMessage:  4,
+		MaxImagesAfterExpand: 64,
+		FFmpegTimeout:        30 * time.Second,
 	}
 	frames, err := sampleVideoToPNGs(context.Background(), policy, "", data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(frames.frames) != 3 {
-		t.Fatalf("frame count=%d want 3 (2s @ 1fps capped by max_frames)", len(frames.frames))
+		t.Fatalf("frame count=%d want 3 (3s @ 1fps capped by max_frames)", len(frames.frames))
 	}
 	for i, f := range frames.frames {
 		if len(f) < 8 || f[0] != 0x89 || f[1] != 0x50 {

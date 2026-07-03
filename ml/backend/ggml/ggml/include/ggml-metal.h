@@ -57,8 +57,6 @@ GGML_BACKEND_API void ggml_backend_metal_capture_next_compute(ggml_backend_t bac
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);
 
-// Map an in-process ANE IOSurface (by ID) to a ggml Metal backend buffer.
-// IOSurfaceLookup only succeeds in the same PID as the ANE kernel owner.
 GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
         ggml_backend_dev_t device,
         uint32_t surface_id,

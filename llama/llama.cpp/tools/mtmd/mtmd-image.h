@@ -17,15 +17,9 @@ struct mtmd_image_preprocessor {
     virtual ~mtmd_image_preprocessor() = default;
     virtual bool preprocess(const clip_image_u8 & img, clip_image_f32_batch & output) = 0;
 
-    // Encode already-resized RGB u8 into f32 batch (used when client grid_thw hint fixed pixel size).
-    bool encode_u8_f32(const clip_image_u8 & img, clip_image_f32_batch & output);
-
     void img_u8_to_f32(const clip_image_u8 & src, clip_image_f32 & dst, const float mean[3], const float std[3]);
     void img_u8_to_f32(const clip_image_u8 & src, clip_image_f32 & dst);
 };
-
-// Resize img to W*patch x H*patch for SGLang grid_thw [1,H,W]; returns false if hint invalid.
-bool mtmd_image_apply_grid_hint_resize(clip_image_u8 & img, const int32_t grid_thw[3], int patch_size);
 
 /**
  * implementation of LLaVA-UHD:

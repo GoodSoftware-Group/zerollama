@@ -6,8 +6,6 @@ import "unsafe"
 
 /*
 #cgo pkg-config: python3-embed
-# WHY python3-embed (not python-3.11-embed inline): fixed at compile time; Linux operators
-# overlay PKG_CONFIG_PATH via scripts/training_embed_build_env.sh when linking 3.11 on Ubuntu 22.04.
 #cgo darwin LDFLAGS: -Wl,-rpath,/Applications/Xcode.app/Contents/Developer/Library/Frameworks -Wl,-rpath,/Library/Developer/CommandLineTools/Library/Frameworks
 #cgo CFLAGS: -I${SRCDIR}
 #include <stdlib.h>

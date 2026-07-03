@@ -124,8 +124,8 @@ func TestMinOllamaVersion(t *testing.T) {
 	if MinOllamaVersion == "" {
 		t.Error("MinOllamaVersion should not be empty")
 	}
-	if MinOllamaVersion != "0.19.0" {
-		t.Errorf("MinOllamaVersion = %q, want %q", MinOllamaVersion, "0.19.0")
+	if MinOllamaVersion != "0.30.11" {
+		t.Errorf("MinOllamaVersion = %q, want %q", MinOllamaVersion, "0.30.11")
 	}
 }
 

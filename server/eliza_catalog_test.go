@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 func resetElizaCatalogAfterTest(t *testing.T) {
@@ -101,6 +102,15 @@ func TestElizaCloudDisplayName(t *testing.T) {
 		if got := elizaCloudDisplayName(tt.id); got != tt.want {
 			t.Fatalf("elizaCloudDisplayName(%q) = %q, want %q", tt.id, got, tt.want)
 		}
+	}
+}
+
+func TestInferElizaCloudCapabilities(t *testing.T) {
+	if caps := inferElizaCloudCapabilities("google/gemini-3.1-flash-image"); len(caps) != 1 || caps[0] != model.CapabilityImage {
+		t.Fatalf("flash-image caps=%v", caps)
+	}
+	if caps := inferElizaCloudCapabilities("openai/gpt-4o"); len(caps) != 0 {
+		t.Fatalf("gpt-4o caps=%v", caps)
 	}
 }
 

@@ -228,6 +228,24 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 
 ---
 
+## Intel Arc A380 track (Vulkan / 6 GB)
+
+**Why a separate track:** CUDA 5080 and Mac Metal playbooks do not apply to **Mesa ANV + 6 GB GDDR6**. Research lane [`~/bmtl/asm_lab/lanes/arc-a380`](../../bmtl/asm_lab/lanes/arc-a380) documented per-request **`load_ms` ~580 ms**, partial **`num_gpu` cliff**, and integer-dot instability — operators need env pins, honest **`total_duration_eval_tok_s`**, and **local image gen** that fits VRAM without MLX.
+
+**Guide:** [a380-runbook.md](./a380-runbook.md) · **Image:** [sd-vulkan-a380.md](./sd-vulkan-a380.md), [sd-openvino-a380.md](./sd-openvino-a380.md)
+
+| Milestone | Goal | Owner | Exit criteria |
+|-----------|------|--------|----------------|
+| **A1** | **Vulkan GGUF chat** | Repo + vendor | **Done** — `OLLAMA_VULKAN=1`, `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1`, vendor llama-server, `arc-a380` L1 profile; sign-off `a380_signoff.sh` |
+| **A2** | **SD 1.5 via sd.cpp (Vulkan)** | Repo | **Done** — `external-image` hook, `sd15-vulkan` / Q8 / turbo / SDXL manifests, `install_stable_diffusion.sh`; **`diffusion_fa`** for ANV |
+| **A3** | **SD via OpenVINO GenAI** | Repo | **Done** — `openvino-image` backend, `sd15-openvino` / `sdxl-openvino`, per-manifest `external_image_bin`; venv under `/usr/share/zerollama/openvino-genai/` |
+| **A4** | **Image in `ls` + bench PERF** | Go | **Done** — `zerollama ls image`; PERF seconds for image tags; `bench` image cap 2 epochs + min-epochs clamp; `ModelsSearchDirs()` for service model roots |
+| **A5** | **Production systemd stack** | Repo | **Done** — `build_zerollama_a380.sh`, `install_a380_llama_server.sh`, `zerollama-a380.service`, `/etc/zerollama/a380-llama.env` |
+
+**Not goals:** CUDA training on Arc; MLX imagegen; SYCL/Level Zero as zerollama default backend; cloud image billing in local-only deployments.
+
+---
+
 ## Local voice & llama borrowings (eliza-v3)
 
 **Why a separate track:** [eliza-v3](https://github.com/elizaos/eliza) (`plugin-local-inference`, `elizaOS/llama.cpp`) ships a **fused on-device stack**—custom llama.cpp kernels, per-GPU autotune, and a duplex voice graph (ASR → MTP LLM → chunked TTS with barge-in). Zerollama already covers **OpenAI `/v1/audio/*`** via **Piper + Whisper subprocesses** ([multimodal-backends.md](./multimodal-backends.md)) and **MTP/ngram** in the Python runtime ([SPECULATIVE.md](../runtime/docs/SPECULATIVE.md)). This track ports **patterns and data** that fit our Go + Python shape—**not** the Eliza-1 bundle catalog, Capacitor/AOSP mobile loaders, or device-bridge WebSocket layer.
@@ -329,7 +347,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **LA7** | **Manifest repair command** | Go | **Done** — `zerollama repair` rewrites params/config/template without re-download; [manifest hygiene](./localai-borrowings.md#manifest-hygiene-existing-tags) |
 | **LA8** | **HF importer v0** | Go | **Done** — `huggingface://` / `hf://` pull → local manifest; optional `source` + local name |
 | **LA9** | **Logprob score API** | Go + runtime | **Done** — `POST /api/score`; llamarunner, ollamarunner, llama-server backends |
-| **LA10** | **Model bench cache** | Go | **Done** — `zerollama bench` + `TOK/S` in `ls`; `~/.ollama/bench.json` keyed by digest; [bench-cache.md](./bench-cache.md) |
+| **LA10** | **Model bench cache** | Go | **Done** — `zerollama bench` + **PERF** in `ls` (tok/s or seconds); `~/.ollama/bench.json` keyed by digest; image/video_gen kinds; [bench-cache.md](./bench-cache.md) |
 
 **Not goals:** `backend.proto` plugin zoo, NATS cluster, full gallery parity, replacing Phase 15/17 engines.
 

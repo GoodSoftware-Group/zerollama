@@ -980,9 +980,8 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
         return nullptr;
     }
 
-    const char * name = device->iface.get_name(device);
-    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
-        GGML_LOG_ERROR("%s: device is not Metal (name=%s)\n", __func__, name ? name : "null");
+    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal\n", __func__);
         return nullptr;
     }
 

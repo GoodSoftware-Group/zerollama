@@ -104,6 +104,8 @@ git clone <this-repo> zerollama && cd zerollama
 
 **CUDA (5080-class):** [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
 
+**Intel Arc A380 (6 GB, Vulkan):** [a380-runbook.md](docs/a380-runbook.md) — research: `~/bmtl/asm_lab/lanes/arc-a380`
+
 **Compare with upstream on the same machine:**
 
 ```bash
@@ -261,6 +263,33 @@ cd ~/zerollama && source ./scripts/5080_env.sh
 
 Long reference (VRAM, remote serve, MLX): [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
 
+### Building zerollama on Intel Arc A380 (Vulkan / 6 GB)
+
+**Start here:** [a380-runbook.md](docs/a380-runbook.md) + `source scripts/a380_env.sh` + `./scripts/a380_signoff.sh`
+
+```bash
+cd ~/zerollama && source ./scripts/a380_env.sh
+./scripts/a380_signoff.sh --build
+bash scripts/serve_a380_example.sh   # OLLAMA_VULKAN=1, GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
+```
+
+**Research baseline:** `~/bmtl/asm_lab/lanes/arc-a380` (`runs/research_synthesis.json`). Report **`total_duration_eval_tok_s`**, not `eval_tok_s` alone (~580 ms `load_ms` per API call).
+
+**Local image generation (6 GB):** MLX imagegen needs 16 GB CUDA/Metal — on A380 use **stable-diffusion.cpp (Vulkan)** and/or **OpenVINO GenAI (INT8)** via the same `zerollama run` / `POST /api/generate` path. **Why subprocess hooks:** diffusion stacks differ from ggml chat; manifest `backend_paths` + `image_generation` carry per-model weights and Intel ANV flags without forking the scheduler.
+
+```bash
+./scripts/install_stable_diffusion.sh && ./scripts/register_sd_models.sh
+./scripts/install_openvino_diffusion.sh && ./scripts/register_ov_models.sh   # optional second stack
+zerollama run sd15-turbo-vulkan "a red apple on white"
+zerollama run sd15-openvino "a watercolor lighthouse"
+zerollama ls image                    # local sd* + cloud image routes; PERF column after bench
+zerollama bench sd15 --force --epochs 1 --warmup 0
+```
+
+Guides: [sd-vulkan-a380.md](docs/sd-vulkan-a380.md), [sd-openvino-a380.md](docs/sd-openvino-a380.md). Set `OLLAMA_EXTERNAL_IMAGE_BIN` to the sd.cpp wrapper in service env; OpenVINO tags override via manifest `external_image_bin`.
+
+**Production serve:** bind `OLLAMA_HOST=192.168.255.105:11434` on the private network — agents use that URL directly; do not SSH port-forward `:11434`.
+
 **Production serve (remote `:8080`):** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh && ~/bin/serve.sh` — **WHY wrapper:** `serve_gpu_example.sh` in `~/bin` resolves repo as `$HOME`, not `~/zerollama`. See [5080-runbook — Production serve](docs/5080-runbook.md#production-serve-binserve-sh).
 
 **Why a separate section:** CUDA hosts use discrete VRAM (`single_gpu.yaml`, `nvidia-smi`), **sm_120** needs CUDA **12.8+** `nvcc`, and Proxmox operators often land on the **host** while GPU passthrough lives in an **LXC** — run gates **inside** the CT (`pct exec 1564 -- …`), not on the host with stale CUDA 12.3.
@@ -358,8 +387,8 @@ OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
 **Why:** LM Studio and zerollama often share a Mac; re-downloading 30–70 GB weights from the registry wastes time and disk when `~/.lmstudio/models` already has them.
 
 ```bash
-./zerollama list                                    # includes discoverable LM Studio caches; TOK/S when bench cache exists
-./zerollama bench                                   # measure decode tok/s → ~/.ollama/bench.json
+./zerollama list                                    # includes discoverable LM Studio caches; PERF when bench cache exists
+./zerollama bench                                   # measure tok/s or image/video seconds → ~/.ollama/bench.json
 ./zerollama pull lmstudio-community/gemma-4-31b-it:q8_0   # registers from cache when matched
 OLLAMA_LMSTUDIO_LIST_ALL=1 ./zerollama serve      # list MLX models even when disk is tight
 ```
@@ -372,13 +401,14 @@ Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lm
 
 ### Model throughput in `list` (`zerollama bench`)
 
-**Why:** Disk size and parameter labels do not predict decode speed on your GPU. **`zerollama bench`** runs a short generate benchmark per local model and caches tok/s to **`~/.ollama/bench.json`** (keyed by digest so re-pulls reset stale numbers). **`zerollama ls`** shows a **TOK/S** column — `--` until you bench.
+**Why:** Disk size and parameter labels do not predict decode speed on your GPU — and image models need **seconds per frame**, not tok/s. **`zerollama bench`** runs a short benchmark per local model and caches results to **`~/.ollama/bench.json`** (keyed by digest so re-pulls reset stale numbers). **`zerollama ls`** shows a **PERF** column: **tok/s** for chat, **seconds** for image/video — `--` until you bench.
 
 ```bash
-./zerollama bench              # all local text models (skips embed/image-only tags)
-./zerollama bench llama3.2     # prefix filter
-./zerollama bench --force      # re-bench cached models
-./zerollama ls                 # NAME … TOK/S … MODIFIED
+./zerollama bench                    # completion + image + video_gen locals
+./zerollama bench llama3.2           # prefix filter (same idea as ls)
+./zerollama bench sd15 --force       # image tags: wall seconds, max 2 timed epochs
+./zerollama ls                       # NAME … PERF … MODIFIED
+./zerollama ls image                 # filter by image capability (sd15-vulkan, cloud routes, …)
 ```
 
 Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models. For CI-grade A/B use `cmd/bench/bench.go` or Phase 17 / L1 scripts. Doc: [docs/bench-cache.md](docs/bench-cache.md).
@@ -402,7 +432,9 @@ Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models.
 - [ggml @ b9611 migration](docs/ggml-b9509-migration.md) — **why** in-process ggml uses a pinned vendor tree + 14 reviewable patches (not overlay snapshots); ahead of vanilla Ollama b9509; sync, Ollama deltas, Mac sign-off checklist.
 - [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); **ggml unload / manifest `num_ctx` at load**; **M12 ggml `suggested_max_num_ctx` + opt-in clamp** (parity with Phase 13); prompt truncation fields.
 - [LocalAI control-plane borrowings](docs/localai-borrowings.md) — **why** fast GGUF metadata, manifest guess, scheduler watchdog, concurrency groups, fleet score, and **`zerollama repair`** for existing tags.
-- [Model bench cache](docs/bench-cache.md) — **why** `zerollama bench` persists decode tok/s to `~/.ollama/bench.json` and surfaces **TOK/S** in `zerollama ls`.
+- [Stable Diffusion on Arc A380 (Vulkan)](docs/sd-vulkan-a380.md) — **why** sd.cpp + `external-image` on 6 GB Intel GPU; Q4/Q8/turbo/SDXL manifests; `diffusion_fa` on Mesa ANV.
+- [Stable Diffusion on Arc A380 (OpenVINO)](docs/sd-openvino-a380.md) — **why** Intel INT8 IR + per-manifest wrapper coexists with Vulkan SD.
+- [Model bench cache](docs/bench-cache.md) — **why** `zerollama bench` persists tok/s or generation seconds to `~/.ollama/bench.json` and surfaces **PERF** in `zerollama ls`.
 - [Fleet management (multi-node)](docs/fleet-management.md) — **why** a thin manager above per-node schedulers; `zerollama fleet serve`; warm-model assign API (F3); pairs with [fleet scheduling design](docs/fleet-scheduling.md).
 - [Phase 11 runtime admission](docs/phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first; priority classes; enqueue before queue; tunable min-free and training reserve.
 - [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs. **Ggml path (M12):** same suggest/clamp idea on Go scheduler — see [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#ggml-vram-suggest-and-opt-in-clamp-m12-jun-2026).
@@ -414,6 +446,7 @@ Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models.
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
 - [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
 - [5080 runbook — what to run](docs/5080-runbook.md) — **ordered CUDA gate tiers** after pull (base → L1/L3 → Phase 15 → `RUN_E2E_UPSTREAM_GGUF=1`); CT 1564 status; Mac counterpart `metal_signoff.sh`.
+- [A380 runbook (Intel Arc Vulkan)](docs/a380-runbook.md) — **6 GB GDDR6** via Mesa ANV; `a380_env.sh` / `a380_signoff.sh`; asm_lab research lane `~/bmtl/asm_lab/lanes/arc-a380`; cite `total_duration_eval_tok_s` not `eval_tok_s` alone.
 - [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; Proxmox CT layout; **`OLLAMA_HOST=0.0.0.0:8080`** for remote clients; **CGO `cpp-httplib` vendoring**; **`RUN_E2E_PREFLIGHT=0`** when httplib missing; L1/L3 full gates; Phase 15 + L2 sign-off sequence.
 - [L2 eliza fork evaluation](docs/gpu-profiles-l2.md) — **why** QJL/Polar/TBQ via **one** `../llama.cpp` @ `LLAMA_CPP_COMMIT`; L1 vs fork = profile argv (`ZEROLLAMA_LLAMA_FORK`), not separate siblings. Doc: [llama-cpp-unification.md](docs/llama-cpp-unification.md).
 - [L3 prompt cache → slot bridge](docs/gpu-profiles-l3.md) — **why** stable session keys skip repeat prefill; pinned `id_slot` + disk TTL; batch `prompt_cache_keys`; SWA/draft-spec policy; **5080 Jun 2026:** STRICT PASS @ 8k + production gate PASS @ 27k on eliza-1 9B.

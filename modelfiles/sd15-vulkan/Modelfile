@@ -1,0 +1,3 @@
+# Config-only manifest for stable-diffusion.cpp (Vulkan) on Intel Arc / other Vulkan hosts.
+# Install: ../../scripts/install_stable_diffusion.sh
+# Register: ../../scripts/register_sd_models.sh

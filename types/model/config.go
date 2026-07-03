@@ -39,6 +39,23 @@ type VideoGenerationConfig struct {
 	TimeoutSec   int    `json:"timeout_sec,omitempty"`
 }
 
+// ImageGenerationConfig holds per-model defaults for subprocess image backends
+// (stable-diffusion.cpp and OpenVINO GenAI).
+//
+// WHY manifest fields not env-only: Intel Mesa ANV requires diffusion_fa for sd.cpp;
+// SD-Turbo uses ~4 steps and cfg≈1; SDXL may need vae_tiling — these vary per tag.
+// Server maps these to OLLAMA_SD_* / OLLAMA_OV_* at the subprocess boundary.
+type ImageGenerationConfig struct {
+	Width       int     `json:"width,omitempty"`
+	Height      int     `json:"height,omitempty"`
+	Steps       int     `json:"steps,omitempty"`
+	CFGScale    float64 `json:"cfg_scale,omitempty"`
+	Sampler     string  `json:"sampler,omitempty"`
+	DiffusionFA *bool   `json:"diffusion_fa,omitempty"`
+	VAEOnCPU    *bool   `json:"vae_on_cpu,omitempty"`
+	VAETiling   *bool   `json:"vae_tiling,omitempty"`
+}
+
 // ConfigV2 represents the configuration metadata for a model.
 type ConfigV2 struct {
 	ModelFormat   string   `json:"model_format"`
@@ -75,11 +92,17 @@ type ConfigV2 struct {
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
 	// BackendPaths passes filesystem paths to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
-	// Keys include "whisper_model", "piper_model", "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path".
+	// Keys include "whisper_model", "piper_model", "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
+	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
+	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
 
 	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md).
 	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
+
+	// ImageGeneration presets for models with capability image and modality_backends.image=external-image
+	// or openvino-image (see docs/sd-vulkan-a380.md, docs/sd-openvino-a380.md).
+	ImageGeneration *ImageGenerationConfig `json:"image_generation,omitempty"`
 
 	// VideoSampling overrides native ffmpeg sampling for video_understanding=native (see docs/video-parity.md).
 	VideoSampling *VideoSampling `json:"video_sampling,omitempty"`

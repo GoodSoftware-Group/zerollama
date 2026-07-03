@@ -150,12 +150,8 @@ MTMD_API void                  mtmd_bitmap_free       (mtmd_bitmap * bitmap);
 // these getters/setters are dedicated functions, so you can for example calculate the hash of the image based on mtmd_bitmap_get_data()
 MTMD_API const char * mtmd_bitmap_get_id(const mtmd_bitmap * bitmap);
 MTMD_API void         mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id);
-
-// Optional SGLang-style patch grid [T,H,W] (per-frame bitmaps use [1,H,W]).
-// On M-RoPE vision models, resize to W*patch x H*patch before ViT instead of smart_resize.
-MTMD_API void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t grid_thw[3]);
-MTMD_API bool mtmd_bitmap_has_grid_hint(const mtmd_bitmap * bitmap);
-MTMD_API bool mtmd_bitmap_get_grid_hint(const mtmd_bitmap * bitmap, int32_t grid_thw[3]);
+// Optional [T,H,W] grid hint for M-RoPE vision (Qwen-VL etc.); no-op when unset.
+MTMD_API void         mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t grid_thw[3]);
 
 
 // mtmd_input_chunks

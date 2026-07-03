@@ -30,13 +30,6 @@ void mtmd_image_preprocessor::img_u8_to_f32(const clip_image_u8 & src, clip_imag
     }
 }
 
-bool mtmd_image_preprocessor::encode_u8_f32(const clip_image_u8 & img, clip_image_f32_batch & output) {
-    clip_image_f32_ptr img_f32(clip_image_f32_init());
-    img_u8_to_f32(img, *img_f32, hparams.image_mean, hparams.image_std);
-    output.entries.push_back(std::move(img_f32));
-    return true;
-}
-
 // set of tools to manipulate images
 // in the future, we can have HW acceleration by allowing this struct to access 3rd party lib like imagick or opencv
 struct img_tool {
@@ -566,26 +559,6 @@ private:
         return s + (e - s) * t;
     }
 };
-
-
-bool mtmd_image_apply_grid_hint_resize(clip_image_u8 & img, const int32_t grid_thw[3], int patch_size) {
-    if (grid_thw == nullptr || patch_size <= 0) {
-        return false;
-    }
-    const int T = grid_thw[0];
-    const int H = grid_thw[1];
-    const int W = grid_thw[2];
-    if (T != 1 || H <= 0 || W <= 0) {
-        return false;
-    }
-    const clip_image_size target{W * patch_size, H * patch_size};
-    clip_image_u8 resized;
-    img_tool::resize(img, resized, target, RESIZE_ALGO_BILINEAR, /*add_padding=*/false);
-    img.nx = resized.nx;
-    img.ny = resized.ny;
-    img.buf = std::move(resized.buf);
-    return true;
-}
 
 
 //

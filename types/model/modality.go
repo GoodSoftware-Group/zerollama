@@ -20,6 +20,7 @@ const (
 	BackendWhisper       = "whisper"        // whisper.cpp / compatible CLI
 	BackendPiper         = "piper"          // Piper TTS
 	BackendExternalImage = "external-image" // user-provided command (see docs)
+	BackendOpenVINOImage = "openvino-image" // OpenVINO GenAI Text2ImagePipeline (see docs/sd-openvino-a380.md)
 	BackendVideoNative   = "native"         // ffmpeg frame sampling inside Ollama (default when unset)
 	BackendSGLang           = "sglang"              // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)

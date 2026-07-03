@@ -1498,7 +1498,7 @@ struct ggml_metal_buffer {
     // pointers to global device
     ggml_metal_device_t dev;
 
-    // optional IOSurface backing (retained until buffer free) — ANE hybrid handoff
+    // optional IOSurface backing (retained until buffer free)
     IOSurfaceRef iosurface;
 };
 

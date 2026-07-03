@@ -1,0 +1,22 @@
+{
+  "capabilities": ["image"],
+  "modality_backends": { "image": "external-image" },
+  "concurrency_groups": ["imagegen"],
+  "image_generation": {
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "cfg_scale": 7.0,
+    "sampler": "euler_a",
+    "diffusion_fa": true,
+    "vae_on_cpu": true,
+    "vae_tiling": false
+  },
+  "backend_paths": {
+    "sd_cli": "/usr/share/zerollama/sd-cpp/bin/sd-cli",
+    "sd_model": "/usr/share/zerollama/sd-cpp/models/stable-diffusion-v1-5-Q8_0.gguf"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

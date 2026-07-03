@@ -64,14 +64,23 @@ if [[ "${ROOT}" == "${_VENDOR_ROOT}" || "${ROOT}" == "${_VENDOR_ROOT}/" ]]; then
   "${_ZEROLLAMA_ROOT}/scripts/stage_llama_compat_for_vendor.sh" "${ROOT}"
 fi
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  bash "${_ZEROLLAMA_ROOT}/scripts/patch_vendor_linux_ane_hook.sh" "${ROOT}"
+  if [[ -f "${_ZEROLLAMA_ROOT}/llama/llama.cpp/common/ane_draft_hook.cpp" ]]; then
+    bash "${_ZEROLLAMA_ROOT}/scripts/patch_vendor_linux_ane_hook.sh" "${_ZEROLLAMA_ROOT}/llama/llama.cpp"
+  fi
+fi
+
 _probe_llama_server_capabilities() {
   local bin="$1"
   local help_text
-  help_text="$("${bin}" --help 2>&1 || true)"
-  if echo "${help_text}" | grep -qE 'qjl1_256|q4_polar'; then
+  local libdir
+  libdir="$(dirname "${bin}")"
+  help_text="$(LD_LIBRARY_PATH="${libdir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${bin}" --help 2>&1 || true)"
+  if echo "${help_text}" | grep -qE 'qjl1_256|q4_polar|tbq3_0|tbq4_0'; then
     echo "OK: ${bin} advertises eliza KV cache types"
   else
-    echo "warn: ${bin} missing qjl1_256/q4_polar in --help (wrong ref?)" >&2
+    echo "warn: ${bin} missing fork KV types in --help (wrong ref?)" >&2
   fi
   if echo "${help_text}" | grep -q 'checkpoint-every-n-tokens'; then
     echo "OK: ${bin} advertises --checkpoint-every-n-tokens"
@@ -86,16 +95,22 @@ _probe_llama_server_capabilities() {
 _probe_seq_copy_route() {
   local bin="$1"
   local root="$2"
+  local has_route=0
+  if grep -aqF 'kv/seq-copy' "${bin}" 2>/dev/null; then
+    has_route=1
+  elif strings "${bin}" 2>/dev/null | grep -qF 'kv/seq-copy'; then
+    has_route=1
+  fi
   # WHY: Radix cross-slot seed requires patch 0017 on vendor tree only.
   if [[ "${root}" != "${_VENDOR_ROOT}" && "${root}" != "${_VENDOR_ROOT}/" ]]; then
-    if strings "${bin}" 2>/dev/null | grep -q 'kv/seq-copy'; then
+    if [[ "${has_route}" -eq 1 ]]; then
       echo "OK: ${bin} embeds /kv/seq-copy (non-vendor build)"
     else
       echo "warn: ${bin} missing /kv/seq-copy (expected for bare sibling builds)" >&2
     fi
     return 0
   fi
-  if strings "${bin}" 2>/dev/null | grep -q 'kv/seq-copy'; then
+  if [[ "${has_route}" -eq 1 ]]; then
     echo "OK: ${bin} embeds POST /kv/seq-copy (patch 0017)"
   else
     echo "error: ${bin} missing /kv/seq-copy — rebuild from patched vendor" >&2
@@ -153,6 +168,35 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   exit 0
 fi
 
+export LLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}"
+
+if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
+  echo "Building llama-server in ${ROOT} (Vulkan)"
+  rm -rf "${BUILD}"
+  cmake -S "${ROOT}" -B "${BUILD}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_VULKAN=ON \
+    -DGGML_CUDA=OFF \
+    -DGGML_METAL=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -DLLAMA_CURL=ON \
+    -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI}"
+  cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
+  BIN="${BUILD}/bin/llama-server"
+  if [[ -x "${BIN}" ]]; then
+    echo "OK: ${BIN}"
+    "${BIN}" --version 2>/dev/null || true
+    _probe_llama_server_capabilities "${BIN}"
+    if [[ "${ROOT}" == "${_VENDOR_ROOT}" || "${ROOT}" == "${_VENDOR_ROOT}/" ]]; then
+      _probe_seq_copy_route "${BIN}" "${ROOT}"
+    fi
+  else
+    echo "Build finished but ${BIN} missing" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
 echo "Building llama-server in ${ROOT} (CUDA=${GGML_CUDA:-ON})"
 if [[ "${GGML_CUDA:-ON}" == "ON" ]]; then
   cuda_bins=()
@@ -187,9 +231,6 @@ fi
 # Default sm_89 (RTX 4090). RTX 5080 (Blackwell): CMAKE_CUDA_ARCHITECTURES=120-real
 # needs a toolkit whose nvcc supports sm_120 (often CUDA 12.8+ or 13.x).
 CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
-
-# WHY LLAMA_BUILD_WEBUI=OFF default on Linux: headless builds lack WebUI assets.
-export LLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}"
 
 rm -rf "${BUILD}"
 # WHY LLAMA_BUILD_WEBUI: eliza fork defaults ON; headless Linux builds fail without WebUI assets.

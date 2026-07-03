@@ -38,6 +38,10 @@ func PathForName(n model.Name) (string, error) {
 }
 
 func BlobsPath(digest string) (string, error) {
+	return BlobsPathIn(envconfig.Models(), digest)
+}
+
+func BlobsPathIn(modelsDir, digest string) (string, error) {
 	// only accept actual sha256 digests
 	pattern := "^sha256[:-][0-9a-fA-F]{64}$"
 	re := regexp.MustCompile(pattern)
@@ -47,7 +51,7 @@ func BlobsPath(digest string) (string, error) {
 	}
 
 	digest = strings.ReplaceAll(digest, ":", "-")
-	path := filepath.Join(envconfig.Models(), "blobs", digest)
+	path := filepath.Join(modelsDir, "blobs", digest)
 	dirPath := filepath.Dir(path)
 	if digest == "" {
 		dirPath = path

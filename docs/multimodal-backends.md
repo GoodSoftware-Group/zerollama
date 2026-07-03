@@ -16,7 +16,7 @@ Merging env + manifest avoids forcing every user to edit JSON for safety caps, w
 In the model `config.json` (same layer as other `model.ConfigV2` fields):
 
 - **`modality_backends`**: map of modality key → driver name.
-  - `image`: `mlx-imagegen` (default, implicit) or `external-image` (user command).
+  - `image`: `mlx-imagegen` (default, implicit), `external-image` (stable-diffusion.cpp; [sd-vulkan-a380.md](./sd-vulkan-a380.md)), or `openvino-image` (OpenVINO GenAI; [sd-openvino-a380.md](./sd-openvino-a380.md)).
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
   - `speech`: `piper` for Piper TTS.
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
@@ -31,6 +31,47 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `piper_voice_<name>`: optional per-voice ONNX (e.g. `piper_voice_alloy`); `<name>` is the OpenAI `voice` field with non-alphanumeric characters stripped. If set, it overrides `piper_model` for that request.
   - `wan_repo`, `wan_ckpt_dir`: Wan upstream tree and checkpoint directory (weights installed outside Ollama blobs).
   - `wan_gguf_path` (optional): GGUF weights when safetensors+offload OOM on 16 GB.
+  - `sd_cli`, `sd_model`: [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Vulkan; [sd-vulkan-a380.md](./sd-vulkan-a380.md))
+  - `ov_model_dir`, `ov_python`, `external_image_bin`: OpenVINO GenAI ([sd-openvino-a380.md](./sd-openvino-a380.md))
+- **`image_generation`** (optional): per-model defaults for `external-image` / `openvino-image` — `width`, `height`, `steps`, `cfg_scale`, `sampler`, `diffusion_fa`, `vae_on_cpu`, `vae_tiling`. **Why manifest not env:** Intel ANV needs `diffusion_fa: true` for sd.cpp on Arc; SD-Turbo needs low steps/cfg — these vary per tag, not fleet-wide.
+
+Example (SD 1.5 Vulkan on Arc):
+
+```json
+{
+  "capabilities": ["image"],
+  "modality_backends": { "image": "external-image" },
+  "concurrency_groups": ["imagegen"],
+  "backend_paths": {
+    "sd_cli": "/usr/share/zerollama/sd-cpp/bin/sd-cli",
+    "sd_model": "/usr/share/zerollama/sd-cpp/models/stable-diffusion-v1-5-Q4_0.gguf"
+  },
+  "image_generation": {
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "cfg_scale": 7.0,
+    "diffusion_fa": true,
+    "vae_on_cpu": true
+  }
+}
+```
+
+Example (OpenVINO — per-model wrapper override):
+
+```json
+{
+  "capabilities": ["image"],
+  "modality_backends": { "image": "openvino-image" },
+  "backend_paths": {
+    "ov_model_dir": "/usr/share/zerollama/openvino-genai/models/sd15-int8-ov",
+    "external_image_bin": "/usr/lib/ollama-zerollama/ov_external_image.sh"
+  },
+  "image_generation": { "width": 512, "height": 512, "steps": 20 }
+}
+```
+
+**Why `external_image_bin` in manifest:** Vulkan SD uses fleet env `OLLAMA_EXTERNAL_IMAGE_BIN` → `sd_external_image.sh`; OpenVINO tags need a different wrapper without changing global env — manifest wins over env when set.
 
 Example (Piper TTS):
 
@@ -90,12 +131,16 @@ When `modality_backends.video_understanding` is `sglang` and `OLLAMA_SGLANG_URL`
 
 ### External image hook
 
-When `modality_backends.image` is `external-image`, Ollama sets:
+When `modality_backends.image` is `external-image` or `openvino-image`, Ollama sets:
 
 - `OLLAMA_IMAGE_PROMPT`, `OLLAMA_IMAGE_WIDTH`, `OLLAMA_IMAGE_HEIGHT`, `OLLAMA_IMAGE_SEED`
 - `OLLAMA_IMAGE_OUTPUT`: path where your program must write a PNG.
+- For SD models: `OLLAMA_SD_CLI`, `OLLAMA_SD_MODEL`, and optional `OLLAMA_SD_STEPS`, `OLLAMA_SD_CFG_SCALE`, `OLLAMA_SD_SAMPLER`, `OLLAMA_SD_DIFFUSION_FA`, `OLLAMA_SD_VAE_ON_CPU`, `OLLAMA_SD_VAE_TILING` (from manifest `backend_paths` + `image_generation`).
+- For OpenVINO: `OLLAMA_OV_MODEL_DIR`, `OLLAMA_OV_PYTHON`, `OLLAMA_OV_DEVICE`, `OLLAMA_OV_STEPS`, … (from manifest + `ov_image_generate.py`).
 
-The model must still declare the `image` capability.
+**Why subprocess not in-process ggml:** diffusion UNet/VAE stacks are separate from chat GGUF runners; sd.cpp and OpenVINO GenAI ship their own schedulers and weight formats. Subprocess isolation keeps chat scheduler stable and lets operators swap backends without recompiling zerollama.
+
+The model must still declare the `image` capability. List with `zerollama ls image`; bench wall time with `zerollama bench MODEL --force`.
 
 ## Audio formats
 
