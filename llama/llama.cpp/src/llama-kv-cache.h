@@ -150,6 +150,7 @@ public:
 
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
+    bool     get_v_trans()  const { return v_trans; }
 
     bool get_has_shift() const;
 

@@ -49,6 +49,18 @@ def run_tensor_probe(ctx_ptr: int, seq_id: int, kv_slot: int) -> dict[str, Any] 
     return dict(raw) if raw is not None else None
 
 
+def last_tensor_probe_entries() -> list[dict[str, Any]]:
+    """Last successful tensor probes per kv_slot (survives page_bind_clear)."""
+    if not tensor_probe_available():
+        return []
+    try:
+        from runtime.kv._kv_native import page_bind_last_tensor_probe
+    except AttributeError:
+        return []
+    rows = page_bind_last_tensor_probe()
+    return [{"kv_slot": int(r["kv_slot"]), "probe": dict(r["probe"])} for r in rows]
+
+
 def map_page(ctx_ptr: int, seq_id: int, kv_slot: int, page_index: int) -> dict[str, Any]:
     """Resolve writable K/V tensor spans for one registered PA page."""
     if not tensor_probe_available() or ctx_ptr == 0:

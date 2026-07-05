@@ -26,11 +26,17 @@ typedef struct {
     uint64_t kv_v_data_layer0;
     int32_t kv_n_layers;
     int32_t tensor_layers_verified;
+    int32_t kv_v_transposed;
+    uint32_t kv_cache_kv_size;
+    uint32_t kv_cache_n_stream;
     int physical_pages_bound;
     int physical_pages_mapped;
 } KvTensorProbeResult;
 
 int kv_tensor_probe_run(void *ctx, int32_t seq_id, int32_t kv_slot, KvTensorProbeResult *out);
+
+/* v35: survives page_bind_clear so /health can show last decode bind. */
+int kv_tensor_probe_last_get(int kv_slot, KvTensorProbeResult *out);
 
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
 #endif /* KV_TENSOR_PROBE_H */

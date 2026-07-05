@@ -85,6 +85,18 @@ LLAMA_API int32_t llama_memory_kv_n_layers(
         llama_memory_t mem,
         uint32_t *     out_n);
 
+typedef struct llama_kv_cache_layout {
+    uint32_t kv_size;
+    uint32_t n_stream;
+    int32_t  v_transposed;   /* 1 when V uses transposed cell indexing (non-FA) */
+    int32_t  ok;
+} llama_kv_cache_layout;
+
+/* Resolved attn KV layout (stream count, transposed-V flag). */
+LLAMA_API int32_t llama_memory_kv_cache_layout(
+        llama_memory_t         mem,
+        llama_kv_cache_layout * out);
+
 /*
  * Writable span for one PA page mapped onto llama KV cells (layer 0 export).
  * WHY layer 0 first: operators validate bind path before multi-layer fan-out;
@@ -102,6 +114,7 @@ typedef struct llama_kv_page_map {
     uint64_t   k_span_bytes;
     uint64_t   v_span_bytes;
     int32_t    kv_layer;
+    int32_t    v_transposed;     /* 1 when V uses transposed cell indexing (non-FA) */
     int32_t    ok;
 } llama_kv_page_map;
 

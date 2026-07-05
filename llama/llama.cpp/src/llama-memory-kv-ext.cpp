@@ -206,6 +206,27 @@ int32_t llama_memory_kv_n_layers(
     return LLAMA_KV_EXT_OK;
 }
 
+int32_t llama_memory_kv_cache_layout(
+        llama_memory_t         mem,
+        llama_kv_cache_layout * out) {
+    if (!out) {
+        return LLAMA_KV_EXT_ARG;
+    }
+
+    std::memset(out, 0, sizeof(*out));
+
+    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
+    if (!kv) {
+        return LLAMA_KV_EXT_UNSUPPORTED;
+    }
+
+    out->kv_size      = kv->get_size();
+    out->n_stream     = kv->get_n_stream();
+    out->v_transposed = kv->get_v_trans() ? 1 : 0;
+    out->ok           = 1;
+    return LLAMA_KV_EXT_OK;
+}
+
 static bool llama_kv_ext_cells_contiguous(
         const llama_kv_cell_bind * cells,
         uint32_t                   n) {
@@ -235,13 +256,21 @@ static int32_t llama_kv_ext_page_map_contiguous(
     }
 
     const uint64_t kv_size = kv->get_size();
-    if ((uint64_t) k->ne[1] != kv_size || (uint64_t) v->ne[1] != kv_size) {
-        /* Transposed-V / non-standard layouts: v33 supports FA-style [embd, kv_size]. */
+    if ((uint64_t) k->ne[1] != kv_size) {
+        return LLAMA_KV_EXT_UNSUPPORTED;
+    }
+    if (v && (uint64_t) v->ne[1] != kv_size) {
         return LLAMA_KV_EXT_UNSUPPORTED;
     }
 
     if (!llama_kv_ext_cells_contiguous(cells, n_cells)) {
         return LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    for (uint32_t i = 1; i < n_cells; ++i) {
+        if (cells[i].stream != cells[0].stream) {
+            return LLAMA_KV_EXT_NOT_FOUND;
+        }
     }
 
     const uint32_t cell0 = cells[0].cell_idx;
@@ -251,18 +280,28 @@ static int32_t llama_kv_ext_page_map_contiguous(
     }
 
     const uint64_t k_off = (uint64_t) cell0 * (uint64_t) k->nb[1];
-    const uint64_t v_off = (uint64_t) cell0 * (uint64_t) v->nb[1];
     const uint64_t span  = (uint64_t) n_cells * (uint64_t) k->nb[1];
-    const uint64_t vspan = (uint64_t) n_cells * (uint64_t) v->nb[1];
 
     out->n_cells         = n_cells;
     out->cell_idx_first  = cell0;
     out->cell_idx_last   = cell1;
     out->stream          = cells[0].stream;
     out->k_data          = (uint64_t) (uintptr_t) ((const char *) k->data + k_off);
-    out->v_data          = (uint64_t) (uintptr_t) ((const char *) v->data + v_off);
     out->k_span_bytes    = span;
-    out->v_span_bytes    = vspan;
+    out->v_transposed    = kv->get_v_trans() ? 1 : 0;
+
+    if (v && v->data) {
+        const uint64_t v_off  = (uint64_t) cell0 * (uint64_t) v->nb[1];
+        const uint64_t vspan  = (uint64_t) n_cells * (uint64_t) v->nb[1];
+        out->v_data           = (uint64_t) (uintptr_t) ((const char *) v->data + v_off);
+        /* WHY same span for v_trans: cells are contiguous along dim 1; full V page
+         * requires strided access with row stride kv_size when v_transposed=1. */
+        out->v_span_bytes     = vspan;
+    } else {
+        out->v_data       = 0;
+        out->v_span_bytes = 0;
+    }
+
     out->ok              = 1;
     return LLAMA_KV_EXT_OK;
 }

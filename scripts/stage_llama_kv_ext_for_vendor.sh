@@ -28,7 +28,8 @@ CMAKE="${VENDOR_SRC}/CMakeLists.txt"
 
 for f in \
   "${INTREE}/include/llama-kv-ext.h" \
-  "${INTREE}/src/llama-memory-kv-ext.cpp"; do
+  "${INTREE}/src/llama-memory-kv-ext.cpp" \
+  "${INTREE}/src/llama-kv-cache.h"; do
   if [[ ! -f "${f}" ]]; then
     echo "error: missing in-tree kv-ext source ${f}" >&2
     exit 1
@@ -49,6 +50,7 @@ _sync_one() {
 
 _sync_one "${INTREE}/include/llama-kv-ext.h" "${VENDOR_INC}/llama-kv-ext.h"
 _sync_one "${INTREE}/src/llama-memory-kv-ext.cpp" "${VENDOR_SRC}/llama-memory-kv-ext.cpp"
+_sync_one "${INTREE}/src/llama-kv-cache.h" "${VENDOR_SRC}/llama-kv-cache.h"
 
 if ! grep -q 'llama-memory-kv-ext.cpp' "${CMAKE}" 2>/dev/null; then
   _changed=1

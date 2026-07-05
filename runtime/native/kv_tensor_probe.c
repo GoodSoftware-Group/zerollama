@@ -206,6 +206,36 @@ kv_tensor_bind_attempt(
     return;
 }
 
+typedef struct {
+    int valid;
+    KvTensorProbeResult probe;
+} KvLastProbeSlot;
+
+static KvLastProbeSlot g_last_probes[KV_MAX_PAGE_BINDS];
+
+static void
+kv_tensor_probe_last_save(int kv_slot, const KvTensorProbeResult *probe)
+{
+    if (probe == NULL || kv_slot < 0 || kv_slot >= KV_MAX_PAGE_BINDS) {
+        return;
+    }
+    g_last_probes[kv_slot].valid = 1;
+    g_last_probes[kv_slot].probe = *probe;
+}
+
+int
+kv_tensor_probe_last_get(int kv_slot, KvTensorProbeResult *out)
+{
+    if (out == NULL || kv_slot < 0 || kv_slot >= KV_MAX_PAGE_BINDS) {
+        return -1;
+    }
+    if (!g_last_probes[kv_slot].valid) {
+        return 1;
+    }
+    *out = g_last_probes[kv_slot].probe;
+    return 0;
+}
+
 int
 kv_tensor_probe_run(void *ctx, int32_t seq_id, int32_t kv_slot, KvTensorProbeResult *out)
 {
@@ -231,6 +261,12 @@ kv_tensor_probe_run(void *ctx, int32_t seq_id, int32_t kv_slot, KvTensorProbeRes
         out->can_shift = llama_memory_can_shift(mem) ? 1 : 0;
         out->seq_pos_min = (int32_t)llama_memory_seq_pos_min(mem, (llama_seq_id)seq_id);
         out->seq_pos_max = (int32_t)llama_memory_seq_pos_max(mem, (llama_seq_id)seq_id);
+        llama_kv_cache_layout layout;
+        if (llama_memory_kv_cache_layout(mem, &layout) == LLAMA_KV_EXT_OK && layout.ok) {
+            out->kv_v_transposed = layout.v_transposed;
+            out->kv_cache_kv_size = layout.kv_size;
+            out->kv_cache_n_stream = layout.n_stream;
+        }
     }
 
     KvPageBind *bind = kv_find_page_bind((int)kv_slot);
@@ -261,6 +297,9 @@ kv_tensor_probe_run(void *ctx, int32_t seq_id, int32_t kv_slot, KvTensorProbeRes
     }
 
     kv_tensor_bind_attempt(lctx, seq_id, kv_slot, out);
+    if (out->tensor_pages_bound) {
+        kv_tensor_probe_last_save(kv_slot, out);
+    }
     return 0;
 }
 

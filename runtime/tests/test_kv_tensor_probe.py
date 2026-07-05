@@ -133,6 +133,9 @@ def test_page_bind_health_includes_multi_layer_probe_fields(monkeypatch):
         "physical_pages_bound": 1,
         "kv_n_layers": 32,
         "tensor_layers_verified": 32,
+        "kv_v_transposed": 0,
+        "kv_cache_kv_size": 4096,
+        "kv_cache_n_stream": 1,
         "blocker": "",
     }
     h = page_bind_health(native_ext_available=True, tensor_probe=probe)
@@ -140,6 +143,33 @@ def test_page_bind_health_includes_multi_layer_probe_fields(monkeypatch):
     assert h["bind_level"] == "physical"
     assert h["kv_n_layers"] == 32
     assert h["tensor_layers_verified"] == 32
+    assert h["kv_v_transposed"] is False
+    assert h["kv_cache_kv_size"] == 4096
+    assert h["kv_cache_n_stream"] == 1
+
+
+def test_page_bind_health_uses_last_probe_fallback(monkeypatch):
+    monkeypatch.setattr("runtime.kv.page_bind._native_page_bind_available", lambda: True)
+    last_probe = {
+        "memory_non_null": 1,
+        "aligned": 1,
+        "tensor_pages_bound": 1,
+        "physical_pages_bound": 1,
+        "kv_v_transposed": 1,
+        "kv_cache_kv_size": 8192,
+        "kv_cache_n_stream": 2,
+        "blocker": "",
+    }
+    monkeypatch.setattr(
+        "runtime.kv.page_bind.page_bind_last_tensor_probe_for_health",
+        lambda: last_probe,
+    )
+    h = page_bind_health(native_ext_available=True, tensor_probe=None)
+    assert h["status"] == "bound"
+    assert h["bind_level"] == "physical"
+    assert h["last_tensor_probe"] is True
+    assert h["kv_v_transposed"] is True
+    assert h["kv_cache_n_stream"] == 2
 
 
 def test_page_bind_health_bound_not_overridden_by_misaligned(monkeypatch):

@@ -33,6 +33,7 @@ done
 
 grep -q 'llama-memory-kv-ext.cpp' "${ROOT}/llama/llama.cpp/src/CMakeLists.txt"
 grep -q 'cell_index_for' "${ROOT}/llama/llama.cpp/src/llama-kv-cache.h"
+grep -q 'get_v_trans' "${ROOT}/llama/llama.cpp/src/llama-kv-cache.h"
 grep -q 'llama_memory_kv_ext_classify' "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
 
 # Staging API symbols we export from libllama when linked.
@@ -41,6 +42,7 @@ REQUIRED_API=(
   llama_memory_kv_cell_map_range
   llama_memory_kv_tensor_info
   llama_memory_kv_n_layers
+  llama_memory_kv_cache_layout
   llama_memory_kv_ext_classify
   llama_memory_kv_ext_writable_bind_probe
 )
@@ -122,6 +124,8 @@ report = {
         "llama_memory_kv_cell_for_pos",
         "llama_memory_kv_cell_map_range",
         "llama_memory_kv_tensor_info",
+        "llama_memory_kv_n_layers",
+        "llama_memory_kv_cache_layout",
         "llama_memory_kv_ext_classify",
         "llama_memory_kv_ext_writable_bind_probe",
     ],

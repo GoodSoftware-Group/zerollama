@@ -13,6 +13,7 @@ All notable changes to this project are documented in this file. The format is b
 - **Mac build** — `scripts/stage_llama_kv_ext_for_vendor.sh`; `BUILD_RUNTIME_KV_EXT=auto` in `build_zerollama_mac.sh` with `.build-stamps/runtime-kv-native.sha` fingerprint cache.
 - **Darwin sidecar** — `BootstrapDarwinSidecar` compares `kv_native_build_sha` on `/health` vs on-disk stamp; stops and respawns stale sidecar on mismatch (default persist policy no longer traps old Python processes).
 - **v34 multi-layer bind** — `llama_memory_kv_n_layers`; tensor probe verifies all KV layers; writable `page_map` fans out per layer; `/health.kv_page_bind.kv_n_layers` + `tensor_layers_verified`.
+- **v35 transposed-V layout** — `llama_memory_kv_cache_layout`; `v_transposed` on `llama_kv_page_map`; multi-stream cell stream guard; `/health` exports `kv_v_transposed`, `kv_cache_kv_size`, `kv_cache_n_stream`; `page_bind_last_tensor_probe` survives `page_bind_clear` for post-generate health.
 - **`smoke_runtime_assert_kv_snapshot()`** — accepts `bound`+`physical`; allows `kv_bind.physical_pages_bound` when v33 writable page-map is linked.
 
 ### Agent QoS hardening, project tracking, and cross-backend safety (M15b, Jul 2026)

@@ -110,6 +110,27 @@ def page_bind_stats() -> dict[str, Any]:
     }
 
 
+def page_bind_last_tensor_probe_for_health() -> dict[str, Any] | None:
+    """Return the best last decode probe when no running request is active."""
+    if not _native_page_bind_available():
+        return None
+    try:
+        from runtime.kv._kv_native import page_bind_last_tensor_probe
+    except (ImportError, AttributeError):
+        return None
+    rows = page_bind_last_tensor_probe()
+    if not rows:
+        return None
+    best: dict[str, Any] | None = None
+    for row in rows:
+        probe = dict(row.get("probe") or {})
+        if probe.get("tensor_pages_bound"):
+            return probe
+        if best is None:
+            best = probe
+    return best
+
+
 def page_bind_tensor_probe_for_ctx(
     lib: Any,
     ctx: Any,
@@ -147,6 +168,12 @@ def page_bind_health(
     stats = page_bind_stats()
     active = int(stats.get("active_binds") or 0)
     base_probe = tensor_probe or {}
+    last_probe_fallback = False
+    if not tensor_probe:
+        last = page_bind_last_tensor_probe_for_health()
+        if last:
+            base_probe = last
+            last_probe_fallback = True
     writable = writable_probe if writable_probe is not None else default_writable_probe()
 
     # Normalise int 0/1 from C to bool; None means no probe was run.
@@ -241,6 +268,14 @@ def page_bind_health(
                 out["kv_n_layers"] = int(base_probe["kv_n_layers"])
             if base_probe.get("tensor_layers_verified") is not None:
                 out["tensor_layers_verified"] = int(base_probe["tensor_layers_verified"])
+            if base_probe.get("kv_v_transposed") is not None:
+                out["kv_v_transposed"] = bool(base_probe["kv_v_transposed"])
+            if base_probe.get("kv_cache_kv_size") is not None:
+                out["kv_cache_kv_size"] = int(base_probe["kv_cache_kv_size"])
+            if base_probe.get("kv_cache_n_stream") is not None:
+                out["kv_cache_n_stream"] = int(base_probe["kv_cache_n_stream"])
+            if last_probe_fallback:
+                out["last_tensor_probe"] = True
         return out
 
     return {

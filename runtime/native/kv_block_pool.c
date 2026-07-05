@@ -621,6 +621,67 @@ kv_native_page_bind_table(PyObject *Py_UNUSED(self), PyObject *args)
 
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
 static PyObject *
+kv_native_probe_result_dict(const KvTensorProbeResult *probe)
+{
+    const char *blocker = kv_tensor_blocker_str(probe->blocker_code);
+    const char *memory_kind = kv_tensor_memory_kind_str(probe->memory_kind);
+    return Py_BuildValue(
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O}",
+        "memory_non_null",
+        probe->memory_non_null,
+        "can_shift",
+        probe->can_shift,
+        "seq_pos_min",
+        (int)probe->seq_pos_min,
+        "seq_pos_max",
+        (int)probe->seq_pos_max,
+        "llama_token_cells",
+        (int)probe->llama_token_cells,
+        "pa_pages_registered",
+        (int)probe->pa_pages_registered,
+        "pa_block_size",
+        (int)probe->pa_block_size,
+        "pages_fit",
+        probe->pages_fit,
+        "aligned",
+        probe->aligned,
+        "cell_pages_bound",
+        probe->cell_pages_bound,
+        "tensor_pages_bound",
+        probe->tensor_pages_bound ? 1 : 0,
+        "physical_pages_bound",
+        probe->physical_pages_bound ? 1 : 0,
+        "physical_pages_mapped",
+        (int)probe->physical_pages_mapped,
+        "kv_stream",
+        (int)probe->kv_stream,
+        "memory_kind",
+        (int)probe->memory_kind,
+        "kv_n_layers",
+        (int)probe->kv_n_layers,
+        "tensor_layers_verified",
+        (int)probe->tensor_layers_verified,
+        "kv_v_transposed",
+        (int)probe->kv_v_transposed,
+        "kv_cache_kv_size",
+        (int)probe->kv_cache_kv_size,
+        "kv_cache_n_stream",
+        (int)probe->kv_cache_n_stream,
+        "kv_k_data_layer0",
+        probe->kv_k_data_layer0,
+        "kv_v_data_layer0",
+        probe->kv_v_data_layer0,
+        "memory_kind_name",
+        memory_kind,
+        "blocker",
+        blocker,
+        "tensor_bind_ready",
+        probe->tensor_pages_bound ? Py_True : Py_False,
+        "writable_bind_ready",
+        probe->physical_pages_bound ? Py_True : Py_False);
+}
+
+static PyObject *
 kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
 {
     unsigned PY_LONG_LONG ctx_ptr = 0;
@@ -638,56 +699,51 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
         PyErr_SetString(PyExc_RuntimeError, "tensor probe failed");
         return NULL;
     }
-    const char *blocker = kv_tensor_blocker_str(probe.blocker_code);
-    const char *memory_kind = kv_tensor_memory_kind_str(probe.memory_kind);
-    return Py_BuildValue(
-        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O}",
-        "memory_non_null",
-        probe.memory_non_null,
-        "can_shift",
-        probe.can_shift,
-        "seq_pos_min",
-        (int)probe.seq_pos_min,
-        "seq_pos_max",
-        (int)probe.seq_pos_max,
-        "llama_token_cells",
-        (int)probe.llama_token_cells,
-        "pa_pages_registered",
-        (int)probe.pa_pages_registered,
-        "pa_block_size",
-        (int)probe.pa_block_size,
-        "pages_fit",
-        probe.pages_fit,
-        "aligned",
-        probe.aligned,
-        "cell_pages_bound",
-        probe.cell_pages_bound,
-        "tensor_pages_bound",
-        probe.tensor_pages_bound ? 1 : 0,
-        "physical_pages_bound",
-        probe.physical_pages_bound ? 1 : 0,
-        "physical_pages_mapped",
-        (int)probe.physical_pages_mapped,
-        "kv_stream",
-        (int)probe.kv_stream,
-        "memory_kind",
-        (int)probe.memory_kind,
-        "kv_n_layers",
-        (int)probe.kv_n_layers,
-        "tensor_layers_verified",
-        (int)probe.tensor_layers_verified,
-        "kv_k_data_layer0",
-        probe.kv_k_data_layer0,
-        "kv_v_data_layer0",
-        probe.kv_v_data_layer0,
-        "memory_kind_name",
-        memory_kind,
-        "blocker",
-        blocker,
-        "tensor_bind_ready",
-        probe.tensor_pages_bound ? Py_True : Py_False,
-        "writable_bind_ready",
-        probe.physical_pages_bound ? Py_True : Py_False);
+    return kv_native_probe_result_dict(&probe);
+}
+
+static PyObject *
+kv_native_page_bind_last_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    int kv_slot = -1;
+    if (!PyArg_ParseTuple(args, "|i", &kv_slot)) {
+        return NULL;
+    }
+    if (kv_slot >= 0) {
+        KvTensorProbeResult probe;
+        if (kv_tensor_probe_last_get(kv_slot, &probe) != 0) {
+            Py_RETURN_NONE;
+        }
+        return kv_native_probe_result_dict(&probe);
+    }
+    PyObject *out = PyList_New(0);
+    if (out == NULL) {
+        return NULL;
+    }
+    for (int slot = 0; slot < KV_MAX_PAGE_BINDS; slot++) {
+        KvTensorProbeResult probe;
+        if (kv_tensor_probe_last_get(slot, &probe) != 0) {
+            continue;
+        }
+        PyObject *probe_dict = kv_native_probe_result_dict(&probe);
+        if (probe_dict == NULL) {
+            Py_DECREF(out);
+            return NULL;
+        }
+        PyObject *row = Py_BuildValue("{s:i,s:O}", "kv_slot", slot, "probe", probe_dict);
+        Py_DECREF(probe_dict);
+        if (row == NULL) {
+            Py_DECREF(out);
+            return NULL;
+        }
+        if (PyList_Append(out, row) != 0) {
+            Py_DECREF(row);
+            Py_DECREF(out);
+            return NULL;
+        }
+        Py_DECREF(row);
+    }
+    return out;
 }
 
 #ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
@@ -747,7 +803,7 @@ kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
     }
 
     return Py_BuildValue(
-        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:K,s:K,s:K,s:K}",
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:K,s:K,s:K,s:K,s:i}",
         "page",
         page_index,
         "block_id",
@@ -771,7 +827,9 @@ kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
         "k_span_bytes",
         page_map.k_span_bytes,
         "v_span_bytes",
-        page_map.v_span_bytes);
+        page_map.v_span_bytes,
+        "v_transposed",
+        (int)page_map.v_transposed);
 }
 #endif /* LLAMA_KV_EXT_WRITABLE_PAGE_MAP */
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
@@ -1588,6 +1646,8 @@ static PyMethodDef kv_module_methods[] = {
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
     {"page_bind_tensor_probe", kv_native_page_bind_tensor_probe, METH_VARARGS,
      "Probe llama memory vs PA page table (ctx_ptr, seq_id, kv_slot)"},
+    {"page_bind_last_tensor_probe", kv_native_page_bind_last_tensor_probe, METH_VARARGS,
+     "Last successful tensor probe for kv_slot (optional); all slots when omitted"},
 #ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
     {"page_bind_map_page", kv_native_page_bind_map_page, METH_VARARGS,
      "Resolve writable K/V spans for one PA page (ctx_ptr, seq_id, kv_slot, page_index)"},
