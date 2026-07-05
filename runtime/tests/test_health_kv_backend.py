@@ -64,6 +64,14 @@ def test_kv_native_health_when_built(monkeypatch):
     assert isinstance(pool, NativeBlockPool)
 
 
+def test_kv_native_build_sha_reads_stamp(monkeypatch, tmp_path):
+    stamp_dir = tmp_path / ".build-stamps"
+    stamp_dir.mkdir()
+    (stamp_dir / "runtime-kv-native.sha").write_text("abc123\n", encoding="utf-8")
+    monkeypatch.setenv("ZEROLLAMA_REPO", str(tmp_path))
+    assert backend_mod.kv_native_build_sha() == "abc123"
+
+
 @pytest.mark.skipif(not _NATIVE_BUILT, reason="native extension not built")
 def test_block_pool_lazy_respects_env(monkeypatch):
     _fresh_backend(monkeypatch, ZEROLLAMA_RUNTIME_KV_NATIVE="1")

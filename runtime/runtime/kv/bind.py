@@ -87,13 +87,14 @@ def kv_bind_health(
     assign_llama_slots: bool,
     parallel_slots: int,
     physical_bind_level: str | None = None,
+    physical_pages_bound: bool = False,
 ) -> dict[str, Any]:
     mode = KvBindMode.ACCOUNTING_ONLY
     if assign_llama_slots and parallel_slots >= 1:
         mode = KvBindMode.SEQ_SLOT
     return {
         "mode": mode.value,
-        "physical_pages_bound": False,
+        "physical_pages_bound": physical_pages_bound,
         "physical_bind_level": physical_bind_level,
         "page_table_semantics": (
             "block_ids[i] is pool block id for sequence page i (ordinal page, not id==i)"

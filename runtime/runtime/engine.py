@@ -1511,17 +1511,27 @@ class InferenceEngine:
 
     def _kv_bind_health(self) -> dict[str, Any]:
         from runtime.kv.bind import kv_bind_health
+        from runtime.kv.page_bind import page_bind_stats
         from runtime.kv.physical import kv_bind_physical_level
 
         backend = self._health_llama_backend()
         inprocess_loaded = self._inprocess_session_for_health() is not None
+        stats = page_bind_stats()
+        physical_bound = bool(stats.get("physical_pages_bound"))
+        tensor_bound = bool(stats.get("tensor_pages_bound"))
+        level = kv_bind_physical_level(
+            backend, inprocess_weights_loaded=inprocess_loaded
+        )
+        if physical_bound:
+            level = "physical"
+        elif tensor_bound:
+            level = "tensor"
         return kv_bind_health(
             llama_backend=backend,
             assign_llama_slots=self.loop.assign_llama_slots,
             parallel_slots=self._effective_llama_parallel_slots(),
-            physical_bind_level=kv_bind_physical_level(
-                backend, inprocess_weights_loaded=inprocess_loaded
-            ),
+            physical_bind_level=level,
+            physical_pages_bound=physical_bound,
         )
 
     def _kv_physical_health(self) -> dict[str, Any] | None:

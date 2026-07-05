@@ -100,3 +100,15 @@ def test_kv_bind_health_modes():
     )
     assert h2["mode"] == KvBindMode.ACCOUNTING_ONLY.value
     assert "sequence page" in h["page_table_semantics"] or "ordinal" in h["page_table_semantics"]
+
+
+def test_kv_bind_health_physical_when_bound():
+    h = kv_bind_health(
+        llama_backend="inprocess",
+        assign_llama_slots=True,
+        parallel_slots=2,
+        physical_bind_level="physical",
+        physical_pages_bound=True,
+    )
+    assert h["physical_pages_bound"] is True
+    assert h["physical_bind_level"] == "physical"

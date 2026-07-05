@@ -179,7 +179,7 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | Piece | Notes |
 |-------|--------|
 | `runtime/runtime/kv/bind.py` | Page table: sequence page *i* → pool id `block_ids[i]` (ids are **not** required to equal *i*) |
-| `/health` `kv_bind` | `mode`, `physical_pages_bound: false` |
+| `/health` `kv_bind` | `mode`, `physical_bind_level`, `physical_pages_bound` (true when v33 writable page-map mapped all live pages) |
 | `/health` `kv_scheduler.requests[].block_ids` | Primary-pool (device 0) page list per request |
 | Forward | `assert_kv_capacity` before generate/stream/batch; in-process `kv_token_budget` vs PA reserve |
 | Multi-seq load | Shared `n_ctx` capped by `num_blocks * block_size` when pool cap is configured |
@@ -635,7 +635,7 @@ Phase 14 **inprocess** per-request `llama_context` remains default when `llama_p
 | `kv` | Allocator: `backend` (`python` / `native`), `native_requested`, `native_available`, optional `note` |
 | `kv_pools` | Per-device `free`, `utilization` (unchanged) |
 | `kv_scheduler` | `blocks_reserved`, `requests[]` (`block_ids`, `kv_slot`, tokens, state) |
-| `kv_bind` | `mode`, `physical_bind_level`, `physical_pages_bound: false` |
+| `kv_bind` | `mode`, `physical_bind_level`, `physical_pages_bound` (aggregate from native page-bind stats) |
 | `kv_physical` | Running-request PA reserve; live `llama_pos_*` when multi-seq shared ctx |
 | `kv_physical_recent` | Last ≤8 **mismatch** alignment rows (`request_id`, `at`, `aligned`, …) |
 | `kv_scheduler_tick` | `{value, source}` admission counter |
@@ -643,7 +643,7 @@ Phase 14 **inprocess** per-request `llama_context` remains default when `llama_p
 | `kv_decode_steps` | Cumulative in-process decode count or `{active: false, reason}` |
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | List of forward-plan objects (waiting + running) |
-| `kv_page_bind` | v8 bind status: `partial` + `bind_level=seq_position` when native ext built without linked tensor probe; **`bound` + `bind_level=tensor`** after linked `llama-kv-ext` decode (GPU sign-off success path); `not_implemented` when ext missing. **`physical_pages_bound` stays false** until upstream writable page-map API (criterion #5). GPU smokes: `smoke_runtime_assert_kv_snapshot()` accepts partial or bound — **why:** requiring partial-only false-fails linked vendor builds. |
+| `kv_page_bind` | v8 bind status: `partial` + `bind_level=seq_position` when native ext built without linked tensor probe; **`bound` + `bind_level=tensor|physical`** after linked `llama-kv-ext` decode (GPU sign-off success path); `not_implemented` when ext missing. **v33:** `physical_pages_bound` when `llama_memory_kv_page_map` maps all live pages. GPU smokes: `smoke_runtime_assert_kv_snapshot()` accepts partial or bound — **why:** requiring partial-only false-fails linked vendor builds. |
 | `kv_live_physical` | Opt-in bump to multi-seq in-process ctx (`ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL`) |
 
 `kv_bind.physical_bind_level` is `seq_position` whenever in-process weights are loaded (not only multi-seq). `kv_physical` may include a `note` when `llama_parallel_slots==1` (no shared ctx for live positions).

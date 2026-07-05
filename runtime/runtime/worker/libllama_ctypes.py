@@ -826,6 +826,15 @@ class LlamaLoadedSession:
         probe = run_tensor_probe(ctx_ptr, seq_id, int(slot))
         if not probe:
             return
+        if probe.get("physical_pages_bound"):
+            _llama_log.debug(
+                "KV physical bind ok (%s kv_slot=%s stream=%s mapped=%s)",
+                seq_id,
+                slot,
+                probe.get("kv_stream"),
+                probe.get("physical_pages_mapped"),
+            )
+            return
         if probe.get("tensor_pages_bound"):
             _llama_log.debug(
                 "KV tensor bind ok (%s kv_slot=%s stream=%s)",

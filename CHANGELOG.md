@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file. The format is b
 - **Native ext** — `kv_tensor_probe.c`, `page_bind.py`, `/health.kv_page_bind.writable_bind_*` and `physical_pages_bound` after decode probe.
 - **Mac build** — `scripts/stage_llama_kv_ext_for_vendor.sh`; `BUILD_RUNTIME_KV_EXT=auto` in `build_zerollama_mac.sh` with `.build-stamps/runtime-kv-native.sha` fingerprint cache.
 - **Darwin sidecar** — `BootstrapDarwinSidecar` compares `kv_native_build_sha` on `/health` vs on-disk stamp; stops and respawns stale sidecar on mismatch (default persist policy no longer traps old Python processes).
+- **`smoke_runtime_assert_kv_snapshot()`** — accepts `bound`+`physical`; allows `kv_bind.physical_pages_bound` when v33 writable page-map is linked.
 
 ### Agent QoS hardening, project tracking, and cross-backend safety (M15b, Jul 2026)
 
@@ -315,7 +316,7 @@ Doc: [radix-prefix-share.md](docs/radix-prefix-share.md), [ROADMAP L3-R](docs/RO
 
 - **`./scripts/metal_signoff.sh`** — M4 Max **PASS** (~2.6 min): coordination → Phase 13 snapshot → Phase 14 inprocess → qwen35 → Phase 15 (5 steps incl. `batch_decode_in_c=True`, tensor bind probe).
 - **Canonical qwen35 tag:** **`eliza-1-2b:latest`** via `RUN_E2E_QWEN35_MODEL=…` — **why:** `eliza-1-*` is the ship qwen35 family in this repo (2B is fast enough for CI handoff/resume); `qwen3.6:latest` remains valid but heavier and not required for the gate.
-- **`smoke_runtime_assert_kv_snapshot()`** — accepts `partial`+`seq_position` **or** `bound`+`tensor`/`seq_position` on `/health` and `partial`/`bound` on `/internal/kv-snapshot`; still asserts `physical_pages_bound=false` until upstream writable page-map API lands.
+- **`smoke_runtime_assert_kv_snapshot()`** — accepts `partial`+`seq_position` **or** `bound`+`tensor`/`physical`/`seq_position` on `/health` and `partial`/`bound` on `/internal/kv-snapshot`; v33+ allows `physical_pages_bound` when writable page-map is linked.
 - **Vendor libllama:** `macos_export_llama_cpp_paths()` → `vendor/llama-cpp-c84b3020` for linked `_kv_native`; weak CUDA graph invalidate in `kv_decode_loop.c` for Metal vendor builds without zerollama’s CUDA hook.
 - **Doc sync:** ROADMAP M9/M10, README Mac tier-2, [apple-silicon-metal.md](docs/apple-silicon-metal.md), [testing-smoke.md](docs/testing-smoke.md).
 
