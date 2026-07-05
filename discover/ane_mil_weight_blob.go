@@ -80,6 +80,8 @@ func ExtractMatmulRectFP16(raw []byte, tensor *ggml.Tensor, inCh, outCh int) ([]
 		return extractMatmulRectF32(raw, int(cols), inCh, outCh, transpose)
 	case ggml.TensorTypeBF16:
 		return extractMatmulRectBF16(raw, int(cols), inCh, outCh, transpose)
+	case ggml.TensorTypeQ8_0:
+		return extractMatmulRectQ8_0(raw, int(rows), int(cols), inCh, outCh, transpose)
 	default:
 		return nil, fmt.Errorf("tensor %q kind %v unsupported for matmul MIL extract", tensor.Name, kind)
 	}
@@ -99,6 +101,24 @@ func extractMatmulRectF16(raw []byte, cols, inCh, outCh int, transpose bool) ([]
 				return nil, fmt.Errorf("tensor data truncated at (%d,%d)", srcR, srcC)
 			}
 			copy(out[(ic*outCh+oc)*2:(ic*outCh+oc)*2+2], raw[srcOff:srcOff+2])
+		}
+	}
+	return out, nil
+}
+
+func extractMatmulRectQ8_0(raw []byte, ne0, ne1, inCh, outCh int, transpose bool) ([]byte, error) {
+	out := make([]byte, inCh*outCh*2)
+	for ic := 0; ic < inCh; ic++ {
+		for oc := 0; oc < outCh; oc++ {
+			srcR, srcC := ic, oc
+			if !transpose {
+				srcR, srcC = oc, ic
+			}
+			f, err := q8_0Element(raw, ne0, srcR, srcC)
+			if err != nil {
+				return nil, err
+			}
+			binary.LittleEndian.PutUint16(out[(ic*outCh+oc)*2:], float32ToFloat16Bits(f))
 		}
 	}
 	return out, nil

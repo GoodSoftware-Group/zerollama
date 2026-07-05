@@ -13,7 +13,7 @@ the removed sched_set_batch_size fit path; CUDA pool overrides deferred.
  3 files changed, 94 insertions(+), 3 deletions(-)
 
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index fca3b84..87dcd05 100644
+index fca3b8452..87dcd05a5 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
 @@ -337,6 +337,7 @@ extern "C" {
@@ -25,7 +25,7 @@ index fca3b84..87dcd05 100644
  
      // Initialize backend buffers from a measure graph
 diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
-index d5cc054..06b46e3 100644
+index d5cc05446..06b46e3b3 100644
 --- a/ggml/src/ggml-backend-impl.h
 +++ b/ggml/src/ggml-backend-impl.h
 @@ -26,12 +26,17 @@ extern "C" {
@@ -72,7 +72,7 @@ index d5cc054..06b46e3 100644
  
      struct ggml_backend {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 876a0b5..41b60f0 100644
+index 876a0b5e2..41b60f034 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -36,11 +36,27 @@ const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {

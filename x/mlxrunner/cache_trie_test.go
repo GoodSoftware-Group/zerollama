@@ -453,3 +453,64 @@ func TestRemoveNode(t *testing.T) {
 		removeNode(parent, nil)
 	})
 }
+
+func TestBestRestorableOffsetPrefersSnapshotBoundary(t *testing.T) {
+	root := &trieNode{lastUsed: time.Now()}
+	n4 := &trieNode{tokens: []int32{1, 2, 3, 4}, endOffset: 4, parent: root, lastUsed: time.Now()}
+	n8 := &trieNode{tokens: []int32{5, 6, 7, 8}, endOffset: 8, parent: n4, lastUsed: time.Now()}
+	n10 := &trieNode{tokens: []int32{9, 10}, endOffset: 10, parent: n8, lastUsed: time.Now()}
+	n4.snapshots = []cache.Snapshot{&fakeSnapshot{}}
+	n8.snapshots = []cache.Snapshot{&fakeSnapshot{}}
+	n10.snapshots = []cache.Snapshot{&fakeSnapshot{}}
+	path := []*trieNode{root, n4, n8, n10}
+
+	gotPath, got, ok := bestRestorableOffset(path, 10)
+	if !ok || got != 10 {
+		t.Fatalf("target=10: got=%d ok=%v want 10 true", got, ok)
+	}
+	if len(gotPath) != 4 || gotPath[3] != n10 {
+		t.Fatalf("path=%v", gotPath)
+	}
+
+	_, got, ok = bestRestorableOffset(path, 9)
+	if !ok || got != 8 {
+		t.Fatalf("target=9: got=%d ok=%v want 8 true", got, ok)
+	}
+}
+
+func TestCapTrieMatchForRestorePartialEdge(t *testing.T) {
+	root := &trieNode{lastUsed: time.Now()}
+	parent := &trieNode{
+		tokens:    make([]int32, 8192),
+		endOffset: 8192,
+		parent:    root,
+		lastUsed:  time.Now(),
+	}
+	for i := range parent.tokens {
+		parent.tokens[i] = int32(i + 1)
+	}
+	partial := &trieNode{
+		tokens:    make([]int32, 8192),
+		endOffset: 16384,
+		parent:    parent,
+		lastUsed:  time.Now(),
+	}
+	for i := range partial.tokens {
+		partial.tokens[i] = int32(i + 8193)
+	}
+	root.children = []*trieNode{parent}
+	parent.children = []*trieNode{partial}
+
+	input := append(slices.Clone(parent.tokens), partial.tokens[:4096]...)
+	path, matched := findBestMatch(root, input)
+	if matched != 8192+4096 {
+		t.Fatalf("matched = %d want %d", matched, 8192+4096)
+	}
+	path, matched = capTrieMatchForRestore(path, matched)
+	if matched != 8192 {
+		t.Fatalf("restorable = %d want 8192", matched)
+	}
+	if len(path) != 2 || path[1] != parent {
+		t.Fatalf("path = %v want [root parent]", path)
+	}
+}

@@ -31,6 +31,40 @@ _resolve_llama_cpp_root() {
 
 ROOT="$(_resolve_llama_cpp_root)"
 BUILD="${ROOT}/build"
+BUILD_LOCK="${ROOT}/.zerollama_llama_server_build.lock.d"
+
+_acquire_llama_server_build_lock() {
+  if pgrep -f "cmake --build ${BUILD}" >/dev/null 2>&1 \
+    || pgrep -f "make.*${ROOT}/build" >/dev/null 2>&1; then
+    echo "error: llama-server build still running for ${ROOT}" >&2
+    echo "  wait for it to finish, or: pkill -f 'cmake --build ${BUILD}'" >&2
+    exit 1
+  fi
+  if ! mkdir "${BUILD_LOCK}" 2>/dev/null; then
+    echo "error: llama-server build lock held for ${ROOT}" >&2
+    echo "  wait for the other build, or if stale: rm -rf ${BUILD_LOCK}" >&2
+    exit 1
+  fi
+  trap '_release_llama_server_build_lock' EXIT
+}
+
+_release_llama_server_build_lock() {
+  rmdir "${BUILD_LOCK}" 2>/dev/null || true
+}
+
+_build_jobs() {
+  local n="${LLAMA_BUILD_JOBS:-}"
+  if [[ -n "${n}" ]]; then
+    echo "${n}"
+    return 0
+  fi
+  n="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+  # High -j races rm -rf + link on the same tree (missing bin/*.dylib, *.o.d).
+  if [[ "${n}" -gt 8 ]]; then
+    n=8
+  fi
+  echo "${n}"
+}
 
 # shellcheck source=scripts/ensure_llama_cpp_sibling.sh
 source "${_ZEROLLAMA_ROOT}/scripts/ensure_llama_cpp_sibling.sh"
@@ -51,18 +85,33 @@ if [[ -d "${ROOT}/.git" && "${ROOT}" != "${_VENDOR_ROOT}" ]]; then
   ensure_llama_cpp_at_pin "${ROOT}"
 fi
 
-# Darwin: re-apply ANE hook after pin checkout (git checkout --force drops sibling patches).
+# Patched vendor builds need Ollama patch commits + compat loader hooks + staged sources.
+if [[ "${ROOT}" == "${_VENDOR_ROOT}" || "${ROOT}" == "${_VENDOR_ROOT}/" ]]; then
+  "${_ZEROLLAMA_ROOT}/scripts/ensure_llama_vendor_patches.sh" "${ROOT}"
+fi
+
+# Darwin sibling fallback: re-apply ANE hook after pin checkout (vendor gets 0018 via git am).
 if [[ "$(uname -s)" == Darwin && "${ZEROLLAMA_SKIP_ANE_HOOK_SYNC:-0}" != "1" ]]; then
-  if [[ -f "${_ZEROLLAMA_ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh" ]]; then
-    echo ">>> sync ANE draft hook → ${ROOT}" >&2
-    LLAMA_CPP_ROOT="${ROOT}" "${_ZEROLLAMA_ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh"
+  if [[ "${ROOT}" != "${_VENDOR_ROOT}" && "${ROOT}" != "${_VENDOR_ROOT}/" ]]; then
+    if [[ -f "${_ZEROLLAMA_ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh" ]]; then
+      echo ">>> sync ANE draft hook → ${ROOT}" >&2
+      LLAMA_CPP_ROOT="${ROOT}" "${_ZEROLLAMA_ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh"
+    fi
   fi
 fi
 
-# Patched vendor builds need zerollama llama/compat sources linked into CMake targets.
-if [[ "${ROOT}" == "${_VENDOR_ROOT}" || "${ROOT}" == "${_VENDOR_ROOT}/" ]]; then
-  "${_ZEROLLAMA_ROOT}/scripts/stage_llama_compat_for_vendor.sh" "${ROOT}"
-fi
+_probe_ollama_compat_loader() {
+  local vendor_root="$1"
+  if [[ "${vendor_root}" != "${_VENDOR_ROOT}" && "${vendor_root}" != "${_VENDOR_ROOT}/" ]]; then
+    return 0
+  fi
+  if grep -q 'llama_ollama_compat::translate_metadata' "${vendor_root}/src/llama-model-loader.cpp"; then
+    echo "OK: vendor loader calls llama_ollama_compat::translate_metadata"
+  else
+    echo "error: vendor loader missing Ollama compat hooks — run ./scripts/ensure_llama_vendor_patches.sh" >&2
+    exit 1
+  fi
+}
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   bash "${_ZEROLLAMA_ROOT}/scripts/patch_vendor_linux_ane_hook.sh" "${ROOT}"
@@ -130,6 +179,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     export CXX="$(xcrun --find clang++)"
   fi
   echo "Building llama-server in ${ROOT} (Metal) CC=${CC} CXX=${CXX}"
+  _acquire_llama_server_build_lock
   rm -rf "${BUILD}"
   cmake -S "${ROOT}" -B "${BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -140,7 +190,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -DBUILD_SHARED_LIBS=ON \
     -DLLAMA_CURL=OFF \
     -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}"
-  cmake --build "${BUILD}" --target llama-server -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+  cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
+    echo "error: llama-server build failed; cleaning ${BUILD}" >&2
+    rm -rf "${BUILD}"
+    exit 1
+  }
   BIN="${BUILD}/bin/llama-server"
   LIB="${BUILD}/bin/libllama.dylib"
   ANE_REPO="${ANE_REPO:-${HOME}/Sites/inference/ane}"
@@ -160,7 +214,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "OK: ${LIB}"
     "${BIN}" --version 2>/dev/null || true
     _probe_llama_server_capabilities "${BIN}"
+    _probe_ollama_compat_loader "${ROOT}"
     _probe_seq_copy_route "${BIN}" "${ROOT}"
+    git -C "${ROOT}" rev-parse HEAD > "${BUILD}/.zerollama_vendor_rev" 2>/dev/null || true
   else
     echo "Build finished but ${BIN} or ${LIB} missing" >&2
     exit 1
@@ -232,6 +288,7 @@ fi
 # needs a toolkit whose nvcc supports sm_120 (often CUDA 12.8+ or 13.x).
 CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
 
+_acquire_llama_server_build_lock
 rm -rf "${BUILD}"
 # WHY LLAMA_BUILD_WEBUI: eliza fork defaults ON; headless Linux builds fail without WebUI assets.
 # WHY GGML_CUDA_GRAPHS: L3 prefix cache clears KV slots; zerollama calls
@@ -245,13 +302,18 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DLLAMA_CURL=ON \
   -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-ON}"
 
-cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
+cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
+  echo "error: llama-server build failed; cleaning ${BUILD}" >&2
+  rm -rf "${BUILD}"
+  exit 1
+}
 
 BIN="${BUILD}/bin/llama-server"
 if [[ -x "${BIN}" ]]; then
   echo "OK: ${BIN}"
   "${BIN}" --version 2>/dev/null || true
   _probe_llama_server_capabilities "${BIN}"
+  _probe_ollama_compat_loader "${ROOT}"
   _probe_seq_copy_route "${BIN}" "${ROOT}"
 else
   echo "Build finished but ${BIN} missing" >&2

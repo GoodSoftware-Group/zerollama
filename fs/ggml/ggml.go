@@ -581,6 +581,12 @@ func DecodeMetadata(rs io.ReadSeeker) (*GGML, error) {
 	return decode(rs, 0, true)
 }
 
+// DecodeMetadataArrays is like DecodeMetadata but loads small metadata arrays
+// (e.g. dflash.target_layer_ids) up to maxArraySize elements.
+func DecodeMetadataArrays(rs io.ReadSeeker, maxArraySize int) (*GGML, error) {
+	return decode(rs, maxArraySize, true)
+}
+
 func decode(rs io.ReadSeeker, maxArraySize int, metadataOnly bool) (*GGML, error) {
 	rs = bufioutil.NewBufferedSeeker(rs, 32<<10)
 

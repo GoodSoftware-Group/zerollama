@@ -30,7 +30,7 @@ func runtimeProxyActive(c *gin.Context) bool {
 	return false
 }
 
-func resolveRuntimeProxy(c *gin.Context, modelName string) bool {
+func resolveRuntimeProxy(c *gin.Context, modelName string, opts map[string]any) bool {
 	if effectiveRuntimeURL() == "" {
 		return false
 	}
@@ -49,7 +49,13 @@ func resolveRuntimeProxy(c *gin.Context, modelName string) bool {
 	if err != nil {
 		return false
 	}
-	return modelUsesRuntimeInference(m)
+	if modelUsesRuntimeInference(m) {
+		return true
+	}
+	if agentCachePrefersRuntime(opts) && modelEligibleForAgentCacheRuntime(m) {
+		return true
+	}
+	return false
 }
 
 // numPredictFromOptions returns an output token limit when the client set num_predict > 0.
@@ -153,6 +159,64 @@ func runtimeOptionsWithNumPredict(nPredict int, limited bool) map[string]any {
 	return map[string]any{"num_predict": nPredict}
 }
 
+// thinkNeedsLegacyRunner is true when the client enabled thinking (not merely omitted).
+func thinkNeedsLegacyRunner(think *api.ThinkValue) bool {
+	if think == nil {
+		return false
+	}
+	if think.IsString() {
+		return strings.TrimSpace(think.String()) != ""
+	}
+	return think.Bool()
+}
+
+// proxyOptsFromV1Body extracts Ollama-style options from an OpenAI v1 chat body.
+func proxyOptsFromV1Body(body map[string]any) map[string]any {
+	if body == nil {
+		return nil
+	}
+	var out map[string]any
+	if opts, ok := body["options"].(map[string]any); ok && len(opts) > 0 {
+		out = make(map[string]any, len(opts)+1)
+		for k, v := range opts {
+			out[k] = v
+		}
+	}
+	mergePromptCacheKeyIntoProxyOpts(&out, body)
+	if eb, ok := body["extra_body"].(map[string]any); ok {
+		if opts, ok := eb["options"].(map[string]any); ok {
+			out = mergeOptionsMaps(out, opts)
+		}
+		if z, ok := eb["zerollama"].(map[string]any); ok {
+			out = mergeZerollamaIntoOptions(out, map[string]any{"zerollama": z})
+		}
+		mergePromptCacheKeyIntoProxyOpts(&out, eb)
+	}
+	out = mergeZerollamaIntoOptions(out, body)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergePromptCacheKeyIntoProxyOpts(opts *map[string]any, src map[string]any) {
+	if src == nil {
+		return
+	}
+	v, ok := src["prompt_cache_key"].(string)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	key := strings.TrimSpace(v)
+	if *opts == nil {
+		*opts = map[string]any{"prompt_cache_key": key}
+		return
+	}
+	if _, has := (*opts)["prompt_cache_key"]; !has {
+		(*opts)["prompt_cache_key"] = key
+	}
+}
+
 func forwardRuntimeGenerate(
 	c *gin.Context,
 	modelName string,
@@ -215,7 +279,7 @@ func chatMessagesToPrompt(messages []api.Message) string {
 }
 
 func chatNeedsLegacyRunner(messages []api.Message, req api.ChatRequest) bool {
-	if req.Logprobs || req.Think != nil {
+	if req.Logprobs || thinkNeedsLegacyRunner(req.Think) {
 		return true
 	}
 	for _, m := range messages {

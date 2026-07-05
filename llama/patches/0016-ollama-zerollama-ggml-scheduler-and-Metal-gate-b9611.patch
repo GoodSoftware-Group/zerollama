@@ -13,7 +13,7 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
  2 files changed, 12 insertions(+), 4 deletions(-)
 
 diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
-index 8165ae2..6852e03 100644
+index 8165ae2c8..6852e03e2 100644
 --- a/ggml/src/ggml-backend-reg.cpp
 +++ b/ggml/src/ggml-backend-reg.cpp
 @@ -117,7 +117,13 @@ struct ggml_backend_registry {
@@ -32,7 +32,7 @@ index 8165ae2..6852e03 100644
  #ifdef GGML_USE_SYCL
          register_backend(ggml_backend_sycl_reg());
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 41b60f0..3a664a4 100644
+index 41b60f034..3a664a486 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -847,7 +847,7 @@ static bool ggml_is_view_op(enum ggml_op op) {

@@ -50,6 +50,27 @@ func TestParseMatmulChainFromLog(t *testing.T) {
 	if got := parseMatmulChainFromLog(`P1 matmul kernel active chain2=gate+silu+up`); got != 2 {
 		t.Fatalf("P2 chain = %d", got)
 	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain10_blk1_down mse=0 cosine=1.0`); got != 10 {
+		t.Fatalf("chain10 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain9_blk1_swiglu mse=0 cosine=1.0`); got != 9 {
+		t.Fatalf("chain9 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain8_dflash_fc mse=0 cosine=1.0`); got != 8 {
+		t.Fatalf("chain8 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain7_blk1_gate mse=0 cosine=1.0`); got != 7 {
+		t.Fatalf("chain7 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P1 matmul kernel active chain7=qkv+swiglu+down+attn_gate+ssm_out+blk1_gate`); got != 7 {
+		t.Fatalf("chain7 note: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P7 matmul chain blk.1 ffn_gate ic=768→oc=256`); got != 7 {
+		t.Fatalf("P7 init line: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain6_qkv mse=0 cosine=1.0`); got != 6 {
+		t.Fatalf("golden chain6 = %d", got)
+	}
 	if got := parseMatmulChainFromLog(`P1 matmul kernel active chain5=swiglu+down+attn_gate+ssm_out`); got != 5 {
 		t.Fatalf("P5 chain = %d", got)
 	}
@@ -64,6 +85,51 @@ func TestParseMatmulChainFromLog(t *testing.T) {
 	}
 	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain3 mse_ref_vs_ane=0 cosine=1.0`); got != 3 {
 		t.Fatalf("golden chain3 = %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain11_dflash_attn_q mse=0 cosine=1.0`); got != 11 {
+		t.Fatalf("chain11 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P11 dflash chain12 active (fc + hidden_norm + attn_q/k/v)`); got != 12 {
+		t.Fatalf("chain12 init: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain12_dflash_attn_v mse=0 cosine=1.0`); got != 12 {
+		t.Fatalf("chain12 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P12 dflash chain13 active (fc + hidden_norm + attn_q/k/v + host cross-attn)`); got != 13 {
+		t.Fatalf("chain13 init: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain13_dflash_attn_out mse=0 cosine=1.0`); got != 13 {
+		t.Fatalf("chain13 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P13 dflash chain14 active (fc + attn_q/k/v + host cross-attn + attn_wo)`); got != 14 {
+		t.Fatalf("chain14 init: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain14_dflash_attn_wo mse=0 cosine=1.0`); got != 14 {
+		t.Fatalf("chain14 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P14 dflash chain15 active (… + blk.0 ffn_gate)`); got != 15 {
+		t.Fatalf("chain15 init: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain15_dflash_ffn_gate mse=0 cosine=1.0`); got != 15 {
+		t.Fatalf("chain15 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P15 dflash chain16 active (… + blk.0 ffn_gate/up/SwiGLU/down)`); got != 16 {
+		t.Fatalf("chain16 init: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain16_dflash_ffn_down mse=0 cosine=1.0`); got != 16 {
+		t.Fatalf("chain16 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`P16 dflash chain17 active (… + output_norm + tied-embed lm_head)`); got != 17 {
+		t.Fatalf("chain17 init: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`B6 golden step=1 mode=matmul_chain17_dflash_lm_head mse=0 cosine=1.0`); got != 17 {
+		t.Fatalf("chain17 golden: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`ane_session_init: P16 dflash chain17 init failed`); got != 0 {
+		t.Fatalf("chain17 init failed should not match: got %d", got)
+	}
+	if got := parseMatmulChainFromLog(`ane_session_init: P10 dflash chain11 init failed`); got != 0 {
+		t.Fatalf("chain11 init failed should not match: got %d", got)
 	}
 }
 
@@ -87,7 +153,7 @@ log_ane_golden_telemetry: B6 golden step=2 mode=conv2 mse_ref_vs_ane=0.002 cosin
 
 func TestParseB7ShadowFromLog(t *testing.T) {
 	log := `B7 shadow step=1 seq=0 ane_tok=42 metal_tok=42 match=1 hidden_cos=0.8123
-B7 shadow step=2 seq=0 ane_tok=1 metal_tok=2 match=0 hidden_cos=0.4500`
+B7 shadow step=2 seq=0 handoff_tok=99 ane_tok=1 metal_tok=2 match=0 hidden_cos=0.4500`
 	steps, matches, cosSum, cosN := parseB7ShadowFromLog(log)
 	if steps != 2 || matches != 1 {
 		t.Fatalf("steps=%d matches=%d", steps, matches)
@@ -105,6 +171,12 @@ func TestDraftANEMatmulDims(t *testing.T) {
 }
 
 func TestDraftANEHandoffStride(t *testing.T) {
+	if got := DraftANEHandoffStride("matmul", 11); got != 20 {
+		t.Fatalf("chain11 stride = %d, want 20", got)
+	}
+	if got := DraftANEHandoffStride("matmul", 7); got != 20 {
+		t.Fatalf("matmul P7 stride = %d, want 20", got)
+	}
 	if got := DraftANEHandoffStride("matmul", 1); got != 4 {
 		t.Fatalf("matmul P1 stride = %d, want 4", got)
 	}
@@ -116,6 +188,9 @@ func TestDraftANEHandoffStride(t *testing.T) {
 	}
 	if got := DraftANEHandoffStride("matmul", 5); got != 12 {
 		t.Fatalf("matmul P5 stride = %d, want 12", got)
+	}
+	if got := DraftANEHandoffStride("matmul", 6); got != 16 {
+		t.Fatalf("matmul P6 stride = %d, want 16", got)
 	}
 	if got := DraftANEHandoffStride("conv", 0); got != 2 {
 		t.Fatalf("conv stride = %d, want 2", got)
@@ -179,5 +254,14 @@ func TestAcceptanceParity(t *testing.T) {
 		ANEDraftServerRun{GenTokens: 10, AccTokens: 3, DraftAcceptance: 0.29},
 	) {
 		t.Fatal("comparable close legs should pass")
+	}
+}
+
+func TestANEDraftLabNumCtx(t *testing.T) {
+	if got := aneDraftLabNumCtx(ANEDraftEntry{Tag: "eliza-1-2b-dflash:latest", EmbeddingLength: 768}, true); got != 0 {
+		t.Fatalf("2b quick: got %d want 0", got)
+	}
+	if got := aneDraftLabNumCtx(ANEDraftEntry{Tag: "eliza-1-27b-256k-dflash:latest", EmbeddingLength: 5120}, true); got != 8192 {
+		t.Fatalf("27b quick: got %d want 8192", got)
 	}
 }

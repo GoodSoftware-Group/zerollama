@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -15,7 +14,7 @@ import (
 
 var runtimeProxyClient = func() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.ResponseHeaderTimeout = 120 * time.Second
+	t.ResponseHeaderTimeout = 0
 	return &http.Client{Transport: t}
 }()
 
@@ -40,6 +39,7 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		EnsureGeneratePromptCacheKey(&req)
 		if req.Prompt == "" && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
 			c.Next()
 			return
@@ -55,7 +55,7 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			return
 		}
 
-		if !resolveRuntimeProxy(c, req.Model) {
+		if !resolveRuntimeProxy(c, req.Model, req.Options) {
 			c.Next()
 			return
 		}
@@ -70,18 +70,18 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 		if gguf, ok := rtOpts["gguf"].(string); ok {
 			runtimeclient.LogVramBudgetIfTight(c.Request.Context(), req.Model, gguf, rtOpts)
 		}
-	if ollamaWantsStream(req.Stream) {
-		payload := map[string]any{
-			"model":   req.Model,
-			"prompt":  req.Prompt,
-			"stream":  true,
-			"options": rtOpts,
-		}
-		if err := writeRuntimeStreamAccepted(c, req.Model, false); err != nil {
-			writeRuntimeProxyError(c, err)
-			return
-		}
-		if err := forwardRuntimeNDJSON(c, "/api/generate", payload); err != nil {
+		if ollamaWantsStream(req.Stream) {
+			payload := map[string]any{
+				"model":   req.Model,
+				"prompt":  req.Prompt,
+				"stream":  true,
+				"options": rtOpts,
+			}
+			if err := writeRuntimeStreamAccepted(c, req.Model, false); err != nil {
+				writeRuntimeProxyError(c, err)
+				return
+			}
+			if err := forwardRuntimeNDJSON(c, "/api/generate", payload); err != nil {
 				writeRuntimeProxyError(c, err)
 			}
 			return

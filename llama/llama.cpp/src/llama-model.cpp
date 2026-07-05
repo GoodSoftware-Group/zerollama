@@ -2186,6 +2186,30 @@ int32_t llama_model_n_layer(const llama_model * model) {
     return model->hparams.n_layer;
 }
 
+int32_t llama_model_dflash_n_target_features(const llama_model * model) {
+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+        return 0;
+    }
+    return (int32_t) model->hparams.dflash_n_target_features;
+}
+
+int32_t llama_model_dflash_n_target_layers(const llama_model * model) {
+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+        return 0;
+    }
+    return (int32_t) model->hparams.dflash_n_target_layers;
+}
+
+int32_t llama_model_dflash_target_layer_id(const llama_model * model, int32_t i) {
+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT || i < 0) {
+        return -1;
+    }
+    if ((uint32_t) i >= model->hparams.dflash_n_target_layers) {
+        return -1;
+    }
+    return (int32_t) model->hparams.dflash_target_layer_ids[i];
+}
+
 int32_t llama_model_n_head(const llama_model * model) {
     return model->hparams.n_head();
 }

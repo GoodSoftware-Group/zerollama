@@ -108,6 +108,103 @@ Code: `x/mlxrunner/tokenize_cache.go`, `x/mlxrunner/client.go` (`Client.tokenize
 
 ---
 
+## Agent prompt chain splice (multi-turn MLX cache)
+
+**Why:** Gemma4/Hermes chat templates are **not token-prefix-stable** — each turn replaces the trailing **generation stub** (`<|turn>model\n<|channel>thought…`) with the prior assistant reply, so full-render string prefix matching fails. MLX prefix trie matching then misses on turn 2 (`cached_tokens ≈ 0`).
+
+**Fix:** When `prompt_cache_key` is set, cache the **stable prefix** (render minus gen stub) + token IDs per thread. On append-only history (message fingerprint prefix match), tokenize only the stable delta + new gen stub.
+
+**Log to watch (debug):**
+```
+mlx agent prompt chain splice  key=hermes:agent:main:cli:1 tokens=65542
+mlx prompt chain miss  reason=render_prefix_mismatch  (system prompt edited or compression rewrote history)
+```
+
+Code: `server/mlx_prompt_chain.go`, wired from `server/prompt.go`, `server/routes.go` (chat + generate-with-messages).
+
+---
+
+## M15a: live session + restore (Jul 2026)
+
+**Why:** Production Hermes turn 2 often reported **99% `cached_tokens`** but still took **60–90s** to first token — and turn 3+ sometimes collapsed to **~16k cached** (~175s) when `messages_dropped` climbed. Root causes:
+
+| Symptom | Why it happened |
+|---------|-----------------|
+| **99% cached, slow TTFT** | Trie restore succeeded (`cache hit`, `utilization_pct≈99`) but **live-session** never fired (`fast_path=false`). Gen tokens from turn 1 sat in KV past the new prompt LCP; on Gemma4 OptiQ **rotating KV** cannot `Restore(nil, offset)` once the window has wrapped (~65k tokens) — every turn paid trie page-in/materialize. |
+| **`fast_path` never in logs** | Live session requires the **same** `prompt_cache_key` on consecutive turns **and** `lastSessionInputs` from a completed prior turn. Missing key → trie-only path (still can hit 99%, but slower). |
+| **~16,384 cached on turn 3+** | Message-level truncation (`messages_dropped` 5→11) rewrites the prompt **from the start**. Trie matches a partial shared prefix but rotating KV can only restore to **snapshot boundaries**. Coarse 2048-token intervals left large gaps; stale prompt-chain splice could misalign token IDs. |
+| **`mlx_cache_warn` noise** | Short `/api/generate` sidecar calls matched ~29 trie tokens but KV restore failed on rotating layers — expected, not operator error. |
+
+**Fixes (automatic — no env knobs):**
+
+| Mechanism | Behavior | Why |
+|-----------|----------|-----|
+| **Live-session LCP** | Per `prompt_cache_key`, store prior **prompt-only** token IDs; next turn: longest common prefix with new inputs, rewind past gen tokens, prefill delta only. | Gen stub replacement changes the tail, not the stable prefix — compare prompts, not trie leaves that include generation. |
+| **`rewindCachesViaSnapshots`** | When rotating KV declines live rewind, page in trie snapshots on the **active branch** (no per-cache `Free()` — partial free misaligned layers and forced `freeAll`). | Mirrors `switchToPath` page-in without a full trie round trip; safe for wrapped sliding windows. |
+| **`bestRestorableOffset`** | Pick the **largest snapshot boundary ≤ LCP** on the trimmed active path (gen tokens past LCP excluded). Falls back to `capTrieMatchForRestore` only when no interior snapshots exist. | Blind mid-edge cap on the gen-extended leaf rewound too far (e.g. 10 → 8 in tests; 65k → 16k in production). |
+| **Same-branch restore** | Trie match extends active path and live KV covers restore point → rewind only, skip leaf page-out/in. Snapshot fallback when live rewind fails on rotating layers. | Avoids ~75s page-in when the runner never switched branches between turns. |
+| **`tunePrefillConfig`** | When `prompt_cache_key` + `fast_path`, `same_branch`, or high cache ratio + short tail, relax `materializeEvery` / `clearCacheEvery` (8–16 chunks) on the tail only. | Long-prompt cold defaults (`materializeEvery=1`) were correct for turn 1 but wasted seconds re-evaluating KV already resident after restore. |
+| **Trie snapshot interval** | Agent + rotating KV: **1× `sliding_window`** (1024 for Gemma4 OptiQ), min 1024, plus end-of-prompt when `prompt_cache_key` set. Was 2× window (2048). | Finer boundaries reduce restore loss when prefix diverges (message drops, branch changes). |
+| **Prompt chain on truncate** | `messages_dropped > 0` → invalidate stable-prefix cache + `prompt_chain_miss` `reason=messages_truncated`. | Cached stable tokens referred to messages no longer in the render; splicing would poison trie matching. |
+| **Message fingerprint** | Equal message **count** now checks fingerprint (not only append-only extend). | In-place edits to the last message falsely hit splice when count unchanged. |
+| **Warn policy** | `mlx_cache_warn` only at **Warn** for long agent prompts (≥8k matched + key set); short sidecar + expected rotating caps → **Debug**. | Production logs were dominated by harmless `/api/generate` restore misses. |
+
+**Log to watch:**
+
+```bash
+# Live session (needs prompt_cache_key on both turns)
+jq -c 'select(.event=="mlx_cache" and .fast_path==true)' ~/.ollama/logs/gemma-agent.jsonl
+
+# Same-branch trie restore (fast_path false but hot tail tuning applies)
+jq -c 'select(.event=="mlx_cache" and .same_branch==true)' ~/.ollama/logs/gemma-agent.jsonl
+
+# Truncation → expect cold/partial cache, not 99%
+jq -c 'select(.event=="prompt_chain_miss" and .reason=="messages_truncated")' ~/.ollama/logs/gemma-agent.jsonl
+jq -c 'select(.event=="response_out") | {dropped:.messages_dropped,cached:.cached_prompt_tokens,ms:.duration_ms}' \
+  ~/.ollama/logs/gemma-agent.jsonl | tail -10
+```
+
+**Example mlxrunner lines:**
+
+```
+cache hit  fast_path=true  rewound_from=6587  rewound_to=6586  cached=6586  left=42
+cache hit  same_branch=true  cached=65042  utilization_pct=99.3
+mlx prefix trie match but KV restore missed  (debug — short sidecar or expected cap)
+```
+
+| `gemma-agent.jsonl` field | Meaning |
+|---------------------------|---------|
+| `fast_path` | Live KV extended via LCP + snapshot rewind — skipped trie page-in/out |
+| `same_branch` | Trie same-branch restore — skipped leaf page-out/in |
+| `rewound_to` | Actual KV offset after rotating cap (may be < LCP when no snapshot at exact boundary) |
+| `messages_dropped` | Oldest messages dropped to fit `num_ctx`; correlates with cache collapse when it increases |
+
+Code: `x/mlxrunner/cache.go` (`tryExtendLiveSession`, `bestRestorableOffset`, `rewindCachesViaSnapshots`), `x/mlxrunner/prefill_config.go`, `x/mlxrunner/pipeline.go`, `server/mlx_prompt_chain.go`, `server/prompt.go`, `agentstats/runner_line.go`.
+
+---
+
+## MLX sidecar defer (Jul 2026)
+
+**Why:** Unkeyed `/api/generate` on the same MLX model (~7.8k tok background work every ~20s) shares one `kvCache` with Hermes agent chat. Even with M15a trie restore, sidecar `begin()` → `switchToPath` clobbers **live** KV between agent turns and blocks `fast_path`.
+
+**Behavior (automatic):**
+
+| Request | Gate |
+|---------|------|
+| `/v1/chat/completions` or `/api/generate` with `prompt_cache_key` on MLX | Marks model **agent-hot** for the full inference (prefill + decode) |
+| Any request with a **different** session key on same MLX runner | **Defers** (polls every 50ms) until hot session finishes and 90s cooldown expires |
+| Unkeyed request on same MLX runner | **Defers** — treated as a different key |
+
+**Log to watch:**
+
+```bash
+jq -c 'select(.event=="mlx_sidecar_defer")' ~/.ollama/logs/gemma-agent.jsonl
+```
+
+Code: `server/mlx_sidecar_gate.go`, wired from `server/routes.go` (`scheduleRunner`, `ChatHandler`, `GenerateHandler`).
+
+---
+
 ## MLX keep-alive floor
 
 **Why:** MLX model load takes 3–10s on Apple Silicon. Default Ollama `keep_alive` is 5 m — any agent pause longer than that evicts the runner; next turn pays cold load + full prefill again.
@@ -157,7 +254,7 @@ MTP disabled for long prompt; using standard decode
 peak memory  size=114.80 GiB
 ```
 
-**Why:** `tok_per_sec` regressions across rebuilds are visible without MLX-internal profilers.
+**Why:** `tok_per_sec` regressions across rebuilds are visible without MLX-internal profilers. Per-chunk `forward_ms` / `materialize_ms` breakdown is at **debug** (`OLLAMA_DEBUG=1`). Gemma4 OptiQ uses **2048-token** prefill chunks automatically (2× sliding window).
 
 ### Runner reload reason
 
@@ -194,13 +291,208 @@ Code: `server/show_log.go`, `server/routes.go` (`ShowHandler`, `GetModelInfo`).
 
 ---
 
-## What to fix on the client (still recommended)
+## Gemma agent stats file (JSONL)
+
+Production Hermes traffic on `:11434` writes a **session-scoped JSONL log**. Each `./zerollama serve` start writes a `serve_start` line (version, pid, …) and rotates the prior session to **`gemma-agent.jsonl.prev`** when non-empty:
+
+**Default path:** `~/.ollama/logs/gemma-agent.jsonl`
+
+```bash
+# tail while Hermes runs
+tail -f ~/.ollama/logs/gemma-agent.jsonl | jq -c .
+
+# compare current vs previous serve session (e.g. before/after a binary upgrade)
+jq 'select(.event=="serve_start")' ~/.ollama/logs/gemma-agent.jsonl ~/.ollama/logs/gemma-agent.jsonl.prev
+```
+
+**Disable:** `ZEROLLAMA_GEMMA_AGENT_LOG=0 ./zerollama serve`
+
+**Custom path:** `ZEROLLAMA_GEMMA_AGENT_LOG=/tmp/gemma.jsonl ./zerollama serve`
+
+Events recorded when `prompt_cache_key` is set (Hermes) or model name contains `gemma`, plus all MLX runner cache/prefill lines:
+
+| `event` | Meaning |
+|---------|---------|
+| `serve_start` | New serve session: `version`, `edge_build`, `pid`, `goos`/`goarch`; `previous_log` when `.prev` was rotated |
+| `request_in` / `response_out` | Route, model, key, tokens, cache hits, duration |
+| `request_parsed` | `prompt_cache_key` backfilled after `/v1` middleware (when peek missed nested `extra_body`) |
+| `phase` | `runner_ready`, `prompt_ready`, `first_token` timings |
+| `prompt_chain_splice` / `prompt_chain_miss` | Stable-prefix tokenize path |
+| `mlx_cache` / `mlx_prefill` | mlxrunner trie restore + prefill summary (`fast_path`, `same_branch`, `rewound_to` when present) |
+| `runner_reload` | Cold reload reason (`num_ctx`, ping failed, …) |
+
+Serve logs `gemma agent stats log enabled path=...` at startup when active.
+
+---
+
+## Smoke (isolated port)
+
+Hermes and other apps use production `:11434`. Run the two-turn prefix cache smoke on **`:11435`** so traffic does not share the MLX runner:
+
+```bash
+MLX_SMOKE_START_SERVE=1 ./scripts/mlx_prefix_cache_smoke.sh
+# or: OLLAMA_HOST=127.0.0.1:11435 ./zerollama serve   # separate terminal
+#     ./scripts/mlx_prefix_cache_smoke.sh
+```
+
+Pass criteria: turn 2 `cached_tokens` ≥ 4000 and elapsed ≤ 90s.
+
+---
+
+## What to fix on the client (Hermes / agents)
 
 Server-side caps help but **root cause** is often client context:
 
 - Exclude static corpora (`papers_kb/`) from every turn; pin via retrieval instead.
-- Pass stable `options.num_ctx` ≤ model max (131072 for Gemma4 text).
-- Use `prompt_cache_key` / L3 for **repeat system prefix** on GGUF runtime models (MLX uses trie cache inside mlxrunner, not L3 slot bridge).
+- Pass stable `options.num_ctx` ≤ model max (**131072** for Gemma4 text on Mac MLX/GGUF).
+- Pass **`prompt_cache_key`** per agent thread for prefix reuse:
+  - **Hermes** (`provider: custom` → zerollama): `plugins/model-providers/custom` sets `hermes:{session_id}` on `/v1/chat/completions`. Keys are duplicated into **`extra_body`** (OpenAI SDK promotes them to the HTTP JSON root) and into `options` for `/api/chat` after middleware conversion.
+  - **OpenAI-compatible ingress:** `/v1/chat/completions` uses `BindChatCompletionRequest` to merge nested `extra_body.prompt_cache_key` when the SDK does not flatten unknown fields.
+  - **GGUF + Python runtime:** L3 slot bridge skips repeat system prefill when `ZEROLLAMA_AGENT_CACHE_RUNTIME=auto` (Darwin default when runtime URL is set).
+  - **MLX (e.g. `gemma4:26b-optiq`):** mlxrunner trie snapshots every **`sliding_window`** (1024 for OptiQ) plus end-of-prompt when `prompt_cache_key` is set — **why:** rotating KV can only restore at snapshot boundaries; finer intervals reduce the ~16k partial-hit ceiling when `messages_dropped` changes the prefix. Live-session (`fast_path=true`) additionally needs the key on **every** turn. Not L3.
+- Set `model.context_length` and `model.ollama_num_ctx: 131072` in `~/.hermes/config.yaml` so Hermes compression budget matches runtime (GGUF metadata may advertise 262144).
+
+Example Hermes config:
+
+```yaml
+model:
+  default: gemma4:26b-optiq
+  provider: custom
+  context_length: 131072
+  ollama_num_ctx: 131072
+providers:
+  custom:
+    base_url: http://localhost:11434/v1
+    models:
+      gemma4:26b-optiq:
+        context_length: 131072
+```
+
+---
+
+## Harness QoS API (generic, Jul 2026)
+
+Any client can detect zerollama via `GET /api/version` (`distribution: zerollama`, `zerollama.capabilities.mlx_qos`) and progressively add scheduling hints. Vanilla Ollama ignores unknown `options` fields.
+
+### `options.zerollama`
+
+| Field | Values | Purpose |
+|-------|--------|---------|
+| `qos_class` | `interactive` \| `auxiliary` \| `background` | Scheduling intent (aliases: `primary`, `aux`, `bg`) |
+| `qos_priority` | `0–100` | Class inferred when `qos_class` omitted (`≥70` interactive) |
+| `session_group` | string | Harness id for shared cache branch (`aux:{model}:{group}`) |
+| `session_parent` | string | Parent thread `prompt_cache_key` (logging / future parent-aware defer) |
+| `project_id` | string | Client harness id for fleet / `zerollama ps` (aliases: `client_id`, `project`) |
+| `project_name` | string | Human label — Discord channel, audit phase, workspace name (aliases: `client_name`) |
+| `cache_scope` | `auto` \| `thread` \| `shared` | `thread` = keep key as-is (live KV); `shared` = collapse ephemeral to shared branch |
+
+Legacy flat fields still honored: `mlx_session_class`, `mlx_session_parent`.
+
+### Examples
+
+**Interactive agent (any harness):**
+
+```json
+{
+  "options": {
+    "prompt_cache_key": "myapp:agent:thread:abc",
+    "zerollama": { "qos_class": "interactive", "cache_scope": "thread" }
+  }
+}
+```
+
+**Auxiliary worker (compression, subagent):**
+
+```json
+{
+  "options": {
+    "zerollama": {
+      "qos_class": "auxiliary",
+      "session_group": "my-harness",
+      "session_parent": "myapp:agent:thread:abc",
+      "cache_scope": "shared"
+    }
+  }
+}
+```
+
+**Background batch (`/api/generate`):**
+
+```json
+{
+  "options": {
+    "prompt_cache_key": "myapp:bg:questions",
+    "zerollama": { "qos_class": "background", "session_group": "my-harness", "cache_scope": "shared" }
+  }
+}
+```
+
+OpenAI SDK: nest under `extra_body.zerollama` (merged into `options` by `BindChatCompletionRequest`).
+
+Server-inferred fallbacks (no harness deploy): `hermes:agent:*` → interactive; timestamped `hermes:YYYYMMDD_*` → auxiliary; unkeyed `/api/generate` → background.
+
+### Multimodal coverage (Jul 2026)
+
+| Modality | Routes | Default class |
+|----------|--------|---------------|
+| `text` | `/api/generate`, `/api/chat`, `/v1/chat/completions` | route/stream inferred |
+| `vision` | chat with images (not video) | auxiliary (stream) |
+| `video_understanding` | chat with `videos[]` / `video_spans` | auxiliary (stream) |
+| `image_generation` | image-capable `/api/generate`, `/v1/images/*` | **background** |
+| `video_generation` | `POST /v1/videos` (Wan) | **background** (waits behind interactive MLX) |
+
+Image and video generation default to `background` + `cache_scope: shared` unless you set explicit `qos_class`. Wan video jobs wait for hot interactive agent threads before queuing; MLX imagegen uses the same per-runner gate as chat.
+
+**Image generation QoS:**
+
+```json
+{
+  "model": "z-image-turbo",
+  "prompt": "a red cube",
+  "options": {
+    "zerollama": { "qos_class": "background", "session_group": "my-harness" }
+  }
+}
+```
+
+**Video generation QoS (`POST /v1/videos`):**
+
+```json
+{
+  "model": "wan2.1-t2v-1.3b",
+  "prompt": "ocean waves at sunset",
+  "options": {
+    "zerollama": { "qos_class": "background", "session_group": "my-harness" }
+  }
+}
+```
+
+Detect supported modalities via `GET /api/version` → `zerollama.qos.modalities`.
+
+### Project tracking (`zerollama ps`, Jul 2026)
+
+**Why:** Multiple harnesses on one node (Hermes Discord, ruby-trivia audit, manual scripts) share GPU. Model name and VRAM alone do not answer “who is blocking my load?”
+
+Send stable **`project_id`** (app/repo) and optional **`project_name`** (thread, phase, channel):
+
+```json
+{
+  "options": {
+    "prompt_cache_key": "hermes:agent:main:discord:dm:123",
+    "zerollama": {
+      "qos_class": "interactive",
+      "project_id": "hermes-lean",
+      "project_name": "discord:dm:123"
+    }
+  }
+}
+```
+
+**CLI:** `./zerollama ps` adds **PROJECT** and **SESSION** when gate metadata is active.
+
+**API:** `GET /api/ps` → `models[].zerollama.sessions[]`.
+
+**Client convention:** probe `GET /api/version` (`distribution: zerollama`) before sending Tier 2 fields — vanilla Ollama ignores unknown options but should not receive eliza / prefix-mm-cache / 30m keep-alive floors from clients. Full branching rules: [agent-qos-and-project-tracking.md](./agent-qos-and-project-tracking.md).
 
 ---
 
@@ -213,6 +505,10 @@ Server-side caps help but **root cause** is often client context:
 | `TestMLXKeepAliveFloor` | `server` | 30m floor; explicit keep_alive honored |
 | `TestBuildModelInfo` (bogus text_config max_pos) | `x/server` | vocab_size ≠ context window |
 | `TestTokenizeCacheHitMiss` | `x/mlxrunner` | LRU hit/miss + copy safety |
+| `TestTryExtendLiveSession*` / `TestBestRestorableOffset*` | `x/mlxrunner` | Live-session LCP, rotating snapshot rewind, restore boundary pick |
+| `TestMLXPromptChain*` / `TestMLXPromptChainInvalidate` | `server` | Stable-prefix splice, fingerprint on equal count, invalidate on truncate |
+| `TestInferencePath*` / `TestGateSessionKey*` / `TestAgentSessionMetadataEnabled` | `server` | GGUF preserves client keys; eliza gated; embedding-only skips QoS |
+| `TestReserveScheduleQoSClaimsBeforeRunnerWait` | `server` | TOCTOU: gate claimed before runner wait |
 | `TestStreamKeepalive*` | `server` | keepalive session lifecycle |
 
 ---

@@ -8,7 +8,7 @@ Subject: [PATCH] maintain ordering for rules for grammar
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/common/json-schema-to-grammar.cpp b/common/json-schema-to-grammar.cpp
-index 4448304..8db43ea 100644
+index 4448304f5..8db43ea9c 100644
 --- a/common/json-schema-to-grammar.cpp
 +++ b/common/json-schema-to-grammar.cpp
 @@ -315,7 +315,7 @@ private:

@@ -99,11 +99,12 @@ func (c *Client) WaitUntilRunning(ctx context.Context) error {
 }
 
 type CompletionRequest struct {
-	Prompt      string       `json:"prompt"`
-	Tokens      []int32      `json:"tokens,omitempty"`
-	Options     api.Options  `json:"options"`
-	Logprobs    bool         `json:"logprobs,omitempty"`
-	TopLogprobs int          `json:"top_logprobs,omitempty"`
+	Prompt          string       `json:"prompt"`
+	Tokens          []int32      `json:"tokens,omitempty"`
+	PromptCacheKey  string       `json:"prompt_cache_key,omitempty"`
+	Options         api.Options  `json:"options"`
+	Logprobs        bool         `json:"logprobs,omitempty"`
+	TopLogprobs     int          `json:"top_logprobs,omitempty"`
 }
 
 type CompletionResponse struct {
@@ -146,9 +147,10 @@ func (c *Client) Close() error {
 // Completion implements llm.LlamaServer.
 func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn func(llm.CompletionResponse)) error {
 	creq := CompletionRequest{
-		Prompt:      req.Prompt,
-		Logprobs:    req.Logprobs,
-		TopLogprobs: req.TopLogprobs,
+		Prompt:         req.Prompt,
+		PromptCacheKey: strings.TrimSpace(req.PromptCacheKey),
+		Logprobs:       req.Logprobs,
+		TopLogprobs:    req.TopLogprobs,
 	}
 	if req.Options != nil {
 		creq.Options = *req.Options
@@ -174,10 +176,7 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		if errMsg := c.status.LastError(); errMsg != "" {
-			return fmt.Errorf("mlx runner failed: %s", errMsg)
-		}
-		return err
+		return wrapRunnerErr(ctx, err, c.status)
 	}
 	defer resp.Body.Close()
 
@@ -221,12 +220,22 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 	}
 
 	if err := scanner.Err(); err != nil {
-		if errMsg := c.status.LastError(); errMsg != "" {
-			return fmt.Errorf("mlx runner failed: %s", errMsg)
-		}
-		return err
+		return wrapRunnerErr(ctx, err, c.status)
 	}
 	return nil
+}
+
+func wrapRunnerErr(ctx context.Context, err error, status *llm.StatusWriter) error {
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errMsg := status.LastError(); errMsg != "" {
+		return fmt.Errorf("mlx runner failed: %s", errMsg)
+	}
+	return err
 }
 
 func (c *Client) Chat(ctx context.Context, req llm.ChatRequest, fn func(llm.ChatResponse)) error {
@@ -278,6 +287,24 @@ func (c *Client) HasExited() bool {
 	}
 }
 
+// ExitError returns the subprocess wait error after exit.
+func (c *Client) ExitError() error {
+	select {
+	case <-c.done:
+		return c.doneErr
+	default:
+		return nil
+	}
+}
+
+// LastStatusError returns the last stderr/stdout status line from the subprocess.
+func (c *Client) LastStatusError() string {
+	if c.status == nil {
+		return ""
+	}
+	return c.status.LastError()
+}
+
 // Load checks whether the model fits in GPU memory and starts the subprocess.
 func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error) {
 	if len(gpus) > 0 {
@@ -326,11 +353,13 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	cmd.Env = os.Environ()
 
 	// Set library path environment variable for MLX libraries
-	// Linux: LD_LIBRARY_PATH, Windows: PATH
+	// Linux: LD_LIBRARY_PATH, macOS: DYLD_LIBRARY_PATH, Windows: PATH
 	var libPathEnvVar string
 	switch runtime.GOOS {
 	case "linux":
 		libPathEnvVar = "LD_LIBRARY_PATH"
+	case "darwin":
+		libPathEnvVar = "DYLD_LIBRARY_PATH"
 	case "windows":
 		libPathEnvVar = "PATH"
 	}
@@ -396,7 +425,15 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 
 	// Reap subprocess when it exits
 	go func() {
+		pid := cmd.Process.Pid
 		c.doneErr = cmd.Wait()
+		if c.doneErr != nil {
+			attrs := []any{"error", c.doneErr, "exit", llm.ExitStatusFromError(c.doneErr), "pid", pid, "model", c.modelName, "port", c.port}
+			if msg := status.LastError(); msg != "" {
+				attrs = append(attrs, "status", msg)
+			}
+			slog.Error("mlx runner subprocess exited", attrs...)
+		}
 		close(c.done)
 	}()
 

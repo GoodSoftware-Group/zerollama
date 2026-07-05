@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Agent QoS hardening, project tracking, and cross-backend safety (M15b, Jul 2026)
+
+**Why:** Production Jul 4 logs showed two concurrent MLX streams slipping through QoS defer checks (TOCTOU), MLX subprocess death with no stderr in logs, and operators unable to see which agent harness owned a loaded model. Separately, Tier 2 client options (eliza, keep_alive floor, prefix-mm-cache) risked affecting vanilla Ollama / vLLM / CUDA proxies if sent or injected unconditionally.
+
+- **`reserveScheduleQoS`** — claims session gate slot **before** `GetRunner` wait; handlers `defer releaseQoS()` on all paths. **Why:** two streams passed defer checks within ~13ms and raced into the same MLX runner.
+- **`project_id` / `project_name`** — parsed from `options.zerollama` (aliases: `client_id`, `project`, `client_name`); surfaced on `GET /api/ps` and **`zerollama ps`** PROJECT / SESSION columns. **Why:** fleet operators need “who owns this GPU?” without log grep.
+- **`server/inference_path.go`** — backend detection (`mlx`, `gguf_ggml`, `gguf_llama_server`, `runtime`); `gateSessionKey` preserves GGUF client keys; unkeyed GGUF skips MLX interactive wait; `agentSessionMetadataEnabled` gates eliza injection. **Why:** MLX trie branch rewriting must not break llama-server L3 keys; CUDA batch jobs without session keys must not stall behind Mac agent cooldown.
+- **MLX exit logging** — `slog.Error("mlx runner subprocess exited", …)` with exit code + stderr tail. **Why:** Jul 4 crash had no subprocess death line in `log`.
+- **Version API** — `zerollama.capabilities.session_qos_gate`, `runner_paths`. **Why:** clients probe once and send Tier 2 hints only on zerollama nodes.
+- **Clients** — Hermes (`hermes-lean`), ruby-trivia, simpleagent: detect zerollama via `/api/version`; send `project_id` / `qos_class` / `prompt_cache_key` progressively.
+
+**Docs:** [docs/agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md); [ROADMAP M15b](docs/ROADMAP.md#apple-silicon--metal-track).
+
+### MLX agent live-session hardening (M15a, Jul 2026)
+
+**Why:** Hermes on `gemma4:26b-optiq` showed turn-2 **99% `cached_tokens`** but **60–90s** TTFT (`fast_path` never logged), turn-3+ **~16k cached** when `messages_dropped` increased, and noisy `mlx_cache_warn` on short `/api/generate` sidecar calls. Trie restore worked; live KV rewind and prompt-chain alignment did not.
+
+- **`tryExtendLiveSession`** — LCP vs prior prompt-only IDs; `trimPathToOffset` excludes gen past LCP; **`bestRestorableOffset`** picks largest snapshot boundary ≤ LCP; **`rewindCachesViaSnapshots`** page-in on active branch when rotating KV rejects `Restore(nil, …)`. **Why:** wrapped OptiQ windows cannot live-rewind 65k offsets; gen tokens in KV broke naive compare; blind mid-edge cap left 2k-token restore gaps.
+- **`trySameBranchRestore`** — snapshot fallback after failed live rewind. **`same_branch`** on trie `cache hit` logs + `tunePrefillConfig` hot-tail path. **Why:** same as live session but trie-keyed — skips leaf page-out/in when branch unchanged.
+- **`trieSnapshotInterval`** — agent + rotating KV: **1× sliding_window** (1024 OptiQ), was 2× (2048). **Why:** coarser snapshots explained ~16,384-token partial restores after message-level truncation changed the prefix.
+- **Prompt chain** — invalidate on `messages_dropped > 0`; fingerprint check when message count unchanged; `prompt_chain_miss` `reason=messages_truncated`. **Why:** truncated history invalidates cached stable tokens; in-place message edits falsely spliced.
+- **Observability** — `mlx_cache` agentstats: `same_branch`, `rewound_to`; KV-restore warns → Debug unless long prompt + session key. **Why:** operators could not separate live-session wins from trie hits or correlate drops with cache collapse.
+- **MLX sidecar defer** — unkeyed `/api/generate` on MLX waits while a different keyed session is in-flight or within 90s post-turn cooldown (no max wait; bounded only by request context). Chat/OpenAI paths skip unkeyed defer so concurrent `stream=false` calls are not blocked behind agent cooldown. **Why:** background sidecar `begin()` clobbered live KV between agent turns; the old 2m cap forced unsafe proceed and unkeyed chat hit client 120s timeouts while waiting.
+
+**Docs:** [docs/mlx-agent-prompts.md](docs/mlx-agent-prompts.md#m15a-live-session--restore-jul-2026); [ROADMAP M15a](docs/ROADMAP.md).
+
 ### Local image generation on Intel Arc A380 (Vulkan + OpenVINO) — Jul 2026
 
 **Why:** MLX imagegen (Z-Image, Flux) needs **16 GB CUDA/Metal** and does not run on 6 GB Arc. Operators still need **local text-to-image** on the same zerollama API (`POST /api/generate`, `zerollama run`) without a second server. Two subprocess backends reuse the existing **`external-image` hook** — one global env for Vulkan sd.cpp, per-manifest wrapper override for OpenVINO so stacks coexist.

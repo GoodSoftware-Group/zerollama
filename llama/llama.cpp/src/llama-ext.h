@@ -104,3 +104,46 @@ LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
 // mirrors:
 // LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
+
+//
+// cross-attention encoder cache (dflash target_hidden window; T5 encoder path)
+//
+
+// True when cross.v_embd has at least one row (n_embd × n_enc).
+LLAMA_API bool llama_context_cross_has_v_embd(const struct llama_context * ctx);
+
+// Copy row `pos` from cross.v_embd into dst (at most dst_cap floats). Returns copied length.
+LLAMA_API int32_t llama_context_cross_row(
+        const struct llama_context * ctx,
+        int32_t pos,
+        float * dst,
+        int32_t dst_cap);
+
+// Upsert one cross row (grows n_enc as needed). Used by ANE dflash_fc handoff (B8 lab).
+LLAMA_API void llama_context_cross_upsert_row(
+        struct llama_context * ctx,
+        int32_t pos,
+        const float * src,
+        int32_t n_feat);
+
+// Number of staged cross rows (0 when cross.v_embd empty).
+LLAMA_API int32_t llama_context_cross_n_enc(const struct llama_context * ctx);
+
+//
+// dflash-draft model metadata (B8 target_hidden / cross.v_embd wiring)
+//
+
+// Returns dflash.n_target_features for dflash-draft models, else 0.
+LLAMA_API int32_t llama_model_dflash_n_target_features(const struct llama_model * model);
+
+// Returns count of dflash.target_layer_ids[], else 0.
+LLAMA_API int32_t llama_model_dflash_n_target_layers(const struct llama_model * model);
+
+// Returns dflash.target_layer_ids[i] or -1 when out of range / not dflash-draft.
+LLAMA_API int32_t llama_model_dflash_target_layer_id(const struct llama_model * model, int32_t i);
+
+// Enable per-layer target hidden export on ctx_tgt using draft-model dflash metadata.
+LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, const struct llama_model * draft_model);
+
+// Row from the last target decode ([n_target_features]); NULL when export inactive.
+LLAMA_API float * llama_get_dflash_target_features_ith(struct llama_context * ctx, int32_t i);

@@ -441,8 +441,14 @@ func EmbeddingsMiddleware() gin.HandlerFunc {
 
 func ChatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req openai.ChatCompletionRequest
-		err := c.ShouldBindJSON(&req)
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+		req, err := openai.BindChatCompletionRequest(body)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
@@ -634,8 +640,13 @@ func (w *ImageWriter) Write(data []byte) (int, error) {
 
 func ImageGenerationsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req openai.ImageGenerationRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		req, err := openai.BindImageGenerationRequest(body)
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
 		}
@@ -669,8 +680,13 @@ func ImageGenerationsMiddleware() gin.HandlerFunc {
 
 func ImageEditsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req openai.ImageEditRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		req, err := openai.BindImageEditRequest(body)
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
 		}

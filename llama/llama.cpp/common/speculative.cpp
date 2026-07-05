@@ -236,9 +236,19 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
         common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
 
+        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DFLASH);
+        if (dflash || common_ane_draft_enabled()) {
+            common_ane_draft_bind_target_ctx(ctx_tgt);
+            llama_set_embeddings_pre_norm(ctx_tgt, true);
+            llama_set_dflash_target_export(ctx_tgt, llama_get_model(ctx_dft));
+        }
+
         // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
         if (common_ane_draft_enabled()) {
             llama_set_embeddings_pre_norm(ctx_dft, true);
+            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {
+                llama_set_embeddings(ctx_dft, true);
+            }
         }
     }
 
@@ -252,6 +262,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
     bool process(const llama_batch & batch) override {
         auto * ctx_dft = params.ctx_dft;
+
+        // B8: stage target pre-norm into cross.v_embd before draft sync-decode (Metal dflash + ANE).
+        common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, batch);
 
         const int ret = llama_decode(ctx_dft, batch);
 
@@ -296,6 +309,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
         }
 
         // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).
+        if (batch.n_tokens > 0 && batch.token) {
+            common_ane_draft_note_handoff_token(batch.token[batch.n_tokens - 1]);
+        }
         common_ane_draft_handoff_after_decode(ctx_dft, 0);
 
         int i = 0;
@@ -331,10 +347,17 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                 if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
                     llama_token ane_id = 0;
                     float ane_p = 0.f;
-                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p)) {
+                    float hidden_cos = 0.f;
+                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {
                         if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
-                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d\n",
-                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0);
+                            llama_token metal_ref = id;
+                            if (!common_ane_draft_metal_ref_token(ctx_dft, i_batch - 1, &metal_ref)) {
+                                metal_ref = id;
+                            }
+                            LOG_INF("%s: B7 shadow step=%d seq=%d handoff_tok=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\n",
+                                    __func__, i, (int) seq_id, (int) common_ane_draft_last_handoff_token(),
+                                    (int) ane_id, (int) metal_ref,
+                                    ane_id == metal_ref ? 1 : 0, hidden_cos);
                         } else {
                             id = ane_id;
                             pick_p = ane_p;
@@ -380,6 +403,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
             }
 
             // B5: handoff on each speculative draft decode step (stride via env in hook).
+            if (batch.n_tokens > 0 && batch.token) {
+                common_ane_draft_note_handoff_token(batch.token[batch.n_tokens - 1]);
+            }
             common_ane_draft_handoff_after_decode(ctx_dft, 0);
 
             ++i;
@@ -657,6 +683,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             return;
         }
 
+        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).
+        common_ane_draft_handoff_after_decode(ctx_dft, 0);
+
         int i = 0;
 
         while (n_drafting > 0) {
@@ -713,6 +742,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 LOG_WRN("%s: llama_decode[%d] returned %d\n", __func__, i, ret);
                 break;
             }
+
+            // B5: handoff on each speculative draft decode step (stride via env in hook).
+            common_ane_draft_handoff_after_decode(ctx_dft, 0);
 
             ++i;
         }

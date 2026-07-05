@@ -19,6 +19,6 @@ llama_unified_vendor_prepare() {
   fi
 
   export OLLAMA_LLAMA_CPP_SOURCE="${vendor}"
-  "${root}/scripts/stage_llama_compat_for_vendor.sh" "${vendor}"
+  "${root}/scripts/ensure_llama_vendor_patches.sh" "${vendor}"
   echo ">>> unified llama.cpp: ${vendor}" >&2
 }

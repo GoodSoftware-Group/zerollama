@@ -1134,6 +1134,15 @@ func (m *Model) TokenEmbeddings(inputIDs *mlx.Array) *mlx.Array {
 	return mlx.MulScalar(m.EmbedTokens.Forward(inputIDs), m.EmbedScale)
 }
 
+// SlidingWindowSize returns the local-attention window for prefill chunk sizing.
+// Implements mlxrunner slidingWindowModel when > 0.
+func (m *Model) SlidingWindowSize() int {
+	if m.SlidingWindow > 0 {
+		return int(m.SlidingWindow)
+	}
+	return 0
+}
+
 // NewCaches creates cache objects for layers that own KV state.
 func (m *Model) NewCaches() []cache.Cache {
 	cacheLayers := len(m.Layers)

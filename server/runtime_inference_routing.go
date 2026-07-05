@@ -79,6 +79,39 @@ func modelEligibleForLlamaCppRuntime(m *Model) bool {
 	return true
 }
 
+// modelEligibleForAgentCacheRuntime reports whether a keyed agent chat may use the Python
+// runtime for L3 prefix cache. Unlike modelEligibleForLlamaCppRuntime, thinking-capable
+// text models (e.g. qwen3.6) remain eligible — only multimodal/embedding caps exclude.
+func modelEligibleForAgentCacheRuntime(m *Model) bool {
+	if m == nil || effectiveRuntimeURL() == "" || envconfig.LegacyRunnerForced() {
+		return false
+	}
+	if m.ModelPath == "" || m.IsMLX() {
+		return false
+	}
+	backend := modelInferenceBackend(m)
+	if backend != "" && backend != model.BackendZerollamaRuntime {
+		return false
+	}
+	if m.CheckCapabilities(model.CapabilityCompletion) != nil {
+		return false
+	}
+	for _, cap := range []model.Capability{
+		model.CapabilityEmbedding,
+		model.CapabilityVision,
+		model.CapabilityVideo,
+		model.CapabilityImage,
+		model.CapabilityVideoGen,
+		model.CapabilityAudio,
+		model.CapabilitySpeech,
+	} {
+		if m.CheckCapabilities(cap) == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // modelEligibleForRuntimeDefault reports whether a local GGUF text model may use
 // the Python runtime when ZEROLLAMA_RUNTIME default-on is active (Phase 12).
 func modelEligibleForRuntimeDefault(m *Model) bool {

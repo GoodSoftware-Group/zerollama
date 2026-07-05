@@ -647,6 +647,9 @@ func (s *llamaServerRunner) ContextLength() int {
 // WHY unified second: one elizaOS @ LLAMA_CPP_COMMIT tree; avoid stale eliza-llama.cpp siblings.
 func FindLlamaServer() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("LLAMA_SERVER_BIN")); override != "" {
+		if abs, err := filepath.Abs(override); err == nil {
+			override = abs
+		}
 		if _, err := os.Stat(override); err == nil {
 			return override, nil
 		}
@@ -2070,27 +2073,15 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 	}
 
 	if hasFinalResp {
-		for scanner.Scan() {
-		}
-
-		if err := scanner.Err(); err != nil {
-			if err := llamaServerStreamLimitError("response", err); err != nil {
-				return err
-			}
-			return fmt.Errorf("error reading llama-server response: %v", err)
-		}
-
-		if err := res.Body.Close(); err != nil {
-			return fmt.Errorf("error closing llama-server response: %v", err)
-		}
-
-		fn(finalResp)
-		return nil
+		return deliverFinalLlamaServerStream(ctx, scanner, res.Body, func() { fn(finalResp) }, "response")
 	}
 
 	if err := scanner.Err(); err != nil {
 		if err := llamaServerStreamLimitError("response", err); err != nil {
 			return err
+		}
+		if isBenignLlamaServerStreamError(ctx, err) {
+			return ctx.Err()
 		}
 		if strings.Contains(err.Error(), "unexpected EOF") || strings.Contains(err.Error(), "forcibly closed") {
 			s.Close()
@@ -2104,6 +2095,40 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 	}
 
 	return nil
+}
+
+func deliverFinalLlamaServerStream(ctx context.Context, scanner *bufio.Scanner, body io.Closer, deliver func(), label string) error {
+	for scanner.Scan() {
+	}
+	drainErr := scanner.Err()
+	if err := body.Close(); err != nil && drainErr == nil && !isBenignLlamaServerStreamError(ctx, err) {
+		return fmt.Errorf("error closing llama-server %s: %v", label, err)
+	}
+	deliver()
+	if drainErr != nil {
+		if err := llamaServerStreamLimitError(label, drainErr); err != nil {
+			return err
+		}
+		if isBenignLlamaServerStreamError(ctx, drainErr) {
+			return nil
+		}
+		return fmt.Errorf("error reading llama-server %s: %v", label, drainErr)
+	}
+	return nil
+}
+
+func isBenignLlamaServerStreamError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context canceled") || strings.Contains(msg, "operation was canceled")
 }
 
 func llamaServerStreamLimitError(label string, err error) error {
@@ -2380,27 +2405,15 @@ func (s *llamaServerRunner) Chat(ctx context.Context, req ChatRequest, fn func(C
 	}
 
 	if hasFinalResp {
-		for scanner.Scan() {
-		}
-
-		if err := scanner.Err(); err != nil {
-			if err := llamaServerStreamLimitError("chat response", err); err != nil {
-				return err
-			}
-			return fmt.Errorf("error reading llama-server chat response: %v", err)
-		}
-
-		if err := res.Body.Close(); err != nil {
-			return fmt.Errorf("error closing llama-server chat response: %v", err)
-		}
-
-		fn(finalResp)
-		return nil
+		return deliverFinalLlamaServerStream(ctx, scanner, res.Body, func() { fn(finalResp) }, "chat response")
 	}
 
 	if err := scanner.Err(); err != nil {
 		if err := llamaServerStreamLimitError("chat response", err); err != nil {
 			return err
+		}
+		if isBenignLlamaServerStreamError(ctx, err) {
+			return ctx.Err()
 		}
 		if strings.Contains(err.Error(), "unexpected EOF") || strings.Contains(err.Error(), "forcibly closed") {
 			s.Close()

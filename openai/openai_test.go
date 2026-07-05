@@ -229,6 +229,38 @@ func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
 	}
 }
 
+func TestFromChatRequest_KeepAlive(t *testing.T) {
+	ka := api.Duration{Duration: 30 * time.Minute}
+	req := ChatCompletionRequest{
+		Model:     "gemma4:26b-optiq",
+		Messages:  []Message{{Role: "user", Content: "hi"}},
+		KeepAlive: &ka,
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.KeepAlive == nil || out.KeepAlive.Duration != ka.Duration {
+		t.Fatalf("KeepAlive=%v want 30m", out.KeepAlive)
+	}
+
+	req2 := ChatCompletionRequest{
+		Model:    "gemma4:26b-optiq",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Options:  map[string]any{"keep_alive": "45m"},
+	}
+	out2, err := FromChatRequest(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2.KeepAlive == nil || out2.KeepAlive.Duration != 45*time.Minute {
+		t.Fatalf("KeepAlive from options=%v want 45m", out2.KeepAlive)
+	}
+	if _, ok := out2.Options["keep_alive"]; ok {
+		t.Fatal("keep_alive should be lifted out of options")
+	}
+}
+
 func TestDecodeVideoURL_RejectsLoopback(t *testing.T) {
 	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
 	_, err := decodeVideoURL(context.Background(), "http://127.0.0.1:8080/v.mp4")

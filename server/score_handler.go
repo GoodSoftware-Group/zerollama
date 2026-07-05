@@ -48,11 +48,12 @@ func (s *Server) ScoreHandler(c *gin.Context) {
 		return
 	}
 
-	r, _, _, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
+	r, _, _, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
 	}
+	defer releaseQoS()
 
 	scorer, ok := r.(llm.Scorer)
 	if !ok {

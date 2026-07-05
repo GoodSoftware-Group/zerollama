@@ -10,7 +10,7 @@ Subject: [PATCH] fix: cell_index_for + stage Ollama compat in CMake
  3 files changed, 5 insertions(+), 4 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index e43104a..0d75522 100644
+index e43104af0..0d7552279 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -38,6 +38,8 @@ add_library(llama
@@ -31,7 +31,7 @@ index e43104a..0d75522 100644
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index e4bf025..ef45bdd 100644
+index e4bf025a1..ef45bdd89 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -634,10 +634,6 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
@@ -46,7 +46,7 @@ index e4bf025..ef45bdd 100644
          return -1;
      }
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index 294ff61..38c80c6 100644
+index 294ff61da..38c80c6ae 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
 @@ -56,6 +56,8 @@ target_link_libraries     (mtmd PRIVATE Threads::Threads)

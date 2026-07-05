@@ -204,7 +204,37 @@ static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const 
         "metal.cpp proc address",
     )
     if "ggml_backend_dev_buffer_from_iosurface" in metal_cpp.read_text():
-        print("  skip metal.cpp public API (already applied)")
+        has_public = "GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(" in metal_cpp.read_text()
+        if has_public:
+            print("  skip metal.cpp public API (already applied)")
+        else:
+            patch_once(
+                metal_cpp,
+                "    return &reg;\n}\n\nGGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)",
+                """    return &reg;
+}
+
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
+        ggml_backend_dev_t device,
+        uint32_t surface_id,
+        size_t size,
+        size_t max_tensor_size) {
+    if (!device || !device->iface.get_name) {
+        return nullptr;
+    }
+
+    const char * name = device->iface.get_name(device);
+    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal (name=%s)\\n", __func__, name ? name : "null");
+        return nullptr;
+    }
+
+    return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);
+}
+
+GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)""",
+                "metal.cpp public API",
+            )
     else:
         patch_once(
             metal_cpp,

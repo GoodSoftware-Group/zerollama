@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/fs/ggml"
+	mlggml "github.com/ollama/ollama/ml/backend/ggml"
 )
 
 const driveEmbdMagic = "ZANE1"
@@ -30,6 +31,53 @@ type ANEDraftDriveHeadManifest struct {
 
 func defaultDriveEmbdTensor() string  { return "token_embd.weight" }
 func defaultDriveNormTensor() string { return "output_norm.weight" }
+
+func driveEmbdTensorCandidates() []string {
+	return []string{"token_embd.weight", "output.weight"}
+}
+
+func resolveDriveEmbdGGUF(entry ANEDraftEntry, tensorName string) (path string, ok bool) {
+	if draftPath, present := resolveDraftGGUFPath(entry); present && draftPath != "" {
+		if _, _, err := ggml.ReadTensorBytes(draftPath, tensorName); err == nil {
+			return draftPath, true
+		}
+	}
+	if base := strings.TrimSpace(entry.BaseGGUF); base != "" {
+		if _, _, err := ggml.ReadTensorBytes(base, tensorName); err == nil {
+			return base, true
+		}
+	}
+	return "", false
+}
+
+func resolveDriveEmbdSource(entry ANEDraftEntry) (ggufPath, tensorName string, err error) {
+	for _, t := range driveEmbdTensorCandidates() {
+		if p, ok := resolveDriveEmbdGGUF(entry, t); ok {
+			return p, t, nil
+		}
+	}
+	return "", "", fmt.Errorf("no token_embd/output.weight in sidecar or base for %s", entry.Tag)
+}
+
+func resolveDriveNormSource(entry ANEDraftEntry, nEmbd int) (ggufPath, tensorName string) {
+	for _, t := range []string{defaultDriveNormTensor(), "blk.0.attn_norm.weight"} {
+		if draftPath, present := resolveDraftGGUFPath(entry); present && draftPath != "" {
+			if raw, tensor, err := ggml.ReadTensorBytes(draftPath, t); err == nil {
+				if _, err := extractVectorF32(raw, tensor, nEmbd); err == nil {
+					return draftPath, t
+				}
+			}
+		}
+		if base := strings.TrimSpace(entry.BaseGGUF); base != "" {
+			if raw, tensor, err := ggml.ReadTensorBytes(base, t); err == nil {
+				if _, err := extractVectorF32(raw, tensor, nEmbd); err == nil {
+					return base, t
+				}
+			}
+		}
+	}
+	return "", ""
+}
 
 func driveEmbdCachePath(sidecarPath string) string {
 	base := strings.TrimSuffix(filepath.Base(sidecarPath), filepath.Ext(sidecarPath))
@@ -72,8 +120,11 @@ func MaterializeANEDraftDriveHead(entry ANEDraftEntry) (ANEDraftDriveHeadManifes
 		}
 	}
 
-	embdTensor := defaultDriveEmbdTensor()
-	rawEmbd, tensorEmbd, err := ggml.ReadTensorBytes(draftPath, embdTensor)
+	embdGGUF, embdTensor, err := resolveDriveEmbdSource(entry)
+	if err != nil {
+		return ANEDraftDriveHeadManifest{}, false, err
+	}
+	rawEmbd, tensorEmbd, err := ggml.ReadTensorBytes(embdGGUF, embdTensor)
 	if err != nil {
 		return ANEDraftDriveHeadManifest{}, false, err
 	}
@@ -102,13 +153,15 @@ func MaterializeANEDraftDriveHead(entry ANEDraftEntry) (ANEDraftDriveHeadManifes
 		TensorEmbd:    embdTensor,
 	}
 
-	if normRaw, tensorNorm, err := ggml.ReadTensorBytes(draftPath, defaultDriveNormTensor()); err == nil {
-		normF32, err := extractVectorF32(normRaw, tensorNorm, nEmbd)
-		if err == nil {
-			if err := os.WriteFile(normPath, normF32, 0o644); err == nil {
-				out.OutputNormPath = normPath
-				out.NormBytes = len(normF32)
-				out.TensorNorm = tensorNorm.Name
+	if normGGUF, normTensor := resolveDriveNormSource(entry, nEmbd); normGGUF != "" {
+		if normRaw, tensorNorm, err := ggml.ReadTensorBytes(normGGUF, normTensor); err == nil {
+			normF32, err := extractVectorF32(normRaw, tensorNorm, nEmbd)
+			if err == nil {
+				if err := os.WriteFile(normPath, normF32, 0o644); err == nil {
+					out.OutputNormPath = normPath
+					out.NormBytes = len(normF32)
+					out.TensorNorm = tensorNorm.Name
+				}
 			}
 		}
 	}
@@ -187,7 +240,18 @@ func extractTokenEmbdFP16(raw []byte, tensor *ggml.Tensor) ([]byte, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("token_embd kind %v unsupported for B7 drive", kind)
+		if !ggml.TensorType(kind).IsQuantized() {
+			return nil, fmt.Errorf("token_embd kind %v unsupported for B7 drive", kind)
+		}
+		f32 := mlggml.ConvertToF32(raw, tensor.Kind, uint64(nEmbd*nVocab))
+		if len(f32) < nEmbd*nVocab {
+			return nil, fmt.Errorf("token_embd dequant truncated")
+		}
+		out := make([]byte, need)
+		for i := 0; i < nEmbd*nVocab; i++ {
+			binary.LittleEndian.PutUint16(out[i*2:], float32ToFloat16Bits(f32[i]))
+		}
+		return out, nil
 	}
 }
 

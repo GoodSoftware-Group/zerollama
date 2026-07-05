@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"sync/atomic"
+
+	"github.com/ollama/ollama/agentstats"
 )
 
 // StatusWriter is a writer that captures error messages from the llama runner process
@@ -156,6 +158,8 @@ func (w *StatusWriter) Write(b []byte) (int, error) {
 		if errMsg := statusErrorLine(line); errMsg != "" {
 			w.AppendError(errMsg)
 		}
+
+		agentstats.MaybeRecordRunnerLine(line)
 	}
 
 	if w.out == nil {
@@ -165,7 +169,16 @@ func (w *StatusWriter) Write(b []byte) (int, error) {
 	return w.out.Write(b)
 }
 
+func isInformationalMLXLine(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "optional symbol") && strings.Contains(lower, "(no-op)")
+}
+
 func statusErrorLine(line string) string {
+	if isInformationalMLXLine(line) {
+		return ""
+	}
+
 	errStart := -1
 	errPrefix := ""
 	for _, prefix := range errorPrefixes {

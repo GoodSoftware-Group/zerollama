@@ -94,6 +94,20 @@ format-patches: llama/patches
 .PHONY: clean
 clean: checkout
 	@git -C $(WORKDIR) am --abort || true
+	@for rel in \
+	  common/ane_draft_hook.cpp \
+	  common/ane_draft_hook.h \
+	  common/ane_draft_session.h \
+	  common/ane_draft_session.mm \
+	  common/ane_draft_session_stub.cpp \
+	  common/ane_iosurface_map.h \
+	  src/llama-ext.h \
+	  src/ollama-compat; do \
+	  if [ -e "$(WORKDIR)/$$rel" ] && ! git -C $(WORKDIR) ls-files --error-unmatch "$$rel" >/dev/null 2>&1; then \
+	    echo ">>> removing untracked $$rel (blocks git am)"; \
+	    rm -rf "$(WORKDIR)/$$rel"; \
+	  fi; \
+	done
 	$(RM) llama/patches/.*.patched
 
 .PHONY: print-base

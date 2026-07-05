@@ -13,7 +13,12 @@ import (
 // fleet needs to know compile artifact vs env-only --edge without shelling out to `zerollama -v`.
 func VersionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"version":    version.Version,
-		"edge_build": version.IsEdgeBuild(),
+		"version":      version.Version,
+		"distribution": "zerollama",
+		"edge_build":   version.IsEdgeBuild(),
+		"zerollama": gin.H{
+			"capabilities": zerollamaVersionCapabilities(),
+			"qos":          zerollamaVersionQoS(),
+		},
 	})
 }

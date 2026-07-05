@@ -20,6 +20,7 @@ size_t (*mlx_dtype_size_ptr)(mlx_dtype dtype) = NULL;
 int (*mlx_array_tostring_ptr)(mlx_string* str, const mlx_array arr) = NULL;
 mlx_array (*mlx_array_new_ptr)(void) = NULL;
 int (*mlx_array_free_ptr)(mlx_array arr) = NULL;
+int (*mlx_array_detach_ptr)(mlx_array arr) = NULL;
 mlx_array (*mlx_array_new_bool_ptr)(bool val) = NULL;
 mlx_array (*mlx_array_new_int_ptr)(int val) = NULL;
 mlx_array (*mlx_array_new_float32_ptr)(float val) = NULL;
@@ -670,6 +671,10 @@ int mlx_load_functions(void* handle) {
     if (mlx_array_free_ptr == NULL) {
         fprintf(stderr, "MLX: Failed to load symbol: mlx_array_free\n");
         return -1;
+    }
+    mlx_array_detach_ptr = GET_SYM(handle, "mlx_array_detach");
+    if (mlx_array_detach_ptr == NULL) {
+        fprintf(stderr, "MLX: optional symbol mlx_array_detach missing from libmlxc (no-op)\n");
     }
     mlx_array_new_bool_ptr = GET_SYM(handle, "mlx_array_new_bool");
     if (mlx_array_new_bool_ptr == NULL) {
@@ -3774,6 +3779,13 @@ int mlx_array_free(mlx_array arr) {
     return mlx_array_free_ptr(arr);
 }
 
+int mlx_array_detach(mlx_array arr) {
+    if (mlx_array_detach_ptr == NULL) {
+        return 0;
+    }
+    return mlx_array_detach_ptr(arr);
+}
+
 mlx_array mlx_array_new_bool(bool val) {
     return mlx_array_new_bool_ptr(val);
 }
@@ -3983,9 +3995,6 @@ const int64_t* mlx_array_data_int64(const mlx_array arr) {
 }
 
 const float* mlx_array_data_float32(const mlx_array arr) {
-    if (mlx_array_data_float32_ptr == NULL) {
-        return NULL;
-    }
     return mlx_array_data_float32_ptr(arr);
 }
 

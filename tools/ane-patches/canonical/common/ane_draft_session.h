@@ -64,13 +64,72 @@ bool ane_draft_session_matmul_dynamic(void);
 // Pack activation slice only into dynamic matmul IOSurface [ic × seq]; weights primed at init.
 bool ane_draft_session_pack_matmul_activations(float * dst, const float * hidden, int hidden_len);
 
-// 0, 1 (gate), 2 (gate+silu+up), 3 (SwiGLU+ffn_down), or 4 (+attn_gate) when matmul kernel active.
+// 0 … 17 (P16 output_norm + lm_head = chain 17; P15 ffn SwiGLU+down = chain 16) when matmul kernel active.
 int ane_draft_session_matmul_chain_depth(void);
+
+// True when MATMUL_CHAIN=8 / native dflash_fc path (input from ctx_tgt target_hidden).
+bool ane_draft_session_dflash_fc_active(void);
+
+// True when MATMUL_CHAIN=11 — dflash_fc + hidden_norm + blk.0 attn_q (P10).
+bool ane_draft_session_dflash_chain11_active(void);
+
+// True when MATMUL_CHAIN=12 — dflash_fc + hidden_norm + blk.0 attn_q/k/v (P11; output = v).
+bool ane_draft_session_dflash_chain12_active(void);
+
+// True when MATMUL_CHAIN=13 — chain 12 + host cross-attn softmax/KV combine (P12).
+bool ane_draft_session_dflash_chain13_active(void);
+
+// True when MATMUL_CHAIN=14 — chain 13 + blk.0 attn_output (wo) on ANE (P13).
+bool ane_draft_session_dflash_chain14_active(void);
+
+// True when MATMUL_CHAIN=15 — chain 14 + blk.0 ffn_gate on ANE (P14).
+bool ane_draft_session_dflash_chain15_active(void);
+
+// True when MATMUL_CHAIN=16 — chain 15 + blk.0 ffn_up/SwiGLU/down (P15).
+bool ane_draft_session_dflash_chain16_active(void);
+
+// True when MATMUL_CHAIN=17 — chain 16 + host output_norm for tied-embed lm_head (P16).
+bool ane_draft_session_dflash_chain17_active(void);
+
+// ANE eval attn_out @ wo after host cross-attn wrote outBuf (chain 14+).
+bool ane_draft_session_eval_dflash_attn_wo(void);
+
+// ANE eval post-attn hidden @ ffn_gate after wo wrote outBuf (chain 15+).
+bool ane_draft_session_eval_dflash_ffn_gate(void);
+
+// ANE ffn_up + host SwiGLU + host fp32 ffn_down after gate (chain 16+).
+bool ane_draft_session_eval_dflash_ffn_up_swiglu_down(void);
+
+// Host RMS output_norm on ffn_down hidden (chain 17).
+bool ane_draft_session_eval_dflash_output_norm(void);
+
+// Host RMS attn_post_norm on post-attn residual before ffn_gate (chain 15+).
+bool ane_draft_session_eval_dflash_attn_post_norm(void);
+
+// Host fp32 dflash_fc output (full target export @ native W) — skips ANE kernel1 eval when set.
+bool ane_draft_session_set_dflash_fc_host(const float * fc, int n);
+void ane_draft_session_clear_dflash_fc_host(void);
+
+// Overwrite last ANE output with host attn vector (chain 13).
+bool ane_draft_session_write_dflash_attn_out(const float * src, int n);
+
+// Spatial-mean row of current outBuf; add delta row to all seq slots (dflash residuals).
+bool ane_draft_session_snapshot_output_row(float * row, int n);
+bool ane_draft_session_add_output_row(const float * delta, int n);
+
+// Read stashed q/k/v noise projections after chain 12/13 eval.
+bool ane_draft_session_read_dflash_qkv(float * q, float * k, float * v, int n);
 
 // Full n_embd after ffn_down (768 on 2B); valid when chain depth >= 3.
 int ane_draft_session_matmul_ffn_embd(void);
 
-// Stashed ffn_down vector for B7 drive when chain4 output is attn_gate width.
+// blk.1 SwiGLU width (192 on 2B proxy); valid when chain depth >= 9.
+int ane_draft_session_matmul9_oc(void);
+
+// Stashed attn_qkv prefix (P6) after handoff hidden pack.
+size_t ane_draft_session_read_qkv_prefix(float * dst, size_t dst_floats);
+
+// Stashed ffn_down vector for B7 drive when chain4+ output is not full n_embd.
 size_t ane_draft_session_read_ffn_down(float * dst, size_t dst_floats);
 
 bool ane_draft_session_using_conv2(void);

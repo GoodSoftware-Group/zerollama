@@ -2,6 +2,7 @@ package discover
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ type ANEDraftEntry struct {
 	SpecType            string `json:"spec_type,omitempty"`
 	NumCtx              int    `json:"num_ctx,omitempty"`
 	Architecture        string `json:"architecture,omitempty"`
+	DraftArchitecture   string `json:"draft_architecture,omitempty"`
 	EmbeddingLength     int    `json:"embedding_length,omitempty"`
 	ProxyChannels       int    `json:"proxy_channels,omitempty"`
 	ProxySpatial        int    `json:"proxy_spatial,omitempty"`
@@ -34,7 +36,7 @@ func ListANEDraftInventory() ([]ANEDraftEntry, error) {
 
 	var out []ANEDraftEntry
 	for name, mf := range ms {
-		entry, ok, err := aneDraftEntryFromManifest(name, mf)
+		entry, ok, err := aneDraftEntryFromManifest(name, mf, ms)
 		if err != nil || !ok {
 			continue
 		}
@@ -67,7 +69,70 @@ func SelectANEDraftModel(entries []ANEDraftEntry, preferred string) (ANEDraftEnt
 	return entries[0], true
 }
 
-func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraftEntry, bool, error) {
+// dflashParentShort strips a -dflash suffix so eliza-1-2b-dflash → eliza-1-2b.
+func dflashParentShort(short string) string {
+	s := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(short)), "-dflash")
+	if s == "" || s == strings.ToLower(short) {
+		return ""
+	}
+	return s
+}
+
+func modelGGUFPathFromManifest(mf *manifest.Manifest) (string, error) {
+	if mf == nil {
+		return "", fmt.Errorf("nil manifest")
+	}
+	for _, layer := range mf.Layers {
+		if layer.MediaType != "application/vnd.ollama.image.model" {
+			continue
+		}
+		return manifest.BlobsPath(layer.Digest)
+	}
+	return "", fmt.Errorf("no model layer")
+}
+
+func draftGGUFPathFromManifest(mf *manifest.Manifest) (string, error) {
+	if mf == nil {
+		return "", fmt.Errorf("nil manifest")
+	}
+	var secondModel string
+	for _, layer := range mf.Layers {
+		switch layer.MediaType {
+		case "application/vnd.ollama.image.draft":
+			return manifest.BlobsPath(layer.Digest)
+		case "application/vnd.ollama.image.model":
+			if secondModel == "" {
+				if p, err := manifest.BlobsPath(layer.Digest); err == nil {
+					secondModel = p
+				}
+			} else if p, err := manifest.BlobsPath(layer.Digest); err == nil {
+				return p, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no draft layer")
+}
+
+func parentManifestForDflash(short string, all map[model.Name]*manifest.Manifest) (*manifest.Manifest, string) {
+	parentShort := dflashParentShort(short)
+	if parentShort == "" || len(all) == 0 {
+		return nil, ""
+	}
+	want := strings.ToLower(parentShort)
+	for n, mf := range all {
+		tag := n.DisplayShortest()
+		if tag == "" {
+			tag = n.String()
+		}
+		base := strings.SplitN(tag, ":", 2)[0]
+		if strings.EqualFold(base, want) {
+			return mf, tag
+		}
+	}
+	return nil, ""
+}
+
+func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest, all map[model.Name]*manifest.Manifest) (ANEDraftEntry, bool, error) {
 	if mf == nil {
 		return ANEDraftEntry{}, false, nil
 	}
@@ -99,9 +164,15 @@ func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraft
 			}
 			if basePath == "" {
 				basePath = path
-			} else {
+			} else if draftPath == "" {
 				draftPath = path
 			}
+		case "application/vnd.ollama.image.draft":
+			path, err := manifest.BlobsPath(layer.Digest)
+			if err != nil {
+				return ANEDraftEntry{}, false, err
+			}
+			draftPath = path
 		case "application/vnd.ollama.image.params":
 			path, err := manifest.BlobsPath(layer.Digest)
 			if err != nil {
@@ -129,6 +200,21 @@ func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraft
 		specType == "draft-eagle3" || specType == "draft-mtp" || specType == "dflash"
 	if !isDraft || basePath == "" {
 		return ANEDraftEntry{}, false, nil
+	}
+
+	// zerollama create may embed a 128k base blob; dflash e2e needs the parent tag base
+	// (eliza-1-2b) so llama-server keeps spec decoding enabled with the qwen35 sidecar.
+	if strings.Contains(strings.ToLower(short), "dflash") {
+		if parentMF, _ := parentManifestForDflash(short, all); parentMF != nil {
+			if parentBase, err := modelGGUFPathFromManifest(parentMF); err == nil && parentBase != "" {
+				basePath = parentBase
+			}
+		}
+		if draftPath == "" {
+			if manifestDraft, err := draftGGUFPathFromManifest(mf); err == nil {
+				draftPath = manifestDraft
+			}
+		}
 	}
 
 	if params != nil {
@@ -170,6 +256,9 @@ func aneDraftEntryFromManifest(name model.Name, mf *manifest.Manifest) (ANEDraft
 		entry.ProxySpatial = info.ProxySpatial
 	}
 	if entry.DraftSidecarPresent && draftPath != "" {
+		if arch, err := ProbeSidecarArchitecture(draftPath); err == nil {
+			entry.DraftArchitecture = arch
+		}
 		if dinfo, err := ProbeANEDraftGGUF(draftPath, ""); err == nil && dinfo.EmbeddingLength > 0 {
 			entry.EmbeddingLength = dinfo.EmbeddingLength
 			if entry.Architecture == "" {

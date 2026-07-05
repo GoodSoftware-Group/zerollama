@@ -32,6 +32,7 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		EnsureAgentPromptCacheKey(&req)
 		if len(req.Messages) == 0 && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
 			c.Next()
 			return
@@ -50,7 +51,7 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if !resolveRuntimeProxy(c, req.Model) {
+		if !resolveRuntimeProxy(c, req.Model, req.Options) {
 			c.Next()
 			return
 		}

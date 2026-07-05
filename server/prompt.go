@@ -129,15 +129,42 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 		}
 	}
 
-	// MLX Prepare re-tokenizes unless PromptTokens is set. Always capture ids once
-	// so completion skips a second full encode on long agent prompts.
-	if m.IsMLX() && len(promptTokens) == 0 && tokenize != nil && p != "" {
-		ids, err := tokenize(ctx, p)
-		if err != nil {
-			return "", nil, 0, nil, err
+	// MLX Prepare re-tokenizes unless PromptTokens is set. Prefer agent prompt-chain
+	// splice (suffix-only tokenize) before a full megaprompt encode.
+	if m.IsMLX() && tokenize != nil && p != "" {
+		key := promptCacheKeyFromCtx(ctx)
+		var fresh []int
+		if len(promptTokens) > 0 {
+			fresh = promptTokens
 		}
-		promptTokens = ids
-		slog.Debug("mlx prompt pre-tokenized for passthrough", "tokens", len(promptTokens))
+		if key != "" {
+			if messagesDropped > 0 {
+				// Message-level truncation drops oldest turns — stable-prefix cache from
+				// the prior turn is invalid even when prompt_cache_key is unchanged.
+				globalMLXPromptChain.invalidate(key)
+				recordMLXChainMiss(key, "messages_truncated", map[string]any{
+					"messages_dropped": messagesDropped,
+					"messages":         len(msgs),
+				})
+			} else if spliced, ok := mlxPromptChainTokensForRender(ctx, key, p, msgs, tokenize); ok {
+				promptTokens = mlxPromptChainReconcile(key, spliced, fresh)
+				slog.Info("mlx agent prompt chain splice", "key", key, "tokens", len(promptTokens), "messages", len(msgs))
+				RecordAgentStatsEvent("prompt_chain_splice", map[string]any{
+					"prompt_cache_key": key,
+					"tokens":           len(promptTokens),
+					"messages":         len(msgs),
+					"messages_dropped": messagesDropped,
+				})
+			}
+		}
+		if len(promptTokens) == 0 {
+			ids, err := tokenize(ctx, p)
+			if err != nil {
+				return "", nil, 0, nil, err
+			}
+			promptTokens = ids
+			slog.Debug("mlx prompt pre-tokenized for passthrough", "tokens", len(promptTokens))
+		}
 	}
 
 	return p, images, messagesDropped, promptTokens, nil

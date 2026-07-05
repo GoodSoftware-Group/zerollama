@@ -30,6 +30,16 @@ func TestVersionHandler(t *testing.T) {
 	if edge, ok := body["edge_build"].(bool); !ok || edge {
 		t.Fatalf("edge_build=%v want false", body["edge_build"])
 	}
+	if body["distribution"] != "zerollama" {
+		t.Fatalf("distribution=%v want zerollama", body["distribution"])
+	}
+	z, ok := body["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatal("missing zerollama block")
+	}
+	if caps, ok := z["capabilities"].(map[string]any); !ok || caps["mlx_qos"] != true {
+		t.Fatalf("capabilities=%v", z["capabilities"])
+	}
 }
 
 func TestVersionHandlerEdgeBuild(t *testing.T) {

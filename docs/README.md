@@ -56,14 +56,15 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** compat + Metal embed; Go ollama-engine; **full `metal_signoff.sh` + qwen35** (qwen35 before Phase 15; canonical **`eliza-1-2b:latest`**); manifest `num_ctx` vs request options; thinking-model fields.
 * [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **why** `:11434` daily vs `:8080` CI; CGO; auto-clone `../llama.cpp`.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
-* [MLX agent prompts](./mlx-agent-prompts.md) — **why** context cap, tail truncate, `PromptTokens`, tokenize cache, keep-alive floor, SSE keepalive, and operator logs for agent megaprompts on safetensors models.
+* [MLX agent prompts](./mlx-agent-prompts.md) — **why** context cap, tail truncate, `PromptTokens`, tokenize cache, keep-alive floor, SSE keepalive, **M15a live-session + rotating-KV restore** (`fast_path`, `messages_dropped`), and operator logs for agent megaprompts on safetensors models.
+* [Agent QoS and project tracking](./agent-qos-and-project-tracking.md) — **why** session gate TOCTOU fix, `project_id` / `zerollama ps`, inference-path branching, and progressive client ladder; keeps Tier 2 options off vanilla Ollama and unkeyed CUDA traffic.
 * [LM Studio cache import](./lmstudio-import.md) — **why** pull-from-cache, MLX copy vs GGUF symlink, disk policy, env vars, troubleshooting.
 
 ### GPU training & scheduling (repo)
 
 * [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; prompt truncation API fields.
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
-* [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** fast GGUF metadata, manifest guess hooks, scheduler watchdog, concurrency groups, fleet score, manifest hygiene for existing tags; env reference.
+* [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA10 (metadata, watchdog, fleet score, repair, HF pull, `/api/score`, bench cache); **upstream watch** for LA11+ candidates; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Phase 11 runtime admission](./phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first policy; priority classes; enqueue/dequeue flow; `/health` gates; `VRAM_MIN_FREE` / `TRAINING_VRAM_RESERVE`.

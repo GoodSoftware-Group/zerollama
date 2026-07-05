@@ -1,6 +1,8 @@
-//go:build ignore
+//go:build mlxcodegen
 
 // Codegen tool for mlx bindings — run via `go generate` in x/mlxrunner/mlx, not `go build ./...`.
+// WHY mlxcodegen not ignore: `go run -tags ignore` also enables stdlib gen*.go (gengoarch.go, …)
+// and breaks Go 1.22+ with "internal/goarch is a program, not an importable package".
 package main
 
 import (
@@ -23,6 +25,7 @@ var fsys embed.FS
 // optionalSymbols lists symbols that may not be present in all builds
 // (e.g., float16/bfloat16 are unavailable in CUDA builds of MLX).
 var optionalSymbols = map[string]bool{
+	"mlx_array_detach":        true,
 	"mlx_array_item_float16":  true,
 	"mlx_array_item_bfloat16": true,
 	"mlx_array_data_float16":  true,

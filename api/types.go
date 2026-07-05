@@ -1188,6 +1188,23 @@ type ProcessModelResponse struct {
 	SizeVRAM       int64                `json:"size_vram"`
 	ContextLength  int                  `json:"context_length"`
 	LoadedMetadata *LoadedModelMetadata `json:"loaded_metadata,omitempty"`
+	Zerollama      *ProcessZerollamaInfo `json:"zerollama,omitempty"`
+}
+
+// ProcessZerollamaInfo is zerollama-specific /api/ps metadata for loaded runners.
+type ProcessZerollamaInfo struct {
+	Sessions []ProcessSessionInfo `json:"sessions,omitempty"`
+}
+
+// ProcessSessionInfo describes a hot or in-flight prompt_cache_key session on a runner.
+type ProcessSessionInfo struct {
+	SessionKey   string    `json:"session_key,omitempty"`
+	SessionClass string    `json:"session_class,omitempty"`
+	SessionGroup string    `json:"session_group,omitempty"`
+	ProjectID    string    `json:"project_id,omitempty"`
+	ProjectName  string    `json:"project_name,omitempty"`
+	Inflight     int       `json:"inflight,omitempty"`
+	HotUntil     time.Time `json:"hot_until,omitempty"`
 }
 
 // LoadedModelMetadata is probed from the runner after load (ground truth vs manifest).
@@ -1524,7 +1541,14 @@ func (opts *Options) FromMap(m map[string]any) error {
 	for key, val := range m {
 		opt, ok := jsonOpts[key]
 		if !ok {
-			slog.Warn("invalid option provided", "option", key)
+			// Suppress noise for known pass-through keys handled elsewhere
+			// (e.g. eliza metadata used by EnsureAgentPromptCacheKey,
+			// prompt_cache_key / cache_seed used by L3 slot bridge).
+			switch key {
+			case "eliza", "prompt_cache_key", "cache_seed":
+			default:
+				slog.Warn("invalid option provided", "option", key)
+			}
 			continue
 		}
 

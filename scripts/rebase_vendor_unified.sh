@@ -44,23 +44,17 @@ if [[ "${DO_APPLY}" == "1" ]]; then
   echo ">>> applying llama/patches/*.patch" >&2
   rm -f "${ROOT}"/llama/patches/.*.patched
   make -C "${ROOT}" -f Makefile.sync apply-patches
+else
+  "${ROOT}/scripts/ensure_llama_vendor_patches.sh" "${VENDOR}"
 fi
 
 PATCH_COUNT="$(git -C "${VENDOR}" rev-list --count "${FETCH_REF}..HEAD" 2>/dev/null || echo 0)"
 echo ">>> vendor @ $(git -C "${VENDOR}" rev-parse --short HEAD) (+${PATCH_COUNT} Ollama patches on ${FETCH_REF:0:12})" >&2
 
 if [[ "${PATCH_COUNT}" -eq 0 ]]; then
-  echo "error: no patch commits on vendor — run with --apply or apply manually" >&2
+  echo "error: no patch commits on vendor — run with --apply or ./scripts/ensure_llama_vendor_patches.sh" >&2
   exit 1
 fi
-
-# Mark patches applied (vendor already carries commits from rebase).
-for p in "${ROOT}"/llama/patches/*.patch; do
-  touch "${p%.patch}.patched"
-  # Makefile expects llama/patches/.0001-foo.patched
-  base="$(basename "${p}")"
-  touch "${ROOT}/llama/patches/.${base%.patch}.patched"
-done
 
 if [[ "${DO_SYNC}" == "1" || "${DO_APPLY}" == "1" ]]; then
   "${ROOT}/scripts/sync_vendor_llama.sh"

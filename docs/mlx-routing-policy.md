@@ -102,13 +102,13 @@ Code: `internal/lmstudio/lmstudio.go` (`ImportCopyBytes`), `server/lmstudio_cata
 2. **Tools on runtime-routed text:** ensure runtime embed + Phase 12 path; see [apple-silicon-metal.md](./apple-silicon-metal.md).
 3. **safetensors / MLX create:** build MLX component; model uses `IsMLX()` path automatically.
 4. **Session gate:** `./scripts/gpu_metal_session.sh` (smoke + snapshot); optional `RUN_E2E_PHASE14=1` for inprocess Metal.
-5. **Agent megaprompts (MLX):** see [mlx-agent-prompts.md](./mlx-agent-prompts.md) — context cap, truncate, tokenize cache, keepalive logs.
+5. **Agent megaprompts (MLX):** see [mlx-agent-prompts.md](./mlx-agent-prompts.md) — context cap, truncate, tokenize cache, **M15a live-session** (`prompt_cache_key`, `fast_path`), keepalive logs.
 
 ---
 
 ## MLX agent prompts (Jun 2026)
 
-**Why separate from routing:** `IsMLX()` picks the subprocess; **M15** hardening fixes what happens **inside** that path when clients send 100k+ tokens every turn.
+**Why separate from routing:** `IsMLX()` picks the subprocess; **M15** hardening fixes what happens **inside** that path when clients send 100k+ tokens every turn. **M15a** adds live KV rewind on rotating OptiQ — trie `cached_tokens` alone is not enough.
 
 | Symptom | Likely cause | Log / fix |
 |---------|--------------|-----------|
@@ -117,6 +117,8 @@ Code: `internal/lmstudio/lmstudio.go` (`ImportCopyBytes`), `server/lmstudio_cata
 | Cold reload every ~5m | Default keep_alive | MLX 30m floor when unset; or set explicit `keep_alive` |
 | Client empty-stream timeout | Long prefill, no SSE bytes | `OLLAMA_STREAM_KEEPALIVE_INTERVAL=15` (default) |
 | 8 min to first token @ 131k | No truncate + full prefill | Client: shrink context; server: `prompt tail-truncated` |
+| 99% cached, 60–90s TTFT | Trie hit without `fast_path` | Pass `prompt_cache_key` every turn; grep `fast_path=true` |
+| ~16k cached, `messages_dropped` up | Prefix rewrite + coarse restore | Expect partial hit; shrink client context; see M15a doc |
 
 Full guide: [mlx-agent-prompts.md](./mlx-agent-prompts.md).
 

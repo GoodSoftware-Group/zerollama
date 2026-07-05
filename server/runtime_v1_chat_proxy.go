@@ -54,7 +54,7 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if !resolveRuntimeProxy(c, oreq.Model) {
+		if !resolveRuntimeProxy(c, oreq.Model, proxyOptsFromV1Body(bodyMap)) {
 			c.Next()
 			return
 		}
@@ -171,6 +171,9 @@ func v1ThinkNeedsLegacy(v any) bool {
 	}
 	if b, ok := v.(bool); ok {
 		return b
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s) != ""
 	}
 	return true
 }

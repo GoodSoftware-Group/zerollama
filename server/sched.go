@@ -92,6 +92,9 @@ type Scheduler struct {
 
 	// loadingFifoSeq is the ticket of the pending request currently being scheduled/loaded.
 	loadingFifoSeq atomic.Uint64
+
+	// mlxGate defers unkeyed MLX generate while keyed agent sessions are active.
+	mlxGate mlxAgentGate
 }
 
 // Default automatic value for number of models we allow per GPU
@@ -115,6 +118,7 @@ func InitScheduler(ctx context.Context) *Scheduler {
 		waitForRecovery: 5 * time.Second,
 	}
 	sched.loadFn = sched.load
+	sched.mlxGate = *newMLXAgentGate()
 	return sched
 }
 
@@ -1112,6 +1116,16 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 		// (common: num_ctx mismatch after MLX context cap fix).
 		args := append([]any{"model", schedulerModelKey(req.model), "reload_reason", reason}, attrs...)
 		slog.Info("runner needs reload", args...)
+		fields := map[string]any{
+			"model":         schedulerModelKey(req.model),
+			"reload_reason": reason,
+		}
+		for i := 0; i+1 < len(attrs); i += 2 {
+			if k, ok := attrs[i].(string); ok {
+				fields[k] = attrs[i+1]
+			}
+		}
+		RecordAgentStatsEvent("runner_reload", fields)
 		return true
 	}
 
@@ -1196,9 +1210,20 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 		if runner.model.IsMLX() {
 			// MLX runs inference on a single worker thread; Ping can block behind prefill
 			// or fail spuriously while the subprocess is healthy.
-			if runner.llama.HasExited() {
-				return reloadReason("mlx_runner_exited")
+		if runner.llama.HasExited() {
+			attrs := []any{"pid", runner.pid}
+			if er, ok := runner.llama.(interface{ ExitError() error }); ok {
+				if err := er.ExitError(); err != nil {
+					attrs = append(attrs, "exit_err", err, "exit", llm.ExitStatusFromError(err))
+				}
 			}
+			if sr, ok := runner.llama.(interface{ LastStatusError() string }); ok {
+				if msg := sr.LastStatusError(); msg != "" {
+					attrs = append(attrs, "status_err", msg)
+				}
+			}
+			return reloadReason("mlx_runner_exited", attrs...)
+		}
 		} else if runner.llama.Ping(ctx) != nil {
 			return reloadReason("ping_failed")
 		}
@@ -1632,6 +1657,8 @@ func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
 	s.loadedMu.Unlock()
 
 	models := make([]api.ProcessModelResponse, 0, len(runners))
+	now := time.Now()
+	sessionSnap := s.mlxGate.activeSessionsSnapshot(now)
 	for _, runner := range runners {
 		runner.refMu.Lock()
 		if runner.loading || runner.model == nil {
@@ -1645,6 +1672,13 @@ func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
 		mr.LoadedMetadata = &meta
 		if mr.ContextLength == 0 && meta.NumCtx > 0 {
 			mr.ContextLength = meta.NumCtx
+		}
+		modelKey := runner.modelKey
+		if modelKey == "" && runner.model != nil {
+			modelKey = schedulerModelKey(runner.model)
+		}
+		if sessions := sessionSnap[modelKey]; len(sessions) > 0 {
+			mr.Zerollama = &api.ProcessZerollamaInfo{Sessions: sessions}
 		}
 		models = append(models, mr)
 	}

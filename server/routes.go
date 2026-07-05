@@ -34,6 +34,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/agentstats"
 	"github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
@@ -349,9 +350,9 @@ func truncateNativeChatMessages(ctx context.Context, m *Model, r llm.LlamaServer
 // scheduleRunner schedules a runner after validating inputs such as capabilities and model options.
 // It returns the allocated runner, model instance, consolidated options, and optional ggml num_ctx
 // clamp metadata if successful and error otherwise.
-func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration, shift *bool, statusCh chan<- any, writeStatus func(ch chan<- any, model, status, detail string, position, queueDepth int)) (llm.LlamaServer, *Model, *api.Options, *api.GgmlNumCtx, error) {
+func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration, shift *bool, statusCh chan<- any, writeStatus func(ch chan<- any, model, status, detail string, position, queueDepth int)) (llm.LlamaServer, *Model, *api.Options, *api.GgmlNumCtx, func(), error) {
 	if name == "" {
-		return nil, nil, nil, nil, fmt.Errorf("model %w", errRequired)
+		return nil, nil, nil, nil, func() {}, fmt.Errorf("model %w", errRequired)
 	}
 
 	if repaired, err := RepairLMStudioModelIfNeeded(ctx, name); err != nil {
@@ -362,15 +363,15 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 
 	model, err := GetModel(name)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, func() {}, err
 	}
 
 	if slices.Contains(model.Config.ModelFamilies, "mllama") && len(model.ProjectorPaths) > 0 {
-		return nil, nil, nil, nil, fmt.Errorf("'llama3.2-vision' is no longer compatible with your version of Ollama and has been replaced by a newer version. To re-download, run 'ollama pull llama3.2-vision'")
+		return nil, nil, nil, nil, func() {}, fmt.Errorf("'llama3.2-vision' is no longer compatible with your version of Ollama and has been replaced by a newer version. To re-download, run 'ollama pull llama3.2-vision'")
 	}
 
 	if err := model.CheckCapabilities(caps...); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("%s %w", name, err)
+		return nil, nil, nil, nil, func() {}, fmt.Errorf("%s %w", name, err)
 	}
 
 	// Deprecated runner override option; ignore if present.
@@ -378,7 +379,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 
 	opts, err := s.modelOptions(model, requestOpts)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, func() {}, err
 	}
 
 	capMLXScheduleOptions(model, &opts)
@@ -386,6 +387,11 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	ggmlCtx := capNumCtxToModelMax(model, &opts)
 	if vram := s.applyGgmlNumCtxClamp(ctx, model, &opts); vram != nil {
 		ggmlCtx = mergeGgmlNumCtxInfo(ggmlCtx, vram)
+	}
+
+	releaseQoS, err := s.reserveScheduleQoS(ctx, model, requestOpts)
+	if err != nil {
+		return nil, nil, nil, nil, func() {}, err
 	}
 
 	schedStart := time.Now()
@@ -404,12 +410,13 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		var err error
 		runner, err = s.waitRunnerWithStatus(ctx, model.ShortName, ticket, runnerCh, errCh, statusCh, writeFn)
 		if err != nil {
+			releaseQoS()
 			slog.Warn("scheduleRunner: failed",
 				"model", name,
 				"elapsed", time.Since(schedStart),
 				"error", err,
 			)
-			return nil, nil, nil, nil, enrichModelLoadError(name, err)
+			return nil, nil, nil, nil, func() {}, enrichModelLoadError(name, err)
 		}
 	} else {
 		select {
@@ -421,19 +428,21 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 				"loading", runner.loading,
 			)
 		case err = <-errCh:
+			releaseQoS()
 			slog.Warn("scheduleRunner: failed",
 				"model", name,
 				"elapsed", time.Since(schedStart),
 				"error", err,
 			)
-			return nil, nil, nil, nil, enrichModelLoadError(name, err)
+			return nil, nil, nil, nil, func() {}, enrichModelLoadError(name, err)
 		case <-ctx.Done():
+			releaseQoS()
 			slog.Warn("scheduleRunner: client canceled while waiting",
 				"model", name,
 				"elapsed", time.Since(schedStart),
 				"err", ctx.Err(),
 			)
-			return nil, nil, nil, nil, ctx.Err()
+			return nil, nil, nil, nil, func() {}, ctx.Err()
 		}
 	}
 
@@ -442,7 +451,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 		opts.Runner = runner.Options.Runner
 	}
 
-	return runner.llama, model, &opts, ggmlCtx, nil
+	return runner.llama, model, &opts, ggmlCtx, releaseQoS, nil
 }
 
 func signinURL() (string, error) {
@@ -466,6 +475,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	EnsureGeneratePromptCacheKey(&req)
 
 	if req.TopLogprobs < 0 || req.TopLogprobs > 20 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "top_logprobs must be between 0 and 20"})
@@ -588,7 +599,12 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		writeGenerateStatus(ch, req.Model, status, detail, pos, depth)
 	}
 
-	r, m, opts, ggmlCtx, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
+	schedCtx := ctxWithMLXScheduleHints(c.Request.Context(), mlxScheduleHints{
+		Route:  "generate",
+		Stream: streaming,
+	})
+
+	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
 		return
@@ -596,6 +612,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		handleScheduleError(c, req.Model, err)
 		return
 	}
+	defer releaseQoS()
 
 	checkpointLoaded := time.Now()
 	logInferencePhase(c, "runner_ready", req.Model, checkpointStart)
@@ -631,6 +648,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	var messagesDropped int
 	var promptTokens []int
 	var leadingBOS string
+	var generateChainMessages []api.Message
 	if !req.Raw {
 		tmpl := m.Template
 		if req.Template != "" {
@@ -730,7 +748,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				}
 			} else {
 				tokenBudget, detok := chatPromptLimits(m, opts, genTruncate, r.ContextLength(), r.Detokenize)
-				prompt, images, messagesDropped, promptTokens, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
+				genCtx := withPromptCacheKey(c.Request.Context(), modality.ExtractPromptCacheKey(req.Options))
+				prompt, images, messagesDropped, promptTokens, err = chatPrompt(genCtx, m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
+				generateChainMessages = values.Messages
 				if err != nil {
 					abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 					return
@@ -869,6 +889,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 				applyGenerateTruncation(&res, cr, messagesDropped)
 				applyGgmlNumCtxResponse(&res, ggmlCtx)
+				rememberMLXPromptChain(m, req.Options, prompt, generateChainMessages, r.Tokenize)
 				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount)
 				if cr.OriginalPromptTokens > 0 {
 					recordInferencePromptSize(c, cr.PromptEvalCount, cr.OriginalPromptTokens, messagesDropped)
@@ -1010,11 +1031,12 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
-	r, m, opts, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
+	r, m, opts, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
 	}
+	defer releaseQoS()
 
 	checkpointLoaded := time.Now()
 
@@ -1165,11 +1187,12 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 
 	name := modelRef.Name
 
-	r, _, _, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
+	r, _, _, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
 	}
+	defer releaseQoS()
 
 	// an empty request loads the model
 	if req.Prompt == "" {
@@ -2228,6 +2251,11 @@ func Serve(ln net.Listener) error {
 	if err := s.initRequestLogging(); err != nil {
 		return err
 	}
+	if err := agentstats.Init(envconfig.GemmaAgentLogPath()); err != nil {
+		slog.Warn("gemma agent stats log disabled", "error", err)
+	} else if p := agentstats.Path(); p != "" {
+		slog.Info("gemma agent stats log enabled", "path", p, "version", version.Version)
+	}
 
 	var rc *ollama.Registry
 	if useClient2 {
@@ -2706,6 +2734,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	EnsureAgentPromptCacheKey(&req)
+	recordInferenceAccessCacheKey(c, modality.ExtractPromptCacheKey(req.Options))
+	modality.WarnPrefixMMCacheWithoutSessionKey(&req)
+
 	if req.TopLogprobs < 0 || req.TopLogprobs > 20 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "top_logprobs must be between 0 and 20"})
 		return
@@ -2884,7 +2916,23 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		writeChatStatus(ch, req.Model, status, detail, pos, depth)
 	}
 
-	r, m, opts, ggmlCtx, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
+	chatRoute := "chat"
+	if strings.HasPrefix(c.Request.URL.Path, "/v1/") {
+		chatRoute = "openai"
+	}
+	chatModality := mlxModalityFromChat(&req)
+	if req.Options == nil {
+		req.Options = map[string]any{}
+	}
+	chatHints := mlxScheduleHints{
+		Route:    chatRoute,
+		Modality: chatModality,
+		Stream:   streaming,
+	}
+	ensureQoSDefaults(req.Options, chatHints)
+	schedCtx := ctxWithMLXScheduleHints(c.Request.Context(), chatHints)
+
+	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
 		return
@@ -2892,6 +2940,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		handleScheduleError(c, req.Model, err)
 		return
 	}
+	defer releaseQoS()
 
 	checkpointLoaded := time.Now()
 	logInferencePhase(c, "runner_ready", req.Model, checkpointStart)
@@ -2946,7 +2995,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 	truncate := req.Truncate == nil || *req.Truncate
 	tokenBudget, detok := chatPromptLimits(m, opts, truncate, r.ContextLength(), r.Detokenize)
-	prompt, images, messagesDropped, promptTokens, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
+	chatCtx := withPromptCacheKey(c.Request.Context(), modality.ExtractPromptCacheKey(req.Options))
+	prompt, images, messagesDropped, promptTokens, err := chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 	if err != nil {
 		slog.Error("chat prompt error", "error", err)
 		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
@@ -3023,6 +3073,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if ch == nil {
 		ch = make(chan any)
 	}
+	runnerTokenize := r.Tokenize
 	go func() {
 		var sentDone bool
 		defer func() {
@@ -3118,6 +3169,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 					applyPromptTruncation(&res, r, messagesDropped)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
+					rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
 					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount)
 					if r.OriginalPromptTokens > 0 {
 						recordInferencePromptSize(c, r.PromptEvalCount, r.OriginalPromptTokens, messagesDropped)
@@ -3241,18 +3293,22 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 
 				msgs = append(msgs, msg)
-				prompt, _, _, promptTokens, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
+				prompt, _, _, promptTokens, err = chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 				if err != nil {
 					slog.Error("chat prompt error applying structured outputs", "error", err)
 					enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
 					return
 				}
+				completionPromptTokens = mlxCompletionPromptTokens(m, promptTokens)
 				// force constraining by terminating thinking header, the parser is already at this state
 				// when the last message is thinking, the rendered for gpt-oss cannot disambiguate between having the
 				// model continue thinking or ending thinking and outputting the final message.
 				// TODO(parthsareen): consider adding prefill disambiguation logic to the renderer for structured outputs.
 				if shouldUseHarmony(m) || (builtinParser != nil && m.Config.Parser == "harmony") {
 					prompt += "<|end|><|start|>assistant<|channel|>final<|message|>"
+					if ids, err := runnerTokenize(chatCtx, prompt); err == nil {
+						completionPromptTokens = mlxCompletionPromptTokens(m, ids)
+					}
 				}
 				continue
 			}
@@ -3352,6 +3408,18 @@ func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateReq
 		})
 		return
 	}
+	if req.Options == nil {
+		req.Options = map[string]any{}
+	}
+	imgHints := mlxScheduleHints{
+		Route:    "image_generation",
+		Modality: mlxModalityImageGeneration,
+		Stream:   false,
+	}
+	if err := s.waitRequestQoS(c.Request.Context(), nil, req.Options, imgHints); err != nil {
+		handleScheduleError(c, req.Model, err)
+		return
+	}
 	w, h := req.Width, req.Height
 	if ig := cfg.ImageGeneration; ig != nil {
 		if w <= 0 && ig.Width > 0 {
@@ -3441,6 +3509,18 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 		return
 	}
 
+	isStreaming := req.Stream == nil || *req.Stream
+	if req.Options == nil {
+		req.Options = map[string]any{}
+	}
+	imgHints := mlxScheduleHints{
+		Route:    "image_generation",
+		Modality: mlxModalityImageGeneration,
+		Stream:   isStreaming,
+	}
+	ensureQoSDefaults(req.Options, imgHints)
+	schedCtx := ctxWithMLXScheduleHints(c.Request.Context(), imgHints)
+
 	// Imagegen needs exclusive GPU; evict other ggml runners and the runtime sidecar first.
 	// Skip when this model is already loaded — avoids tearing down an in-flight generation.
 	keepKey := s.sched.keepModelKeyForUnload(m)
@@ -3449,11 +3529,12 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 	}
 
 	// Schedule the runner for image generation
-	runner, _, _, _, err := s.scheduleRunner(c.Request.Context(), modelName, []model.Capability{model.CapabilityImage}, nil, req.KeepAlive, nil, nil, nil)
+	runner, m, _, _, releaseQoS, err := s.scheduleRunner(schedCtx, modelName, []model.Capability{model.CapabilityImage}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
 	}
+	defer releaseQoS()
 
 	checkpointLoaded := time.Now()
 
@@ -3468,9 +3549,7 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 		return
 	}
 
-	// Check streaming preference
-	isStreaming := req.Stream == nil || *req.Stream
-
+	// Check streaming preference (computed above for QoS hints)
 	contentType := "application/x-ndjson"
 	if !isStreaming {
 		contentType = "application/json; charset=utf-8"

@@ -117,7 +117,8 @@ Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial unti
 | **llama-server discovery** | Upstream schedulers expect CUDA `ARCHS=` + ROCm gfx from llama-server stderr; ggml `/info` never had parity. Hybrid bootstrap keeps Mac ggml default. |
 | **LeadingBOS** | DisableJinja means Go owns the full prompt; without BOS dedup, Gemma4/LFM2 double-count the first token. |
 | **PromptTokens from chatPrompt** | Tail-truncate by token ID; re-tokenizing truncated text diverges on edge cases and breaks MLX MTP budget checks. |
-| **MLX M15 (agent prompts)** | Context cap, tokenize LRU, keep-alive floor, SSE keepalive, reload/prefill logs — [mlx-agent-prompts.md](./mlx-agent-prompts.md). **Why:** 131k megaprompts every agent turn. |
+| **MLX M15 / M15a (agent prompts)** | Context cap, tokenize LRU, keep-alive, SSE keepalive, live-session + rotating-KV restore, prompt-chain on truncate — [mlx-agent-prompts.md](./mlx-agent-prompts.md). **Why:** 131k megaprompts every turn; turn-2 trie hits without `fast_path` still slow on OptiQ. |
+| **M15b QoS + project tracking** | Session gate TOCTOU fix, `zerollama ps` PROJECT/SESSION, inference-path branching, client Tier 2 ladder — [agent-qos-and-project-tracking.md](./agent-qos-and-project-tracking.md). **Why:** concurrent streams raced MLX runner; operators couldn't attribute GPU; Tier 2 options must not hit vanilla Ollama/CUDA proxies. |
 | **PreservedTokens** | Harmony/tool parsers register vocab IDs llama-server must not shift during context operations. |
 | **Launch drift guard** | `zerollama launch` writes inline config; stale files caused silent wrong-model agent sessions. |
 | **Pin `b9781` (file)** | Single source of truth for sibling `../llama.cpp`; vendor sync is gated — **why:** pin file documents intent before every operator runs full vendor re-apply |
@@ -200,7 +201,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **M1** | **Unified memory admission** | Python | **Shipped (audit)** — `metal-unified` probe; `read_host_memory()` on darwin (load + `/health`); `apple_silicon.yaml` autoconfig; `check_gguf_host_budget` no longer Linux-only; `vm.swapusage` parser fixed. |
 | **M2** | **Operator smoke + docs** | Repo | **Shipped** — `macos_metal_smoke.sh`; guide + ROADMAP; pytest for darwin probe + snapshot hints; `check_gpu_scripts` greps. **Jun 2026:** ordered Phase 11→13→15 Mac gate — `./scripts/phase11_13_15_metal_signoff.sh` (M4 Max PASS; `METAL_SELF_START=1` self-contained). |
 | **M3** | **Runtime Metal parity** | Python | **Shipped** — `m3_metal_signoff.sh` / `gpu_metal_session.sh`; Phase 13 snapshot + Phase 14 inprocess on Metal (M4 Max sign-off, Jun 2026). `apple_silicon.yaml` sets **`llama_backend: inprocess`**; M3 validates `llama_backend_source=config`. Use a **text-only** GGUF with pinned llama.cpp (not vision gemma3 on old pin). Mac daily serve: **`zerollama serve`** (auto sidecar `:8081`); `./scripts/serve_mac_runtime.sh` for CI (prints log paths — see [fleet-management.md](./fleet-management.md#macos-runtime-stack-related)). Optional Phase 15: `RUN_E2E_PHASE15=1 ./scripts/m3_metal_signoff.sh` or `./scripts/phase15_metal_signoff.sh`. |
-| **M4** | **MLX policy** | Go + docs | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md); `IsMLX()` excluded from runtime default **and** explicit Modelfile backend; Go tests. **Dylibs:** rebuild at `MLX_VERSION` / `MLX_C_VERSION` via `build_production_mac.sh` (Jun 2026 sign-off @ `2165dc08` / `fba4470b`). |
+| **M4** | **MLX policy** | Go + docs | **Shipped** — [mlx-routing-policy.md](./mlx-routing-policy.md); `IsMLX()` excluded from runtime default **and** explicit Modelfile backend; Go tests. **Dylibs:** rebuild at `MLX_VERSION` / `MLX_C_VERSION` via `build_production_mac.sh` (Jun 2026 sign-off @ `2165dc08` / `fba4470b`). **Optional build path:** [mlx-cgo](#optional-mac-mlx-build-path-mlx-cgo) (not default). |
 | **M5** | **Phase 15 Metal KV sign-off** | Python | **Shipped (Jun 2026, M4 Max PASS)** — `phase15_metal_signoff.sh` (5 steps: KV hook, multiseq, **continuous batch decode** via `phase15_batch_decode_smoke.sh`, L3 two-turn, tensor bind); `metal_signoff.sh` optional `RUN_E2E_PHASE15=1`. **Why batch step:** v27–v30 engine batch path must run on real Metal multiseq sidecar, not CPU pytest mocks. |
 | **M6** | **MPS LoRA training + Mac operator polish** | Python + Go + CI | **Shipped** — PyTorch MPS + PEFT in `training.py`; QLoRA rejected on Darwin; `training_uv_venv.sh`; **`zerollama serve` Darwin bootstrap** (uv venvs, sidecar `:8081`, autoconfig); `zerollama doctor --json --fix`; Darwin CI (`macos-darwin-smoke`). **Extended (M14):** tiered clone bootstrap — see **M14**. |
 | **M7** | **Upstream-shape GGUF benchmark (Metal)** | Repo | **Done** — ggml Metal ~164 tok/s vs upstream Go→llama-server ~158 tok/s (`llama3.2:3b`, `num_ctx=4096`, 6 epochs, idle GPU). Keep ggml default; Phase 17 for mergeability. [phase17-llama-server.md](./phase17-llama-server.md) |
@@ -212,9 +213,12 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **M13** | **L1 GPU profiles (Metal tiers)** | Python | **Done (Jun 2026, M4 Max)** — RAM-tier JSON (`apple_silicon_16g` … `128g`), `gpu_profiles.py`, `/health.gpu_profile`. **Why:** unified memory needs different `-np`/batch than CUDA discrete VRAM; one conservative profile left 128 GiB machines under-utilized. Sign-off: `./scripts/m3_metal_signoff.sh`. Doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md). |
 | **M14** | **Portable Mac dev bootstrap (any checkout)** | Repo + docs | **Done (Jun 2026)** — `dev_bootstrap.sh`, `ensure_llama_cpp_sibling.sh`, `mac_setup.sh` tier 0 defaults (sign-off off, auto-clone `../llama.cpp`), `build_llama_server.sh` sibling path fix, port table (`:11434` daily vs `:8080` CI). **Why:** fresh clones failed without operator-specific `Sites/inference` layout, manual llama.cpp clone, or pre-pulled models; sign-off in default `mac_setup` blocked onboarding. Doc: [mac-dev-setup.md](./mac-dev-setup.md). **`doctor --fix`** runs `ensure_llama_cpp_sibling.sh` before Metal build. |
 | **M15** | **MLX agent prompt hardening** | Go + mlxrunner + docs | **Done (Jun 2026)** — bogus HF `text_config.max_position_embeddings` fix; `capMLXScheduleOptions` + tail truncate; `PromptTokens` single-tokenize passthrough; tokenize LRU; 30m MLX keep-alive floor; SSE keepalive during prefill; reload/prefill/prompt-size operator logs. **Why:** agent megaprompts (131k tokens) caused multi-minute prefill, cold reload every 5m, double tokenize, empty client streams; Gemma4 config exported vocab_size as ctx. Doc: [mlx-agent-prompts.md](./mlx-agent-prompts.md). |
+| **M15a** | **MLX agent live-session + restore** | mlxrunner + server | **Done (Jul 2026)** — `tryExtendLiveSession` LCP + gen-token rewind; **`rewindCachesViaSnapshots`** + **`bestRestorableOffset`** for rotating KV; same-branch trie restore + snapshot fallback; **`tunePrefillConfig`** hot tails; **1× sliding_window** trie snapshots; prompt-chain invalidate on **`messages_dropped`**; message fingerprint on equal count; **`fast_path` / `same_branch`** agentstats; **MLX sidecar defer** (unkeyed `/api/generate` waits while agent hot). **Why:** turn 2 hit 99% trie cached but ~75s page-in; `fast_path` absent without snapshot rewind on wrapped OptiQ; turn 3+ collapsed to ~16k when message drops rewrote prefix; warn noise on sidecar `/api/generate`. **Requires:** stable `prompt_cache_key` every turn (Hermes `extra_body`). Doc: [mlx-agent-prompts.md](./mlx-agent-prompts.md#m15a-live-session--restore-jul-2026). |
+| **M15b** | **Agent QoS + project tracking + cross-backend safety** | Go + clients + docs | **Done (Jul 2026)** — **`reserveScheduleQoS`** claims gate before runner wait (TOCTOU fix); **`project_id` / `project_name`** on `/api/ps` + **`zerollama ps`**; **`inference_path.go`** backend branching (GGUF preserves client keys; unkeyed GGUF no-op; eliza gated); MLX subprocess exit logging; **`GET /api/version`** `runner_paths` + `session_qos_gate`; Hermes/ruby-trivia/simpleagent Tier 2 ladder. **Why:** Jul 4 concurrent streams crashed MLX; operators couldn't see harness ownership; optimizations must not slow vanilla Ollama/vLLM/CUDA stacks. Doc: [agent-qos-and-project-tracking.md](./agent-qos-and-project-tracking.md). |
 | **M16** | **Flash-MoE (anemll) via llama-server** | Go + fork build | **Partial (Jun 2026)** — `--moe-*` passthrough, Modelfile options, `build_flash_moe_llama_server.sh`, **`flash_moe_smoke.sh` tier 0–2**, doctor check, envconfig; **why:** Qwen3.5-class MoE exceeds unified RAM; ggml Metal path cannot slot-bank stream from SSD. **Open:** `pull` sidecar extract, vendor pin merge. Doc: [flash-moe.md](./flash-moe.md). |
 | **M17** | **ANE probe (maderix/ANE)** | Repo + subprocess | **Partial (Jun 2026)** — `tools/ane-probe`, `libane_bridge` smoke, doctor + hidden CLI; **why:** validate ANE reachability before hybrid inference research without linking private APIs into Go. Doc: [ane-probe.md](./ane-probe.md). |
-| **M18** | **ANE in-process dflash draft (B1–B7, P1–P5 matmul)** | llama-common + discover | **Partial (Jun 2026, lab)** — P3–**P5** blk.0 matmul (FFN+attn_gate+ssm_out), `golden_cosine`≈1.0. Async eval + stride **8/12** by chain depth. Force drive uses ffn_down stash. **Open:** full attn QKV + lm_head. Doc: [ane-draft-inprocess.md](./ane-draft-inprocess.md). |
+| **M18** | **ANE in-process dflash draft (B1–B7, P1–P11 matmul)** | llama-common + discover | **Partial (Jul 2026, lab)** — P1–**P3** blk.0 FFN on ANE (`shadow_hidden_cos=1.0`). **P7–P9** blk.1 gate/up/down use **host fp32**. **P9** chain 10 — lab `golden_cosine=1.0`. **P7b/B8** chain 8 — **2b proxy** `golden_cosine=1.0`; **27b native** chain 8 **`golden_cosine=0.9854`** (real `dflash_fc` + per-layer export handoff). **P10** chain 11 — **2b** `golden_cosine=1.0`; **27b native** chain 11 **`golden_cosine=1.0`** (`dflash_fc` + `dflash_hidden_norm` + `blk.0.attn_q`). **Open:** attn/KV, lm_head for token parity (`shadow_match_pct`). Doc: [ane-draft-inprocess.md](./ane-draft-inprocess.md). |
+| **M19** | **Optional Mac MLX build (mlx-cgo)** | Repo + build | **Not started (eval only)** — optional **`OLLAMA_MLX_C_SOURCE`** fork [WhoseBiasDoYallSeek/mlx-cgo](https://github.com/WhoseBiasDoYallSeek/mlx-cgo) instead of upstream `ml-explore/mlx-c`. **Why consider:** Go `mlxgen` replaces Python mlx-c codegen (no `pip`); committed `mlx/c/` for normal builds; may avoid `go generate ./x/...` failures during cmake on newer Go. **Not default:** ship path stays upstream pins + `build_mlx_dylibs_mac.sh`; **5080 CUDA / imagegen MLX unchanged** (mlx-cgo is Apple Silicon–only). **Runtime unchanged:** zerollama still uses `libmlx`/`libmlxc` dylibs + mlxrunner subprocess — not static CGo embed. **Open:** pin + smoke vs upstream; `libjaccl` install in cmake bundle; fork drift tracking. See [Optional Mac MLX build path](#optional-mac-mlx-build-path-mlx-cgo). |
 
 **Already optimized (Go, shipped):** Metal ggml runner, scheduler unified-memory behavior, Phase 8 broker with runtime embed.
 
@@ -223,6 +227,43 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 **Mac operator default (why not legacy ggml):** `apple_silicon.yaml` → **`llama_backend: inprocess`**; Go proxy pulled tags need **`X-Zerollama-Runtime: 1`** or **`RUN_E2E_PHASE14=1`** in smokes — otherwise manifest names route to ggml and contend with the runtime sidecar on one Metal device.
 
 **Not goals:** Replacing ggml Metal with MLX for all GGUF; NVML on Mac; duplicating `gpu_5080_session` on Darwin.
+
+### Optional Mac MLX build path (mlx-cgo)
+
+**Status:** evaluation only — **not** wired into CI, production Mac builds, or default `ensure_mlx_sources.sh`.
+
+**What it is:** [mlx-cgo](https://github.com/WhoseBiasDoYallSeek/mlx-cgo) is a fork of upstream [mlx-c](https://github.com/ml-explore/mlx-c) that replaces the Python code-generator with a Go binary (`cmd/mlxgen`) and ships committed generated C headers under `mlx/c/`. Normal fork builds do not require Python or mlx-c regen.
+
+**Why it might matter here:**
+
+| Pain today (upstream mlx-c) | mlx-cgo claim |
+|-----------------------------|---------------|
+| cmake configure runs `go generate ./x/...` (can fail on newer Go, e.g. import-cycle noise) | Committed `mlx/c/`; regen optional via `./scripts/regenerate.sh` |
+| Python mlx-c generator in the build loop | Go-only `mlxgen` |
+| Stale `dist/.../mlx_metal_v*/` missing deps (e.g. `libjaccl.dylib`) | Same cmake install path — still need `jaccl` in `RUNTIME_DEPENDENCIES` bundle |
+
+**What does *not* change if we adopt it as `OLLAMA_MLX_C_SOURCE`:**
+
+- **Runtime architecture** — safetensors still go through **mlxrunner subprocess** + dynamic `libmlxc.dylib` (`x/mlxrunner/mlx/dynamic.go`), not static CGo link into `zerollama`.
+- **Linux CUDA MLX** — imagegen and 5080 MLX stay on upstream `ml-explore/mlx` + `mlx-c` pins; mlx-cgo README is Apple Silicon only.
+- **GGUF default** — Metal ggml remains default for pulled GGUF; MLX is still `ModelFormat: safetensors` only ([mlx-routing-policy.md](./mlx-routing-policy.md)).
+
+**How to try (operator / dev, unsupported):**
+
+```bash
+git clone https://github.com/WhoseBiasDoYallSeek/mlx-cgo.git ../mlx-cgo
+# align fork with MLX_VERSION / MLX_C_VERSION pins as needed
+export OLLAMA_MLX_C_SOURCE="$PWD/../mlx-cgo"
+INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build_mlx_dylibs_mac.sh
+./zerollama doctor   # expect [ok] mlx engine
+```
+
+**Exit criteria before promoting from “optional” to “supported”:**
+
+1. Metal v3 dylib smoke (`doctor`, `mlxrunner` load, one safetensors model e.g. `ornith-9b-optiq`) **PASS** vs upstream mlx-c at the same pin.
+2. Documented pin policy (fork commit tracked beside `MLX_C_VERSION`).
+3. No regression on 5080 CUDA MLX build (still upstream sources only).
+4. cmake configure no longer requires fragile `go generate ./x/...` when using the fork as C source **or** upstream path is fixed independently.
 
 **Borrowings track:** Inference speed first — [Local voice & llama borrowings](#local-voice--llama-borrowings-eliza-v3) **L1–L3** (GPU profiles, fork kernels, KV prefix cache); voice **L5–L8** deferred.
 
@@ -353,7 +394,9 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 
 **Not goals:** `backend.proto` plugin zoo, NATS cluster, full gallery parity, replacing Phase 15/17 engines.
 
-**Relationship to Fleet F-track:** LA6 extends [F3 management node](./fleet-management.md) routing; LA5 feeds future capacity-aware scores.
+**Next candidates (upstream watch):** [localai-borrowings.md — LA11+](./localai-borrowings.md#candidates-la11--suggested-priority) — intelligent score router (LA11), fleet radix routing (LA13), resumable peer transfers (LA14).
+
+**Relationship to Fleet F-track:** LA6 extends [F3 management node](./fleet-management.md) routing; LA5 feeds future capacity-aware scores; LA13 would extend F7 when cross-node prefix visibility lands (L3-R4).
 
 ---
 
@@ -546,7 +589,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | Inference vs training **priority / idle policy** | Training **T6**, inference **Phase 11** | One GPU, many clients—documented target is queued work + policy, not “implicitly fair” |
 | **Fleet management + warm routing** | Fleet **F2–F5** | Many nodes, many agents—thin orchestrator, status, mDNS; avoid scatter-gather on constrained GPUs |
 | **Local voice latency + duplex** | Borrowings **L5**, **L7** (Tier B) | Phrase cache + streaming pipeline after inference baseline |
-| **LocalAI control-plane borrowings** | **LA1–LA9** | Fast GGUF read, guess hooks, watchdog, concurrency groups, fleet score, repair, HF pull, **logprob score API** — [localai-borrowings.md](./localai-borrowings.md) |
+| **LocalAI control-plane borrowings** | **LA1–LA10** | Fast GGUF read, guess hooks, watchdog, concurrency groups, fleet score, repair, HF pull, logprob score API, **bench cache** — [localai-borrowings.md](./localai-borrowings.md) |
 | **In-process ASR (Qwen3-ASR)** | Borrowings **L6** (Tier B) | ASR subprocess removal—not LLM tok/s |
 | Eliza catalog / response mapping | Eliza follow-ups | Operator UX when local + cloud lists collide |
 | Video Option 2 A–D | Video track | Native VLM quality without SGLang dependency; **Jun 2026:** Tier 1 + audit fixes shipped — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |

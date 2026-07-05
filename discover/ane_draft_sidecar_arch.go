@@ -31,6 +31,27 @@ func ProbeSidecarArchitecture(path string) (string, error) {
 	return arch, nil
 }
 
+// DraftSidecarArchitecture returns the draft sidecar general.architecture (e.g. dflash-draft, qwen35).
+func DraftSidecarArchitecture(entry ANEDraftEntry) string {
+	if arch := strings.TrimSpace(entry.DraftArchitecture); arch != "" {
+		return arch
+	}
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return ""
+	}
+	arch, err := ProbeSidecarArchitecture(draftPath)
+	if err != nil {
+		return ""
+	}
+	return arch
+}
+
+// IsNativeDflashDraftSidecar is true when the draft GGUF is llama.cpp dflash-draft (has dflash_fc).
+func IsNativeDflashDraftSidecar(entry ANEDraftEntry) bool {
+	return strings.EqualFold(strings.TrimSpace(DraftSidecarArchitecture(entry)), "dflash-draft")
+}
+
 // DefaultProxyConvTensorForArch picks the lab conv proxy extract tensor for a sidecar arch.
 func DefaultProxyConvTensorForArch(arch string) string {
 	switch strings.ToLower(strings.TrimSpace(arch)) {

@@ -9,9 +9,17 @@ import (
 )
 
 func TestInferencePeekRequestBody(t *testing.T) {
-	model, stream := inferencePeekRequestBody([]byte(`{"model":"llama3.2:3b","stream":true,"prompt":"hi"}`))
-	if model != "llama3.2:3b" || !stream {
-		t.Fatalf("model=%q stream=%v", model, stream)
+	model, stream, key := inferencePeekRequestBody([]byte(`{"model":"llama3.2:3b","stream":true,"prompt":"hi"}`))
+	if model != "llama3.2:3b" || !stream || key != "" {
+		t.Fatalf("model=%q stream=%v key=%q", model, stream, key)
+	}
+	model, stream, key = inferencePeekRequestBody([]byte(`{"model":"gemma4:26b-optiq","prompt_cache_key":"hermes:main","stream":false}`))
+	if model != "gemma4:26b-optiq" || stream || key != "hermes:main" {
+		t.Fatalf("model=%q stream=%v key=%q", model, stream, key)
+	}
+	_, _, key = inferencePeekRequestBody([]byte(`{"model":"gemma4:26b-optiq","stream":true,"extra_body":{"prompt_cache_key":"hermes:extra"}}`))
+	if key != "hermes:extra" {
+		t.Fatalf("extra_body key=%q", key)
 	}
 }
 

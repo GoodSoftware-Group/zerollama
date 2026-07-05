@@ -9,7 +9,7 @@ Subject: [PATCH] ollama: add C API for mtmd_input_text (b9611 port)
  2 files changed, 13 insertions(+)
 
 diff --git a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
-index e217fe7..878dd25 100644
+index e217fe7af..878dd25b9 100644
 --- a/tools/mtmd/mtmd.cpp
 +++ b/tools/mtmd/mtmd.cpp
 @@ -110,6 +110,16 @@ const char * mtmd_default_marker() {
@@ -30,7 +30,7 @@ index e217fe7..878dd25 100644
      switch (flash_attn_type) {
          case LLAMA_FLASH_ATTN_TYPE_AUTO:     return CLIP_FLASH_ATTN_TYPE_AUTO;
 diff --git a/tools/mtmd/mtmd.h b/tools/mtmd/mtmd.h
-index 54b9515..9f6b143 100644
+index 54b9515a3..9f6b143cf 100644
 --- a/tools/mtmd/mtmd.h
 +++ b/tools/mtmd/mtmd.h
 @@ -80,6 +80,9 @@ typedef struct mtmd_input_chunk  mtmd_input_chunk;

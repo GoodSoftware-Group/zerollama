@@ -155,7 +155,11 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 		if !manifestStat.ModTime().Before(sidecarStat.ModTime()) {
 			var cached ANEDraftWeightManifest
 			data, err := os.ReadFile(manifestPath)
-			if err == nil && json.Unmarshal(data, &cached) == nil && cached.ConvWeightPath() != "" && cached.Version >= 10 {
+			minVer := 10
+			if IsNativeDflashDraftSidecar(entry) {
+				minVer = 11
+			}
+			if err == nil && json.Unmarshal(data, &cached) == nil && cached.ConvWeightPath() != "" && cached.Version >= minVer {
 				return cached, true, nil
 			}
 		}
@@ -272,8 +276,26 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 		manifest.Note = "B13 v10: block0 quad + blk.1 full quad oct conv1 chain"
 	}
 
-	for _, normTensor := range []string{"blk.0.ffn_norm.weight", "blk.0.attn_norm.weight"} {
-		gammaPath := aneDraftWeightCachePath(draftPath, ch, normTensor)
+	gammaDim := ch
+	if IsNativeDflashDraftSidecar(entry) {
+		if dim := DraftANEDflashHiddenNormDim(entry); dim > 0 {
+			gammaDim = dim
+		}
+	}
+	normCandidates := []string{ResolveChain11HiddenNormTensor(entry)}
+	if !IsNativeDflashDraftSidecar(entry) {
+		normCandidates = append(normCandidates, "blk.0.ffn_norm.weight", "blk.0.attn_norm.weight")
+	}
+	seenNorm := map[string]struct{}{}
+	for _, normTensor := range normCandidates {
+		if normTensor == "" {
+			continue
+		}
+		if _, dup := seenNorm[normTensor]; dup {
+			continue
+		}
+		seenNorm[normTensor] = struct{}{}
+		gammaPath := aneDraftWeightCachePath(draftPath, gammaDim, normTensor)
 		if gammaStat, err := os.Stat(gammaPath); err == nil {
 			if !gammaStat.ModTime().Before(sidecarStat.ModTime()) && gammaStat.Size() > 0 {
 				manifest.Weights = append(manifest.Weights, ANEDraftWeightEntry{
@@ -283,11 +305,17 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 					Path:   gammaPath,
 					Bytes:  int(gammaStat.Size()),
 				})
+				if IsNativeDflashDraftSidecar(entry) && gammaDim > entry.EmbeddingLength {
+					if manifest.Version < 11 {
+						manifest.Version = 11
+					}
+					manifest.Note = "B13 v11: dflash hidden_norm gamma at fcOut width"
+				}
 				break
 			}
 		}
 
-		blob, tensor, err := ExtractNormVectorWeightBlob(draftPath, normTensor, ch)
+		blob, tensor, err := ExtractNormVectorWeightBlob(draftPath, normTensor, gammaDim)
 		if err != nil {
 			continue
 		}
@@ -309,6 +337,12 @@ func MaterializeANEDraftWeightBundle(entry ANEDraftEntry) (ANEDraftWeightManifes
 			Path:   gammaPath,
 			Bytes:  len(blob),
 		})
+		if IsNativeDflashDraftSidecar(entry) && gammaDim > entry.EmbeddingLength {
+			if manifest.Version < 11 {
+				manifest.Version = 11
+			}
+			manifest.Note = "B13 v11: dflash hidden_norm gamma at fcOut width"
+		}
 		break
 	}
 

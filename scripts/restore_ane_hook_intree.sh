@@ -20,4 +20,8 @@ for f in ane_draft_hook.h ane_draft_hook.cpp ane_draft_session.h ane_draft_sessi
 done
 
 python3 "${ROOT}/tools/ane-patches/apply_speculative_ane_hook.py" "${INTREE}"
+
+python3 "${ROOT}/tools/ane-patches/verify_session_stub.py" \
+  "${CANON}/ane_draft_session.h" "${INTREE}/ane_draft_session_stub.cpp"
+
 echo ">>> restore_ane_hook_intree: OK" >&2

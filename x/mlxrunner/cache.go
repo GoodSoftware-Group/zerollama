@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ollama/ollama/logutil"
@@ -32,10 +33,12 @@ import (
 const maxPagedOutBytes int64 = 8 << 30 // 8 GiB eviction threshold for paged-out snapshot memory
 
 type kvCache struct {
-	root          *trieNode   // root of the prefix trie
-	activePath    []*trieNode // current root→leaf path with live MLX arrays
-	caches        []cache.Cache
-	pagedOutBytes int64 // total bytes in paged-out snapshots across the trie
+	root               *trieNode   // root of the prefix trie
+	activePath         []*trieNode // current root→leaf path with live MLX arrays
+	caches             []cache.Cache
+	pagedOutBytes      int64 // total bytes in paged-out snapshot memory across the trie
+	lastPromptCacheKey string
+	lastSessionInputs  []int32
 }
 
 // pendingSnapshot is a snapshot scheduled to be taken during prefill.
@@ -52,9 +55,12 @@ type cacheSession struct {
 	inputs  []int32
 	outputs []int32
 
-	caches    []cache.Cache
-	remaining []int32
-	cachedPrefix int // tokens restored from trie before prefill
+	caches         []cache.Cache
+	remaining      []int32
+	cachedPrefix   int // tokens restored from trie before prefill
+	promptCacheKey string
+	fastPath       bool // live-session continuation; skip trie page-in/out
+	sameBranch     bool // trie same-branch restore; skip page-out/in round trip
 
 	// pendingSnapshots lists offsets where snapshots should be captured
 	// during prefill, sorted by offset. Entries are scheduled on the caches
@@ -87,9 +93,20 @@ func (c *kvCache) ensureRoot() {
 
 // begin prepares caches for a new request. It finds the nearest
 // matching cache or creates new caches if none match.
-func (c *kvCache) begin(m base.Model, inputs []int32) *cacheSession {
+func (c *kvCache) begin(m base.Model, inputs []int32, promptCacheKey string) *cacheSession {
 	c.ensureCaches(m)
 	c.ensureRoot()
+
+	key := strings.TrimSpace(promptCacheKey)
+	if key != "" && key != c.lastPromptCacheKey {
+		c.lastSessionInputs = nil
+	}
+	if key != "" && key == c.lastPromptCacheKey {
+		if session, ok := c.tryExtendLiveSession(modelSlidingWindow(m), inputs); ok {
+			c.lastPromptCacheKey = key
+			return session
+		}
+	}
 
 	matchPath, matched := findBestMatch(c.root, inputs)
 	originalMatched := matched
@@ -101,18 +118,28 @@ func (c *kvCache) begin(m base.Model, inputs []int32) *cacheSession {
 	}
 
 	// Switch to the matched path, paging in/out as needed.
-	c.switchToPath(matchPath, matched)
+	// Mid-edge cap applies only to rotating KV (Gemma4 OptiQ); full KV caches
+	// can live-rewind to an interior offset.
+	if modelSlidingWindow(m) > 0 {
+		matchPath, matched = capTrieMatchForRestore(matchPath, matched)
+	}
+	sameBranch := c.trySameBranchRestore(matchPath, matched)
+	if !sameBranch {
+		c.switchToPath(matchPath, matched)
+	}
 
 	// switchToPath aligns caches to a common offset
 	prefix := c.minCacheOffset()
 	remaining := inputs[prefix:]
 
 	session := &cacheSession{
-		cache:        c,
-		inputs:       inputs,
-		caches:       c.caches,
-		remaining:    remaining,
-		cachedPrefix: prefix,
+		cache:          c,
+		inputs:         inputs,
+		caches:         c.caches,
+		remaining:      remaining,
+		cachedPrefix:   prefix,
+		promptCacheKey: key,
+		sameBranch:     sameBranch,
 	}
 
 	// Schedule a snapshot at the branch point during prefill so future
@@ -136,15 +163,391 @@ func (c *kvCache) begin(m base.Model, inputs []int32) *cacheSession {
 		"left", len(remaining),
 		"utilization_pct", utilPct,
 	}
+	if sameBranch {
+		attrs = append(attrs, "same_branch", true)
+	}
 	if originalMatched > 0 && prefix == 0 {
-		slog.Warn("mlx prefix trie match but KV restore missed; full prefill required",
+		attrs := []any{
 			"matched", originalMatched,
+			"restorable", matched,
 			"total", len(inputs),
-		)
+		}
+		if key != "" {
+			attrs = append(attrs, "prompt_cache_key", key)
+		}
+		// Expected on short sidecar /api/generate calls and rotating-KV edge caps;
+		// only surface at warn for long agent prompts with a session key — otherwise
+		// operators chase harmless sidecar noise while real misses use prefill debug.
+		if key != "" && originalMatched >= 8192 {
+			attrs = append(attrs, "hint", "rotating KV cannot restore mid-edge; ensure prompt_cache_key is stable across turns")
+			slog.Warn("mlx prefix trie match but KV restore missed; full prefill required", attrs...)
+		} else {
+			slog.Debug("mlx prefix trie match but KV restore missed; full prefill required", attrs...)
+		}
 	}
 	slog.Info(msg, attrs...)
 
+	// Do not clear lastPromptCacheKey on unkeyed sidecar /api/generate — that
+	// would make the next keyed agent turn wipe lastSessionInputs and miss fast_path.
+	if key != "" {
+		c.lastPromptCacheKey = key
+	}
 	return session
+}
+
+// tryExtendLiveSession reuses resident MLX KV when the same agent thread extends
+// its prompt without a trie page-in/out round trip. Generation tokens from the
+// prior turn sit in KV and the trie but not in the new prompt prefix, so we
+// match on the longest common prefix with the prior prompt and rewind past gen.
+//
+// Requires the same prompt_cache_key as the prior turn (lastSessionInputs set in
+// close()). On rotating KV (Gemma4 OptiQ), live rewind uses rewindCachesViaSnapshots
+// because Restore(nil, offset) fails once offset > sliding_window — wrapped buffers
+// need trie snapshot page-in, not in-place index rewind.
+func (c *kvCache) tryExtendLiveSession(slidingWindow int, inputs []int32) (*cacheSession, bool) {
+	if len(c.activePath) == 0 || len(c.caches) == 0 || len(c.lastSessionInputs) == 0 {
+		return nil, false
+	}
+	lcp := longestCommonPrefix(inputs, c.lastSessionInputs)
+	minRetain := len(c.lastSessionInputs) - agentGenStubTokenSlack
+	if minRetain < 0 {
+		minRetain = 0
+	}
+	if lcp < minRetain {
+		return nil, false
+	}
+
+	live := c.minCacheOffset()
+	if live < lcp {
+		// Runtime sidecar shares this runner and switches activePath/KV without a
+		// prompt_cache_key; restore the agent prefix from trie before gen-token rewind.
+		if !c.bootstrapLiveSessionFromTrie(inputs, lcp, minRetain, slidingWindow) {
+			return nil, false
+		}
+		live = c.minCacheOffset()
+		if live < lcp {
+			return nil, false
+		}
+	}
+	rotating := slidingWindow > 0
+	branch := trimPathToOffset(c.activePath, lcp)
+	rewindTo := lcp
+	if rotating {
+		var ok bool
+		branch, rewindTo, ok = bestRestorableOffset(branch, lcp)
+		if !ok || rewindTo < minRetain {
+			return nil, false
+		}
+	}
+	if live > rewindTo {
+		c.snapshotActiveLeafBeforeRewind(rewindTo)
+		if rotating {
+			if !c.rewindCachesViaSnapshots(branch, rewindTo) {
+				return nil, false
+			}
+		} else if !c.rewindCachesTo(rewindTo) {
+			return nil, false
+		}
+	}
+
+	prefix := rewindTo
+	if prefix == len(inputs) && prefix > 0 {
+		prefix--
+	}
+	remaining := inputs[prefix:]
+	session := &cacheSession{
+		cache:          c,
+		inputs:         inputs,
+		caches:         c.caches,
+		remaining:      remaining,
+		cachedPrefix:   prefix,
+		promptCacheKey: c.lastPromptCacheKey,
+		fastPath:       true,
+	}
+	utilPct := 0.0
+	if len(inputs) > 0 {
+		utilPct = float64(prefix) / float64(len(inputs)) * 100
+	}
+	slog.Info("cache hit",
+		"total", len(inputs),
+		"matched", lcp,
+		"cached", prefix,
+		"left", len(remaining),
+		"utilization_pct", utilPct,
+		"fast_path", true,
+		"rewound_from", live,
+		"rewound_to", rewindTo,
+	)
+	return session, true
+}
+
+const agentGenStubTokenSlack = 512
+
+// bootstrapLiveSessionFromTrie reloads agent KV from trie snapshots when live
+// caches were left on an unkeyed sidecar branch between keyed agent turns.
+func (c *kvCache) bootstrapLiveSessionFromTrie(inputs []int32, lcp, minRetain, slidingWindow int) bool {
+	matchPath, matched := findBestMatch(c.root, inputs)
+	if matched < minRetain {
+		return false
+	}
+	rotating := slidingWindow > 0
+	if rotating {
+		matchPath, matched = capTrieMatchForRestore(matchPath, matched)
+		if matched < minRetain {
+			return false
+		}
+	}
+	branch := trimPathToOffset(matchPath, matched)
+	rewindTo := matched
+	if rotating {
+		var ok bool
+		branch, rewindTo, ok = bestRestorableOffset(branch, matched)
+		if !ok || rewindTo < minRetain {
+			return false
+		}
+	}
+	if rewindTo < lcp && lcp-rewindTo > agentGenStubTokenSlack {
+		return false
+	}
+	if rotating {
+		if !c.rewindCachesViaSnapshots(branch, rewindTo) {
+			return false
+		}
+	} else {
+		c.switchToPath(branch, rewindTo)
+	}
+	c.activePath = branch
+	if len(c.activePath) > 0 {
+		c.activePath[len(c.activePath)-1].lastUsed = time.Now()
+	}
+	slog.Debug("live session bootstrap from trie after sidecar clobber",
+		"rewind_to", rewindTo, "lcp", lcp, "min_retain", minRetain)
+	return c.minCacheOffset() >= rewindTo
+}
+
+func longestCommonPrefix(a, b []int32) int {
+	n := min(len(a), len(b))
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+func (c *kvCache) rewindCachesTo(offset int) bool {
+	rewound := false
+	for _, kv := range c.caches {
+		if kv == nil {
+			continue
+		}
+		if kv.Offset() <= offset {
+			continue
+		}
+		if !kv.Restore(nil, offset) {
+			slog.Debug("mlx cache rewind failed; freeing caches", "target", offset, "had", kv.Offset())
+			c.freeAll()
+			return false
+		}
+		rewound = true
+	}
+	if !rewound {
+		return true
+	}
+	for i := len(c.activePath) - 1; i >= 0; i-- {
+		if c.activePath[i].endOffset <= offset {
+			c.activePath = c.activePath[:i+1]
+			break
+		}
+	}
+	return true
+}
+
+// rewindCachesViaSnapshots restores KV to matched by paging in trie snapshots on
+// path. Used for live-session and same-branch rewind on rotating KV where
+// Restore(nil, target) fails once the window has wrapped.
+func (c *kvCache) rewindCachesViaSnapshots(path []*trieNode, matched int) bool {
+	if matched < 0 {
+		return false
+	}
+	if matched == 0 {
+		return len(path) <= 1
+	}
+	if len(path) == 0 {
+		return false
+	}
+
+	// Cheap live rewind for layers that support it. When live rewind fails on a
+	// wrapped rotating buffer, Free the layer so page-in can restore it from trie
+	// snapshots — same pattern as switchToPath.
+	for _, kv := range c.caches {
+		if kv == nil {
+			continue
+		}
+		if kv.Offset() <= matched {
+			continue
+		}
+		if !kv.Restore(nil, matched) {
+			kv.Free()
+		}
+	}
+
+	for _, node := range path {
+		if node.endOffset > matched {
+			continue
+		}
+		if !node.hasSnapshots() {
+			continue
+		}
+		nodeTarget := node.endOffset
+		for j, kv := range c.caches {
+			if kv == nil {
+				continue
+			}
+			if j >= len(node.snapshots) || node.snapshots[j] == nil {
+				continue
+			}
+			if kv.Offset() >= nodeTarget {
+				continue
+			}
+			if !kv.Restore(node.snapshots[j], nodeTarget) {
+				c.freeAll()
+				return false
+			}
+		}
+	}
+
+	minOff := c.minCacheOffset()
+	if minOff < matched {
+		c.freeAll()
+		return false
+	}
+	if minOff > matched {
+		if !c.rewindCachesTo(matched) {
+			return false
+		}
+	}
+	for _, kv := range c.caches {
+		if kv == nil {
+			continue
+		}
+		if kv.Offset() == matched {
+			continue
+		}
+		if !kv.Restore(nil, matched) {
+			c.freeAll()
+			return false
+		}
+	}
+	c.activePath = trimPathToOffset(path, matched)
+	if len(c.activePath) > 0 {
+		c.activePath[len(c.activePath)-1].lastUsed = time.Now()
+	}
+	return c.minCacheOffset() == matched && c.maxCacheOffset() == matched
+}
+
+// trySameBranchRestore skips full trie page-out/in when the matched path extends
+// the current active branch and live KV already covers the restore point.
+func (c *kvCache) trySameBranchRestore(newPath []*trieNode, matched int) bool {
+	if matched <= 0 || len(c.activePath) == 0 || len(newPath) < len(c.activePath) {
+		return false
+	}
+	for i := range c.activePath {
+		if c.activePath[i] != newPath[i] {
+			return false
+		}
+	}
+	cur := c.minCacheOffset()
+	if cur < matched {
+		return false
+	}
+	if cur > matched {
+		c.snapshotActiveLeafBeforeRewind(matched)
+	}
+	if !c.rewindCachesTo(matched) && !c.rewindCachesViaSnapshots(newPath, matched) {
+		return false
+	}
+	c.activePath = trimPathToOffset(newPath, matched)
+	if len(c.activePath) > 0 {
+		c.activePath[len(c.activePath)-1].lastUsed = time.Now()
+	}
+	slog.Debug("same-branch cache restore", "matched", matched, "rewound_from", cur)
+	return true
+}
+
+// snapshotActiveLeafBeforeRewind pages out the active leaf when a same-branch
+// rewind will discard KV state past matched (mirrors switchToPath leaf page-out).
+func (c *kvCache) snapshotActiveLeafBeforeRewind(matched int) {
+	if len(c.activePath) == 0 {
+		return
+	}
+	leaf := c.activePath[len(c.activePath)-1]
+	if matched >= leaf.endOffset || leaf.hasAllSnapshots() {
+		return
+	}
+	fromOffset := leaf.startOffset()
+	snaps := make([]cache.Snapshot, len(c.caches))
+	for j, kv := range c.caches {
+		if kv == nil {
+			continue
+		}
+		snaps[j] = kv.Snapshot(fromOffset)
+	}
+	leaf.setSnapshots(snaps, &c.pagedOutBytes)
+}
+
+func trimPathToOffset(path []*trieNode, offset int) []*trieNode {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i].endOffset <= offset {
+			return path[:i+1]
+		}
+	}
+	return path[:1]
+}
+
+// bestRestorableOffset returns the largest snapshot boundary on path that is
+// <= target. Prefer interior trie nodes with snapshots over mid-edge caps.
+//
+// Why: capTrieMatchForRestore alone walks leaf edges and can rewind thousands of
+// tokens short of LCP when snapshots exist at finer boundaries (production symptom:
+// ~16k cached on long prompts after messages_dropped changed the prefix).
+func bestRestorableOffset(path []*trieNode, target int) ([]*trieNode, int, bool) {
+	if target <= 0 || len(path) <= 1 {
+		return path, 0, false
+	}
+	path = trimPathToOffset(path, target)
+	best := 0
+	bestLen := 1
+	for i := 1; i < len(path); i++ {
+		node := path[i]
+		if node.endOffset > target || !node.hasSnapshots() {
+			continue
+		}
+		if node.endOffset > best {
+			best = node.endOffset
+			bestLen = i + 1
+		}
+	}
+	if best > 0 {
+		return path[:bestLen], best, true
+	}
+	path, matched := capTrieMatchForRestore(path, target)
+	return path, matched, matched > 0
+}
+
+// capTrieMatchForRestore trims a trie match when the last traversed edge extends
+// past matched (partial edge). RotatingKV snapshots cannot restore below their
+// capture point, so page-in skips nodes with endOffset > matched.
+func capTrieMatchForRestore(path []*trieNode, matched int) ([]*trieNode, int) {
+	for len(path) > 1 {
+		leaf := path[len(path)-1]
+		if matched >= leaf.endOffset {
+			return path, matched
+		}
+		matched = leaf.startOffset()
+		path = path[:len(path)-1]
+	}
+	return path, matched
 }
 
 // switchToPath transitions from the current active path to a new path,
@@ -213,10 +616,13 @@ func (c *kvCache) switchToPath(newPath []*trieNode, matched int) {
 	// Caches already past a node skip it via offset check.
 pageIn:
 	for _, node := range newPath {
+		if node.endOffset > matched {
+			continue
+		}
 		if !node.hasSnapshots() {
 			continue
 		}
-		nodeTarget := min(node.endOffset, matched)
+		nodeTarget := node.endOffset
 		for j, kv := range c.caches {
 			if kv == nil {
 				continue
@@ -313,8 +719,18 @@ func (s *cacheSession) schedulePrefillSnapshots(offsets []int) {
 		prepared[i] = p.offset
 	}
 	for _, kv := range c.caches {
-		if kv != nil {
-			kv.PrepareSnapshots(prepared)
+		if kv == nil {
+			continue
+		}
+		cur := kv.Offset()
+		var forKV []int
+		for _, off := range prepared {
+			if off >= cur && off <= len(s.inputs) {
+				forKV = append(forKV, off)
+			}
+		}
+		if len(forKV) > 0 {
+			kv.PrepareSnapshots(forKV)
 		}
 	}
 }
@@ -480,6 +896,21 @@ func (c *kvCache) minCacheOffset() int {
 	return offset
 }
 
+func (c *kvCache) maxCacheOffset() int {
+	offset := 0
+	found := false
+	for _, kv := range c.caches {
+		if kv == nil {
+			continue
+		}
+		if off := kv.Offset(); !found || off > offset {
+			offset = off
+			found = true
+		}
+	}
+	return offset
+}
+
 // close saves the token state if the forward pass ran.
 func (s *cacheSession) close() {
 	// Release any prefill snapshots the session scheduled but never attached to
@@ -518,6 +949,12 @@ func (s *cacheSession) close() {
 			c.advancePath(frontier, newTokens, offset)
 		}
 		c.activePath[len(c.activePath)-1].lastUsed = time.Now()
+		if key := strings.TrimSpace(s.promptCacheKey); key != "" {
+			leaf := c.activePath[len(c.activePath)-1]
+			leaf.user = true
+			c.lastPromptCacheKey = key
+			c.lastSessionInputs = slices.Clone(s.inputs)
+		}
 	}
 }
 
@@ -535,7 +972,7 @@ func (c *kvCache) enforceEvictionPolicy() {
 	for c.pagedOutBytes > maxPagedOutBytes {
 		var best *trieNode
 		walkNodes(c.root, func(n *trieNode) bool {
-			if n == c.root || activeSet[n] || len(n.children) > 1 {
+			if n == c.root || activeSet[n] || len(n.children) > 1 || n.user {
 				return true
 			}
 			// Evict: oldest, then deepest, then largest.

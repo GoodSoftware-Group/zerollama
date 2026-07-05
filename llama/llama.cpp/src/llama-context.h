@@ -86,6 +86,8 @@ struct llama_context {
 
     float * get_embeddings_pre_norm();
     float * get_embeddings_pre_norm_ith(int32_t i);
+    float * get_dflash_target_features_ith(int32_t i);
+    ggml_tensor * get_dflash_target_features();
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -111,6 +113,14 @@ struct llama_context {
 
     void set_embeddings (bool value);
     void set_embeddings_pre_norm(bool value);
+    void set_dflash_target_export(const llama_model * draft_model);
+
+    // dflash target_hidden window (cross.v_embd staging for ANE B8 lab)
+    bool cross_has_v_embd() const;
+    int32_t cross_n_enc() const;
+    int32_t cross_row(int32_t pos, float * dst, int32_t dst_cap) const;
+    void cross_upsert_row(int32_t pos, const float * src, int32_t n_feat);
+
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -286,6 +296,11 @@ private:
     // populated only when cparams.embeddings_pre_norm is enabled and the model graph
     // sets llm_graph_result::t_h_pre_norm
     buffer_view<float> embd_pre_norm = {nullptr, 0};
+
+    // concatenated target-layer hiddens for dflash cross pack ([n_outputs][n_target_features])
+    buffer_view<float> dflash_target_feat = {nullptr, 0};
+
+    ggml_tensor * t_dflash_target_features = nullptr;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

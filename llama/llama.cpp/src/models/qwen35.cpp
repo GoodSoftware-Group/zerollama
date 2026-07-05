@@ -1,5 +1,6 @@
 #include "models.h"
 #include "llama-memory-recurrent.h"
+#include "llama-dflash-export.h"
 
 void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
@@ -161,6 +162,11 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
     const int n_transformer_layers = n_layer - (int) hparams.nextn_predict_layers;
+    const bool export_dflash = llama_dflash_export_enabled(cparams.dflash_export);
+    std::vector<ggml_tensor *> dflash_layer_parts;
+    if (export_dflash) {
+        dflash_layer_parts.assign(cparams.dflash_export.n_target_layers, nullptr);
+    }
     for (int il = 0; il < n_transformer_layers; ++il) {
         ggml_tensor * inpSA = inpL;
 
@@ -207,8 +213,32 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
 
+        if (export_dflash && llama_dflash_export_layer(cparams.dflash_export, il)) {
+            for (uint32_t di = 0; di < cparams.dflash_export.n_target_layers; ++di) {
+                if ((int) cparams.dflash_export.target_layer_ids[di] == il) {
+                    dflash_layer_parts[di] = cur;
+                    break;
+                }
+            }
+        }
+
         // Input for next layer
         inpL = cur;
+    }
+    if (export_dflash) {
+        bool complete = true;
+        for (ggml_tensor * t : dflash_layer_parts) {
+            if (t == nullptr) {
+                complete = false;
+                break;
+            }
+        }
+        if (complete) {
+            ggml_tensor * feats = llama_dflash_concat_layer_tensors(ctx0, dflash_layer_parts);
+            cb(feats, "dflash_target_features", -1);
+            ggml_build_forward_expand(gf, feats);
+            res->t_dflash_target_features = feats;
+        }
     }
     cur = inpL;
 

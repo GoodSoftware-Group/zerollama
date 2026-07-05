@@ -16,7 +16,7 @@ Subject: [PATCH] ollama: GPU discovery enhancements (b9509 port)
  create mode 100644 ggml/src/mem_nvml.cpp
 
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index 489c21e..fca3b84 100644
+index 489c21e28..fca3b8452 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
 @@ -188,6 +188,13 @@ extern "C" {
@@ -34,7 +34,7 @@ index 489c21e..fca3b84 100644
  
      GGML_API const char *                  ggml_backend_dev_name(ggml_backend_dev_t device);
 diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
-index b5114de..879fb27 100644
+index b5114de2c..879fb2750 100644
 --- a/ggml/src/CMakeLists.txt
 +++ b/ggml/src/CMakeLists.txt
 @@ -206,6 +206,8 @@ add_library(ggml-base
@@ -47,7 +47,7 @@ index b5114de..879fb27 100644
              gguf.cpp)
  
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index e556968..2677ba1 100644
+index e556968c1..2677ba13f 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -195,6 +195,50 @@ static int ggml_cuda_parse_id(char devName[]) {
@@ -207,7 +207,7 @@ index e556968..2677ba1 100644
  
                  ggml_backend_dev_t dev = new ggml_backend_device {
 diff --git a/ggml/src/ggml-impl.h b/ggml/src/ggml-impl.h
-index 62b76ab..44dcd48 100644
+index 62b76abbc..44dcd484b 100644
 --- a/ggml/src/ggml-impl.h
 +++ b/ggml/src/ggml-impl.h
 @@ -741,6 +741,14 @@ static inline bool ggml_can_fuse_subgraph(const struct ggml_cgraph * cgraph,
@@ -226,7 +226,7 @@ index 62b76ab..44dcd48 100644
  }
  #endif
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 69a60b7..a9d2d89 100644
+index 69a60b726..a9d2d8923 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
 @@ -669,6 +669,7 @@ static enum ggml_backend_dev_type ggml_backend_metal_device_get_type(ggml_backen
@@ -247,7 +247,7 @@ index 69a60b7..a9d2d89 100644
          /* .host_buffer          = */ false,
 diff --git a/ggml/src/mem_hip.cpp b/ggml/src/mem_hip.cpp
 new file mode 100644
-index 0000000..23c7658
+index 000000000..23c765806
 --- /dev/null
 +++ b/ggml/src/mem_hip.cpp
 @@ -0,0 +1,558 @@
@@ -812,7 +812,7 @@ index 0000000..23c7658
 \ No newline at end of file
 diff --git a/ggml/src/mem_nvml.cpp b/ggml/src/mem_nvml.cpp
 new file mode 100644
-index 0000000..f473a2a
+index 000000000..f473a2a2c
 --- /dev/null
 +++ b/ggml/src/mem_nvml.cpp
 @@ -0,0 +1,274 @@

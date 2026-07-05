@@ -1619,6 +1619,17 @@ extern "C" {
             size_t                 n_embd,
             size_t                 n_tokens);
 
+    //
+    // DFlash speculative-decoding scaffolding (milady dflash-draft)
+    //
+    LLAMA_API struct ggml_tensor * llama_get_dflash_target_features(struct llama_context * ctx);
+
+    LLAMA_API void llama_set_dflash_target_export(
+            struct llama_context * ctx_tgt,
+            const struct llama_model * draft_model);
+
+    LLAMA_API float * llama_get_dflash_target_features_ith(struct llama_context * ctx, int32_t i);
+
 #ifdef __cplusplus
 }
 #endif

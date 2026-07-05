@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/blobaudit"
 	"github.com/ollama/ollama/internal/modelhealth"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/version"
@@ -41,11 +42,25 @@ func NewDoctorCommand() *cobra.Command {
 	var jsonOut bool
 	var fix bool
 	var modelsOnly bool
+	var auditStorage bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
 		Long:  "Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if auditStorage {
+				report, err := blobaudit.Audit()
+				if err != nil {
+					return err
+				}
+				if jsonOut {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					return enc.Encode(report)
+				}
+				fmt.Fprint(os.Stdout, blobaudit.FormatHuman(report))
+				return nil
+			}
 			repo := doctorRepoRoot()
 			if fix {
 				if err := runDoctorFix(repo); err != nil {
@@ -83,6 +98,7 @@ func NewDoctorCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print results as JSON")
 	cmd.Flags().BoolVar(&fix, "fix", false, "Run safe auto-fixes (uv venv; on Darwin build Metal llama.cpp when missing)")
 	cmd.Flags().BoolVar(&modelsOnly, "models", false, "Check local model blob integrity (missing/orphaned registrations)")
+	cmd.Flags().BoolVar(&auditStorage, "audit", false, "Blob storage rollup (use with --models or alone; see also zerollama blobs audit)")
 	return cmd
 }
 

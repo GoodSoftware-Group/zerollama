@@ -115,6 +115,45 @@ func MaterializeANEDraftMatmulWeightFile(entry ANEDraftEntry, tensorName string,
 	return cachePath, false, nil
 }
 
+// MaterializeANEDraftNormGammaFile extracts RMS gamma for host hidden_norm (P10 chain 11).
+func MaterializeANEDraftNormGammaFile(entry ANEDraftEntry, tensorName string, dim int) (path string, cached bool, err error) {
+	draftPath, present := resolveDraftGGUFPath(entry)
+	if !present || draftPath == "" {
+		return "", false, fmt.Errorf("draft sidecar GGUF missing for %s", entry.Tag)
+	}
+	if strings.TrimSpace(tensorName) == "" || dim <= 0 {
+		return "", false, fmt.Errorf("invalid norm gamma request")
+	}
+
+	cachePath := aneDraftWeightCachePath(draftPath, dim, tensorName)
+	sidecarStat, err := os.Stat(draftPath)
+	if err != nil {
+		return "", false, err
+	}
+	if cacheStat, err := os.Stat(cachePath); err == nil {
+		if !cacheStat.ModTime().Before(sidecarStat.ModTime()) && cacheStat.Size() > 0 {
+			return cachePath, true, nil
+		}
+	}
+
+	blob, _, err := ExtractNormVectorWeightBlob(draftPath, tensorName, dim)
+	if err != nil {
+		return "", false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return "", false, err
+	}
+	tmp := cachePath + ".tmp"
+	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
+		return "", false, err
+	}
+	if err := os.Rename(tmp, cachePath); err != nil {
+		_ = os.Remove(tmp)
+		return "", false, err
+	}
+	return cachePath, false, nil
+}
+
 func aneDraftWeightCacheDir() string {
 	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_CACHE")); v != "" {
 		return v

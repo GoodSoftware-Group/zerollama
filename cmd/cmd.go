@@ -1026,42 +1026,52 @@ func ListRunningHandler(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var data [][]string
-
+	var rows []runningModelRow
 	for _, m := range models.Models {
 		if len(args) == 0 || strings.HasPrefix(m.Name, args[0]) {
-			var procStr string
-			switch {
-			case m.SizeVRAM == 0:
-				procStr = "100% CPU"
-			case m.SizeVRAM == m.Size:
-				procStr = "100% GPU"
-			case m.SizeVRAM > m.Size || m.Size == 0:
-				procStr = "Unknown"
-			default:
-				sizeCPU := m.Size - m.SizeVRAM
-				cpuPercent := math.Round(float64(sizeCPU) / float64(m.Size) * 100)
-				procStr = fmt.Sprintf("%d%%/%d%% CPU/GPU", int(cpuPercent), int(100-cpuPercent))
-			}
-
-			var until string
-			delta := time.Since(m.ExpiresAt)
-			if delta > 0 {
-				until = "Stopping..."
-			} else {
-				until = format.HumanTime(m.ExpiresAt, "Never")
-			}
-			ctxStr := strconv.Itoa(m.ContextLength)
-			digest := m.Digest
-			if len(digest) > 12 {
-				digest = digest[:12]
-			}
-			data = append(data, []string{m.Name, digest, format.HumanBytes(m.Size), procStr, ctxStr, until})
+			rows = append(rows, runningModelRowFromAPI(m))
 		}
 	}
 
+	showProjects := false
+	for _, row := range rows {
+		if row.project != "" || row.session != "" {
+			showProjects = true
+			break
+		}
+	}
+
+	var data [][]string
+	for _, row := range rows {
+		if showProjects {
+			data = append(data, []string{
+				row.name,
+				row.project,
+				row.session,
+				row.digest,
+				row.size,
+				row.processor,
+				row.context,
+				row.until,
+			})
+			continue
+		}
+		data = append(data, []string{
+			row.name,
+			row.digest,
+			row.size,
+			row.processor,
+			row.context,
+			row.until,
+		})
+	}
+
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"})
+	header := []string{"NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"}
+	if showProjects {
+		header = []string{"NAME", "PROJECT", "SESSION", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"}
+	}
+	table.SetHeader(header)
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 	table.SetAlignment(tablewriter.ALIGN_LEFT)
 	table.SetHeaderLine(false)
@@ -1072,6 +1082,86 @@ func ListRunningHandler(cmd *cobra.Command, args []string) error {
 	table.Render()
 
 	return nil
+}
+
+type runningModelRow struct {
+	name      string
+	project   string
+	session   string
+	digest    string
+	size      string
+	processor string
+	context   string
+	until     string
+}
+
+func runningModelRowFromAPI(m api.ProcessModelResponse) runningModelRow {
+	var procStr string
+	switch {
+	case m.SizeVRAM == 0:
+		procStr = "100% CPU"
+	case m.SizeVRAM == m.Size:
+		procStr = "100% GPU"
+	case m.SizeVRAM > m.Size || m.Size == 0:
+		procStr = "Unknown"
+	default:
+		sizeCPU := m.Size - m.SizeVRAM
+		cpuPercent := math.Round(float64(sizeCPU) / float64(m.Size) * 100)
+		procStr = fmt.Sprintf("%d%%/%d%% CPU/GPU", int(cpuPercent), int(100-cpuPercent))
+	}
+
+	var until string
+	delta := time.Since(m.ExpiresAt)
+	if delta > 0 {
+		until = "Stopping..."
+	} else {
+		until = format.HumanTime(m.ExpiresAt, "Never")
+	}
+
+	digest := m.Digest
+	if len(digest) > 12 {
+		digest = digest[:12]
+	}
+
+	project, session := primaryProjectSession(m)
+	return runningModelRow{
+		name:      m.Name,
+		project:   project,
+		session:   session,
+		digest:    digest,
+		size:      format.HumanBytes(m.Size),
+		processor: procStr,
+		context:   strconv.Itoa(m.ContextLength),
+		until:     until,
+	}
+}
+
+func primaryProjectSession(m api.ProcessModelResponse) (project, session string) {
+	if m.Zerollama == nil || len(m.Zerollama.Sessions) == 0 {
+		return "", ""
+	}
+	s := m.Zerollama.Sessions[0]
+	project = processProjectLabel(s.ProjectID, s.ProjectName)
+	session = s.SessionKey
+	if len(session) > 48 {
+		session = session[:45] + "..."
+	}
+	return project, session
+}
+
+func processProjectLabel(id, name string) string {
+	id = strings.TrimSpace(id)
+	name = strings.TrimSpace(name)
+	switch {
+	case id != "" && name != "" && !strings.EqualFold(id, name):
+		return id + "/" + name
+	case name != "":
+		return name
+	case id != "":
+		return id
+	default:
+		return ""
+	}
 }
 
 func DeleteHandler(cmd *cobra.Command, args []string) error {
@@ -2524,6 +2614,7 @@ func NewCLI() *cobra.Command {
 		doctorCmd,
 		benchCmd,
 		NewRepairCommand(),
+		NewBlobsCommand(),
 		NewFleetCommand(),
 		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
 	)

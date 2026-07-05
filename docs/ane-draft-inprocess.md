@@ -60,7 +60,7 @@
 | **B5** | Per-step handoff | Handoff after **every** draft `llama_decode`, not once — matches real speculative loop; enables step telemetry. |
 | **B6** | Two-conv bundle + golden telemetry | Second weight from `ffn_up`; optional chained conv MIL (falls back to conv1 if compile fails); CPU golden vs ANE for numerical parity; `HANDOFF_STRIDE` to limit overhead. |
 
-**Open (B7):** `ZEROLLAMA_ANE_DRAFT_DRIVE=shadow|force` — ANE conv output → host tied-embed argmax → draft token (`shadow` logs parity, `force` replaces Metal sampler). **Force baseline (2B, Jun 2026):** ~27% draft token acceptance vs Metal, ~35–68% e2e overhead — conv proxy is not dflash; B8 subgraph expansion required.
+**Open (B7):** `ZEROLLAMA_ANE_DRAFT_DRIVE=shadow|force` — ANE matmul output → host tied-embed argmax → draft token (`shadow` logs parity, `force` replaces Metal sampler). **P6 token shadow (M4 Max, Jun 2026):** `shadow_steps=14`, `shadow_match_pct=0%` (expected — blk.0 proxy ≠ full dflash), `shadow_hidden_cos≈1.0` on ffn_down stash vs CPU golden. **Force baseline (P6):** ~27% draft acceptance, large TPS hit from sync eval per handoff. **Open (B8):** attn softmax/KV, lm_head for token parity. **Shipped (Jul 2026):** `common_ane_draft_sync_target_cross` runs after each target decode in speculative `process()` so native Metal dflash reads `cross.v_embd` before draft sync-decode. **Per-layer target export (Jul 2026):** `llama_set_dflash_target_export` + qwen35 graph concat at `dflash.target_layer_ids[]` → `llama_get_dflash_target_features_ith`; ANE hook prefers export over `TARGET_FEAT_TILE` stub when draft arch is native `dflash-draft` (eliza lab sidecar is still qwen35 proxy — export inactive until inventory ships real dflash-draft GGUF).
 
 **Matmul path (P1–P3, Jun 2026):** Prefer `ane-draft-parity-smoke` over the 8-conv chain — lower overhead, real FFN weights.
 
@@ -70,7 +70,13 @@
 | **P2** | gate → SiLU → `silu(g) @ ffn_up` (256→768) | SiLU on gate | same |
 | **P3** | gate + up from `h`, CPU `silu(g)*u`, then `@ ffn_down` (256→768) | SwiGLU multiply | same; **3 ANE evals** per handoff |
 | **P4** | P3 + `@ attn_gate` (768→256) | — | `mode=matmul_chain4` golden cos; **4 ANE evals**; B7 drive still uses ffn_down 768-d stash |
-| **P5** | P4 + `@ ssm_out` from ffn_down (768→256) | — | `mode=matmul_chain5`; **5 ANE evals**; stride **12** default |
+| **P5** | P4 + `@ ssm_out` from ffn_down (768→256) | — | `mode=matmul_chain5`; **5 ANE evals**; stride **12** |
+| **P6** | P5 + **`attn_qkv` prefix** from `h` (768→256) before FFN | — | `mode=matmul_chain6_qkv`; **6 evals**; stride **16**; `MATMUL_CHAIN=5` pins P5 |
+| **P7a** | P6 + **`blk.1 ffn_gate`** from ffn_down (768→256) | — | **7 evals**; stride **20**; **host fp32** on lab (ANE fp16 ~0.58 B6 cos) |
+| **P8** | P7a + **`blk.1 ffn_up`** + CPU SwiGLU (768→256) | SiLU× on blk.1 gate/up | **8 evals**; `MATMUL_CHAIN=9`; stride **24**; **host fp32 up** |
+| **P9** | P8 + **`blk.1 ffn_down`** (256→768) | — | **host fp32** (ANE fp16 underflow at ~1e-3 SwiGLU); `MATMUL_CHAIN=10`; stride **28**; lab **`shadow_hidden_cos=1.0`** |
+| **P7b** | `target_hidden @ dflash_fc` → `n_embd` (native dflash-draft only) | — | **`MATMUL_CHAIN=8`**; `bind_target_ctx` + ctx_tgt pre-norm at **`i_batch=-1`**; **`common_ane_draft_sync_target_cross`** in speculative `process()` → `cross.v_embd`; `TARGET_FEAT_TILE=1` lab stub — **M4 Max Jul 2026: `golden_cosine=1.0`** (eliza qwen35 gate proxy) |
+| **P10** | P7b + **host RMS(`dflash_hidden_norm`)** + `@ blk.0.attn_q` | RMS on fc out | **`MATMUL_CHAIN=11`**; `WEIGHT_FILE2=attn_qkv` (qwen35 fallback); stride **20** — **M4 Max Jul 2026: `golden_cosine=1.0`** (gate proxy + `attn_norm` gamma) |
 
 ```bash
 # P3 parity (default matmul kernel, shadow hidden metrics only)
@@ -88,11 +94,31 @@ LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
 # P1/P2 baseline (explicit chain; skips auto P3 when FILE3 materialized)
 ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=1 ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
 ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2 ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
+
+# P7b / P10 dflash subgraph (ctx_tgt handoff + cross.v_embd sync)
+ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=8 LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
+  ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
+ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=11 LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
+  ./zerollama ane-draft-parity-smoke --model eliza-1-2b-dflash --quick --telemetry
 ```
 
-**P3 lab (M4 Max, stride=8 default, async eval):** `shadow_hidden_cos=1.0`, `golden_cosine=1.0`, hook+shadow overhead ~**0–7%** vs Metal-only dflash (quick runs are noisy; use `--telemetry` for golden_cos).
+**P6 lab (M4 Max, stride=16 default, async eval):** `golden_cosine=1.0`, `matmul_chain=6`, hook overhead ~3–7% vs Metal-only dflash.
 
-**P3 at stride=4** (override `ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE=4`): hook ~**7%** — use when validating per-step handoff parity.
+**P9 lab (Jul 2026):** blk.1 gate/up/down run on **host fp32** — ANE fp16 loses ~0.58 cos on blk.1 gate and returns zero on blk.1 down (~1e-3 SwiGLU vs ~3 blk.0). With host fp32 P7–P9, `shadow_hidden_cos=1.0` and `golden_cosine=1.0` on eliza `qwen35` sidecar (`ane-draft-parity-smoke --token-shadow --telemetry`). P1–P3 blk.0 FFN remains on ANE.
+
+**P10 lab (Jul 2026):** `MATMUL_CHAIN=11` — dflash_fc (gate proxy) → host RMS norm → `blk.0.attn_qkv` top-left slice on ANE; `mode=matmul_chain11_dflash_attn_q`, **`golden_cosine=1.0`**, stride **20**. qwen35 sidecar lacks `blk.0.attn_q.weight`; Go `ResolveChain11AttnQTensor()` falls back to fused `attn_qkv`.
+
+**Native dflash-draft lab (27b):** `eliza-1-27b-256k-dflash` sidecar is **`dflash-draft`** with real `dflash_fc.weight` `[25600×5120]` (Q8_0), `dflash_hidden_norm.weight`, and full decoder blocks. Inventory tracks **`draft_architecture`** separately from the target base model; chain **8/11** auto-select native weights and skip `TARGET_FEAT_TILE` when export meta is set. **Jul 2026 lab:** chain **8** **`golden_cosine=0.9854`** (512-d export slice → `dflash_fc` on ANE); chain **11** **`golden_cosine=1.0`** (`dflash_fc` → host RMS(`dflash_hidden_norm`) → `blk.0.attn_q` at `5120×512` proxy slice, stride **20**). **B7 token shadow (Jul 2026):** `--token-shadow` on chain **11** loads tied-embed from **base model** (sidecar lacks `token_embd`; Q4_K dequant cache ~2.5GB); **`shadow_steps=18`**, **`shadow_match_pct=0%`** until attn/KV + lm_head complete the draft hidden (ANE argmax uses 512-d `attn_q` padded to `n_embd`). Go wiring: `forceChain==11` enables native `dflash_fc`; `MaterializeANEDraftNormGammaFile` + `MaterializeANEDraftDriveHead` with base-model fallback.
+
+**Staged chain baselines (M4 Max):** `MATMUL_CHAIN=3` → hidden_cos **1.0** (blk.0 down); chain **7/9/10** → **1.0** after P7 host fp32 (chain 7 B7 metric still reports blk.0 down; B6 `chain7_blk1_gate` was ~0.58 on ANE). **Chain 8/11** → **1.0** (dflash_fc subgraph + P10 attn_q).
+
+**B7 token shadow (Jun 2026):** `--token-shadow` stable (~25–30s with `skipMicro`); `shadow_steps=14`, `shadow_match_pct=0%` on eliza `qwen35` drafter (blk.0 proxy ≠ full decode). Parity JSON includes `sidecar_architecture` + `has_dflash_fc_tensor`.
+
+**Lab env hygiene (Jun 2026):** `runDflashServerLeg` strips inherited `ZEROLLAMA_ANE_DRAFT_*` before applying smoke env so stale shell exports (e.g. `DRIVE_METRICS=hidden`) cannot override `--token-shadow`. Operator overrides for `MATMUL_CHAIN` / `HANDOFF_STRIDE` are still read from the shell once, then re-applied.
+
+**llama-server subprocess (Jun 2026):** `runDflashServerLeg` sets `cmd.Dir` to `filepath.Dir(LLAMA_SERVER_BIN)` and prepends that directory to `DYLD_LIBRARY_PATH` so `libane_bridge.dylib` resolves next to the unified build (same rule as `ane-probe`).
+
+**Async eval sync (Jun 2026):** `ane_draft_session_eval_async` pairs `dispatch_group_enter/leave` so `eval_sync()` blocks until ANE eval completes. **B7 drive (shadow/force)** forces **sync eval on handoff** — `try_drive_token` runs in the same `draft()` turn; `eval_sync()` is skipped when drive is active (avoids dispatch_group deadlock).
 
 ---
 
@@ -149,18 +175,26 @@ LLAMA_SERVER_BIN=../llama.cpp/build/bin/llama-server \
 | `ZEROLLAMA_ANE_DRAFT_DRIVE_VOCAB_CAP` | `8192` (when drive on) | Limit host argmax scan for lab speed (full vocab ~248k is slow). |
 | `ZEROLLAMA_ANE_DRAFT_TOKEN_EMBD_FILE` | — | B7 mmap tied-embed cache from `ane-draft-mil-bundle` manifest v4. |
 | `ZEROLLAMA_ANE_DRAFT_TELEMETRY` | `0` | Log CPU golden vs ANE output per step — validates bridge, not draft quality yet. |
-| `ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE` | `2` conv / `4` P1–P2 / `8` P3–P4 / `12` P5 matmul | Handoff every N decode steps (Go A/B default per chain depth). |
+| `ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE` | `2` conv / `4` P1–P2 / `8` P3–P4 / `12` P5 / `16` P6 | Handoff every N decode steps (Go A/B default per chain depth). |
 | `ZEROLLAMA_ANE_DRAFT_CONV_DEPTH` | `0` (unlimited) | Cap compiled conv kernels (`1` = `WEIGHT_FILE` only). **Why:** faster A/B when full v9 chain is materialized but you only want B8/B9 depth. |
 | `ZEROLLAMA_ANE_DRAFT_KERNEL` | `conv` | `matmul` — gate (+ optional chain2 up). Static MIL may fail; auto-falls back to **dynamic MIL**. |
-| `ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN` | auto | `1`–`5`; P5 auto when `WEIGHT_FILE5` (`ssm_out`) materialized. `3`/`4` pin P3/P4. |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN` | auto | `1`–`7`; pin with explicit value. P7 auto when `WEIGHT_FILE7` (`blk.1.ffn_gate`) materialized. |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4` | — | P4 matmul: `blk.0.attn_gate.weight` (768×256 slice). Conv path: `ffn_down`. |
 | `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5` | — | P5 matmul: `blk.0.ssm_out.weight` (768×256 slice). Conv path uses FILE5 for blk.1 gate. |
 | `ZEROLLAMA_ANE_DRAFT_MATMUL_OC5` | — | P5 ssm_out output channels. |
-| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4` | — | P4 matmul: `blk.0.attn_gate.weight` (768×256). Conv path uses FILE4 for `ffn_down` — do not mix. |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6` | — | P6 matmul: `blk.0.attn_qkv.weight` (768×256 slice). Conv path uses FILE6 for blk.1 `ffn_up`. |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_OC6` | — | P6 qkv output channels. |
+| `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7` | — | P7 matmul: `blk.1.ffn_gate.weight` (768×256 slice). Conv path uses FILE7 for blk.1 `attn_gate`. |
+| `ZEROLLAMA_ANE_DRAFT_MATMUL_OC7` | — | P7 blk.1 gate output channels. |
 | `ZEROLLAMA_ANE_DRAFT_MATMUL_OC4` | — | P4 attn_gate output channels (Go A/B sets from sidecar dims). |
 | `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2` | — | P2/P3: `blk.0.ffn_up.weight` matmul blob. |
 | `ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3` | — | P3: `blk.0.ffn_down.weight` matmul blob (256×768). |
 | `ZEROLLAMA_ANE_DRAFT_MATMUL_OC2` / `OC3` | — | Up/down output channels (Go A/B sets from sidecar dims). |
 | `ZEROLLAMA_ANE_DRAFT_MATMUL_SEQ` | `16` | Matmul spatial; **min 16** at ic=oc=256 (ANE MIL eval floor). |
+| `ZEROLLAMA_ANE_DRAFT_SYNC_CROSS` | `1` | Upsert ctx_tgt pre-norm into draft `cross.v_embd` (speculative `process()` + handoff fallback). |
+| `ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE` | `0` | B8 lab: repeat ctx_tgt `n_embd` across `dflash_fc` ic when native sidecar lacks `dflash_fc.weight`. |
+| `ZEROLLAMA_ANE_DRAFT_DFLASH_N_TARGET_FEATURES` | auto | Override `dflash.n_target_features` width for cross pack (native dflash-draft). |
+| `ZEROLLAMA_ANE_DRAFT_DFLASH_N_TARGET_LAYERS` | `0` | Lab layer-concat stub: tile final pre-norm into N slices until per-layer target export exists. |
 | `ZEROLLAMA_ANE_DRAFT_EVAL_ASYNC` | matmul on | After IOSurface pack, queue P1–P3 ANE eval on a serial GCD queue (overlaps with next Metal decode). `eval_sync()` before the next pack or force-drive read. Set `0` to block in handoff (~2× hook overhead on M4 Max lab). |
 | `ane-draft-parity-smoke` | — | Hidden CLI: matmul + shadow metrics on lab port 11435. JSON: **`hook_overhead_pct`** (handoff+eval only) vs **`shadow_overhead_pct`** (includes B7 tied-embed scan). |
 | `ZEROLLAMA_ANE_LAB_PORT` | `11435` | Keeps e2e A/B off production `:11434`. |

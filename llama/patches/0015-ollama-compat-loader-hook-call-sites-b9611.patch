@@ -13,7 +13,7 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
  2 files changed, 30 insertions(+)
 
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 1318e8e..4e97f9b 100644
+index 1318e8e4a..4e97f9b3c 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -4,6 +4,7 @@
@@ -79,7 +79,7 @@ index 1318e8e..4e97f9b 100644
          if (use_mmap) {
              const auto & mapping = mappings.at(weight->idx);
 diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index 7b2a2ee..16823c6 100644
+index 7b2a2ee78..16823c62a 100644
 --- a/tools/mtmd/clip.cpp
 +++ b/tools/mtmd/clip.cpp
 @@ -10,6 +10,8 @@

@@ -15,6 +15,12 @@ func TestV1ThinkNeedsLegacy(t *testing.T) {
 	if !v1ThinkNeedsLegacy(true) {
 		t.Fatal("think true should require legacy")
 	}
+	if !v1ThinkNeedsLegacy("high") {
+		t.Fatal("think high should require legacy")
+	}
+	if v1ThinkNeedsLegacy("  ") {
+		t.Fatal("think empty string should not require legacy")
+	}
 }
 
 func TestV1BodyNeedsLegacyRunner(t *testing.T) {
@@ -41,7 +47,7 @@ func TestV1ChatNeedsLegacyRunnerReasoning(t *testing.T) {
 	trueVal := true
 	effort := "medium"
 	req := &openai.ChatCompletionRequest{
-		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+		Messages:  []openai.Message{{Role: "user", Content: "hi"}},
 		Reasoning: &openai.Reasoning{Effort: "low"},
 	}
 	if !v1ChatNeedsLegacyRunner(req, nil) {

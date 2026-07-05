@@ -46,6 +46,38 @@ func TestDecodeMetadataSkipsTensorWalk(t *testing.T) {
 	}
 }
 
+func TestDecodeMetadataArraysLoadsSmallArray(t *testing.T) {
+	t.Parallel()
+	w, err := os.CreateTemp(t.TempDir(), "*.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	if err := WriteGGUF(w, KV{
+		"general.architecture": "test",
+		"general.alignment":    uint32(32),
+		"test.layer_ids":       &array[int32]{size: 3, values: []int32{1, 16, 31}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := os.Open(w.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	meta, err := DecodeMetadataArrays(r, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := meta.KV().UintOrArrayValueAsArray("layer_ids", 0)
+	if len(got) != 3 || got[0] != 1 || got[2] != 31 {
+		t.Fatalf("layer_ids: got %v", got)
+	}
+}
+
 func TestWriteGGUF(t *testing.T) {
 	tensorData := make([]byte, 2*3*4) // 6 F32 elements = 24 bytes
 	for range 8 {

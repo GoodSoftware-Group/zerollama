@@ -11,7 +11,7 @@ Subject: [PATCH] graph memory reporting on failure
  4 files changed, 40 insertions(+), 3 deletions(-)
 
 diff --git a/ggml/include/ggml-alloc.h b/ggml/include/ggml-alloc.h
-index 78aa059..7fa8403 100644
+index 78aa059dd..7fa8403b3 100644
 --- a/ggml/include/ggml-alloc.h
 +++ b/ggml/include/ggml-alloc.h
 @@ -72,6 +72,7 @@ GGML_API bool ggml_gallocr_reserve_n(
@@ -23,7 +23,7 @@ index 78aa059..7fa8403 100644
  // Utils
  // Create a buffer and allocate all the tensors in a ggml_context
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index f913863..8a8c9f6 100644
+index f9138636b..8a8c9f65d 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
 @@ -344,6 +344,7 @@ extern "C" {
@@ -35,7 +35,7 @@ index f913863..8a8c9f6 100644
      GGML_API void                 ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
      GGML_API ggml_backend_t       ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node);
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
-index 3846ad3..9e16fe7 100644
+index 3846ad332..9e16fe7c6 100644
 --- a/ggml/src/ggml-alloc.c
 +++ b/ggml/src/ggml-alloc.c
 @@ -481,6 +481,7 @@ struct node_alloc {
@@ -121,7 +121,7 @@ index 3846ad3..9e16fe7 100644
  
  static void free_buffers(ggml_backend_buffer_t ** buffers, const size_t * n_buffers) {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index b3efebd..d43fc5a 100644
+index b3efebd5c..d43fc5a79 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -2063,6 +2063,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe

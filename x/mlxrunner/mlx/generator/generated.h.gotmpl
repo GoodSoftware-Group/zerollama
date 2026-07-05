@@ -19,6 +19,18 @@ extern {{ .Type }} (*{{ .Name }}_){{ .Parameters }};
 int mlx_dynamic_load_symbols(mlx_dynamic_handle handle);
 {{ range .Functions }}
 static inline {{ .Type }} {{ .Name }}{{ .Parameters }} {{ "{" }}
+{{- if .Optional }}
+    if ({{ .Name }}_ == NULL) {
+{{- if eq .Type "mlx_array" }}
+        mlx_array empty = {0};
+        return empty;
+{{- else if eq .Type "void" }}
+        return;
+{{- else }}
+        return 0;
+{{- end }}
+    }
+{{- end }}
     return {{ .Name }}_({{ .Args }});
 {{ "}" }}
 {{- end }}

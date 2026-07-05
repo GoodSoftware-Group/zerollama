@@ -106,6 +106,24 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		return
 	}
 
+	opts := req.Options
+	if opts == nil {
+		opts = map[string]any{}
+	}
+	videoHints := mlxScheduleHints{
+		Route:    "video_generation",
+		Modality: mlxModalityVideoGeneration,
+		Stream:   false,
+	}
+	if err := s.waitRequestQoS(c.Request.Context(), nil, opts, videoHints); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			c.JSON(http.StatusRequestTimeout, openai.NewError(http.StatusRequestTimeout, err.Error()))
+			return
+		}
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
+		return
+	}
+
 	seed := req.Seed
 	if seed == nil && req.Options != nil {
 		if v, ok := req.Options["seed"]; ok {

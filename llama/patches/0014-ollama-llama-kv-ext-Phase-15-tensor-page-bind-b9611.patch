@@ -15,7 +15,7 @@ Subject: [PATCH] ollama: llama-kv-ext Phase 15 tensor page bind (b9611)
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
 new file mode 100644
-index 0000000..a48661a
+index 000000000..a48661ac9
 --- /dev/null
 +++ b/include/llama-kv-ext.h
 @@ -0,0 +1,96 @@
@@ -116,7 +116,7 @@ index 0000000..a48661a
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index b3d0035..e43104a 100644
+index b3d003592..e43104af0 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -28,6 +28,7 @@ add_library(llama
@@ -128,7 +128,7 @@ index b3d0035..e43104a 100644
              llama-model-loader.cpp
              llama-model-saver.cpp
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 0eb9dad..e4bf025 100644
+index 0eb9dad8a..e4bf025a1 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -633,6 +633,59 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
@@ -192,7 +192,7 @@ index 0eb9dad..e4bf025 100644
      std::map<ggml_backend_buffer_type_t, size_t> ret;
      for (const auto & [ctx, buf] : ctxs_bufs) {
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 60b33b4..527c7ed 100644
+index 60b33b429..527c7ed85 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -156,6 +156,13 @@ public:
@@ -211,7 +211,7 @@ index 60b33b4..527c7ed 100644
      void copy_from(const llama_kv_cache & other);
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
 new file mode 100644
-index 0000000..8b1a271
+index 000000000..8b1a271a3
 --- /dev/null
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -0,0 +1,216 @@

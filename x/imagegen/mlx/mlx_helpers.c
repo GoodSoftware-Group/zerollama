@@ -26,7 +26,7 @@ static void init_detach_ptr(void) {
     }
     mlx_array_detach_ptr = (int (*)(mlx_array))GET_SYM(handle, "mlx_array_detach");
     if (mlx_array_detach_ptr == NULL) {
-        fprintf(stderr, "MLX: mlx_array_detach symbol not found in library\n");
+        return;
     }
     mlx_array_data_bfloat16_ptr = (const uint16_t* (*)(mlx_array))GET_SYM(handle, "mlx_array_data_bfloat16");
 }
@@ -34,7 +34,7 @@ static void init_detach_ptr(void) {
 int mlx_go_array_detach(mlx_array arr) {
     init_detach_ptr();
     if (mlx_array_detach_ptr == NULL) {
-        return 1;
+        return 0;
     }
     return mlx_array_detach_ptr(arr);
 }

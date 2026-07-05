@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/ollama/ollama/agentstats"
 )
 
 const inferenceAccessLogKey = "inference_access_log"
@@ -27,6 +30,7 @@ type inferenceAccessMeta struct {
 	route              string
 	model              string
 	stream             bool
+	promptCacheKey     string
 	start              time.Time
 	queueIn            inferenceQueueSnapshot
 	doneReason         string
@@ -75,14 +79,15 @@ func (s *Server) inferenceAccessLogMiddleware(route string) gin.HandlerFunc {
 			return
 		}
 
-		model, stream := inferencePeekRequest(c)
+		model, stream, cacheKey := inferencePeekRequest(c)
 		queueIn := s.inferenceQueueSnapshot()
 		meta := &inferenceAccessMeta{
-			route:   route,
-			model:   model,
-			stream:  stream,
-			start:   time.Now(),
-			queueIn: queueIn,
+			route:          route,
+			model:          model,
+			stream:         stream,
+			promptCacheKey: cacheKey,
+			start:          time.Now(),
+			queueIn:        queueIn,
 		}
 		c.Set(inferenceAccessLogKey, meta)
 
@@ -92,33 +97,33 @@ func (s *Server) inferenceAccessLogMiddleware(route string) gin.HandlerFunc {
 		}
 		attrs = append(attrs, inferenceQueueLogAttrs(queueIn)...)
 		slog.Info("inference request in", attrs...)
+		recordAgentStatsRequestIn(meta)
 
 		c.Next()
 		meta.logResponseOut(c.Writer.Status(), s.inferenceQueueSnapshot())
 	}
 }
 
-func inferencePeekRequest(c *gin.Context) (model string, stream bool) {
+func inferencePeekRequest(c *gin.Context) (model string, stream bool, promptCacheKey string) {
 	if c.Request.Body == nil {
-		return "", false
+		return "", false, ""
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.Request.Body = io.NopCloser(bytes.NewReader(nil))
-		return "", false
+		return "", false, ""
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	model, stream = inferencePeekRequestBody(body)
-	return model, stream
+	return inferencePeekRequestBody(body)
 }
 
-func inferencePeekRequestBody(body []byte) (model string, stream bool) {
+func inferencePeekRequestBody(body []byte) (model string, stream bool, promptCacheKey string) {
 	if len(body) == 0 {
-		return "", false
+		return "", false, ""
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return "", false
+		return "", false, ""
 	}
 	if m, ok := raw["model"]; ok {
 		_ = json.Unmarshal(m, &model)
@@ -126,7 +131,40 @@ func inferencePeekRequestBody(body []byte) (model string, stream bool) {
 	if s, ok := raw["stream"]; ok {
 		_ = json.Unmarshal(s, &stream)
 	}
-	return model, stream
+	if k, ok := raw["prompt_cache_key"]; ok {
+		_ = json.Unmarshal(k, &promptCacheKey)
+	}
+	if promptCacheKey == "" {
+		if opts, ok := raw["options"]; ok {
+			var optMap map[string]json.RawMessage
+			if json.Unmarshal(opts, &optMap) == nil {
+				if k, ok := optMap["prompt_cache_key"]; ok {
+					_ = json.Unmarshal(k, &promptCacheKey)
+				}
+			}
+		}
+	}
+	if promptCacheKey == "" {
+		if eb, ok := raw["extra_body"]; ok {
+			var extra map[string]json.RawMessage
+			if json.Unmarshal(eb, &extra) == nil {
+				if k, ok := extra["prompt_cache_key"]; ok {
+					_ = json.Unmarshal(k, &promptCacheKey)
+				}
+				if promptCacheKey == "" {
+					if opts, ok := extra["options"]; ok {
+						var optMap map[string]json.RawMessage
+						if json.Unmarshal(opts, &optMap) == nil {
+							if k, ok := optMap["prompt_cache_key"]; ok {
+								_ = json.Unmarshal(k, &promptCacheKey)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return model, stream, strings.TrimSpace(promptCacheKey)
 }
 
 // logInferencePhase emits an INFO-level log for a named phase of inference
@@ -145,12 +183,40 @@ func logInferencePhase(c *gin.Context, phase string, model string, since time.Ti
 		"phase_elapsed", time.Since(since).Round(time.Millisecond),
 		"request_elapsed", requestElapsed.Round(time.Millisecond),
 	)
+	recordAgentStatsPhase(meta, phase, model, time.Since(since), requestElapsed)
 }
 
 // recordInferencePromptSize stores prompt sizing on the access-log meta.
 // promptTokens is the post-truncation token count sent to the runner.
 // originalTokens is the pre-truncation count (0 when no truncation happened).
 // messagesDropped is the number of chat messages dropped to fit the context window.
+// recordInferenceAccessCacheKey backfills prompt_cache_key after ChatMiddleware
+// parses the body (Hermes often nests keys under extra_body).
+func recordInferenceAccessCacheKey(c *gin.Context, key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	v, ok := c.Get(inferenceAccessLogKey)
+	if !ok {
+		return
+	}
+	meta, ok := v.(*inferenceAccessMeta)
+	if !ok || meta == nil {
+		return
+	}
+	if meta.promptCacheKey == key {
+		return
+	}
+	meta.promptCacheKey = key
+	agentstats.Record("request_parsed", map[string]any{
+		"route":              meta.route,
+		"model":              meta.model,
+		"stream":             meta.stream,
+		"prompt_cache_key":   key,
+	})
+}
+
 func recordInferencePromptSize(c *gin.Context, promptTokens, originalTokens, messagesDropped int) {
 	v, ok := c.Get(inferenceAccessLogKey)
 	if !ok {
@@ -246,6 +312,9 @@ func (m *inferenceAccessMeta) logResponseOut(status int, queueOut inferenceQueue
 			"ggml_active_in", m.queueIn.GgmlActive,
 		)
 	}
+	if key := strings.TrimSpace(m.promptCacheKey); key != "" {
+		attrs = append(attrs, "prompt_cache_key", key)
+	}
 	if m.doneReason != "" {
 		attrs = append(attrs, "done_reason", m.doneReason)
 	}
@@ -296,4 +365,74 @@ func (m *inferenceAccessMeta) logResponseOut(status int, queueOut inferenceQueue
 		}
 	}
 	slog.Info("inference response out", attrs...)
+	recordAgentStatsResponseOut(m)
+}
+
+func recordAgentStatsRequestIn(m *inferenceAccessMeta) {
+	if m == nil {
+		return
+	}
+	fields := map[string]any{
+		"route":  m.route,
+		"model":  m.model,
+		"stream": m.stream,
+	}
+	if m.promptCacheKey != "" {
+		fields["prompt_cache_key"] = m.promptCacheKey
+	}
+	agentstats.Record("request_in", fields)
+}
+
+func recordAgentStatsPhase(meta *inferenceAccessMeta, phase, model string, phaseElapsed, requestElapsed time.Duration) {
+	fields := map[string]any{
+		"phase":              phase,
+		"model":              model,
+		"phase_elapsed_ms":   phaseElapsed.Milliseconds(),
+		"request_elapsed_ms": requestElapsed.Milliseconds(),
+	}
+	if meta != nil {
+		fields["route"] = meta.route
+		if meta.promptCacheKey != "" {
+			fields["prompt_cache_key"] = meta.promptCacheKey
+		}
+	}
+	agentstats.Record("phase", fields)
+}
+
+func recordAgentStatsResponseOut(m *inferenceAccessMeta) {
+	if m == nil {
+		return
+	}
+	fields := map[string]any{
+		"route":        m.route,
+		"model":        m.model,
+		"stream":       m.stream,
+		"duration_ms":  time.Since(m.start).Milliseconds(),
+		"done_reason":  m.doneReason,
+	}
+	if key := strings.TrimSpace(m.promptCacheKey); key != "" {
+		fields["prompt_cache_key"] = key
+	}
+	if m.promptTokens > 0 {
+		fields["prompt_tokens"] = m.promptTokens
+	}
+	if m.originalTokens > 0 && m.originalTokens != m.promptTokens {
+		fields["original_tokens"] = m.originalTokens
+		fields["truncated_tokens"] = m.originalTokens - m.promptTokens
+	}
+	if m.messagesDropped > 0 {
+		fields["messages_dropped"] = m.messagesDropped
+	}
+	fields["prompt_eval_count"] = m.promptEvalCount
+	fields["eval_count"] = m.evalCount
+	if key := strings.TrimSpace(m.promptCacheKey); key != "" {
+		fields["prompt_cache_key"] = key
+	}
+	fields["cached_prompt_tokens"] = m.cachedPromptTokens
+	agentstats.Record("response_out", fields)
+}
+
+// RecordAgentStatsEvent records a named agent/Gemma diagnostic event to the JSONL log.
+func RecordAgentStatsEvent(event string, fields map[string]any) {
+	agentstats.Record(event, fields)
 }

@@ -237,6 +237,7 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | **llama-server GPU discovery** | Done | Hybrid: Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; else ggml bootstrap. **Why Mac gated:** avoid spawning llama-server when ggml is default; tests were timing out when binary existed on disk |
 | **Pre-tokenized `PromptTokens`** | Done | `chatPrompt` tail-truncate → runner. **Why:** re-tokenize after front-drop diverges; MLX MTP needs exact IDs |
 | **MLX agent prompt hardening (M15)** | Done | Context cap, tail truncate, tokenize LRU, keep-alive floor, SSE keepalive, operator logs. **Why:** agent megaprompts on safetensors; see [mlx-agent-prompts.md](./mlx-agent-prompts.md) |
+| **MLX agent live-session (M15a)** | Done | `fast_path` live KV + rotating snapshot rewind; prompt-chain on `messages_dropped`; 1× sliding_window trie snapshots. **Why:** 99% trie cached still ~75s on OptiQ without live rewind; see [mlx-agent-prompts.md#m15a](./mlx-agent-prompts.md#m15a-live-session--restore-jul-2026) |
 | **CGO `-lc++` (llama.go)** | Done | **Why:** `go test ./discover/` links jinja C++ without production build env |
 | **OpenCode thinking / launch drift** | Done | `cmd/launch/opencode.go`, `liveConfigMatches` |
 | **LFM2 optional thinking** | Done | parser + renderer |

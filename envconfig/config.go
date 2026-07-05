@@ -605,6 +605,22 @@ func LlamaCppBackend() bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+// AgentCacheRuntimeEnabled routes GGUF /api/chat with prompt_cache_key through the
+// Python runtime on Darwin when ZEROLLAMA_RUNTIME is set, even if runtime-default
+// is off. Why: L3 slot pinning skips repeat prefill for agent megaprompts; Metal ggml
+// default path cannot use L3. Set ZEROLLAMA_AGENT_CACHE_RUNTIME=0 to disable.
+func AgentCacheRuntimeEnabled() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_AGENT_CACHE_RUNTIME"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	// auto (default): on when runtime URL is configured and not edge mode.
+	return RuntimeURL() != "" && !EdgeMode()
+}
+
 // DarwinSidecarKillOnServeExit is true when the child sidecar should exit with zerollama serve.
 // Default: persist — sidecar survives serve restarts and is reused on the next bootstrap.
 // Set ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=managed to kill the child on serve shutdown.
@@ -1282,4 +1298,21 @@ func NoCloudSource() string {
 	default:
 		return "none"
 	}
+}
+
+// GemmaAgentLogPath is the JSONL path for MLX Gemma agent diagnostics (Hermes loops).
+// Set ZEROLLAMA_GEMMA_AGENT_LOG=0 to disable. Default: ~/.ollama/logs/gemma-agent.jsonl
+// The file is truncated on each serve start.
+func GemmaAgentLogPath() string {
+	if raw := strings.TrimSpace(Var("ZEROLLAMA_GEMMA_AGENT_LOG")); raw != "" {
+		if raw == "0" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "false") {
+			return ""
+		}
+		return raw
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(Models(), "..", "logs", "gemma-agent.jsonl")
+	}
+	return filepath.Join(home, ".ollama", "logs", "gemma-agent.jsonl")
 }

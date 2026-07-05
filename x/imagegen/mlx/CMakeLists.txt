@@ -104,30 +104,48 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR OR NOT APPLE)
     find_program(GO_EXECUTABLE go REQUIRED)
     message(STATUS "Regenerating MLX Go wrappers")
 
-    # CGo's probe compilation is sensitive to CGO_CFLAGS/CGO_CXXFLAGS and CC.
-    # Clear them so go generate uses default compiler settings:
-    # - On Windows, CC may contain spaces (e.g., "C:/Program Files/.../cl.exe")
-    #   which breaks CGo's CC parsing.
-    # - On macOS, CGO_CFLAGS with -mmacosx-version-min breaks header search
-    #   when cmake also sets CMAKE_OSX_DEPLOYMENT_TARGET.
+    # CGo (tree-sitter in x/mlxrunner/mlx/generator) needs a real SDK toolchain on macOS.
+    # Clear CGO_CFLAGS/CGO_CXXFLAGS only — CC= breaks stdbool.h on Apple; on Windows CC
+    # may contain spaces and breaks cgo parsing.
     set(_SAVE_CC "$ENV{CC}")
+    set(_SAVE_SDKROOT "$ENV{SDKROOT}")
     set(_SAVE_CGO_CFLAGS "$ENV{CGO_CFLAGS}")
     set(_SAVE_CGO_CXXFLAGS "$ENV{CGO_CXXFLAGS}")
-    set(ENV{CC} "")
-    set(ENV{CGO_CFLAGS} "")
-    set(ENV{CGO_CXXFLAGS} "")
+    set(_SAVE_GOFLAGS "$ENV{GOFLAGS}")
 
-    # WHY GOFLAGS=-mod=mod in the environment: go generate loads zerollama packages;
-    # incomplete vendor/ aborts configure (see build_production_mac.sh).
+    set(_GO_GEN_ENVS GOFLAGS=-mod=mod CGO_CFLAGS= CGO_CXXFLAGS=)
+    if(APPLE)
+        execute_process(
+            COMMAND xcrun --find clang
+            OUTPUT_VARIABLE _MLX_GOGEN_CC
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            COMMAND_ERROR_IS_FATAL ANY
+        )
+        execute_process(
+            COMMAND xcrun --show-sdk-path
+            OUTPUT_VARIABLE _MLX_GOGEN_SDK
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            COMMAND_ERROR_IS_FATAL ANY
+        )
+        list(APPEND _GO_GEN_ENVS "CC=${_MLX_GOGEN_CC}" "SDKROOT=${_MLX_GOGEN_SDK}")
+    elseif(WIN32)
+        list(APPEND _GO_GEN_ENVS CC=)
+    endif()
+
+    # WHY GOFLAGS=-mod=mod: incomplete vendor/ aborts configure (build_production_mac.sh).
+    # WHY narrow paths: only mlxrunner/imagegen have //go:generate; ./x/... is unnecessary.
     execute_process(
-        COMMAND ${GO_EXECUTABLE} generate ./x/...
+        COMMAND ${CMAKE_COMMAND} -E env ${_GO_GEN_ENVS}
+            ${GO_EXECUTABLE} generate ./x/mlxrunner/mlx ./x/imagegen/mlx
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMAND_ERROR_IS_FATAL ANY
     )
 
     set(ENV{CC} "${_SAVE_CC}")
+    set(ENV{SDKROOT} "${_SAVE_SDKROOT}")
     set(ENV{CGO_CFLAGS} "${_SAVE_CGO_CFLAGS}")
     set(ENV{CGO_CXXFLAGS} "${_SAVE_CGO_CXXFLAGS}")
+    set(ENV{GOFLAGS} "${_SAVE_GOFLAGS}")
 else()
     message(STATUS "Skipping MLX Go wrapper generation (cross-compiling)")
 endif()

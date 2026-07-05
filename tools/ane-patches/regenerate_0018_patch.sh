@@ -18,10 +18,7 @@ if [[ ! -d "${VENDOR}/.git" ]]; then
 fi
 
 echo "== regenerate_0018: stage ANE hook on ${VENDOR} =="
-LLAMA_CPP_ROOT="${VENDOR}" "${ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh"
-
-# IOSurface ggml changes are part of 0018 (same as sync applies to sibling).
-python3 "${ROOT}/tools/ane-patches/apply_iosurface_sibling.py" "${VENDOR}"
+"${ROOT}/scripts/stage_ane_hook_to_tree.sh" "${VENDOR}"
 
 if git -C "${VENDOR}" diff --quiet && git -C "${VENDOR}" diff --cached --quiet; then
   echo "regenerate_0018: no changes — patch already applied on vendor?" >&2
@@ -33,6 +30,7 @@ git -C "${VENDOR}" add \
   common/ane_draft_session.h common/ane_draft_session.mm \
   common/ane_draft_session_stub.cpp common/ane_iosurface_map.h \
   common/speculative.cpp common/CMakeLists.txt \
+  src/llama-ext.h src/llama-context.h src/llama-context.cpp \
   ggml/include/ggml-metal.h \
   ggml/src/ggml-metal/CMakeLists.txt \
   ggml/src/ggml-metal/ggml-metal-device.h \
@@ -49,12 +47,9 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
 EOF
 )"
 
-make -C "${ROOT}" -f Makefile.sync format-patches
-shopt -s nullglob
-for p in "${ROOT}"/llama/patches/0018-*.patch; do
-  mv -f "${p}" "${OUT}"
-  break
-done
+make -C "${ROOT}" -f Makefile.sync format-patches 2>/dev/null || true
+git -C "${VENDOR}" format-patch -1 HEAD --stdout > "${OUT}.new"
+mv -f "${OUT}.new" "${OUT}"
 
 echo "== regenerate_0018: wrote ${OUT} =="
 echo "Next: make -f Makefile.sync clean apply-patches && ./scripts/sync_vendor_llama.sh"

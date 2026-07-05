@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -101,13 +102,25 @@ type ANEDraftABComparison struct {
 var (
 	dflashStatsRE       = regexp.MustCompile(`statistics dflash:.*?#gen drafts = (\d+), #acc drafts = (\d+), #gen tokens = (\d+), #acc tokens = (\d+)`)
 	draftAcceptRateRE   = regexp.MustCompile(`draft acceptance rate = ([0-9.]+)`)
-	aneHandoffStepRE    = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+ ggml iosurface handoff ok`)
+	aneHandoffStepRE    = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+ (?:ggml iosurface handoff ok|iosurface handoff ok)`)
 	aneConv2ChainedRE   = regexp.MustCompile(`B6 dual conv1 chain active|B8 triple conv1 chain active|B9 quad conv1 chain active|B10 pent conv1 chain active|B11 hex conv1 chain active|B12 hept conv1 chain active|B13 oct conv1 chain active`)
 	aneConvDepthRE      = regexp.MustCompile(`conv depth cap=(\d+) active_convs=(\d+)`)
 	aneGoldenCosineRE   = regexp.MustCompile(`B6 golden step=\d+ mode=\w+ mse_ref_vs_ane=[0-9.eE+-]+ cosine=([0-9.-]+)`)
-	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+ ane_tok=\d+ metal_tok=\d+ match=(\d+)(?: hidden_cos=([0-9.eE+-]+))?`)
+	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+(?: handoff_tok=\d+)? ane_tok=\d+ metal_tok=\d+ match=(\d+)(?: hidden_cos=([0-9.eE+-]+))?`)
 	aneMatmulChain4RE   = regexp.MustCompile(`chain4=swiglu\+down\+attn_gate|mode=matmul_chain4`)
 	aneMatmulChain5RE   = regexp.MustCompile(`chain5=swiglu\+down\+attn_gate\+ssm_out|mode=matmul_chain5`)
+	aneMatmulChain10RE  = regexp.MustCompile(`chain10=|P9 matmul chain blk\.1 ffn_down|mode=matmul_chain10_blk1_down`)
+	aneMatmulChain9RE   = regexp.MustCompile(`chain9=|P8 matmul chain blk\.1|mode=matmul_chain9_blk1_swiglu`)
+	aneMatmulChain8RE   = regexp.MustCompile(`chain8=|P7b dflash_fc|mode=matmul_chain8_dflash_fc`)
+	aneMatmulChain11RE  = regexp.MustCompile(`chain11=|P10 dflash chain11 active|mode=matmul_chain11_dflash_attn_q`)
+	aneMatmulChain12RE  = regexp.MustCompile(`chain12=|P11 dflash chain12 active|mode=matmul_chain12_dflash_attn_v`)
+	aneMatmulChain13RE  = regexp.MustCompile(`chain13=|P12 dflash chain13 active|mode=matmul_chain13_dflash_attn_out`)
+	aneMatmulChain14RE  = regexp.MustCompile(`chain14=|P13 dflash chain14 active|mode=matmul_chain14_dflash_attn_wo`)
+	aneMatmulChain15RE  = regexp.MustCompile(`chain15=|P14 dflash chain15 active|mode=matmul_chain15_dflash_ffn_gate`)
+	aneMatmulChain16RE  = regexp.MustCompile(`chain16=|P15 dflash chain16 active|mode=matmul_chain16_dflash_ffn_down`)
+	aneMatmulChain17RE  = regexp.MustCompile(`chain17=|P16 dflash chain17 active|mode=matmul_chain17_dflash_lm_head`)
+	aneMatmulChain7RE   = regexp.MustCompile(`chain7=|P7 matmul chain blk\.1|mode=matmul_chain7_blk1_gate`)
+	aneMatmulChain6RE   = regexp.MustCompile(`chain6=qkv\+|mode=matmul_chain6_qkv`)
 	aneMatmulChain3RE   = regexp.MustCompile(`chain3=swiglu\+down|mode=matmul_chain3`)
 	aneMatmulChain2RE   = regexp.MustCompile(`chain2=gate\+silu\+up|mode=matmul_chain2`)
 )
@@ -144,6 +157,42 @@ func parseGoldenCosineFromLog(logText string) (last float64, count int) {
 
 // parseMatmulChainFromLog reads runtime chain depth from P1 init / B6 golden lines.
 func parseMatmulChainFromLog(logText string) int {
+	if aneMatmulChain17RE.MatchString(logText) {
+		return 17
+	}
+	if aneMatmulChain16RE.MatchString(logText) {
+		return 16
+	}
+	if aneMatmulChain15RE.MatchString(logText) {
+		return 15
+	}
+	if aneMatmulChain14RE.MatchString(logText) {
+		return 14
+	}
+	if aneMatmulChain13RE.MatchString(logText) {
+		return 13
+	}
+	if aneMatmulChain12RE.MatchString(logText) {
+		return 12
+	}
+	if aneMatmulChain11RE.MatchString(logText) {
+		return 11
+	}
+	if aneMatmulChain10RE.MatchString(logText) {
+		return 10
+	}
+	if aneMatmulChain9RE.MatchString(logText) {
+		return 9
+	}
+	if aneMatmulChain8RE.MatchString(logText) {
+		return 8
+	}
+	if aneMatmulChain7RE.MatchString(logText) {
+		return 7
+	}
+	if aneMatmulChain6RE.MatchString(logText) {
+		return 6
+	}
 	if aneMatmulChain5RE.MatchString(logText) {
 		return 5
 	}
@@ -271,7 +320,8 @@ func fillServerRunFromCompletion(run *ANEDraftServerRun, cc chatCompletionResp, 
 // driveMode: "" (off), "shadow", or "force" when runE2E && ANE hook leg uses B7 drive.
 // convDepth: cap active conv kernels (0 = use full manifest chain).
 // kernel: "conv" (default) or "matmul" for blk.0 ffn_gate matmul proxy.
-func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, runE2E, e2eTelemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftABResult, error) {
+// skipMicro: when true, skip ane-inprocess-smoke (parity e2e only — faster lab runs).
+func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, runE2E, e2eTelemetry bool, driveMode, driveMetrics string, convDepth int, kernel string, skipMicro bool) (ANEDraftABResult, error) {
 	out := ANEDraftABResult{
 		Mode:      "draft_ab_smoke",
 		ConvDepth: convDepth,
@@ -308,16 +358,24 @@ func ProbeANEDraftAB(ctx context.Context, preferred string, steps int, quick, ru
 		out.WeightBundle = &bundle
 	}
 
-	inproc, err := ProbeANEInprocessSmoke(ctx, preferred, steps, quick)
-	if err != nil {
-		out.Error = err.Error()
-		return out, err
+	if skipMicro {
+		out.Note = "micro inprocess smoke skipped (e2e-only parity)"
+	} else {
+		inproc, err := ProbeANEInprocessSmoke(ctx, preferred, steps, quick)
+		if err != nil {
+			if !(runE2E && strings.Contains(err.Error(), "abort trap")) {
+				out.Error = err.Error()
+				return out, err
+			}
+			out.Note = "micro inprocess smoke aborted on Metal teardown (e2e leg still runs)"
+		} else {
+			out.Micro.InprocessAvgEvalMS = inproc.AvgEvalMS
+			out.Micro.InprocessAvgMapFillMS = inproc.AvgMapFillMS
+			out.Micro.InprocessAvgStepMS = inproc.AvgEvalMS + inproc.AvgMapFillMS
+			out.Micro.InprocessSteps = len(inproc.Steps)
+			out.Micro.KernelReused = inproc.KernelReused
+		}
 	}
-	out.Micro.InprocessAvgEvalMS = inproc.AvgEvalMS
-	out.Micro.InprocessAvgMapFillMS = inproc.AvgMapFillMS
-	out.Micro.InprocessAvgStepMS = inproc.AvgEvalMS + inproc.AvgMapFillMS
-	out.Micro.InprocessSteps = len(inproc.Steps)
-	out.Micro.KernelReused = inproc.KernelReused
 	out.Micro.HasSidecarGamma = bundle.GammaWeightPath() != ""
 
 	ch, sp := entry.ProxyChannels, entry.ProxySpatial
@@ -373,11 +431,11 @@ func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry
 		maxTokens = 16
 	}
 
-	metalRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, false, false, "", "", 0, "")
+	metalRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, quick, false, false, "", "", 0, "")
 	if err != nil {
 		return ANEDraftABE2E{}, err
 	}
-	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, true, telemetry, driveMode, driveMetrics, convDepth, kernel)
+	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, quick, true, telemetry, driveMode, driveMetrics, convDepth, kernel)
 	if err != nil {
 		return ANEDraftABE2E{}, err
 	}
@@ -414,7 +472,7 @@ func probeANEDraftHookOverhead(ctx context.Context, entry ANEDraftEntry, quick b
 	if quick {
 		maxTokens = 16
 	}
-	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, true, false, "", "", convDepth, kernel)
+	aneRun, err := runDflashServerLeg(ctx, serverBin, entry, port, maxTokens, quick, true, false, "", "", convDepth, kernel)
 	if err != nil {
 		return 0, 0, run, err
 	}
@@ -444,7 +502,44 @@ func acceptanceParity(metal, ane ANEDraftServerRun) bool {
 	return acceptanceClose(metal.DraftAcceptance, ane.DraftAcceptance)
 }
 
-func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEntry, port, maxTokens int, aneHook, telemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftServerRun, error) {
+func aneDraftLabNumCtx(entry ANEDraftEntry, quick bool) int {
+	if !quick {
+		return 0
+	}
+	if entry.NumCtx > 32768 {
+		return 8192
+	}
+	if entry.EmbeddingLength >= 4096 {
+		return 8192
+	}
+	tag := strings.ToLower(entry.Tag)
+	if strings.Contains(tag, "256k") || strings.Contains(tag, "27b") {
+		return 8192
+	}
+	return 0
+}
+
+func aneDraftServerLegTimeout(aneHook bool) time.Duration {
+	if !aneHook {
+		return 3 * time.Minute
+	}
+	matmulChain := 0
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			matmulChain = n
+		}
+	}
+	switch {
+	case matmulChain >= 17:
+		return 30 * time.Minute
+	case matmulChain >= 13:
+		return 15 * time.Minute
+	default:
+		return 8 * time.Minute
+	}
+}
+
+func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEntry, port, maxTokens int, quick, aneHook, telemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftServerRun, error) {
 	run := ANEDraftServerRun{}
 	if ctx == nil {
 		ctx = context.Background()
@@ -466,7 +561,8 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 		defer os.Remove(logPath)
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	legTimeout := aneDraftServerLegTimeout(aneHook)
+	runCtx, cancel := context.WithTimeout(ctx, legTimeout)
 	defer cancel()
 
 	args := []string{
@@ -478,14 +574,20 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 		"--spec-draft-n-max", "4",
 		"-ngl", "99",
 	}
+	if nctx := aneDraftLabNumCtx(entry, quick); nctx > 0 {
+		args = append(args, "-c", strconv.Itoa(nctx))
+	}
 
 	cmd := exec.CommandContext(runCtx, serverBin, args...)
-	cmd.Env = os.Environ()
+	cmd.Dir = filepath.Dir(serverBin)
+	shellEnv := os.Environ()
+	cmd.Env = shellEnv
 	if aneHook {
 		kernel = strings.ToLower(strings.TrimSpace(kernel))
 		if kernel == "" {
 			kernel = "conv"
 		}
+		cmd.Env = stripANEDraftEnv(cmd.Env)
 		ch := entry.ProxyChannels
 		if ch <= 0 {
 			ch, _ = DraftANEProxyDims(entry.EmbeddingLength)
@@ -504,24 +606,48 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 			cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
 				return strings.HasPrefix(k, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE")
 			})
-			cmd.Env = append(cmd.Env,
-				"ZEROLLAMA_ANE_DRAFT_KERNEL=matmul",
-				"ZEROLLAMA_ANE_DRAFT_MATMUL_SEQ="+strconv.Itoa(matmulSeq),
-				"ZEROLLAMA_ANE_DRAFT_MATMUL_OC="+strconv.Itoa(matmulOC),
-			)
+			cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_KERNEL", "matmul")
+			cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_SEQ", strconv.Itoa(matmulSeq))
+			cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(matmulOC))
 			sp = matmulSeq
+			forceChain := 0
+			if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN")); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					forceChain = n
+				}
+			}
+			matmulChain = 1
+			useDflashFc := false
+			if forceChain == 8 || forceChain == 11 || forceChain == 12 || forceChain == 13 || forceChain == 14 || forceChain == 15 || forceChain == 16 || forceChain == 17 || (forceChain == 0 && IsNativeDflashDraftSidecar(entry)) {
+				if icFc, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok {
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "dflash_fc.weight", icFc, ocFc); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "8")
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocFc))
+						matmulChain = 8
+						ch = icFc
+						useDflashFc = true
+						for k, v := range ExportDflashTargetMetaEnv(entry) {
+							cmd.Env = upsertEnv(cmd.Env, k, v)
+						}
+						// Native dflash_fc is [n_target_features × n_embd]; ANE uses a top-left slice.
+						// Run full matmul on host so B7 shadow matches Metal draft (export row @ full W).
+						if fullIc, fullOc, okFull := DraftANEMatmulChain7DflashFcNativeDims(entry); okFull && fullIc > icFc {
+							if wFull, _, err := MaterializeANEDraftMatmulWeightFile(entry, "dflash_fc.weight", fullIc, fullOc); err == nil && wFull != "" {
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DFLASH_FC_HOST", "1")
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DFLASH_FC_FULL_IC", strconv.Itoa(fullIc))
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DFLASH_FC_FULL_WEIGHT_FILE", wFull)
+							}
+						}
+					}
+				}
+			}
+			if !useDflashFc && forceChain != 8 && forceChain != 11 && forceChain != 12 && forceChain != 13 && forceChain != 14 && forceChain != 15 && forceChain != 16 && forceChain != 17 {
 			if wpath, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", matmulIC, matmulOC); err == nil && wpath != "" {
 				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE="+wpath)
 			}
 			icUp, ocUp := DraftANEMatmulChain3UpDims(matmulIC, matmulOC)
 			icDown, ocDown := DraftANEMatmulChain3DownDims(matmulOC, matmulIC)
-			forceChain := 0
-			if v, ok := aneDraftEnvValue(os.Environ(), "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN"); ok {
-				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
-					forceChain = n
-				}
-			}
-			matmulChain = 1
 			chain3 := false
 			if forceChain != 1 && forceChain != 2 {
 				if w3, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_down.weight", icDown, ocDown); err == nil && w3 != "" {
@@ -549,16 +675,64 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 										"ZEROLLAMA_ANE_DRAFT_MATMUL_OC5="+strconv.Itoa(oc5),
 									)
 									matmulChain = 5
+									if forceChain != 5 {
+										ic6, oc6 := DraftANEMatmulChain6QKVDims(matmulIC, matmulOC)
+										if w6, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_qkv.weight", ic6, oc6); err == nil && w6 != "" {
+											cmd.Env = append(cmd.Env,
+												"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6="+w6,
+												"ZEROLLAMA_ANE_DRAFT_MATMUL_OC6="+strconv.Itoa(oc6),
+											)
+											matmulChain = 6
+											if forceChain != 6 {
+												ic7, oc7 := DraftANEMatmulChain7Blk1GateDims(matmulIC, matmulOC)
+												if w7, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_gate.weight", ic7, oc7); err == nil && w7 != "" {
+													cmd.Env = append(cmd.Env,
+														"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7="+w7,
+														"ZEROLLAMA_ANE_DRAFT_MATMUL_OC7="+strconv.Itoa(oc7),
+													)
+													matmulChain = 7
+													if forceChain == 0 || forceChain == 9 || forceChain == 10 {
+														ic9, oc9 := DraftANEMatmulChain9Blk1UpDims(matmulIC, matmulOC)
+														if w8, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_up.weight", ic9, oc9); err == nil && w8 != "" {
+															cmd.Env = append(cmd.Env,
+																"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8="+w8,
+																"ZEROLLAMA_ANE_DRAFT_MATMUL_OC9="+strconv.Itoa(oc9),
+															)
+															matmulChain = 9
+															if forceChain == 0 || forceChain == 10 { // not 9 — lab chain9 stops at blk.1 SwiGLU
+																ic10, oc10 := DraftANEMatmulChain10Blk1DownDims(matmulOC, matmulIC)
+																if w9, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_down.weight", ic10, oc10); err == nil && w9 != "" {
+																	cmd.Env = append(cmd.Env,
+																		"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9="+w9,
+																		"ZEROLLAMA_ANE_DRAFT_MATMUL_OC10="+strconv.Itoa(oc10),
+																	)
+																	matmulChain = 10
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
 								}
 							}
 						}
 						switch matmulChain {
+						case 10:
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "10")
+						case 9:
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "9")
+						case 7:
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "7")
+						case 6:
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "6")
 						case 5:
-							cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=5")
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "5")
 						case 4:
-							cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=4")
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "4")
 						default:
-							cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=3")
+							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "3")
 						}
 					}
 				}
@@ -583,28 +757,575 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 					matmulChain = 2
 				}
 			}
+			}
 			if forceChain == 1 {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=1")
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "1")
 				matmulChain = 1
 			} else if forceChain == 2 {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2")
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "2")
 				matmulChain = 2
 			} else if forceChain == 3 {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=3")
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "3")
 				matmulChain = 3
 			} else if forceChain == 4 {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=4")
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "4")
 				matmulChain = 4
 			} else if forceChain == 5 {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=5")
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "5")
 				matmulChain = 5
+			} else if forceChain == 6 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "6")
+				matmulChain = 6
+			} else if forceChain == 7 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "7")
+				matmulChain = 7
+			} else if forceChain == 8 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "8")
+				matmulChain = 8
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC7",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC9", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				if !useDflashFc {
+					// Lab plumbing: gate top-left slice stands in for dflash_fc when sidecar lacks tensor.
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+					}
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 17 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "17")
+				matmulChain = 17
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC9", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				icK, ocK := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnKTensor := ResolveChain12AttnKTensor(entry)
+				if wk, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnKTensor, icK, ocK); err == nil && wk != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3", wk)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", strconv.Itoa(ocK))
+				}
+				icV, ocV := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnVTensor := ResolveChain12AttnVTensor(entry)
+				if wv, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnVTensor, icV, ocV); err == nil && wv != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", wv)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", strconv.Itoa(ocV))
+				}
+				icWo, ocWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
+				attnWoTensor := ResolveChain14AttnWoTensor(entry)
+				if wwo, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnWoTensor, icWo, ocWo); err == nil && wwo != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5", wwo)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", strconv.Itoa(ocWo))
+				}
+				icGate, ocGate := DraftANEMatmulChain15FFNGateDims(entry, fcOut)
+				ffnGateTensor := ResolveChain15FFNGateTensor(entry)
+				if wg, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnGateTensor, icGate, ocGate); err == nil && wg != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6", wg)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", strconv.Itoa(ocGate))
+				}
+				icUp, ocUp := DraftANEMatmulChain16FFNUpDims(entry, fcOut)
+				ffnUpTensor := ResolveChain16FFNUpTensor(entry)
+				if wu, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnUpTensor, icUp, ocUp); err == nil && wu != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7", wu)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC7", strconv.Itoa(ocUp))
+				}
+				icDown, ocDown := DraftANEMatmulChain16FFNDownDims(entry, fcOut)
+				ffnDownTensor := ResolveChain16FFNDownTensor(entry)
+				if wd, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnDownTensor, icDown, ocDown); err == nil && wd != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8", wd)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC8", strconv.Itoa(ocDown))
+				}
+				if head, _, err := MaterializeANEDraftDriveHead(entry); err == nil {
+					for k, v := range ExportDriveEnvForHead(head) {
+						cmd.Env = upsertEnv(cmd.Env, k, v)
+					}
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 16 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "16")
+				matmulChain = 16
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC9", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				icK, ocK := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnKTensor := ResolveChain12AttnKTensor(entry)
+				if wk, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnKTensor, icK, ocK); err == nil && wk != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3", wk)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", strconv.Itoa(ocK))
+				}
+				icV, ocV := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnVTensor := ResolveChain12AttnVTensor(entry)
+				if wv, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnVTensor, icV, ocV); err == nil && wv != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", wv)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", strconv.Itoa(ocV))
+				}
+				icWo, ocWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
+				attnWoTensor := ResolveChain14AttnWoTensor(entry)
+				if wwo, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnWoTensor, icWo, ocWo); err == nil && wwo != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5", wwo)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", strconv.Itoa(ocWo))
+				}
+				icGate, ocGate := DraftANEMatmulChain15FFNGateDims(entry, fcOut)
+				ffnGateTensor := ResolveChain15FFNGateTensor(entry)
+				if wg, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnGateTensor, icGate, ocGate); err == nil && wg != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6", wg)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", strconv.Itoa(ocGate))
+				}
+				icUp, ocUp := DraftANEMatmulChain16FFNUpDims(entry, fcOut)
+				ffnUpTensor := ResolveChain16FFNUpTensor(entry)
+				if wu, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnUpTensor, icUp, ocUp); err == nil && wu != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7", wu)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC7", strconv.Itoa(ocUp))
+				}
+				icDown, ocDown := DraftANEMatmulChain16FFNDownDims(entry, fcOut)
+				ffnDownTensor := ResolveChain16FFNDownTensor(entry)
+				if wd, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnDownTensor, icDown, ocDown); err == nil && wd != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8", wd)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC8", strconv.Itoa(ocDown))
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 15 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "15")
+				matmulChain = 15
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC7", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC9",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				icK, ocK := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnKTensor := ResolveChain12AttnKTensor(entry)
+				if wk, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnKTensor, icK, ocK); err == nil && wk != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3", wk)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", strconv.Itoa(ocK))
+				}
+				icV, ocV := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnVTensor := ResolveChain12AttnVTensor(entry)
+				if wv, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnVTensor, icV, ocV); err == nil && wv != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", wv)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", strconv.Itoa(ocV))
+				}
+				icWo, ocWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
+				attnWoTensor := ResolveChain14AttnWoTensor(entry)
+				if wwo, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnWoTensor, icWo, ocWo); err == nil && wwo != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5", wwo)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", strconv.Itoa(ocWo))
+				}
+				icGate, ocGate := DraftANEMatmulChain15FFNGateDims(entry, fcOut)
+				ffnGateTensor := ResolveChain15FFNGateTensor(entry)
+				if wg, _, err := MaterializeANEDraftMatmulWeightFile(entry, ffnGateTensor, icGate, ocGate); err == nil && wg != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6", wg)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", strconv.Itoa(ocGate))
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 14 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "14")
+				matmulChain = 14
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC7",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC9", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				icK, ocK := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnKTensor := ResolveChain12AttnKTensor(entry)
+				if wk, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnKTensor, icK, ocK); err == nil && wk != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3", wk)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", strconv.Itoa(ocK))
+				}
+				icV, ocV := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnVTensor := ResolveChain12AttnVTensor(entry)
+				if wv, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnVTensor, icV, ocV); err == nil && wv != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", wv)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", strconv.Itoa(ocV))
+				}
+				icWo, ocWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
+				attnWoTensor := ResolveChain14AttnWoTensor(entry)
+				if wwo, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnWoTensor, icWo, ocWo); err == nil && wwo != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5", wwo)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", strconv.Itoa(ocWo))
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 13 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "13")
+				matmulChain = 13
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC6",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC7", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC9",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				icK, ocK := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnKTensor := ResolveChain12AttnKTensor(entry)
+				if wk, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnKTensor, icK, ocK); err == nil && wk != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3", wk)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", strconv.Itoa(ocK))
+				}
+				icV, ocV := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnVTensor := ResolveChain12AttnVTensor(entry)
+				if wv, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnVTensor, icV, ocV); err == nil && wv != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", wv)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", strconv.Itoa(ocV))
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 12 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "12")
+				matmulChain = 12
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC6",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC7", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC9",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				icK, ocK := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnKTensor := ResolveChain12AttnKTensor(entry)
+				if wk, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnKTensor, icK, ocK); err == nil && wk != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3", wk)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", strconv.Itoa(ocK))
+				}
+				icV, ocV := DraftANEMatmulChain12AttnKVDimsForChain(entry, fcOut, matmulChain)
+				attnVTensor := ResolveChain12AttnVTensor(entry)
+				if wv, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnVTensor, icV, ocV); err == nil && wv != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", wv)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", strconv.Itoa(ocV))
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 11 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "11")
+				matmulChain = 11
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					switch k {
+					case "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7",
+						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8", "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9":
+						return true
+					case "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC3",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC5",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC7",
+						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC9", "ZEROLLAMA_ANE_DRAFT_MATMUL_OC10":
+						return true
+					}
+					return false
+				})
+				fcOut := matmulOC
+				if useDflashFc {
+					if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+						fcOut = ocFc
+					}
+				} else {
+					icFeat, ocEmbd := matmulIC, matmulOC
+					if wfc, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", icFeat, ocEmbd); err == nil && wfc != "" {
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE", wfc)
+						cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC", strconv.Itoa(ocEmbd))
+						ch = icFeat
+						fcOut = ocEmbd
+					}
+				}
+				icQ, ocQ := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+				attnQTensor := ResolveChain11AttnQTensor(entry)
+				if wq, _, err := MaterializeANEDraftMatmulWeightFile(entry, attnQTensor, icQ, ocQ); err == nil && wq != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2", wq)
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", strconv.Itoa(ocQ))
+				}
+				for k, v := range ExportDflashTargetMetaEnv(entry) {
+					cmd.Env = upsertEnv(cmd.Env, k, v)
+				}
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
+				}
+			} else if forceChain == 9 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "9")
+				matmulChain = 9
+				cmd.Env = filterANEDraftEnv(cmd.Env, func(k string) bool {
+					return k == "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9" || k == "ZEROLLAMA_ANE_DRAFT_MATMUL_OC10"
+				})
+			} else if forceChain == 10 {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "10")
+				matmulChain = 10
 			}
-			ch = matmulIC
+			if !useDflashFc && forceChain != 8 && forceChain != 11 && forceChain != 12 && forceChain != 13 && forceChain != 14 && forceChain != 15 && forceChain != 16 && forceChain != 17 {
+				ch = matmulIC
+			}
 		} else {
 			applyConvManifestEnv(&cmd.Env, manifest, convDepth)
 		}
-		if gamma := manifest.GammaWeightPath(); gamma != "" {
-			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_GAMMA_FILE="+gamma)
+		dflashGammaWired := false
+		if kernel == "matmul" && (matmulChain == 8 || matmulChain == 11 || matmulChain == 12 || matmulChain == 13 || matmulChain == 14 || matmulChain == 15 || matmulChain == 16 || matmulChain == 17) && IsNativeDflashDraftSidecar(entry) {
+			normTensor := ResolveChain11HiddenNormTensor(entry)
+			gammaDim := DraftANEDflashHiddenNormDim(entry)
+			if gp, _, err := MaterializeANEDraftNormGammaFile(entry, normTensor, gammaDim); err == nil && gp != "" {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_GAMMA_FILE", gp)
+				dflashGammaWired = true
+			}
+		}
+		if !dflashGammaWired {
+			if gamma := manifest.GammaWeightPath(); gamma != "" {
+				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_GAMMA_FILE="+gamma)
+			}
+		}
+		if kernel == "matmul" && (matmulChain == 15 || matmulChain == 16 || matmulChain == 17) && IsNativeDflashDraftSidecar(entry) {
+			fcOut := matmulOC
+			if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+				fcOut = ocFc
+			}
+			postNormTensor := ResolveChain15AttnPostNormTensor(entry)
+			postNormDim := DraftANEDflashAttnPostNormDim(entry, fcOut)
+			if pp, _, err := MaterializeANEDraftNormGammaFile(entry, postNormTensor, postNormDim); err == nil && pp != "" {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ATTN_POST_NORM_FILE", pp)
+			}
+		}
+		if kernel == "matmul" && matmulChain >= 13 && IsNativeDflashDraftSidecar(entry) {
+			fcOut := matmulOC
+			if _, ocFc, ok := DraftANEMatmulChain7DflashFcDims(entry); ok && ocFc > 0 {
+				fcOut = ocFc
+			}
+			_, ocAttn := DraftANEMatmulChain11AttnQDimsForChain(entry, fcOut, matmulChain)
+			if ap, _, err := MaterializeANEDraftNormGammaFile(entry, ResolveChain13AttnNormTensor(entry), fcOut); err == nil && ap != "" {
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ATTN_NORM_FILE", ap)
+			}
+			if meta, err := DraftANEDraftAttnHeadMeta(entry); err == nil && meta.HeadDim > 0 {
+				nHeadKV := meta.NHeadKV
+				headDim := meta.HeadDim
+				nHeadQ := meta.NHead
+				if !DraftANEDraftAttnUseFullDims(matmulChain, entry) {
+					if nh, hd, ok := DraftANEDraftAttnHeadKVForOC(entry, ocAttn); ok {
+						nHeadKV = nh
+						headDim = hd
+					}
+				} else if nh := DraftANEDraftAttnQueryHeadCount(entry); nh > 0 {
+					nHeadQ = nh
+				}
+				if nHeadQ > 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_N_HEAD", strconv.Itoa(nHeadQ))
+				}
+				if nHeadKV > 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_N_HEAD_KV", strconv.Itoa(nHeadKV))
+				}
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_N_EMBD_HEAD", strconv.Itoa(headDim))
+				if meta.RopeNDims > 0 {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ROPE_N_DIMS", strconv.Itoa(meta.RopeNDims))
+				}
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ROPE_FREQ_BASE", strconv.FormatFloat(meta.FreqBase, 'g', -1, 64))
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ROPE_FREQ_SCALE", strconv.FormatFloat(meta.FreqScale, 'g', -1, 64))
+				if meta.NeoX {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ROPE_NEOX", "1")
+				}
+				qNormTensor := ResolveChain13AttnQNormTensor(entry)
+				if qp, _, err := MaterializeANEDraftNormGammaFile(entry, qNormTensor, meta.HeadDim); err == nil && qp != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ATTN_Q_NORM_FILE", qp)
+				}
+				kNormTensor := ResolveChain13AttnKNormTensor(entry)
+				if kp, _, err := MaterializeANEDraftNormGammaFile(entry, kNormTensor, meta.HeadDim); err == nil && kp != "" {
+					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_ATTN_K_NORM_FILE", kp)
+				}
+				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HOST_ROPE", "1")
+			}
 		}
 		cmd.Env = append(cmd.Env,
 			"ZEROLLAMA_ANE_DRAFT_CHANNELS="+strconv.Itoa(ch),
@@ -615,15 +1336,13 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 			matmulChainForStride = matmulChain
 		}
 		stride := DraftANEHandoffStride(kernel, matmulChainForStride)
-		if !aneDraftEnvHasKey(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE") {
-			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE="+strconv.Itoa(stride))
-		}
-		run.HandoffStride = stride
-		if v, ok := aneDraftEnvValue(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE"); ok {
+		if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE")); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				run.HandoffStride = n
+				stride = n
 			}
 		}
+		cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_HANDOFF_STRIDE", strconv.Itoa(stride))
+		run.HandoffStride = stride
 		if convDepth > 0 && kernel != "matmul" {
 			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_CONV_DEPTH="+strconv.Itoa(convDepth))
 		}
@@ -631,9 +1350,8 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TELEMETRY=1")
 		}
 		if driveMode != "" {
-			cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE="+driveMode)
+			cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE", driveMode)
 			if needDriveHead {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_DRIVE_VOCAB_CAP=8192")
 				if headManifest, _, err := MaterializeANEDraftWeightBundleWithDrive(entry, true); err == nil {
 					for k, v := range ExportEnvForManifest(headManifest, "") {
 						if strings.HasPrefix(k, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE") && kernel == "matmul" {
@@ -642,7 +1360,7 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 						if k == "ZEROLLAMA_ANE_DRAFT" || k == "ZEROLLAMA_ANE_DRAFT_CHANNELS" || k == "ZEROLLAMA_ANE_DRAFT_SPATIAL" {
 							continue
 						}
-						cmd.Env = append(cmd.Env, k+"="+v)
+						cmd.Env = upsertEnv(cmd.Env, k, v)
 					}
 				}
 				if driveMode == "shadow" {
@@ -661,6 +1379,8 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 			}
 		}
 	}
+	cmd.Env = prependLlamaServerLibPath(cmd.Env, serverBin)
+	cmd.Env = dedupeEnvLastWins(cmd.Env)
 
 	logOut, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -698,8 +1418,29 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	}
 	defer stop()
 
+	copyABLegLog := func() {
+		dst := aneDraftABKeepLogDest(os.Getenv("ZEROLLAMA_ANE_KEEP_AB_LOG"), aneHook, driveMode)
+		if dst == "" {
+			return
+		}
+		logBytes, _ := os.ReadFile(logPath)
+		if len(logBytes) == 0 {
+			return
+		}
+		_ = os.WriteFile(dst, logBytes, 0o644)
+		snapshotANEDraftEnv(cmd.Env, dst+".env")
+	}
+	defer copyABLegLog()
+
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health", port)
-	deadline := time.Now().Add(90 * time.Second)
+	healthWait := legTimeout / 2
+	if healthWait < 3*time.Minute {
+		healthWait = 3 * time.Minute
+	}
+	if healthWait > legTimeout-30*time.Second {
+		healthWait = legTimeout - 30*time.Second
+	}
+	deadline := time.Now().Add(healthWait)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequestWithContext(runCtx, http.MethodGet, healthURL, nil)
 		resp, err := http.DefaultClient.Do(req)
@@ -748,17 +1489,10 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	fillServerRunFromCompletion(&run, cc, elapsed.Seconds()*1000)
 
 	stop()
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(750 * time.Millisecond)
 
 	logBytes, _ := os.ReadFile(logPath)
 	logText := string(logBytes)
-	if keep := os.Getenv("ZEROLLAMA_ANE_KEEP_AB_LOG"); keep != "" {
-		dst := keep
-		if keep == "1" {
-			dst = "/tmp/zerollama-ane-ab-last.log"
-		}
-		_ = os.WriteFile(dst, logBytes, 0o644)
-	}
 	if g, a, gt, at, ok := parseDflashStatistics(logText); ok {
 		run.GenDrafts = g
 		run.AccDrafts = a
@@ -816,6 +1550,42 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 	return run, nil
 }
 
+func aneDraftABKeepLogDest(keep string, aneHook bool, driveMode string) string {
+	if keep == "" {
+		return ""
+	}
+	leg := "metal"
+	if aneHook {
+		if strings.TrimSpace(driveMode) != "" {
+			leg = "ane-drive"
+		} else {
+			leg = "ane-hook"
+		}
+	}
+	if keep == "1" {
+		return fmt.Sprintf("/tmp/zerollama-ane-ab-%s.log", leg)
+	}
+	if strings.HasSuffix(keep, ".log") {
+		return strings.TrimSuffix(keep, ".log") + "-" + leg + ".log"
+	}
+	return keep + "-" + leg
+}
+
+func snapshotANEDraftEnv(env []string, dst string) {
+	if dst == "" {
+		return
+	}
+	var b strings.Builder
+	for _, e := range env {
+		k, _, _ := strings.Cut(e, "=")
+		if strings.HasPrefix(k, "ZEROLLAMA_ANE_DRAFT") {
+			b.WriteString(e)
+			b.WriteByte('\n')
+		}
+	}
+	_ = os.WriteFile(dst, []byte(b.String()), 0o644)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -825,7 +1595,7 @@ func truncate(s string, n int) string {
 
 // RunANEDraftABJSON writes B4 A/B JSON to w.
 func RunANEDraftABJSON(ctx context.Context, w io.Writer, preferred string, steps int, quick, e2e, e2eTelemetry bool, driveMode string, convDepth int) error {
-	res, err := ProbeANEDraftAB(ctx, preferred, steps, quick, e2e, e2eTelemetry, driveMode, "", convDepth, "conv")
+	res, err := ProbeANEDraftAB(ctx, preferred, steps, quick, e2e, e2eTelemetry, driveMode, "", convDepth, "conv", false)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err != nil {

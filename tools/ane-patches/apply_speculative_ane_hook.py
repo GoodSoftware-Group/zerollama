@@ -34,6 +34,11 @@ def patch_draft_simple_ctor(spec: pathlib.Path) -> None:
         '            throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");\n'
         "        }\n\n"
         "        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));\n\n"
+        "        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DFLASH);\n"
+        "        if (dflash || common_ane_draft_enabled()) {\n"
+        "            common_ane_draft_bind_target_ctx(ctx_tgt);\n"
+        "            llama_set_embeddings_pre_norm(ctx_tgt, true);\n"
+        "        }\n\n"
         "        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).\n"
         "        if (common_ane_draft_enabled()) {\n"
         "            llama_set_embeddings_pre_norm(ctx_dft, true);\n"
@@ -44,6 +49,48 @@ def patch_draft_simple_ctor(spec: pathlib.Path) -> None:
         "    }"
     )
     patch_once(spec, needle, repl, "speculative.cpp draft_simple ctor")
+
+
+def patch_bind_target_ctx(spec: pathlib.Path) -> None:
+    text = spec.read_text()
+    if "common_ane_draft_bind_target_ctx" in text:
+        print("  skip bind_target_ctx (already applied)")
+        return
+    old = (
+        "        if (common_ane_draft_enabled()) {\n"
+        "            llama_set_embeddings_pre_norm(ctx_dft, true);\n"
+    )
+    new = (
+        "        if (common_ane_draft_enabled()) {\n"
+        "            common_ane_draft_bind_target_ctx(ctx_tgt);\n"
+        "            llama_set_embeddings_pre_norm(ctx_dft, true);\n"
+        "            llama_set_embeddings_pre_norm(ctx_tgt, true); // B8 dflash_fc ctx_tgt handoff\n"
+    )
+    if old not in text:
+        print("  skip bind_target_ctx (ctor anchor drift)")
+        return
+    spec.write_text(text.replace(old, new, 1))
+    print("  patched speculative.cpp bind_target_ctx (B8)")
+
+
+def patch_draft_simple_process(spec: pathlib.Path) -> None:
+    patch_once(
+        spec,
+        (
+            "    bool process(const llama_batch & batch) override {\n"
+            "        auto * ctx_dft = params.ctx_dft;\n\n"
+            "        const int ret = llama_decode(ctx_dft, batch);"
+        ),
+        (
+            "    bool process(const llama_batch & batch) override {\n"
+            "        auto * ctx_dft = params.ctx_dft;\n\n"
+            "        // B8: stage target pre-norm into cross.v_embd before draft sync-decode (Metal dflash + ANE).\n"
+            "        common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, batch);\n\n"
+            "        const int ret = llama_decode(ctx_dft, batch);"
+        ),
+        "speculative.cpp process() sync_target_cross (B8)",
+        required=False,
+    )
 
 
 def patch_draft_simple_draft(spec: pathlib.Path) -> None:
@@ -240,6 +287,8 @@ def verify(spec: pathlib.Path) -> None:
         "common_ane_draft_try_drive_token",
         "B7 shadow step=",
         "common_ane_draft_reset_handoff",
+        "common_ane_draft_bind_target_ctx",
+        "common_ane_draft_sync_target_cross",
     ):
         if marker not in text:
             missing.append(marker)
@@ -264,6 +313,8 @@ def main() -> None:
         "speculative.cpp include",
     )
     patch_draft_simple_ctor(spec)
+    patch_bind_target_ctx(spec)
+    patch_draft_simple_process(spec)
     patch_draft_simple_draft(spec)
     if cmake.is_file():
         patch_cmake(cmake)

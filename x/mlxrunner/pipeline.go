@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ollama/ollama/llm"
@@ -14,12 +15,20 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/cache"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
+	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	sampler "github.com/ollama/ollama/x/mlxrunner/sample"
 	"github.com/ollama/ollama/x/tokenizer"
 )
 
-func prefillChunkSize() int {
-	return 2 << 10
+func modelSlidingWindow(m base.Model) int {
+	type sliding interface {
+		SlidingWindowSize() int
+	}
+	s, ok := m.(sliding)
+	if !ok {
+		return 0
+	}
+	return s.SlidingWindowSize()
 }
 
 // Prepare tokenizes the prompt and validates it against the model's
@@ -102,7 +111,7 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 
 	inputs := request.Tokens
 
-	session := r.cache.begin(r.Model, inputs)
+	session := r.cache.begin(r.Model, inputs, request.PromptCacheKey)
 	defer session.close()
 	caches := session.caches
 
@@ -111,7 +120,7 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 	spec := r.spec.open(request, caches)
 	defer spec.close()
 
-	seed, position, promptEval, err := r.prefill(ctx, session, spec)
+	seed, position, promptEval, err := r.prefill(ctx, request, session, spec)
 	if err != nil {
 		return err
 	}
@@ -129,28 +138,44 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 	return r.decode(ctx, request, session, d, promptEval)
 }
 
+// completionPromptMetrics reports prompt tokens evaluated this request vs restored
+// from the MLX prefix trie (mirrors llama-server cache_n / prompt_eval_count).
+func completionPromptMetrics(session *cacheSession) (evalCount, cachedCount int) {
+	if session == nil {
+		return 0, 0
+	}
+	total := len(session.inputs)
+	cached := session.cachedPrefix
+	if cached < 0 {
+		cached = 0
+	}
+	if cached > total {
+		cached = total
+	}
+	return total - cached, cached
+}
+
 // prefill evaluates the prompt in chunks, leaving one token for decode to
 // seed from, and schedules the prompt's periodic snapshots. It returns the
 // seed tokens, the resume position, and the prompt-evaluation duration.
-func (r *Runner) prefill(ctx context.Context, session *cacheSession, spec *speculationSession) ([]int32, int, time.Duration, error) {
+func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSession, spec *speculationSession) ([]int32, int, time.Duration, error) {
 	start := time.Now()
 	inputs := session.inputs
 	tokens := session.remaining
 	caches := session.caches
-	prefillChunk := prefillChunkSize()
 
-	// Request periodic snapshots during prefill and near the end of the
-	// prompt so that long prompts can be partially restored and
-	// thinking/generation can be retried without full reprocessing.
-	const snapshotInterval = 8192
-	var snapshotOffsets []int
-	for offset := snapshotInterval; offset < len(inputs); offset += snapshotInterval {
-		snapshotOffsets = append(snapshotOffsets, offset)
-	}
-
-	const preThinking = 4
-	if end := len(inputs) - preThinking; end > 0 {
-		snapshotOffsets = append(snapshotOffsets, end)
+	cfg := defaultPrefillConfig(len(inputs), modelSlidingWindow(r.Model))
+	cfg = tunePrefillConfig(cfg, prefillTuneInput{
+		total:          len(inputs),
+		cachedPrefix:   session.cachedPrefix,
+		remaining:      len(session.remaining),
+		promptCacheKey: request.PromptCacheKey,
+		fastPath:       session.fastPath,
+		sameBranch:     session.sameBranch,
+	})
+	prefillChunk := cfg.chunkSize
+	if prefillChunk < 1 {
+		prefillChunk = defaultPrefillChunk
 	}
 
 	materializeCaches := func() {
@@ -164,17 +189,22 @@ func (r *Runner) prefill(ctx context.Context, session *cacheSession, spec *specu
 		mlx.Eval(state...)
 	}
 
-	session.schedulePrefillSnapshots(snapshotOffsets)
+	session.schedulePrefillSnapshots(buildTriePrefillSnapshotOffsets(cfg, len(inputs), request.PromptCacheKey, modelSlidingWindow(r.Model)))
 
 	total, processed := len(tokens), 0
 	position := len(inputs) - len(tokens)
+	chunkIdx := 0
 	for total-processed > 1 {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, 0, err
 		}
 
 		n := min(prefillChunk, total-processed-1)
+		remainingAfter := total - processed - n
+		isLastChunk := remainingAfter <= 1
+		chunkIdx++
 
+		tForwardStart := time.Now()
 		chunkIDs := mlx.FromValues(tokens[processed:processed+n], 1, n)
 		hidden := r.Model.Forward(&batch.Batch{
 			InputIDs:     chunkIDs,
@@ -182,23 +212,93 @@ func (r *Runner) prefill(ctx context.Context, session *cacheSession, spec *specu
 			SeqQueryLens: []int32{int32(n)},
 		}, caches)
 		spec.committed(chunkIDs, hidden, position)
+		tForward := time.Since(tForwardStart)
+
+		tSweepStart := time.Now()
 		mlx.Sweep()
-		materializeCaches()
+		tSweep := time.Since(tSweepStart)
+
+		var tMaterialize time.Duration
+		shouldMaterialize := cfg.materializeEvery <= 1 || chunkIdx%cfg.materializeEvery == 0 || isLastChunk
+		if shouldMaterialize {
+			tMatStart := time.Now()
+			materializeCaches()
+			tMaterialize = time.Since(tMatStart)
+		}
+
 		processed += n
 		position += n
+
+		var tClear time.Duration
+		if cfg.clearCacheEvery > 0 && (chunkIdx%cfg.clearCacheEvery == 0 || isLastChunk) {
+			tClearStart := time.Now()
+			mlx.ClearCache()
+			tClear = time.Since(tClearStart)
+		}
+
+		emitPrefillProgress(ctx, request.Responses, processed, total)
 		slog.Info("Prompt processing progress", "processed", processed, "total", total)
 		logutil.TraceContext(ctx, "mlx prompt forward", "processed", processed, "total", total, "tokens", n, "memory", mlx.Memory{})
-
-		mlx.ClearCache()
+		slog.Debug("mlx prefill chunk",
+			"chunk", chunkIdx,
+			"tokens", n,
+			"forward_ms", tForward.Milliseconds(),
+			"sweep_ms", tSweep.Milliseconds(),
+			"materialize_ms", tMaterialize.Milliseconds(),
+			"clear_ms", tClear.Milliseconds(),
+			"memory", mlx.Memory{},
+		)
 	}
 
 	// Flush before attaching: snapshots attach only at offsets every cache
 	// has crossed, and a drafter with draft caches keeps buffered pairs that
 	// would otherwise hold those caches short of the scheduled offsets.
 	spec.flush()
-	session.attachPrefillSnapshots()
 
-	return tokens[processed:], position, time.Since(start), nil
+	tAttachStart := time.Now()
+	session.attachPrefillSnapshots()
+	slog.Debug("mlx prefill snapshots attached", "elapsed_ms", time.Since(tAttachStart).Milliseconds())
+
+	promptEval := time.Since(start)
+	prefillTokens := processed
+	attrs := []any{
+		"prompt_tokens", len(inputs),
+		"cached_tokens", session.cachedPrefix,
+		"prefill_tokens", prefillTokens,
+		"elapsed", promptEval,
+		"chunk_size", prefillChunk,
+	}
+	if prefillTokens > 0 && promptEval > 0 {
+		attrs = append(attrs, "tok_per_sec", float64(prefillTokens)/promptEval.Seconds())
+	}
+	if len(inputs) > defaultMTPMaxPromptTokens && prefillSnapshotInterval(cfg, len(inputs)) == 0 {
+		slog.Info("prefill MTP snapshots disabled for long prompt", "prompt_tokens", len(inputs),
+			"trie_restore", strings.TrimSpace(request.PromptCacheKey) != "")
+	}
+	if session.cachedPrefix == 0 && len(inputs) > defaultMTPMaxPromptTokens && strings.TrimSpace(request.PromptCacheKey) != "" {
+		slog.Debug("mlx prefix cache miss despite prompt_cache_key; full prefill required",
+			"prompt_cache_key", request.PromptCacheKey,
+			"prompt_tokens", len(inputs),
+			"hint", "prompt tokens changed since last turn, runner reloaded, or trie restore failed",
+		)
+	}
+	slog.Info("prefill complete", attrs...)
+
+	return tokens[processed:], position, promptEval, nil
+}
+
+func emitPrefillProgress(ctx context.Context, responses chan<- CompletionResponse, processed, total int) {
+	if responses == nil || processed <= 0 {
+		return
+	}
+	resp := CompletionResponse{
+		PrefillProcessed: processed,
+		PrefillTotal:     total,
+	}
+	select {
+	case <-ctx.Done():
+	case responses <- resp:
+	}
 }
 
 // A decoder produces each run of tokens to emit, owning its own dispatch and
@@ -220,7 +320,8 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 		wantTopLogprobs: request.SamplerOpts.TopLogprobs,
 	}
 
-	final := CompletionResponse{Done: true, PromptEvalCount: len(request.Tokens), DoneReason: 1}
+	final := CompletionResponse{Done: true, DoneReason: 1}
+	final.PromptEvalCount, final.PromptEvalCachedCount = completionPromptMetrics(session)
 	final.PromptEvalDuration = promptEval
 	now := time.Now()
 

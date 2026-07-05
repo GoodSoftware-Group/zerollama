@@ -23,6 +23,12 @@ type Function struct {
 	NeedsARM64Guard bool
 }
 
+// optionalMLXSymbols are exported by patched mlx-c builds only; missing symbols
+// fall back to no-ops so stock libmlxc (Metal/CUDA) still loads.
+var optionalMLXSymbols = map[string]bool{
+	"mlx_array_detach": true,
+}
+
 func findHeaders(directory string) ([]string, error) {
 	var headers []string
 	err := filepath.WalkDir(directory, func(path string, d fs.DirEntry, err error) error {
@@ -328,9 +334,14 @@ func generateWrapperFiles(functions []Function, headerPath, implPath string) err
 		}
 		implBuf.WriteString(fmt.Sprintf("    %s_ptr = GET_SYM(handle, \"%s\");\n", fn.Name, fn.Name))
 		implBuf.WriteString(fmt.Sprintf("    if (%s_ptr == NULL) {\n", fn.Name))
-		implBuf.WriteString(fmt.Sprintf("        fprintf(stderr, \"MLX: Failed to load symbol: %s\\n\");\n", fn.Name))
-		implBuf.WriteString("        return -1;\n")
-		implBuf.WriteString("    }\n")
+		if optionalMLXSymbols[fn.Name] {
+			implBuf.WriteString(fmt.Sprintf("        fprintf(stderr, \"MLX: optional symbol %s missing from libmlxc (no-op)\\n\");\n", fn.Name))
+			implBuf.WriteString("    }\n")
+		} else {
+			implBuf.WriteString(fmt.Sprintf("        fprintf(stderr, \"MLX: Failed to load symbol: %s\\n\");\n", fn.Name))
+			implBuf.WriteString("        return -1;\n")
+			implBuf.WriteString("    }\n")
+		}
 		if fn.NeedsARM64Guard {
 			implBuf.WriteString("#endif\n")
 		}
@@ -347,8 +358,17 @@ func generateWrapperFiles(functions []Function, headerPath, implPath string) err
 		}
 		implBuf.WriteString(fmt.Sprintf("%s %s(%s) {\n", fn.ReturnType, fn.Name, fn.Params))
 
-		// Call through function pointer
 		if fn.ReturnType != "void" {
+			if optionalMLXSymbols[fn.Name] {
+				implBuf.WriteString(fmt.Sprintf("    if (%s_ptr == NULL) {\n", fn.Name))
+				if fn.ReturnType == "mlx_array" {
+					implBuf.WriteString("        mlx_array empty = {0};\n")
+					implBuf.WriteString("        return empty;\n")
+				} else {
+					implBuf.WriteString("        return 0;\n")
+				}
+				implBuf.WriteString("    }\n")
+			}
 			implBuf.WriteString(fmt.Sprintf("    return %s_ptr(", fn.Name))
 		} else {
 			implBuf.WriteString(fmt.Sprintf("    %s_ptr(", fn.Name))

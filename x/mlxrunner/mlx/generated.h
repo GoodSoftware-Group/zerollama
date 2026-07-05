@@ -9,6 +9,7 @@
 #define mlx_array_tostring mlx_array_tostring_mlx_gen_orig_
 #define mlx_array_new mlx_array_new_mlx_gen_orig_
 #define mlx_array_free mlx_array_free_mlx_gen_orig_
+#define mlx_array_detach mlx_array_detach_mlx_gen_orig_
 #define mlx_array_new_bool mlx_array_new_bool_mlx_gen_orig_
 #define mlx_array_new_int mlx_array_new_int_mlx_gen_orig_
 #define mlx_array_new_float32 mlx_array_new_float32_mlx_gen_orig_
@@ -632,6 +633,7 @@
 #undef mlx_array_tostring
 #undef mlx_array_new
 #undef mlx_array_free
+#undef mlx_array_detach
 #undef mlx_array_new_bool
 #undef mlx_array_new_int
 #undef mlx_array_new_float32
@@ -1253,6 +1255,7 @@ extern size_t (*mlx_dtype_size_)(mlx_dtype dtype);
 extern int (*mlx_array_tostring_)(mlx_string* str, const mlx_array arr);
 extern mlx_array (*mlx_array_new_)(void);
 extern int (*mlx_array_free_)(mlx_array arr);
+extern int (*mlx_array_detach_)(mlx_array arr);
 extern mlx_array (*mlx_array_new_bool_)(bool val);
 extern mlx_array (*mlx_array_new_int_)(int val);
 extern mlx_array (*mlx_array_new_float32_)(float val);
@@ -3643,6 +3646,12 @@ static inline mlx_array mlx_array_new(void) {
 }
 static inline int mlx_array_free(mlx_array arr) {
     return mlx_array_free_(arr);
+}
+static inline int mlx_array_detach(mlx_array arr) {
+    if (mlx_array_detach_ == NULL) {
+        return 0;
+    }
+    return mlx_array_detach_(arr);
 }
 static inline mlx_array mlx_array_new_bool(bool val) {
     return mlx_array_new_bool_(val);

@@ -150,6 +150,8 @@ type ChatCompletionRequest struct {
 	// Options passes Ollama-native request options (eliza.conversationId, num_ctx, …). Merged after
 	// standard OpenAI fields so operators can set L3 keys and ctx without a second HTTP API.
 	Options map[string]any `json:"options,omitempty"`
+	// KeepAlive mirrors /api/chat keep_alive (e.g. "30m") so agent clients pin MLX runners.
+	KeepAlive *api.Duration `json:"keep_alive,omitempty"`
 }
 
 type ChatCompletion struct {
@@ -835,7 +837,31 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		Logprobs:        r.Logprobs != nil && *r.Logprobs,
 		TopLogprobs:     r.TopLogprobs,
 		DebugRenderOnly: r.DebugRenderOnly,
+		KeepAlive:       chatKeepAliveFromRequest(r, options),
 	}, nil
+}
+
+func chatKeepAliveFromRequest(r ChatCompletionRequest, options map[string]any) *api.Duration {
+	if r.KeepAlive != nil {
+		return r.KeepAlive
+	}
+	if options == nil {
+		return nil
+	}
+	raw, ok := options["keep_alive"]
+	if !ok || raw == nil {
+		return nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var d api.Duration
+	if err := json.Unmarshal(b, &d); err != nil {
+		return nil
+	}
+	delete(options, "keep_alive")
+	return &d
 }
 
 func nameFromToolCallID(messages []Message, toolCallID string) string {
@@ -964,12 +990,13 @@ func FromCompleteRequest(r CompletionRequest) (api.GenerateRequest, error) {
 
 // ImageGenerationRequest is an OpenAI-compatible image generation request.
 type ImageGenerationRequest struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	N              int    `json:"n,omitempty"`
-	Size           string `json:"size,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"`
-	Seed           *int64 `json:"seed,omitempty"`
+	Model          string         `json:"model"`
+	Prompt         string         `json:"prompt"`
+	N              int            `json:"n,omitempty"`
+	Size           string         `json:"size,omitempty"`
+	ResponseFormat string         `json:"response_format,omitempty"`
+	Seed           *int64         `json:"seed,omitempty"`
+	Options        map[string]any `json:"options,omitempty"`
 }
 
 // ImageGenerationResponse is an OpenAI-compatible image generation response.
@@ -987,8 +1014,9 @@ type ImageURLOrData struct {
 // FromImageGenerationRequest converts an OpenAI image generation request to an Ollama GenerateRequest.
 func FromImageGenerationRequest(r ImageGenerationRequest) api.GenerateRequest {
 	req := api.GenerateRequest{
-		Model:  r.Model,
-		Prompt: r.Prompt,
+		Model:   r.Model,
+		Prompt:  r.Prompt,
+		Options: r.Options,
 	}
 	// Parse size if provided (e.g., "1024x768")
 	if r.Size != "" {
@@ -1115,18 +1143,20 @@ func FromTranscriptionRequest(r TranscriptionRequest) (*api.ChatRequest, error) 
 
 // ImageEditRequest is an OpenAI-compatible image edit request.
 type ImageEditRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Image  string `json:"image"`          // Base64-encoded image data
-	Size   string `json:"size,omitempty"` // e.g., "1024x1024"
-	Seed   *int64 `json:"seed,omitempty"`
+	Model   string         `json:"model"`
+	Prompt  string         `json:"prompt"`
+	Image   string         `json:"image"`          // Base64-encoded image data
+	Size    string         `json:"size,omitempty"` // e.g., "1024x1024"
+	Seed    *int64         `json:"seed,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 // FromImageEditRequest converts an OpenAI image edit request to an Ollama GenerateRequest.
 func FromImageEditRequest(r ImageEditRequest) (api.GenerateRequest, error) {
 	req := api.GenerateRequest{
-		Model:  r.Model,
-		Prompt: r.Prompt,
+		Model:   r.Model,
+		Prompt:  r.Prompt,
+		Options: r.Options,
 	}
 
 	// Decode the input image

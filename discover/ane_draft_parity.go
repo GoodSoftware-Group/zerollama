@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ANEDraftParityOpts configures matmul parity smoke on lab port 11435.
@@ -46,6 +49,10 @@ type ANEDraftParityResult struct {
 	HandoffStride      int                     `json:"handoff_stride,omitempty"`
 	HookOverheadPct    float64                 `json:"hook_overhead_pct,omitempty"`
 	ShadowOverheadPct  float64                 `json:"shadow_overhead_pct,omitempty"`
+	SidecarArchitecture string                 `json:"sidecar_architecture,omitempty"`
+	HasDflashFcTensor  bool                    `json:"has_dflash_fc_tensor,omitempty"`
+	DflashNTargetFeat  int                     `json:"dflash_n_target_features,omitempty"`
+	DflashTargetLayers []uint32                `json:"dflash_target_layer_ids,omitempty"`
 	MetalTokensPerSec  float64                 `json:"metal_tokens_per_sec,omitempty"`
 	ANETokensPerSec    float64                 `json:"ane_tokens_per_sec,omitempty"`
 	HookOnlyANETPS     float64                 `json:"hook_only_ane_tokens_per_sec,omitempty"`
@@ -87,7 +94,18 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 	}
 	out.DriveMetrics = driveMetrics
 
-	ab, err := ProbeANEDraftAB(ctx, preferred, 0, opts.Quick, true, opts.Telemetry, driveMode, driveMetrics, convDepth, kernel)
+	// Lab e2e loads multi-GB GGUF cold; parent CLI ctx is often ~3min — use a dedicated budget.
+	e2eBudget := 12 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 17 {
+			e2eBudget = 90 * time.Minute
+		} else if err == nil && n >= 13 {
+			e2eBudget = 35 * time.Minute
+		}
+	}
+	e2eCtx, cancel := context.WithTimeout(context.Background(), e2eBudget)
+	defer cancel()
+	ab, err := ProbeANEDraftAB(e2eCtx, preferred, 0, opts.Quick, true, opts.Telemetry, driveMode, driveMetrics, convDepth, kernel, true)
 	if err != nil {
 		out.Error = err.Error()
 		out.Tag = ab.Tag
@@ -111,6 +129,16 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 			out.MatmulOC = oc
 			out.MatmulSeq = seq
 			out.MatmulFullEmbd = entry.EmbeddingLength
+			if draftPath, present := resolveDraftGGUFPath(entry); present {
+				if arch, err := ProbeSidecarArchitecture(draftPath); err == nil {
+					out.SidecarArchitecture = arch
+				}
+			}
+			out.HasDflashFcTensor = DraftSidecarHasTensor(entry, "dflash_fc.weight")
+			if nFeat, layers, ok := DraftDflashTargetMeta(entry); ok {
+				out.DflashNTargetFeat = nFeat
+				out.DflashTargetLayers = layers
+			}
 		}
 	}
 	if out.MatmulSeq <= 0 {
@@ -131,6 +159,22 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 					ic5, oc5 := DraftANEMatmulChain5SSMOutDims(out.MatmulIC, out.MatmulOC)
 					if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "blk.0.ssm_out.weight", ic5, oc5); err == nil {
 						out.MatmulChain = 5
+						ic6, oc6 := DraftANEMatmulChain6QKVDims(out.MatmulIC, out.MatmulOC)
+						if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "blk.0.attn_qkv.weight", ic6, oc6); err == nil {
+							out.MatmulChain = 6
+							ic7, oc7 := DraftANEMatmulChain7Blk1GateDims(out.MatmulIC, out.MatmulOC)
+							if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "blk.1.ffn_gate.weight", ic7, oc7); err == nil {
+								out.MatmulChain = 7
+								ic9, oc9 := DraftANEMatmulChain9Blk1UpDims(out.MatmulIC, out.MatmulOC)
+								if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "blk.1.ffn_up.weight", ic9, oc9); err == nil {
+									out.MatmulChain = 9
+									ic10, oc10 := DraftANEMatmulChain10Blk1DownDims(out.MatmulOC, out.MatmulIC)
+									if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "blk.1.ffn_down.weight", ic10, oc10); err == nil {
+										out.MatmulChain = 10
+									}
+								}
+							}
+						}
 					}
 				}
 			}
@@ -138,6 +182,12 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 			ic2, oc2 := DraftANEMatmulChain2Dims(out.MatmulIC, out.MatmulOC)
 			if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "blk.0.ffn_up.weight", ic2, oc2); err == nil {
 				out.MatmulChain = 2
+			}
+		}
+		if icFc, ocFc, ok := DraftANEMatmulChain7DflashFcDims(labEntry); ok {
+			if _, _, err := MaterializeANEDraftMatmulWeightFile(labEntry, "dflash_fc.weight", icFc, ocFc); err == nil &&
+				IsNativeDflashDraftSidecar(labEntry) {
+				out.MatmulChain = 8
 			}
 		}
 	}
@@ -169,18 +219,52 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 	}
 
 	if kernel == "matmul" {
+		chainLabel := "P3"
+		if out.MatmulChain >= 11 {
+			chainLabel = "P10"
+		} else if out.MatmulChain >= 10 {
+			chainLabel = "P9"
+		} else if out.MatmulChain >= 9 {
+			chainLabel = "P8"
+		} else if out.MatmulChain >= 8 {
+			chainLabel = "P7b"
+		} else if out.MatmulChain >= 7 {
+			chainLabel = "P7"
+		} else if out.MatmulChain >= 6 {
+			chainLabel = "P6"
+		} else if out.MatmulChain >= 3 {
+			chainLabel = "P3"
+		}
 		switch driveMode {
 		case "force":
-			out.Note = "matmul P3 force: ANE blk.0 FFN proxy drives draft token via tied-embed argmax"
+			out.Note = fmt.Sprintf("matmul %s force: ANE blk.0 proxy drives draft token via tied-embed argmax", chainLabel)
 		case "shadow":
 			switch driveMetrics {
 			case "both":
-				out.Note = "matmul P3 shadow: hidden_cos + token match (tied-embed argmax on ffn_down out)"
+				if out.MatmulChain >= 11 {
+					out.Note = fmt.Sprintf("matmul %s shadow: dflash_fc+hidden_norm+attn_q from ctx_tgt stub + token match", chainLabel)
+				} else if out.MatmulChain >= 10 {
+					out.Note = fmt.Sprintf("matmul %s shadow: hidden_cos on blk.1 ffn_down + token match", chainLabel)
+				} else if out.MatmulChain >= 9 {
+					out.Note = fmt.Sprintf("matmul %s shadow: hidden_cos on blk.1 SwiGLU + token match", chainLabel)
+				} else if out.MatmulChain >= 8 {
+					out.Note = fmt.Sprintf("matmul %s shadow: dflash_fc from ctx_tgt target_hidden stub + token match", chainLabel)
+				} else if out.MatmulChain >= 7 {
+					out.Note = fmt.Sprintf("matmul %s shadow: hidden_cos on blk.1 gate + token match (tied-embed argmax on ffn_down out)", chainLabel)
+				} else {
+					out.Note = fmt.Sprintf("matmul %s shadow: hidden_cos + token match (tied-embed argmax on ffn_down out)", chainLabel)
+				}
 			case "tokens":
-				out.Note = "matmul P3 shadow: token match only (tied-embed on ffn_down out)"
+				out.Note = fmt.Sprintf("matmul %s shadow: token match only (tied-embed on ffn_down out)", chainLabel)
 			default:
-				out.Note = "matmul P3: gate+up SwiGLU+ffn_down; shadow uses DRIVE_METRICS=hidden"
+				out.Note = fmt.Sprintf("matmul %s: gate+up SwiGLU+ffn_down; shadow uses DRIVE_METRICS=hidden", chainLabel)
 			}
+		}
+		if out.SidecarArchitecture != "" && out.SidecarArchitecture != "dflash-draft" {
+			out.Note += fmt.Sprintf("; sidecar=%s (blk.0 proxy — not native dflash_fc graph)", out.SidecarArchitecture)
+		}
+		if out.HasDflashFcTensor {
+			out.Note += "; dflash_fc.weight present — P7b uses ctx_tgt handoff (lab stub: first ic target features)"
 		}
 	}
 
