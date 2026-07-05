@@ -168,21 +168,42 @@ kv_tensor_bind_attempt(
     }
     out->kv_stream = (int32_t)seq_stream;
 
-    llama_kv_tensor_info info;
-    if (llama_memory_kv_tensor_info(mem, 0, seq_stream, &info) == LLAMA_KV_EXT_OK && info.ok) {
-        out->tensor_pages_bound = 1;
-        out->kv_k_data_layer0 = info.k_data;
-        out->kv_v_data_layer0 = info.v_data;
-        bind->tensor_pages_bound_slot = 1;
-        out->blocker_code = KV_TENSOR_BLOCKER_NONE;
-#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
-        kv_page_bind_materialize_writable(lctx, seq_id, kv_slot, out);
-#endif
+    uint32_t n_layers = 0;
+    if (llama_memory_kv_n_layers(mem, &n_layers) != LLAMA_KV_EXT_OK || n_layers == 0) {
+        bind->tensor_pages_bound_slot = 0;
+        out->blocker_code = KV_TENSOR_BLOCKER_NO_TENSOR;
+        return;
+    }
+    out->kv_n_layers = (int32_t)n_layers;
+
+    int32_t verified = 0;
+    for (uint32_t layer = 0; layer < n_layers; layer++) {
+        llama_kv_tensor_info info;
+        if (llama_memory_kv_tensor_info(mem, (int32_t)layer, seq_stream, &info) != LLAMA_KV_EXT_OK
+            || !info.ok) {
+            break;
+        }
+        verified++;
+        if (layer == 0) {
+            out->kv_k_data_layer0 = info.k_data;
+            out->kv_v_data_layer0 = info.v_data;
+        }
+    }
+    out->tensor_layers_verified = verified;
+
+    if (verified != (int32_t)n_layers) {
+        bind->tensor_pages_bound_slot = 0;
+        out->blocker_code = KV_TENSOR_BLOCKER_NO_TENSOR;
         return;
     }
 
-    bind->tensor_pages_bound_slot = 0;
-    out->blocker_code = KV_TENSOR_BLOCKER_NO_TENSOR;
+    out->tensor_pages_bound = 1;
+    bind->tensor_pages_bound_slot = 1;
+    out->blocker_code = KV_TENSOR_BLOCKER_NONE;
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+    kv_page_bind_materialize_writable(lctx, seq_id, kv_slot, out);
+#endif
+    return;
 }
 
 int
@@ -276,26 +297,37 @@ kv_page_bind_materialize_writable(
     }
 
     const llama_pos base = (out->seq_pos_min >= 0) ? (llama_pos)out->seq_pos_min : 0;
-    int mapped = 0;
+    int mapped_pages = 0;
+
+    uint32_t n_layers = 0;
+    if (llama_memory_kv_n_layers(mem, &n_layers) != LLAMA_KV_EXT_OK || n_layers == 0) {
+        return 0;
+    }
 
     for (int p = 0; p < pages_live; p++) {
-        llama_kv_page_map page_map;
-        const int32_t rc = llama_memory_kv_page_map(
-            mem,
-            (llama_seq_id)seq_id,
-            base,
-            (uint32_t)p,
-            (uint32_t)bs,
-            0,
-            &page_map);
-        if (rc == LLAMA_KV_EXT_OK && page_map.ok) {
-            mapped++;
+        int layers_ok = 0;
+        for (uint32_t layer = 0; layer < n_layers; layer++) {
+            llama_kv_page_map page_map;
+            const int32_t rc = llama_memory_kv_page_map(
+                mem,
+                (llama_seq_id)seq_id,
+                base,
+                (uint32_t)p,
+                (uint32_t)bs,
+                (int32_t)layer,
+                &page_map);
+            if (rc == LLAMA_KV_EXT_OK && page_map.ok) {
+                layers_ok++;
+            }
+        }
+        if (layers_ok == (int)n_layers) {
+            mapped_pages++;
         }
     }
 
-    bind->physical_pages_mapped = mapped;
-    bind->physical_pages_bound = (mapped > 0 && mapped == pages_live) ? 1 : 0;
-    out->physical_pages_mapped = mapped;
+    bind->physical_pages_mapped = mapped_pages;
+    bind->physical_pages_bound = (mapped_pages > 0 && mapped_pages == pages_live) ? 1 : 0;
+    out->physical_pages_mapped = mapped_pages;
     out->physical_pages_bound = bind->physical_pages_bound;
     return 0;
 }

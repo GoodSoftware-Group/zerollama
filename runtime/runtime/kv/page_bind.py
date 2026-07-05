@@ -237,6 +237,10 @@ def page_bind_health(
             out["tensor_probe"] = base_probe
             out["accounting_aligned"] = bool(accounting_ok) if accounting_ok is not None else None
             out["cell_pages_bound"] = cell_bound
+            if base_probe.get("kv_n_layers") is not None:
+                out["kv_n_layers"] = int(base_probe["kv_n_layers"])
+            if base_probe.get("tensor_layers_verified") is not None:
+                out["tensor_layers_verified"] = int(base_probe["tensor_layers_verified"])
         return out
 
     return {

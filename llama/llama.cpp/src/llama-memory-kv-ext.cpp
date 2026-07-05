@@ -189,6 +189,23 @@ int32_t llama_memory_kv_tensor_info(
     return LLAMA_KV_EXT_OK;
 }
 
+int32_t llama_memory_kv_n_layers(
+        llama_memory_t mem,
+        uint32_t *     out_n) {
+    if (!out_n) {
+        return LLAMA_KV_EXT_ARG;
+    }
+    *out_n = 0;
+
+    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
+    if (!kv) {
+        return LLAMA_KV_EXT_UNSUPPORTED;
+    }
+
+    *out_n = kv->n_kv_layers();
+    return LLAMA_KV_EXT_OK;
+}
+
 static bool llama_kv_ext_cells_contiguous(
         const llama_kv_cell_bind * cells,
         uint32_t                   n) {

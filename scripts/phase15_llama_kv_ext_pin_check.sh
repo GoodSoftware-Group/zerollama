@@ -40,6 +40,7 @@ REQUIRED_API=(
   llama_memory_kv_cell_for_pos
   llama_memory_kv_cell_map_range
   llama_memory_kv_tensor_info
+  llama_memory_kv_n_layers
   llama_memory_kv_ext_classify
   llama_memory_kv_ext_writable_bind_probe
 )

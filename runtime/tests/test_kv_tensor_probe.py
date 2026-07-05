@@ -124,6 +124,24 @@ def test_page_bind_health_includes_v19_fields(monkeypatch):
     assert h["accounting_aligned"] is True
 
 
+def test_page_bind_health_includes_multi_layer_probe_fields(monkeypatch):
+    monkeypatch.setattr("runtime.kv.page_bind._native_page_bind_available", lambda: True)
+    probe = {
+        "memory_non_null": 1,
+        "aligned": 1,
+        "tensor_pages_bound": 1,
+        "physical_pages_bound": 1,
+        "kv_n_layers": 32,
+        "tensor_layers_verified": 32,
+        "blocker": "",
+    }
+    h = page_bind_health(native_ext_available=True, tensor_probe=probe)
+    assert h["status"] == "bound"
+    assert h["bind_level"] == "physical"
+    assert h["kv_n_layers"] == 32
+    assert h["tensor_layers_verified"] == 32
+
+
 def test_page_bind_health_bound_not_overridden_by_misaligned(monkeypatch):
     """tensor_bound wins over aligned=0 — bound status must not flip to misaligned."""
     monkeypatch.setattr("runtime.kv.page_bind._native_page_bind_available", lambda: True)

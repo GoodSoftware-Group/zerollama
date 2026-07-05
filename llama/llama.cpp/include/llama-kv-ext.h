@@ -80,6 +80,11 @@ LLAMA_API int32_t llama_memory_kv_tensor_info(
         uint32_t               stream,
         llama_kv_tensor_info * out);
 
+/* Number of KV layers in the resolved attn cache (for multi-layer bind fan-out). */
+LLAMA_API int32_t llama_memory_kv_n_layers(
+        llama_memory_t mem,
+        uint32_t *     out_n);
+
 /*
  * Writable span for one PA page mapped onto llama KV cells (layer 0 export).
  * WHY layer 0 first: operators validate bind path before multi-layer fan-out;

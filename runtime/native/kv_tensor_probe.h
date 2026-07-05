@@ -24,6 +24,8 @@ typedef struct {
     int32_t memory_kind;
     uint64_t kv_k_data_layer0;
     uint64_t kv_v_data_layer0;
+    int32_t kv_n_layers;
+    int32_t tensor_layers_verified;
     int physical_pages_bound;
     int physical_pages_mapped;
 } KvTensorProbeResult;

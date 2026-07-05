@@ -641,7 +641,7 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
     const char *blocker = kv_tensor_blocker_str(probe.blocker_code);
     const char *memory_kind = kv_tensor_memory_kind_str(probe.memory_kind);
     return Py_BuildValue(
-        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O,s:O}",
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O}",
         "memory_non_null",
         probe.memory_non_null,
         "can_shift",
@@ -672,6 +672,10 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
         (int)probe.kv_stream,
         "memory_kind",
         (int)probe.memory_kind,
+        "kv_n_layers",
+        (int)probe.kv_n_layers,
+        "tensor_layers_verified",
+        (int)probe.tensor_layers_verified,
         "kv_k_data_layer0",
         probe.kv_k_data_layer0,
         "kv_v_data_layer0",
