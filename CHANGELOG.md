@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Phase 15 v33 writable KV page bind + Darwin sidecar compatibility (Jul 2026)
+
+**Why:** PA block tables needed writable K/V tensor spans via fork `llama_memory_kv_page_map`; Mac builds had to rebuild `_kv_native` when kv-ext changed; stale `:8081` sidecars survived `zerollama serve` restarts and reported `native_ext_not_built` despite a fresh `.so` on disk.
+
+- **Fork kv-ext v33** — `llama_memory_kv_page_map` in `llama-kv-ext.h` / `llama-memory-kv-ext.cpp`; `LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1` on libllama build.
+- **Native ext** — `kv_tensor_probe.c`, `page_bind.py`, `/health.kv_page_bind.writable_bind_*` and `physical_pages_bound` after decode probe.
+- **Mac build** — `scripts/stage_llama_kv_ext_for_vendor.sh`; `BUILD_RUNTIME_KV_EXT=auto` in `build_zerollama_mac.sh` with `.build-stamps/runtime-kv-native.sha` fingerprint cache.
+- **Darwin sidecar** — `BootstrapDarwinSidecar` compares `kv_native_build_sha` on `/health` vs on-disk stamp; stops and respawns stale sidecar on mismatch (default persist policy no longer traps old Python processes).
+
 ### Agent QoS hardening, project tracking, and cross-backend safety (M15b, Jul 2026)
 
 **Why:** Production Jul 4 logs showed two concurrent MLX streams slipping through QoS defer checks (TOCTOU), MLX subprocess death with no stderr in logs, and operators unable to see which agent harness owned a loaded model. Separately, Tier 2 client options (eliza, keep_alive floor, prefix-mm-cache) risked affecting vanilla Ollama / vLLM / CUDA proxies if sent or injected unconditionally.

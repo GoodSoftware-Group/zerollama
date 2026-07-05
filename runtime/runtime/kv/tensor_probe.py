@@ -17,11 +17,10 @@ def tensor_probe_available() -> bool:
 
 
 def writable_bind_probe() -> dict[str, Any]:
-    """Static probe: is writable PA→tensor page bind API linked in libllama?
+    """Static probe: is writable PA→tensor page-map API linked in libllama?
 
-    WHY no ctx: upstream page-handle availability is a build-time capability,
-    not per-request. Operators watch ``writable_bind_available`` on /health
-    until llama.cpp ships a stable writable page-map API.
+    WHY no ctx: page-map availability is a build-time capability on the forked
+    llama.cpp pin; operators watch ``writable_bind_available`` on /health.
     """
     try:
         from runtime.kv._kv_native import page_bind_writable_probe
@@ -48,6 +47,15 @@ def run_tensor_probe(ctx_ptr: int, seq_id: int, kv_slot: int) -> dict[str, Any] 
 
     raw = page_bind_tensor_probe(int(ctx_ptr), int(seq_id), int(kv_slot))
     return dict(raw) if raw is not None else None
+
+
+def map_page(ctx_ptr: int, seq_id: int, kv_slot: int, page_index: int) -> dict[str, Any]:
+    """Resolve writable K/V tensor spans for one registered PA page."""
+    if not tensor_probe_available() or ctx_ptr == 0:
+        raise RuntimeError("native ext with llama-kv-ext link required")
+    from runtime.kv._kv_native import page_bind_map_page
+
+    return dict(page_bind_map_page(int(ctx_ptr), int(seq_id), int(kv_slot), int(page_index)))
 
 
 def export_page_table(kv_slot: int) -> list[dict[str, int]]:

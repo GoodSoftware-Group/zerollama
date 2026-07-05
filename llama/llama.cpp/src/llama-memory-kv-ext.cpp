@@ -189,6 +189,131 @@ int32_t llama_memory_kv_tensor_info(
     return LLAMA_KV_EXT_OK;
 }
 
+static bool llama_kv_ext_cells_contiguous(
+        const llama_kv_cell_bind * cells,
+        uint32_t                   n) {
+    if (n <= 1) {
+        return true;
+    }
+    for (uint32_t i = 1; i < n; ++i) {
+        if (cells[i].cell_idx != cells[i - 1].cell_idx + 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int32_t llama_kv_ext_page_map_contiguous(
+        llama_kv_cache *           kv,
+        ggml_tensor *              k,
+        ggml_tensor *              v,
+        const llama_kv_cell_bind * cells,
+        uint32_t                   n_cells,
+        llama_kv_page_map *        out) {
+    if (!kv || !k || !v || !cells || n_cells == 0 || !out) {
+        return LLAMA_KV_EXT_ARG;
+    }
+    if (!k->data || !v->data) {
+        return LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    const uint64_t kv_size = kv->get_size();
+    if ((uint64_t) k->ne[1] != kv_size || (uint64_t) v->ne[1] != kv_size) {
+        /* Transposed-V / non-standard layouts: v33 supports FA-style [embd, kv_size]. */
+        return LLAMA_KV_EXT_UNSUPPORTED;
+    }
+
+    if (!llama_kv_ext_cells_contiguous(cells, n_cells)) {
+        return LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    const uint32_t cell0 = cells[0].cell_idx;
+    const uint32_t cell1 = cells[n_cells - 1].cell_idx;
+    if (cell1 >= kv_size) {
+        return LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    const uint64_t k_off = (uint64_t) cell0 * (uint64_t) k->nb[1];
+    const uint64_t v_off = (uint64_t) cell0 * (uint64_t) v->nb[1];
+    const uint64_t span  = (uint64_t) n_cells * (uint64_t) k->nb[1];
+    const uint64_t vspan = (uint64_t) n_cells * (uint64_t) v->nb[1];
+
+    out->n_cells         = n_cells;
+    out->cell_idx_first  = cell0;
+    out->cell_idx_last   = cell1;
+    out->stream          = cells[0].stream;
+    out->k_data          = (uint64_t) (uintptr_t) ((const char *) k->data + k_off);
+    out->v_data          = (uint64_t) (uintptr_t) ((const char *) v->data + v_off);
+    out->k_span_bytes    = span;
+    out->v_span_bytes    = vspan;
+    out->ok              = 1;
+    return LLAMA_KV_EXT_OK;
+}
+
+int32_t llama_memory_kv_page_map(
+        llama_memory_t     mem,
+        llama_seq_id       seq_id,
+        llama_pos          seq_pos_min,
+        uint32_t           page_index,
+        uint32_t           block_size,
+        int32_t            kv_layer,
+        llama_kv_page_map * out) {
+    if (!out || block_size == 0 || page_index > 8192) {
+        return LLAMA_KV_EXT_ARG;
+    }
+
+    std::memset(out, 0, sizeof(*out));
+    out->kv_layer = kv_layer;
+
+    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
+    if (!kv) {
+        return LLAMA_KV_EXT_UNSUPPORTED;
+    }
+
+    if (kv_layer < 0 || (uint32_t) kv_layer >= kv->n_kv_layers()) {
+        return LLAMA_KV_EXT_ARG;
+    }
+
+    const llama_pos seq_max = llama_memory_seq_pos_max(mem, seq_id);
+    if (seq_max < 0) {
+        return LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    const llama_pos base = seq_pos_min >= 0 ? seq_pos_min : 0;
+    const llama_pos t0   = base + (llama_pos) page_index * (llama_pos) block_size;
+    llama_pos       t1   = t0 + (llama_pos) block_size;
+    if (t0 > seq_max) {
+        return LLAMA_KV_EXT_NOT_FOUND;
+    }
+    if (t1 > seq_max + 1) {
+        t1 = seq_max + 1;
+    }
+    if (t1 <= t0) {
+        return LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    const uint32_t need = (uint32_t) (t1 - t0);
+    if (need > 512) {
+        return LLAMA_KV_EXT_ARG;
+    }
+
+    llama_kv_cell_bind cells[512];
+    uint32_t n = 0;
+    const int32_t rc = llama_memory_kv_cell_map_range(
+        mem, seq_id, t0, t1, cells, need, &n);
+    if (rc != LLAMA_KV_EXT_OK || n != need) {
+        return rc != LLAMA_KV_EXT_OK ? rc : LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    ggml_tensor * k = kv->kv_tensor_k(kv_layer, cells[0].stream);
+    ggml_tensor * v = kv->kv_tensor_v(kv_layer, cells[0].stream);
+
+    out->pos_start = t0;
+    out->pos_end   = t1;
+
+    return llama_kv_ext_page_map_contiguous(kv, k, v, cells, n, out);
+}
+
 int32_t llama_memory_kv_ext_writable_bind_probe(
         int32_t  * out_available,
         char     * out_api_name,

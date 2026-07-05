@@ -24,6 +24,8 @@ typedef struct {
     int32_t memory_kind;
     uint64_t kv_k_data_layer0;
     uint64_t kv_v_data_layer0;
+    int physical_pages_bound;
+    int physical_pages_mapped;
 } KvTensorProbeResult;
 
 int kv_tensor_probe_run(void *ctx, int32_t seq_id, int32_t kv_slot, KvTensorProbeResult *out);

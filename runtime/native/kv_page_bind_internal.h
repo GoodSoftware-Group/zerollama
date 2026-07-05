@@ -21,6 +21,8 @@ typedef struct {
     int block_ids[KV_MAX_PAGES_PER_BIND];
     int cell_pages_bound;          /* v20: PA pages resolved to llama cells */
     int tensor_pages_bound_slot;   /* v20: K/V tensor backing verified */
+    int physical_pages_bound;      /* v33: writable tensor spans for all live pages */
+    int physical_pages_mapped;     /* v33: count of pages with resolved writable spans */
 } KvPageBind;
 
 KvPageBind *kv_find_page_bind(int kv_slot);

@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,6 +54,102 @@ func (s *DarwinSidecar) Stop() {
 	})
 }
 
+// darwinReadBuildSha reads .build-stamps/runtime-kv-native.sha from the repo root.
+// Returns "" when the file is absent (pre-v33 or BUILD_RUNTIME_KV_EXT=0 build).
+func darwinReadBuildSha(repoRoot string) string {
+	data, err := os.ReadFile(filepath.Join(repoRoot, ".build-stamps", "runtime-kv-native.sha"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// darwinSidecarBuildSha fetches /health from a running sidecar and returns the
+// kv_native_build_sha field (empty when the field is absent or fetch fails).
+func darwinSidecarBuildSha(ctx context.Context, baseURL string) string {
+	client := &http.Client{Timeout: 4 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(baseURL, "/")+"/health", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		return ""
+	}
+	defer resp.Body.Close()
+	var body struct {
+		KvNativeBuildSha  string `json:"kv_native_build_sha"`
+		KvPageBind        *struct {
+			NativeExtAvailable bool `json:"native_ext_available"`
+		} `json:"kv_page_bind"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return ""
+	}
+	// Also log if native ext is unavailable so operators can diagnose without /health curl.
+	if body.KvPageBind != nil && !body.KvPageBind.NativeExtAvailable {
+		slog.Info("darwin sidecar: running sidecar has native_ext_available=false (stale process)")
+	}
+	return body.KvNativeBuildSha
+}
+
+// darwinSidecarIsCompatible returns true when the running sidecar's kv_native_build_sha
+// matches the on-disk stamp produced by the last build. When the stamp is absent on both
+// sides (BUILD_RUNTIME_KV_EXT=0), the sidecar is considered compatible.
+func darwinSidecarIsCompatible(ctx context.Context, baseURL, repoRoot string) bool {
+	want := darwinReadBuildSha(repoRoot)
+	have := darwinSidecarBuildSha(ctx, baseURL)
+	if want == "" && have == "" {
+		return true
+	}
+	if want == "" {
+		// No stamp on disk — build skipped; accept whatever is running.
+		return true
+	}
+	if have == "" {
+		// Running sidecar predates kv_native_build_sha field or has no stamp.
+		slog.Info("darwin sidecar: running sidecar has no build sha (pre-v33); will restart")
+		return false
+	}
+	if want != have {
+		slog.Info("darwin sidecar: kv_native build sha mismatch", "want", want, "have", have)
+		return false
+	}
+	return true
+}
+
+// darwinStopSidecarOnPort kills the process listening on the given port, best-effort.
+// Used when the running sidecar is stale (wrong kv_native build).
+func darwinStopSidecarOnPort(port int) {
+	cmd := exec.Command("lsof", "-t", "-i", fmt.Sprintf("TCP:%d", port), "-sTCP:LISTEN")
+	out, err := cmd.Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return
+	}
+	for _, pidStr := range strings.Fields(string(out)) {
+		pidStr = strings.TrimSpace(pidStr)
+		if pidStr == "" {
+			continue
+		}
+		pid := 0
+		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil || pid <= 0 {
+			continue
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		slog.Info("darwin sidecar: stopping stale sidecar", "pid", pid, "port", port)
+		_ = proc.Signal(os.Interrupt)
+	}
+	// Give it a moment to exit cleanly before the caller spawns a new one.
+	time.Sleep(1 * time.Second)
+}
+
 // BootstrapDarwinSidecar ensures uv venvs, sets Darwin defaults, and starts or reuses
 // a loopback runtime sidecar. Returns (nil, nil) when bootstrap does not apply.
 func BootstrapDarwinSidecar(ctx context.Context) (*DarwinSidecar, error) {
@@ -87,12 +184,22 @@ func BootstrapDarwinSidecar(ctx context.Context) (*DarwinSidecar, error) {
 
 	slog.Info("darwin sidecar: checking runtime health", "url", baseURL)
 	probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
-	if waitRuntimeHealth(probeCtx, baseURL, 2*time.Second) == nil {
-		probeCancel()
-		slog.Info("darwin runtime sidecar already listening", "url", baseURL)
-		return &DarwinSidecar{}, nil
-	}
+	sidecarUp := waitRuntimeHealth(probeCtx, baseURL, 2*time.Second) == nil
 	probeCancel()
+	if sidecarUp {
+		compatCtx, compatCancel := context.WithTimeout(ctx, 5*time.Second)
+		compatible := darwinSidecarIsCompatible(compatCtx, baseURL, repoRoot)
+		compatCancel()
+		if compatible {
+			slog.Info("darwin runtime sidecar already listening (compatible)", "url", baseURL)
+			return &DarwinSidecar{}, nil
+		}
+		slog.Info("darwin sidecar: stale sidecar detected, stopping and restarting", "url", baseURL)
+		_, sidecarPort := darwinSidecarListen()
+		darwinStopSidecarOnPort(sidecarPort)
+		// Wait briefly for the port to free up.
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	py := filepath.Join(repoRoot, "runtime", ".venv", "bin", "python")
 	if _, err := os.Stat(py); err != nil {

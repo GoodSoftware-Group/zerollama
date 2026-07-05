@@ -66,11 +66,14 @@ def test_writable_bind_probe_linked_build():
     assert "writable_bind_available" in out
     assert "writable_bind_api" in out
     assert "writable_bind_blocker" in out
-    # Until LLAMA_KV_EXT_WRITABLE_PAGE_MAP is defined, expect false on linked builds too.
-    if not out["writable_bind_available"]:
+    if out["writable_bind_available"]:
+        assert out["writable_bind_api"] == "llama_memory_kv_page_map"
+        assert out["writable_bind_blocker"] == ""
+    else:
         assert out["writable_bind_blocker"] in (
             "staging_writable_page_map_not_implemented",
             "llama_kv_ext_not_linked",
+            "libllama_writable_page_map_not_linked",
         )
 
 

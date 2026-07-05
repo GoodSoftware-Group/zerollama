@@ -89,6 +89,7 @@ def _kv_native_extension() -> Extension:
                 "set LLAMA_CPP_LIB or build llama.cpp under LLAMA_CPP_ROOT"
             )
         define_macros.append(("ZEROLLAMA_KV_DECODE_LOOP", "1"))
+        define_macros.append(("LLAMA_KV_EXT_WRITABLE_PAGE_MAP", "1"))
         include_dirs.extend(
             [
                 str(cpp_root / "include"),

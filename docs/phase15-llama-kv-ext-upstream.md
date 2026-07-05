@@ -84,7 +84,7 @@ If a pin bump removes or renames these, refresh patch **0014** and `kv_tensor_pr
 
 | Gap | Why blocked | Path forward |
 |-----|-------------|--------------|
-| **Writable cross-allocator bind** | PA `block_ids` cannot be written into llama tensor pages without upstream page-handle API | Upstream proposal: `(layer, page_index) → writable span` or equivalent; **v32b:** `llama_memory_kv_ext_writable_bind_probe` + `/health.kv_page_bind.writable_bind_available` tracks when API lands |
+| **Writable cross-allocator bind** | PA `block_ids` → writable llama tensor spans | **Shipped (v33, fork patch 0014+)** — `llama_memory_kv_page_map` in `llama-kv-ext.h`; `LLAMA_KV_EXT_WRITABLE_PAGE_MAP` on libllama build; `/health.kv_page_bind.physical_pages_bound` after decode materialize |
 | **SWA cache pages** | Windowed SWA tensor is separate from PA full-context reserve | Dual bind registry or upstream unified page API |
 | **Recurrent state** | No cell/page model — different memory layout | Out of scope for attn PA bind; separate Phase 15 slice if needed |
 

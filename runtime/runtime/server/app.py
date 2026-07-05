@@ -72,6 +72,10 @@ def create_app(
     def health() -> dict[str, Any]:
         out = eng.health()
         out["server_revision"] = "fastapi-body-v3"
+        from runtime.kv.backend import kv_native_build_sha
+
+        sha = kv_native_build_sha()
+        out["kv_native_build_sha"] = sha or ""
         return out
 
     @app.post("/v1/completions")

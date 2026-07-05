@@ -67,6 +67,7 @@ apply_vendor_patches() {
   make -C "${ROOT}" -f Makefile.sync clean apply-patches
   "${ROOT}/scripts/stage_llama_compat_for_vendor.sh" "${VENDOR}"
   "${ROOT}/scripts/stage_llama_ext_b8_for_vendor.sh" "${VENDOR}"
+  "${ROOT}/scripts/stage_llama_kv_ext_for_vendor.sh" "${VENDOR}"
   if [[ -f "${VENDOR}/common/ane_draft_hook.cpp" ]]; then
     "${ROOT}/scripts/stage_ane_hook_to_tree.sh" "${VENDOR}"
   fi
@@ -85,6 +86,7 @@ if vendor_has_compat_hooks; then
   if vendor_is_unified; then
     "${ROOT}/scripts/stage_llama_compat_for_vendor.sh" "${VENDOR}"
     "${ROOT}/scripts/stage_llama_ext_b8_for_vendor.sh" "${VENDOR}"
+    "${ROOT}/scripts/stage_llama_kv_ext_for_vendor.sh" "${VENDOR}"
     if [[ -f "${VENDOR}/common/ane_draft_hook.cpp" ]]; then
       "${ROOT}/scripts/stage_ane_hook_to_tree.sh" "${VENDOR}"
     fi
@@ -109,3 +111,4 @@ fi
 
 count="$(vendor_patch_commit_count)"
 echo ">>> Ollama patches applied (${count} commits); compat hooks verified" >&2
+"${ROOT}/scripts/stage_llama_kv_ext_for_vendor.sh" "${VENDOR}"

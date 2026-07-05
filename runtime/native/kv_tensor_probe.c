@@ -13,6 +13,14 @@
 
 #define KV_TENSOR_BIND_MAX_CELLS 512
 
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+static int kv_page_bind_materialize_writable(
+    void *ctx,
+    int32_t seq_id,
+    int32_t kv_slot,
+    KvTensorProbeResult *out);
+#endif
+
 static void
 kv_tensor_bind_attempt(
     struct llama_context *lctx,
@@ -61,6 +69,8 @@ kv_tensor_bind_attempt(
      * into page_bind_stats() when this attempt fails partway through. */
     bind->cell_pages_bound = 0;
     bind->tensor_pages_bound_slot = 0;
+    bind->physical_pages_bound = 0;
+    bind->physical_pages_mapped = 0;
 
     llama_memory_t mem = llama_get_memory(lctx);
     if (!mem) {
@@ -133,6 +143,8 @@ kv_tensor_bind_attempt(
     if (!all_cells) {
         bind->cell_pages_bound = 0;
         bind->tensor_pages_bound_slot = 0;
+        bind->physical_pages_bound = 0;
+        bind->physical_pages_mapped = 0;
         return;
     }
 
@@ -163,6 +175,9 @@ kv_tensor_bind_attempt(
         out->kv_v_data_layer0 = info.v_data;
         bind->tensor_pages_bound_slot = 1;
         out->blocker_code = KV_TENSOR_BLOCKER_NONE;
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+        kv_page_bind_materialize_writable(lctx, seq_id, kv_slot, out);
+#endif
         return;
     }
 
@@ -227,5 +242,63 @@ kv_tensor_probe_run(void *ctx, int32_t seq_id, int32_t kv_slot, KvTensorProbeRes
     kv_tensor_bind_attempt(lctx, seq_id, kv_slot, out);
     return 0;
 }
+
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+static int
+kv_page_bind_materialize_writable(
+    void *ctx,
+    int32_t seq_id,
+    int32_t kv_slot,
+    KvTensorProbeResult *out)
+{
+    if (!ctx || !out) {
+        return -1;
+    }
+
+    KvPageBind *bind = kv_find_page_bind((int)kv_slot);
+    if (bind == NULL || !bind->active || bind->num_pages <= 0 || bind->block_size <= 0) {
+        return 0;
+    }
+    if (!out->tensor_pages_bound || out->llama_token_cells <= 0) {
+        return 0;
+    }
+
+    struct llama_context *lctx = (struct llama_context *)ctx;
+    llama_memory_t mem = llama_get_memory(lctx);
+    if (!mem) {
+        return 0;
+    }
+
+    const int32_t bs = bind->block_size;
+    int32_t pages_live = (out->llama_token_cells + bs - 1) / bs;
+    if (pages_live > bind->num_pages) {
+        pages_live = bind->num_pages;
+    }
+
+    const llama_pos base = (out->seq_pos_min >= 0) ? (llama_pos)out->seq_pos_min : 0;
+    int mapped = 0;
+
+    for (int p = 0; p < pages_live; p++) {
+        llama_kv_page_map page_map;
+        const int32_t rc = llama_memory_kv_page_map(
+            mem,
+            (llama_seq_id)seq_id,
+            base,
+            (uint32_t)p,
+            (uint32_t)bs,
+            0,
+            &page_map);
+        if (rc == LLAMA_KV_EXT_OK && page_map.ok) {
+            mapped++;
+        }
+    }
+
+    bind->physical_pages_mapped = mapped;
+    bind->physical_pages_bound = (mapped > 0 && mapped == pages_live) ? 1 : 0;
+    out->physical_pages_mapped = mapped;
+    out->physical_pages_bound = bind->physical_pages_bound;
+    return 0;
+}
+#endif /* LLAMA_KV_EXT_WRITABLE_PAGE_MAP */
 
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */

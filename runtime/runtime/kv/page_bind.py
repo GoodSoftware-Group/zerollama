@@ -1,10 +1,11 @@
 """Phase 15 v8 — PA block pool → llama KV page bind (seq-position → tensor).
 
-v0–v7 export logical page tables (`kv_forward_plans`) and bind llama sequence/slot ids.
+v0–v7 export logical page tables (``kv_forward_plans``) and bind llama sequence/slot ids.
 v8 registers PA ``block_ids`` per ``kv_slot`` in native C for seq-position validation
 before decode. v20+ with linked ``llama-kv-ext`` reports ``status=bound`` +
 ``bind_level=tensor`` after K/V tensor verify — GPU smokes accept that as success.
-Writable cross-allocator bind (PA block_ids → mutable tensor pages) remains upstream-blocked.
+v33 adds ``llama_memory_kv_page_map`` in the forked llama.cpp tree: writable K/V spans
+per PA page for external KV migration (``physical_pages_bound`` on /health).
 """
 
 from __future__ import annotations
@@ -89,16 +90,24 @@ def page_bind_stats() -> dict[str, Any]:
 
         raw = dict(native_stats())
         raw["tensor_pages_bound"] = bool(raw.get("tensor_pages_bound"))
+        raw["physical_pages_bound"] = bool(raw.get("physical_pages_bound"))
         raw["slots"] = [
             {
                 **dict(s),
                 "cell_pages_bound": bool(s.get("cell_pages_bound")),
                 "tensor_pages_bound": bool(s.get("tensor_pages_bound")),
+                "physical_pages_bound": bool(s.get("physical_pages_bound")),
             }
             for s in page_bind_slots()
         ]
         return raw
-    return {"active_binds": 0, "total_registers": 0, "tensor_pages_bound": False, "slots": []}
+    return {
+        "active_binds": 0,
+        "total_registers": 0,
+        "tensor_pages_bound": False,
+        "physical_pages_bound": False,
+        "slots": [],
+    }
 
 
 def page_bind_tensor_probe_for_ctx(
@@ -148,6 +157,7 @@ def page_bind_health(
     accounting_ok = _bool_probe("aligned") if base_probe else None
     cell_bound = bool(base_probe.get("cell_pages_bound")) if base_probe else False
     tensor_bound = bool(base_probe.get("tensor_pages_bound")) if base_probe else False
+    physical_bound = bool(base_probe.get("physical_pages_bound")) if base_probe else False
 
     if native_ext_available and _native_page_bind_available():
         if tensor_bound:
@@ -157,6 +167,12 @@ def page_bind_health(
                 "PA block_ids mapped to llama KV cells; K/V tensor backing verified "
                 "(zerollama llama-kv-ext staging API)."
             )
+            if physical_bound:
+                bind_level = "physical"
+                reason = (
+                    "Writable K/V tensor spans resolved for live PA pages "
+                    "(llama_memory_kv_page_map)."
+                )
         elif cell_bound:
             status = "partial"
             bind_level = "cell_index"
@@ -205,6 +221,8 @@ def page_bind_health(
             "bind_level": bind_level,
             "tensor_pages_bound": tensor_bound,
             "tensor_bind_ready": tensor_bound,
+            "physical_pages_bound": physical_bound,
+            "writable_bind_ready": physical_bound,
             "writable_bind_available": bool(writable.get("writable_bind_available")),
             "writable_bind_api": writable.get("writable_bind_api") or "none",
             "writable_bind_blocker": writable.get("writable_bind_blocker") or "",

@@ -20,6 +20,11 @@
 #include "kv_page_bind_internal.h"
 #include "kv_tensor_probe.h"
 
+#ifdef ZEROLLAMA_KV_DECODE_LOOP
+#include "llama.h"
+#include "llama-kv-ext.h"
+#endif
+
 static PyObject *BlockPoolError = NULL;
 
 typedef struct {
@@ -346,6 +351,17 @@ kv_any_tensor_pages_bound(void)
     return 0;
 }
 
+static int
+kv_any_physical_pages_bound(void)
+{
+    for (int i = 0; i < KV_MAX_PAGE_BINDS; i++) {
+        if (g_page_binds[i].active && g_page_binds[i].physical_pages_bound) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static const char *
 kv_tensor_blocker_str(int code)
 {
@@ -425,6 +441,8 @@ kv_native_page_bind_set(PyObject *Py_UNUSED(self), PyObject *args)
     bind->num_pages = (int)n;
     bind->cell_pages_bound = 0;
     bind->tensor_pages_bound_slot = 0;
+    bind->physical_pages_bound = 0;
+    bind->physical_pages_mapped = 0;
     for (Py_ssize_t i = 0; i < n; i++) {
         PyObject *item = PySequence_Fast_GET_ITEM(seq, i);
         long bid = PyLong_AsLong(item);
@@ -462,6 +480,8 @@ kv_native_page_bind_clear(PyObject *Py_UNUSED(self), PyObject *args)
         bind->num_pages = 0;
         bind->cell_pages_bound = 0;
         bind->tensor_pages_bound_slot = 0;
+        bind->physical_pages_bound = 0;
+        bind->physical_pages_mapped = 0;
     }
     Py_RETURN_NONE;
 }
@@ -501,13 +521,15 @@ static PyObject *
 kv_native_page_bind_stats(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
 {
     return Py_BuildValue(
-        "{s:i,s:K,s:O}",
+        "{s:i,s:K,s:O,s:O}",
         "active_binds",
         kv_count_active_page_binds(),
         "total_registers",
         g_page_bind_registers,
         "tensor_pages_bound",
-        kv_any_tensor_pages_bound() ? Py_True : Py_False);
+        kv_any_tensor_pages_bound() ? Py_True : Py_False,
+        "physical_pages_bound",
+        kv_any_physical_pages_bound() ? Py_True : Py_False);
 }
 
 static PyObject *
@@ -522,7 +544,7 @@ kv_native_page_bind_slots(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
             continue;
         }
         PyObject *row = Py_BuildValue(
-            "{s:i,s:i,s:i,s:i,s:i}",
+            "{s:i,s:i,s:i,s:i,s:i,s:i,s:i}",
             "kv_slot",
             g_page_binds[i].kv_slot,
             "num_pages",
@@ -532,7 +554,11 @@ kv_native_page_bind_slots(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
             "cell_pages_bound",
             g_page_binds[i].cell_pages_bound,
             "tensor_pages_bound",
-            g_page_binds[i].tensor_pages_bound_slot);
+            g_page_binds[i].tensor_pages_bound_slot,
+            "physical_pages_bound",
+            g_page_binds[i].physical_pages_bound,
+            "physical_pages_mapped",
+            g_page_binds[i].physical_pages_mapped);
         if (row == NULL) {
             Py_DECREF(out);
             return NULL;
@@ -615,7 +641,7 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
     const char *blocker = kv_tensor_blocker_str(probe.blocker_code);
     const char *memory_kind = kv_tensor_memory_kind_str(probe.memory_kind);
     return Py_BuildValue(
-        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O}",
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O,s:O}",
         "memory_non_null",
         probe.memory_non_null,
         "can_shift",
@@ -638,6 +664,10 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
         probe.cell_pages_bound,
         "tensor_pages_bound",
         probe.tensor_pages_bound ? 1 : 0,
+        "physical_pages_bound",
+        probe.physical_pages_bound ? 1 : 0,
+        "physical_pages_mapped",
+        (int)probe.physical_pages_mapped,
         "kv_stream",
         (int)probe.kv_stream,
         "memory_kind",
@@ -651,14 +681,113 @@ kv_native_page_bind_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
         "blocker",
         blocker,
         "tensor_bind_ready",
-        probe.tensor_pages_bound ? Py_True : Py_False);
+        probe.tensor_pages_bound ? Py_True : Py_False,
+        "writable_bind_ready",
+        probe.physical_pages_bound ? Py_True : Py_False);
 }
+
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+static PyObject *
+kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    unsigned PY_LONG_LONG ctx_ptr = 0;
+    int seq_id = 0;
+    int kv_slot = 0;
+    int page_index = 0;
+    if (!PyArg_ParseTuple(args, "Kiii", &ctx_ptr, &seq_id, &kv_slot, &page_index)) {
+        return NULL;
+    }
+    if (ctx_ptr == 0) {
+        PyErr_SetString(PyExc_ValueError, "ctx_ptr must be non-zero");
+        return NULL;
+    }
+    if (page_index < 0) {
+        PyErr_SetString(PyExc_ValueError, "page_index must be non-negative");
+        return NULL;
+    }
+    KvPageBind *bind = kv_find_page_bind(kv_slot);
+    if (bind == NULL || !bind->active) {
+        PyErr_Format(PyExc_KeyError, "no page bind for kv_slot %d", kv_slot);
+        return NULL;
+    }
+    if (page_index >= bind->num_pages) {
+        PyErr_Format(PyExc_ValueError, "page_index %d out of range", page_index);
+        return NULL;
+    }
+
+    struct llama_context *lctx = (struct llama_context *)(uintptr_t)ctx_ptr;
+    llama_memory_t mem = llama_get_memory(lctx);
+    if (!mem) {
+        PyErr_SetString(PyExc_RuntimeError, "llama_get_memory returned NULL");
+        return NULL;
+    }
+
+    const llama_pos base = llama_memory_seq_pos_min(mem, (llama_seq_id)seq_id);
+    llama_kv_page_map page_map;
+    memset(&page_map, 0, sizeof(page_map));
+    const int32_t rc = llama_memory_kv_page_map(
+        mem,
+        (llama_seq_id)seq_id,
+        base,
+        (uint32_t)page_index,
+        (uint32_t)bind->block_size,
+        0,
+        &page_map);
+    if (rc != LLAMA_KV_EXT_OK || !page_map.ok) {
+        PyErr_Format(
+            PyExc_RuntimeError,
+            "llama_memory_kv_page_map failed rc=%d page=%d",
+            (int)rc,
+            page_index);
+        return NULL;
+    }
+
+    return Py_BuildValue(
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:K,s:K,s:K,s:K}",
+        "page",
+        page_index,
+        "block_id",
+        bind->block_ids[page_index],
+        "pos_start",
+        (int)page_map.pos_start,
+        "pos_end",
+        (int)page_map.pos_end,
+        "n_cells",
+        (int)page_map.n_cells,
+        "cell_idx_first",
+        (int)page_map.cell_idx_first,
+        "cell_idx_last",
+        (int)page_map.cell_idx_last,
+        "stream",
+        (int)page_map.stream,
+        "k_data",
+        page_map.k_data,
+        "v_data",
+        page_map.v_data,
+        "k_span_bytes",
+        page_map.k_span_bytes,
+        "v_span_bytes",
+        page_map.v_span_bytes);
+}
+#endif /* LLAMA_KV_EXT_WRITABLE_PAGE_MAP */
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
 
 static PyObject *
 kv_native_page_bind_writable_probe(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
 {
-#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+#if defined(LLAMA_KV_EXT_WRITABLE_PAGE_MAP) && defined(ZEROLLAMA_KV_DECODE_LOOP)
+    int32_t avail = 0;
+    char api_name[64] = "none";
+    llama_memory_kv_ext_writable_bind_probe(&avail, api_name, sizeof(api_name));
+    return Py_BuildValue(
+        "{s:O,s:s,s:s}",
+        "writable_bind_available",
+        avail ? Py_True : Py_False,
+        "writable_bind_api",
+        api_name,
+        "writable_bind_blocker",
+        avail ? "" : "libllama_writable_page_map_not_linked");
+#elif defined(LLAMA_KV_EXT_WRITABLE_PAGE_MAP)
     return Py_BuildValue(
         "{s:O,s:s,s:s}",
         "writable_bind_available",
@@ -1455,6 +1584,10 @@ static PyMethodDef kv_module_methods[] = {
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
     {"page_bind_tensor_probe", kv_native_page_bind_tensor_probe, METH_VARARGS,
      "Probe llama memory vs PA page table (ctx_ptr, seq_id, kv_slot)"},
+#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
+    {"page_bind_map_page", kv_native_page_bind_map_page, METH_VARARGS,
+     "Resolve writable K/V spans for one PA page (ctx_ptr, seq_id, kv_slot, page_index)"},
+#endif
 #endif
     {"decode_batch_layout", kv_native_decode_batch_layout, METH_VARARGS,
      "Build llama_batch field lists in C (token, pos, seq_id, logits)"},

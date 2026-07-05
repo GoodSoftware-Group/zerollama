@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pathlib
 from typing import Any, Type
 
 from runtime.kv._py_block_pool import BlockPool as PyBlockPool
@@ -75,6 +76,27 @@ def kv_backend_name() -> str:
     else:
         _BACKEND = "python"
     return _BACKEND
+
+
+def kv_native_build_sha() -> str | None:
+    """Read .build-stamps/runtime-kv-native.sha from the repo root.
+
+    WHY here: bootstrap compatibility check in Go reads this field from /health to decide
+    whether a running sidecar matches the binary on disk. Empty string means the stamp
+    file is absent (pre-v33 builds or manually skipped _kv_native build).
+    """
+    # Walk up from runtime/runtime/kv/backend.py → runtime/ → repo root.
+    here = pathlib.Path(__file__).resolve()
+    repo_root = here.parents[3]  # backend.py → kv/ → runtime/ → runtime-pkg/ → repo
+    # Prefer ZEROLLAMA_REPO if set (Darwin sidecar always sets it).
+    env_root = os.environ.get("ZEROLLAMA_REPO", "").strip()
+    if env_root:
+        repo_root = pathlib.Path(env_root)
+    stamp = repo_root / ".build-stamps" / "runtime-kv-native.sha"
+    try:
+        return stamp.read_text().strip() or None
+    except OSError:
+        return None
 
 
 def kv_backend_health() -> dict[str, Any]:

@@ -81,6 +81,40 @@ LLAMA_API int32_t llama_memory_kv_tensor_info(
         llama_kv_tensor_info * out);
 
 /*
+ * Writable span for one PA page mapped onto llama KV cells (layer 0 export).
+ * WHY layer 0 first: operators validate bind path before multi-layer fan-out;
+ * higher layers share the same cell index layout.
+ */
+typedef struct llama_kv_page_map {
+    llama_pos  pos_start;
+    llama_pos  pos_end;          /* exclusive */
+    uint32_t   n_cells;
+    uint32_t   cell_idx_first;
+    uint32_t   cell_idx_last;
+    uint32_t   stream;
+    uint64_t   k_data;           /* writable base for contiguous cell span */
+    uint64_t   v_data;
+    uint64_t   k_span_bytes;
+    uint64_t   v_span_bytes;
+    int32_t    kv_layer;
+    int32_t    ok;
+} llama_kv_page_map;
+
+/*
+ * Resolve writable K/V tensor spans for token positions
+ * [seq_pos_min + page_index*block_size, +block_size) on attn KV cache.
+ * Returns LLAMA_KV_EXT_NOT_FOUND when page has no live cells yet.
+ */
+LLAMA_API int32_t llama_memory_kv_page_map(
+        llama_memory_t     mem,
+        llama_seq_id       seq_id,
+        llama_pos          seq_pos_min,
+        uint32_t           page_index,
+        uint32_t           block_size,
+        int32_t            kv_layer,
+        llama_kv_page_map * out);
+
+/*
  * Probe whether writable cross-allocator PA→tensor page bind is available.
  * out_available: 1 when staging or upstream writable page-map API is linked.
  * out_api_name: detected API name (e.g. "llama_memory_kv_page_map") or "none".
