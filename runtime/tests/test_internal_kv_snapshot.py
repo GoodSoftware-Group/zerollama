@@ -28,6 +28,7 @@ def test_internal_kv_snapshot_loopback(cfg_root):
     assert "kv_forward_plans" in body
     assert "kv_continuous_batch" in body
     assert "kv_page_bind" in body
+    assert "kv_page_migration" in body
     assert "kv_resume" in body
     pb = body["kv_page_bind"]
     from runtime.kv.backend import native_available

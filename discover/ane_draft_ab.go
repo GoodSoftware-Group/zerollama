@@ -84,6 +84,11 @@ type ANEDraftServerRun struct {
 	DriveShadowMatches     int     `json:"drive_shadow_matches,omitempty"`
 	DriveShadowHiddenCos   float64 `json:"drive_shadow_hidden_cos,omitempty"`
 	DriveShadowHiddenSteps int     `json:"drive_shadow_hidden_steps,omitempty"`
+	MetalGoldenLegs        map[string]float64 `json:"metal_golden_legs,omitempty"` // last B8m cos per leg
+	MetalGoldenInputCos    float64            `json:"metal_golden_input_cos,omitempty"`
+	MetalGoldenHostFcCos   float64            `json:"metal_golden_host_fc_cos,omitempty"`
+	MetalGoldenPreOutputCos float64           `json:"metal_golden_pre_output_cos,omitempty"`
+	MetalGoldenOutputCos   float64            `json:"metal_golden_output_cos,omitempty"`
 	MatmulChain            int     `json:"matmul_chain,omitempty"`
 	Error              string  `json:"error,omitempty"`
 }
@@ -107,6 +112,7 @@ var (
 	aneConvDepthRE      = regexp.MustCompile(`conv depth cap=(\d+) active_convs=(\d+)`)
 	aneGoldenCosineRE   = regexp.MustCompile(`B6 golden step=\d+ mode=\w+ mse_ref_vs_ane=[0-9.eE+-]+ cosine=([0-9.-]+)`)
 	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+(?: handoff_tok=\d+)? ane_tok=\d+ metal_tok=\d+ match=(\d+)(?: hidden_cos=([0-9.eE+-]+))?`)
+	aneB8MetalGoldenRE  = regexp.MustCompile(`B8m step=\d+ leg=(\w+) cos=([0-9.eE+-]+) n=\d+(?: note=\w+)?`)
 	aneMatmulChain4RE   = regexp.MustCompile(`chain4=swiglu\+down\+attn_gate|mode=matmul_chain4`)
 	aneMatmulChain5RE   = regexp.MustCompile(`chain5=swiglu\+down\+attn_gate\+ssm_out|mode=matmul_chain5`)
 	aneMatmulChain10RE  = regexp.MustCompile(`chain10=|P9 matmul chain blk\.1 ffn_down|mode=matmul_chain10_blk1_down`)
@@ -141,6 +147,32 @@ func parseB7ShadowFromLog(logText string) (steps, matches int, hiddenCosSum floa
 		}
 	}
 	return steps, matches, hiddenCosSum, hiddenCosN
+}
+
+func parseB8MetalGoldenFromLog(logText string) (last map[string]float64, avg map[string]float64) {
+	last = make(map[string]float64)
+	sum := make(map[string]float64)
+	count := make(map[string]int)
+	for _, m := range aneB8MetalGoldenRE.FindAllStringSubmatch(logText, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		leg := m[1]
+		v, err := strconv.ParseFloat(m[2], 64)
+		if err != nil {
+			continue
+		}
+		last[leg] = v
+		sum[leg] += v
+		count[leg]++
+	}
+	avg = make(map[string]float64)
+	for leg, n := range count {
+		if n > 0 {
+			avg[leg] = sum[leg] / float64(n)
+		}
+	}
+	return last, avg
 }
 
 func parseGoldenCosineFromLog(logText string) (last float64, count int) {
@@ -1530,8 +1562,22 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 			}
 			run.ActiveConvDepth = active
 		}
-		if telemetry {
+		if telemetry || driveMode == "shadow" || driveMode == "force" {
 			run.GoldenCosine, run.GoldenSteps = parseGoldenCosineFromLog(logText)
+		}
+		if lastMetal, _ := parseB8MetalGoldenFromLog(logText); len(lastMetal) > 0 {
+			run.MetalGoldenLegs = lastMetal
+			run.MetalGoldenInputCos = lastMetal["handoff_input"]
+			run.MetalGoldenHostFcCos = lastMetal["host_fc"]
+			if v, ok := lastMetal["output_norm"]; ok {
+				run.MetalGoldenOutputCos = v
+			} else {
+				run.MetalGoldenOutputCos = lastMetal["ffn_down_out"]
+				if run.MetalGoldenOutputCos == 0 {
+					run.MetalGoldenOutputCos = lastMetal["ffn_down"]
+				}
+			}
+			run.MetalGoldenPreOutputCos = lastMetal["pre_output_norm"]
 		}
 		if kernel == "matmul" {
 			run.MatmulChain = parseMatmulChainFromLog(logText)

@@ -115,14 +115,17 @@ def test_infer_trace_debug_tag(monkeypatch: pytest.MonkeyPatch):
 def test_kv_env_defaults(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ZEROLLAMA_KV_NATIVE_DECODE", raising=False)
     monkeypatch.delenv("ZEROLLAMA_KV_AUTO_BATCH", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_AUTO_BATCH_STREAM", raising=False)
     from runtime.env import (
         kv_auto_batch_enabled,
+        kv_auto_batch_stream_enabled,
         kv_native_decode_enabled,
         kv_env_health,
     )
 
     assert kv_native_decode_enabled() is True
     assert kv_auto_batch_enabled() is False
+    assert kv_auto_batch_stream_enabled() is False
     assert kv_env_health()["auto_batch_ms"] == 5
 
 

@@ -156,4 +156,5 @@ def test_health_includes_kv_auto_batch(cfg_root):
     eng = InferenceEngine(cfg_root)
     h = eng.health()
     assert "kv_auto_batch" in h
-    assert h["kv_auto_batch"]["enabled"] is False
+    assert h["kv_auto_batch"]["non_stream"]["enabled"] is False
+    assert h["kv_auto_batch"]["stream"]["enabled"] is False

@@ -163,6 +163,26 @@ B7 shadow step=2 seq=0 handoff_tok=99 ane_tok=1 metal_tok=2 match=0 hidden_cos=0
 	}
 }
 
+func TestParseB8MetalGoldenFromLog(t *testing.T) {
+	log := `log_ane_metal_golden_handoff_input: B8m step=1 leg=handoff_input cos=0.9988 n=25600 note=export
+log_ane_metal_golden_host_fc: B8m step=1 leg=host_fc cos=1.0000 n=5120 note=export_replay
+log_ane_metal_golden_chain_output: B8m step=1 leg=attn_out cos=1.0000 n=4096 note=cpu_ref
+log_ane_metal_golden_chain_output: B8m step=1 leg=attn_wo cos=0.9900 n=5120 note=cpu_ref
+log_ane_metal_golden_chain_output: B8m step=1 leg=pre_output_norm cos=0.1300 n=5120 note=metal_pre_norm
+log_ane_metal_golden_chain_output: B8m step=1 leg=ffn_down cos=0.9800 n=5120 note=cpu_ref
+log_ane_metal_golden_chain_output: B8m step=1 leg=output_norm cos=0.1251 n=5120`
+	last, avg := parseB8MetalGoldenFromLog(log)
+	if last["handoff_input"] < 0.99 || last["host_fc"] < 0.99 || last["output_norm"] < 0.1 {
+		t.Fatalf("last=%v", last)
+	}
+	if last["pre_output_norm"] < 0.1 || last["attn_out"] < 0.99 {
+		t.Fatalf("intermediate last=%v", last)
+	}
+	if avg["handoff_input"] < 0.99 {
+		t.Fatalf("avg=%v", avg)
+	}
+}
+
 func TestDraftANEMatmulDims(t *testing.T) {
 	ic, oc, seq := DraftANEMatmulDims(ANEDraftEntry{EmbeddingLength: 768, ProxyChannels: 256, ProxySpatial: 16})
 	if ic != 768 || oc != 256 || seq != 16 {

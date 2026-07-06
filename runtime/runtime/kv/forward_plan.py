@@ -8,6 +8,8 @@ N running sequences (``/health.kv_continuous_batch``).
 v20a adds ``native_page_table`` + ``page_table_native_parity`` from the C registry
 when admitted (operator debug for v19 tensor bind scaffold). Does not bind pages
 to llama tensors.
+v40 adds ``page_migration_summary`` on running admitted plans when tensor/physical
+bind probe data is available (lightweight; full plan on ``/internal/kv-snapshot``).
 
 WHY ``decode_prefill`` is admit-only
 ------------------------------------

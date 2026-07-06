@@ -22,6 +22,7 @@ IN_TREE=(
   "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
   "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
   "${ROOT}/llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch"
+  "${ROOT}/llama/patches/0019-ollama-llama-kv-ext-external-buffer-alias-v47.patch"
 )
 
 for f in "${IN_TREE[@]}"; do
@@ -45,6 +46,8 @@ REQUIRED_API=(
   llama_memory_kv_cache_layout
   llama_memory_kv_ext_classify
   llama_memory_kv_ext_writable_bind_probe
+  llama_memory_kv_ext_external_alias_probe
+  llama_memory_kv_page_alias_validate
 )
 for sym in "${REQUIRED_API[@]}"; do
   grep -q "${sym}" "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
@@ -120,6 +123,7 @@ report = {
     "pin": os.environ.get("PIN", ""),
     "llama_cpp_version": os.environ.get("VERSION", ""),
     "patch": "0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch",
+    "patch_alias": "0019-ollama-llama-kv-ext-external-buffer-alias-v47.patch",
     "staging_api": [
         "llama_memory_kv_cell_for_pos",
         "llama_memory_kv_cell_map_range",
@@ -128,6 +132,8 @@ report = {
         "llama_memory_kv_cache_layout",
         "llama_memory_kv_ext_classify",
         "llama_memory_kv_ext_writable_bind_probe",
+        "llama_memory_kv_ext_external_alias_probe",
+        "llama_memory_kv_page_alias_validate",
     ],
     "upstream_writable_watch_found": json.loads(os.environ.get("WATCH_JSON", "[]")),
     "upstream_writable_watch": [
@@ -141,4 +147,4 @@ print(f"report: {out}")
 PY
 fi
 
-echo "PASS: llama-kv-ext in-tree + patch 0014 present; upstream memory deps OK at pin ${PIN}"
+echo "PASS: llama-kv-ext in-tree + patches 0014/0019 present; upstream memory deps OK at pin ${PIN}"

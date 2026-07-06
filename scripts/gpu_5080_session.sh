@@ -15,6 +15,7 @@
 #   RUN_E2E_PHASE14=1 RUN_E2E_INPROCESS=1                   # phase14_inprocess_smoke (serve must use inprocess)
 #   RUN_E2E_PHASE14_SIGNOFF=1                               # phase14_5080_signoff (needs LLAMA_CPP_LIB; self-contained restarts)
 #   RUN_E2E_PHASE15=1                                       # phase15_inprocess_signoff (needs LLAMA_CPP_LIB)
+#   RUN_E2E_PHASE15_AUTO_BATCH=1                            # with RUN_E2E_PHASE15=1: RUN_P15_AUTO_BATCH_ALL sign-off
 #   RUN_E2E_L1=1                                            # l1_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 7B–9B)
 #   RUN_E2E_L3=1                                            # l3_cuda_full_gate (needs CUDA_LLAMA_MODEL or LLAMA_MODEL 9B+)
 #   RUN_E2E_L3_SPEC=1                                       # also L3_RUN_SPEC_CACHE=1 on l3_cuda_full_gate (ngram policy leg)
@@ -115,6 +116,9 @@ elif [[ "${RUN_E2E_PHASE15:-0}" == "1" ]]; then
   fi
   echo ""
   echo "== Phase 15 in-process GPU sign-off =="
+  if [[ "${RUN_E2E_PHASE15_AUTO_BATCH:-0}" == "1" ]]; then
+    export RUN_P15_AUTO_BATCH_ALL=1
+  fi
   "${ROOT}/scripts/phase15_inprocess_signoff.sh"
 elif [[ "${RUN_E2E_PHASE14:-0}" == "1" ]]; then
   echo ""

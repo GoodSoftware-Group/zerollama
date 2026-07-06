@@ -7,6 +7,8 @@
  *
  * v8 partial: page_bind_* registers PA block_ids per kv_slot (seq-position bind).
  * Tensor KV pages remain inside llama until upstream exposes stable handles.
+ * v47: page_bind_external_alias_probe + page_bind_alias_validate (patch 0019) —
+ * classify external-buffer alias feasibility without mutating ggml tensors.
  * decode_batch_layout / decode_prefill_chunks prepare llama_batch metadata; llama_decode
  * still runs from Python ctypes until a libllama-linked extension exists.
  */
@@ -22,6 +24,8 @@
 
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
 #include "llama.h"
+#endif
+#if defined(ZEROLLAMA_KV_DECODE_LOOP) || defined(LLAMA_KV_EXT_EXTERNAL_ALIAS)
 #include "llama-kv-ext.h"
 #endif
 
@@ -625,8 +629,10 @@ kv_native_probe_result_dict(const KvTensorProbeResult *probe)
 {
     const char *blocker = kv_tensor_blocker_str(probe->blocker_code);
     const char *memory_kind = kv_tensor_memory_kind_str(probe->memory_kind);
+    /* Format must have exactly 20 s:i before s:K,s:K — v35 added kv_cache_kv_size and
+     * kv_cache_n_stream. A short format treats GPU pointers as C strings → SIGBUS. */
     return Py_BuildValue(
-        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O}",
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:s,s:s,s:O,s:O}",
         "memory_non_null",
         probe->memory_non_null,
         "can_shift",
@@ -720,9 +726,10 @@ kv_native_page_bind_last_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
     if (out == NULL) {
         return NULL;
     }
-    for (int slot = 0; slot < KV_MAX_PAGE_BINDS; slot++) {
+    for (int idx = 0; idx < KV_MAX_PAGE_BINDS; idx++) {
+        int stored_slot = -1;
         KvTensorProbeResult probe;
-        if (kv_tensor_probe_last_get(slot, &probe) != 0) {
+        if (kv_tensor_probe_last_get_by_index(idx, &stored_slot, &probe) != 0) {
             continue;
         }
         PyObject *probe_dict = kv_native_probe_result_dict(&probe);
@@ -730,7 +737,7 @@ kv_native_page_bind_last_tensor_probe(PyObject *Py_UNUSED(self), PyObject *args)
             Py_DECREF(out);
             return NULL;
         }
-        PyObject *row = Py_BuildValue("{s:i,s:O}", "kv_slot", slot, "probe", probe_dict);
+        PyObject *row = Py_BuildValue("{s:i,s:O}", "kv_slot", stored_slot, "probe", probe_dict);
         Py_DECREF(probe_dict);
         if (row == NULL) {
             Py_DECREF(out);
@@ -754,15 +761,16 @@ kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
     int seq_id = 0;
     int kv_slot = 0;
     int page_index = 0;
-    if (!PyArg_ParseTuple(args, "Kiii", &ctx_ptr, &seq_id, &kv_slot, &page_index)) {
+    int kv_layer = 0;
+    if (!PyArg_ParseTuple(args, "Kiii|i", &ctx_ptr, &seq_id, &kv_slot, &page_index, &kv_layer)) {
         return NULL;
     }
     if (ctx_ptr == 0) {
         PyErr_SetString(PyExc_ValueError, "ctx_ptr must be non-zero");
         return NULL;
     }
-    if (page_index < 0) {
-        PyErr_SetString(PyExc_ValueError, "page_index must be non-negative");
+    if (page_index < 0 || kv_layer < 0) {
+        PyErr_SetString(PyExc_ValueError, "page_index and kv_layer must be non-negative");
         return NULL;
     }
     KvPageBind *bind = kv_find_page_bind(kv_slot);
@@ -791,7 +799,7 @@ kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
         base,
         (uint32_t)page_index,
         (uint32_t)bind->block_size,
-        0,
+        kv_layer,
         &page_map);
     if (rc != LLAMA_KV_EXT_OK || !page_map.ok) {
         PyErr_Format(
@@ -803,11 +811,13 @@ kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
     }
 
     return Py_BuildValue(
-        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:K,s:K,s:K,s:K,s:i}",
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:K,s:K,s:K,s:K,s:i,s:i}",
         "page",
         page_index,
         "block_id",
         bind->block_ids[page_index],
+        "kv_layer",
+        kv_layer,
         "pos_start",
         (int)page_map.pos_start,
         "pos_end",
@@ -829,10 +839,133 @@ kv_native_page_bind_map_page(PyObject *Py_UNUSED(self), PyObject *args)
         "v_span_bytes",
         page_map.v_span_bytes,
         "v_transposed",
-        (int)page_map.v_transposed);
+        (int)        page_map.v_transposed);
 }
 #endif /* LLAMA_KV_EXT_WRITABLE_PAGE_MAP */
+
+#ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
+static PyObject *
+kv_native_page_bind_alias_validate(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    unsigned PY_LONG_LONG ctx_ptr = 0;
+    int seq_id = 0;
+    int kv_slot = 0;
+    int page_index = 0;
+    unsigned PY_LONG_LONG kv_layer = 0;
+    unsigned PY_LONG_LONG ext_k_data = 0;
+    unsigned PY_LONG_LONG ext_k_span = 0;
+    unsigned PY_LONG_LONG ext_v_data = 0;
+    unsigned PY_LONG_LONG ext_v_span = 0;
+    if (!PyArg_ParseTuple(
+            args,
+            "Kiii|KKKKK",
+            &ctx_ptr,
+            &seq_id,
+            &kv_slot,
+            &page_index,
+            &kv_layer,
+            &ext_k_data,
+            &ext_k_span,
+            &ext_v_data,
+            &ext_v_span)) {
+        return NULL;
+    }
+    if (ctx_ptr == 0) {
+        PyErr_SetString(PyExc_ValueError, "ctx_ptr must be non-zero");
+        return NULL;
+    }
+    if (page_index < 0 || (long long)kv_layer < 0) {
+        PyErr_SetString(PyExc_ValueError, "page_index and kv_layer must be non-negative");
+        return NULL;
+    }
+    KvPageBind *bind = kv_find_page_bind(kv_slot);
+    if (bind == NULL || !bind->active) {
+        PyErr_Format(PyExc_KeyError, "no page bind for kv_slot %d", kv_slot);
+        return NULL;
+    }
+    if (page_index >= bind->num_pages) {
+        PyErr_Format(PyExc_ValueError, "page_index %d out of range", page_index);
+        return NULL;
+    }
+
+    struct llama_context *lctx = (struct llama_context *)(uintptr_t)ctx_ptr;
+    llama_memory_t mem = llama_get_memory(lctx);
+    if (!mem) {
+        PyErr_SetString(PyExc_RuntimeError, "llama_get_memory returned NULL");
+        return NULL;
+    }
+
+    const llama_pos base = llama_memory_seq_pos_min(mem, (llama_seq_id)seq_id);
+    llama_kv_page_alias_plan plan;
+    memset(&plan, 0, sizeof(plan));
+    const int32_t rc = llama_memory_kv_page_alias_validate(
+        mem,
+        (llama_seq_id)seq_id,
+        base,
+        (uint32_t)page_index,
+        (uint32_t)bind->block_size,
+        (int32_t)kv_layer,
+        ext_k_data,
+        ext_k_span,
+        ext_v_data,
+        ext_v_span,
+        &plan);
+    if (rc != LLAMA_KV_EXT_OK && rc != LLAMA_KV_EXT_NOT_FOUND && rc != LLAMA_KV_EXT_UNSUPPORTED) {
+        PyErr_Format(PyExc_RuntimeError, "llama_memory_kv_page_alias_validate failed rc=%d", (int)rc);
+        return NULL;
+    }
+
+    return Py_BuildValue(
+        "{s:O,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:i,s:K,s:K,s:K,s:K,s:s}",
+        "ok",
+        plan.ok ? Py_True : Py_False,
+        "alias_ready",
+        (int)plan.alias_ready,
+        "alias_mode",
+        (int)plan.alias_mode,
+        "buffer_host",
+        (int)plan.buffer_host,
+        "k_spans_match",
+        (int)plan.k_spans_match,
+        "v_spans_match",
+        (int)plan.v_spans_match,
+        "k_same_pointer",
+        (int)plan.k_same_pointer,
+        "v_same_pointer",
+        (int)plan.v_same_pointer,
+        "v_transposed",
+        (int)plan.v_transposed,
+        "llama_k_data",
+        plan.llama_k_data,
+        "llama_v_data",
+        plan.llama_v_data,
+        "k_span_bytes",
+        plan.k_span_bytes,
+        "v_span_bytes",
+        plan.v_span_bytes,
+        "blocker",
+        plan.blocker);
+}
+#endif /* LLAMA_KV_EXT_EXTERNAL_ALIAS */
 #endif /* ZEROLLAMA_KV_DECODE_LOOP */
+
+#ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
+static PyObject *
+kv_native_page_bind_external_alias_probe(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
+{
+    llama_kv_ext_external_alias_probe probe;
+    memset(&probe, 0, sizeof(probe));
+    llama_memory_kv_ext_external_alias_probe(&probe);
+    return Py_BuildValue(
+        "{s:O,s:O,s:s}",
+        "external_alias_available",
+        probe.available ? Py_True : Py_False,
+        "external_alias_validate_api",
+        probe.validate_api ? Py_True : Py_False,
+        "external_alias_api",
+        probe.api_name);
+}
+#endif /* LLAMA_KV_EXT_EXTERNAL_ALIAS */
 
 static PyObject *
 kv_native_page_bind_writable_probe(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
@@ -1643,6 +1776,10 @@ static PyMethodDef kv_module_methods[] = {
      "Export PA page table rows for kv_slot (page, block_id, token range)"},
     {"page_bind_writable_probe", kv_native_page_bind_writable_probe, METH_NOARGS,
      "Probe whether writable PA→tensor page bind API is linked (Phase 15 v32b)"},
+#ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
+    {"page_bind_external_alias_probe", kv_native_page_bind_external_alias_probe, METH_NOARGS,
+     "Static probe: external buffer alias validate API linked (Phase 15 v47)"},
+#endif
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
     {"page_bind_tensor_probe", kv_native_page_bind_tensor_probe, METH_VARARGS,
      "Probe llama memory vs PA page table (ctx_ptr, seq_id, kv_slot)"},
@@ -1650,7 +1787,11 @@ static PyMethodDef kv_module_methods[] = {
      "Last successful tensor probe for kv_slot (optional); all slots when omitted"},
 #ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
     {"page_bind_map_page", kv_native_page_bind_map_page, METH_VARARGS,
-     "Resolve writable K/V spans for one PA page (ctx_ptr, seq_id, kv_slot, page_index)"},
+     "Resolve writable K/V spans for one PA page (ctx_ptr, seq_id, kv_slot, page_index[, kv_layer=0])"},
+#endif
+#ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
+    {"page_bind_alias_validate", kv_native_page_bind_alias_validate, METH_VARARGS,
+     "Validate external K/V ptrs vs page_map (ctx_ptr, seq_id, kv_slot, page_index[, kv_layer, ext_k, ext_k_span, ext_v, ext_v_span])"},
 #endif
 #endif
     {"decode_batch_layout", kv_native_decode_batch_layout, METH_VARARGS,

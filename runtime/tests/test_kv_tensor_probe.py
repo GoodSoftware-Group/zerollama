@@ -38,14 +38,23 @@ def test_page_bind_health_includes_writable_bind_probe(monkeypatch):
         "writable_bind_api": "none",
         "writable_bind_blocker": "staging_writable_page_map_not_implemented",
     }
+    ext_alias = {
+        "external_alias_available": False,
+        "external_alias_api": "none",
+        "external_alias_blocker": "external_alias_api_not_linked",
+    }
     h = page_bind_health(
         native_ext_available=True,
         tensor_probe=probe,
         writable_probe=writable,
+        external_alias_probe=ext_alias,
     )
     assert h["writable_bind_available"] is False
     assert h["writable_bind_api"] == "none"
     assert h["writable_bind_blocker"] == "staging_writable_page_map_not_implemented"
+    assert h["external_alias_available"] is False
+    assert h["external_alias_api"] == "none"
+    assert h["external_alias_blocker"] == "external_alias_api_not_linked"
 
 
 def test_writable_bind_probe_without_native_ext():
@@ -75,6 +84,31 @@ def test_writable_bind_probe_linked_build():
             "llama_kv_ext_not_linked",
             "libllama_writable_page_map_not_linked",
         )
+
+
+def test_external_alias_probe_without_native_ext():
+    from runtime.kv.tensor_probe import external_alias_probe
+
+    if native_available():
+        pytest.skip("native ext built")
+    out = external_alias_probe()
+    assert out["external_alias_available"] is False
+    assert out["external_alias_blocker"] == "native_ext_not_built"
+
+
+@pytest.mark.skipif(not native_available(), reason="native ext not built")
+def test_external_alias_probe_linked_build():
+    from runtime.kv.tensor_probe import external_alias_probe
+
+    out = external_alias_probe()
+    assert "external_alias_available" in out
+    assert "external_alias_validate_api" in out
+    assert "external_alias_api" in out
+    if out["external_alias_available"]:
+        assert out["external_alias_api"] == "llama_memory_kv_page_alias_validate"
+        assert out["external_alias_blocker"] == ""
+    else:
+        assert out["external_alias_blocker"] == "external_alias_api_not_linked"
 
 
 def test_page_bind_health_bound_when_tensor_pages_bound(monkeypatch):

@@ -69,3 +69,5 @@ endif()
 
 # zerollama Phase 15 v33: staging writable KV page-map (llama-kv-ext.h)
 target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1)
+# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
+target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)

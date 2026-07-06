@@ -1,4 +1,4 @@
-"""Phase 15 v8 — PA block pool → llama KV page bind (seq-position → tensor).
+"""Phase 15 v8–v47 — PA block pool → llama KV page bind (seq-position → tensor → alias validate).
 
 v0–v7 export logical page tables (``kv_forward_plans``) and bind llama sequence/slot ids.
 v8 registers PA ``block_ids`` per ``kv_slot`` in native C for seq-position validation
@@ -6,6 +6,32 @@ before decode. v20+ with linked ``llama-kv-ext`` reports ``status=bound`` +
 ``bind_level=tensor`` after K/V tensor verify — GPU smokes accept that as success.
 v33 adds ``llama_memory_kv_page_map`` in the forked llama.cpp tree: writable K/V spans
 per PA page for external KV migration (``physical_pages_bound`` on /health).
+v34 fans out the writable page_map across all KV layers; ``tensor_layers_verified``
+tracks how many layers were successfully backed.
+v35 adds ``kv_v_transposed`` / ``kv_cache_kv_size`` / ``kv_cache_n_stream`` from
+``llama_memory_kv_cache_layout``; ``page_bind_last_tensor_probe`` persists the last
+decode probe so /health can show layout data after ``page_bind_clear``.
+v36 adds GGUF-derived layer-group enrichment: ``kv_full_layers`` / ``kv_swa_layers`` /
+``tensor_layers_expected`` on /health.kv_page_bind so operators can distinguish an
+expected SWA-layer gap from a real bind failure on hybrid models (Gemma 3/4, etc.).
+v47 adds external-buffer alias probe + validate on /health (patch 0019) — classifies
+whether external PA pointers can zero-copy alias ``page_map`` spans without mutating
+ggml tensors (``external_alias_*`` fields; true bind is v48+).
+
+WHY the last-probe fallback: ``page_bind_clear`` fires on generation complete. At that
+point /health has no running request to probe against. Without the snapshot, operators
+would see ``status=partial`` (no live probe) even for a model that just completed a
+fully-bound decode. ``last_tensor_probe=True`` in the health dict signals that the data
+comes from the most recent completed generation, not a live request.
+
+WHY v36 layer enrichment: the tensor probe reports ``kv_n_layers`` (from llama's attn
+cache) and ``tensor_layers_verified`` (how many layers passed the bind attempt). For
+hybrid models the llama attn cache only holds full-attention layers; SWA layers have a
+separate windowed cache that is NOT the PA bind target. Without the GGUF layer-group
+context, operators see ``tensor_layers_verified < kv_n_layers`` and cannot tell if the
+gap is from SWA layers (expected) or a real bind failure on full-attention layers. With
+``tensor_layers_expected`` set to the full-attention layer count, operators can compare:
+``tensor_layers_verified == tensor_layers_expected`` → full bind, not a failure.
 """
 
 from __future__ import annotations
@@ -15,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from runtime.worker.llama_server import LlamaServerError
 
 if TYPE_CHECKING:
+    from runtime.kv.hybrid_kv_coordinator import HybridKVCacheCoordinator
     from runtime.scheduler.scheduler import Request
 
 
@@ -110,8 +137,12 @@ def page_bind_stats() -> dict[str, Any]:
     }
 
 
-def page_bind_last_tensor_probe_for_health() -> dict[str, Any] | None:
-    """Return the best last decode probe when no running request is active."""
+def page_bind_last_probe_row_for_health() -> dict[str, Any] | None:
+    """Return ``{kv_slot, probe}`` for the best last decode probe snapshot.
+
+    WHY separate from ``page_bind_last_tensor_probe_for_health``: migration summary
+    needs the kv_slot that produced the probe (export_page_table is slot-scoped).
+    """
     if not _native_page_bind_available():
         return None
     try:
@@ -121,14 +152,31 @@ def page_bind_last_tensor_probe_for_health() -> dict[str, Any] | None:
     rows = page_bind_last_tensor_probe()
     if not rows:
         return None
-    best: dict[str, Any] | None = None
+    best_row: dict[str, Any] | None = None
     for row in rows:
         probe = dict(row.get("probe") or {})
+        entry = {"kv_slot": int(row.get("kv_slot", -1)), "probe": probe}
         if probe.get("tensor_pages_bound"):
-            return probe
-        if best is None:
-            best = probe
-    return best
+            return entry
+        if best_row is None:
+            best_row = entry
+    return best_row
+
+
+def page_bind_last_tensor_probe_for_health() -> dict[str, Any] | None:
+    """Return the best last decode probe when no running request is active.
+
+    WHY needed: after ``page_bind_clear`` fires on generation complete there is no
+    running request to probe, so the live probe path returns None. This function
+    falls back to the last-probe snapshot stored by ``kv_tensor_probe_last_save``
+    during the most recent decode that reached ``tensor_pages_bound=True``.
+
+    Preference order: first probe with ``tensor_pages_bound=True`` wins; any probe
+    returned if none reached tensor bound (gives layout data even on partial bind).
+    Returns None when native ext is not built or no snapshot exists yet.
+    """
+    row = page_bind_last_probe_row_for_health()
+    return row["probe"] if row else None
 
 
 def page_bind_tensor_probe_for_ctx(
@@ -156,14 +204,29 @@ def page_bind_health(
     native_ext_available: bool,
     tensor_probe: dict[str, Any] | None = None,
     writable_probe: dict[str, Any] | None = None,
+    external_alias_probe: dict[str, Any] | None = None,
+    kv_coordinator: "HybridKVCacheCoordinator | None" = None,
+    kv_slot: int | None = None,
+    block_size: int | None = None,
 ) -> dict[str, Any]:
     """Operator-facing status for tensor/page bind readiness.
 
     WHY status escalates partial → bound: seq-position bind proves PA accounting;
     cell_index adds llama cell map; tensor adds K/V backing verify via linked kv-ext.
     Smokes treat bound+tensor as the linked-build success path (see runtime_smoke_lib).
+
+    WHY kv_coordinator (v36): hybrid models (Gemma 3/4, etc.) have both full-attention
+    and SWA layers. The llama attn cache only backs full-attention layers — SWA layers
+    use a separate windowed cache that is NOT the PA bind target. Without the coordinator,
+    operators see ``tensor_layers_verified < kv_n_layers`` and cannot tell if the gap is
+    an expected SWA-layer exclusion or a real bind failure on full-attention layers.
+    When provided, ``kv_full_layers`` / ``kv_swa_layers`` / ``tensor_layers_expected``
+    are added to the output so a correct comparison is possible.
     """
-    from runtime.kv.tensor_probe import writable_bind_probe as default_writable_probe
+    from runtime.kv.tensor_probe import (
+        external_alias_probe as default_external_alias_probe,
+        writable_bind_probe as default_writable_probe,
+    )
 
     stats = page_bind_stats()
     active = int(stats.get("active_binds") or 0)
@@ -175,6 +238,13 @@ def page_bind_health(
             base_probe = last
             last_probe_fallback = True
     writable = writable_probe if writable_probe is not None else default_writable_probe()
+    # WHY external alias on health: v47 validate is build-time + per-page; operators need
+    # the same static visibility as writable_bind_* before migration bind ships (v48).
+    ext_alias = (
+        external_alias_probe
+        if external_alias_probe is not None
+        else default_external_alias_probe()
+    )
 
     # Normalise int 0/1 from C to bool; None means no probe was run.
     def _bool_probe(key: str) -> bool | None:
@@ -253,6 +323,9 @@ def page_bind_health(
             "writable_bind_available": bool(writable.get("writable_bind_available")),
             "writable_bind_api": writable.get("writable_bind_api") or "none",
             "writable_bind_blocker": writable.get("writable_bind_blocker") or "",
+            "external_alias_available": bool(ext_alias.get("external_alias_available")),
+            "external_alias_api": ext_alias.get("external_alias_api") or "none",
+            "external_alias_blocker": ext_alias.get("external_alias_blocker") or "",
             "reason": reason,
             "native_ext_available": True,
             "active_binds": active,
@@ -276,6 +349,57 @@ def page_bind_health(
                 out["kv_cache_n_stream"] = int(base_probe["kv_cache_n_stream"])
             if last_probe_fallback:
                 out["last_tensor_probe"] = True
+
+        # v36: layer-group enrichment from GGUF coordinator.
+        # WHY: for hybrid models (full-attn + SWA), tensor_layers_verified < kv_n_layers
+        # is EXPECTED because the llama attn cache only holds full-attention layers.
+        # Emitting kv_full_layers / kv_swa_layers / tensor_layers_expected lets operators
+        # distinguish an expected SWA gap from a real bind failure.
+        if kv_coordinator is not None:
+            full = kv_coordinator.full_layer_count
+            swa = kv_coordinator.swa_layer_count
+            kind = kv_coordinator.kind
+            out["kv_coordinator_kind"] = kind
+            if kind in ("hybrid", "sliding_window"):
+                out["kv_full_layers"] = full
+                out["kv_swa_layers"] = swa
+                # For a hybrid model, the bind target is the full-attention cache only.
+                # tensor_layers_expected == full gives operators the right comparison.
+                out["tensor_layers_expected"] = full
+            else:
+                # Standard model: all layers are full-attention; expected == n_layers.
+                n_layers = out.get("kv_n_layers")
+                if n_layers is not None:
+                    out["tensor_layers_expected"] = int(n_layers)
+
+        # v38: single boolean for bind-success (uses v36 expected count when present).
+        verified = out.get("tensor_layers_verified")
+        expected = out.get("tensor_layers_expected")
+        if verified is not None and expected is not None:
+            out["tensor_layers_bind_complete"] = int(verified) == int(expected)
+        elif verified is not None and out.get("kv_n_layers") is not None:
+            out["tensor_layers_bind_complete"] = int(verified) == int(out["kv_n_layers"])
+
+        # v42: lightweight migration summary on /health when bind progressed far
+        # enough for operators to see page/layer progress without kv-snapshot fan-out.
+        if block_size and base_probe and (tensor_bound or physical_bound):
+            summary_slot = kv_slot
+            if summary_slot is None:
+                row = page_bind_last_probe_row_for_health()
+                if row is not None:
+                    summary_slot = int(row["kv_slot"])
+            if summary_slot is not None and summary_slot >= 0:
+                from runtime.kv.page_migration_plan import migration_plan_summary
+
+                summary = migration_plan_summary(
+                    base_probe,
+                    block_size=int(block_size),
+                    kv_slot=int(summary_slot),
+                    tensor_layers_expected=out.get("tensor_layers_expected"),
+                )
+                if summary:
+                    out["page_migration_summary"] = summary
+
         return out
 
     return {
@@ -287,6 +411,9 @@ def page_bind_health(
         "writable_bind_available": False,
         "writable_bind_api": "none",
         "writable_bind_blocker": "native_ext_not_built",
+        "external_alias_available": False,
+        "external_alias_api": "none",
+        "external_alias_blocker": "native_ext_not_built",
         "reason": (
             "build native ext (cd runtime && python3 setup.py build_ext --inplace); "
             "use kv_forward_plans for logical page tables"

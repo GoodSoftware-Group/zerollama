@@ -41,6 +41,9 @@ PYTHONPATH=.:${PYTHONPATH:-} python3 -m pytest \
   tests/test_kv_decode_batch_loop.py \
   tests/test_kv_decode_engine_batch.py \
   tests/test_kv_auto_batch.py \
+  tests/test_kv_stream_auto_batch.py \
+  tests/test_kv_page_descriptor.py \
+  tests/test_kv_page_migration_plan.py \
   tests/test_kv_live_physical.py \
   tests/test_internal_kv_snapshot.py \
   tests/test_resolve_parallel_slots.py \

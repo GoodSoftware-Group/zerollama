@@ -84,6 +84,7 @@ Applied on top of **`c84b3020`** via `llama/patches/*.patch` (includes historica
 | 0016 | **ggml scheduler + Metal gate** | `GGML_SCHED_MAX_SPLIT_INPUTS 128`, `alloc_buffers` guard for LoadOperationFit, `GGML_DISABLE_METAL` runtime gate |
 | 0017 | **kv seq-copy endpoint** | Radix cross-slot KV seed (`POST /kv/seq-copy`) |
 | 0018 | **ANE dflash hook (lab)** | In-process IOSurface draft hook — optional Mac lab build |
+| 0019 | **llama-kv-ext alias validate (v47)** | External PA buffer alias feasibility probe + validate (no tensor mutation) |
 
 **Patch vs compat ownership:** GGUF translation logic lives in `llama/compat/*.cpp`. Numbered patches carry **ggml/llama.cpp deltas** that compat cannot replace (scheduler, grammar, kv-ext, CGO hooks). Overlap removed: BakLLaVA MLP default (was 0007) is compat-only.
 

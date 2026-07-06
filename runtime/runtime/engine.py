@@ -128,8 +128,10 @@ class InferenceEngine:
         self._vocab_sessions: dict[str, Any] = {}
         self._vocab_lock = threading.RLock()
         from runtime.kv.auto_batch import AutoBatchCoordinator
+        from runtime.kv.stream_auto_batch import StreamAutoBatchCoordinator
 
         self._auto_batch = AutoBatchCoordinator(self)
+        self._stream_auto_batch = StreamAutoBatchCoordinator(self)
         from runtime.subprocess_slot_state import SubprocessSlotState
 
         self._subprocess_slots = SubprocessSlotState()
@@ -1578,15 +1580,91 @@ class InferenceEngine:
 
     def _kv_forward_plans_health(self) -> list[dict[str, Any]]:
         from runtime.kv.forward_plan import kv_forward_plans_for_requests
+        from runtime.kv.page_migration_plan import migration_plan_summary
         from runtime.kv.physical import current_pos_by_request_from_physical
 
         pos_by_id = current_pos_by_request_from_physical(self._kv_physical_health())
         reqs = list(self.scheduler.waiting) + list(self.scheduler.running)
-        return kv_forward_plans_for_requests(
+        plans = kv_forward_plans_for_requests(
             reqs,
             block_size=self.config.block_size,
             current_pos_by_request_id=pos_by_id or None,
         )
+        probe_by_slot = self._tensor_probe_by_running_kv_slot()
+        layers_expected = self._tensor_layers_expected_for_health()
+        last_probe_row = None
+        for plan in plans:
+            if plan.get("state") != "running":
+                continue
+            slot = plan.get("kv_slot")
+            if slot is None:
+                continue
+            probe = probe_by_slot.get(int(slot))
+            if not probe:
+                if last_probe_row is None:
+                    from runtime.kv.page_bind import page_bind_last_probe_row_for_health
+
+                    last_probe_row = page_bind_last_probe_row_for_health()
+                if (
+                    last_probe_row is not None
+                    and int(last_probe_row["kv_slot"]) == int(slot)
+                ):
+                    probe = last_probe_row["probe"]
+            if not probe:
+                continue
+            summary = migration_plan_summary(
+                probe,
+                block_size=self.config.block_size,
+                kv_slot=int(slot),
+                tensor_layers_expected=layers_expected,
+            )
+            if summary:
+                plan["page_migration_summary"] = summary
+        return plans
+
+    def _tensor_layers_expected_for_health(self) -> int | None:
+        """Expected full-attention layer count for hybrid models (v36/v40)."""
+        try:
+            gguf = self._health_gguf_path()
+            if gguf is None:
+                return None
+            from runtime.gguf_estimate import gguf_arch_hints
+            from runtime.kv.hybrid_kv_coordinator import build_hybrid_kv_coordinator
+
+            coord = build_hybrid_kv_coordinator(
+                gguf_arch_hints(gguf),
+                self.config.num_ctx if self.config else None,
+            )
+            if coord.kind in ("hybrid", "sliding_window"):
+                return coord.full_layer_count
+        except Exception:
+            pass
+        return None
+
+    def _tensor_probe_by_running_kv_slot(self) -> dict[int, dict[str, Any]]:
+        """Live tensor probes keyed by kv_slot for running requests."""
+        from runtime.kv.page_bind import page_bind_tensor_probe_for_ctx
+        from runtime.kv.tensor_probe import tensor_probe_available
+
+        out: dict[int, dict[str, Any]] = {}
+        if not tensor_probe_available():
+            return out
+        pair = self._inprocess_ctx_for_health()
+        if pair is None:
+            return out
+        lib, ctx = pair
+        seen: set[int] = set()
+        for req in self.scheduler.running:
+            slot = req.kv_slot
+            if slot is None or slot < 0 or slot in seen:
+                continue
+            seen.add(slot)
+            probe = page_bind_tensor_probe_for_ctx(
+                lib, ctx, seq_id=slot, kv_slot=slot
+            )
+            if probe:
+                out[slot] = probe
+        return out
 
     def _kv_continuous_batch_health(self) -> dict[str, Any]:
         from runtime.kv.forward_plan import kv_continuous_batch_forward_plan
@@ -1603,12 +1681,21 @@ class InferenceEngine:
 
     def _kv_auto_batch_health(self) -> dict[str, Any]:
         from runtime.kv.auto_batch import native_auto_batch_enabled
+        from runtime.kv.stream_auto_batch import native_stream_auto_batch_enabled
 
-        out = self._auto_batch.stats()
+        out: dict[str, Any] = {
+            "non_stream": self._auto_batch.stats(),
+            "stream": self._stream_auto_batch.stats(),
+        }
         if not native_auto_batch_enabled():
-            out.setdefault(
+            out["non_stream"].setdefault(
                 "note",
                 "set ZEROLLAMA_KV_AUTO_BATCH=1 + inprocess multiseq + linked batch decode",
+            )
+        if not native_stream_auto_batch_enabled():
+            out["stream"].setdefault(
+                "note",
+                "set ZEROLLAMA_KV_AUTO_BATCH_STREAM=1 + inprocess multiseq + linked batch decode",
             )
         return out
 
@@ -1623,19 +1710,42 @@ class InferenceEngine:
         # return aligned=True trivially and mislead the operator into thinking
         # a live seq has been verified.  Omit probe when nothing is running.
         tensor_probe = None
+        probe_kv_slot: int | None = None
         pair = self._inprocess_ctx_for_health()
         if pair is not None:
             lib, ctx = pair
             for req in self.scheduler.running:
                 slot = req.kv_slot
                 if slot is not None and slot >= 0:
+                    probe_kv_slot = slot
                     tensor_probe = page_bind_tensor_probe_for_ctx(
                         lib, ctx, seq_id=slot, kv_slot=slot
                     )
                     break
+
+        # v36: resolve GGUF layer-group coordinator so page_bind_health can emit
+        # kv_full_layers / kv_swa_layers / tensor_layers_expected.
+        # WHY lazy + best-effort: the coordinator is a read-only GGUF parse; errors
+        # must not break /health when the model file is temporarily unavailable.
+        kv_coordinator = None
+        try:
+            gguf = self._health_gguf_path()
+            if gguf is not None:
+                from runtime.kv.hybrid_kv_coordinator import build_hybrid_kv_coordinator
+                from runtime.gguf_estimate import gguf_arch_hints
+
+                arch = gguf_arch_hints(gguf)
+                num_ctx = self.config.num_ctx if self.config else None
+                kv_coordinator = build_hybrid_kv_coordinator(arch, num_ctx)
+        except Exception:
+            pass
+
         return page_bind_health(
             native_ext_available=native_available(),
             tensor_probe=tensor_probe,
+            kv_coordinator=kv_coordinator,
+            kv_slot=probe_kv_slot,
+            block_size=self.config.block_size,
         )
 
     def _kv_decode_loop_health(self) -> dict[str, Any]:
@@ -1711,10 +1821,169 @@ class InferenceEngine:
             "kv_continuous_batch": self._kv_continuous_batch_health(),
             "kv_auto_batch": self._kv_auto_batch_health(),
             "kv_page_bind": self._kv_page_bind_health(),
+            "kv_page_migration": self._kv_page_migration_snapshot(),
             "kv_decode_loop": self._kv_decode_loop_health(),
             "kv_resume": self._kv_resume_health(),
             "kv_live_physical": self._kv_live_physical_health(),
         }
+
+    def _page_migration_summary_for_probe(
+        self,
+        probe: dict[str, Any],
+        kv_slot: int | None,
+    ) -> dict[str, Any] | None:
+        """Lightweight migration summary for snapshot / health (v42)."""
+        from runtime.kv.page_bind import page_bind_last_probe_row_for_health
+        from runtime.kv.page_migration_plan import migration_plan_summary
+
+        slot = kv_slot
+        if slot is None:
+            row = page_bind_last_probe_row_for_health()
+            if row is not None:
+                slot = int(row["kv_slot"])
+        if slot is None or slot < 0:
+            return None
+        return migration_plan_summary(
+            probe,
+            block_size=self.config.block_size,
+            kv_slot=int(slot),
+            tensor_layers_expected=self._tensor_layers_expected_for_health(),
+        )
+
+    def _kv_page_migration_snapshot(self) -> dict[str, Any] | None:
+        """Export v38 copy descriptors for live bound pages (v39 loopback debug).
+
+        WHY on kv_snapshot not /health: migration plans include raw pointers and
+        can be large (pages × layers); keep /health lightweight for polling.
+
+        v42 adds ``migration_summary`` on every branch so idle post-decode snapshots
+        still report page/layer bind progress without building pages×layers plans.
+        """
+        from runtime.kv.page_bind import (
+            page_bind_last_probe_row_for_health,
+            page_bind_last_tensor_probe_for_health,
+            page_bind_tensor_probe_for_ctx,
+        )
+        from runtime.kv.page_migration_plan import (
+            build_page_migration_plan,
+            migration_include_pointers,
+            prepare_migration_plan_for_export,
+        )
+        from runtime.kv.tensor_probe import tensor_probe_available
+
+        if not tensor_probe_available():
+            return None
+
+        pair = self._inprocess_ctx_for_health()
+
+        def _with_summary(payload: dict[str, Any], probe: dict[str, Any], slot: int | None) -> dict[str, Any]:
+            summary = self._page_migration_summary_for_probe(probe, slot)
+            if summary:
+                payload["migration_summary"] = summary
+            return payload
+
+        if pair is None:
+            row = page_bind_last_probe_row_for_health()
+            probe = page_bind_last_tensor_probe_for_health()
+            if probe is None:
+                return None
+            slot = int(row["kv_slot"]) if row else None
+            return _with_summary(
+                {
+                    "active": False,
+                    "source": "last_tensor_probe",
+                    "note": "no in-process ctx; summary from last decode probe only",
+                    "probe": probe,
+                },
+                probe,
+                slot,
+            )
+
+        lib, ctx = pair
+        probe: dict[str, Any] | None = None
+        kv_slot: int | None = None
+        seq_id: int | None = None
+        for req in self.scheduler.running:
+            slot = req.kv_slot
+            if slot is not None and slot >= 0:
+                kv_slot = slot
+                seq_id = slot
+                probe = page_bind_tensor_probe_for_ctx(
+                    lib, ctx, seq_id=slot, kv_slot=slot
+                )
+                break
+
+        if probe is None or kv_slot is None or seq_id is None:
+            row = page_bind_last_probe_row_for_health()
+            probe = page_bind_last_tensor_probe_for_health()
+            if probe is None:
+                return None
+            slot = int(row["kv_slot"]) if row else None
+            payload: dict[str, Any] = {
+                "active": False,
+                "source": "last_tensor_probe",
+                "note": "no running request with kv_slot",
+                "probe": probe,
+            }
+            if slot is not None and slot >= 0:
+                payload["kv_slot"] = slot
+            try:
+                ctx_ptr = int(ctx) if isinstance(ctx, int) else int(getattr(ctx, "value", 0) or 0)
+            except (TypeError, ValueError):
+                ctx_ptr = 0
+            if ctx_ptr and slot is not None and slot >= 0:
+                plan = build_page_migration_plan(
+                    ctx_ptr,
+                    slot,
+                    slot,
+                    block_size=self.config.block_size,
+                    probe=probe,
+                )
+                if plan is not None:
+                    payload["plan_available"] = True
+                    payload["plan"] = prepare_migration_plan_for_export(plan)
+                    payload["pointers_redacted"] = not migration_include_pointers()
+                else:
+                    payload["plan_available"] = False
+            return _with_summary(payload, probe, slot)
+
+        try:
+            ctx_ptr = int(ctx) if isinstance(ctx, int) else int(getattr(ctx, "value", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+
+        plan = build_page_migration_plan(
+            ctx_ptr,
+            seq_id,
+            kv_slot,
+            block_size=self.config.block_size,
+            probe=probe,
+        )
+        if plan is None:
+            return _with_summary(
+                {
+                    "active": True,
+                    "kv_slot": kv_slot,
+                    "source": "live_probe",
+                    "plan_available": False,
+                    "note": "tensor/physical bind not complete — no writable page map yet",
+                    "probe": probe,
+                },
+                probe,
+                kv_slot,
+            )
+        return _with_summary(
+            {
+                "active": True,
+                "kv_slot": kv_slot,
+                "source": "live_probe",
+                "plan_available": True,
+                "plan": prepare_migration_plan_for_export(plan),
+                "pointers_redacted": not migration_include_pointers(),
+            },
+            probe,
+            kv_slot,
+        )
 
     def _kv_decode_steps_before(self) -> int | None:
         from runtime.kv.native_decode import current_decode_steps, decode_hook_enabled
@@ -1976,6 +2245,89 @@ class InferenceEngine:
                 )
             return results
 
+    def _stream_parallel_admitted(
+        self, jobs: list[Any]
+    ) -> Iterator[dict[str, Any]]:
+        """Stream decode for N already-admitted requests (v37 stream auto-batch)."""
+        from runtime.kv.stream_auto_batch import _PendingStreamJob
+
+        pending = [j for j in jobs if isinstance(j, _PendingStreamJob)]
+        if not pending:
+            return iter(())
+        first = pending[0]
+        n_predict = first.n_predict
+        gguf = first.gguf
+        options = first.options
+        for job in pending[1:]:
+            if job.n_predict != n_predict:
+                raise LlamaServerError("stream auto-batch n_predict mismatch")
+        admitted = [job.request for job in pending]
+        prompts = [job.prompt for job in pending]
+        for active in admitted:
+            self._assert_kv_bind(active, at="stream_auto_batch")
+        vram_opts = admitted[0].vram_options or self._vram_options(
+            admitted[0].num_ctx, options
+        )
+        decode_before = self._kv_decode_steps_before()
+        with self._model_swap.hold(gguf):
+            srv = self._ensure_gguf_loaded_unlocked(
+                gguf, num_ctx=admitted[0].num_ctx, options=vram_opts
+            )
+            from runtime.kv.bind import reserved_token_capacity
+
+            policy = self._prefix_cache_policy(gguf, admitted[0].num_ctx)
+            cache_rows = [self._prefix_cache_admission(a, policy) for a in admitted]
+            req_by_idx = {i: a for i, a in enumerate(admitted)}
+            if len(pending) == 1:
+                job = pending[0]
+                active = job.request
+                for chunk in srv.completion_stream(
+                    job.prompt,
+                    n_predict=n_predict,
+                    id_slot=self._id_slot_for_request(active),
+                    kv_token_budget=reserved_token_capacity(active),
+                    kv_bind_req=active,
+                    kv_block_size=self.config.block_size,
+                    sampler=sampler_options_from_dict(options),
+                    cache_prompt=cache_rows[0][0],
+                    current_pos=cache_rows[0][1],
+                ):
+                    out = dict(chunk)
+                    out["request_id"] = active.request_id
+                    out.setdefault("seq_idx", 0)
+                    if bool(out.get("stop")):
+                        self._record_subprocess_slot(active, out)
+                        kv_steps = self._kv_decode_steps_after(decode_before)
+                        if kv_steps is not None:
+                            out["kv_decode_steps"] = kv_steps
+                    yield out
+                return
+
+            for chunk in srv.completions_parallel_stream(
+                prompts,
+                n_predict=n_predict,
+                id_slots=[self._id_slot_for_request(a) for a in admitted],
+                kv_token_budgets=[reserved_token_capacity(a) for a in admitted],
+                kv_bind_reqs=admitted,
+                kv_block_size=self.config.block_size,
+                sampler=sampler_options_from_dict(options),
+                cache_prompts=[row[0] for row in cache_rows],
+                current_positions=[row[1] for row in cache_rows],
+            ):
+                seq_idx = int(chunk.get("seq_idx", 0))
+                active = req_by_idx.get(seq_idx)
+                if active is None:
+                    continue
+                out = dict(chunk)
+                out["request_id"] = active.request_id
+                if bool(out.get("stop")):
+                    active.state = RequestState.FINISHED
+                    self._record_subprocess_slot(active, out)
+                    kv_steps = self._kv_decode_steps_after(decode_before)
+                    if kv_steps is not None:
+                        out["kv_decode_steps"] = kv_steps
+                yield out
+
     def generate(
         self,
         prompt: str,
@@ -2081,8 +2433,64 @@ class InferenceEngine:
         vram_api = self._api_vram_num_ctx_from_request(active)
         decode_before = self._kv_decode_steps_before()
         from runtime.kv.native_decode_loop import PrefillAbortedError
+        from runtime.kv.stream_auto_batch import stream_auto_batch_eligible
 
         try:
+            if (
+                prefill_cancel is None
+                and stream_auto_batch_eligible(self, gguf=gguf, stream=True)
+            ):
+                yield self._generate_progress_chunk(
+                    model, "generating", "generating response", created=created
+                )
+                saw_stop = False
+                first = True
+                for chunk in self._stream_auto_batch.iter_stream(
+                    prompt=prompt,
+                    request=active,
+                    n_predict=n_predict,
+                    gguf=gguf,
+                    num_ctx=active.num_ctx,
+                    options=options,
+                ):
+                    content = chunk.get("content") or chunk.get("response") or ""
+                    stop = bool(chunk.get("stop"))
+                    if stop:
+                        saw_stop = True
+                    out: dict[str, Any] = {
+                        "model": model,
+                        "created_at": created,
+                        "response": content,
+                        "done": stop,
+                        "done_reason": "stop" if stop else None,
+                    }
+                    if stop:
+                        kv_steps = chunk.get("kv_decode_steps")
+                        if kv_steps is None:
+                            kv_steps = self._kv_decode_steps_after(decode_before)
+                        if kv_steps is not None:
+                            out["kv_decode_steps"] = kv_steps
+                        out.update(metrics_from_llama_chunk(chunk))
+                    if first and vram_api:
+                        out["vram_num_ctx"] = vram_api
+                        first = False
+                    yield out
+                if not saw_stop:
+                    tail: dict[str, Any] = {
+                        "model": model,
+                        "created_at": created,
+                        "response": "",
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                    if first and vram_api:
+                        tail["vram_num_ctx"] = vram_api
+                    kv_steps = self._kv_decode_steps_after(decode_before)
+                    if kv_steps is not None:
+                        tail["kv_decode_steps"] = kv_steps
+                    yield tail
+                return
+
             with self._model_swap.hold(gguf):
                 if self._gguf_needs_load(gguf):
                     yield self._generate_progress_chunk(

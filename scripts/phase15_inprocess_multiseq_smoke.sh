@@ -30,8 +30,13 @@ sleep 2
 
 # shellcheck source=scripts/phase14_serve_env.sh
 source "${ROOT}/scripts/phase14_serve_env.sh"
+# shellcheck source=scripts/phase15_runtime_kv_env.sh
+source "${ROOT}/scripts/phase15_runtime_kv_env.sh"
 # shellcheck source=scripts/runtime_smoke_lib.sh
 source "${ROOT}/scripts/runtime_smoke_lib.sh"
+
+phase15_runtime_kv_env_apply
+phase15_runtime_auto_batch_env_apply
 
 RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
 TMPYAML="$(mktemp /tmp/zerollama-phase15-multiseq-XXXX.yaml)"
@@ -56,6 +61,11 @@ echo "== Phase 15 in-process multi-seq smoke =="
     # WHY disable L1 profile: rtx-5080 sets n_parallel=4, overriding temp YAML
     # llama_parallel_slots: 2 — sign-off asserts kv_inprocess_n_seq_max=2 (same as Metal).
     ZEROLLAMA_GPU_PROFILE=0 \
+    ZEROLLAMA_RUNTIME_KV_NATIVE="${ZEROLLAMA_RUNTIME_KV_NATIVE:-1}" \
+    ZEROLLAMA_KV_NATIVE_DECODE="${ZEROLLAMA_KV_NATIVE_DECODE:-1}" \
+    ZEROLLAMA_KV_NATIVE_SAMPLE="${ZEROLLAMA_KV_NATIVE_SAMPLE:-1}" \
+    ZEROLLAMA_KV_AUTO_BATCH="${ZEROLLAMA_KV_AUTO_BATCH:-0}" \
+    ZEROLLAMA_KV_AUTO_BATCH_STREAM="${ZEROLLAMA_KV_AUTO_BATCH_STREAM:-0}" \
     ZEROLLAMA_RUNTIME_CONFIG="$TMPYAML" \
     ZEROLLAMA_RUNTIME_EMBED="${ZEROLLAMA_RUNTIME_EMBED:-on}" \
     ZEROLLAMA_RUNTIME="${ZEROLLAMA_RUNTIME:-1}" \
@@ -131,6 +141,7 @@ print('post-generate kv_decode_steps:', kd.get('value'), 'n_seq_max=2')
 " "$post_health"
 
 smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
+smoke_runtime_assert_migration_summary "$RUNTIME_URL" 1
 
 echo ""
 echo "== [3/3] continuous batch decode (generate_batch + stream) =="

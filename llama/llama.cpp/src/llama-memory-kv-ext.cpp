@@ -1,10 +1,13 @@
 /*
- * Staging llama.cpp KV cell / tensor introspection for zerollama Phase 15 v20/v31.
+ * Staging llama.cpp KV cell / tensor introspection for zerollama Phase 15 v20/v31/v47.
  *
  * WHY resolve hybrid/iSWA: PA page bind targets attn KV cells. Hybrid and iSWA
  * models wrap llama_kv_cache (or iswa base cache) — dynamic_cast to the wrapper
  * alone returned UNSUPPORTED even though get_base()/get_mem_attn() expose the
  * same cell layout as standard models.
+ *
+ * WHY v47 alias validate: page_map discovers llama-owned spans; external PA pools
+ * must prove zero-copy alias feasibility before v48 overlay bind mutates tensor->data.
  */
 
 #include "llama-kv-ext.h"
@@ -15,6 +18,7 @@
 #include "llama-memory-hybrid-iswa.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 
 #include <cstdio>
 #include <cstring>
@@ -244,14 +248,14 @@ static bool llama_kv_ext_cells_contiguous(
 static int32_t llama_kv_ext_page_map_contiguous(
         llama_kv_cache *           kv,
         ggml_tensor *              k,
-        ggml_tensor *              v,
+        ggml_tensor *              v,      /* may be null for MLA (no V cache) */
         const llama_kv_cell_bind * cells,
         uint32_t                   n_cells,
         llama_kv_page_map *        out) {
-    if (!kv || !k || !v || !cells || n_cells == 0 || !out) {
+    if (!kv || !k || !cells || n_cells == 0 || !out) {
         return LLAMA_KV_EXT_ARG;
     }
-    if (!k->data || !v->data) {
+    if (!k->data) {
         return LLAMA_KV_EXT_NOT_FOUND;
     }
 
@@ -293,10 +297,15 @@ static int32_t llama_kv_ext_page_map_contiguous(
     if (v && v->data) {
         const uint64_t v_off  = (uint64_t) cell0 * (uint64_t) v->nb[1];
         const uint64_t vspan  = (uint64_t) n_cells * (uint64_t) v->nb[1];
-        out->v_data           = (uint64_t) (uintptr_t) ((const char *) v->data + v_off);
-        /* WHY same span for v_trans: cells are contiguous along dim 1; full V page
-         * requires strided access with row stride kv_size when v_transposed=1. */
-        out->v_span_bytes     = vspan;
+        out->v_data       = (uint64_t) (uintptr_t) ((const char *) v->data + v_off);
+        /* WHY v_span_bytes when v_transposed=1: v->nb[1] is the byte stride between
+         * consecutive cell indices (dim 1 stride). v_off..v_off+vspan covers the
+         * contiguous byte range that holds this cell block's data, but the embedding
+         * values for each cell are NOT laid out contiguously — they are interleaved
+         * across n_embd_v_gqa rows at stride kv_size (see set_input_v_idxs).
+         * Callers must check v_transposed and use the appropriate scatter/gather
+         * pattern; do not memcpy(v_data, vspan) as a flat cell buffer. */
+        out->v_span_bytes = vspan;
     } else {
         out->v_data       = 0;
         out->v_span_bytes = 0;
@@ -368,6 +377,153 @@ int32_t llama_memory_kv_page_map(
     out->pos_end   = t1;
 
     return llama_kv_ext_page_map_contiguous(kv, k, v, cells, n, out);
+}
+
+static bool llama_kv_ext_tensor_on_host(const ggml_tensor * t) {
+    if (!t || !t->buffer) {
+        return false;
+    }
+    return ggml_backend_buffer_is_host(t->buffer);
+}
+
+static void llama_kv_ext_alias_set_blocker(
+        llama_kv_page_alias_plan * plan,
+        const char *               msg) {
+    if (!plan || !msg) {
+        return;
+    }
+    std::snprintf(plan->blocker, sizeof(plan->blocker), "%s", msg);
+}
+
+int32_t llama_memory_kv_ext_external_alias_probe(
+        llama_kv_ext_external_alias_probe * out) {
+    if (!out) {
+        return LLAMA_KV_EXT_ARG;
+    }
+    std::memset(out, 0, sizeof(*out));
+#ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
+    out->available    = 1;
+    out->validate_api = 1;
+    std::snprintf(out->api_name, sizeof(out->api_name), "llama_memory_kv_page_alias_validate");
+    return LLAMA_KV_EXT_OK;
+#else
+    std::snprintf(out->api_name, sizeof(out->api_name), "none");
+    return LLAMA_KV_EXT_OK;
+#endif
+}
+
+int32_t llama_memory_kv_page_alias_validate(
+        llama_memory_t            mem,
+        llama_seq_id              seq_id,
+        llama_pos                 seq_pos_min,
+        uint32_t                  page_index,
+        uint32_t                  block_size,
+        int32_t                   kv_layer,
+        uint64_t                  ext_k_data,
+        uint64_t                  ext_k_span_bytes,
+        uint64_t                  ext_v_data,
+        uint64_t                  ext_v_span_bytes,
+        llama_kv_page_alias_plan * out) {
+    if (!out) {
+        return LLAMA_KV_EXT_ARG;
+    }
+    if (block_size == 0 || page_index > 8192) {
+        return LLAMA_KV_EXT_ARG;
+    }
+
+    std::memset(out, 0, sizeof(*out));
+
+#ifndef LLAMA_KV_EXT_EXTERNAL_ALIAS
+    llama_kv_ext_alias_set_blocker(out, "external_alias_api_not_linked");
+    return LLAMA_KV_EXT_UNSUPPORTED;
+#else
+    llama_kv_ext_mem_kind kind = LLAMA_KV_EXT_MEM_NONE;
+    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, &kind);
+    if (!kv || kind == LLAMA_KV_EXT_MEM_UNSUPPORTED) {
+        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_UNSUPPORTED;
+        llama_kv_ext_alias_set_blocker(out, "kv_cache_unsupported");
+        out->ok = 1;
+        return LLAMA_KV_EXT_OK;
+    }
+
+    llama_kv_page_map page_map;
+    std::memset(&page_map, 0, sizeof(page_map));
+    const int32_t map_rc = llama_memory_kv_page_map(
+        mem, seq_id, seq_pos_min, page_index, block_size, kv_layer, &page_map);
+    if (map_rc != LLAMA_KV_EXT_OK || !page_map.ok) {
+        out->alias_mode = (map_rc == LLAMA_KV_EXT_UNSUPPORTED)
+            ? LLAMA_KV_EXT_ALIAS_BLOCKED_UNSUPPORTED
+            : LLAMA_KV_EXT_ALIAS_BLOCKED_NO_PAGE;
+        llama_kv_ext_alias_set_blocker(
+            out,
+            map_rc == LLAMA_KV_EXT_UNSUPPORTED ? "kv_cache_unsupported" : "page_map_failed");
+        return map_rc != LLAMA_KV_EXT_OK ? map_rc : LLAMA_KV_EXT_NOT_FOUND;
+    }
+
+    out->llama_k_data   = page_map.k_data;
+    out->llama_v_data   = page_map.v_data;
+    out->k_span_bytes   = page_map.k_span_bytes;
+    out->v_span_bytes   = page_map.v_span_bytes;
+    out->v_transposed   = page_map.v_transposed;
+
+    ggml_tensor * k = kv->kv_tensor_k(kv_layer, page_map.stream);
+    if (!k || !k->data) {
+        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_NO_PAGE;
+        llama_kv_ext_alias_set_blocker(out, "kv_tensor_not_materialized");
+        out->ok = 1;
+        return LLAMA_KV_EXT_OK;
+    }
+    const bool host = llama_kv_ext_tensor_on_host(k);
+    out->buffer_host = host ? 1 : 0;
+
+    out->k_spans_match = (ext_k_span_bytes == page_map.k_span_bytes) ? 1 : 0;
+    const bool v_absent = page_map.v_data == 0 || page_map.v_span_bytes == 0;
+    if (v_absent) {
+        out->v_spans_match = (ext_v_data == 0 && ext_v_span_bytes == 0) ? 1 : 0;
+    } else {
+        out->v_spans_match = (ext_v_span_bytes == page_map.v_span_bytes) ? 1 : 0;
+    }
+
+    out->k_same_pointer = (ext_k_data != 0 && ext_k_data == page_map.k_data) ? 1 : 0;
+    if (v_absent) {
+        out->v_same_pointer = (ext_v_data == 0) ? 1 : 0;
+    } else {
+        out->v_same_pointer = (ext_v_data != 0 && ext_v_data == page_map.v_data) ? 1 : 0;
+    }
+
+    if (!out->k_spans_match || !out->v_spans_match) {
+        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_SPAN;
+        llama_kv_ext_alias_set_blocker(out, "ext_span_mismatch");
+        out->ok = 1;
+        return LLAMA_KV_EXT_OK;
+    }
+
+    if (!host) {
+        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_DEVICE;
+        llama_kv_ext_alias_set_blocker(out, "kv_tensors_on_device_buffer");
+        out->ok = 1;
+        return LLAMA_KV_EXT_OK;
+    }
+
+    if (page_map.v_transposed && !v_absent) {
+        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_V_TRANS;
+        llama_kv_ext_alias_set_blocker(out, "v_transposed_scatter_gather_required");
+        out->ok = 1;
+        return LLAMA_KV_EXT_OK;
+    }
+
+    if (out->k_same_pointer && out->v_same_pointer) {
+        out->alias_mode  = LLAMA_KV_EXT_ALIAS_SAME_POINTER;
+        out->alias_ready = 1;
+        out->ok          = 1;
+        return LLAMA_KV_EXT_OK;
+    }
+
+    out->alias_mode = LLAMA_KV_EXT_ALIAS_HOST_REBASE;
+    llama_kv_ext_alias_set_blocker(out, "host_rebase_overlay_bind_not_implemented");
+    out->ok = 1;
+    return LLAMA_KV_EXT_OK;
+#endif /* LLAMA_KV_EXT_EXTERNAL_ALIAS */
 }
 
 int32_t llama_memory_kv_ext_writable_bind_probe(

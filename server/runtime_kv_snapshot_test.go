@@ -20,6 +20,13 @@ func TestRuntimeKVSnapshotHandler(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"kv_forward_plans": []any{},
 			"kv_page_bind":     map[string]any{"status": "not_implemented"},
+			"kv_page_migration": map[string]any{
+				"migration_summary": map[string]any{
+					"pages_live":          1,
+					"n_layers":            2,
+					"full_plan_endpoint":  "/internal/kv-snapshot",
+				},
+			},
 		})
 	}))
 	defer rt.Close()
@@ -44,6 +51,11 @@ func TestRuntimeKVSnapshotHandler(t *testing.T) {
 	}
 	if _, ok := body["kv_page_bind"]; !ok {
 		t.Fatalf("missing kv_page_bind: %v", body)
+	}
+	if mig, ok := body["kv_page_migration"].(map[string]any); !ok {
+		t.Fatalf("missing kv_page_migration: %v", body)
+	} else if _, ok := mig["migration_summary"]; !ok {
+		t.Fatalf("missing migration_summary: %v", mig)
 	}
 }
 

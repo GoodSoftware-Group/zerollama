@@ -15,6 +15,7 @@
 # Env:
 #   M3_LLAMA_MODEL       — GGUF blob (default: auto-pick smallest text GGUF)
 #   PHASE15_SKIP_BOOT=1  — skip step-1 sidecar+go start (M3 chain); step-2 multiseq still reloads
+#   PHASE15_SKIP_PHASE14=1 — skip embedded phase14_yaml_config_smoke (lab stack already validated)
 #
 # Multiseq step: temp YAML llama_parallel_slots=2 + ZEROLLAMA_GPU_PROFILE=0 — why: L1 128g
 # profile sets n_parallel=8 and breaks kv_inprocess_n_seq_max=2 assertions.
@@ -61,7 +62,11 @@ if [[ "${PHASE15_SKIP_BOOT:-0}" != "1" ]]; then
   macos_runtime_start_sidecar "$LLAMA_MODEL" "" 1
   macos_runtime_start_go
 fi
-"${ROOT}/scripts/phase14_yaml_config_smoke.sh"
+if [[ "${PHASE15_SKIP_PHASE14:-0}" != "1" ]]; then
+  "${ROOT}/scripts/phase14_yaml_config_smoke.sh"
+else
+  echo "skip phase14_yaml_config_smoke (PHASE15_SKIP_PHASE14=1)"
+fi
 smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 echo "PASS: phase15 metal kv hook"
 
@@ -73,6 +78,7 @@ sed -e 's/^llama_parallel_slots: 1/llama_parallel_slots: 2/' \
 
 # Why disable L1 GPU profile here: apple-silicon-128g sets n_parallel=8, overriding yaml:2
 # and breaking kv_inprocess_n_seq_max assertions for this multiseq gate.
+phase15_runtime_auto_batch_env_apply
 ZEROLLAMA_GPU_PROFILE=0 macos_runtime_start_sidecar "$LLAMA_MODEL" "$TMPYAML" 0
 
 nseq=""
@@ -140,8 +146,44 @@ smoke_runtime_assert_kv_snapshot "$RUNTIME_URL"
 echo "PASS: phase15 metal multiseq"
 
 echo ""
+echo "== [2b/5] migration summary post-decode (v42/v43) =="
+MIGRATION_SMOKE_SKIP_GEN=1 "${ROOT}/scripts/phase15_migration_summary_smoke.sh"
+
+echo ""
 echo "== [3/5] continuous batch decode (generate_batch + stream) =="
 "${ROOT}/scripts/phase15_batch_decode_smoke.sh"
+
+if [[ "${RUN_P15_AUTO_BATCH_ALL:-0}" == "1" ]]; then
+  echo ""
+  echo "== [3b/5] auto-batch sign-off (non-stream + stream) =="
+  phase15_runtime_auto_batch_env_apply
+  if [[ "${ZEROLLAMA_KV_AUTO_BATCH:-0}" != "1" || "${ZEROLLAMA_KV_AUTO_BATCH_STREAM:-0}" != "1" ]]; then
+    echo "WARN: restart sidecar with ZEROLLAMA_KV_AUTO_BATCH=1 and ZEROLLAMA_KV_AUTO_BATCH_STREAM=1" >&2
+    echo "      (metal signoff exports these when RUN_P15_AUTO_BATCH_ALL=1 before multiseq boot)" >&2
+    exit 1
+  fi
+  "${ROOT}/scripts/phase15_auto_batch_signoff.sh"
+elif [[ "${RUN_P15_STREAM_AUTO_BATCH:-0}" == "1" ]]; then
+  echo ""
+  echo "== [3b/5] stream auto-batch (concurrent /api/generate stream=true) =="
+  if [[ "${ZEROLLAMA_KV_AUTO_BATCH_STREAM:-0}" != "1" ]]; then
+    echo "WARN: ZEROLLAMA_KV_AUTO_BATCH_STREAM not set on sidecar — restart sidecar with env=1" >&2
+    echo "      or export RUN_P15_STREAM_AUTO_BATCH=0 to skip this gate" >&2
+    exit 1
+  fi
+  "${ROOT}/scripts/phase15_stream_auto_batch_smoke.sh"
+fi
+
+if [[ "${RUN_P15_AUTO_BATCH:-0}" == "1" ]]; then
+  echo ""
+  echo "== [3c/5] non-stream auto-batch (concurrent /api/generate stream=false) =="
+  if [[ "${ZEROLLAMA_KV_AUTO_BATCH:-0}" != "1" ]]; then
+    echo "WARN: ZEROLLAMA_KV_AUTO_BATCH not set on sidecar — restart sidecar with env=1" >&2
+    echo "      or export RUN_P15_AUTO_BATCH=0 to skip this gate" >&2
+    exit 1
+  fi
+  "${ROOT}/scripts/phase15_auto_batch_smoke.sh"
+fi
 
 echo ""
 echo "== [4/5] L3 prompt_cache_key two-turn (in-process resume wiring) =="

@@ -1,4 +1,9 @@
-"""Phase 15 v19 — llama memory probe + PA page accounting (tensor bind scaffold)."""
+"""Phase 15 v19/v47 — llama memory probe + PA page accounting + alias validate.
+
+WHY this module: tensor page bind and external-buffer alias need llama-kv-ext symbols
+without pulling llama types into every Python caller. Static probes (writable bind,
+external alias) need no live ctx; live probes need ``ctx_ptr`` from the in-process engine.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +38,66 @@ def writable_bind_probe() -> dict[str, Any]:
     return dict(page_bind_writable_probe())
 
 
+def external_alias_probe() -> dict[str, Any]:
+    """Static probe: is external buffer alias validate API linked in libllama?
+
+    WHY no ctx: alias validate availability is a build-time capability on the forked
+    llama.cpp pin (patch 0019 + ``LLAMA_KV_EXT_EXTERNAL_ALIAS``); operators watch
+    ``external_alias_available`` on /health before wiring migration bind (v48+).
+    """
+    try:
+        from runtime.kv._kv_native import page_bind_external_alias_probe
+    except Exception:
+        return {
+            "external_alias_available": False,
+            "external_alias_validate_api": False,
+            "external_alias_api": "none",
+            "external_alias_blocker": "native_ext_not_built",
+        }
+    out = dict(page_bind_external_alias_probe())
+    out["external_alias_blocker"] = (
+        "" if out.get("external_alias_available") else "external_alias_api_not_linked"
+    )
+    return out
+
+
+def alias_validate(
+    ctx_ptr: int,
+    seq_id: int,
+    kv_slot: int,
+    page_index: int,
+    *,
+    kv_layer: int = 0,
+    ext_k_data: int = 0,
+    ext_k_span_bytes: int = 0,
+    ext_v_data: int = 0,
+    ext_v_span_bytes: int = 0,
+) -> dict[str, Any]:
+    """Validate external K/V pointers against llama page_map geometry (no mutation).
+
+    WHY: v38 copy descriptors need to know if migration can skip memcpy (SAME_POINTER)
+    or must copy/scatter (BLOCKED_V_TRANS, BLOCKED_DEVICE on Metal). Returns plan dict
+    with ``alias_mode``, ``blocker``, ``alias_ready`` — see ``llama_kv_ext_alias_mode``.
+    """
+    if not tensor_probe_available() or ctx_ptr == 0:
+        raise RuntimeError("native ext with llama-kv-ext link required")
+    from runtime.kv._kv_native import page_bind_alias_validate
+
+    return dict(
+        page_bind_alias_validate(
+            int(ctx_ptr),
+            int(seq_id),
+            int(kv_slot),
+            int(page_index),
+            int(kv_layer),
+            int(ext_k_data),
+            int(ext_k_span_bytes),
+            int(ext_v_data),
+            int(ext_v_span_bytes),
+        )
+    )
+
+
 def run_tensor_probe(ctx_ptr: int, seq_id: int, kv_slot: int) -> dict[str, Any] | None:
     """Probe llama memory vs native page_bind table for one sequence.
 
@@ -61,13 +126,41 @@ def last_tensor_probe_entries() -> list[dict[str, Any]]:
     return [{"kv_slot": int(r["kv_slot"]), "probe": dict(r["probe"])} for r in rows]
 
 
-def map_page(ctx_ptr: int, seq_id: int, kv_slot: int, page_index: int) -> dict[str, Any]:
-    """Resolve writable K/V tensor spans for one registered PA page."""
+def map_page(
+    ctx_ptr: int,
+    seq_id: int,
+    kv_slot: int,
+    page_index: int,
+    *,
+    kv_layer: int = 0,
+) -> dict[str, Any]:
+    """Resolve writable K/V tensor spans for one registered PA page on one layer."""
     if not tensor_probe_available() or ctx_ptr == 0:
         raise RuntimeError("native ext with llama-kv-ext link required")
     from runtime.kv._kv_native import page_bind_map_page
 
-    return dict(page_bind_map_page(int(ctx_ptr), int(seq_id), int(kv_slot), int(page_index)))
+    return dict(
+        page_bind_map_page(
+            int(ctx_ptr), int(seq_id), int(kv_slot), int(page_index), int(kv_layer)
+        )
+    )
+
+
+def map_page_all_layers(
+    ctx_ptr: int,
+    seq_id: int,
+    kv_slot: int,
+    page_index: int,
+    *,
+    n_layers: int,
+) -> list[dict[str, Any]]:
+    """Fan-out ``map_page`` across ``0..n_layers-1`` (mirrors v34 materialize loop)."""
+    if n_layers <= 0:
+        return []
+    return [
+        map_page(ctx_ptr, seq_id, kv_slot, page_index, kv_layer=layer)
+        for layer in range(n_layers)
+    ]
 
 
 def export_page_table(kv_slot: int) -> list[dict[str, int]]:

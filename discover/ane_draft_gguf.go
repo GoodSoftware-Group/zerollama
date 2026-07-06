@@ -452,6 +452,9 @@ func ResolveChain16FFNDownTensor(entry ANEDraftEntry) string {
 // cuts handoff rate without blocking the draft loop. P1/P2 stay at stride 4.
 func DraftANEHandoffStride(kernel string, matmulChain int) int {
 	if strings.EqualFold(strings.TrimSpace(kernel), "matmul") {
+		if matmulChain >= 17 {
+			return 32
+		}
 		if matmulChain >= 12 {
 			return 20
 		}

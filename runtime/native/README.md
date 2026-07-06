@@ -2,7 +2,7 @@
 
 **Why:** PagedAttention block allocation, page-table validation, and decode batch layout run on every admission and decode step. Moving hot bookkeeping — and eventually `llama_decode` — off the Python interpreter reduces GIL contention when training and inference share one embedded CPython (`ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`).
 
-## Shipped (v0–v19)
+## Shipped (v0–v47)
 
 | Module | Source | Role |
 |--------|--------|------|
@@ -115,6 +115,31 @@ export RUN_E2E_DECODE_LOOP=1 LLAMA_MODEL=/path/to/small.gguf
 | `page_bind_writable_probe()` | Python binding → `/health.kv_page_bind.writable_bind_available` |
 | Pin check upstream watch | CI greps `llama.h` for page-map symbol names |
 
+**See also v47** — external alias tracker uses the same static-probe pattern (`external_alias_*` on `/health`).
+
+### v34 — multi-layer KV tensor verify + writable page-map fan-out
+
+| API / field | Why |
+|-------------|-----|
+| `llama_memory_kv_n_layers(mem, &out_n)` | Total KV layers in resolved attn cache — needed to loop all layers, not assume layer 0 is representative |
+| Tensor verify loop in `kv_tensor_bind_attempt` | Breaks on first layer failure; `tensor_layers_verified` counts successes; `tensor_pages_bound` only set when `verified == n_layers` |
+| Writable fan-out in `kv_page_bind_materialize_writable` | Calls `llama_memory_kv_page_map` for every `(page, layer)` pair; a page counts only when all layers map OK |
+| `/health` `kv_n_layers` + `tensor_layers_verified` | Operator visibility into partial vs full layer coverage |
+
+### v35 — transposed-V layout visibility + last-probe health
+
+| API / field | Why |
+|-------------|-----|
+| `llama_memory_kv_cache_layout(mem, &out)` | Returns `{kv_size, n_stream, v_transposed}`. WHY: layout is a cache constant; probe it once rather than inferring from per-page tensor dims |
+| `v_transposed` on `llama_kv_page_map` | Tells callers whether `v_span_bytes` is a contiguous cell buffer (FA, `v_transposed=0`) or requires row-stride scatter/gather (non-FA, `v_transposed=1`). WHY: without this flag, a migration routine that memcpy's `v_span_bytes` would produce silently wrong data for the majority of deployed models |
+| MLA null-V arg guard fix | Removed `!v` from the early-exit guard so MLA models (where `kv_tensor_v()` returns null) reach the `if (v && v->data)` branch instead of returning `LLAMA_KV_EXT_ARG` |
+| Multi-stream cell consistency guard | `llama_kv_ext_page_map_contiguous` now rejects a cell range where any cell's stream differs from `cells[0].stream` — prevents silent corruption if a future caller accidentally passes a cross-stream range |
+| `kv_v_transposed` / `kv_cache_kv_size` / `kv_cache_n_stream` on `KvTensorProbeResult` | Layout fields populated early in `kv_tensor_probe_run`, before the bind attempt; available even when bind fails |
+| `g_last_probes[KV_MAX_PAGE_BINDS]` + `kv_tensor_probe_last_save/get/get_by_index` | Snapshot of the last successful tensor probe, keyed by bind-table position (not kv_slot value). WHY: kv_slot is an arbitrary scheduler integer — using it directly as an array index would overflow for slots ≥ 32. Snapshot survives `page_bind_clear` so `/health` shows post-generate layout data |
+| `page_bind_last_tensor_probe([kv_slot])` Python binding | No arg → list; int arg → single dict or None |
+| `page_bind_last_tensor_probe_for_health()` / `last_tensor_probe_entries()` | Python helpers for `/health` fallback and sign-off tooling |
+| `stage_llama_kv_ext_for_vendor.sh` syncs `llama-kv-cache.h` | `get_v_trans()` is defined in the internal header; vendor builds need the patched copy |
+
 ### v24 — C decode loop bind validation + post-prefill probe
 
 | Piece | Why |
@@ -162,6 +187,34 @@ export RUN_E2E_DECODE_LOOP=1 LLAMA_MODEL=/path/to/small.gguf
 | `smpl_ptrs[]` in `kv_decode_loop_run_batch_step` | Correct logit row + isolated sampler accept state per sequence |
 | `run_batch_step(..., smpl_ptrs=)` | Python passes one sampler per active batch row |
 | `_decode_parallel_stream` C batch path | Decode + sample in one GIL-released call when native sample enabled |
+
+### v36 — GGUF layer-group enrichment (`page_bind_health`)
+
+| API / field | Why |
+|-------------|-----|
+| `page_bind_health(kv_coordinator=)` | Emits `kv_full_layers`, `kv_swa_layers`, `tensor_layers_expected` for hybrid models |
+| `tensor_layers_expected` | Bind success = `tensor_layers_verified == kv_full_layers`, not total model layers |
+
+### v37 — stream auto-batch (`stream_auto_batch.py`)
+
+| API / field | Why |
+|-------------|-----|
+| `StreamAutoBatchCoordinator.iter_stream()` | Coalesces concurrent streaming `generate()` when `ZEROLLAMA_KV_AUTO_BATCH_STREAM=1` |
+| `engine._stream_parallel_admitted()` | 1- or N-row stream decode for coordinator flush |
+| `/health.kv_auto_batch.stream` | Operator stats separate from non-stream coordinator |
+
+### v47 — external-buffer alias probe + validate (patch 0019)
+
+| API / field | Why |
+|-------------|-----|
+| `llama_memory_kv_ext_external_alias_probe` | Static build probe — no ctx; mirrors writable bind tracker pattern |
+| `llama_memory_kv_page_alias_validate` | Classifies alias feasibility vs `page_map` without mutating ggml tensors |
+| `page_bind_external_alias_probe()` | Python/C binding; works without live decode ctx |
+| `page_bind_alias_validate(ctx, …)` | Live validate; returns `alias_mode`, `blocker`, `alias_ready` |
+| `/health.kv_page_bind.external_alias_*` | Operator visibility on every health poll |
+| `page_copy_descriptor(alias_plan=)` | `external_buffer_alias_ready` only when validate reports SAME_POINTER |
+
+**WHY v47 before v48 bind:** overlaying `tensor->data` incorrectly corrupts KV silently across decode steps; validate establishes blockers (`BLOCKED_DEVICE` on Metal, `BLOCKED_V_TRANS` on non-FA) before any bind API ships.
 
 ## Build
 

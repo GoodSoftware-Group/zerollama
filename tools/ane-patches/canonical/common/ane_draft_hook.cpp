@@ -124,6 +124,8 @@ static float ane_vec_cosine(const float * ref, const float * out, int n);
 static bool load_output_norm_vector(const char * path, int n, std::vector<float> & out);
 static void ane_apply_output_norm_file(std::vector<float> & h);
 
+static bool ane_metal_golden_enabled(void);
+
 static void log_ane_golden_telemetry(const float * input, int ch, int sp, int step);
 static void ane_handoff_eval_done(bool ok);
 
@@ -131,6 +133,11 @@ static std::atomic<bool> g_ane_output_ready { false };
 static std::atomic<int>  g_handoff_step { 0 };
 static std::vector<float> g_last_handoff_hidden;
 static std::vector<float> g_dflash_inpSA;
+static std::vector<float> g_dflash_host_fc;
+static std::vector<float> g_b8m_ane_attn_out;
+static std::vector<float> g_b8m_ane_attn_wo;
+static std::vector<float> g_b8m_ane_pre_out_norm;
+static int32_t g_handoff_i_batch = -1;
 static llama_token g_dflash_handoff_token = LLAMA_TOKEN_NULL;
 static std::vector<float> g_dflash_ffn_residual;
 static std::vector<float> g_async_golden_emb;
@@ -149,6 +156,11 @@ void common_ane_draft_reset_handoff(void) {
     g_handoff_step.store(0);
     g_last_handoff_hidden.clear();
     g_dflash_inpSA.clear();
+    g_dflash_host_fc.clear();
+    g_b8m_ane_attn_out.clear();
+    g_b8m_ane_attn_wo.clear();
+    g_b8m_ane_pre_out_norm.clear();
+    g_handoff_i_batch = -1;
     g_dflash_handoff_token = LLAMA_TOKEN_NULL;
     g_dflash_ffn_residual.clear();
     g_async_golden_emb.clear();
@@ -852,12 +864,18 @@ bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_
             const int oc_ffn  = (chain_depth >= 4) ? ane_draft_session_matmul_ffn_embd() : oc;
             std::vector<float> inp;
             if (ane_draft_session_dflash_chain17_active()) {
+                const int nd = oc < n_embd ? oc : n_embd;
+                std::vector<float> mref((size_t) n_embd, 0.f);
                 const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
                 if (metal) {
-                    const int nd = oc < n_embd ? oc : n_embd;
-                    std::vector<float> mref((size_t) nd);
-                    for (int i = 0; i < nd; ++i) {
+                    for (int i = 0; i < n_embd; ++i) {
                         mref[(size_t) i] = metal[i];
+                    }
+                    ane_apply_output_norm_file(mref);
+                    *out_hidden_cos = ane_vec_cosine(mref.data(), h.data(), nd);
+                } else if (const float * pre = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)) {
+                    for (int i = 0; i < n_embd; ++i) {
+                        mref[(size_t) i] = pre[i];
                     }
                     ane_apply_output_norm_file(mref);
                     *out_hidden_cos = ane_vec_cosine(mref.data(), h.data(), nd);
@@ -1158,16 +1176,27 @@ bool common_ane_draft_metal_ref_token(struct llama_context * ctx_dft, int32_t i_
     if (!drive_head_load(embd_path, norm_path)) {
         return false;
     }
-    const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
-    if (!metal) {
-        return false;
-    }
     const int n_embd = g_drive_head.n_embd;
     std::vector<float> h((size_t) n_embd);
-    for (int i = 0; i < n_embd; ++i) {
-        h[(size_t) i] = metal[i];
+    const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
+    bool applied_out_norm = false;
+    if (metal) {
+        for (int i = 0; i < n_embd; ++i) {
+            h[(size_t) i] = metal[i];
+        }
+    } else if (const float * pre = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)) {
+        for (int i = 0; i < n_embd; ++i) {
+            h[(size_t) i] = pre[i];
+        }
+        if (ane_draft_session_dflash_chain17_active()) {
+            ane_apply_output_norm_file(h);
+            applied_out_norm = true;
+        }
+    } else {
+        return false;
     }
-    if (ane_draft_session_dflash_chain17_active()) {
+    if (ane_draft_session_dflash_chain17_active() && !applied_out_norm) {
+        // Draft ctx embeddings are usually pre-output_norm; ANE chain17 output is post-norm.
         ane_apply_output_norm_file(h);
     }
     *out_id = drive_argmax_tied(h);
@@ -2511,6 +2540,108 @@ static bool ane_dflash_qkv_from_attn_norm_tok(
     return true;
 }
 
+// P20: when P19 host dflash_fc is active, Q/K/V noise uses hidden_norm(host_fc) — same as ANE chain11+.
+static bool ane_dflash_qkv_from_host_fc_hidden_norm(
+        int ic_fc, int oc_q, int oc_kv,
+        std::vector<float> & q,
+        std::vector<float> & k_noise,
+        std::vector<float> & v_noise) {
+    if (!ane_dflash_fc_host_enabled() || g_dflash_host_fc.empty() || ic_fc <= 0 ||
+        oc_q <= 0 || oc_kv <= 0) {
+        return false;
+    }
+    std::vector<float> cur((size_t) ic_fc, 0.f);
+    const int n_copy = std::min(ic_fc, (int) g_dflash_host_fc.size());
+    if (n_copy <= 0) {
+        return false;
+    }
+    std::memcpy(cur.data(), g_dflash_host_fc.data(), (size_t) n_copy * sizeof(float));
+    std::vector<float> gamma;
+    if (!load_gamma_scales(std::getenv("ZEROLLAMA_ANE_DRAFT_GAMMA_FILE"), ic_fc, gamma)) {
+        return false;
+    }
+    ane_apply_rms_gamma_host(cur.data(), ic_fc, gamma);
+    static std::vector<float> w_q;
+    static std::vector<float> w_k;
+    static std::vector<float> w_v;
+    static std::atomic<bool> ok { false };
+    static int cached_ic = -1;
+    static int cached_oc_q = -1;
+    static int cached_oc_kv = -1;
+    if (cached_ic != ic_fc || cached_oc_q != oc_q || cached_oc_kv != oc_kv) {
+        const char * w2 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2");
+        const char * w3 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3");
+        const char * w4 = std::getenv("ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4");
+        ok.store(w2 && w3 && w4 &&
+                 load_matmul_golden_weights(w2, ic_fc, oc_q, w_q) &&
+                 load_matmul_golden_weights(w3, ic_fc, oc_kv, w_k) &&
+                 load_matmul_golden_weights(w4, ic_fc, oc_kv, w_v));
+        cached_ic = ic_fc;
+        cached_oc_q = oc_q;
+        cached_oc_kv = oc_kv;
+    }
+    if (!ok.load()) {
+        return false;
+    }
+    q.resize((size_t) oc_q);
+    k_noise.resize((size_t) oc_kv);
+    v_noise.resize((size_t) oc_kv);
+    matmul_golden_reference(cur.data(), ic_fc, oc_q, w_q, q);
+    matmul_golden_reference(cur.data(), ic_fc, oc_kv, w_k, k_noise);
+    matmul_golden_reference(cur.data(), ic_fc, oc_kv, w_v, v_noise);
+    static std::atomic<bool> host_fc_qkv_logged { false };
+    if (!host_fc_qkv_logged.exchange(true)) {
+        LOG_INF("%s: P20 Q/K/V from hidden_norm(host_fc) ic=%d oc_q=%d oc_kv=%d host_fc=%d\n",
+                __func__, ic_fc, oc_q, oc_kv, (int) g_dflash_host_fc.size());
+    }
+    return true;
+}
+
+// P21: Q/K/V noise path — metal=P18 attn_norm(tok_embd); ane=P20 hidden_norm(host_fc); auto=P20 then P18.
+static const char * ane_dflash_qkv_path_name(void) {
+    const char * v = std::getenv("ZEROLLAMA_ANE_DRAFT_QKV_PATH");
+    if (v && v[0]) {
+        return v;
+    }
+    if (common_ane_draft_get_drive_mode() == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
+        return "metal";
+    }
+    return "auto";
+}
+
+static bool ane_dflash_qkv_path_is_metal(const char * path) {
+    return path && (strcmp(path, "metal") == 0 || strcmp(path, "p18") == 0 ||
+                    strcmp(path, "tok") == 0 || strcmp(path, "attn_norm") == 0);
+}
+
+static bool ane_dflash_qkv_path_is_ane(const char * path) {
+    return path && (strcmp(path, "ane") == 0 || strcmp(path, "p20") == 0 ||
+                    strcmp(path, "host_fc") == 0 || strcmp(path, "hidden_norm") == 0);
+}
+
+static bool ane_dflash_qkv_for_noise(
+        int ic_fc, int oc_q, int oc_kv,
+        std::vector<float> & q,
+        std::vector<float> & k_noise,
+        std::vector<float> & v_noise) {
+    const char * path = ane_dflash_qkv_path_name();
+    static std::atomic<bool> path_logged { false };
+    if (!path_logged.exchange(true)) {
+        LOG_INF("%s: P21 qkv_path=%s (metal=P18 attn_norm(tok_embd), ane=P20 hidden_norm(host_fc))\n",
+                __func__, path);
+    }
+    if (ane_dflash_qkv_path_is_metal(path)) {
+        return ane_dflash_qkv_from_attn_norm_tok(ic_fc, oc_q, oc_kv, q, k_noise, v_noise);
+    }
+    if (ane_dflash_qkv_path_is_ane(path)) {
+        return ane_dflash_qkv_from_host_fc_hidden_norm(ic_fc, oc_q, oc_kv, q, k_noise, v_noise);
+    }
+    if (ane_dflash_qkv_from_host_fc_hidden_norm(ic_fc, oc_q, oc_kv, q, k_noise, v_noise)) {
+        return true;
+    }
+    return ane_dflash_qkv_from_attn_norm_tok(ic_fc, oc_q, oc_kv, q, k_noise, v_noise);
+}
+
 static bool ane_dflash_qkv_for_cross_attn(
         const float * input, int ic_in, int ic_fc, int oc_q, int oc_kv,
         const std::vector<float> & w_fc, const std::vector<float> & gamma,
@@ -2518,7 +2649,7 @@ static bool ane_dflash_qkv_for_cross_attn(
         std::vector<float> & q,
         std::vector<float> & k_noise,
         std::vector<float> & v_noise) {
-    if (ane_dflash_qkv_from_attn_norm_tok(ic_fc, oc_q, oc_kv, q, k_noise, v_noise)) {
+    if (ane_dflash_qkv_for_noise(ic_fc, oc_q, oc_kv, q, k_noise, v_noise)) {
         return true;
     }
     std::vector<float> fused;
@@ -2650,28 +2781,47 @@ static bool ane_dflash_host_cross_attn(
 
     attn_out.assign((size_t) oc_q, 0.f);
 
-    if (gqa) {
+    // Precompute ctx K/V once per cross row — why: GQA head loop must not repeat dflash_fc fusion.
+    struct cross_ctx_kv {
+        std::vector<float> k;
+        std::vector<float> v;
+        bool               ok = false;
+    };
+    std::vector<cross_ctx_kv> ctx_kv((size_t) n_ctx);
+    {
         std::vector<float> feat((size_t) cached_cross_read);
         std::vector<float> fused;
         std::vector<float> k_row((size_t) oc_kv);
         std::vector<float> v_row((size_t) oc_kv);
+        for (int j = 0; j < n_ctx; ++j) {
+            if (!ctx_dft || llama_context_cross_row(ctx_dft, j, feat.data(), cached_cross_read) <= 0) {
+                continue;
+            }
+            if (!ane_dflash_fused_from_feat(feat.data(), cached_ic_in, cached_oc_fc, cached_oc_fc, w_fc, gamma, fused)) {
+                continue;
+            }
+            matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_k, k_row);
+            matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_v, v_row);
+            ane_dflash_prepare_k(k_row.data(), oc_kv, kv_rope_heads, geom, k_norm_gamma, (llama_pos) (win_off + j));
+            ctx_kv[(size_t) j].k = k_row;
+            ctx_kv[(size_t) j].v = v_row;
+            ctx_kv[(size_t) j].ok = true;
+        }
+    }
+
+    if (gqa) {
         for (int h = 0; h < n_head_q; ++h) {
             const int h_kv = (h * geom.n_heads_kv) / n_head_q;
             const float * q_h = q_work.data() + h * geom.head_dim;
             std::vector<float> scores;
             std::vector<std::vector<float>> v_heads;
             for (int j = 0; j < n_ctx; ++j) {
-                if (!ctx_dft || llama_context_cross_row(ctx_dft, j, feat.data(), cached_cross_read) <= 0) {
+                if (!ctx_kv[(size_t) j].ok) {
                     continue;
                 }
-                if (!ane_dflash_fused_from_feat(feat.data(), cached_ic_in, cached_oc_fc, cached_oc_fc, w_fc, gamma, fused)) {
-                    continue;
-                }
-                matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_k, k_row);
-                matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_v, v_row);
-                ane_dflash_prepare_k(k_row.data(), oc_kv, kv_rope_heads, geom, k_norm_gamma, (llama_pos) (win_off + j));
-                const float * k_h = k_row.data() + h_kv * geom.head_dim;
+                const float * k_h = ctx_kv[(size_t) j].k.data() + h_kv * geom.head_dim;
                 scores.push_back(ane_vec_dot(q_h, k_h, geom.head_dim) * attn_scale);
+                const auto & v_row = ctx_kv[(size_t) j].v;
                 v_heads.emplace_back(v_row.begin() + h_kv * geom.head_dim, v_row.begin() + (h_kv + 1) * geom.head_dim);
             }
             const float * k_h = k_noise_work.data() + h_kv * geom.head_dim;
@@ -2693,22 +2843,13 @@ static bool ane_dflash_host_cross_attn(
     const int oc = oc_q;
     std::vector<float> scores;
     std::vector<std::vector<float>> v_rows;
-    std::vector<float> feat((size_t) cached_cross_read);
-    std::vector<float> fused;
-    std::vector<float> k_row((size_t) oc);
-    std::vector<float> v_row((size_t) oc);
     for (int j = 0; j < n_ctx; ++j) {
-        if (!ctx_dft || llama_context_cross_row(ctx_dft, j, feat.data(), cached_cross_read) <= 0) {
+        if (!ctx_kv[(size_t) j].ok) {
             continue;
         }
-        if (!ane_dflash_fused_from_feat(feat.data(), cached_ic_in, cached_oc_fc, cached_oc_fc, w_fc, gamma, fused)) {
-            continue;
-        }
-        matmul_golden_reference(fused.data(), cached_oc_fc, oc, w_k, k_row);
-        matmul_golden_reference(fused.data(), cached_oc_fc, oc, w_v, v_row);
-        ane_dflash_prepare_k(k_row.data(), oc, kv_rope_heads, geom, k_norm_gamma, (llama_pos) (win_off + j));
-        scores.push_back(ane_vec_dot(q_work.data(), k_row.data(), oc) * attn_scale);
-        v_rows.push_back(v_row);
+        const float * k_row = ctx_kv[(size_t) j].k.data();
+        scores.push_back(ane_vec_dot(q_work.data(), k_row, oc) * attn_scale);
+        v_rows.push_back(ctx_kv[(size_t) j].v);
     }
     scores.push_back(ane_vec_dot(q_work.data(), k_noise_work.data(), oc) * attn_scale);
     v_rows.emplace_back(v_noise, v_noise + oc);
@@ -2730,7 +2871,7 @@ static bool ane_dflash_post_eval_host_attn(llama_context * ctx_dft, int oc_q, in
     std::vector<float> k;
     std::vector<float> v;
     const int ic_fc = env_int_or("ZEROLLAMA_ANE_DRAFT_MATMUL_OC", oc_q);
-    if (!ane_dflash_qkv_from_attn_norm_tok(ic_fc, oc_q, oc_kv, q, k, v)) {
+    if (!ane_dflash_qkv_for_noise(ic_fc, oc_q, oc_kv, q, k, v)) {
         q.assign((size_t) oc_q, 0.f);
         k.assign((size_t) oc_kv, 0.f);
         v.assign((size_t) oc_kv, 0.f);
@@ -2744,6 +2885,9 @@ static bool ane_dflash_post_eval_host_attn(llama_context * ctx_dft, int oc_q, in
     std::vector<float> attn_out;
     if (!ane_dflash_host_cross_attn(ctx_dft, q.data(), k.data(), v.data(), oc_q, oc_kv, attn_out)) {
         return false;
+    }
+    if (ane_metal_golden_enabled()) {
+        g_b8m_ane_attn_out = attn_out;
     }
     return ane_draft_session_write_dflash_attn_out(attn_out.data(), oc_q);
 }
@@ -2854,6 +2998,195 @@ static bool ane_dflash_run_host_fc(const float * input, int ic_in, std::vector<f
     return true;
 }
 
+static bool ane_metal_golden_enabled(void) {
+    return ane_draft_telemetry_enabled() ||
+           common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF;
+}
+
+static void log_ane_metal_golden_leg(int step, const char * leg, float cos, int n, const char * note) {
+    if (note && note[0]) {
+        LOG_INF("%s: B8m step=%d leg=%s cos=%.4f n=%d note=%s\n", __func__, step, leg, cos, n, note);
+    } else {
+        LOG_INF("%s: B8m step=%d leg=%s cos=%.4f n=%d\n", __func__, step, leg, cos, n);
+    }
+}
+
+static bool ane_read_ane_output_avg(int oc, int sp, std::vector<float> & avg) {
+    if (oc <= 0 || sp <= 0) {
+        return false;
+    }
+    const size_t out_floats = (size_t) oc * (size_t) sp;
+    std::vector<float> out(out_floats);
+    if (ane_draft_session_read_output(out.data(), out_floats) == 0) {
+        return false;
+    }
+    avg.assign((size_t) oc, 0.f);
+    for (int o = 0; o < oc; ++o) {
+        double sum = 0.0;
+        for (int s = 0; s < sp; ++s) {
+            sum += (double) out[(size_t) o * (size_t) sp + (size_t) s];
+        }
+        avg[(size_t) o] = (float) (sum / (double) sp);
+    }
+    return true;
+}
+
+static bool ane_metal_draft_hidden_for_leg(
+        llama_context * ctx_dft, int32_t i_batch, bool post_output_norm, std::vector<float> & h) {
+    if (!ctx_dft || i_batch < 0) {
+        return false;
+    }
+    const llama_model * model = llama_get_model(ctx_dft);
+    const int n_embd = llama_model_n_embd(model);
+    if (n_embd <= 0) {
+        return false;
+    }
+    h.assign((size_t) n_embd, 0.f);
+    bool applied_out_norm = false;
+    const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
+    if (metal) {
+        for (int i = 0; i < n_embd; ++i) {
+            h[(size_t) i] = metal[i];
+        }
+    } else if (const float * pre = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)) {
+        for (int i = 0; i < n_embd; ++i) {
+            h[(size_t) i] = pre[i];
+        }
+        if (post_output_norm) {
+            ane_apply_output_norm_file(h);
+            applied_out_norm = true;
+        }
+    } else {
+        return false;
+    }
+    if (post_output_norm && !applied_out_norm) {
+        ane_apply_output_norm_file(h);
+    }
+    return true;
+}
+
+static void log_ane_metal_golden_handoff_input(
+        int step,
+        llama_context * ctx_dft,
+        llama_context * src_ctx,
+        int32_t i_batch,
+        const float * packed,
+        int pack_len) {
+    if (!ane_metal_golden_enabled() || !packed || pack_len <= 0 || !src_ctx) {
+        return;
+    }
+    const int32_t src_i = ane_handoff_src_batch_index(src_ctx, i_batch);
+    std::vector<float> metal_row;
+    const char * note = nullptr;
+    if (ane_copy_dflash_export_row(src_ctx, src_i, pack_len, metal_row)) {
+        note = "export";
+    } else if (ctx_dft && llama_context_cross_has_v_embd(ctx_dft)) {
+        const int32_t cross_i = ane_cross_row_index(ctx_dft, src_i);
+        metal_row.assign((size_t) pack_len, 0.f);
+        if (llama_context_cross_row(ctx_dft, cross_i, metal_row.data(), pack_len) <= 0) {
+            log_ane_metal_golden_leg(step, "handoff_input", 0.f, pack_len, "no_metal_row");
+            return;
+        }
+        note = "cross";
+    } else {
+        log_ane_metal_golden_leg(step, "handoff_input", 0.f, pack_len, "no_metal_row");
+        return;
+    }
+    const float cos = ane_vec_cosine(metal_row.data(), packed, pack_len);
+    log_ane_metal_golden_leg(step, "handoff_input", cos, pack_len, note);
+}
+
+static void log_ane_metal_golden_host_fc(
+        int step,
+        llama_context * src_ctx,
+        int32_t i_batch,
+        const float * packed,
+        int pack_len,
+        const float * host_fc,
+        int fc_len) {
+    if (!ane_metal_golden_enabled() || !ane_dflash_fc_host_enabled() ||
+        !host_fc || fc_len <= 0 || !packed || pack_len <= 0 || !src_ctx) {
+        return;
+    }
+    const int32_t src_i = ane_handoff_src_batch_index(src_ctx, i_batch);
+    std::vector<float> metal_row;
+    if (!ane_copy_dflash_export_row(src_ctx, src_i, pack_len, metal_row)) {
+        log_ane_metal_golden_leg(step, "host_fc", 0.f, fc_len, "no_export");
+        return;
+    }
+    std::vector<float> fc_from_metal;
+    if (!ane_dflash_run_host_fc(metal_row.data(), pack_len, fc_from_metal)) {
+        log_ane_metal_golden_leg(step, "host_fc", 0.f, fc_len, "fc_replay_failed");
+        return;
+    }
+    const int n = std::min(fc_len, (int) fc_from_metal.size());
+    const float cos = ane_vec_cosine(fc_from_metal.data(), host_fc, n);
+    log_ane_metal_golden_leg(step, "host_fc", cos, n, "export_replay");
+}
+
+static void log_ane_metal_golden_chain_output(int step, llama_context * ctx_dft, int32_t i_batch) {
+    if (!ane_metal_golden_enabled() || !ctx_dft || i_batch < 0) {
+        return;
+    }
+    const int sp = ane_draft_session_spatial();
+    const int oc = ane_draft_session_matmul_ffn_embd();
+    if (oc <= 0 || sp <= 0) {
+        return;
+    }
+    const int ic_fc = env_int_or("ZEROLLAMA_ANE_DRAFT_MATMUL_OC", oc);
+    const int ic_in = ane_dflash_ref_ic(ane_draft_session_channels());
+    const int oc_q  = env_int_or("ZEROLLAMA_ANE_DRAFT_MATMUL_OC2", oc);
+    const int oc_kv = env_int_or("ZEROLLAMA_ANE_DRAFT_MATMUL_OC3", oc);
+    const int oc_wo = env_int_or("ZEROLLAMA_ANE_DRAFT_MATMUL_OC5", oc);
+    const int oc_ff = env_int_or("ZEROLLAMA_ANE_DRAFT_MATMUL_OC6", oc);
+    const float * handoff = g_last_handoff_hidden.empty() ? nullptr : g_last_handoff_hidden.data();
+
+    if (!g_b8m_ane_attn_out.empty() && handoff) {
+        const float cos = ane_dflash_chain13_attn_out_ref_cosine(
+                handoff, ic_in, ic_fc, ic_fc, oc_q,
+                g_b8m_ane_attn_out.data(), (int) g_b8m_ane_attn_out.size(), ctx_dft);
+        log_ane_metal_golden_leg(step, "attn_out", cos, (int) g_b8m_ane_attn_out.size(), "cpu_ref");
+    }
+    if (!g_b8m_ane_attn_wo.empty() && handoff) {
+        const float cos = ane_dflash_chain14_wo_ref_cosine(
+                handoff, ic_in, ic_fc, oc_q, oc_wo,
+                g_b8m_ane_attn_wo.data(), (int) g_b8m_ane_attn_wo.size(), ctx_dft);
+        log_ane_metal_golden_leg(step, "attn_wo", cos, (int) g_b8m_ane_attn_wo.size(), "cpu_ref");
+    }
+    if (!g_b8m_ane_pre_out_norm.empty()) {
+        std::vector<float> metal;
+        if (ane_metal_draft_hidden_for_leg(ctx_dft, i_batch, false, metal)) {
+            const int n = std::min((int) g_b8m_ane_pre_out_norm.size(), (int) metal.size());
+            const float cos = ane_vec_cosine(metal.data(), g_b8m_ane_pre_out_norm.data(), n);
+            log_ane_metal_golden_leg(step, "pre_output_norm", cos, n, "metal_pre_norm");
+        } else {
+            log_ane_metal_golden_leg(step, "pre_output_norm", 0.f, (int) g_b8m_ane_pre_out_norm.size(), "no_metal_emb");
+        }
+    }
+    if (!g_b8m_ane_pre_out_norm.empty() && handoff && oc_ff > 0) {
+        const float cos = ane_dflash_chain16_ffn_down_ref_cosine(
+                handoff, ic_in, ic_fc, oc_q, oc_wo, oc_ff,
+                g_b8m_ane_pre_out_norm.data(), (int) g_b8m_ane_pre_out_norm.size(), ctx_dft);
+        log_ane_metal_golden_leg(step, "ffn_down", cos, (int) g_b8m_ane_pre_out_norm.size(), "cpu_ref");
+    }
+
+    std::vector<float> ane_out;
+    if (!ane_read_ane_output_avg(oc, sp, ane_out)) {
+        log_ane_metal_golden_leg(step, "output_norm", 0.f, oc, "no_ane_out");
+        return;
+    }
+    const bool post_norm = ane_draft_session_dflash_chain17_active();
+    const char * leg = post_norm ? "output_norm" : "ffn_down_out";
+    std::vector<float> metal;
+    if (!ane_metal_draft_hidden_for_leg(ctx_dft, i_batch, post_norm, metal)) {
+        log_ane_metal_golden_leg(step, leg, 0.f, oc, "no_metal_emb");
+        return;
+    }
+    const int n = std::min(oc, (int) metal.size());
+    const float cos = ane_vec_cosine(metal.data(), ane_out.data(), n);
+    log_ane_metal_golden_leg(step, leg, cos, n, nullptr);
+}
+
 static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
     if (ane_draft_session_dflash_chain13_active() || ane_draft_session_dflash_chain14_active() ||
         ane_draft_session_dflash_chain15_active() || ane_draft_session_dflash_chain16_active() ||
@@ -2874,6 +3207,13 @@ static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
         }
         if (!ane_dflash_apply_attn_inpSA_residual()) {
             return false;
+        }
+        if (ane_metal_golden_enabled()) {
+            const int n = ane_draft_session_matmul_ffn_embd();
+            if (n > 0) {
+                g_b8m_ane_attn_wo.assign((size_t) n, 0.f);
+                ane_draft_session_snapshot_output_row(g_b8m_ane_attn_wo.data(), n);
+            }
         }
         if (!ane_dflash_stash_ffn_skip()) {
             return false;
@@ -2897,6 +3237,13 @@ static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
         }
         if (!ane_dflash_apply_ffn_residual()) {
             return false;
+        }
+        if (ane_metal_golden_enabled() && ane_draft_session_dflash_chain17_active()) {
+            const int n = ane_draft_session_matmul_ffn_embd();
+            if (n > 0) {
+                g_b8m_ane_pre_out_norm.assign((size_t) n, 0.f);
+                ane_draft_session_snapshot_output_row(g_b8m_ane_pre_out_norm.data(), n);
+            }
         }
     }
     if (ane_draft_session_dflash_chain17_active()) {
@@ -4446,6 +4793,7 @@ static void ane_handoff_eval_done(bool ok) {
         LOG_WRN("%s: dflash post-eval pipeline failed\n", __func__);
     }
     g_ane_output_ready.store(true);
+    log_ane_metal_golden_chain_output(g_async_golden_step, g_handoff_ctx_dft, g_handoff_i_batch);
     if (g_async_golden_telemetry && !g_async_golden_emb.empty()) {
         log_ane_golden_telemetry(
             g_async_golden_emb.data(),
@@ -4463,6 +4811,7 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
     g_handoff_ctx_dft = ctx_dft;
 
     const int step = g_handoff_step.fetch_add(1) + 1;
+    g_handoff_i_batch = i_batch;
     const int stride = ane_handoff_stride();
     if ((step - 1) % stride != 0) {
         // B7 shadow: do not reuse ANE logits from a prior handoff step when Metal decoded anew.
@@ -4502,6 +4851,7 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
             ane_draft_session_dflash_chain16_active() || ane_draft_session_dflash_chain17_active()) {
             ane_dflash_stash_inpSA(ctx_dft, i_batch);
         }
+        log_ane_metal_golden_handoff_input(step, ctx_dft, src_ctx, i_batch, pack_ptr, pack_len);
     } else {
         emb = llama_get_embeddings_pre_norm_ith(src_ctx, i_batch);
         if (!emb) {
@@ -4549,8 +4899,11 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
             LOG_WRN("%s: step=%d host dflash_fc stash failed\n", __func__, step);
             return;
         }
+        g_dflash_host_fc = host_fc;
+        log_ane_metal_golden_host_fc(step, src_ctx, i_batch, pack_ptr, pack_len, host_fc.data(), (int) host_fc.size());
     } else {
         ane_draft_session_clear_dflash_fc_host();
+        g_dflash_host_fc.clear();
     }
 
     g_ane_output_ready.store(false);
@@ -4588,6 +4941,7 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
 
     g_ane_output_ready.store(true);
 
+    log_ane_metal_golden_chain_output(step, ctx_dft, i_batch);
     log_ane_golden_telemetry(emb, ane_draft_session_channels(), ane_draft_session_spatial(), step);
 
     if (log_info) {

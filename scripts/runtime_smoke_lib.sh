@@ -462,6 +462,78 @@ smoke_runtime_require_phase14_endpoints() {
 
 # Phase 15 v7/v8: assert KV export keys on /health and GET /internal/kv-snapshot.
 #
+# v42/v43: validate migration_summary / page_migration_summary shape when present;
+# with required=1 after linked decode, at least one summary must exist.
+smoke_runtime_assert_migration_summary() {
+  local runtime_url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
+  local required="${2:-0}"
+  runtime_url="${runtime_url%/}"
+  curl -sf "${runtime_url}/health" -o /tmp/zerollama-migration-health.json
+  curl -sf "${runtime_url}/internal/kv-snapshot" -o /tmp/zerollama-migration-snapshot.json
+  python3 -c "
+import json, sys
+
+required = sys.argv[1] == '1'
+health = json.load(open('/tmp/zerollama-migration-health.json'))
+snap = json.load(open('/tmp/zerollama-migration-snapshot.json'))
+pb = health.get('kv_page_bind') or {}
+snap_pb = snap.get('kv_page_bind') or {}
+mig = snap.get('kv_page_migration') or {}
+dl = health.get('kv_decode_loop') or {}
+
+linked = (
+    pb.get('writable_bind_api') not in (None, '', 'none')
+    or bool(dl.get('batch_decode_in_c'))
+)
+
+def check_shape(summary, label):
+    for key in ('pages_live', 'n_layers', 'full_plan_endpoint'):
+        assert key in summary, f'{label} missing {key}'
+    assert summary['full_plan_endpoint'] == '/internal/kv-snapshot'
+    assert int(summary['pages_live']) >= 0
+    assert int(summary['n_layers']) >= 0
+
+for label, block in (
+    ('kv_page_bind.page_migration_summary', pb.get('page_migration_summary')),
+    ('kv_page_bind.page_migration_summary(snapshot)', snap_pb.get('page_migration_summary')),
+    ('kv_page_migration.migration_summary', mig.get('migration_summary')),
+):
+    if isinstance(block, dict):
+        check_shape(block, label)
+
+if not linked:
+    print('migration summary: skip (kv-ext not linked)')
+    sys.exit(0)
+
+if required:
+    has = any(
+        isinstance(x, dict)
+        for x in (
+            pb.get('page_migration_summary'),
+            snap_pb.get('page_migration_summary'),
+            mig.get('migration_summary'),
+        )
+    )
+    assert has, (
+        'linked kv-ext decode expected page_migration_summary or migration_summary '
+        f'after generate; kv_page_bind={pb.get(\"status\")} '
+        f'last_tensor_probe={pb.get(\"last_tensor_probe\")}'
+    )
+    print('migration summary: ok (linked decode)')
+elif any(
+    isinstance(x, dict)
+    for x in (
+        pb.get('page_migration_summary'),
+        snap_pb.get('page_migration_summary'),
+        mig.get('migration_summary'),
+    )
+):
+    print('migration summary: shape ok')
+else:
+    print('migration summary: none (idle / no bind yet)')
+" "$required"
+}
+
 # WHY acceptable page_bind shapes:
 #   - partial + seq_position/cell_index: PA block_ids registered before tensor verify.
 #   - bound + tensor/physical/seq_position: linked llama-kv-ext ran decode + probe.
@@ -510,7 +582,7 @@ print(
   python3 -c "
 import json
 b = json.load(open('/tmp/zerollama-kv-snapshot.json'))
-for key in ('kv_forward_plans', 'kv_page_bind', 'kv_decode_steps', 'kv_bind'):
+for key in ('kv_forward_plans', 'kv_page_bind', 'kv_decode_steps', 'kv_bind', 'kv_page_migration'):
     assert key in b, sorted(b.keys())
 pb = b['kv_page_bind']
 if pb.get('available'):
@@ -519,7 +591,42 @@ if pb.get('available'):
         assert pb.get('physical_pages_bound') is True, pb
 else:
     assert pb['status'] == 'not_implemented'
+# v40: snapshot migration plans redact src_ptr unless ZEROLLAMA_KV_MIGRATION_INCLUDE_PTRS=1
+mig = b.get('kv_page_migration') or {}
+plan = mig.get('plan')
+if isinstance(plan, dict) and plan.get('pages'):
+    for page in plan['pages']:
+        for layer in page.get('layers') or []:
+            for copy_key in ('k_copy', 'v_copy'):
+                block = layer.get(copy_key)
+                if isinstance(block, dict) and 'src_ptr' in block:
+                    import os
+                    if os.environ.get('ZEROLLAMA_KV_MIGRATION_INCLUDE_PTRS', '').strip().lower() not in (
+                        '1', 'true', 'yes', 'on',
+                    ):
+                        raise AssertionError(f'unredacted {copy_key}.src_ptr in kv_page_migration plan')
 print('kv-snapshot ok')
+"
+  smoke_runtime_assert_migration_summary "$runtime_url" 0
+  smoke_runtime_assert_kv_auto_batch "$runtime_url"
+}
+
+# v45: nested kv_auto_batch shape on /health (v32/v37 split).
+smoke_runtime_assert_kv_auto_batch() {
+  local runtime_url="${1:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
+  runtime_url="${runtime_url%/}"
+  curl -sf "${runtime_url}/health" -o /tmp/zerollama-kv-auto-batch-health.json
+  python3 -c "
+import json
+h = json.load(open('/tmp/zerollama-kv-auto-batch-health.json'))
+ab = h.get('kv_auto_batch') or {}
+for key in ('non_stream', 'stream'):
+    assert key in ab, sorted(ab.keys())
+    block = ab[key]
+    assert isinstance(block, dict), block
+    for field in ('enabled', 'pending', 'window_ms', 'flush_count', 'batched_requests'):
+        assert field in block, (key, block)
+print('kv_auto_batch shape ok')
 "
 }
 

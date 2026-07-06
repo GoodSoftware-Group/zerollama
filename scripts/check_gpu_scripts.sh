@@ -100,6 +100,10 @@ scripts=(
   phase15_llama_kv_ext_pin_check.sh
   llama_patch_doctor.sh
   phase15_health_smoke.sh
+  phase15_migration_summary_smoke.sh
+  phase15_stream_auto_batch_smoke.sh
+  phase15_auto_batch_smoke.sh
+  phase15_auto_batch_signoff.sh
 )
 
 for s in "${scripts[@]}"; do

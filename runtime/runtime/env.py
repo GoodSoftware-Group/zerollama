@@ -679,8 +679,22 @@ def kv_auto_batch_enabled() -> bool:
     return env_bool("ZEROLLAMA_KV_AUTO_BATCH", default=False)
 
 
+def kv_auto_batch_stream_enabled() -> bool:
+    """Opt-in: coalesce concurrent in-process streaming ``generate()`` (v37)."""
+    return env_bool("ZEROLLAMA_KV_AUTO_BATCH_STREAM", default=False)
+
+
 def kv_auto_batch_window_ms() -> int:
     return _int_env("ZEROLLAMA_KV_AUTO_BATCH_MS", default=5, minimum=0)
+
+
+def kv_migration_include_pointers() -> bool:
+    """Include raw ``src_ptr`` in ``/internal/kv-snapshot`` migration plans (v40).
+
+    Default off — WHY: loopback snapshot may be logged or forwarded; raw K/V
+    addresses are process-local and rarely needed outside live migration debug.
+    """
+    return env_bool("ZEROLLAMA_KV_MIGRATION_INCLUDE_PTRS", default=False)
 
 
 def kv_env_health() -> dict[str, object]:
@@ -689,5 +703,7 @@ def kv_env_health() -> dict[str, object]:
         "native_batch": kv_native_batch_enabled(),
         "native_sample": kv_native_sample_enabled(),
         "auto_batch": kv_auto_batch_enabled(),
+        "auto_batch_stream": kv_auto_batch_stream_enabled(),
         "auto_batch_ms": kv_auto_batch_window_ms(),
+        "migration_include_ptrs": kv_migration_include_pointers(),
     }

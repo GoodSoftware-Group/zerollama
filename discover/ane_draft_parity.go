@@ -45,6 +45,11 @@ type ANEDraftParityResult struct {
 	ShadowMatchPct     float64                 `json:"shadow_match_pct"`
 	ShadowHiddenCos    float64                 `json:"shadow_hidden_cos,omitempty"`
 	ShadowHiddenSteps  int                     `json:"shadow_hidden_steps,omitempty"`
+	MetalGoldenLegs    map[string]float64      `json:"metal_golden_legs,omitempty"`
+	MetalGoldenInputCos  float64               `json:"metal_golden_input_cos,omitempty"`
+	MetalGoldenHostFcCos float64               `json:"metal_golden_host_fc_cos,omitempty"`
+	MetalGoldenPreOutputCos float64            `json:"metal_golden_pre_output_cos,omitempty"`
+	MetalGoldenOutputCos float64               `json:"metal_golden_output_cos,omitempty"`
 	GoldenCosine       float64                 `json:"golden_cosine,omitempty"`
 	HandoffStride      int                     `json:"handoff_stride,omitempty"`
 	HookOverheadPct    float64                 `json:"hook_overhead_pct,omitempty"`
@@ -202,6 +207,11 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 		out.ShadowMatches = ab.E2E.ANEHook.DriveShadowMatches
 		out.ShadowHiddenCos = ab.E2E.ANEHook.DriveShadowHiddenCos
 		out.ShadowHiddenSteps = ab.E2E.ANEHook.DriveShadowHiddenSteps
+		out.MetalGoldenLegs = ab.E2E.ANEHook.MetalGoldenLegs
+		out.MetalGoldenInputCos = ab.E2E.ANEHook.MetalGoldenInputCos
+		out.MetalGoldenHostFcCos = ab.E2E.ANEHook.MetalGoldenHostFcCos
+		out.MetalGoldenPreOutputCos = ab.E2E.ANEHook.MetalGoldenPreOutputCos
+		out.MetalGoldenOutputCos = ab.E2E.ANEHook.MetalGoldenOutputCos
 		out.MetalAcceptance = ab.E2E.MetalOnly.DraftAcceptance
 		out.ANEAceptance = ab.E2E.ANEHook.DraftAcceptance
 		if out.ShadowSteps > 0 {

@@ -32,6 +32,29 @@ phase15_runtime_kv_env_apply() {
   export ZEROLLAMA_KV_NATIVE_SAMPLE="${ZEROLLAMA_KV_NATIVE_SAMPLE:-1}"
 }
 
+# v45: export auto-batch env before multiseq sidecar restart so GPU smokes see enabled coordinators.
+# WHY separate from kv_env_apply: daily serve keeps auto-batch off; sign-off opt-in only.
+phase15_runtime_auto_batch_env_apply() {
+  if [[ "${RUN_P15_AUTO_BATCH_ALL:-0}" == "1" ]]; then
+    export RUN_P15_AUTO_BATCH=1
+    export RUN_P15_STREAM_AUTO_BATCH=1
+    export ZEROLLAMA_KV_AUTO_BATCH=1
+    export ZEROLLAMA_KV_AUTO_BATCH_STREAM=1
+    return 0
+  fi
+  if [[ "${PHASE15_AUTO_BATCH_SIGNOFF:-0}" == "1" ]]; then
+    export ZEROLLAMA_KV_AUTO_BATCH=1
+    export ZEROLLAMA_KV_AUTO_BATCH_STREAM=1
+    return 0
+  fi
+  if [[ "${RUN_P15_AUTO_BATCH:-0}" == "1" ]]; then
+    export ZEROLLAMA_KV_AUTO_BATCH=1
+  fi
+  if [[ "${RUN_P15_STREAM_AUTO_BATCH:-0}" == "1" ]]; then
+    export ZEROLLAMA_KV_AUTO_BATCH_STREAM=1
+  fi
+}
+
 phase15_runtime_kv_ext_build() {
   local root="${_PHASE15_RT_KV_ROOT}/runtime"
   local llama_root="${LLAMA_CPP_ROOT:-}"

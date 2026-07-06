@@ -21,11 +21,6 @@
 #include <string>
 #include <vector>
 
-#if !defined(__APPLE__)
-// ZEROLLAMA_LINUX_HANDOFF_STEP
-static std::atomic<int> g_handoff_step { 0 };
-#endif
-
 #if defined(__APPLE__)
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -857,12 +852,18 @@ bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_
             const int oc_ffn  = (chain_depth >= 4) ? ane_draft_session_matmul_ffn_embd() : oc;
             std::vector<float> inp;
             if (ane_draft_session_dflash_chain17_active()) {
+                const int nd = oc < n_embd ? oc : n_embd;
+                std::vector<float> mref((size_t) n_embd, 0.f);
                 const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
                 if (metal) {
-                    const int nd = oc < n_embd ? oc : n_embd;
-                    std::vector<float> mref((size_t) nd);
-                    for (int i = 0; i < nd; ++i) {
+                    for (int i = 0; i < n_embd; ++i) {
                         mref[(size_t) i] = metal[i];
+                    }
+                    ane_apply_output_norm_file(mref);
+                    *out_hidden_cos = ane_vec_cosine(mref.data(), h.data(), nd);
+                } else if (const float * pre = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)) {
+                    for (int i = 0; i < n_embd; ++i) {
+                        mref[(size_t) i] = pre[i];
                     }
                     ane_apply_output_norm_file(mref);
                     *out_hidden_cos = ane_vec_cosine(mref.data(), h.data(), nd);
@@ -1163,16 +1164,27 @@ bool common_ane_draft_metal_ref_token(struct llama_context * ctx_dft, int32_t i_
     if (!drive_head_load(embd_path, norm_path)) {
         return false;
     }
-    const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
-    if (!metal) {
-        return false;
-    }
     const int n_embd = g_drive_head.n_embd;
     std::vector<float> h((size_t) n_embd);
-    for (int i = 0; i < n_embd; ++i) {
-        h[(size_t) i] = metal[i];
+    const float * metal = llama_get_embeddings_ith(ctx_dft, i_batch);
+    bool applied_out_norm = false;
+    if (metal) {
+        for (int i = 0; i < n_embd; ++i) {
+            h[(size_t) i] = metal[i];
+        }
+    } else if (const float * pre = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)) {
+        for (int i = 0; i < n_embd; ++i) {
+            h[(size_t) i] = pre[i];
+        }
+        if (ane_draft_session_dflash_chain17_active()) {
+            ane_apply_output_norm_file(h);
+            applied_out_norm = true;
+        }
+    } else {
+        return false;
     }
-    if (ane_draft_session_dflash_chain17_active()) {
+    if (ane_draft_session_dflash_chain17_active() && !applied_out_norm) {
+        // Draft ctx embeddings are usually pre-output_norm; ANE chain17 output is post-norm.
         ane_apply_output_norm_file(h);
     }
     *out_id = drive_argmax_tied(h);
@@ -2655,28 +2667,47 @@ static bool ane_dflash_host_cross_attn(
 
     attn_out.assign((size_t) oc_q, 0.f);
 
-    if (gqa) {
+    // Precompute ctx K/V once per cross row — why: GQA head loop must not repeat dflash_fc fusion.
+    struct cross_ctx_kv {
+        std::vector<float> k;
+        std::vector<float> v;
+        bool               ok = false;
+    };
+    std::vector<cross_ctx_kv> ctx_kv((size_t) n_ctx);
+    {
         std::vector<float> feat((size_t) cached_cross_read);
         std::vector<float> fused;
         std::vector<float> k_row((size_t) oc_kv);
         std::vector<float> v_row((size_t) oc_kv);
+        for (int j = 0; j < n_ctx; ++j) {
+            if (!ctx_dft || llama_context_cross_row(ctx_dft, j, feat.data(), cached_cross_read) <= 0) {
+                continue;
+            }
+            if (!ane_dflash_fused_from_feat(feat.data(), cached_ic_in, cached_oc_fc, cached_oc_fc, w_fc, gamma, fused)) {
+                continue;
+            }
+            matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_k, k_row);
+            matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_v, v_row);
+            ane_dflash_prepare_k(k_row.data(), oc_kv, kv_rope_heads, geom, k_norm_gamma, (llama_pos) (win_off + j));
+            ctx_kv[(size_t) j].k = k_row;
+            ctx_kv[(size_t) j].v = v_row;
+            ctx_kv[(size_t) j].ok = true;
+        }
+    }
+
+    if (gqa) {
         for (int h = 0; h < n_head_q; ++h) {
             const int h_kv = (h * geom.n_heads_kv) / n_head_q;
             const float * q_h = q_work.data() + h * geom.head_dim;
             std::vector<float> scores;
             std::vector<std::vector<float>> v_heads;
             for (int j = 0; j < n_ctx; ++j) {
-                if (!ctx_dft || llama_context_cross_row(ctx_dft, j, feat.data(), cached_cross_read) <= 0) {
+                if (!ctx_kv[(size_t) j].ok) {
                     continue;
                 }
-                if (!ane_dflash_fused_from_feat(feat.data(), cached_ic_in, cached_oc_fc, cached_oc_fc, w_fc, gamma, fused)) {
-                    continue;
-                }
-                matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_k, k_row);
-                matmul_golden_reference(fused.data(), cached_oc_fc, oc_kv, w_v, v_row);
-                ane_dflash_prepare_k(k_row.data(), oc_kv, kv_rope_heads, geom, k_norm_gamma, (llama_pos) (win_off + j));
-                const float * k_h = k_row.data() + h_kv * geom.head_dim;
+                const float * k_h = ctx_kv[(size_t) j].k.data() + h_kv * geom.head_dim;
                 scores.push_back(ane_vec_dot(q_h, k_h, geom.head_dim) * attn_scale);
+                const auto & v_row = ctx_kv[(size_t) j].v;
                 v_heads.emplace_back(v_row.begin() + h_kv * geom.head_dim, v_row.begin() + (h_kv + 1) * geom.head_dim);
             }
             const float * k_h = k_noise_work.data() + h_kv * geom.head_dim;
@@ -2698,22 +2729,13 @@ static bool ane_dflash_host_cross_attn(
     const int oc = oc_q;
     std::vector<float> scores;
     std::vector<std::vector<float>> v_rows;
-    std::vector<float> feat((size_t) cached_cross_read);
-    std::vector<float> fused;
-    std::vector<float> k_row((size_t) oc);
-    std::vector<float> v_row((size_t) oc);
     for (int j = 0; j < n_ctx; ++j) {
-        if (!ctx_dft || llama_context_cross_row(ctx_dft, j, feat.data(), cached_cross_read) <= 0) {
+        if (!ctx_kv[(size_t) j].ok) {
             continue;
         }
-        if (!ane_dflash_fused_from_feat(feat.data(), cached_ic_in, cached_oc_fc, cached_oc_fc, w_fc, gamma, fused)) {
-            continue;
-        }
-        matmul_golden_reference(fused.data(), cached_oc_fc, oc, w_k, k_row);
-        matmul_golden_reference(fused.data(), cached_oc_fc, oc, w_v, v_row);
-        ane_dflash_prepare_k(k_row.data(), oc, kv_rope_heads, geom, k_norm_gamma, (llama_pos) (win_off + j));
-        scores.push_back(ane_vec_dot(q_work.data(), k_row.data(), oc) * attn_scale);
-        v_rows.push_back(v_row);
+        const float * k_row = ctx_kv[(size_t) j].k.data();
+        scores.push_back(ane_vec_dot(q_work.data(), k_row, oc) * attn_scale);
+        v_rows.push_back(ctx_kv[(size_t) j].v);
     }
     scores.push_back(ane_vec_dot(q_work.data(), k_noise_work.data(), oc) * attn_scale);
     v_rows.emplace_back(v_noise, v_noise + oc);

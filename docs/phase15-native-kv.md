@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (Jul 2026) — **v0–v35 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **v33 (Jul 2026):** fork writable page-map (`llama_memory_kv_page_map`); Darwin sidecar restarts when `kv_native_build_sha` mismatches build stamp. **v35 (Jul 2026):** `llama_memory_kv_cache_layout` + transposed-V `page_map` visibility; last decode probe on `/health` after bind clear. **Open:** true external-buffer alias into ggml allocators; scheduler-driven async batching across concurrent HTTP streams.
+**Status:** Partial (Jul 2026) — **v0–v47 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **v33 (Jul 2026):** fork writable page-map (`llama_memory_kv_page_map`); Darwin sidecar restarts when `kv_native_build_sha` mismatches build stamp. **v35 (Jul 2026):** `llama_memory_kv_cache_layout` + transposed-V `page_map` visibility; last decode probe on `/health` after bind clear. **v36 (Jul 2026):** GGUF layer-group enrichment (`tensor_layers_expected` for hybrid models). **v37 (Jul 2026):** stream auto-batch for concurrent streaming `/api/generate` (`ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`). **v38 (Jul 2026):** external-buffer copy descriptors + `tensor_layers_bind_complete`. **v39 (Jul 2026):** `kv_page_migration` on `/internal/kv-snapshot`. **v40 (Jul 2026):** `page_migration_summary` on forward plans + snapshot pointer redaction. **v41 (Jul 2026):** operator sign-off smokes for v40 + stream auto-batch GPU gate. **v42 (Jul 2026):** `page_migration_summary` on `/health.kv_page_bind` + snapshot `migration_summary`. **v43 (Jul 2026):** migration summary GPU sign-off (`phase15_migration_summary_smoke.sh`). **v44 (Jul 2026):** non-stream auto-batch GPU smoke (`phase15_auto_batch_smoke.sh`). **v45 (Jul 2026):** auto-batch env wiring + combined sign-off (`RUN_P15_AUTO_BATCH_ALL=1`). **v46 (Jul 2026):** Linux embed auto-batch parity (`RUN_E2E_PHASE15_AUTO_BATCH=1`). **v47 (Jul 2026):** external-buffer alias probe + validate (patch 0019; feasibility only — no tensor mutation). **Open:** ggml allocator overlay bind (`HOST_REBASE` / device alias, v48+).
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
@@ -14,6 +14,20 @@ See also [ROADMAP Phase 15 exit criteria](../ROADMAP.md#phase-15--exit-criteria-
 
 | Slice | Summary |
 |-------|---------|
+| **v34** | `llama_memory_kv_n_layers`; tensor probe verifies all KV layers; writable page_map fans out per layer; `/health` adds `kv_n_layers` + `tensor_layers_verified` |
+| **v35** | `llama_memory_kv_cache_layout`; `v_transposed` on page_map; multi-stream cell guard; MLA null-V fix; last-probe snapshot (`page_bind_last_tensor_probe`); `/health` shows `kv_v_transposed` / `kv_cache_kv_size` / `kv_cache_n_stream` after bind clear |
+| **v36** | GGUF `HybridKVCacheCoordinator` wired into `page_bind_health`; `/health.kv_page_bind` adds `kv_full_layers`, `kv_swa_layers`, `tensor_layers_expected` so hybrid model (Gemma 3/4) bind success is `tensor_layers_verified == tensor_layers_expected` (full-attn layers only) |
+| **v37** | `StreamAutoBatchCoordinator` — opt-in (`ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`) coalesces concurrent streaming `/api/generate`; `/health.kv_auto_batch` → `{non_stream, stream}` |
+| **v38** | `page_copy_descriptor()` — transposed-V-aware copy plans; `map_page(..., kv_layer=)`; `/health.kv_page_bind.tensor_layers_bind_complete` |
+| **v39** | `build_page_migration_plan()` — full pages×layers plan on `GET /internal/kv-snapshot` as `kv_page_migration` |
+| **v40** | `page_migration_summary` on running `kv_forward_plans`; snapshot redacts `src_ptr` by default (`ZEROLLAMA_KV_MIGRATION_INCLUDE_PTRS=1` to include) |
+| **v41** | Operator sign-off: snapshot redaction asserts in health smoke + `phase15_stream_auto_batch_smoke.sh` (`RUN_P15_STREAM_AUTO_BATCH=1`) |
+| **v42** | `page_migration_summary` on `/health.kv_page_bind`; `migration_summary` on all `kv_page_migration` snapshot branches + last-probe plan build when ctx loaded |
+| **v43** | `smoke_runtime_assert_migration_summary()` + `phase15_migration_summary_smoke.sh`; wired into metal + inprocess multiseq sign-off |
+| **v44** | `phase15_auto_batch_smoke.sh` — concurrent non-stream `/api/generate` GPU gate (`RUN_P15_AUTO_BATCH=1`, `ZEROLLAMA_KV_AUTO_BATCH=1`) |
+| **v45** | `phase15_runtime_auto_batch_env_apply()` + `phase15_auto_batch_signoff.sh`; `RUN_P15_AUTO_BATCH_ALL=1`; `smoke_runtime_assert_kv_auto_batch()` |
+| **v46** | Linux embed parity — auto-batch env on `phase15_inprocess_multiseq_smoke.sh`; `RUN_E2E_PHASE15_AUTO_BATCH=1` on 5080 session |
+| **v47** | External-buffer alias probe + validate — patch 0019; `llama_memory_kv_page_alias_validate`; `/health.kv_page_bind.external_alias_*`; `alias_plan` on copy descriptors |
 | **v0** | Native `BlockPool` (`kv_block_pool.c`), `ZEROLLAMA_RUNTIME_KV_NATIVE`, parity tests, `phase15_kv_native_ci.sh` |
 | **v1** | `kv_scheduler` on `/health`, `num_ctx` block reserve, `kv_slot` → subprocess `id_slot` / in-process `seq_id` |
 | **v2** | In-process multi-seq shared `llama_context` when `llama_parallel_slots` > 1 (`resolve_parallel_slots`, `-np` wins) |
@@ -232,8 +246,8 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | `validate_token_positions` | Endpoints of each batch checked against registry; raises `LlamaServerError` on overrun |
 | `decode_batch_layout` (C) | Returns `{token, pos, seq_id, logits}` lists — Python fills `LlamaBatch` |
 | `decode_prefill_chunks` (C) | Splits long prompts at PA page boundaries when `len(prompt) > block_size` |
-| `kv_auto_batch` | v32: opt-in coordinator stats when `ZEROLLAMA_KV_AUTO_BATCH=1` — `pending`, `flush_count`, `window_ms` |
-| `kv_page_bind` on `/health` | `status` values: `partial` (normal), `misaligned` (llama cells exceed PA reserve), `bound` (tensor verified), `not_implemented` (ext not built). `bind_level` values: `seq_position` → `cell_index` → `tensor` → `physical` (escalating bind quality). `blocker`: probe-reported string when a probe ran, or `llama_kv_ext_not_linked_or_no_decode` when no probe. **v32b:** `writable_bind_available`, `writable_bind_api`, `writable_bind_blocker` — static upstream writable page-map tracker (no live ctx). **v33:** `physical_pages_bound` true when `llama_memory_kv_page_map` resolves writable spans after decode. `slots`: per-slot export from v21 C registry. v19 adds `tensor_probe`, `tensor_bind_ready`, `blocker`, `accounting_aligned`. |
+| `kv_auto_batch` | v32/v37: `{non_stream, stream}` coordinator stats when opt-in — `pending`, `flush_count`, `window_ms` |
+| `kv_page_bind` on `/health` | `status` values: `partial` (normal), `misaligned` (llama cells exceed PA reserve), `bound` (tensor verified), `not_implemented` (ext not built). `bind_level` values: `seq_position` → `cell_index` → `tensor` → `physical` (escalating bind quality). `blocker`: probe-reported string when a probe ran, or `llama_kv_ext_not_linked_or_no_decode` when no probe. **v32b:** `writable_bind_available`, `writable_bind_api`, `writable_bind_blocker` — static upstream writable page-map tracker (no live ctx). **v33:** `physical_pages_bound` true when `llama_memory_kv_page_map` resolves writable spans after decode. **v47:** `external_alias_available`, `external_alias_api`, `external_alias_blocker` — static build probe for alias validate API (patch 0019). `slots`: per-slot export from v21 C registry. v19 adds `tensor_probe`, `tensor_bind_ready`, `blocker`, `accounting_aligned`. |
 | `kv_live_physical` | Opt-in env bumps in-process effective `-np` to 2 when YAML defaults to 1 |
 | Go loopback | `GET :8080/internal/kv-snapshot` proxies Python runtime snapshot |
 
@@ -597,6 +611,201 @@ cd ../../runtime && python3 setup.py build_ext --inplace
 
 ---
 
+### v34 ops — multi-layer KV tensor verify and writable page-map fan-out (Jul 2026)
+
+**Why this slice:** v33 shipped `llama_memory_kv_page_map` but the tensor probe only verified layer 0, and the writable materialize path only called `page_map` for layer 0 (hardcoded). For models where individual KV layers can have different tensor shapes or separate allocations (MLA, per-layer scaling, split-device offload), verifying only the first layer silently passed the probe while deeper layers were unmapped — operators would see `status=physical` but only 1 of 32 layers was actually backed.
+
+**Fix:** `llama_memory_kv_n_layers` API + full-layer verify loop in the bind attempt and materialize path.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `llama_memory_kv_n_layers` | `llama-kv-ext.h` / `llama-memory-kv-ext.cpp` | Returns the number of KV layers in the resolved attn cache |
+| Tensor verify loop | `kv_tensor_probe.c` `kv_tensor_bind_attempt` | Loops all `n_layers`; breaks on first failure; sets `tensor_layers_verified` |
+| Writable fan-out | `kv_tensor_probe.c` `kv_page_bind_materialize_writable` | Calls `llama_memory_kv_page_map` for every layer on every live page; counts `layers_ok` per page |
+| `/health.kv_page_bind` | `page_bind.py` | `kv_n_layers`, `tensor_layers_verified` when probe ran |
+
+**`physical_pages_bound` semantics (v34):** only `true` when every live page has all `n_layers` resolved. A partial fan-out (some layers mapped) leaves `physical_pages_bound=false` and `physical_pages_mapped` reflects how many pages reached full layer coverage.
+
+---
+
+### v35 ops — transposed-V layout visibility + last-probe health (Jul 2026)
+
+**Why this slice:** Non-FA llama KV caches use a **transposed V layout**: V tensor shape is `[n_embd_v_gqa, kv_size, n_stream]` where cells run along dim 1, but each token's embedding is scattered across `n_embd_v_gqa` rows at row stride `kv_size`. A page-map consumer that treats `v_span_bytes` as a flat contiguous buffer will read interleaved embedding values from multiple cells — producing silently wrong data. Before v35, operators and future migration code had no flag to detect this layout from the page-map result.
+
+Second motivation: after `page_bind_clear()` fires on generation complete the tensor probe becomes unavailable, so `/health` would show `kv_page_bind.status=partial` (no running request → no live probe) even though the previous decode was fully bound. Operators debugging post-generate state had no evidence of what the last decode looked like.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `llama_memory_kv_cache_layout` | `llama-kv-ext.h` / `llama-memory-kv-ext.cpp` | Returns `{kv_size, n_stream, v_transposed, ok}` for the resolved attn cache. WHY separate from page_map: layout is a cache-level constant; calling it once at probe time avoids redundant queries per page/layer. |
+| `llama_kv_cache::get_v_trans()` | `llama-kv-cache.h` | Inline accessor for the `v_trans` field. WHY needed: `llama-memory-kv-ext.cpp` compiles against the internal header; the public `llama.h` has no equivalent. |
+| `v_transposed` on `llama_kv_page_map` | `llama-kv-ext.h` | Set to 1 on every `llama_memory_kv_page_map` result when cache uses transposed V. Callers must check this field before interpreting `v_data` + `v_span_bytes`. |
+| Multi-stream cell guard | `llama-memory-kv-ext.cpp` `llama_kv_ext_page_map_contiguous` | Rejects a cell range where cells belong to different streams — this can only happen if the cell-map range crosses a seq-stream boundary, indicating a caller bug or corrupt cell state. |
+| MLA null-V fix | `llama-memory-kv-ext.cpp` | Removed `!v` from the arg guard. MLA models have `has_v=false` → `kv_tensor_v()` returns null; the existing `if (v && v->data)` branch already handled null-V correctly — the guard was incorrectly blocking MLA before reaching that branch. |
+| `v_span_bytes` comment | `llama-memory-kv-ext.cpp` | Explicit warning: when `v_transposed=1` the byte range `[v_data, v_data+v_span_bytes)` covers cells but they are NOT laid out as a contiguous per-cell buffer. Callers must use scatter/gather at stride `kv_size`. |
+| `KvTensorProbeResult` layout fields | `kv_tensor_probe.h/.c` | `kv_v_transposed`, `kv_cache_kv_size`, `kv_cache_n_stream` — populated at probe start by calling `llama_memory_kv_cache_layout` before the bind attempt. |
+| Last-probe snapshot | `kv_tensor_probe.c` | `g_last_probes[KV_MAX_PAGE_BINDS]` stores the last successful probe per bind slot. Indexed by **bind-table position** (not kv_slot value) with kv_slot stored inside the entry. WHY: kv_slot is an arbitrary scheduler integer that can exceed `KV_MAX_PAGE_BINDS`; using it as an array index would overflow. |
+| `kv_tensor_probe_last_get` / `kv_tensor_probe_last_get_by_index` | `kv_tensor_probe.h/.c` | Look up snapshot by kv_slot value or by table index respectively. The by-index variant is needed by the Python binding to iterate all stored probes. |
+| `page_bind_last_tensor_probe()` | `kv_block_pool.c` | Python binding: no arg → list of `{kv_slot, probe}` dicts for all stored snapshots; with int arg → single probe dict or None. |
+| `page_bind_last_tensor_probe_for_health()` | `runtime/kv/page_bind.py` | Fallback used by `page_bind_health()` when `tensor_probe` arg is None — returns the best stored probe (prefers `tensor_pages_bound=True`). Sets `last_tensor_probe=True` on the health dict to signal to operators that this is a post-clear snapshot. |
+| `last_tensor_probe_entries()` | `runtime/kv/tensor_probe.py` | Convenience export for scripts and sign-off tooling. |
+| `stage_llama_kv_ext_for_vendor.sh` | `scripts/` | Now syncs `llama-kv-cache.h` alongside the kv-ext headers, since `get_v_trans()` is defined there. WHY: vendor builds use an independent copy of the header; without sync they would compile against the unpatched version and get a link error. |
+
+**`/health.kv_page_bind` new fields (v34+v35):**
+
+| Field | Type | When set | Meaning |
+|-------|------|----------|---------|
+| `kv_n_layers` | int | Probe ran + kv_ext linked | Total KV layers in the resolved attn cache |
+| `tensor_layers_verified` | int | Probe ran + kv_ext linked | Layers successfully verified (== `kv_n_layers` when fully bound) |
+| `kv_v_transposed` | bool | Probe ran + kv_ext linked | True when V cache uses transposed cell indexing (non-FA) |
+| `kv_cache_kv_size` | int | Probe ran + kv_ext linked | `llama_kv_cache.get_size()` — total KV cell slots in cache |
+| `kv_cache_n_stream` | int | Probe ran + kv_ext linked | Number of per-sequence streams (== `llama_parallel_slots` for multi-seq) |
+| `last_tensor_probe` | bool | No running request; last-probe fallback used | Indicates the probe data is from the most recent completed decode, not a live request |
+
+**Transposed-V access pattern (for future migration code):**
+
+When `v_transposed=1`, V data is stored as `[n_embd_v_gqa rows × kv_size cols]` per stream. For cell index `c` and embedding dimension `j`:
+
+```
+v_element(c, j) = v_data_base[ j * kv_size + c ]   -- stride = kv_size elements
+```
+
+A bulk copy of `v_span_bytes` starting at `v_data` picks up all embedding dims for `n_cells` consecutive cells, but they are **interleaved** across rows — not a contiguous `[n_cells × n_embd_v_gqa]` block. External buffer alias must account for this layout or the copied data is garbage.
+
+When `v_transposed=0` (Flash Attention path), V is `[n_embd_v_gqa per cell, contiguous]`:
+
+```
+v_element(c, j) = v_data_base[ c * n_embd_v_gqa + j ]   -- stride = n_embd_v_gqa elements
+```
+
+`v_span_bytes = n_cells * v->nb[1]` is directly usable as a contiguous cell buffer in that case.
+
+---
+
+### v36 ops — GGUF layer-group enrichment on `/health.kv_page_bind` (Jul 2026)
+
+**Why this slice:** Hybrid models (Gemma 3/4, Falcon H1, etc.) interleave full-attention and sliding-window attention (SWA) layers. The llama attn cache (`llama_kv_cache`) only backs **full-attention** layers — SWA layers maintain a separate windowed cache that is not the PA bind target. As a result, `tensor_layers_verified` from v34 can legitimately be less than the total model layer count, and the gap is NOT a bind failure.
+
+Without v36, operators debugging a hybrid model see `tensor_layers_verified=26, kv_n_layers=26` and conclude "full bind" — but for a model with 36 total layers (26 full + 10 SWA), they might expect 36 and incorrectly infer a partial failure. Conversely, they might see `tensor_layers_verified=0, kv_n_layers=0` on a pure-SWA model and not understand why.
+
+**Fix:** parse `HybridKVCacheCoordinator` from GGUF metadata at `/health` time and pass it to `page_bind_health()`. The coordinator knows `full_layer_count` (the bind target) and `swa_layer_count` (excluded from PA bind). Operators now compare `tensor_layers_verified == tensor_layers_expected` (= `full_layer_count`) for the correct bind-success criterion.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `page_bind_health(kv_coordinator=)` | `runtime/kv/page_bind.py` | Optional `HybridKVCacheCoordinator` arg; when provided emits `kv_coordinator_kind`, `kv_full_layers`, `kv_swa_layers`, `tensor_layers_expected` |
+| `tensor_layers_expected` logic | `page_bind_health` | For `hybrid`/`sliding_window` kinds: = `full_layer_count`; for `standard`: = `kv_n_layers` from probe |
+| `engine._kv_page_bind_health` | `engine.py` | Resolves coordinator via `gguf_arch_hints(gguf) + build_hybrid_kv_coordinator(arch, num_ctx)`; errors silently skipped (best-effort: model file may be unavailable at health time) |
+| Tests | `tests/test_kv_page_bind.py` | 5 new cases: standard/hybrid/sliding-window/no-probe/no-coordinator |
+
+**`/health.kv_page_bind` new fields (v36):**
+
+| Field | Type | When set | Meaning |
+|-------|------|----------|---------|
+| `kv_coordinator_kind` | str | Coordinator resolved from GGUF | `standard` / `hybrid` / `sliding_window` |
+| `kv_full_layers` | int | `hybrid` or `sliding_window` kind | Number of full-attention layers (PA bind target) |
+| `kv_swa_layers` | int | `hybrid` or `sliding_window` kind | Number of SWA layers (excluded from PA bind) |
+| `tensor_layers_expected` | int | Coordinator resolved | Expected `tensor_layers_verified` for a complete bind (== `kv_full_layers` for hybrid) |
+
+**Operator bind success criterion (v36+):**
+
+| Model kind | Bind complete when |
+|------------|-------------------|
+| standard | `tensor_layers_verified == tensor_layers_expected` (== `kv_n_layers`) |
+| hybrid (e.g. Gemma 3/4) | `tensor_layers_verified == kv_full_layers` (< total model layers) |
+| sliding_window only | `tensor_layers_verified == 0` (no full-attn layers to bind) |
+
+---
+
+### v37 ops — stream auto-batch for concurrent streaming generate (Jul 2026)
+
+**Why this slice:** v32 `AutoBatchCoordinator` coalesced non-stream `generate()` within a short window, but concurrent streaming `/api/generate` still decoded one row per `llama_decode` per token step. v37 extends the same slot-fill + window policy to streaming requests and demuxes `completions_parallel_stream` chunks back to each caller's iterator.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `StreamAutoBatchCoordinator` | `runtime/kv/stream_auto_batch.py` | Queue-based coordinator; `iter_stream()` blocks until batch flush, yields decode chunks |
+| `_stream_parallel_admitted()` | `engine.py` | Runs `completion_stream` (1 row) or `completions_parallel_stream` (N rows) for admitted jobs |
+| `stream_generate()` routing | `engine.py` | Uses coordinator when `ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`; skips when `prefill_cancel` set |
+| `/health.kv_auto_batch` | `engine.py` | `{non_stream: {...}, stream: {...}}` — separate stats per coordinator |
+
+**Env (v37):**
+
+| Variable | Default | Why |
+|----------|---------|-----|
+| `ZEROLLAMA_KV_AUTO_BATCH_STREAM` | `0` | Gate stream auto-batch separately from non-stream — streaming adds TTFT latency and chunk demux complexity |
+| `ZEROLLAMA_KV_AUTO_BATCH_MS` | `5` | Shared coalesce window for both coordinators (same as v32) |
+
+---
+
+### v38 ops — external-buffer copy descriptors (Jul 2026)
+
+**Why this slice:** Writable page-map spans (`v33`) expose raw K/V pointers, but external migration cannot treat `v_span_bytes` as a flat buffer when `v_transposed=1`. True in-place ggml allocator alias remains upstream-blocked. v38 ships structured **copy descriptors** — the staging contract for copy-out / copy-in migration.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `page_copy_descriptor()` | `runtime/kv/page_descriptor.py` | `{k_copy, v_copy, migration_ready, external_buffer_alias_ready}` per page map |
+| `v_copy.mode` | descriptor | `contiguous` (FA), `row_stride` (non-FA), or `absent` (MLA) |
+| `map_page(..., kv_layer=0)` | C + `tensor_probe.py` | Per-layer page map (v34 fan-out from Python) |
+| `map_page_all_layers()` | `tensor_probe.py` | Calls `map_page` for layers `0..n_layers-1` |
+| `tensor_layers_bind_complete` | `page_bind_health()` | Single bool: `tensor_layers_verified == tensor_layers_expected` |
+
+**Example descriptor (non-FA V, row_stride):**
+
+```json
+{
+  "page": 0,
+  "kv_layer": 0,
+  "v_transposed": true,
+  "k_copy": {"mode": "contiguous", "byte_length": 4096},
+  "v_copy": {
+    "mode": "row_stride",
+    "row_stride_elements": 512,
+    "warning": "use scatter/gather at stride kv_size — do not memcpy v_span"
+  },
+  "migration_ready": true,
+  "external_buffer_alias_ready": false
+}
+```
+
+---
+
+### v47 ops — external-buffer alias probe + validate (Jul 2026)
+
+**Why this slice:** v33 `page_map` discovers **llama-owned** writable spans; v38 copy descriptors describe **how** to migrate bytes (including transposed-V scatter/gather). Exit criterion **#5** still needs PA pool pointers to **alias** those spans without a memcpy — but mutating ggml tensor backing stores is unsafe without a staged feasibility contract. v47 answers “is zero-copy alias possible for this (page, layer, external ptrs)?” **without** changing tensors. True overlay bind (`HOST_REBASE` on CPU, device path on Metal) is **v48+**.
+
+**WHY separate from patch 0014:** 0014 ships read/write span discovery in llama-owned memory (`llama_memory_kv_page_map`). 0019 adds a **cross-allocator** validate layer: compare external K/V pointers + byte spans against `page_map` geometry and classify blockers.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `llama_memory_kv_ext_external_alias_probe` | `llama-kv-ext.h` | Static/build probe — `LLAMA_KV_EXT_EXTERNAL_ALIAS` linked |
+| `llama_memory_kv_page_alias_validate` | `llama-memory-kv-ext.cpp` | Per-page feasibility; fills `llama_kv_page_alias_plan` |
+| Patch **0019** | `llama/patches/0019-…-v47.patch` | Incremental on 0014; pin check requires 0014 + 0019 |
+| `external_alias_probe()` | `tensor_probe.py` | Python facade → static probe |
+| `alias_validate(ctx, …, ext_k_data, …)` | `tensor_probe.py` | Live ctx validate; returns plan dict |
+| `/health.kv_page_bind.external_alias_*` | `page_bind.py` | Operator visibility (mirrors writable bind tracker) |
+| `page_copy_descriptor(..., alias_plan=)` | `page_descriptor.py` | `external_buffer_alias_ready=true` only when `alias_ready` (SAME_POINTER) |
+
+**Alias modes (`llama_kv_ext_alias_mode`):**
+
+| Mode | Meaning | Typical on M4 Max Metal |
+|------|---------|-------------------------|
+| `SAME_POINTER` | External ptrs == `page_map` targets; `alias_ready=1` | Rare (pool not yet aliased) |
+| `HOST_REBASE` | Host spans match; pointers differ — overlay bind not implemented | N/A (KV on device) |
+| `BLOCKED_DEVICE` | KV tensors on non-host ggml buffer | **Expected** after decode |
+| `BLOCKED_V_TRANS` | non-FA V needs scatter/gather, not flat alias | Many models |
+| `BLOCKED_SPAN` | External byte spans ≠ llama spans | Misconfigured pool |
+| `BLOCKED_UNSUPPORTED` | Recurrent-only / unsupported memory | — |
+
+**Operator probes:**
+
+```bash
+./scripts/phase15_llama_kv_ext_pin_check.sh   # asserts 0014 + 0019 symbols
+python3 -c "from runtime.kv.tensor_probe import external_alias_probe; print(external_alias_probe())"
+curl -s :8081/health | jq '.kv_page_bind | {external_alias_available, external_alias_api, external_alias_blocker}'
+```
+
+**Next (v48):** `llama_memory_kv_page_alias_bind` / `unbind` for host overlay; device-buffer strategy for Metal; wire migration loop to call validate before bind.
+
+---
+
 ## Two KV caps (operators)
 
 1. **PA block pool** (`kv_pools`, `kv_scheduler`) — admission and `/health`; sum of reserved blocks × `block_size`.
@@ -643,7 +852,7 @@ Phase 14 **inprocess** per-request `llama_context` remains default when `llama_p
 | `kv_decode_steps` | Cumulative in-process decode count or `{active: false, reason}` |
 | `kv_native_stats` | `{scheduler_tick, decode_steps}` from C when ext built; else `null` |
 | `kv_forward_plans` | List of forward-plan objects (waiting + running) |
-| `kv_page_bind` | v8 bind status: `partial` + `bind_level=seq_position` when native ext built without linked tensor probe; **`bound` + `bind_level=tensor|physical`** after linked `llama-kv-ext` decode (GPU sign-off success path); `not_implemented` when ext missing. **v33:** `physical_pages_bound` when `llama_memory_kv_page_map` maps all live pages. GPU smokes: `smoke_runtime_assert_kv_snapshot()` accepts partial or bound — **why:** requiring partial-only false-fails linked vendor builds. |
+| `kv_page_bind` | v8 bind status: `partial` + `bind_level=seq_position` when native ext built without linked tensor probe; **`bound` + `bind_level=tensor\|physical`** after linked `llama-kv-ext` decode (GPU sign-off success path); `not_implemented` when ext missing. **v33:** `physical_pages_bound` when `llama_memory_kv_page_map` maps all live pages. **v34:** `kv_n_layers`, `tensor_layers_verified` — all layers must verify for `physical` status. **v35:** `kv_v_transposed`, `kv_cache_kv_size`, `kv_cache_n_stream`; `last_tensor_probe=true` when data comes from last-decode snapshot (no running request). GPU smokes: `smoke_runtime_assert_kv_snapshot()` accepts partial or bound — **why:** requiring partial-only false-fails linked vendor builds. |
 | `kv_live_physical` | Opt-in bump to multi-seq in-process ctx (`ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL`) |
 
 `kv_bind.physical_bind_level` is `seq_position` whenever in-process weights are loaded (not only multi-seq). `kv_physical` may include a `note` when `llama_parallel_slots==1` (no shared ctx for live positions).
@@ -682,7 +891,9 @@ Each element is one scheduler request (waiting or running):
 
 Loopback-only (same middleware as `/internal/vram-estimate`). Returns:
 
-`kv`, `kv_bind`, `kv_scheduler`, `kv_physical`, `kv_physical_recent`, `kv_scheduler_tick`, `kv_decode_steps`, `kv_native_stats`, `kv_forward_plans`
+`kv`, `kv_bind`, `kv_scheduler`, `kv_physical`, `kv_physical_recent`, `kv_scheduler_tick`, `kv_decode_steps`, `kv_native_stats`, `kv_forward_plans`, `kv_page_bind`, `kv_page_migration` (v39), `kv_auto_batch`, `kv_continuous_batch`, `kv_decode_loop`, `kv_resume`, `kv_live_physical`
+
+**v39 `kv_page_migration`:** when tensor/physical bind is complete on a running request, includes full pages×layers copy descriptor plan. Falls back to last-probe metadata when no request is running. Omitted from `/health` — **why:** includes raw pointers and can be large; snapshot is loopback debug only.
 
 ```bash
 curl -s http://127.0.0.1:8081/internal/kv-snapshot | python3 -m json.tool
@@ -700,6 +911,15 @@ curl -s http://127.0.0.1:8080/internal/kv-snapshot | python3 -m json.tool
 | `ZEROLLAMA_RUNTIME_KV_PHYSICAL_STRICT` | off | In-process: error if llama seq cells exceed PA reserve after decode |
 | `ZEROLLAMA_RUNTIME_KV_DECODE_HOOK` | on | Count decode steps on in-process ctypes path; set `0` to disable |
 | `ZEROLLAMA_RUNTIME_KV_LIVE_PHYSICAL` | off | In-process: bump effective `-np` to 2 when defaults use 1 for live `kv_physical` (explicit `-np` wins) |
+| `ZEROLLAMA_KV_AUTO_BATCH` | off | v32: coalesce concurrent non-stream `generate()` within `ZEROLLAMA_KV_AUTO_BATCH_MS` |
+| `ZEROLLAMA_KV_AUTO_BATCH_STREAM` | off | v37: coalesce concurrent streaming `generate()` — separate knob from non-stream |
+| `ZEROLLAMA_KV_AUTO_BATCH_MS` | `5` | Coalesce window (ms) for both auto-batch coordinators |
+| `ZEROLLAMA_KV_MIGRATION_INCLUDE_PTRS` | off | v40: include raw `src_ptr` in `/internal/kv-snapshot` migration plans (default redacted) |
+| `RUN_P15_STREAM_AUTO_BATCH` | off | v41: opt-in stream auto-batch step in `phase15_metal_signoff.sh` (requires `ZEROLLAMA_KV_AUTO_BATCH_STREAM=1` on sidecar) |
+| `RUN_P15_AUTO_BATCH` | off | v44: opt-in non-stream auto-batch step in `phase15_metal_signoff.sh` (requires `ZEROLLAMA_KV_AUTO_BATCH=1` on sidecar) |
+| `RUN_P15_AUTO_BATCH_ALL` | off | v45: both auto-batch smokes + export env before multiseq sidecar restart |
+| `RUN_E2E_PHASE15_AUTO_BATCH` | off | v46: with `RUN_E2E_PHASE15=1` on 5080 session — sets `RUN_P15_AUTO_BATCH_ALL` |
+| `PHASE15_AUTO_BATCH_SIGNOFF` | off | v45: alias — sets both `ZEROLLAMA_KV_AUTO_BATCH*` on sidecar boot (sign-off scripts) |
 | `llama_parallel_slots` / `-np` | yaml / argv | Slot allocator + in-process `n_seq_max` (**argv wins**) |
 | (build) | — | `cd runtime && python3 setup.py build_ext --inplace` |
 

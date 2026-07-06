@@ -206,8 +206,15 @@ kv_tensor_bind_attempt(
     return;
 }
 
+/*
+ * Last-probe snapshot: indexed by bind-table position (0..KV_MAX_PAGE_BINDS-1),
+ * NOT by kv_slot value. WHY: kv_slot is an opaque scheduler integer that can be
+ * arbitrarily large; using it as an array index would overflow. We store the
+ * kv_slot value inside the entry so callers can filter or return it accurately.
+ */
 typedef struct {
     int valid;
+    int kv_slot;
     KvTensorProbeResult probe;
 } KvLastProbeSlot;
 
@@ -216,23 +223,56 @@ static KvLastProbeSlot g_last_probes[KV_MAX_PAGE_BINDS];
 static void
 kv_tensor_probe_last_save(int kv_slot, const KvTensorProbeResult *probe)
 {
-    if (probe == NULL || kv_slot < 0 || kv_slot >= KV_MAX_PAGE_BINDS) {
+    if (probe == NULL) {
         return;
     }
-    g_last_probes[kv_slot].valid = 1;
-    g_last_probes[kv_slot].probe = *probe;
+    /* Find the bind-table index for this kv_slot to use as the array index. */
+    for (int i = 0; i < KV_MAX_PAGE_BINDS; i++) {
+        if (g_last_probes[i].valid && g_last_probes[i].kv_slot == kv_slot) {
+            g_last_probes[i].probe = *probe;
+            return;
+        }
+    }
+    /* No existing entry — find a free slot. */
+    for (int i = 0; i < KV_MAX_PAGE_BINDS; i++) {
+        if (!g_last_probes[i].valid) {
+            g_last_probes[i].valid    = 1;
+            g_last_probes[i].kv_slot  = kv_slot;
+            g_last_probes[i].probe    = *probe;
+            return;
+        }
+    }
+    /* Table full: overwrite the first entry (oldest). */
+    g_last_probes[0].kv_slot = kv_slot;
+    g_last_probes[0].probe   = *probe;
 }
 
 int
 kv_tensor_probe_last_get(int kv_slot, KvTensorProbeResult *out)
 {
-    if (out == NULL || kv_slot < 0 || kv_slot >= KV_MAX_PAGE_BINDS) {
+    if (out == NULL) {
         return -1;
     }
-    if (!g_last_probes[kv_slot].valid) {
+    for (int i = 0; i < KV_MAX_PAGE_BINDS; i++) {
+        if (g_last_probes[i].valid && g_last_probes[i].kv_slot == kv_slot) {
+            *out = g_last_probes[i].probe;
+            return 0;
+        }
+    }
+    return 1; /* not found */
+}
+
+int
+kv_tensor_probe_last_get_by_index(int idx, int *out_kv_slot, KvTensorProbeResult *out)
+{
+    if (out == NULL || out_kv_slot == NULL || idx < 0 || idx >= KV_MAX_PAGE_BINDS) {
+        return -1;
+    }
+    if (!g_last_probes[idx].valid) {
         return 1;
     }
-    *out = g_last_probes[kv_slot].probe;
+    *out_kv_slot = g_last_probes[idx].kv_slot;
+    *out         = g_last_probes[idx].probe;
     return 0;
 }
 
