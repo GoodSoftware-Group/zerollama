@@ -77,6 +77,14 @@ target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1)
   fi
 fi
 
+if ! grep -q 'LLAMA_KV_EXT_EXTERNAL_ALIAS' "${CMAKE}" 2>/dev/null; then
+  _changed=1
+  if [[ "${CHECK_ONLY}" != "--check" ]]; then
+    printf '# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)\n' >> "${CMAKE}"
+    printf 'target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)\n' >> "${CMAKE}"
+  fi
+fi
+
 if [[ "${CHECK_ONLY}" == "--check" ]]; then
   if [[ "${_changed}" -eq 1 ]]; then
     exit 1

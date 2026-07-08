@@ -117,14 +117,6 @@ for patch in "${PATCH_DIR}"/*.patch; do
     continue
   fi
 
-  # Optional/broken patch — never retry once skipped.
-  if [[ "${base}" == 0019-ollama-llama-kv-ext-external-buffer-alias-v47 ]]; then
-    echo ">>> skip optional: ${base}"
-    touch "${PATCH_DIR}/.${base}.patched"
-    skipped=$((skipped + 1))
-    continue
-  fi
-
   # Duplicate seq-copy patch (0018 Radix) — same subject as 0017 after 0017 applies.
   if [[ "${base}" == 0018-ollama-kv-seq-copy-endpoint-Radix-L3-v1 ]]; then
     if grep -q 'kv/seq-copy' "${VENDOR}/tools/server/server.cpp" 2>/dev/null; then
