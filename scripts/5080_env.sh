@@ -13,6 +13,12 @@
 
 _Z5080_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")/.." && pwd)"
 export Z5080_ROOT="${Z5080_ROOT:-$_Z5080_ROOT}"
+export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${Z5080_ROOT}}"
+export CUDA_LANE="${CUDA_LANE:-rtx_5080}"
+
+# Shared CUDA vars (libs, CGO, llama-server discovery) — docs/cuda-lanes.md
+# shellcheck source=scripts/cuda_common_env.sh disable=SC1091
+source "${Z5080_ROOT}/scripts/cuda_common_env.sh"
 
 # --- CT layout (override on non-1564 hosts) ---
 export Z5080_CT="${Z5080_CT:-1564}"

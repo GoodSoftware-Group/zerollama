@@ -29,13 +29,37 @@ _resolve_llama_cpp_root() {
   echo "${_SIBLING_ROOT}"
 }
 
+_canonical_path() {
+  readlink -f "$1" 2>/dev/null || realpath "$1" 2>/dev/null || (cd "$1" && pwd)
+}
+
+# Container mounts vendor at /llama.cpp while _VENDOR_ROOT is /zerollama/vendor/... — same tree.
+_is_vendor_root() {
+  local root="$1"
+  [[ -f "${root}/CMakeLists.txt" ]] || return 1
+  local a b
+  a="$(_canonical_path "${root}")"
+  b="$(_canonical_path "${_VENDOR_ROOT}")"
+  [[ "${a}" == "${b}" ]] && return 0
+  # Podman bind-mount alias: same inode, different path.
+  if [[ -f "${_VENDOR_ROOT}/CMakeLists.txt" ]]; then
+    local ia ib
+    ia="$(stat -c '%d:%i' "${root}/CMakeLists.txt" 2>/dev/null || stat -f '%d:%i' "${root}/CMakeLists.txt")"
+    ib="$(stat -c '%d:%i' "${_VENDOR_ROOT}/CMakeLists.txt" 2>/dev/null || stat -f '%d:%i' "${_VENDOR_ROOT}/CMakeLists.txt")"
+    [[ "${ia}" == "${ib}" ]] && return 0
+  fi
+  return 1
+}
+
 ROOT="$(_resolve_llama_cpp_root)"
-BUILD="${ROOT}/build"
-BUILD_LOCK="${ROOT}/.zerollama_llama_server_build.lock.d"
+BUILD="${ZEROLLAMA_BUILD_DIR:-${ROOT}/build}"
+BUILD_LOCK="${BUILD}/.zerollama_llama_server_build.lock.d"
+if [[ "${BUILD}" != "${ROOT}/build" ]]; then
+  BUILD_LOCK="${ROOT}/.zerollama_llama_server_build.lock.d"
+fi
 
 _acquire_llama_server_build_lock() {
-  if pgrep -f "cmake --build ${BUILD}" >/dev/null 2>&1 \
-    || pgrep -f "make.*${ROOT}/build" >/dev/null 2>&1; then
+  if pgrep -f "cmake --build ${BUILD}" >/dev/null 2>&1; then
     echo "error: llama-server build still running for ${ROOT}" >&2
     echo "  wait for it to finish, or: pkill -f 'cmake --build ${BUILD}'" >&2
     exit 1
@@ -79,20 +103,23 @@ if [[ ! -f "${ROOT}/CMakeLists.txt" ]]; then
     exit 1
   }
   ROOT="$(_resolve_llama_cpp_root)"
-  BUILD="${ROOT}/build"
+  BUILD="${ZEROLLAMA_BUILD_DIR:-${ROOT}/build}"
 fi
-if [[ -d "${ROOT}/.git" && "${ROOT}" != "${_VENDOR_ROOT}" ]]; then
+if [[ -d "${ROOT}/.git" ]] && ! _is_vendor_root "${ROOT}" \
+    && [[ "${ZEROLLAMA_SKIP_PIN_CHECKOUT:-0}" != "1" ]]; then
   ensure_llama_cpp_at_pin "${ROOT}"
 fi
 
-# Patched vendor builds need Ollama patch commits + compat loader hooks + staged sources.
-if [[ "${ROOT}" == "${_VENDOR_ROOT}" || "${ROOT}" == "${_VENDOR_ROOT}/" ]]; then
-  "${_ZEROLLAMA_ROOT}/scripts/ensure_llama_vendor_patches.sh" "${ROOT}"
+# Patched vendor: ensure Ollama + CUDA fork patches (skip when ZEROLLAMA_SKIP_VENDOR_APPLY=1).
+if _is_vendor_root "${ROOT}"; then
+  if [[ "${ZEROLLAMA_SKIP_VENDOR_APPLY:-0}" != "1" ]]; then
+    "${_ZEROLLAMA_ROOT}/scripts/apply_llama_vendor_patches.sh" "${ROOT}"
+  fi
 fi
 
 # Darwin sibling fallback: re-apply ANE hook after pin checkout (vendor gets 0018 via git am).
 if [[ "$(uname -s)" == Darwin && "${ZEROLLAMA_SKIP_ANE_HOOK_SYNC:-0}" != "1" ]]; then
-  if [[ "${ROOT}" != "${_VENDOR_ROOT}" && "${ROOT}" != "${_VENDOR_ROOT}/" ]]; then
+  if ! _is_vendor_root "${ROOT}"; then
     if [[ -f "${_ZEROLLAMA_ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh" ]]; then
       echo ">>> sync ANE draft hook → ${ROOT}" >&2
       LLAMA_CPP_ROOT="${ROOT}" "${_ZEROLLAMA_ROOT}/scripts/sync_ane_hook_to_llama_cpp.sh"
@@ -102,7 +129,7 @@ fi
 
 _probe_ollama_compat_loader() {
   local vendor_root="$1"
-  if [[ "${vendor_root}" != "${_VENDOR_ROOT}" && "${vendor_root}" != "${_VENDOR_ROOT}/" ]]; then
+  if ! _is_vendor_root "${vendor_root}"; then
     return 0
   fi
   if grep -q 'llama_ollama_compat::translate_metadata' "${vendor_root}/src/llama-model-loader.cpp"; then
@@ -114,7 +141,9 @@ _probe_ollama_compat_loader() {
 }
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  bash "${_ZEROLLAMA_ROOT}/scripts/patch_vendor_linux_ane_hook.sh" "${ROOT}"
+  if [[ -f "${ROOT}/common/ane_draft_hook.cpp" ]]; then
+    bash "${_ZEROLLAMA_ROOT}/scripts/patch_vendor_linux_ane_hook.sh" "${ROOT}"
+  fi
   if [[ -f "${_ZEROLLAMA_ROOT}/llama/llama.cpp/common/ane_draft_hook.cpp" ]]; then
     bash "${_ZEROLLAMA_ROOT}/scripts/patch_vendor_linux_ane_hook.sh" "${_ZEROLLAMA_ROOT}/llama/llama.cpp"
   fi
@@ -141,6 +170,42 @@ _probe_llama_server_capabilities() {
   fi
 }
 
+_probe_cuda_fork_cuda_symbols() {
+  local bindir="$1"
+  local cuda_lib=""
+  for cand in \
+    "${bindir}/libggml-cuda.so.0.12.0" \
+    "${bindir}/libggml-cuda.so.0" \
+    "${bindir}/libggml-cuda.so"; do
+    if [[ -e "${cand}" ]]; then
+      cuda_lib="$(readlink -f "${cand}")"
+      break
+    fi
+  done
+  if [[ -z "${cuda_lib}" || ! -f "${cuda_lib}" ]]; then
+    echo "error: libggml-cuda not found under ${bindir}" >&2
+    return 1
+  fi
+  _cuda_lib_has_symbol() {
+    local sym="$1"
+    nm -D --demangle "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
+    nm --demangle "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
+    strings "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
+    return 1
+  }
+  if ! _cuda_lib_has_symbol 'ggml_cuda_op_set_rows'; then
+    echo "error: ${cuda_lib} missing ggml_cuda_op_set_rows (fork KV load will abort)" >&2
+    return 1
+  fi
+  echo "OK: libggml-cuda SET_ROWS dispatch present"
+  if _cuda_lib_has_symbol 'fused_attn_qjl_polar_cuda'; then
+    echo "OK: libggml-cuda fused QJL attn symbols present"
+  else
+    echo "error: ${cuda_lib} missing fused QJL attn (build with -DGGML_CUDA_FUSED_ATTN_QJL=ON)" >&2
+    return 1
+  fi
+}
+
 _probe_seq_copy_route() {
   local bin="$1"
   local root="$2"
@@ -151,7 +216,7 @@ _probe_seq_copy_route() {
     has_route=1
   fi
   # WHY: Radix cross-slot seed requires patch 0017 on vendor tree only.
-  if [[ "${root}" != "${_VENDOR_ROOT}" && "${root}" != "${_VENDOR_ROOT}/" ]]; then
+  if ! _is_vendor_root "${root}"; then
     if [[ "${has_route}" -eq 1 ]]; then
       echo "OK: ${bin} embeds /kv/seq-copy (non-vendor build)"
     else
@@ -243,7 +308,7 @@ if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
     echo "OK: ${BIN}"
     "${BIN}" --version 2>/dev/null || true
     _probe_llama_server_capabilities "${BIN}"
-    if [[ "${ROOT}" == "${_VENDOR_ROOT}" || "${ROOT}" == "${_VENDOR_ROOT}/" ]]; then
+    if _is_vendor_root "${ROOT}"; then
       _probe_seq_copy_route "${BIN}" "${ROOT}"
     fi
   else
@@ -261,6 +326,7 @@ if [[ "${GGML_CUDA:-ON}" == "ON" ]]; then
   fi
   cuda_bins+=(
     /usr/local/cuda/bin
+    /usr/bin
     /usr/local/cuda-13/bin
     /usr/local/cuda-13.1/bin
     /usr/local/cuda-12.8/bin
@@ -290,6 +356,24 @@ CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
 
 _acquire_llama_server_build_lock
 rm -rf "${BUILD}"
+# WHY stubs: link llama-server in devel containers / CI without libcuda.so.1 on LD path.
+CUDA_STUBS=""
+for _stub in /usr/local/cuda/lib64/stubs /usr/local/cuda/targets/x86_64-linux/lib/stubs; do
+  if [[ -f "${_stub}/libcuda.so" ]]; then
+    CUDA_STUBS="${_stub}"
+    break
+  fi
+done
+CMAKE_EXTRA=()
+if [[ -n "${CUDA_STUBS}" ]]; then
+  CMAKE_EXTRA+=("-DCMAKE_EXE_LINKER_FLAGS=-L${CUDA_STUBS} -Wl,-rpath-link,${CUDA_STUBS} -lcuda")
+fi
+# Installed layout: libs in $ORIGIN, CUDA backend in $ORIGIN/cuda_v12 (see install_cuda_llama_server.sh).
+CMAKE_EXTRA+=(
+  "-DCMAKE_BUILD_RPATH=\$ORIGIN:\$ORIGIN/cuda_v12"
+  "-DCMAKE_INSTALL_RPATH=\$ORIGIN:\$ORIGIN/cuda_v12"
+  "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+)
 # WHY LLAMA_BUILD_WEBUI: eliza fork defaults ON; headless Linux builds fail without WebUI assets.
 # WHY GGML_CUDA_GRAPHS: L3 prefix cache clears KV slots; zerollama calls
 # llama_context_cuda_graph_invalidate (in-process) or POST /cuda-graph/invalidate
@@ -298,9 +382,11 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA="${GGML_CUDA:-ON}" \
   -DGGML_CUDA_GRAPHS=ON \
+  -DGGML_CUDA_FUSED_ATTN_QJL=ON \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
   -DLLAMA_CURL=ON \
-  -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-ON}"
+  -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-ON}" \
+  "${CMAKE_EXTRA[@]}"
 
 cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
   echo "error: llama-server build failed; cleaning ${BUILD}" >&2
@@ -313,8 +399,11 @@ if [[ -x "${BIN}" ]]; then
   echo "OK: ${BIN}"
   "${BIN}" --version 2>/dev/null || true
   _probe_llama_server_capabilities "${BIN}"
-  _probe_ollama_compat_loader "${ROOT}"
-  _probe_seq_copy_route "${BIN}" "${ROOT}"
+  if [[ "${ZEROLLAMA_SKIP_BUILD_PROBES:-0}" != "1" ]]; then
+    _probe_cuda_fork_cuda_symbols "$(dirname "${BIN}")"
+    _probe_ollama_compat_loader "${ROOT}"
+    _probe_seq_copy_route "${BIN}" "${ROOT}"
+  fi
 else
   echo "Build finished but ${BIN} missing" >&2
   exit 1

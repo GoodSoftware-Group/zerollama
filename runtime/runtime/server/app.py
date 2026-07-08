@@ -43,6 +43,7 @@ def create_app(
     from runtime.server.access_log import log_request_in, log_response_out, runtime_queue_snapshot
 
     eng = engine or InferenceEngine(config)
+    eng.maybe_auto_resume_inference()
 
     class CompletionRequest(BaseModel):
         prompt: str
@@ -71,12 +72,30 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, Any]:
         out = eng.health()
-        out["server_revision"] = "fastapi-body-v3"
+        out["server_revision"] = "fastapi-body-v4"
         from runtime.kv.backend import kv_native_build_sha
 
         sha = kv_native_build_sha()
         out["kv_native_build_sha"] = sha or ""
         return out
+
+    @app.get("/ready")
+    def ready():
+        body = eng.health()
+        if body.get("ready"):
+            return body
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ready": False,
+                "ready_reasons": body.get("ready_reasons", []),
+                "ready_warnings": body.get("ready_warnings", []),
+                "inference_state": body.get("inference_state"),
+                "accepts_new_loads": body.get("accepts_new_loads"),
+            },
+        )
 
     @app.post("/v1/completions")
     def completions(req: CompletionRequest = Body()) -> dict[str, Any]:
@@ -551,7 +570,13 @@ def create_app(
         from runtime.go_coordination import update_go_coordination
 
         update_go_coordination(body)
-        return {"status": "ok"}
+        resumed = eng.maybe_auto_resume_inference()
+        eng.invalidate_health_cache()
+        out: dict[str, str] = {"status": "ok"}
+        if resumed:
+            out["inference_state"] = eng.coordinator.state.value
+            out["auto_resumed"] = "true"
+        return out
 
     class VramEstimateBody(BaseModel):
         gguf: str

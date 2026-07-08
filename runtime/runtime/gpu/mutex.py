@@ -65,6 +65,9 @@ class InferenceGpuCoordinator:
     def unload_all(self) -> None:
         with self._lock:
             self._state = InferenceState.UNLOADED
+            # GPU is empty; UNLOADED already drives VRAM reserve — do not leave a stale
+            # handoff flag on /health after training evicted llama-server.
+            self._training_handoff_active = False
             hook = self._unload_hook
         if hook is not None:
             hook()

@@ -15,7 +15,7 @@ if [[ -z "${VENDOR_ROOT}" || ! -f "${VENDOR_ROOT}/CMakeLists.txt" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPAT_SRC="${ROOT}/llama/compat"
+COMPAT_SRC="${ZEROLLAMA_COMPAT_SRC:-${COMPAT_SRC:-${ROOT}/llama/compat}}"
 STAGE="${VENDOR_ROOT}/src/ollama-compat"
 
 mkdir -p "${STAGE}/models"
@@ -24,7 +24,12 @@ for f in \
   llama-ollama-compat.h \
   llama-ollama-compat-util.cpp \
   llama-ollama-compat-util.h; do
-  ln -sf "${COMPAT_SRC}/${f}" "${STAGE}/${f}"
+  if [[ "${ZEROLLAMA_COMPAT_COPY:-0}" == "1" ]]; then
+    rm -f "${STAGE}/${f}"
+    cp -f "${COMPAT_SRC}/${f}" "${STAGE}/${f}"
+  else
+    ln -sf "${COMPAT_SRC}/${f}" "${STAGE}/${f}"
+  fi
 done
 # Optional arch overlays (laguna etc.) ship with Go CGO only until upstream adds arch.
 

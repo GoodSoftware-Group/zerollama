@@ -1,7 +1,9 @@
 # Dual RTX 4090 topology (Phase 3). Env vars override at launch.
 device_count: 2
 tensor_parallel: 2
-split_mode: tensor
+# Layer split across both GPUs (-sm layer -ts). Tensor split (-sm tensor) aborts
+# params_fit on llama.cpp c84b302+; layer + -ts is the stable dual-4090 path.
+split_mode: layer
 # Equal weight/KV split across both GPUs (llama-server -ts)
 tensor_split: [1, 1]
 main_gpu: 0

@@ -1171,6 +1171,7 @@ class InferenceEngine:
                 for p in self.pools
             ],
             "llama_server": self._server is not None and self._server.is_running(),
+            "llama_server_status": self._llama_server_status_health(),
             "llama_backend": self._health_llama_backend(),
             "llama_backend_source": llama_backend_source(self.config),
             "llama_backend_requested": self._requested_llama_backend().value,
@@ -1223,7 +1224,50 @@ class InferenceEngine:
             num_ctx=self._loaded_vram_num_ctx,
             spec_method=self.config.speculative.method,
         )
+        from runtime.readiness import compute_readiness
+
+        body.update(compute_readiness(body))
         return body
+
+    def _llama_server_status_health(self) -> dict[str, Any] | None:
+        srv = self._server
+        if srv is None:
+            return None
+        snap = getattr(srv, "status_snapshot", None)
+        if callable(snap):
+            return snap()
+        running = srv.is_running() if hasattr(srv, "is_running") else False
+        return {"running": running, "died": not running, "reachable": None}
+
+    def maybe_auto_resume_inference(self) -> bool:
+        """Resume after training handoff when Go mirror shows training idle."""
+        import os
+
+        from runtime.gpu.mutex import InferenceState
+
+        raw = os.environ.get("ZEROLLAMA_RUNTIME_AUTO_RESUME", "1").strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return False
+        if self.coordinator.state == InferenceState.RUNNING:
+            return False
+        if self.coordinator.go_training_gpu_busy:
+            return False
+        from runtime.go_coordination import (
+            go_coordination_is_fresh,
+            go_defer_waiting,
+            go_ggml_loads_paused,
+            go_training_gpu_blocked,
+        )
+
+        if go_coordination_is_fresh():
+            if go_training_gpu_blocked():
+                return False
+            if go_ggml_loads_paused():
+                return False
+            if go_defer_waiting() > 0:
+                return False
+        self.resume_inference()
+        return True
 
     def training_handoff(self) -> InferenceState:
         self.coordinator.training_handoff()
@@ -2617,7 +2661,9 @@ class InferenceEngine:
                     "prompt_eval_count",
                     "prompt_eval_cached_count",
                     "cached_prompt_tokens",
+                    "prompt_eval_duration",
                     "eval_count",
+                    "eval_duration",
                 ):
                     if key in chunk:
                         out[key] = chunk[key]

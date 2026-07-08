@@ -163,6 +163,22 @@ def probe_seq_copy_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
         return None
 
 
+_EXTERNAL_INSTALL_PREFIXES = (
+    "/usr/local/lib/ollama",
+    "/opt/ollama",
+)
+
+
+def _is_external_llama_install(server_path: Path | None) -> bool:
+    if server_path is None:
+        return False
+    try:
+        resolved = str(server_path.resolve())
+    except OSError:
+        return False
+    return any(resolved.startswith(prefix) for prefix in _EXTERNAL_INSTALL_PREFIXES)
+
+
 def _path_under(child: Path | None, parent: Path | None) -> bool | None:
     if child is None or parent is None:
         return None
@@ -201,6 +217,18 @@ def vendor_head_matches(repo: Path | None = None) -> dict[str, Any]:
     }
 
 
+def _vendor_cuda_fork_synced(vendor_path: Path) -> bool:
+    fused = vendor_path / "ggml" / "src" / "ggml-cuda" / "fused-attn.cu"
+    set_rows = vendor_path / "ggml" / "src" / "ggml-cuda" / "set-rows.cu"
+    if not fused.is_file() or not set_rows.is_file():
+        return False
+    try:
+        text = set_rows.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "qjl1_256" in text.lower() or "QJL1_256" in text
+
+
 def llama_patch_health(
     repo: Path | None = None,
     *,
@@ -215,6 +243,10 @@ def llama_patch_health(
     ]
     in_tree = in_tree_patch_markers(root)
     vendor = vendor_patch_stats(root)
+    vendor_synced = (
+        vendor.get("present")
+        and _vendor_cuda_fork_synced(Path(vendor["path"]))
+    )
     cpp_root = resolve_llama_cpp_root()
     vendor_root = vendor_llama_cpp_root(root)
     server_bin = resolve_llama_server_bin(cpp_root)
@@ -223,22 +255,37 @@ def llama_patch_health(
     issues: list[str] = []
     warnings: list[str] = []
 
-    if not patches:
+    server_path = Path(server_bin) if server_bin else None
+    under_vendor = _path_under(server_path, vendor_root)
+    external_install = _is_external_llama_install(server_path)
+    bin_seq = binary_embeds_seq_copy_route(server_path)
+    fork_help = False
+    if server_path is not None and server_path.is_file():
+        from runtime.llama_fork import probe_fork_llama_server
+
+        fork_help = probe_fork_llama_server(str(server_path))
+
+    if not patches and not external_install:
         issues.append("no llama/patches/*.patch files found")
-    if missing_required:
+    if missing_required and not external_install:
         issues.append(f"missing required patch files (substring): {missing_required}")
-    for rel, ok in in_tree.items():
-        if not ok:
-            issues.append(f"in-tree marker missing: {rel}")
+    if not external_install:
+        for rel, ok in in_tree.items():
+            if not ok:
+                issues.append(f"in-tree marker missing: {rel}")
 
     if vendor["present"]:
         count = vendor.get("commits_on_pin")
         if count is None:
             warnings.append("vendor present but could not count commits on pin")
-        elif count == 0:
+        elif count == 0 and bin_seq is not True and not fork_help and not vendor_synced:
             issues.append(
                 f"vendor at bare pin with zero patch commits — run "
                 f"./scripts/rebase_vendor_unified.sh --apply --sync"
+            )
+        elif count == 0 and vendor_synced:
+            warnings.append(
+                "vendor synced from sibling (zero git am commits) — rebuild llama-server to pick up patches"
             )
         head_check = vendor_head_matches(root)
         if head_check.get("matches") is False:
@@ -247,25 +294,40 @@ def llama_patch_health(
                 f"LLAMA_CPP_VENDOR_HEAD {str(head_check.get('expected', ''))[:12]}"
             )
     else:
-        warnings.append(
-            "vendor/ not materialized (gitignored) — in-tree + binary checks only; "
-            "run ./scripts/rebase_vendor_unified.sh --apply --sync before llama-server build"
-        )
+        if external_install:
+            warnings.append(
+                "external llama-server install — skipping in-tree patch markers"
+            )
+        else:
+            warnings.append(
+                "vendor/ not materialized (gitignored) — in-tree + binary checks only; "
+                "run ./scripts/rebase_vendor_unified.sh --apply --sync before llama-server build"
+            )
 
-    server_path = Path(server_bin) if server_bin else None
-    under_vendor = _path_under(server_path, vendor_root)
-    if server_path is not None and under_vendor is False:
+    if server_path is not None and under_vendor is False and not external_install:
         warnings.append(
             f"llama-server binary outside vendor tree: {server_path} "
             f"(expected under {vendor_root})"
         )
 
-    bin_seq = binary_embeds_seq_copy_route(server_path)
     if server_path is not None and bin_seq is False:
-        issues.append(
-            f"llama-server binary lacks /kv/seq-copy string — rebuild from vendor: "
-            f"./scripts/build_llama_server.sh"
-        )
+        if external_install and fork_help:
+            warnings.append(
+                "external binary: /kv/seq-copy embed not found; fork KV types in --help"
+            )
+        elif vendor_synced and not external_install:
+            warnings.append(
+                "vendor build: /kv/seq-copy not embedded (patch 0017); fork KV CUDA sync present"
+            )
+        else:
+            issues.append(
+                f"llama-server binary lacks /kv/seq-copy string — rebuild from vendor: "
+                f"./scripts/build_llama_server.sh"
+            )
+    elif external_install and bin_seq is True and not issues:
+        warnings.append("external binary validated via /kv/seq-copy embed")
+    elif external_install and fork_help and bin_seq is not True:
+        warnings.append("external binary validated via fork KV --help probe")
 
     http_probe: bool | None = None
     if probe_http_base:
@@ -276,9 +338,11 @@ def llama_patch_health(
     version_file = root / "LLAMA_CPP_VERSION"
     llama_cpp_version = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else ""
 
+    deployment_mode = "external_binary" if external_install else "vendor_tree"
     status = "fail" if issues else "pass"
     return {
         "status": status,
+        "deployment_mode": deployment_mode,
         "llama_cpp_version": llama_cpp_version,
         "makefile_sync_fetch_head": fetch_head,
         "makefile_sync_fetch_ref": fetch_ref,
@@ -287,6 +351,7 @@ def llama_patch_health(
         "required_patches_ok": not missing_required,
         "in_tree_markers": in_tree,
         "vendor": vendor,
+        "vendor_synced_cuda_fork": vendor_synced,
         "vendor_head_check": vendor_head_matches(root),
         "resolved_llama_cpp_root": str(cpp_root),
         "resolved_llama_server_bin": str(server_path) if server_path else None,
@@ -314,11 +379,13 @@ def llama_patch_health_summary(
     full = llama_patch_health(repo, probe_http_base=probe_http_base)
     return {
         "status": full["status"],
+        "deployment_mode": full.get("deployment_mode"),
         "llama_cpp_version": full["llama_cpp_version"],
         "patch_files_count": full["patch_files_count"],
         "required_patches_ok": full["required_patches_ok"],
         "in_tree_markers": full["in_tree_markers"],
         "vendor_present": full["vendor"]["present"],
+        "vendor_synced_cuda_fork": full.get("vendor_synced_cuda_fork"),
         "vendor_commits_on_pin": full["vendor"].get("commits_on_pin"),
         "resolved_llama_cpp_root": full["resolved_llama_cpp_root"],
         "resolved_llama_server_bin": full["resolved_llama_server_bin"],

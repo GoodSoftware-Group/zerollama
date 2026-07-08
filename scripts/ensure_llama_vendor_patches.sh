@@ -61,6 +61,10 @@ scrub_untracked_patch_conflicts() {
 
 apply_vendor_patches() {
   echo ">>> resetting vendor to pin and applying llama/patches/*.patch" >&2
+  if [[ -x "${ROOT}/scripts/apply_llama_vendor_patches.sh" ]]; then
+    "${ROOT}/scripts/apply_llama_vendor_patches.sh" "${VENDOR}"
+    return 0
+  fi
   git -C "${VENDOR}" am --abort &>/dev/null || true
   scrub_untracked_patch_conflicts
   rm -f "${ROOT}"/llama/patches/.*.patched

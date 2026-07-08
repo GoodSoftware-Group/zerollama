@@ -1,7 +1,7 @@
 # Dual RTX 4090 + n-gram speculative (no draft model). Env overrides apply.
 device_count: 2
 tensor_parallel: 2
-split_mode: tensor
+split_mode: layer          # layer + -fit off (c84b302+); not tensor on dual 4090
 tensor_split: [1, 1]
 llama_parallel_slots: 4
 kv:

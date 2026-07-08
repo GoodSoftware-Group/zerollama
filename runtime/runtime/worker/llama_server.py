@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -27,6 +28,65 @@ from runtime.worker.llama_server_http import (
 
 logger = get_logger("llama_server")
 
+_GPU_BACKEND_PREFIXES = ("libggml-", "ggml-")
+
+
+def _is_gpu_ggml_backend(path: Path) -> bool:
+    name = path.name.lower()
+    if not name.endswith((".so", ".dll", ".dylib")) and ".so." not in name:
+        return False
+    for prefix in _GPU_BACKEND_PREFIXES:
+        if not name.startswith(prefix):
+            continue
+        if any(
+            name.startswith(f"{prefix}{skip}")
+            for skip in ("base", "cpu")
+        ):
+            return False
+        return True
+    return False
+
+
+def _discover_gpu_backend_path() -> Path | None:
+    """Match Go llama-server spawn: set GGML_BACKEND_PATH for CUDA offload."""
+    explicit = os.environ.get("GGML_BACKEND_PATH", "").strip()
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            return p
+    search_roots: list[Path] = []
+    for key in ("OLLAMA_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        raw = os.environ.get(key, "").strip()
+        if not raw:
+            continue
+        for part in raw.split(os.pathsep):
+            if part:
+                search_roots.append(Path(part))
+    llama_bin = os.environ.get("LLAMA_SERVER_BIN", "").strip()
+    if llama_bin:
+        search_roots.insert(0, Path(llama_bin).resolve().parent)
+    seen: set[Path] = set()
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        resolved = root.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        matches = sorted(resolved.glob("libggml-*.so*"))
+        for match in matches:
+            if _is_gpu_ggml_backend(match):
+                return match.resolve()
+    return None
+
+
+def _llama_server_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    backend = _discover_gpu_backend_path()
+    if backend is not None:
+        env["GGML_BACKEND_PATH"] = str(backend)
+    return env
+
 
 class LlamaServerError(Exception):
     pass
@@ -42,9 +102,80 @@ class LlamaServerProcess:
     port: int = 8082
     n_gpu_layers: int = -1
     _proc: subprocess.Popen[bytes] | None = None
+    _exit_code: int | None = field(default=None, init=False, repr=False)
+    _crash_tail: str = field(default="", init=False, repr=False)
+    _watchdog_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _watchdog_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _log_file: Any = field(default=None, init=False, repr=False)
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    def status_snapshot(self) -> dict[str, Any]:
+        """Operator snapshot for /health (no blocking I/O beyond poll)."""
+        running = self.is_running()
+        out: dict[str, Any] = {
+            "running": running,
+            "died": self._exit_code is not None and not running,
+            "exit_code": self._exit_code,
+            "reachable": None,
+            "base_url": self.base_url,
+        }
+        if self._crash_tail:
+            out["crash_tail"] = self._crash_tail[-2000:]
+        if running:
+            out["reachable"] = self._probe_health(timeout_s=1.0)
+        return out
+
+    def _probe_health(self, timeout_s: float = 2.0) -> bool:
+        url = f"{self.base_url}/health"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+                return resp.status == 200
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return False
+
+    def _open_log_sink(self) -> int:
+        log_path = os.environ.get("ZEROLLAMA_LLAMA_SERVER_LOG", "").strip()
+        if log_path:
+            path = Path(log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = path.open("ab", buffering=0)
+            return self._log_file.fileno()
+        return subprocess.DEVNULL
+
+    def _start_watchdog(self) -> None:
+        self._watchdog_stop.clear()
+        proc = self._proc
+        if proc is None:
+            return
+
+        def _watch() -> None:
+            assert proc is not None
+            proc.wait()
+            code = proc.returncode
+            self._exit_code = code
+            tail = ""
+            if proc.stderr is not None:
+                try:
+                    raw = proc.stderr.read()
+                    if raw:
+                        tail = raw.decode(errors="replace")
+                except OSError:
+                    pass
+            self._crash_tail = tail
+            if code not in (0, None):
+                logger.warning(
+                    "llama-server exited model=%s code=%s tail=%s",
+                    self.model.name,
+                    code,
+                    tail[-500:] if tail else "",
+                )
+
+        self._watchdog_thread = threading.Thread(
+            target=_watch, name="llama-server-watchdog", daemon=True
+        )
+        self._watchdog_thread.start()
 
     @property
     def base_url(self) -> str:
@@ -88,13 +219,16 @@ class LlamaServerProcess:
         if extra_args:
             cmd.extend(extra_args)
 
-        env = os.environ.copy()
+        log_fd = self._open_log_sink()
+        self._exit_code = None
+        self._crash_tail = ""
         self._proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
+            stdout=log_fd,
+            stderr=log_fd if log_fd != subprocess.DEVNULL else subprocess.DEVNULL,
+            env=_llama_server_subprocess_env(),
         )
+        self._start_watchdog()
         self._wait_healthy(timeout_s=120.0)
 
     def _wait_healthy(self, timeout_s: float) -> None:
@@ -102,8 +236,13 @@ class LlamaServerProcess:
         url = f"{self.base_url}/health"
         while time.monotonic() < deadline:
             if self._proc is not None and self._proc.poll() is not None:
-                err = self._proc.stderr.read().decode() if self._proc.stderr else ""
-                raise LlamaServerError(f"llama-server exited early: {err}")
+                tail = self._crash_tail
+                if not tail and self._proc.stderr is not None:
+                    try:
+                        tail = self._proc.stderr.read().decode(errors="replace")
+                    except OSError:
+                        tail = ""
+                raise LlamaServerError(f"llama-server exited early: {tail}")
             try:
                 with urllib.request.urlopen(url, timeout=2.0) as resp:
                     if resp.status == 200:
@@ -121,6 +260,7 @@ class LlamaServerProcess:
     def stop(self) -> None:
         if self._proc is None:
             return
+        self._watchdog_stop.set()
         if self._proc.poll() is None:
             self._proc.terminate()
             try:
@@ -128,7 +268,16 @@ class LlamaServerProcess:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
                 self._proc.wait(timeout=5)
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=2.0)
         self._proc = None
+        self._watchdog_thread = None
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
 
     def completion(
         self,

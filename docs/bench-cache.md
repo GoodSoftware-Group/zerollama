@@ -53,6 +53,16 @@ zerollama ls             PERF column (-- when no entry for digest)
 
 **Why unload between chat models (`KeepAlive: 0`):** Each model gets a fair VRAM slot; otherwise a warm predecessor skews load time and scheduler state for the next tag.
 
+**Dual-GPU / large-model sweeps:** Default server `OLLAMA_LOAD_TIMEOUT` is 5m — 30B+ GGUF loads can exceed that on tensor-parallel hosts. Set `OLLAMA_LOAD_TIMEOUT=30m` on the serve process and use client flags:
+
+```bash
+source /etc/profile.d/zerollama-cli.sh
+OLLAMA_HOST=http://127.0.0.1:2083 OLLAMA_MAX_LOADED_MODELS=1 \
+  ./zerollama bench --load-timeout 1800 --timeout 900 --force qwen3.6:35b
+```
+
+Re-bench after a bad run with `--force` (digest-keyed cache keeps stale numbers like bogus partial-stream tok/s until forced).
+
 **Why cap image timed epochs at 2:** SD on 6 GB Arc is ~30–60 s per frame; three+ epochs × many tags becomes hours. Chat keeps the full `--epochs` default.
 
 **Why clamp `min-epochs` for image:** CLI `--min-epochs 3` with default `--epochs 3` would always fail when the image path caps timed runs at 2 — clamp `effectiveMin` to the cap so operator flags stay intuitive.

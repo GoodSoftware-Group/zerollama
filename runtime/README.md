@@ -78,7 +78,7 @@ Sign-off: `../scripts/phase14_inprocess_smoke.sh` (5080 GPU), `../scripts/phase1
 
 **Single GPU:** `configs/single_gpu.yaml` (`tensor_parallel: 1`, layer split). **Why:** tensor split on one GPU makes `llama-server` fail model fitting.
 
-Dual RTX 4090 example (`tensor_parallel: 2`, `-sm tensor -ts 1,1`):
+Dual RTX 4090 example (`tensor_parallel: 2`, `-sm layer -ts 1,1 -fit off`):
 
 ```bash
 export LLAMA_SERVER_BIN=/var/lib/vz/private/1564/root/llama.cpp/build/bin/llama-server
@@ -89,7 +89,7 @@ zerollama-runtime serve --port 8081
 
 Override via env: `ZEROLLAMA_RUNTIME_CONFIG`, `ZEROLLAMA_TENSOR_PARALLEL`, `ZEROLLAMA_KV_NUM_BLOCKS`.
 
-Endpoints: `GET /health`, `POST /api/generate`, `POST /api/chat`, `POST /v1/completions`, `POST /internal/vram-estimate` (loopback), `POST /internal/training-handoff`, `POST /internal/inference/resume`.
+Endpoints: `GET /health`, `GET /ready` (503 when not accepting loads), `POST /api/generate`, `POST /api/chat`, `POST /v1/completions`, `POST /internal/vram-estimate` (loopback), `POST /internal/training-handoff`, `POST /internal/inference/resume`.
 
 Smoke / GPU handoff: [../docs/testing-smoke.md](../docs/testing-smoke.md). **Why two internal endpoints:** handoff unloads GPU for training or legacy runners; resume clears `inference_state` without full process restart.
 

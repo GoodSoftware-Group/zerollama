@@ -21,6 +21,11 @@
 #include <string>
 #include <vector>
 
+#if !defined(__APPLE__)
+// ZEROLLAMA_LINUX_HANDOFF_STEP
+static std::atomic<int> g_handoff_step { 0 };
+#endif
+
 #if defined(__APPLE__)
 #include <fcntl.h>
 #include <sys/mman.h>

@@ -10,20 +10,32 @@ from __future__ import annotations
 from typing import Any
 
 
+def _ms_to_ns(ms: float) -> int:
+    if ms <= 0:
+        return 0
+    return int(ms * 1_000_000)
+
+
 def metrics_from_llama_chunk(chunk: dict[str, Any]) -> dict[str, int]:
-    """Extract prompt/eval counts from a streaming completion chunk."""
+    """Extract prompt/eval counts and durations from a streaming completion chunk."""
     timings = chunk.get("timings")
     if not isinstance(timings, dict):
         return {}
     cache_n = int(timings.get("cache_n") or 0)
     prompt_n = int(timings.get("prompt_n") or 0)
     predict_n = int(timings.get("predicted_n") or timings.get("predict_n") or 0)
+    prompt_ms = float(timings.get("prompt_ms") or 0.0)
+    predict_ms = float(timings.get("predicted_ms") or timings.get("predict_ms") or 0.0)
     out: dict[str, int] = {}
     if cache_n > 0:
         out["prompt_eval_cached_count"] = cache_n
         out["cached_prompt_tokens"] = cache_n
-    if cache_n+prompt_n > 0:
+    if cache_n + prompt_n > 0:
         out["prompt_eval_count"] = cache_n + prompt_n
+    if prompt_ms > 0:
+        out["prompt_eval_duration"] = _ms_to_ns(prompt_ms)
     if predict_n > 0:
         out["eval_count"] = predict_n
+    if predict_ms > 0:
+        out["eval_duration"] = _ms_to_ns(predict_ms)
     return out

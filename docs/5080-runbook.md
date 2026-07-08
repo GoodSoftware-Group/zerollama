@@ -1,5 +1,7 @@
 # RTX 5080 runbook — complete operator guide (Jun 2026)
 
+**CUDA lane map (common vs 5080 vs dual 4090):** [cuda-lanes.md](./cuda-lanes.md)
+
 **Status (CT 1564):** **Full re-sign-off PASS** — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
 
 **This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/metal_signoff.sh`.

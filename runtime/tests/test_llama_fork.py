@@ -5,6 +5,8 @@ import pytest
 
 from runtime.gpu_profiles import flags_from_gpu_config, llama_argv_from_profile_flags
 from runtime.llama_fork import (
+    auto_fork_kv_supported,
+    cuda_fork_backend_capable,
     fork_health,
     fork_detection_source,
     llama_fork_enabled,
@@ -23,7 +25,7 @@ def test_llama_fork_env_override():
     assert llama_fork_env_override() is None
 
 
-def test_probe_fork_detects_ctx_checkpoints(monkeypatch, tmp_path):
+def test_probe_fork_ignores_stock_ctx_checkpoints(monkeypatch, tmp_path):
     from runtime.llama_fork import clear_fork_probe_cache
 
     fake = tmp_path / "llama-server"
@@ -35,6 +37,24 @@ def test_probe_fork_detects_ctx_checkpoints(monkeypatch, tmp_path):
         lambda *a, **k: MagicMock(
             returncode=0,
             stdout="--ctx-checkpoints N",
+            stderr="",
+        ),
+    )
+    assert probe_fork_llama_server(str(fake)) is False
+
+
+def test_probe_fork_detects_qjl_cache_types(monkeypatch, tmp_path):
+    from runtime.llama_fork import clear_fork_probe_cache
+
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    clear_fork_probe_cache()
+    monkeypatch.setattr(
+        "runtime.llama_fork.subprocess.run",
+        lambda *a, **k: MagicMock(
+            returncode=0,
+            stdout="--cache-type-k TYPE  q4_0, q8_0, qjl1_256",
             stderr="",
         ),
     )
@@ -62,6 +82,41 @@ def test_probe_fork_stock_help(monkeypatch, tmp_path):
 def test_llama_fork_enabled_force_env(monkeypatch):
     monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK", "1")
     assert llama_fork_enabled() is True
+
+
+def test_llama_fork_auto_probe_enabled_when_fork_binary(monkeypatch, tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK", raising=False)
+    monkeypatch.setattr(
+        "runtime.llama_fork.probe_fork_llama_server",
+        lambda _bin: True,
+    )
+    monkeypatch.setattr(
+        "runtime.llama_fork.cuda_fork_backend_capable",
+        lambda _bin: True,
+    )
+    assert llama_fork_enabled(llama_server_bin=fake) is True
+    assert fork_detection_source(llama_server_bin=fake) == "probe"
+
+
+def test_llama_fork_disabled_when_cuda_backend_incapable(monkeypatch, tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK", raising=False)
+    monkeypatch.setattr(
+        "runtime.llama_fork.probe_fork_llama_server",
+        lambda _bin: True,
+    )
+    monkeypatch.setattr(
+        "runtime.llama_fork.cuda_fork_backend_capable",
+        lambda _bin: False,
+    )
+    monkeypatch.setattr("runtime.llama_fork.sys.platform", "linux")
+    assert llama_fork_enabled(llama_server_bin=fake) is False
+    assert fork_detection_source(llama_server_bin=fake) == "probe_disabled_cuda_backend"
 
 
 def test_llama_fork_env_off_overrides_probe(monkeypatch, tmp_path):

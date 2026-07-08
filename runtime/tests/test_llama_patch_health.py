@@ -30,7 +30,38 @@ def test_llama_patch_health_passes_in_repo():
     assert report["status"] == "pass", report.get("issues")
 
 
-def test_llama_patch_health_fails_missing_in_tree(tmp_path: Path):
+def test_llama_patch_health_external_binary(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "zerollama"
+    repo.mkdir()
+    (repo / "Makefile.sync").write_text(
+        "FETCH_HEAD=abc\nFETCH_REF=abc123\nBUILD_NUMBER=1\n", encoding="utf-8"
+    )
+    ext_bin = Path("/usr/local/lib/ollama/llama-server")
+    monkeypatch.setattr(
+        "runtime.llama_patch_health.resolve_llama_server_bin",
+        lambda _root=None: str(ext_bin),
+    )
+    monkeypatch.setattr(
+        "runtime.llama_patch_health._is_external_llama_install",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        "runtime.llama_fork.probe_fork_llama_server",
+        lambda _bin: True,
+    )
+    monkeypatch.setattr(
+        "runtime.llama_patch_health.binary_embeds_seq_copy_route",
+        lambda _path: False,
+    )
+    report = llama_patch_health(repo)
+    assert report["deployment_mode"] == "external_binary"
+    assert report["status"] == "pass"
+    assert report["status"] == "pass", report.get("issues")
+    assert report["llama_server_binary_seq_copy"] is False
+
+
+def test_llama_patch_health_fails_missing_in_tree(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("LLAMA_SERVER_BIN", raising=False)
     repo = tmp_path / "zerollama"
     (repo / "llama" / "patches").mkdir(parents=True)
     (repo / "llama" / "patches" / "0014-ollama-llama-kv-ext.patch").write_text("x\n")

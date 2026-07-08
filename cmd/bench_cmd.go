@@ -105,18 +105,30 @@ func selectBenchModels(all []api.ListModelResponse, filters []string) []api.List
 	return selected
 }
 
+const (
+	benchMinEvalDuration   = time.Millisecond
+	benchMaxSanityTokPerSec = 10_000 // reject partial-stream metrics (e.g. 333k tok/s glitches)
+)
+
 func benchTokPerSec(metrics *api.Metrics) float64 {
 	// WHY EvalDuration not TotalDuration: load and prefill are paid in warmup; ls column is decode tok/s.
-	if metrics == nil || metrics.EvalCount <= 0 || metrics.EvalDuration <= 0 {
+	if metrics == nil || metrics.EvalCount <= 0 || metrics.EvalDuration < benchMinEvalDuration {
 		return 0
 	}
-	return float64(metrics.EvalCount) / metrics.EvalDuration.Seconds()
+	rate := float64(metrics.EvalCount) / metrics.EvalDuration.Seconds()
+	if rate > benchMaxSanityTokPerSec {
+		return 0
+	}
+	return rate
 }
 
-func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string, epoch, maxTokens int, loadTimeout, genTimeout time.Duration) (*api.Metrics, error) {
+func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string, epoch, maxTokens, numCtx int, loadTimeout, genTimeout time.Duration) (*api.Metrics, error) {
 	options := map[string]any{
 		"num_predict": maxTokens,
 		"temperature": 0.0,
+	}
+	if numCtx > 0 {
+		options["num_ctx"] = numCtx
 	}
 
 	stream := true
@@ -140,10 +152,8 @@ func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string
 
 	var metrics *api.Metrics
 	err := client.Generate(ctx, req, func(resp api.GenerateResponse) error {
-		if resp.Metrics.EvalCount > 0 || resp.Metrics.EvalDuration > 0 {
-			m := resp.Metrics
-			metrics = &m
-		}
+		// WHY Done-only: streaming chunks can carry full EvalCount with near-zero EvalDuration,
+		// producing nonsense tok/s (e.g. 333k) if we accept intermediate updates.
 		if resp.Done {
 			m := resp.Metrics
 			metrics = &m
@@ -172,6 +182,27 @@ func benchUnloadModel(client *api.Client, modelName string, timeout time.Duratio
 	_ = client.Generate(ctx, req, func(api.GenerateResponse) error { return nil })
 }
 
+func benchWaitServer(ctx context.Context, client *api.Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if _, err := client.List(ctx); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("server not ready: %w", lastErr)
+	}
+	return fmt.Errorf("server not ready within %s", timeout)
+}
+
 type benchModelResult struct {
 	kind        string
 	rate        float64
@@ -181,9 +212,9 @@ type benchModelResult struct {
 	partial     bool
 }
 
-func benchModel(ctx context.Context, client *api.Client, m api.ListModelResponse, warmup, epochs, maxTokens int, loadTimeout, genTimeout time.Duration, minEpochs int) (benchModelResult, error) {
+func benchModel(ctx context.Context, client *api.Client, m api.ListModelResponse, warmup, epochs, maxTokens, numCtx int, loadTimeout, genTimeout time.Duration, minEpochs int) (benchModelResult, error) {
 	for i := range warmup {
-		_, err := benchGenerateOnce(ctx, client, m.Name, -(i + 1), maxTokens, loadTimeout, genTimeout)
+		_, err := benchGenerateOnce(ctx, client, m.Name, -(i + 1), maxTokens, numCtx, loadTimeout, genTimeout)
 		if err != nil {
 			// WHY warn not fail: slow first load should not skip timed epochs that would succeed.
 			fmt.Fprintf(os.Stderr, "warning: warmup %d/%d for %s failed: %v\n", i+1, warmup, m.Name, err)
@@ -192,7 +223,7 @@ func benchModel(ctx context.Context, client *api.Client, m api.ListModelResponse
 
 	var rates []float64
 	for epoch := range epochs {
-		metrics, err := benchGenerateOnce(ctx, client, m.Name, epoch, maxTokens, loadTimeout, genTimeout)
+		metrics, err := benchGenerateOnce(ctx, client, m.Name, epoch, maxTokens, numCtx, loadTimeout, genTimeout)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: epoch %d/%d: %v\n", m.Name, epoch+1, epochs, err)
 			continue
@@ -236,6 +267,7 @@ func benchPreflightSkip(name string, skipCheck bool) (string, bool) {
 func runBench(cmd *cobra.Command, args []string) error {
 	epochs, _ := cmd.Flags().GetInt("epochs")
 	maxTokens, _ := cmd.Flags().GetInt("tokens")
+	numCtx, _ := cmd.Flags().GetInt("num-ctx")
 	warmup, _ := cmd.Flags().GetInt("warmup")
 	force, _ := cmd.Flags().GetBool("force")
 	timeoutSec, _ := cmd.Flags().GetInt("timeout")
@@ -284,9 +316,15 @@ func runBench(cmd *cobra.Command, args []string) error {
 		err     error
 	}
 	results := make([]result, 0, len(models))
+	var lastBenched string
 
 	for _, m := range models {
 		kind := benchModelKind(m)
+
+		if lastBenched != "" && kind != benchKindVideoGen {
+			benchUnloadModel(client, lastBenched, genTimeout)
+			_ = benchWaitServer(cmd.Context(), client, 30*time.Second)
+		}
 
 		if detail, skip := benchPreflightSkip(m.Name, skipHealth); skip {
 			fmt.Fprintf(os.Stderr, "skip %s (unhealthy: %s)\n", m.Name, detail)
@@ -311,14 +349,22 @@ func runBench(cmd *cobra.Command, args []string) error {
 		case benchKindVideoGen:
 			br, err = benchVideoModel(cmd.Context(), m, videoTimeout)
 		default:
-			br, err = benchModel(cmd.Context(), client, m, warmup, epochs, maxTokens, loadTimeout, genTimeout, minEpochs)
+			br, err = benchModel(cmd.Context(), client, m, warmup, epochs, maxTokens, numCtx, loadTimeout, genTimeout, minEpochs)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", m.Name, err)
 			results = append(results, result{name: m.Name, kind: kind, err: err})
 			if kind != benchKindVideoGen {
 				benchUnloadModel(client, m.Name, genTimeout)
+				_ = benchWaitServer(cmd.Context(), client, 120*time.Second)
 			}
+			continue
+		}
+
+		if br.rate <= 0 {
+			fmt.Fprintf(os.Stderr, "warning: %s: no valid tok/s metrics\n", m.Name)
+			results = append(results, result{name: m.Name, kind: kind, err: fmt.Errorf("invalid metrics")})
+			benchUnloadModel(client, m.Name, genTimeout)
 			continue
 		}
 
@@ -342,8 +388,12 @@ func runBench(cmd *cobra.Command, args []string) error {
 		}
 		results = append(results, result{name: m.Name, kind: kind, perf: perf, partial: br.partial})
 		if kind != benchKindVideoGen {
-			benchUnloadModel(client, m.Name, genTimeout)
+			lastBenched = m.Name
 		}
+	}
+
+	if lastBenched != "" {
+		benchUnloadModel(client, lastBenched, genTimeout)
 	}
 
 	var tableData [][]string
@@ -395,6 +445,7 @@ Cached results are skipped unless --force is set.`,
 
 	cmd.Flags().Int("epochs", 3, "Number of timed epochs to average")
 	cmd.Flags().Int("tokens", 128, "Maximum output tokens per epoch")
+	cmd.Flags().Int("num-ctx", 8192, "Context window for bench loads (lower fits large models on dual-GPU tensor parallel)")
 	cmd.Flags().Int("warmup", 1, "Warmup runs before timing")
 	cmd.Flags().Bool("force", false, "Re-bench models that already have cached results")
 	cmd.Flags().Int("timeout", 600, "Per-request generation timeout in seconds (image models)")

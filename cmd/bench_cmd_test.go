@@ -52,6 +52,11 @@ func TestBenchTokPerSec(t *testing.T) {
 	if benchTokPerSec(nil) != 0 {
 		t.Fatal("expected 0 for nil metrics")
 	}
+	// Partial stream chunk: high count, tiny duration — must not produce nonsense tok/s.
+	glitch := &api.Metrics{EvalCount: 128, EvalDuration: 384 * time.Nanosecond}
+	if got := benchTokPerSec(glitch); got != 0 {
+		t.Fatalf("benchTokPerSec(glitch) = %v, want 0", got)
+	}
 }
 
 func TestBenchPromptForEpoch(t *testing.T) {

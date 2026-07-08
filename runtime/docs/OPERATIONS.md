@@ -65,6 +65,13 @@ Bind the runtime to loopback in production (`ZEROLLAMA_RUNTIME_HOST=127.0.0.1`);
 
 When `OLLAMA_TRAINING` and `ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING` are on (default), the Go daemon also runs a background policy loop: pause ggml loads, call `training-handoff`, and unload all runners while training is active, a job is running, or a training HF model remains on CUDA; it resumes runtime inference when that clears.
 
+### `GET /health` and `GET /ready`
+
+- **`GET /health`** — always HTTP 200; rich diagnostic JSON (`status: ok` is not readiness).
+- **`GET /ready`** — HTTP 200 when `ready: true`; **503** with `ready_reasons` when inference cannot accept loads (training handoff, missing binary, crashed llama-server, etc.).
+
+Use `/ready` for systemd/Kubernetes probes; use `/health` for operator dashboards.
+
 ### `GET /health` fields (runtime)
 
 | Field | Shape | Meaning |

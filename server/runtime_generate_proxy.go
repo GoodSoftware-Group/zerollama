@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/internal/runtimeclient"
+	"github.com/ollama/ollama/server/vram"
 )
 
 var runtimeProxyClient = func() *http.Client {
@@ -41,6 +43,23 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 		}
 		EnsureGeneratePromptCacheKey(&req)
 		if req.Prompt == "" && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
+			// WHY runtime unload here: bench and CLI use KeepAlive=0 between models.
+			// Falling through to GenerateHandler scheduleRunner would spawn a ggml
+			// llama-server load on dual-4090 hosts where inference uses the sidecar.
+			if resolveRuntimeProxy(c, req.Model, req.Options) {
+				vram.ReleaseRuntimeVRAM(c.Request.Context())
+				if s != nil && s.sched != nil {
+					s.sched.UnloadAllRunners()
+				}
+				c.JSON(http.StatusOK, api.GenerateResponse{
+					Model:      req.Model,
+					CreatedAt:  time.Now().UTC(),
+					Done:       true,
+					DoneReason: "unload",
+				})
+				c.Abort()
+				return
+			}
 			c.Next()
 			return
 		}

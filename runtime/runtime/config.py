@@ -84,6 +84,8 @@ class RuntimeConfig:
             if splits is None:
                 splits = tuple(1.0 for _ in range(self.tensor_parallel))
             args.extend(["-ts", ",".join(str(s) for s in splits)])
+            # c84b302+ llama-server: params_fit aborts on SPLIT_MODE_TENSOR; layer split still uses -ts.
+            args.extend(["-fit", "off"])
         try:
             args.extend(llama_server_args_for(self.speculative))
         except ValueError:
