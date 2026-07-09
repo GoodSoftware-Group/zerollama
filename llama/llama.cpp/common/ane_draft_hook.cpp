@@ -163,11 +163,19 @@ void common_ane_draft_reset_handoff(void) {
 }
 
 void common_ane_draft_note_handoff_token(llama_token tok) {
+#if defined(__APPLE__)
     g_dflash_handoff_token = tok;
+#else
+    (void) tok;
+#endif
 }
 
 llama_token common_ane_draft_last_handoff_token(void) {
+#if defined(__APPLE__)
     return g_dflash_handoff_token;
+#else
+    return LLAMA_TOKEN_NULL;
+#endif
 }
 
 #if defined(__APPLE__)
@@ -4327,6 +4335,7 @@ void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
 
     const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
     if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
+#if defined(__APPLE__)
         if (ane_drive_metrics_hidden_only()) {
             LOG_INF("%s: B7 drive mode=shadow metrics=hidden — matmul gate cosine only (skip tied-embed argmax)\n", __func__);
         } else {
@@ -4334,6 +4343,9 @@ void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
                     __func__,
                     drive == COMMON_ANE_DRAFT_DRIVE_FORCE ? "force" : "shadow");
         }
+#else
+        LOG_INF("%s: B7 drive mode requested but ANE is Apple-only — ignoring on this platform\n", __func__);
+#endif
     }
 }
 
@@ -4489,6 +4501,11 @@ static void ane_handoff_eval_done(bool ok) {
 #endif
 
 void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32_t i_batch) {
+#if !defined(__APPLE__)
+    (void) ctx_dft;
+    (void) i_batch;
+    return;
+#else
     if (!common_ane_draft_enabled() || !ane_draft_session_ready() || !ctx_dft) {
         return;
     }
@@ -4553,7 +4570,6 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
         pack_len = llama_model_n_embd(llama_get_model(src_ctx));
     }
 
-#if defined(__APPLE__)
     const bool use_async_eval = ane_draft_session_eval_async_enabled() &&
                                 common_ane_draft_get_drive_mode() == COMMON_ANE_DRAFT_DRIVE_OFF;
     if (use_async_eval) {
@@ -4633,11 +4649,5 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
     } else {
         LOG_DBG("%s: step=%d handoff+eval ok\n", __func__, step);
     }
-#else
-    GGML_UNUSED(step);
-    GGML_UNUSED(log_info);
-    GGML_UNUSED(emb);
-    GGML_UNUSED(pack_len);
-    LOG_WRN("%s: handoff skipped (not Apple platform)\n", __func__);
 #endif
 }

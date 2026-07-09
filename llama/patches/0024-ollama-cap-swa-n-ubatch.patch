@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 9 Jul 2026 13:25:00 -0700
+Subject: [PATCH] ollama: cap n_ubatch for SWA CUDA decode safety
+
+gemma4 (and other SWA/iswa models) hit CUDA illegal access during the
+first sample after a physical ubatch larger than ~256 tokens. Reproduced
+on RTX 4090 with -ub 288+ (SUM_ROWS / MUL_MAT); -ub 256 is stable for
+both short (~326) and long (~8k) prompts. Cap before llama_init_from_model
+so graph reservation matches runtime.
+
+---
+diff --git a/common/common.cpp b/common/common.cpp
+index 5a3591930..61e0cfdf6 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1284,6 +1284,18 @@ common_init_result::common_init_result(common_params & params) :
+         }
+     }
+ 
++    // SWA / iswa (gemma4, etc.): CUDA illegal access during decode when a single
++    // physical ubatch exceeds ~256 tokens (SUM_ROWS / MUL_MAT on the last chunk).
++    // Reproduced with -ub 288+ on RTX 4090; -ub 256 is stable. Cap before context
++    // creation so graph reservation matches runtime decode.
++    constexpr int32_t k_swa_safe_n_ubatch = 256;
++    if (llama_model_n_swa(model) > 0 && !params.swa_full && cparams.n_ubatch > k_swa_safe_n_ubatch) {
++        LOG_WRN("%s: capping n_ubatch (%d -> %d): SWA CUDA decode is unsafe with larger ubatches\n",
++                __func__, cparams.n_ubatch, k_swa_safe_n_ubatch);
++        cparams.n_ubatch = k_swa_safe_n_ubatch;
++        params.n_ubatch  = k_swa_safe_n_ubatch;
++    }
++
+     llama_context * lctx = llama_init_from_model(model, cparams);
+     if (lctx == NULL) {
+         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
