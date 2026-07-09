@@ -135,9 +135,14 @@ def estimate_gguf_ram_bytes(gguf: Path) -> int:
     from runtime.env import vram_ram_overhead
     from runtime.gguf_estimate import gguf_weight_bytes
 
-    weights = gguf_weight_bytes(gguf)
-    base = weights if weights is not None else gguf.stat().st_size
-    return int(base * vram_ram_overhead())
+    if not isinstance(gguf, Path):
+        gguf = Path(gguf)
+    try:
+        weights = gguf_weight_bytes(gguf)
+        base = weights if weights is not None else gguf.stat().st_size
+        return int(base * vram_ram_overhead())
+    except (OSError, TypeError, ValueError):
+        return 0
 
 
 def host_ram_margin() -> float:

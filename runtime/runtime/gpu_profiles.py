@@ -512,9 +512,16 @@ def apply_profile_to_config(
 ) -> None:
     """Mutate RuntimeConfig fields from a selected profile."""
     flags = profile.flags
+    yaml_slots = int(getattr(config, "llama_parallel_slots", 4) or 4)
     n_par = flags.get("n_parallel")
     if n_par is not None:
-        config.llama_parallel_slots = max(1, int(n_par))  # type: ignore[attr-defined]
+        slots = max(1, int(n_par))
+        tp = int(getattr(config, "tensor_parallel", 1) or 1)
+        if tp > 1:
+            # Profile n_parallel targets single-GPU VRAM; split KV across tensor-parallel ranks.
+            slots = max(1, slots // tp)
+        # Host YAML caps slots for multi-GPU topologies (dual_4090.yaml → 4).
+        config.llama_parallel_slots = min(slots, yaml_slots)  # type: ignore[attr-defined]
 
     sm = flags.get("split_mode")
     if sm and config.tensor_parallel <= 1:  # type: ignore[attr-defined]

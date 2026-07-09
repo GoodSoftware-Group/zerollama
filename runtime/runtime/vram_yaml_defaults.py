@@ -37,10 +37,41 @@ def _load_vram_block(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+# YAML ``serve:`` keys → env (Go + runtime share topology YAML).
+_SERVE_ENV_MAP: tuple[tuple[str, str], ...] = (
+    ("llama_fork", "ZEROLLAMA_LLAMA_FORK"),
+)
+
+
+def _load_serve_block(path: Path) -> dict[str, Any]:
+    from runtime.config import _load_yaml
+
+    raw = _load_yaml(path).get("serve")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _apply_yaml_env_block(
+    block: dict[str, Any],
+    mapping: tuple[tuple[str, str], ...],
+    result: dict[str, Any],
+) -> None:
+    for yaml_key, env_key in mapping:
+        if yaml_key not in block:
+            continue
+        if os.environ.get(env_key, "").strip():
+            result["skipped"].append(env_key)
+            continue
+        value = block[yaml_key]
+        if value is None:
+            continue
+        os.environ[env_key] = str(value).strip()
+        result["applied"].append(env_key)
+
+
 def apply_vram_defaults_from_config(
     config_path: Path | None = None, *, force: bool = False
 ) -> dict[str, Any]:
-    """Set ``ZEROLLAMA_RUNTIME_*`` from YAML ``vram:`` when not already in env."""
+    """Set runtime env from YAML ``vram:`` and ``serve:`` when not already in env."""
     global _APPLIED, _APPLY_RESULT
     if _APPLIED and not force and _APPLY_RESULT is not None:
         return dict(_APPLY_RESULT)
@@ -58,24 +89,16 @@ def apply_vram_defaults_from_config(
         _APPLY_RESULT = result
         return dict(result)
 
-    block = _load_vram_block(config_path)
-    if not block:
-        result["reason"] = "no_vram_block"
+    vram_block = _load_vram_block(config_path)
+    serve_block = _load_serve_block(config_path)
+    if not vram_block and not serve_block:
+        result["reason"] = "no_vram_or_serve_block"
         _APPLIED = True
         _APPLY_RESULT = result
         return dict(result)
 
-    for yaml_key, env_key in _VRAM_ENV_MAP:
-        if yaml_key not in block:
-            continue
-        if os.environ.get(env_key, "").strip():
-            result["skipped"].append(env_key)
-            continue
-        value = block[yaml_key]
-        if value is None:
-            continue
-        os.environ[env_key] = str(value).strip()
-        result["applied"].append(env_key)
+    _apply_yaml_env_block(vram_block, _VRAM_ENV_MAP, result)
+    _apply_yaml_env_block(serve_block, _SERVE_ENV_MAP, result)
 
     _APPLIED = True
     _APPLY_RESULT = result

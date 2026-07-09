@@ -6,6 +6,9 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/ml"
 )
 
 const specDraftBackendSamplingFlag = "--spec-draft-backend-sampling"
@@ -63,4 +66,27 @@ func appendSpecDraftBackendSamplingArg(params []string, serverBin string) []stri
 // resetLlamaServerHelpCache clears cached help text (tests only).
 func resetLlamaServerHelpCache() {
 	llamaServerHelpCache = sync.Map{}
+}
+
+func launchFlashAttentionMode(launch llamaServerLaunchConfig) ml.FlashAttentionType {
+	enabled := envconfig.FlashAttention(false)
+	userSet := enabled == envconfig.FlashAttention(true)
+	if userSet {
+		if enabled {
+			return ml.FlashAttentionEnabled
+		}
+		return ml.FlashAttentionDisabled
+	}
+	return LlamaServerFlashAttention(launch.gpus)
+}
+
+func appendFlashAttentionArgsForLaunch(params []string, launch llamaServerLaunchConfig) []string {
+	switch launchFlashAttentionMode(launch) {
+	case ml.FlashAttentionEnabled:
+		return append(params, "--flash-attn", "on")
+	case ml.FlashAttentionDisabled:
+		return append(params, "--flash-attn", "off")
+	default:
+		return append(params, "--flash-attn", "auto")
+	}
 }

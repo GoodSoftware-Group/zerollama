@@ -448,6 +448,63 @@ void server_tokens::keep_first(size_t n) {
     tokens.resize(n);
 }
 
+bool server_tokens::truncate_to_limit(size_t limit, size_t n_keep) {
+    if (tokens.size() <= limit) {
+        return false;
+    }
+    if (n_keep > limit) {
+        n_keep = limit;
+    }
+
+    size_t discard   = tokens.size() - limit;
+    size_t cut_start = n_keep;
+    size_t cut_end   = n_keep + discard;
+
+    if (has_mtmd) {
+        bool expanded = true;
+        while (expanded) {
+            expanded = false;
+            for (const auto & [idx, chunk] : map_idx_to_media) {
+                (void) chunk;
+                size_t chunk_end = idx;
+                while (chunk_end + 1 < tokens.size() && tokens[chunk_end + 1] == LLAMA_TOKEN_NULL) {
+                    chunk_end++;
+                }
+                if (cut_start <= chunk_end && cut_end > idx) {
+                    cut_start = std::min(cut_start, idx);
+                    cut_end   = std::max(cut_end, chunk_end + 1);
+                    expanded  = true;
+                }
+            }
+        }
+    }
+
+    llama_tokens new_tokens;
+    new_tokens.reserve(limit);
+    new_tokens.insert(new_tokens.end(), tokens.begin(), tokens.begin() + (ptrdiff_t) cut_start);
+    new_tokens.insert(new_tokens.end(), tokens.begin() + (ptrdiff_t) cut_end, tokens.end());
+
+    if (new_tokens.size() > limit) {
+        new_tokens.resize(limit);
+    }
+
+    if (has_mtmd) {
+        std::map<size_t, mtmd::input_chunk_ptr> new_map;
+        const size_t removed = cut_end - cut_start;
+        for (auto & [idx, chunk] : map_idx_to_media) {
+            if (idx < cut_start) {
+                new_map[idx] = std::move(chunk);
+            } else if (idx >= cut_end) {
+                new_map[idx - removed] = std::move(chunk);
+            }
+        }
+        map_idx_to_media = std::move(new_map);
+    }
+
+    tokens = std::move(new_tokens);
+    return true;
+}
+
 std::string server_tokens::detokenize(const llama_context * ctx, bool special) const {
     llama_tokens text_tokens;
     text_tokens.reserve(tokens.size());

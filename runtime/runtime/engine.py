@@ -889,6 +889,22 @@ class InferenceEngine:
                 loaded_ctx=loaded_ctx,
             )
             return self._server
+        if self._server is not None and not self._server.is_running():
+            crash = getattr(self._server, "_exit_code", None)
+            if crash not in (None, 0):
+                from runtime.infer_trace import infer_trace
+
+                infer_trace(
+                    "engine.reload",
+                    reason="subprocess_crash",
+                    resolved=str(resolved),
+                    exit_code=crash,
+                )
+                self._stop_server()
+                self.config.llama_model = resolved
+                self._server = self._create_llama_worker(resolved)
+                self.coordinator.set_unload_hook(self._stop_server)
+                proc_alive = False
         if not self._server.is_running():
             from runtime.infer_trace import infer_trace
 
@@ -997,7 +1013,10 @@ class InferenceEngine:
         )
         from runtime.host_memory import host_ram_budget_snapshot
 
-        host_ram = host_ram_budget_snapshot(resolved)
+        try:
+            host_ram = host_ram_budget_snapshot(resolved)
+        except (OSError, TypeError, ValueError):
+            host_ram = None
         if host_ram is not None:
             if budget is None:
                 budget = {}

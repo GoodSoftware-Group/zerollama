@@ -11,7 +11,6 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
-#include "llama-dflash-export.h"
 #include "llama.h"
 
 namespace {
@@ -38,7 +37,6 @@ bool check_and_clear_resized_kv(llama_memory_i * memory) {
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
-#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -471,15 +469,14 @@ void llama_context::sched_reserve() {
 
     LLAMA_LOG_DEBUG("%s: worst-case: n_tokens = %d, n_seqs = %d, n_outputs = %d\n", __func__, n_tokens, n_seqs, n_outputs);
 
-    // resolve automatic Flash Attention use
-    if (cparams.auto_fa) {
+    // resolve automatic Flash Attention use, and validate forced FA on multi-GPU
+    const auto check_flash_attn_devices = [&]() -> bool {
         auto * gf = graph_reserve(1, n_seqs, n_outputs, mctx.get(), true);
         if (!gf) {
             throw std::runtime_error("failed to reserve graph for Flash Attention check");
         }
 
         const size_t prefix_len = strlen(LLAMA_TENSOR_NAME_FATTN) + 1;
-        bool fa_device_mismatch = false;
         for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
             ggml_tensor * n = ggml_graph_node(gf, i);
             if (n->op != GGML_OP_FLASH_ATTN_EXT) {
@@ -496,20 +493,28 @@ void llama_context::sched_reserve() {
                         "is assigned to device %s (usually due to missing support)\n",
                         __func__, il, ggml_backend_dev_name(device_kv), ggml_backend_dev_name(device_fa));
                 // FIXME: fa_device_mismatch logic is wrong for --no-kv-offload, but this is broken anyways
-                fa_device_mismatch = true;
-                break;
+                return false;
             }
         }
 
-        if (fa_device_mismatch) {
-            cparams.flash_attn = false;
-            LLAMA_LOG_WARN("%s: Flash Attention was auto, set to disabled\n", __func__);
-        } else {
+        return true;
+    };
+
+    if (cparams.auto_fa) {
+        if (check_flash_attn_devices()) {
             cparams.flash_attn = true;
             LLAMA_LOG_INFO("%s: Flash Attention was auto, set to enabled\n", __func__);
+        } else {
+            cparams.flash_attn = false;
+            LLAMA_LOG_WARN("%s: Flash Attention was auto, set to disabled\n", __func__);
         }
 
         cparams.auto_fa = false;
+    } else if (cparams.flash_attn && model.n_devices() > 1) {
+        if (!check_flash_attn_devices()) {
+            cparams.flash_attn = false;
+            LLAMA_LOG_WARN("%s: Flash Attention disabled: FA/KV device mismatch on multi-GPU\n", __func__);
+        }
     }
 
     if (cparams.auto_fgdn) {
@@ -933,35 +938,6 @@ float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
     }
 }
 
-float * llama_context::get_dflash_target_features_ith(int32_t i) {
-    output_reorder();
-
-    try {
-        if (dflash_target_feat.data == nullptr) {
-            throw std::runtime_error("no dflash target features");
-        }
-
-        const int64_t j = output_resolve_row(i);
-        const uint32_t n_feat = cparams.dflash_export.n_target_features;
-        if (n_feat == 0) {
-            throw std::runtime_error("dflash export disabled");
-        }
-        return dflash_target_feat.data + j*n_feat;
-    } catch (const std::exception & err) {
-        LLAMA_LOG_ERROR("%s: invalid dflash target features id %d, reason: %s\n", __func__, i, err.what());
-#ifndef NDEBUG
-        GGML_ABORT("fatal error");
-#else
-        return nullptr;
-#endif
-    }
-}
-
-ggml_tensor * llama_context::get_dflash_target_features() {
-    synchronize();
-    return t_dflash_target_features;
-}
-
 llama_token llama_context::get_sampled_token_ith(int32_t idx) {
     output_reorder();
 
@@ -1146,67 +1122,6 @@ void llama_context::set_embeddings_pre_norm(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
     cparams.embeddings_pre_norm = value;
-}
-
-void llama_context::set_dflash_target_export(const llama_model * draft_model) {
-    cparams.dflash_export = {};
-    t_dflash_target_features = nullptr;
-    dflash_target_feat = { nullptr, 0 };
-    if (!draft_model || draft_model->arch != LLM_ARCH_DFLASH_DRAFT) {
-        return;
-    }
-    const uint32_t n_layers = draft_model->hparams.dflash_n_target_layers;
-    const uint32_t n_feat   = draft_model->hparams.dflash_n_target_features;
-    if (n_layers == 0 || n_feat == 0) {
-        return;
-    }
-    cparams.dflash_export.enabled           = true;
-    cparams.dflash_export.n_target_features = n_feat;
-    cparams.dflash_export.n_target_layers   = std::min(n_layers, (uint32_t) LLAMA_DFLASH_MAX_TARGET_LAYERS);
-    for (uint32_t i = 0; i < cparams.dflash_export.n_target_layers; ++i) {
-        cparams.dflash_export.target_layer_ids[i] = draft_model->hparams.dflash_target_layer_ids[i];
-    }
-    cparams.embeddings_pre_norm = true;
-    sched_need_reserve = true;
-}
-
-bool llama_context::cross_has_v_embd() const {
-    return cross.n_embd > 0 && cross.n_enc > 0 && !cross.v_embd.empty();
-}
-
-int32_t llama_context::cross_n_enc() const {
-    return (int32_t) cross.n_enc;
-}
-
-int32_t llama_context::cross_row(int32_t pos, float * dst, int32_t dst_cap) const {
-    if (!dst || dst_cap <= 0 || pos < 0) {
-        return 0;
-    }
-    if (cross.n_embd <= 0 || cross.v_embd.empty() || pos >= cross.n_enc) {
-        return 0;
-    }
-    const int32_t n_copy = (int32_t) std::min((int64_t) dst_cap, cross.n_embd);
-    const float * row = cross.v_embd.data() + (size_t) pos * (size_t) cross.n_embd;
-    std::memcpy(dst, row, (size_t) n_copy * sizeof(float));
-    return n_copy;
-}
-
-void llama_context::cross_upsert_row(int32_t pos, const float * src, int32_t n_feat) {
-    if (!src || n_feat <= 0 || pos < 0) {
-        return;
-    }
-    if (cross.n_embd != n_feat) {
-        cross.n_embd = n_feat;
-    }
-    const int64_t need_enc = (int64_t) pos + 1;
-    if (cross.n_enc < need_enc) {
-        cross.n_enc = need_enc;
-    }
-    cross.v_embd.resize((size_t) cross.n_embd * (size_t) cross.n_enc, 0.f);
-    std::memcpy(
-            cross.v_embd.data() + (size_t) pos * (size_t) cross.n_embd,
-            src,
-            (size_t) n_feat * sizeof(float));
 }
 
 void llama_context::set_causal_attn(bool value) {
@@ -1486,8 +1401,6 @@ int llama_context::encode(const llama_batch & batch_inp) {
     auto * t_logits        = res->get_logits();
     auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
     auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
-    auto * t_dflash_feat   = llama_dflash_export_enabled(cparams.dflash_export) ? res->get_dflash_target_features() : nullptr;
-    t_dflash_target_features = t_dflash_feat;
 
     // extract logits
     if (logits.data && t_logits) {
@@ -1561,17 +1474,6 @@ int llama_context::encode(const llama_batch & batch_inp) {
         const uint32_t n_embd = hparams.n_embd;
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_pre_norm.size);
         ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm.data, 0, n_tokens*n_embd*sizeof(float));
-    }
-
-    if (dflash_target_feat.data && t_dflash_feat && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
-        const uint32_t n_feat = cparams.dflash_export.n_target_features;
-        GGML_ASSERT(n_tokens*(int64_t)n_feat <= (int64_t) dflash_target_feat.size);
-        ggml_backend_t backend_df = ggml_backend_sched_get_tensor_backend(sched.get(), t_dflash_feat);
-        if (backend_df != nullptr) {
-            ggml_backend_tensor_get_async(backend_df, t_dflash_feat, dflash_target_feat.data, 0, n_tokens*n_feat*sizeof(float));
-        } else if (t_dflash_feat->buffer != nullptr) {
-            ggml_backend_tensor_get(t_dflash_feat, dflash_target_feat.data, 0, n_tokens*n_feat*sizeof(float));
-        }
     }
 
     // TODO: hacky solution
@@ -1933,8 +1835,6 @@ int llama_context::decode(const llama_batch & batch_inp) {
         auto * t_logits        = res->get_logits();
         auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
         auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
-        auto * t_dflash_feat   = llama_dflash_export_enabled(cparams.dflash_export) ? res->get_dflash_target_features() : nullptr;
-        t_dflash_target_features = t_dflash_feat;
 
         if (t_embd && res->get_embd_pooled()) {
             t_embd = res->get_embd_pooled();
@@ -2029,20 +1929,6 @@ int llama_context::decode(const llama_batch & batch_inp) {
             ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_outputs*n_embd*sizeof(float));
         }
 
-        if (dflash_target_feat.data && t_dflash_feat && n_outputs > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
-            const uint32_t n_feat = cparams.dflash_export.n_target_features;
-            float * dflash_out = dflash_target_feat.data + n_outputs_prev*n_feat;
-
-            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-            GGML_ASSERT((n_outputs_prev + n_outputs)*(int64_t)n_feat <= (int64_t) dflash_target_feat.size);
-            ggml_backend_t backend_df = ggml_backend_sched_get_tensor_backend(sched.get(), t_dflash_feat);
-            if (backend_df != nullptr) {
-                ggml_backend_tensor_get_async(backend_df, t_dflash_feat, dflash_out, 0, n_outputs*n_feat*sizeof(float));
-            } else if (t_dflash_feat->buffer != nullptr) {
-                ggml_backend_tensor_get(t_dflash_feat, dflash_out, 0, n_outputs*n_feat*sizeof(float));
-            }
-        }
-
         // Copy backend sampling output if this ubatch produced any sampling tensors.
         if (has_samplers && (!res->t_sampled.empty() || !res->t_sampled_probs.empty() || !res->t_sampled_logits.empty())) {
             const auto seq_to_output_row = build_seq_to_output_row(ubatch, n_outputs_prev);
@@ -2133,7 +2019,6 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     bool has_logits        = true;
     bool has_embd          = cparams.embeddings;
     bool has_embd_pre_norm = cparams.embeddings_pre_norm;
-    bool has_dflash_target = llama_dflash_export_enabled(cparams.dflash_export);
 
     // TODO: hacky enc-dec support
     if (model.arch == LLM_ARCH_T5) {
@@ -2148,7 +2033,6 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     logits.size        = has_logits        ? n_vocab*n_outputs_max     : 0;
     embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
     embd_pre_norm.size = has_embd_pre_norm ? n_embd*n_outputs_max      : 0;
-    dflash_target_feat.size = has_dflash_target ? (size_t) cparams.dflash_export.n_target_features * (size_t) n_outputs_max : 0;
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
@@ -2164,7 +2048,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
     const size_t new_size  =
-        (logits.size + embd.size + embd_pre_norm.size + dflash_target_feat.size + backend_float_count) * sizeof(float) +
+        (logits.size + embd.size + embd_pre_norm.size + backend_float_count) * sizeof(float) +
         (                                               backend_token_count) * sizeof(llama_token);
 
     // alloc only when more than the current capacity is required
@@ -2182,7 +2066,6 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
             logits.data = nullptr;
             embd.data = nullptr;
             embd_pre_norm.data = nullptr;
-            dflash_target_feat.data = nullptr;
         }
 
         auto * buft = ggml_backend_cpu_buffer_type();
@@ -2213,9 +2096,6 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     embd_pre_norm = has_embd_pre_norm ? buffer_view<float>{(float *) (base + offset), embd_pre_norm.size} : buffer_view<float>{nullptr, 0};
     offset += embd_pre_norm.size * sizeof(float);
-
-    dflash_target_feat = has_dflash_target ? buffer_view<float>{(float *) (base + offset), dflash_target_feat.size} : buffer_view<float>{nullptr, 0};
-    offset += dflash_target_feat.size * sizeof(float);
 
     if (has_sampling) {
         sampling.logits = {(float *) (base + offset), (size_t)(n_vocab*n_outputs_max)};
@@ -3725,32 +3605,6 @@ float * llama_get_embeddings_pre_norm_ith(llama_context * ctx, int32_t i) {
     return ctx->get_embeddings_pre_norm_ith(i);
 }
 
-bool llama_context_cross_has_v_embd(const llama_context * ctx) {
-    return ctx && ctx->cross_has_v_embd();
-}
-
-int32_t llama_context_cross_row(
-        const llama_context * ctx,
-        int32_t pos,
-        float * dst,
-        int32_t dst_cap) {
-    return ctx ? ctx->cross_row(pos, dst, dst_cap) : 0;
-}
-
-void llama_context_cross_upsert_row(
-        llama_context * ctx,
-        int32_t pos,
-        const float * src,
-        int32_t n_feat) {
-    if (ctx) {
-        ctx->cross_upsert_row(pos, src, n_feat);
-    }
-}
-
-int32_t llama_context_cross_n_enc(const llama_context * ctx) {
-    return ctx ? ctx->cross_n_enc() : 0;
-}
-
 bool llama_set_sampler(llama_context * ctx, llama_seq_id seq_id, llama_sampler * smpl) {
     return ctx->set_sampler(seq_id, smpl);
 }
@@ -4155,25 +4009,4 @@ void llama_opt_epoch(
 
 llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx) {
     return ctx->memory_breakdown();
-}
-
-struct ggml_tensor * llama_get_dflash_target_features(llama_context * ctx) {
-    if (!ctx) {
-        return nullptr;
-    }
-    return ctx->get_dflash_target_features();
-}
-
-float * llama_get_dflash_target_features_ith(llama_context * ctx, int32_t i) {
-    if (!ctx) {
-        return nullptr;
-    }
-    ctx->synchronize();
-    return ctx->get_dflash_target_features_ith(i);
-}
-
-void llama_set_dflash_target_export(llama_context * ctx_tgt, const llama_model * draft_model) {
-    if (ctx_tgt) {
-        ctx_tgt->set_dflash_target_export(draft_model);
-    }
 }

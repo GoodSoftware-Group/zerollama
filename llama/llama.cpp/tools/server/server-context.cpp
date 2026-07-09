@@ -23,6 +23,50 @@
 #include <filesystem>
 #include <utility>
 
+namespace {
+
+static uint64_t estimate_mmproj_file_bytes(const char * path) {
+    llama_model_params mp = llama_model_default_params();
+    mp.no_alloc  = true;
+    mp.use_mmap  = false;
+    mp.use_mlock = false;
+
+    llama_model * model = llama_model_load_from_file(path, mp);
+    if (model == nullptr) {
+        return 0;
+    }
+
+    const uint64_t size = llama_model_size(model);
+    llama_model_free(model);
+    return size;
+}
+
+static bool mmproj_vram_fits(uint64_t mmproj_bytes, size_t headroom) {
+    if (mmproj_bytes == 0) {
+        return true;
+    }
+
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
+        if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            continue;
+        }
+
+        size_t free  = 0;
+        size_t total = 0;
+        ggml_backend_dev_memory(dev, &free, &total);
+        (void) total;
+        if (free >= mmproj_bytes + headroom) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
 // fix problem with std::min and std::max
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -928,6 +972,17 @@ private:
             mparams.image_max_tokens = params_base.image_max_tokens;
             mparams.media_marker     = get_media_marker();
 
+            if (mparams.use_gpu) {
+                constexpr size_t mmproj_headroom = 1u << 30; // 1 GiB, matches ollama go headroom
+                const uint64_t mmproj_bytes = estimate_mmproj_file_bytes(mmproj_path.c_str());
+                if (mmproj_bytes > 0 && !mmproj_vram_fits(mmproj_bytes, mmproj_headroom)) {
+                    SRV_WRN("disabling mmproj GPU offload: projector needs ~%.0f MiB + 1 GiB headroom, insufficient free VRAM\n",
+                            mmproj_bytes / (1024.0 * 1024.0));
+                    mparams.use_gpu          = false;
+                    params_base.mmproj_use_gpu = false;
+                }
+            }
+
             mctx = mtmd_init_from_file(mmproj_path.c_str(), model_tgt, mparams);
             if (mctx == nullptr) {
                 SRV_ERR("failed to load multimodal model, '%s'\n", mmproj_path.c_str());
@@ -1434,6 +1489,20 @@ private:
         if (!task.tokens.validate(ctx_tgt)) {
             send_error(task, "Prompt contains invalid tokens", ERROR_TYPE_INVALID_REQUEST);
             return false;
+        }
+
+        const size_t prompt_limit = slot.n_ctx > 0 ? (size_t) slot.n_ctx - 1 : 0;
+        if (prompt_limit > 0 && task.tokens.size() > prompt_limit) {
+            int n_keep = task.params.n_keep < 0 ? (int) task.tokens.size() : task.params.n_keep;
+            if (add_bos_token) {
+                n_keep += 1;
+            }
+            n_keep = std::min((int) prompt_limit, n_keep);
+            const size_t orig = task.tokens.size();
+            if (task.tokens.truncate_to_limit(prompt_limit, (size_t) n_keep)) {
+                SLT_WRN(slot, "prompt truncated from %zu to %zu tokens to fit context\n", orig, prompt_limit);
+                slot.truncated = true;
+            }
         }
 
         SLT_DBG(slot, "launching slot : %s\n", safe_json_to_str(slot.to_json()).c_str());

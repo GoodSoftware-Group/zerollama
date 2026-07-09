@@ -206,12 +206,30 @@ def test_runtime_config_applies_profile_by_name(monkeypatch):
     cfg = RuntimeConfig.from_file(path)
     assert cfg.gpu_profile is not None
     assert cfg.gpu_profile["id"] == "rtx-4090"
-    assert cfg.llama_parallel_slots == 8
+    assert cfg.llama_parallel_slots == 1  # single_gpu.yaml caps profile n_parallel=8
     args = cfg.llama_server_args()
     assert "-fa" in args
     assert "--cache-type-k" in args
     assert cfg.speculative.draft_n_max == 24
     assert "--mlock" not in args
+
+
+def test_runtime_config_dual_4090_caps_parallel_slots(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_GPU_PROFILE", "1")
+    monkeypatch.setattr(
+        "runtime.gpu_profiles.detect_nvidia_gpu_name",
+        lambda device_index=0: "NVIDIA GeForce RTX 4090",
+    )
+    monkeypatch.setattr(
+        "runtime.gpu_profiles.detect_gpu_total_vram_gb",
+        lambda device_index=0: 24.0,
+    )
+    path = Path(__file__).resolve().parents[1] / "configs" / "dual_4090.yaml"
+    cfg = RuntimeConfig.from_file(path)
+    assert cfg.gpu_profile is not None
+    assert cfg.tensor_parallel == 2
+    # 4090 profile n_parallel=8 → 8//2=4, capped by dual_4090.yaml llama_parallel_slots=4
+    assert cfg.llama_parallel_slots == 4
 
 
 def test_runtime_config_skips_profile_ctx_via_env(monkeypatch):
@@ -246,7 +264,7 @@ def test_runtime_config_applies_apple_profile(monkeypatch):
     assert cfg.gpu_profile["bucket_label"] == "128g"
     assert cfg.gpu_profile.get("kv_num_blocks") == 8192
     assert cfg.num_blocks == 8192
-    assert cfg.llama_parallel_slots == 8
+    assert cfg.llama_parallel_slots == 1  # apple_silicon.yaml caps profile n_parallel
     args = cfg.llama_server_args()
     assert "-fa" in args
     assert "-c" in args and "131072" in args

@@ -16,7 +16,7 @@ func GgmlClampNumCtxEnabled() bool {
 	switch v {
 	case "0", "false", "no", "off":
 		return false
-	case "1", "true", "yes", "on":
+	case "1", "true", "yes", "on", "auto":
 		return true
 	default:
 		slog.Warn("invalid ZEROLLAMA_GGML_CLAMP_NUM_CTX; treating as off", "value", v)

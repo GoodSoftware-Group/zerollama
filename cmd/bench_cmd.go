@@ -182,6 +182,56 @@ func benchUnloadModel(client *api.Client, modelName string, timeout time.Duratio
 	_ = client.Generate(ctx, req, func(api.GenerateResponse) error { return nil })
 }
 
+func benchUnloadAllLoaded(ctx context.Context, client *api.Client, timeout time.Duration) {
+	// WHY unload every /api/ps entry: OOM or partial load can leave a different tag resident than lastBenched.
+	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	resp, err := client.ListRunning(listCtx)
+	cancel()
+	if err != nil || len(resp.Models) == 0 {
+		return
+	}
+	per := timeout / time.Duration(len(resp.Models))
+	if per < 30*time.Second {
+		per = 30 * time.Second
+	}
+	for _, m := range resp.Models {
+		name := m.Name
+		if name == "" {
+			name = m.Model
+		}
+		if name == "" {
+			continue
+		}
+		benchUnloadModel(client, name, per)
+	}
+	_ = benchWaitUnloaded(ctx, client, timeout)
+}
+
+func benchWaitUnloaded(ctx context.Context, client *api.Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastCount int
+	for time.Now().Before(deadline) {
+		listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		resp, err := client.ListRunning(listCtx)
+		cancel()
+		if err == nil {
+			if len(resp.Models) == 0 {
+				return nil
+			}
+			lastCount = len(resp.Models)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if lastCount > 0 {
+		return fmt.Errorf("%d model(s) still loaded after %s", lastCount, timeout)
+	}
+	return fmt.Errorf("unload wait timed out after %s", timeout)
+}
+
 func benchWaitServer(ctx context.Context, client *api.Client, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
@@ -316,13 +366,16 @@ func runBench(cmd *cobra.Command, args []string) error {
 		err     error
 	}
 	results := make([]result, 0, len(models))
-	var lastBenched string
+
+	if numCtx > 0 {
+		fmt.Fprintf(os.Stderr, "bench num_ctx=%d (use --num-ctx to override)\n", numCtx)
+	}
 
 	for _, m := range models {
 		kind := benchModelKind(m)
 
-		if lastBenched != "" && kind != benchKindVideoGen {
-			benchUnloadModel(client, lastBenched, genTimeout)
+		if kind != benchKindVideoGen {
+			benchUnloadAllLoaded(cmd.Context(), client, genTimeout)
 			_ = benchWaitServer(cmd.Context(), client, 30*time.Second)
 		}
 
@@ -355,7 +408,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", m.Name, err)
 			results = append(results, result{name: m.Name, kind: kind, err: err})
 			if kind != benchKindVideoGen {
-				benchUnloadModel(client, m.Name, genTimeout)
+				benchUnloadAllLoaded(cmd.Context(), client, 120*time.Second)
 				_ = benchWaitServer(cmd.Context(), client, 120*time.Second)
 			}
 			continue
@@ -364,7 +417,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 		if br.rate <= 0 {
 			fmt.Fprintf(os.Stderr, "warning: %s: no valid tok/s metrics\n", m.Name)
 			results = append(results, result{name: m.Name, kind: kind, err: fmt.Errorf("invalid metrics")})
-			benchUnloadModel(client, m.Name, genTimeout)
+			benchUnloadAllLoaded(cmd.Context(), client, genTimeout)
 			continue
 		}
 
@@ -387,14 +440,9 @@ func runBench(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "%s  %s\n", m.Name, perf)
 		}
 		results = append(results, result{name: m.Name, kind: kind, perf: perf, partial: br.partial})
-		if kind != benchKindVideoGen {
-			lastBenched = m.Name
-		}
 	}
 
-	if lastBenched != "" {
-		benchUnloadModel(client, lastBenched, genTimeout)
-	}
+	benchUnloadAllLoaded(cmd.Context(), client, genTimeout)
 
 	var tableData [][]string
 	for _, r := range results {

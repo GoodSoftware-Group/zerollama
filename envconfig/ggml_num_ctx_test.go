@@ -15,6 +15,10 @@ func TestGgmlClampNumCtxEnabled(t *testing.T) {
 	if GgmlClampNumCtxEnabled() {
 		t.Fatal("expected off")
 	}
+	t.Setenv("ZEROLLAMA_GGML_CLAMP_NUM_CTX", "auto")
+	if !GgmlClampNumCtxEnabled() {
+		t.Fatal("expected on for auto")
+	}
 }
 
 func TestGgmlSuggestCtxMaxCap(t *testing.T) {

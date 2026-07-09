@@ -62,6 +62,7 @@ func ApplyServeBackendEnv(opts ServeBackendOpts) {
 	}
 	ApplyLlamaCppBackendDefaults()
 	ApplyLlamaServerBackendDefaults()
+	ApplyHardwareLaneDefaults()
 }
 
 // applyEdgeBuildServeDefault enables Phase 16 edge env when built with -tags edge /

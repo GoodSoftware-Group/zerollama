@@ -39,12 +39,20 @@ class GgufArchHints:
         return self.scalar[key]
 
 
+def _read_exact(f, n: int) -> bytes:
+    """Read exactly *n* bytes or raise (corrupt/truncated GGUF)."""
+    data = f.read(n)
+    if not isinstance(data, (bytes, bytearray)) or len(data) != n:
+        raise EOFError(f"gguf short read: wanted {n} bytes")
+    return bytes(data)
+
+
 def _read_u32(f) -> int:
-    return struct.unpack("<I", f.read(4))[0]
+    return struct.unpack("<I", _read_exact(f, 4))[0]
 
 
 def _read_u64(f) -> int:
-    return struct.unpack("<Q", f.read(8))[0]
+    return struct.unpack("<Q", _read_exact(f, 8))[0]
 
 
 def _read_string(f) -> str:
@@ -152,7 +160,7 @@ def _parse_gguf_arch_hints(path: Path) -> GgufArchHints:
                     continue
                 if isinstance(val, int):
                     _hint_from_gguf_key(key, val, scalar)
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, struct.error, TypeError, EOFError):
         pass
     return GgufArchHints(
         scalar=scalar,
@@ -569,7 +577,7 @@ def gguf_file_tensor_region_bytes(path: Path) -> int | None:
             if tensor_offset >= size:
                 return None
             return size - tensor_offset
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, struct.error, TypeError, EOFError):
         return None
 
 
@@ -611,7 +619,7 @@ def gguf_tensor_infos(path: Path) -> list[GgufTensorInfo] | None:
                     )
                 )
             return out
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, struct.error, TypeError, EOFError):
         return None
 
 

@@ -151,6 +151,7 @@ type llamaServerLaunchConfig struct {
 	gpuLibs              []string
 	extraEnvs            map[string]string
 	forceNoMMProjOffload bool
+	ggufKV               ggml.KV // raw GGUF KV for feature detection
 }
 
 func newLlamaServerHTTPClient() *http.Client {
@@ -724,7 +725,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 		params = append(params, "--cache-type-k", launch.kvCacheType, "--cache-type-v", launch.kvCacheType)
 	}
 
-	params = appendFlashAttentionArgs(params, launch.gpus)
+	params = appendFlashAttentionArgsForLaunch(params, launch)
 
 	params = appendBatchArgs(params, launch.opts, launch.embedding, launch.numParallel)
 
@@ -1262,6 +1263,7 @@ func NewLlamaServerRunner(
 		gpus:        slices.Clone(gpus),
 		gpuLibs:     slices.Clone(gpuLibs),
 		extraEnvs:   cloneStringMap(serverEnvs),
+		ggufKV:      f.KV(),
 	}
 
 	s := &llamaServerRunner{

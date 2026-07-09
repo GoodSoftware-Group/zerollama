@@ -227,6 +227,11 @@ public:
 
     void keep_first(size_t n);
 
+    // truncate an oversized prompt by discarding tokens from the middle while
+    // keeping the first n_keep tokens and enough suffix to fit limit.
+    // Returns true if tokens were truncated. Media chunks are never split.
+    bool truncate_to_limit(size_t limit, size_t n_keep);
+
     std::string detokenize(const llama_context * ctx, bool special) const;
 
     size_t get_common_prefix(const server_tokens & b) const;
