@@ -13,8 +13,8 @@ from runtime.llama_patch_health import (
 
 def test_list_patch_files_includes_required():
     names = list_patch_files()
-    assert any("0014-ollama-llama-kv-ext" in n for n in names)
-    assert any("0017-ollama-kv-seq-copy-endpoint" in n for n in names)
+    assert any("ollama-llama-kv-ext" in n for n in names)
+    assert any("ollama-kv-seq-copy-endpoint" in n for n in names)
 
 
 def test_in_tree_seq_copy_markers_present():
@@ -36,7 +36,9 @@ def test_llama_patch_health_external_binary(tmp_path: Path, monkeypatch):
     (repo / "Makefile.sync").write_text(
         "FETCH_HEAD=abc\nFETCH_REF=abc123\nBUILD_NUMBER=1\n", encoding="utf-8"
     )
-    ext_bin = Path("/usr/local/lib/ollama/llama-server")
+    ext_bin = tmp_path / "external" / "llama-server"
+    ext_bin.parent.mkdir(parents=True)
+    ext_bin.write_bytes(b"\0")
     monkeypatch.setattr(
         "runtime.llama_patch_health.resolve_llama_server_bin",
         lambda _root=None: str(ext_bin),
@@ -55,7 +57,6 @@ def test_llama_patch_health_external_binary(tmp_path: Path, monkeypatch):
     )
     report = llama_patch_health(repo)
     assert report["deployment_mode"] == "external_binary"
-    assert report["status"] == "pass"
     assert report["status"] == "pass", report.get("issues")
     assert report["llama_server_binary_seq_copy"] is False
 
@@ -65,7 +66,7 @@ def test_llama_patch_health_fails_missing_in_tree(tmp_path: Path, monkeypatch):
     repo = tmp_path / "zerollama"
     (repo / "llama" / "patches").mkdir(parents=True)
     (repo / "llama" / "patches" / "0014-ollama-llama-kv-ext.patch").write_text("x\n")
-    (repo / "llama" / "patches" / "0017-ollama-kv-seq-copy-endpoint.patch").write_text("x\n")
+    (repo / "llama" / "patches" / "0018-ollama-kv-seq-copy-endpoint.patch").write_text("x\n")
     (repo / "Makefile.sync").write_text(
         "FETCH_HEAD=abc\nFETCH_REF=abc123\nBUILD_NUMBER=1\n", encoding="utf-8"
     )

@@ -1,12 +1,12 @@
-# Unified llama.cpp vendor sync (elizaOS base + Ollama patches).
+# Unified llama.cpp vendor sync (ggml-org master + Ollama/zerollama patches).
 # Runtime sibling and in-process ggml share LLAMA_CPP_COMMIT.
-UPSTREAM=https://github.com/elizaOS/llama.cpp.git
-WORKDIR=vendor/llama-cpp-c84b3020
-FETCH_HEAD=c84b3020
+UPSTREAM=https://github.com/ggml-org/llama.cpp.git
+WORKDIR=vendor/llama-cpp-8f114a9b
+FETCH_HEAD=8f114a9b
 # Full git ref for checkout / rev-list (see repo-root LLAMA_CPP_COMMIT).
-FETCH_REF=c84b30200c8d512c00c9d61c96bed078f1c0024d
-# build-info.cpp int field (symbolic id for unified pin; not ggml-org tag number).
-BUILD_NUMBER=8430220
+FETCH_REF=8f114a9b573b69035299f9b924047f53c1e22c7e
+# build-info.cpp int field (past latest tag b9951 on master tip).
+BUILD_NUMBER=9952
 
 # WHY sync order matters: build-info.cpp only stamps FETCH_HEAD/BUILD_NUMBER via sed.
 # If rsync from vendor/ is skipped, binaries report the new pin while in-tree
@@ -15,7 +15,7 @@ BUILD_NUMBER=8430220
 #
 # WHY `make sync` does NOT run `checkout`: `checkout` resets vendor/ to bare
 # FETCH_REF and destroys Ollama patch commits before rsync — you would ship an
-# unpatch tree while build-info still says c84b3020. Use:
+# unpatch tree while build-info still says ad56033f. Use:
 #   make -f Makefile.sync clean apply-patches   # once per pin bump
 #   ./scripts/sync_vendor_llama.sh              # after every vendor edit
 # `make sync` is a thin alias for the script (no git checkout).
