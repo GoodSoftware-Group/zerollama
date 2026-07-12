@@ -297,6 +297,19 @@ write/read sites in the file either write into a local `std::vector` (safe) or r
 sites were found. Re-verified chains 14, 15, 16, and 17 all pass the token-shadow smoke test
 cleanly after this hardening pass.
 
+**Extended coverage (Jul 12, same day, evening):** ran an additional 18 back-to-back chain-17
+`--token-shadow --quick` runs on `eliza-1-27b-256k-dflash` (10 at default chain probing which
+resolved to chain 8, 8 with `ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=17` forced explicitly) — all 26/26
+completed cleanly (`ok: true`, exit 0) across this and the prior verification pass, 0 crashes.
+Attempted to add `eliza-1-2b-dflash` as a second model for shape-independent coverage, but it
+fails at server load time on an unrelated pre-existing assertion
+(`speculative.cpp:1001: GGML_ASSERT(target_layer_ids_n > 0 && "DFlash model has no
+target_layer_ids")` — this model's sidecar metadata lacks `target_layer_ids`, so it can't reach
+the dflash draft path at all, chain 17 or otherwise. Not a regression from this fix; out of scope
+for this bug. The smoke harness has no prompt/seed knobs (fixed prompt "Write a short poem about
+apples.", no seed param), so coverage variety on this model is currently limited to chain depth
+(11-17) and `--quick` vs full-length token budget.
+
 ### (Historical) investigation notes below, kept for the record
 
 **Symptom:** `eliza-1-27b-256k-dflash` chain 17 (`ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=17`) with
