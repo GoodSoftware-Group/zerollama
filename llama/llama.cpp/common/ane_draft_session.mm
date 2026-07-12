@@ -3691,6 +3691,8 @@ bool ane_draft_session_dflash_chain17_active(void) {
     return g_session.matmulActive && g_session.dflashChain17Active;
 }
 
+static bool ane_session_ensure_out_buf(size_t new_bytes);
+
 bool ane_draft_session_eval_dflash_attn_wo(void) {
     if ((!g_session.dflashChain14Active && !g_session.dflashChain15Active && !g_session.dflashChain16Active && !g_session.dflashChain17Active) || !g_session.kernel5 || !g_session.outBuf) {
         return false;
@@ -3717,6 +3719,9 @@ bool ane_draft_session_eval_dflash_attn_wo(void) {
         return false;
     }
     const size_t wo_bytes = (size_t) oc5 * (size_t) seq * sizeof(float);
+    if (!ane_session_ensure_out_buf(wo_bytes)) {
+        return false;
+    }
     ane_bridge_read_output(g_session.kernel5, 0, g_session.outBuf, wo_bytes);
     g_session.outIoBytes = wo_bytes;
     g_session.stepCount++;
@@ -3752,17 +3757,13 @@ bool ane_draft_session_eval_dflash_ffn_gate(void) {
     const size_t gate_bytes = (size_t) oc6 * (size_t) seq * sizeof(float);
     // P71: outBuf was sized for the previous step's row-dim (e.g. attn_wo's oc5=n_embd), which
     // for dflash chains is almost always smaller than ffn_gate's oc6 (n_embd -> ffn intermediate,
-    // e.g. 5120 -> 17408). Every other step in this chain that changes the output row-dim
-    // (see ffn_up_swiglu_down's ffn_down write) grows outBuf first; this one didn't — a real heap
-    // buffer overflow (~3.4x the allocation for chain 17's shapes), consistent with the FAR
-    // fault-address pattern seen across tonight's crashes (see docs/ane-draft-inprocess.md).
-    if (gate_bytes > g_session.outIoBytes) {
-        float * grown = (float *) calloc((size_t) oc6 * (size_t) seq, sizeof(float));
-        if (!grown) {
-            return false;
-        }
-        free(g_session.outBuf);
-        g_session.outBuf = grown;
+    // e.g. 5120 -> 17408). This step used to write directly without growing outBuf first — a real
+    // heap buffer overflow (~3.4x the allocation for chain 17's shapes), consistent with the FAR
+    // fault-address pattern seen across the original crash investigation (see
+    // docs/ane-draft-inprocess.md). Now routed through ane_session_ensure_out_buf() like every
+    // other row-dim-changing write in this file.
+    if (!ane_session_ensure_out_buf(gate_bytes)) {
+        return false;
     }
     if (g_session.dflashFfnHostFp32 && g_session.matmul6W &&
         g_session.matmul6WCount >= (size_t) ic6 * (size_t) oc6) {
@@ -3837,14 +3838,8 @@ bool ane_draft_session_eval_dflash_ffn_up_swiglu_down(void) {
     }
 
     const size_t down_bytes = (size_t) oc_down * (size_t) seq * sizeof(float);
-    if (down_bytes > g_session.outIoBytes) {
-        if (g_session.outBuf) {
-            free(g_session.outBuf);
-        }
-        g_session.outBuf = (float *) calloc((size_t) oc_down * (size_t) seq, sizeof(float));
-        if (!g_session.outBuf) {
-            return false;
-        }
+    if (!ane_session_ensure_out_buf(down_bytes)) {
+        return false;
     }
     ane_host_matmul_seq(swiglu.data(), ic_down, oc_down, seq, g_session.matmul10W, g_session.outBuf);
     g_session.outIoBytes = down_bytes;
@@ -3928,6 +3923,27 @@ bool ane_draft_session_eval_dflash_attn_post_norm(void) {
             g_session.outBuf[(size_t) i * (size_t) seq + (size_t) s] = hidden[(size_t) i];
         }
     }
+    return true;
+}
+
+// P71 hardening: g_session.outBuf is reused across every eval step in a dflash chain, resized
+// on demand as the row-dim changes step to step (e.g. n_embd -> ffn intermediate -> n_embd).
+// INVARIANT: any code that is about to write `new_bytes` worth of floats into outBuf MUST call
+// this first — do not `calloc`/`free` outBuf ad hoc or assume it is already big enough because a
+// same-named session field (matmulNOc, etc.) "should" match. A missing check here was the root
+// cause of the P70/P71 chain-17 SIGSEGV investigation (see docs/ane-draft-inprocess.md): the
+// ffn_gate step wrote 17408*seq floats into an outBuf still sized for the prior 5120*seq step, a
+// ~3.4x heap overflow. Returns false (and leaves outBuf untouched) only on allocation failure.
+static bool ane_session_ensure_out_buf(size_t new_bytes) {
+    if (new_bytes <= g_session.outIoBytes && g_session.outBuf) {
+        return true;
+    }
+    float * grown = (float *) calloc(new_bytes > 0 ? new_bytes : 1, 1);
+    if (!grown) {
+        return false;
+    }
+    free(g_session.outBuf);
+    g_session.outBuf = grown;
     return true;
 }
 

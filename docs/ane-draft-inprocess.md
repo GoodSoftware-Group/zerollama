@@ -280,6 +280,23 @@ Metal-completion-queue/timing "fixes" attempted earlier in this investigation (d
 residency-heartbeat pause, post-sync sleep) are harmless no-ops now that the actual corruption is
 fixed, and are left in the tree as defensive/perf changes, but were never the real fix.
 
+**Follow-up hardening (Jul 12, same day):** audited every `g_session.outBuf` write site across
+all dflash chains (11–17), not just the one that crashed, for the same missing-grow-check bug
+class. Found one more latent (not yet observed to trigger) instance:
+`ane_draft_session_eval_dflash_attn_wo()` wrote `oc5 * seq` floats into `outBuf` with no
+size check — currently safe in practice because `oc5` is a fixed session field that happens to
+always match the prior step's ending size for chains 14–17, but nothing enforces that invariant,
+so a future chain reordering/addition could silently reintroduce the same overflow. Hardened it
+with the same grow-check. Also introduced a shared helper,
+`static bool ane_session_ensure_out_buf(size_t new_bytes)`, and refactored all three grow-check
+call sites (`attn_wo`, `ffn_gate`, `ffn_up_swiglu_down`'s `ffn_down` write) to use it instead of
+duplicating the `calloc`/`free` pattern inline — **any new dflash step that writes a
+differently-sized row into `outBuf` should call this helper first.** All other `outBuf`
+write/read sites in the file either write into a local `std::vector` (safe) or read/write using
+`g_session.outIoBytes`/`ioBytes` (the already-current size, self-consistent), so no other overflow
+sites were found. Re-verified chains 14, 15, 16, and 17 all pass the token-shadow smoke test
+cleanly after this hardening pass.
+
 ### (Historical) investigation notes below, kept for the record
 
 **Symptom:** `eliza-1-27b-256k-dflash` chain 17 (`ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=17`) with
