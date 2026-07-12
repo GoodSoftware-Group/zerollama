@@ -1,0 +1,1011 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 10 Jul 2026 00:51:25 -0700
+Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
+
+---
+ include/llama-kv-ext.h                        | 245 ++++++++
+ src/CMakeLists.txt                            |   7 +
+ src/llama-kv-cache.h                          |  46 +-
+ src/llama-memory-kv-ext.cpp                   | 553 ++++++++++++++++++
+ .../llama-ollama-compat-util.cpp              |   1 +
+ src/ollama-compat/llama-ollama-compat-util.h  |   1 +
+ src/ollama-compat/llama-ollama-compat.cpp     |   1 +
+ src/ollama-compat/llama-ollama-compat.h       |   1 +
+ tools/mtmd/CMakeLists.txt                     |   2 +
+ 9 files changed, 843 insertions(+), 14 deletions(-)
+ create mode 100644 include/llama-kv-ext.h
+ create mode 100644 src/llama-memory-kv-ext.cpp
+ create mode 120000 src/ollama-compat/llama-ollama-compat-util.cpp
+ create mode 120000 src/ollama-compat/llama-ollama-compat-util.h
+ create mode 120000 src/ollama-compat/llama-ollama-compat.cpp
+ create mode 120000 src/ollama-compat/llama-ollama-compat.h
+
+diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
+new file mode 100644
+index 000000000..32705a314
+--- /dev/null
++++ b/include/llama-kv-ext.h
+@@ -0,0 +1,245 @@
++#pragma once
++
++/*
++ * Staging C API for zerollama Phase 15 v20 — external PA page bind onto llama KV cells.
++ *
++ * WHY separate from llama.h: cell-index and tensor introspection are not stable upstream
++ * yet; zerollama links this when built with ZEROLLAMA_KV_DECODE_LOOP=1.
++ */
++
++#include "llama.h"
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define LLAMA_KV_EXT_OK           0
++#define LLAMA_KV_EXT_UNSUPPORTED -1
++#define LLAMA_KV_EXT_NOT_FOUND   -2
++#define LLAMA_KV_EXT_ARG         -3
++
++typedef struct llama_kv_cell_bind {
++    llama_pos  pos;
++    uint32_t   cell_idx;
++    uint32_t   stream;
++} llama_kv_cell_bind;
++
++typedef struct llama_kv_tensor_info {
++    int32_t  layer;
++    uint64_t k_data;
++    uint64_t v_data;
++    uint64_t k_size_bytes;
++    uint64_t v_size_bytes;
++    int32_t  ok;
++} llama_kv_tensor_info;
++
++/* Resolved attn KV view behind llama_memory_t (for operator / probe visibility). */
++typedef enum llama_kv_ext_mem_kind {
++    LLAMA_KV_EXT_MEM_NONE = 0,
++    LLAMA_KV_EXT_MEM_KV_CACHE,
++    LLAMA_KV_EXT_MEM_ISWA_BASE,
++    LLAMA_KV_EXT_MEM_HYBRID_ATTN,
++    LLAMA_KV_EXT_MEM_HYBRID_ISWA_BASE,
++    LLAMA_KV_EXT_MEM_UNSUPPORTED,
++} llama_kv_ext_mem_kind;
++
++/* Classify memory; returns LLAMA_KV_EXT_UNSUPPORTED for recurrent-only layouts. */
++LLAMA_API int32_t llama_memory_kv_ext_classify(
++        llama_memory_t         mem,
++        llama_kv_ext_mem_kind * out_kind);
++
++/* Resolve llama KV cell index for one (seq_id, pos). */
++LLAMA_API int32_t llama_memory_kv_cell_for_pos(
++        llama_memory_t mem,
++        llama_seq_id   seq_id,
++        llama_pos      pos,
++        uint32_t *     out_cell_idx,
++        uint32_t *     out_stream);
++
++/*
++ * Fill out[] with cell bindings for positions [pos_start, pos_end).
++ * out_count receives the number written on success.
++ */
++LLAMA_API int32_t llama_memory_kv_cell_map_range(
++        llama_memory_t       mem,
++        llama_seq_id         seq_id,
++        llama_pos            pos_start,
++        llama_pos            pos_end,
++        llama_kv_cell_bind * out,
++        uint32_t             out_cap,
++        uint32_t *           out_count);
++
++/* Read-only K/V tensor backing store for one KV layer (kv layer index, not model layer).
++ * stream is the per-sequence stream index from llama_kv_cell_bind.stream.
++ * Pass 0 for single-stream (n_stream==1) contexts. */
++LLAMA_API int32_t llama_memory_kv_tensor_info(
++        llama_memory_t         mem,
++        int32_t                kv_layer,
++        uint32_t               stream,
++        llama_kv_tensor_info * out);
++
++/*
++ * Number of KV layers in the resolved attn cache.
++ * WHY needed: models with per-layer K/V scaling, MLA, or split-device offload may
++ * allocate different tensor shapes per layer; verifying only layer 0 would silently
++ * pass the tensor bind probe while deeper layers are unmapped. Callers should loop
++ * 0..out_n-1 and fail the bind if any layer returns NOT_FOUND or UNSUPPORTED.
++ */
++LLAMA_API int32_t llama_memory_kv_n_layers(
++        llama_memory_t mem,
++        uint32_t *     out_n);
++
++/*
++ * Cache-level layout constants for the resolved attn KV.
++ * WHY v_transposed: non-FA caches store V tokens at dim-1 cell positions but with
++ * embedding values interleaved across n_embd_v_gqa rows at row stride kv_size.
++ * A page-map consumer must check v_transposed before choosing its access pattern:
++ *   v_transposed=0 (FA)    : V is [n_embd, n_cells] — contiguous per-cell buffer.
++ *   v_transposed=1 (non-FA): V is [n_embd rows × kv_size cols] — scatter/gather required.
++ * This struct is a cache constant; query it once rather than inferring from tensor dims.
++ */
++typedef struct llama_kv_cache_layout {
++    uint32_t kv_size;        /* total cell slots in the KV cache */
++    uint32_t n_stream;       /* per-sequence stream count (== llama_parallel_slots) */
++    int32_t  v_transposed;   /* 1 when V uses transposed cell indexing (non-FA) */
++    int32_t  ok;
++} llama_kv_cache_layout;
++
++/* Resolve cache-level layout constants (kv_size, n_stream, v_transposed). */
++LLAMA_API int32_t llama_memory_kv_cache_layout(
++        llama_memory_t         mem,
++        llama_kv_cache_layout * out);
++
++/*
++ * Writable span for one PA page mapped onto llama KV cells.
++ * Call llama_memory_kv_page_map() once per (page, layer) pair to fan out the bind
++ * across all KV layers (v34+). All layers share the same cell_idx layout; only the
++ * tensor base pointers (k_data, v_data) differ.
++ *
++ * IMPORTANT — v_transposed semantics (v35):
++ *   v_transposed=0 (Flash Attention): V cells are contiguous.
++ *     v_data..v_data+v_span_bytes is a flat [n_cells × n_embd_v_gqa] buffer.
++ *   v_transposed=1 (non-FA, default): V cells are scattered across rows.
++ *     v_data is the start of the cell block in dim-1, but each cell's embedding
++ *     is split across n_embd_v_gqa rows at row stride kv_size.
++ *     Do NOT memcpy v_span_bytes as a flat cell buffer — use scatter/gather.
++ *
++ * v_data is 0 (and v_span_bytes is 0) for MLA models where the V cache is absent.
++ */
++typedef struct llama_kv_page_map {
++    llama_pos  pos_start;
++    llama_pos  pos_end;          /* exclusive */
++    uint32_t   n_cells;
++    uint32_t   cell_idx_first;
++    uint32_t   cell_idx_last;
++    uint32_t   stream;
++    uint64_t   k_data;           /* writable base for contiguous K cell span */
++    uint64_t   v_data;           /* writable base for V cells; 0 for MLA (no V) */
++    uint64_t   k_span_bytes;
++    uint64_t   v_span_bytes;     /* byte extent; interpret with v_transposed flag */
++    int32_t    kv_layer;
++    int32_t    v_transposed;     /* 1 when V requires scatter/gather (non-FA) */
++    int32_t    ok;
++} llama_kv_page_map;
++
++/*
++ * Resolve writable K/V tensor spans for one PA page on one KV layer.
++ * Covers token positions [seq_pos_min + page_index*block_size, +block_size).
++ * Returns LLAMA_KV_EXT_NOT_FOUND when the page has no live cells yet.
++ *
++ * WHY per-layer: v34 fan-out calls this once per (page, kv_layer) pair.
++ * All layers share the same cell_idx layout; kv_data pointers differ.
++ * WHY multi-stream guard: cells belonging to different streams cannot form a
++ * contiguous physical page; callers should always map positions from one stream.
++ */
++LLAMA_API int32_t llama_memory_kv_page_map(
++        llama_memory_t     mem,
++        llama_seq_id       seq_id,
++        llama_pos          seq_pos_min,
++        uint32_t           page_index,
++        uint32_t           block_size,
++        int32_t            kv_layer,
++        llama_kv_page_map * out);
++
++/*
++ * Probe whether writable cross-allocator PA→tensor page bind is available.
++ * out_available: 1 when staging or upstream writable page-map API is linked.
++ * out_api_name: detected API name (e.g. "llama_memory_kv_page_map") or "none".
++ */
++LLAMA_API int32_t llama_memory_kv_ext_writable_bind_probe(
++        int32_t  * out_available,
++        char     * out_api_name,
++        uint32_t   name_cap);
++
++/*
++ * Phase 15 v47 — external PA buffer alias staging (probe + validate; no tensor mutation).
++ *
++ * WHY separate from page_map: page_map discovers llama-owned spans; alias_validate
++ * checks whether external pool pointers can zero-copy alias those spans without copy.
++ * True ggml allocator overlay bind remains a follow-on slice; v47 only classifies feasibility.
++ */
++typedef enum llama_kv_ext_alias_mode {
++    LLAMA_KV_EXT_ALIAS_NONE = 0,
++    LLAMA_KV_EXT_ALIAS_SAME_POINTER,    /* ext ptrs already match llama page_map targets */
++    LLAMA_KV_EXT_ALIAS_HOST_REBASE,     /* host tensors; full-tensor rebase feasible (staging) */
++    LLAMA_KV_EXT_ALIAS_BLOCKED_DEVICE,  /* KV tensors on non-host buffer (Metal/CUDA) */
++    LLAMA_KV_EXT_ALIAS_BLOCKED_V_TRANS, /* non-FA V layout blocks flat external alias */
++    LLAMA_KV_EXT_ALIAS_BLOCKED_SPAN,    /* ext byte spans != llama page_map spans */
++    LLAMA_KV_EXT_ALIAS_BLOCKED_NO_PAGE, /* page_map failed (no live cells / misaligned page) */
++    LLAMA_KV_EXT_ALIAS_BLOCKED_UNSUPPORTED, /* recurrent-only / unsupported memory layout */
++} llama_kv_ext_alias_mode;
++
++typedef struct llama_kv_ext_external_alias_probe {
++    int32_t available;    /* 1 when LLAMA_KV_EXT_EXTERNAL_ALIAS is linked */
++    int32_t validate_api; /* 1 when llama_memory_kv_page_alias_validate is linked */
++    char    api_name[64];
++} llama_kv_ext_external_alias_probe;
++
++/* Static/build probe — no live ctx required. */
++LLAMA_API int32_t llama_memory_kv_ext_external_alias_probe(
++        llama_kv_ext_external_alias_probe * out);
++
++typedef struct llama_kv_page_alias_plan {
++    int32_t  ok;
++    int32_t  alias_ready;       /* 1 when zero-copy alias is feasible now (SAME_POINTER) */
++    int32_t  alias_mode;        /* llama_kv_ext_alias_mode */
++    int32_t  buffer_host;       /* llama K tensor on host ggml buffer */
++    int32_t  k_spans_match;
++    int32_t  v_spans_match;
++    int32_t  k_same_pointer;
++    int32_t  v_same_pointer;
++    int32_t  v_transposed;
++    uint64_t llama_k_data;
++    uint64_t llama_v_data;
++    uint64_t k_span_bytes;
++    uint64_t v_span_bytes;
++    char     blocker[128];
++} llama_kv_page_alias_plan;
++
++/*
++ * Validate external K/V pointers against llama_memory_kv_page_map geometry.
++ * Does not mutate tensors — feasibility check only.
++ *
++ * alias_ready=1 only when ext pointers exactly match llama page_map targets
++ * (SAME_POINTER). HOST_REBASE is reported when host spans match but pointers
++ * differ; callers must not treat that as alias_ready until overlay bind ships.
++ */
++LLAMA_API int32_t llama_memory_kv_page_alias_validate(
++        llama_memory_t            mem,
++        llama_seq_id              seq_id,
++        llama_pos                 seq_pos_min,
++        uint32_t                  page_index,
++        uint32_t                  block_size,
++        int32_t                   kv_layer,
++        uint64_t                  ext_k_data,
++        uint64_t                  ext_k_span_bytes,
++        uint64_t                  ext_v_data,
++        uint64_t                  ext_v_span_bytes,
++        llama_kv_page_alias_plan * out);
++
++#ifdef __cplusplus
++}
++#endif
++
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 320784c3a..ebb3a1cd3 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -30,6 +30,7 @@ add_library(llama
+             llama-memory-hybrid.cpp
+             llama-memory-hybrid-iswa.cpp
+             llama-memory-recurrent.cpp
++            llama-memory-kv-ext.cpp
+             llama-mmap.cpp
+             llama-model-loader.cpp
+             llama-model-saver.cpp
+@@ -39,6 +40,8 @@ add_library(llama
+             llama-vocab.cpp
+             unicode-data.cpp
+             unicode.cpp
++            ollama-compat/llama-ollama-compat.cpp
++            ollama-compat/llama-ollama-compat-util.cpp
+             unicode.h
+             ${LLAMA_MODELS_SOURCES}
+             )
+@@ -50,6 +53,7 @@ set_target_properties(llama PROPERTIES
+ )
+ 
+ target_include_directories(llama PRIVATE .)
++target_include_directories(llama PRIVATE ollama-compat)
+ target_include_directories(llama PUBLIC ../include)
+ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+ 
+@@ -58,5 +62,8 @@ target_link_libraries(llama PUBLIC ggml)
+ if (BUILD_SHARED_LIBS)
+     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
+     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
++target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1)
+     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
+ endif()
++# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
++target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index 531d99dbd..a6a88304d 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -93,12 +93,8 @@ public:
+ 
+     using slot_info_vec_t = std::vector<slot_info>;
+ 
+-    // TODO: refactor the memory instances to not depend on `llama_model`
+-    //       instead pass all necessary info (e.g. hparams, dev layers, arch, etc.) directly
+-    //       likely through `struct llama_memory_params`
+     llama_kv_cache(
+             const llama_model & model,
+-          const llama_hparams & hparams,
+                     ggml_type   type_k,
+                     ggml_type   type_v,
+                          bool   v_trans,
+@@ -109,10 +105,9 @@ public:
+                      uint32_t   n_pad,
+                      uint32_t   n_swa,
+                llama_swa_type   swa_type,
+-               llama_memory_t   mem_other,
+         const layer_filter_cb & filter,
+         const  layer_reuse_cb & reuse,
+-        const  layer_share_cb & share);
++                     uint32_t   kv_size_max = 0);
+ 
+     ~llama_kv_cache() = default;
+ 
+@@ -155,14 +150,24 @@ public:
+ 
+     uint32_t get_size()     const;
+     uint32_t get_n_stream() const;
++    bool     get_v_trans()  const { return v_trans; }
+ 
+     bool get_has_shift() const;
+ 
+     ggml_type type_k() const;
+     ggml_type type_v() const;
+ 
+-    std::vector<uint32_t> get_layer_ids() const;
+-    ggml_tensor * get_k_storage(int32_t il) const;
++    // zerollama Phase 15 v20: external PA page bind helpers (llama-kv-ext.h)
++    int32_t  cell_index_for(llama_seq_id seq_id, llama_pos pos, uint32_t * out_stream = nullptr) const;
++    uint32_t n_kv_layers() const;
++    // stream=0 → full (single-stream) tensor; stream>=1 → per-stream 2D view
++    ggml_tensor * kv_tensor_k(int32_t kv_layer, uint32_t stream = 0) const;
++    ggml_tensor * kv_tensor_v(int32_t kv_layer, uint32_t stream = 0) const;
++
++    // dynamic resize support
++    bool try_resize();
++    void copy_from(const llama_kv_cache & other);
++    bool check_and_clear_resized();
+ 
+     //
+     // graph_build API
+@@ -269,12 +274,7 @@ private:
+     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
+     std::vector<uint32_t> v_heads;
+ 
+-    // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
+-    llama_kv_cache * other;
+-
+-    std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
+-
+-    llama_kv_cells_vec & v_cells;
++    std::vector<llama_kv_cells> v_cells;
+ 
+     // maps from a sequence id to a stream id
+     std::vector<uint32_t> seq_to_stream;
+@@ -284,6 +284,24 @@ private:
+ 
+     std::vector<kv_layer> layers;
+ 
++    // dynamic resize state
++    uint32_t kv_size_cur     = 0;
++    uint32_t kv_size_max_val = 0;
++    bool     was_resized     = false;
++
++    // saved construction parameters (for resize)
++    ggml_type        saved_type_k    = GGML_TYPE_F16;
++    ggml_type        saved_type_v    = GGML_TYPE_F16;
++    bool             saved_v_trans   = true;
++    bool             saved_offload   = true;
++    bool             saved_unified   = false;
++    uint32_t         saved_n_seq_max = 1;
++    uint32_t         saved_n_pad     = 1;
++    uint32_t         saved_n_swa     = 0;
++    llama_swa_type   saved_swa_type  = LLAMA_SWA_TYPE_NONE;
++    layer_filter_cb  saved_filter    = nullptr;
++    layer_reuse_cb   saved_reuse     = nullptr;
++
+     // model layer id -> KV cache layer id
+     std::unordered_map<int32_t, int32_t> map_layer_ids;
+ 
+diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
+new file mode 100644
+index 000000000..d4bef15b4
+--- /dev/null
++++ b/src/llama-memory-kv-ext.cpp
+@@ -0,0 +1,553 @@
++/*
++ * Staging llama.cpp KV cell / tensor introspection for zerollama Phase 15 v20/v31/v47.
++ *
++ * WHY resolve hybrid/iSWA: PA page bind targets attn KV cells. Hybrid and iSWA
++ * models wrap llama_kv_cache (or iswa base cache) — dynamic_cast to the wrapper
++ * alone returned UNSUPPORTED even though get_base()/get_mem_attn() expose the
++ * same cell layout as standard models.
++ *
++ * WHY v47 alias validate: page_map discovers llama-owned spans; external PA pools
++ * must prove zero-copy alias feasibility before v48 overlay bind mutates tensor->data.
++ */
++
++#include "llama-kv-ext.h"
++
++#include "llama-kv-cache.h"
++#include "llama-kv-cache-iswa.h"
++#include "llama-memory-hybrid.h"
++#include "llama-memory-hybrid-iswa.h"
++
++#include "ggml.h"
++#include "ggml-backend.h"
++
++#include <cstdio>
++#include <cstring>
++
++static llama_kv_cache * llama_kv_ext_resolve_cache(
++        llama_memory_t         mem,
++        llama_kv_ext_mem_kind * kind_out) {
++    if (kind_out) {
++        *kind_out = LLAMA_KV_EXT_MEM_NONE;
++    }
++    if (!mem) {
++        return nullptr;
++    }
++
++    if (auto * kv = dynamic_cast<llama_kv_cache *>(mem)) {
++        if (kind_out) {
++            *kind_out = LLAMA_KV_EXT_MEM_KV_CACHE;
++        }
++        return kv;
++    }
++
++    if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(mem)) {
++        /* WHY base cache: holds full-context attn KV; SWA cache is windowed. */
++        if (kind_out) {
++            *kind_out = LLAMA_KV_EXT_MEM_ISWA_BASE;
++        }
++        return iswa->get_base();
++    }
++
++    if (auto * hybrid = dynamic_cast<llama_memory_hybrid *>(mem)) {
++        llama_kv_cache * attn = hybrid->get_mem_attn();
++        if (kind_out) {
++            *kind_out = attn ? LLAMA_KV_EXT_MEM_HYBRID_ATTN : LLAMA_KV_EXT_MEM_UNSUPPORTED;
++        }
++        return attn;
++    }
++
++    if (auto * hybrid_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(mem)) {
++        llama_kv_cache_iswa * attn = hybrid_iswa->get_mem_attn();
++        if (!attn) {
++            if (kind_out) {
++                *kind_out = LLAMA_KV_EXT_MEM_UNSUPPORTED;
++            }
++            return nullptr;
++        }
++        if (kind_out) {
++            *kind_out = LLAMA_KV_EXT_MEM_HYBRID_ISWA_BASE;
++        }
++        return attn->get_base();
++    }
++
++    if (kind_out) {
++        *kind_out = LLAMA_KV_EXT_MEM_UNSUPPORTED;
++    }
++    return nullptr;
++}
++
++int32_t llama_memory_kv_ext_classify(
++        llama_memory_t         mem,
++        llama_kv_ext_mem_kind * out_kind) {
++    if (!out_kind) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    llama_kv_ext_resolve_cache(mem, out_kind);
++    if (*out_kind == LLAMA_KV_EXT_MEM_UNSUPPORTED) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++    if (*out_kind == LLAMA_KV_EXT_MEM_NONE) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    return LLAMA_KV_EXT_OK;
++}
++
++int32_t llama_memory_kv_cell_for_pos(
++        llama_memory_t mem,
++        llama_seq_id   seq_id,
++        llama_pos      pos,
++        uint32_t *     out_cell_idx,
++        uint32_t *     out_stream) {
++    if (!out_cell_idx) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
++    if (!kv) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    const int32_t cell = kv->cell_index_for(seq_id, pos, out_stream);
++    if (cell < 0) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    *out_cell_idx = (uint32_t) cell;
++    return LLAMA_KV_EXT_OK;
++}
++
++int32_t llama_memory_kv_cell_map_range(
++        llama_memory_t       mem,
++        llama_seq_id         seq_id,
++        llama_pos            pos_start,
++        llama_pos            pos_end,
++        llama_kv_cell_bind * out,
++        uint32_t             out_cap,
++        uint32_t *           out_count) {
++    if (!out || !out_count || pos_end <= pos_start) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    const uint32_t need = (uint32_t) (pos_end - pos_start);
++    if (need > out_cap) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
++    if (!kv) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    uint32_t n = 0;
++    for (llama_pos pos = pos_start; pos < pos_end; ++pos) {
++        uint32_t stream = 0;
++        const int32_t cell = kv->cell_index_for(seq_id, pos, &stream);
++        if (cell < 0) {
++            return LLAMA_KV_EXT_NOT_FOUND;
++        }
++        out[n].pos      = pos;
++        out[n].cell_idx = (uint32_t) cell;
++        out[n].stream   = stream;
++        ++n;
++    }
++
++    *out_count = n;
++    return LLAMA_KV_EXT_OK;
++}
++
++static uint64_t llama_kv_ext_tensor_bytes(const ggml_tensor * t) {
++    if (!t) {
++        return 0;
++    }
++    return (uint64_t) ggml_nbytes(t);
++}
++
++int32_t llama_memory_kv_tensor_info(
++        llama_memory_t         mem,
++        int32_t                kv_layer,
++        uint32_t               stream,
++        llama_kv_tensor_info * out) {
++    if (!out) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    std::memset(out, 0, sizeof(*out));
++    out->layer = kv_layer;
++
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
++    if (!kv) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    ggml_tensor * k = kv->kv_tensor_k(kv_layer, stream);
++    ggml_tensor * v = kv->kv_tensor_v(kv_layer, stream);
++    if (!k || !v || !k->data || !v->data) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    out->k_data        = (uint64_t) (uintptr_t) k->data;
++    out->v_data        = (uint64_t) (uintptr_t) v->data;
++    out->k_size_bytes  = llama_kv_ext_tensor_bytes(k);
++    out->v_size_bytes  = llama_kv_ext_tensor_bytes(v);
++    out->ok            = 1;
++    return LLAMA_KV_EXT_OK;
++}
++
++int32_t llama_memory_kv_n_layers(
++        llama_memory_t mem,
++        uint32_t *     out_n) {
++    if (!out_n) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    *out_n = 0;
++
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
++    if (!kv) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    *out_n = kv->n_kv_layers();
++    return LLAMA_KV_EXT_OK;
++}
++
++int32_t llama_memory_kv_cache_layout(
++        llama_memory_t         mem,
++        llama_kv_cache_layout * out) {
++    if (!out) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    std::memset(out, 0, sizeof(*out));
++
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
++    if (!kv) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    out->kv_size      = kv->get_size();
++    out->n_stream     = kv->get_n_stream();
++    out->v_transposed = kv->get_v_trans() ? 1 : 0;
++    out->ok           = 1;
++    return LLAMA_KV_EXT_OK;
++}
++
++static bool llama_kv_ext_cells_contiguous(
++        const llama_kv_cell_bind * cells,
++        uint32_t                   n) {
++    if (n <= 1) {
++        return true;
++    }
++    for (uint32_t i = 1; i < n; ++i) {
++        if (cells[i].cell_idx != cells[i - 1].cell_idx + 1) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static int32_t llama_kv_ext_page_map_contiguous(
++        llama_kv_cache *           kv,
++        ggml_tensor *              k,
++        ggml_tensor *              v,      /* may be null for MLA (no V cache) */
++        const llama_kv_cell_bind * cells,
++        uint32_t                   n_cells,
++        llama_kv_page_map *        out) {
++    if (!kv || !k || !cells || n_cells == 0 || !out) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    if (!k->data) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    const uint64_t kv_size = kv->get_size();
++    if ((uint64_t) k->ne[1] != kv_size) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++    if (v && (uint64_t) v->ne[1] != kv_size) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    if (!llama_kv_ext_cells_contiguous(cells, n_cells)) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    for (uint32_t i = 1; i < n_cells; ++i) {
++        if (cells[i].stream != cells[0].stream) {
++            return LLAMA_KV_EXT_NOT_FOUND;
++        }
++    }
++
++    const uint32_t cell0 = cells[0].cell_idx;
++    const uint32_t cell1 = cells[n_cells - 1].cell_idx;
++    if (cell1 >= kv_size) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    const uint64_t k_off = (uint64_t) cell0 * (uint64_t) k->nb[1];
++    const uint64_t span  = (uint64_t) n_cells * (uint64_t) k->nb[1];
++
++    out->n_cells         = n_cells;
++    out->cell_idx_first  = cell0;
++    out->cell_idx_last   = cell1;
++    out->stream          = cells[0].stream;
++    out->k_data          = (uint64_t) (uintptr_t) ((const char *) k->data + k_off);
++    out->k_span_bytes    = span;
++    out->v_transposed    = kv->get_v_trans() ? 1 : 0;
++
++    if (v && v->data) {
++        const uint64_t v_off  = (uint64_t) cell0 * (uint64_t) v->nb[1];
++        const uint64_t vspan  = (uint64_t) n_cells * (uint64_t) v->nb[1];
++        out->v_data       = (uint64_t) (uintptr_t) ((const char *) v->data + v_off);
++        /* WHY v_span_bytes when v_transposed=1: v->nb[1] is the byte stride between
++         * consecutive cell indices (dim 1 stride). v_off..v_off+vspan covers the
++         * contiguous byte range that holds this cell block's data, but the embedding
++         * values for each cell are NOT laid out contiguously — they are interleaved
++         * across n_embd_v_gqa rows at stride kv_size (see set_input_v_idxs).
++         * Callers must check v_transposed and use the appropriate scatter/gather
++         * pattern; do not memcpy(v_data, vspan) as a flat cell buffer. */
++        out->v_span_bytes = vspan;
++    } else {
++        out->v_data       = 0;
++        out->v_span_bytes = 0;
++    }
++
++    out->ok              = 1;
++    return LLAMA_KV_EXT_OK;
++}
++
++int32_t llama_memory_kv_page_map(
++        llama_memory_t     mem,
++        llama_seq_id       seq_id,
++        llama_pos          seq_pos_min,
++        uint32_t           page_index,
++        uint32_t           block_size,
++        int32_t            kv_layer,
++        llama_kv_page_map * out) {
++    if (!out || block_size == 0 || page_index > 8192) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    std::memset(out, 0, sizeof(*out));
++    out->kv_layer = kv_layer;
++
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, nullptr);
++    if (!kv) {
++        return LLAMA_KV_EXT_UNSUPPORTED;
++    }
++
++    if (kv_layer < 0 || (uint32_t) kv_layer >= kv->n_kv_layers()) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    const llama_pos seq_max = llama_memory_seq_pos_max(mem, seq_id);
++    if (seq_max < 0) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    const llama_pos base = seq_pos_min >= 0 ? seq_pos_min : 0;
++    const llama_pos t0   = base + (llama_pos) page_index * (llama_pos) block_size;
++    llama_pos       t1   = t0 + (llama_pos) block_size;
++    if (t0 > seq_max) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++    if (t1 > seq_max + 1) {
++        t1 = seq_max + 1;
++    }
++    if (t1 <= t0) {
++        return LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    const uint32_t need = (uint32_t) (t1 - t0);
++    if (need > 512) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    llama_kv_cell_bind cells[512];
++    uint32_t n = 0;
++    const int32_t rc = llama_memory_kv_cell_map_range(
++        mem, seq_id, t0, t1, cells, need, &n);
++    if (rc != LLAMA_KV_EXT_OK || n != need) {
++        return rc != LLAMA_KV_EXT_OK ? rc : LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    ggml_tensor * k = kv->kv_tensor_k(kv_layer, cells[0].stream);
++    ggml_tensor * v = kv->kv_tensor_v(kv_layer, cells[0].stream);
++
++    out->pos_start = t0;
++    out->pos_end   = t1;
++
++    return llama_kv_ext_page_map_contiguous(kv, k, v, cells, n, out);
++}
++
++static bool llama_kv_ext_tensor_on_host(const ggml_tensor * t) {
++    if (!t || !t->buffer) {
++        return false;
++    }
++    return ggml_backend_buffer_is_host(t->buffer);
++}
++
++static void llama_kv_ext_alias_set_blocker(
++        llama_kv_page_alias_plan * plan,
++        const char *               msg) {
++    if (!plan || !msg) {
++        return;
++    }
++    std::snprintf(plan->blocker, sizeof(plan->blocker), "%s", msg);
++}
++
++int32_t llama_memory_kv_ext_external_alias_probe(
++        llama_kv_ext_external_alias_probe * out) {
++    if (!out) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    std::memset(out, 0, sizeof(*out));
++#ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
++    out->available    = 1;
++    out->validate_api = 1;
++    std::snprintf(out->api_name, sizeof(out->api_name), "llama_memory_kv_page_alias_validate");
++    return LLAMA_KV_EXT_OK;
++#else
++    std::snprintf(out->api_name, sizeof(out->api_name), "none");
++    return LLAMA_KV_EXT_OK;
++#endif
++}
++
++int32_t llama_memory_kv_page_alias_validate(
++        llama_memory_t            mem,
++        llama_seq_id              seq_id,
++        llama_pos                 seq_pos_min,
++        uint32_t                  page_index,
++        uint32_t                  block_size,
++        int32_t                   kv_layer,
++        uint64_t                  ext_k_data,
++        uint64_t                  ext_k_span_bytes,
++        uint64_t                  ext_v_data,
++        uint64_t                  ext_v_span_bytes,
++        llama_kv_page_alias_plan * out) {
++    if (!out) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    if (block_size == 0 || page_index > 8192) {
++        return LLAMA_KV_EXT_ARG;
++    }
++
++    std::memset(out, 0, sizeof(*out));
++
++#ifndef LLAMA_KV_EXT_EXTERNAL_ALIAS
++    llama_kv_ext_alias_set_blocker(out, "external_alias_api_not_linked");
++    return LLAMA_KV_EXT_UNSUPPORTED;
++#else
++    llama_kv_ext_mem_kind kind = LLAMA_KV_EXT_MEM_NONE;
++    llama_kv_cache * kv = llama_kv_ext_resolve_cache(mem, &kind);
++    if (!kv || kind == LLAMA_KV_EXT_MEM_UNSUPPORTED) {
++        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_UNSUPPORTED;
++        llama_kv_ext_alias_set_blocker(out, "kv_cache_unsupported");
++        out->ok = 1;
++        return LLAMA_KV_EXT_OK;
++    }
++
++    llama_kv_page_map page_map;
++    std::memset(&page_map, 0, sizeof(page_map));
++    const int32_t map_rc = llama_memory_kv_page_map(
++        mem, seq_id, seq_pos_min, page_index, block_size, kv_layer, &page_map);
++    if (map_rc != LLAMA_KV_EXT_OK || !page_map.ok) {
++        out->alias_mode = (map_rc == LLAMA_KV_EXT_UNSUPPORTED)
++            ? LLAMA_KV_EXT_ALIAS_BLOCKED_UNSUPPORTED
++            : LLAMA_KV_EXT_ALIAS_BLOCKED_NO_PAGE;
++        llama_kv_ext_alias_set_blocker(
++            out,
++            map_rc == LLAMA_KV_EXT_UNSUPPORTED ? "kv_cache_unsupported" : "page_map_failed");
++        return map_rc != LLAMA_KV_EXT_OK ? map_rc : LLAMA_KV_EXT_NOT_FOUND;
++    }
++
++    out->llama_k_data   = page_map.k_data;
++    out->llama_v_data   = page_map.v_data;
++    out->k_span_bytes   = page_map.k_span_bytes;
++    out->v_span_bytes   = page_map.v_span_bytes;
++    out->v_transposed   = page_map.v_transposed;
++
++    ggml_tensor * k = kv->kv_tensor_k(kv_layer, page_map.stream);
++    if (!k || !k->data) {
++        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_NO_PAGE;
++        llama_kv_ext_alias_set_blocker(out, "kv_tensor_not_materialized");
++        out->ok = 1;
++        return LLAMA_KV_EXT_OK;
++    }
++    const bool host = llama_kv_ext_tensor_on_host(k);
++    out->buffer_host = host ? 1 : 0;
++
++    out->k_spans_match = (ext_k_span_bytes == page_map.k_span_bytes) ? 1 : 0;
++    const bool v_absent = page_map.v_data == 0 || page_map.v_span_bytes == 0;
++    if (v_absent) {
++        out->v_spans_match = (ext_v_data == 0 && ext_v_span_bytes == 0) ? 1 : 0;
++    } else {
++        out->v_spans_match = (ext_v_span_bytes == page_map.v_span_bytes) ? 1 : 0;
++    }
++
++    out->k_same_pointer = (ext_k_data != 0 && ext_k_data == page_map.k_data) ? 1 : 0;
++    if (v_absent) {
++        out->v_same_pointer = (ext_v_data == 0) ? 1 : 0;
++    } else {
++        out->v_same_pointer = (ext_v_data != 0 && ext_v_data == page_map.v_data) ? 1 : 0;
++    }
++
++    if (!out->k_spans_match || !out->v_spans_match) {
++        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_SPAN;
++        llama_kv_ext_alias_set_blocker(out, "ext_span_mismatch");
++        out->ok = 1;
++        return LLAMA_KV_EXT_OK;
++    }
++
++    if (!host) {
++        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_DEVICE;
++        llama_kv_ext_alias_set_blocker(out, "kv_tensors_on_device_buffer");
++        out->ok = 1;
++        return LLAMA_KV_EXT_OK;
++    }
++
++    if (page_map.v_transposed && !v_absent) {
++        out->alias_mode = LLAMA_KV_EXT_ALIAS_BLOCKED_V_TRANS;
++        llama_kv_ext_alias_set_blocker(out, "v_transposed_scatter_gather_required");
++        out->ok = 1;
++        return LLAMA_KV_EXT_OK;
++    }
++
++    if (out->k_same_pointer && out->v_same_pointer) {
++        out->alias_mode  = LLAMA_KV_EXT_ALIAS_SAME_POINTER;
++        out->alias_ready = 1;
++        out->ok          = 1;
++        return LLAMA_KV_EXT_OK;
++    }
++
++    out->alias_mode = LLAMA_KV_EXT_ALIAS_HOST_REBASE;
++    llama_kv_ext_alias_set_blocker(out, "host_rebase_overlay_bind_not_implemented");
++    out->ok = 1;
++    return LLAMA_KV_EXT_OK;
++#endif /* LLAMA_KV_EXT_EXTERNAL_ALIAS */
++}
++
++int32_t llama_memory_kv_ext_writable_bind_probe(
++        int32_t  * out_available,
++        char     * out_api_name,
++        uint32_t   name_cap) {
++    if (!out_available) {
++        return LLAMA_KV_EXT_ARG;
++    }
++    *out_available = 0;
++    if (out_api_name && name_cap > 0) {
++        out_api_name[0] = '\0';
++    }
++
++#ifdef LLAMA_KV_EXT_WRITABLE_PAGE_MAP
++    *out_available = 1;
++    if (out_api_name && name_cap > 0) {
++        std::snprintf(out_api_name, name_cap, "llama_memory_kv_page_map");
++    }
++    return LLAMA_KV_EXT_OK;
++#else
++    if (out_api_name && name_cap > 0) {
++        std::snprintf(out_api_name, name_cap, "none");
++    }
++    return LLAMA_KV_EXT_OK;
++#endif
++}
+diff --git a/src/ollama-compat/llama-ollama-compat-util.cpp b/src/ollama-compat/llama-ollama-compat-util.cpp
+new file mode 120000
+index 000000000..916a18ff8
+--- /dev/null
++++ b/src/ollama-compat/llama-ollama-compat-util.cpp
+@@ -0,0 +1 @@
++/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat-util.cpp
+\ No newline at end of file
+diff --git a/src/ollama-compat/llama-ollama-compat-util.h b/src/ollama-compat/llama-ollama-compat-util.h
+new file mode 120000
+index 000000000..74c23f92d
+--- /dev/null
++++ b/src/ollama-compat/llama-ollama-compat-util.h
+@@ -0,0 +1 @@
++/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat-util.h
+\ No newline at end of file
+diff --git a/src/ollama-compat/llama-ollama-compat.cpp b/src/ollama-compat/llama-ollama-compat.cpp
+new file mode 120000
+index 000000000..9af5aa24f
+--- /dev/null
++++ b/src/ollama-compat/llama-ollama-compat.cpp
+@@ -0,0 +1 @@
++/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.cpp
+\ No newline at end of file
+diff --git a/src/ollama-compat/llama-ollama-compat.h b/src/ollama-compat/llama-ollama-compat.h
+new file mode 120000
+index 000000000..05760aa00
+--- /dev/null
++++ b/src/ollama-compat/llama-ollama-compat.h
+@@ -0,0 +1 @@
++/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
+\ No newline at end of file
+diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
+index ea684d9f1..1b510fba4 100644
+--- a/tools/mtmd/CMakeLists.txt
++++ b/tools/mtmd/CMakeLists.txt
+@@ -64,6 +64,8 @@ target_link_libraries     (mtmd PRIVATE Threads::Threads)
+ target_include_directories(mtmd PUBLIC  .)
+ target_include_directories(mtmd PRIVATE ../..)
+ target_include_directories(mtmd PRIVATE ../../vendor)
++target_include_directories(mtmd PRIVATE ../../src/ollama-compat)
++target_compile_definitions(mtmd PRIVATE OLLAMA_COMPAT_MTMD_BUILD)
+ target_compile_features   (mtmd PRIVATE cxx_std_17)
+ 
+ if (MTMD_VIDEO)

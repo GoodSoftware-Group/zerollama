@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 10 Jul 2026 23:40:53 -0700
+Subject: [PATCH] ggml: define GGML_ALIGN and GGML_THREAD_LOCAL for QJL/Polar
+ CPU
+
+Patch 0027 used these macros without defining them; Mac CGO builds failed.
+---
+ ggml/include/ggml.h | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index dbff6a36f..1c936b62b 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -2865,6 +2865,15 @@ extern "C" {
+ #        define GGML_RESTRICT restrict
+ #    endif
+ #endif
++
++#if defined(_MSC_VER)
++#    define GGML_ALIGN(n)       __declspec(align(n))
++#    define GGML_THREAD_LOCAL   __declspec(thread)
++#else
++#    define GGML_ALIGN(n)       __attribute__((aligned(n)))
++#    define GGML_THREAD_LOCAL   __thread
++#endif
++
+     typedef void (*ggml_to_float_t)  (const void  * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+     typedef void (*ggml_from_float_t)(const float * GGML_RESTRICT x, void  * GGML_RESTRICT y, int64_t k);
+ 

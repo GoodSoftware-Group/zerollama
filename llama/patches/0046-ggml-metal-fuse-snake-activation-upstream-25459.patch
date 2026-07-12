@@ -1,0 +1,244 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sat, 11 Jul 2026 10:06:33 -0700
+Subject: [PATCH] ggml-metal: fuse snake activation (upstream #25459)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Autofuse mul→sin→sqr→mul→add into a single Metal kernel for f32/f16/bf16
+snake activations used by some audio/diffusion graphs.
+---
+ ggml/src/ggml-metal/ggml-metal-device.cpp | 17 ++++
+ ggml/src/ggml-metal/ggml-metal-device.h   |  1 +
+ ggml/src/ggml-metal/ggml-metal-impl.h     |  5 ++
+ ggml/src/ggml-metal/ggml-metal-ops.cpp    | 99 ++++++++++++++++++++++-
+ ggml/src/ggml-metal/ggml-metal-ops.h      |  1 +
+ ggml/src/ggml-metal/ggml-metal.metal      | 29 +++++++
+ 6 files changed, 151 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index 2d836abfa..bb23a658f 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -1877,6 +1877,23 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_col2im_1d(ggml_m
+     return res;
+ }
+ 
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_snake(ggml_metal_library_t lib, enum ggml_type type) {
++    GGML_ASSERT(type == GGML_TYPE_F32 || type == GGML_TYPE_F16 || type == GGML_TYPE_BF16);
++
++    char base[256];
++    char name[256];
++
++    snprintf(base, 256, "kernel_snake_%s", ggml_type_name(type));
++    snprintf(name, 256, "%s", base);
++
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
++    }
++
++    return res;
++}
++
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_transpose_2d(ggml_metal_library_t lib, const ggml_tensor * op) {
+     assert(op->op == GGML_OP_CONV_TRANSPOSE_2D);
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 02b316329..a98bc339b 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -152,6 +152,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_im2col
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_transpose_1d (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_transpose_2d (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_col2im_1d         (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_snake             (ggml_metal_library_t lib, enum ggml_type type);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d           (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d_dw        (ggml_metal_library_t lib, const struct ggml_tensor * op, bool tiled);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_3d           (ggml_metal_library_t lib, const struct ggml_tensor * op);
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index 17f6db882..2e78c0224 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -631,6 +631,11 @@ typedef struct {
+     int32_t  p0;
+ } ggml_metal_kargs_col2im_1d;
+ 
++typedef struct {
++    int32_t T;
++    int32_t C;
++} ggml_metal_kargs_snake;
++
+ typedef struct {
+     int32_t  IC;
+     int32_t  IH;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index ca76a7c4e..3176f0dc6 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -272,7 +272,55 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+         case GGML_OP_MUL:
+         case GGML_OP_DIV:
+             {
+-                n_fuse = ggml_metal_op_bin(ctx, idx);
++                // Snake activation autofuse: mul -> sin -> sqr -> mul -> add
++                bool fused = false;
++                if (node->op == GGML_OP_MUL && ctx->use_fusion) {
++                    static constexpr ggml_op snake_ops[5] = { GGML_OP_MUL, GGML_OP_SIN, GGML_OP_SQR, GGML_OP_MUL, GGML_OP_ADD };
++                    if (ctx->can_fuse(idx, snake_ops, 5)) {
++                        const ggml_tensor * mul0     = ctx->node(idx + 0);
++                        const ggml_tensor * sin_node = ctx->node(idx + 1);
++                        const ggml_tensor * sqr      = ctx->node(idx + 2);
++                        const ggml_tensor * mul1     = ctx->node(idx + 3);
++                        const ggml_tensor * add      = ctx->node(idx + 4);
++
++                        // x carries the full activation shape, a is the broadcast operand
++                        const ggml_tensor * x = ggml_are_same_shape(mul0, mul0->src[0]) ? mul0->src[0] : mul0->src[1];
++                        const ggml_tensor * a = (x == mul0->src[0]) ? mul0->src[1] : mul0->src[0];
++
++                        // mul1 reads sqr and inv_b in either operand order
++                        const ggml_tensor * inv_b    = (mul1->src[0] == sqr) ? mul1->src[1] : mul1->src[0];
++
++                        // closure check: the trailing add reads the same x as the leading mul
++                        const ggml_tensor * x_in_add = (add->src[0] == mul1) ? add->src[1] : add->src[0];
++
++                        // x is in the supported whitelist and every chain intermediate shares x's type.
++                        // a and inv_b bind as device const float * in the kernel, so they stay F32.
++                        const bool types_ok =
++                            (x->type == GGML_TYPE_F32 || x->type == GGML_TYPE_F16 || x->type == GGML_TYPE_BF16) &&
++                            (a->type    == GGML_TYPE_F32) && (inv_b->type    == GGML_TYPE_F32) &&
++                            (mul0->type == x->type)       && (sin_node->type == x->type) &&
++                            (sqr->type  == x->type)       && (mul1->type     == x->type) &&
++                            (add->type  == x->type);
++                        // a / inv_b collapse to [1, C, 1, 1], x and add stay 2D
++                        const bool shape_ok = ggml_are_same_shape(a, inv_b) && a->ne[0] == 1 && a->ne[1] == x->ne[1];
++                        const bool dim_ok =
++                            (x->ne[2]     == 1) && (x->ne[3]     == 1) &&
++                            (add->ne[2]   == 1) && (add->ne[3]   == 1) &&
++                            (a->ne[2]     == 1) && (a->ne[3]     == 1) &&
++                            (inv_b->ne[2] == 1) && (inv_b->ne[3] == 1);
++                        // kernel reads x[idx] and a[c] / inv_b[c] linearly, so every operand is contiguous
++                        const bool contig_ok =
++                            ggml_is_contiguous(x) && ggml_is_contiguous(add) &&
++                            ggml_is_contiguous(a) && ggml_is_contiguous(inv_b);
++                        if (types_ok && shape_ok && dim_ok && contig_ok && x_in_add == x) {
++                            n_fuse = ggml_metal_op_snake_fused(ctx, idx);
++                            fused = true;
++                        }
++                    }
++                }
++                if (!fused) {
++                    n_fuse = ggml_metal_op_bin(ctx, idx);
++                }
+             } break;
+         case GGML_OP_ADD_ID:
+             {
+@@ -4225,6 +4273,55 @@ int ggml_metal_op_col2im_1d(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+ 
++// Dispatch the fused snake kernel from the matched mul -> sin -> sqr -> mul -> add chain.
++// idx points at the leading mul. The caller has validated the chain.
++int ggml_metal_op_snake_fused(ggml_metal_op_t ctx, int idx) {
++    ggml_metal_library_t lib = ctx->lib;
++    ggml_metal_encoder_t enc = ctx->enc;
++
++    const ggml_tensor * mul0 = ctx->node(idx + 0);
++    const ggml_tensor * sqr  = ctx->node(idx + 2);
++    const ggml_tensor * mul1 = ctx->node(idx + 3);
++    ggml_tensor *       add  = ctx->node(idx + 4);
++
++    const ggml_tensor * x = ggml_are_same_shape(mul0, mul0->src[0]) ? mul0->src[0] : mul0->src[1];
++    const ggml_tensor * a = (x == mul0->src[0]) ? mul0->src[1] : mul0->src[0];
++    const ggml_tensor * inv_b = (mul1->src[0] == sqr) ? mul1->src[1] : mul1->src[0];
++
++    const int T     = (int) x->ne[0];
++    const int C     = (int) x->ne[1];
++    const int total = T * C;
++
++    // the encode loop pre-checked the leading mul only, check the rest of the chain
++    for (int i = 1; i < 5; ++i) {
++        if (!ggml_metal_op_concurrency_check(ctx, ctx->node(idx + i))) {
++            ggml_metal_op_concurrency_reset(ctx);
++
++            break;
++        }
++    }
++
++    auto pipeline = ggml_metal_library_get_pipeline_snake(lib, x->type);
++
++    ggml_metal_kargs_snake args = {
++        /*.T =*/ T,
++        /*.C =*/ C,
++    };
++
++    ggml_metal_encoder_set_pipeline(enc, pipeline);
++    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(x),     1);
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(a),     2);
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(inv_b), 3);
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(add),   4);
++
++    const int nth = 256;
++    const int ntg = (total + nth - 1) / nth;
++    ggml_metal_encoder_dispatch_threadgroups(enc, ntg, 1, 1, nth, 1, 1);
++
++    return 5;
++}
++
+ int ggml_metal_op_conv_transpose_2d(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
+index 2d33dab8b..2fa847af0 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -82,6 +82,7 @@ int ggml_metal_op_conv_3d           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_conv_transpose_1d (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_conv_transpose_2d (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_col2im_1d         (ggml_metal_op_t ctx, int idx);
++int ggml_metal_op_snake_fused       (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_upscale           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_pad               (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_pad_reflect_1d    (ggml_metal_op_t ctx, int idx);
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 3e13384f7..011bca638 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -5319,6 +5319,35 @@ template [[host_name("kernel_col2im_1d_bf16")]] kernel void kernel_col2im_1d<bfl
+ #endif
+ 
+ 
++template <typename T>
++kernel void kernel_snake(
++        constant ggml_metal_kargs_snake & args,
++        device const T     * x,
++        device const float * a,
++        device const float * inv_b,
++        device       T     * dst,
++        uint         tgpig [[threadgroup_position_in_grid]],
++        uint         tpitg [[thread_position_in_threadgroup]],
++        uint         ntg   [[threads_per_threadgroup]]) {
++
++    const int idx = tgpig * ntg + tpitg;
++    if (idx >= args.T * args.C) {
++        return;
++    }
++
++    const int   c  = idx / args.T;  // x is [T, C], a / inv_b collapse to [1, C]
++    const float xi = float(x[idx]);
++    const float si = sin(a[c] * xi);
++    dst[idx] = T(xi + si * si * inv_b[c]);
++}
++
++template [[host_name("kernel_snake_f32")]]  kernel void kernel_snake<float>(constant ggml_metal_kargs_snake &, device const float *, device const float *, device const float *, device float *, uint, uint, uint);
++template [[host_name("kernel_snake_f16")]]  kernel void kernel_snake<half>(constant ggml_metal_kargs_snake &, device const half *, device const float *, device const float *, device half *, uint, uint, uint);
++#if defined(GGML_METAL_HAS_BF16)
++template [[host_name("kernel_snake_bf16")]] kernel void kernel_snake<bfloat>(constant ggml_metal_kargs_snake &, device const bfloat *, device const float *, device const float *, device bfloat *, uint, uint, uint);
++#endif
++
++
+ typedef void (conv_transpose_2d_t)(
+         constant ggml_metal_kargs_conv_transpose_2d & args,
+         device const float * src0,

@@ -11,7 +11,7 @@ Subject: [PATCH] graph memory reporting on failure
  4 files changed, 40 insertions(+), 3 deletions(-)
 
 diff --git a/ggml/include/ggml-alloc.h b/ggml/include/ggml-alloc.h
-index 78aa059dd..7fa8403b3 100644
+index a7926a21a..7df7add64 100644
 --- a/ggml/include/ggml-alloc.h
 +++ b/ggml/include/ggml-alloc.h
 @@ -72,6 +72,7 @@ GGML_API bool ggml_gallocr_reserve_n(
@@ -23,10 +23,10 @@ index 78aa059dd..7fa8403b3 100644
  // Utils
  // Create a buffer and allocate all the tensors in a ggml_context
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index f9138636b..8a8c9f65d 100644
+index 2924fdbe9..8f34d13c4 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -344,6 +344,7 @@ extern "C" {
+@@ -330,6 +330,7 @@ extern "C" {
  
      GGML_API ggml_backend_buffer_type_t ggml_backend_sched_get_buffer_type(ggml_backend_sched_t sched, ggml_backend_t backend);
      GGML_API size_t                     ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backend_t backend);
@@ -35,7 +35,7 @@ index f9138636b..8a8c9f65d 100644
      GGML_API void                 ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
      GGML_API ggml_backend_t       ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node);
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
-index 3846ad332..9e16fe7c6 100644
+index 3bda9abbe..c26ffb094 100644
 --- a/ggml/src/ggml-alloc.c
 +++ b/ggml/src/ggml-alloc.c
 @@ -481,6 +481,7 @@ struct node_alloc {
@@ -64,7 +64,7 @@ index 3846ad332..9e16fe7c6 100644
      free(galloc->buffers);
      free(galloc->buf_tallocs);
      free(galloc->node_allocs);
-@@ -906,6 +911,8 @@ static bool ggml_gallocr_reserve_n_impl(
+@@ -900,6 +905,8 @@ static bool ggml_gallocr_reserve_n_impl(
          }
      }
  
@@ -73,7 +73,7 @@ index 3846ad332..9e16fe7c6 100644
      // reallocate buffers if needed
      for (int i = 0; i < galloc->n_buffers; i++) {
          // if the buffer type is used multiple times, we reuse the same buffer
-@@ -942,15 +949,20 @@ static bool ggml_gallocr_reserve_n_impl(
+@@ -936,15 +943,20 @@ static bool ggml_gallocr_reserve_n_impl(
                  galloc->buffers[i] = NULL;
              } else {
                  galloc->buffers[i] = ggml_vbuffer_alloc(galloc->bufts[i], galloc->buf_tallocs[i], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
@@ -97,7 +97,7 @@ index 3846ad332..9e16fe7c6 100644
  }
  
  void ggml_gallocr_reserve_n_size(
-@@ -1120,6 +1132,22 @@ size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
+@@ -1114,6 +1126,22 @@ size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
      return ggml_vbuffer_size(galloc->buffers[buffer_id]);
  }
  
@@ -121,10 +121,10 @@ index 3846ad332..9e16fe7c6 100644
  
  static void free_buffers(ggml_backend_buffer_t ** buffers, const size_t * n_buffers) {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index b3efebd5c..d43fc5a79 100644
+index 87615921c..a3d8fe74a 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -2063,6 +2063,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
+@@ -1957,6 +1957,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
      return ggml_gallocr_get_buffer_size(sched->galloc, backend_index);
  }
  

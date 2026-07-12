@@ -19,7 +19,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`8f114a9b`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-8f114a9b/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (**49** commits on pin: through 0049 NVFP4 + 0048 GLA) |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (**55** commits on pin: through 0055 Metal IOSurface / ANE export) |
 | **Rebase helper** | `./scripts/rebase_vendor_unified.sh --sync` |
 
 Runtime `llama-server` and in-process ggml share **one ggml-org `8f114a9b` base** + zerollama patches.
