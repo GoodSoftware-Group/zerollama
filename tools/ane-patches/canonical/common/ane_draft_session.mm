@@ -8,6 +8,8 @@
 #import <mach/mach_time.h>
 
 #include "ane_draft_session.h"
+
+#include "ane_draft_hook.h"
 #include "ane_iosurface_map.h"
 #include "ane_bridge.h"
 #include "log.h"
@@ -36,6 +38,34 @@ static int ane_conv_depth_cap(void) {
         return 0;
     }
     return (int) d;
+}
+
+// P23: full n_ff FFN gate/up/down on host fp32 — ANE matmul at oc~17k is slow and can destabilize llama-server.
+static bool ane_dflash_ffn_host_fp32(int oc_ff) {
+    if (oc_ff <= 0) {
+        return false;
+    }
+    if (const char * v = getenv("ZEROLLAMA_ANE_DRAFT_FFN_HOST_FP32")) {
+        if (v[0] == '0' || (v[0] == 'n' && (v[1] == '\0' || v[1] == 'o'))) {
+            return false;
+        }
+        return true;
+    }
+    return oc_ff > 1024;
+}
+
+// P24: Q/K/V noise on host fp32 (P21 path) — ANE fp16 attn_q/k/v diverges from Metal P18 cross-attn.
+static bool ane_dflash_qkv_host_fp32_local(int oc_q) {
+    if (oc_q <= 0) {
+        return false;
+    }
+    if (const char * v = getenv("ZEROLLAMA_ANE_DRAFT_QKV_HOST_FP32")) {
+        if (v[0] == '0' || (v[0] == 'n' && (v[1] == '\0' || v[1] == 'o'))) {
+            return false;
+        }
+        return true;
+    }
+    return oc_q > 1024;
 }
 
 static double ane_ticks_to_ms(uint64_t t) {
@@ -503,6 +533,8 @@ typedef struct {
     bool              dflashChain15Active;
     bool              dflashChain16Active;
     bool              dflashChain17Active;
+    bool              dflashFfnHostFp32;
+    bool              dflashQkvHostFp32;
     float *           outputNormGamma;
     int               outputNormGammaLen;
     float *           attnPostNormGamma;
@@ -700,6 +732,8 @@ static void ane_session_clear(ANEDraftSession * st) {
     st->dflashChain15Active = false;
     st->dflashChain16Active = false;
     st->dflashChain17Active = false;
+    st->dflashFfnHostFp32 = false;
+    st->dflashQkvHostFp32 = false;
     if (st->outputNormGamma) {
         free(st->outputNormGamma);
         st->outputNormGamma = NULL;
@@ -2768,6 +2802,34 @@ static bool ane_session_eval_dflash_chain12(int seq) {
     }
     ane_apply_rms_gamma(norm_fc.data(), oc_fc, g_session.hiddenNormGamma);
 
+    if (g_session.dflashQkvHostFp32) {
+        if (!ane_dflash_fill_session_qkv_host_fp32(oc_q, oc_k)) {
+            LOG_WRN("%s: P24 host qkv fill failed oc_q=%d oc_k=%d\n", __func__, oc_q, oc_k);
+            return false;
+        }
+        // Chain12 stub used to broadcast V into outBuf. On chain16/17 outBuf is the
+        // ffn_down / lm-head workspace (oc10×seq); writing oc_v×seq V rows is wrong and
+        // has correlated with intermittent NSLock / ObjC method-cache corruption mid-handoff.
+        // Host post_eval reads lastDflashQ/K/V directly — do not touch outBuf here.
+        if (!g_session.dflashChain16Active && !g_session.dflashChain17Active &&
+            g_session.outBuf && g_session.lastDflashV) {
+            const size_t need = (size_t) oc_v * (size_t) seq * sizeof(float);
+            if (g_session.outIoBytes >= need) {
+                for (int o = 0; o < oc_v; ++o) {
+                    const float v = g_session.lastDflashV[o];
+                    for (int s = 0; s < seq; ++s) {
+                        g_session.outBuf[(size_t) o * (size_t) seq + (size_t) s] = v;
+                    }
+                }
+            } else {
+                LOG_WRN("%s: P24 skip V→outBuf (need=%zu have=%zu)\n",
+                        __func__, need, g_session.outIoBytes);
+            }
+        }
+        g_session.stepCount += 4;
+        return true;
+    }
+
     if (!ane_session_pack_matmul2_activations(
             g_session.inSID2, norm_fc.data(), oc_fc, oc_fc, oc_q, seq)) {
         return false;
@@ -2846,6 +2908,10 @@ static bool ane_session_init_dflash_chain13(int seq) {
         return false;
     }
     g_session.dflashChain13Active = true;
+    g_session.dflashQkvHostFp32 = ane_dflash_qkv_host_fp32_local(oc_q);
+    if (g_session.dflashQkvHostFp32) {
+        LOG_INF("%s: P24 dflash qkv host_fp32 oc_q=%d oc_kv=%d\n", __func__, oc_q, oc_kv);
+    }
     return true;
 }
 
@@ -2939,6 +3005,13 @@ static bool ane_session_init_dflash_ffn_gate(int seq) {
     g_session.matmul6WCount = wcount;
     g_session.matmul6Ic = ic6;
     g_session.matmul6Oc = oc6;
+    g_session.dflashFfnHostFp32 = ane_dflash_ffn_host_fp32(oc6);
+    if (g_session.dflashFfnHostFp32) {
+        g_session.matmul6Active = true;
+        g_session.matmul6Dynamic = false;
+        LOG_INF("%s: P23 dflash ffn_gate host_fp32 ic=%d→oc=%d seq=%d\n", __func__, ic6, oc6, seq);
+        return true;
+    }
     const int spIn6 = seq + oc6;
     g_session.ioBytes6 = (size_t) ic6 * (size_t) spIn6 * sizeof(float);
     const size_t gateOutBytes = (size_t) oc6 * (size_t) seq * sizeof(float);
@@ -3060,6 +3133,12 @@ static bool ane_session_init_dflash_ffn_up(int seq) {
     g_session.matmul7WCount = wcount;
     g_session.matmul7Ic = ic7;
     g_session.matmul7Oc = oc7;
+    if (g_session.dflashFfnHostFp32) {
+        g_session.matmul7Active = true;
+        g_session.matmul7Dynamic = false;
+        LOG_INF("%s: P23 dflash ffn_up host_fp32 ic=%d→oc=%d seq=%d\n", __func__, ic7, oc7, seq);
+        return true;
+    }
     const int spIn7 = seq + oc7;
     g_session.ioBytes7 = (size_t) ic7 * (size_t) spIn7 * sizeof(float);
     const size_t upOutBytes = (size_t) oc7 * (size_t) seq * sizeof(float);
@@ -3645,7 +3724,11 @@ bool ane_draft_session_eval_dflash_attn_wo(void) {
 }
 
 bool ane_draft_session_eval_dflash_ffn_gate(void) {
-    if ((!g_session.dflashChain15Active && !g_session.dflashChain16Active && !g_session.dflashChain17Active) || !g_session.kernel6 || !g_session.outBuf) {
+    if ((!g_session.dflashChain15Active && !g_session.dflashChain16Active && !g_session.dflashChain17Active) ||
+        !g_session.outBuf || !g_session.matmul6Active) {
+        return false;
+    }
+    if (!g_session.dflashFfnHostFp32 && !g_session.kernel6) {
         return false;
     }
     const int ic6 = g_session.matmul6Ic;
@@ -3666,23 +3749,48 @@ bool ane_draft_session_eval_dflash_ffn_gate(void) {
         g_session.lastDflashWoHiddenLen >= ic6) {
         memcpy(g_session.lastDflashWoHidden, hidden.data(), (size_t) ic6 * sizeof(float));
     }
-    if (!ane_session_pack_matmul2_activations(
-            g_session.inSID6, hidden.data(), ic6, ic6, oc6, seq)) {
-        return false;
-    }
-    if (!ane_bridge_eval(g_session.kernel6)) {
-        return false;
-    }
     const size_t gate_bytes = (size_t) oc6 * (size_t) seq * sizeof(float);
-    ane_bridge_read_output(g_session.kernel6, 0, g_session.outBuf, gate_bytes);
+    // P71: outBuf was sized for the previous step's row-dim (e.g. attn_wo's oc5=n_embd), which
+    // for dflash chains is almost always smaller than ffn_gate's oc6 (n_embd -> ffn intermediate,
+    // e.g. 5120 -> 17408). Every other step in this chain that changes the output row-dim
+    // (see ffn_up_swiglu_down's ffn_down write) grows outBuf first; this one didn't — a real heap
+    // buffer overflow (~3.4x the allocation for chain 17's shapes), consistent with the FAR
+    // fault-address pattern seen across tonight's crashes (see docs/ane-draft-inprocess.md).
+    if (gate_bytes > g_session.outIoBytes) {
+        float * grown = (float *) calloc((size_t) oc6 * (size_t) seq, sizeof(float));
+        if (!grown) {
+            return false;
+        }
+        free(g_session.outBuf);
+        g_session.outBuf = grown;
+    }
+    if (g_session.dflashFfnHostFp32 && g_session.matmul6W &&
+        g_session.matmul6WCount >= (size_t) ic6 * (size_t) oc6) {
+        ane_host_matmul_seq(hidden.data(), ic6, oc6, seq, g_session.matmul6W, g_session.outBuf);
+    } else {
+        if (!g_session.kernel6 || !ane_session_pack_matmul2_activations(
+                g_session.inSID6, hidden.data(), ic6, ic6, oc6, seq)) {
+            return false;
+        }
+        if (!ane_bridge_eval(g_session.kernel6)) {
+            return false;
+        }
+        ane_bridge_read_output(g_session.kernel6, 0, g_session.outBuf, gate_bytes);
+    }
     g_session.outIoBytes = gate_bytes;
     g_session.stepCount++;
     return true;
 }
 
 bool ane_draft_session_eval_dflash_ffn_up_swiglu_down(void) {
-    if (!g_session.dflashChain16Active || !g_session.kernel7 || !g_session.outBuf ||
+    if (!g_session.dflashChain16Active || !g_session.outBuf ||
         !g_session.matmul10Active || !g_session.matmul10W) {
+        return false;
+    }
+    if (!g_session.dflashFfnHostFp32 && !g_session.kernel7) {
+        return false;
+    }
+    if (g_session.dflashFfnHostFp32 && (!g_session.matmul7Active || !g_session.matmul7W)) {
         return false;
     }
     const int oc_gate = g_session.matmul6Oc;
@@ -3699,16 +3807,21 @@ bool ane_draft_session_eval_dflash_ffn_up_swiglu_down(void) {
     std::vector<float> gate((size_t) oc_gate * (size_t) seq);
     memcpy(gate.data(), g_session.outBuf, gate_bytes);
 
-    if (!ane_session_pack_matmul2_activations(
-            g_session.inSID7, g_session.lastDflashWoHidden, ic_up, ic_up, oc_up, seq)) {
-        return false;
-    }
-    if (!ane_bridge_eval(g_session.kernel7)) {
-        return false;
-    }
     const size_t up_bytes = (size_t) oc_up * (size_t) seq * sizeof(float);
     std::vector<float> up((size_t) oc_up * (size_t) seq);
-    ane_bridge_read_output(g_session.kernel7, 0, up.data(), up_bytes);
+    if (g_session.dflashFfnHostFp32 && g_session.matmul7W &&
+        g_session.matmul7WCount >= (size_t) ic_up * (size_t) oc_up) {
+        ane_host_matmul_seq(g_session.lastDflashWoHidden, ic_up, oc_up, seq, g_session.matmul7W, up.data());
+    } else {
+        if (!ane_session_pack_matmul2_activations(
+                g_session.inSID7, g_session.lastDflashWoHidden, ic_up, ic_up, oc_up, seq)) {
+            return false;
+        }
+        if (!ane_bridge_eval(g_session.kernel7)) {
+            return false;
+        }
+        ane_bridge_read_output(g_session.kernel7, 0, up.data(), up_bytes);
+    }
 
     std::vector<float> swiglu((size_t) oc_gate);
     for (int i = 0; i < oc_gate; ++i) {
@@ -3882,21 +3995,69 @@ bool ane_draft_session_add_output_row(const float * delta, int n) {
     return true;
 }
 
-bool ane_draft_session_read_dflash_qkv(float * q, float * k, float * v, int n) {
-    if (n <= 0 || g_session.lastDflashAttnLen <= 0) {
+bool ane_draft_session_write_output_row(const float * row, int n) {
+    if (!row || n <= 0 || !g_session.outBuf) {
         return false;
     }
-    const int copy = n < g_session.lastDflashAttnLen ? n : g_session.lastDflashAttnLen;
-    if (q && g_session.lastDflashQ) {
-        memcpy(q, g_session.lastDflashQ, (size_t) copy * sizeof(float));
+    const int seq = g_session.sp > 0 ? g_session.sp : 1;
+    const int oc = ane_session_output_row_dim();
+    if (oc <= 0) {
+        return false;
     }
-    if (k && g_session.lastDflashK) {
-        memcpy(k, g_session.lastDflashK, (size_t) copy * sizeof(float));
+    const int copy = n < oc ? n : oc;
+    for (int o = 0; o < copy; ++o) {
+        for (int s = 0; s < seq; ++s) {
+            g_session.outBuf[(size_t) o * (size_t) seq + (size_t) s] = row[o];
+        }
     }
-    if (v && g_session.lastDflashV) {
-        memcpy(v, g_session.lastDflashV, (size_t) copy * sizeof(float));
+    return true;
+}
+
+bool ane_draft_session_read_dflash_qkv(float * q, int oc_q, float * k, float * v, int oc_kv) {
+    if (g_session.lastDflashAttnLen <= 0 || oc_q <= 0 || oc_kv <= 0) {
+        return false;
     }
-    return g_session.lastDflashQ && g_session.lastDflashK && g_session.lastDflashV;
+    if (!g_session.lastDflashQ || !g_session.lastDflashK || !g_session.lastDflashV) {
+        return false;
+    }
+    const int qn = oc_q < g_session.lastDflashAttnLen ? oc_q : g_session.lastDflashAttnLen;
+    if (q) {
+        memcpy(q, g_session.lastDflashQ, (size_t) qn * sizeof(float));
+    }
+    if (k) {
+        memcpy(k, g_session.lastDflashK, (size_t) oc_kv * sizeof(float));
+    }
+    if (v) {
+        memcpy(v, g_session.lastDflashV, (size_t) oc_kv * sizeof(float));
+    }
+    return true;
+}
+
+bool ane_draft_session_set_dflash_qkv(const float * q, const float * k, const float * v, int oc_q, int oc_kv) {
+    if (oc_q <= 0 || oc_kv <= 0 || !g_session.lastDflashQ || !g_session.lastDflashK || !g_session.lastDflashV) {
+        return false;
+    }
+    if (g_session.lastDflashAttnLen <= 0) {
+        return false;
+    }
+    const int qn = oc_q < g_session.lastDflashAttnLen ? oc_q : g_session.lastDflashAttnLen;
+    // K/V buffers are allocated to matmul3Oc at chain13 init (see ane_session_init_dflash_chain13).
+    const int kv_cap = g_session.matmul3Oc > 0 ? g_session.matmul3Oc : oc_kv;
+    const int kvn = oc_kv < kv_cap ? oc_kv : kv_cap;
+    if (q) {
+        memcpy(g_session.lastDflashQ, q, (size_t) qn * sizeof(float));
+    }
+    if (k) {
+        memcpy(g_session.lastDflashK, k, (size_t) kvn * sizeof(float));
+    }
+    if (v) {
+        memcpy(g_session.lastDflashV, v, (size_t) kvn * sizeof(float));
+    }
+    return true;
+}
+
+bool ane_draft_session_dflash_qkv_host_fp32(void) {
+    return g_session.dflashQkvHostFp32;
 }
 
 int ane_draft_session_matmul_ffn_embd(void) {
