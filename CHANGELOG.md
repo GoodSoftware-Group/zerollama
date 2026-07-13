@@ -4,6 +4,221 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Qwen3-Next MTP (patch 0065)
+
+**What:** Port [#25589](https://github.com/ggml-org/llama.cpp/pull/25589) for our hybrid MoE stack (qwen3next / eliza-class).
+
+- **0065** — NextN/MTP draft graph + `graph_mtp` decl; hybrid KV filters include `LLM_ARCH_QWEN3NEXT`
+- In-tree CGO uses `nextn_predict_layers` (qwen35moe parity); vendor pin keeps upstream `n_layer_nextn`
+- MTP/NextN GGUFs needed to exercise the draft head; trunk load path unchanged for non-MTP weights
+- Conversion scripts from the PR deferred (use upstream convert when building MTP GGUFs)
+
+**Vendor HEAD:** `2dfb59d30` (`LLAMA_CPP_VENDOR_HEAD`).
+
+### In-tree Metal dig re-sync (0062–0064)
+
+**What:** Re-apply vendor Metal dig into CGO `ml/backend/ggml/` after the MTP cleanup wipe.
+
+- **0063** — already present on in-tree `ggml-metal-context.m` (no-op re-apply)
+- **0064** — TQ2_0 Metal kernels applied to in-tree `ggml-metal.metal` / device / impl
+- **0062 E8_2** — in-tree at type id **`51`** / ftype **`29`** (keeps eliza `Q1_0_g32/g128` at 42/43; vendor dig still uses id 43)
+- `build_zerollama_mac.sh` now compiles + embeds `default.metallib` (+ eliza-shipped) instead of Metal source
+
+### Metal TQ2_0 (patch 0064)
+
+**What:** Rewrite [#12485](https://github.com/ggml-org/llama.cpp/pull/12485) Metal TQ2_0 onto modern pipeline API (PR still targets old `ggml-metal.m`).
+
+- **0064** — dequant + mul_mv/get_rows/mul_mm/mul_mm_id/mul_mv_id for `GGML_TYPE_TQ2_0` (type already on pin)
+- `N_R0_TQ2_0=4` / `N_SG_TQ2_0=2` (matches old PR 8-row TG dispatch)
+
+**Vendor HEAD:** `4d637f2e` (`LLAMA_CPP_VENDOR_HEAD`). Still defer MoE disk #23440 / CE WIP #18121 / RWKV fuse #25206.
+
+### Metal non-Apple concurrency guard (patch 0063)
+
+**What:** Extract correctness fix from [#19527](https://github.com/ggml-org/llama.cpp/pull/19527) (AMD/Intel Metal).
+
+- **0063** — auto-disable `MTLDispatchTypeConcurrent` when `!supports_gpu_family_apple7`
+- Skipped PR managed-buffer hunks (invalid `BytesNoCopy`+Managed / buffer `synchronizeResource`)
+
+**Vendor HEAD:** `73e05a20` (`LLAMA_CPP_VENDOR_HEAD`). Still defer MoE disk #23440 / TQ2_0 / full #19527 managed path.
+
+### GGML_TYPE_E8_2 KV quant (patch 0062)
+
+**What:** Port [#25352](https://github.com/ggml-org/llama.cpp/pull/25352) E8 lattice 2-bit KV (`2.125` bpe, `QK_E8_2=128`).
+
+- **0062** — CPU quant/dequant/vec_dot + Metal dequant/quantize, cpy, get_rows, set_rows, FA (dk128/256)
+- Type id **`43`** / ftype **`29`** (upstream used 42/28; those are `Q2_0` on this pin)
+- Metal: use `const float lut[]` (not `constant`) — address-space on automatic locals fails MSL compile
+- CUDA hunks deferred (Mac Metal path)
+
+**Vendor HEAD:** `9267b8bc` (`LLAMA_CPP_VENDOR_HEAD`). Still defer MoE disk #23440 / TQ2_0.
+
+### Metal async 2D tensor copy (patch 0061)
+
+**What:** Fill backend `set/get_tensor_2d_async` (were NULL) from [#22515](https://github.com/ggml-org/llama.cpp/pull/22515).
+
+- **0061** — Metal blit-based 2D strided async copies (multi-GPU / batched host↔device)
+- Fixed upstream PR wiring bug (set/get were swapped in the iface table)
+
+**Vendor HEAD:** `9267b8bc` (`LLAMA_CPP_VENDOR_HEAD`). Still defer MoE disk #23440 / TQ2_0.
+
+### Metal IM2COL_3D (patches 0058–0060)
+
+**What:** Extract remaining useful piece of [#16669](https://github.com/ggml-org/llama.cpp/pull/16669) (DIAG_MASK already via 0044).
+
+- **0058** — Metal `IM2COL_3D` f32/f16 kernels + dispatch (3D conv im2col on GPU)
+- **0059** — wire `src0`/`src1`/`dst` for `GGML_TENSOR_BINARY_OP_LOCALS`
+- **0060** — explicit f32/f16 kernels (Metal rejects decltype template instantiation here)
+
+**Vendor HEAD:** `cc1364ff` (`LLAMA_CPP_VENDOR_HEAD`). Still defer MoE disk #23440 / TQ2_0; async 2D landed in 0061.
+
+### Metal ARGMAX ties + FA V-skip (patches 0056–0057)
+
+**What:** Small correctness/opt-in Metal dig after OUT_PROD.
+
+- **0056** — [#25032](https://github.com/ggml-org/llama.cpp/pull/25032): ARGMAX first-index-on-ties (Metal simd + CPU `vec_argmax`)
+- **0057** — [#21119](https://github.com/ggml-org/llama.cpp/pull/21119): opt-in FA V-skip (`GGML_METAL_FA_SKIP_V=1`)
+
+**Vendor HEAD:** was `aa1f50cb`; superseded by 0058 above.
+
+### Metal OUT_PROD (patch 0050)
+
+**What:** Dig of remaining open Metal PRs; port the clean missing op.
+
+- **0050** — [#23724](https://github.com/ggml-org/llama.cpp/pull/23724): partial Metal `OUT_PROD` (f32 + q4_0/q4_1/q8_0/mxfp4 × f32)
+- Already on pin (no port): #21782 `ROLL`, #18878 `FLOOR`/ceil/round (unified unary), #22595 rsets_rm (ANE path)
+- Still defer: #23440 MoE disk (+920), #12485 TQ2_0 (old metal.m); IM2COL_3D landed in 0058–0060; async 2D in 0061
+
+**Vendor HEAD:** was `c551f738`; superseded by 0056–0057 above.
+
+### Metal GLA + NVFP4 (patches 0048–0049)
+
+**What:** Remaining high-value Metal niche ports after 0046–0047.
+
+- **0048** — [#21452](https://github.com/ggml-org/llama.cpp/pull/21452): Metal `GATED_LINEAR_ATTN` (head 64/128)
+- **0049** — [#20456](https://github.com/ggml-org/llama.cpp/pull/20456): Metal NVFP4 mul_mat/get_rows (type already on pin)
+
+**Vendor HEAD:** was `67426a65`; superseded by 0050 above.
+
+### Metal snake fuse + Q2_0 (patches 0046–0047)
+
+**What:** Next deferred Metal niche cluster after 0044–0045.
+
+- **0046** — [#25459](https://github.com/ggml-org/llama.cpp/pull/25459): fuse snake activation (`mul→sin→sqr→mul→add`) on Metal
+- **0047** — [#25419](https://github.com/ggml-org/llama.cpp/pull/25419): Q2_0 Metal backend (dequant / mul_mv / mul_mm / cpy / get_rows)
+
+**Vendor HEAD:** was `d0621e6d`; superseded by 0048–0049 above.
+
+### Metal DIAG_MASK_INF + pad_reflect optimize (patches 0044–0045)
+
+**What:** Small correctness/perf Metal ports after 0043.
+
+- **0044** — [#24844](https://github.com/ggml-org/llama.cpp/pull/24844): Metal `DIAG_MASK_INF` (f32) so causal mask stays on GPU
+- **0045** — [#23992](https://github.com/ggml-org/llama.cpp/pull/23992): `PAD_REFLECT_1D` float4 path when p0/row strides are 16-byte aligned
+
+**Vendor HEAD:** was `cc61c3f8`; superseded by 0046–0047 above.
+
+### Metal q8_0 KV flash-attn + QJL build fix (patches 0042–0043)
+
+**What:** Next Metal cluster after 0032–0041, plus rebuild-time ggml correctness.
+
+- **0042** — fix QJL `GGML_OP_COUNT` (97→101) / `OP_SYMBOL` lag and corrupted TBQ/`TQ` wrappers in `ggml-quants.c`
+- **0043** — [#25556](https://github.com/ggml-org/llama.cpp/pull/25556): Q8_0→F16 materialize for head256 high-GQA FA, packed q8_0 loads, `vec_gqa2` (rebased onto `nqptg` from #21443)
+
+**Vendor HEAD:** was `f245612e`; superseded by 0044–0045 above.
+
+### Metal correctness ports from ggml-org (patches 0032–0034)
+
+**What:** Cherry-picked three open upstream Metal PRs onto pin `8f114a9b` (still open upstream; ported as format-patches).
+
+- **0032** — [#25371](https://github.com/ggml-org/llama.cpp/pull/25371): null-check Metal buffer alloc on OOM (avoid `is_shared(NULL)` crash)
+- **0033** — [#24368](https://github.com/ggml-org/llama.cpp/pull/24368): wind down residency sets at teardown instead of `GGML_ASSERT` abort
+- **0034** — [#25442](https://github.com/ggml-org/llama.cpp/pull/25442): MoE down-proj L2 rescale so Metal `MUL_MAT_ID` f16 cast does not NaN
+
+**Vendor HEAD:** was `e9de09c6`; superseded by 0035–0036 below.
+
+### Metal small-batch mul_mat (patches 0035–0036)
+
+**What:** Speculative / small-batch Metal matmul path from open upstream PRs (issue [#25250](https://github.com/ggml-org/llama.cpp/issues/25250)).
+
+- **0035** — [#25453](https://github.com/ggml-org/llama.cpp/pull/25453): extend small-batch mat-vec dispatch to `ne11 <= 16` (+ `r1ptg` for 9..16)
+- **0036** — [#25377](https://github.com/ggml-org/llama.cpp/pull/25377): 64×8 `mul_mm` tile for `q4_0×f32` at bs 5..16; Q4_0 hands off at `ne11 > 4` (merged with 0035 so non-Q4_0 still use mat-vec through 16)
+
+**Vendor HEAD:** `7abf6c43` (`LLAMA_CPP_VENDOR_HEAD`). Synced Metal + regenerated `ggml-metal-embed.metal`.
+
+### Metal Qwen3-VL flash-attn (patch 0037)
+
+**What:** [#21443](https://github.com/ggml-org/llama.cpp/pull/21443) — ~11% faster large-image encode on Metal for f16 head72 (Qwen3-VL).
+
+- **0037** — `nqptg=16` + `nsg=8` for f16 dk72; generalize FA kernel Q loops (`QB = Q/8`); new `kernel_flash_attn_ext_f16_dk72_dv72_q16`
+
+**Vendor HEAD:** `6e5cb627` (`LLAMA_CPP_VENDOR_HEAD`).
+
+### Metal Qwen3-Next / Mamba / deployment (patches 0038–0040)
+
+- **0038** — [#23401](https://github.com/ggml-org/llama.cpp/pull/23401): `@available` guard for `waitUntilSignaledValue`
+- **0039** — [#25533](https://github.com/ggml-org/llama.cpp/pull/25533): Mamba-2 SSM scan group kernel (Nemotron-H)
+- **0040** — [#16143](https://github.com/ggml-org/llama.cpp/pull/16143): fused `RMS_NORM+MUL+SWIGLU` for Qwen3-Next (rebased onto `get_pipeline_norm` / float4 kernels)
+
+**Vendor HEAD:** `9024286f` (`LLAMA_CPP_VENDOR_HEAD`). Dig high-value Metal ports complete (0032–0040).
+
+### Build fix: GGML_ALIGN / GGML_THREAD_LOCAL (patch 0041)
+
+**What:** QJL/Polar CPU kernels (0027) used `GGML_ALIGN` / `GGML_THREAD_LOCAL` without defining them — Mac CGO failed. **0041** adds the macros to `ggml.h`.
+
+**Vendor HEAD:** `3b8af95a8`.
+
+### ElizaOS QJL/Polar/TBQ extraction (patches 0026–0030)
+
+**What:** Ported QJL (Quantized Johnson-Lindenstrauss), PolarQuant Q4, and TurboQuant 3/4-bit KV-cache compression from the elizaOS llama.cpp fork into the ggml-org vendor tree as formal patches.
+
+- **0026** — types + ops: 7 new GGML_TYPE_* enums, 4 new GGML_OP_* ops, graph builders, type_traits
+- **0027** — CPU kernels: ~32 files (qjl/, polarquant/, fused-attn, quants), full quantize/dequantize
+- **0028** — CUDA kernels: QJL score, PolarQuant decode, TBQ3_TCQ, fused attention, SET_ROWS
+- **0029** — Metal shaders: standalone .metal files compiled into metallib
+- **0030** — Fused QJL-K attn dispatch + SET_ROWS wiring in ggml-cuda.cu + llama-graph.cpp
+
+**Deferred:** Vulkan dispatch (shaders exist in elizaOS but not wired to backend).
+
+### MLX bump to `main` tip `4367c73b` (Jul 2026)
+
+**Why:** Local sibling `../mlx` and `dist/.../libmlx.dylib` were still on the May pin (`2165dc08`) while the repo had tracked Ollama’s Jul 3 pin (`de7b4ed9`). Operators asked for latest MLX; mlx `main` was 18 commits ahead of that pin (NAX configure warnings, GGUF metadata int64 fix, etc.).
+
+**What shipped:**
+
+- **`MLX_VERSION`** → `4367c73b` (2026-07-10 — Warn when NAX kernels disabled). **`MLX_C_VERSION`** unchanged at `fba4470b` (already mlx-c `main` tip / Ollama 0.31.2 bindings).
+- Rebuilt Metal **v3** + **v4** dylibs into `build/metal-v*/` and `dist/darwin-arm64/lib/ollama/mlx_metal_v*/` (`libmlx` embeds `4367c73`).
+- Sibling checkouts: `../mlx` @ pin, `../mlx-c` @ pin.
+
+**Operator:** restart `zerollama serve` so mlxrunner reloads dylibs (already-loaded processes keep the old mapping). Verify: `./zerollama doctor` → mlx engine ok; `strings …/libmlx.dylib | grep 4367c73`.
+
+### Vendor rebase to ggml-org master `8f114a9b` (Jul 2026)
+
+**Why:** Operators asked for latest [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) (not elizaOS). Pin is master tip `8f114a9b` (past tag `b9951`).
+
+- **Pin:** `LLAMA_CPP_VERSION=8f114a9b`, `LLAMA_CPP_COMMIT=8f114a9b573b…`, `Makefile.sync` → `vendor/llama-cpp-8f114a9b` (`UPSTREAM=ggml-org/llama.cpp`, `BUILD_NUMBER=9952`)
+- **Patches:** **41** format-patches (incl. 0032–0040 Metal ports); clean re-apply **`fail=0`**
+- **Deferred:** eliza fused QJL/Polar/TBQ CUDA (**old 0021**) — types not in ggml-org; restore via eliza overlay or extraction series if L2 fork KV is required
+- **Includes:** kv-ext + alias probe, seq-copy, ANE lab, SWA/mmproj fit, `n_ubatch` cap, GPU discovery, compat hooks
+
+### Vendor rebase to elizaOS `ad56033f` / b10064 (Jul 2026) — superseded
+
+Brief elizaOS pin for in-tree QJL; replaced by ggml-org master above when operators requested upstream tip.
+### Upstream Ollama v0.31.2 cherry-picks (Jul 2026)
+
+**Why:** Upstream shipped inference fixes and MLX bumps between v0.30.11 and v0.31.2; zerollama ports additive Go/compat fixes. Vendor pin is elizaOS **`ad56033f`** (see above) — not required to match Ollama’s ggml-org `b9888` for these cherry-picks.
+
+- **#16996** — iGPU mmproj offload with `LLAMA_ARG_FIT_TARGET` padding (`llm/llama_server.go`)
+- **#15901** — apply format constraint for all thinking parsers when `think=false` (`server/routes.go`)
+- **#16994** — Flash Attention on CUDA CC 6.x (`ml/device.go`)
+- **#16949** — JetPack runner fallback to standard CUDA when jetpack libs absent (`discover/runner.go`)
+- **#16999** — UTF-8-safe compat tensor reads via `ggml_fopen` (`llama/compat/llama-ollama-compat-util.cpp`)
+- **#16964** — Gemma 4 MoE fused expert loading for quantized `.experts.*` tensors (`x/models/gemma4/gemma4.go`)
+- **#17056** — MLX bump to `de7b4ed9` (`MLX_VERSION`; `MLX_C_VERSION` unchanged)
+- **main `d47859ce`** — Qwen3.5/Next parser/renderer selection before broad `qwen3` match (`x/create/client/create.go`)
+
+**Not ported:** agent UI/harness (#17017, #16963), wholesale `x/create` rewrite (#16919), Mac-default llama-server runner removal, GGUF create hardening (#17062 — evaluate separately).
+
 ### Phase 15 v33 writable KV page bind + Darwin sidecar compatibility (Jul 2026)
 
 **Why:** PA block tables needed writable K/V tensor spans via fork `llama_memory_kv_page_map`; Mac builds had to rebuild `_kv_native` when kv-ext changed; stale `:8081` sidecars survived `zerollama serve` restarts and reported `native_ext_not_built` despite a fresh `.so` on disk.

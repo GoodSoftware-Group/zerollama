@@ -439,7 +439,8 @@ extern "C" {
         GGML_TYPE_TBQ3_TCQ  = 48, // TurboQuant TCQ-3: 128-element block, fp16 norm + 6-bit init state + 128*3-bit Viterbi-encoded symbol stream (52 B = 3.25 bpw)
         GGML_TYPE_TBQ3_K    = 49, // Upstream-style TurboQuant 3-bit, QK_K block layout
         GGML_TYPE_TBQ4_K    = 50, // Upstream-style TurboQuant 4-bit, QK_K block layout
-        GGML_TYPE_COUNT     = 51,
+        GGML_TYPE_E8_2      = 51, // E8 lattice 2-bit KV (#25352; vendor dig uses 43 — keep Q1_0_g* at 42/43)
+        GGML_TYPE_COUNT     = 52,
     };
 
     // precision
@@ -483,6 +484,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         GGML_FTYPE_MOSTLY_NVFP4     = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0      = 27, // except 1d tensors
+        GGML_FTYPE_MOSTLY_E8_2      = 29, // except 1d tensors (KV; matches vendor dig ftype)
         // milady custom ftype values
         GGML_FTYPE_MOSTLY_Q1_0_g128 = 100, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0_g32  = 101, // except 1d tensors

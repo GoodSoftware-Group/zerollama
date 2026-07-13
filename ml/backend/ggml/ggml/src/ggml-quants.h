@@ -52,6 +52,11 @@ GGML_API void quantize_row_iq2_s_ref  (const float * GGML_RESTRICT x, block_iq2_
 
 // Dequantization
 GGML_API void dequantize_row_q1_0(const block_q1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+
+GGML_API void quantize_row_e8_2_ref(const float * GGML_RESTRICT x, block_e8_2 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_e8_2(const block_e8_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_e8_2(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
 GGML_API void dequantize_row_q1_0_g32(const block_q1_0_g32 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_q1_0_g128(const block_q1_0_g128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);

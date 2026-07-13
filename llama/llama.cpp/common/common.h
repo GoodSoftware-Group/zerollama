@@ -171,6 +171,11 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_COUNT          // number of types, unknown type
 };
 
+// Alias used by ANE draft hook / vendor naming (same value as DFLASH).
+#ifndef COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH
+#define COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH COMMON_SPECULATIVE_TYPE_DFLASH
+#endif
+
 // Grammar type enumeration
 enum common_grammar_type {
     COMMON_GRAMMAR_TYPE_NONE,           // no grammar set

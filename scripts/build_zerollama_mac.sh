@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Build zerollama on macOS with CGO (Metal ggml + optional MLX dylibs + embedded libpython).
 #
-# Why go generate runs here: macOS Metal loads shaders from ggml-metal-embed.metal
-# (generated from ggml-metal.metal). If ggml adds kernels without regenerating
-# the embed, model load can succeed but first decode crashes (missing unary ops
-# such as sigmoid for qwen35 SSM). See docs/qwen35-apple-silicon.md.
+# Why metallib embed runs here: Eliza ggml-metal-device.m loads
+# ggml-metal-embed.metal via newLibraryWithData — that file must be compiled
+# default.metallib bytes (merged with eliza-shipped kernels), not Metal source.
+# Stale embeds miss new kernels (TQ2/E8/unary) and first decode can crash.
+# See docs/qwen35-apple-silicon.md.
 #
 # MLX (safetensors): when ../mlx is present, BUILD_MLX=auto (default) installs
 # libmlx/libmlxc under build/metal-v*/lib/ollama/ so repo-root ./zerollama works.
@@ -88,8 +89,20 @@ _llama_vendor_patched_ok() {
 }
 
 _llama_server_binary_ok() {
-  [[ -x "${LLAMA_SERVER_BIN}" && -f "${LLAMA_LIB}" ]] \
-    && grep -qF 'kv/seq-copy' < <(strings "${LLAMA_SERVER_BIN}" 2>/dev/null)
+  # WHY: ggml-org split server routes into libllama-server-impl.dylib; the
+  # llama-server Mach-O is a thin wrapper (~30KB) that no longer embeds
+  # "/kv/seq-copy". Probe the impl dylib (same as build_llama_server.sh).
+  [[ -x "${LLAMA_SERVER_BIN}" && -f "${LLAMA_LIB}" ]] || return 1
+  if grep -aqF 'kv/seq-copy' "${LLAMA_SERVER_BIN}" 2>/dev/null; then
+    return 0
+  fi
+  local impl
+  for impl in "$(dirname "${LLAMA_SERVER_BIN}")"/libllama-server-impl*; do
+    if [[ -f "${impl}" ]] && grep -aqF 'kv/seq-copy' "${impl}" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 _llama_lib_has_kv_page_map() {
@@ -314,8 +327,41 @@ echo ">>> SDKROOT=${SDKROOT}" >&2
 echo ">>> python3-embed: $(pkg-config --modversion python3-embed)" >&2
 
 cd "${ROOT}"
-echo ">>> regenerating ggml-metal-embed.metal" >&2
-GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src/ggml-metal/
+# Eliza Metal loader uses newLibraryWithData on ggml-metal-embed.metal — that
+# file must be compiled default.metallib bytes (not Metal source). Upstream
+# ollama JIT-compiles source; our ggml-metal-device.m embed path does not.
+METAL_DIR="${ROOT}/ml/backend/ggml/ggml/src/ggml-metal"
+METALLIB_TMP="${ROOT}/.build-stamps/metal-embed"
+echo ">>> compiling embedded Metal metallib (+ eliza-shipped kernels)" >&2
+mkdir -p "${METALLIB_TMP}" "${STAMP_DIR}"
+(
+  cd "${METAL_DIR}"
+  {
+    sed -e '/__embed_ggml-common.h__/r ../ggml-common.h' \
+        -e '/__embed_ggml-common.h__/d' \
+        ggml-metal.metal
+  } >"${METALLIB_TMP}/embed.tmp.metal"
+  sed -e '/#include "ggml-metal-impl.h"/r ggml-metal-impl.h' \
+      -e '/#include "ggml-metal-impl.h"/d' \
+      "${METALLIB_TMP}/embed.tmp.metal" >"${METALLIB_TMP}/ggml-metal-embed.metal"
+  xcrun -sdk macosx metal -O3 -DGGML_METAL_EMBED_LIBRARY=1 -DGGML_METAL_HAS_BF16=1 \
+    -c "${METALLIB_TMP}/ggml-metal-embed.metal" -o "${METALLIB_TMP}/ggml-metal-embed.air"
+  for _f in turbo3 turbo4 turbo3_tcq qjl qjl_set_rows polar polar_preht fused_attn_qjl_tbq fused_attn_qjl_polar istft; do
+    xcrun -sdk macosx metal -O3 -c "eliza-shipped/${_f}.metal" -o "${METALLIB_TMP}/${_f}.air"
+  done
+  xcrun -sdk macosx metallib \
+    "${METALLIB_TMP}/ggml-metal-embed.air" \
+    "${METALLIB_TMP}/turbo3.air" "${METALLIB_TMP}/turbo4.air" "${METALLIB_TMP}/turbo3_tcq.air" \
+    "${METALLIB_TMP}/qjl.air" "${METALLIB_TMP}/qjl_set_rows.air" \
+    "${METALLIB_TMP}/polar.air" "${METALLIB_TMP}/polar_preht.air" \
+    "${METALLIB_TMP}/fused_attn_qjl_tbq.air" "${METALLIB_TMP}/fused_attn_qjl_polar.air" \
+    "${METALLIB_TMP}/istft.air" \
+    -o "${METALLIB_TMP}/default.metallib"
+  cp "${METALLIB_TMP}/default.metallib" "${METAL_DIR}/ggml-metal-embed.metal"
+)
+# Force as to re-.incbin: go build may skip ggml-metal-embed.s when only the
+# .metal payload changed (mtime race left stale shaders in the binary).
+touch "${METAL_DIR}/ggml-metal-embed.s"
 
 if _should_build_mlx; then
   echo ">>> building MLX dylibs (BUILD_MLX=${BUILD_MLX})" >&2
