@@ -57,6 +57,8 @@ L1 ships **tuned flags on q8_0** by default. Eliza-v3’s largest wins — **QJL
 
 L1 profile aliases `turbo3_0` → `tbq3_0`, etc.
 
+**Flash Attention required:** quantized fork KV (`tbq*`, `qjl*`, `q4_polar`) needs `-fa on`. Without it llama-server fails with *quantized V cache was requested, but this requires Flash Attention*. GPU JSON already sets `flash_attn: true` on CUDA cards; `llama_argv_from_profile_flags` also forces `-fa on` when those cache types are active.
+
 **Recommended pairings (from eliza SPECS):**
 
 | GPU class | K | V |

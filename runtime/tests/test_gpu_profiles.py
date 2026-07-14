@@ -85,6 +85,20 @@ def test_llama_argv_from_profile_flags():
     assert "--mlock" in args
 
 
+def test_llama_argv_forces_fa_for_tbq_without_flash_flag():
+    """Quantized V/K cache requires Flash Attention (llama.cpp hard error otherwise)."""
+    args = llama_argv_from_profile_flags(
+        {
+            "cache_type_k": "tbq4_0",
+            "cache_type_v": "tbq3_0",
+            "flash_attn": False,
+            "batch_size": 512,
+        }
+    )
+    assert "-fa" in args
+    assert args[args.index("-fa") + 1] == "on"
+
+
 def test_llama_argv_respects_emit_options():
     flags = {"ctx_size": 32768, "mlock": True, "batch_size": 512}
     args = llama_argv_from_profile_flags(flags, emit={"ctx_size": False, "mlock": False})

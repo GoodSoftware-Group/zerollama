@@ -98,8 +98,23 @@ if [[ -n "${CUDA_LLAMA_MODEL:-}" ]]; then
 fi
 smoke_m3_resolve_signoff_model
 
+_radix_runtime_port() {
+  local url="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
+  # shellcheck disable=SC2001
+  echo "${url}" | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p'
+}
+
+_radix_llama_server_port() {
+  local rt
+  rt="$(_radix_runtime_port)"
+  [[ -n "${rt}" ]] || rt=8081
+  echo $((rt + 1))
+}
+
 _radix_kill_llama_server() {
-  lsof -ti :8082 2>/dev/null | xargs kill 2>/dev/null || true
+  local ls_port
+  ls_port="$(_radix_llama_server_port)"
+  lsof -ti ":${ls_port}" 2>/dev/null | xargs kill 2>/dev/null || true
   sleep 1
 }
 
@@ -110,8 +125,12 @@ _radix_force_runtime_restart() {
     macos_runtime_stop_sidecar_port
   fi
   _radix_kill_llama_server
+  local rt_port
+  rt_port="$(_radix_runtime_port)"
+  [[ -n "${rt_port}" ]] || rt_port=8081
   if curl -sf -m 1 "${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}/health" >/dev/null 2>&1; then
-    lsof -ti :8081 2>/dev/null | xargs kill -9 2>/dev/null || true
+    # WHY kill only the smoke runtime port — never hardcode :8081 (prod may be there).
+    lsof -ti ":${rt_port}" 2>/dev/null | xargs kill -9 2>/dev/null || true
     sleep 2
   fi
   _radix_kill_llama_server
@@ -206,8 +225,18 @@ def llama_server_base(health: dict) -> str | None:
         base = ls.get("base_url") or ls.get("url")
         if base:
             return str(base).rstrip("/")
-    port = health.get("llama_server_port") or 8082
-    return f"http://127.0.0.1:{port}"
+    port = health.get("llama_server_port")
+    if port is None:
+        # WHY: subprocess llama-server is runtime_port+1; never assume :8082 when
+        # ZEROLLAMA_RUNTIME_URL points at an alternate smoke port (e.g. :18081).
+        try:
+            from urllib.parse import urlparse
+
+            rt = urlparse(os.environ.get("ZEROLLAMA_RUNTIME_URL", "http://127.0.0.1:8081"))
+            port = (rt.port or 8081) + 1
+        except Exception:
+            port = 8082
+    return f"http://127.0.0.1:{int(port)}"
 
 
 def probe_seq_copy(base: str) -> bool:

@@ -498,6 +498,21 @@ def llama_argv_from_profile_flags(
     cv = flags.get("cache_type_v")
     if cv:
         args.extend(["--cache-type-v", str(cv)])
+    # WHY force FA for quantized fork KV: llama.cpp rejects TBQ/QJL/Polar V (and
+    # typically K) without Flash Attention — "quantized V cache … requires Flash
+    # Attention". Profile JSON already sets flash_attn on CUDA cards; this guards
+    # manual overrides / Vulkan profiles that leave FA off.
+    if not flags.get("flash_attn"):
+        need_fa = False
+        for raw in (ck, cv):
+            if not raw:
+                continue
+            t = str(raw).lower()
+            if t.startswith(("tbq", "qjl", "q4_polar", "polar")) or "polar" in t:
+                need_fa = True
+                break
+        if need_fa:
+            args.extend(["-fa", "on"])
     if emit_opts.get("mlock", True) and flags.get("mlock"):
         args.append("--mlock")
     if flags.get("no_mmap"):

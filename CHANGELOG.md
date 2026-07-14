@@ -15,6 +15,8 @@ All notable changes to this project are documented in this file. The format is b
 - 4090 gates: TBQ long-ctx **−27…−35% VRAM**; QJL/Polar **−48…−85% decode** @ 8k/27k — speed stays experimental
 - Docs / pin status / `l2_cuda_bench.sh` health alignment; vendor → in-tree sync
 - **`LLAMA_CPP_VENDOR_HEAD`** → `95f753fd` (post-0067–0070 tip); patch doctor / build scripts probe `libllama-server-impl*` for `/kv/seq-copy` (thin wrapper no longer embeds the string)
+- Force `-fa on` when fork KV types are TBQ/QJL/Polar (llama.cpp hard-requires FA for quantized V)
+- `l3_radix_prefix_smoke.sh`: derive llama-server port from `ZEROLLAMA_RUNTIME_URL` (never hard-kill prod `:8081`/`:8082`)
 
 **Non-goals:** flipping production `llama_fork` off stock; merging fork profiles as default-on for tok/s.
 
