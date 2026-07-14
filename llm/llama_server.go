@@ -54,6 +54,14 @@ const (
 	openEndedGenerationContextMultiplier = 10
 )
 
+const (
+	llamaArgFitTargetEnv = "LLAMA_ARG_FIT_TARGET"
+	bytesPerMiB          = 1 << 20
+
+	// mmprojOffloadHeadroom leaves 1 GiB for backend buffers beyond projector weights.
+	mmprojOffloadHeadroom = 1 << 30
+)
+
 // DefaultEmbeddingNumBatchForContext caps the embedding batch default to the
 // active context length before it is passed to llama-server.
 func DefaultEmbeddingNumBatchForContext(numCtx int) int {
@@ -133,6 +141,11 @@ type llamaServerRunner struct {
 	launch                  llamaServerLaunchConfig
 	output                  *memoryParsingWriter
 	mmprojOffloadOOMRetried bool
+
+	// Recorded at spawn time so a later rebuild of llama-server (same path,
+	// newer mtime) can be detected without restarting zerollama serve itself.
+	serverBinPath    string
+	serverBinModTime time.Time
 }
 
 type llamaServerLaunchConfig struct {
@@ -189,6 +202,28 @@ func (s *llamaServerRunner) GetPort() int {
 
 func (s *llamaServerRunner) HasExited() bool {
 	return s.cmd != nil && s.cmd.ProcessState != nil && s.cmd.ProcessState.ExitCode() >= 0
+}
+
+// BinaryStale reports whether the llama-server binary this runner was spawned
+// from has since been rebuilt in place (same resolved path, newer mtime) —
+// e.g. via ./scripts/build_llama_server.sh or ./scripts/build_zerollama_mac.sh
+// while this runner was still alive. The scheduler uses this to force a
+// reload instead of silently keeping a stale subprocess running forever.
+func (s *llamaServerRunner) BinaryStale() bool {
+	if s.serverBinPath == "" || s.serverBinModTime.IsZero() {
+		return false
+	}
+	exe, err := FindLlamaServer()
+	if err != nil || exe != s.serverBinPath {
+		// Path resolution changed (e.g. env override added/removed) — let the
+		// normal reload paths handle that; don't force an unload here.
+		return false
+	}
+	st, err := os.Stat(exe)
+	if err != nil {
+		return false
+	}
+	return st.ModTime().After(s.serverBinModTime)
 }
 
 func (s *llamaServerRunner) llamaServerMediaMarker() string {
@@ -760,7 +795,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 		cmd.Stderr = out
 	}
 	cmd.SysProcAttr = LlamaServerSysProcAttr
-	SetupLlamaServerCommandEnv(cmd, exe, launch.gpuLibs, launch.extraEnvs)
+	SetupLlamaServerCommandEnv(cmd, exe, launch.gpuLibs, launch.extraEnvsForStart())
 
 	slog.Info("starting llama-server", "cmd", cmd)
 	slog.Debug("subprocess", "", filteredEnv(cmd.Env))
@@ -961,11 +996,6 @@ func appendMainGPUArgs(params []string, opts api.Options) []string {
 	return append(params, "--split-mode", "none", "--main-gpu", strconv.Itoa(opts.MainGPU))
 }
 
-const (
-	// mmprojOffloadHeadroom leaves 1 GiB for backend buffers beyond projector weights.
-	mmprojOffloadHeadroom = 1 << 30
-)
-
 func appendMMProjArgs(params []string, launch llamaServerLaunchConfig) []string {
 	if len(launch.projectors) == 0 {
 		return params
@@ -998,9 +1028,6 @@ func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLay
 	requiredMemory := mmprojMemory + mmprojOffloadHeadroom
 
 	for _, gpu := range gpus {
-		if gpu.Integrated && gpu.Library != "Metal" {
-			return true, "shared-memory-gpu"
-		}
 		memory := gpu.FreeMemory
 		if memory == 0 || (gpu.TotalMemory > 0 && gpu.TotalMemory < memory) {
 			memory = gpu.TotalMemory
@@ -1011,6 +1038,47 @@ func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLay
 	}
 
 	return false, ""
+}
+
+func (launch llamaServerLaunchConfig) extraEnvsForStart() map[string]string {
+	pad, ok := launch.mmprojFitTargetMiB()
+	if !ok {
+		return launch.extraEnvs
+	}
+
+	if existing, ok := launch.extraEnvs[llamaArgFitTargetEnv]; ok {
+		existingTarget, err := strconv.ParseUint(existing, 10, 64)
+		if err != nil {
+			slog.Warn("invalid llama-server fit target", "env", llamaArgFitTargetEnv, "value", existing, "error", err)
+			return launch.extraEnvs
+		}
+
+		envs := cloneStringMap(launch.extraEnvs)
+		envs[llamaArgFitTargetEnv] = strconv.FormatUint(existingTarget+pad, 10)
+		return envs
+	}
+
+	if _, ok := os.LookupEnv(llamaArgFitTargetEnv); ok {
+		// Preserve an inherited user override. SetupLlamaServerCommandEnv
+		// will pass it through unless extraEnvs overrides it.
+		return launch.extraEnvs
+	}
+
+	envs := cloneStringMap(launch.extraEnvs)
+	envs[llamaArgFitTargetEnv] = strconv.FormatUint(pad, 10)
+	return envs
+}
+
+func (launch llamaServerLaunchConfig) mmprojFitTargetMiB() (uint64, bool) {
+	if len(launch.projectors) == 0 || launch.mmprojMemory == 0 {
+		return 0, false
+	}
+	if disable, _ := launch.mmprojOffloadDisabled(); disable {
+		return 0, false
+	}
+
+	requiredMemory := launch.mmprojMemory + mmprojOffloadHeadroom
+	return (requiredMemory + bytesPerMiB - 1) / bytesPerMiB, true
 }
 
 // mmprojMemoryRequirement is a stopgap until fit accounts for mmproj memory directly.
@@ -1103,7 +1171,9 @@ func appendSpeculativeArgs(params []string, serverBin string, config LlamaServer
 			"--spec-ngram-simple-size-m", strconv.Itoa(sizeM),
 			"--spec-ngram-simple-min-hits", strconv.Itoa(minHits),
 		)
-	case "dflash":
+	case "dflash", "draft-dflash":
+		// ggml-org renamed the CLI token to draft-dflash (patch 0031); keep
+		// accepting legacy "dflash" from model Modelfile / eliza tags.
 		if config.DraftModelPath == "" {
 			return params
 		}
@@ -1112,7 +1182,7 @@ func appendSpeculativeArgs(params []string, serverBin string, config LlamaServer
 			nMax = 4
 		}
 		params = append(params,
-			"--spec-type", "dflash",
+			"--spec-type", "draft-dflash",
 			"--spec-draft-model", config.DraftModelPath,
 			"--spec-draft-n-max", strconv.Itoa(nMax),
 		)
@@ -1335,6 +1405,13 @@ func (s *llamaServerRunner) startProcess() error {
 	s.doneErr = nil
 	s.loadStart = time.Now()
 	s.startLoadTracking(s.loadStart)
+
+	if exe, err := FindLlamaServer(); err == nil {
+		s.serverBinPath = exe
+		if st, err := os.Stat(exe); err == nil {
+			s.serverBinModTime = st.ModTime()
+		}
+	}
 
 	// Reap subprocess when it exits.
 	go func(cmd *exec.Cmd, done chan struct{}) {
