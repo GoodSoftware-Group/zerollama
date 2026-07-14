@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### ComfyUI image backend (agent-max utility) — Jul 2026
+
+**Why:** Agents need edit / img2img / ControlNet / LoRA on Qwen-Image, FLUX.1/2-dev, GLM-Image, and Klein 9B — not only MLX Z-Image / Klein 4B. Porting each DiT into `x/imagegen` would take months per family; ComfyUI already packages those graphs. Zerollama **orchestrates** a running ComfyUI (`modality_backends.image=comfyui`) instead of embedding Diffusers or expanding the raw `external-image` hook.
+
+**Shipped:**
+
+- **`BackendComfyUI`** + `handleComfyImageGenerate` — routes `/api/generate` and OpenAI `/v1/images/generations|edits`; calls `vram.PrepareForImageGen` (**why:** exclusive GPU like MLX, unlike historical `external-image`).
+- **`server/modality/comfyui`** — upload → inject bindings → `POST /prompt` → poll `/history` → `/view`; surfaces Comfy `execution_error` details (**why:** `/prompt` often returns 200 before node OOM/missing-checkpoint fails).
+- **Agent options** — `options.workflow`, `negative_prompt`, `lora` / `lora_strength`, `control_image` / `control_strength`; discovery via `GET /api/image/workflows?model=`.
+- **Config-only presets** — `comfy/qwen-image` (+ img2img/controlnet), `comfy/qwen-image-edit`, `comfy/flux1-dev`, `comfy/flux2-dev`, `comfy/glm-image`, `comfy/flux2-klein-9b`; register with `./scripts/register_comfy_models.sh`.
+- **Env** — `OLLAMA_COMFYUI_URL`, `OLLAMA_COMFYUI_TIMEOUT`, `OLLAMA_COMFYUI_WORKFLOWS_ROOT` (**why root:** manifests ship relative `scripts/comfyui/...` paths that otherwise depend on daemon cwd).
+- **Workflow JSON** — worked examples under `scripts/comfyui/`; **not** verified drop-in against every Comfy+custom-node install (calibrate filenames/node types first). No fake default LoRA (`none.safetensors`) — Comfy rejects missing files.
+- **Tests** — unit (render, mock HTTP, path resolve, execution errors); opt-in `RUN_E2E_COMFY=1`.
+- **Doc:** [comfyui-image-backend.md](docs/comfyui-image-backend.md), [multimodal-backends.md](docs/multimodal-backends.md), roadmap image-generation track.
+
+**Non-goals:** bundling ComfyUI in the Go binary; MLX ports of Qwen/GLM/FLUX.1; interactive-speed guarantees for GLM-Image / FLUX.2-dev on 16 GB; cancelling in-flight Comfy jobs on HTTP disconnect (follow-up: `/interrupt`).
+
 ### Qwen3-Next MTP (patch 0065)
 
 **What:** Port [#25589](https://github.com/ggml-org/llama.cpp/pull/25589) for our hybrid MoE stack (qwen3next / eliza-class).

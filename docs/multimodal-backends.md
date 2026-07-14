@@ -16,7 +16,7 @@ Merging env + manifest avoids forcing every user to edit JSON for safety caps, w
 In the model `config.json` (same layer as other `model.ConfigV2` fields):
 
 - **`modality_backends`**: map of modality key → driver name.
-  - `image`: `mlx-imagegen` (default, implicit), `external-image` (stable-diffusion.cpp; [sd-vulkan-a380.md](./sd-vulkan-a380.md)), or `openvino-image` (OpenVINO GenAI; [sd-openvino-a380.md](./sd-openvino-a380.md)).
+  - `image`: `mlx-imagegen` (default, implicit), `external-image` (stable-diffusion.cpp; [sd-vulkan-a380.md](./sd-vulkan-a380.md)), `openvino-image` (OpenVINO GenAI; [sd-openvino-a380.md](./sd-openvino-a380.md)), or `comfyui` (proxy to a running ComfyUI server for edit/img2img/ControlNet/LoRA — see [comfyui-image-backend.md](./comfyui-image-backend.md)).
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
   - `speech`: `piper` for Piper TTS (CPU ONNX), or `remote-tts` for an OpenAI-compatible HTTP TTS server (Chatterbox, Orpheus, Kokoro, …).
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
@@ -38,6 +38,8 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `wan_gguf_path` (optional): GGUF weights when safetensors+offload OOM on 16 GB.
   - `sd_cli`, `sd_model`: [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Vulkan; [sd-vulkan-a380.md](./sd-vulkan-a380.md))
   - `ov_model_dir`, `ov_python`, `external_image_bin`: OpenVINO GenAI ([sd-openvino-a380.md](./sd-openvino-a380.md))
+  - `comfy_workflow_dir`: directory of ComfyUI API-format workflow template JSON files (one per named workflow, e.g. `t2i.json`, `edit.json`) for `modality_backends.image=comfyui`.
+  - `comfy_default_workflow` (optional): workflow name used when the request omits `options.workflow`; falls back to `t2i`.
 - **`image_generation`** (optional): per-model defaults for `external-image` / `openvino-image` — `width`, `height`, `steps`, `cfg_scale`, `sampler`, `diffusion_fa`, `vae_on_cpu`, `vae_tiling`. **Why manifest not env:** Intel ANV needs `diffusion_fa: true` for sd.cpp on Arc; SD-Turbo needs low steps/cfg — these vary per tag, not fleet-wide.
 
 Example (SD 1.5 Vulkan on Arc):
@@ -172,6 +174,9 @@ Registered tags: `piper-lessac:latest`, `whisper-base:latest`, `chatterbox:lates
 | `OLLAMA_TTS_TIMEOUT` | Max runtime for remote TTS HTTP (default `5m`). |
 | `OLLAMA_EXTERNAL_IMAGE_BIN` | Script/binary for `modality_backends.image=external-image`. |
 | `OLLAMA_EXTERNAL_IMAGE_TIMEOUT` | Max runtime for external image hook (default `10m`). |
+| `OLLAMA_COMFYUI_URL` | Base URL for a running ComfyUI server (default `http://127.0.0.1:8188`) when `modality_backends.image=comfyui`. |
+| `OLLAMA_COMFYUI_TIMEOUT` | Max wall time for one Comfy workflow run: queue + poll + download (default `10m`; heavy models like GLM-Image/FLUX.2-dev may need more on 16GB cards). |
+| `OLLAMA_COMFYUI_WORKFLOWS_ROOT` | Base directory that a relative `backend_paths.comfy_workflow_dir` is joined against (default: daemon's current working directory). Set this or use absolute paths if `zerollama serve` doesn't run from the repo root. |
 | `OLLAMA_SGLANG_URL` | Base URL for SGLang (e.g. `http://127.0.0.1:30000`) when `video_understanding` is `sglang`. |
 | `OLLAMA_VIDEO_ALLOW_INSECURE_HTTP` | Set to `1` / `true` to allow `http://` for remote `video_url` fetches (default: **https only**). |
 | `OLLAMA_FFMPEG` | `ffmpeg` binary for native video frame sampling (default: `ffmpeg` on `PATH`). |
@@ -209,6 +214,20 @@ When `modality_backends.image` is `external-image` or `openvino-image`, Ollama s
 **Why subprocess not in-process ggml:** diffusion UNet/VAE stacks are separate from chat GGUF runners; sd.cpp and OpenVINO GenAI ship their own schedulers and weight formats. Subprocess isolation keeps chat scheduler stable and lets operators swap backends without recompiling zerollama.
 
 The model must still declare the `image` capability. List with `zerollama ls image`; bench wall time with `zerollama bench MODEL --force`.
+
+### ComfyUI image backend
+
+When `modality_backends.image` is `comfyui`, Zerollama proxies to a running [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server.
+
+**Why another image driver (alongside MLX, external-image, and OpenVINO):**
+
+| Driver | Use when |
+|--------|----------|
+| `mlx-imagegen` (default) | Fast Z-Image / Klein 4B on the in-tree MLX subprocess |
+| `comfyui` | Agent utility: edit, img2img, ControlNet, LoRA, Qwen/FLUX/GLM graphs |
+| `external-image` | One-off `OLLAMA_EXTERNAL_IMAGE_BIN` script (no workflow discovery) |
+
+Porting each HF DiT into MLX would take months; Comfy already packs those graphs. See **[comfyui-image-backend.md](./comfyui-image-backend.md)** for setup, model presets (`comfy/*`), and `options.*`. Discovery: `GET /api/image/workflows?model=<name>`.
 
 ## Audio formats
 

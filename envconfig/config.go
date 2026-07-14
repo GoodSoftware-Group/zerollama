@@ -550,6 +550,30 @@ func ModalityExternalImageTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_EXTERNAL_IMAGE_TIMEOUT", 10*time.Minute)
 }
 
+// ComfyUIURL is the base URL for a running ComfyUI server when
+// modality_backends.image=comfyui. Defaults to the stock local port.
+// WHY a separate process URL (not in-process Diffusers): Comfy owns custom-node
+// graphs and HF weight layout; Zerollama only injects agent options and polls PNG output.
+func ComfyUIURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(cmp.Or(Var("OLLAMA_COMFYUI_URL"), "http://127.0.0.1:8188")), "/")
+}
+
+// ModalityComfyUITimeout bounds one Comfy workflow (queue + poll + download).
+// WHY default 10m (not the short timeouts used for Whisper/Piper): Qwen-Image GGUF,
+// GLM-Image, and FLUX.2-dev on 16GB cards routinely take minutes per image; a 30s
+// deadline would abort valid agent jobs.
+func ModalityComfyUITimeout() time.Duration {
+	return modalityTimeout("OLLAMA_COMFYUI_TIMEOUT", 10*time.Minute)
+}
+
+// ComfyUIWorkflowsRoot is an optional base for relative backend_paths.comfy_workflow_dir
+// values. WHY: shipped modelfiles use short paths like scripts/comfyui/qwen-image that
+// only resolve if the daemon cwd is the repo root (or this root is set). Absolute and
+// ~/… paths ignore this variable.
+func ComfyUIWorkflowsRoot() string {
+	return Var("OLLAMA_COMFYUI_WORKFLOWS_ROOT")
+}
+
 func modalityTimeout(envKey string, defaultDur time.Duration) time.Duration {
 	if s := Var(envKey); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {

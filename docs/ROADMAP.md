@@ -484,6 +484,33 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build_mlx_dylibs_mac.s
 
 **Future tracks:** GGUF Wan2.2 if 16 GB OOMs; upstream proxy for non-Wan stacks; CogVideoX / LTX via `runner: diffusers`.
 
+## Image generation — MLX fast path + ComfyUI utility (partial)
+
+**Why a separate track from Wan / VLM / MLX-only imagegen:** Text understanding (vision encoders), Wan T2V (minute-scale diffusion via training `run_script`), and **still-image generation** share almost no code. Inside still-image generation there are two jobs:
+
+1. **Interactive T2I** on a small set of models → keep in-tree MLX (`x/imagegen`).
+2. **Agent utility** (edit, ControlNet, LoRA, many HF DiTs) → orchestrate ComfyUI rather than reimplement DiTs in Go.
+
+Mixing “port Qwen-Image to MLX” with “agent needs ControlNet” hid the real product decision: **maximum agent utility comes from Comfy graphs**, not from another MLX model family.
+
+**Shipped (v0 — Jul 2026):**
+
+- `modality_backends.image=comfyui` + `server/modality/comfyui` HTTP bridge; OpenAI `/v1/images/*` via existing generate middleware.
+- Named workflows + `GET /api/image/workflows`; config-only `comfy/*` manifests; `PrepareForImageGen` before Comfy jobs.
+- Worked-example workflow JSON for Qwen-Image(+edit), FLUX.1/2-dev, GLM-Image, Klein 9B — **operator-calibrated**, not bit-for-bit verified against every Comfy install.
+
+**Operator guide:** [comfyui-image-backend.md](./comfyui-image-backend.md). Fast path stays [imagegen-zimage-turbo.md](./imagegen-zimage-turbo.md).
+
+| Milestone | Goal | Why |
+|-----------|------|-----|
+| **v0** | Comfy bridge + agent options + discovery | **Done** — unlock utility without MLX DiT ports. |
+| **v0.1** | Calibrate one golden workflow (e.g. Qwen-Image GGUF) on 5080 / ship GPU | Prove templates end-to-end; document exact custom nodes + filenames. |
+| **v0.2** | Cancel /interrupt Comfy on client disconnect | Stop orphaned GPU jobs when agents abort polls. |
+| **v0.3** | Optional `upscale` template + checkpoint override in `backend_paths` | Plan leftover; agents ask for upscale often. |
+| **Later** | Async job shape (Wan-like) for multi-minute GLM/FLUX.2 | Sync HTTP is fine for demos; agents need job ids for minutes-long gens. |
+
+**Non-goals:** shipping ComfyUI inside the Go binary; dropping MLX Z-Image/Klein; guaranteeing interactive latency for GLM-Image / FLUX.2-dev on 16 GB; replacing `external-image` (escape hatch remains).
+
 ## Option 2 — Narrow the gap without SGLang (in-tree over time)
 
 **Execution checklist:** [video-parity.md](./video-parity.md) (reference workloads + parity matrix). **Shipped borrowings:** [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md).

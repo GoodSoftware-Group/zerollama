@@ -313,6 +313,8 @@ L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh   # optional: prefix-cache
 
 **MLX image generation (experimental):** build MLX-C once, set `OLLAMA_LIBRARY_PATH` to include `mlx_cuda_v12`, pull `x/z-image-turbo`, stop other models, then `zerollama run x/z-image-turbo "prompt"`. Default **384×384** on 16 GB CUDA — **why:** activations scale with pixels². Guide: [imagegen-zimage-turbo.md](docs/imagegen-zimage-turbo.md).
 
+**ComfyUI image backend (agent utility):** for edit / img2img / ControlNet / LoRA on Qwen-Image, FLUX.1/2-dev, GLM-Image, Klein 9B — run a local ComfyUI, register `./scripts/register_comfy_models.sh`, then `zerollama run comfy/qwen-image "prompt"` (or `/v1/images/*`). **Why not port every DiT to MLX:** months per family; Comfy already packs the graphs. **Why not only `external-image`:** that hook has no workflow discovery. Guide: [comfyui-image-backend.md](docs/comfyui-image-backend.md). Env: `OLLAMA_COMFYUI_URL`, `OLLAMA_COMFYUI_TIMEOUT`, `OLLAMA_COMFYUI_WORKFLOWS_ROOT`.
+
 **Why a separate build script:** CGO needs Xcode SDK, embedded Python, and Metal ggml from the **patched in-tree** vendor (`llama/patches/` on `b9611`), not only sibling `../llama.cpp`.
 
 ```bash
@@ -424,7 +426,8 @@ Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models.
 - [SGLang multimodal borrowings](docs/sglang-multimodal-borrowings.md) — **why** native path adopted pooled fetch, expansion LRU, session cache, padded inject, precomputed/processor ingest, OpenAI usage breakdown, `cached_tokens`, multi-turn preflight scoping, and OpenAI `prompt_cache_key` without requiring SGLang.
 - [Wan text-to-video (T2V)](docs/wan-t2v.md) — **why** async `/v1/videos` uses the training `run_script` queue (not GGUF chat), **why** checkpoints install separately, defer ids, and artifact paths.
 - [MLX image generation (Z-Image Turbo)](docs/imagegen-zimage-turbo.md) — **why** diffusion uses an MLX subprocess (not ggml/runtime); 16 GB CUDA staged VRAM; `zerollama run x/z-image-turbo`; build `libmlxc.so` + `patch_mlx_cuda_vram.sh`.
-- [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, and **OLLAMA_VIDEO_*** for native video.
+- [ComfyUI image backend](docs/comfyui-image-backend.md) — **why** agent utility (edit/ControlNet/LoRA) goes through Comfy instead of new MLX DiTs; named workflows; `GET /api/image/workflows`; calibrate example graphs before production.
+- [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, ComfyUI, and **OLLAMA_VIDEO_*** for native video.
 - [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
 - [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.
 - [Phase 17 llama-server path](docs/phase17-llama-server.md) — **why** upstream Go→llama-server is ported but Mac keeps ggml default

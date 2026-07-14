@@ -1,0 +1,4 @@
+# Config-only ComfyUI FLUX.2 Klein 9B preset (weights live in ComfyUI's models/ tree, not Ollama blobs).
+# Register with: ../../scripts/register_comfy_models.sh comfy/flux2-klein-9b modelfiles/comfy-flux2-klein-9b/config.json
+# Note: the fast MLX path (x/flux2-klein) targets the 4B-shaped variant; Klein 9B runs through
+# Comfy — see docs/comfyui-image-backend.md.

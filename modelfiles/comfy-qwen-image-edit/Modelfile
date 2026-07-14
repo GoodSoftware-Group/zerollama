@@ -1,0 +1,5 @@
+# Config-only ComfyUI Qwen-Image-Edit preset (weights live in ComfyUI's models/ tree, not Ollama blobs).
+# Register with: ../../scripts/register_comfy_models.sh comfy/qwen-image-edit modelfiles/comfy-qwen-image-edit/config.json
+# Requires: a running ComfyUI server with qwen-image-edit GGUF weights (+ optional Lightning LoRA
+# for 8-step edits) — see docs/comfyui-image-backend.md. Pass the source image via
+# /v1/images/edits or api.GenerateRequest.Images[0].

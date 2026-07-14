@@ -50,6 +50,7 @@ import (
 	"github.com/ollama/ollama/server/internal/client/ollama"
 	"github.com/ollama/ollama/server/internal/registry"
 	"github.com/ollama/ollama/server/modality"
+	"github.com/ollama/ollama/server/modality/comfyui"
 	"github.com/ollama/ollama/server/openapi"
 	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/template"
@@ -824,17 +825,17 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}()
 		firstToken := true
 		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
-			Prompt:          prompt,
-			PromptTokens:    mlxCompletionPromptTokens(m, promptTokens),
-			Images:          images,
-			Format:          req.Format,
-			Options:         opts,
-			Shift:           req.Shift == nil || *req.Shift,
-			Truncate:        req.Truncate == nil || *req.Truncate,
-			PreservedTokens: preservedTokensForCompletion(builtinParser),
-			LeadingBOS:      leadingBOS,
-			Logprobs:        req.Logprobs,
-			TopLogprobs:     req.TopLogprobs,
+			Prompt:            prompt,
+			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
+			Images:            images,
+			Format:            req.Format,
+			Options:           opts,
+			Shift:             req.Shift == nil || *req.Shift,
+			Truncate:          req.Truncate == nil || *req.Truncate,
+			PreservedTokens:   preservedTokensForCompletion(builtinParser),
+			LeadingBOS:        leadingBOS,
+			Logprobs:          req.Logprobs,
+			TopLogprobs:       req.TopLogprobs,
 			PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
 			SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
 		}, func(cr llm.CompletionResponse) {
@@ -1868,6 +1869,18 @@ func (s *Server) ListHandler(c *gin.Context) {
 	models = mergeElizaCloudModels(c.Request.Context(), models)
 	models = mergeLMStudioModels(models)
 
+	// Stock ollama clients (through at least 0.31.x) do digest[:12] unconditionally
+	// in `ollama ls` and panic on empty digests. Ensure every row is safe.
+	for i := range models {
+		if models[i].Digest == "" {
+			seed := models[i].Model
+			if seed == "" {
+				seed = models[i].Name
+			}
+			models[i].Digest = listCatalogDigest("tags:" + seed)
+		}
+	}
+
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
 }
 
@@ -2168,6 +2181,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 
 	// Inference
 	r.GET("/api/ps", s.PsHandler)
+	r.GET("/api/image/workflows", s.ImageWorkflowsHandler)
 	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.runtimeGenerateProxy(), s.GenerateHandler)...)
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
@@ -3138,18 +3152,18 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				PromptTokens:        completionPromptTokens,
 				PaddedLayoutConsume: paddedLayoutConsume,
 				Images:              images,
-				Format:          currentFormat,
-				Options:         opts,
-				Shift:           req.Shift == nil || *req.Shift,
-				Truncate:        truncate,
-				PreservedTokens: preservedTokensForCompletion(builtinParser),
-				ToolCallTag:     toolCallTagForCompletion(toolParser),
-				LeadingBOS:      leadingBOSForModel(m),
-				Logprobs:        req.Logprobs,
-				TopLogprobs:     req.TopLogprobs,
-				PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
-				SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
-				Gemma4PaddedMedia: gemma4PaddedMedia,
+				Format:              currentFormat,
+				Options:             opts,
+				Shift:               req.Shift == nil || *req.Shift,
+				Truncate:            truncate,
+				PreservedTokens:     preservedTokensForCompletion(builtinParser),
+				ToolCallTag:         toolCallTagForCompletion(toolParser),
+				LeadingBOS:          leadingBOSForModel(m),
+				Logprobs:            req.Logprobs,
+				TopLogprobs:         req.TopLogprobs,
+				PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
+				SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
+				Gemma4PaddedMedia:   gemma4PaddedMedia,
 			}, func(r llm.CompletionResponse) {
 				if emitMLXPrefillStatus(ch, req.Model, r.PrefillProcessed, r.PrefillTotal, r.Content, r.Done) {
 					return
@@ -3496,6 +3510,176 @@ func (s *Server) handleExternalImageGenerate(c *gin.Context, req api.GenerateReq
 	c.JSON(http.StatusOK, res)
 }
 
+// handleComfyImageGenerate runs modality_backends.image=comfyui via a running ComfyUI server.
+//
+// WHY this handler (vs scheduleRunner + MLX): Comfy owns DiT weights and node graphs;
+// Zerollama only injects agent fields (prompt/seed/size/lora/control) into a named
+// workflow template and returns the PNG. That keeps /api/generate and /v1/images/*
+// identical for agents while avoiding months of per-family MLX ports.
+func (s *Server) handleComfyImageGenerate(c *gin.Context, req api.GenerateRequest, m *Model, checkpointStart time.Time) {
+	if req.Prompt == "" {
+		c.JSON(http.StatusOK, api.GenerateResponse{
+			Model:      req.Model,
+			CreatedAt:  time.Now().UTC(),
+			Done:       true,
+			DoneReason: "load",
+		})
+		return
+	}
+
+	workflowDir := modality.PathFor(m.Config, "comfy_workflow_dir")
+	defaultWorkflow := modality.PathFor(m.Config, "comfy_default_workflow")
+
+	var seed int64
+	var seedSet bool
+	if sv, ok := req.Options["seed"]; ok {
+		seedSet = true
+		switch v := sv.(type) {
+		case int:
+			seed = int64(v)
+		case int64:
+			seed = v
+		case float64:
+			seed = int64(v)
+		}
+	}
+
+	comfyReq := comfyui.Request{
+		WorkflowDir:     workflowDir,
+		Workflow:        stringOption(req.Options, "workflow"),
+		DefaultWorkflow: defaultWorkflow,
+		Prompt:          req.Prompt,
+		NegativePrompt:  stringOption(req.Options, "negative_prompt"),
+		Width:           req.Width,
+		Height:          req.Height,
+		Steps:           req.Steps,
+		Seed:            seed,
+		SeedSet:         seedSet,
+		LoRAName:        stringOption(req.Options, "lora"),
+	}
+	if strength, ok := floatOption(req.Options, "lora_strength"); ok {
+		comfyReq.LoRAStrength = strength
+		comfyReq.LoRAStrengthSet = true
+	}
+	if strength, ok := floatOption(req.Options, "control_strength"); ok {
+		comfyReq.ControlStrength = strength
+		comfyReq.ControlStrengthSet = true
+	}
+	if len(req.Images) > 0 {
+		comfyReq.Image = req.Images[0]
+	}
+	if controlB64 := stringOption(req.Options, "control_image"); controlB64 != "" {
+		if data, err := base64.StdEncoding.DecodeString(controlB64); err == nil {
+			comfyReq.ControlImage = data
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid options.control_image: %v", err)})
+			return
+		}
+	}
+
+	loadStart := time.Now()
+	result, err := comfyui.Generate(c.Request.Context(), comfyReq)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(result.PNG)
+	isStreaming := req.Stream == nil || *req.Stream
+	contentType := "application/x-ndjson"
+	if !isStreaming {
+		contentType = "application/json; charset=utf-8"
+	}
+	c.Header("Content-Type", contentType)
+	res := api.GenerateResponse{
+		Model:      req.Model,
+		CreatedAt:  time.Now().UTC(),
+		Done:       true,
+		DoneReason: "stop",
+		Image:      b64,
+	}
+	res.Metrics.TotalDuration = time.Since(checkpointStart)
+	res.Metrics.LoadDuration = loadStart.Sub(checkpointStart)
+	if isStreaming {
+		data, _ := json.Marshal(res)
+		c.Writer.Write(append(data, '\n'))
+		c.Writer.Flush()
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// stringOption reads a string field from a generate request's options map.
+func stringOption(opts map[string]any, key string) string {
+	if opts == nil {
+		return ""
+	}
+	if v, ok := opts[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// floatOption reads a numeric field from a generate request's options map.
+func floatOption(opts map[string]any, key string) (float64, bool) {
+	if opts == nil {
+		return 0, false
+	}
+	switch v := opts[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+// ImageWorkflowsHandler serves GET /api/image/workflows?model=NAME.
+//
+// WHY a dedicated discovery route: tool-using agents need required fields (image,
+// control_image, …) before queuing a multi-minute Comfy job; reading Comfy API-format
+// JSON is operator territory, not agent territory.
+func (s *Server) ImageWorkflowsHandler(c *gin.Context) {
+	modelName := c.Query("model")
+	if modelName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model query parameter is required"})
+		return
+	}
+	m, err := GetModel(modelName)
+	if err != nil {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", modelName)})
+		case err.Error() == errtypes.InvalidModelNameErrMsg:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	if modality.BackendFor(m.Config, model.ModalityImage) != model.BackendComfyUI {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("model %q is not configured with modality_backends.image=comfyui", modelName)})
+		return
+	}
+	workflowDir := modality.PathFor(m.Config, "comfy_workflow_dir")
+	if workflowDir == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "model manifest is missing backend_paths.comfy_workflow_dir"})
+		return
+	}
+	workflows, err := comfyui.ListWorkflows(workflowDir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"model":     modelName,
+		"default":   modality.PathFor(m.Config, "comfy_default_workflow"),
+		"workflows": workflows,
+	})
+}
+
 // handleImageGenerate handles image generation requests within GenerateHandler.
 // This is called when the model has the Image capability.
 //
@@ -3525,6 +3709,15 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 
 	if modality.IsExternalImageBackend(modality.BackendFor(m.Config, model.ModalityImage)) {
 		s.handleExternalImageGenerate(c, req, m.Config, checkpointStart)
+		return
+	}
+
+	if modality.BackendFor(m.Config, model.ModalityImage) == model.BackendComfyUI {
+		// WHY PrepareForImageGen here (and not for external-image): Comfy diffusion can fill
+		// a 16GB card; leaving ggml/runtime resident OOMs. WHY empty keepKey: there is no
+		// Go-side MLX runner to preserve — all GPU work is in the ComfyUI process.
+		vram.PrepareForImageGen(c.Request.Context(), s.sched, "")
+		s.handleComfyImageGenerate(c, req, m, checkpointStart)
 		return
 	}
 

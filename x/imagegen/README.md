@@ -4,6 +4,8 @@ Go package that implements Ollama-compatible **image generation** via an MLX sub
 
 **Operator guide:** [docs/imagegen-zimage-turbo.md](../../docs/imagegen-zimage-turbo.md)
 
+**Why MLX stays here and Qwen/FLUX/GLM do not:** this package is the **interactive fast path** (Z-Image Turbo, Klein 4B-shaped). Agent utility (edit / ControlNet / LoRA on larger HF DiTs) goes through `modality_backends.image=comfyui` — see [docs/comfyui-image-backend.md](../../docs/comfyui-image-backend.md) and `server/modality/comfyui`. **Why not grow MLX for every family:** months of ports per DiT; Comfy already ships those graphs.
+
 ---
 
 ## Why a subprocess
