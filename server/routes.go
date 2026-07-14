@@ -50,6 +50,7 @@ import (
 	"github.com/ollama/ollama/server/internal/client/ollama"
 	"github.com/ollama/ollama/server/internal/registry"
 	"github.com/ollama/ollama/server/modality"
+	"github.com/ollama/ollama/server/openapi"
 	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
@@ -1709,6 +1710,15 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		return resp, nil
 	}
 
+	// Config-only speech (Piper TTS) / STT (Whisper) manifests reference external
+	// ONNX/ggml weights via backend_paths — there is no GGUF model layer.
+	if slices.Contains(m.Capabilities(), model.CapabilitySpeech) {
+		return resp, nil
+	}
+	if m.ModelPath == "" {
+		return resp, nil
+	}
+
 	// For safetensors LLM models (experimental), populate ModelInfo from config.json
 	if m.Config.ModelFormat == "safetensors" && slices.Contains(m.Config.Capabilities, "completion") {
 		info, infoErr := xserver.GetSafetensorsLLMInfo(name)
@@ -2112,7 +2122,15 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 
 	// General
 	r.HEAD("/", func(c *gin.Context) { c.String(http.StatusOK, "Ollama is running") })
-	r.GET("/", func(c *gin.Context) { c.String(http.StatusOK, "Ollama is running") })
+	r.GET("/", func(c *gin.Context) {
+		accept := c.GetHeader("Accept")
+		if strings.Contains(accept, "text/html") && !strings.Contains(accept, "text/plain") {
+			c.Redirect(http.StatusFound, "/docs")
+			return
+		}
+		c.String(http.StatusOK, "Ollama is running\n%s\n", openapi.SpecSummary())
+	})
+	openapi.Register(r)
 	r.HEAD("/api/version", VersionHandler)
 	r.GET("/api/version", VersionHandler)
 	r.GET("/api/status", s.StatusHandler)
@@ -2171,6 +2189,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// OpenAI-compatible audio endpoints
 	r.POST("/v1/audio/transcriptions", middleware.TranscriptionMiddleware(), s.TranscriptionHandler)
 	r.POST("/v1/audio/speech", middleware.SpeechMiddleware(), s.SpeechHandler)
+	r.GET("/v1/audio/voices", s.VoicesHandler)
 	// OpenAI-compatible async text-to-video (local Wan via training run_script queue)
 	r.POST("/v1/videos", middleware.VideoCreateMiddleware(), s.VideoCreateHandler)
 	r.GET("/v1/videos/:id", s.VideoGetHandler)

@@ -16,13 +16,14 @@ const (
 
 // Backend driver names for [ConfigV2.ModalityBackends].
 const (
-	BackendMLXImagegen   = "mlx-imagegen"   // default MLX pipeline in Ollama
-	BackendWhisper       = "whisper"        // whisper.cpp / compatible CLI
-	BackendPiper         = "piper"          // Piper TTS
-	BackendExternalImage = "external-image" // user-provided command (see docs)
-	BackendOpenVINOImage = "openvino-image" // OpenVINO GenAI Text2ImagePipeline (see docs/sd-openvino-a380.md)
-	BackendVideoNative   = "native"         // ffmpeg frame sampling inside Ollama (default when unset)
-	BackendSGLang           = "sglang"              // forward OpenAI chat to SGLang HTTP API
+	BackendMLXImagegen      = "mlx-imagegen"      // default MLX pipeline in Ollama
+	BackendWhisper          = "whisper"           // whisper.cpp / compatible CLI
+	BackendPiper            = "piper"             // Piper TTS (CPU ONNX)
+	BackendRemoteTTS        = "remote-tts"        // OpenAI-compatible HTTP TTS (Chatterbox/Orpheus/Kokoro/…)
+	BackendExternalImage    = "external-image"    // user-provided command (see docs)
+	BackendOpenVINOImage    = "openvino-image"    // OpenVINO GenAI Text2ImagePipeline (see docs/sd-openvino-a380.md)
+	BackendVideoNative      = "native"            // ffmpeg frame sampling inside Ollama (default when unset)
+	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
 	BackendWan              = "wan"               // Wan2.x via scripts/wan_video_generate.py (see docs/wan-t2v.md)
 )

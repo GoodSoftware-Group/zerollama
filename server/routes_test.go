@@ -582,6 +582,63 @@ func TestGetModelInfo_VideoGenConfigOnly(t *testing.T) {
 	}
 }
 
+func TestGetModelInfo_SpeechConfigOnly(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	cfgData, err := json.Marshal(model.ConfigV2{
+		Capabilities:     []string{string(model.CapabilitySpeech)},
+		ModalityBackends: map[string]string{model.ModalitySpeech: model.BackendPiper},
+		BackendPaths:     map[string]string{"piper_model": "/tmp/voice.onnx"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	configLayer, err := manifest.NewLayer(bytes.NewReader(cfgData), "application/vnd.docker.container.image.v1+json")
+	if err != nil {
+		t.Fatalf("layer: %v", err)
+	}
+	name := model.ParseName("piper-lessac:latest")
+	if err := manifest.WriteManifest(name, configLayer, nil); err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+
+	resp, err := GetModelInfo(api.ShowRequest{Model: name.String()})
+	if err != nil {
+		t.Fatalf("GetModelInfo() error = %v", err)
+	}
+	if !slices.Contains(resp.Capabilities, model.CapabilitySpeech) {
+		t.Fatalf("Capabilities = %v, want speech", resp.Capabilities)
+	}
+}
+
+func TestGetModelInfo_WhisperConfigOnly(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	cfgData, err := json.Marshal(model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityTranscribe: model.BackendWhisper},
+		BackendPaths:     map[string]string{"whisper_model": "/tmp/ggml-base.en.bin"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	configLayer, err := manifest.NewLayer(bytes.NewReader(cfgData), "application/vnd.docker.container.image.v1+json")
+	if err != nil {
+		t.Fatalf("layer: %v", err)
+	}
+	name := model.ParseName("whisper-base:latest")
+	if err := manifest.WriteManifest(name, configLayer, nil); err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+
+	resp, err := GetModelInfo(api.ShowRequest{Model: name.String()})
+	if err != nil {
+		t.Fatalf("GetModelInfo() error = %v", err)
+	}
+	if !slices.Contains(resp.Capabilities, model.CapabilityAudio) {
+		t.Fatalf("Capabilities = %v, want audio (from transcribe backend)", resp.Capabilities)
+	}
+}
+
 func TestGetModelInfo_SafetensorsUsesStoredFileType(t *testing.T) {
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 

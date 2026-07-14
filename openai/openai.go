@@ -76,9 +76,9 @@ type PromptTokensDetails struct {
 // CachedTokensDetails breaks down prefix-cache hits by tier (SGLang sglext shape).
 // Native path maps L3 / llama-server cache_n to device until host/storage tiers land.
 type CachedTokensDetails struct {
-	Device int  `json:"device,omitempty"`
-	Host   int  `json:"host,omitempty"`
-	Storage *int `json:"storage,omitempty"`
+	Device         int     `json:"device,omitempty"`
+	Host           int     `json:"host,omitempty"`
+	Storage        *int    `json:"storage,omitempty"`
 	StorageBackend *string `json:"storage_backend,omitempty"`
 }
 
@@ -1054,6 +1054,9 @@ type SpeechCreateRequest struct {
 	Voice          string   `json:"voice,omitempty"`
 	ResponseFormat string   `json:"response_format,omitempty"` // mp3, opus, aac, flac, wav, pcm
 	Speed          *float64 `json:"speed,omitempty"`
+	// Emotion is a zerollama extension for expressive engines (Chatterbox / Orpheus).
+	// Upstream OpenAI ignores unknown fields; remote-tts forwards it when set.
+	Emotion string `json:"emotion,omitempty"`
 }
 
 // TranscriptionResponse is the response format for /v1/audio/transcriptions.

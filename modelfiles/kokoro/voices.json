@@ -1,0 +1,15 @@
+{
+  "voices": [
+    {"id": "af_heart", "name": "Heart (US female)", "backend": "remote-tts"},
+    {"id": "af_bella", "name": "Bella", "backend": "remote-tts"},
+    {"id": "af_nicole", "name": "Nicole", "backend": "remote-tts"},
+    {"id": "af_sarah", "name": "Sarah", "backend": "remote-tts"},
+    {"id": "af_sky", "name": "Sky", "backend": "remote-tts"},
+    {"id": "am_adam", "name": "Adam", "backend": "remote-tts"},
+    {"id": "am_michael", "name": "Michael", "backend": "remote-tts"},
+    {"id": "bf_emma", "name": "Emma (UK)", "backend": "remote-tts"},
+    {"id": "bf_isabella", "name": "Isabella", "backend": "remote-tts"},
+    {"id": "bm_george", "name": "George", "backend": "remote-tts"},
+    {"id": "bm_lewis", "name": "Lewis", "backend": "remote-tts"}
+  ]
+}

@@ -91,8 +91,10 @@ type ConfigV2 struct {
 	// "video_generation" (T2V: "wan" with scripts/wan_video_generate.py).
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
-	// BackendPaths passes filesystem paths to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
-	// Keys include "whisper_model", "piper_model", "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
+	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
+	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
+	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
+	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
 	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`

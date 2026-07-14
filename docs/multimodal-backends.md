@@ -18,7 +18,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
 - **`modality_backends`**: map of modality key → driver name.
   - `image`: `mlx-imagegen` (default, implicit), `external-image` (stable-diffusion.cpp; [sd-vulkan-a380.md](./sd-vulkan-a380.md)), or `openvino-image` (OpenVINO GenAI; [sd-openvino-a380.md](./sd-openvino-a380.md)).
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
-  - `speech`: `piper` for Piper TTS.
+  - `speech`: `piper` for Piper TTS (CPU ONNX), or `remote-tts` for an OpenAI-compatible HTTP TTS server (Chatterbox, Orpheus, Kokoro, …).
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
   - `video_generation` (T2V): `wan` runs [Wan](../scripts/wan_video_generate.py) via the training job queue; capability `video_gen`. See [wan-t2v.md](./wan-t2v.md).
 - **`video_sampling`** (optional, native path only): per-model overrides for ffmpeg—`mode` (`fps` or `stride`), `fps`, `stride`, `max_frames`. Omitted fields use server env defaults (see below).
@@ -29,6 +29,11 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `piper_model`: Piper ONNX file.
   - `piper_config`: optional Piper JSON config.
   - `piper_voice_<name>`: optional per-voice ONNX (e.g. `piper_voice_alloy`); `<name>` is the OpenAI `voice` field with non-alphanumeric characters stripped. If set, it overrides `piper_model` for that request.
+  - `tts_url`: base URL or full `…/v1/audio/speech` for `remote-tts` (overrides fleet `OLLAMA_TTS_URL`).
+  - `tts_upstream_model`: model id sent to the remote server (defaults to the local tag name).
+  - `tts_default_voice`: used when the client omits `voice`.
+  - `tts_voices_file`: JSON catalog (`[{id,name,…}]` or `{"voices":[…]}`) listed by `GET /v1/audio/voices`.
+  - `tts_ref_audio`: path to a clone reference clip; sent as `X-TTS-Ref-Audio` to the remote server.
   - `wan_repo`, `wan_ckpt_dir`: Wan upstream tree and checkpoint directory (weights installed outside Ollama blobs).
   - `wan_gguf_path` (optional): GGUF weights when safetensors+offload OOM on 16 GB.
   - `sd_cli`, `sd_model`: [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Vulkan; [sd-vulkan-a380.md](./sd-vulkan-a380.md))
@@ -83,6 +88,45 @@ Example (Piper TTS):
 }
 ```
 
+Example (remote GPU TTS — Chatterbox / Orpheus / Kokoro):
+
+```json
+{
+  "capabilities": ["speech"],
+  "modality_backends": { "speech": "remote-tts" },
+  "backend_paths": {
+    "tts_upstream_model": "chatterbox",
+    "tts_default_voice": "puppet",
+    "tts_voices_file": "/mnt/ollama_img/speech/voices/chatterbox.json",
+    "tts_ref_audio": "/mnt/ollama_img/speech/refs/puppet.wav"
+  }
+}
+```
+
+Set the remote server once via fleet env (or per-model `tts_url`):
+
+```bash
+# systemd drop-in / environment
+OLLAMA_TTS_URL=http://cozmic:8090   # or http://127.0.0.1:8090 for local sidecar
+```
+
+On the GPU host, run the OpenAI-compatible sidecar:
+
+```bash
+TTS_ENGINE=chatterbox TTS_PORT=8090 python3 scripts/tts_remote_server.py
+# or TTS_ENGINE=orpheus / kokoro / echo (smoke)
+```
+
+Clients call the same OpenAI route; optional zerollama extension `emotion` is forwarded for expressive engines:
+
+```bash
+curl -s localhost:11434/v1/audio/speech \
+  -H 'content-type: application/json' \
+  -d '{"model":"orpheus","input":"Hello there.","voice":"tara","emotion":"excited"}' \
+  -o speech.wav
+curl -s localhost:11434/v1/audio/voices | jq .
+```
+
 Example (Whisper STT):
 
 ```json
@@ -91,6 +135,28 @@ Example (Whisper STT):
   "backend_paths": { "whisper_model": "/path/to/ggml-base.bin" }
 }
 ```
+
+### Host install (Linux)
+
+Speech backends are **not llama GGUFs**. Piper uses ONNX; Whisper uses whisper.cpp `ggml-*.bin`. Weights live outside the Ollama blob store and are referenced from `backend_paths`. `/api/show` skips GGUF metadata for these config-only tags (same pattern as Wan / image backends).
+
+On this dual-4090 lane, speech assets live on the models volume (root disk is tight):
+
+```bash
+./scripts/install_speech_backends.sh          # Piper multi-voice + Whisper + voice catalogs
+OLLAMA_MODELS=/mnt/ollama_img/models ./scripts/register_speech_models.sh
+sudo cp scripts/systemd/speech-backends.conf /etc/systemd/system/ollama.service.d/
+# Edit drop-in: set OLLAMA_TTS_URL=http://cozmic:8090 when using remote-tts tags
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
+Registered tags: `piper-lessac:latest`, `whisper-base:latest`, `chatterbox:latest`, `orpheus:latest`, `kokoro:latest`.
+
+**Live OpenAPI:** this server serves `GET /docs` (Swagger UI), `GET /openapi.json`, and `GET /openapi.yaml`.
+
+**Voice catalog:** Piper exposes every `piper_voice_*` key; remote tags load `tts_voices_file`. List with `GET /v1/audio/voices` (optional `?model=`).
+
+**Recommended layout:** Chatterbox/Orpheus on GPU (`remote-tts`) for quality + emotion; Kokoro for efficient multi-preset; Piper as CPU fallback.
 
 ## Environment variables
 
@@ -102,6 +168,8 @@ Example (Whisper STT):
 | `OLLAMA_WHISPER_TIMEOUT` | Max runtime for Whisper (Go duration, e.g. `15m`; default `10m`). |
 | `OLLAMA_PIPER_BIN` | Piper executable (default: `piper`). |
 | `OLLAMA_PIPER_TIMEOUT` | Max runtime for Piper (default `5m`). |
+| `OLLAMA_TTS_URL` | Default base/full URL for `modality_backends.speech=remote-tts` when `backend_paths.tts_url` is unset. |
+| `OLLAMA_TTS_TIMEOUT` | Max runtime for remote TTS HTTP (default `5m`). |
 | `OLLAMA_EXTERNAL_IMAGE_BIN` | Script/binary for `modality_backends.image=external-image`. |
 | `OLLAMA_EXTERNAL_IMAGE_TIMEOUT` | Max runtime for external image hook (default `10m`). |
 | `OLLAMA_SGLANG_URL` | Base URL for SGLang (e.g. `http://127.0.0.1:30000`) when `video_understanding` is `sglang`. |
@@ -146,9 +214,11 @@ The model must still declare the `image` capability. List with `zerollama ls ima
 
 The Whisper adapter keeps the upload’s **filename extension** when present (e.g. `.webm`, `.mp3`, `.wav`); otherwise it **sniffs** common magic bytes (WAV, MP3, FLAC, Ogg, WebM/EBML). Your Whisper build must support the container you send.
 
-`POST /v1/audio/speech` limits **`input`** to **4096 Unicode characters** (OpenAI-compatible). **`speed`** is mapped to Piper `--length_scale` (inverse: higher speed ⇒ shorter scale), clamped similarly to OpenAI’s 0.25–4.0 range.
+`POST /v1/audio/speech` limits **`input`** to **4096 Unicode characters** (OpenAI-compatible). **`speed`** is mapped to Piper `--length_scale` (inverse: higher speed ⇒ shorter scale), clamped similarly to OpenAI’s 0.25–4.0 range. Optional **`emotion`** is a zerollama extension forwarded by `remote-tts` (ignored by Piper).
 
-Piper returns **WAV** audio regardless of OpenAI `response_format` (other formats are not transcoded yet).
+Piper returns **WAV** audio regardless of OpenAI `response_format` (other formats are not transcoded yet). Remote engines may return WAV/MP3 depending on upstream `Content-Type`.
+
+`GET /v1/audio/voices` lists selectable `voice` ids across speech models (or `?model=` for one tag).
 
 ### Transcription `response_format`
 

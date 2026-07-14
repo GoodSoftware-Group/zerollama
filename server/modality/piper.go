@@ -34,7 +34,7 @@ func SpeechPiper(ctx context.Context, cfg model.ConfigV2, text, voice string, sp
 
 	outPath := filepath.Join(tmpDir, "out.wav")
 	args := []string{"--model", modelPath, "--output_file", outPath}
-	if p := PathFor(cfg, "piper_config"); p != "" {
+	if p := resolvePiperConfigPath(cfg, voice, modelPath); p != "" {
 		args = append(args, "--config", p)
 	}
 	if speed != nil && *speed > 0 {
@@ -73,7 +73,25 @@ func resolvePiperModelPath(cfg model.ConfigV2, voice string) string {
 	return base
 }
 
+// resolvePiperConfigPath prefers piper_config_<voice>, then <model>.json beside the ONNX, then piper_config.
+func resolvePiperConfigPath(cfg model.ConfigV2, voice, modelPath string) string {
+	voice = strings.TrimSpace(strings.ToLower(voice))
+	if voice != "" {
+		if p := PathFor(cfg, "piper_config_"+sanitizeVoiceKey(voice)); p != "" {
+			return p
+		}
+	}
+	if modelPath != "" {
+		sibling := modelPath + ".json"
+		if st, err := os.Stat(sibling); err == nil && !st.IsDir() {
+			return sibling
+		}
+	}
+	return PathFor(cfg, "piper_config")
+}
+
 func sanitizeVoiceKey(v string) string {
+	v = strings.ToLower(v)
 	var b strings.Builder
 	for _, r := range v {
 		switch {

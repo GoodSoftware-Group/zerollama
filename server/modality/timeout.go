@@ -15,6 +15,10 @@ func piperCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, envconfig.ModalityPiperTimeout())
 }
 
+func remoteTTSCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, envconfig.ModalityRemoteTTSTimeout())
+}
+
 func externalImageCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, envconfig.ModalityExternalImageTimeout())
 }

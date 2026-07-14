@@ -754,13 +754,26 @@ type TranscriptionWriter struct {
 
 func (w *TranscriptionWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
-	if code != http.StatusOK {
+	if code != 0 && code != http.StatusOK {
 		return w.writeError(data)
 	}
 
 	var chatResponse api.ChatResponse
 	if err := json.Unmarshal(data, &chatResponse); err != nil {
-		return 0, err
+		// Not a chat stream chunk — pass through (errors, plain text, etc.).
+		return w.ResponseWriter.Write(data)
+	}
+
+	// Whisper subprocess path writes openai.TranscriptionResponse {"text":"..."} via
+	// c.Data(). That JSON unmarshals into an empty ChatResponse (Done=false) and used
+	// to be swallowed here. Detect by top-level "text" without a chat "message".
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) == nil {
+		if _, hasText := raw["text"]; hasText {
+			if _, hasMessage := raw["message"]; !hasMessage {
+				return w.ResponseWriter.Write(data)
+			}
+		}
 	}
 
 	w.text.WriteString(chatResponse.Message.Content)

@@ -1,0 +1,13 @@
+{
+  "capabilities": ["speech"],
+  "modality_backends": { "speech": "remote-tts" },
+  "backend_paths": {
+    "tts_upstream_model": "chatterbox",
+    "tts_default_voice": "default",
+    "tts_voices_file": "/mnt/ollama_img/speech/voices/chatterbox.json",
+    "tts_ref_audio": "/mnt/ollama_img/speech/refs/puppet.wav"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

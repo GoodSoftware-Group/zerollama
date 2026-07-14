@@ -1,0 +1,12 @@
+{
+  "capabilities": ["speech"],
+  "modality_backends": { "speech": "remote-tts" },
+  "backend_paths": {
+    "tts_upstream_model": "kokoro",
+    "tts_default_voice": "af_heart",
+    "tts_voices_file": "/mnt/ollama_img/speech/voices/kokoro.json"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

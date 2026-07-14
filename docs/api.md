@@ -1,6 +1,8 @@
 # API
 
-> Note: Ollama's API docs are moving to https://docs.ollama.com/api
+> Live OpenAPI on a running zerollama server: **`/docs`** (Swagger UI), **`/openapi.json`**, **`/openapi.yaml`**.
+>
+> Static Mintlify docs: https://docs.ollama.com/api
 
 ## Endpoints
 
