@@ -988,4 +988,12 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
     return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);
 }
 
+GGML_BACKEND_API void ggml_backend_metal_dev_rsets_pause(ggml_backend_dev_t device) {
+    GGML_UNUSED(device);
+}
+
+GGML_BACKEND_API void ggml_backend_metal_dev_rsets_resume(ggml_backend_dev_t device) {
+    GGML_UNUSED(device);
+}
+
 GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)

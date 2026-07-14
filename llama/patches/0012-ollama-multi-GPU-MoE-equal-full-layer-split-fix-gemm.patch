@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Wed, 8 Jul 2026 15:03:47 -0700
+Subject: [PATCH] ollama: multi-GPU MoE equal full-layer split (fix gemma4
+ dual-GPU crash)
+
+---
+ common/fit.cpp | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/common/fit.cpp b/common/fit.cpp
+index afbf0b10f..304938863 100644
+--- a/common/fit.cpp
++++ b/common/fit.cpp
+@@ -642,6 +642,56 @@ static void common_params_fit_impl(
+         return;
+     }
+ 
++    // step 3.5: multi-GPU MoE — prefer equal full-layer split when it fits.
++    // Partial-layer tensor_buft_overrides (step 4) split attn vs FFN across GPU/CPU
++    // boundaries and break dual-KV (iswa) models such as gemma4 on dual-GPU CUDA.
++    if (nd > 1) {
++        static const std::string pattern_moe_all = "blk\\.\\d+\\.ffn_(up|down|gate_up|gate)_(ch|)exps";
++
++        std::vector<ngl_t> ngl_equal(nd);
++        uint32_t rem = hp_ngl + 1;
++        for (size_t id = 0; id < nd; ++id) {
++            ngl_equal[id].n_layer = rem / (uint32_t)(nd - id);
++            rem -= ngl_equal[id].n_layer;
++            ngl_equal[id].n_part  = 0;
++        }
++
++        llama_model_params mparams_test = *mparams;
++        set_ngl_tensor_split_tbo(ngl_equal, overflow_bufts, mparams_test);
++        tensor_buft_overrides[0] = { pattern_moe_all.c_str(), ggml_backend_cpu_buffer_type() };
++        tensor_buft_overrides[1] = { nullptr, nullptr };
++        mparams_test.tensor_buft_overrides = tensor_buft_overrides;
++
++        const dmds_t dmds_equal = common_get_device_memory_data(
++            path_model, &mparams_test, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
++
++        bool equal_fits = true;
++        for (size_t id = 0; id < nd; ++id) {
++            if (projected_device_used(dmds_equal, id) > targets[id]) {
++                equal_fits = false;
++                break;
++            }
++        }
++
++        if (equal_fits) {
++            LOG_INF("%s: multi-GPU MoE: using equal full-layer split (MoE on host, no partial overflow)\n", __func__);
++            for (size_t id = 0; id < nd; ++id) {
++                const int64_t used = projected_device_used(dmds_equal, id);
++                LOG_TRC("%s:   - %s: %2" PRIu32 " layers, %6" PRId64 " MiB used, %6" PRId64 " MiB free\n",
++                    __func__, dev_names[id].c_str(), ngl_equal[id].n_layer, used/MiB,
++                    (dmds_equal[id].free - used)/MiB);
++            }
++            set_ngl_tensor_split_tbo(ngl_equal, overflow_bufts, *mparams);
++            tensor_buft_overrides[0] = { pattern_moe_all.c_str(), ggml_backend_cpu_buffer_type() };
++            tensor_buft_overrides[1] = { nullptr, nullptr };
++            mparams->tensor_buft_overrides = tensor_buft_overrides;
++            return;
++        }
++
++        tensor_buft_overrides[0] = { nullptr, nullptr };
++        mparams->tensor_buft_overrides = tensor_buft_overrides;
++    }
++
+     // step 4: for a MoE model where all dense tensors fit,
+     //     convert the dense-only layers in the back to full layers in the front until all devices are full
+     // essentially the same procedure as for the dense-only layers except front-to-back

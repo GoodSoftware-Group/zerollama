@@ -962,6 +962,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_tbq4_k,
         .from_float_ref           = (ggml_from_float_t) quantize_row_tbq4_k_ref,
     },
+    [GGML_TYPE_E8_2] = {
+        .type_name                = "e8_2",
+        .blck_size                = QK_E8_2,
+        .type_size                = sizeof(block_e8_2),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_e8_2,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_e8_2_ref,
+    },
     [GGML_TYPE_TBQ3_TCQ] = {
         // TurboQuant TCQ-3 K-cache: 128-element block, fp16 norm + 6-bit
         // initial-state prefix + 128*3-bit Viterbi-encoded symbol stream
@@ -1516,6 +1524,7 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
         case GGML_FTYPE_MOSTLY_Q4_0:          wtype = GGML_TYPE_Q4_0;  break;
         case GGML_FTYPE_MOSTLY_Q4_1:          wtype = GGML_TYPE_Q4_1;  break;
         case GGML_FTYPE_MOSTLY_Q1_0:          wtype = GGML_TYPE_Q1_0;  break;
+        case GGML_FTYPE_MOSTLY_E8_2:          wtype = GGML_TYPE_E8_2;  break;
         case GGML_FTYPE_MOSTLY_Q1_0_g32:      wtype = GGML_TYPE_Q1_0_g32;   break;
         case GGML_FTYPE_MOSTLY_Q1_0_g128:     wtype = GGML_TYPE_Q1_0_g128;  break;
         case GGML_FTYPE_MOSTLY_Q4_POLAR:      wtype = GGML_TYPE_Q4_POLAR; break;
@@ -8031,6 +8040,7 @@ size_t ggml_quantize_chunk(
     size_t result = 0;
 
     switch (type) {
+        case GGML_TYPE_E8_2:     result = quantize_e8_2      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q1_0:     result = quantize_q1_0      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q1_0_g32: result = quantize_q1_0_g32  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q1_0_g128: result = quantize_q1_0_g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

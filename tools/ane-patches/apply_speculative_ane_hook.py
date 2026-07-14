@@ -34,7 +34,7 @@ def patch_draft_simple_ctor(spec: pathlib.Path) -> None:
         '            throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");\n'
         "        }\n\n"
         "        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));\n\n"
-        "        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DFLASH);\n"
+        "        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);\n"
         "        if (dflash || common_ane_draft_enabled()) {\n"
         "            common_ane_draft_bind_target_ctx(ctx_tgt);\n"
         "            llama_set_embeddings_pre_norm(ctx_tgt, true);\n"
@@ -102,30 +102,35 @@ def patch_draft_simple_draft(spec: pathlib.Path) -> None:
         required=False,
     )
 
-    patch_once(
-        spec,
-        (
-            "        int ret = llama_decode(ctx_dft, batch);\n"
-            "        if (ret != 0) {\n"
-            '            LOG_WRN("%s: llama_decode returned %d\\n", __func__, ret);\n'
-            "            return;\n"
-            "        }\n\n"
-            "        int i = 0;\n\n"
-            "        while (n_drafting > 0) {"
-        ),
-        (
-            "        int ret = llama_decode(ctx_dft, batch);\n"
-            "        if (ret != 0) {\n"
-            '            LOG_WRN("%s: llama_decode returned %d\\n", __func__, ret);\n'
-            "            return;\n"
-            "        }\n\n"
-            "        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).\n"
-            "        common_ane_draft_handoff_after_decode(ctx_dft, 0);\n\n"
-            "        int i = 0;\n\n"
-            "        while (n_drafting > 0) {"
-        ),
-        "speculative.cpp draft() handoff (B2)",
-    )
+    # In-tree may already wrap handoff with note_handoff_token; treat any B2 marker as applied.
+    b2_text = spec.read_text()
+    if "// B2/B5: IOSurface handoff after first draft decode" in b2_text and "common_ane_draft_handoff_after_decode" in b2_text:
+        print("  skip speculative.cpp draft() handoff (B2) (already applied)")
+    else:
+        patch_once(
+            spec,
+            (
+                "        int ret = llama_decode(ctx_dft, batch);\n"
+                "        if (ret != 0) {\n"
+                '            SPC_ERR("llama_decode returned %d\\n", ret);\n'
+                "            return;\n"
+                "        }\n\n"
+                "        int i = 0;\n\n"
+                "        while (n_drafting > 0) {"
+            ),
+            (
+                "        int ret = llama_decode(ctx_dft, batch);\n"
+                "        if (ret != 0) {\n"
+                '            SPC_ERR("llama_decode returned %d\\n", ret);\n'
+                "            return;\n"
+                "        }\n\n"
+                "        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).\n"
+                "        common_ane_draft_handoff_after_decode(ctx_dft, 0);\n\n"
+                "        int i = 0;\n\n"
+                "        while (n_drafting > 0) {"
+            ),
+            "speculative.cpp draft() handoff (B2)",
+        )
 
     b7_needle = (
         "                // add drafted token for each sequence\n"
@@ -209,7 +214,7 @@ def patch_draft_simple_draft(spec: pathlib.Path) -> None:
             "            // evaluate the drafted tokens on the draft model\n"
             "            ret = llama_decode(ctx_dft, batch);\n"
             "            if (ret != 0) {\n"
-            '                LOG_WRN("%s: llama_decode[%d] returned %d\\n", __func__, i, ret);\n'
+            '                SPC_ERR("llama_decode[%d] returned %d\\n", i, ret);\n'
             "                break;\n"
             "            }\n\n"
             "            ++i;\n"
@@ -218,7 +223,7 @@ def patch_draft_simple_draft(spec: pathlib.Path) -> None:
             "            // evaluate the drafted tokens on the draft model\n"
             "            ret = llama_decode(ctx_dft, batch);\n"
             "            if (ret != 0) {\n"
-            '                LOG_WRN("%s: llama_decode[%d] returned %d\\n", __func__, i, ret);\n'
+            '                SPC_ERR("llama_decode[%d] returned %d\\n", i, ret);\n'
             "                break;\n"
             "            }\n\n"
             "            // B5: handoff on each speculative draft decode step (stride via env in hook).\n"

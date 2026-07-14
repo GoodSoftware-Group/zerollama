@@ -1227,6 +1227,9 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 		} else if runner.llama.Ping(ctx) != nil {
 			return reloadReason("ping_failed")
 		}
+		if sb, ok := runner.llama.(interface{ BinaryStale() bool }); ok && sb.BinaryStale() {
+			return reloadReason("llama_server_binary_rebuilt", "pid", runner.pid)
+		}
 	}
 
 	return false

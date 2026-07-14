@@ -1,0 +1,399 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 12 Jul 2026 11:50:56 -0700
+Subject: [PATCH] ggml-metal: partial OUT_PROD support (upstream #23724)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add Metal kernels for outer-product (f32 and q4_0/q4_1/q8_0/mxfp4 × f32)
+so OUT_PROD stays on GPU instead of CPU fallback.
+---
+ ggml/src/ggml-metal/ggml-metal-device.cpp |  23 +++
+ ggml/src/ggml-metal/ggml-metal-device.h   |   1 +
+ ggml/src/ggml-metal/ggml-metal-device.m   |   9 ++
+ ggml/src/ggml-metal/ggml-metal-impl.h     |  27 ++++
+ ggml/src/ggml-metal/ggml-metal-ops.cpp    |  65 ++++++++
+ ggml/src/ggml-metal/ggml-metal-ops.h      |   1 +
+ ggml/src/ggml-metal/ggml-metal.metal      | 175 ++++++++++++++++++++++
+ 7 files changed, 301 insertions(+)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index 8c14115b0..b0972ebcf 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -2254,3 +2254,26 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_count_equal(ggml
+ 
+     return res;
+ }
++
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_out_prod(ggml_metal_library_t lib, const ggml_tensor *  op) {
++    GGML_ASSERT(op->op == GGML_OP_OUT_PROD);
++    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32 ||
++                op->src[0]->type == GGML_TYPE_Q4_0 || op->src[0]->type == GGML_TYPE_Q4_1 ||
++                op->src[0]->type == GGML_TYPE_Q8_0 || op->src[0]->type == GGML_TYPE_MXFP4);
++    GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
++
++    char base[256];
++
++    snprintf(base, 256, "kernel_out_prod_%s_f32", ggml_type_name(op->src[0]->type));
++
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, base);
++
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, base, base, nullptr);
++    }
++
++    res.nsg = 1;
++    res.smem = (32 + 32) * sizeof(float);
++
++    return res;
++}
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 00027e78d..cdae96c50 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -167,6 +167,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_opt_step_
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_opt_step_sgd      (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_memset            (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_count_equal       (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_out_prod          (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ 
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_pad(
+         ggml_metal_library_t lib,
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index 43d3c4722..b4dafddab 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1220,6 +1220,15 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+                    op->src[1]->type == GGML_TYPE_F32;
+         case GGML_OP_SUM:
+             return has_simdgroup_reduction && ggml_is_contiguous(op->src[0]);
++        case GGML_OP_OUT_PROD:
++            return ggml_is_contiguous_rows(op->src[0]) &&
++                   ggml_is_contiguous_rows(op->src[1]) &&
++                   (op->src[0]->type == GGML_TYPE_F32 ||
++                    op->src[0]->type == GGML_TYPE_Q4_0 ||
++                    op->src[0]->type == GGML_TYPE_Q4_1 ||
++                    op->src[0]->type == GGML_TYPE_Q8_0 ||
++                    op->src[0]->type == GGML_TYPE_MXFP4) &&
++                   (op->src[1]->type == GGML_TYPE_F32);
+         case GGML_OP_TRI:
+             return ggml_is_contiguous_rows(op->src[0]);
+         case GGML_OP_SUM_ROWS:
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index 254aef858..63a0e785c 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -956,6 +956,33 @@ typedef struct {
+     uint64_t nb3;
+ } ggml_metal_kargs_gated_delta_net;
+ 
++typedef struct {
++    int32_t ne00;
++    int32_t ne01;
++    int32_t ne02;
++    int32_t ne03;
++    uint64_t nb00;
++    uint64_t nb01;
++    uint64_t nb02;
++    uint64_t nb03;
++    int32_t ne10;
++    int32_t ne11;
++    int32_t ne12;
++    int32_t ne13;
++    uint64_t nb10;
++    uint64_t nb11;
++    uint64_t nb12;
++    uint64_t nb13;
++    int32_t ne0;
++    int32_t ne1;
++    int32_t ne2;
++    int32_t ne3;
++    uint64_t nb0;
++    uint64_t nb1;
++    uint64_t nb2;
++    uint64_t nb3;
++} ggml_metal_kargs_out_prod;
++
+ typedef struct {
+     int32_t  ne00;
+     int32_t  ne01;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 3131ea35a..fdbd9f1cc 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -538,6 +538,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+             {
+                 n_fuse = ggml_metal_op_count_equal(ctx, idx);
+             } break;
++        case GGML_OP_OUT_PROD:
++            {
++                n_fuse = ggml_metal_op_out_prod(ctx, idx);
++            } break;
+         default:
+             {
+                 GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));
+@@ -5142,3 +5146,64 @@ int ggml_metal_op_count_equal(ggml_metal_op_t ctx, int idx) {
+ 
+     return 1;
+ }
++
++int ggml_metal_op_out_prod(ggml_metal_op_t ctx, int idx) {
++    ggml_tensor * op = ctx->node(idx);
++
++    ggml_metal_library_t lib = ctx->lib;
++    ggml_metal_encoder_t enc = ctx->enc;
++
++    GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
++    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
++    GGML_TENSOR_LOCALS( int32_t, ne1, op->src[1], ne);
++    GGML_TENSOR_LOCALS(uint64_t, nb1, op->src[1], nb);
++    GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
++    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
++
++    {
++        ggml_metal_kargs_out_prod args = {
++            /*.ne00 =*/ ne00,
++            /*.ne01 =*/ ne01,
++            /*.ne02 =*/ ne02,
++            /*.ne03 =*/ ne03,
++            /*.nb00 =*/ nb00,
++            /*.nb01 =*/ nb01,
++            /*.nb02 =*/ nb02,
++            /*.nb03 =*/ nb03,
++            /*.ne10 =*/ ne10,
++            /*.ne11 =*/ ne11,
++            /*.ne12 =*/ ne12,
++            /*.ne13 =*/ ne13,
++            /*.nb10 =*/ nb10,
++            /*.nb11 =*/ nb11,
++            /*.nb12 =*/ nb12,
++            /*.nb13 =*/ nb13,
++            /*.ne0  =*/ ne0,
++            /*.ne1  =*/ ne1,
++            /*.ne2  =*/ ne2,
++            /*.ne3  =*/ ne3,
++            /*.nb0  =*/ nb0,
++            /*.nb1  =*/ nb1,
++            /*.nb2  =*/ nb2,
++            /*.nb3  =*/ nb3,
++        };
++
++        auto pipeline = ggml_metal_library_get_pipeline_out_prod(lib, op);
++
++        const int nth = 32*pipeline.nsg;
++        const size_t smem = pipeline.smem;
++        const int tg_w = (ne0 + nth - 1)/nth;
++        const int tg_h = (ne1 + nth - 1)/nth;
++
++        ggml_metal_encoder_set_pipeline(enc, pipeline);
++        ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[0]), 1);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[1]), 2);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op), 3);
++
++        ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
++        ggml_metal_encoder_dispatch_threadgroups(enc, tg_w, tg_h, ne2*ne3, nth, 1, 1);
++    }
++
++    return 1;
++}
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
+index c3ffaa2e3..de6a15006 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -97,6 +97,7 @@ int ggml_metal_op_tri               (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_opt_step_adamw    (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_opt_step_sgd      (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_count_equal       (ggml_metal_op_t ctx, int idx);
++int ggml_metal_op_out_prod          (ggml_metal_op_t ctx, int idx);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 8e145b8ee..b9e12cec6 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -6116,6 +6116,181 @@ kernel void kernel_roll_f32(
+     }
+ }
+ 
++kernel void kernel_out_prod_f32_f32(
++    constant ggml_metal_kargs_out_prod & args,
++    device  const char * src0,
++    device  const char * src1,
++    device        char * dst,
++    threadgroup  char * shmem,
++    uint3 tgpig[[threadgroup_position_in_grid]],
++    uint3 tpitg[[thread_position_in_threadgroup]]) {
++    // should match the tile size used in ggml_metal_library_get_pipeline_out_prod
++    #define BLOCK_SIZE 32
++
++    const int64_t i3 = tgpig.z;
++    const int64_t i2 = tgpig.y;
++    const int64_t i1 = tgpig.x;
++
++    const int64_t m_start = i1 * BLOCK_SIZE;
++    const int64_t n_start = i2 * BLOCK_SIZE;
++
++    if (i3 >= args.ne2 * args.ne3 || n_start >= args.ne1 || m_start >= args.ne0) {
++        return;
++    }
++
++    const int64_t i3_3d = i3 % args.ne2;
++    const int64_t i3_4d = i3 / args.ne2;
++
++    // GQA broadcast
++    const int64_t dps2 = args.ne2 / args.ne02;
++    const int64_t dps3 = args.ne3 / args.ne03;
++
++    const int64_t i3_3d_src0 = i3_3d / dps2;
++    const int64_t i3_4d_src0 = i3_4d / dps3;
++
++    device const char * src0_base = src0 + m_start*args.nb00 + i3_3d_src0*args.nb02 + i3_4d_src0*args.nb03;
++    device const char * src1_base = src1 + n_start*args.nb10 + i3_3d*args.nb12      + i3_4d*args.nb13;
++    device       char * dst_base  = dst  + m_start*args.nb0  + n_start*args.nb1 + i3_3d*args.nb2 + i3_4d*args.nb3;
++
++    threadgroup float * shmem_A = (threadgroup float *)shmem;
++    threadgroup float * shmem_B = (threadgroup float *)(shmem + BLOCK_SIZE*sizeof(float));
++    float thread_result[BLOCK_SIZE];
++    for (uint i = 0; i < BLOCK_SIZE; ++i) {
++        thread_result[i] = 0.0f;
++    }
++
++    for (int64_t b = 0; b < args.ne01; ++b) {
++        if (m_start + tpitg.x < args.ne0) {
++            shmem_A[tpitg.x] = *(device const float *)(src0_base + tpitg.x*args.nb00 + b*args.nb01);
++        } else {
++            shmem_A[tpitg.x] = 0.0f;
++        }
++
++        if (n_start + tpitg.x < args.ne1) {
++            shmem_B[tpitg.x] = *(device const float *)(src1_base + tpitg.x*args.nb10 + b*args.nb11);
++        } else {
++            shmem_B[tpitg.x] = 0.0f;
++        }
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        const float cur_A = shmem_A[tpitg.x];
++
++        #pragma unroll(BLOCK_SIZE)
++        for (uint col = 0; col < BLOCK_SIZE; ++col) {
++            thread_result[col] += cur_A * shmem_B[col];
++        }
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++    }
++
++    if (m_start + tpitg.x < args.ne0) {
++        for (uint col = 0; col < BLOCK_SIZE; ++col) {
++            if (n_start + col < args.ne1) {
++                *(device float *)(dst_base + tpitg.x*args.nb0 + col*args.nb1) = thread_result[col];
++            }
++        }
++    }
++
++    #undef BLOCK_SIZE
++}
++
++template<typename q_t, void (*dequantize_func)(device const q_t *, short nl, thread float4x4 &)>
++kernel void kernel_out_prod_q_f32(
++    constant ggml_metal_kargs_out_prod & args,
++    device  const char * src0,
++    device  const char * src1,
++    device        char * dst,
++    threadgroup  char * shmem,
++    uint3 tgpig[[threadgroup_position_in_grid]],
++    uint3 tpitg[[thread_position_in_threadgroup]]) {
++    // should match the tile size used in ggml_metal_library_get_pipeline_out_prod
++    #define BLOCK_SIZE 32
++
++    const int64_t i3 = tgpig.z;
++    const int64_t i2 = tgpig.y;
++    const int64_t i1 = tgpig.x;
++
++    const int64_t m_start = i1 * BLOCK_SIZE;
++    const int64_t n_start = i2 * BLOCK_SIZE;
++
++    if (i3 >= args.ne2 * args.ne3 || n_start >= args.ne1 || m_start >= args.ne0) {
++        return;
++    }
++
++    const int64_t i3_3d = i3 % args.ne2;
++    const int64_t i3_4d = i3 / args.ne2;
++
++    // GQA broadcast
++    const int64_t dps2 = args.ne2 / args.ne02;
++    const int64_t dps3 = args.ne3 / args.ne03;
++
++    const int64_t i3_3d_src0 = i3_3d / dps2;
++    const int64_t i3_4d_src0 = i3_4d / dps3;
++
++    device const char * src0_base = src0 + i1*args.nb00 + i3_3d_src0*args.nb02 + i3_4d_src0*args.nb03;
++    device const char * src1_base = src1 + n_start*args.nb10 + i3_3d*args.nb12      + i3_4d*args.nb13;
++    device       char * dst_base  = dst  + m_start*args.nb0  + n_start*args.nb1 + i3_3d*args.nb2 + i3_4d*args.nb3;
++
++    threadgroup float * shmem_A = (threadgroup float *)shmem;
++    threadgroup float * shmem_B = (threadgroup float *)(shmem + BLOCK_SIZE*sizeof(float));
++    float thread_result[BLOCK_SIZE];
++    for (uint i = 0; i < BLOCK_SIZE; ++i) {
++        thread_result[i] = 0.0f;
++    }
++
++    for (int64_t b = 0; b < args.ne01; ++b) {
++        if (m_start + tpitg.x < args.ne0) {
++            if (tpitg.x < 2) { // extract 16 * 2 elements
++                float4x4 temp;
++                device const q_t * src0_row = (device const q_t *)(src0_base + b*args.nb01);
++                dequantize_func(src0_row, tpitg.x, temp);
++                ((threadgroup float4x4 *)shmem_A)[tpitg.x] = temp;
++            }
++        }
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        if (m_start + tpitg.x >= args.ne0) {
++            shmem_A[tpitg.x] = 0.0f;
++        }
++
++        if (n_start + tpitg.x < args.ne1) {
++            shmem_B[tpitg.x] = *(device const float *)(src1_base + tpitg.x*args.nb10 + b*args.nb11);
++        } else {
++            shmem_B[tpitg.x] = 0.0f;
++        }
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        const float cur_A = shmem_A[tpitg.x];
++
++        #pragma unroll(BLOCK_SIZE)
++        for (uint col = 0; col < BLOCK_SIZE; ++col) {
++            thread_result[col] += cur_A * shmem_B[col];
++        }
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++    }
++
++    if (m_start + tpitg.x < args.ne0) {
++        for (uint col = 0; col < BLOCK_SIZE; ++col) {
++            if (n_start + col < args.ne1) {
++                *(device float *)(dst_base + tpitg.x*args.nb0 + col*args.nb1) = thread_result[col];
++            }
++        }
++    }
++
++    #undef BLOCK_SIZE
++}
++
++typedef decltype(kernel_out_prod_q_f32<block_q4_0, dequantize_q4_0>) kernel_out_prod_q4_0_f32;
++
++template [[host_name("kernel_out_prod_q4_0_f32")]]  kernel kernel_out_prod_q4_0_f32 kernel_out_prod_q_f32<block_q4_0, dequantize_q4_0>;
++template [[host_name("kernel_out_prod_q4_1_f32")]]  kernel kernel_out_prod_q4_0_f32 kernel_out_prod_q_f32<block_q4_1, dequantize_q4_1>;
++template [[host_name("kernel_out_prod_q8_0_f32")]]  kernel kernel_out_prod_q4_0_f32 kernel_out_prod_q_f32<block_q8_0, dequantize_q8_0>;
++template [[host_name("kernel_out_prod_mxfp4_f32")]] kernel kernel_out_prod_q4_0_f32 kernel_out_prod_q_f32<block_mxfp4, dequantize_mxfp4>;
++
+ template <typename T>
+ kernel void kernel_pad_impl(
+     constant ggml_metal_kargs_pad & args,

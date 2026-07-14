@@ -6,23 +6,24 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 
 | Field | Value |
 |-------|--------|
-| **Recommended build tree** | `vendor/llama-cpp-c84b3020/` (patched) — `./scripts/build_llama_server.sh` |
-| **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched eliza only; prefer vendor) |
-| **Upstream repo** | `https://github.com/elizaOS/llama.cpp.git` |
-| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `c84b30200c8d512c00c9d61c96bed078f1c0024d` |
+| **Recommended build tree** | `vendor/llama-cpp-8f114a9b/` (patched) — `./scripts/build_llama_server.sh` |
+| **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; prefer vendor) |
+| **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
+| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `8f114a9b573b69035299f9b924047f53c1e22c7e` (master tip; past tag `b9951`) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build_llama_server.sh` |
-| **Why eliza base** | Superset of ggml-org: `dflash-draft`, QJL/Polar/TBQ KV, `--checkpoint-every-n-tokens`, upstream checkpoints. One binary; L1 vs fork GPU profiles are runtime flags (`ZEROLLAMA_LLAMA_FORK`), not separate builds. |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ now **applied** as patches 0026–0030 on vendor. |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
 | Field | Value |
 |-------|--------|
-| **Vendor pin** | **`c84b3020`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-c84b3020/` |
-| **Upstream repo** | `https://github.com/elizaOS/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | `llama/patches/0001–0016` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` |
+| **Vendor pin** | **`8f114a9b`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-8f114a9b/` |
+| **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (through **0065** Qwen3-Next MTP / upstream #25589; vendor HEAD `2dfb59d30`) |
+| **In-tree Metal dig** | **0062–0064** in CGO `ml/backend/ggml/`: E8_2 at type **51** (vendor dig keeps 43), TQ2 Metal kernels, concurrency guard. Mac build embeds compiled metallib. |
 | **Rebase helper** | `./scripts/rebase_vendor_unified.sh --sync` |
 
-Runtime `llama-server` and in-process ggml now share **one elizaOS base commit** + zerollama patches.
+Runtime `llama-server` and in-process ggml share **one ggml-org `8f114a9b` base** + zerollama patches.
 
 Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake fetch time for **llama-server**. In-process **ggml** uses `llama/patches/` on a vendored tree synced via [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
 
@@ -30,7 +31,7 @@ Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake 
 
 | Field | Value |
 |-------|--------|
-| **MLX_VERSION** | `2165dc08d7b33258260aa849d39f087d50e62962` (upstream Ollama) |
+| **MLX_VERSION** | `de7b4ed986b6d6f55b8ace5e73c24d1ca0bea89b` (upstream Ollama v0.31.2) |
 | **MLX_C_VERSION** | `fba4470b89073180056c9ea46c443051375f7399` (upstream Ollama) |
 | **Fetch** | `./scripts/ensure_mlx_sources.sh` (sibling `../mlx`, `../mlx-c`) |
 

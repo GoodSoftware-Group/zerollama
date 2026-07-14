@@ -22,17 +22,19 @@ func TestAppendSpeculativeArgsNgram(t *testing.T) {
 }
 
 func TestAppendSpeculativeArgsDFlash(t *testing.T) {
-	got := appendSpeculativeArgs([]string{"base"}, "", LlamaServerConfig{
-		SpecType:       "dflash",
-		DraftModelPath: "drafter.gguf",
-	}, api.Options{Runner: api.Runner{DraftNumPredict: 6}})
-	want := []string{
-		"base", "--spec-type", "dflash",
-		"--spec-draft-model", "drafter.gguf",
-		"--spec-draft-n-max", "6",
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("appendSpeculativeArgs = %v, want %v", got, want)
+	for _, specType := range []string{"dflash", "draft-dflash"} {
+		got := appendSpeculativeArgs([]string{"base"}, "", LlamaServerConfig{
+			SpecType:       specType,
+			DraftModelPath: "drafter.gguf",
+		}, api.Options{Runner: api.Runner{DraftNumPredict: 6}})
+		want := []string{
+			"base", "--spec-type", "draft-dflash",
+			"--spec-draft-model", "drafter.gguf",
+			"--spec-draft-n-max", "6",
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("appendSpeculativeArgs(%q) = %v, want %v", specType, got, want)
+		}
 	}
 }
 

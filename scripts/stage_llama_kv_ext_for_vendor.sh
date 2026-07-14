@@ -50,7 +50,14 @@ _sync_one() {
 
 _sync_one "${INTREE}/include/llama-kv-ext.h" "${VENDOR_INC}/llama-kv-ext.h"
 _sync_one "${INTREE}/src/llama-memory-kv-ext.cpp" "${VENDOR_SRC}/llama-memory-kv-ext.cpp"
-_sync_one "${INTREE}/src/llama-kv-cache.h" "${VENDOR_SRC}/llama-kv-cache.h"
+# WHY: vendor dig (MTP / dual-cache) can be ahead of in-tree llama-kv-cache.h.
+# Blind overwrite breaks llama-server (ctor mismatch vs llama-kv-cache.cpp).
+if grep -q 'llama_memory_t[[:space:]]*mem_other' "${VENDOR_SRC}/llama-kv-cache.h" 2>/dev/null \
+  && ! grep -q 'llama_memory_t[[:space:]]*mem_other' "${INTREE}/src/llama-kv-cache.h" 2>/dev/null; then
+  echo ">>> skip llama-kv-cache.h stage (vendor ctor ahead of in-tree)" >&2
+else
+  _sync_one "${INTREE}/src/llama-kv-cache.h" "${VENDOR_SRC}/llama-kv-cache.h"
+fi
 
 if ! grep -q 'llama-memory-kv-ext.cpp' "${CMAKE}" 2>/dev/null; then
   _changed=1

@@ -35,7 +35,7 @@ func ModelNeedsLlamaServerSpec(config LlamaServerConfig) bool {
 	}
 	switch strings.ToLower(strings.TrimSpace(config.SpecType)) {
 	case "ngram", "ngram-simple",
-		"draft-eagle3", "eagle3", "dflash",
+		"draft-eagle3", "eagle3", "dflash", "draft-dflash",
 		"draft-mtp", "mtp":
 		return true
 	default:

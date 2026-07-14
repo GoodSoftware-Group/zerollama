@@ -22,8 +22,8 @@ from runtime.llama_cpp_unified import (
 )
 
 _REQUIRED_PATCH_SUBSTRINGS = (
-    "0014-ollama-llama-kv-ext",
-    "0017-ollama-kv-seq-copy-endpoint",
+    "ollama-llama-kv-ext",  # Phase 15; numbered 0014 historically, 0019 on 8f114a9b
+    "ollama-kv-seq-copy-endpoint",  # numbered 0017/0018 historically; 0022 on 8f114a9b
 )
 
 _IN_TREE_MARKERS = (
@@ -40,8 +40,8 @@ def _repo_root(explicit: Path | None = None) -> Path:
 
 
 def _read_makefile_sync(repo: Path) -> tuple[str, str]:
-    fetch_head = "c84b3020"
-    fetch_ref = "c84b30200c8d512c00c9d61c96bed078f1c0024d"
+    fetch_head = "8f114a9b"
+    fetch_ref = "8f114a9b573b69035299f9b924047f53c1e22c7e"
     makefile = repo / "Makefile.sync"
     if makefile.is_file():
         text = makefile.read_text(encoding="utf-8", errors="replace")

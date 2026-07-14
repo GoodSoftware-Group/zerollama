@@ -254,6 +254,198 @@ Manifest **v1 → v2** auto-refresh: old caches without `proxy_conv_w1` are rebu
 
 ---
 
+## Known issues
+
+### Chain 17 B7 token-shadow: intermittent SIGSEGV — RESOLVED Jul 12 2026 (heap buffer overflow in `ane_draft_session_eval_dflash_ffn_gate`)
+
+**Root cause found and fixed.** `ane_draft_session_eval_dflash_ffn_gate()` (`ane_draft_session.mm`)
+writes `oc6 * seq` floats into `g_session.outBuf`, but unlike every other step in the dflash
+chain that changes the output row-dimension (e.g. `ane_draft_session_eval_dflash_ffn_up_swiglu_down`'s
+`ffn_down` write, which checks `if (down_bytes > g_session.outIoBytes) { realloc }`), this one had
+**no grow-on-demand check before writing**. `outBuf` was left sized from the previous step
+(`attn_wo`, row-dim = n_embd = 5120) and `ffn_gate` then wrote `oc6 * seq = 17408 * 16 = 278,528`
+floats into it — for chain 17's real shapes that's a **~3.4x heap buffer overflow**, corrupting
+~789KB past the end of a ~320KB allocation into whatever the heap allocator placed next. Fixed by
+adding the same grow-then-`calloc` pattern used elsewhere in the file, guarded by comparing
+`gate_bytes` against `g_session.outIoBytes` before the write.
+
+This was found via forensic analysis of the fault address (`far` register) across ~10 crash
+reports, all of which showed the classic "two adjacent floats overwriting a 64-bit pointer slot"
+pattern (see FAR analysis below) — confirming this was real heap corruption, not a live Metal
+timing race, before the specific overflow site was located by code audit.
+
+**Verification:** 11/11 back-to-back `ane-draft-parity-smoke --token-shadow` runs on chain 17
+completed cleanly (`ok: true`, exit 0) after the fix, vs. the prior ~50% crash rate. All the
+Metal-completion-queue/timing "fixes" attempted earlier in this investigation (drain-sync,
+residency-heartbeat pause, post-sync sleep) are harmless no-ops now that the actual corruption is
+fixed, and are left in the tree as defensive/perf changes, but were never the real fix.
+
+**Follow-up hardening (Jul 12, same day):** audited every `g_session.outBuf` write site across
+all dflash chains (11–17), not just the one that crashed, for the same missing-grow-check bug
+class. Found one more latent (not yet observed to trigger) instance:
+`ane_draft_session_eval_dflash_attn_wo()` wrote `oc5 * seq` floats into `outBuf` with no
+size check — currently safe in practice because `oc5` is a fixed session field that happens to
+always match the prior step's ending size for chains 14–17, but nothing enforces that invariant,
+so a future chain reordering/addition could silently reintroduce the same overflow. Hardened it
+with the same grow-check. Also introduced a shared helper,
+`static bool ane_session_ensure_out_buf(size_t new_bytes)`, and refactored all three grow-check
+call sites (`attn_wo`, `ffn_gate`, `ffn_up_swiglu_down`'s `ffn_down` write) to use it instead of
+duplicating the `calloc`/`free` pattern inline — **any new dflash step that writes a
+differently-sized row into `outBuf` should call this helper first.** All other `outBuf`
+write/read sites in the file either write into a local `std::vector` (safe) or read/write using
+`g_session.outIoBytes`/`ioBytes` (the already-current size, self-consistent), so no other overflow
+sites were found. Re-verified chains 14, 15, 16, and 17 all pass the token-shadow smoke test
+cleanly after this hardening pass.
+
+**Extended coverage (Jul 12, same day, evening):** ran an additional 18 back-to-back chain-17
+`--token-shadow --quick` runs on `eliza-1-27b-256k-dflash` (10 at default chain probing which
+resolved to chain 8, 8 with `ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=17` forced explicitly) — all 26/26
+completed cleanly (`ok: true`, exit 0) across this and the prior verification pass, 0 crashes.
+Attempted to add `eliza-1-2b-dflash` as a second model for shape-independent coverage, but it
+fails at server load time on an unrelated pre-existing assertion
+(`speculative.cpp:1001: GGML_ASSERT(target_layer_ids_n > 0 && "DFlash model has no
+target_layer_ids")` — this model's sidecar metadata lacks `target_layer_ids`, so it can't reach
+the dflash draft path at all, chain 17 or otherwise. Not a regression from this fix; out of scope
+for this bug. The smoke harness has no prompt/seed knobs (fixed prompt "Write a short poem about
+apples.", no seed param), so coverage variety on this model is currently limited to chain depth
+(11-17) and `--quick` vs full-length token budget.
+
+### (Historical) investigation notes below, kept for the record
+
+**Symptom:** `eliza-1-27b-256k-dflash` chain 17 (`ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=17`) with
+`--token-shadow` on lab port 11435 crashes `llama-server` with `SIGSEGV`
+(`EXC_BAD_ACCESS` / `KERN_INVALID_ADDRESS`) roughly every other run. The fault always lands in
+Apple's own AGX/Metal resource-list code (`MTLResourceListAddResource` or
+`IOGPUMetalCommandBufferStorageReset`), reached via different call stacks depending on what
+else is running at the time:
+
+- Async completion queue: `com.Metal.CompletionQueueDispatch` → `IOGPUMetalCommandBufferStorageReset/Dealloc` (most common / baseline signature)
+- Main thread building a new compute encoder (`ggml_metal_encoder_init`)
+- Main thread doing an ordinary blit copy inside `llama_decode`/`extract_layer_inputs`
+
+**Root cause: not yet found.** This is a genuine data race / memory-safety bug, most likely a
+use-after-free or similar corruption of Metal resource-tracking state tied to `ctx_dft`'s Metal
+buffers — but the exact mechanism is still unknown. The bug has a strong **observer effect**:
+every diagnostic tool tried either changes the crash signature or suppresses it entirely
+(`MTL_DEBUG_LAYER=1` avoided it outright in testing), which makes it very hard to catch live.
+
+**Hypotheses tested and disproven (Jul 2026 lab session):**
+1. ~~Host-side latency in the ANE post-eval pipeline (`ane_dflash_post_eval_pipeline`,
+   especially `matmul_golden_reference`-based FFN forward in `ane_dflash_host_layer_forward`)
+   widens a timing window that exposes a pre-existing race.~~ Multithreading
+   `matmul_golden_reference` gave a real ~4.7x speedup (host_layer_tail 31.6s → 6.6s) but the
+   crash still reproduced with the same signature — window shrinking alone isn't enough.
+2. ~~The `ggml_metal_rsets_init` background residency-set keep-alive heartbeat (5ms period,
+   `ggml-metal-device.m`) races a Metal command-encoder/resource-list mutation on `ctx_dft`.~~
+   Added `ggml_backend_metal_dev_rsets_pause/resume` (ref-counted; see `ggml-metal.h`,
+   `ggml-metal-device.{h,m}`) and paused the heartbeat for the entire ANE host-compute window
+   in `common_ane_draft_handoff_after_decode`. Confirmed the pause engaged (debug log fired).
+   Crash still reproduced with the exact same signature — the heartbeat is not the culprit.
+3. ~~The cached IOSurface buffer in `pack_draft_hidden_into_iosurface` is freed while a Metal
+   command buffer still references it (resize-free path).~~ Added a `llama_synchronize(ctx_dft)`
+   guard before the resize-free (`ZEROLLAMA_ANE_IOSURFACE_RESIZE_SYNC`, default on). Real
+   defensive fix, kept, but the resize-free path was never even exercised in single-request
+   repros (no `resize-free` log line), so it cannot explain the crash by itself.
+4. Ruled out (not a hypothesis, a check): the GCD async-eval path
+   (`ane_draft_session_eval_async` / `ane_handoff_eval_done`) is not implicated — it only runs
+   when drive mode is `COMMON_ANE_DRAFT_DRIVE_OFF`, but `--token-shadow` forces
+   `COMMON_ANE_DRAFT_DRIVE_SHADOW`, which uses the synchronous eval path exclusively (confirmed
+   via drive logs: `"eval ok"`, never `"async ANE eval queued"`). The server's `update_slots()`
+   loop is also single-threaded — no cross-thread misuse of `ctx_dft` from our own code found.
+   The only genuinely concurrent actor touching Metal state is Apple's own completion-queue
+   thread, which lines up with where every crash bottoms out.
+
+**Mitigation for lab work today:** run chain 17 B7 token-shadow smoke tests with
+`MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1` set — this reliably avoided the crash in testing
+(one full clean run, vs otherwise ~50% crash rate). This is a **timing-perturbation mitigation,
+not a fix** — do not use it as evidence the underlying bug is resolved, and do not extrapolate
+"no crash under Metal validation" to production behavior (which will never run with that flag).
+
+**Left in the tree (all lab-only, harmless if unused):**
+- `matmul_golden_reference` (`ane_draft_hook.cpp`) — multithreaded, real perf win independent of this bug.
+- `ZEROLLAMA_ANE_HANDOFF_DRAIN_SYNC` (default on) — `llama_synchronize(ctx_dft)` before returning from handoff.
+- `ZEROLLAMA_ANE_RSETS_PAUSE` (default on) — pauses the residency heartbeat during the ANE host-compute window.
+- `ZEROLLAMA_ANE_IOSURFACE_RESIZE_SYNC` (default on) — synchronizes before freeing the cached IOSurface buffer on resize.
+- `ggml_backend_metal_dev_rsets_pause/resume` (`ggml-metal.h`) — new reusable API, independent of whether it fixes this bug.
+
+**Tried and disproven (Jul 12 follow-up session):**
+5. ~~`llama_synchronize(ctx_dft)`/`ggml_backend_sched_synchronize` (used by our drain-sync and by
+   stock `llama_get_logits_ith`) only calls `[cmd_buf waitUntilCompleted]`, which does not
+   guarantee Metal's own internal async command-buffer teardown
+   (`IOGPUMetalCommandBufferStorageReset/Dealloc`, dispatched via
+   `IOGPUNotificationQueueDispatchAvailableCompletionNotifications`) has finished — added a
+   tunable post-sync sleep (`ZEROLLAMA_ANE_HANDOFF_DRAIN_SLEEP_US`, default 2000us) as an
+   empirical workaround to give that teardown more time.~~ Tested at 3ms: crash still reproduced,
+   and the signature **shifted again** — plain `SIGSEGV` in `ggml_mul_impl` called from
+   `llm_graph_context::build_norm` during the *next* `llama_decode`'s graph build (CPU-side ggml
+   op, not even touching a Metal API directly), one call stack level up from
+   `llama_context::process_ubatch`. This is consistent with memory corruption of an `ggml_tensor`
+   or its backing buffer from an earlier step (not a live Metal API race at the crash site
+   itself) — sleeping longer just changes which subsequent access observes the corruption first.
+   Left in the tree, defaults to a small delay since it's cheap and does not appear harmful, but
+   it is **not a fix**; do not rely on it.
+
+**New forensic lead (Jul 12 follow-up, FAR analysis):** pulled the fault address (`far` register)
+from 10 consecutive crash reports across every signature seen tonight (Metal resource-list code,
+`objc_msgSend`/`IOGPUMetalCommandBufferStorageReset`, `ggml_gallocr_alloc_graph`, `ggml_mul_impl`).
+Nearly every one has a fault address whose high and low 32-bit halves are identical or nearly
+identical (e.g. `0xc0674e94c0674e94`, `0x99fb7c0099fc0`, `0x4c9075404c9080`,
+`0xc11259c2c11259ca`). That is the textbook signature of a 64-bit pointer-sized memory slot
+(vtable ptr, `next`/`data` field, etc.) having been overwritten by **two adjacent 32-bit floats**
+— i.e. real out-of-bounds/stray float write corruption, not a live Metal completion-queue timing
+race. This reframes the bug: every crash "moving" under different diagnostics was never a race
+changing — it was always the same underlying corruption, and each perturbation just changed
+*which* corrupted struct got dereferenced first (explains hypotheses 1–5 above all failing to
+fix it while still reproducing the "same" bug family).
+
+Audited (by inspection, not found faulty):
+- `pack_draft_hidden_into_iosurface` / `ane_draft_session_pack_matmul_activations` (main IOSurface
+  packing path) — verified exact byte math for chain 17's actual runtime shapes
+  (ch=512, seq=16, oc=5120, `spIn`=5136, buffer=10,518,528B) — in bounds.
+- `drive_head_load` / tied-embed lookup (`W[e*nv+tok]`) — bounds-checked via `tok < nv`, mmap'd
+  read-only region sized against `n_embd*n_vocab*2` up front.
+- `ane_dflash_stash_inpSA` / `ane_dflash_apply_attn_inpSA_residual` / `ane_dflash_apply_ffn_residual`
+  (`ane_draft_session_add_output_row`) — bounds-checked via `min(n, oc)` against
+  `ane_session_output_row_dim()`.
+- `ane_draft_session_eval_dflash_attn_post_norm` / `..._output_norm` / `..._ffn_up_swiglu_down` —
+  each re-derives `outBuf`'s current row-dim (`n_embd`/`oc_gate`/`oc_up`/`oc_down`) from the same
+  session field that was used to size `outBuf` (via `calloc`) one step earlier in the chain, so
+  the local accounting is internally consistent at each individual call site.
+
+**Not yet audited** (chain 17 touches many more matmul/pack helpers than the above — this list is
+not exhaustive): `ane_session_pack_matmul2_activations`, `ane_host_matmul_seq`, the
+`matmul{2,4,5,6,7,10}W`/`WCount` weight-load paths, `ane_bridge_read_output`, and every other
+`load_gamma_scales` call site (there are ~25). A single off-by-one or stale-length field in any of
+these (e.g. a session field updated in one branch but read stale in a sibling branch on a
+different code path — chain 17 has several `if/else` forks between "host fp32" and "ANE kernel"
+variants of the same step) would produce exactly this kind of intermittent stray-float write.
+
+**Next steps for whoever picks this up:**
+- **Start from the FAR-pattern lead, not more synchronization/timing changes.** Grep every
+  `calloc`/`resize`/`assign` for `outBuf`, `matmulNW`, `lastDflash*` fields in `ane_draft_session.mm`
+  and cross-check each against every read/write site's row-dim math, specifically across the
+  host-fp32-vs-ANE-kernel branches within chain 17 — a size field set on one branch and consumed
+  on the other after a mode toggle is the most likely single bug class here.
+- Alternatively, build with `-fsanitize=address` (ASan) for a single-shot, non-interactive repro
+  — ASan poisons redzones around heap allocations, which would catch this class of bug on the
+  *write* rather than waiting for a later, unrelated read to crash. (Earlier guidance this session
+  was to avoid ASan for iteration speed, but given the FAR evidence now strongly favors a heap
+  OOB write over a live race, ASan is likely to catch it in one run instead of ~50% flaky manual
+  repros.)
+- The crash is probabilistic (confirmed: one clean run followed immediately by a crash under
+  identical config), so any "it passed" result needs many repeated runs before it's meaningful
+  evidence of anything.
+- Since every external observation tool perturbs the timing, consider in-process instrumentation
+  instead: e.g. a debug build with `MTLResourceListAddResource` symbolicated watchpoints set via
+  a lldb script that only breaks (doesn't slow down other paths), or Instruments' Metal System
+  Trace, which is designed to observe without the same degree of interference as `lldb -b`/malloc
+  debug flags.
+- Consider whether `ctx_dft`'s Metal buffers (KV cache / compute buffers, not just our IOSurface
+  cache) get resized/reallocated during a `llama_decode` call that could race an in-flight
+  command buffer from a *previous* decode — i.e. look inside stock `llama.cpp`/`ggml-metal`
+  buffer lifecycle during ordinary decode, not just our ANE-specific code paths.
+- This was all reproduced only on the lab port (11435); never touched production (11434/8081).
+
 ## Non-goals
 
 - No automatic `ZEROLLAMA_ANE_DRAFT=1` on `./zerollama serve :11434`
