@@ -149,8 +149,8 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 | `ZEROLLAMA_LLAMA_FORK=1` | Force fork profile merge (checkpoints + KV types) |
 | `ZEROLLAMA_LLAMA_FORK=0` | Force stock sanitize (L1 default) |
 | *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for fork KV markers |
-| `ZEROLLAMA_LLAMA_FORK_PROFILE=speed` | Default fork pairing (`_eliza_fork_*`, usually QJL/Polar) |
-| `ZEROLLAMA_LLAMA_FORK_PROFILE=vram` | TBQ pairing (`_eliza_fork_vram_*`) — long-ctx VRAM headroom |
+| `ZEROLLAMA_LLAMA_FORK_PROFILE=vram` | **Default** when fork on — TBQ (`_eliza_fork_vram_*`) |
+| `ZEROLLAMA_LLAMA_FORK_PROFILE=speed` | QJL/Polar (`_eliza_fork_*`) — experimental; large CUDA tok/s hit |
 | `LLAMA_CPP_ROOT` / `LLAMA_CPP_COMMIT` | Override clone path / commit (`ensure_llama_cpp_sibling.sh`) |
 
 ---
@@ -204,7 +204,7 @@ JSON: `/tmp/l2-cuda-gate/bench-8k.json` (1B), `/tmp/l2-cuda-gate-long/bench-{8k,
 
 **Fork build footgun (container):** eliza sibling may need `-DLLAMA_BUILD_WEBUI=OFF` — default WebUI asset download fails headless.
 
-**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor profile defaults:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Kernels live in patches **0026–0030** on ggml-org `8f114a9b`; profile checkpoint argv uses `--checkpoint-every-n-tokens`.
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor profile defaults:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Kernels: patches **0026–0030** + CUDA follow-ups **0067–0070** on ggml-org `8f114a9b`; `FORK=1` defaults to TBQ (`FORK_PROFILE=vram`). Checkpoint argv uses `--checkpoint-every-n-tokens`.
 
 ### CUDA 4090 exploratory (Jul 2026, dual RTX 4090)
 
@@ -217,16 +217,35 @@ Gate fixes required for valid A/B: pin `single_gpu.yaml` into `linux_runtime_sta
 | llama3.2 3B | 65536 | **93.0 tok/s**, 7522 MiB | 88.6 tok/s, 5504 MiB | Decode **−5%**; VRAM **−27%** |
 | llama3.2 3B | 131072 | **91.6 tok/s**, 11470 MiB | 85.7 tok/s, 7436 MiB | Decode **−6%**; VRAM **−35%** (~4 GiB saved) |
 
-**QJL/Polar on llama3.2:** `qjl1_256`/`q4_polar` **abort** on vendor `c84b3020` (`GGML_ASSERT` flash-attn / segfault). Use TBQ (`ZEROLLAMA_LLAMA_FORK_PROFILE=vram` or `L2_FORK_CACHE_TYPE_*=tbq*`).
+**8f114a9b re-gate (Jul 2026, same host, TBQ via `L2_FORK_CACHE_TYPE_*`):** stock still wins decode; fork wins VRAM. Short legs (contended host): `/tmp/l2-cuda-gate-8f114a9b-llama32-tbq/`. Long-ctx (prod stopped): `/tmp/l2-cuda-gate-8f114a9b-llama32-long/`.
 
-**Verdict:** do **not** flip defaults for tok/s. **Do** opt into fork **VRAM profile** when long-ctx headroom matters (agent 65k–131k, multi-slot). Artifacts: `/tmp/l2-cuda-gate-4090-llama32-tbq/`, `/tmp/l2-cuda-gate-4090-llama32-long/`.
+| Model | ctx | Stock | Fork (TBQ) | Notes |
+|-------|-----|-------|------------|-------|
+| llama3.2 3B | 8192 | 10.4 tok/s, 3562 MiB | 9.5 tok/s, 3310 MiB | Contended host; decode **−9%**; VRAM **−7%** |
+| llama3.2 3B | 26624 | 34.7 tok/s, 4700 MiB | 26.1 tok/s, 3922 MiB | Contended; decode **−25%**; VRAM **−17%** |
+| llama3.2 3B | 65536 | 33.4 tok/s, 7116 MiB | 26.8 tok/s, 5208 MiB | Quiet host; decode **−20%**; VRAM **−27%** |
+| llama3.2 3B | 131072 | 32.1 tok/s, 11196 MiB | 25.2 tok/s, 7384 MiB | Quiet host; decode **−21%**; VRAM **−34%** |
+
+VRAM deltas at 65k/131k match the c84 reference (−27% / −35%). Absolute tok/s is lower via the Python sidecar path than direct `llama-server`, but the VRAM tradeoff is confirmed on **`8f114a9b`**.
+
+**QJL/Polar on llama3.2:** aborts on legacy `c84b3020`. On pin **`8f114a9b` + patches 0067–0070**, QJL/Polar **loads and runs** (no abort). Contended-host sidecar A/B (`L2_FORK_CACHE_TYPE_*=qjl1_256/q4_polar`, prod left up): `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`.
+
+| Model | ctx | Stock | Fork (QJL/Polar) | Notes |
+|-------|-----|-------|------------------|-------|
+| llama3.2 3B | 8192 | 10.8 tok/s, 3556 MiB | 5.6 tok/s, 3284 MiB | Decode **−48%**; VRAM **−8%** |
+| llama3.2 3B | 26624 | 63.6 tok/s, 4696 MiB | 9.8 tok/s, 3740 MiB | Decode **−85%**; VRAM **−20%** |
+
+Same host TBQ @ 8k/27k was only **−9% / −25%** decode — QJL **speed** profile is far worse on tok/s than TBQ **vram**. Prefer `FORK_PROFILE=vram` (TBQ) for headroom; treat `speed` (QJL/Polar) as experimental. TBQ load segfault on bare rebase was missing CPU `type_traits_cpu.from_float` (**0070**).
+
+**Verdict:** do **not** flip defaults for tok/s. **Do** opt into fork **VRAM profile** (TBQ) when long-ctx headroom matters (agent 65k–131k, multi-slot). **Do not** default `speed`/QJL on CUDA. Artifacts: `/tmp/l2-cuda-gate-4090-llama32-tbq/`, `/tmp/l2-cuda-gate-4090-llama32-long/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-tbq/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-long/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`.
 
 **When to enable fork for VRAM (operator)**
 
 ```bash
-# Env (any topology)
+# Env (any topology) — FORK=1 defaults to vram/TBQ; set speed only for QJL experiments
 export ZEROLLAMA_LLAMA_FORK=1
-export ZEROLLAMA_LLAMA_FORK_PROFILE=vram   # TBQ pairing from GPU JSON
+# export ZEROLLAMA_LLAMA_FORK_PROFILE=vram   # optional; already the default
+# export ZEROLLAMA_LLAMA_FORK_PROFILE=speed  # QJL/Polar — expect large decode regression on CUDA
 
 # Dual 4090 drop-in YAML (serve.llama_fork + llama_fork_profile)
 export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vram.yaml
@@ -235,8 +254,8 @@ export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vra
 | Goal | Setting | Why |
 |------|---------|-----|
 | Max decode tok/s | `ZEROLLAMA_LLAMA_FORK=0` / `dual_4090.yaml` (default) | L1 q8_0 wins measured legs |
-| Fit more ctx / slots | `FORK=1` + `FORK_PROFILE=vram` / `dual_4090_vram.yaml` | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
-| Max compression (experimental) | `FORK=1` + `FORK_PROFILE=speed` | QJL/Polar — may abort on some GGUFs |
+| Fit more ctx / slots | `FORK=1` (defaults to TBQ) / `dual_4090_vram.yaml` | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
+| Max compression (experimental) | `FORK=1` + `FORK_PROFILE=speed` | QJL/Polar — runs on `8f` llama3.2 but **−48…−85%** decode @ 8k/27k; prefer TBQ |
 
 ---
 

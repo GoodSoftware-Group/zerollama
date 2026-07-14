@@ -80,11 +80,11 @@ def flags_from_gpu_config(
     when stock sanitize rewrote fork KV types to ``q8_0``; always False on fork path.
 
     Fork KV pairing (when ``fork_enabled``):
-    - ``ZEROLLAMA_LLAMA_FORK_PROFILE=speed`` (default) → ``_eliza_fork_llama_server_flags``
-      (typically QJL/Polar — max compression, may abort on some GGUFs)
-    - ``ZEROLLAMA_LLAMA_FORK_PROFILE=vram`` → ``_eliza_fork_vram_llama_server_flags`` if
-      present, else falls back to speed block. Prefer TBQ for broader model compatibility
-      when the win is long-ctx VRAM headroom rather than peak tok/s.
+    - ``ZEROLLAMA_LLAMA_FORK_PROFILE=vram`` (default) → ``_eliza_fork_vram_llama_server_flags``
+      if present (typically TBQ — long-ctx VRAM headroom with milder decode cost), else
+      falls back to the speed block.
+    - ``ZEROLLAMA_LLAMA_FORK_PROFILE=speed`` → ``_eliza_fork_llama_server_flags``
+      (typically QJL/Polar — max compression; CUDA ship gates show large tok/s regressions).
     """
     base = dict(cfg.get("llama_server_flags") or {})
     if not fork_enabled:
@@ -93,16 +93,19 @@ def flags_from_gpu_config(
     merged = dict(base)
     # Legacy key from early L1 port (checkpoints only).
     merged.update(cfg.get("_fork_only_llama_server_flags") or {})
-    profile = os.environ.get("ZEROLLAMA_LLAMA_FORK_PROFILE", "speed").strip().lower()
-    if profile in ("vram", "memory", "tbq", "long-ctx", "long_ctx"):
+    # WHY default vram/TBQ: 8f CUDA gates show QJL/Polar (speed) −48…−85% decode
+    # vs TBQ −5…−25% at comparable ctx; FORK=1 without a profile should pick the
+    # operator-useful path, not the experimental compression pairing.
+    profile = os.environ.get("ZEROLLAMA_LLAMA_FORK_PROFILE", "vram").strip().lower()
+    if profile in ("speed", "qjl", "polar", "qjl_polar"):
+        merged.update(cfg.get("_eliza_fork_llama_server_flags") or {})
+    else:
+        # vram / memory / tbq / long-ctx / default / unknown → prefer TBQ block
         vram_flags = cfg.get("_eliza_fork_vram_llama_server_flags")
         if isinstance(vram_flags, dict) and vram_flags:
             merged.update(vram_flags)
         else:
             merged.update(cfg.get("_eliza_fork_llama_server_flags") or {})
-    else:
-        # speed / default / qjl / polar
-        merged.update(cfg.get("_eliza_fork_llama_server_flags") or {})
     for field in ("cache_type_k", "cache_type_v"):
         raw = merged.get(field)
         if raw:
@@ -580,7 +583,7 @@ def apply_profile_to_config(
         "emit_mlock": emit.get("mlock", True),
         "llama_fork": fork_enabled,
         "llama_fork_profile": (
-            os.environ.get("ZEROLLAMA_LLAMA_FORK_PROFILE", "speed").strip().lower() or "speed"
+            os.environ.get("ZEROLLAMA_LLAMA_FORK_PROFILE", "vram").strip().lower() or "vram"
             if fork_enabled
             else None
         ),

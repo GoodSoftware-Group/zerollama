@@ -21,8 +21,8 @@ LEGACY_CHECKOUT_NAMES = frozenset(
     }
 )
 
-DEFAULT_PIN = "c84b30200c8d512c00c9d61c96bed078f1c0024d"
-UNIFIED_REPO = "https://github.com/elizaOS/llama.cpp.git"
+DEFAULT_PIN = "8f114a9b573b69035299f9b924047f53c1e22c7e"
+UNIFIED_REPO = "https://github.com/ggml-org/llama.cpp.git"
 
 
 def _repo_root() -> Path:

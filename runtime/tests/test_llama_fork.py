@@ -182,6 +182,7 @@ def test_runtime_config_fork_profile(monkeypatch, tmp_path):
     fake_bin.chmod(0o755)
     monkeypatch.setenv("ZEROLLAMA_GPU_PROFILE", "1")
     monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK", "1")
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_PROFILE", raising=False)
     monkeypatch.setenv("LLAMA_SERVER_BIN", str(fake_bin))
     monkeypatch.setattr(
         "runtime.gpu_profiles.detect_nvidia_gpu_name",
@@ -195,11 +196,19 @@ def test_runtime_config_fork_profile(monkeypatch, tmp_path):
     cfg = RuntimeConfig.from_file(path)
     assert cfg.gpu_profile is not None
     assert cfg.gpu_profile.get("llama_fork") is True
+    assert cfg.gpu_profile.get("llama_fork_profile") == "vram"
     args = cfg.llama_server_args()
     assert "--cache-type-k" in args
     idx = args.index("--cache-type-k")
-    assert args[idx + 1] == "qjl1_256"
+    # Default FORK_PROFILE is vram → TBQ on 4090.json
+    assert args[idx + 1] == "tbq4_0"
     assert "--ctx-checkpoints" in args
+
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_PROFILE", "speed")
+    cfg_speed = RuntimeConfig.from_file(path)
+    args_speed = cfg_speed.llama_server_args()
+    idx_s = args_speed.index("--cache-type-k")
+    assert args_speed[idx_s + 1] == "qjl1_256"
 
 
 def test_fork_health():

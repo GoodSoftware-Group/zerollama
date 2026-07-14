@@ -33,5 +33,5 @@
     "cache_type_k": "tbq4_0",
     "cache_type_v": "tbq3_0"
   },
-  "_provenance": "eliza-v3 3090.json; Ampere speed fork=q8_0 K + polar V; vram profile=tbq"
+  "_provenance": "eliza-v3 3090.json; Ampere speed=q8_0 K + polar V; FORK=1 defaults to vram/TBQ"
 }

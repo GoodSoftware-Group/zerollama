@@ -183,6 +183,12 @@ def test_flags_from_gpu_config_fork_speed_vs_vram(monkeypatch):
         },
     }
     monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_PROFILE", raising=False)
+    # Default profile is vram/TBQ (CUDA ship gates: QJL speed loses tok/s badly).
+    default, _ = flags_from_gpu_config(cfg, fork_enabled=True)
+    assert default["cache_type_k"] == "tbq4_0"
+    assert default["cache_type_v"] == "tbq3_0"
+
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_PROFILE", "speed")
     speed, _ = flags_from_gpu_config(cfg, fork_enabled=True)
     assert speed["cache_type_k"] == "qjl1_256"
     assert speed["cache_type_v"] == "q4_polar"

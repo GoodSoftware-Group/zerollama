@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### L2 CUDA on ggml-org `8f114a9b` (patches 0067–0070) — Jul 2026
+
+**Why:** Rebase onto ggml-org pin broke TBQ load (missing CPU `type_traits` / CUDA SET_ROWS + fattn vec routing). QJL/Polar as the default fork pairing also lost badly on 4090 tok/s.
+
+**Shipped:**
+
+- **0067–0070** — TBQ flash-attn vec helpers, CLI KV types + `-cpent`, CUDA SET_ROWS/GET_ROWS + fattn routing, CPU type_traits/dispatch for TBQ/QJL/Polar
+- **`ZEROLLAMA_LLAMA_FORK_PROFILE` default `vram`** (TBQ) instead of `speed` (QJL/Polar) when `ZEROLLAMA_LLAMA_FORK=1`
+- 4090 gates: TBQ long-ctx **−27…−35% VRAM**; QJL/Polar **−48…−85% decode** @ 8k/27k — speed stays experimental
+- Docs / pin status / `l2_cuda_bench.sh` health alignment; vendor → in-tree sync
+
+**Non-goals:** flipping production `llama_fork` off stock; merging fork profiles as default-on for tok/s.
+
 ### ComfyUI image backend (agent-max utility) — Jul 2026
 
 **Why:** Agents need edit / img2img / ControlNet / LoRA on Qwen-Image, FLUX.1/2-dev, GLM-Image, and Klein 9B — not only MLX Z-Image / Klein 4B. Porting each DiT into `x/imagegen` would take months per family; ComfyUI already packages those graphs. Zerollama **orchestrates** a running ComfyUI (`modality_backends.image=comfyui`) instead of embedding Diffusers or expanding the raw `external-image` hook.

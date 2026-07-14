@@ -2,12 +2,13 @@
 #
 # WHY a separate file: dual_4090.yaml keeps llama_fork: stock for peak tok/s.
 # This topology enables fork KV compression (TBQ) for ~−27…−35% VRAM at 65k–131k
-# with ~−5…−6% decode on llama3.2 (Jul 2026 4090 gate). Doc: docs/gpu-profiles-l2.md
+# (decode cost depends on path: direct llama-server ~−5…−6%; 8f sidecar ~−20…−21%).
+# Doc: docs/gpu-profiles-l2.md
 #
 # Use:
 #   ZEROLLAMA_RUNTIME_CONFIG=$PWD/runtime/configs/dual_4090_vram.yaml
 #   # or systemd Environment=ZEROLLAMA_RUNTIME_CONFIG=.../dual_4090_vram.yaml
-# Env still wins when set before start.
+# Equivalent env: ZEROLLAMA_LLAMA_FORK=1 (FORK_PROFILE defaults to vram/TBQ).
 device_count: 2
 tensor_parallel: 2
 split_mode: layer

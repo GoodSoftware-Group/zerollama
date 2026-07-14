@@ -3,7 +3,8 @@
 #
 # WHY: Criterion 7 tracks whether fork KV *profiles* (QJL/Polar/TBQ) should become
 # defaults. Kernels are already extracted onto ggml-org via patches 0026–0030;
-# vendor rebase of the full elizaOS tree is no longer the merge question.
+# CUDA L2 completeness is 0067–0070 (fattn TBQ, CLI KV types, SET_ROWS, CPU traits).
+# Vendor rebase of the full elizaOS tree is no longer the merge question.
 #
 # Usage:
 #   ./scripts/phase17_l2_pin_status.sh
@@ -53,9 +54,13 @@ fi
 
 echo ""
 echo "L2 model (Jul 2026): QJL/Polar/TBQ extracted as patches 0026–0030 on ggml-org;"
+echo "  CUDA L2 follow-ups 0067–0070 (fattn TBQ helpers, CLI types, SET_ROWS, CPU type_traits)."
 echo "  fork *profiles* stay opt-in (ZEROLLAMA_LLAMA_FORK) until gate passes."
-echo "  VRAM opt-in: ZEROLLAMA_LLAMA_FORK=1 + ZEROLLAMA_LLAMA_FORK_PROFILE=vram (TBQ),"
-echo "  or runtime/configs/dual_4090_vram.yaml — long-ctx −27…−35% VRAM @ −5…−6% decode (4090)."
+  echo "  VRAM opt-in: ZEROLLAMA_LLAMA_FORK=1 (defaults to TBQ / FORK_PROFILE=vram),"
+  echo "  or runtime/configs/dual_4090_vram.yaml — long-ctx −27…−35% VRAM (4090;"
+  echo "  direct llama-server −5…−6% decode; 8f sidecar re-gate −20…−21%)."
+  echo "  Speed profile (qjl/polar): FORK_PROFILE=speed — runs on 8f but FAIL tok/s"
+  echo "  (−48…−85% @ 8k/27k) — keep experimental."
 echo "Ship-of-record (5080 eliza-1, Jun 2026): FAIL default profiles — stock q8_0 faster @ 8k/27k."
 echo "Gates: ./scripts/l2_cuda_full_gate.sh (CUDA) · ./scripts/l2_full_gate.sh (Metal)"
 echo "Doc: docs/gpu-profiles-l2.md · docs/phase17-llama-server.md · runtime/LLAMA_CPP_PIN.md"

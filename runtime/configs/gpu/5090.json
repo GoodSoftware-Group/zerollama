@@ -33,5 +33,5 @@
     "cache_type_k": "tbq4_0",
     "cache_type_v": "tbq3_0"
   },
-  "_provenance": "eliza-v3 5090.json; fork speed=qjl/polar; fork vram=tbq via ZEROLLAMA_LLAMA_FORK_PROFILE=vram"
+  "_provenance": "eliza-v3 5090.json; FORK=1 defaults to vram/TBQ; speed=qjl/polar experimental"
 }

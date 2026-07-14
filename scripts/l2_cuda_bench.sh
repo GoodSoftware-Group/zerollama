@@ -133,10 +133,26 @@ _l2_run_leg() {
         [[ -n "${L2_FORK_CACHE_TYPE_K:-}" ]] && extra+=(--cache-type-k "${L2_FORK_CACHE_TYPE_K}")
         [[ -n "${L2_FORK_CACHE_TYPE_V:-}" ]] && extra+=(--cache-type-v "${L2_FORK_CACHE_TYPE_V}")
         export LLAMA_SERVER_EXTRA_ARGS="${extra[*]}${LLAMA_SERVER_EXTRA_ARGS:+ ${LLAMA_SERVER_EXTRA_ARGS}}"
+        # Align /health llama_fork_profile with the override (default FORK_PROFILE is vram/TBQ).
+        local _ck="${L2_FORK_CACHE_TYPE_K:-}" _cv="${L2_FORK_CACHE_TYPE_V:-}"
+        if [[ "${_ck}${_cv}" == *qjl* || "${_ck}${_cv}" == *polar* ]]; then
+          export ZEROLLAMA_LLAMA_FORK_PROFILE=speed
+        elif [[ "${_ck}${_cv}" == *tbq* ]]; then
+          export ZEROLLAMA_LLAMA_FORK_PROFILE=vram
+        fi
       fi
       ;;
     *) echo "unknown fork_mode: ${fork_mode}" >&2; return 1 ;;
   esac
+
+  # WHY: with ZEROLLAMA_GPU_PROFILE_CTX=0 the profile omits -c; without an explicit
+  # -c llama-server falls back toward n_ctx_train (often 128k+) and blows VRAM.
+  # Long-ctx legs set PROFILE_CTX=0 so L2_NUM_CTX must become argv.
+  local _ctx_env
+  _ctx_env="$(echo "${ZEROLLAMA_GPU_PROFILE_CTX:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_ctx_env}" =~ ^(0|false|no|off)$ ]]; then
+    export LLAMA_SERVER_EXTRA_ARGS="-c ${L2_NUM_CTX}${LLAMA_SERVER_EXTRA_ARGS:+ ${LLAMA_SERVER_EXTRA_ARGS}}"
+  fi
 
   linux_runtime_stop_sidecar_port
   # WHY pass config path: start_sidecar "" clears ZEROLLAMA_RUNTIME_CONFIG and
@@ -249,14 +265,18 @@ def decode_tok_per_s(out: dict, elapsed_s: float, n_predict: int) -> float:
 
 
 def nvidia_used_mib() -> list[int] | None:
-    """Live device VRAM used (MiB) via nvidia-smi — preferred over heuristic estimates."""
+    """Live device VRAM used (MiB) via nvidia-smi — preferred over heuristic estimates.
+
+    When CUDA_VISIBLE_DEVICES is set, only those GPU indices are returned (same
+    order as the env list). Otherwise all devices are sampled.
+    """
     import subprocess
 
     try:
         out = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=memory.used",
+                "--query-gpu=index,memory.used",
                 "--format=csv,noheader,nounits",
             ],
             text=True,
@@ -264,16 +284,32 @@ def nvidia_used_mib() -> list[int] | None:
         )
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         return None
-    vals: list[int] = []
+    by_index: dict[int, int] = {}
     for line in out.splitlines():
-        line = line.strip()
-        if not line:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
             continue
         try:
-            vals.append(int(line.split()[0]))
+            by_index[int(parts[0])] = int(parts[1].split()[0])
         except ValueError:
             return None
-    return vals or None
+    if not by_index:
+        return None
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if visible:
+        vals: list[int] = []
+        for tok in visible.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                idx = int(tok)
+            except ValueError:
+                continue
+            if idx in by_index:
+                vals.append(by_index[idx])
+        return vals or None
+    return [by_index[i] for i in sorted(by_index)]
 
 
 health = http_json("GET", "/health")
@@ -359,11 +395,11 @@ leg = {
     "gpu_profile": gp,
     "llama_server_args": llama_args,
     "cache_type_k": next(
-        (llama_args[i + 1] for i, a in enumerate(llama_args) if a == "--cache-type-k"),
+        (llama_args[i + 1] for i in range(len(llama_args) - 1, -1, -1) if llama_args[i] == "--cache-type-k"),
         None,
     ),
     "cache_type_v": next(
-        (llama_args[i + 1] for i, a in enumerate(llama_args) if a == "--cache-type-v"),
+        (llama_args[i + 1] for i in range(len(llama_args) - 1, -1, -1) if llama_args[i] == "--cache-type-v"),
         None,
     ),
     "bench": {
