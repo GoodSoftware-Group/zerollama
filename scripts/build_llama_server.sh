@@ -374,10 +374,22 @@ CMAKE_EXTRA+=(
   "-DCMAKE_INSTALL_RPATH=\$ORIGIN:\$ORIGIN/cuda_v12"
   "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
 )
-# WHY LLAMA_BUILD_WEBUI: eliza fork defaults ON; headless Linux builds fail without WebUI assets.
+# WHY LLAMA_BUILD_UI/WEBUI: ggml-org 8f114a9b+ uses LLAMA_BUILD_UI (WEBUI deprecated);
+# headless Linux builds fail without HF UI assets when left ON.
+# WHY LLAMA_USE_PREBUILT_UI=OFF with UI off: partial HF dist (missing loading.html)
+# makes llama-ui-embed abort; empty stub embed is fine for llama-server API use.
 # WHY GGML_CUDA_GRAPHS: L3 prefix cache clears KV slots; zerollama calls
 # llama_context_cuda_graph_invalidate (in-process) or POST /cuda-graph/invalidate
 # (subprocess llama-server) to drop stale captured graphs on CUDA.
+_LLAMA_UI="${LLAMA_BUILD_UI:-${LLAMA_BUILD_WEBUI:-OFF}}"
+_LLAMA_PREBUILT_UI="${LLAMA_USE_PREBUILT_UI:-}"
+if [[ -z "${_LLAMA_PREBUILT_UI}" ]]; then
+  if [[ "${_LLAMA_UI}" == "ON" || "${_LLAMA_UI}" == "1" ]]; then
+    _LLAMA_PREBUILT_UI=ON
+  else
+    _LLAMA_PREBUILT_UI=OFF
+  fi
+fi
 cmake -S "${ROOT}" -B "${BUILD}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA="${GGML_CUDA:-ON}" \
@@ -385,7 +397,10 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DGGML_CUDA_FUSED_ATTN_QJL=ON \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
   -DLLAMA_CURL=ON \
-  -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-ON}" \
+  -DLLAMA_BUILD_UI="${_LLAMA_UI}" \
+  -DLLAMA_BUILD_WEBUI="${_LLAMA_UI}" \
+  -DLLAMA_USE_PREBUILT_UI="${_LLAMA_PREBUILT_UI}" \
+  -DLLAMA_USE_PREBUILT_WEBUI="${_LLAMA_PREBUILT_UI}" \
   "${CMAKE_EXTRA[@]}"
 
 cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {

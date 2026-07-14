@@ -8,9 +8,6 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
         case GGML_TYPE_Q1_0:
             mul_mat_q_case<GGML_TYPE_Q1_0>(ctx, args, stream);
             break;
-        case GGML_TYPE_Q1_0_g128:
-            mul_mat_q_case<GGML_TYPE_Q1_0_g128>(ctx, args, stream);
-            break;
         case GGML_TYPE_Q4_0:
             mul_mat_q_case<GGML_TYPE_Q4_0>(ctx, args, stream);
             break;
@@ -276,7 +273,6 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
 
     switch (type) {
         case GGML_TYPE_Q1_0:
-        case GGML_TYPE_Q1_0_g128:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -305,10 +301,6 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     }
 
     if (!mmq_supported) {
-        return false;
-    }
-
-    if ((type == GGML_TYPE_Q1_0 || type == GGML_TYPE_Q1_0_g128) && !turing_mma_available(cc)) {
         return false;
     }
 
@@ -371,40 +363,16 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
             }
         }
 
-        if (GGML_CUDA_CC_IS_RDNA4(cc)){
-            switch (type) {
-                case GGML_TYPE_IQ2_S:
-                case GGML_TYPE_Q6_K:
-                    return ne11 <= 128;
-                case GGML_TYPE_Q4_0:
-                case GGML_TYPE_Q4_1:
-                case GGML_TYPE_Q5_0:
-                case GGML_TYPE_Q5_1:
-                case GGML_TYPE_MXFP4:
-                    return true;
-                case GGML_TYPE_Q5_K:
-                case GGML_TYPE_IQ3_XXS:
-                case GGML_TYPE_IQ3_S:
-                case GGML_TYPE_IQ2_XS:
-                case GGML_TYPE_IQ2_XXS:
-                case GGML_TYPE_Q2_K:
-                case GGML_TYPE_Q3_K:
-                case GGML_TYPE_IQ1_S:
-                case GGML_TYPE_Q4_K:
-                    return ne11 <= 256;
-                case GGML_TYPE_Q8_0:
-                case GGML_TYPE_IQ4_NL:
-                case GGML_TYPE_IQ4_XS:
-                    return ne11 <= 512;
-
-                default:
-                    return false;
-
-            }
-
-            return false;
-        }
+        // For RDNA4 MMQ is consistently faster than dequantization + hipBLAS:
+        // https://github.com/ggml-org/llama.cpp/pull/18537#issuecomment-3706422301
         return true;
+    }
+
+    // gfx900 (Vega 10) lacks native dp4a, loses to dequant + hipBLAS
+    // for dense matrices; keep MMQ only for MoE, where the
+    // hipBLAS path is much slower.
+    if (cc == GGML_CUDA_CC_VEGA) {
+        return n_experts > 0;
     }
 
     return (!GGML_CUDA_CC_IS_CDNA(cc)) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;

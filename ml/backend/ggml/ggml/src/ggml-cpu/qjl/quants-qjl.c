@@ -159,22 +159,12 @@ static const float * qjl_default_projection(void) {
  * block per cached key vector; QK_QJL is exposed in the table only as
  * the on-cache row-byte-size denominator.
  */
-void quantize_row_qjl1_256_ref(const float * GGML_RESTRICT x, block_qjl1_256 * GGML_RESTRICT y, int64_t k) {
-    /* Number of cached key vectors = k / head_dim. The ggml row-size math
-     * pre-divides by blck_size (= QK_QJL = 256), so callers that respect
-     * the type's blck_size always pass a multiple of 256 for n_per_row;
-     * the kernel always consumes head_dim=128 floats per output block. */
-    GGML_ASSERT(k > 0);
-    GGML_ASSERT((k % QJL_HEAD_DIM) == 0);
-    const int64_t n_blocks = k / QJL_HEAD_DIM;
-    const float * prj = qjl_default_projection();
-    GGML_ASSERT(prj != NULL);
-
-    for (int64_t r = 0; r < n_blocks; r++) {
-        qjl_quantize_row_ref(x + r * QJL_HEAD_DIM, prj,
-                             (qjl_block_qjl1_256 *)(y + r));
-    }
-}
+/* Note: quantize_row_qjl1_256_ref / dequantize_row_qjl1_256 / quantize_qjl1_256
+ * (the type-traits table entries) now live in ggml-base/qjl-quants-base.c,
+ * since ggml.c's type_traits[] table is compiled into ggml-base and does not
+ * link against ggml-cpu. This file keeps the SIMD-dispatched CPU-backend
+ * entry point (quantize_row_qjl1_256) and the GGML_OP_ATTN_SCORE_QJL compute
+ * op, both of which are only reachable through the ggml-cpu backend. */
 
 /* CPU-backend entry point — pick best SIMD path. Mirrors quantize_row_tbq3_0(). */
 void quantize_row_qjl1_256(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
@@ -186,34 +176,6 @@ void quantize_row_qjl1_256(const float * GGML_RESTRICT x, void * GGML_RESTRICT v
     GGML_ASSERT(prj != NULL);
 
     qjl_quantize_rows(x, prj, (qjl_block_qjl1_256 *)y, (size_t) n_blocks);
-}
-
-/* Dequantize: reconstruct an approximate fp32 key from a packed block,
- * using the QJL paper's cosine-similarity scl = sqrt(pi/2)/proj_dim.
- * Stride matches quantize_row_qjl1_256_ref (one block per head_dim
- * outputs). Uses the same default projection as the quantize path so
- * round-trips match. */
-void dequantize_row_qjl1_256(const block_qjl1_256 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    GGML_ASSERT(k > 0);
-    GGML_ASSERT((k % QJL_HEAD_DIM) == 0);
-    const int64_t n_blocks = k / QJL_HEAD_DIM;
-    const float * prj = qjl_default_projection();
-    GGML_ASSERT(prj != NULL);
-
-    for (int64_t r = 0; r < n_blocks; r++) {
-        qjl_dequantize_row_ref((const qjl_block_qjl1_256 *)(x + r), prj,
-                               y + r * QJL_HEAD_DIM);
-    }
-}
-
-/* `quantize_qjl1_256` — the bulk path called from ggml_quantize_chunk.
- * Mirrors `quantize_tbq3_0` shape: ignores quant_weights, defers to the
- * row-ref wrapper, returns the on-cache byte size of the result. */
-size_t quantize_qjl1_256(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    (void) quant_weights;
-    const size_t row_size = ggml_row_size(GGML_TYPE_QJL1_256, n_per_row);
-    quantize_row_qjl1_256_ref(src, (block_qjl1_256 *) dst, (int64_t) nrow * n_per_row);
-    return (size_t) nrow * row_size;
 }
 
 /* ---------------- attention score op ---------------- */

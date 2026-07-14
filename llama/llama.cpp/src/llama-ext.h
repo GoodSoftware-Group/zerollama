@@ -2,6 +2,7 @@
 
 // this is a staging header for new llama.cpp API
 // breaking changes and C++ are allowed. everything here should be considered WIP
+// try as much as possible to not include this header in the rest of the codebase
 
 #include "llama.h"
 
@@ -89,21 +90,35 @@ LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * m
 
 LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);
 
-//
-// pre-norm embeddings (hidden state before the final output norm)
-//
+// Set whether the context outputs nextn embeddings or not
+// If masked == true,  output the embeddings only for the tokens with batch.logits != 0
+// If masked == false, output the embeddings for all tokens in the batch regardless of batch.logits
+LLAMA_API void llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
 
-// mirrors:
-// LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
-LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
+// Select which appended NextN block the DECODER_MTP graph runs (offset past
+// the trunk: il = n_layer() + offset). Used by the speculative NextN driver to
+// chain multiple trained NextN heads. Default 0 (first head).
+LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
 
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
-LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
+LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
+
+// LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
+
+// Set whether the context outputs the input embeddings of a specific layer
+LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
 
 // mirrors:
-// LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
-LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
+// LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
+LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);
+
+LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
+
+//
+// model/context data extraction
+//
 
 //
 // cross-attention encoder cache (dflash target_hidden window; T5 encoder path)
@@ -126,8 +141,29 @@ LLAMA_API void llama_context_cross_upsert_row(
         const float * src,
         int32_t n_feat);
 
+// returns pointer to the target-model layer indices
+LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_model * model);
+// returns the number of extracted layers from target model
+LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
+
 // Number of staged cross rows (0 when cross.v_embd empty).
 LLAMA_API int32_t llama_context_cross_n_enc(const struct llama_context * ctx);
+
+//
+// pre-norm embeddings (hidden state before the final output norm)
+// implemented as thin aliases over the embeddings_nextn machinery (unmasked mode)
+//
+
+// mirrors:
+// LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
+LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
+
+// mirrors:
+// LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
+LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
+
+// LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
 
 //
 // dflash-draft model metadata (B8 target_hidden / cross.v_embd wiring)
@@ -135,6 +171,12 @@ LLAMA_API int32_t llama_context_cross_n_enc(const struct llama_context * ctx);
 
 // Returns dflash.n_target_features for dflash-draft models, else 0.
 LLAMA_API int32_t llama_model_dflash_n_target_features(const struct llama_model * model);
+
+// Returns dflash.mask_token_id for dflash-draft models, else -1.
+LLAMA_API int32_t llama_model_dflash_mask_token_id(const struct llama_model * model);
+
+// Returns dflash.block_size for dflash-draft models, else 0.
+LLAMA_API int32_t llama_model_dflash_block_size(const struct llama_model * model);
 
 // Returns count of dflash.target_layer_ids[], else 0.
 LLAMA_API int32_t llama_model_dflash_n_target_layers(const struct llama_model * model);
@@ -148,14 +190,28 @@ LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, co
 // Row from the last target decode ([n_target_features]); NULL when export inactive.
 LLAMA_API float * llama_get_dflash_target_features_ith(struct llama_context * ctx, int32_t i);
 
-// Extra dflash activation getters used by ANE draft hook (lab). May return NULL when
-// the corresponding graph output was not exported for this decode.
+// Full tensor view for ANE pack sizing; may be NULL when export inactive.
+LLAMA_API struct ggml_tensor * llama_get_dflash_target_features(struct llama_context * ctx);
+
+// Row from the last dflash-draft decode (kqv_out before attn_wo); NULL when inactive.
 LLAMA_API float * llama_get_dflash_attn_out_ith(struct llama_context * ctx, int32_t i);
+
+// Row from the last dflash-draft decode (tok_embd before attn_norm); NULL when inactive.
 LLAMA_API float * llama_get_dflash_tok_embd_ith(struct llama_context * ctx, int32_t i);
+
+// Row from the last dflash-draft decode (attn_norm on tok_embd); NULL when inactive.
 LLAMA_API float * llama_get_dflash_attn_norm_ith(struct llama_context * ctx, int32_t i);
+
+// Row from the last dflash-draft decode (Q after wq matmul); NULL when inactive.
 LLAMA_API float * llama_get_dflash_q_mm_ith(struct llama_context * ctx, int32_t i);
+
+// Row from the last dflash-draft decode (Q after attn_q_norm, before RoPE); NULL when inactive.
 LLAMA_API float * llama_get_dflash_q_pre_rope_ith(struct llama_context * ctx, int32_t i);
+
+// Row from the last dflash-draft decode (Q after RoPE); NULL when inactive.
 LLAMA_API float * llama_get_dflash_q_rope_ith(struct llama_context * ctx, int32_t i);
+
+// dflash-draft K/V noise after RoPE and concat ctx+noise K/V cat (requires embeddings_pre_norm).
 LLAMA_API float * llama_get_dflash_k_noise_ith(struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_dflash_v_noise_ith(struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_dflash_k_cat_ith(struct llama_context * ctx, int32_t i, int32_t slot);
@@ -166,7 +222,12 @@ LLAMA_API int32_t llama_get_dflash_fused_n(struct llama_context * ctx);
 LLAMA_API float * llama_get_dflash_k_ctx_ith(struct llama_context * ctx, int32_t i, int32_t slot);
 LLAMA_API float * llama_get_dflash_k_ctx_pre_ith(struct llama_context * ctx, int32_t i, int32_t slot);
 LLAMA_API int32_t llama_get_dflash_k_ctx_n(struct llama_context * ctx);
+
+// Row from the last dflash-draft decode (hidden after blk.layer); NULL when inactive.
 LLAMA_API float * llama_get_dflash_layer_hidden_ith(struct llama_context * ctx, int32_t layer, int32_t i);
 
-// 1 if layer il uses SWA (sliding-window attention), else 0.
+// P51: re-pull dflash export tensors from the last graph into host output buffers.
+LLAMA_API void llama_dflash_pull_graph_exports(struct llama_context * ctx);
+
+// Returns 1 if layer `il` uses sliding-window attention, 0 otherwise (or on invalid input).
 LLAMA_API int32_t llama_model_layer_has_swa(const struct llama_model * model, int32_t il);

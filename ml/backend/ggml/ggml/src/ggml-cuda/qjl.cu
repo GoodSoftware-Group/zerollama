@@ -22,10 +22,76 @@
 
 #if defined(GGML_CUDA_QJL)
 
+#include "common.cuh"
+
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <cstdint>
 #include <cmath>
+#include <cstdlib>
+#include <mutex>
+
+// Device pointer read by qjl-set-rows.cuh during SET_ROWS.
+__device__ float * ggml_cuda_qjl_prj_dev = nullptr;
+
+namespace {
+
+static float * g_qjl_prj_h = nullptr;
+static float * g_qjl_prj_d = nullptr;
+static std::once_flag g_qjl_prj_once;
+
+static uint64_t qjl_splitmix64(uint64_t * state) {
+    uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static double qjl_u01_open(uint64_t * state) {
+    const uint64_t v = qjl_splitmix64(state);
+    return ((double) ((v >> 11) | 1ULL)) * (1.0 / 9007199254740992.0);
+}
+
+static void qjl_make_projection_mt(float * prj, int head_dim, int proj_dim, uint64_t seed) {
+    uint64_t state = seed ^ 0xC0FFEE1234567890ULL;
+    const int total = head_dim * proj_dim;
+    int i = 0;
+    while (i + 1 < total) {
+        const double u1 = qjl_u01_open(&state);
+        const double u2 = qjl_u01_open(&state);
+        const double r  = sqrt(-2.0 * log(u1));
+        const double th = 6.28318530717958647692 * u2;
+        prj[i++] = (float) (r * cos(th));
+        prj[i++] = (float) (r * sin(th));
+    }
+    if (i < total) {
+        const double u1 = qjl_u01_open(&state);
+        const double u2 = qjl_u01_open(&state);
+        const double r  = sqrt(-2.0 * log(u1));
+        const double th = 6.28318530717958647692 * u2;
+        prj[i++] = (float) (r * cos(th));
+    }
+}
+
+static void qjl_init_projection_host() {
+    constexpr int head_dim = 128;
+    constexpr int proj_dim = 256;
+    g_qjl_prj_h = (float *) malloc(sizeof(float) * head_dim * proj_dim);
+    GGML_ASSERT(g_qjl_prj_h != nullptr);
+    qjl_make_projection_mt(g_qjl_prj_h, head_dim, proj_dim, 42ULL);
+}
+
+} // namespace
+
+void ggml_cuda_qjl_ensure_projection(cudaStream_t stream) {
+    std::call_once(g_qjl_prj_once, []() {
+        qjl_init_projection_host();
+        CUDA_CHECK(cudaMalloc(&g_qjl_prj_d, sizeof(float) * 128 * 256));
+        CUDA_CHECK(cudaMemcpy(g_qjl_prj_d, g_qjl_prj_h, sizeof(float) * 128 * 256, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpyToSymbol(ggml_cuda_qjl_prj_dev, &g_qjl_prj_d, sizeof(float *)));
+    });
+    GGML_UNUSED(stream);
+}
 
 #define QJL_PROJ_DIM   QK_QJL                  // 256
 #define QJL_HASH_BYTES (QJL_PROJ_DIM / 8)      // 32
@@ -275,6 +341,47 @@ void attn_score_qjl_cuda(
     const dim3 block(QJL_HASH_BYTES, 1, 1); // = 32
     qjl_score_kernel<<<grid, block, 0, stream>>>(
         q_sketch_d, packed, n_heads, n_kv_heads, n_kv_tokens, scores_d);
+}
+
+// ---------------- Q projection ----------------
+//
+// sketch[j] = sum_i q[i] * prj[i * proj_dim + j], one thread per (q_pos, head, j).
+
+__global__ void qjl_project_q_kernel(
+    const float * __restrict__ q,
+    const float * __restrict__ prj,
+    float * __restrict__ out,
+    int head_dim,
+    int proj_dim,
+    int n_heads,
+    int n_q_pos) {
+    const int j   = blockIdx.x * blockDim.x + threadIdx.x;
+    const int hq  = blockIdx.y;
+    const int qp  = blockIdx.z;
+    if (j >= proj_dim || hq >= n_heads || qp >= n_q_pos) return;
+
+    const float * qh = q + ((size_t) qp * n_heads + hq) * head_dim;
+    float acc = 0.f;
+    for (int i = 0; i < head_dim; ++i) {
+        acc += qh[i] * prj[i * proj_dim + j];
+    }
+    out[((size_t) qp * n_heads + hq) * proj_dim + j] = acc;
+}
+
+void qjl_project_q_cuda(
+    const float * q_d,
+    float * q_sketch_d,
+    int head_dim,
+    int proj_dim,
+    int n_heads,
+    int n_q_pos,
+    cudaStream_t stream) {
+    GGML_ASSERT(head_dim > 0 && proj_dim > 0 && n_heads > 0 && n_q_pos > 0);
+    ggml_cuda_qjl_ensure_projection(stream);
+    const dim3 block(256, 1, 1);
+    const dim3 grid((proj_dim + 255) / 256, n_heads, n_q_pos);
+    qjl_project_q_kernel<<<grid, block, 0, stream>>>(
+        q_d, g_qjl_prj_d, q_sketch_d, head_dim, proj_dim, n_heads, n_q_pos);
 }
 
 #endif // GGML_CUDA_QJL

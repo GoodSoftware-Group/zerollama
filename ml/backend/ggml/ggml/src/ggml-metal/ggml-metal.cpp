@@ -203,6 +203,11 @@ static ggml_backend_buffer_t ggml_backend_metal_buffer_type_alloc_buffer(ggml_ba
     ggml_metal_device_t ctx_dev = (ggml_metal_device_t)buft->device->context;
     ggml_metal_buffer_t res = ggml_metal_buffer_init(ctx_dev, size, shared);
 
+    if (res == NULL) {
+        GGML_LOG_ERROR("%s: error: failed to allocate Metal buffer of %zu bytes (out of memory)\n", __func__, size);
+        return NULL;
+    }
+
     ggml_backend_buffer_i buf_i = ggml_metal_buffer_is_shared(res)
         ? ggml_backend_metal_buffer_shared_i
         : ggml_backend_metal_buffer_private_i;
@@ -225,6 +230,7 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
                 res += ggml_metal_op_flash_attn_ext_extra_pad(tensor);
                 res += ggml_metal_op_flash_attn_ext_extra_blk(tensor);
                 res += ggml_metal_op_flash_attn_ext_extra_tmp(tensor);
+                res += ggml_metal_op_flash_attn_ext_extra_q8_f16(tensor);
             } break;
         case GGML_OP_CUMSUM:
         case GGML_OP_ARGSORT:
@@ -510,6 +516,20 @@ static void ggml_backend_metal_get_tensor_async(ggml_backend_t backend, const gg
     ggml_metal_get_tensor_async(ctx, tensor, data, offset, size);
 }
 
+static void ggml_backend_metal_set_tensor_2d_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data,
+        size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data) {
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    ggml_metal_set_tensor_2d_async(ctx, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
+}
+
+static void ggml_backend_metal_get_tensor_2d_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data,
+        size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data) {
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    ggml_metal_get_tensor_2d_async(ctx, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
+}
+
 static bool ggml_backend_metal_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
     if (!ggml_backend_is_metal(backend_src) || !ggml_backend_is_metal(backend_dst)) {
         return false;
@@ -570,8 +590,8 @@ static ggml_backend_i ggml_backend_metal_i = {
     /* .free                    = */ ggml_backend_metal_free,
     /* .set_tensor_async        = */ ggml_backend_metal_set_tensor_async,
     /* .get_tensor_async        = */ ggml_backend_metal_get_tensor_async,
-    /* .set_tensor_2d_async     = */ NULL,
-    /* .get_tensor_2d_async     = */ NULL,
+    /* .set_tensor_2d_async     = */ ggml_backend_metal_set_tensor_2d_async,
+    /* .get_tensor_2d_async     = */ ggml_backend_metal_get_tensor_2d_async,
     /* .cpy_tensor_async        = */ ggml_backend_metal_cpy_tensor_async, // only needed for multi-GPU setups
     /* .synchronize             = */ ggml_backend_metal_synchronize,
     /* .graph_plan_create       = */ NULL,
@@ -980,8 +1000,9 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
         return nullptr;
     }
 
-    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {
-        GGML_LOG_ERROR("%s: device is not Metal\n", __func__);
+    const char * name = device->iface.get_name(device);
+    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal (name=%s)\n", __func__, name ? name : "null");
         return nullptr;
     }
 
@@ -989,11 +1010,27 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
 }
 
 GGML_BACKEND_API void ggml_backend_metal_dev_rsets_pause(ggml_backend_dev_t device) {
-    GGML_UNUSED(device);
+    if (!device || !device->iface.get_name) {
+        return;
+    }
+    const char * name = device->iface.get_name(device);
+    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
+        return;
+    }
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) device->context;
+    ggml_metal_device_rsets_pause(ctx_dev);
 }
 
 GGML_BACKEND_API void ggml_backend_metal_dev_rsets_resume(ggml_backend_dev_t device) {
-    GGML_UNUSED(device);
+    if (!device || !device->iface.get_name) {
+        return;
+    }
+    const char * name = device->iface.get_name(device);
+    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {
+        return;
+    }
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) device->context;
+    ggml_metal_device_rsets_resume(ctx_dev);
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)

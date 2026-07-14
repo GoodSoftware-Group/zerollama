@@ -24,9 +24,8 @@
 #define N_R0_Q1_0 8
 #define N_SG_Q1_0 2
 
-#define N_R0_Q1_0_g128 4
-#define N_SG_Q1_0_g128 2
-
+#define N_R0_Q2_0 8
+#define N_SG_Q2_0 2
 
 #define N_R0_Q4_0 4
 #define N_SG_Q4_0 2
@@ -111,6 +110,7 @@
 #define FC_SUM_ROWS                    1400
 #define FC_UPSCALE                     1500
 #define FC_GATED_DELTA_NET             1600
+#define FC_PAD_REFLECT_1D              1700
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
@@ -340,6 +340,22 @@ typedef struct {
     int32_t  sect_3;
     bool     src2;
 } ggml_metal_kargs_rope;
+
+typedef struct {
+    int32_t  ne10;
+    int32_t  ne11;
+    int32_t  ne12;
+    int32_t  ne13;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    uint64_t nb20;
+    uint64_t nb21;
+    uint64_t nb22;
+    uint64_t nb23;
+    int32_t  nblocks;
+} ggml_metal_kargs_flash_attn_ext_q8_0_to_f16;
 
 typedef struct {
     int32_t  ne11;
@@ -615,6 +631,21 @@ typedef struct {
 } ggml_metal_kargs_conv_transpose_1d;
 
 typedef struct {
+    int32_t  T_in;
+    int32_t  T_out;
+    int32_t  OC;
+    int32_t  K;
+    int32_t  K_OC;
+    int32_t  s0;
+    int32_t  p0;
+} ggml_metal_kargs_col2im_1d;
+
+typedef struct {
+    int32_t T;
+    int32_t C;
+} ggml_metal_kargs_snake;
+
+typedef struct {
     int32_t  IC;
     int32_t  IH;
     int32_t  IW;
@@ -702,6 +733,36 @@ typedef struct {
     int32_t  KW;
     int32_t  KHW; // KH * KW, pre-computed on CPU to save GPU resources
 } ggml_metal_kargs_im2col;
+
+typedef struct {
+    int32_t  s0;
+    int32_t  s1;
+    int32_t  s2;
+    int32_t  p0;
+    int32_t  p1;
+    int32_t  p2;
+    int32_t  d0;
+    int32_t  d1;
+    int32_t  d2;
+    int32_t  IC;
+    int32_t  ID;
+    int32_t  IH;
+    int32_t  IW;
+    int32_t  KD;
+    int32_t  KH;
+    int32_t  KW;
+    int32_t  OD;
+    int32_t  OH;
+    int32_t  OW;
+    uint64_t nb13;
+    uint64_t nb12;
+    uint64_t nb11;
+    uint64_t nb10;
+    uint64_t KH_KW;
+    uint64_t KD_KH_KW;
+    uint64_t IC_KD_KH_KW;
+    uint64_t N;
+} ggml_metal_kargs_im2col_3d;
 
 typedef struct {
     int32_t  IW;
@@ -929,6 +990,33 @@ typedef struct {
 } ggml_metal_kargs_gated_delta_net;
 
 typedef struct {
+    int32_t ne00;
+    int32_t ne01;
+    int32_t ne02;
+    int32_t ne03;
+    uint64_t nb00;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    int32_t ne10;
+    int32_t ne11;
+    int32_t ne12;
+    int32_t ne13;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    int32_t ne0;
+    int32_t ne1;
+    int32_t ne2;
+    int32_t ne3;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+} ggml_metal_kargs_out_prod;
+
+typedef struct {
     int32_t  ne00;
     int32_t  ne01;
     int32_t  ne02;
@@ -1004,6 +1092,26 @@ typedef struct {
     uint64_t nb2;
     uint64_t nb3;
 } ggml_metal_kargs_diag;
+
+typedef struct {
+    int32_t  ne00;
+    int32_t  ne01;
+    int32_t  ne02;
+    int32_t  ne03;
+    uint64_t nb00;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  ne3;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+    int32_t  n_past;
+} ggml_metal_kargs_diag_mask_inf;
 
 typedef struct {
     int64_t  ne00;
@@ -1097,17 +1205,6 @@ typedef struct {
     int      dim;
     int      max_period;
 } ggml_metal_kargs_timestep_embedding;
-
-// # ELIZA-ISTFT-DISPATCH-V1 — kargs for GGML_OP_ISTFT (must mirror IstftParams
-// in eliza-shipped/istft.metal).
-typedef struct {
-    uint32_t n_fft;
-    uint32_t hop_length;
-    uint32_t win_length;
-    uint32_t T;
-    uint32_t n_out;
-    uint32_t use_window;
-} ggml_metal_kargs_istft;
 
 typedef struct {
     int32_t  ne00;

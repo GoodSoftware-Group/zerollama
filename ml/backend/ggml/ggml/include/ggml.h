@@ -429,9 +429,9 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        // elizaOS custom quant types — IDs 42+ (upstream uses 0-41)
-        GGML_TYPE_Q1_0_g32  = 42, // 1-bit quant, 32-token group
-        GGML_TYPE_Q1_0_g128 = 43, // 1-bit quant, 128-token group
+        GGML_TYPE_Q2_0    = 42,
+        GGML_TYPE_E8_2    = 43, // E8 lattice 2-bit KV cache (#25352; id 43 — upstream used 42 which is Q2_0 here)
+        // elizaOS QJL/Polar/TBQ custom quant types — IDs 44+
         GGML_TYPE_TBQ3_0    = 44, // TurboQuant 3-bit baseline
         GGML_TYPE_TBQ4_0    = 45, // TurboQuant 4-bit baseline
         GGML_TYPE_QJL1_256  = 46, // 1-bit JL-transform K-cache block (34 B / 256 sketch dims)
@@ -439,8 +439,7 @@ extern "C" {
         GGML_TYPE_TBQ3_TCQ  = 48, // TurboQuant TCQ-3: 128-element block, fp16 norm + 6-bit init state + 128*3-bit Viterbi-encoded symbol stream (52 B = 3.25 bpw)
         GGML_TYPE_TBQ3_K    = 49, // Upstream-style TurboQuant 3-bit, QK_K block layout
         GGML_TYPE_TBQ4_K    = 50, // Upstream-style TurboQuant 4-bit, QK_K block layout
-        GGML_TYPE_E8_2      = 51, // E8 lattice 2-bit KV (#25352; vendor dig uses 43 — keep Q1_0_g* at 42/43)
-        GGML_TYPE_COUNT     = 52,
+        GGML_TYPE_COUNT     = 51,
     };
 
     // precision
@@ -482,13 +481,11 @@ extern "C" {
         GGML_FTYPE_MOSTLY_IQ1_M   = 23, // except 1d tensors
         GGML_FTYPE_MOSTLY_BF16    = 24, // except 1d tensors
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
-        GGML_FTYPE_MOSTLY_NVFP4     = 26, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q1_0      = 27, // except 1d tensors
-        GGML_FTYPE_MOSTLY_E8_2      = 29, // except 1d tensors (KV; matches vendor dig ftype)
-        // milady custom ftype values
-        GGML_FTYPE_MOSTLY_Q1_0_g128 = 100, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q1_0_g32  = 101, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q4_POLAR  = 102, // except 1d tensors
+        GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
+        GGML_FTYPE_MOSTLY_E8_2    = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q4_POLAR = 102, // except 1d tensors
     };
 
     // available tensor operations:
@@ -551,6 +548,7 @@ extern "C" {
         GGML_OP_IM2COL,
         GGML_OP_IM2COL_BACK,
         GGML_OP_IM2COL_3D,
+        GGML_OP_COL2IM_1D,
         GGML_OP_CONV_2D,
         GGML_OP_CONV_3D,
         GGML_OP_CONV_2D_DW,
@@ -572,10 +570,10 @@ extern "C" {
 
         GGML_OP_FLASH_ATTN_EXT,
         GGML_OP_FLASH_ATTN_BACK,
-        GGML_OP_ATTN_SCORE_QJL, // QJL 1-bit packed-K attention score
-        GGML_OP_ATTN_SCORE_TBQ, // // ELIZA-TBQ-POLAR-ATTN-DISPATCH-V1 TurboQuant packed-K attention score
-        GGML_OP_ATTN_SCORE_POLAR, // PolarQuant packed-K attention score
-        GGML_OP_FUSED_ATTN_QJL_TBQ, // fused QJL-K + TBQ-V attention (CPU-only)
+        GGML_OP_ATTN_SCORE_QJL,       // QJL 1-bit packed-K attention score
+        GGML_OP_ATTN_SCORE_TBQ,       // TurboQuant packed-K attention score
+        GGML_OP_ATTN_SCORE_POLAR,     // PolarQuant packed-K attention score
+        GGML_OP_FUSED_ATTN_QJL_TBQ,  // fused QJL-K + TBQ-V attention (CPU-only)
         GGML_OP_SSM_CONV,
         GGML_OP_SSM_SCAN,
         GGML_OP_WIN_PART,
@@ -602,8 +600,6 @@ extern "C" {
         GGML_OP_OPT_STEP_SGD,
 
         GGML_OP_GLU,
-
-        GGML_OP_ISTFT,
 
         GGML_OP_COUNT,
     };
@@ -663,12 +659,11 @@ extern "C" {
 
     // this tensor...
     enum ggml_tensor_flag {
-        GGML_TENSOR_FLAG_INPUT         =  1, // ...is an input for the GGML compute graph
-        GGML_TENSOR_FLAG_OUTPUT        =  2, // ...is an output for the GGML compute graph
-        GGML_TENSOR_FLAG_PARAM         =  4, // ...contains trainable parameters
-        GGML_TENSOR_FLAG_LOSS          =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
-        GGML_TENSOR_FLAG_COMPUTE       = 16, // ...must be computed
-        GGML_TENSOR_FLAG_NO_ALLOC_FREE = 32, // ...buffer should not be freed/reused by the allocator (note: causes graph realloc)
+        GGML_TENSOR_FLAG_INPUT   =  1, // ...is an input for the GGML compute graph
+        GGML_TENSOR_FLAG_OUTPUT  =  2, // ...is an output for the GGML compute graph
+        GGML_TENSOR_FLAG_PARAM   =  4, // ...contains trainable parameters
+        GGML_TENSOR_FLAG_LOSS    =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
+        GGML_TENSOR_FLAG_COMPUTE = 16, // ...must be computed
     };
 
     enum ggml_tri_type {
@@ -1212,8 +1207,8 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a);
 
-    // a - x
-    // b - dy
+    // a - dy
+    // b - x
     GGML_API struct ggml_tensor * ggml_silu_back(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
@@ -2030,6 +2025,16 @@ extern "C" {
         int                   d1, // dilation dimension 1
         bool                  is_2D);
 
+    // col2im_1d: scatter-add GEMM columns back to 1D signal
+    // a: [K*OC, T_in]  (columns from matmul, K = a->ne[0]/OC)
+    // result: [T_out, OC]  where T_out = (T_in - 1)*s0 + K - 2*p0
+    GGML_API struct ggml_tensor * ggml_col2im_1d(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,   // columns [K*OC, T_in]
+        int                   s0,  // stride
+        int                   oc,  // output channels
+        int                   p0); // padding to crop from both sides
+
     GGML_API struct ggml_tensor * ggml_conv_1d(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,   // convolution kernel
@@ -2245,30 +2250,6 @@ extern "C" {
             float                 p0,
             float                 p1);
 
-    // ggml_istft
-    //
-    // Inverse short-time Fourier transform with a Hann analysis window and
-    // overlap-add synthesis.  Encodes the (mag, phase) spectrogram produced by
-    // iSTFTNet decoders into a 1-D time-domain waveform.
-    //
-    // src0 shape: [2, F, T, 1]   F = n_fft/2+1, T = number of frames
-    //              dim 0 = 0:mag / 1:phase  (interleaved channel-first)
-    //
-    // Output shape: [N, 1, 1, 1] where N = (T-1)*hop_length + win_length
-    //
-    // op_params layout (int32):
-    //   [0] n_fft        [1] hop_length      [2] win_length
-    //
-    // The window tensor (src1) must be a 1-D F32 tensor of length win_length
-    // pre-computed with a Hann window.  Pass NULL for a default periodic Hann.
-    GGML_API struct ggml_tensor * ggml_istft(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * mag_phase,  // [2, F, T] F=n_fft/2+1
-            struct ggml_tensor  * window,     // [win_length] Hann, or NULL
-            int                   n_fft,
-            int                   hop_length,
-            int                   win_length);
-
     enum ggml_scale_mode {
         GGML_SCALE_MODE_NEAREST  = 0,
         GGML_SCALE_MODE_BILINEAR = 1,
@@ -2463,89 +2444,6 @@ extern "C" {
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
 
-    // QJL 1-bit packed-K attention score.
-    //
-    // Inputs:
-    //   q          F32 [proj_dim, n_heads, n_batch, ne3] — pre-projected
-    //              query sketch (already through Π). Caller is responsible
-    //              for projecting Q once at the top of the attention block;
-    //              this op never touches the raw query.
-    //   packed_k   QJL1_256 [proj_dim, n_kv_tokens, n_kv_heads, ne3] — the
-    //              packed K-cache. The element type carries the per-token
-    //              norm and the packed signs together. proj_dim is encoded
-    //              in the type's blck_size (= QK_QJL = 256), so the leading
-    //              dim length must equal QK_QJL.
-    //   n_kv_heads number of KV heads (the GQA divisor). n_heads must be a
-    //              multiple of n_kv_heads.
-    //
-    // Output:
-    //   F32 [n_kv_tokens, n_heads, n_batch, ne3] — per-(q-head, token) score
-    //   computed as ||k_t|| * sqrt(pi/2)/proj_dim * sum_j sign[t,j] * q[h_q,j],
-    //   matching the QJL paper's unbiased cosine-similarity estimator.
-    //
-    // Shape invariants:
-    //   q->ne[0] == QK_QJL
-    //   packed_k->ne[0] == QK_QJL
-    //   q->ne[1] % packed_k->ne[2] == 0
-    //   q->ne[2] == packed_k->ne[3]   // batch dim matches
-    GGML_API struct ggml_tensor * ggml_attn_score_qjl(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * q,
-            struct ggml_tensor  * packed_k,
-            int                   n_kv_heads);
-
-    // // ELIZA-TBQ-POLAR-ATTN-DISPATCH-V1
-    // TurboQuant packed-K attention score.
-    // q: F32 [128, n_heads, n_batch, ne3]
-    // packed_k: TBQ3_0/TBQ4_0/TBQ3_TCQ [128, n_kv_tokens, n_kv_heads, ne3]
-    // output: F32 [n_kv_tokens, n_heads, n_batch, ne3]
-    GGML_API struct ggml_tensor * ggml_attn_score_tbq(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * q,
-            struct ggml_tensor  * packed_k,
-            int                   n_kv_heads);
-
-    // PolarQuant packed-K attention score.
-    // q: F32 [128, n_heads, n_batch, ne3]
-    // packed_k: Q4_POLAR [128, n_kv_tokens, n_kv_heads, ne3]
-    // use_qjl mirrors the PolarQuant GGUF residual flag.
-    // output: F32 [n_kv_tokens, n_heads, n_batch, ne3]
-    GGML_API struct ggml_tensor * ggml_attn_score_polar(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * q,
-            struct ggml_tensor  * packed_k,
-            int                   n_kv_heads,
-            bool                  use_qjl);
-
-    // PolarQuant packed-K attention score with pre-Hadamarded query.
-    // q_preht MUST contain H*q for each query head, where H is the same
-    // unnormalised 128-point Walsh-Hadamard transform used by the PolarQuant
-    // decoder. This is faster than ggml_attn_score_polar() because the backend
-    // can use dot(H*x, q) == dot(x, H*q) and avoid one Hadamard per K row.
-    GGML_API struct ggml_tensor * ggml_attn_score_polar_preht(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * q_preht,
-            struct ggml_tensor  * packed_k,
-            int                   n_kv_heads,
-            bool                  use_qjl);
-
-    // Fused QJL-K + TBQ-V attention (CPU-only). Computes
-    //   out[h_q, d] = Σ_t softmax(QJL_score(q, K)/sqrt(d_k))_t * dequant_V[t, d]
-    // in two passes (max pass then exp+mix pass) without materializing
-    // dequantized K or V intermediates. Inputs:
-    //   q         F32      [proj_dim,  n_heads,    n_batch, ne3]
-    //   packed_k  QJL1_256 [head_dim,  n_kv_tokens, n_kv_heads, ne3]
-    //   packed_v  TBQ3_0   [head_dim,  n_kv_tokens, n_kv_heads, ne3]
-    // Output: F32 [head_dim, n_heads, n_batch, ne3].
-    // sm_scale is the pre-softmax temperature (typically 1/sqrt(head_dim)).
-    GGML_API struct ggml_tensor * ggml_fused_attn_qjl_tbq(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * q,
-            struct ggml_tensor  * packed_k,
-            struct ggml_tensor  * packed_v,
-            int                   n_kv_heads,
-            float                 sm_scale);
-
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(
            struct ggml_context * ctx,
@@ -2554,6 +2452,45 @@ extern "C" {
            struct ggml_tensor  * v,
            struct ggml_tensor  * d,
            bool                  masked);
+
+    // QJL 1-bit packed-K attention score (cosine-similarity estimator)
+    GGML_API struct ggml_tensor * ggml_attn_score_qjl(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * packed_k,
+            int                   n_kv_heads);
+
+    // TurboQuant packed-K attention score
+    GGML_API struct ggml_tensor * ggml_attn_score_tbq(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * packed_k,
+            int                   n_kv_heads);
+
+    // PolarQuant packed-K attention score
+    GGML_API struct ggml_tensor * ggml_attn_score_polar(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * packed_k,
+            int                   n_kv_heads,
+            bool                  use_qjl);
+
+    // PolarQuant packed-K attention score with pre-Hadamarded query
+    GGML_API struct ggml_tensor * ggml_attn_score_polar_preht(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q_preht,
+            struct ggml_tensor  * packed_k,
+            int                   n_kv_heads,
+            bool                  use_qjl);
+
+    // Fused QJL-K + TBQ-V attention (CPU-only)
+    GGML_API struct ggml_tensor * ggml_fused_attn_qjl_tbq(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * packed_k,
+            struct ggml_tensor  * packed_v,
+            int                   n_kv_heads,
+            float                 sm_scale);
 
     GGML_API struct ggml_tensor * ggml_ssm_conv(
             struct ggml_context * ctx,
@@ -2672,10 +2609,16 @@ extern "C" {
     // TODO: add ggml_gated_delta_net_set_bcast() to be able to configure Q, K broadcast type: tiled vs interleaved [TAG_GGML_GDN_BCAST]
     // ref: https://github.com/ggml-org/llama.cpp/pull/19468#discussion_r2786394306
     //
-    // state is a 3D tensor of shape (S_v*S_v*H, K, n_seqs):
-    //   K == 1: output carries the final state only.
-    //   K  > 1: output carries K snapshot slots; the kernel writes the last min(n_tokens, K)
-    //   per-token snapshots into the trailing slots
+    // tensor shapes (S_k == S_v, H_v % H_k == 0):
+    //   q, k  : [S_k, H_k, n_tokens, n_seqs]
+    //   v     : [S_v, H_v, n_tokens, n_seqs]
+    //   g     : [1, H_v, n_tokens, n_seqs] (scalar gate) or [S_v, H_v, n_tokens, n_seqs] (KDA)
+    //   beta  : [1, H_v, n_tokens, n_seqs]
+    //   state : [S_v, S_v, H_v, n_seqs] -- initial recurrent state s0
+    //
+    // the output packs the attention scores [S_v, H_v, n_tokens, n_seqs] followed by K state
+    // snapshots, most-recent first (slot 0 = final state, slot s = state s tokens back). K == 1
+    // keeps only the final state; when n_tokens < K only slots 0..n_tokens-1 are written.
     GGML_API struct ggml_tensor * ggml_gated_delta_net(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,
@@ -2683,7 +2626,8 @@ extern "C" {
             struct ggml_tensor  * v,
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
-            struct ggml_tensor  * state);
+            struct ggml_tensor  * state,
+            int64_t               K);
 
     // custom operators
 
@@ -2923,6 +2867,15 @@ extern "C" {
 #        define GGML_RESTRICT restrict
 #    endif
 #endif
+
+#if defined(_MSC_VER)
+#    define GGML_ALIGN(n)       __declspec(align(n))
+#    define GGML_THREAD_LOCAL   __declspec(thread)
+#else
+#    define GGML_ALIGN(n)       __attribute__((aligned(n)))
+#    define GGML_THREAD_LOCAL   __thread
+#endif
+
     typedef void (*ggml_to_float_t)  (const void  * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
     typedef void (*ggml_from_float_t)(const float * GGML_RESTRICT x, void  * GGML_RESTRICT y, int64_t k);
 

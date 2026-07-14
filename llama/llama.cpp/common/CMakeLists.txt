@@ -82,8 +82,6 @@ add_library(${TARGET}
     http.h
     imatrix-loader.cpp
     imatrix-loader.h
-    json-partial.cpp
-    json-partial.h
     json-schema-to-grammar.cpp
     llguidance.cpp
     log.cpp
@@ -98,10 +96,8 @@ add_library(${TARGET}
     peg-parser.h
     preset.cpp
     preset.h
-    regex-partial.cpp
     reasoning-budget.cpp
     reasoning-budget.h
-    regex-partial.h
     sampling.cpp
     sampling.h
     speculative.cpp
@@ -174,6 +170,7 @@ if (LLAMA_LLGUIDANCE)
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
+
 # B1: in-process ANE draft session (Darwin + libane_bridge only).
 set(_ZEROLLAMA_ANE_REPO "$ENV{HOME}/Sites/inference/ane")
 if (DEFINED ENV{ANE_REPO})
@@ -203,4 +200,3 @@ else()
         message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
     endif()
 endif()
-

@@ -76,6 +76,19 @@ void attn_score_qjl_cuda(
     float * scores_d,
     cudaStream_t stream);
 
+// Upload default JL projection (seed=42) for SET_ROWS KV-cache writes.
+void ggml_cuda_qjl_ensure_projection(cudaStream_t stream);
+
+// Project fp32 Q heads to the QJL sketch: [head_dim, n_heads, n_q_pos] -> [proj_dim, n_heads, n_q_pos].
+void qjl_project_q_cuda(
+    const float * q_d,
+    float * q_sketch_d,
+    int head_dim,
+    int proj_dim,
+    int n_heads,
+    int n_q_pos,
+    cudaStream_t stream);
+
 #ifdef __cplusplus
 }
 #endif

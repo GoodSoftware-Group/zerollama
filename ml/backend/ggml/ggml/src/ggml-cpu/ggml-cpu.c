@@ -82,6 +82,9 @@ float ggml_table_f32_f16[1 << 16];
 // precomputed f32 table for e8m0 half (1 KB) (simd-mappings.h)
 float ggml_table_f32_e8m0_half[1 << 8];
 
+// precomputed f32 table for ue4m3 (1 KB) (simd-mappings.h)
+float ggml_table_f32_ue4m3[1 << 8];
+
 #if defined(__ARM_ARCH)
 struct ggml_arm_arch_features_type {
     int sve_cnt;
@@ -206,11 +209,6 @@ typedef pthread_t ggml_thread_t;
 #include <unistd.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
-
-#if defined(__aarch64__) && TARGET_OS_MAC
-#include "macos-scheduling.h"
-#endif
-
 #endif
 
 static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -232,21 +230,16 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
-    [GGML_TYPE_Q1_0_g32] = {
-        .from_float               = quantize_row_q1_0_g32,
-        .vec_dot                  = ggml_vec_dot_q1_0_g32_q8_0,
-        .vec_dot_type             = GGML_TYPE_Q8_0,
-        .nrows                    = 1,
-    },
-    [GGML_TYPE_Q1_0_g128] = {
-        .from_float               = quantize_row_q1_0_g128,
-        .vec_dot                  = ggml_vec_dot_q1_0_g128_q8_0,
-        .vec_dot_type             = GGML_TYPE_Q8_0,
-        .nrows                    = 1,
-    },
+
     [GGML_TYPE_E8_2] = {
         .from_float               = quantize_row_e8_2,
         .vec_dot                  = ggml_vec_dot_e8_2_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q2_0] = {
+        .from_float               = quantize_row_q2_0,
+        .vec_dot                  = ggml_vec_dot_q2_0_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
@@ -1978,6 +1971,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_im2col_3d(params, tensor);
             } break;
+        case GGML_OP_COL2IM_1D:
+            {
+                ggml_compute_forward_col2im_1d(params, tensor);
+            } break;
         case GGML_OP_CONV_2D:
             {
                 ggml_compute_forward_conv_2d(params, tensor);
@@ -2105,10 +2102,6 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_GLU:
             {
                 ggml_compute_forward_glu(params, tensor);
-            } break;
-        case GGML_OP_ISTFT:
-            {
-                ggml_compute_forward_istft(params, tensor);
             } break;
         case GGML_OP_GET_REL_POS:
             {
@@ -2434,6 +2427,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CONV_2D:
         case GGML_OP_CONV_3D:
         case GGML_OP_CONV_2D_DW:
+        case GGML_OP_COL2IM_1D:
         case GGML_OP_CONV_TRANSPOSE_1D:
         case GGML_OP_CONV_TRANSPOSE_2D:
             {
@@ -2479,10 +2473,6 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                 // space over ith/nth — each task owns disjoint score rows
                 // / head outputs, no shared scratch race (the fused op
                 // takes a per-task wdata slice; see the work-size case).
-                // TBQ / POLAR are correctness oracles for the Metal
-                // kernels (production path is Metal); they are listed
-                // here so they get full thread fan-out instead of falling
-                // through to the n_tasks default branch.
                 n_tasks = n_threads;
             } break;
         case GGML_OP_WIN_PART:
@@ -2536,12 +2526,6 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_OPT_STEP_ADAMW:
         case GGML_OP_OPT_STEP_SGD:
             {
-                n_tasks = n_threads;
-            } break;
-        case GGML_OP_ISTFT:
-            {
-                // iSTFT is parallelized per frame; n_tasks = n_threads capped
-                // by the number of output frames at runtime — set max here.
                 n_tasks = n_threads;
             } break;
         case GGML_OP_NONE:
@@ -2688,18 +2672,6 @@ static bool ggml_thread_apply_priority(int32_t prio) {
 
     return true;
 }
-
-#if defined(CLUSTER_SCHEDULING_AVAILABLE)
-/* if it's a secondary SME thread, call this as a hint to the OS. */
-static void ggml_thread_apply_sme_settings(int ith) {
-    int cnt = pthread_qos_max_parallelism(QOS_CLASS_USER_INTERACTIVE, PTHREAD_MAX_PARALLELISM_CLUSTER);
-    if (ith != 0 && ith <= cnt) {
-#if 0
-        pthread_prefer_alternate_amx_self();
-#endif
-    }
-}
-#endif
 
 #elif defined(__gnu_linux__)
 // TODO: this may not work on BSD, to be verified
@@ -3077,7 +3049,7 @@ struct ggml_cplan ggml_graph_plan(
                 case GGML_OP_GATED_DELTA_NET:
                     {
                         const int64_t S_v = node->src[2]->ne[0];
-                        const int64_t K   = node->src[5]->ne[1];  // state is (D, K, n_seqs)
+                        const int64_t K   = ggml_get_op_params_i32(node, 0);
                         const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
                         cur = per_thread * sizeof(float) * n_tasks;
                     } break;
@@ -3293,10 +3265,6 @@ static thread_ret_t ggml_graph_compute_secondary_thread(void* data) {
     if (ggml_thread_cpumask_is_valid(state->cpumask)) {
         ggml_thread_apply_affinity(state->cpumask);
     }
-
-#if defined(CLUSTER_SCHEDULING_AVAILABLE)
-    ggml_thread_apply_sme_settings(state->ith);
-#endif
 
     while (true) {
         // Check if we need to sleep
@@ -3929,6 +3897,11 @@ void ggml_cpu_init(void) {
             // initialize E8M0 half table (256 entries)
             for (int i = 0; i < (1 << 8); ++i) {
                 ggml_table_f32_e8m0_half[i] = GGML_E8M0_TO_FP32_HALF(i);
+            }
+
+            // initialize UE4M3 table (256 entries)
+            for (int i = 0; i < (1 << 8); ++i) {
+                ggml_table_f32_ue4m3[i] = ggml_ue4m3_to_fp32(i);
             }
 
             const uint64_t t_end = ggml_time_us(); UNUSED(t_end);
