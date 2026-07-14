@@ -105,7 +105,7 @@ func SpecModelRequiresLlamaServerError(config LlamaServerConfig) error {
 		return fmt.Errorf("model requires llama-server for %s but ZEROLLAMA_LLAMA_SERVER=0", spec)
 	}
 	if !LlamaServerDiscoverable() {
-		return fmt.Errorf("model requires llama-server for %s; build llama-server (./scripts/build_ollama_llama_server_darwin.sh) or set LLAMA_SERVER_BIN", spec)
+		return fmt.Errorf("model requires llama-server for %s; build llama-server (./scripts/build/build_ollama_llama_server_darwin.sh) or set LLAMA_SERVER_BIN", spec)
 	}
 	return nil
 }

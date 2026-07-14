@@ -24,5 +24,5 @@ const (
 	BackendVideoNative   = "native"         // ffmpeg frame sampling inside Ollama (default when unset)
 	BackendSGLang           = "sglang"              // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
-	BackendWan              = "wan"               // Wan2.x via scripts/wan_video_generate.py (see docs/wan-t2v.md)
+	BackendWan              = "wan"               // Wan2.x via scripts/video/wan_video_generate.py (see docs/wan-t2v.md)
 )

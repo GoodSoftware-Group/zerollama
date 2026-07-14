@@ -206,7 +206,7 @@ func LlamaCppUnificationReport() LlamaCppUnificationStatus {
 	if report.LegacyCheckout {
 		parts = append(parts, "legacy checkout name — migrate to vendor tree")
 		report.Warn = true
-		report.FixHint = "./scripts/rebase_vendor_unified.sh --sync && ./scripts/build_llama_server.sh"
+		report.FixHint = "./scripts/vendor/rebase_vendor_unified.sh --sync && ./scripts/build/build_llama_server.sh"
 	}
 	if vendor := vendorLlamaCppRoot(); vendor != "" && isBareSiblingLlamaRoot(root) {
 		parts = append(parts, "LLAMA_CPP_ROOT bare sibling — prefer "+vendor)
@@ -237,7 +237,7 @@ func LlamaCppUnificationReport() LlamaCppUnificationStatus {
 		parts = append(parts, "llama-server not built")
 		report.Warn = true
 		if report.FixHint == "" {
-			report.FixHint = "./scripts/build_llama_server.sh"
+			report.FixHint = "./scripts/build/build_llama_server.sh"
 		}
 	}
 	report.Detail = strings.Join(parts, "; ")
@@ -344,7 +344,7 @@ func ApplyUnifiedLlamaCppEnv() []string {
 			_ = os.Setenv("LLAMA_SERVER_BIN", serverPath)
 			msgs = append(msgs, "set LLAMA_SERVER_BIN="+serverPath)
 		} else if LlamaCppPathUsesLegacyCheckout(bin) && !serverOK && unified != "" {
-			msgs = append(msgs, "run ./scripts/build_llama_server.sh in "+unified)
+			msgs = append(msgs, "run ./scripts/build/build_llama_server.sh in "+unified)
 		}
 	}
 

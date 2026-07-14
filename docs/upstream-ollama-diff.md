@@ -19,14 +19,14 @@ This document captures **architecture deltas**, **pin gaps**, and **actionable c
 Clone beside zerollama (no merge into this repo):
 
 ```bash
-./scripts/clone_upstream_ollama.sh
+./scripts/gpu/clone_upstream_ollama.sh
 # default: ../ollama-upstream
 ```
 
 Build and run on a different port for A/B:
 
 ```bash
-./scripts/build_upstream_ollama_mac.sh   # llama-server (Metal) + go binary — required, not just go build
+./scripts/build/build_upstream_ollama_mac.sh   # llama-server (Metal) + go binary — required, not just go build
 OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve
 ```
 
@@ -70,8 +70,8 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Python runtime | None | `runtime/` FastAPI sidecar/embed |
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
-| llama.cpp pin | `LLAMA_CPP_VERSION` = **`c84b3020`** | **`c84b3020`** vendored via `vendor/llama-cpp-c84b3020` + **19** patches | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**19** on c84b3020) + compat hooks via **0015**, ggml deltas via **0016**, **0017** seq-copy |
+| llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9888`** (ggml-org) | **`8f114a9b`** (ggml-org master) via `vendor/llama-cpp-8f114a9b` + **25** patch commits | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
+| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**25** on 8f114a9b) + compat/kv-ext/seq-copy |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
 | MLX MTP / speculation | Recent commits (draft tokens, KV file split) | Pin behind `MLX_VERSION`; cherry-pick as needed |
 
@@ -81,10 +81,11 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| llama.cpp tag | `b9781` (upstream v0.30.11) | **`c84b3020`** (elizaOS unified) | Vendor sync via `./scripts/sync_vendor_llama.sh`; patch doctor: `./scripts/llama_patch_doctor.sh` |
+| Ollama release | **v0.31.2** (`a6293eb5`) | v0.30.11 base + **v0.31.2 cherry-picks** | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
+| llama.cpp tag | `b9888` (upstream v0.31.2) | **`8f114a9b`** (ggml-org master tip; past b9951) | Vendor sync via `./scripts/vendor/sync_vendor_llama.sh`; patch doctor: `./scripts/vendor/llama_patch_doctor.sh` |
 | Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build_llama_server.sh` on sibling tree | Align presets when porting |
-| MLX | `MLX_VERSION` / `MLX_C_VERSION` in CMake | Same pattern | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |
+| llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build/build_llama_server.sh` on sibling tree | Align presets when porting |
+| MLX | `4367c73b` / `fba4470b` | **Ahead of Ollama** (`MLX_VERSION` / `MLX_C_VERSION`) — mlx `main` tip Jul 10; mlx-c still Ollama 0.31.2 bindings | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |
 
 **Phase 15 blocker context:** native tensor page bind depends on llama.cpp APIs; staying on an old pin widens the gap. Bumping toward upstream’s pin is prerequisite work, not optional polish.
 
@@ -166,7 +167,7 @@ OLLAMA_HOST=127.0.0.1:11435 ./ollama serve
 cd ../zerollama && ./zerollama serve
 
 # Terminal C — zerollama llama.cpp backend (Python runtime)
-cd ../zerollama && ./scripts/serve_llama_cpp_backend.sh
+cd ../zerollama && ./scripts/serve/serve_llama_cpp_backend.sh
 ```
 
 ### 3. Throughput smoke
@@ -188,7 +189,7 @@ On Apple Silicon, compare three GGUF arms:
 | Arm | Command | Backend |
 |-----|---------|---------|
 | ggml Metal | `./zerollama serve` | In-process ggml via runner |
-| Python runtime | `./scripts/serve_llama_cpp_backend.sh` or default sidecar + runtime routing | `inprocess` or `llama-server` Metal |
+| Python runtime | `./scripts/serve/serve_llama_cpp_backend.sh` or default sidecar + runtime routing | `inprocess` or `llama-server` Metal |
 | Upstream | `OLLAMA_HOST=127.0.0.1:11435 ./ollama serve` | Go → llama-server Metal |
 
 See [apple-silicon-metal.md](./apple-silicon-metal.md#compare-with-upstream-ollama).
@@ -302,4 +303,4 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | Python sidecar | — | `runtime/server.py`, `server/darwin_sidecar.go` |
 | llama.cpp integration | `llama/server/`, `llama/compat/` | `llama/patches/`, sibling `../llama.cpp` |
 | Training | — | `training.py`, `x/trainingworker/pyembed/` |
-| Clone helper | — | `scripts/clone_upstream_ollama.sh` |
+| Clone helper | — | `scripts/gpu/clone_upstream_ollama.sh` |

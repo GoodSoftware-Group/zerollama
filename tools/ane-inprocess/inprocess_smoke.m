@@ -322,7 +322,7 @@ int main(int argc, const char *argv[]) {
             emitLine(@{
                 @"ok": @NO,
                 @"mode": @"ane_inprocess_smoke",
-                @"error": weightPath ? @"init failed — check --weight-file size matches channels" : @"init failed — run scripts/ane_bridge_patch.sh",
+                @"error": weightPath ? @"init failed — check --weight-file size matches channels" : @"init failed — run scripts/ane/ane_bridge_patch.sh",
             });
             return 1;
         }

@@ -24,11 +24,11 @@ Both use zerollama’s subprocess hook (`openvino-image` or `external-image`). V
 ```bash
 sudo apt install python3.14-venv   # required once on Ubuntu for the GenAI venv
 cd ~/zerollama
-chmod +x scripts/install_openvino_diffusion.sh scripts/ov_external_image.sh scripts/register_ov_models.sh
+chmod +x scripts/image/install_openvino_diffusion.sh scripts/image/ov_external_image.sh scripts/image/register_ov_models.sh
 
-./scripts/install_openvino_diffusion.sh
-./scripts/register_ov_models.sh
-sudo cp scripts/ov_external_image.sh /usr/lib/ollama-zerollama/
+./scripts/image/install_openvino_diffusion.sh
+./scripts/image/register_ov_models.sh
+sudo cp scripts/image/ov_external_image.sh /usr/lib/ollama-zerollama/
 ```
 
 Layout:
@@ -88,9 +88,9 @@ API: same as Vulkan — `POST /api/generate` with `"model": "sd15-openvino"`.
 
 | File | Role |
 |------|------|
-| `scripts/install_openvino_diffusion.sh` | venv + HF model download |
-| `scripts/ov_image_generate.py` | OpenVINO GenAI generate |
-| `scripts/ov_external_image.sh` | external-image hook |
-| `scripts/register_ov_models.sh` | config-only manifests |
+| `scripts/image/install_openvino_diffusion.sh` | venv + HF model download |
+| `scripts/image/ov_image_generate.py` | OpenVINO GenAI generate |
+| `scripts/image/ov_external_image.sh` | external-image hook |
+| `scripts/image/register_ov_models.sh` | config-only manifests |
 | `modelfiles/sd15-openvino/` | SD 1.5 preset |
 | `modelfiles/sdxl-openvino/` | SDXL preset |

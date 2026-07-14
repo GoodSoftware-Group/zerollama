@@ -330,9 +330,9 @@ Serve logs `gemma agent stats log enabled path=...` at startup when active.
 Hermes and other apps use production `:11434`. Run the two-turn prefix cache smoke on **`:11435`** so traffic does not share the MLX runner:
 
 ```bash
-MLX_SMOKE_START_SERVE=1 ./scripts/mlx_prefix_cache_smoke.sh
+MLX_SMOKE_START_SERVE=1 ./scripts/mlx/mlx_prefix_cache_smoke.sh
 # or: OLLAMA_HOST=127.0.0.1:11435 ./zerollama serve   # separate terminal
-#     ./scripts/mlx_prefix_cache_smoke.sh
+#     ./scripts/mlx/mlx_prefix_cache_smoke.sh
 ```
 
 Pass criteria: turn 2 `cached_tokens` ≥ 4000 and elapsed ≤ 90s.

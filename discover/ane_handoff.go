@@ -68,7 +68,7 @@ func RunANEIOSurfaceSmoke(ctx context.Context, w io.Writer, quick bool) error {
 func ProbeANEIOSurfaceSmoke(ctx context.Context, quick bool) (ANEHandoffResult, error) {
 	bin := FindANEIOSurfaceSmokeBin()
 	if bin == "" {
-		return ANEHandoffResult{}, fmt.Errorf("ane-iosurface-smoke not found — run ./scripts/ane_probe_build.sh")
+		return ANEHandoffResult{}, fmt.Errorf("ane-iosurface-smoke not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	args := []string{}
 	if quick {
@@ -135,7 +135,7 @@ func ProbeANEMetalHandoffSmoke(ctx context.Context, quick bool) (ANEMetalHandoff
 func ProbeANEMetalHandoffDims(ctx context.Context, channels, spatial int, quick bool) (ANEMetalHandoffResult, error) {
 	bin := FindANEMetalHandoffSmokeBin()
 	if bin == "" {
-		return ANEMetalHandoffResult{}, fmt.Errorf("ane-metal-handoff-smoke not found — run ./scripts/ane_probe_build.sh")
+		return ANEMetalHandoffResult{}, fmt.Errorf("ane-metal-handoff-smoke not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	args := aneMetalHandoffArgs(channels, spatial, quick)
 	out, err := runANETool(ctx, bin, args)

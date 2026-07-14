@@ -36,8 +36,8 @@ CACHE_TYPE_ALIASES: dict[str, str] = {
     "turbo3_tcq": "tbq3_tcq",
 }
 
-# Pin documented for unified runtime builds (elizaOS/llama.cpp, Jun 2026).
-ELIZA_LLAMA_CPP_DEFAULT_REF = "c84b30200c8d512c00c9d61c96bed078f1c0024d"
+# Pin documented for unified runtime builds (ggml-org vendor + Eliza L2 overlay).
+ELIZA_LLAMA_CPP_DEFAULT_REF = "8f114a9b573b69035299f9b924047f53c1e22c7e"
 ELIZA_LLAMA_CPP_REPO = "https://github.com/elizaOS/llama.cpp.git"
 
 _CUDA_FORK_REQUIRED_SYMBOLS = (

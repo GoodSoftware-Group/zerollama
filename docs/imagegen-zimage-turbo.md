@@ -77,7 +77,7 @@ cmake -B build-mlx --preset "MLX CUDA 12" \
 cmake --build build-mlx --target mlx --target mlxc --parallel
 
 # Optional but recommended on 16GB: patch allocator before build
-./scripts/patch_mlx_cuda_vram.sh
+./scripts/mlx/patch_mlx_cuda_vram.sh
 cmake --build build-mlx --target mlx --target mlxc --parallel
 
 cmake --install build-mlx --component MLX --strip
@@ -89,14 +89,14 @@ sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 
 ```bash
 # 1. mlx-c/array.cpp — add mlx_array_detach + mlx_go_export_latents_bin_d2h
-./scripts/patch_mlx_c_array.sh
+./scripts/mlx/patch_mlx_c_array.sh
 
 # 2. (first build only / clean tree) — strip debug fprintfs added during OOM
 #    diagnosis; safe no-op if already clean
-./scripts/patch_mlx_c_debug_cleanup.sh
+./scripts/mlx/patch_mlx_c_debug_cleanup.sh
 
 # 3. mlx/backend/cuda/allocator.cpp — cudaMalloc, 90% limit, disable recycle
-./scripts/patch_mlx_cuda_vram.sh
+./scripts/mlx/patch_mlx_cuda_vram.sh
 
 cmake --build build-mlx --target mlx --target mlxc --parallel
 ```
@@ -113,7 +113,7 @@ All three scripts are idempotent — safe to re-run if you're unsure whether a p
 
 ## Serve and run
 
-Use `scripts/serve_gpu_example.sh` as a template. Minimum for imagegen:
+Use `scripts/serve/serve_gpu_example.sh` as a template. Minimum for imagegen:
 
 ```bash
 export OLLAMA_LIBRARY_PATH=/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12
@@ -213,10 +213,10 @@ NDJSON lines include `completed`/`total` during denoise and `image` (base64 PNG)
 | Weight I/O | `x/imagegen/manifest/weights.go` | mmap safetensors, batched eval |
 | MLX bindings | `x/imagegen/mlx/mlx.go` | `EvalErrBatched`, VRAM trim, cleanup |
 | CPU VAE helper | `x/imagegen/decode_latents.go` | Subprocess entry for post-denoise decode |
-| MLX allocator patch | `scripts/patch_mlx_cuda_vram.sh` | `cudaMalloc`, 90% limit, disable recycle |
-| MLX-C array patch | `scripts/patch_mlx_c_array.sh` | `mlx_array_detach` + `mlx_go_export_latents_bin_d2h` |
-| MLX-C debug cleanup | `scripts/patch_mlx_c_debug_cleanup.sh` | Strip debug `fprintf`s before production build |
-| Serve template | `scripts/serve_gpu_example.sh` | Library paths + comments |
+| MLX allocator patch | `scripts/mlx/patch_mlx_cuda_vram.sh` | `cudaMalloc`, 90% limit, disable recycle |
+| MLX-C array patch | `scripts/mlx/patch_mlx_c_array.sh` | `mlx_array_detach` + `mlx_go_export_latents_bin_d2h` |
+| MLX-C debug cleanup | `scripts/mlx/patch_mlx_c_debug_cleanup.sh` | Strip debug `fprintf`s before production build |
+| Serve template | `scripts/serve/serve_gpu_example.sh` | Library paths + comments |
 
 Developer notes: [x/imagegen/README.md](../x/imagegen/README.md).
 

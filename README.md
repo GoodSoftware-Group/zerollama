@@ -39,7 +39,7 @@ Full architecture comparison: [docs/upstream-ollama-diff.md](docs/upstream-ollam
 | **Zerollama ggml Metal (Mac default)** | **~166 (+7%)** |
 | Zerollama `--llama-server-backend` | ~158 |
 
-Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
+Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh`
 
 ---
 
@@ -51,7 +51,7 @@ Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
 |------|-----|
 | Test upstream-shaped GGUF on Mac | `./zerollama serve --llama-server-backend` or `ZEROLLAMA_LLAMA_SERVER=1` |
 | Linux plain text (auto) | Install/build `llama-server`; default when binary found (`ZEROLLAMA_LLAMA_SERVER=0` to disable) |
-| Compare side-by-side | [upstream-ollama-diff.md](docs/upstream-ollama-diff.md) · `./scripts/clone_upstream_ollama.sh` |
+| Compare side-by-side | [upstream-ollama-diff.md](docs/upstream-ollama-diff.md) · `./scripts/gpu/clone_upstream_ollama.sh` |
 | Full operator guide | [phase17-llama-server.md](docs/phase17-llama-server.md) |
 
 **What Phase 17 does *not* change:** Python runtime, `/api/train/*`, Eliza cloud, fleet scheduling, Mac ggml default.
@@ -65,7 +65,7 @@ Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
 | Track | Problem | Status | Enable |
 |-------|---------|--------|--------|
 | **[Flash-MoE (anemll)](docs/flash-moe.md)** | MoE models **larger than unified RAM** (e.g. Qwen3.5-397B experts) | Partial — flag passthrough + fork build + **`flash_moe_smoke.sh`** | `ZEROLLAMA_FLASH_MOE=1` + sidecar + `--llama-server-backend` |
-| **[ANE probe (maderix)](docs/ane-probe.md)** | Validate **Apple Neural Engine** via private API bridge | Partial — subprocess smoke only | `./scripts/ane_probe_build.sh`; `zerollama doctor` |
+| **[ANE probe (maderix)](docs/ane-probe.md)** | Validate **Apple Neural Engine** via private API bridge | Partial — subprocess smoke only | `./scripts/ane/ane_probe_build.sh`; `zerollama doctor` |
 | **[ANE dflash in-process (B1–B6)](docs/ane-draft-inprocess.md)** | **Metal base + ANE draft-step** handoff on eliza `*-dflash` | Partial — lab hook on llama-server; tokens still Metal | `ZEROLLAMA_ANE_DRAFT=1` on **lab port 11435** only; see doc |
 
 **Why Flash-MoE is llama-server-only:** slot-bank streaming and `-fit` VRAM budgeting live in anemll's forked server, not ggml Metal. **Why ANE probe is subprocess:** private `_ANEClient` APIs break on macOS updates; isolated smoke keeps `zerollama` stable. **Why ANE dflash is in-process (not probe subprocess):** ANE IOSurface surface IDs are not visible across PIDs — llama-server must own the compiled kernel for ggml handoff.
@@ -80,9 +80,9 @@ ROADMAP: [M16 Flash-MoE](docs/ROADMAP.md#apple-silicon--metal-track), [M17 ANE p
 
 | Goal | How |
 |------|-----|
-| Upstream-shaped serve (runtime chat off) | `./scripts/serve_edge.sh` or `./zerollama serve --edge` |
-| Edge-marked binary (no in-process ggml CGO) | `./scripts/build_zerollama_edge.sh` → `./zerollama-edge serve` |
-| Linux auto (no `--edge` flag needed) | `./scripts/serve_linux_auto.sh` when llama-server on disk |
+| Upstream-shaped serve (runtime chat off) | `./scripts/serve/serve_edge.sh` or `./zerollama serve --edge` |
+| Edge-marked binary (no in-process ggml CGO) | `./scripts/build/build_zerollama_edge.sh` → `./zerollama-edge serve` |
+| Linux auto (no `--edge` flag needed) | `./scripts/serve/serve_linux_auto.sh` when llama-server on disk |
 | Operator visibility | `curl -s localhost:11434/api/status \| jq .inference.backend` |
 | Full operator guide | [phase16-thin-edge.md](docs/phase16-thin-edge.md) |
 
@@ -96,7 +96,7 @@ ROADMAP: [M16 Flash-MoE](docs/ROADMAP.md#apple-silicon--metal-track), [M17 ANE p
 
 ```bash
 git clone <this-repo> zerollama && cd zerollama
-./scripts/dev_bootstrap.sh
+./scripts/runtime/dev_bootstrap.sh
 ./zerollama serve
 ./zerollama pull llama3.2:3b
 ./zerollama run llama3.2:3b
@@ -109,8 +109,8 @@ git clone <this-repo> zerollama && cd zerollama
 **Compare with upstream on the same machine:**
 
 ```bash
-./scripts/clone_upstream_ollama.sh
-./scripts/build_upstream_ollama_mac.sh
+./scripts/gpu/clone_upstream_ollama.sh
+./scripts/build/build_upstream_ollama_mac.sh
 OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve   # upstream
 ./zerollama serve                                              # zerollama :11434
 ```
@@ -242,35 +242,35 @@ console.log(response.message.content);
 
 ### Building zerollama on macOS (ggml vendor @ b9781)
 
-**Fresh clone (any path):** `./scripts/dev_bootstrap.sh` then `./zerollama serve`.
+**Fresh clone (any path):** `./scripts/runtime/dev_bootstrap.sh` then `./zerollama serve`.
 
-**Vendor sync (after pin bump or patch edit):** `make -f Makefile.sync clean apply-patches` then `./scripts/sync_vendor_llama.sh`. **Why not only `make sync`:** sync rsyncs whatever is in vendor — patches must be applied first; the script refuses bare tags.
+**Vendor sync (after pin bump or patch edit):** `make -f Makefile.sync clean apply-patches` then `./scripts/vendor/sync_vendor_llama.sh`. **Why not only `make sync`:** sync rsyncs whatever is in vendor — patches must be applied first; the script refuses bare tags.
 
-**Phase 17 (optional upstream path):** `./scripts/build_ollama_llama_server_darwin.sh` then `./zerollama serve --llama-server-backend` — [phase17-llama-server.md](docs/phase17-llama-server.md). **Why optional on Mac:** ggml Metal ~+7% decode vs llama-server; Phase 17 is merge parity, not default engine swap.
+**Phase 17 (optional upstream path):** `./scripts/build/build_ollama_llama_server_darwin.sh` then `./zerollama serve --llama-server-backend` — [phase17-llama-server.md](docs/phase17-llama-server.md). **Why optional on Mac:** ggml Metal ~+7% decode vs llama-server; Phase 17 is merge parity, not default engine swap.
 
 **Why tiers, not one setup script:** sign-off needs pulled GGUFs; CI smokes bind Go **`:8080`** while daily serve uses **`:11434`**; `../llama.cpp` is cloned automatically on tier 0. **`zerollama doctor --fix`** clones the sibling and builds Metal libllama when missing — same order as `mac_setup`. Details: [mac-dev-setup.md](docs/mac-dev-setup.md) · ROADMAP [M14](docs/ROADMAP.md#apple-silicon--metal-track).
 
 ### Building zerollama on CUDA (RTX 5080-class / Proxmox CT)
 
-**Start here:** [5080-runbook.md](docs/5080-runbook.md) + `source scripts/5080_env.sh` + `./scripts/5080_resignoff.sh --build`
+**Start here:** [5080-runbook.md](docs/5080-runbook.md) + `source scripts/gpu/5080_env.sh` + `./scripts/gpu/5080_resignoff.sh --build`
 
 ```bash
 # Inside CT 1564
-cd ~/zerollama && source ./scripts/5080_env.sh
-./scripts/5080_resignoff.sh --build          # full tiers 0–4
-./scripts/5080_resignoff.sh --tier 2 --radix --vendor   # Radix live (optional)
+cd ~/zerollama && source ./scripts/gpu/5080_env.sh
+./scripts/gpu/5080_resignoff.sh --build          # full tiers 0–4
+./scripts/gpu/5080_resignoff.sh --tier 2 --radix --vendor   # Radix live (optional)
 ```
 
 Long reference (VRAM, remote serve, MLX): [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
 
 ### Building zerollama on Intel Arc A380 (Vulkan / 6 GB)
 
-**Start here:** [a380-runbook.md](docs/a380-runbook.md) + `source scripts/a380_env.sh` + `./scripts/a380_signoff.sh`
+**Start here:** [a380-runbook.md](docs/a380-runbook.md) + `source scripts/gpu/a380_env.sh` + `./scripts/gpu/a380_signoff.sh`
 
 ```bash
-cd ~/zerollama && source ./scripts/a380_env.sh
-./scripts/a380_signoff.sh --build
-bash scripts/serve_a380_example.sh   # OLLAMA_VULKAN=1, GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
+cd ~/zerollama && source ./scripts/gpu/a380_env.sh
+./scripts/gpu/a380_signoff.sh --build
+bash scripts/serve/serve_a380_example.sh   # OLLAMA_VULKAN=1, GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
 ```
 
 **Research baseline:** `~/bmtl/asm_lab/lanes/arc-a380` (`runs/research_synthesis.json`). Report **`total_duration_eval_tok_s`**, not `eval_tok_s` alone (~580 ms `load_ms` per API call).
@@ -278,8 +278,8 @@ bash scripts/serve_a380_example.sh   # OLLAMA_VULKAN=1, GGML_VK_DISABLE_INTEGER_
 **Local image generation (6 GB):** MLX imagegen needs 16 GB CUDA/Metal — on A380 use **stable-diffusion.cpp (Vulkan)** and/or **OpenVINO GenAI (INT8)** via the same `zerollama run` / `POST /api/generate` path. **Why subprocess hooks:** diffusion stacks differ from ggml chat; manifest `backend_paths` + `image_generation` carry per-model weights and Intel ANV flags without forking the scheduler.
 
 ```bash
-./scripts/install_stable_diffusion.sh && ./scripts/register_sd_models.sh
-./scripts/install_openvino_diffusion.sh && ./scripts/register_ov_models.sh   # optional second stack
+./scripts/image/install_stable_diffusion.sh && ./scripts/image/register_sd_models.sh
+./scripts/image/install_openvino_diffusion.sh && ./scripts/image/register_ov_models.sh   # optional second stack
 zerollama run sd15-turbo-vulkan "a red apple on white"
 zerollama run sd15-openvino "a watercolor lighthouse"
 zerollama ls image                    # local sd* + cloud image routes; PERF column after bench
@@ -290,7 +290,7 @@ Guides: [sd-vulkan-a380.md](docs/sd-vulkan-a380.md), [sd-openvino-a380.md](docs/
 
 **Production serve:** bind `OLLAMA_HOST=192.168.255.105:11434` on the private network — agents use that URL directly; do not SSH port-forward `:11434`.
 
-**Production serve (remote `:8080`):** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh && ~/bin/serve.sh` — **WHY wrapper:** `serve_gpu_example.sh` in `~/bin` resolves repo as `$HOME`, not `~/zerollama`. See [5080-runbook — Production serve](docs/5080-runbook.md#production-serve-binserve-sh).
+**Production serve (remote `:8080`):** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh && ~/bin/serve.sh` — **WHY wrapper:** `serve_gpu_example.sh` in `~/bin` resolves repo as `$HOME`, not `~/zerollama`. See [5080-runbook — Production serve](docs/5080-runbook.md#production-serve-binserve-sh).
 
 **Why a separate section:** CUDA hosts use discrete VRAM (`single_gpu.yaml`, `nvidia-smi`), **sm_120** needs CUDA **12.8+** `nvcc`, and Proxmox operators often land on the **host** while GPU passthrough lives in an **LXC** — run gates **inside** the CT (`pct exec 1564 -- …`), not on the host with stale CUDA 12.3.
 
@@ -299,14 +299,14 @@ Guides: [sd-vulkan-a380.md](docs/sd-vulkan-a380.md), [sd-openvino-a380.md](docs/
 export LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf   # ~1B Q8 smoke
 export LLAMA_CPP_LIB=/root/llama.cpp/build/bin/libllama.so
 export CMAKE_CUDA_ARCHITECTURES=120-real
-CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build_llama_server.sh
+CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build/build_llama_server.sh
 
 # Gate sequence (see gpu-5080-operator-guide.md)
-./scripts/phase15_llama_kv_ext_pin_check.sh
-./scripts/phase15_inprocess_signoff.sh          # PASS
-CUDA_LLAMA_MODEL=$LLAMA_MODEL ./scripts/l2_cuda_full_gate.sh
-./scripts/l3_cache_smoke.sh && ./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
-L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh   # optional: prefix-cache × spec policy
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh
+./scripts/phase/phase15_inprocess_signoff.sh          # PASS
+CUDA_LLAMA_MODEL=$LLAMA_MODEL ./scripts/phase/l2_cuda_full_gate.sh
+./scripts/phase/l3_cache_smoke.sh && ./scripts/phase/l3_gate_report.sh /tmp/l3-cache-smoke.json
+L3_SPEC_METHOD=ngram ./scripts/phase/l3_spec_cache_smoke.sh   # optional: prefix-cache × spec policy
 ```
 
 **Jun 2026 sign-off (CT 1564):** Phase 15 **PASS**; L2 **FAIL merge** @ 8k (stock faster); L3 **SOFT PASS**. Full playbook: [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md).
@@ -317,27 +317,27 @@ L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh   # optional: prefix-cache
 
 ```bash
 # Tier 0 — build + serve (recommended first run)
-./scripts/dev_bootstrap.sh
+./scripts/runtime/dev_bootstrap.sh
 ./zerollama serve
 
 # Tier 1 — pull a model
 ./zerollama pull llama3.2:3b
 
 # Optional: vendor sync when hacking ggml patches (not required for first build)
-# make -f Makefile.sync clean apply-patches && ./scripts/sync_vendor_llama.sh
+# make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh
 
 # Rebuild ggml binary only
-./scripts/build_zerollama_mac.sh   # BUILD_MLX=auto when ../mlx present
+./scripts/build/build_zerollama_mac.sh   # BUILD_MLX=auto when ../mlx present
 
 # Tier 2 — sign-off (after pull; uses :8080/:8081 smoke layout)
-# MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/mac_setup.sh
+# MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/runtime/mac_setup.sh
 # Full gate + qwen35 (M4 Max, Jun 2026 PASS):
 # eliza-1-* is the ship qwen35 family — 2B is the default sign-off tag (fast handoff/resume).
-# RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
+# RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/gpu/metal_signoff.sh
 # Alternate: RUN_E2E_QWEN35_MODEL=qwen3.6:latest (heavier; same gate shape)
 
 # Optional: qwen35 ggml smoke only (needs :8080/:8081 stack or run via metal_signoff)
-# RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
+# RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/runtime/qwen35_mac_smoke.sh
 ```
 
 **Daily serve:** `zerollama serve` — Go `:11434` (or `:8080` in dev) + uv sidecar `:8081` with `apple_silicon.yaml` inprocess backend.
@@ -348,11 +348,11 @@ L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh   # optional: prefix-cache
 
 **Agent QoS + fleet visibility (Jul 2026):** clients detect zerollama via `GET /api/version`, then send **`options.zerollama`** (`qos_class`, `project_id`, `project_name`) and a stable **`prompt_cache_key`**. **`zerollama ps`** shows PROJECT / SESSION columns when harness metadata is present. **Why:** background batch jobs must defer behind live agent threads; operators need to see which app owns GPU without log archaeology; Tier 2 hints are gated so vanilla Ollama / CUDA proxies are not penalized. Guide: [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md).
 
-**Prompt cache → slot bridge (L3):** pass a stable session key in request `options` (`eliza.conversationId`, `prompt_cache_key`, …) and the runtime pins llama-server `id_slot` + sets `cache_prompt: true` so repeat system prompts skip full prefill. Check `curl -s :8081/health | jq .llama_cache`. **Why:** agent threads re-send the same system prompt every turn — dynamic Phase 15 slots throw away KV on `complete()`. L3 maps keys → slots (needs `-np > 1` from L1). Batch rows use `prompt_cache_keys[]` (strict per-index — no silent fallback to a flat key). Disk cache lives under `~/.cache/zerollama/llama-cache/<modelHash>/`; hash canonicalizes GGUF paths and includes L2 cache types so fork/stock blobs never mix. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Sign-off: `./scripts/l3_cache_smoke.sh` + `./scripts/l3_gate_report.sh` (or `RUN_E2E_L3=1` on `m3_metal_signoff.sh`). **5080 Jun 2026:** SOFT PASS on 1B Q8 (bridge wired). Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
+**Prompt cache → slot bridge (L3):** pass a stable session key in request `options` (`eliza.conversationId`, `prompt_cache_key`, …) and the runtime pins llama-server `id_slot` + sets `cache_prompt: true` so repeat system prompts skip full prefill. Check `curl -s :8081/health | jq .llama_cache`. **Why:** agent threads re-send the same system prompt every turn — dynamic Phase 15 slots throw away KV on `complete()`. L3 maps keys → slots (needs `-np > 1` from L1). Batch rows use `prompt_cache_keys[]` (strict per-index — no silent fallback to a flat key). Disk cache lives under `~/.cache/zerollama/llama-cache/<modelHash>/`; hash canonicalizes GGUF paths and includes L2 cache types so fork/stock blobs never mix. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Sign-off: `./scripts/phase/l3_cache_smoke.sh` + `./scripts/phase/l3_gate_report.sh` (or `RUN_E2E_L3=1` on `m3_metal_signoff.sh`). **5080 Jun 2026:** SOFT PASS on 1B Q8 (bridge wired). Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
 
-**Cross-slot Radix prefix share (L3 v1 + v2):** **Why:** L3 pins one slot per `prompt_cache_key`; two agents with the same system prompt but different keys hash to different slots and repeat prefill without cross-slot seed. **`ZEROLLAMA_L3_PROFILE=agent`** (or `ZEROLLAMA_RADIX_PREFIX_SHARE=1`) copies donor KV into cold targets, **warm catch-up** when the donor holds a longer verified prefix (L3-R2), **ref-count block metadata** for overlapping donors (L3-R3), optional **`redis://` LMCache** for fleet block index (L3-R4), and **SWA-window-gated hybrid** `seq_cp` for Gemma-style models (L3-R5). Requires hash-chained block pool + vendor `POST /kv/seq-copy` (patch 0017), `n_parallel > 1`, patched vendor llama-server — not bare sibling `../llama.cpp`. Live gate: `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh`. **Not full RadixAttention:** no llama-level shared KV pages, no cross-node KV blob pull — see [radix-prefix-share.md](docs/radix-prefix-share.md#product-gaps) and [ROADMAP — L3-R](docs/ROADMAP.md#radix-v2-l3-r--product-gaps).
+**Cross-slot Radix prefix share (L3 v1 + v2):** **Why:** L3 pins one slot per `prompt_cache_key`; two agents with the same system prompt but different keys hash to different slots and repeat prefill without cross-slot seed. **`ZEROLLAMA_L3_PROFILE=agent`** (or `ZEROLLAMA_RADIX_PREFIX_SHARE=1`) copies donor KV into cold targets, **warm catch-up** when the donor holds a longer verified prefix (L3-R2), **ref-count block metadata** for overlapping donors (L3-R3), optional **`redis://` LMCache** for fleet block index (L3-R4), and **SWA-window-gated hybrid** `seq_cp` for Gemma-style models (L3-R5). Requires hash-chained block pool + vendor `POST /kv/seq-copy` (patch 0017), `n_parallel > 1`, patched vendor llama-server — not bare sibling `../llama.cpp`. Live gate: `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh`. **Not full RadixAttention:** no llama-level shared KV pages, no cross-node KV blob pull — see [radix-prefix-share.md](docs/radix-prefix-share.md#product-gaps) and [ROADMAP — L3-R](docs/ROADMAP.md#radix-v2-l3-r--product-gaps).
 
-**Decode graph invalidation (CUDA, vLLM-inspired):** when L3 clears a KV slot (SWA block, owner change, `cache_prompt=false`, draft drop-last-block fallback on subprocess), the runtime bumps a per-slot decode-graph epoch and clears ggml's captured CUDA graph cache. **In-process:** `llama_context_cuda_graph_invalidate` via native/ctypes on the live context. **Subprocess (default backend):** `POST /cuda-graph/invalidate` on the llama-server child — **why:** the child owns `ctx_tgt`; Python epoch alone cannot reach ggml in another process. **Why invalidation at all:** ggml keys captured graphs by compute topology, not sequence id — prefix reuse without breaking graphs can replay wrong GPU work. Check `curl -s :8081/health | jq .llama_cache.decode_graph`. Rebuild sibling `../llama.cpp` after pull (`./scripts/build_llama_server.sh`; CUDA: `GGML_CUDA_GRAPHS=ON`). Disable ggml clear: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. On Metal the API is a no-op; epoch + L3 policy still run. Doc: [decode-graph-invalidation.md](docs/decode-graph-invalidation.md).
+**Decode graph invalidation (CUDA, vLLM-inspired):** when L3 clears a KV slot (SWA block, owner change, `cache_prompt=false`, draft drop-last-block fallback on subprocess), the runtime bumps a per-slot decode-graph epoch and clears ggml's captured CUDA graph cache. **In-process:** `llama_context_cuda_graph_invalidate` via native/ctypes on the live context. **Subprocess (default backend):** `POST /cuda-graph/invalidate` on the llama-server child — **why:** the child owns `ctx_tgt`; Python epoch alone cannot reach ggml in another process. **Why invalidation at all:** ggml keys captured graphs by compute topology, not sequence id — prefix reuse without breaking graphs can replay wrong GPU work. Check `curl -s :8081/health | jq .llama_cache.decode_graph`. Rebuild sibling `../llama.cpp` after pull (`./scripts/build/build_llama_server.sh`; CUDA: `GGML_CUDA_GRAPHS=ON`). Disable ggml clear: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. On Metal the API is a no-op; epoch + L3 policy still run. Doc: [decode-graph-invalidation.md](docs/decode-graph-invalidation.md).
 
 **Multimodal agent caches (SGLang-inspired, native path):** repeat `video_url` / video blobs on the same thread benefit from three layers — (1) HTTPS body LRU, (2) global ffmpeg expansion LRU, (3) session expansion cache when `prompt_cache_key` matches L3. Pass the key via `/api/chat` `options`, `/v1/chat/completions` `prompt_cache_key` or `options`, or Responses `prompt_cache_key`. OpenAI responses include `usage.prompt_tokens_details` (`image_tokens`, `video_tokens`, `cached_tokens` — heuristic modality counts; `cached_tokens` from L3). Vision preflight runs before ffmpeg; pre-expanded `video_spans` count on the latest user turn only so echoed history does not false-reject follow-ups.
 
@@ -366,9 +366,9 @@ L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh   # optional: prefix-cache
 
 **Why caches + padded inject + hints + preprocessed ingest:** agents re-send the same clip every turn; without caches ffmpeg and CDN dominate latency; without keys session cache does not pin per thread; without scoped preflight multi-turn chats fail incorrectly; without splice tool loops silently drop vision layout; without grid hints layout drift is invisible until quality degrades; without preprocessed paths clients pay duplicate ViT work on every turn.
 
-Smoke: `./scripts/video_expand_cache_smoke.sh` (unit), `./scripts/video_agent_cache_smoke.sh` (expand + session cache, `RUN_E2E_VIDEO_AGENT=1`), `./scripts/video_agent_infer_smoke.sh` (live VLM + turn-2 `cached_prompt_tokens`, `RUN_E2E_VIDEO_AGENT_INFER=1`; optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded layout restore; optional `VIDEO_AGENT_INFER_PREFIX_MM_WARN=1` for prefix-mm hint grep). Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md), [video-understanding.md](docs/video-understanding.md), [mtmd-grid-thw-handoff.md](docs/mtmd-grid-thw-handoff.md).
+Smoke: `./scripts/video/video_expand_cache_smoke.sh` (unit), `./scripts/video/video_agent_cache_smoke.sh` (expand + session cache, `RUN_E2E_VIDEO_AGENT=1`), `./scripts/video/video_agent_infer_smoke.sh` (live VLM + turn-2 `cached_prompt_tokens`, `RUN_E2E_VIDEO_AGENT_INFER=1`; optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded layout restore; optional `VIDEO_AGENT_INFER_PREFIX_MM_WARN=1` for prefix-mm hint grep). Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md), [video-understanding.md](docs/video-understanding.md), [mtmd-grid-thw-handoff.md](docs/mtmd-grid-thw-handoff.md).
 
-**Fork evaluation (L2):** build eliza `llama-server` sibling + A/B against stock. `./scripts/l2_full_gate.sh` (Mac) or `./scripts/l2_cuda_full_gate.sh` (CUDA). **Why:** QJL/TurboQuant live in `elizaOS/llama.cpp` — vendor merge is gated on measured wins. Metal Jun 2026: stock wins decode at 8k/27k; fork runs 131k ctx. **CUDA 5080 Jun 2026:** stock wins @ 8k (FAIL merge); long-ctx legs pending. Doc: [gpu-profiles-l2.md](docs/gpu-profiles-l2.md).
+**Fork evaluation (L2):** build eliza `llama-server` sibling + A/B against stock. `./scripts/phase/l2_full_gate.sh` (Mac) or `./scripts/phase/l2_cuda_full_gate.sh` (CUDA). **Why:** QJL/TurboQuant live in `elizaOS/llama.cpp` — vendor merge is gated on measured wins. Metal Jun 2026: stock wins decode at 8k/27k; fork runs 131k ctx. **CUDA 5080 Jun 2026:** stock wins @ 8k (FAIL merge); long-ctx legs pending. Doc: [gpu-profiles-l2.md](docs/gpu-profiles-l2.md).
 
 **Why rebuild after pull:** Jun 2026 fixed Mac **GPU bootstrap discovery** (`total_vram="0 B"` / CPU-only offload) and **Go ollama-engine sched_reserve** for qwen35moe (`GGML_ASSERT(tensor->buffer == NULL)` abort). Rebuild so `/info` uses `DiscoverBackendDevices()` and graph tensors defer to the scheduler — see [apple-silicon-metal.md](docs/apple-silicon-metal.md#gpu-bootstrap-discovery-jun-2026) and [sched_reserve](docs/apple-silicon-metal.md#go-ollama-engine-sched_reserve-jun-2026).
 
@@ -382,7 +382,7 @@ Smoke: `./scripts/video_expand_cache_smoke.sh` (unit), `./scripts/video_agent_ca
 OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
 ```
 
-**GPU training venv (when `OLLAMA_TRAINING=true`):** packages live in `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y must match** the libpython linked into your `zerollama` binary (`ldd $(which zerollama) | grep libpython`). **Why:** embedded CPython loads torch from `PYTHONPATH`, not the venv interpreter — ABI mismatch fails at startup with `training worker not started`. **Linux 5080:** prefer **3.11** embed + venv (same as `runtime/.venv`) via [`scripts/training_embed_build_env.sh`](scripts/training_embed_build_env.sh) before `go build`. Setup: [`scripts/training_uv_venv.sh`](scripts/training_uv_venv.sh) (`--embed-py`, `--verify`); **production serve:** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh` (do **not** copy `serve_gpu_example.sh` to `~/bin` — breaks repo root). After migration, remove legacy `venv-training/` (~7 GiB). Details: [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter).
+**GPU training venv (when `OLLAMA_TRAINING=true`):** packages live in `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y must match** the libpython linked into your `zerollama` binary (`ldd $(which zerollama) | grep libpython`). **Why:** embedded CPython loads torch from `PYTHONPATH`, not the venv interpreter — ABI mismatch fails at startup with `training worker not started`. **Linux 5080:** prefer **3.11** embed + venv (same as `runtime/.venv`) via [`scripts/training/training_embed_build_env.sh`](scripts/training/training_embed_build_env.sh) before `go build`. Setup: [`scripts/training/training_uv_venv.sh`](scripts/training/training_uv_venv.sh) (`--embed-py`, `--verify`); **production serve:** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh` (do **not** copy `serve_gpu_example.sh` to `~/bin` — breaks repo root). After migration, remove legacy `venv-training/` (~7 GiB). Details: [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter).
 
 ### LM Studio cache (reuse local downloads)
 
@@ -442,7 +442,7 @@ Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models.
 - [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs. **Ggml path (M12):** same suggest/clamp idea on Go scheduler — see [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#ggml-vram-suggest-and-opt-in-clamp-m12-jun-2026).
 - [Phase 14 in-process llama](docs/phase14-inprocess-llama.md) — **why** loopback `llama-server` added latency, split VRAM, and blocked token-accurate tools truncation; three backends (`subprocess` default, `inprocess` ctypes GPU, `llama-cpp-python` wheel CPU-default); `POST /internal/tokenize` for Go render-chat; sign-off scripts `phase14_inprocess_smoke.sh`, `phase14_wheel_cpu_smoke.sh`, `phase14_yaml_config_smoke.sh`, `phase14_both_backends.sh`.
 - [Phase 14 handoff](docs/handoff-phase14-inprocess-llama.md) — engineer handoff: architecture, code map, bugs fixed, 5080 sign-off commands.
-- [Phase 15 native KV](docs/phase15-native-kv.md) — **why** PA block pool + scheduler bind precede tensor KV; **v13–v16** C `llama_decode` + GIL release + engine resume via `current_pos`; **v26–v30** continuous batch decode (`run_batch_step`, `generate_batch`, `stream_generate_batch`, per-row C sampling); **v47** external-buffer alias validate (patch 0019 — feasibility probe, no tensor mutation); **GPU sign-off** `phase15_metal_signoff.sh` (Mac) + `phase15_inprocess_signoff.sh` (**PASS RTX 5080 Jun 2026**); loopback `POST /internal/generate-batch`; `/health.kv_decode_loop`, `kv_continuous_batch`, `kv_page_bind.external_alias_*`. Linked build: `scripts/phase15_runtime_kv_env.sh` + patches 0014/0019.
+- [Phase 15 native KV](docs/phase15-native-kv.md) — **why** PA block pool + scheduler bind precede tensor KV; **v13–v16** C `llama_decode` + GIL release + engine resume via `current_pos`; **v26–v30** continuous batch decode (`run_batch_step`, `generate_batch`, `stream_generate_batch`, per-row C sampling); **v47** external-buffer alias validate (patch 0019 — feasibility probe, no tensor mutation); **GPU sign-off** `phase15_metal_signoff.sh` (Mac) + `phase15_inprocess_signoff.sh` (**PASS RTX 5080 Jun 2026**); loopback `POST /internal/generate-batch`; `/health.kv_decode_loop`, `kv_continuous_batch`, `kv_page_bind.external_alias_*`. Linked build: `scripts/phase/phase15_runtime_kv_env.sh` + patches 0014/0019.
 - [Phase 12 tools + admission handoff](docs/handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), GPU code maps, smokes.
 - [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500`; embedded CPython; inference-first VRAM on OOM; defer queue env vars. Code map: [`x/trainingworker/pyembed/README.md`](x/trainingworker/pyembed/README.md).
 - [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.

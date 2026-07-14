@@ -187,7 +187,7 @@ Only choose B/C when Phase 4–6 are stable.
 
 1. [x] Phase 0 — skeleton + llama.cpp pin + block pool unit tests (`runtime/`)  
 2. [x] Phase 1 — sidecar HTTP + Go proxy (`ZEROLLAMA_RUNTIME_URL`, `runtime_generate_proxy.go`)
-3. [x] Phase 1b — `llama-server` build script (`scripts/build_llama_server.sh`, sm_89); E2E needs `LLAMA_MODEL`  
+3. [x] Phase 1b — `llama-server` build script (`scripts/build/build_llama_server.sh`, sm_89); E2E needs `LLAMA_MODEL`  
 4. [x] Phase 2 — `InferenceEngine` + scheduler admit + `/api/generate` on runtime; Go proxy uses `/api/generate`  
 5. [x] Phase 3 — dual 4090 YAML (`configs/dual_4090.yaml`), multi-pool KV admit, TP llama-server flags  
 6. [x] Phase 4 — Go proxy for `/api/generate` + `/api/chat` (`ZEROLLAMA_RUNTIME=1`, per-model `zerollama-runtime`); training handoff wired  

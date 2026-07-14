@@ -48,8 +48,8 @@
 **Draft/hybrid commands** use the **dflash inventory**. **Prefill commands** use **any local GGUF** via `ane-model-resolve`.
 
 ```bash
-./scripts/ane_probe_build.sh
-./scripts/build_llama_server.sh
+./scripts/ane/ane_probe_build.sh
+./scripts/build/build_llama_server.sh
 ./zerollama ane-draft-mil-bundle --model eliza-1-2b-dflash
 ./zerollama ane-draft-ab-smoke --model eliza-1-2b-dflash --quick --e2e
 ```

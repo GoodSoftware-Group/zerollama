@@ -592,7 +592,10 @@ static_assert(sizeof(block_iq4_xs) == sizeof(ggml_half) + sizeof(uint16_t) + QK_
 #elif defined(GGML_COMMON_IMPL_METAL)
 #include <metal_stdlib>
 
-#define GGML_TABLE_BEGIN(type, name, size) static const constant type name[size] = {
+// Metal shaders only reference a subset of these shared tables (float variants
+// live in ggml-metal.metal). Mark unused so unused int8/uint64 tables do not
+// spam -Wunused-const-variable on every metallib build.
+#define GGML_TABLE_BEGIN(type, name, size) static const constant type name[size] __attribute__((unused)) = {
 #define GGML_TABLE_END() };
 
 #define GGML_COMMON_IMPL

@@ -28,7 +28,7 @@ Fixing one layer often exposed the next. This doc is the operator map.
 4. **Expect thinking/VL variants** — monolithic qwen35 VL blobs include vision tensors; the compat layer strips/hides them for the text loader and uses mtmd for vision when configured. **Thinking models** (e.g. `qwen3.6:latest`) may return short replies in the **`thinking`** field with an empty **`response`** — that is normal, not a failed generate.
 
 ```bash
-./scripts/build_zerollama_mac.sh
+./scripts/build/build_zerollama_mac.sh
 ./zerollama serve
 # API example — cap context for first test
 curl http://127.0.0.1:11434/api/generate -d \
@@ -42,7 +42,7 @@ curl http://127.0.0.1:11434/api/generate -d \
 **Why `go generate` is part of the Mac build:** The Metal backend does not ship a precompiled `.metallib` in the Go binary—it embeds **Metal source** and JIT-specializes kernels (e.g. `kernel_unary_f32_f32_op=102` = sigmoid for gated SSM). If `ggml-metal-embed.metal` is stale, load succeeds but **first decode** crashes.
 
 ```bash
-./scripts/build_zerollama_mac.sh
+./scripts/build/build_zerollama_mac.sh
 ```
 
 That script (since Jun 2026) runs:
@@ -97,7 +97,7 @@ go build -a -o zerollama .   # -a when embed changed, to force CGO relink
 | KV/recurrent mark | `Context.Persistent()` + kvcache `*.go` | KV cells and recurrent state must exist before forward — not scheduler scratch |
 | Remove arch blocklist | `runner/ollamarunner/runner.go` `reserveWorstCaseGraph` | Skipping qwen35 reserve hid the bug; root fix makes worst-case reserve safe |
 
-**Verify:** `./scripts/build_zerollama_mac.sh && ./zerollama serve` → load `qwen3.6:latest` → log `offloaded N/N layers to GPU`, runner cmd includes `--ollama-engine`, no abort.
+**Verify:** `./scripts/build/build_zerollama_mac.sh && ./zerollama serve` → load `qwen3.6:latest` → log `offloaded N/N layers to GPU`, runner cmd includes `--ollama-engine`, no abort.
 
 ---
 
@@ -268,7 +268,7 @@ init: embeddings required but some input tokens were not marked as outputs -> ov
 
 ```bash
 # Canonical sign-off tag: eliza-1-* is the ship qwen35 family (2B is fast for handoff/resume).
-RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
+RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/runtime/qwen35_mac_smoke.sh
 # Alternate (full MoE/dense): RUN_E2E_QWEN35_MODEL=qwen3.6:latest
 ```
 
@@ -281,8 +281,8 @@ RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
 **Why a separate gate from daily serve:** Sign-off uses **`OLLAMA_HOST=:8080`** + runtime **`:8081`** (CI layout), starts its own stack, and runs Phase 13–15 plus optional qwen35 — not the default `:11434` daily path.
 
 ```bash
-LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
-RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.sh
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build/build_llama_server.sh
+RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/gpu/metal_signoff.sh
 # Alternate: RUN_E2E_QWEN35_MODEL=qwen3.6:latest
 ```
 
@@ -295,7 +295,7 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/metal_signoff.
 Standalone qwen35 only (when you already have `:8080`/`:8081` up):
 
 ```bash
-RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/qwen35_mac_smoke.sh
+RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/runtime/qwen35_mac_smoke.sh
 ```
 
 ---

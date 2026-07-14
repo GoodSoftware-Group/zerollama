@@ -206,7 +206,7 @@ func (s *llamaServerRunner) HasExited() bool {
 
 // BinaryStale reports whether the llama-server binary this runner was spawned
 // from has since been rebuilt in place (same resolved path, newer mtime) —
-// e.g. via ./scripts/build_llama_server.sh or ./scripts/build_zerollama_mac.sh
+// e.g. via ./scripts/build/build_llama_server.sh or ./scripts/build/build_zerollama_mac.sh
 // while this runner was still alive. The scheduler uses this to force a
 // reload instead of silently keeping a stale subprocess running forever.
 func (s *llamaServerRunner) BinaryStale() bool {

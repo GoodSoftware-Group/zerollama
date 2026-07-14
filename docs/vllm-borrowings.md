@@ -70,7 +70,7 @@
 | **In-process** (`ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess`) | `bump_decode_graph_epoch(..., ctx_ptr=…)` → native/ctypes → `llama_context_cuda_graph_invalidate` | Runtime owns `llama_context` in-process |
 | **Subprocess** (default) | `bump_decode_graph_epoch(..., base_url=…)` → `POST /cuda-graph/invalidate` | llama-server child owns `ctx_tgt`; ctypes from Python would target the wrong address space |
 
-Rebuild llama-server after pull so the HTTP route exists: `./scripts/build_llama_server.sh`.
+Rebuild llama-server after pull so the HTTP route exists: `./scripts/build/build_llama_server.sh`.
 
 ---
 

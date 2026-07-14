@@ -214,9 +214,9 @@ Check `GET /health` → `llama_cache.policy`:
 - **Prefix block pool (Jun 2026):** auto-on when L3 + `n_parallel > 1`, Radix share, or LMCache URI; hash-chained blocks verify prefix integrity before reuse. **`ZEROLLAMA_PREFIX_BLOCK_POOL=0`** disables. **`ZEROLLAMA_LMCACHE_URI=file://…`** or **`redis://host:6379/0`** (L3-R4 fleet metadata) persists block index for restart/cold-node hydration.
 - **Cross-slot Radix share (Jun 2026):** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` — target slots seed or **catch up** KV from a donor with a longer matching prefix block chain (`llama_memory_seq_cp` in-process; `POST /kv/seq-copy` on llama-server). **Why:** L3 pins one slot per cache key; agents sharing a system prompt but different keys otherwise repeat prefill. **v2 (L3-R2–R5):** warm catch-up on partial targets; ref-count block metadata; optional `redis://` LMCache; Gemma-style hybrid `seq_cp` when prefix ≤ SWA window (`ZEROLLAMA_RADIX_HYBRID_SEQ_COPY`, default on). Requires **vendor** llama-server (patch 0017). Operator guide: [radix-prefix-share.md](./radix-prefix-share.md).
 
-Smoke: `./scripts/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Block pool: `./scripts/l3_prefix_block_pool_smoke.sh`. Radix: `./scripts/l3_radix_prefix_smoke.sh` (`L3_RADIX_LIVE=1` for live gate). Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py` + `kv/prefix_block_pool.py` + `kv/radix_prefix_share.py`.
+Smoke: `./scripts/phase/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Block pool: `./scripts/phase/l3_prefix_block_pool_smoke.sh`. Radix: `./scripts/phase/l3_radix_prefix_smoke.sh` (`L3_RADIX_LIVE=1` for live gate). Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py` + `kv/prefix_block_pool.py` + `kv/radix_prefix_share.py`.
 
-**Trace replay (Jun 2026):** set `ZEROLLAMA_PREFIX_CACHE_TRACE=1` to record per-request `(cache_prompt, resume_pos, seq_pos)` JSONL under `~/.cache/zerollama/prefix-cache-traces/`. Trace rows may include `prefix_block_matched_tokens` when block pool is enabled; **`radix_seed`** after successful cross-slot copy (`radix_source_slot`, `radix_copy_tokens`). Replay offline with `prefix_cache_trace.replay_trace_file()` or `./scripts/l3_prefix_cache_trace_replay.sh` (golden fixture, no GPU).
+**Trace replay (Jun 2026):** set `ZEROLLAMA_PREFIX_CACHE_TRACE=1` to record per-request `(cache_prompt, resume_pos, seq_pos)` JSONL under `~/.cache/zerollama/prefix-cache-traces/`. Trace rows may include `prefix_block_matched_tokens` when block pool is enabled; **`radix_seed`** after successful cross-slot copy (`radix_source_slot`, `radix_copy_tokens`). Replay offline with `prefix_cache_trace.replay_trace_file()` or `./scripts/phase/l3_prefix_cache_trace_replay.sh` (golden fixture, no GPU).
 
 **Health fields (Jun 2026):** `/health.llama_cache.kv_cache_spec`, `.spec_bind`, `.decode_graph.global_epoch`, `.prefix_block_pool`; `/health.kv_resume.prefix_cache_spec` + `.prefix_block_pool`.
 
@@ -249,7 +249,7 @@ curl -s :8081/health | jq '.llama_cache.decode_graph'
 
 **Subprocess smoke (optional):** with llama-server running, `curl -s -X POST http://127.0.0.1:8082/cuda-graph/invalidate` → `{"ok":true,"backends_cleared":N}`. **Why verify:** older llama-server binaries lack the route — epoch bumps still run but ggml graphs are not cleared until rebuild.
 
-**Operator:** rebuild sibling `../llama.cpp` after pull — `./scripts/build_llama_server.sh` (CUDA: `-DGGML_CUDA_GRAPHS=ON`). Kill-switch: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. **Metal:** invalidate API returns 0 backends; epoch still bumps for trace/future scaffold.
+**Operator:** rebuild sibling `../llama.cpp` after pull — `./scripts/build/build_llama_server.sh` (CUDA: `-DGGML_CUDA_GRAPHS=ON`). Kill-switch: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. **Metal:** invalidate API returns 0 backends; epoch still bumps for trace/future scaffold.
 
 Full guide: [decode-graph-invalidation.md](./decode-graph-invalidation.md).
 
@@ -313,14 +313,14 @@ Direct `:8081` generate/chat accepts the same `options` shape.
 
 | Script | Role |
 |--------|------|
-| `scripts/l3_cache_smoke.sh` | Two-turn same `prompt_cache_key`; subprocess path @ 8k |
-| `scripts/l3_inprocess_smoke.sh` | Two-turn in-process + disk file check |
-| `scripts/l3_agent_bench.sh` | Multi-turn agent workload (cached vs cold) |
-| `scripts/l3_gate_report.sh` | PASS/FAIL from smoke JSON or merged full-gate JSON |
-| `scripts/l3_production_gate.sh` | Strict gate on production GGUF @ 27k ctx (`L3_PREFIX_REPEAT=150`) |
-| `scripts/l3_cuda_full_gate.sh` | **Production gate** — 8k smoke + 27k production + merged `gate.json` |
-| `scripts/l3_spec_cache_smoke.sh` | Spec decode × prefix cache policy (`/health.llama_cache.policy`); `L3_SPEC_METHOD=ngram` default |
-| `scripts/l3_full_gate.sh` | Platform dispatcher (CUDA full gate / Darwin smoke) |
+| `scripts/phase/l3_cache_smoke.sh` | Two-turn same `prompt_cache_key`; subprocess path @ 8k |
+| `scripts/phase/l3_inprocess_smoke.sh` | Two-turn in-process + disk file check |
+| `scripts/phase/l3_agent_bench.sh` | Multi-turn agent workload (cached vs cold) |
+| `scripts/phase/l3_gate_report.sh` | PASS/FAIL from smoke JSON or merged full-gate JSON |
+| `scripts/phase/l3_production_gate.sh` | Strict gate on production GGUF @ 27k ctx (`L3_PREFIX_REPEAT=150`) |
+| `scripts/phase/l3_cuda_full_gate.sh` | **Production gate** — 8k smoke + 27k production + merged `gate.json` |
+| `scripts/phase/l3_spec_cache_smoke.sh` | Spec decode × prefix cache policy (`/health.llama_cache.policy`); `L3_SPEC_METHOD=ngram` default |
+| `scripts/phase/l3_full_gate.sh` | Platform dispatcher (CUDA full gate / Darwin smoke) |
 | `RUN_E2E_L3=1` in `gpu_5080_session.sh` or `m3_metal_signoff.sh` | Sign-off hooks |
 
 Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `generate_batch` prompt order. When this list is present, out-of-range indices get **no** cache key (no flat-key fallback) so unrelated batch rows do not share a slot.
@@ -333,8 +333,8 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 | CUDA 5080 (CT 1564) | OuteTTS 1B Q8 @ 8k | **SOFT PASS** | Bridge wired: `llama_cache.enabled=true`, `derived_slot=3`, `n_parallel=2`; turn2 wall 1.384s vs turn1 1.379s (ratio 0.996 — no measurable win on tiny prefix). Artifacts: `/tmp/l3-cache-smoke.json`. |
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **STRICT PASS** | `l3_cache_smoke.sh`: cached turn2 **0.66s** vs no-cache **1.13s** (`L3_PREFIX_REPEAT=150`). |
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 27k | **PASS** | `l3_production_gate.sh`: cached **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met). Artifact: `/tmp/l3-production-gate.json`. |
-| Metal (M4 Max) | vendor llama-server | **PASS (Radix live)** | `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — donor slot 0 → target 2; target **0.58s** vs donor **8.2s**; `radix_seed` 128 tokens; artifact `/tmp/l3-radix-prefix-smoke-live.json` |
-| CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **PASS (Radix live)** | `CUDA_LLAMA_MODEL=… L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — donor slot 1 → target 0; target **0.66s** vs donor **10.6s**; `radix_seed` 128 tokens; `/tmp/l3-radix-prefix-smoke-live.json` |
+| Metal (M4 Max) | vendor llama-server | **PASS (Radix live)** | `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh` — donor slot 0 → target 2; target **0.58s** vs donor **8.2s**; `radix_seed` 128 tokens; artifact `/tmp/l3-radix-prefix-smoke-live.json` |
+| CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **PASS (Radix live)** | `CUDA_LLAMA_MODEL=… L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh` — donor slot 1 → target 0; target **0.66s** vs donor **10.6s**; `radix_seed` 128 tokens; `/tmp/l3-radix-prefix-smoke-live.json` |
 
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
@@ -343,19 +343,19 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 ```bash
 # CUDA production gate (5080) — recommended:
 export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf
-./scripts/l3_cuda_full_gate.sh
-./scripts/l3_gate_report.sh /tmp/l3-cuda-full-gate/gate.json
+./scripts/phase/l3_cuda_full_gate.sh
+./scripts/phase/l3_gate_report.sh /tmp/l3-cuda-full-gate/gate.json
 
 # Or inside full 5080 session:
-RUN_E2E_L3=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/gpu_5080_session.sh
+RUN_E2E_L3=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/gpu/gpu_5080_session.sh
 
 # Optional spec × cache policy leg (ngram default; eagle3 needs LLAMA_DRAFT_MODEL):
-L3_RUN_SPEC_CACHE=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l3_cuda_full_gate.sh
+L3_RUN_SPEC_CACHE=1 CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/phase/l3_cuda_full_gate.sh
 
 # Individual legs:
-CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_PREFIX_REPEAT=150 L3_COMPARE_NO_CACHE=1 ./scripts/l3_cache_smoke.sh
-CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l3_production_gate.sh
-L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf L3_PREFIX_REPEAT=150 L3_COMPARE_NO_CACHE=1 ./scripts/phase/l3_cache_smoke.sh
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/phase/l3_production_gate.sh
+L3_SPEC_METHOD=ngram ./scripts/phase/l3_spec_cache_smoke.sh
 ```
 
 **Pass criteria (ship bar):**
@@ -528,8 +528,8 @@ export L3_PREFIX_REPEAT=150
 export L3_COMPARE_NO_CACHE=1
 # WHY ZEROLLAMA_GPU_PROFILE_CTX=1 on Linux: l3_cache_smoke.sh sets this — without -c,
 # deferred load leaves n_ctx=1024 and long prefix fails.
-./scripts/l3_cache_smoke.sh
-./scripts/l3_gate_report.sh /tmp/l3-cache-smoke.json
+./scripts/phase/l3_cache_smoke.sh
+./scripts/phase/l3_gate_report.sh /tmp/l3-cache-smoke.json
 ```
 
 Artifact: `/tmp/l3-cache-smoke-9b.json` (or `L3_OUT=…`). Doc: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#gate-3--l3-agent-cache-bench).

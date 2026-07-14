@@ -135,7 +135,7 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 ### 14. Agent two-turn session cache test + live smoke
 
-**Where:** `server/modality/session_video_cache_test.go` (`TestExpandVideosInChatRequest_agentSecondTurn`); `scripts/video_agent_cache_smoke.sh`.
+**Where:** `server/modality/session_video_cache_test.go` (`TestExpandVideosInChatRequest_agentSecondTurn`); `scripts/video/video_agent_cache_smoke.sh`.
 
 **Why:** Unit LRU tests do not model the agent pattern (turn 2 resends clip on latest message only). Live smoke (`RUN_E2E_VIDEO_AGENT=1`) checks ffmpeg + `video sample session cache hit` in serve logs.
 
@@ -336,7 +336,7 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 ### 37. Video agent infer smoke (live VLM gate)
 
-**Where:** `scripts/video_agent_infer_smoke.sh`, `scripts/video_agent_infer_gate_report.sh`.
+**Where:** `scripts/video/video_agent_infer_smoke.sh`, `scripts/video/video_agent_infer_gate_report.sh`.
 
 **Why:** `video_agent_cache_smoke.sh` live mode uses `_debug_render_only` — it proves ffmpeg/session expansion caches but **not** real vision prefill or turn-2 prefix reuse. Agents need proof that `cached_prompt_tokens` > 0 on turn 2 when the same clip + `prompt_cache_key` returns. Expand-only smoke gave false confidence on Mac ollama-engine where `llama_cache.enabled` may be false but runner input-cache still hits.
 
@@ -357,9 +357,9 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 ```bash
 RUN_E2E_VIDEO_AGENT_INFER=1 VIDEO_SMOKE_MODEL=qwen3-vl:latest \
   VIDEO_AGENT_GO_LOG=/tmp/zerollama-go.log \
-  ./scripts/video_agent_infer_smoke.sh
+  ./scripts/video/video_agent_infer_smoke.sh
 VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
-./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
+./scripts/video/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
 ```
 
 ### 24. ViT embed cache
@@ -437,10 +437,10 @@ VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
 4. **L3 path:** `curl -s :8081/health | jq .llama_cache` — prefix policy and slot stats.
 5. **Optional SGLang:** unchanged — full-body proxy when `video_understanding=sglang`; native path does not require it.
 
-6. **CI gate:** `./scripts/video_expand_cache_smoke.sh` — unit tests for expansion/session/URL caches and preflight (no GPU).
-7. **Agent loop:** `./scripts/video_agent_cache_smoke.sh` — two-turn resend-clip test; live E2E with `RUN_E2E_VIDEO_AGENT=1` + `VIDEO_SMOKE_MODEL`.
-8. **Video + L3 gate:** `./scripts/video_l3_agent_gate.sh`; add `RUN_E2E_L3=1` for L3 text smoke on GPU hosts.
-9. **Video + inference cache:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` — real VLM prefill; strict pass needs turn-2 `/api/chat` `cached_prompt_tokens` (L3 subprocess or ollama-engine input cache). Optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded preproc infer (§37). Optional `VIDEO_AGENT_INFER_PREFIX_MM_WARN=1` + `VIDEO_AGENT_GO_LOG` greps prefix-mm hint without session key. `./scripts/video_agent_infer_gate_report.sh` for sign-off. Grep logs: `vision embed session cache hit`, `vision grid hints`, `preprocessed layout session cache hit`, `precomputed_embedding runner inject`, `processor_output runner inject`.
+6. **CI gate:** `./scripts/video/video_expand_cache_smoke.sh` — unit tests for expansion/session/URL caches and preflight (no GPU).
+7. **Agent loop:** `./scripts/video/video_agent_cache_smoke.sh` — two-turn resend-clip test; live E2E with `RUN_E2E_VIDEO_AGENT=1` + `VIDEO_SMOKE_MODEL`.
+8. **Video + L3 gate:** `./scripts/video/video_l3_agent_gate.sh`; add `RUN_E2E_L3=1` for L3 text smoke on GPU hosts.
+9. **Video + inference cache:** `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video/video_agent_infer_smoke.sh` — real VLM prefill; strict pass needs turn-2 `/api/chat` `cached_prompt_tokens` (L3 subprocess or ollama-engine input cache). Optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded preproc infer (§37). Optional `VIDEO_AGENT_INFER_PREFIX_MM_WARN=1` + `VIDEO_AGENT_GO_LOG` greps prefix-mm hint without session key. `./scripts/video/video_agent_infer_gate_report.sh` for sign-off. Grep logs: `vision embed session cache hit`, `vision grid hints`, `preprocessed layout session cache hit`, `precomputed_embedding runner inject`, `processor_output runner inject`.
 10. **Pre-expanded layout:** live `RUN_E2E_VIDEO_AGENT=1` also checks turn-2 `images` + `video_spans` restore (`preprocessed layout session cache hit` in `VIDEO_AGENT_GO_LOG`).
 11. **Preprocessed ingest:** send `precomputed_embedding` or `processor_output` with `padded_input_ids` on ollama-engine VLMs; grep inject log lines above. llama-server and llamarunner processor paths reject — use PNG or precomputed embed chunks on ggml path.
 
@@ -459,10 +459,10 @@ VIDEO_AGENT_INFER_PREPROC=1 ...  # optional padded + grid_thw leg
 | Grid layout | `server/modality/vision_grid_compute.go`, `server/modality/vision_grid_tokens.go`, `server/modality/grid_thw_raster.go`, `runner/llamarunner/grid_thw_hint.go`, `runner/ollamarunner/grid_thw_hint.go` |
 | Video payload detection | `server/modality/multimodal.go` (`ChatRequestHasVideoPayload`) |
 | Policy golden tests | `server/modality/video_policy_golden_test.go` |
-| CI smoke | `scripts/video_expand_cache_smoke.sh` |
-| Agent + L3 gate | `scripts/video_agent_cache_smoke.sh`, `scripts/video_l3_agent_gate.sh`, `scripts/video_agent_infer_smoke.sh`, `scripts/video_agent_infer_gate_report.sh` |
+| CI smoke | `scripts/video/video_expand_cache_smoke.sh` |
+| Agent + L3 gate | `scripts/video/video_agent_cache_smoke.sh`, `scripts/video/video_l3_agent_gate.sh`, `scripts/video/video_agent_infer_smoke.sh`, `scripts/video/video_agent_infer_gate_report.sh` |
 | mtmd grid_thw seam | `llama/llama.go` (`MultimodalTokenize`), `runner/llamarunner/image.go`, `docs/mtmd-grid-thw-handoff.md` |
-| Agent smoke | `scripts/video_agent_cache_smoke.sh` |
+| Agent smoke | `scripts/video/video_agent_cache_smoke.sh` |
 | OpenAI agent session test | `openai/video_agent_session_test.go` |
 | Qwen3-VL span render tests | `model/renderers/qwen3vl_video_test.go` |
 | Padded prompt splice + runner inject | `server/modality/build_padded_prompt.go`, `server/modality/padded_layout_consume.go`, `runner/llamarunner/padded_inputs.go`, `runner/llamarunner/padded_families.go`, `runner/ollamarunner/padded_inputs.go`, `runner/ollamarunner/padded_{lfm2,glmocr,mistral3,deepseekocr}.go`, `llm/padded_prompt_llama_server.go` |

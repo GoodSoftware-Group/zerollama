@@ -1,7 +1,7 @@
 """ctypes bindings to pinned libllama.so (Phase 14).
 
 WHY ctypes against the same tree as llama-server: no second vendored llama.cpp via pip;
-operators already build ``build/bin/libllama.so`` with ``scripts/build_llama_server.sh``.
+operators already build ``build/bin/libllama.so`` with ``scripts/build/build_llama_server.sh``.
 """
 
 from __future__ import annotations

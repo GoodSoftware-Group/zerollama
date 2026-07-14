@@ -6,11 +6,11 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 
 | Field | Value |
 |-------|--------|
-| **Recommended build tree** | `vendor/llama-cpp-8f114a9b/` (patched) — `./scripts/build_llama_server.sh` |
+| **Recommended build tree** | `vendor/llama-cpp-8f114a9b/` (patched) — `./scripts/build/build_llama_server.sh` |
 | **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; prefer vendor) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
 | **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `8f114a9b573b69035299f9b924047f53c1e22c7e` (master tip; past tag `b9951`) |
-| **Binary** | `build/bin/llama-server` — `./scripts/build_llama_server.sh` |
+| **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
 | **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ now **applied** as patches 0026–0030 on vendor. |
 
 ## In-process ggml (Go CGO) — unified with runtime
@@ -19,9 +19,9 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`8f114a9b`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-8f114a9b/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (through **0065** Qwen3-Next MTP / upstream #25589; vendor HEAD `2dfb59d30`) |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0068** Metal TBQ SET_ROWS + L2 fork cache types; vendor HEAD `966e60824`) |
 | **In-tree Metal dig** | **0062–0064** in CGO `ml/backend/ggml/`: E8_2 at type **51** (vendor dig keeps 43), TQ2 Metal kernels, concurrency guard. Mac build embeds compiled metallib. |
-| **Rebase helper** | `./scripts/rebase_vendor_unified.sh --sync` |
+| **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
 Runtime `llama-server` and in-process ggml share **one ggml-org `8f114a9b` base** + zerollama patches.
 
@@ -33,17 +33,17 @@ Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake 
 |-------|--------|
 | **MLX_VERSION** | `de7b4ed986b6d6f55b8ace5e73c24d1ca0bea89b` (upstream Ollama v0.31.2) |
 | **MLX_C_VERSION** | `fba4470b89073180056c9ea46c443051375f7399` (upstream Ollama) |
-| **Fetch** | `./scripts/ensure_mlx_sources.sh` (sibling `../mlx`, `../mlx-c`) |
+| **Fetch** | `./scripts/mlx/ensure_mlx_sources.sh` (sibling `../mlx`, `../mlx-c`) |
 
-**Why separate from llama.cpp:** MLX drives **safetensors** via `mlxrunner`, not GGUF ggml. Pin bumps require a **native dylib rebuild** — use `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` (dev) or `./scripts/build_production_mac.sh` (release).
+**Why separate from llama.cpp:** MLX drives **safetensors** via `mlxrunner`, not GGUF ggml. Pin bumps require a **native dylib rebuild** — use `BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh` (dev) or `./scripts/build/build_production_mac.sh` (release).
 
 **Rebuild (Darwin arm64):**
 
 ```bash
-./scripts/ensure_mlx_sources.sh
+./scripts/mlx/ensure_mlx_sources.sh
 git -C ../mlx checkout $(cat MLX_VERSION)
 git -C ../mlx-c checkout $(cat MLX_C_VERSION)
-BUILD_MLX=1 ./scripts/build_zerollama_mac.sh
+BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh
 ./zerollama doctor   # mlx engine → build/metal-v*/lib/ollama/...
 ```
 
@@ -64,14 +64,14 @@ Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests
 ## Bump checklist (runtime sibling)
 
 1. Update `LLAMA_CPP_COMMIT` (and tag file `LLAMA_CPP_VERSION` if tagging)
-2. `./scripts/build_llama_server.sh` — probes QJL + checkpoint flags in `--help`
-3. `./scripts/l2_fork_eval.sh` — profile argv smoke
-4. `./scripts/l2_full_gate.sh` or `./scripts/l2_cuda_full_gate.sh` on GPU hosts
+2. `./scripts/build/build_llama_server.sh` — probes QJL + checkpoint flags in `--help`
+3. `./scripts/phase/l2_fork_eval.sh` — profile argv smoke
+4. `./scripts/phase/l2_full_gate.sh` or `./scripts/phase/l2_cuda_full_gate.sh` on GPU hosts
 
 ## Bump checklist (in-process vendor — when rebasing)
 
 1. Update `LLAMA_CPP_VERSION` + `Makefile.sync` `FETCH_HEAD` / upstream URL
 2. `make -f Makefile.sync clean apply-patches` (fix conflicts in vendor)
-3. `./scripts/sync_vendor_llama.sh` → fix CGO breaks → `format-patch` if needed
+3. `./scripts/vendor/sync_vendor_llama.sh` → fix CGO breaks → `format-patch` if needed
 4. Update `llama/build-info.cpp` BUILD_NUMBER/COMMIT
-5. `./scripts/build_zerollama_mac.sh` && `./zerollama doctor`
+5. `./scripts/build/build_zerollama_mac.sh` && `./zerollama doctor`

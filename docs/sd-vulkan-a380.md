@@ -22,10 +22,10 @@ OpenVINO integration (second stack, same API): see [sd-openvino-a380.md](./sd-op
 
 ```bash
 cd ~/zerollama
-chmod +x scripts/install_stable_diffusion.sh scripts/sd_external_image.sh scripts/register_sd_models.sh
+chmod +x scripts/image/install_stable_diffusion.sh scripts/image/sd_external_image.sh scripts/image/register_sd_models.sh
 
-./scripts/install_stable_diffusion.sh          # prebuilt Vulkan binary + SD1.5 Q4_0 GGUF
-./scripts/register_sd_models.sh
+./scripts/image/install_stable_diffusion.sh          # prebuilt Vulkan binary + SD1.5 Q4_0 GGUF
+./scripts/image/register_sd_models.sh
 ```
 
 Install layout:
@@ -34,7 +34,7 @@ Install layout:
 |------|---------|
 | `~/.zerollama/third_party/sd-cpp/bin/sd-cli` | stable-diffusion.cpp Vulkan binary |
 | `~/.zerollama/third_party/sd-cpp/models/stable-diffusion-v1-5-Q4_0.gguf` | SD 1.5 weights |
-| `scripts/sd_external_image.sh` | zerollama wrapper |
+| `scripts/image/sd_external_image.sh` | zerollama wrapper |
 
 ---
 
@@ -43,7 +43,7 @@ Install layout:
 Add to `/etc/zerollama/a380-llama.env` (or export before `zerollama serve`):
 
 ```bash
-OLLAMA_EXTERNAL_IMAGE_BIN=/root/zerollama/scripts/sd_external_image.sh
+OLLAMA_EXTERNAL_IMAGE_BIN=/root/zerollama/scripts/image/sd_external_image.sh
 ```
 
 Restart `zerollama.service` after changes.
@@ -59,7 +59,7 @@ Restart `zerollama.service` after changes.
 | `sd15-turbo-vulkan` | SD-Turbo Q8 | **Fast** — 4 steps, cfg 1.0 |
 | `sdxl-vulkan` | SDXL Q4_0 | **Experimental** — 768², vae tiling |
 
-Install all: `./scripts/install_stable_diffusion.sh --models-only`
+Install all: `./scripts/image/install_stable_diffusion.sh --models-only`
 
 ---
 
@@ -121,7 +121,7 @@ Tune in `modelfiles/sd15-vulkan/config.json` under `image_generation`.
 
 | Symptom | Fix |
 |---------|-----|
-| `OLLAMA_EXTERNAL_IMAGE_BIN is not set` | Set env to `scripts/sd_external_image.sh` |
+| `OLLAMA_EXTERNAL_IMAGE_BIN is not set` | Set env to `scripts/image/sd_external_image.sh` |
 | `OLLAMA_SD_CLI must point to sd-cli` | Run `install_stable_diffusion.sh` |
 | Structured noise / stripes | Confirm `--diffusion-fa` (manifest `diffusion_fa: true`) |
 | Vulkan OOM | `--vae-on-cpu`, lower to 512×512, `zerollama stop` other models |
@@ -133,9 +133,9 @@ Tune in `modelfiles/sd15-vulkan/config.json` under `image_generation`.
 
 | File | Role |
 |------|------|
-| `scripts/install_stable_diffusion.sh` | Download/build sd-cli + HF weights |
-| `scripts/sd_external_image.sh` | External-image hook |
-| `scripts/register_sd_models.sh` | Write config-only manifest |
+| `scripts/image/install_stable_diffusion.sh` | Download/build sd-cli + HF weights |
+| `scripts/image/sd_external_image.sh` | External-image hook |
+| `scripts/image/register_sd_models.sh` | Write config-only manifest |
 | `modelfiles/sd15-vulkan/` | SD 1.5 Q4 preset |
 | `modelfiles/sd15-q8-vulkan/` | SD 1.5 Q8 preset |
 | `modelfiles/sd15-turbo-vulkan/` | SD-Turbo (~4 steps) |

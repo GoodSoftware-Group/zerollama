@@ -88,17 +88,17 @@ VRAM_PROBE_CALIBRATE (optional) → vram_calibration + autotune persist
 
 ```bash
 # Pre-flight budget (no load)
-./scripts/runtime_vram_estimate.sh /path/to/model.gguf --num-ctx 8192
+./scripts/runtime/runtime_vram_estimate.sh /path/to/model.gguf --num-ctx 8192
 
 # Coordination + Phase 13 health fields
-ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh
+ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e/e2e_coordination_smoke.sh
 
 # GPU: estimate → generate → calibration hint
-RUN_E2E_GPU=1 LLAMA_MODEL=... LLAMA_SERVER_BIN=... ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 LLAMA_MODEL=... LLAMA_SERVER_BIN=... ./scripts/e2e/e2e_runtime_smoke.sh
 
 # Optional: tools + proxy + clamp probe (serve must enable clamp for last)
-RUN_E2E_GPU=1 RUN_E2E_PROXY=1 RUN_E2E_TOOLS=1 ./scripts/e2e_runtime_smoke.sh
-RUN_E2E_VRAM_CLAMP=1 ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 RUN_E2E_PROXY=1 RUN_E2E_TOOLS=1 ./scripts/e2e/e2e_runtime_smoke.sh
+RUN_E2E_VRAM_CLAMP=1 ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto ./scripts/e2e/e2e_runtime_smoke.sh
 ```
 
 **Why `runtime_vram_estimate.sh`:** pick quant and `num_ctx` before paying load latency; same code path as Go `LogVramBudgetIfTight` async probe on proxy.
@@ -145,13 +145,13 @@ Full narrative: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
 ## Suggested 5080 workflow
 
 1. `export ZEROLLAMA_RUNTIME_CONFIG=.../runtime/configs/single_gpu.yaml` (or rely on `ZEROLLAMA_AUTO_CONFIG=1`)
-2. `./scripts/runtime_vram_estimate.sh "$LLAMA_MODEL" --num-ctx 8192` — read `suggested_max_num_ctx` and `fits_with_margin`.
+2. `./scripts/runtime/runtime_vram_estimate.sh "$LLAMA_MODEL" --num-ctx 8192` — read `suggested_max_num_ctx` and `fits_with_margin`.
 3. One probed load with `VRAM_PROBE_CALIBRATE=auto` — read `/health` `vram_calibration.suggested_estimate_factor` or rely on autotune persist.
-4. `./scripts/gpu_health_report.sh` (or `python -m runtime.gpu_health_report` with `HEALTH_JSON`) — post-load summary + suggested env exports.
+4. `./scripts/gpu/gpu_health_report.sh` (or `python -m runtime.gpu_health_report` with `HEALTH_JSON`) — post-load summary + suggested env exports.
 5. Tune `VRAM_MIN_FREE` / `TRAINING_VRAM_RESERVE` from measured free VRAM under chat+training (see `/health` `vram_*_configured`).
 6. Enable `VRAM_CLAMP_NUM_CTX=auto` only if you accept automatic context lowering (watch for `vram_num_ctx` in API responses).
-7. `./scripts/gpu_phase13_snapshot.sh --gguf "$LLAMA_MODEL" --num-ctx 8192` — save JSON (`GPU_PHASE13_SNAPSHOT_OUT=5080.json`); prints `python -m runtime.gpu_snapshot` hints (`GPU_SNAPSHOT_RECOMMEND=0` to skip).
-8. `./scripts/gpu_5080_session.sh` — preflight + smokes + snapshot + recommendations (official 16GB gate).
-9. `./scripts/gpu_smoke_all.sh` — coordination + full inference smokes after rebuild.
-10. Optional: `RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh` — `/api/chat` with tools on `:8081` and `:8080` proxy (not legacy 501).
+7. `./scripts/gpu/gpu_phase13_snapshot.sh --gguf "$LLAMA_MODEL" --num-ctx 8192` — save JSON (`GPU_PHASE13_SNAPSHOT_OUT=5080.json`); prints `python -m runtime.gpu_snapshot` hints (`GPU_SNAPSHOT_RECOMMEND=0` to skip).
+8. `./scripts/gpu/gpu_5080_session.sh` — preflight + smokes + snapshot + recommendations (official 16GB gate).
+9. `./scripts/gpu/gpu_smoke_all.sh` — coordination + full inference smokes after rebuild.
+10. Optional: `RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh` — `/api/chat` with tools on `:8081` and `:8080` proxy (not legacy 501).
 11. Optional: `RUN_E2E_VRAM_CLAMP=1` with `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` on serve — smoke asserts `vram_num_ctx_policy.clamp_enabled` and probes high `num_ctx`.

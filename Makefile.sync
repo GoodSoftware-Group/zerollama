@@ -17,7 +17,7 @@ BUILD_NUMBER=9952
 # FETCH_REF and destroys Ollama patch commits before rsync — you would ship an
 # unpatch tree while build-info still says ad56033f. Use:
 #   make -f Makefile.sync clean apply-patches   # once per pin bump
-#   ./scripts/sync_vendor_llama.sh              # after every vendor edit
+#   ./scripts/vendor/sync_vendor_llama.sh              # after every vendor edit
 # `make sync` is a thin alias for the script (no git checkout).
 
 .PHONY: help
@@ -34,7 +34,7 @@ help:
 
 .PHONY: sync sync-from-vendor
 sync sync-from-vendor:
-	./scripts/sync_vendor_llama.sh
+	./scripts/vendor/sync_vendor_llama.sh
 
 # Legacy granular targets (rsync only — never reset vendor checkout)
 llama/build-info.cpp: llama/build-info.cpp.in llama/llama.cpp

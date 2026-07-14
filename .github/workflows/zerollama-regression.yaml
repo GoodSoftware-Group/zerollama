@@ -57,27 +57,27 @@ jobs:
       - name: Phase 16 edge compile marker smoke
         env:
           CGO_ENABLED: '1'
-        run: ./scripts/phase16_edge_build_smoke.sh
+        run: ./scripts/phase/phase16_edge_build_smoke.sh
 
       - name: Phase 15 llama-kv-ext pin check
         env:
           P15_PIN_JSON: /tmp/phase15-kv-ext-pin-check.json
-        run: ./scripts/phase15_llama_kv_ext_pin_check.sh
+        run: ./scripts/phase/phase15_llama_kv_ext_pin_check.sh
 
       - name: llama.cpp patch doctor (in-tree + vendor)
         env:
           LLAMA_PATCH_JSON: /tmp/llama-patch-doctor.json
-        run: ./scripts/llama_patch_doctor.sh
+        run: ./scripts/vendor/llama_patch_doctor.sh
 
       - name: Phase 17 L2 pin status report
         env:
           P17_L2_OUT: /tmp/phase17-l2-pin-status.json
-        run: ./scripts/phase17_l2_pin_status.sh
+        run: ./scripts/phase/phase17_l2_pin_status.sh
 
       - name: Phase 15 upstream writable KV watch
         env:
           P15_UPSTREAM_JSON: /tmp/phase15-upstream-kv-watch.json
-        run: ./scripts/phase15_upstream_kv_watch.sh
+        run: ./scripts/phase/phase15_upstream_kv_watch.sh
 
   runtime-pytest:
     runs-on: ubuntu-latest
@@ -118,7 +118,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Darwin runtime pytest
         run: |
-          source scripts/runtime_uv_venv.sh
+          source scripts/runtime/runtime_uv_venv.sh
           runtime_uv_venv
           cd runtime && PYTHONPATH=. "${RUNTIME_UV_PYTHON}" -m pytest \
             tests/test_host_memory_darwin.py \
@@ -137,7 +137,7 @@ jobs:
           cache-dependency-path: go.sum
       - name: doctor + training platform tests
         run: |
-          source scripts/mac_cgo_env.sh
+          source scripts/runtime/mac_cgo_env.sh
           mac_cgo_env
           go test -count=1 ./cmd -run 'Doctor|Sidecar|Serve|Report'
           go test -count=1 ./server -run 'TrainingPlatform|TrainingQlora|DarwinSidecar'

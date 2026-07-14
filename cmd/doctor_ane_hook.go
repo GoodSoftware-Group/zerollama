@@ -116,7 +116,7 @@ func doctorCheckANEDraftHook(repo string) doctorCheck {
 			Name:    name,
 			Status:  "warn",
 			Detail:  fmt.Sprintf("llama.cpp not found at %s", root),
-			FixHint: "./scripts/ensure_llama_cpp_sibling.sh && ./scripts/build_llama_server.sh",
+			FixHint: "./scripts/vendor/ensure_llama_cpp_sibling.sh && ./scripts/build/build_llama_server.sh",
 		}
 	}
 
@@ -135,14 +135,14 @@ func doctorCheckANEDraftHook(repo string) doctorCheck {
 			Name:    name,
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s @ %s; %s", srcDetail, filepath.Base(root), binDetail),
-			FixHint: "./scripts/build_llama_server.sh (auto-syncs ANE hook on Darwin)",
+			FixHint: "./scripts/build/build_llama_server.sh (auto-syncs ANE hook on Darwin)",
 		}
 	default:
 		return doctorCheck{
 			Name:    name,
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s @ %s", srcDetail, root),
-			FixHint: "./scripts/sync_ane_hook_to_llama_cpp.sh && ./scripts/build_llama_server.sh",
+			FixHint: "./scripts/vendor/sync_ane_hook_to_llama_cpp.sh && ./scripts/build/build_llama_server.sh",
 		}
 	}
 }

@@ -163,20 +163,20 @@ POST /internal/render-chat (Go)
 
 | Script | Why |
 |--------|-----|
-| `scripts/phase14_serve_env.sh` | Unsets `ZEROLLAMA_RUNTIME_URL`; enables embed — **#1 smoke footgun** |
-| `scripts/phase14_backend_smoke.sh` | One backend on running serve; preflight `llama_backend` + `/internal/tokenize` 404 |
-| `scripts/phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off (`RUN_E2E_INPROCESS=1`, `llama_backend_source=env`) |
-| `scripts/phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers `inprocess` or `llama-cpp-python` from `/health` |
-| `scripts/phase14_subprocess_default_smoke.sh` | Backend smoke with `llama_backend_source=default` (packaged subprocess default) |
-| `scripts/phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_backend_source=env`) |
-| `scripts/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate) |
-| `scripts/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after env smoke passes |
-| `scripts/phase14_both_backends.sh` | Restart serve per backend; `env -u` URL and stale `RUN_E2E_*`; fails if zero backends ran |
-| `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 multi-seq |
-| `scripts/phase14_yaml_config_full_smoke.sh` | Temp YAML `llama_backend: inprocess` without editing repo `single_gpu.yaml` |
-| `scripts/phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq |
-| `scripts/phase15_inprocess_kv_smoke.sh` | Self-contained inprocess serve + `kv_decode_steps` on generate and `/health` |
-| `scripts/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; self-contained serve restart |
+| `scripts/phase/phase14_serve_env.sh` | Unsets `ZEROLLAMA_RUNTIME_URL`; enables embed — **#1 smoke footgun** |
+| `scripts/phase/phase14_backend_smoke.sh` | One backend on running serve; preflight `llama_backend` + `/internal/tokenize` 404 |
+| `scripts/phase/phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off (`RUN_E2E_INPROCESS=1`, `llama_backend_source=env`) |
+| `scripts/phase/phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers `inprocess` or `llama-cpp-python` from `/health` |
+| `scripts/phase/phase14_subprocess_default_smoke.sh` | Backend smoke with `llama_backend_source=default` (packaged subprocess default) |
+| `scripts/phase/phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_backend_source=env`) |
+| `scripts/phase/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate) |
+| `scripts/phase/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after env smoke passes |
+| `scripts/phase/phase14_both_backends.sh` | Restart serve per backend; `env -u` URL and stale `RUN_E2E_*`; fails if zero backends ran |
+| `scripts/phase/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 multi-seq |
+| `scripts/phase/phase14_yaml_config_full_smoke.sh` | Temp YAML `llama_backend: inprocess` without editing repo `single_gpu.yaml` |
+| `scripts/phase/phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq |
+| `scripts/phase/phase15_inprocess_kv_smoke.sh` | Self-contained inprocess serve + `kv_decode_steps` on generate and `/health` |
+| `scripts/phase/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; self-contained serve restart |
 | `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh` | Forces `X-Zerollama-Runtime` on Go proxy — **sign-off only** |
 | `RUN_E2E_LLAMA_BACKEND_SOURCE=config\|env\|default` | Assert `/health` provenance (YAML key vs env override vs packaged default) after serve restart |
 
@@ -184,7 +184,7 @@ POST /internal/render-chat (Go)
 
 ```bash
 # Terminal A — uncomment llama_backend: inprocess in runtime/configs/single_gpu.yaml first
-source ./scripts/phase14_serve_env.sh
+source ./scripts/phase/phase14_serve_env.sh
 export LLAMA_MODEL=/path/to/small.q8_0.gguf
 export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 # omit ZEROLLAMA_RUNTIME_LLAMA_BACKEND when testing YAML default
@@ -193,22 +193,22 @@ export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 # Terminal B
 export LLAMA_MODEL=/path/to/same.gguf
 export RUN_E2E_PROXY_MODEL=<pulled-local-tag>
-./scripts/phase14_yaml_config_smoke.sh
+./scripts/phase/phase14_yaml_config_smoke.sh
 ```
 
 Or enable YAML in one step after env inprocess smoke passes:
 
 ```bash
-./scripts/phase14_enable_yaml_inprocess.sh
+./scripts/phase/phase14_enable_yaml_inprocess.sh
 # restart serve without ZEROLLAMA_RUNTIME_LLAMA_BACKEND
-./scripts/phase14_yaml_config_smoke.sh
+./scripts/phase/phase14_yaml_config_smoke.sh
 ```
 
 ### Quick start — inprocess (5080 GPU)
 
 ```bash
 # Terminal A
-source ./scripts/phase14_serve_env.sh
+source ./scripts/phase/phase14_serve_env.sh
 export LLAMA_MODEL=/path/to/small.q8_0.gguf
 export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
@@ -217,7 +217,7 @@ export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 # Terminal B
 export LLAMA_MODEL=/path/to/same.gguf
 export RUN_E2E_PROXY_MODEL=<pulled-local-tag>
-./scripts/phase14_inprocess_smoke.sh
+./scripts/phase/phase14_inprocess_smoke.sh
 ```
 
 **Pass:** `PASS: phase14_backend_smoke`, `render-chat truncate_mode: tokenize`.
@@ -226,7 +226,7 @@ export RUN_E2E_PROXY_MODEL=<pulled-local-tag>
 
 ```bash
 export LLAMA_MODEL=... RUN_E2E_PROXY_MODEL=...
-./scripts/phase14_both_backends.sh
+./scripts/phase/phase14_both_backends.sh
 # wheel CPU ~10 min; inprocess GPU faster
 ```
 

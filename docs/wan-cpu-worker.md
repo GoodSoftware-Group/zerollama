@@ -156,9 +156,9 @@ Go **`buildWanVideoPayload`** (`server/video_generate.go`) would pass these thro
 | Layer | Change |
 |-------|--------|
 | **`scripts/wan_cpu_client.py`** (new) | HTTP client, retry, tensor (de)serialize |
-| **`scripts/wan_memory_hooks.py`** | If `WAN_CPU_WORKER_URL` set, skip local T5 load / unload hooks |
-| **`scripts/wan_generate_entry.py`** | Patch `WanT2V.generate` to inject remote `context` / `context_null` before diffusion |
-| **`scripts/wan_video_generate.py`** | Log `WAN_CPU_WORKER_URL`; progress lines `PROGRESS:10:encoded via cpu worker` |
+| **`scripts/video/wan_memory_hooks.py`** | If `WAN_CPU_WORKER_URL` set, skip local T5 load / unload hooks |
+| **`scripts/video/wan_generate_entry.py`** | Patch `WanT2V.generate` to inject remote `context` / `context_null` before diffusion |
+| **`scripts/video/wan_video_generate.py`** | Log `WAN_CPU_WORKER_URL`; progress lines `PROGRESS:10:encoded via cpu worker` |
 | **`server/video_generate.go`** | Optional manifest/backend_paths + env passthrough |
 | **`modelfiles/wan2.1-t2v/config.json`** | Optional `"wan_cpu_worker_url"` in `backend_paths` |
 | **`docs/wan-t2v.md`** | Link here; troubleshooting row for worker down → fallback |

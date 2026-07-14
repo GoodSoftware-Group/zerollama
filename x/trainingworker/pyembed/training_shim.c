@@ -191,8 +191,8 @@ static int check_embedded_python_version(char **err_out) {
 	if (major < 3 || (major == 3 && minor < 10)) {
 		set_err(err_out,
 			"embedded Python 3.10+ required for training (got 3.x from libpython); "
-			"rebuild with ./scripts/build_zerollama_mac.sh after .venv-training exists "
-			"(see MAC_SETUP_TRAINING=1 ./scripts/mac_setup.sh)");
+			"rebuild with ./scripts/build/build_zerollama_mac.sh after .venv-training exists "
+			"(see MAC_SETUP_TRAINING=1 ./scripts/runtime/mac_setup.sh)");
 		return -1;
 	}
 	return 0;
@@ -247,7 +247,7 @@ int training_init(const char *repo_root, const char *bootstrap_py, char **err_ou
 			/* WHY .venv-training in the message: canonical venv path; ABI must match embedded libpython. */
 			snprintf(msg, sizeof(msg),
 				"embedded Python %d.%d requires .venv-training/lib/python%d.%d/site-packages; "
-				"recreate with TRAINING_UV_PYTHON_VER=%d.%d ./scripts/training_uv_venv.sh --verify "
+				"recreate with TRAINING_UV_PYTHON_VER=%d.%d ./scripts/training/training_uv_venv.sh --verify "
 				"(see docs/gpu-training.md)",
 				py_major, py_minor, py_major, py_minor, py_major, py_minor);
 			set_err(err_out, msg);

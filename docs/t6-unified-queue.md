@@ -15,7 +15,7 @@ Inference (chat → ggml and/or Python runtime) and training (`/api/train/*` →
 3. **Restrict training to a time window** (night batch).
 4. **Order work fairly** across ggml, runtime, and defer via global FIFO tickets.
 
-**Smoke:** `./scripts/e2e_t6_queue_smoke.sh` (offline Go + pytest; optional live `/api/status` + runtime `/health`).
+**Smoke:** `./scripts/e2e/e2e_t6_queue_smoke.sh` (offline Go + pytest; optional live `/api/status` + runtime `/health`).
 
 ---
 
@@ -213,7 +213,7 @@ Fleet and operators can poll configured T6 gates without parsing env:
 | Coordination push | `server/training_policy.go`, `runtime/runtime/go_coordination.py` |
 | Runtime defer admission | `runtime/runtime/gpu/admission.py` |
 | Env helpers | `envconfig/config.go` |
-| Smoke | `scripts/e2e_t6_queue_smoke.sh` |
+| Smoke | `scripts/e2e/e2e_t6_queue_smoke.sh` |
 
 ---
 

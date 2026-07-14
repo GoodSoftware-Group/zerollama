@@ -2,7 +2,7 @@
 
 **Audience:** Runtime operators and integrators running L3 prefix cache on CUDA (RTX 5080-class) or debugging in-process Phase 15 decode.
 
-**Related:** [L3 prompt cache → slot bridge](./gpu-profiles-l3.md), [phase15-native-kv.md](./phase15-native-kv.md), [ROADMAP — vLLM borrowings](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), sibling [`../llama.cpp`](../llama.cpp) build (`scripts/build_llama_server.sh`).
+**Related:** [L3 prompt cache → slot bridge](./gpu-profiles-l3.md), [phase15-native-kv.md](./phase15-native-kv.md), [ROADMAP — vLLM borrowings](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), sibling [`../llama.cpp`](../llama.cpp) build (`scripts/build/build_llama_server.sh`).
 
 ---
 
@@ -73,10 +73,10 @@ Invalidation is a **new public API** in the sibling tree (`../llama.cpp`), not i
 
 ```bash
 # Mac (Metal — API present, CUDA graphs no-op at runtime)
-./scripts/build_llama_server.sh
+./scripts/build/build_llama_server.sh
 
 # CUDA 5080 — ensure graphs enabled
-GGML_CUDA=ON ./scripts/build_llama_server.sh
+GGML_CUDA=ON ./scripts/build/build_llama_server.sh
 ```
 
 **Why rebuild:** Python calls `llama_context_cuda_graph_invalidate` via ctypes or the Phase 15 native extension. Without the symbol, invalidation returns `symbol_missing_rebuild_libllama` and epoch bumps still run but ggml graphs are not cleared.
@@ -172,7 +172,7 @@ curl -s -X POST http://127.0.0.1:8082/kv/seq-copy \
   -d '{"src_slot":0,"dst_slot":1,"pos_end":512}'
 ```
 
-Offline gate (no GPU): `./scripts/l3_radix_prefix_smoke.sh`.
+Offline gate (no GPU): `./scripts/phase/l3_radix_prefix_smoke.sh`.
 
 ---
 
@@ -188,7 +188,7 @@ cd runtime && python3 -m pytest tests/test_decode_graph_policy.py \
 Prefix cache golden trace (includes epoch in JSONL when tracing):
 
 ```bash
-ZEROLLAMA_PREFIX_CACHE_TRACE=1 ./scripts/l3_prefix_cache_trace_replay.sh
+ZEROLLAMA_PREFIX_CACHE_TRACE=1 ./scripts/phase/l3_prefix_cache_trace_replay.sh
 ```
 
 Subprocess policy (no GPU):

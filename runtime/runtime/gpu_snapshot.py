@@ -185,7 +185,7 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
 
     # Harmony / gpt-oss:20b not validated on ~19GiB host RAM — CI Go golden covers parser.
     lines.append(
-        "# harmony real-weight capture: skip on ~19GiB host; use ./scripts/phase12_golden_ci.sh"
+        "# harmony real-weight capture: skip on ~19GiB host; use ./scripts/phase/phase12_golden_ci.sh"
     )
 
     return lines

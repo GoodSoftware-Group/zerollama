@@ -1,6 +1,6 @@
 # llama.cpp backend unification
 
-**Status:** Unified (Jun 2026). Runtime + `llama-server` + in-process Go ggml vendor share **elizaOS @ `LLAMA_CPP_COMMIT`** + 16 Ollama patches.
+**Status:** Unified (Jul 2026). Runtime + `llama-server` + in-process Go ggml vendor share **ggml-org @ `LLAMA_CPP_COMMIT` (`8f114a9b`)** + **25** Ollama/zerollama patches. Eliza QJL deferred.
 
 **Related:** [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md), [gpu-profiles-l2.md](./gpu-profiles-l2.md), [phase17-llama-server.md](./phase17-llama-server.md), [ggml-b9509-migration.md](./ggml-b9509-migration.md).
 
@@ -27,11 +27,11 @@ Operators were maintaining **multiple llama.cpp trees** with different pins and 
 
 ```text
          ┌─────────────────────────────────────┐
-         │  elizaOS/llama.cpp @ LLAMA_CPP_COMMIT │
-         │  + llama/patches/ (16 Ollama deltas) │
+         │  ggml-org/llama.cpp @ LLAMA_CPP_COMMIT │
+         │  + llama/patches/ (25 Ollama deltas) │
          └─────────────────────────────────────┘
                            │
-              vendor/llama-cpp-c84b3020 + sync
+              vendor/llama-cpp-8f114a9b + sync
                            │
          ┌─────────────────┴──────────────────────────────┐
          │ ../llama.cpp sibling    in-tree ggml + llama.cpp │
@@ -68,8 +68,8 @@ Operators were maintaining **multiple llama.cpp trees** with different pins and 
 ### One clone, one build
 
 ```bash
-./scripts/rebase_vendor_unified.sh --sync   # vendor + in-tree ggml sync (U3)
-./scripts/build_llama_server.sh             # Metal or CUDA — one llama-server + libllama
+./scripts/vendor/rebase_vendor_unified.sh --sync   # vendor + in-tree ggml sync (U3)
+./scripts/build/build_llama_server.sh             # Metal or CUDA — one llama-server + libllama
 ```
 
 ### Environment (prefer unset overrides)
@@ -84,8 +84,8 @@ Operators were maintaining **multiple llama.cpp trees** with different pins and 
 ### Migrate from legacy siblings
 
 ```bash
-./scripts/migrate_llama_cpp_unified.sh
-MIGRATE_BUILD=1 ./scripts/migrate_llama_cpp_unified.sh   # clone pin + build if needed
+./scripts/vendor/migrate_llama_cpp_unified.sh
+MIGRATE_BUILD=1 ./scripts/vendor/migrate_llama_cpp_unified.sh   # clone pin + build if needed
 ```
 
 **Automatic redirect:** `zerollama serve` and the Darwin runtime sidecar call `ApplyUnifiedLlamaCppEnv()` — if `LLAMA_SERVER_BIN` points at `eliza-llama.cpp` but unified `../llama.cpp` is built, env is rewritten at startup (logged).
@@ -114,7 +114,7 @@ MIGRATE_BUILD=1 ./scripts/migrate_llama_cpp_unified.sh   # clone pin + build if 
 - Legacy checkout name warning (`eliza-llama.cpp`)
 - In-process vendor pin drift (`Makefile.sync FETCH_HEAD` vs `LLAMA_CPP_COMMIT`)
 
-Pin status script: `./scripts/phase17_l2_pin_status.sh`
+Pin status script: `./scripts/phase/phase17_l2_pin_status.sh`
 
 ---
 
@@ -123,8 +123,8 @@ Pin status script: `./scripts/phase17_l2_pin_status.sh`
 | Path | Role |
 |------|------|
 | `LLAMA_CPP_COMMIT` | Unified runtime pin |
-| `scripts/ensure_llama_cpp_sibling.sh` | Clone + checkout |
-| `scripts/build_llama_server.sh` | Single build entry |
+| `scripts/vendor/ensure_llama_cpp_sibling.sh` | Clone + checkout |
+| `scripts/build/build_llama_server.sh` | Single build entry |
 | `llm/llama_cpp_unified.go` | Root resolution + doctor report |
 | `llm/llama_server_flags.go` | Per-binary `--help` probe |
 | `runtime/LLAMA_CPP_PIN.md` | Runtime operator pin doc |
@@ -138,7 +138,7 @@ Pin status script: `./scripts/phase17_l2_pin_status.sh`
 |-------|-------------|------|
 | **U1** (done) | One runtime tree + profile-based L2 | `build_llama_server.sh` only; L2 scripts use one root |
 | **U2** (done) | Discovery + doctor + argv probe | No startup crash on stale fork; doctor warns legacy paths |
-| **U3** (done) | Vendor rebase | `Makefile.sync` → elizaOS @ `LLAMA_CPP_COMMIT`; `./scripts/rebase_vendor_unified.sh` |
+| **U3** (done) | Vendor rebase | `Makefile.sync` → elizaOS @ `LLAMA_CPP_COMMIT`; `./scripts/vendor/rebase_vendor_unified.sh` |
 | **U4** (next) | Phase 17 default | Linux/Mac plain GGUF → Go→unified llama-server without Python hop where policy allows |
 | **U5** (deferred) | Flash-MoE in unified tree | MoE flags in same binary or documented override only |
 

@@ -67,7 +67,7 @@ seq-copy clears target first — redundant tail re-copy is acceptable).
 ---
 
 
-**One-liner (agents):** `ZEROLLAMA_L3_PROFILE=agent` loads `runtime/configs/l3_agent_subprocess.yaml` (`n_parallel=4`, `l3.radix_share=true`). Env overrides any YAML field. Live smoke: `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh`.
+**One-liner (agents):** `ZEROLLAMA_L3_PROFILE=agent` loads `runtime/configs/l3_agent_subprocess.yaml` (`n_parallel=4`, `l3.radix_share=true`). Env overrides any YAML field. Live smoke: `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh`.
 
 | Variable | Default | WHY |
 |----------|---------|-----|
@@ -88,14 +88,14 @@ seq-copy clears target first — redundant tail re-copy is acceptable).
 
 ```bash
 # 5080 / CT 1564 (preferred)
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 5080_build_vendor_llama_server
 
 # Manual (any host)
 make -f Makefile.sync vendor
 LLAMA_CPP_ROOT=vendor/llama-cpp-$(grep '^FETCH_HEAD=' Makefile.sync | cut -d= -f2) \
-  ./scripts/build_llama_server.sh
-./scripts/llama_patch_doctor.sh
+  ./scripts/build/build_llama_server.sh
+./scripts/vendor/llama_patch_doctor.sh
 ```
 
 4. Runtime must use that binary — live smoke forces `LLAMA_CPP_ROOT` to vendor (ignores stale shell `LLAMA_CPP_ROOT=../llama.cpp`).
@@ -168,10 +168,10 @@ Block pool verification still runs when copy is skipped. Live smokes warn (soft-
 
 | Script | Mode |
 |--------|------|
-| `./scripts/l3_radix_prefix_smoke.sh` | Offline pytest + plan replay (no GPU) |
-| `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` | Two-key live gate (donor + target slots, block pool + `radix_seed`) |
-| `./scripts/l3_prefix_block_pool_smoke.sh` | Block pool policy only |
-| `./scripts/l3_cache_smoke.sh` | Same-key L3 slot pinning |
+| `./scripts/phase/l3_radix_prefix_smoke.sh` | Offline pytest + plan replay (no GPU) |
+| `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh` | Two-key live gate (donor + target slots, block pool + `radix_seed`) |
+| `./scripts/phase/l3_prefix_block_pool_smoke.sh` | Block pool policy only |
+| `./scripts/phase/l3_cache_smoke.sh` | Same-key L3 slot pinning |
 
 Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, probes `/kv/seq-copy` after donor generate.
 
@@ -189,7 +189,7 @@ Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, p
 | `runtime/runtime/prefix_cache_trace.py` | `record_radix_share()` |
 | `runtime/runtime/subprocess_slot_state.py` | `seed_seq_pos()` after subprocess copy |
 | `llama/patches/0017-ollama-kv-seq-copy-endpoint.patch` | llama-server route |
-| `scripts/l3_radix_prefix_smoke.sh` | Operator gate |
+| `scripts/phase/l3_radix_prefix_smoke.sh` | Operator gate |
 
 ---
 
@@ -242,7 +242,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 
 | Gate | Platform | Status | Notes |
 |------|----------|--------|-------|
-| Offline pytest + plan replay | CI / any host | **PASS** | Default `./scripts/l3_radix_prefix_smoke.sh` |
+| Offline pytest + plan replay | CI / any host | **PASS** | Default `./scripts/phase/l3_radix_prefix_smoke.sh` |
 | Live two-key smoke | **Mac Metal** (vendor llama-server) | **PASS** | `L3_RADIX_LIVE=1`; donor slot 0 → target 2; `radix_seed` 128 tokens; target ~0.52s vs donor ~8.83s |
 | Live two-key smoke | **CUDA 5080** | **Pending** | Same-key L3 signed off; add `L3_RADIX_LIVE=1` to 5080 session when operator runs cross-slot gate |
 | Hybrid model live | — | **Soft-pass** | Short prompts within SWA window may `radix_seed`; smoke warns when absent |
@@ -253,7 +253,7 @@ Full gap matrix with validation status: see **[Product gaps](#product-gaps)** be
 
 1. **`ZEROLLAMA_L3_PROFILE=agent`** or `ZEROLLAMA_RADIX_PREFIX_SHARE=1`
 2. **`n_parallel > 1`** — Radix needs multiple slots in one server
-3. **Vendor llama-server** with patch **0017** — `./scripts/llama_patch_doctor.sh`
+3. **Vendor llama-server** with patch **0017** — `./scripts/vendor/llama_patch_doctor.sh`
 4. **Hybrid GGUF** — Radix may seed when prefix ≤ SWA window; full-KV still hard-gates `radix_seed` in smokes
 5. **Distinct cache keys, same system prompt** — same key uses same-slot L3, not Radix
 6. **Cold second thread** — turn 1 on key B after turn 1 on key A completed on donor slot

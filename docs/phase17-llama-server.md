@@ -48,13 +48,13 @@ Zerollama harness:     Client → Go → Python runtime → llama-server  (--lla
 
 ```bash
 # Build llama-server into zerollama tree (Metal)
-./scripts/build_ollama_llama_server_darwin.sh
+./scripts/build/build_ollama_llama_server_darwin.sh
 
 # Build zerollama
-./scripts/build_zerollama_mac.sh
+./scripts/build/build_zerollama_mac.sh
 
 # Serve (sets ZEROLLAMA_LEGACY_RUNNER=1 so Python runtime does not steal text GGUF)
-./scripts/serve_llama_server_backend.sh
+./scripts/serve/serve_llama_server_backend.sh
 # equivalent:
 ./zerollama serve --llama-server-backend
 ```
@@ -62,23 +62,23 @@ Zerollama harness:     Client → Go → Python runtime → llama-server  (--lla
 **Linux auto (plain serve, no flag):**
 
 ```bash
-./scripts/build_llama_server.sh
-./scripts/serve_linux_auto.sh
+./scripts/build/build_llama_server.sh
+./scripts/serve/serve_linux_auto.sh
 # equivalent on Linux when llama-server is discoverable:
 ./zerollama serve
 ```
 
-Smoke (Linux auto policy): `./scripts/phase17_linux_auto_smoke.sh` or `RUN_E2E_P17_LINUX_AUTO=1 ./scripts/gpu_5080_session.sh`
+Smoke (Linux auto policy): `./scripts/phase/phase17_linux_auto_smoke.sh` or `RUN_E2E_P17_LINUX_AUTO=1 ./scripts/gpu/gpu_5080_session.sh`
 
 **Edge-marked binary (`-tags edge`, Phase 16 v1):**
 
 ```bash
-./scripts/build_zerollama_edge.sh
+./scripts/build/build_zerollama_edge.sh
 ./zerollama-edge serve --edge   # or plain serve — edge defaults apply
 ./zerollama-edge -v             # prints edge build: true
 ```
 
-Edge builds set `inference.backend.ggml_linked=false`, stub `zerollama runner`, and require llama-server for GGUF. **v2 (Jun 2026):** `-tags edge` also excludes in-process ggml CGO (`llm/server.go`); edge main dep tree has no `llama`/`model` packages. CI: `./scripts/phase16_edge_build_smoke.sh`. Doc: [phase16-thin-edge.md](./phase16-thin-edge.md).
+Edge builds set `inference.backend.ggml_linked=false`, stub `zerollama runner`, and require llama-server for GGUF. **v2 (Jun 2026):** `-tags edge` also excludes in-process ggml CGO (`llm/server.go`); edge main dep tree has no `llama`/`model` packages. CI: `./scripts/phase/phase16_edge_build_smoke.sh`. Doc: [phase16-thin-edge.md](./phase16-thin-edge.md).
 
 Binary discovery (`llm.FindLlamaServer`) checks, in order:
 
@@ -89,19 +89,19 @@ Binary discovery (`llm.FindLlamaServer`) checks, in order:
 Reuse upstream’s build if you already have it:
 
 ```bash
-BUILD_UPSTREAM_GO=0 ./scripts/build_upstream_ollama_mac.sh
+BUILD_UPSTREAM_GO=0 ./scripts/build/build_upstream_ollama_mac.sh
 LLAMA_SERVER_BIN=../ollama-upstream/build/llama-server-darwin/bin/llama-server \
   ./zerollama serve --llama-server-backend
 ```
 
-Smoke: `./scripts/phase17_llama_server_smoke.sh` (requires pulled local tag — auto-resolved from smallest text GGUF blob, or set `P17_MODEL=your-tag:latest`)
+Smoke: `./scripts/phase/phase17_llama_server_smoke.sh` (requires pulled local tag — auto-resolved from smallest text GGUF blob, or set `P17_MODEL=your-tag:latest`)
 
 **Vision/thinking:** with `--llama-server-backend` or Linux `auto`, all GGUF (split mmproj, inline vision tensors `v.*`, thinking) routes through `NewLlamaServerRunner`. Split mmproj needs `--mmproj`. Thinking models use `enable_thinking` chat-template kwargs. Linux auto sends vision GGUF to llama-server the same as text — no plain-text-only restriction.
 
 Vision E2E (opt-in, needs projector model pulled):
 
 ```bash
-RUN_E2E_P17_VISION=1 P17_VISION_MODEL=llava:latest ./scripts/phase17_llama_server_vision_smoke.sh
+RUN_E2E_P17_VISION=1 P17_VISION_MODEL=llava:latest ./scripts/phase/phase17_llama_server_vision_smoke.sh
 ```
 
 ---
@@ -214,7 +214,7 @@ Code: `llm/padded_prompt_llama_server.go`, `llm/llama_server.go` (`completionPro
 | `mistral3_img_runner_inject` | Mistral3 / Pixtral |
 | `deepseekocr_img_runner_inject` | DeepSeek-OCR |
 
-Session ViT overlay + input-cache prefix hits surface as `cached_prompt_tokens` on turn 2 when `prompt_cache_key` is stable. Live gate: `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video_agent_infer_smoke.sh` (+ optional `VIDEO_AGENT_INFER_PREPROC=1`, requires `VIDEO_AGENT_GO_LOG` for layout-cache grep). **Why infer smoke:** expand-only `_debug_render_only` does not exercise real vision prefill. See [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) §32–37 and [video-understanding.md](./video-understanding.md#live-gate).
+Session ViT overlay + input-cache prefix hits surface as `cached_prompt_tokens` on turn 2 when `prompt_cache_key` is stable. Live gate: `RUN_E2E_VIDEO_AGENT_INFER=1 ./scripts/video/video_agent_infer_smoke.sh` (+ optional `VIDEO_AGENT_INFER_PREPROC=1`, requires `VIDEO_AGENT_GO_LOG` for layout-cache grep). **Why infer smoke:** expand-only `_debug_render_only` does not exercise real vision prefill. See [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) §32–37 and [video-understanding.md](./video-understanding.md#live-gate).
 
 **Still `deferred_non_qwen3vl`:** text-only architectures (e.g. **gemma3n**, **glm4moelite**) and VLMs without a native Go `MultimodalProcessor` path on ollama-engine.
 
@@ -236,11 +236,11 @@ Zerollama pins **elizaOS/llama.cpp** @ **`c84b3020`** (`LLAMA_CPP_VERSION`, `LLA
 
 **Why elizaOS unified base:** one sibling/runtime tree with dflash/QJL/checkpoint features; zerollama adds **19 Ollama/zerollama patches** on top — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
 
-**Vendor tree:** `vendor/llama-cpp-c84b3020/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
+**Vendor tree:** `vendor/llama-cpp-c84b3020/` + `./scripts/vendor/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
 
 **Why `sync_vendor_llama.sh` checks patch count:** syncing bare pin (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports `c84b3020` — CGO then misses `ggml_backend_dev_reset`, no-alloc scheduler, kv-ext, and `/kv/seq-copy`.
 
-**Patch doctor:** `./scripts/llama_patch_doctor.sh` · `/health.llama_patches` · `zerollama doctor` (llama.cpp patches check)
+**Patch doctor:** `./scripts/vendor/llama_patch_doctor.sh` · `/health.llama_patches` · `zerollama doctor` (llama.cpp patches check)
 
 Workflow: [llama/README.md](../llama/README.md) · [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md)
 
@@ -258,7 +258,7 @@ Fair run: idle GPU, `llama3.2:3b`, `num_ctx=4096`, 6 epochs.
 
 **Decision:** keep **ggml Metal** as Mac default; Phase 17 is for **mergeability** and upstream parity, not immediate throughput wins.
 
-Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
+Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh`
 
 ---
 
@@ -275,7 +275,7 @@ Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
 9. ~~**Vision/thinking on llama-server**~~ — explicit or Linux `auto`; vision E2E: `phase17_llama_server_vision_smoke.sh`
 10. ~~**Launch model inventory**~~ — [launch-model-inventory.md](./launch-model-inventory.md)
 11. ~~**Phase 16 edge mode**~~ — [phase16-thin-edge.md](./phase16-thin-edge.md)
-12. **L2 fork merge** — coordinate pin with borrowings L2 when bench gates pass (**Jun 2026: FAIL merge @ 8k CUDA** — stock faster; see `./scripts/phase17_l2_pin_status.sh` and [gpu-profiles-l2.md](./gpu-profiles-l2.md))
+12. **L2 fork merge** — coordinate pin with borrowings L2 when bench gates pass (**Jun 2026: FAIL merge @ 8k CUDA** — stock faster; see `./scripts/phase/phase17_l2_pin_status.sh` and [gpu-profiles-l2.md](./gpu-profiles-l2.md))
 13. **Flash-MoE (anemll)** — **Partial (Jun 2026):** flag passthrough, Modelfile `moe_*` options, `build_flash_moe_llama_server.sh`, **`flash_moe_smoke.sh`**, doctor check — [flash-moe.md](./flash-moe.md). **Why llama-server only:** slot-bank lives in anemll fork, not ggml Metal. **Open:** `pull` sidecar extract, vendor pin merge.
 14. **ANE probe (maderix)** — **Partial (Jun 2026):** subprocess smoke + doctor — [ane-probe.md](./ane-probe.md). **Why subprocess:** private ANE APIs must not ship inside main Go binary. **Open:** hybrid inference research, not hot path.
 
@@ -285,21 +285,21 @@ Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
 
 | Symptom | Likely cause | Fix |
 |---------|----------------|-----|
-| `ggml runner not linked in edge build` | `-tags edge` binary without llama-server routing | `./scripts/build_llama_server.sh`; `zerollama serve --edge` or `ZEROLLAMA_LLAMA_SERVER=1` |
+| `ggml runner not linked in edge build` | `-tags edge` binary without llama-server routing | `./scripts/build/build_llama_server.sh`; `zerollama serve --edge` or `ZEROLLAMA_LLAMA_SERVER=1` |
 | `ggml runner disabled in edge mode` | Edge mode without llama-server routing | Set `ZEROLLAMA_LLAMA_SERVER=1`/`auto`, or place `llama-server` on disk for Linux auto |
 | `using llama-server subprocess` missing in logs | Model routed to ggml or runtime | Check `GET /api/status` → `inference.backend`; use `--llama-server-backend` or Linux auto |
 | `:8081` runtime answers during edge smoke | Runtime not disabled | `ZEROLLAMA_RUNTIME=0`; use `phase16_edge_smoke.sh` env |
-| Linux plain serve uses ggml | llama-server not on disk | Build llama-server; `./scripts/serve_linux_auto.sh`; `zerollama doctor` |
+| Linux plain serve uses ggml | llama-server not on disk | Build llama-server; `./scripts/serve/serve_linux_auto.sh`; `zerollama doctor` |
 
 **Ship-hardware bundle (5080-class):**
 
 ```bash
 export LLAMA_SERVER_BIN=/path/to/llama-server
 export RUN_E2E_PROXY_MODEL=llama3.2:3b
-RUN_E2E_PREFLIGHT=0 RUN_E2E_UPSTREAM_GGUF=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_PREFLIGHT=0 RUN_E2E_UPSTREAM_GGUF=1 ./scripts/gpu/gpu_5080_session.sh
 ```
 
-**Phase 15 writable bind:** still blocked upstream — watch `./scripts/phase15_upstream_kv_watch.sh` and `phase15_llama_kv_ext_pin_check.sh` for new symbols in `llama.h`.
+**Phase 15 writable bind:** still blocked upstream — watch `./scripts/phase/phase15_upstream_kv_watch.sh` and `phase15_llama_kv_ext_pin_check.sh` for new symbols in `llama.h`.
 
 ---
 

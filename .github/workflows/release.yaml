@@ -59,7 +59,7 @@ jobs:
             go.sum
             Makefile.sync
       - run: |
-          ./scripts/build_darwin.sh
+          ./scripts/build/build_darwin.sh
       - name: Log build results
         run: |
           ls -l dist/
@@ -415,7 +415,7 @@ jobs:
           cache-to: type=inline
       - name: Deduplicate CUDA libraries
         run: |
-          ./scripts/deduplicate_cuda_libs.sh dist/${{ matrix.os }}-${{ matrix.arch }}
+          ./scripts/gpu/deduplicate_cuda_libs.sh dist/${{ matrix.os }}-${{ matrix.arch }}
       - run: |
           for COMPONENT in bin/* lib/ollama/*; do
             case "$COMPONENT" in

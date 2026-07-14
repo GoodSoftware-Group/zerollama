@@ -62,14 +62,14 @@ git clone --branch Server-Flash-Moe --depth 1 \
 2. Build Flash-MoE `llama-server`:
 
 ```bash
-./scripts/build_flash_moe_llama_server.sh
+./scripts/build/build_flash_moe_llama_server.sh
 # → build/flash-moe-llama-server-darwin/bin/llama-server
 ```
 
 3. Extract a sidecar (example: Qwen3.5-35B-A3B):
 
 ```bash
-./scripts/flash_moe_extract_sidecar.sh \
+./scripts/gpu/flash_moe_extract_sidecar.sh \
   --model ~/Models/Qwen3.5-35B-A3B-UD-IQ2_M.gguf \
   --out-dir ~/Models/flash/qwen35 --force --verify
 ```
@@ -181,24 +181,24 @@ Rule of thumb: **5–15% of RAM** for slot bank.
 
 ```bash
 # Tier 0 (CI-friendly on Mac)
-./scripts/flash_moe_smoke.sh
+./scripts/phase/flash_moe_smoke.sh
 
 # Tier 1 — startup only (no generation)
 RUN_E2E_FLASH_MOE_STARTUP=1 \
   FLASH_MOE_GGUF=~/Models/Qwen3.5-35B-A3B-UD-IQ2_M.gguf \
   FLASH_MOE_SIDECAR=~/Models/flash/qwen35 \
-  ./scripts/flash_moe_smoke.sh
+  ./scripts/phase/flash_moe_smoke.sh
 
 # Auto-extract sidecar on first run
-FLASH_MOE_EXTRACT=1 RUN_E2E_FLASH_MOE_STARTUP=1 FLASH_MOE_GGUF=... ./scripts/flash_moe_smoke.sh
+FLASH_MOE_EXTRACT=1 RUN_E2E_FLASH_MOE_STARTUP=1 FLASH_MOE_GGUF=... ./scripts/phase/flash_moe_smoke.sh
 
 # Tier 2 — full E2E (needs pulled tag or FLASH_MOE_MODEL)
 RUN_E2E_FLASH_MOE=1 \
   FLASH_MOE_GGUF=... FLASH_MOE_SIDECAR=... FLASH_MOE_MODEL=qwen35:latest \
-  ./scripts/flash_moe_smoke.sh
+  ./scripts/phase/flash_moe_smoke.sh
 ```
 
-Disk-starved dev hosts: `FLASH_MOE_SKIP_GO_TEST=1 ./scripts/flash_moe_smoke.sh`
+Disk-starved dev hosts: `FLASH_MOE_SKIP_GO_TEST=1 ./scripts/phase/flash_moe_smoke.sh`
 
 **Auto-resolve from zerollama store:** tier 1/2 call `./zerollama flash-moe-resolve` when `FLASH_MOE_GGUF` / `FLASH_MOE_SIDECAR` are unset — scans pulled MoE tags under `~/.ollama/models`, reads manifest `moe_sidecar`, and checks `~/Models/flash/<tag>`.
 

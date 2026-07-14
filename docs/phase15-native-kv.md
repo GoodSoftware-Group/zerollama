@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (Jul 2026) — **v0–v47 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **v33 (Jul 2026):** fork writable page-map (`llama_memory_kv_page_map`); Darwin sidecar restarts when `kv_native_build_sha` mismatches build stamp. **v35 (Jul 2026):** `llama_memory_kv_cache_layout` + transposed-V `page_map` visibility; last decode probe on `/health` after bind clear. **v36 (Jul 2026):** GGUF layer-group enrichment (`tensor_layers_expected` for hybrid models). **v37 (Jul 2026):** stream auto-batch for concurrent streaming `/api/generate` (`ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`). **v38 (Jul 2026):** external-buffer copy descriptors + `tensor_layers_bind_complete`. **v39 (Jul 2026):** `kv_page_migration` on `/internal/kv-snapshot`. **v40 (Jul 2026):** `page_migration_summary` on forward plans + snapshot pointer redaction. **v41 (Jul 2026):** operator sign-off smokes for v40 + stream auto-batch GPU gate. **v42 (Jul 2026):** `page_migration_summary` on `/health.kv_page_bind` + snapshot `migration_summary`. **v43 (Jul 2026):** migration summary GPU sign-off (`phase15_migration_summary_smoke.sh`). **v44 (Jul 2026):** non-stream auto-batch GPU smoke (`phase15_auto_batch_smoke.sh`). **v45 (Jul 2026):** auto-batch env wiring + combined sign-off (`RUN_P15_AUTO_BATCH_ALL=1`). **v46 (Jul 2026):** Linux embed auto-batch parity (`RUN_E2E_PHASE15_AUTO_BATCH=1`). **v47 (Jul 2026):** external-buffer alias probe + validate (patch 0019; feasibility only — no tensor mutation). **Open:** ggml allocator overlay bind (`HOST_REBASE` / device alias, v48+).
+**Status:** Partial (Jul 2026) — **v0–v47 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **v33 (Jul 2026):** fork writable page-map (`llama_memory_kv_page_map`); Darwin sidecar restarts when `kv_native_build_sha` mismatches build stamp. **v35 (Jul 2026):** `llama_memory_kv_cache_layout` + transposed-V `page_map` visibility; last decode probe on `/health` after bind clear. **v36 (Jul 2026):** GGUF layer-group enrichment (`tensor_layers_expected` for hybrid models). **v37 (Jul 2026):** stream auto-batch for concurrent streaming `/api/generate` (`ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`). **v38 (Jul 2026):** external-buffer copy descriptors + `tensor_layers_bind_complete`. **v39 (Jul 2026):** `kv_page_migration` on `/internal/kv-snapshot`. **v40 (Jul 2026):** `page_migration_summary` on forward plans + snapshot pointer redaction. **v41 (Jul 2026):** operator sign-off smokes for v40 + stream auto-batch GPU gate. **v42 (Jul 2026):** `page_migration_summary` on `/health.kv_page_bind` + snapshot `migration_summary`. **v43 (Jul 2026):** migration summary GPU sign-off (`phase15_migration_summary_smoke.sh`). **v44 (Jul 2026):** non-stream auto-batch GPU smoke (`phase15_auto_batch_smoke.sh`). **v45 (Jul 2026):** auto-batch env wiring + combined sign-off (`RUN_P15_AUTO_BATCH_ALL=1`). **v46 (Jul 2026):** Linux embed auto-batch parity (`RUN_E2E_PHASE15_AUTO_BATCH=1`). **v47 (Jul 2026):** external-buffer alias probe + validate (patch 0019; feasibility only — no tensor mutation). **Open:** ggml allocator overlay bind (`HOST_REBASE` / device alias, v48+).
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
@@ -129,7 +129,7 @@ Stream mode (`"stream": true`) returns NDJSON lines with `request_id`, `seq_idx`
 | `ZEROLLAMA_KV_NATIVE_SAMPLE` | `1` | C sampling on prefill + v30 batch rows |
 | `llama_parallel_slots` | `1` | Must be >1 for batch merge (`kv_inprocess_n_seq_max` on `/health`) |
 
-Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one place to enable C pool + native decode + build linked ext against sibling `../llama.cpp`.
+Sign-off scripts source `scripts/phase/phase15_runtime_kv_env.sh` — **why:** one place to enable C pool + native decode + build linked ext against sibling `../llama.cpp`.
 
 ### GPU sign-off (v27–v30 batch step)
 
@@ -139,7 +139,7 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | `phase15_inprocess_signoff.sh` | Linux embed | End of `phase15_inprocess_multiseq_smoke.sh` |
 | `phase15_batch_decode_smoke.sh` | Either (sidecar must be up, `n_seq_max≥2`) | Standalone |
 
-**Jun 2026:** `./scripts/phase15_metal_signoff.sh` **PASS** on M4 Max — `batch_decode_in_c=True`, non-stream + stream batch returned content for both rows, `kv_decode_steps` incremented, **`kv_page_bind.status=bound`** + **`bind_level=tensor`** on linked vendor kv-ext (full gate via `./scripts/metal_signoff.sh` + `eliza-1-2b:latest` qwen35).
+**Jun 2026:** `./scripts/phase/phase15_metal_signoff.sh` **PASS** on M4 Max — `batch_decode_in_c=True`, non-stream + stream batch returned content for both rows, `kv_decode_steps` incremented, **`kv_page_bind.status=bound`** + **`bind_level=tensor`** on linked vendor kv-ext (full gate via `./scripts/gpu/metal_signoff.sh` + `eliza-1-2b:latest` qwen35).
 
 ---
 
@@ -153,7 +153,7 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | Backend selector | `runtime/runtime/kv/backend.py` | Env `ZEROLLAMA_RUNTIME_KV_NATIVE=1` |
 | Engine wiring | `runtime/runtime/engine.py` | `create_block_pool()`; `/health` → `kv` object |
 | Parity tests | `runtime/tests/test_kv_native_parity.py` | Skips if extension not built |
-| CI helper | `scripts/phase15_kv_native_ci.sh` | build native + KV pytest bundle |
+| CI helper | `scripts/phase/phase15_kv_native_ci.sh` | build native + KV pytest bundle |
 
 ### v1 — scheduler ↔ llama slots
 
@@ -363,7 +363,7 @@ cd runtime && python3 setup.py build_ext --inplace
 | `runtime/setup.py` | Resolves `LLAMA_CPP_ROOT` / `LLAMA_CPP_LIB`; `-lllama` + rpath when flag set |
 | `native/kv_decode_loop.c` | Calls `llama_max_devices()` — no ctx, no inference |
 | `/health.kv_decode_loop` | `available: true`, `llama_max_devices` when linked build |
-| `scripts/phase15_kv_decode_loop_build.sh` | Optional smoke; skips if libllama missing |
+| `scripts/phase/phase15_kv_decode_loop_build.sh` | Optional smoke; skips if libllama missing |
 
 ---
 
@@ -379,7 +379,7 @@ cd runtime && python3 setup.py build_ext --inplace
 | `runtime/kv/native_decode_loop.py` | `run_prefill(ctx_ptr, tokens, *, seq_id, block_size) → int \| None`; `run_step(ctx_ptr, token, *, seq_id, current_pos) → int \| None`; returns `None` when ctypes build |
 | `runtime/worker/libllama_ctypes.py` | `_decode_stream` v13 fast path: C prefill → sample → C step loop; falls back to ctypes when ext not linked or encoder model |
 | Tests | `test_run_prefill_returns_none_when_not_linked` / `test_run_step_returns_none_when_not_linked` |
-| CI | `scripts/phase15_kv_decode_loop_build.sh` — also verifies `decode_loop_prefill` / `decode_loop_step` symbols exported |
+| CI | `scripts/phase/phase15_kv_decode_loop_build.sh` — also verifies `decode_loop_prefill` / `decode_loop_step` symbols exported |
 
 **WHY ctx_ptr is `int`:** ctypes `c_void_p` arrives as a Python `int`; the C binding casts `(void *)(uintptr_t)ctx_ptr` → `struct llama_context *`.  No ABI mismatch because both the ext and `_decode_stream` load the same libllama.
 
@@ -398,7 +398,7 @@ cd runtime && python3 setup.py build_ext --inplace
 | `decode_loop_prefill(..., pos_start=0)` | Python binding extended (`\|i` optional arg) |
 | `runtime/kv/native_decode_loop.py` | `validate_token_positions` before C calls; `greedy_decode_tokens()` for tests |
 | `tests/test_kv_decode_loop_e2e.py` | Gated: `RUN_E2E_DECODE_LOOP=1` + `LLAMA_MODEL` + linked build |
-| `scripts/phase15_kv_decode_loop_build.sh` | Asserts `gil_released`; runs E2E when env set |
+| `scripts/phase/phase15_kv_decode_loop_build.sh` | Asserts `gil_released`; runs E2E when env set |
 
 **WHY GIL release in bindings not in kv_decode_loop.c:** Python owns thread state; only the extension entry points know when it is safe to release before calling into libllama.
 
@@ -502,7 +502,7 @@ If any condition fails, the slot is cleared (safe fallback = pre-v16 behaviour).
 | `owners_by_slot` | `{slot_id: owner_key}` from `resume_owner_snapshot()` |
 | `owner_key_pinned` / `owner_key_unpinned` | Documents v17 owner scheme |
 | `note` | Why inactive (subprocess or single-seq) |
-| `scripts/phase15_metal_signoff.sh` step 4 | Two-turn generate with same `prompt_cache_key`; asserts `kv_resume.active` and non-empty owners |
+| `scripts/phase/phase15_metal_signoff.sh` step 4 | Two-turn generate with same `prompt_cache_key`; asserts `kv_resume.active` and non-empty owners |
 
 ---
 
@@ -524,11 +524,11 @@ If any condition fails, the slot is cleared (safe fallback = pre-v16 behaviour).
 
 ```bash
 cd runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_tensor_bind_probe.sh
+../scripts/phase/phase15_tensor_bind_probe.sh
 # Linked probe (GPU host):
 export ZEROLLAMA_KV_DECODE_LOOP=1 LLAMA_CPP_LIB=/path/to/libllama.dylib
 cd runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_tensor_bind_probe.sh
+../scripts/phase/phase15_tensor_bind_probe.sh
 ```
 
 **Upstream needed for full tensor bind:** public C API returning writable KV page/cell handles keyed by `(layer, page_index)` or equivalent — then wire `block_ids[i]` → handle in `page_bind_tensor_bind()`.
@@ -570,12 +570,12 @@ cd llama/llama.cpp && cmake -B build -DBUILD_SHARED_LIBS=ON && cmake --build bui
 # 2) Link native ext
 export LLAMA_CPP_ROOT=$PWD ZEROLLAMA_KV_DECODE_LOOP=1
 cd ../../runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_tensor_bind_probe.sh
+../scripts/phase/phase15_tensor_bind_probe.sh
 ```
 
 **Limitations:** pure recurrent-only models → `memory_kind_name=unsupported`. SWA window cache is not the PA bind target (base attn cache is). Writable cross-process PA→tensor migration still needs upstream stable page-handle API; v20/v31 is read-verify bind on live decode.
 
-**Pin tracking:** patch `0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` + `./scripts/phase15_llama_kv_ext_pin_check.sh` — see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
+**Pin tracking:** patch `0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` + `./scripts/phase/phase15_llama_kv_ext_pin_check.sh` — see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
 
 ### v20b ops — audit fixes (Jun 2026)
 
@@ -596,7 +596,7 @@ cd ../../runtime && python3 setup.py build_ext --inplace
 | Piece | Role |
 |-------|------|
 | `runtime/infer_trace.py` | Opt-in phase logging (`ZEROLLAMA_INFER_TRACE=1`) |
-| `scripts/phase15_metal_crash_repro.sh` | Bisect harness (workarounds off) |
+| `scripts/phase/phase15_metal_crash_repro.sh` | Bisect harness (workarounds off) |
 
 ### v23 ops — unified prefill chunker + sign-off defaults (Jun 2026)
 
@@ -606,7 +606,7 @@ cd ../../runtime && python3 setup.py build_ext --inplace
 |-------|------|
 | `iter_prefill_execute_chunks()` | Single source for ctypes prefill + `kv_decode_prefill_plan`; final chunk `logits_last=True` |
 | `libllama_ctypes._prefill_prompt` | Calls shared chunker (v23) |
-| `scripts/phase15_runtime_kv_env.sh` | `ZEROLLAMA_RUNTIME_KV_NATIVE=1`, native decode/sample defaults; optional ext build |
+| `scripts/phase/phase15_runtime_kv_env.sh` | `ZEROLLAMA_RUNTIME_KV_NATIVE=1`, native decode/sample defaults; optional ext build |
 | Sign-off scripts | `phase15_metal_signoff.sh`, `phase15_inprocess_signoff.sh` source env + build ext when `PHASE15_BUILD_KV_EXT=1` |
 
 ---
@@ -797,7 +797,7 @@ Without v36, operators debugging a hybrid model see `tensor_layers_verified=26, 
 **Operator probes:**
 
 ```bash
-./scripts/phase15_llama_kv_ext_pin_check.sh   # asserts 0014 + 0019 symbols
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh   # asserts 0014 + 0019 symbols
 python3 -c "from runtime.kv.tensor_probe import external_alias_probe; print(external_alias_probe())"
 curl -s :8081/health | jq '.kv_page_bind | {external_alias_available, external_alias_api, external_alias_blocker}'
 ```
@@ -935,8 +935,8 @@ export ZEROLLAMA_RUNTIME_KV_NATIVE=1
 
 # Tests + smokes (no GPU)
 cd ..
-./scripts/phase15_kv_native_ci.sh      # includes phase15_health_smoke.sh
-./scripts/phase15_health_smoke.sh      # /health KV keys only
+./scripts/phase/phase15_kv_native_ci.sh      # includes phase15_health_smoke.sh
+./scripts/phase/phase15_health_smoke.sh      # /health KV keys only
 
 # With serve (embed or sidecar):
 export ZEROLLAMA_RUNTIME_KV_NATIVE=1
@@ -947,7 +947,7 @@ curl -s http://127.0.0.1:8081/internal/kv-snapshot | python3 -m json.tool | head
 # GPU in-process (needs LLAMA_CPP_LIB + small GGUF):
 export LLAMA_MODEL=/path/to/small.q8_0.gguf
 export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
-./scripts/phase15_inprocess_signoff.sh
+./scripts/phase/phase15_inprocess_signoff.sh
 ```
 
 ---
@@ -956,12 +956,12 @@ export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 
 | Script | Role |
 |--------|------|
-| `scripts/phase15_kv_native_ci.sh` | `build_ext --inplace` + KV pytest + `phase15_health_smoke.sh` |
-| `scripts/phase15_health_smoke.sh` | Engine `/health` KV key assertions (no GPU) |
-| `scripts/phase15_inprocess_signoff.sh` | GPU: KV decode hook + multi-seq (self-contained; needs `LLAMA_CPP_LIB`) |
-| `scripts/phase15_batch_decode_smoke.sh` | GPU: continuous batch decode via `POST /internal/generate-batch` (needs multiseq sidecar) |
-| `scripts/phase15_inprocess_kv_smoke.sh` | GPU: single-seq decode hook only |
-| `scripts/phase15_inprocess_multiseq_smoke.sh` | GPU: `llama_parallel_slots: 2` |
+| `scripts/phase/phase15_kv_native_ci.sh` | `build_ext --inplace` + KV pytest + `phase15_health_smoke.sh` |
+| `scripts/phase/phase15_health_smoke.sh` | Engine `/health` KV key assertions (no GPU) |
+| `scripts/phase/phase15_inprocess_signoff.sh` | GPU: KV decode hook + multi-seq (self-contained; needs `LLAMA_CPP_LIB`) |
+| `scripts/phase/phase15_batch_decode_smoke.sh` | GPU: continuous batch decode via `POST /internal/generate-batch` (needs multiseq sidecar) |
+| `scripts/phase/phase15_inprocess_kv_smoke.sh` | GPU: single-seq decode hook only |
+| `scripts/phase/phase15_inprocess_multiseq_smoke.sh` | GPU: `llama_parallel_slots: 2` |
 | `.github/workflows/zerollama-regression.yaml` | Runtime pytest; native tests **skip** if `.so` missing |
 
 Optional self-hosted: run `phase15_kv_native_ci.sh` after building the extension on the runner.

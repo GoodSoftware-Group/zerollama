@@ -13,7 +13,7 @@
 # Optional env (see docs/apple-silicon-metal.md):
 #   ZEROLLAMA_AUTO_CONFIG=1
 #   ZEROLLAMA_RUNTIME_VRAM_PROBE=auto   # metal-unified on macOS when no NVIDIA
-# Go scheduler watchdog (source scripts/sched_watchdog_env.sh before serve):
+# Go scheduler watchdog (source scripts/runtime/sched_watchdog_env.sh before serve):
 #   ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD=0.95
 #   ZEROLLAMA_SCHED_WATCHDOG_INTERVAL=30s
 device_count: 1

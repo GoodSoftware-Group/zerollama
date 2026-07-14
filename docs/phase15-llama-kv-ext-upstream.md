@@ -14,7 +14,7 @@
 | Runtime sibling build | `../llama.cpp` via `LLAMA_CPP_ROOT` |
 | Staging patch (page map) | `llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` |
 | Staging patch (alias validate) | `llama/patches/0019-ollama-llama-kv-ext-external-buffer-alias-v47.patch` |
-| CI pin gate | `./scripts/phase15_llama_kv_ext_pin_check.sh` |
+| CI pin gate | `./scripts/phase/phase15_llama_kv_ext_pin_check.sh` |
 
 **On every pin bump:** run `make -f Makefile.sync clean apply-patches sync`, then `phase15_llama_kv_ext_pin_check.sh`, rebuild libllama, rebuild `_kv_native` with `ZEROLLAMA_KV_DECODE_LOOP=1`.
 
@@ -66,9 +66,9 @@
 CI pin check greps `llama.h` for upstream watch symbols (`llama_memory_kv_page_map`, `llama_memory_kv_page_write`, `llama_kv_cache_get_block`) and prints NOTICE when any appear.
 
 ```bash
-./scripts/phase15_llama_kv_ext_pin_check.sh   # includes writable API + upstream watch
-P15_PIN_JSON=/tmp/phase15-kv-ext-pin-check.json ./scripts/phase15_llama_kv_ext_pin_check.sh
-./scripts/phase15_upstream_kv_watch.sh        # scan in-tree + ollama-upstream llama.h
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh   # includes writable API + upstream watch
+P15_PIN_JSON=/tmp/phase15-kv-ext-pin-check.json ./scripts/phase/phase15_llama_kv_ext_pin_check.sh
+./scripts/phase/phase15_upstream_kv_watch.sh        # scan in-tree + ollama-upstream llama.h
 python3 -c "from runtime.kv.tensor_probe import writable_bind_probe; print(writable_bind_probe())"
 python3 -c "from runtime.kv.tensor_probe import external_alias_probe; print(external_alias_probe())"
 ```
@@ -123,18 +123,18 @@ Read-verify bind (`status=bound` on standard + hybrid attn models) is **unblocke
 
 ```bash
 # 1) Pin + patch present (CI gate)
-./scripts/phase15_llama_kv_ext_pin_check.sh
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh
 
 # 2) Rebuild libllama from patched tree (in-tree or sibling)
 cd llama/llama.cpp && cmake -B build -DBUILD_SHARED_LIBS=ON && cmake --build build -j
-# or: LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+# or: LLAMA_CPP_ROOT=../llama.cpp ./scripts/build/build_llama_server.sh
 
 # 3) Link native ext
-source ./scripts/phase15_runtime_kv_env.sh
+source ./scripts/phase/phase15_runtime_kv_env.sh
 phase15_runtime_kv_ext_build
 
 # 4) Probe after decode
-./scripts/phase15_tensor_bind_probe.sh
+./scripts/phase/phase15_tensor_bind_probe.sh
 curl -s :8081/health | jq '.kv_page_bind'
 ```
 

@@ -1,9 +1,9 @@
 # Python deps for embedded GPU training (training.py via libpython3 + PYTHONPATH).
-# Recommended: uv venv at repo .venv-training (see scripts/training_uv_venv.sh).
+# Recommended: uv venv at repo .venv-training (see scripts/training/training_uv_venv.sh).
 #
-#   ./scripts/training_uv_venv.sh --verify
-#   UV_BIN=/path/to/uv ./scripts/training_uv_venv.sh --verify   # several uv copies on account
-#   eval "$(./scripts/training_uv_venv.sh --export)" && zerollama serve
+#   ./scripts/training/training_uv_venv.sh --verify
+#   UV_BIN=/path/to/uv ./scripts/training/training_uv_venv.sh --verify   # several uv copies on account
+#   eval "$(./scripts/training/training_uv_venv.sh --export)" && zerollama serve
 #
 # Linux + NVIDIA (CUDA wheels via uv):
 #   uv pip install --python .venv-training/bin/python -r requirements-training.txt \
@@ -12,7 +12,7 @@
 # macOS Apple Silicon (MPS; bitsandbytes excluded on Darwin):
 #   uv pip install --python .venv-training/bin/python -r requirements-training.txt
 #
-# Verify: ./scripts/training_uv_venv.sh --verify
+# Verify: ./scripts/training/training_uv_venv.sh --verify
 
 torch>=2.5
 transformers>=4.40

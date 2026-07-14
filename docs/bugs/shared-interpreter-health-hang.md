@@ -1,6 +1,6 @@
 # Bug: `GET /health` hangs with shared CPython (training + embedded runtime)
 
-**Status:** mitigated (May 2026) — see **Mitigation** below; `./scripts/repro_shared_interpreter_health_hang.sh` exits 0 (5× `/health` @ 200, verified on dev host)  
+**Status:** mitigated (May 2026) — see **Mitigation** below; `./scripts/runtime/repro_shared_interpreter_health_hang.sh` exits 0 (5× `/health` @ 200, verified on dev host)  
 **Severity:** medium — training HTTP/TCP work; runtime HTTP stalls; Go `go-coordination` pushes time out  
 **Affects:** `OLLAMA_TRAINING=true` + embedded runtime (`ZEROLLAMA_RUNTIME_EMBED` on, `ZEROLLAMA_RUNTIME_URL` unset)
 
@@ -24,7 +24,7 @@ Training surfaces remain usable:
 From repo root (uses **non-production** ports `19180` / `19181` / `19650`):
 
 ```bash
-./scripts/repro_shared_interpreter_health_hang.sh
+./scripts/runtime/repro_shared_interpreter_health_hang.sh
 ```
 
 Expected output (after training checks pass):

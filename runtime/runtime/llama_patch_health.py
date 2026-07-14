@@ -281,7 +281,7 @@ def llama_patch_health(
         elif count == 0 and bin_seq is not True and not fork_help and not vendor_synced:
             issues.append(
                 f"vendor at bare pin with zero patch commits — run "
-                f"./scripts/rebase_vendor_unified.sh --apply --sync"
+                f"./scripts/vendor/rebase_vendor_unified.sh --apply --sync"
             )
         elif count == 0 and vendor_synced:
             warnings.append(
@@ -301,7 +301,7 @@ def llama_patch_health(
         else:
             warnings.append(
                 "vendor/ not materialized (gitignored) — in-tree + binary checks only; "
-                "run ./scripts/rebase_vendor_unified.sh --apply --sync before llama-server build"
+                "run ./scripts/vendor/rebase_vendor_unified.sh --apply --sync before llama-server build"
             )
 
     if server_path is not None and under_vendor is False and not external_install:
@@ -322,7 +322,7 @@ def llama_patch_health(
         else:
             issues.append(
                 f"llama-server binary lacks /kv/seq-copy string — rebuild from vendor: "
-                f"./scripts/build_llama_server.sh"
+                f"./scripts/build/build_llama_server.sh"
             )
     elif external_install and bin_seq is True and not issues:
         warnings.append("external binary validated via /kv/seq-copy embed")
@@ -362,10 +362,10 @@ def llama_patch_health(
         "issues": issues,
         "warnings": warnings,
         "remediation": [
-            "./scripts/rebase_vendor_unified.sh --apply --sync",
-            "./scripts/build_llama_server.sh",
-            "./scripts/phase15_llama_kv_ext_pin_check.sh",
-            "L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh",
+            "./scripts/vendor/rebase_vendor_unified.sh --apply --sync",
+            "./scripts/build/build_llama_server.sh",
+            "./scripts/phase/phase15_llama_kv_ext_pin_check.sh",
+            "L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh",
         ],
     }
 
@@ -393,5 +393,5 @@ def llama_patch_health_summary(
         "llama_server_binary_seq_copy": full["llama_server_binary_seq_copy"],
         "issues": full["issues"],
         "warnings": full["warnings"],
-        "doctor": "./scripts/llama_patch_doctor.sh",
+        "doctor": "./scripts/vendor/llama_patch_doctor.sh",
     }

@@ -217,7 +217,7 @@ curl -s http://127.0.0.1:11450/api/fleet/status | jq .
 
 ## macOS runtime stack (related)
 
-For Apple Silicon CI/dev, `./scripts/serve_mac_runtime.sh` starts sidecar + Go proxy. **Why logs were quiet:** both processes background to files so CI stays clean. The script now prints startup progress and log paths (`MACOS_RT_LOG`, `MACOS_GO_LOG`). Daily use remains `zerollama serve` (Darwin bootstrap).
+For Apple Silicon CI/dev, `./scripts/serve/serve_mac_runtime.sh` starts sidecar + Go proxy. **Why logs were quiet:** both processes background to files so CI stays clean. The script now prints startup progress and log paths (`MACOS_RT_LOG`, `MACOS_GO_LOG`). Daily use remains `zerollama serve` (Darwin bootstrap).
 
 ---
 

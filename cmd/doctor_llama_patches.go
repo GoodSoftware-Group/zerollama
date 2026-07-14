@@ -14,7 +14,7 @@ const llamaPatchSeqCopyMarker = `"/kv/seq-copy"`
 
 func doctorCheckLlamaPatches(repo string) doctorCheck {
 	name := "llama.cpp patches"
-	fix := "./scripts/llama_patch_doctor.sh"
+	fix := "./scripts/vendor/llama_patch_doctor.sh"
 
 	inTree := filepath.Join(repo, "llama", "llama.cpp", "tools", "server", "server.cpp")
 	data, err := os.ReadFile(inTree)
@@ -22,7 +22,7 @@ func doctorCheckLlamaPatches(repo string) doctorCheck {
 		return doctorCheck{
 			Name:    name,
 			Status:  "fail",
-			Detail:  "in-tree server.cpp missing — sync vendor: ./scripts/rebase_vendor_unified.sh --sync",
+			Detail:  "in-tree server.cpp missing — sync vendor: ./scripts/vendor/rebase_vendor_unified.sh --sync",
 			FixHint: fix,
 		}
 	}
@@ -30,15 +30,16 @@ func doctorCheckLlamaPatches(repo string) doctorCheck {
 		return doctorCheck{
 			Name:    name,
 			Status:  "fail",
-			Detail:  "in-tree llama.cpp lacks POST /kv/seq-copy (patch 0017 not synced)",
-			FixHint: "./scripts/rebase_vendor_unified.sh --apply --sync",
+			Detail:  "in-tree llama.cpp lacks POST /kv/seq-copy (kv-seq-copy patch not synced)",
+			FixHint: "./scripts/vendor/rebase_vendor_unified.sh --apply --sync",
 		}
 	}
 
 	patchDir := filepath.Join(repo, "llama", "patches")
+	// Match by content stem (numbers shift as patches are inserted).
 	required := []string{
-		"0014-ollama-llama-kv-ext",
-		"0017-ollama-kv-seq-copy-endpoint",
+		"ollama-llama-kv-ext",
+		"ollama-kv-seq-copy-endpoint",
 	}
 	var missing []string
 	for _, sub := range required {
@@ -80,7 +81,7 @@ func doctorCheckLlamaPatches(repo string) doctorCheck {
 			detail += "; llama-server embeds /kv/seq-copy"
 		} else {
 			status = "warn"
-			detail += "; llama-server binary missing /kv/seq-copy — rebuild: ./scripts/build_llama_server.sh"
+			detail += "; llama-server binary missing /kv/seq-copy — rebuild: ./scripts/build/build_llama_server.sh"
 		}
 	}
 
@@ -123,9 +124,32 @@ func doctorVendorHeadMatches(repo string) (head, expected string, vendorPresent 
 }
 
 func doctorBinaryEmbedsSeqCopy(bin string) bool {
-	out, err := exec.Command("strings", bin).Output()
+	candidates := []string{bin}
+	// Thin llama-server launchers keep route strings in libllama-server-impl.
+	dir := filepath.Dir(bin)
+	for _, name := range []string{
+		"libllama-server-impl.dylib",
+		"libllama-server-impl.so",
+		"llama-server.exe",
+	} {
+		candidates = append(candidates, filepath.Join(dir, name))
+	}
+	for _, path := range candidates {
+		if doctorFileContainsSeqCopy(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorFileContainsSeqCopy(path string) bool {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return false
+	}
+	out, err := exec.Command("strings", path).Output()
 	if err != nil {
-		data, readErr := os.ReadFile(bin)
+		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return false
 		}

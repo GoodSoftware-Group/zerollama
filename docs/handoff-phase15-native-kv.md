@@ -68,7 +68,7 @@
 | Go loopback proxy | `server/runtime_kv_snapshot.go`, `internal/runtimeclient/kv_snapshot.go` (`GET :8080/internal/kv-snapshot`) |
 | In-process forward | `runtime/runtime/worker/libllama_ctypes.py` (`_decode_parallel_stream`, `complete_parallel_stream`, `complete_parallel`), `llama_inprocess.py` |
 | C batch decode step | `runtime/native/kv_decode_loop.c` — `kv_decode_loop_run_batch_step` (v26 layout, v30 `smpl_ptrs[]`) |
-| Batch smoke | `scripts/phase15_batch_decode_smoke.sh`, `scripts/phase15_metal_signoff.sh` step 3/5 |
+| Batch smoke | `scripts/phase/phase15_batch_decode_smoke.sh`, `scripts/phase/phase15_metal_signoff.sh` step 3/5 |
 | Slot count | `runtime/runtime/llama_args.py` (`resolve_parallel_slots`) |
 
 ---
@@ -130,11 +130,11 @@ kv_decode_loop, kv_resume, kv_live_physical
 **Smokes:**
 
 ```bash
-./scripts/phase15_health_smoke.sh    # engine.health() key checks
-./scripts/phase15_kv_native_ci.sh    # build_ext + KV pytest + health smoke
-./scripts/phase15_inprocess_signoff.sh  # GPU: KV decode hook + multi-seq (needs LLAMA_CPP_LIB)
-./scripts/phase15_inprocess_kv_smoke.sh # GPU: self-contained single-seq decode hook
-./scripts/phase15_inprocess_multiseq_smoke.sh  # GPU: llama_parallel_slots=2
+./scripts/phase/phase15_health_smoke.sh    # engine.health() key checks
+./scripts/phase/phase15_kv_native_ci.sh    # build_ext + KV pytest + health smoke
+./scripts/phase/phase15_inprocess_signoff.sh  # GPU: KV decode hook + multi-seq (needs LLAMA_CPP_LIB)
+./scripts/phase/phase15_inprocess_kv_smoke.sh # GPU: self-contained single-seq decode hook
+./scripts/phase/phase15_inprocess_multiseq_smoke.sh  # GPU: llama_parallel_slots=2
 ```
 
 ---
@@ -171,8 +171,8 @@ Subprocess and wheel paths: hook inactive; field omitted or `/health` shows `act
 ```bash
 cd runtime && python3 setup.py build_ext --inplace
 cd ..
-./scripts/phase15_kv_native_ci.sh
-./scripts/phase15_health_smoke.sh
+./scripts/phase/phase15_kv_native_ci.sh
+./scripts/phase/phase15_health_smoke.sh
 
 cd runtime
 PYTHONPATH=. python3 -m pytest \
@@ -227,7 +227,7 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 ### v19 — tensor bind scaffold (shipped)
 
 13. **`page_bind_tensor_probe`** + **`page_bind_table`** — accounting bind vs llama seq cells; `/health.kv_page_bind.tensor_probe`.
-14. **`scripts/phase15_tensor_bind_probe.sh`** — build + table export smoke.
+14. **`scripts/phase/phase15_tensor_bind_probe.sh`** — build + table export smoke.
 
 ### v20a — forward plan native mirror (shipped)
 
@@ -256,12 +256,12 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 ### v22 — stale decode_pos fix (shipped)
 
 24. **`decode_pos = 0` after `_clear_sequence`** on non-resume multiseq path.
-25. **`infer_trace`** — opt-in debug; `scripts/phase15_metal_crash_repro.sh`.
+25. **`infer_trace`** — opt-in debug; `scripts/phase/phase15_metal_crash_repro.sh`.
 
 ### v23 — unified prefill chunker (shipped)
 
 26. **`iter_prefill_execute_chunks`** — `_decode_stream` + `kv_decode_prefill_plan` share one chunker.
-27. **`scripts/phase15_runtime_kv_env.sh`** — sign-off enables C block pool + optional linked ext build.
+27. **`scripts/phase/phase15_runtime_kv_env.sh`** — sign-off enables C block pool + optional linked ext build.
 
 ### v24 — C decode loop page-bind + post-prefill probe (shipped)
 
@@ -315,7 +315,7 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 
 50. **`llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch`** — formal b9781 patch so vendor sync preserves kv-ext.
 51. **`llama_memory_kv_ext_classify`** — resolve hybrid/iSWA to attn base cache; `memory_kind_name` on probe.
-52. **`scripts/phase15_llama_kv_ext_pin_check.sh`** — pin gate in `phase15_kv_native_ci.sh`.
+52. **`scripts/phase/phase15_llama_kv_ext_pin_check.sh`** — pin gate in `phase15_kv_native_ci.sh`.
 
 ### v32b — writable bind upstream tracker (shipped)
 
@@ -334,7 +334,7 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 59. **`llama_memory_kv_page_map`** — writable K/V tensor spans per PA page in `llama-kv-ext.h` / `llama-memory-kv-ext.cpp`; `LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1` on libllama build.
 60. **`physical_pages_bound`** on `/health.kv_page_bind` — set after `kv_page_bind_materialize_writable` resolves all live pages.
 61. **Darwin sidecar sha restart** — `BootstrapDarwinSidecar` compares `kv_native_build_sha` on `/health` vs on-disk `.build-stamps/runtime-kv-native.sha`; stops and respawns stale sidecar on mismatch.
-62. **`scripts/stage_llama_kv_ext_for_vendor.sh`** — syncs kv-ext headers + `llama-kv-cache.h` into vendor build tree.
+62. **`scripts/vendor/stage_llama_kv_ext_for_vendor.sh`** — syncs kv-ext headers + `llama-kv-cache.h` into vendor build tree.
 
 ### v34 — multi-layer tensor verify + writable fan-out (Jul 2026)
 
@@ -467,8 +467,8 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 ## Verification checklist (last known good)
 
 ```bash
-./scripts/phase15_kv_native_ci.sh     # KV tests + health smoke (no GPU)
-./scripts/phase15_kv_decode_loop_build.sh   # optional: libllama-linked ext (skips if no libllama)
+./scripts/phase/phase15_kv_native_ci.sh     # KV tests + health smoke (no GPU)
+./scripts/phase/phase15_kv_decode_loop_build.sh   # optional: libllama-linked ext (skips if no libllama)
 ./scripts/check_gpu_scripts.sh
 cd runtime && PYTHONPATH=. python3 -m pytest tests/ -q   # full runtime suite (~579 pass, 19 skip)
 ```
@@ -479,16 +479,16 @@ On GPU host with in-process backend:
 # Linux embed:
 export LLAMA_MODEL=/path/to/small.q8_0.gguf
 export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
-./scripts/phase15_inprocess_signoff.sh
+./scripts/phase/phase15_inprocess_signoff.sh
 
 # Mac Metal sidecar (includes batch decode step 3/5):
-LLAMA_CPP_ROOT=../llama.cpp ./scripts/phase15_metal_signoff.sh
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/phase/phase15_metal_signoff.sh
 ```
 
 After multiseq sidecar is up (`kv_inprocess_n_seq_max≥2`), standalone batch smoke:
 
 ```bash
-./scripts/phase15_batch_decode_smoke.sh   # POST /internal/generate-batch
+./scripts/phase/phase15_batch_decode_smoke.sh   # POST /internal/generate-batch
 ```
 
 Confirm `batch_decode_in_c=True` on `/health.kv_decode_loop`, both batch rows return content, and `kv_decode_steps` increments.

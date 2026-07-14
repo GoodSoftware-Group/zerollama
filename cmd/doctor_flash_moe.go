@@ -36,7 +36,7 @@ func doctorCheckFlashMoE(_ string) doctorCheck {
 		case binOK:
 			detail = fmt.Sprintf("not enabled (binary ready @ %s)", bin)
 		case repoOK:
-			detail += "; run ./scripts/build_flash_moe_llama_server.sh"
+			detail += "; run ./scripts/build/build_flash_moe_llama_server.sh"
 		default:
 			detail += fmt.Sprintf("; repo missing at %s", repo)
 		}
@@ -44,7 +44,7 @@ func doctorCheckFlashMoE(_ string) doctorCheck {
 		if !repoOK {
 			fixHint = "git clone --branch Server-Flash-Moe --depth 1 https://github.com/Anemll/anemll-flash-llama.cpp.git " + repo
 		} else if !binOK {
-			fixHint = "./scripts/build_flash_moe_llama_server.sh"
+			fixHint = "./scripts/build/build_flash_moe_llama_server.sh"
 		}
 		return doctorCheck{Name: name, Status: "warn", Detail: detail, FixHint: fixHint}
 	}
@@ -63,7 +63,7 @@ func doctorCheckFlashMoE(_ string) doctorCheck {
 			Name:    name,
 			Status:  "warn",
 			Detail:  "flash-moe llama-server not built",
-			FixHint: "./scripts/build_flash_moe_llama_server.sh",
+			FixHint: "./scripts/build/build_flash_moe_llama_server.sh",
 		}
 	}
 

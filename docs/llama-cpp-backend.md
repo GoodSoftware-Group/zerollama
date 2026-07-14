@@ -24,7 +24,7 @@ export ZEROLLAMA_LLAMA_CPP_BACKEND=1
 **Helper script (Mac):**
 
 ```bash
-./scripts/serve_llama_cpp_backend.sh
+./scripts/serve/serve_llama_cpp_backend.sh
 ```
 
 Sets `ZEROLLAMA_RUNTIME=1`, `ZEROLLAMA_AUTO_CONFIG=1`, and `LLAMA_CPP_ROOT=../llama.cpp` when present.
@@ -50,8 +50,8 @@ Scheduler **skips ggml runner load** for deferred models (`ErrRuntimeInferenceMo
 ## Prerequisites
 
 ```bash
-LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
-./scripts/ensure_mlx_sources.sh   # only if also testing MLX
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build/build_llama_server.sh
+./scripts/mlx/ensure_mlx_sources.sh   # only if also testing MLX
 ./zerollama doctor
 ```
 
@@ -80,7 +80,7 @@ go run ./cmd/bench -model llama3.2:3b -epochs 3 -format csv -output ggml.csv
 **llama.cpp backend (Python runtime):**
 
 ```bash
-./scripts/serve_llama_cpp_backend.sh
+./scripts/serve/serve_llama_cpp_backend.sh
 go run ./cmd/bench -model llama3.2:3b -epochs 3 -format csv -output llamacpp.csv
 ```
 
@@ -103,8 +103,8 @@ Check runtime health: `curl -s http://127.0.0.1:8081/health | jq '.llama_backend
 ## Upstream Ollama comparison
 
 ```bash
-./scripts/clone_upstream_ollama.sh
-./scripts/build_upstream_ollama_mac.sh
+./scripts/gpu/clone_upstream_ollama.sh
+./scripts/build/build_upstream_ollama_mac.sh
 OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve
 ```
 

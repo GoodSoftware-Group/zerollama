@@ -32,7 +32,7 @@
 |-------|-----|
 | `runtime/setup.py` | Auto-links `-lllama` when libllama found (v25); `ZEROLLAMA_KV_DECODE_LOOP=0` for unlinked CI |
 | `native/kv_decode_loop.c` | `llama_max_devices()` link probe — no inference |
-| `scripts/phase15_kv_decode_loop_build.sh` | Optional operator smoke |
+| `scripts/phase/phase15_kv_decode_loop_build.sh` | Optional operator smoke |
 
 Default CI build: `ZEROLLAMA_KV_DECODE_LOOP=0` (no libllama on GitHub runners). GPU / dev builds auto-link when libllama is under `LLAMA_CPP_ROOT`.
 
@@ -59,7 +59,7 @@ Optional E2E:
 # Auto-links when libllama is built under LLAMA_CPP_ROOT (v25 default)
 cd runtime && LLAMA_CPP_ROOT=/path/to/llama.cpp python3 setup.py build_ext --inplace
 export RUN_E2E_DECODE_LOOP=1 LLAMA_MODEL=/path/to/small.gguf
-../scripts/phase15_kv_decode_loop_build.sh
+../scripts/phase/phase15_kv_decode_loop_build.sh
 ```
 
 **Still open (v16):** engine passes `current_pos` from `kv_physical` into generate; tensor page bind.
@@ -230,7 +230,7 @@ Libllama link (v12–v25, auto when libllama present):
 export LLAMA_CPP_ROOT=/path/to/llama.cpp
 export LLAMA_CPP_ROOT=/path/to/llama.cpp
 cd runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_kv_decode_loop_build.sh
+../scripts/phase/phase15_kv_decode_loop_build.sh
 ```
 
 Enable at runtime:
@@ -247,6 +247,6 @@ Default block allocator remains Python (`kv.backend: python` on `/health`). Page
 cd runtime && PYTHONPATH=. python3 -m pytest tests/test_kv_native_parity.py tests/test_kv_page_bind.py tests/test_kv_native_decode_batch.py tests/test_kv_decode_plan.py tests/test_kv_decode_work_plan.py -q
 ```
 
-CI: `./scripts/phase15_kv_native_ci.sh` — build native + KV pytest bundle.
+CI: `./scripts/phase/phase15_kv_native_ci.sh` — build native + KV pytest bundle.
 
 See [docs/phase15-native-kv.md](../../docs/phase15-native-kv.md).

@@ -10,15 +10,15 @@ Install prerequisites:
 
 ```bash
 sudo apt install python3.11-dev pkg-config
-source ./scripts/training_embed_build_env.sh 3.11   # WHY: overlay pkg-config before go build
+source ./scripts/training/training_embed_build_env.sh 3.11   # WHY: overlay pkg-config before go build
 CGO_ENABLED=1 go build -o zerollama .
-TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify
+TRAINING_UV_PYTHON_VER=3.11 ./scripts/training/training_uv_venv.sh --verify
 ldd ./zerollama | grep libpython   # expect 3.11
 ```
 
-See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). **`5080_build_zerollama`** in [`scripts/5080_env.sh`](../scripts/5080_env.sh) sources the embed overlay automatically when `python-3.11-embed` is installed.
+See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). **`5080_build_zerollama`** in [`scripts/gpu/5080_env.sh`](../scripts/gpu/5080_env.sh) sources the embed overlay automatically when `python-3.11-embed` is installed.
 
-**5080 production serve:** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh` to `~/bin`:** breaks repo-root detection (`_ROOT=$HOME`). See [5080-runbook.md](./5080-runbook.md#production-serve-binserve-sh).
+**5080 production serve:** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh` to `~/bin`:** breaks repo-root detection (`_ROOT=$HOME`). See [5080-runbook.md](./5080-runbook.md#production-serve-binserve-sh).
 
 Then build and run Ollama from the root directory of the repository:
 
@@ -32,7 +32,7 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 **Architecture (directional):** Zerollama aggregates **many inference callers** and **optional training jobs** into **queued work** sharing one or few GPUs per node; the roadmap spells out today’s split schedulers vs a future **unified policy** (priorities, idle training) on each host, and a **fleet management node** for multi-node warm routing and agent status. See [ROADMAP.md](./ROADMAP.md#product-model-queues-stakeholders-and-gpu-time) and [fleet-scheduling.md](./fleet-scheduling.md).
 
-**Compare with upstream Ollama:** Zerollama adds Python runtime, training, and Eliza; upstream routes default GGUF as **Go → llama-server** (no Python sidecar). Clone vanilla Ollama beside this repo for A/B without merging: `./scripts/clone_upstream_ollama.sh` → [upstream-ollama-diff.md](./upstream-ollama-diff.md).
+**Compare with upstream Ollama:** Zerollama adds Python runtime, training, and Eliza; upstream routes default GGUF as **Go → llama-server** (no Python sidecar). Clone vanilla Ollama beside this repo for A/B without merging: `./scripts/gpu/clone_upstream_ollama.sh` → [upstream-ollama-diff.md](./upstream-ollama-diff.md).
 
 > [!NOTE]
 > Ollama includes native code compiled with CGO.  From time to time these data structures can change and CGO can get out of sync resulting in unexpected crashes.  You can force a full build of the native code by running `go clean -cache` first. 
@@ -45,7 +45,7 @@ macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** m
 **First-time setup:** see **[mac-dev-setup.md](./mac-dev-setup.md)** (tier 0 bootstrap for any Mac / any checkout path).
 
 ```bash
-./scripts/dev_bootstrap.sh   # clone ../llama.cpp if needed; sign-off off by default
+./scripts/runtime/dev_bootstrap.sh   # clone ../llama.cpp if needed; sign-off off by default
 zerollama serve              # default :11434; auto sidecar on :8081, autoconfig, training venv
 zerollama doctor             # check CGO env, uv, libllama, sidecar /health
 zerollama doctor --fix       # uv venv + Mac CGO build; clones ../llama.cpp then builds libllama when missing (M14)
@@ -55,11 +55,11 @@ zerollama doctor --fix       # uv venv + Mac CGO build; clones ../llama.cpp then
 
 **Serve on macOS:** `zerollama serve` listens on **`OLLAMA_HOST`** (default `:11434`). On Apple Silicon it automatically ensures `runtime/.venv`, starts the Python runtime sidecar on loopback `:8081`, enables autoconfig (`ZEROLLAMA_AUTO_CONFIG=1`), and prepares the training venv when `OLLAMA_TRAINING` is on. No wrapper scripts required for daily use.
 
-**CI / sign-off only:** `./scripts/metal_signoff.sh` and `./scripts/macos_metal_smoke.sh` use **`OLLAMA_HOST=:8080`** + sidecar `:8081` — not the default `:11434` daily layout.
+**CI / sign-off only:** `./scripts/gpu/metal_signoff.sh` and `./scripts/gpu/macos_metal_smoke.sh` use **`OLLAMA_HOST=:8080`** + sidecar `:8081` — not the default `:11434` daily layout.
 
 **Escape hatches:** set `ZEROLLAMA_RUNTIME_URL` to an existing sidecar (skip spawn), `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0` for ggml-only, or `OLLAMA_TRAINING=false` to skip training deps.
 
-**Build (CGO):** use **`./scripts/build_zerollama_mac.sh`** (or `./scripts/mac_setup.sh`). Details: [mac-dev-setup.md](./mac-dev-setup.md).
+**Build (CGO):** use **`./scripts/build/build_zerollama_mac.sh`** (or `./scripts/runtime/mac_setup.sh`). Details: [mac-dev-setup.md](./mac-dev-setup.md).
 
 Optional **MLX engine** for safetensors models: see [MLX Engine](#mlx-engine-optional) below.
 
@@ -223,17 +223,17 @@ Clone sibling repos with **full history** (not `--depth 1`) so pinned commits st
 ```shell
 git clone https://github.com/ml-explore/mlx.git ../mlx
 git clone https://github.com/ml-explore/mlx-c.git ../mlx-c
-./scripts/ensure_mlx_sources.sh   # fetch MLX_VERSION / MLX_C_VERSION if missing
+./scripts/mlx/ensure_mlx_sources.sh   # fetch MLX_VERSION / MLX_C_VERSION if missing
 ```
 
 For example, using the helper scripts with local mlx and mlx-c repos:
 ```shell
-OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build_linux.sh
+OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build/build_linux.sh
 
-OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build_darwin.sh
+OLLAMA_MLX_SOURCE=../mlx OLLAMA_MLX_C_SOURCE=../mlx-c ./scripts/build/build_darwin.sh
 
 # arm64 production layout (dist/darwin-arm64/) — see mac-dev-setup.md
-./scripts/build_production_mac.sh
+./scripts/build/build_production_mac.sh
 ```
 
 ```powershell
@@ -247,7 +247,7 @@ $env:OLLAMA_MLX_C_SOURCE="../mlx-c"
 Zerollama is a fork with **Python runtime**, **training**, and **Eliza cloud**. Upstream [ollama/ollama](https://github.com/ollama/ollama) removed in-process ggml for text GGUF and uses **`llm/llama_server.go`** instead.
 
 ```bash
-./scripts/clone_upstream_ollama.sh          # ../ollama-upstream
+./scripts/gpu/clone_upstream_ollama.sh          # ../ollama-upstream
 cd ../ollama-upstream && go build -o ollama .
 OLLAMA_HOST=127.0.0.1:11435 ./ollama serve   # A/B vs zerollama :11434
 ```

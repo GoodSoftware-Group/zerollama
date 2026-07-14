@@ -1,3 +1,3 @@
 # Config-only Wan T2V preset (weights live under ~/.zerollama/third_party/wan).
-# Register with: ../../scripts/register_wan_models.sh wan2.1-t2v:1.3b modelfiles/wan2.1-t2v/config.json
+# Register with: ../../scripts/video/register_wan_models.sh wan2.1-t2v:1.3b modelfiles/wan2.1-t2v/config.json
 # Or after install: zerollama create wan2.1-t2v:1.3b -f Modelfile  (use register script; no GGUF in this directory)

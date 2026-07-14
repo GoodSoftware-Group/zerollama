@@ -4,7 +4,7 @@
 
 **Status (CT 1564):** **Full re-sign-off PASS** — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
 
-**This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/metal_signoff.sh`.
+**This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`.
 
 ---
 
@@ -47,22 +47,22 @@
 cd ~/zerollama
 git pull
 
-source ./scripts/5080_env.sh          # PYTHONPATH, paths, RUN_E2E_PREFLIGHT=0
-./scripts/5080_resignoff.sh --build   # rebuild + tiers 0→4 (stop on first FAIL)
+source ./scripts/gpu/5080_env.sh          # PYTHONPATH, paths, RUN_E2E_PREFLIGHT=0
+./scripts/gpu/5080_resignoff.sh --build   # rebuild + tiers 0→4 (stop on first FAIL)
 
 # Radix cross-slot (after L3 same-key PASS) — needs vendor llama-server:
-source ./scripts/5080_env.sh
-./scripts/5080_resignoff.sh --tier 2 --radix --vendor --no-serve
+source ./scripts/gpu/5080_env.sh
+./scripts/gpu/5080_resignoff.sh --tier 2 --radix --vendor --no-serve
 ```
 
 | Script | Role |
 |--------|------|
-| [`scripts/5080_env.sh`](../scripts/5080_env.sh) | Source once — CT paths, GGUF, `PYTHONPATH`, helpers: `5080_start_serve`, `5080_build_patched_libllama`, `5080_build_vendor_llama_server`, `5080_setup_venvs` |
-| [`scripts/5080_resignoff.sh`](../scripts/5080_resignoff.sh) | Full re-sign-off driver (`--tier N`, `--radix`, `--vendor`, `--build`) |
-| [`scripts/gpu_5080_session.sh`](../scripts/gpu_5080_session.sh) | Tier 1 only (Phase 11–13 + snapshot) when serve already up |
-| [`scripts/llama_patch_doctor.sh`](../scripts/llama_patch_doctor.sh) | Vendor / `/kv/seq-copy` before Radix live |
-| [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) | In-repo production env (`OLLAMA_HOST=0.0.0.0:8080`, PYTHONPATH, vendor llama-server) |
-| [`scripts/serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh) | Install as `~/bin/serve.sh` — **WHY:** copying the example to `~/bin` breaks repo-root detection |
+| [`scripts/gpu/5080_env.sh`](../scripts/gpu/5080_env.sh) | Source once — CT paths, GGUF, `PYTHONPATH`, helpers: `5080_start_serve`, `5080_build_patched_libllama`, `5080_build_vendor_llama_server`, `5080_setup_venvs` |
+| [`scripts/gpu/5080_resignoff.sh`](../scripts/gpu/5080_resignoff.sh) | Full re-sign-off driver (`--tier N`, `--radix`, `--vendor`, `--build`) |
+| [`scripts/gpu/gpu_5080_session.sh`](../scripts/gpu/gpu_5080_session.sh) | Tier 1 only (Phase 11–13 + snapshot) when serve already up |
+| [`scripts/vendor/llama_patch_doctor.sh`](../scripts/vendor/llama_patch_doctor.sh) | Vendor / `/kv/seq-copy` before Radix live |
+| [`scripts/serve/serve_gpu_example.sh`](../scripts/serve/serve_gpu_example.sh) | In-repo production env (`OLLAMA_HOST=0.0.0.0:8080`, PYTHONPATH, vendor llama-server) |
+| [`scripts/serve/serve_production_wrapper.sh`](../scripts/serve/serve_production_wrapper.sh) | Install as `~/bin/serve.sh` — **WHY:** copying the example to `~/bin` breaks repo-root detection |
 
 ### `5080_env.sh` helpers (after `source`)
 
@@ -88,12 +88,12 @@ source ./scripts/5080_env.sh
 
 | Goal | Command |
 |------|---------|
-| Pull + smoke base only | `git pull && source ./scripts/5080_env.sh && 5080_start_serve && ./scripts/gpu_5080_session.sh` |
+| Pull + smoke base only | `git pull && source ./scripts/gpu/5080_env.sh && 5080_start_serve && ./scripts/gpu/gpu_5080_session.sh` |
 | Production serve | `~/bin/serve.sh` (wrapper → in-repo example); `tail -f /tmp/zerollama-serve.log` |
 | Stop everything | `5080_stop_serve` |
 | Health | `curl -s http://127.0.0.1:8081/health \| jq .` |
 | Training status | `curl -s http://127.0.0.1:8080/api/train/status \| jq .` |
-| Single tier | `./scripts/5080_resignoff.sh --tier 2 --no-serve` (serve must already be healthy) |
+| Single tier | `./scripts/gpu/5080_resignoff.sh --tier 2 --no-serve` (serve must already be healthy) |
 
 ---
 
@@ -139,22 +139,22 @@ pct exec 1564 -- bash -lc 'cd /root/zerollama && …'
 | **CGO build** | `CGO_ENABLED=1 go build -o zerollama .` | Go ggml + embed need CGO. |
 | **cpp-httplib (minimal CT)** | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` then rebuild | **Symptom:** `fatal error: cpp-httplib/httplib.h`. Root `.gitignore` excludes `vendor/`; CT often lacks httplib. **Why `RUN_E2E_PREFLIGHT=0`:** skip Go golden when httplib missing; CI still runs `phase12_golden_ci.sh`. |
 | **Linux link** | `-lstdc++` in `llama/llama.go` (not `-lc++`) | **Symptom:** `cannot find -lc++` on Debian CTs. |
-| **llama-server** | `LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh` | Runtime subprocess + Phase 17 smokes need CUDA `llama-server`. |
+| **llama-server** | `LLAMA_CPP_ROOT=../llama.cpp ./scripts/build/build_llama_server.sh` | Runtime subprocess + Phase 17 smokes need CUDA `llama-server`. |
 | **Patched libllama (Tier 3)** | See [Build patched libllama](#build-patched-libllama-phase-15--sm_120) | Phase 15 linked `_kv_native` needs kv-ext symbols in `libllama.so`. |
 | **Smoke GGUF** | 1B Q8 (e.g. OuteTTS) for base session | Fits 16 GiB; calibration evidence only until production re-run. |
 | **Production GGUF (L1/L3)** | eliza-1 9B @ 8k/27k | L1 concurrent + L3 strict/production gates — not 1B smoke. |
 | **Pulled tag** | `zerollama pull llama3.2:3b` | Phase 17 / edge smokes need a local manifest name. |
-| **Runtime venv** | `RUNTIME_UV_SYNC=1 ./scripts/runtime_uv_venv.sh` | Embed needs `uvicorn` on `PYTHONPATH`; Phase 15 `_kv_native` build needs `setuptools>=75`. |
-| **Training venv + embed** | `sudo apt install python3.11-dev`; `source ./scripts/training_embed_build_env.sh 3.11 && CGO_ENABLED=1 go build -o zerollama .`; `TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify` | **WHY 3.11 on 5080/CT 1564:** runtime `.venv` is already 3.11; default `python3-embed` on Ubuntu 22.04 is 3.10 — without `training_embed_build_env.sh` the binary and venv diverge. **Production:** `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh` (not a verbatim copy of `serve_gpu_example.sh`). |
+| **Runtime venv** | `RUNTIME_UV_SYNC=1 ./scripts/runtime/runtime_uv_venv.sh` | Embed needs `uvicorn` on `PYTHONPATH`; Phase 15 `_kv_native` build needs `setuptools>=75`. |
+| **Training venv + embed** | `sudo apt install python3.11-dev`; `source ./scripts/training/training_embed_build_env.sh 3.11 && CGO_ENABLED=1 go build -o zerollama .`; `TRAINING_UV_PYTHON_VER=3.11 ./scripts/training/training_uv_venv.sh --verify` | **WHY 3.11 on 5080/CT 1564:** runtime `.venv` is already 3.11; default `python3-embed` on Ubuntu 22.04 is 3.10 — without `training_embed_build_env.sh` the binary and venv diverge. **Production:** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh` (not a verbatim copy of `serve_gpu_example.sh`). |
 | **Legacy 3.10 cleanup** | After both binary and `.venv-training` are 3.11: `rm -rf venv-training/ .venv-training-py310.bak` | **WHY:** duplicate torch stacks ~7 GiB each; legacy `venv-training/` is ignored by scripts. See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). |
 | **NVML (Proxmox passthrough)** | `libnvidia-ml1` must match host kernel module | CT 1564: host **590.48.01** — if `nvidia-smi` reports driver/library mismatch: `nvidia-driver-pinning-590.48.01` + `libnvidia-ml1=590.48.01-1` (`--allow-downgrades`). |
 
 **CT 1564 build + serve (after pull):**
 
 ```bash
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 5080_setup_venvs          # first time only — runtime (+ training) venv
-5080_build_zerollama      # or: ./scripts/5080_resignoff.sh --build
+5080_build_zerollama      # or: ./scripts/gpu/5080_resignoff.sh --build
 5080_build_sibling_llama_server
 5080_pull_proxy_model     # llama3.2:3b for Phase 17 smokes
 ```
@@ -166,7 +166,7 @@ source ./scripts/5080_env.sh
 **Do not copy export blocks from older docs.** Source once:
 
 ```bash
-source ./scripts/5080_env.sh   # PYTHONPATH, GGUF paths, RUN_E2E_PREFLIGHT=0, serve helpers
+source ./scripts/gpu/5080_env.sh   # PYTHONPATH, GGUF paths, RUN_E2E_PREFLIGHT=0, serve helpers
 5080_print_env                 # sanity check
 ```
 
@@ -181,11 +181,11 @@ Override any variable after sourcing (e.g. `export CUDA_LLAMA_MODEL=/path/other.
 **Why:** Phase 15 in-process sign-off links `_kv_native` against `libllama.so` with **kv-ext** symbols. Stock sibling `llama.cpp` without patch **0014** fails `nm … llama_memory_kv_`. Host CUDA **12.3** cannot compile **sm_120** — install **cuda-nvcc-12-8** in the CT.
 
 ```bash
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 5080_build_patched_libllama    # checkout b9781 + copy kv-ext from in-tree; cmake sm_120
 ```
 
-**Pin check (no GPU):** `./scripts/phase15_llama_kv_ext_pin_check.sh` — run before a long CUDA rebuild.
+**Pin check (no GPU):** `./scripts/phase/phase15_llama_kv_ext_pin_check.sh` — run before a long CUDA rebuild.
 
 **Vendor alternative:** `5080_build_vendor_llama_server` for Radix `/kv/seq-copy` (patch 0017); Phase 15 KV-ext on sibling is still the documented path for tier 3. See [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
 
@@ -196,7 +196,7 @@ source ./scripts/5080_env.sh
 **Why not sibling alone:** bare `~/llama.cpp` often lacks `POST /kv/seq-copy` even when in-tree carries patch **0017**. Radix cross-slot live **requires** vendor build.
 
 ```bash
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 # First time: vendor tree
 cd ~/zerollama && make -f Makefile.sync vendor   # → vendor/llama-cpp-c84b3020
 
@@ -204,9 +204,9 @@ cd ~/zerollama && make -f Makefile.sync vendor   # → vendor/llama-cpp-c84b3020
 5080_patch_doctor                 # optional live probe on :8082
 ```
 
-**Fold into resignoff:** `./scripts/5080_resignoff.sh --tier 2 --radix --vendor --no-serve`
+**Fold into resignoff:** `./scripts/gpu/5080_resignoff.sh --tier 2 --radix --vendor --no-serve`
 
-**Patch doctor (offline):** `./scripts/llama_patch_doctor.sh` — greps vendor HEAD, binary `/kv/seq-copy`, resolved paths.
+**Patch doctor (offline):** `./scripts/vendor/llama_patch_doctor.sh` — greps vendor HEAD, binary `/kv/seq-copy`, resolved paths.
 
 ---
 
@@ -217,7 +217,7 @@ cd ~/zerollama && make -f Makefile.sync vendor   # → vendor/llama-cpp-c84b3020
 **Gate / dev (loopback, from `5080_env.sh`):**
 
 ```bash
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 5080_start_serve    # 5080_stop_serve + zerollama serve + /health wait
 ```
 
@@ -233,7 +233,7 @@ source ./scripts/5080_env.sh
 
 ```bash
 cd ~/zerollama
-cp scripts/serve_production_wrapper.sh ~/bin/serve.sh
+cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh
 chmod +x ~/bin/serve.sh
 ```
 
@@ -250,7 +250,7 @@ curl -s http://127.0.0.1:8080/api/train/status | jq .
 
 **Remote smoke (CT 1564 example):** `curl -s http://192.168.255.164:8080/api/tags`
 
-In-repo reference (same env, for debugging): [`scripts/serve_gpu_example.sh`](../scripts/serve_gpu_example.sh) sets:
+In-repo reference (same env, for debugging): [`scripts/serve/serve_gpu_example.sh`](../scripts/serve/serve_gpu_example.sh) sets:
 
 | Env | Production value | Why |
 |-----|------------------|-----|
@@ -271,15 +271,15 @@ In-repo reference (same env, for debugging): [`scripts/serve_gpu_example.sh`](..
 ```bash
 sudo apt install python3.11-dev python3.11-embed
 cd ~/zerollama
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 5080_setup_venvs
 
 # Rebuild binary pinned to 3.11 embed:
-source ./scripts/training_embed_build_env.sh 3.11
+source ./scripts/training/training_embed_build_env.sh 3.11
 CGO_ENABLED=1 go build -o zerollama .
 cp zerollama /usr/bin/zerollama
 
-TRAINING_UV_PYTHON_VER=3.11 ./scripts/training_uv_venv.sh --verify
+TRAINING_UV_PYTHON_VER=3.11 ./scripts/training/training_uv_venv.sh --verify
 ```
 
 **Cleanup after migration:** `rm -rf venv-training/ .venv-training-py310.bak` (~7 GiB each if duplicate torch stacks).
@@ -298,10 +298,10 @@ curl -s http://127.0.0.1:8080/api/train/status | jq .
 
 ```bash
 ./scripts/check_gpu_scripts.sh
-./scripts/phase12_golden_ci.sh          # full dev host only; skipped when RUN_E2E_PREFLIGHT=0
-./scripts/phase15_kv_native_ci.sh     # CPU Phase 15 pytest bundle
-./scripts/phase15_upstream_kv_watch.sh  # upstream writable-bind symbol watch (no GPU)
-./scripts/phase17_l2_pin_status.sh      # L2 pin report (no GPU)
+./scripts/phase/phase12_golden_ci.sh          # full dev host only; skipped when RUN_E2E_PREFLIGHT=0
+./scripts/phase/phase15_kv_native_ci.sh     # CPU Phase 15 pytest bundle
+./scripts/phase/phase15_upstream_kv_watch.sh  # upstream writable-bind symbol watch (no GPU)
+./scripts/phase/phase17_l2_pin_status.sh      # L2 pin report (no GPU)
 ```
 
 ---
@@ -312,7 +312,7 @@ curl -s http://127.0.0.1:8080/api/train/status | jq .
 
 ```bash
 kill $(pgrep -xo zerollama) 2>/dev/null || fuser -k 8080/tcp 8081/tcp 2>/dev/null || true
-./scripts/gpu_5080_session.sh
+./scripts/gpu/gpu_5080_session.sh
 ```
 
 **Pass:** `PASS: gpu_5080_session` + `/tmp/5080-session.json` (or `GPU_PHASE13_SNAPSHOT_OUT`).
@@ -333,12 +333,12 @@ export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf   # 7B–9B production proxy
 # Combined in one session:
 RUN_E2E_PREFLIGHT=0 RUN_E2E_L1=1 RUN_E2E_L3=1 \
   CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" \
-  ./scripts/gpu_5080_session.sh
+  ./scripts/gpu/gpu_5080_session.sh
 
 # Or standalone:
-./scripts/l1_cuda_full_gate.sh
-./scripts/l3_cuda_full_gate.sh
-./scripts/l3_production_gate.sh    # 27k ctx production verdict
+./scripts/phase/l1_cuda_full_gate.sh
+./scripts/phase/l3_cuda_full_gate.sh
+./scripts/phase/l3_production_gate.sh    # 27k ctx production verdict
 ```
 
 | Gate | Status (CT 1564, Jun 28 2026) | Notes |
@@ -352,28 +352,28 @@ RUN_E2E_PREFLIGHT=0 RUN_E2E_L1=1 RUN_E2E_L3=1 \
 Optional spec-decode × L3 policy leg:
 
 ```bash
-RUN_E2E_L3_SPEC=1 RUN_E2E_PREFLIGHT=0 RUN_E2E_L3=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_L3_SPEC=1 RUN_E2E_PREFLIGHT=0 RUN_E2E_L3=1 ./scripts/gpu/gpu_5080_session.sh
 
 # Radix cross-slot (optional — after same-key L3 PASS; vendor llama-server required):
-RUN_E2E_PREFLIGHT=0 RUN_E2E_L3_RADIX=1 CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/gpu_5080_session.sh
+RUN_E2E_PREFLIGHT=0 RUN_E2E_L3_RADIX=1 CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/gpu/gpu_5080_session.sh
 # Or folded into L3 gate:
-RUN_E2E_PREFLIGHT=0 RUN_E2E_L3=1 RUN_E2E_L3_RADIX=1 CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/gpu_5080_session.sh
+RUN_E2E_PREFLIGHT=0 RUN_E2E_L3=1 RUN_E2E_L3_RADIX=1 CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/gpu/gpu_5080_session.sh
 # Standalone:
-CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh
+CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh
 ```
 
 ---
 
 ## Tier 3 — Phase 14 + 15 (in-process KV)
 
-**Why:** Mac closes this with `./scripts/metal_signoff.sh`; CUDA uses **embed** path (`phase15_inprocess_signoff.sh`), not uv sidecar. Phase 15 needs **patched** `libllama.so` + `LLAMA_CPP_LIB`; multiseq smokes set **`ZEROLLAMA_GPU_PROFILE=0`** — **why:** L1 `-np 4` breaks `kv_inprocess_n_seq_max=2`.
+**Why:** Mac closes this with `./scripts/gpu/metal_signoff.sh`; CUDA uses **embed** path (`phase15_inprocess_signoff.sh`), not uv sidecar. Phase 15 needs **patched** `libllama.so` + `LLAMA_CPP_LIB`; multiseq smokes set **`ZEROLLAMA_GPU_PROFILE=0`** — **why:** L1 `-np 4` breaks `kv_inprocess_n_seq_max=2`.
 
 ### Phase 15 only (~10 min)
 
 ```bash
 export LLAMA_CPP_LIB="$HOME/llama.cpp/build/bin/libllama.so"   # or vendor build with kv-ext
 kill $(pgrep -xo zerollama) 2>/dev/null || fuser -k 8080/tcp 8081/tcp 2>/dev/null || true
-./scripts/phase15_inprocess_signoff.sh
+./scripts/phase/phase15_inprocess_signoff.sh
 ```
 
 **Pass:** KV hook (`kv_decode_steps>0`, `batch_decode_in_c=True`), multiseq, batch decode via `/internal/generate-batch`, `smoke_runtime_assert_kv_snapshot` accepts **`bound`+`tensor`** when kv-ext linked.
@@ -388,9 +388,9 @@ kill $(pgrep -xo zerollama) 2>/dev/null || fuser -k 8080/tcp 8081/tcp 2>/dev/nul
 **Optional tensor bind spot-check** (after multiseq PASS):
 
 ```bash
-source ./scripts/phase15_runtime_kv_env.sh
+source ./scripts/phase/phase15_runtime_kv_env.sh
 phase15_runtime_kv_ext_build
-./scripts/phase15_tensor_bind_probe.sh
+./scripts/phase/phase15_tensor_bind_probe.sh
 curl -s :8081/health | jq '.kv_page_bind, .kv_decode_loop'
 ```
 
@@ -400,7 +400,7 @@ Expect `batch_decode_in_c: true`; after generate with active bind: `status: "bou
 
 ```bash
 export LLAMA_CPP_LIB="$HOME/llama.cpp/build/bin/libllama.so"
-RUN_E2E_PREFLIGHT=0 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_PREFLIGHT=0 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu/gpu_5080_session.sh
 ```
 
 **Why separate from Tier 1:** sign-off **restarts serve** per backend; folded into session only when explicitly flagged.
@@ -422,24 +422,24 @@ export RUN_E2E_PROXY_MODEL=llama3.2:3b
 kill $(pgrep -xo zerollama) 2>/dev/null || fuser -k 8080/tcp 8081/tcp 2>/dev/null || true
 
 # One flag — sets RUN_E2E_P17 + RUN_E2E_P17_LINUX_AUTO + RUN_E2E_EDGE (needs serve up for base leg):
-RUN_E2E_PREFLIGHT=0 RUN_E2E_UPSTREAM_GGUF=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_PREFLIGHT=0 RUN_E2E_UPSTREAM_GGUF=1 ./scripts/gpu/gpu_5080_session.sh
 ```
 
 **Recommended on 5080 (avoids fork-cache × stock llama-server clash):**
 
 ```bash
-LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase17_llama_server_smoke.sh
-LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase17_linux_auto_smoke.sh
-P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./scripts/phase16_edge_smoke.sh
+LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase/phase17_llama_server_smoke.sh
+LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase/phase17_linux_auto_smoke.sh
+P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./scripts/phase/phase16_edge_smoke.sh
 ```
 
 **Individual smokes via session flags** (also valid; each restarts serve):
 
 ```bash
-RUN_E2E_P17=1 ./scripts/gpu_5080_session.sh              # Go → llama-server generate
-RUN_E2E_P17_LINUX_AUTO=1 ./scripts/gpu_5080_session.sh   # plain serve, backend.llama_server=auto
-RUN_E2E_EDGE=1 ./scripts/gpu_5080_session.sh             # serve --edge, runtime chat off
-./scripts/phase16_edge_build_smoke.sh                    # no GPU: -tags edge compile
+RUN_E2E_P17=1 ./scripts/gpu/gpu_5080_session.sh              # Go → llama-server generate
+RUN_E2E_P17_LINUX_AUTO=1 ./scripts/gpu/gpu_5080_session.sh   # plain serve, backend.llama_server=auto
+RUN_E2E_EDGE=1 ./scripts/gpu/gpu_5080_session.sh             # serve --edge, runtime chat off
+./scripts/phase/phase16_edge_build_smoke.sh                    # no GPU: -tags edge compile
 ```
 
 **Pass criteria:** `phase17_llama_server_smoke` generate OK; `/api/status` shows `inference.backend` with `llama_server`; edge smoke: no `:8081` runtime chat; `GET /api/version` `edge_build` when using `-tags edge` binary. Edge smoke: if `empty response` at default `num_predict=8`, retry with `P17_NUM_PREDICT=32`.
@@ -497,7 +497,7 @@ python -m runtime.gpu_snapshot /tmp/5080-session.json
 
 **Problem:** Go may return **503** before Phase 8 broker runs; stale ggml runner holds VRAM → runtime 502/503.
 
-**Solution:** `smoke_unload_ggml_runners` in `scripts/runtime_smoke_lib.sh`:
+**Solution:** `smoke_unload_ggml_runners` in `scripts/runtime/runtime_smoke_lib.sh`:
 
 1. `pgrep -f '/zerollama runner --'` only (not shell lines).
 2. `/api/ps` → each model `keep_alive:0`.
@@ -531,10 +531,10 @@ python -m runtime.gpu_snapshot /tmp/5080-session.json
 ```bash
 export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-/root/eliza-1-9b-256k.gguf}"
 # First time fork build:
-L2_BUILD_FORK=1 ./scripts/l2_cuda_full_gate.sh
-./scripts/l2_gate_report.sh /tmp/l2-cuda-gate/bench-*.json
+L2_BUILD_FORK=1 ./scripts/phase/l2_cuda_full_gate.sh
+./scripts/phase/l2_gate_report.sh /tmp/l2-cuda-gate/bench-*.json
 # Or cross-platform pin report (no GPU):
-./scripts/phase17_l2_pin_status.sh
+./scripts/phase/phase17_l2_pin_status.sh
 ```
 
 | Model @ 8192 ctx | Stock tok/s | Fork tok/s | Verdict |
@@ -561,7 +561,7 @@ L2_BUILD_FORK=1 ./scripts/l2_cuda_full_gate.sh
 **27k production:** cached must beat no-cache control — strict `turn2/turn1 ≤ 0.75` may fail when turn-1 already warmed the slot; alternate PASS is cached vs no-cache.
 
 ```bash
-CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/l3_production_gate.sh
+CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/phase/l3_production_gate.sh
 ```
 
 ### Radix cross-slot live (vendor only)
@@ -571,8 +571,8 @@ CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/l3_production_gate.sh
 **PASS (CT 1564):** donor prefill **10.6s** → target **0.66s**; `radix_seed` **128** tokens; artifact `/tmp/l3-radix-prefix-smoke-live.json`.
 
 ```bash
-CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh
-# Or: RUN_E2E_L3_RADIX=1 ./scripts/gpu_5080_session.sh
+CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh
+# Or: RUN_E2E_L3_RADIX=1 ./scripts/gpu/gpu_5080_session.sh
 ```
 
 **Optional spec-decode × L3:** `RUN_E2E_L3_SPEC=1` — policy leg after same-key L3 PASS.
@@ -592,7 +592,7 @@ CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_s
 3. Serve with inprocess backend:
 
 ```bash
-source ./scripts/phase14_serve_env.sh
+source ./scripts/phase/phase14_serve_env.sh
 export LLAMA_MODEL="${LLAMA_MODEL:-/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf}"
 export LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-$HOME/llama.cpp/build/bin/libllama.so}"
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
@@ -604,8 +604,8 @@ export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 
 ```bash
 export RUN_E2E_PROXY_MODEL="${RUN_E2E_PROXY_MODEL:-llama3.2:3b}"
-./scripts/phase14_inprocess_smoke.sh
-# Or: RUN_E2E_INPROCESS=1 ./scripts/phase14_backend_smoke.sh
+./scripts/phase/phase14_inprocess_smoke.sh
+# Or: RUN_E2E_INPROCESS=1 ./scripts/phase/phase14_backend_smoke.sh
 ```
 
 **Pass:** `PASS: phase14_backend_smoke`; `/health`: `llama_backend=inprocess`, `llama_backend_source=env`, `llama_server=false`; render-chat `truncate_mode=tokenize`.
@@ -613,16 +613,16 @@ export RUN_E2E_PROXY_MODEL="${RUN_E2E_PROXY_MODEL:-llama3.2:3b}"
 ### Fold into session
 
 ```bash
-RUN_E2E_PREFLIGHT=0 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_PREFLIGHT=0 RUN_E2E_PHASE14_SIGNOFF=1 ./scripts/gpu/gpu_5080_session.sh
 # Runs phase14_5080_signoff.sh — restarts serve per backend (~15–20 min with Phase 15)
 ```
 
 ### Optional: YAML inprocess (after env smoke PASS)
 
 ```bash
-./scripts/phase14_enable_yaml_inprocess.sh
+./scripts/phase/phase14_enable_yaml_inprocess.sh
 # restart serve without ZEROLLAMA_RUNTIME_LLAMA_BACKEND
-RUN_E2E_LLAMA_BACKEND_SOURCE=config ./scripts/phase14_yaml_config_smoke.sh
+RUN_E2E_LLAMA_BACKEND_SOURCE=config ./scripts/phase/phase14_yaml_config_smoke.sh
 ```
 
 Uncomment `llama_backend: inprocess` in `runtime/configs/single_gpu.yaml` — `/health` shows `llama_backend_source=config`.
@@ -646,13 +646,13 @@ Uncomment `llama_backend: inprocess` in `runtime/configs/single_gpu.yaml` — `/
 | Goal | Command | Why |
 |------|---------|-----|
 | **Training ops** | `RUN_E2E_TRAINING_OPS=1` (serve needs `OLLAMA_TRAINING=true`) | Embedded training HTTP/TCP without blocking inference smokes |
-| **Tools chat** | `RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh` | Runtime `/api/chat` with tools — 501 means wrong route |
+| **Tools chat** | `RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh` | Runtime `/api/chat` with tools — 501 means wrong route |
 | **VRAM clamp** | `RUN_E2E_VRAM_CLAMP=1` + `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` on serve | Opt-in clamp policy — default off in YAML |
-| **L2 fork eval** | `./scripts/l2_full_gate.sh` | Compare stock vs eliza fork @ 8k; long-ctx fork-only legs optional |
-| **Radix live (5080)** | `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` | Cross-slot prefix share — **WHY vendor:** patch 0017 `/kv/seq-copy`; fold via `RUN_E2E_L3_RADIX=1` on `gpu_5080_session.sh` |
+| **L2 fork eval** | `./scripts/phase/l2_full_gate.sh` | Compare stock vs eliza fork @ 8k; long-ctx fork-only legs optional |
+| **Radix live (5080)** | `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh` | Cross-slot prefix share — **WHY vendor:** patch 0017 `/kv/seq-copy`; fold via `RUN_E2E_L3_RADIX=1` on `gpu_5080_session.sh` |
 | **Phase 17 vision** | `RUN_E2E_P17_VISION=1 P17_VISION_MODEL=llava:latest` | Heavy; opt-in projector smoke |
 | **Decode graph** | Rebuild llama-server with `GGML_CUDA_GRAPHS=ON`; L3 smokes | CUDA graph invalidation on slot clear — [decode-graph-invalidation.md](./decode-graph-invalidation.md) |
-| **Writable KV bind watch** | `./scripts/phase15_upstream_kv_watch.sh` | Phase 15 criterion #5 blocked upstream — no live decode required |
+| **Writable KV bind watch** | `./scripts/phase/phase15_upstream_kv_watch.sh` | Phase 15 criterion #5 blocked upstream — no live decode required |
 
 ---
 
@@ -662,34 +662,34 @@ Uncomment `llama_backend: inprocess` in `runtime/configs/single_gpu.yaml` — `/
 
 ```bash
 cd ~/zerollama
-source ./scripts/5080_env.sh
-./scripts/5080_resignoff.sh --build
+source ./scripts/gpu/5080_env.sh
+./scripts/gpu/5080_resignoff.sh --build
 # Optional Radix (vendor llama-server):
-./scripts/5080_resignoff.sh --tier 2 --radix --vendor --no-serve
+./scripts/gpu/5080_resignoff.sh --tier 2 --radix --vendor --no-serve
 ```
 
 **Manual equivalent** (stop on first FAIL):
 
 ```bash
 # 0. Env + one-time build (see sections above)
-source ./scripts/5080_env.sh
+source ./scripts/gpu/5080_env.sh
 export RUN_E2E_PREFLIGHT=0
 5080_start_serve
 
 # 1. Base Phase 11–13
-./scripts/gpu_5080_session.sh
+./scripts/gpu/gpu_5080_session.sh
 
 # 2. L1 + L3 production
-RUN_E2E_L1=1 RUN_E2E_L3=1 ./scripts/gpu_5080_session.sh
+RUN_E2E_L1=1 RUN_E2E_L3=1 ./scripts/gpu/gpu_5080_session.sh
 
 # 3. Phase 15 KV (restarts serve inside script)
 5080_stop_serve
-./scripts/phase15_inprocess_signoff.sh
+./scripts/phase/phase15_inprocess_signoff.sh
 
 # 4. Phase 16/17 upstream (individual smokes)
-LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase17_llama_server_smoke.sh
-LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase17_linux_auto_smoke.sh
-P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./scripts/phase16_edge_smoke.sh
+LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase/phase17_llama_server_smoke.sh
+LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P17_MODEL=llama3.2:3b ./scripts/phase/phase17_linux_auto_smoke.sh
+P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./scripts/phase/phase16_edge_smoke.sh
 ```
 
 **Artifacts to keep:**
@@ -804,9 +804,9 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | `cpp-httplib/httplib.h: No such file` | Minimal checkout, no vendor httplib | `rsync` from sibling `llama.cpp`; or `RUN_E2E_PREFLIGHT=0` for GPU-only gate |
 | `cannot find -lc++` | Debian uses libstdc++ | Rebuild with `-lstdc++` in `llama/llama.go` LDFLAGS |
 | `nvidia-smi` driver/library mismatch | CT userspace ≠ host kernel module | Pin `libnvidia-ml1=590.48.01-1` (CT 1564) |
-| Serve exits immediately / no `:8080` listener | Copied `serve_gpu_example.sh` to `~/bin` — `_ROOT=$HOME` | `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh`; tail `/tmp/zerollama-serve.log` |
-| `ModuleNotFoundError: uvicorn` | Embed without runtime venv on `PYTHONPATH` | Use `~/bin/serve.sh` (wrapper → in-repo example sets `runtime/.venv/...` before training site-packages). `RUNTIME_UV_SYNC=1 ./scripts/runtime_uv_venv.sh` |
-| `training worker not started` / `.venv-training/lib/python3.10/…` | Training venv ABI ≠ embedded libpython | Rebuild with [`training_embed_build_env.sh`](../scripts/training_embed_build_env.sh) **or** recreate venv for `$(./scripts/training_uv_venv.sh --embed-py)`; restart `~/bin/serve.sh`. Doc: [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter) |
+| Serve exits immediately / no `:8080` listener | Copied `serve_gpu_example.sh` to `~/bin` — `_ROOT=$HOME` | `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh`; tail `/tmp/zerollama-serve.log` |
+| `ModuleNotFoundError: uvicorn` | Embed without runtime venv on `PYTHONPATH` | Use `~/bin/serve.sh` (wrapper → in-repo example sets `runtime/.venv/...` before training site-packages). `RUNTIME_UV_SYNC=1 ./scripts/runtime/runtime_uv_venv.sh` |
+| `training worker not started` / `.venv-training/lib/python3.10/…` | Training venv ABI ≠ embedded libpython | Rebuild with [`training_embed_build_env.sh`](../scripts/training/training_embed_build_env.sh) **or** recreate venv for `$(./scripts/training/training_uv_venv.sh --embed-py)`; restart `~/bin/serve.sh`. Doc: [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter) |
 | Duplicate training venvs eating disk | Legacy `venv-training/` + `.venv-training-py310.bak` after 3.11 migration | `rm -rf venv-training/ .venv-training-py310.bak`; keep only `.venv-training/` (~7 GiB saved per removed tree) |
 | `/health` timeout / serve “failed to start” | Cold CUDA health ~9s; old 2s curl | Wait with `curl -m 15`; see `LINUX_RT_CURL_TIMEOUT` |
 | 502/503 runtime smokes, ggml still in `/api/ps` | Broker never ran; stale runner | Smokes retry API unload (`keep_alive:0`); free ports and restart serve |
@@ -837,23 +837,23 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 
 | Piece | Path |
 |-------|------|
-| Session env | `scripts/5080_env.sh` |
-| Re-sign-off driver | `scripts/5080_resignoff.sh` |
-| Base gate wrapper | `scripts/gpu_5080_session.sh` |
-| VRAM unload | `scripts/runtime_smoke_lib.sh` |
-| Phase 13 snapshot | `scripts/gpu_phase13_snapshot.sh` |
+| Session env | `scripts/gpu/5080_env.sh` |
+| Re-sign-off driver | `scripts/gpu/5080_resignoff.sh` |
+| Base gate wrapper | `scripts/gpu/gpu_5080_session.sh` |
+| VRAM unload | `scripts/runtime/runtime_smoke_lib.sh` |
+| Phase 13 snapshot | `scripts/gpu/gpu_phase13_snapshot.sh` |
 | Snapshot hints | `runtime/runtime/gpu_snapshot.py` |
 | VRAM YAML defaults | `runtime/runtime/vram_yaml_defaults.py`, `runtime/configs/single_gpu.yaml` |
 | L1 profile | `runtime/configs/gpu/rtx-5080.json` |
-| Phase 14 smokes | `scripts/phase14_serve_env.sh`, `phase14_backend_smoke.sh`, `phase14_5080_signoff.sh` |
-| Phase 15 smokes | `scripts/phase15_inprocess_signoff.sh`, `phase15_runtime_kv_env.sh` |
-| L2 / L3 gates | `scripts/l2_cuda_full_gate.sh`, `l3_cuda_full_gate.sh`, `l3_radix_prefix_smoke.sh` |
-| Eliza fork build | `scripts/build_eliza_llama_server.sh` |
-| Phase 17 / edge | `scripts/phase17_llama_server_smoke.sh`, `phase17_linux_auto_smoke.sh`, `phase16_edge_smoke.sh` |
-| Production serve | `scripts/serve_production_wrapper.sh` → `scripts/serve_gpu_example.sh` |
+| Phase 14 smokes | `scripts/phase/phase14_serve_env.sh`, `phase14_backend_smoke.sh`, `phase14_5080_signoff.sh` |
+| Phase 15 smokes | `scripts/phase/phase15_inprocess_signoff.sh`, `phase15_runtime_kv_env.sh` |
+| L2 / L3 gates | `scripts/phase/l2_cuda_full_gate.sh`, `l3_cuda_full_gate.sh`, `l3_radix_prefix_smoke.sh` |
+| Eliza fork build | `scripts/build/build_eliza_llama_server.sh` |
+| Phase 17 / edge | `scripts/phase/phase17_llama_server_smoke.sh`, `phase17_linux_auto_smoke.sh`, `phase16_edge_smoke.sh` |
+| Production serve | `scripts/serve/serve_production_wrapper.sh` → `scripts/serve/serve_gpu_example.sh` |
 | Phase 8 broker | `server/vram/broker.go` |
 | Vendor sync | `Makefile.sync` → `vendor/llama-cpp-<pin>` |
-| Patch doctor | `scripts/llama_patch_doctor.sh` |
+| Patch doctor | `scripts/vendor/llama_patch_doctor.sh` |
 
 ---
 
@@ -870,9 +870,9 @@ cmake -B build-mlx --preset "MLX CUDA 12" \
   -DMLX_CUDA_ARCHITECTURES=120-real \
   -DBLAS_INCLUDE_DIRS=/usr/include/x86_64-linux-gnu \
   -DLAPACK_INCLUDE_DIRS=/usr/include
-./scripts/patch_mlx_c_array.sh
-./scripts/patch_mlx_c_debug_cleanup.sh
-./scripts/patch_mlx_cuda_vram.sh
+./scripts/mlx/patch_mlx_c_array.sh
+./scripts/mlx/patch_mlx_c_debug_cleanup.sh
+./scripts/mlx/patch_mlx_cuda_vram.sh
 cmake --build build-mlx --target mlx --target mlxc --parallel
 sudo mkdir -p /usr/lib/ollama/mlx_cuda_v12
 sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/

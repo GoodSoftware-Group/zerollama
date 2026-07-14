@@ -26,7 +26,7 @@ Go :8080  VideoCreateHandler
    │  submitTrainingJob (queue_on_busy) → Python queue OR defer-* queue
    ▼
 training.py  run_local_script
-   │  venv python  scripts/wan_video_generate.py
+   │  venv python  scripts/video/wan_video_generate.py
    ▼
 wan_video_generate.py  →  Wan repo generate.py  (--save_file → artifact mp4)
    │
@@ -47,8 +47,8 @@ GET /v1/videos/:id/content (completed only; video/mp4)
 ## Install
 
 ```bash
-./scripts/install_wan_video.sh --profile all   # or 1.3b | 2.2
-./scripts/register_wan_models.sh
+./scripts/video/install_wan_video.sh --profile all   # or 1.3b | 2.2
+./scripts/video/register_wan_models.sh
 ```
 
 **`flash_attn`:** Off by default (`WAN_INSTALL_FLASH_ATTN=1` to compile). Upstream honors **`MAX_JOBS`** (ninja `-j`) and **`NVCC_THREADS`** (`nvcc --threads`); if `MAX_JOBS` is unset, setup.py sets it from **container CPU count** (not `WAN_FLASH_ATTN_MAX_JOBS`). Our script exports both, e.g. `WAN_INSTALL_FLASH_ATTN=1 WAN_FLASH_ATTN_MAX_JOBS=1 WAN_NVCC_THREADS=1`. For 5080 only: `FLASH_ATTN_CUDA_ARCHS=120`. Wan works without it (PyTorch SDPA).
@@ -151,14 +151,14 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 | HTTP handlers | `server/video_generate.go` |
 | OpenAI types / status | `openai/openai.go` (`Video`, `VideoFromTrainingJob`) |
 | Defer queue metadata | `server/training_submit.go` |
-| Wrapper script | `scripts/wan_video_generate.py` |
-| SM120 torch probe | `scripts/wan_torch_compat.py` |
-| Host RAM hooks (T5 unload) | `scripts/wan_memory_hooks.py` |
-| Generate entry (cuDNN probe) | `scripts/wan_generate_entry.py` |
+| Wrapper script | `scripts/video/wan_video_generate.py` |
+| SM120 torch probe | `scripts/video/wan_torch_compat.py` |
+| Host RAM hooks (T5 unload) | `scripts/video/wan_memory_hooks.py` |
+| Generate entry (cuDNN probe) | `scripts/video/wan_generate_entry.py` |
 | Job execution | `training.py` (`run_local_script`, `{job_id}` substitution) |
 | Wire format | `x/trainingworker/pyembed/bootstrap.py` (`_job_to_dict`) |
 | CLI | `x/videogen/cli.go` |
-| Install / register | `scripts/install_wan_video.sh`, `scripts/register_wan_models.sh` |
+| Install / register | `scripts/video/install_wan_video.sh`, `scripts/video/register_wan_models.sh` |
 
 ## Troubleshooting
 
@@ -170,10 +170,10 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 | **404** defer id | Expired tombstone or wrong id; use id from POST response. |
 | **202** on content | Job still running—poll until `status=completed`. |
 | Missing mp4 after “success” | `generate.py` did not write `--save_file` path—check Wan logs in job stdout. |
-| **`CUDA out of memory`** (T5 / `text_encoder.model.to`) | On 16g use `t5_cpu` + `offload_model` (set in `wan2.1-t2v` manifest; re-run `./scripts/register_wan_models.sh`). Unload other GPU models before video. |
+| **`CUDA out of memory`** (T5 / `text_encoder.model.to`) | On 16g use `t5_cpu` + `offload_model` (set in `wan2.1-t2v` manifest; re-run `./scripts/video/register_wan_models.sh`). Unload other GPU models before video. |
 | **Host RAM ~24G** / CT OOM | T5-XXL (~11G) stays loaded upstream until encode finishes. Default **`WAN_UNLOAD_T5=1`** on 16g frees it before diffusion. Avoid **`WAN_VAE_CPU=1`** unless GPU decode OOMs (CPU VAE adds host RAM). Brief startup spike may need **swap** on a 16G CT while T5+DiT load. |
 | **`cuDNN version incompatibility`** (PyTorch 9.19 vs runtime 9.10) at GPU check | **`LD_LIBRARY_PATH`** from `zerollama serve` (ggml `/usr/hostlibs`, CUDA toolkit) shadows PyTorch's bundled cuDNN. Fixed in-tree: wrapper prepends `venv/.../torch/lib` and drops cudnn/hostlibs entries (`wan_torch_compat.sanitize_ld_library_path_for_pytorch`). Retry the job; or unset hostlibs from serve env if you manage LD manually. |
-| **`free(): invalid pointer`** / exit **250** at `0/25` sampling | **cuDNN conv bug on SM120 (5080)** with torch 2.11+cu128: cuDNN-backed `Conv2d`/`Conv3d` SIGABRT. Not flash_attn. Run `./scripts/install_wan_video.sh` (runs `wan_torch_compat.py` probe); entry auto-disables cuDNN and uses native CUDA conv on GPU. Override: `WAN_DISABLE_CUDNN=0` only after verifying a fixed torch/cuDNN drop. Nightly 2.12+cuDNN 9.20 still fails as of 2026-04. |
+| **`free(): invalid pointer`** / exit **250** at `0/25` sampling | **cuDNN conv bug on SM120 (5080)** with torch 2.11+cu128: cuDNN-backed `Conv2d`/`Conv3d` SIGABRT. Not flash_attn. Run `./scripts/video/install_wan_video.sh` (runs `wan_torch_compat.py` probe); entry auto-disables cuDNN and uses native CUDA conv on GPU. Override: `WAN_DISABLE_CUDNN=0` only after verifying a fixed torch/cuDNN drop. Nightly 2.12+cuDNN 9.20 still fails as of 2026-04. |
 | **`free(): invalid pointer`** (legacy flash_attn) | Source-built `flash_attn` on SM120 can also SIGABRT. Keep `pip uninstall flash-attn`; **`WAN_FORCE_SDPA=1`** uses PyTorch SDPA. |
 | **`CUDA unknown error`** in generate.py | Broken GPU in CT after OOM/crash: check `ls -l /dev/nvidia-uvm` (should be `crw*`, not `----------`). Restart the GPU CT or re-attach passthrough; verify `wan venv/bin/python3 -c "import torch; print(torch.cuda.is_available())"`. |
 | Wrong torch / import from legacy `venv-training/` | Obsolete repo-root venv (3.10 era). Training embed reads **`.venv-training/lib/pythonX.Y/site-packages`** only. Remove `venv-training/` after migrating to 3.11; see [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). Wan subprocesses strip training `PYTHONPATH` — rebuild/restart serve after pull. |

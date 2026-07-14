@@ -1,4 +1,4 @@
-"""Format /health JSON for GPU operator tuning (used by scripts/gpu_health_report.sh)."""
+"""Format /health JSON for GPU operator tuning (used by scripts/gpu/gpu_health_report.sh)."""
 
 from __future__ import annotations
 

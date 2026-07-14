@@ -2974,7 +2974,7 @@ kernel void kernel_gated_delta_net_impl(
         b_ptr += args.ne21;
         g_ptr += args.ne21*G;
 
-        if (K > 1u) {
+        if (K > (short)1) {
             const int target_slot = (int)t - shift;
             if (target_slot >= 0 && target_slot < (int)K) {
                 device float * dst_state = (device float *) (dst) + attn_size + (uint)target_slot * state_size_per_snap + state_out_base;
@@ -2986,7 +2986,7 @@ kernel void kernel_gated_delta_net_impl(
         }
     }
 
-    if (K == 1u) {
+    if (K == (short)1) {
         device float * dst_state = (device float *) (dst) + attn_size + state_out_base;
         FOR_UNROLL (short j = 0; j < NSG; j++) {
             const short is = tx*NSG + j;
@@ -5639,11 +5639,11 @@ kernel void kernel_upscale_bilinear_f32(
             float wsum = 0.0f;
 
             for (int64_t sy = y_min; sy < y_max; ++sy) {
-                const float wy = MAX(0.0f, 1.0f - fabs((float)sy - f01) * invscale1);
+                const float wy = bilinear_tri(((float)sy - f01) * invscale1);
                 for (int64_t sx = x_min; sx < x_max; ++sx) {
-                    const float wx = MAX(0.0f, 1.0f - fabs((float)sx - f00) * invscale0);
+                    const float wx = bilinear_tri(((float)sx - f00) * invscale0);
                     const float w  = wx * wy;
-                    const device const float * src_ptr = (device const float *)(src0 + sy*args.nb01 + sx*args.nb00);
+                    device const float * src_ptr = (device const float *)(src0 + sy*args.nb01 + sx*args.nb00);
                     sum  += (*src_ptr) * w;
                     wsum += w;
                 }
@@ -5801,7 +5801,7 @@ kernel void kernel_upscale_bicubic_f32(
     const float w_y2 = bicubic_weight1(1.0f - fd1);
     const float w_y3 = bicubic_weight2(2.0f - fd1);
 
-    const device const char * src_slice = src0 + i03 * args.nb03 + i02 * args.nb02;
+    device const char * src_slice = src0 + i03 * args.nb03 + i02 * args.nb02;
 
     device float * dst_ptr = (device float *)(dst + i3 * args.nb3 + i2 * args.nb2 + i1 * args.nb1);
 
@@ -5825,7 +5825,7 @@ kernel void kernel_upscale_bicubic_f32(
                 const int64_t ix = MAX(0, MIN(args.ne00 - 1, i00 + dx));
                 const float wx = (dx == -1) ? w_x0 : (dx == 0) ? w_x1 : (dx == 1) ? w_x2 : w_x3;
 
-                const device const float * src_ptr = (device const float *)(src_slice + iy * args.nb01 + ix * args.nb00);
+                device const float * src_ptr = (device const float *)(src_slice + iy * args.nb01 + ix * args.nb00);
                 sum += (*src_ptr) * wx * wy;
             }
         }

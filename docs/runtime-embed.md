@@ -71,7 +71,7 @@ ss -tlnp | grep ':8081'
 pkill -f 'zerollama serve'    # or kill the sidecar PID
 ```
 
-`scripts/serve_production_wrapper.sh` (installed as `~/bin/serve.sh`) and `scripts/serve_gpu_example.sh` warn (and the example script may `pkill` stale zerollama). **WHY wrapper:** copying the example to `~/bin` breaks repo-root detection — see [5080-runbook — Production serve](./5080-runbook.md#production-serve-binserve-sh). **`systemctl stop ollama` does not stop zerollama** — common footgun on cudallama-style `~/bin/serve.sh` wrappers.
+`scripts/serve/serve_production_wrapper.sh` (installed as `~/bin/serve.sh`) and `scripts/serve/serve_gpu_example.sh` warn (and the example script may `pkill` stale zerollama). **WHY wrapper:** copying the example to `~/bin` breaks repo-root detection — see [5080-runbook — Production serve](./5080-runbook.md#production-serve-binserve-sh). **`systemctl stop ollama` does not stop zerollama** — common footgun on cudallama-style `~/bin/serve.sh` wrappers.
 
 ## Remote clients (Go API vs embedded runtime)
 

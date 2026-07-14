@@ -67,7 +67,7 @@ LocalAI’s lesson: **cheap metadata + honest lifecycle** at the daemon boundary
 | Busy timeout (force unload stuck runner) | `ZEROLLAMA_RUNNER_BUSY_TIMEOUT` | off — e.g. `30m` |
 | Tick interval | `ZEROLLAMA_SCHED_WATCHDOG_INTERVAL` | `30s` |
 
-Session scripts: `scripts/sched_watchdog_env.sh`, `scripts/gpu_5080_session.sh`, `scripts/gpu_metal_session.sh`.
+Session scripts: `scripts/runtime/sched_watchdog_env.sh`, `scripts/gpu/gpu_5080_session.sh`, `scripts/gpu/gpu_metal_session.sh`.
 
 **Also:** true LRU victim selection via `lastUsedAt`; load coalescing + `waitUntilReady` race fix; pull `singleflight` (`server/images.go`).
 

@@ -12,7 +12,7 @@ Zerollama can **discover**, **list**, and **pull** models already downloaded by 
 
 ```bash
 # Build (embeds version 0.0.1 by default; override with VERSION=…)
-./scripts/build_zerollama_mac.sh
+./scripts/build/build_zerollama_mac.sh
 ./zerollama serve
 
 # List local + discoverable LM Studio caches
@@ -114,8 +114,8 @@ Fuzzy matching applies when the exact name is missing but a single unambiguous d
 ## Version and build
 
 ```bash
-./scripts/build_zerollama_mac.sh          # VERSION defaults to 0.0.1
-VERSION=0.0.2 ./scripts/build_zerollama_mac.sh
+./scripts/build/build_zerollama_mac.sh          # VERSION defaults to 0.0.1
+VERSION=0.0.2 ./scripts/build/build_zerollama_mac.sh
 ./zerollama --version
 curl -s http://127.0.0.1:11434/api/version
 ```

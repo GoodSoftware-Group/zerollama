@@ -32,7 +32,7 @@ Phase 16 north star:     Same API surface; inference hot path not owned by ggml 
 | `ZEROLLAMA_EDGE=1` | **Done** | Forces Go → llama-server, `ZEROLLAMA_LEGACY_RUNNER=1`, `ZEROLLAMA_RUNTIME=0` |
 | Linux auto (`ZEROLLAMA_LLAMA_SERVER=auto`) | **Done** | Serve sets `auto` when llama-server on disk; routes **all** GGUF (text + vision) |
 | Mac default unchanged | **Done** | M7 bench: ggml Metal still faster; edge is explicit opt-in |
-| Separate edge binary / build tag | **Done (v1 marker + v2 CGO drop)** — `./scripts/build_zerollama_edge.sh` (`-tags edge`); v2 excludes `llm/server.go` ggml CGO from edge link |
+| Separate edge binary / build tag | **Done (v1 marker + v2 CGO drop)** — `./scripts/build/build_zerollama_edge.sh` (`-tags edge`); v2 excludes `llm/server.go` ggml CGO from edge link |
 | Drop ggml runner from build | **Partial (v2)** — edge build: no in-process ggml CGO; subprocess `zerollama runner` stubbed (v1); Python embed/MLX CGO remain in link (v3 disables runtime embed/sidecar at compile time via `EdgeBuildTag`) |
 | Training embed without runtime chat | **Partial** | Edge disables runtime chat; pyembed training path unchanged |
 
@@ -42,15 +42,15 @@ Phase 16 north star:     Same API surface; inference hot path not owned by ggml 
 
 ```bash
 # Build llama-server (Linux CUDA or Mac Metal)
-./scripts/build_llama_server.sh   # or build_ollama_llama_server_darwin.sh
+./scripts/build/build_llama_server.sh   # or build_ollama_llama_server_darwin.sh
 
 # Upstream-shaped serve: llama-server for GGUF, no Python runtime chat
-./scripts/serve_edge.sh
+./scripts/serve/serve_edge.sh
 # or:
 ./zerollama serve --edge
 
 # Edge-marked binary (compile marker; serve defaults to edge unless ZEROLLAMA_EDGE=0)
-./scripts/build_zerollama_edge.sh
+./scripts/build/build_zerollama_edge.sh
 ./zerollama-edge serve
 ```
 
@@ -91,14 +91,14 @@ Training (`/api/train/*`), Eliza cloud, fleet, and launch integrations **stay in
 | 1 | `--edge` + env disable runtime chat; route GGUF via llama-server | Go | **Done (v0)** |
 | 2 | Linux serve auto (`auto`) routes all GGUF without explicit flag | Go | **Done (Jun 2026)** |
 | 3 | Operator doc + env table | Docs | **Done** — this file |
-| 4 | Edge smoke: pull tag → generate via llama-server, no runtime on :8081 | Repo | **Done (Mac Jun 2026)** — `./scripts/phase16_edge_smoke.sh` (`--edge`); `./scripts/phase16_edge_binary_smoke.sh` (`-tags edge` artifact); Linux CUDA via `RUN_E2E_UPSTREAM_GGUF=1` pending |
+| 4 | Edge smoke: pull tag → generate via llama-server, no runtime on :8081 | Repo | **Done (Mac Jun 2026)** — `./scripts/phase/phase16_edge_smoke.sh` (`--edge`); `./scripts/phase/phase16_edge_binary_smoke.sh` (`-tags edge` artifact); Linux CUDA via `RUN_E2E_UPSTREAM_GGUF=1` pending |
 | 5 | `/api/status` `inference.backend` policy snapshot | Go | **Done (Jun 2026)** |
 | 5b | `/api/version` `edge_build` compile marker | Go | **Done (Jun 2026)** |
 | 6 | Build tag excluding ggml runner subprocess | Go | **Done (v1)** — `-tags edge` sets `GgmlRunnerLinked=false`, stubs `zerollama runner`, fail-fast without llama-server |
 | 7 | Drop in-process ggml from edge binary | Go | **Partial (v2)** — `server.go`/`server_score.go` excluded with `//go:build !edge`; edge `NewLlamaServer` is llama-server-only; no `llama`/`model` in edge dep tree |
 | 8 | Inference control plane “Go gone” | Go | **Not started** — sched loads llama-server + MLX only |
 
-Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (`./scripts/phase16_edge_smoke.sh`). Mac sign-off **Done** Jun 2026 (`driaforall/tiny-agent-a-0.5b:q8_0`, isolated port). Edge smoke asserts `/api/status` `inference.backend` (`edge`, `runtime_chat=off`, `gguf_path=llama-server`) and `/api/version` `edge_build`. Compile marker: `./scripts/phase16_edge_build_smoke.sh` (CI regression; no GPU).
+Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (`./scripts/phase/phase16_edge_smoke.sh`). Mac sign-off **Done** Jun 2026 (`driaforall/tiny-agent-a-0.5b:q8_0`, isolated port). Edge smoke asserts `/api/status` `inference.backend` (`edge`, `runtime_chat=off`, `gguf_path=llama-server`) and `/api/version` `edge_build`. Compile marker: `./scripts/phase/phase16_edge_build_smoke.sh` (CI regression; no GPU).
 
 **Scheduler guard (v1):** when edge policy is active without llama-server routing, `schedSkipGgmlRunnerLoad` returns HTTP 400 instead of spawning ggml. Edge builds (`-tags edge`) fail fast with `ErrGgmlRunnerUnlinked` unless `ZEROLLAMA_LLAMA_SERVER` is on.
 
@@ -112,7 +112,7 @@ Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (
 | **`go build -tags edge`** | Compile-time: no ggml CGO in `llm/server.go`, runner subprocess stubbed, `ggml_linked=false` | Smaller edge artifact; link-time guarantee GGUF cannot load ggml paths |
 | **`version.EdgeBuild=true`** (ldflags) | CLI/API marker: `zerollama -v`, `/api/version` `edge_build` | CI and fleet can verify which artifact is deployed |
 
-**Typical edge deploy:** `./scripts/build_zerollama_edge.sh` then `./zerollama-edge serve` (edge defaults apply automatically; set `ZEROLLAMA_EDGE=0` to opt out).
+**Typical edge deploy:** `./scripts/build/build_zerollama_edge.sh` then `./zerollama-edge serve` (edge defaults apply automatically; set `ZEROLLAMA_EDGE=0` to opt out).
 
 ---
 
