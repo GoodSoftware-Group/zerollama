@@ -25,7 +25,7 @@ L2 gates compare **profile modes on the same binary**, not stock vs fork sibling
 
 L1 ships **tuned flags on q8_0** by default. Eliza-v3’s largest wins — **QJL K-cache**, **PolarQuant V-cache**, **TurboQuant** — need fork cache types enabled at runtime. L2 measures whether fork profiles beat L1 on your GPU before we flip defaults.
 
-**In-process ggml** uses the same **elizaOS base + 16 Ollama patches** as the runtime sibling (`vendor/llama-cpp-c84b3020/` → sync). Rebase: `./scripts/rebase_vendor_unified.sh --sync`.
+**In-process ggml** shares the same **ggml-org pin + Ollama/zerollama patches** as the runtime vendor (`vendor/llama-cpp-<FETCH_HEAD>/` → sync). Rebase: `./scripts/rebase_vendor_unified.sh --sync`.
 
 ---
 
@@ -33,16 +33,15 @@ L1 ships **tuned flags on q8_0** by default. Eliza-v3’s largest wins — **QJL
 
 | Field | Value |
 |-------|--------|
-| Repo | `https://github.com/elizaOS/llama.cpp.git` |
-| Ref (Jun 2026) | `c84b30200c8d512c00c9d61c96bed078f1c0024d` (`LLAMA_CPP_COMMIT`) |
-| Sibling tree | `../llama.cpp` (default) |
+| Repo (runtime + in-process) | `https://github.com/ggml-org/llama.cpp.git` |
+| Ref (Jul 2026) | `8f114a9b…` (`LLAMA_CPP_COMMIT` / `Makefile.sync` `FETCH_HEAD`) |
+| QJL/Polar/TBQ | Patches **0026–0030** (+ follow-ups) on the ggml-org vendor tree — not a separate elizaOS checkout |
+| Sibling tree | `../llama.cpp` optional; prefer `vendor/llama-cpp-<pin>/` when built |
 | Build | `./scripts/build_llama_server.sh` |
 
-**Delta `96dd1a8` → `c84b302` (35 commits):** mostly voice/mobile (Kokoro TTS, OmniVoice FFI, Silero VAD, Android Vulkan). **No changes** to QJL/Polar/TBQ kernels or `dflash-draft` in that range — L2 bench numbers should match prior pin unless Vulkan shader paths matter on your host.
+**Still measured as L2:** enabling fork **profiles** (`ZEROLLAMA_LLAMA_FORK` → `qjl1_256` / `q4_polar`) vs L1 `q8_0`. Kernel extraction ≠ default-on.
 
-**Already on stock b9781 (no fork patch needed):** `--ctx-checkpoints` ([ggml-org#15293](https://github.com/ggml-org/llama.cpp/pull/15293)), SWA checkpoint cell filter ([ggml-org#23981](https://github.com/ggml-org/llama.cpp/pull/23981)).
-
-**Still fork-only vs stock b9781:** `--checkpoint-every-n-tokens`, QJL/Polar/TBQ KV types, `dflash-draft` architecture (required for `eliza-1-*-dflash` models).
+**Legacy note:** Jun 2026 gates ran on elizaOS `@ c84b3020`. That tree may still exist as a built fallback when `vendor/llama-cpp-8f114a9b` is not materialised — pin status: `./scripts/phase17_l2_pin_status.sh`.
 
 ---
 
@@ -147,9 +146,11 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 
 | Variable | Effect |
 |----------|--------|
-| `ZEROLLAMA_LLAMA_FORK=1` | Force fork profile merge (QJL/Polar, checkpoints) |
+| `ZEROLLAMA_LLAMA_FORK=1` | Force fork profile merge (checkpoints + KV types) |
 | `ZEROLLAMA_LLAMA_FORK=0` | Force stock sanitize (L1 default) |
-| *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for `--ctx-checkpoints` |
+| *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for fork KV markers |
+| `ZEROLLAMA_LLAMA_FORK_PROFILE=speed` | Default fork pairing (`_eliza_fork_*`, usually QJL/Polar) |
+| `ZEROLLAMA_LLAMA_FORK_PROFILE=vram` | TBQ pairing (`_eliza_fork_vram_*`) — long-ctx VRAM headroom |
 | `LLAMA_CPP_ROOT` / `LLAMA_CPP_COMMIT` | Override clone path / commit (`ensure_llama_cpp_sibling.sh`) |
 
 ---
@@ -159,8 +160,8 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 | Component | Role |
 |-----------|------|
 | `runtime/llama_fork.py` | Fork detection (env + binary probe) |
-| `runtime/gpu_profiles.py` | `_eliza_fork_llama_server_flags` merge; emit `--ctx-checkpoints` when present |
-| `/health` | `llama_fork` object + `gpu_profile.llama_fork` |
+| `runtime/gpu_profiles.py` | `_eliza_fork_*` / `_eliza_fork_vram_*` merge via `ZEROLLAMA_LLAMA_FORK_PROFILE`; emit `--ctx-checkpoints` when present |
+| `/health` | `llama_fork` object + `gpu_profile.llama_fork` + `llama_fork_profile` |
 | `scripts/build_llama_server.sh` | Unified runtime build (elizaOS base @ LLAMA_CPP_COMMIT) |
 | `scripts/build_eliza_llama_server.sh` | Deprecated alias → `build_llama_server.sh` |
 | `scripts/l2_fork_eval.sh` | Probe + pytest smoke |
@@ -203,7 +204,39 @@ JSON: `/tmp/l2-cuda-gate/bench-8k.json` (1B), `/tmp/l2-cuda-gate-long/bench-{8k,
 
 **Fork build footgun (container):** eliza sibling may need `-DLLAMA_BUILD_WEBUI=OFF` — default WebUI asset download fails headless.
 
-**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor merge:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Fork pin **`c84b302`**; profile checkpoint argv uses `--checkpoint-every-n-tokens` (not deprecated `--ctx-checkpoint-interval`).
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor profile defaults:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Kernels live in patches **0026–0030** on ggml-org `8f114a9b`; profile checkpoint argv uses `--checkpoint-every-n-tokens`.
+
+### CUDA 4090 exploratory (Jul 2026, dual RTX 4090)
+
+Gate fixes required for valid A/B: pin `single_gpu.yaml` into `linux_runtime_start_sidecar` (empty config re-enabled autoconfig → `dual_4090` + `serve.llama_fork: stock`); force `ZEROLLAMA_LLAMA_FORK=1` on fork leg; sample live `nvidia-smi`.
+
+| Model | ctx | Stock | Fork (TBQ) | Notes |
+|-------|-----|-------|------------|-------|
+| llama3.2 3B | 8192 | **154 tok/s**, 4190 MiB | 133 tok/s, 3936 MiB | Decode **−14%**; VRAM **−6%** |
+| llama3.2 3B | 26624 | **99.5 tok/s**, 5262 MiB | 98.7 tok/s, 4440 MiB | Decode ~flat; VRAM **−16%** |
+| llama3.2 3B | 65536 | **93.0 tok/s**, 7522 MiB | 88.6 tok/s, 5504 MiB | Decode **−5%**; VRAM **−27%** |
+| llama3.2 3B | 131072 | **91.6 tok/s**, 11470 MiB | 85.7 tok/s, 7436 MiB | Decode **−6%**; VRAM **−35%** (~4 GiB saved) |
+
+**QJL/Polar on llama3.2:** `qjl1_256`/`q4_polar` **abort** on vendor `c84b3020` (`GGML_ASSERT` flash-attn / segfault). Use TBQ (`ZEROLLAMA_LLAMA_FORK_PROFILE=vram` or `L2_FORK_CACHE_TYPE_*=tbq*`).
+
+**Verdict:** do **not** flip defaults for tok/s. **Do** opt into fork **VRAM profile** when long-ctx headroom matters (agent 65k–131k, multi-slot). Artifacts: `/tmp/l2-cuda-gate-4090-llama32-tbq/`, `/tmp/l2-cuda-gate-4090-llama32-long/`.
+
+**When to enable fork for VRAM (operator)**
+
+```bash
+# Env (any topology)
+export ZEROLLAMA_LLAMA_FORK=1
+export ZEROLLAMA_LLAMA_FORK_PROFILE=vram   # TBQ pairing from GPU JSON
+
+# Dual 4090 drop-in YAML (serve.llama_fork + llama_fork_profile)
+export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vram.yaml
+```
+
+| Goal | Setting | Why |
+|------|---------|-----|
+| Max decode tok/s | `ZEROLLAMA_LLAMA_FORK=0` / `dual_4090.yaml` (default) | L1 q8_0 wins measured legs |
+| Fit more ctx / slots | `FORK=1` + `FORK_PROFILE=vram` / `dual_4090_vram.yaml` | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
+| Max compression (experimental) | `FORK=1` + `FORK_PROFILE=speed` | QJL/Polar — may abort on some GGUFs |
 
 ---
 

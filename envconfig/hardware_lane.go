@@ -74,6 +74,7 @@ func applyServeEnv(serve map[string]any, configName string) {
 		{"num_parallel", "OLLAMA_NUM_PARALLEL"},
 		{"max_queue", "OLLAMA_MAX_QUEUE"},
 		{"llama_fork", "ZEROLLAMA_LLAMA_FORK"},
+		{"llama_fork_profile", "ZEROLLAMA_LLAMA_FORK_PROFILE"},
 	} {
 		if strings.TrimSpace(os.Getenv(m.envKey)) != "" {
 			continue

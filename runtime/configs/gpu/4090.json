@@ -29,5 +29,9 @@
     "cache_type_k": "qjl1_256",
     "cache_type_v": "q4_polar"
   },
-  "_provenance": "eliza-v3 4090.json; stock cache q8_0; fork cache qjl/polar when ZEROLLAMA_LLAMA_FORK=1"
+  "_eliza_fork_vram_llama_server_flags": {
+    "cache_type_k": "tbq4_0",
+    "cache_type_v": "tbq3_0"
+  },
+  "_provenance": "eliza-v3 4090.json; stock cache q8_0; fork speed=qjl/polar; fork vram=tbq (ZEROLLAMA_LLAMA_FORK_PROFILE=vram) — Jul 2026 4090 llama3.2: TBQ −5% decode / −27% VRAM @ 65k"
 }

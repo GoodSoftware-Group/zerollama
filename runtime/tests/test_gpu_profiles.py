@@ -153,6 +153,10 @@ def test_flags_from_gpu_config_stock_sanitize():
             "cache_type_k": "qjl1_256",
             "cache_type_v": "q4_polar",
         },
+        "_eliza_fork_vram_llama_server_flags": {
+            "cache_type_k": "tbq4_0",
+            "cache_type_v": "tbq3_0",
+        },
         "_fork_only_llama_server_flags": {
             "ctx_checkpoints": 8,
         },
@@ -161,6 +165,32 @@ def test_flags_from_gpu_config_stock_sanitize():
     assert flags["cache_type_k"] == "q8_0"
     assert "ctx_checkpoints" not in flags
     assert fb is False
+
+
+def test_flags_from_gpu_config_fork_speed_vs_vram(monkeypatch):
+    cfg = {
+        "llama_server_flags": {
+            "cache_type_k": "q8_0",
+            "cache_type_v": "q8_0",
+        },
+        "_eliza_fork_llama_server_flags": {
+            "cache_type_k": "qjl1_256",
+            "cache_type_v": "q4_polar",
+        },
+        "_eliza_fork_vram_llama_server_flags": {
+            "cache_type_k": "tbq4_0",
+            "cache_type_v": "tbq3_0",
+        },
+    }
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_PROFILE", raising=False)
+    speed, _ = flags_from_gpu_config(cfg, fork_enabled=True)
+    assert speed["cache_type_k"] == "qjl1_256"
+    assert speed["cache_type_v"] == "q4_polar"
+
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_PROFILE", "vram")
+    vram, _ = flags_from_gpu_config(cfg, fork_enabled=True)
+    assert vram["cache_type_k"] == "tbq4_0"
+    assert vram["cache_type_v"] == "tbq3_0"
 
 
 def test_runtime_config_fork_env_off_overrides_probe(monkeypatch, tmp_path):

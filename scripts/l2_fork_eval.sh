@@ -27,21 +27,36 @@ if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
   BIN="${LLAMA_SERVER_BIN:-${UNIFIED_ROOT}/build/bin/llama-server}"
 fi
 
+# shellcheck source=scripts/linux_runtime_serve_lib.sh
+source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+
 if [[ -z "${BIN}" || ! -x "${BIN}" ]]; then
-  BIN="${UNIFIED_ROOT}/build/bin/llama-server"
+  if _vendor="$(l1_vendor_llama_cpp_root "${ROOT}")"; then
+    BIN="${_vendor}/build/bin/llama-server"
+    UNIFIED_ROOT="${_vendor}"
+  else
+    BIN="${UNIFIED_ROOT}/build/bin/llama-server"
+  fi
 fi
 if [[ ! -x "${BIN}" ]]; then
   echo "Set LLAMA_SERVER_BIN or run L2_BUILD=1 ./scripts/l2_fork_eval.sh" >&2
   exit 1
 fi
 
+export LLAMA_SERVER_BIN="${BIN}"
+export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${UNIFIED_ROOT}}"
+linux_runtime_export_llama_ld_path
+
 echo "== fork binary probe =="
 "${BIN}" --version 2>/dev/null || true
 help_text="$("${BIN}" --help 2>&1 || true)"
-if echo "${help_text}" | grep -qE 'ctx-checkpoints|qjl1_256'; then
-  echo "probe: unified llama-server (QJL/Polar/TBQ or ctx-checkpoints)"
+# WHY grep <<< not pipe: under `set -o pipefail`, `echo | grep -q` exits 141
+# (SIGPIPE) after the first match — false "missing markers" on fork binaries.
+# WHY same markers as runtime/llama_fork.py: stock may ship --ctx-checkpoints alone.
+if grep -qE 'qjl1_256|q4_polar|tbq3_0|tbq4_0' <<<"${help_text}"; then
+  echo "probe: unified llama-server (QJL/Polar/TBQ cache types)"
 else
-  echo "probe: binary missing fork markers in --help (wrong ref?)" >&2
+  echo "probe: binary missing fork KV markers in --help (wrong ref or LD_LIBRARY_PATH?)" >&2
 fi
 
 echo ""

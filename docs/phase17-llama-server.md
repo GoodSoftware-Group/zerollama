@@ -230,15 +230,13 @@ Env `OLLAMA_STREAM_KEEPALIVE_INTERVAL` (default `15`, `0` = off). Emits `status:
 
 ---
 
-## llama.cpp pin (`c84b3020`)
+## llama.cpp pin (`8f114a9b`)
 
-Zerollama pins **elizaOS/llama.cpp** @ **`c84b3020`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`). This supersedes upstream Ollama v0.30.11 tag **`b9781`** while keeping mergeability with Phase 17.
+Zerollama pins **ggml-org/llama.cpp** @ **`8f114a9b`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). QJL/Polar/TBQ and related fork features land as **format-patches** (0026+) on that tree — see [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
 
-**Why elizaOS unified base:** one sibling/runtime tree with dflash/QJL/checkpoint features; zerollama adds **19 Ollama/zerollama patches** on top — see [ggml-b9509-migration.md](./ggml-b9509-migration.md).
+**Vendor tree:** `vendor/llama-cpp-8f114a9b/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`. Older built trees (e.g. `vendor/llama-cpp-c84b3020/`) may remain as a local fallback until the pin tree is materialised and rebuilt.
 
-**Vendor tree:** `vendor/llama-cpp-c84b3020/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`.
-
-**Why `sync_vendor_llama.sh` checks patch count:** syncing bare pin (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports `c84b3020` — CGO then misses `ggml_backend_dev_reset`, no-alloc scheduler, kv-ext, and `/kv/seq-copy`.
+**Why `sync_vendor_llama.sh` checks patch count:** syncing bare pin (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports the new pin — CGO then misses kv-ext, scheduler, and `/kv/seq-copy` deltas.
 
 **Patch doctor:** `./scripts/llama_patch_doctor.sh` · `/health.llama_patches` · `zerollama doctor` (llama.cpp patches check)
 
@@ -275,7 +273,7 @@ Reproduce: `./scripts/m4_upstream_vs_zerollama_bench.sh`
 9. ~~**Vision/thinking on llama-server**~~ — explicit or Linux `auto`; vision E2E: `phase17_llama_server_vision_smoke.sh`
 10. ~~**Launch model inventory**~~ — [launch-model-inventory.md](./launch-model-inventory.md)
 11. ~~**Phase 16 edge mode**~~ — [phase16-thin-edge.md](./phase16-thin-edge.md)
-12. **L2 fork merge** — coordinate pin with borrowings L2 when bench gates pass (**Jun 2026: FAIL merge @ 8k CUDA** — stock faster; see `./scripts/phase17_l2_pin_status.sh` and [gpu-profiles-l2.md](./gpu-profiles-l2.md))
+12. **L2 fork profiles** — flip QJL/Polar defaults when benches pass (**ship: FAIL @ 8k CUDA eliza-1**, Jun 2026 — stock faster; kernels already extracted — see `./scripts/phase17_l2_pin_status.sh` and [gpu-profiles-l2.md](./gpu-profiles-l2.md))
 13. **Flash-MoE (anemll)** — **Partial (Jun 2026):** flag passthrough, Modelfile `moe_*` options, `build_flash_moe_llama_server.sh`, **`flash_moe_smoke.sh`**, doctor check — [flash-moe.md](./flash-moe.md). **Why llama-server only:** slot-bank lives in anemll fork, not ggml Metal. **Open:** `pull` sidecar extract, vendor pin merge.
 14. **ANE probe (maderix)** — **Partial (Jun 2026):** subprocess smoke + doctor — [ane-probe.md](./ane-probe.md). **Why subprocess:** private ANE APIs must not ship inside main Go binary. **Open:** hybrid inference research, not hot path.
 

@@ -57,7 +57,14 @@ for rep in reports:
     d_win = comp.get("fork_wins_decode")
     v_win = comp.get("fork_wins_vram")
     print(f"  decode: stock={s_tps} fork={f_tps} delta={comp.get('decode_delta_pct')}% fork_wins={d_win}")
-    print(f"  vram est: stock={comp.get('stock_vram_required_bytes')} fork={comp.get('fork_vram_required_bytes')} delta={comp.get('vram_delta_pct')}% fork_wins={v_win}")
+    if comp.get("stock_nvidia_smi_peak_sum_mib") is not None:
+        print(
+            f"  nvidia-smi peak sum MiB: stock={comp.get('stock_nvidia_smi_peak_sum_mib')} "
+            f"fork={comp.get('fork_nvidia_smi_peak_sum_mib')} "
+            f"delta={comp.get('nvidia_smi_delta_pct')}% fork_wins={v_win}"
+        )
+    else:
+        print(f"  vram est: stock={comp.get('stock_vram_required_bytes')} fork={comp.get('fork_vram_required_bytes')} delta={comp.get('vram_delta_pct')}% fork_wins={v_win}")
     print(f"  cache: stock={comp.get('stock_cache')} fork={comp.get('fork_cache')}")
     smax = (rep.get("legs") or {}).get("stock", {}).get("vram_budget", {}).get("suggested_max_num_ctx")
     fmax = (rep.get("legs") or {}).get("fork", {}).get("vram_budget", {}).get("suggested_max_num_ctx")

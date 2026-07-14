@@ -18,8 +18,11 @@
 #   L2_BENCH_RUNS            — timed runs after warmup (default: 2)
 #   L2_BUILD=1 / L2_BUILD_FORK=1 — build ../llama.cpp before bench
 #   L2_CUDA_BENCH_OUT        — comparison JSON (default: /tmp/l2-cuda-bench.json)
-#   STOCK_LLAMA_CPP_ROOT     — default ../llama.cpp (legacy name; same tree as fork leg)
-#   ELIZA_LLAMA_CPP_ROOT     — default ../llama.cpp (legacy alias)
+#   L2_ALLOW_AUTO_CONFIG=1   — allow dual-GPU autoconfig (default: force single_gpu.yaml)
+#   CUDA_VISIBLE_DEVICES     — default 0 for clean A/B on multi-GPU hosts
+#   L2_FORK_CACHE_TYPE_K/V   — override fork profile cache types (e.g. tbq4_0 / tbq3_0)
+#   STOCK_LLAMA_CPP_ROOT     — default vendor/sibling (legacy name; same tree as fork leg)
+#   ELIZA_LLAMA_CPP_ROOT     — default same as stock (legacy alias)
 #   L2_SKIP_STOCK=1          — skip stock leg
 #   L2_SKIP_FORK=1           — skip fork leg
 #   L2_SKIP_PREFILL=1        — skip prefill measurement
@@ -43,6 +46,8 @@ if [[ -n "${LLAMA_CPP_ROOT:-}" && -x "${LLAMA_CPP_ROOT}/build/bin/llama-server" 
   UNIFIED_ROOT="${LLAMA_CPP_ROOT}"
 elif [[ -n "${LLAMA_SERVER_BIN:-}" && -x "${LLAMA_SERVER_BIN}" ]]; then
   UNIFIED_ROOT="$(cd "$(dirname "${LLAMA_SERVER_BIN}")/../.." && pwd)"
+elif UNIFIED_ROOT="$(l1_vendor_llama_cpp_root "${ROOT}" 2>/dev/null)"; then
+  :
 else
   UNIFIED_ROOT="${ZEROLLAMA_PARENT}/llama.cpp"
 fi
@@ -66,10 +71,13 @@ if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
 fi
 
 SERVER_BIN="${UNIFIED_ROOT}/build/bin/llama-server"
+export LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-${SERVER_BIN}}"
+export LLAMA_CPP_ROOT="${UNIFIED_ROOT}"
+linux_runtime_export_llama_ld_path
 
 if [[ "${L2_SKIP_STOCK:-0}" != "1" || "${L2_SKIP_FORK:-0}" != "1" ]]; then
   if [[ ! -x "${SERVER_BIN}" ]]; then
-    echo "Missing ${SERVER_BIN}; run ./scripts/build_llama_server.sh" >&2
+    echo "Missing ${SERVER_BIN}; run ./scripts/build_llama_server.sh (or point LLAMA_CPP_ROOT at a built vendor tree)" >&2
     exit 1
   fi
 fi
@@ -78,8 +86,16 @@ fi
 # ZEROLLAMA_GPU_PROFILE=0 for OFF baseline (see scripts/l1_cuda_calibrate.sh).
 export ZEROLLAMA_GPU_PROFILE="${ZEROLLAMA_GPU_PROFILE:-1}"
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess
-unset ZEROLLAMA_RUNTIME_CONFIG
-export ZEROLLAMA_AUTO_CONFIG=1
+# WHY single GPU for A/B: autoconfig on dual-4090 hosts picks tensor-parallel YAML
+# and tanks decode tok/s (~6 vs expected 30+) while conflating VRAM across cards.
+if [[ -z "${ZEROLLAMA_RUNTIME_CONFIG:-}" && -z "${L2_ALLOW_AUTO_CONFIG:-}" ]]; then
+  export ZEROLLAMA_RUNTIME_CONFIG="${ROOT}/runtime/configs/single_gpu.yaml"
+  unset ZEROLLAMA_AUTO_CONFIG
+else
+  unset ZEROLLAMA_RUNTIME_CONFIG
+  export ZEROLLAMA_AUTO_CONFIG=1
+fi
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export LINUX_RT_HEALTH_MAX="${LINUX_RT_HEALTH_MAX:-120}"
 
 linux_runtime_urls
@@ -90,7 +106,7 @@ _L2_LEG_JSON=()
 _l2_run_leg() {
   local label="$1"
   local cpp_root="$2"
-  local fork_mode="$3"   # off | auto
+  local fork_mode="$3"   # off | on
 
   echo ""
   echo "== L2 leg: ${label} (${cpp_root}) fork=${fork_mode} =="
@@ -102,17 +118,52 @@ _l2_run_leg() {
   export LLAMA_CPP_LIB="${cpp_root}/build/bin/libllama.so"
 
   case "${fork_mode}" in
-    off) export ZEROLLAMA_LLAMA_FORK=0 ;;
-    auto) unset ZEROLLAMA_LLAMA_FORK ;;
+    off|0|stock)
+      export ZEROLLAMA_LLAMA_FORK=0
+      unset LLAMA_SERVER_EXTRA_ARGS
+      ;;
+    on|1|auto|fork)
+      # WHY explicit 1 (not unset): empty config/`serve.llama_fork: stock` on
+      # dual_4090 autoconfig would force stock when env is unset.
+      export ZEROLLAMA_LLAMA_FORK=1
+      # Optional cache override (e.g. tbq4_0/tbq3_0 when qjl aborts on a GGUF).
+      # Appended last via LLAMA_SERVER_EXTRA_ARGS — llama-server last-wins.
+      if [[ -n "${L2_FORK_CACHE_TYPE_K:-}" || -n "${L2_FORK_CACHE_TYPE_V:-}" ]]; then
+        local extra=()
+        [[ -n "${L2_FORK_CACHE_TYPE_K:-}" ]] && extra+=(--cache-type-k "${L2_FORK_CACHE_TYPE_K}")
+        [[ -n "${L2_FORK_CACHE_TYPE_V:-}" ]] && extra+=(--cache-type-v "${L2_FORK_CACHE_TYPE_V}")
+        export LLAMA_SERVER_EXTRA_ARGS="${extra[*]}${LLAMA_SERVER_EXTRA_ARGS:+ ${LLAMA_SERVER_EXTRA_ARGS}}"
+      fi
+      ;;
     *) echo "unknown fork_mode: ${fork_mode}" >&2; return 1 ;;
   esac
 
   linux_runtime_stop_sidecar_port
-  linux_runtime_start_sidecar "${LLAMA_MODEL}" ""
+  # WHY pass config path: start_sidecar "" clears ZEROLLAMA_RUNTIME_CONFIG and
+  # re-enables autoconfig (dual_4090 → llama_fork: stock), defeating L2 A/B.
+  linux_runtime_start_sidecar "${LLAMA_MODEL}" "${ZEROLLAMA_RUNTIME_CONFIG:-}"
 
   local health_json
   health_json="$(runtime_fetch_health "${ZEROLLAMA_RUNTIME_URL}")"
   linux_runtime_resume_if_needed "${health_json}"
+
+  # Gate: refuse to bench if fork env did not land in the live sidecar.
+  if ! echo "${health_json}" | python3 -c "
+import json, os, sys
+h = json.load(sys.stdin)
+lf = h.get('llama_fork') or {}
+want = os.environ.get('ZEROLLAMA_LLAMA_FORK', '')
+enabled = bool(lf.get('enabled'))
+if want in ('0', 'false', 'off', 'stock') and enabled:
+    print('L2 leg health: expected fork off, got', lf, file=sys.stderr)
+    sys.exit(1)
+if want in ('1', 'true', 'on', 'fork', 'eliza') and not enabled:
+    print('L2 leg health: expected fork on, got', lf, file=sys.stderr)
+    sys.exit(1)
+print('llama_fork:', lf)
+"; then
+    return 1
+  fi
 
   local leg_json
   leg_json="$(
@@ -180,6 +231,51 @@ def generate(prompt: str, *, n_predict: int) -> tuple[dict, float]:
     return out, elapsed
 
 
+def decode_tok_per_s(out: dict, elapsed_s: float, n_predict: int) -> float:
+    """Prefer server eval timings; wall clock includes prefill + HTTP (last resort)."""
+    eval_count = out.get("eval_count")
+    eval_duration = out.get("eval_duration")  # ns
+    if (
+        isinstance(eval_count, int)
+        and eval_count > 0
+        and isinstance(eval_duration, (int, float))
+        and eval_duration > 0
+    ):
+        return eval_count / (eval_duration / 1e9)
+    if elapsed_s > 0:
+        n = eval_count if isinstance(eval_count, int) and eval_count > 0 else n_predict
+        return n / elapsed_s
+    return 0.0
+
+
+def nvidia_used_mib() -> list[int] | None:
+    """Live device VRAM used (MiB) via nvidia-smi — preferred over heuristic estimates."""
+    import subprocess
+
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    vals: list[int] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            vals.append(int(line.split()[0]))
+        except ValueError:
+            return None
+    return vals or None
+
+
 health = http_json("GET", "/health")
 estimate = http_json(
     "POST",
@@ -197,7 +293,7 @@ llama_args = cfg.llama_server_args() if cfg else []
 gp_live = health.get("gpu_profile") or {}
 
 # Warmup.
-_, warmup_s = generate(decode_prompt, n_predict=min(16, num_predict))
+warmup_out, warmup_s = generate(decode_prompt, n_predict=min(16, num_predict))
 
 # Extra warmup decodes for long-ctx legs (steady-state KV allocation).
 high_ctx_warmups = 0
@@ -207,9 +303,18 @@ if num_ctx >= 65536:
         generate(decode_prompt, n_predict=min(8, num_predict))
 
 decode_times: list[float] = []
+decode_tps_runs: list[float] = []
+eval_counts: list[int] = []
+vram_samples_mib: list[list[int]] = []
 for _ in range(bench_runs):
-    _, elapsed = generate(decode_prompt, n_predict=num_predict)
+    out, elapsed = generate(decode_prompt, n_predict=num_predict)
     decode_times.append(elapsed)
+    decode_tps_runs.append(decode_tok_per_s(out, elapsed, num_predict))
+    if isinstance(out.get("eval_count"), int):
+        eval_counts.append(out["eval_count"])
+    sample = nvidia_used_mib()
+    if sample is not None:
+        vram_samples_mib.append(sample)
 
 prefill_body, prefill_s = None, None
 prefill_err = None
@@ -220,10 +325,25 @@ if os.environ.get("L2_SKIP_PREFILL", "0").strip().lower() not in ("1", "true", "
         prefill_err = str(e)
 
 decode_mean = statistics.mean(decode_times)
-decode_tps = num_predict / decode_mean if decode_mean > 0 else 0.0
+decode_tps = statistics.mean(decode_tps_runs) if decode_tps_runs else 0.0
 prefill_tps = (
-    prefill_n_predict / prefill_s if prefill_s and prefill_s > 0 else None
+    decode_tok_per_s(prefill_body, prefill_s, prefill_n_predict)
+    if prefill_body is not None and prefill_s is not None
+    else None
 )
+
+# Peak per-GPU and sum across GPUs during timed decode runs.
+vram_peak_per_gpu_mib = None
+vram_peak_sum_mib = None
+if vram_samples_mib:
+    n_gpu = max(len(s) for s in vram_samples_mib)
+    peaks = [0] * n_gpu
+    for sample in vram_samples_mib:
+        for i, v in enumerate(sample):
+            if v > peaks[i]:
+                peaks[i] = v
+    vram_peak_per_gpu_mib = peaks
+    vram_peak_sum_mib = sum(peaks)
 
 gp = health.get("gpu_profile") or {}
 lf = health.get("llama_fork") or {}
@@ -255,11 +375,15 @@ leg = {
         "decode_wall_s_mean": round(decode_mean, 3),
         "decode_wall_s_runs": [round(x, 3) for x in decode_times],
         "decode_tok_per_s": round(decode_tps, 2),
+        "decode_tok_per_s_runs": [round(x, 2) for x in decode_tps_runs],
+        "eval_count_runs": eval_counts,
         "prefill_prompt_words": _prefill_words,
         "prefill_n_predict": prefill_n_predict,
         "prefill_decode_wall_s": round(prefill_s, 3) if prefill_s is not None else None,
         "prefill_decode_tok_per_s": round(prefill_tps, 2) if prefill_tps is not None else None,
         "prefill_error": prefill_err,
+        "nvidia_smi_peak_per_gpu_mib": vram_peak_per_gpu_mib,
+        "nvidia_smi_peak_sum_mib": vram_peak_sum_mib,
     },
     "vram_estimate": {
         "required_per_gpu_bytes": ve.get("required_per_gpu_bytes"),
@@ -283,7 +407,7 @@ if [[ "${L2_SKIP_STOCK:-0}" != "1" ]]; then
   _l2_run_leg "stock" "${STOCK_ROOT}" "${L2_STOCK_FORK_MODE:-off}"
 fi
 if [[ "${L2_SKIP_FORK:-0}" != "1" ]]; then
-  _l2_run_leg "fork" "${FORK_ROOT}" "auto"
+  _l2_run_leg "fork" "${FORK_ROOT}" "${L2_FORK_FORK_MODE:-on}"
 fi
 
 export L2_OUT L2_NUM_CTX L2_NUM_PREDICT
@@ -312,6 +436,16 @@ if len(legs) == 2:
     vram_delta_pct = None
     if s_req and f_req and s_req > 0:
         vram_delta_pct = (f_req - s_req) / s_req * 100.0
+    s_nv = stock["bench"].get("nvidia_smi_peak_sum_mib")
+    f_nv = fork["bench"].get("nvidia_smi_peak_sum_mib")
+    nv_delta_pct = None
+    if s_nv and f_nv and s_nv > 0:
+        nv_delta_pct = (f_nv - s_nv) / s_nv * 100.0
+    # Prefer live nvidia-smi for fork_wins_vram when both legs sampled it.
+    if s_nv is not None and f_nv is not None:
+        fork_wins_vram = f_nv < s_nv
+    else:
+        fork_wins_vram = f_req < s_req if s_req and f_req else None
     comparison = {
         "stock_decode_tok_per_s": s_tps,
         "fork_decode_tok_per_s": f_tps,
@@ -320,7 +454,10 @@ if len(legs) == 2:
         "stock_vram_required_bytes": s_req,
         "fork_vram_required_bytes": f_req,
         "vram_delta_pct": round(vram_delta_pct, 2) if vram_delta_pct is not None else None,
-        "fork_wins_vram": f_req < s_req if s_req and f_req else None,
+        "stock_nvidia_smi_peak_sum_mib": s_nv,
+        "fork_nvidia_smi_peak_sum_mib": f_nv,
+        "nvidia_smi_delta_pct": round(nv_delta_pct, 2) if nv_delta_pct is not None else None,
+        "fork_wins_vram": fork_wins_vram,
         "stock_cache": [stock.get("cache_type_k"), stock.get("cache_type_v")],
         "fork_cache": [fork.get("cache_type_k"), fork.get("cache_type_v")],
     }
@@ -350,6 +487,13 @@ if comparison:
         f"delta={comparison.get('decode_delta_pct')}% "
         f"fork_wins={comparison.get('fork_wins_decode')}"
     )
+    if comparison.get("stock_nvidia_smi_peak_sum_mib") is not None:
+        print(
+            f"nvidia-smi peak sum MiB: stock={comparison.get('stock_nvidia_smi_peak_sum_mib')} "
+            f"fork={comparison.get('fork_nvidia_smi_peak_sum_mib')} "
+            f"delta={comparison.get('nvidia_smi_delta_pct')}% "
+            f"fork_wins_vram={comparison.get('fork_wins_vram')}"
+        )
 PY
 
 linux_runtime_stop_sidecar_port
