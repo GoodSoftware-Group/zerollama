@@ -141,8 +141,17 @@ if [[ -x "${BIN}" ]]; then
   fi
   echo "OK: libggml-cuda fork KV + fused attn verified"
   if ! strings "${BIN}" | grep -q 'kv/seq-copy'; then
-    echo "error: ${BIN} missing /kv/seq-copy route" >&2
-    exit 1
+    _impl_ok=0
+    for _impl in "$(dirname "${BIN}")"/libllama-server-impl*; do
+      if [[ -f "${_impl}" ]] && strings "${_impl}" | grep -q 'kv/seq-copy'; then
+        _impl_ok=1
+        break
+      fi
+    done
+    if [[ "${_impl_ok}" -ne 1 ]]; then
+      echo "error: ${BIN} missing /kv/seq-copy route (and no libllama-server-impl*)" >&2
+      exit 1
+    fi
   fi
   echo "OK: llama-server embeds /kv/seq-copy"
 else

@@ -214,6 +214,16 @@ _probe_seq_copy_route() {
     has_route=1
   elif strings "${bin}" 2>/dev/null | grep -qF 'kv/seq-copy'; then
     has_route=1
+  else
+    # WHY: ggml-org thin llama-server wrapper; routes live in libllama-server-impl.
+    local impl
+    for impl in "$(dirname "${bin}")"/libllama-server-impl*; do
+      if [[ -f "${impl}" ]] && { grep -aqF 'kv/seq-copy' "${impl}" 2>/dev/null \
+          || strings "${impl}" 2>/dev/null | grep -qF 'kv/seq-copy'; }; then
+        has_route=1
+        break
+      fi
+    done
   fi
   # WHY: Radix cross-slot seed requires patch 0017 on vendor tree only.
   if ! _is_vendor_root "${root}"; then

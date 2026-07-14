@@ -14,6 +14,7 @@ All notable changes to this project are documented in this file. The format is b
 - **`ZEROLLAMA_LLAMA_FORK_PROFILE` default `vram`** (TBQ) instead of `speed` (QJL/Polar) when `ZEROLLAMA_LLAMA_FORK=1`
 - 4090 gates: TBQ long-ctx **−27…−35% VRAM**; QJL/Polar **−48…−85% decode** @ 8k/27k — speed stays experimental
 - Docs / pin status / `l2_cuda_bench.sh` health alignment; vendor → in-tree sync
+- **`LLAMA_CPP_VENDOR_HEAD`** → `95f753fd` (post-0067–0070 tip); patch doctor / build scripts probe `libllama-server-impl*` for `/kv/seq-copy` (thin wrapper no longer embeds the string)
 
 **Non-goals:** flipping production `llama_fork` off stock; merging fork profiles as default-on for tok/s.
 

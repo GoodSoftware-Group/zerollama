@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from runtime.llama_patch_health import (
+    binary_embeds_seq_copy_route,
     in_tree_patch_markers,
     list_patch_files,
     llama_patch_health,
@@ -15,6 +16,16 @@ def test_list_patch_files_includes_required():
     names = list_patch_files()
     assert any("ollama-llama-kv-ext" in n for n in names)
     assert any("ollama-kv-seq-copy-endpoint" in n for n in names)
+
+
+def test_binary_embeds_seq_copy_checks_server_impl(tmp_path: Path):
+    """Thin llama-server wrapper: route string lives in libllama-server-impl."""
+    wrapper = tmp_path / "llama-server"
+    wrapper.write_bytes(b"thin-wrapper-no-route")
+    assert binary_embeds_seq_copy_route(wrapper) is False
+    impl = tmp_path / "libllama-server-impl.so"
+    impl.write_bytes(b"prefix /kv/seq-copy suffix")
+    assert binary_embeds_seq_copy_route(wrapper) is True
 
 
 def test_in_tree_seq_copy_markers_present():

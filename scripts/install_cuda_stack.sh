@@ -46,8 +46,19 @@ if [[ ! -x "${BIN}" ]]; then
 fi
 
 echo ">>> verify patched binary"
-if ! grep -Fq 'kv/seq-copy' < <(strings "${BIN}"); then
-  echo "error: ${BIN} missing /kv/seq-copy (patch 0017)" >&2
+_seq_ok=0
+if grep -Fq 'kv/seq-copy' < <(strings "${BIN}"); then
+  _seq_ok=1
+else
+  for _impl in "$(dirname "${BIN}")"/libllama-server-impl*; do
+    if [[ -f "${_impl}" ]] && grep -Fq 'kv/seq-copy' < <(strings "${_impl}"); then
+      _seq_ok=1
+      break
+    fi
+  done
+fi
+if [[ "${_seq_ok}" -ne 1 ]]; then
+  echo "error: ${BIN} missing /kv/seq-copy (patch 0017; check libllama-server-impl*)" >&2
   exit 1
 fi
 CUDA_LIB="${VENDOR}/build/bin/libggml-cuda.so.0.12.0"

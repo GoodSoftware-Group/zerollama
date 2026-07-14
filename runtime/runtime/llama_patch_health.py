@@ -137,13 +137,28 @@ def _git_rev_list_count(cwd: Path, base_ref: str) -> int | None:
 
 
 def binary_embeds_seq_copy_route(path: Path | None) -> bool | None:
+    """True when ``/kv/seq-copy`` is in the Mach-O/ELF or its server-impl sibling.
+
+    WHY: ggml-org split routes into ``libllama-server-impl.so`` / ``.dylib``; the
+    ``llama-server`` binary is a thin wrapper (~18KB on Linux) that no longer embeds
+    the route string. Mac ``build_zerollama_mac.sh`` already probes the impl library.
+    """
     if path is None or not path.is_file():
         return None
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    return b"/kv/seq-copy" in data or b"kv/seq-copy" in data
+
+    def _has_route(p: Path) -> bool:
+        try:
+            data = p.read_bytes()
+        except OSError:
+            return False
+        return b"/kv/seq-copy" in data or b"kv/seq-copy" in data
+
+    if _has_route(path):
+        return True
+    for impl in sorted(path.parent.glob("libllama-server-impl*")):
+        if impl.is_file() and _has_route(impl):
+            return True
+    return False
 
 
 def probe_seq_copy_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
