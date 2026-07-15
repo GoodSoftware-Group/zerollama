@@ -28,7 +28,7 @@ from runtime.gpu_vram import (
     vram_budget_health,
 )
 from runtime.host_memory import check_gguf_host_budget, format_bytes, read_host_memory
-from runtime.llama_timings import metrics_from_llama_chunk
+from runtime.llama_timings import detect_context_overflow, metrics_from_llama_chunk
 from runtime.kv.accounting import kv_scheduler_snapshot
 from runtime.kv.block_pool import create_block_pool, kv_backend_health
 from runtime.scheduler.loop import SchedulerLoop
@@ -2534,6 +2534,9 @@ class InferenceEngine:
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
                         out.update(metrics_from_llama_chunk(chunk))
+                        out.update(detect_context_overflow(
+                            out, active.num_ctx, len(active.prompt_tokens),
+                        ))
                     if first and vram_api:
                         out["vram_num_ctx"] = vram_api
                         first = False
@@ -2603,6 +2606,9 @@ class InferenceEngine:
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
                         out.update(metrics_from_llama_chunk(chunk))
+                        out.update(detect_context_overflow(
+                            out, active.num_ctx, len(active.prompt_tokens),
+                        ))
                         self._record_subprocess_slot(active, chunk)
                     if first and vram_api:
                         out["vram_num_ctx"] = vram_api
@@ -2683,6 +2689,8 @@ class InferenceEngine:
                     "prompt_eval_duration",
                     "eval_count",
                     "eval_duration",
+                    "prompt_truncated",
+                    "original_prompt_tokens",
                 ):
                     if key in chunk:
                         out[key] = chunk[key]

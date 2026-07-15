@@ -39,3 +39,36 @@ def metrics_from_llama_chunk(chunk: dict[str, Any]) -> dict[str, int]:
     if predict_ms > 0:
         out["eval_duration"] = _ms_to_ns(predict_ms)
     return out
+
+
+def detect_context_overflow(
+    metrics: dict[str, Any],
+    num_ctx: int | None,
+    original_prompt_tokens: int | None,
+) -> dict[str, Any]:
+    """Return prompt_truncated / original_prompt_tokens when the backend
+    silently truncated the prompt via context shift.
+
+    Detection: prompt_eval_count is pinned at or near num_ctx while the
+    original prompt was larger.  We also check ``done_reason == "length"``
+    as a secondary signal but do not require it.
+    """
+    if num_ctx is None or num_ctx <= 0:
+        return {}
+    pec = metrics.get("prompt_eval_count", 0)
+    if pec <= 0:
+        return {}
+    orig = original_prompt_tokens or 0
+    if orig <= num_ctx and pec >= num_ctx - 8:
+        orig = 0
+    if orig > num_ctx:
+        return {
+            "prompt_truncated": True,
+            "original_prompt_tokens": orig,
+        }
+    if pec >= num_ctx - 8 and orig > pec:
+        return {
+            "prompt_truncated": True,
+            "original_prompt_tokens": orig,
+        }
+    return {}

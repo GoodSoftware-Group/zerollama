@@ -28,7 +28,7 @@ type detokenizeFunc func(context.Context, []int) (string, error)
 // promptTokens is non-nil when tail-truncation ran, or for MLX when we captured
 // ids for passthrough: routes pass CompletionRequest.PromptTokens so runners
 // ingest exact IDs instead of re-tokenizing (avoids byte/special-token drift; MLX MTP).
-func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue, truncate bool, tokenBudget int, detokenize detokenizeFunc) (prompt string, images []llm.ImageData, messagesDropped int, promptTokens []int, err error) {
+func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue, truncate bool, tokenBudget int, detokenize detokenizeFunc) (prompt string, images []llm.ImageData, messagesDropped int, promptTokens []int, originalPromptTokens int, err error) {
 	// TODO: Ideally we would compute this from the projector metadata but some pieces are implementation dependent
 	// Clip images are represented as 768 tokens, each an embedding
 	imageNumTokens := 768
@@ -44,7 +44,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 			var err error
 			currMsgIdx, err = findChatPromptStartIdx(ctx, m, msgs, tools, think, tokenize, budget, imageNumTokens, m.ProjectorPaths != nil)
 			if err != nil {
-				return "", nil, 0, nil, err
+				return "", nil, 0, nil, 0, err
 			}
 		}
 	}
@@ -57,7 +57,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	for cnt, msg := range msgs[currMsgIdx:] {
 		mmCount := len(msg.Images) + len(msg.PrecomputedEmbeddings) + len(msg.ProcessorOutputs)
 		if slices.Contains(m.Config.ModelFamilies, "mllama") && mmCount > 1 {
-			return "", nil, 0, nil, errors.New("this model only supports one image; more than one was requested (including multiple frames sampled from video)")
+			return "", nil, 0, nil, 0, errors.New("this model only supports one image; more than one was requested (including multiple frames sampled from video)")
 		}
 
 		var prefix string
@@ -113,7 +113,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	system := chatSystemPrefix(msgs, currMsgIdx)
 	p, err := renderPrompt(m, append(system, msgs[currMsgIdx:]...), tools, think)
 	if err != nil {
-		return "", nil, 0, nil, err
+		return "", nil, 0, nil, 0, err
 	}
 
 	if truncate && tokenize != nil {
@@ -122,9 +122,13 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 			budget = chatPromptTokenBudget(opts)
 		}
 		if budget > 0 {
-			p, _, promptTokens, err = tailTruncatePrompt(ctx, tokenize, detokenize, p, budget)
+			var dropped int
+			p, dropped, promptTokens, err = tailTruncatePrompt(ctx, tokenize, detokenize, p, budget)
 			if err != nil {
-				return "", nil, 0, nil, err
+				return "", nil, 0, nil, 0, err
+			}
+			if dropped > 0 {
+				originalPromptTokens = dropped + len(promptTokens)
 			}
 		}
 	}
@@ -160,14 +164,14 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 		if len(promptTokens) == 0 {
 			ids, err := tokenize(ctx, p)
 			if err != nil {
-				return "", nil, 0, nil, err
+				return "", nil, 0, nil, 0, err
 			}
 			promptTokens = ids
 			slog.Debug("mlx prompt pre-tokenized for passthrough", "tokens", len(promptTokens))
 		}
 	}
 
-	return p, images, messagesDropped, promptTokens, nil
+	return p, images, messagesDropped, promptTokens, originalPromptTokens, nil
 }
 
 func tailTruncatePrompt(ctx context.Context, tokenize tokenizeFunc, detokenize detokenizeFunc, prompt string, budget int) (string, int, []int, error) {

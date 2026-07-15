@@ -21,6 +21,8 @@ class OllamaGenerateResponse(BaseModel):
     done_reason: Optional[str] = "stop"
     vram_num_ctx: Optional[dict[str, Any]] = None
     kv_decode_steps: Optional[int] = None
+    prompt_truncated: Optional[bool] = None
+    original_prompt_tokens: Optional[int] = None
 
 
 class OllamaChatRequest(BaseModel):

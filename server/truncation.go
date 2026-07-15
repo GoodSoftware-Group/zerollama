@@ -7,7 +7,7 @@ import (
 	"github.com/ollama/ollama/llm"
 )
 
-func applyPromptTruncation(res *api.ChatResponse, cr llm.CompletionResponse, messagesDropped int) {
+func applyPromptTruncation(res *api.ChatResponse, cr llm.CompletionResponse, messagesDropped int, chatOriginalTokens int) {
 	if messagesDropped > 0 {
 		res.MessagesTruncated = true
 		res.MessagesDropped = messagesDropped
@@ -15,10 +15,14 @@ func applyPromptTruncation(res *api.ChatResponse, cr llm.CompletionResponse, mes
 	if cr.PromptTruncated {
 		res.PromptTruncated = true
 		res.OriginalPromptTokens = cr.OriginalPromptTokens
+	}
+	if chatOriginalTokens > 0 && (!res.PromptTruncated || chatOriginalTokens > res.OriginalPromptTokens) {
+		res.PromptTruncated = true
+		res.OriginalPromptTokens = chatOriginalTokens
 	}
 }
 
-func applyGenerateTruncation(res *api.GenerateResponse, cr llm.CompletionResponse, messagesDropped int) {
+func applyGenerateTruncation(res *api.GenerateResponse, cr llm.CompletionResponse, messagesDropped int, chatOriginalTokens int) {
 	if messagesDropped > 0 {
 		res.MessagesTruncated = true
 		res.MessagesDropped = messagesDropped
@@ -26,5 +30,9 @@ func applyGenerateTruncation(res *api.GenerateResponse, cr llm.CompletionRespons
 	if cr.PromptTruncated {
 		res.PromptTruncated = true
 		res.OriginalPromptTokens = cr.OriginalPromptTokens
+	}
+	if chatOriginalTokens > 0 && (!res.PromptTruncated || chatOriginalTokens > res.OriginalPromptTokens) {
+		res.PromptTruncated = true
+		res.OriginalPromptTokens = chatOriginalTokens
 	}
 }

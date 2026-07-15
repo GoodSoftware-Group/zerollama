@@ -649,6 +649,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	prompt := req.Prompt
 	var messagesDropped int
 	var promptTokens []int
+	var originalPromptTokens int
 	var leadingBOS string
 	var generateChainMessages []api.Message
 	if !req.Raw {
@@ -751,7 +752,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			} else {
 				tokenBudget, detok := chatPromptLimits(m, opts, genTruncate, r.ContextLength(), r.Detokenize)
 				genCtx := withPromptCacheKey(c.Request.Context(), modality.ExtractPromptCacheKey(req.Options))
-				prompt, images, messagesDropped, promptTokens, err = chatPrompt(genCtx, m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
+				prompt, images, messagesDropped, promptTokens, originalPromptTokens, err = chatPrompt(genCtx, m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate, tokenBudget, detok)
 				generateChainMessages = values.Messages
 				if err != nil {
 					abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
@@ -790,7 +791,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	checkpointPromptReady := time.Now()
 	logInferencePhase(c, "prompt_ready", req.Model, checkpointLoaded)
 	logLargeMLXPromptIfNeeded(m, promptTokens, opts)
-	recordInferencePromptSize(c, len(promptTokens), 0, messagesDropped)
+	recordInferencePromptSize(c, len(promptTokens), originalPromptTokens, messagesDropped)
 
 	var thinkingState *thinking.Parser
 	if builtinParser == nil {
@@ -889,7 +890,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				res.DoneReason = cr.DoneReason.String()
 				res.TotalDuration = time.Since(checkpointStart)
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-				applyGenerateTruncation(&res, cr, messagesDropped)
+				applyGenerateTruncation(&res, cr, messagesDropped, originalPromptTokens)
 				applyGgmlNumCtxResponse(&res, ggmlCtx)
 				rememberMLXPromptChain(m, req.Options, prompt, generateChainMessages, r.Tokenize)
 				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount)
@@ -3029,7 +3030,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	truncate := req.Truncate == nil || *req.Truncate
 	tokenBudget, detok := chatPromptLimits(m, opts, truncate, r.ContextLength(), r.Detokenize)
 	chatCtx := withPromptCacheKey(c.Request.Context(), modality.ExtractPromptCacheKey(req.Options))
-	prompt, images, messagesDropped, promptTokens, err := chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
+	prompt, images, messagesDropped, promptTokens, originalPromptTokens, err := chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 	if err != nil {
 		slog.Error("chat prompt error", "error", err)
 		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
@@ -3057,7 +3058,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	checkpointPromptReady := time.Now()
 	logInferencePhase(c, "prompt_ready", req.Model, checkpointLoaded)
 	logLargeMLXPromptIfNeeded(m, promptTokens, opts)
-	recordInferencePromptSize(c, len(promptTokens), 0, messagesDropped)
+	recordInferencePromptSize(c, len(promptTokens), originalPromptTokens, messagesDropped)
 
 	// If debug mode is enabled, return the rendered template instead of calling the model
 	if req.DebugRenderOnly {
@@ -3200,7 +3201,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.DoneReason = r.DoneReason.String()
 					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-					applyPromptTruncation(&res, r, messagesDropped)
+					applyPromptTruncation(&res, r, messagesDropped, originalPromptTokens)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
 					rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
 					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount)
@@ -3326,7 +3327,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 
 				msgs = append(msgs, msg)
-				prompt, _, _, promptTokens, err = chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
+				prompt, _, _, promptTokens, _, err = chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 				if err != nil {
 					slog.Error("chat prompt error applying structured outputs", "error", err)
 					enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
