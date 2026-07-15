@@ -335,6 +335,10 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 27k | **PASS** | `l3_production_gate.sh`: cached **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met). Artifact: `/tmp/l3-production-gate.json`. |
 | Metal (M4 Max) | vendor llama-server | **PASS (Radix live)** | `L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — donor slot 0 → target 2; target **0.58s** vs donor **8.2s**; `radix_seed` 128 tokens; artifact `/tmp/l3-radix-prefix-smoke-live.json` |
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **PASS (Radix live)** | `CUDA_LLAMA_MODEL=… L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh` — donor slot 1 → target 0; target **0.66s** vs donor **10.6s**; `radix_seed` 128 tokens; `/tmp/l3-radix-prefix-smoke-live.json` |
+| CUDA dual-4090 (Jul 2026) | Toppy-M-7B Q5 @ 8k | **PASS** | `l3_cuda_full_gate.sh` + `L3_RUN_RADIX=1` on `/usr/local` pin **`8f114a9b`+0071**; stock fork; cached **0.53s** vs no-cache **0.73s**. Artifact: `/tmp/l3-cuda-full-gate-toppy7b/smoke-8k.json`. |
+| CUDA dual-4090 (Jul 2026) | Toppy-M-7B Q5 @ 27k | **PASS** | cached **0.73s** vs no-cache **1.10s**; `turn2/turn1=0.98` (strict ≤0.75 not met). Artifact: `/tmp/l3-cuda-full-gate-toppy7b/production-27k.json`. |
+| CUDA dual-4090 (Jul 2026) | Toppy-M-7B Q5 | **PASS (Radix live)** | donor **3.15s** → target **0.21s**; `radix_copy_tokens` **192**; `/tmp/l3-cuda-full-gate-toppy7b/radix-live.json`. Merged: `/tmp/l3-cuda-full-gate-toppy7b/gate.json` → **L3 CUDA full gate PASS**. |
+| CUDA dual-4090 (Jul 2026) | eliza-1 9B | **blocked** | `/root/eliza-1-9b-256k.gguf` not on host — re-run when GGUF is present. |
 
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
@@ -360,18 +364,19 @@ L3_SPEC_METHOD=ngram ./scripts/l3_spec_cache_smoke.sh
 
 **Pass criteria (ship bar):**
 
-| Leg | Threshold | Jun 2026 (CT 1564, eliza-1 9B) |
-|-----|-----------|--------------------------------|
-| 8k smoke | cached turn2 **<** no-cache **or** turn2 **<** turn1 | cached **0.66s** vs no-cache **1.13s** |
-| 27k production | cached **<** no-cache **or** strict ratio ≤ 0.75 | cached **0.72s** vs no-cache **1.48s** (ratio **1.02** — strict optional) |
+| Leg | Threshold | Jun 2026 (CT 1564, eliza-1 9B) | Jul 2026 (dual-4090, Toppy-7B) |
+|-----|-----------|--------------------------------|--------------------------------|
+| 8k smoke | cached turn2 **<** no-cache **or** turn2 **<** turn1 | cached **0.66s** vs no-cache **1.13s** | cached **0.53s** vs no-cache **0.73s** |
+| 27k production | cached **<** no-cache **or** strict ratio ≤ 0.75 | cached **0.72s** vs no-cache **1.48s** (ratio **1.02** — strict optional) | cached **0.73s** vs no-cache **1.10s** (ratio **0.98**) |
 
-Optional supernova-class re-validation when that GGUF is on host — not blocking L3 Done.
+Optional supernova-class / eliza-1 9B re-validation when that GGUF is on host — not blocking L3 Done on 4090 (Toppy-7B proxy PASS).
 
-## Status (Jun 2026)
+## Status (Jun–Jul 2026)
 
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **Subprocess (5080 CUDA)** | **Done** — `l3_cuda_full_gate.sh` on eliza-1 9B | Optional supernova re-run |
+| **Subprocess (dual-4090 CUDA)** | **Done** — Toppy-M-7B Q5 full gate + Radix (`8f114a9b`+0071) | eliza-1 9B re-gate blocked (GGUF missing) |
 | **In-process (Metal)** | **Done** — RAM resume + disk parity; `l3_inprocess_smoke.sh` | `RUN_E2E_L3=1` on `m3_metal_signoff.sh` |
 
 **Deferred:** Go-side explicit cache-key field docs (options passthrough works).

@@ -230,6 +230,13 @@ Gate fixes required for valid A/B: pin `single_gpu.yaml` into `linux_runtime_sta
 
 VRAM deltas at 65k/131k match the c84 reference (−27% / −35%). Absolute tok/s is lower via the Python sidecar path than direct `llama-server`, but the VRAM tradeoff is confirmed on **`8f114a9b`**.
 
+**8f114a9b+0071 re-gate (Jul 2026, dual-4090, GPU1 sidecar, prod left up):** `/tmp/l2-cuda-gate-8f-0071-llama32-long/`. TBQ VRAM wins again; decode still loses at 65k. The 131k stock leg printed **5.3 tok/s** (fork 18.8) — treat as **contended/anomalous**, not a real fork tok/s win (quiet-host 8f long table above remains the decode reference).
+
+| Model | ctx | Stock | Fork (TBQ) | Notes |
+|-------|-----|-------|------------|-------|
+| llama3.2 3B | 65536 | **32.5 tok/s**, 6474 MiB | 18.7 tok/s, 4566 MiB | Decode **−43%**; VRAM **−29%** |
+| llama3.2 3B | 131072 | 5.3 tok/s‡, 10554 MiB | 18.8 tok/s, 6742 MiB | VRAM **−36%**; ‡stock decode not trusted (vs ~32 tok/s quiet) |
+
 **QJL/Polar on llama3.2:** aborts on legacy `c84b3020`. On pin **`8f114a9b` + patches 0067–0070**, QJL/Polar **loads and runs** (no abort). Contended-host sidecar A/B (`L2_FORK_CACHE_TYPE_*=qjl1_256/q4_polar`, prod left up): `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`.
 
 | Model | ctx | Stock | Fork (QJL/Polar) | Notes |
@@ -239,7 +246,7 @@ VRAM deltas at 65k/131k match the c84 reference (−27% / −35%). Absolute tok/
 
 Same host TBQ @ 8k/27k was only **−9% / −25%** decode — QJL **speed** profile is far worse on tok/s than TBQ **vram**. Prefer `FORK_PROFILE=vram` (TBQ) for headroom; treat `speed` (QJL/Polar) as experimental. TBQ load segfault on bare rebase was missing CPU `type_traits_cpu.from_float` (**0070**).
 
-**Verdict:** do **not** flip defaults for tok/s. **Do** opt into fork **VRAM profile** (TBQ) when long-ctx headroom matters (agent 65k–131k, multi-slot). **Do not** default `speed`/QJL on CUDA. Artifacts: `/tmp/l2-cuda-gate-4090-llama32-tbq/`, `/tmp/l2-cuda-gate-4090-llama32-long/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-tbq/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-long/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`.
+**Verdict:** do **not** flip defaults for tok/s. **Do** opt into fork **VRAM profile** (TBQ) when long-ctx headroom matters (agent 65k–131k, multi-slot). **Do not** default `speed`/QJL on CUDA. Artifacts: `/tmp/l2-cuda-gate-4090-llama32-tbq/`, `/tmp/l2-cuda-gate-4090-llama32-long/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-tbq/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-long/`, `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`, `/tmp/l2-cuda-gate-8f-0071-llama32-long/`.
 
 **When to enable fork for VRAM (operator)**
 
