@@ -225,6 +225,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
                 res += ggml_metal_op_mul_mat_id_extra_tpe(tensor);
                 res += ggml_metal_op_mul_mat_id_extra_ids(tensor);
             } break;
+        case GGML_OP_FLASHMOE_SPLIT_GLU:
+            {
+                res += ggml_metal_op_flashmoe_split_glu_extra_tmp(tensor);
+            } break;
         case GGML_OP_FLASH_ATTN_EXT:
             {
                 res += ggml_metal_op_flash_attn_ext_extra_pad(tensor);
@@ -786,6 +790,8 @@ static bool ggml_backend_metal_device_supports_buft(ggml_backend_dev_t dev, ggml
 static int64_t get_op_batch_size(const ggml_tensor * op) {
     switch (op->op) {
         case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_F16:
+        case GGML_OP_FLASHMOE_SPLIT_GLU:
             return op->ne[1];
         case GGML_OP_MUL_MAT_ID:
             return op->ne[2];
@@ -794,12 +800,66 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
     }
 }
 
+static bool ggml_backend_metal_device_is_routed_decode_op(const ggml_tensor * op) {
+    if (op == nullptr || op->op != GGML_OP_MUL_MAT_ID || op->src[2] == nullptr) {
+        return false;
+    }
+
+    const ggml_tensor * ids = op->src[2];
+    if (ids->type != GGML_TYPE_I32) {
+        return false;
+    }
+
+    // Native Flash-MoE slot-bank decode uses ggml_map_custom1() to translate expert ids
+    // into resident slot ids. Treat that native map the same as the legacy plain-input id
+    // tensor so single-token routed decode can reach Metal's dedicated fast path instead of
+    // silently falling back to the generic batch-size heuristic.
+    const bool ids_are_decode_ready =
+            ids->op == GGML_OP_NONE ||
+            ids->op == GGML_OP_MAP_CUSTOM1;
+
+    return ids_are_decode_ready &&
+            ids->ne[1] == 1 &&
+            ids->ne[0] > 0 &&
+            ids->ne[0] <= 32;
+}
+
+static bool ggml_backend_metal_device_experimental_slot_decode_enabled(void) {
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char * value = getenv("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_SLOT_DECODE");
+        enabled = (value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+    }
+    return enabled == 1;
+}
+
+static bool ggml_backend_metal_device_experimental_split_glu_enabled(void) {
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char * value = getenv("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_SPLIT_GLU");
+        enabled = (value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+    }
+    return enabled == 1;
+}
+
 static bool ggml_backend_metal_device_offload_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
 
-    return (op->op == GGML_OP_MUL_MAT ||
-            op->op == GGML_OP_MUL_MAT_ID) &&
-            get_op_batch_size(op) >= ggml_metal_device_get_props(ctx_dev)->op_offload_min_batch_size;
+    if (op->op != GGML_OP_MUL_MAT && op->op != GGML_OP_MUL_MAT_ID && op->op != GGML_OP_FLASHMOE_SPLIT_GLU) {
+        return false;
+    }
+
+    // Routed slot-bank decode is the hot path for MoE inference, but it presents as a
+    // single-token MUL_MAT_ID and falls below the generic batch-size heuristic. Let these
+    // decode ops reach Metal so the backend can use its dedicated decode fast path instead
+    // of forcing host-backed expert matmuls onto the CPU by default.
+    if ((ggml_backend_metal_device_experimental_slot_decode_enabled() ||
+         ggml_backend_metal_device_experimental_split_glu_enabled()) &&
+        ggml_backend_metal_device_is_routed_decode_op(op)) {
+        return true;
+    }
+
+    return get_op_batch_size(op) >= ggml_metal_device_get_props(ctx_dev)->op_offload_min_batch_size;
 }
 
 static ggml_backend_event_t ggml_backend_metal_device_event_new(ggml_backend_dev_t dev) {

@@ -11571,6 +11571,156 @@ kernel void kernel_mul_mm_nr8(
 
 #endif // GGML_METAL_HAS_TENSOR
 
+#ifdef GGML_METAL_HAS_TENSOR
+template<typename block_q_ff, typename block_q_down, short nl_ff, short nl_down, bool use_geglu,
+         void (*dequantize_ff)(device const block_q_ff *, short, thread half4x4 &),
+         void (*dequantize_down)(device const block_q_down *, short, thread half4x4 &)>
+kernel void kernel_flashmoe_split_glu(
+        constant ggml_metal_kargs_flashmoe_split_mlp & args,
+        device const char * src0_gate,
+        device const char * src0_up,
+        device const char * src0_down,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiitg[[thread_index_in_threadgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    (void) src0_down;
+    (void) sgitg;
+    (void) dequantize_down;
+    (void) nl_down;
+
+    constexpr int FF_TILE  = 64;
+    constexpr int TOK_TILE = 32;
+    constexpr int K_TILE   = 32;
+
+    constexpr int NL0 = K_TILE/16;
+    constexpr int NL1 = K_TILE/8;
+
+    threadgroup half * sa_gate = (threadgroup half *) shmem;
+    threadgroup half * sa_up   = sa_gate + FF_TILE*K_TILE;
+    threadgroup half * sb      = sa_up   + FF_TILE*K_TILE;
+    threadgroup float * sc_gate = (threadgroup float *) (sb + TOK_TILE*K_TILE);
+    threadgroup float * sc_up   = sc_gate + FF_TILE*TOK_TILE;
+
+    const int ff_base  = tgpig.y*FF_TILE;
+    const int tok_base = tgpig.x*TOK_TILE;
+
+    const short nr_ff  = (args.n_ff     - ff_base  < FF_TILE ) ? (args.n_ff     - ff_base ) : FF_TILE;
+    const short nr_tok = (args.n_tokens - tok_base < TOK_TILE) ? (args.n_tokens - tok_base) : TOK_TILE;
+
+    const bool valid_ff_lane  = ((short)tiitg/NL0) < nr_ff;
+    const bool valid_tok_lane = ((short)tiitg/NL1) < nr_tok;
+
+    const short lr_ff  = valid_ff_lane  ? ((short)tiitg/NL0) : nr_ff  - 1;
+    const short lr_tok = valid_tok_lane ? ((short)tiitg/NL1) : nr_tok - 1;
+
+    const short il0 = (tiitg % NL0);
+    short il = il0;
+
+    device const block_q_ff * x_gate = (device const block_q_ff *)(src0_gate + args.gate_nb01*(ff_base + lr_ff));
+    device const block_q_ff * x_up   = (device const block_q_ff *)(src0_up   + args.up_nb01*(ff_base + lr_ff));
+
+    const short iy = 8*(tiitg % NL1);
+    device const float * y = (device const float *)(src1 + args.in_nb1*(tok_base + lr_tok)) + iy;
+
+    auto tA_gate = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>(sa_gate, dextents<int32_t, 2>(K_TILE, FF_TILE));
+    auto tA_up   = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>(sa_up,   dextents<int32_t, 2>(K_TILE, FF_TILE));
+    auto tB      = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>(sb,      dextents<int32_t, 2>(TOK_TILE, K_TILE));
+
+    mpp::tensor_ops::matmul2d<
+        mpp::tensor_ops::matmul2d_descriptor(TOK_TILE, FF_TILE, K_TILE, false, true, false, mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
+        execution_simdgroups<4>> mm;
+
+    auto cGate = mm.template get_destination_cooperative_tensor<decltype(tA_gate), decltype(tB), float>();
+    auto cUp   = mm.template get_destination_cooperative_tensor<decltype(tA_up),   decltype(tB), float>();
+
+    for (int loop_k = 0; loop_k < args.n_embd_in; loop_k += K_TILE) {
+        half4x4 temp_gate;
+        half4x4 temp_up;
+        if (valid_ff_lane) {
+            dequantize_ff(x_gate, il, temp_gate);
+            dequantize_ff(x_up,   il, temp_up);
+        } else {
+            FOR_UNROLL (short i = 0; i < 16; ++i) {
+                temp_gate[i/4][i%4] = (half) 0.0f;
+                temp_up[i/4][i%4]   = (half) 0.0f;
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2*il0 + i/8;
+            const short sy = (tiitg/NL0)/8;
+            const short lx = i%8;
+            const short ly = (tiitg/NL0)%8;
+
+            *(sa_gate + K_TILE*(8*sy + ly) + 8*sx + lx) = temp_gate[i/4][i%4];
+            *(sa_up   + K_TILE*(8*sy + ly) + 8*sx + lx) = temp_up[i/4][i%4];
+        }
+
+        for (short i = 0; i < 8; ++i) {
+            const short sx = (tiitg%NL1);
+            const short sy = (tiitg/NL1)/8;
+            const short lx = i;
+            const short ly = (tiitg/NL1)%8;
+
+            *(sb + K_TILE*(8*sy + ly) + 8*sx + lx) =
+                    (valid_tok_lane && loop_k + iy + i < args.n_embd_in) ? (half) y[i] : (half) 0;
+        }
+
+        il = (il + 2 < nl_ff) ? il + 2 : il % 2;
+        x_gate = (il < 2) ? x_gate + (2 + nl_ff - 1)/nl_ff : x_gate;
+        x_up   = (il < 2) ? x_up   + (2 + nl_ff - 1)/nl_ff : x_up;
+        y += K_TILE;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        auto sA_gate = tA_gate.slice(0, 0);
+        auto sA_up   = tA_up.slice(0, 0);
+        auto sB      = tB.slice(0, 0);
+
+        mm.run(sB, sA_gate, cGate);
+        mm.run(sB, sA_up,   cUp);
+    }
+
+    auto tCGate = tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline>(sc_gate, dextents<int32_t, 2>(FF_TILE, TOK_TILE));
+    auto tCUp   = tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline>(sc_up,   dextents<int32_t, 2>(FF_TILE, TOK_TILE));
+
+    cGate.store(tCGate);
+    cUp.store(tCUp);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tiitg < 32) {
+        for (int j = tiitg; j < nr_tok; j += 32) {
+            device float * D = (device float *) dst + ff_base + (tok_base + j)*args.n_ff;
+            threadgroup float * gate_row = sc_gate + j*FF_TILE;
+            threadgroup float * up_row   = sc_up   + j*FF_TILE;
+
+            for (int i = 0; i < nr_ff; ++i) {
+                const float x0 = gate_row[i];
+                const float x1 = up_row[i];
+
+                float act;
+                if (use_geglu) {
+                    const float gelu = 0.5f*x0*(1.0f + precise::tanh(SQRT_2_OVER_PI*x0*(1.0f + GELU_COEF_A*x0*x0)));
+                    act = gelu*x1;
+                } else {
+                    const float silu = x0 / (1.0f + exp(-x0));
+                    act = silu*x1;
+                }
+
+                D[i] = act;
+            }
+        }
+    }
+}
+#endif
+
+
 template<short ne20> // n_expert_used
 kernel void kernel_mul_mm_id_map0(
         constant ggml_metal_kargs_mul_mm_id_map0 & args,
@@ -12010,6 +12160,31 @@ template [[host_name("kernel_mul_mm_iq1_s_f16")]]   kernel mul_mm_t kernel_mul_m
 template [[host_name("kernel_mul_mm_iq1_m_f16")]]   kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_iq1_m,   QK_NL, dequantize_iq1_m,   float,  float4x4,  half, half2x4>;
 template [[host_name("kernel_mul_mm_iq4_nl_f16")]]  kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_iq4_nl,  2,     dequantize_iq4_nl,  float,  float4x4,  half, half2x4>;
 template [[host_name("kernel_mul_mm_iq4_xs_f16")]]  kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_iq4_xs,  QK_NL, dequantize_iq4_xs,  float,  float4x4,  half, half2x4>;
+
+//
+// Flash-MoE (M16 port): fused dequant+GEMM+SwiGLU/GeGLU for routed-expert MLP.
+// Metal-tensor-API only (mirrors kernel_mul_mm's #ifdef GGML_METAL_HAS_TENSOR path);
+// ggml-cpu.c GGML_ABORTs for this op, so no non-tensor fallback is needed.
+//
+#ifdef GGML_METAL_HAS_TENSOR
+typedef decltype(kernel_flashmoe_split_glu<block_q4_K, block_q4_K, QK_NL, QK_NL, false, dequantize_q4_K, dequantize_q4_K>) flashmoe_split_glu_t;
+
+#define GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU(NAME, BLOCK_Q_FF, NL_FF, DEQ_FF, BLOCK_Q_DOWN, NL_DOWN, DEQ_DOWN) \
+template [[host_name("kernel_flashmoe_split_swiglu_" NAME)]] kernel flashmoe_split_glu_t kernel_flashmoe_split_glu<BLOCK_Q_FF, BLOCK_Q_DOWN, NL_FF, NL_DOWN, false, DEQ_FF, DEQ_DOWN>; \
+template [[host_name("kernel_flashmoe_split_geglu_" NAME)]] kernel flashmoe_split_glu_t kernel_flashmoe_split_glu<BLOCK_Q_FF, BLOCK_Q_DOWN, NL_FF, NL_DOWN, true, DEQ_FF, DEQ_DOWN>;
+
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q4_K_q4_K_f32", block_q4_K, QK_NL, dequantize_q4_K, block_q4_K, QK_NL, dequantize_q4_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q4_K_q5_K_f32", block_q4_K, QK_NL, dequantize_q4_K, block_q5_K, QK_NL, dequantize_q5_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q4_K_q6_K_f32", block_q4_K, QK_NL, dequantize_q4_K, block_q6_K, QK_NL, dequantize_q6_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q5_K_q4_K_f32", block_q5_K, QK_NL, dequantize_q5_K, block_q4_K, QK_NL, dequantize_q4_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q5_K_q5_K_f32", block_q5_K, QK_NL, dequantize_q5_K, block_q5_K, QK_NL, dequantize_q5_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q5_K_q6_K_f32", block_q5_K, QK_NL, dequantize_q5_K, block_q6_K, QK_NL, dequantize_q6_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q6_K_q4_K_f32", block_q6_K, QK_NL, dequantize_q6_K, block_q4_K, QK_NL, dequantize_q4_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q6_K_q5_K_f32", block_q6_K, QK_NL, dequantize_q6_K, block_q5_K, QK_NL, dequantize_q5_K)
+GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU("q6_K_q6_K_f32", block_q6_K, QK_NL, dequantize_q6_K, block_q6_K, QK_NL, dequantize_q6_K)
+
+#undef GGML_METAL_INSTANTIATE_FLASHMOE_SPLIT_GLU
+#endif // GGML_METAL_HAS_TENSOR
 
 //
 // indirect matrix-matrix multiplication
