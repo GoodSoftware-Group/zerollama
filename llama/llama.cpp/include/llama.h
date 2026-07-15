@@ -997,6 +997,11 @@ extern "C" {
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 
+    // Clear ggml CUDA graph cache for all CUDA backends on this context.
+    // WHY: L3 prefix-cache / slot clear changes KV while ggml keys graphs by topology only.
+    // Returns backends that had ≥1 graph cleared (0 on Metal / graphs disabled / no CUDA).
+    LLAMA_API int llama_context_cuda_graph_invalidate(struct llama_context * ctx);
+
     // Wait until all computations are finished
     // This is automatically done when using one of the functions below to obtain the computation results
     // and is not necessary to call it explicitly in most cases

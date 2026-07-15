@@ -26,6 +26,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_RESTORE,
     SERVER_TASK_TYPE_SLOT_ERASE,
     SERVER_TASK_TYPE_SLOT_SEQ_COPY,
+    SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
 };
@@ -578,6 +579,17 @@ struct server_task_result_slot_seq_copy : server_task_result {
     size_t n_tokens_copied;
 
     virtual json to_json() override;
+};
+
+struct server_task_result_cuda_graph_invalidate : server_task_result {
+    int backends_cleared = 0;
+
+    virtual json to_json() override {
+        return json {
+            { "ok", true },
+            { "backends_cleared", backends_cleared },
+        };
+    }
 };
 
 struct server_task_result_get_lora : server_task_result {

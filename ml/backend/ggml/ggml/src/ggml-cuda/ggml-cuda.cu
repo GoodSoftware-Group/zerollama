@@ -5273,6 +5273,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
     }
+    if (strcmp(name, "ggml_backend_cuda_invalidate_graphs") == 0) {
+        return (void *)ggml_backend_cuda_invalidate_graphs;
+    }
     return nullptr;
 }
 
@@ -5342,6 +5345,28 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
     }
 
     return &reg;
+}
+
+int ggml_backend_cuda_invalidate_graphs(ggml_backend_t backend) {
+    if (!ggml_backend_is_cuda(backend) || backend->context == nullptr) {
+        return 0;
+    }
+
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+
+#ifdef USE_CUDA_GRAPH
+    const int n = (int) cuda_ctx->cuda_graphs.size();
+    if (n <= 0) {
+        return 0;
+    }
+    // WHY sync before clear: in-flight graph launches must finish before destroying executables.
+    CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+    cuda_ctx->cuda_graphs.clear();
+    return n;
+#else
+    GGML_UNUSED(cuda_ctx);
+    return 0;
+#endif
 }
 
 ggml_backend_t ggml_backend_cuda_init(int device) {

@@ -3651,6 +3651,43 @@ int32_t llama_n_threads_batch(llama_context * ctx) {
     return ctx->n_threads_batch();
 }
 
+int llama_context_cuda_graph_invalidate(struct llama_context * ctx) {
+    if (ctx == nullptr) {
+        return 0;
+    }
+
+    ggml_backend_sched_t sched = ctx->get_sched();
+    if (sched == nullptr) {
+        return 0;
+    }
+
+    typedef int (*ggml_backend_cuda_invalidate_graphs_t)(ggml_backend_t);
+
+    int backends_cleared = 0;
+    const int n_backends = ggml_backend_sched_get_n_backends(sched);
+    for (int i = 0; i < n_backends; ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        if (backend == nullptr) {
+            continue;
+        }
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+        ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+        if (reg == nullptr) {
+            continue;
+        }
+        // WHY proc_address: CUDA may be a dynamically loaded backend — do not hard-link ggml-cuda.
+        auto invalidate_fn = (ggml_backend_cuda_invalidate_graphs_t)
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_invalidate_graphs");
+        if (invalidate_fn == nullptr) {
+            continue;
+        }
+        if (invalidate_fn(backend) > 0) {
+            backends_cleared++;
+        }
+    }
+    return backends_cleared;
+}
+
 void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void * data), void * abort_callback_data) {
     ctx->set_abort_callback(abort_callback, abort_callback_data);
 }

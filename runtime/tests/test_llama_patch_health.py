@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from runtime.llama_patch_health import (
+    binary_embeds_cuda_graph_invalidate_route,
     binary_embeds_seq_copy_route,
     in_tree_patch_markers,
     list_patch_files,
@@ -16,6 +17,7 @@ def test_list_patch_files_includes_required():
     names = list_patch_files()
     assert any("ollama-llama-kv-ext" in n for n in names)
     assert any("ollama-kv-seq-copy-endpoint" in n for n in names)
+    assert any("cuda-graph-invalidate" in n for n in names)
 
 
 def test_binary_embeds_seq_copy_checks_server_impl(tmp_path: Path):
@@ -28,9 +30,19 @@ def test_binary_embeds_seq_copy_checks_server_impl(tmp_path: Path):
     assert binary_embeds_seq_copy_route(wrapper) is True
 
 
+def test_binary_embeds_cuda_graph_checks_server_impl(tmp_path: Path):
+    wrapper = tmp_path / "llama-server"
+    wrapper.write_bytes(b"thin-wrapper-no-route")
+    assert binary_embeds_cuda_graph_invalidate_route(wrapper) is False
+    impl = tmp_path / "libllama-server-impl.so"
+    impl.write_bytes(b"prefix /cuda-graph/invalidate suffix")
+    assert binary_embeds_cuda_graph_invalidate_route(wrapper) is True
+
+
 def test_in_tree_seq_copy_markers_present():
     markers = in_tree_patch_markers()
     assert markers["llama/llama.cpp/tools/server/server.cpp"] is True
+    assert markers["llama/llama.cpp/tools/server/server.cpp#cuda-graph"] is True
     assert markers["llama/llama.cpp/include/llama-kv-ext.h"] is True
 
 
@@ -38,6 +50,7 @@ def test_llama_patch_health_passes_in_repo():
     report = llama_patch_health()
     assert report["required_patches_ok"] is True
     assert report["in_tree_markers"]["llama/llama.cpp/tools/server/server.cpp"] is True
+    assert report["in_tree_markers"]["llama/llama.cpp/tools/server/server.cpp#cuda-graph"] is True
     assert report["status"] == "pass", report.get("issues")
 
 

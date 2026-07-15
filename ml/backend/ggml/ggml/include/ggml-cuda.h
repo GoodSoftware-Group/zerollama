@@ -40,6 +40,11 @@ GGML_BACKEND_API void ggml_backend_cuda_get_device_memory(int device, size_t * f
 GGML_BACKEND_API bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size);
 GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
 
+// Clear captured CUDA graphs on this backend (stream sync + map clear).
+// WHY: L3/prefix-cache KV clears leave ggml graph keys intact; stale replay is a correctness risk.
+// Returns number of graph entries cleared (0 if none / graphs disabled / not CUDA).
+GGML_BACKEND_API int ggml_backend_cuda_invalidate_graphs(ggml_backend_t backend);
+
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 
 #ifdef  __cplusplus

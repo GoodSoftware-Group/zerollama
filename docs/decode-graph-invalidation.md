@@ -144,7 +144,7 @@ Each trigger bumps **both** slot epoch and global epoch (conservative: any slot 
 - Task handler calls `llama_context_cuda_graph_invalidate(ctx_tgt)`.
 - Response: `{"ok": true, "backends_cleared": N}` (`N=0` on Metal or when graphs disabled).
 
-**Graceful degradation:** if llama-server predates the endpoint (HTTP 404), `cuda_graph_invalidate.py` logs at debug and returns `ok: false`; epoch bumps still run for trace and future capture keys.
+**Graceful degradation:** if llama-server predates the endpoint (HTTP 404), `cuda_graph_invalidate.py` logs at debug and returns `ok: false`; epoch bumps still run for trace and future capture keys. Doctor: `./scripts/llama_patch_doctor.sh` probes `/cuda-graph/invalidate` embed in `libllama-server-impl` (patch **0072**).
 
 ```bash
 curl -s -X POST http://127.0.0.1:8082/cuda-graph/invalidate \

@@ -2761,6 +2761,18 @@ private:
                     res->n_tokens_copied = n_copy;
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE:
+                {
+                    // WHY task-queue: same thread as decode/slot erase — no race with active graph launch.
+                    int cleared = 0;
+                    if (ctx_tgt != nullptr) {
+                        cleared = llama_context_cuda_graph_invalidate(ctx_tgt);
+                    }
+                    auto res = std::make_unique<server_task_result_cuda_graph_invalidate>();
+                    res->id = task.id;
+                    res->backends_cleared = cleared;
+                    queue_results.send(std::move(res));
+                } break;
             case SERVER_TASK_TYPE_GET_LORA:
                 {
                     // TODO @ngxson : make lora_adapters a dedicated member of server_context
@@ -4666,6 +4678,10 @@ void server_routes::init_routes() {
         return handle_kv_seq_copy(req);
     };
 
+    this->post_cuda_graph_invalidate = [this](const server_http_req & req) {
+        return handle_cuda_graph_invalidate(req);
+    };
+
     this->get_props = [this](const server_http_req &) {
         auto res = create_response(true);
 
@@ -5377,6 +5393,29 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
         return res;
     }
     GGML_ASSERT(dynamic_cast<server_task_result_slot_seq_copy*>(result.get()) != nullptr);
+    res->ok(result->to_json());
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_cuda_graph_invalidate(const server_http_req & req) {
+    auto res = create_response();
+    // Body is optional; reason is for logs only (Python sends {"reason": "..."}).
+    auto & rd = res->rd;
+    {
+        server_task task(SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE);
+        task.id = rd.get_new_id();
+        rd.post_task(std::move(task));
+    }
+    auto result = rd.next(req.should_stop);
+    if (!result) {
+        GGML_ASSERT(req.should_stop());
+        return res;
+    }
+    if (result->is_error()) {
+        res->error(result->to_json());
+        return res;
+    }
+    GGML_ASSERT(dynamic_cast<server_task_result_cuda_graph_invalidate*>(result.get()) != nullptr);
     res->ok(result->to_json());
     return res;
 }

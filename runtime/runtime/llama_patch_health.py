@@ -1,8 +1,8 @@
-"""Offline llama.cpp patch / vendor health (Radix seq-copy, kv-ext, pin drift).
+"""Offline llama.cpp patch / vendor health (Radix seq-copy, CUDA graph, kv-ext, pin drift).
 
 WHY: patched routes ship via ``llama/patches/`` → vendor ``git am`` → rsync in-tree
 → rebuild llama-server. Operators often run a stale sibling binary and see "lost"
-patches (404 on ``/kv/seq-copy``) while git still looks fine.
+patches (404 on ``/kv/seq-copy`` or ``/cuda-graph/invalidate``) while git still looks fine.
 """
 
 from __future__ import annotations
@@ -24,10 +24,12 @@ from runtime.llama_cpp_unified import (
 _REQUIRED_PATCH_SUBSTRINGS = (
     "ollama-llama-kv-ext",  # Phase 15; numbered 0014 historically, 0019 on 8f114a9b
     "ollama-kv-seq-copy-endpoint",  # numbered 0017/0018 historically; 0022 on 8f114a9b
+    "cuda-graph-invalidate",  # 0072 — L3 decode-graph break for subprocess
 )
 
 _IN_TREE_MARKERS = (
     ("llama/llama.cpp/tools/server/server.cpp", '"/kv/seq-copy"'),
+    ("llama/llama.cpp/tools/server/server.cpp#cuda-graph", '"/cuda-graph/invalidate"'),
     ("llama/llama.cpp/include/llama-kv-ext.h", "llama_memory_kv_ext_classify"),
     ("llama/llama.cpp/src/llama-memory-kv-ext.cpp", "llama_memory_kv_cell_for_pos"),
 )
@@ -68,15 +70,16 @@ def list_patch_files(repo: Path | None = None) -> list[str]:
 def in_tree_patch_markers(repo: Path | None = None) -> dict[str, bool]:
     root = _repo_root(repo)
     out: dict[str, bool] = {}
-    for rel, needle in _IN_TREE_MARKERS:
+    for key, needle in _IN_TREE_MARKERS:
+        rel = key.split("#", 1)[0]
         path = root / rel
         if not path.is_file():
-            out[rel] = False
+            out[key] = False
             continue
         try:
-            out[rel] = needle in path.read_text(encoding="utf-8", errors="replace")
+            out[key] = needle in path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            out[rel] = False
+            out[key] = False
     return out
 
 
@@ -136,12 +139,12 @@ def _git_rev_list_count(cwd: Path, base_ref: str) -> int | None:
     return int(raw)
 
 
-def binary_embeds_seq_copy_route(path: Path | None) -> bool | None:
-    """True when ``/kv/seq-copy`` is in the Mach-O/ELF or its server-impl sibling.
+def binary_embeds_route(path: Path | None, needles: tuple[bytes, ...]) -> bool | None:
+    """True when any *needles* appear in the Mach-O/ELF or ``libllama-server-impl*`` sibling.
 
     WHY: ggml-org split routes into ``libllama-server-impl.so`` / ``.dylib``; the
     ``llama-server`` binary is a thin wrapper (~18KB on Linux) that no longer embeds
-    the route string. Mac ``build_zerollama_mac.sh`` already probes the impl library.
+    route strings.
     """
     if path is None or not path.is_file():
         return None
@@ -151,7 +154,7 @@ def binary_embeds_seq_copy_route(path: Path | None) -> bool | None:
             data = p.read_bytes()
         except OSError:
             return False
-        return b"/kv/seq-copy" in data or b"kv/seq-copy" in data
+        return any(n in data for n in needles)
 
     if _has_route(path):
         return True
@@ -161,8 +164,28 @@ def binary_embeds_seq_copy_route(path: Path | None) -> bool | None:
     return False
 
 
+def binary_embeds_seq_copy_route(path: Path | None) -> bool | None:
+    """True when ``/kv/seq-copy`` is in the Mach-O/ELF or its server-impl sibling."""
+    return binary_embeds_route(path, (b"/kv/seq-copy", b"kv/seq-copy"))
+
+
+def binary_embeds_cuda_graph_invalidate_route(path: Path | None) -> bool | None:
+    """True when ``/cuda-graph/invalidate`` is in the binary or server-impl sibling (0072)."""
+    return binary_embeds_route(
+        path, (b"/cuda-graph/invalidate", b"cuda-graph/invalidate")
+    )
+
+
 def probe_seq_copy_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
-    url = base_url.rstrip("/") + "/kv/seq-copy"
+    return _probe_post_route(base_url, "/kv/seq-copy", timeout=timeout)
+
+
+def probe_cuda_graph_invalidate_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
+    return _probe_post_route(base_url, "/cuda-graph/invalidate", timeout=timeout)
+
+
+def _probe_post_route(base_url: str, route: str, *, timeout: float = 3.0) -> bool | None:
+    url = base_url.rstrip("/") + route
     req = urllib.request.Request(
         url,
         data=b"{}",
@@ -274,6 +297,7 @@ def llama_patch_health(
     under_vendor = _path_under(server_path, vendor_root)
     external_install = _is_external_llama_install(server_path)
     bin_seq = binary_embeds_seq_copy_route(server_path)
+    bin_cuda_graph = binary_embeds_cuda_graph_invalidate_route(server_path)
     fork_help = False
     if server_path is not None and server_path.is_file():
         from runtime.llama_fork import probe_fork_llama_server
@@ -344,11 +368,30 @@ def llama_patch_health(
     elif external_install and fork_help and bin_seq is not True:
         warnings.append("external binary validated via fork KV --help probe")
 
+    if server_path is not None and bin_cuda_graph is False:
+        if external_install and fork_help:
+            warnings.append(
+                "external binary: /cuda-graph/invalidate embed not found (0072); rebuild recommended"
+            )
+        else:
+            issues.append(
+                f"llama-server binary lacks /cuda-graph/invalidate string — rebuild with patch 0072: "
+                f"./scripts/build_llama_server.sh"
+            )
+    elif external_install and bin_cuda_graph is True:
+        warnings.append("external binary validated via /cuda-graph/invalidate embed")
+
     http_probe: bool | None = None
+    http_cuda_graph: bool | None = None
     if probe_http_base:
         http_probe = probe_seq_copy_http(probe_http_base)
         if http_probe is False:
             issues.append(f"live llama-server at {probe_http_base!r} returns 404 for POST /kv/seq-copy")
+        http_cuda_graph = probe_cuda_graph_invalidate_http(probe_http_base)
+        if http_cuda_graph is False:
+            issues.append(
+                f"live llama-server at {probe_http_base!r} returns 404 for POST /cuda-graph/invalidate"
+            )
 
     version_file = root / "LLAMA_CPP_VERSION"
     llama_cpp_version = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else ""
@@ -373,7 +416,9 @@ def llama_patch_health(
         "resolved_llama_cpp_lib": str(cpp_lib) if cpp_lib else None,
         "llama_server_under_vendor": under_vendor,
         "llama_server_binary_seq_copy": bin_seq,
+        "llama_server_binary_cuda_graph_invalidate": bin_cuda_graph,
         "live_seq_copy_probe": http_probe,
+        "live_cuda_graph_invalidate_probe": http_cuda_graph,
         "issues": issues,
         "warnings": warnings,
         "remediation": [
@@ -406,6 +451,9 @@ def llama_patch_health_summary(
         "resolved_llama_server_bin": full["resolved_llama_server_bin"],
         "llama_server_under_vendor": full["llama_server_under_vendor"],
         "llama_server_binary_seq_copy": full["llama_server_binary_seq_copy"],
+        "llama_server_binary_cuda_graph_invalidate": full.get(
+            "llama_server_binary_cuda_graph_invalidate"
+        ),
         "issues": full["issues"],
         "warnings": full["warnings"],
         "doctor": "./scripts/llama_patch_doctor.sh",
