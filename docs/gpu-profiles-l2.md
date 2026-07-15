@@ -132,6 +132,9 @@ export ZEROLLAMA_LLAMA_FORK=1
 # 4. CUDA A/B benchmark (L1 vs fork profiles, same binary)
 CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_bench.sh
 # Output: L2_CUDA_BENCH_OUT=/tmp/l2-cuda-bench.json (default)
+# Absolute decode at long ctx (no Python sidecar — preferred for tok/s):
+CUDA_LLAMA_MODEL=/path/to.gguf L2_NUM_CTX=131072 ./scripts/l2_cuda_direct_bench.sh
+# Output: L2_CUDA_DIRECT_OUT=/tmp/l2-cuda-direct-bench.json
 
 # 5. Runtime compat smoke (Linux variant — uses linux_runtime_serve_lib + .so)
 CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_runtime_compat_smoke.sh
@@ -243,7 +246,7 @@ VRAM deltas at 65k/131k match the c84 reference (−27% / −35%). Absolute tok/
 |-------|-----|--------------|------------|-------|
 | llama3.2 3B | 131072 | **~290 tok/s**, 10650 MiB | ~33 tok/s, 6742 MiB | Decode **−89%**; VRAM **−37%** |
 
-**WHY sidecar under-reports stock:** L2 `l2_cuda_bench.sh` goes Go/Python → llama-server; at 131k the stock leg often lands in the mid-single-digit to ~30 tok/s band even on a quiet GPU, while direct `/completion` is ~290 tok/s. Prefer **direct** for absolute decode; sidecar remains OK for relative VRAM nvidia-smi deltas. A sidecar fork-only TBQ load also segfaulted once post-0072 (`libllama` code −11) — direct TBQ load/decode was fine.
+**WHY sidecar under-reports stock:** L2 `l2_cuda_bench.sh` goes Go/Python → llama-server; at 131k the stock leg often lands in the mid-single-digit to ~30 tok/s band even on a quiet GPU, while direct `/completion` is ~290 tok/s. Prefer **`./scripts/l2_cuda_direct_bench.sh`** for absolute decode; sidecar remains OK for relative VRAM nvidia-smi deltas. A sidecar fork-only TBQ load also segfaulted once post-0072 (`libllama` code −11) — direct TBQ load/decode was fine.
 
 **QJL/Polar on llama3.2:** aborts on legacy `c84b3020`. On pin **`8f114a9b` + patches 0067–0070**, QJL/Polar **loads and runs** (no abort). Contended-host sidecar A/B (`L2_FORK_CACHE_TYPE_*=qjl1_256/q4_polar`, prod left up): `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`.
 

@@ -38,6 +38,8 @@ scripts=(
   l2_fork_eval.sh
   l2_metal_bench.sh
   l2_cuda_bench.sh
+  l2_cuda_direct_bench.sh
+  nvfp4_cuda_probe.sh
   l1_cuda_calibrate.sh
   l1_cuda_concurrent_bench.sh
   l1_cuda_full_gate.sh
@@ -188,8 +190,12 @@ grep -q 'l1_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l1.md"
 grep -q 'RUN_E2E_L1' "${ROOT}/scripts/gpu_5080_session.sh"
 grep -q 'ZEROLLAMA_GPU_PROFILE' "${ROOT}/scripts/l1_cuda_calibrate.sh"
 grep -q 'l2_cuda_bench' "${ROOT}/docs/gpu-profiles-l2.md"
+grep -q 'l2_cuda_direct_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_cuda_bench.sh"
 grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_bench.sh"
+grep -q '/completion' "${ROOT}/scripts/l2_cuda_direct_bench.sh"
+grep -q 'NVFP4' "${ROOT}/scripts/nvfp4_cuda_probe.sh"
+grep -q 'nvfp4_cuda_probe' "${ROOT}/docs/cuda-lanes.md"
 grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.sh"
 grep -q 'c84b30200' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'llama-cpp-c84b3020' "${ROOT}/Makefile.sync"
