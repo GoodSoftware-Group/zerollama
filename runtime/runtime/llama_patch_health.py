@@ -3,6 +3,8 @@
 WHY: patched routes ship via ``llama/patches/`` → vendor ``git am`` → rsync in-tree
 → rebuild llama-server. Operators often run a stale sibling binary and see "lost"
 patches (404 on ``/kv/seq-copy`` or ``/cuda-graph/invalidate``) while git still looks fine.
+CUDA weight-format probes (NVFP4/MXFP4) catch a stale ``libggml-cuda`` that lacks FP4
+kernels before an expensive MoE load fails mid-mmap.
 """
 
 from __future__ import annotations
@@ -33,6 +35,10 @@ _IN_TREE_MARKERS = (
     ("llama/llama.cpp/include/llama-kv-ext.h", "llama_memory_kv_ext_classify"),
     ("llama/llama.cpp/src/llama-memory-kv-ext.cpp", "llama_memory_kv_cell_for_pos"),
 )
+
+# WHY bytes needles: scan packaged/vendor libggml-cuda without loading CUDA.
+_NVFP4_NEEDLES = (b"GGML_TYPE_NVFP4", b"nvfp4", b"NVFP4")
+_MXFP4_NEEDLES = (b"GGML_TYPE_MXFP4", b"mxfp4", b"MXFP4")
 
 
 def _repo_root(explicit: Path | None = None) -> Path:
@@ -176,6 +182,87 @@ def binary_embeds_cuda_graph_invalidate_route(path: Path | None) -> bool | None:
     )
 
 
+def resolve_ggml_cuda_lib(
+    server_bin: Path | None = None,
+    *,
+    cpp_root: Path | None = None,
+) -> Path | None:
+    """Locate ``libggml-cuda`` next to llama-server / vendor build / packaged cuda_v12."""
+    cands: list[Path] = []
+    if server_bin is not None:
+        parent = server_bin.parent
+        cands.extend(sorted(parent.glob("libggml-cuda.so*")))
+        cands.extend(sorted(parent.glob("libggml-cuda*.dylib")))
+        cands.extend(sorted((parent / "cuda_v12").glob("libggml-cuda.so*")))
+    root = cpp_root
+    if root is None and server_bin is not None:
+        try:
+            # vendor/.../build/bin/llama-server → vendor tree root
+            maybe = server_bin.resolve().parents[2]
+            if (maybe / "build" / "bin").is_dir() or (maybe / "ggml").is_dir():
+                root = maybe
+        except (IndexError, OSError):
+            root = None
+    if root is not None:
+        bindir = root / "build" / "bin"
+        cands.extend(sorted(bindir.glob("libggml-cuda.so*")))
+        cands.extend(sorted(bindir.glob("libggml-cuda*.dylib")))
+    cands.extend(sorted(Path("/usr/local/lib/ollama/cuda_v12").glob("libggml-cuda.so*")))
+    cands.extend(sorted(Path("/usr/local/lib/ollama").glob("libggml-cuda.so*")))
+    seen: set[Path] = set()
+    for p in cands:
+        try:
+            resolved = p.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_file():
+            continue
+        seen.add(resolved)
+        return resolved
+    return None
+
+
+def binary_embeds_needles(path: Path | None, needles: tuple[bytes, ...]) -> bool | None:
+    """True when any *needles* appear in *path* (shared library or executable)."""
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return any(n in data for n in needles)
+
+
+def probe_cuda_weight_formats(
+    server_bin: Path | None = None,
+    *,
+    cpp_root: Path | None = None,
+) -> dict[str, Any]:
+    """Report whether the CUDA backend embeds NVFP4 / MXFP4 type markers.
+
+    WHY: NVFP4/MXFP4 GGUFs load only when ``libggml-cuda`` has the type + MMQ
+    kernels. Missing markers → fail-fast warning before a 12 GiB MoE mmap.
+    """
+    lib = resolve_ggml_cuda_lib(server_bin, cpp_root=cpp_root)
+    if lib is None:
+        return {
+            "libggml_cuda": None,
+            "nvfp4": None,
+            "mxfp4": None,
+            "skipped": True,
+            "reason": "libggml-cuda not found",
+        }
+    nv = binary_embeds_needles(lib, _NVFP4_NEEDLES)
+    mx = binary_embeds_needles(lib, _MXFP4_NEEDLES)
+    return {
+        "libggml_cuda": str(lib),
+        "nvfp4": nv,
+        "mxfp4": mx,
+        "skipped": False,
+        "reason": None,
+    }
+
+
 def probe_seq_copy_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
     return _probe_post_route(base_url, "/kv/seq-copy", timeout=timeout)
 
@@ -298,6 +385,10 @@ def llama_patch_health(
     external_install = _is_external_llama_install(server_path)
     bin_seq = binary_embeds_seq_copy_route(server_path)
     bin_cuda_graph = binary_embeds_cuda_graph_invalidate_route(server_path)
+    cuda_formats = probe_cuda_weight_formats(
+        server_path,
+        cpp_root=Path(cpp_root) if cpp_root else None,
+    )
     fork_help = False
     if server_path is not None and server_path.is_file():
         from runtime.llama_fork import probe_fork_llama_server
@@ -381,6 +472,20 @@ def llama_patch_health(
     elif external_install and bin_cuda_graph is True:
         warnings.append("external binary validated via /cuda-graph/invalidate embed")
 
+    if cuda_formats.get("skipped"):
+        warnings.append(f"cuda weight-format probe skipped: {cuda_formats.get('reason')}")
+    else:
+        if cuda_formats.get("nvfp4") is False:
+            warnings.append(
+                f"libggml-cuda lacks NVFP4 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "NVFP4 GGUFs will fail; rebuild CUDA backend"
+            )
+        if cuda_formats.get("mxfp4") is False:
+            warnings.append(
+                f"libggml-cuda lacks MXFP4 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "MXFP4 GGUFs will fail; rebuild CUDA backend"
+            )
+
     http_probe: bool | None = None
     http_cuda_graph: bool | None = None
     if probe_http_base:
@@ -417,6 +522,7 @@ def llama_patch_health(
         "llama_server_under_vendor": under_vendor,
         "llama_server_binary_seq_copy": bin_seq,
         "llama_server_binary_cuda_graph_invalidate": bin_cuda_graph,
+        "cuda_weight_formats": cuda_formats,
         "live_seq_copy_probe": http_probe,
         "live_cuda_graph_invalidate_probe": http_cuda_graph,
         "issues": issues,
@@ -425,6 +531,7 @@ def llama_patch_health(
             "./scripts/rebase_vendor_unified.sh --apply --sync",
             "./scripts/build_llama_server.sh",
             "./scripts/phase15_llama_kv_ext_pin_check.sh",
+            "./scripts/nvfp4_cuda_probe.sh",
             "L3_RADIX_LIVE=1 ./scripts/l3_radix_prefix_smoke.sh",
         ],
     }
@@ -454,6 +561,7 @@ def llama_patch_health_summary(
         "llama_server_binary_cuda_graph_invalidate": full.get(
             "llama_server_binary_cuda_graph_invalidate"
         ),
+        "cuda_weight_formats": full.get("cuda_weight_formats"),
         "issues": full["issues"],
         "warnings": full["warnings"],
         "doctor": "./scripts/llama_patch_doctor.sh",
