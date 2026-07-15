@@ -86,6 +86,16 @@ phase15_runtime_kv_ext_build() {
     fi
   fi
   echo "== Phase 15: build _kv_native (block pool + page bind) LLAMA_CPP_ROOT=${LLAMA_CPP_ROOT} =="
+  # WHY: bare runtime/.venv often lacks pip/setuptools; uv sync may not install build deps.
+  if ! "${py}" -c "import setuptools" >/dev/null 2>&1; then
+    if command -v uv >/dev/null 2>&1; then
+      echo "== Phase 15: install setuptools into runtime venv =="
+      uv pip install --python "${py}" setuptools wheel >/dev/null
+    else
+      echo "error: setuptools missing for ${py}; install setuptools/wheel into the runtime venv" >&2
+      return 1
+    fi
+  fi
   (cd "${root}" && rm -rf build && LLAMA_CPP_ROOT="${llama_root}" LLAMA_CPP_LIB="${LLAMA_CPP_LIB:-}" "${py}" setup.py build_ext --inplace)
   echo "== Phase 15: verify linked decode loop =="
   (cd "${root}" && PYTHONPATH=. LLAMA_CPP_ROOT="${llama_root}" "${py}" -c "

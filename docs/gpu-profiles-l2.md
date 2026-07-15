@@ -206,7 +206,7 @@ JSON: `/tmp/l2-cuda-gate/bench-8k.json` (1B), `/tmp/l2-cuda-gate-long/bench-{8k,
 
 **Fork build footgun (container):** eliza sibling may need `-DLLAMA_BUILD_WEBUI=OFF` — default WebUI asset download fails headless.
 
-**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor profile defaults:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Kernels: patches **0026–0030** + CUDA follow-ups **0067–0070** on ggml-org `8f114a9b`; `FORK=1` defaults to TBQ (`FORK_PROFILE=vram`). Checkpoint argv uses `--checkpoint-every-n-tokens`.
+**Gate status (CUDA 5080):** **FAIL merge** @ 8k and **27k** (stock faster; `l2_cuda_full_gate.sh` exit 1 = verdict fail, not broken run; no long-ctx fork win on measured 9B legs). **131k fork-only:** not completed on 5080 — VRAM (9B) + QJL/model head mismatch (1B). **Vendor profile defaults:** blocked until fork wins ≥2/3 on **both** Metal and CUDA without qwen35 regression. Kernels: patches **0026–0030** + CUDA follow-ups **0067–0072** on ggml-org `8f114a9b`; `FORK=1` defaults to TBQ (`FORK_PROFILE=vram`). Checkpoint argv uses `--checkpoint-every-n-tokens`.
 
 ### CUDA 4090 exploratory (Jul 2026, dual RTX 4090)
 
