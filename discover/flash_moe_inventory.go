@@ -101,6 +101,18 @@ func ResolveFlashMoEModel(preferred string) (FlashMoEInventoryEntry, error) {
 	return FlashMoEInventoryEntry{}, os.ErrNotExist
 }
 
+// FlashMoEEntryForName inspects one freshly pulled/created manifest and reports
+// whether it is a Flash-MoE candidate. Why a single-name path instead of
+// reusing ListFlashMoEInventory: pull-time auto-extract must not walk every
+// local manifest on each pull — only the tag that just landed.
+func FlashMoEEntryForName(name model.Name) (FlashMoEInventoryEntry, bool, error) {
+	mf, err := manifest.ParseNamedManifest(name)
+	if err != nil {
+		return FlashMoEInventoryEntry{}, false, err
+	}
+	return flashMoEEntryFromManifest(name, mf)
+}
+
 func flashMoEEntryFromManifest(name model.Name, mf *manifest.Manifest) (FlashMoEInventoryEntry, bool, error) {
 	if mf == nil {
 		return FlashMoEInventoryEntry{}, false, nil

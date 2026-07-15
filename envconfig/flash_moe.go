@@ -42,6 +42,16 @@ func FlashMoEPrefetchTemporal() bool {
 	return Bool("ZEROLLAMA_FLASH_MOE_PREFETCH")()
 }
 
+// FlashMoEAutoExtract is true when `pull` should auto-extract a Flash-MoE
+// sidecar for newly pulled MoE GGUF tags that don't have one yet
+// (ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT=1). Opt-in — why: extraction reads the
+// full GGUF and can take minutes on 100GB+ MoE models; pull must not
+// silently balloon in time for operators who never asked for slot-bank
+// streaming. See docs/flash-moe.md.
+func FlashMoEAutoExtract() bool {
+	return Bool("ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT")()
+}
+
 // FlashMoELlamaServerBin returns an override path for the Flash-MoE llama-server binary.
 func FlashMoELlamaServerBin() string {
 	return strings.TrimSpace(Var("ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN"))

@@ -139,9 +139,37 @@ Zerollama automatically applies **`-ub 1`** and **`-fit on`** when a sidecar is 
 | `ZEROLLAMA_FLASH_MOE_SLOT_BANK` | omit | Resident slots per layer |
 | `ZEROLLAMA_FLASH_MOE_TOPK` | omit | Routed K override |
 | `ZEROLLAMA_FLASH_MOE_PREFETCH` | off | `--moe-prefetch-temporal` |
+| `ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT` | off | Auto-extract sidecar for MoE tags on `pull`/`create` (see below) |
 | `ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN` | — | Override Flash-MoE binary path |
 | `FLASH_MOE_REPO` | `~/Sites/inference/anemll-flash-llama.cpp` | Build script source tree |
 | `LLAMA_SERVER_BIN` | — | Overrides **all** llama-server discovery when set |
+
+---
+
+## Auto-extract sidecar on `pull` (opt-in)
+
+```bash
+export ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT=1
+./zerollama pull qwen35:latest
+```
+
+**Why opt-in, not default:** extraction reads the full routed-expert GGUF
+payload and can take minutes on 100GB+ MoE models. `pull` must not silently
+balloon in time/disk for operators who never asked for slot-bank streaming.
+
+**What happens:** after the manifest lands, zerollama checks whether the GGUF
+looks like a MoE model (`expert_count` / arch / family) and whether a sidecar
+already exists at the default `~/Models/flash/<tag>` path. If missing, it
+shells out to `flashmoe_sidecar.py extract` (same tool as
+`flash_moe_extract_sidecar.sh`) and, on success, writes `moe_sidecar` into the
+manifest's params layer — so a later `serve` or Modelfile `moe_sidecar` value
+is not required; `zerollama flash-moe-resolve` and `doctor` will report
+`sidecar_ready` immediately. Extraction failures are logged only; `pull`
+still succeeds either way.
+
+Requires the anemll fork checked out at `FLASH_MOE_REPO` (default
+`~/Sites/inference/anemll-flash-llama.cpp`) — same prerequisite as manual
+extraction above.
 
 ---
 
@@ -215,8 +243,8 @@ See also [testing-smoke.md](./testing-smoke.md).
 ## Non-goals (today)
 
 - Flash-MoE inside **ggml Metal** default path (llama-server only)
-- Automatic sidecar extraction from `zerollama pull`
 - CUDA Flash-MoE build script (upstream fork supports it; zerollama script is Darwin-only for now)
+- Merging Flash-MoE patches into the main vendor pin (`vendor/llama-cpp-*`) — anemll's fork is not yet stable enough upstream; tracked separately from L2 fork-KV merge work
 
 ---
 

@@ -116,9 +116,15 @@ bool ane_draft_session_write_dflash_attn_out(const float * src, int n);
 // Spatial-mean row of current outBuf; add delta row to all seq slots (dflash residuals).
 bool ane_draft_session_snapshot_output_row(float * row, int n);
 bool ane_draft_session_add_output_row(const float * delta, int n);
+bool ane_draft_session_write_output_row(const float * row, int n);
 
-// Read stashed q/k/v noise projections after chain 12/13 eval.
-bool ane_draft_session_read_dflash_qkv(float * q, float * k, float * v, int n);
+// Read/write host/ANE Q/K/V row vectors; oc_q and oc_kv may differ under GQA.
+bool ane_draft_session_read_dflash_qkv(float * q, int oc_q, float * k, float * v, int oc_kv);
+
+// P24: stash host-computed Q/K/V before cross-attn (oc_q / oc_kv row vectors).
+bool ane_draft_session_set_dflash_qkv(const float * q, const float * k, const float * v, int oc_q, int oc_kv);
+
+bool ane_draft_session_dflash_qkv_host_fp32(void);
 
 // Full n_embd after ffn_down (768 on 2B); valid when chain depth >= 3.
 int ane_draft_session_matmul_ffn_embd(void);

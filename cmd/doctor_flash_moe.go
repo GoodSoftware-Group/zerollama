@@ -30,7 +30,16 @@ func doctorCheckFlashMoE(_ string) doctorCheck {
 	if !enabled && sidecar == "" {
 		detail := "not enabled — set ZEROLLAMA_FLASH_MOE=1 + ZEROLLAMA_FLASH_MOE_SIDECAR for RAM-busting MoE"
 		if inv, err := discover.ListFlashMoEInventory(); err == nil && len(inv) > 0 {
+			needSidecar := 0
+			for _, e := range inv {
+				if !e.SidecarReady {
+					needSidecar++
+				}
+			}
 			detail += fmt.Sprintf("; found %d local MoE tag(s) — run ./zerollama flash-moe-resolve --list", len(inv))
+			if needSidecar > 0 && !envconfig.FlashMoEAutoExtract() {
+				detail += fmt.Sprintf(" (%d without a sidecar — set ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT=1 to extract on next pull)", needSidecar)
+			}
 		}
 		switch {
 		case binOK:
