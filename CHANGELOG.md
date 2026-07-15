@@ -4,7 +4,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Native FP8 GGUF weights (E4M3 / E5M2) — Jul 2026
+
+**Why:** HF FP8 checkpoints were only usable after full F16/BF16 dequant (or re-quant). That wastes convert time, disk, and VRAM, and leaves no first-class CUDA matmul path for native E4M3/E5M2 GGUF weights. This is **weight** FP8 — not FP8 KV (fork KV stays QJL/Polar/TBQ).
+
+**Shipped:**
+
+- **`GGML_TYPE_FP8_E4M3=51` / `FP8_E5M2=52`** — F16 block scale + 32× IEEE FP8 (34 B / block, Q8_0-shaped)
+- **Patches 0073–0076** — type + CPU quant/dot; CUDA convert/get_rows; MMVQ (float×Q8_1) + MMQ (amax→int8 tiles); convert `--fp8-native` including **128×128** `weight_scale_inv` when `block_size[-1]%32==0`; E5M2 twin
+- **Runtime** — `gguf_estimate` layouts; `/health` / `/ready` `cuda_weight_formats.{fp8_e4m3,fp8_e5m2}` needles
+- **Probes** — `./scripts/fp8_cuda_probe.sh`, `fp8_e4m3_gguf_roundtrip.py`, `fp8_e5m2_gguf_roundtrip.py`
+- **Build** — container SET_ROWS verify uses `grep -aF` first (**why:** `strings|grep` false-negatives on freshly linked bind-mounted libs); build lock `mkdir -p` parent (**why:** failed builds `rm -rf` the build dir and mis-report “lock held”)
+- Packaged `/usr/local/lib/ollama` refreshed from vendor tip in `LLAMA_CPP_VENDOR_HEAD` (restart `zerollama-runtime` to load)
+
+**Doc:** [native-fp8-gguf.md](docs/native-fp8-gguf.md), [cuda-lanes.md](docs/cuda-lanes.md).
+
+**Non-goals:** Blackwell-native FP8/NVFP4 MMA (5080 P2); MLX mxfp8; flipping production `llama_fork` off stock.
+
 ### Explicit context-overflow fields (Jul 2026)
+
 
 **Why:** A ~44k-token prompt at `num_ctx=8192` returned HTTP 200 with no `prompt_truncated`. Clients had to infer overflow from `prompt_eval_count` pinned near the window (and sometimes `done_reason: "length"`). Two gaps caused that:
 

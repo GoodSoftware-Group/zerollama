@@ -18,6 +18,8 @@
 #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
 #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
 #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
@@ -76,6 +78,8 @@
 // repack.cpp
 // quants.c (no arch SIMD for E8_2 yet — use generic)
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
 #define ggml_quantize_mat_q8_K_4x8_generic ggml_quantize_mat_q8_K_4x8
 #define ggml_gemv_iq4_nl_8x8_q8_0_generic ggml_gemv_iq4_nl_8x8_q8_0
@@ -88,6 +92,8 @@
 // quants.c
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 // repack.cpp
 #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
 #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
@@ -120,6 +126,8 @@
 #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
 #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
 #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
@@ -171,6 +179,8 @@
 #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
 #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 // repack.cpp
 #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
@@ -255,6 +265,8 @@
 #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
 #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
 #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
@@ -320,6 +332,8 @@
 #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
 #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
 #define ggml_vec_dot_e8_2_q8_0_generic ggml_vec_dot_e8_2_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 // repack.cpp
 #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4

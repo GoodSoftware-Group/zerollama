@@ -142,8 +142,8 @@ Weight formats the **Go → Python runtime → patched llama-server** path can l
 | **Fork KV** (`qjl1_256`, `q4_polar`, `tbq3_0`, `tbq4_0`) | Yes | Yes | Patch 0020 + fork profiles |
 | **MXFP4** | Yes (ggml) | Yes (generic MMQ) | e.g. gpt-oss family |
 | **NVFP4** | Yes (ggml) | Yes (generic MMQ) | **Not** Blackwell-native path on 4090 — uses Q8_1 activation quant in `mmq.cu`; slower than sm_120 but functional |
-| **HF FP8 safetensors** | Via convert only | N/A | `convert_hf_to_gguf.py` **dequants** FP8 → F16/BF16 (or re-quant to Q4_K); no native FP8 GGUF |
-| **Native FP8 GGUF weights** | No | No | No `GGML_TYPE_FP8` in ggml today |
+| **HF FP8 safetensors** | Via convert | N/A until GGUF | Default convert **dequants** → F16/BF16; **`--fp8-native`** writes types 51/52 — see [native-fp8-gguf.md](./native-fp8-gguf.md) |
+| **Native FP8 GGUF weights** | Yes | Yes (MMVQ float + MMQ amax→int8) | `GGML_TYPE_FP8_E4M3=51` / `GGML_TYPE_FP8_E5M2=52` (F16 scale + 32×FP8); CUDA convert/get_rows + MMVQ/MMQ; convert `--fp8-native` (ModelOpt/per-row + **128×128** `weight_scale_inv` when `block_size[-1]%32==0`). Probe: `./scripts/fp8_cuda_probe.sh` |
 
 **NVFP4 on this stack:** eliza pin + vendor tree include `GGML_TYPE_NVFP4`, CUDA `mmq` / `mmvq` / `convert` / `quantize` kernels, and llama.cpp NVFP4 scale-tensor loading. Expect **correctness on 4090**, not the Blackwell `blackwell_mma_available()` fast path (5080 / sm_120). Binary probe (no GGUF): `./scripts/nvfp4_cuda_probe.sh`.
 
@@ -151,7 +151,9 @@ Weight formats the **Go → Python runtime → patched llama-server** path can l
 - NVFP4: [FreedomAISVR/gpt-oss-20B-NVFP4-GGUF](https://huggingface.co/FreedomAISVR/gpt-oss-20B-NVFP4-GGUF) → `/mnt/ssd2/models/nvfp4/gpt-oss-20b/gpt-oss-20b-nvfp4.gguf` (~12 GiB; NVFP4 experts + Q8_0 non-experts)
 - MXFP4 (A/B): [ggml-org/gpt-oss-20b-GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF) → `/mnt/ssd2/models/nvfp4/gpt-oss-20b-mxfp4/gpt-oss-20b-mxfp4.gguf`
 
-**Sign-off:** `./scripts/nvfp4_cuda_signoff.sh` (probe + direct `/completion` @ 8k ctx). Artifact: `/tmp/nvfp4-cuda-signoff.json`. Runtime doctor: `/health.llama_patches.cuda_weight_formats` reports `{nvfp4, mxfp4, libggml_cuda}` from the resolved CUDA backend.
+**Sign-off:** `./scripts/nvfp4_cuda_signoff.sh` (probe + direct `/completion` @ 8k ctx). Artifact: `/tmp/nvfp4-cuda-signoff.json`. Runtime doctor: `/health.llama_patches.cuda_weight_formats` reports `{nvfp4, mxfp4, fp8_e4m3, fp8_e5m2, libggml_cuda}` from the resolved CUDA backend.
+
+**Native FP8 (no GGUF required):** `./scripts/fp8_cuda_probe.sh` — full operator doc [native-fp8-gguf.md](./native-fp8-gguf.md).
 
 | Format | Decode (8k ctx, GPU1) | Peak VRAM | Notes |
 |--------|------------------------|-----------|-------|
@@ -164,7 +166,7 @@ On dual-4090, NVFP4 is within ~4% decode of MXFP4 and uses ~5% more VRAM — **c
 
 | Priority | Item | Why |
 |----------|------|-----|
-| **P1** | **Native FP8 weights** — `GGML_TYPE_*` for block FP8 (E4M3/E5M2 + scales), CUDA matmul/dequant, HF→GGUF without full dequant | HF FP8 checkpoints increasingly common; today forced through F16 or Q4_K |
+| **P1** | **Native FP8 weights** — `GGML_TYPE_FP8_E4M3` + CUDA MMVQ/MMQ + `--fp8-native` | **Built (Jul 2026)** — E4M3 type 51 + E5M2 type 52; CPU/CUDA dequant + MMVQ/MMQ + ModelOpt/`weight_scale_inv` native pack (incl. 128×128). Probe: `./scripts/fp8_cuda_probe.sh` |
 | **P1** | **NVFP4 dual-4090 sign-off** — smoke + L1 gate fixture, document expected perf vs Q4_K / vs 5080 Blackwell path | **Done (Jul 2026)** — `nvfp4_cuda_probe.sh` + `nvfp4_cuda_signoff.sh`; NVFP4≈MXFP4 tok/s on sm_89 (`/tmp/nvfp4-cuda-signoff.json`). Blackwell path remains P2 (5080) |
 | **P2** | **NVFP4 / MXFP4 on Blackwell** — validate `blackwell_mma_available()` path in container builds (sm_120), bench vs generic MMQ | 5080 lane; NVIDIA gpt-oss collaboration path |
 | **P2** | **Ollama compat + runtime probes** for NVFP4/MXFP4/FP8 in `llama_patch_health` / `/ready` | **Done (Jul 2026)** — `cuda_weight_formats` on `/health.llama_patches` + `/ready` warnings when `libggml-cuda` lacks NVFP4/MXFP4 markers |

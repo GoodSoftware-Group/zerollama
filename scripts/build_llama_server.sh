@@ -64,6 +64,9 @@ _acquire_llama_server_build_lock() {
     echo "  wait for it to finish, or: pkill -f 'cmake --build ${BUILD}'" >&2
     exit 1
   fi
+  # Parent must exist: a failed prior build may have rm -rf'd ${BUILD}, and mkdir
+  # without -p then fails with the same errno as a held lock.
+  mkdir -p "$(dirname "${BUILD_LOCK}")"
   if ! mkdir "${BUILD_LOCK}" 2>/dev/null; then
     echo "error: llama-server build lock held for ${ROOT}" >&2
     echo "  wait for the other build, or if stale: rm -rf ${BUILD_LOCK}" >&2

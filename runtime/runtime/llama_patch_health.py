@@ -3,8 +3,8 @@
 WHY: patched routes ship via ``llama/patches/`` → vendor ``git am`` → rsync in-tree
 → rebuild llama-server. Operators often run a stale sibling binary and see "lost"
 patches (404 on ``/kv/seq-copy`` or ``/cuda-graph/invalidate``) while git still looks fine.
-CUDA weight-format probes (NVFP4/MXFP4) catch a stale ``libggml-cuda`` that lacks FP4
-kernels before an expensive MoE load fails mid-mmap.
+CUDA weight-format probes (NVFP4/MXFP4/FP8 E4M3/E5M2) catch a stale ``libggml-cuda``
+that lacks kernels before an expensive MoE/FP8 load fails mid-mmap.
 """
 
 from __future__ import annotations
@@ -37,7 +37,11 @@ _IN_TREE_MARKERS = (
 )
 
 # WHY bytes needles: scan packaged/vendor libggml-cuda without loading CUDA.
+# Prefer short mangled/type-name fragments — demangled templates may be stripped.
 _NVFP4_NEEDLES = (b"GGML_TYPE_NVFP4", b"nvfp4", b"NVFP4")
+# WHY fp8_* lowercase: CUDA objects embed dequantize_fp8_e4m3 / fp8_e4m3; enum spellings may not.
+_FP8_E4M3_NEEDLES = (b"GGML_TYPE_FP8_E4M3", b"fp8_e4m3", b"FP8_E4M3")
+_FP8_E5M2_NEEDLES = (b"GGML_TYPE_FP8_E5M2", b"fp8_e5m2", b"FP8_E5M2")
 _MXFP4_NEEDLES = (b"GGML_TYPE_MXFP4", b"mxfp4", b"MXFP4")
 
 
@@ -238,10 +242,10 @@ def probe_cuda_weight_formats(
     *,
     cpp_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Report whether the CUDA backend embeds NVFP4 / MXFP4 type markers.
+    """Report whether the CUDA backend embeds NVFP4 / MXFP4 / FP8_E4M3 / FP8_E5M2 markers.
 
-    WHY: NVFP4/MXFP4 GGUFs load only when ``libggml-cuda`` has the type + MMQ
-    kernels. Missing markers → fail-fast warning before a 12 GiB MoE mmap.
+    WHY: weight-format GGUFs load only when ``libggml-cuda`` has the type
+    (+ kernels). Missing markers → fail-fast warning before a large mmap.
     """
     lib = resolve_ggml_cuda_lib(server_bin, cpp_root=cpp_root)
     if lib is None:
@@ -249,15 +253,21 @@ def probe_cuda_weight_formats(
             "libggml_cuda": None,
             "nvfp4": None,
             "mxfp4": None,
+            "fp8_e4m3": None,
+            "fp8_e5m2": None,
             "skipped": True,
             "reason": "libggml-cuda not found",
         }
     nv = binary_embeds_needles(lib, _NVFP4_NEEDLES)
     mx = binary_embeds_needles(lib, _MXFP4_NEEDLES)
+    fp8 = binary_embeds_needles(lib, _FP8_E4M3_NEEDLES)
+    fp8_e5m2 = binary_embeds_needles(lib, _FP8_E5M2_NEEDLES)
     return {
         "libggml_cuda": str(lib),
         "nvfp4": nv,
         "mxfp4": mx,
+        "fp8_e4m3": fp8,
+        "fp8_e5m2": fp8_e5m2,
         "skipped": False,
         "reason": None,
     }
@@ -484,6 +494,16 @@ def llama_patch_health(
             warnings.append(
                 f"libggml-cuda lacks MXFP4 markers ({cuda_formats.get('libggml_cuda')}) — "
                 "MXFP4 GGUFs will fail; rebuild CUDA backend"
+            )
+        if cuda_formats.get("fp8_e4m3") is False:
+            warnings.append(
+                f"libggml-cuda lacks FP8_E4M3 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "native FP8 GGUFs will fail; rebuild CUDA backend"
+            )
+        if cuda_formats.get("fp8_e5m2") is False:
+            warnings.append(
+                f"libggml-cuda lacks FP8_E5M2 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "native FP8 GGUFs will fail; rebuild CUDA backend"
             )
 
     http_probe: bool | None = None

@@ -59,8 +59,13 @@ def compute_readiness(body: dict[str, Any]) -> dict[str, Any]:
                 warnings.append(f"llama_patches: {issue}")
 
     formats = patches.get("cuda_weight_formats") or {}
+    # WHY warnings not hard-fail: host may run CPU-only or stock libggml-cuda; /ready still useful.
     if formats.get("nvfp4") is False:
         warnings.append("libggml-cuda missing NVFP4 — NVFP4 GGUFs unsupported")
+    if formats.get("fp8_e4m3") is False:
+        warnings.append("libggml-cuda missing FP8_E4M3 — native FP8 GGUFs unsupported")
+    if formats.get("fp8_e5m2") is False:
+        warnings.append("libggml-cuda missing FP8_E5M2 — native FP8 GGUFs unsupported")
     if formats.get("mxfp4") is False:
         warnings.append("libggml-cuda missing MXFP4 — MXFP4 GGUFs unsupported")
 

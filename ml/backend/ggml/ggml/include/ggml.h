@@ -439,7 +439,11 @@ extern "C" {
         GGML_TYPE_TBQ3_TCQ  = 48, // TurboQuant TCQ-3: 128-element block, fp16 norm + 6-bit init state + 128*3-bit Viterbi-encoded symbol stream (52 B = 3.25 bpw)
         GGML_TYPE_TBQ3_K    = 49, // Upstream-style TurboQuant 3-bit, QK_K block layout
         GGML_TYPE_TBQ4_K    = 50, // Upstream-style TurboQuant 4-bit, QK_K block layout
-        GGML_TYPE_COUNT     = 51,
+        // WHY 51/52: native HF/ModelOpt FP8 weights (not KV). Q8_0-shaped blocks so CUDA MMQ can reuse int8 tiles.
+        // Distinct from E8_2@43 and from MLX mxfp8. See docs/native-fp8-gguf.md.
+        GGML_TYPE_FP8_E4M3  = 51, // IEEE float8_e4m3fn + F16 block scale (QK=32)
+        GGML_TYPE_FP8_E5M2  = 52, // IEEE float8_e5m2 + F16 block scale (QK=32)
+        GGML_TYPE_COUNT     = 53,
     };
 
     // precision
@@ -485,6 +489,8 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
         GGML_FTYPE_MOSTLY_E8_2    = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_FP8_E4M3 = 30, // except 1d tensors
+        GGML_FTYPE_MOSTLY_FP8_E5M2 = 31, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q4_POLAR = 102, // except 1d tensors
     };
 

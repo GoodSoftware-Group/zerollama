@@ -112,6 +112,12 @@ typedef sycl::half2 ggml_half2;
 #define QI_NVFP4 (QK_NVFP4 / (4 * QR_NVFP4))
 #define QR_NVFP4 2
 
+#define QI_FP8_E4M3 (QK_FP8_E4M3 / (4 * QR_FP8_E4M3))
+#define QR_FP8_E4M3 1
+
+#define QI_FP8_E5M2 (QK_FP8_E5M2 / (4 * QR_FP8_E5M2))
+#define QR_FP8_E5M2 1
+
 #define QI5_0 (QK5_0 / (4 * QR5_0))
 #define QR5_0 2
 
@@ -238,6 +244,20 @@ typedef struct {
     uint8_t qs[QK_NVFP4/2];           // packed 4-bit E2M1 values (32 bytes)
 } block_nvfp4;
 static_assert(sizeof(block_nvfp4) == sizeof(uint8_t)*(QK_NVFP4/QK_NVFP4_SUB) + QK_NVFP4/2, "wrong nvfp4 block size/padding");
+
+#define QK_FP8_E4M3 32
+typedef struct {
+    ggml_half d;                     // block scale (F16)
+    uint8_t   qs[QK_FP8_E4M3];       // IEEE float8_e4m3fn bit patterns
+} block_fp8_e4m3;
+static_assert(sizeof(block_fp8_e4m3) == sizeof(ggml_half) + QK_FP8_E4M3, "wrong fp8_e4m3 block size/padding");
+
+#define QK_FP8_E5M2 32
+typedef struct {
+    ggml_half d;                     // block scale (F16)
+    uint8_t   qs[QK_FP8_E5M2];       // IEEE float8_e5m2 bit patterns
+} block_fp8_e5m2;
+static_assert(sizeof(block_fp8_e5m2) == sizeof(ggml_half) + QK_FP8_E5M2, "wrong fp8_e5m2 block size/padding");
 
 #define QK5_0 32
 typedef struct {

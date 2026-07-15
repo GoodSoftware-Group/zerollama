@@ -16,6 +16,9 @@ _EXPECTED_FROM_GGML_COMMON: dict[int, tuple[int, int]] = {
     34: (256, 54),  # TQ1_0
     35: (256, 66),  # TQ2_0
     39: (32, 17),  # MXFP4
+    40: (64, 36),  # NVFP4
+    51: (32, 34),  # FP8_E4M3
+    52: (32, 34),  # FP8_E5M2
 }
 
 

@@ -11,8 +11,8 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
 | **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `8f114a9b573b69035299f9b924047f53c1e22c7e` (master tip; past tag `b9951`) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build_llama_server.sh` |
-| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness **0067–0070** (fattn TBQ helpers, CLI KV types, SET_ROWS, CPU type_traits). |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (through **0070** CPU TBQ/QJL type_traits; container build: `./scripts/build_llama_server_container.sh`) |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (through **0076** native FP8 E4M3/E5M2; container build: `./scripts/build_llama_server_container.sh`) |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness **0067–0070** (fattn TBQ helpers, CLI KV types, SET_ROWS, CPU type_traits). Native FP8 weights **0073–0076** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)). |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
@@ -20,8 +20,8 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`8f114a9b`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-8f114a9b/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (through **0070** CPU TBQ/QJL type_traits; container build: `./scripts/build_llama_server_container.sh`) |
-| **In-tree Metal dig** | **0062–0064** in CGO `ml/backend/ggml/`: E8_2 at type **51** (vendor dig keeps 43), TQ2 Metal kernels, concurrency guard. Mac build embeds compiled metallib. |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/sync_vendor_llama.sh` (through **0076** native FP8; container build: `./scripts/build_llama_server_container.sh`) |
+| **In-tree Metal dig** | **0062–0064** in CGO `ml/backend/ggml/`: E8_2 at type **43**; TQ2 Metal kernels, concurrency guard. Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0073–0076). |
 | **Rebase helper** | `./scripts/rebase_vendor_unified.sh --sync` |
 
 Runtime `llama-server` and in-process ggml share **one ggml-org `8f114a9b` base** + zerollama patches.

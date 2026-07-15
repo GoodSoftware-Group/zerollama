@@ -552,6 +552,134 @@ static inline uint8_t ggml_fp32_to_ue4m3(float x) {
     return (uint8_t) ((ue4m3_exp << 3) | ue4m3_man);
 }
 
+// IEEE float8_e4m3fn (OCP / PyTorch): signed, 4 exp bits (bias=7), 3 mantissa; no Inf; NaN when exp==15 && mant==7.
+// WHY soft convert: CUDA may use __nv_fp8_e4m3; CPU path must match for roundtrip / --fp8-native pack.
+static inline float ggml_fp8_e4m3_to_fp32(uint8_t x) {
+    const int sign = (x >> 7) & 1;
+    const int exp  = (x >> 3) & 0xF;
+    const int man  = x & 0x7;
+    // E4M3FN: only S.1111.111 is NaN; S.1111.xxx (mant<7) encodes finite values up to 448.
+    if (exp == 0xF && man == 0x7) {
+        return 0.0f; // treat NaN as 0 for weight dequant stability
+    }
+    float raw;
+    if (exp == 0) {
+        if (man == 0) {
+            return sign ? -0.0f : 0.0f;
+        }
+        raw = ldexpf((float) man, -9);
+    } else {
+        raw = ldexpf(1.0f + (float) man / 8.0f, exp - 7);
+    }
+    return sign ? -raw : raw;
+}
+
+static inline uint8_t ggml_fp32_to_fp8_e4m3(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof(bits));
+    const uint32_t sign = (bits >> 31) & 1u;
+    if (!isfinite(x)) {
+        return (uint8_t) ((sign << 7) | 0x7F);
+    }
+    float ax = fabsf(x);
+    if (!(ax > 0.0f)) {
+        return (uint8_t) (sign << 7);
+    }
+    if (ax > 448.0f) {
+        ax = 448.0f;
+    }
+    memcpy(&bits, &ax, sizeof(bits));
+    const int fp32_exp = ((int) ((bits >> 23) & 0xFFu)) - 127;
+    const int fp32_man = (int) ((bits >> 20) & 0x7u);
+    const int round_bit = (int) ((bits >> 19) & 1u);
+    int e4 = fp32_exp + 7;
+    if (e4 <= 0) {
+        int man = (int) (ax * 512.0f + 0.5f);
+        if (man > 7) {
+            man = 7;
+        }
+        if (man < 1) {
+            return (uint8_t) (sign << 7);
+        }
+        return (uint8_t) ((sign << 7) | man);
+    }
+    int man = fp32_man + round_bit;
+    if (man > 7) {
+        man = 0;
+        e4++;
+    }
+    // E4M3FN: exp==15 with mant 0..6 is finite (up to 448); mant 7 is NaN — saturate to 0x7E.
+    if (e4 > 15 || (e4 == 15 && man >= 7)) {
+        return (uint8_t) ((sign << 7) | 0x7E);
+    }
+    return (uint8_t) ((sign << 7) | (e4 << 3) | man);
+}
+
+// IEEE float8_e5m2: signed, 5 exp bits (bias=15), 2 mantissa; Inf/NaN when exp==31.
+// WHY soft convert: match CUDA/__nv_fp8_e5m2 and gguf-py for --fp8-native roundtrips.
+static inline float ggml_fp8_e5m2_to_fp32(uint8_t x) {
+    const int sign = (x >> 7) & 1;
+    const int exp  = (x >> 2) & 0x1F;
+    const int man  = x & 0x3;
+    if (exp == 0x1F) {
+        if (man != 0) {
+            return 0.0f; // treat NaN as 0 for weight dequant stability
+        }
+        return sign ? -INFINITY : INFINITY;
+    }
+    float raw;
+    if (exp == 0) {
+        if (man == 0) {
+            return sign ? -0.0f : 0.0f;
+        }
+        raw = ldexpf((float) man, -16);
+    } else {
+        raw = ldexpf(1.0f + (float) man / 4.0f, exp - 15);
+    }
+    return sign ? -raw : raw;
+}
+
+static inline uint8_t ggml_fp32_to_fp8_e5m2(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof(bits));
+    const uint32_t sign = (bits >> 31) & 1u;
+    if (!isfinite(x)) {
+        return (uint8_t) ((sign << 7) | 0x7B); // saturate non-finite weights to max finite
+    }
+    float ax = fabsf(x);
+    if (!(ax > 0.0f)) {
+        return (uint8_t) (sign << 7);
+    }
+    if (ax > 57344.0f) {
+        ax = 57344.0f;
+    }
+    memcpy(&bits, &ax, sizeof(bits));
+    const int fp32_exp = ((int) ((bits >> 23) & 0xFFu)) - 127;
+    const int fp32_man = (int) ((bits >> 21) & 0x3u);
+    const int round_bit = (int) ((bits >> 20) & 1u);
+    int e5 = fp32_exp + 15;
+    if (e5 <= 0) {
+        int man = (int) (ax * 65536.0f + 0.5f);
+        if (man > 3) {
+            man = 3;
+        }
+        if (man < 1) {
+            return (uint8_t) (sign << 7);
+        }
+        return (uint8_t) ((sign << 7) | man);
+    }
+    int man = fp32_man + round_bit;
+    if (man > 3) {
+        man = 0;
+        e5++;
+    }
+    if (e5 >= 31) {
+        return (uint8_t) ((sign << 7) | 0x7B);
+    }
+    return (uint8_t) ((sign << 7) | (e5 << 2) | man);
+}
+
+
 /**
  * Converts brain16 to float32.
  *

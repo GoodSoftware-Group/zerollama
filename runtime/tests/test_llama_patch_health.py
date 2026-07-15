@@ -46,12 +46,14 @@ def test_probe_cuda_weight_formats_from_lib(tmp_path: Path):
     server = tmp_path / "llama-server"
     server.write_bytes(b"thin")
     lib = tmp_path / "libggml-cuda.so"
-    lib.write_bytes(b"pad GGML_TYPE_NVFP4 pad GGML_TYPE_MXFP4 pad")
+    lib.write_bytes(b"pad GGML_TYPE_NVFP4 pad GGML_TYPE_MXFP4 pad GGML_TYPE_FP8_E4M3 pad GGML_TYPE_FP8_E5M2 pad")
     assert resolve_ggml_cuda_lib(server) == lib.resolve()
     report = probe_cuda_weight_formats(server)
     assert report["skipped"] is False
     assert report["nvfp4"] is True
     assert report["mxfp4"] is True
+    assert report["fp8_e4m3"] is True
+    assert report["fp8_e5m2"] is True
     assert binary_embeds_needles(lib, (b"GGML_TYPE_NVFP4",)) is True
 
 
@@ -63,6 +65,8 @@ def test_probe_cuda_weight_formats_missing_markers(tmp_path: Path):
     report = probe_cuda_weight_formats(server)
     assert report["nvfp4"] is False
     assert report["mxfp4"] is False
+    assert report["fp8_e4m3"] is False
+    assert report["fp8_e5m2"] is False
 
 
 def test_llama_patch_health_warns_missing_nvfp4(tmp_path: Path, monkeypatch):

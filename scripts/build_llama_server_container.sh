@@ -126,6 +126,9 @@ if [[ -x "${BIN}" ]]; then
   fi
   _host_cuda_lib_has_symbol() {
     local sym="$1"
+    # Prefer direct binary grep: `strings | grep` can false-negative on large
+    # freshly-linked libs (pipe/EOF races on bind-mounted vendor builds).
+    grep -aFq "${sym}" "${cuda_lib}" 2>/dev/null && return 0
     strings "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
     command -v nm >/dev/null 2>&1 || return 1
     nm --demangle "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0

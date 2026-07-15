@@ -856,6 +856,66 @@ static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
 #endif // defined(GGML_USE_HIP) && defined(CDNA3) && defined(FP8_AVAILABLE) && HIP_VERSION >= 60200000
 }
 
+static __device__ __forceinline__ float ggml_cuda_fp8_e4m3_to_fp32(uint8_t x) {
+#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP)
+    const uint32_t bits = (uint32_t) x;
+    // E4M3FN NaN is only 0x7F / 0xFF; map to 0 for weight dequant.
+    if ((bits & 0x7Fu) == 0x7Fu) {
+        return 0.0f;
+    }
+    const __nv_fp8_e4m3 xf = *reinterpret_cast<const __nv_fp8_e4m3 *>(&bits);
+    return static_cast<float>(xf);
+#else
+    const int sign = (x >> 7) & 1;
+    const int exp  = (x >> 3) & 0xF;
+    const int man  = x & 0x7;
+    if (exp == 0xF && man == 0x7) {
+        return 0.0f;
+    }
+    float raw;
+    if (exp == 0) {
+        if (man == 0) {
+            return 0.0f;
+        }
+        raw = ldexpf((float) man, -9);
+    } else {
+        raw = ldexpf(1.0f + (float) man / 8.0f, exp - 7);
+    }
+    return sign ? -raw : raw;
+#endif
+}
+
+static __device__ __forceinline__ float ggml_cuda_fp8_e5m2_to_fp32(uint8_t x) {
+#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP)
+    const uint32_t bits = (uint32_t) x;
+    if ((bits & 0x7Cu) == 0x7Cu && (bits & 0x03u) != 0) {
+        return 0.0f;
+    }
+    const __nv_fp8_e5m2 xf = *reinterpret_cast<const __nv_fp8_e5m2 *>(&bits);
+    return static_cast<float>(xf);
+#else
+    const int sign = (x >> 7) & 1;
+    const int exp  = (x >> 2) & 0x1F;
+    const int man  = x & 0x3;
+    if (exp == 0x1F) {
+        if (man != 0) {
+            return 0.0f;
+        }
+        return sign ? -INFINITY : INFINITY;
+    }
+    float raw;
+    if (exp == 0) {
+        if (man == 0) {
+            return 0.0f;
+        }
+        raw = ldexpf((float) man, -16);
+    } else {
+        raw = ldexpf(1.0f + (float) man / 4.0f, exp - 15);
+    }
+    return sign ? -raw : raw;
+#endif
+}
+
 static __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_ue4m3(float x) {
 #if defined(BLACKWELL_MMA_AVAILABLE) // This is used for NVFP4 subblock scale quantizations only
     if (!(x > 0.0f)) {
@@ -998,6 +1058,20 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
     static constexpr int qk = QK8_0;
     static constexpr int qr = QR8_0;
     static constexpr int qi = QI8_0;
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_FP8_E4M3> {
+    static constexpr int qk = QK_FP8_E4M3;
+    static constexpr int qr = QR_FP8_E4M3;
+    static constexpr int qi = QI_FP8_E4M3;
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_FP8_E5M2> {
+    static constexpr int qk = QK_FP8_E5M2;
+    static constexpr int qr = QR_FP8_E5M2;
+    static constexpr int qi = QI_FP8_E5M2;
 };
 
 template<>

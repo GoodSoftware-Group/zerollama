@@ -811,6 +811,54 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
     return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_0->d, __low2half(bq8_1->ds));
 }
 
+#define VDR_FP8_E4M3_Q8_1_MMVQ 2
+#define VDR_FP8_E4M3_Q8_1_MMQ  8
+
+static __device__ __forceinline__ float vec_dot_fp8_e4m3_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_fp8_e4m3 * bq = (const block_fp8_e4m3 *) vbq + kbx;
+    const float d = __half2float(bq->d) * __low2float(bq8_1->ds);
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int i = 0; i < VDR_FP8_E4M3_Q8_1_MMVQ; ++i) {
+        const int u = get_int_b4(bq8_1->qs, iqs + i);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int8_t a = int8_t((u >> (8 * j)) & 0xFF);
+            const uint8_t q = bq->qs[4 * (iqs + i) + j];
+            sum += ggml_cuda_fp8_e4m3_to_fp32(q) * float(a);
+        }
+    }
+    return d * sum;
+}
+
+
+#define VDR_FP8_E5M2_Q8_1_MMVQ 2
+#define VDR_FP8_E5M2_Q8_1_MMQ  8
+
+static __device__ __forceinline__ float vec_dot_fp8_e5m2_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_fp8_e5m2 * bq = (const block_fp8_e5m2 *) vbq + kbx;
+    const float d = __half2float(bq->d) * __low2float(bq8_1->ds);
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int i = 0; i < VDR_FP8_E5M2_Q8_1_MMVQ; ++i) {
+        const int u = get_int_b4(bq8_1->qs, iqs + i);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int8_t a = int8_t((u >> (8 * j)) & 0xFF);
+            const uint8_t q = bq->qs[4 * (iqs + i) + j];
+            sum += ggml_cuda_fp8_e5m2_to_fp32(q) * float(a);
+        }
+    }
+    return d * sum;
+}
+
+
 static __device__ __forceinline__ float vec_dot_q2_K_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 

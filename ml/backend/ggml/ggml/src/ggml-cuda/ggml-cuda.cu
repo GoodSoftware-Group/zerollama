@@ -4771,6 +4771,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q8_0:
                     case GGML_TYPE_MXFP4:
                     case GGML_TYPE_NVFP4:
+                    case GGML_TYPE_FP8_E4M3:
+                    case GGML_TYPE_FP8_E5M2:
                     case GGML_TYPE_Q2_K:
                     case GGML_TYPE_Q3_K:
                     case GGML_TYPE_Q4_K:
@@ -4807,6 +4809,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
+                    case GGML_TYPE_FP8_E4M3:
+                    case GGML_TYPE_FP8_E5M2:
                     case GGML_TYPE_Q6_K:
                     case GGML_TYPE_TBQ3_0:
                     case GGML_TYPE_TBQ4_0:

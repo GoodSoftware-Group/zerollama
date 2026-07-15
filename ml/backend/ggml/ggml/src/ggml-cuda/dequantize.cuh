@@ -97,3 +97,27 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
     v.x *= d;
     v.y *= d;
 }
+
+static __device__ __forceinline__ void dequantize_fp8_e4m3(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_fp8_e4m3 * x = (const block_fp8_e4m3 *) vx;
+
+    const float d = x[ib].d;
+
+    v.x = ggml_cuda_fp8_e4m3_to_fp32(x[ib].qs[iqs + 0]);
+    v.y = ggml_cuda_fp8_e4m3_to_fp32(x[ib].qs[iqs + 1]);
+
+    v.x *= d;
+    v.y *= d;
+}
+
+static __device__ __forceinline__ void dequantize_fp8_e5m2(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_fp8_e5m2 * x = (const block_fp8_e5m2 *) vx;
+
+    const float d = x[ib].d;
+
+    v.x = ggml_cuda_fp8_e5m2_to_fp32(x[ib].qs[iqs + 0]);
+    v.y = ggml_cuda_fp8_e5m2_to_fp32(x[ib].qs[iqs + 1]);
+
+    v.x *= d;
+    v.y *= d;
+}
