@@ -4,6 +4,9 @@
 #include "llama-io.h"
 #include "llama-model.h"
 #include "llama-context.h"
+#include "llama-kv-ext.h"
+
+#include "ggml-alloc.h"
 
 #include <algorithm>
 #include <cassert>
@@ -280,7 +283,63 @@ llama_kv_cache::llama_kv_cache(
                 t->buffer = buf; // set dummy buffer for KV cache so that the backend scheduler won't try to allocate it
             }
         } else {
-            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft); // real buffer
+            buf = nullptr;
+
+            /*
+             * Phase 15 v48 — CPU-only donor-buffer overlay bind.
+             *
+             * WHY only ggml_backend_buft_is_host(buft): device (Metal/CUDA) buft
+             * groups never consult the donor registry — there is no upstream
+             * primitive equivalent to ggml_backend_cpu_buffer_from_ptr for device
+             * memory, so this stays a host-only zero-copy path (see
+             * llama_kv_ext_donor_try_consume doc in llama-kv-ext.h).
+             *
+             * WHY query the size first: reusing the same size-query function the
+             * normal path uses (ggml_backend_alloc_ctx_tensors_from_buft_size)
+             * guarantees the donor-consume decision is judged against the exact
+             * byte count ggml would otherwise allocate — an undersized donor is
+             * rejected here and falls through to normal allocation rather than
+             * partially binding.
+             */
+            if (ggml_backend_buft_is_host(buft)) {
+                const size_t required_size = ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), buft);
+                buf = llama_kv_ext_donor_try_consume(required_size);
+                if (buf) {
+                    LLAMA_LOG_INFO("%s: %10s KV buffer backed by external donor (zero-copy, %8.2f MiB)\n",
+                            __func__, ggml_backend_buffer_name(buf), required_size/1024.0/1024.0);
+                    // Wire tensor->data / tensor->buffer for every tensor in this
+                    // ctx into the donor buffer, mirroring
+                    // ggml_backend_alloc_ctx_tensors_from_buft_impl's own
+                    // alloc_tensor_range (ggml-alloc.c): only real allocations
+                    // (view_src == NULL) consume buffer space via ggml_tallocr_alloc;
+                    // view tensors (k_stream/v_stream, created via ggml_view_2d in
+                    // this ctor even when n_stream == 1) must instead derive their
+                    // address from their view_src, exactly like ggml_backend_view_init
+                    // does, or their pointers end up pointing at unrelated memory and
+                    // every subsequent real tensor's offset is corrupted by the
+                    // erroneously double-counted view size.
+                    const size_t align = ggml_backend_buft_get_alignment(buft);
+                    size_t offset = 0;
+                    for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
+                        if (t->view_src != nullptr) {
+                            // Deferred: view_src is guaranteed to already be placed
+                            // because ggml contexts are append-only and llama_kv_cache
+                            // always creates k/v before their k_stream/v_stream views.
+                            t->buffer = t->view_src->buffer;
+                            t->data   = (char *) t->view_src->data + t->view_offs;
+                            continue;
+                        }
+                        offset = GGML_PAD(offset, align);
+                        t->buffer = buf;
+                        t->data   = (char *) ggml_backend_buffer_get_base(buf) + offset;
+                        offset += ggml_backend_buft_get_alloc_size(buft, t);
+                    }
+                }
+            }
+
+            if (!buf) {
+                buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft); // real buffer
+            }
         }
         if (!buf) {
             throw std::runtime_error("failed to allocate buffer for kv cache");

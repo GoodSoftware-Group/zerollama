@@ -80,6 +80,13 @@ class InferenceEngine:
     def __init__(self, config: RuntimeConfig | None = None) -> None:
         self.config = config or RuntimeConfig.from_env()
         self._llama_backend_override: LlamaBackendKind | None = None
+        # v48: CPU-only donor-buffer overlay bind (opt-in, ZEROLLAMA_KV_OVERLAY_BIND=1).
+        # WHY set only via register_kv_overlay_donor(): registration requires an
+        # operator/caller to have already sized + allocated the donor buffer via
+        # the documented two-step query-then-register flow (see
+        # runtime/kv/overlay_bind.py and docs/phase15-native-kv.md v48 section) —
+        # the engine never allocates or sizes this memory automatically.
+        self._kv_overlay_donor_id: int | None = None
         from runtime.env import configure_runtime_env
         from runtime.kv.live_physical import effective_parallel_slots
 
@@ -155,6 +162,11 @@ class InferenceEngine:
         from runtime.decode_graph_policy import bump_all_decode_graph_epochs
 
         bump_all_decode_graph_epochs(reason="server_stop")
+        # v48: unregister the KV overlay donor buffer AFTER the server/session
+        # (and thus its llama_context) has been fully stopped above — freeing
+        # or reusing donor memory while a context is alive is undefined
+        # behavior, same contract as any externally-owned ggml buffer.
+        self.unregister_kv_overlay_donor()
         self._loaded_vram_num_ctx = None
         self._model_swap.reset()
 
@@ -1809,7 +1821,30 @@ class InferenceEngine:
             kv_coordinator=kv_coordinator,
             kv_slot=probe_kv_slot,
             block_size=self.config.block_size,
+            overlay_bind_donor_id=self._kv_overlay_donor_id,
         )
+
+    def register_kv_overlay_donor(self, ptr: int, size: int) -> int:
+        """Phase 15 v48: register a pre-allocated, correctly-sized host buffer as
+        a KV-cache allocation donor. MUST be called before constructing the
+        context/model that will consume it (see runtime/kv/overlay_bind.py doc).
+        Raises RuntimeError if ZEROLLAMA_KV_OVERLAY_BIND is not set.
+        """
+        from runtime.kv.overlay_bind import register_donor_buffer
+
+        donor_id = register_donor_buffer(ptr, size)
+        self._kv_overlay_donor_id = donor_id
+        return donor_id
+
+    def unregister_kv_overlay_donor(self) -> None:
+        """Unregister the currently tracked donor buffer, if any. Callers must
+        ensure the context/model that consumed it has already been unloaded —
+        see runtime/kv/overlay_bind.py lifecycle contract."""
+        from runtime.kv.overlay_bind import unregister_donor_buffer
+
+        if self._kv_overlay_donor_id is not None:
+            unregister_donor_buffer(self._kv_overlay_donor_id)
+            self._kv_overlay_donor_id = None
 
     def _kv_decode_loop_health(self) -> dict[str, Any]:
         from runtime.kv.native_decode_loop import decode_loop_status

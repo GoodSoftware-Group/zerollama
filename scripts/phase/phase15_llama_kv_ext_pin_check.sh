@@ -21,8 +21,8 @@ echo "== Phase 15 llama-kv-ext pin check (pin=${PIN}, LLAMA_CPP_VERSION=${VERSIO
 IN_TREE=(
   "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
   "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
-  "${ROOT}/llama/patches/0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch"
-  "${ROOT}/llama/patches/0019-ollama-llama-kv-ext-external-buffer-alias-v47.patch"
+  "${ROOT}/llama/patches/0019-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch"
+  "${ROOT}/llama/patches/0021-ollama-llama-kv-ext-donor-buffer-v48.patch"
 )
 
 for f in "${IN_TREE[@]}"; do
@@ -48,10 +48,18 @@ REQUIRED_API=(
   llama_memory_kv_ext_writable_bind_probe
   llama_memory_kv_ext_external_alias_probe
   llama_memory_kv_page_alias_validate
+  llama_kv_ext_register_donor_buffer
+  llama_kv_ext_unregister_donor_buffer
+  llama_kv_ext_donor_buffer_status
 )
 for sym in "${REQUIRED_API[@]}"; do
   grep -q "${sym}" "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
 done
+
+# v48: donor-buffer hook must be wired into the KV cache allocation loop, not
+# just declared in the header — otherwise registration is a no-op.
+grep -q 'llama_kv_ext_donor_try_consume' "${ROOT}/llama/llama.cpp/src/llama-kv-cache.cpp"
+grep -q 'LLAMA_KV_EXT_DONOR_BUFFER' "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
 
 # Upstream stable memory API that llama-kv-ext builds on (must exist at pin).
 UPSTREAM_DEPS=(
@@ -60,6 +68,15 @@ UPSTREAM_DEPS=(
   llama_memory_seq_pos_min
   llama_memory_seq_pos_max
 )
+
+# v48 upstream ggml primitive the donor-buffer hook relies on (CPU-only zero-copy).
+# WHY ml/backend path: llama/llama.cpp/ has no own ggml copy — the Go ml backend
+# tree (ml/backend/ggml/ggml/) is the in-tree source ggml headers are staged from.
+GGML_BACKEND_H="${ROOT}/ml/backend/ggml/ggml/include/ggml-backend.h"
+if [[ -f "${GGML_BACKEND_H}" ]] && ! grep -q 'ggml_backend_cpu_buffer_from_ptr' "${GGML_BACKEND_H}"; then
+  echo "FAIL: upstream ggml_backend_cpu_buffer_from_ptr missing from ${GGML_BACKEND_H#${ROOT}/} — v48 donor-buffer hook needs this primitive" >&2
+  exit 1
+fi
 LLAMA_H="${ROOT}/llama/llama.cpp/include/llama.h"
 
 # Upstream writable page-handle symbols — when any appear in llama.h, refresh v32b tracker.
@@ -122,8 +139,8 @@ report = {
     "status": "pass",
     "pin": os.environ.get("PIN", ""),
     "llama_cpp_version": os.environ.get("VERSION", ""),
-    "patch": "0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch",
-    "patch_alias": "0019-ollama-llama-kv-ext-external-buffer-alias-v47.patch",
+    "patch": "0019-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch",
+    "patch_alias": "0021-ollama-llama-kv-ext-donor-buffer-v48.patch",
     "staging_api": [
         "llama_memory_kv_cell_for_pos",
         "llama_memory_kv_cell_map_range",
@@ -134,6 +151,9 @@ report = {
         "llama_memory_kv_ext_writable_bind_probe",
         "llama_memory_kv_ext_external_alias_probe",
         "llama_memory_kv_page_alias_validate",
+        "llama_kv_ext_register_donor_buffer",
+        "llama_kv_ext_unregister_donor_buffer",
+        "llama_kv_ext_donor_buffer_status",
     ],
     "upstream_writable_watch_found": json.loads(os.environ.get("WATCH_JSON", "[]")),
     "upstream_writable_watch": [
@@ -147,4 +167,4 @@ print(f"report: {out}")
 PY
 fi
 
-echo "PASS: llama-kv-ext in-tree + patches 0014/0019 present; upstream memory deps OK at pin ${PIN}"
+echo "PASS: llama-kv-ext in-tree + patches 0019/0021 present; upstream memory deps OK at pin ${PIN}"

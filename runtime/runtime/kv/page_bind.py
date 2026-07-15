@@ -205,6 +205,7 @@ def page_bind_health(
     tensor_probe: dict[str, Any] | None = None,
     writable_probe: dict[str, Any] | None = None,
     external_alias_probe: dict[str, Any] | None = None,
+    overlay_bind_donor_id: int | None = None,
     kv_coordinator: "HybridKVCacheCoordinator | None" = None,
     kv_slot: int | None = None,
     block_size: int | None = None,
@@ -222,7 +223,14 @@ def page_bind_health(
     an expected SWA-layer exclusion or a real bind failure on full-attention layers.
     When provided, ``kv_full_layers`` / ``kv_swa_layers`` / ``tensor_layers_expected``
     are added to the output so a correct comparison is possible.
+
+    WHY overlay_bind_donor_id (v48): CPU-only donor-buffer registration happens
+    at model-load time, outside any single decode/probe call — the engine
+    passes the donor id it registered (if any) so operators can see whether
+    the zero-copy KV allocation actually happened (``overlay_bind_bound``)
+    without needing a separate endpoint.
     """
+    from runtime.kv.overlay_bind import donor_buffer_status, overlay_bind_enabled
     from runtime.kv.tensor_probe import (
         external_alias_probe as default_external_alias_probe,
         writable_bind_probe as default_writable_probe,
@@ -245,6 +253,16 @@ def page_bind_health(
         if external_alias_probe is not None
         else default_external_alias_probe()
     )
+
+    # v48: CPU-only donor-buffer overlay bind status (opt-in; see overlay_bind.py).
+    overlay_enabled = overlay_bind_enabled()
+    overlay_bound = False
+    overlay_bytes = None
+    if overlay_enabled and overlay_bind_donor_id is not None:
+        donor_status = donor_buffer_status(int(overlay_bind_donor_id))
+        if donor_status is not None:
+            overlay_bound = bool(donor_status.get("bound"))
+            overlay_bytes = int(donor_status.get("bytes_used") or 0)
 
     # Normalise int 0/1 from C to bool; None means no probe was run.
     def _bool_probe(key: str) -> bool | None:
@@ -326,6 +344,9 @@ def page_bind_health(
             "external_alias_available": bool(ext_alias.get("external_alias_available")),
             "external_alias_api": ext_alias.get("external_alias_api") or "none",
             "external_alias_blocker": ext_alias.get("external_alias_blocker") or "",
+            "overlay_bind_enabled": overlay_enabled,
+            "overlay_bind_bound": overlay_bound,
+            "overlay_bind_bytes": overlay_bytes,
             "reason": reason,
             "native_ext_available": True,
             "active_binds": active,
@@ -414,6 +435,9 @@ def page_bind_health(
         "external_alias_available": False,
         "external_alias_api": "none",
         "external_alias_blocker": "native_ext_not_built",
+        "overlay_bind_enabled": overlay_enabled,
+        "overlay_bind_bound": False,
+        "overlay_bind_bytes": None,
         "reason": (
             "build native ext (cd runtime && python3 setup.py build_ext --inplace); "
             "use kv_forward_plans for logical page tables"

@@ -2,7 +2,7 @@
 
 **Audience:** Engineers continuing runtime KV / scheduler work without this thread.
 
-**Status (Jul 2026):** **Partial (v0–v47 ops)** — Phase 14 prerequisite **Done**. PA block pool (Python + opt-in C), scheduler accounting, `kv_slot`→llama seq/slot, logical + **seq-position page bind (v8 partial)**, C decode batch layout, **v9–v16** decode loop + engine resume, **v24–v30** page-bind + continuous batch decode, **v33–v38** writable page-map + copy descriptors, **v37** stream auto-batch, **v39–v43** migration plan/summary + GPU sign-off smokes, **v44–v46** auto-batch GPU gates + env wiring, **v47** external-buffer alias validate (patch 0019). **Not done:** ggml allocator overlay bind (v48+); upstream-stable writable page handles (fork ext is staging only).
+**Status (Jul 2026):** **Partial (v0–v48 ops)** — Phase 14 prerequisite **Done**. PA block pool (Python + opt-in C), scheduler accounting, `kv_slot`→llama seq/slot, logical + **seq-position page bind (v8 partial)**, C decode batch layout, **v9–v16** decode loop + engine resume, **v24–v30** page-bind + continuous batch decode, **v33–v38** writable page-map + copy descriptors, **v37** stream auto-batch, **v39–v43** migration plan/summary + GPU sign-off smokes, **v44–v46** auto-batch GPU gates + env wiring, **v47** external-buffer alias validate (patch 0019), **v48** CPU-only donor-buffer registration hook (patch 0021) — zero-copy KV cache alloc into PA-owned host memory. **Not done:** Metal/CUDA device-buffer donor (no upstream primitive for device memory); upstream-stable writable page handles (fork ext is staging only).
 
 | Slice | Shipped |
 |-------|---------|
@@ -456,7 +456,21 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 114. **Pin check** — `phase15_llama_kv_ext_pin_check.sh` requires patches 0014 + 0019 and new symbols.
 115. **SIGBUS fix** — `kv_native_probe_result_dict` `Py_BuildValue` 20×`s:i` invariant (v35 layout fields); misformat dereferenced GPU pointers as C strings on post-decode `/health`.
 
-**v48 next:** `llama_memory_kv_page_alias_bind` / `unbind` (host overlay); Metal device strategy; migration loop calls validate → bind.
+### v48 — CPU-only donor-buffer overlay bind (Jul 2026)
+
+**WHY the sketched v47→v48 approach changed:** the plan going into this slice was `llama_memory_kv_page_alias_bind`/`unbind` mutating `tensor->data` per page. That is **architecturally invalid** — each KV layer is one `ggml_tensor` covering the entire `kv_size`; `page_map`'s `k_data`/`v_data` are pointer arithmetic into that single tensor, not separate allocations. Rewriting a page's sub-range would corrupt stride math for every other page sharing the tensor. The only real zero-copy design is to make external memory *be* the buffer the whole tensor is allocated into, at construction — not bind-after-the-fact.
+
+116. **Patch 0021** — `llama_kv_ext_register_donor_buffer`, `llama_kv_ext_unregister_donor_buffer`, `llama_kv_ext_donor_buffer_status`, `llama_kv_ext_donor_try_consume` (C++-internal); fixed 8-slot mutex-guarded static registry in `llama-memory-kv-ext.cpp`, gated by new `LLAMA_KV_EXT_DONOR_BUFFER` macro (independent of `LLAMA_KV_EXT_EXTERNAL_ALIAS`).
+117. **`llama-kv-cache.cpp` allocation loop** — CPU-buft groups (`ggml_backend_buft_is_host(buft)`) query the exact required size via `ggml_backend_alloc_ctx_tensors_from_buft_size` (same fn `memory_breakdown()` uses), try the donor registry, and on a hit wrap via `ggml_backend_cpu_buffer_from_ptr` + manually place each tensor's `data`/`buffer` at the correct aligned offset (mirrors the pre-existing `no_alloc` dummy-buffer pattern in the same loop). Device buft groups (Metal/CUDA) never consult the registry — falls through unchanged.
+118. **Runtime** — `runtime/kv/overlay_bind.py` (`overlay_bind_enabled()`, `register_donor_buffer()`, `unregister_donor_buffer()`, `donor_buffer_status()`); all gated behind `ZEROLLAMA_KV_OVERLAY_BIND=1` in Python even when the native call would succeed.
+119. **Engine wiring** — `InferenceEngine.register_kv_overlay_donor(ptr, size)` / `unregister_kv_overlay_donor()`; unregister fires from `_stop_server()`, after the server/session (and its `llama_context`) has fully stopped — never while a context using the donor is alive.
+120. **`/health.kv_page_bind`** — `overlay_bind_enabled`, `overlay_bind_bound`, `overlay_bind_bytes`.
+121. **Pin check** — `phase15_llama_kv_ext_pin_check.sh` requires patch 0021, the three donor API symbols, `llama_kv_ext_donor_try_consume` wired into `llama-kv-cache.cpp`, and upstream `ggml_backend_cpu_buffer_from_ptr` presence.
+122. **Vendor staging** — `stage_llama_kv_ext_for_vendor.sh` now also syncs `llama-kv-cache.cpp` (guarded by the same "vendor ctor ahead of in-tree" check used for `llama-kv-cache.h`) and appends the `LLAMA_KV_EXT_DONOR_BUFFER=1` CMake define.
+
+**Required load order:** `register_kv_overlay_donor(ptr, size)` (two-step: query exact size first, then allocate + register a correctly-sized page-aligned buffer) → construct context/model → serve → stop/unload → `unregister_kv_overlay_donor()`.
+
+**Next (beyond v48):** Metal/CUDA device-buffer donor — no upstream primitive equivalent to `ggml_backend_cpu_buffer_from_ptr` for device memory; would need a custom `ggml_backend_buffer` wrapping an externally-owned `MTLBuffer`/CUDA allocation, a materially larger follow-on. CPU-only sign-off (`phase15_overlay_bind_cpu_smoke.sh`) — no GPU corruption claims made by this slice.
 
 ### v20 remaining
 

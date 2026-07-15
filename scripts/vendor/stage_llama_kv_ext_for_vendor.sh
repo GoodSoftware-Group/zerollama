@@ -29,7 +29,8 @@ CMAKE="${VENDOR_SRC}/CMakeLists.txt"
 for f in \
   "${INTREE}/include/llama-kv-ext.h" \
   "${INTREE}/src/llama-memory-kv-ext.cpp" \
-  "${INTREE}/src/llama-kv-cache.h"; do
+  "${INTREE}/src/llama-kv-cache.h" \
+  "${INTREE}/src/llama-kv-cache.cpp"; do
   if [[ ! -f "${f}" ]]; then
     echo "error: missing in-tree kv-ext source ${f}" >&2
     exit 1
@@ -57,6 +58,16 @@ if grep -q 'llama_memory_t[[:space:]]*mem_other' "${VENDOR_SRC}/llama-kv-cache.h
   echo ">>> skip llama-kv-cache.h stage (vendor ctor ahead of in-tree)" >&2
 else
   _sync_one "${INTREE}/src/llama-kv-cache.h" "${VENDOR_SRC}/llama-kv-cache.h"
+fi
+# WHY sync llama-kv-cache.cpp (v48): the donor-buffer overlay bind hook lives in
+# the ctor's per-buft allocation loop, not just the staging header/impl pair.
+# Same "vendor ahead of in-tree" guard as the .h sync above — a vendor dig with a
+# newer ctor (e.g. MTP/dual-cache) must not be blind-overwritten.
+if grep -q 'llama_memory_t[[:space:]]*mem_other' "${VENDOR_SRC}/llama-kv-cache.cpp" 2>/dev/null \
+  && ! grep -q 'llama_memory_t[[:space:]]*mem_other' "${INTREE}/src/llama-kv-cache.cpp" 2>/dev/null; then
+  echo ">>> skip llama-kv-cache.cpp stage (vendor ctor ahead of in-tree)" >&2
+else
+  _sync_one "${INTREE}/src/llama-kv-cache.cpp" "${VENDOR_SRC}/llama-kv-cache.cpp"
 fi
 
 if ! grep -q 'llama-memory-kv-ext.cpp' "${CMAKE}" 2>/dev/null; then
@@ -89,6 +100,14 @@ if ! grep -q 'LLAMA_KV_EXT_EXTERNAL_ALIAS' "${CMAKE}" 2>/dev/null; then
   if [[ "${CHECK_ONLY}" != "--check" ]]; then
     printf '# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)\n' >> "${CMAKE}"
     printf 'target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)\n' >> "${CMAKE}"
+  fi
+fi
+
+if ! grep -q 'LLAMA_KV_EXT_DONOR_BUFFER' "${CMAKE}" 2>/dev/null; then
+  _changed=1
+  if [[ "${CHECK_ONLY}" != "--check" ]]; then
+    printf '# zerollama Phase 15 v48: CPU-only donor-buffer overlay bind (opt-in, zero-copy KV cache alloc)\n' >> "${CMAKE}"
+    printf 'target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_DONOR_BUFFER=1)\n' >> "${CMAKE}"
   fi
 fi
 
