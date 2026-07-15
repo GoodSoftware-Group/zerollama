@@ -114,7 +114,7 @@ LLAMA_CPP_ROOT=vendor/llama-cpp-$(grep '^FETCH_HEAD=' Makefile.sync | cut -d= -f
 
 **Response:** `{"ok": true, "src_slot": 0, "id_slot": 2, "pos_end": N, "n_tokens_copied": M}`
 
-Patch: `llama/patches/0017-ollama-kv-seq-copy-endpoint.patch`
+Patches: `0022` (route; historically 0017/0018) + **`0071`** (Jul 2026) — after `seq_cp`, do **not** call `prompt_clear` (it `seq_rm`s the KV just copied → `pos_min==-1` abort on next decode). Also match `copy_state_to` with `-1,-1` ranges and verify `pos_min` after copy.
 
 Probe (endpoint exists, no KV mutation):
 
@@ -173,7 +173,7 @@ Block pool verification still runs when copy is skipped. Live smokes warn (soft-
 | `./scripts/l3_prefix_block_pool_smoke.sh` | Block pool policy only |
 | `./scripts/l3_cache_smoke.sh` | Same-key L3 slot pinning |
 
-Live radix smoke **forces vendor llama-server**, restarts runtime + port 8082, probes `/kv/seq-copy` after donor generate.
+Live radix smoke **forces vendor llama-server**, restarts the **smoke** runtime + its llama-server port (`ZEROLLAMA_RUNTIME_URL` port and port+1 — never hardcode `:8081`/`:8082` beside production), probes `/kv/seq-copy` after donor generate.
 
 ---
 
