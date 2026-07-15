@@ -753,10 +753,13 @@ type ChatResponse struct {
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
 
-	// PromptTruncated is true when input was shortened to fit num_ctx (runner token trim).
-	// Why on API: logs showed truncation while clients got silent 200 responses.
+	// PromptTruncated is true when input was shortened to fit num_ctx
+	// (chatPrompt tail-trim and/or runner token trim / runtime context-shift detect).
+	// Why on API: logs showed truncation while clients got silent 200 responses;
+	// agents had to infer overflow from prompt_eval_count ≈ num_ctx.
 	PromptTruncated bool `json:"prompt_truncated,omitempty"`
-	// OriginalPromptTokens is the token count before prompt truncation.
+	// OriginalPromptTokens is the token count before prompt truncation (pre-drop size).
+	// Prefer the largest known count (chatPrompt over runner) so megaprompts report ~44k not ~8k.
 	OriginalPromptTokens int `json:"original_prompt_tokens,omitempty"`
 	// MessagesTruncated is true when older chat messages were dropped to fit context.
 	MessagesTruncated bool `json:"messages_truncated,omitempty"`
@@ -1333,10 +1336,13 @@ type GenerateResponse struct {
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
 
-	// PromptTruncated is true when input was shortened to fit num_ctx (runner token trim).
-	// Why on API: logs showed truncation while clients got silent 200 responses.
+	// PromptTruncated is true when input was shortened to fit num_ctx
+	// (chatPrompt tail-trim and/or runner token trim / runtime context-shift detect).
+	// Why on API: logs showed truncation while clients got silent 200 responses;
+	// agents had to infer overflow from prompt_eval_count ≈ num_ctx.
 	PromptTruncated bool `json:"prompt_truncated,omitempty"`
-	// OriginalPromptTokens is the token count before prompt truncation.
+	// OriginalPromptTokens is the token count before prompt truncation (pre-drop size).
+	// Prefer the largest known count (chatPrompt over runner) so megaprompts report ~44k not ~8k.
 	OriginalPromptTokens int `json:"original_prompt_tokens,omitempty"`
 	// MessagesTruncated is true when older chat messages were dropped to fit context.
 	MessagesTruncated bool `json:"messages_truncated,omitempty"`

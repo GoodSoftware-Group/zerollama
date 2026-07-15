@@ -240,6 +240,8 @@ def create_app(
                 queue=runtime_queue_snapshot(eng),
                 queue_in=runtime_queue_snapshot(eng),
             )
+            # Why: non-stream path previously omitted truncation fields entirely;
+            # stream_generate already attaches detect_context_overflow on done chunks.
             from runtime.llama_timings import detect_context_overflow, metrics_from_llama_chunk
             overflow_metrics = metrics_from_llama_chunk(result.llama)
             overflow = detect_context_overflow(overflow_metrics, num_ctx, None)

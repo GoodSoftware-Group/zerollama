@@ -21,6 +21,8 @@ class OllamaGenerateResponse(BaseModel):
     done_reason: Optional[str] = "stop"
     vram_num_ctx: Optional[dict[str, Any]] = None
     kv_decode_steps: Optional[int] = None
+    # Why: Go proxy used to forward runtime /api/generate without truncation
+    # metadata; clients only saw prompt_eval_count pinned at num_ctx.
     prompt_truncated: Optional[bool] = None
     original_prompt_tokens: Optional[int] = None
 

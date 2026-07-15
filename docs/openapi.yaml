@@ -146,7 +146,7 @@ components:
           description: Time spent loading the model in nanoseconds
         prompt_eval_count:
           type: integer
-          description: Number of input tokens in the prompt
+          description: Number of input tokens in the prompt (post-truncation / after context shift)
         prompt_eval_duration:
           type: integer
           description: Time spent evaluating the prompt in nanoseconds
@@ -156,6 +156,25 @@ components:
         eval_duration:
           type: integer
           description: Time spent generating tokens in nanoseconds
+        prompt_truncated:
+          type: boolean
+          description: |
+            True when the prompt was shortened to fit `num_ctx` (Go chatPrompt
+            tail-trim, runner token trim, or runtime detection of llama-server
+            context shift). Why: without this flag, clients only saw
+            `prompt_eval_count` pinned near `num_ctx` on HTTP 200.
+        original_prompt_tokens:
+          type: integer
+          description: |
+            Token count before truncation. Prefer this over inferring size from
+            `prompt_eval_count` when `prompt_truncated` is true (e.g. ~44k when
+            only ~8k fit).
+        messages_truncated:
+          type: boolean
+          description: True when older chat messages were dropped to fit context
+        messages_dropped:
+          type: integer
+          description: Number of leading chat messages removed to fit `num_ctx`
         logprobs:
           type: array
           items:
@@ -190,7 +209,7 @@ components:
           description: Time spent loading the model in nanoseconds
         prompt_eval_count:
           type: integer
-          description: Number of input tokens in the prompt
+          description: Number of input tokens in the prompt (post-truncation / after context shift); set on the final chunk
         prompt_eval_duration:
           type: integer
           description: Time spent evaluating the prompt in nanoseconds
@@ -200,6 +219,20 @@ components:
         eval_duration:
           type: integer
           description: Time spent generating tokens in nanoseconds
+        prompt_truncated:
+          type: boolean
+          description: |
+            Present on the final chunk when the prompt was shortened to fit `num_ctx`.
+            Why: streaming clients previously only saw `prompt_eval_count` pinned near the window.
+        original_prompt_tokens:
+          type: integer
+          description: Token count before truncation (final chunk when `prompt_truncated` is true)
+        messages_truncated:
+          type: boolean
+          description: True when older chat messages were dropped (final chunk)
+        messages_dropped:
+          type: integer
+          description: Number of leading messages removed to fit `num_ctx` (final chunk)
     ChatMessage:
       type: object
       required: [role, content]
@@ -351,7 +384,7 @@ components:
           description: Time spent loading the model in nanoseconds
         prompt_eval_count:
           type: integer
-          description: Number of tokens in the prompt
+          description: Number of tokens in the prompt (post-truncation / after context shift)
         prompt_eval_duration:
           type: integer
           description: Time spent evaluating the prompt in nanoseconds
@@ -361,6 +394,24 @@ components:
         eval_duration:
           type: integer
           description: Time spent generating tokens in nanoseconds
+        prompt_truncated:
+          type: boolean
+          description: |
+            True when the prompt was shortened to fit `num_ctx` (Go chatPrompt
+            tail-trim, runner token trim, or runtime detection of llama-server
+            context shift). Why: without this flag, clients only saw
+            `prompt_eval_count` pinned near `num_ctx` on HTTP 200.
+        original_prompt_tokens:
+          type: integer
+          description: |
+            Token count before truncation. Prefer this over inferring size from
+            `prompt_eval_count` when `prompt_truncated` is true.
+        messages_truncated:
+          type: boolean
+          description: True when older chat messages were dropped to fit context
+        messages_dropped:
+          type: integer
+          description: Number of leading chat messages removed to fit `num_ctx`
         logprobs:
           type: array
           items:
@@ -401,6 +452,26 @@ components:
         done:
           type: boolean
           description: True for the final event in the stream
+        done_reason:
+          type: string
+          description: Reason streaming finished (final event)
+        prompt_eval_count:
+          type: integer
+          description: Prompt tokens evaluated (final event; post-truncation)
+        prompt_truncated:
+          type: boolean
+          description: |
+            Final event only. True when the prompt was shortened to fit `num_ctx`.
+            Why: without this, agents inferred overflow from `prompt_eval_count` ≈ `num_ctx`.
+        original_prompt_tokens:
+          type: integer
+          description: Pre-truncation token count (final event when `prompt_truncated` is true)
+        messages_truncated:
+          type: boolean
+          description: Final event only. True when older messages were dropped
+        messages_dropped:
+          type: integer
+          description: Leading messages removed to fit context (final event)
     StatusEvent:
       type: object
       properties:

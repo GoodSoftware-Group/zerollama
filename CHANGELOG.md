@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Explicit context-overflow fields (Jul 2026)
+
+**Why:** A ~44k-token prompt at `num_ctx=8192` returned HTTP 200 with no `prompt_truncated`. Clients had to infer overflow from `prompt_eval_count` pinned near the window (and sometimes `done_reason: "length"`). Two gaps caused that:
+
+1. **Go `chatPrompt`** — `tailTruncatePrompt` dropped tokens but discarded the pre-truncation count; `recordInferencePromptSize` hardcoded `originalTokens=0`. Runner trim then reported `original_prompt_tokens` as the already-trimmed size (~8192), not ~44k.
+2. **Runtime proxy** — `/api/generate` and `/api/chat` forwarded the raw prompt to the Python sidecar without Go truncation. llama-server context-shifted silently; responses had no truncation metadata.
+
+**Shipped:**
+
+- **`chatPrompt` → `originalPromptTokens`** — propagate pre-drop size through routes into `applyPromptTruncation` / `applyGenerateTruncation` (prefer chatPrompt count over smaller runner count).
+- **Runtime `detect_context_overflow`** — on stream done chunks (and non-stream generate), set `prompt_truncated` / `original_prompt_tokens` when admit-time tokens exceed `num_ctx` or `prompt_eval_count` is pinned near the window.
+- **OpenAPI + docs** — fields documented on Generate/Chat response schemas; see [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#prompt-truncation-in-responses).
+
+**Client check:** `prompt_truncated == true` (or compare `original_prompt_tokens` to `num_ctx`). Soft signals remain: `prompt_eval_count ≈ num_ctx`, `done_reason: "length"`. Set `"truncate": false` for HTTP 400 instead of silent drop on Go paths that honor it.
+
 ### L2 CUDA on ggml-org `8f114a9b` (patches 0067–0070) — Jul 2026
 
 **Why:** Rebase onto ggml-org pin broke TBQ load (missing CPU `type_traits` / CUDA SET_ROWS + fattn vec routing). QJL/Polar as the default fork pairing also lost badly on 4090 tok/s.
@@ -1734,6 +1749,8 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/metal_signoff.sh
 - `messages_truncated: true` and `messages_dropped` when `chatPrompt` removed older messages
 
 Set `"truncate": false` on the request to get HTTP 400 instead of silent truncation.
+
+**Follow-up (Jul 2026):** propagate chatPrompt pre-drop size + runtime `detect_context_overflow` for proxy/sidecar paths — see [Unreleased — Explicit context-overflow fields](#explicit-context-overflow-fields-jul-2026).
 
 ### Model unload after create/stop + manifest `num_ctx` vs load-time KV (Jun 2026)
 

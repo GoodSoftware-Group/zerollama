@@ -2534,6 +2534,9 @@ class InferenceEngine:
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
                         out.update(metrics_from_llama_chunk(chunk))
+                        # Why: runtime proxy skips Go chatPrompt; llama-server
+                        # context-shifts silently. Admit-time prompt_tokens is
+                        # the pre-shift size clients need on the done chunk.
                         out.update(detect_context_overflow(
                             out, active.num_ctx, len(active.prompt_tokens),
                         ))
@@ -2606,6 +2609,8 @@ class InferenceEngine:
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
                         out.update(metrics_from_llama_chunk(chunk))
+                        # Why: same as stream auto-batch path — explicit overflow
+                        # for proxies that never ran Go-side truncate.
                         out.update(detect_context_overflow(
                             out, active.num_ctx, len(active.prompt_tokens),
                         ))
@@ -2689,6 +2694,8 @@ class InferenceEngine:
                     "prompt_eval_duration",
                     "eval_count",
                     "eval_duration",
+                    # Why forward: stream_generate sets these; chat clients must
+                    # see the same overflow signal as /api/generate.
                     "prompt_truncated",
                     "original_prompt_tokens",
                 ):

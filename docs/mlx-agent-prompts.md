@@ -63,9 +63,11 @@ large mlx prompt; prefill may take several minutes  prompt_tokens=65530 num_ctx=
 mlx prepare tail-truncated prompt to fit context  (runner backstop if server budget missed)
 ```
 
-Set `"truncate": false` on the request for HTTP 400 instead of silent drop — see [scheduling-vram-policy.md](./scheduling-vram-policy.md).
+Set `"truncate": false` on the request for HTTP 400 instead of silent drop — see [scheduling-vram-policy.md](./scheduling-vram-policy.md#prompt-truncation-in-responses).
 
-Code: `server/prompt.go` (`tailTruncatePrompt`, `findChatPromptStartIdx`), `x/mlxrunner/pipeline.go` (`Prepare` backstop).
+**API response (Jul 2026):** final chunks set `prompt_truncated: true` and `original_prompt_tokens` to the **pre**-drop size (e.g. 131317, not 65530). **Why:** earlier paths logged `prompt tail-truncated` but left clients to infer overflow from `prompt_eval_count` alone; runtime-proxy requests also now detect llama-server context shift.
+
+Code: `server/prompt.go` (`tailTruncatePrompt`, `findChatPromptStartIdx`), `server/truncation.go`, `x/mlxrunner/pipeline.go` (`Prepare` backstop).
 
 ---
 

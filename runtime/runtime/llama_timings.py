@@ -46,12 +46,19 @@ def detect_context_overflow(
     num_ctx: int | None,
     original_prompt_tokens: int | None,
 ) -> dict[str, Any]:
-    """Return prompt_truncated / original_prompt_tokens when the backend
-    silently truncated the prompt via context shift.
+    """Return ``prompt_truncated`` / ``original_prompt_tokens`` when the backend
+    silently truncated the prompt (context shift / slot fill).
 
-    Detection: prompt_eval_count is pinned at or near num_ctx while the
-    original prompt was larger.  We also check ``done_reason == "length"``
-    as a secondary signal but do not require it.
+    Why this exists: the runtime proxy forwards prompts to llama-server without
+    Go-side ``chatPrompt`` truncation. llama-server then context-shifts and
+    returns HTTP 200 with ``prompt_eval_count`` pinned near ``num_ctx``. Clients
+    had to infer overflow from that pin (and sometimes ``done_reason: length``).
+    We make the signal explicit when we know the original admit token count.
+
+    Detection: ``original_prompt_tokens > num_ctx``, or
+    ``prompt_eval_count`` within 8 of ``num_ctx`` while original > evaluated.
+    ``done_reason: length`` is a common companion signal but is not required —
+    length can also mean ``num_predict`` exhausted on a fully fit prompt.
     """
     if num_ctx is None or num_ctx <= 0:
         return {}
@@ -59,6 +66,8 @@ def detect_context_overflow(
     if pec <= 0:
         return {}
     orig = original_prompt_tokens or 0
+    # Why clear orig when it already fits: a prompt that fills the window is not
+    # an overflow; pinning near num_ctx alone is expected for long-but-valid inputs.
     if orig <= num_ctx and pec >= num_ctx - 8:
         orig = 0
     if orig > num_ctx:

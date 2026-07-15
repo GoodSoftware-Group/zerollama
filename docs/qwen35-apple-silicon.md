@@ -202,7 +202,7 @@ curl http://localhost:11434/api/chat -d '{
 }'
 ```
 
-**Truncation signal:** if input still exceeds effective context, final responses include `prompt_truncated` / `messages_truncated` — set `"truncate": false` for HTTP 400 instead of silent drop. See [CHANGELOG](../CHANGELOG.md).
+**Truncation signal:** if input still exceeds effective context, final responses include `prompt_truncated` / `original_prompt_tokens` / `messages_truncated` — set `"truncate": false` for HTTP 400 instead of silent drop. See [scheduling-vram-policy.md](./scheduling-vram-policy.md#prompt-truncation-in-responses) and [CHANGELOG](../CHANGELOG.md#explicit-context-overflow-fields-jul-2026).
 
 **Unload before trusting `/api/ps`:**
 
