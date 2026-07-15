@@ -40,6 +40,7 @@ scripts=(
   l2_cuda_bench.sh
   l2_cuda_direct_bench.sh
   nvfp4_cuda_probe.sh
+  nvfp4_cuda_signoff.sh
   l1_cuda_calibrate.sh
   l1_cuda_concurrent_bench.sh
   l1_cuda_full_gate.sh
@@ -196,6 +197,8 @@ grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_bench.sh"
 grep -q '/completion' "${ROOT}/scripts/l2_cuda_direct_bench.sh"
 grep -q 'NVFP4' "${ROOT}/scripts/nvfp4_cuda_probe.sh"
 grep -q 'nvfp4_cuda_probe' "${ROOT}/docs/cuda-lanes.md"
+grep -q 'nvfp4_cuda_signoff' "${ROOT}/docs/cuda-lanes.md"
+grep -q 'MXFP4' "${ROOT}/scripts/nvfp4_cuda_signoff.sh"
 grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.sh"
 grep -q 'c84b30200' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'llama-cpp-c84b3020' "${ROOT}/Makefile.sync"
