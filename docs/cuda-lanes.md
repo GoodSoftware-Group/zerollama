@@ -145,14 +145,16 @@ Weight formats the **Go → Python runtime → patched llama-server** path can l
 | **HF FP8 safetensors** | Via convert only | N/A | `convert_hf_to_gguf.py` **dequants** FP8 → F16/BF16 (or re-quant to Q4_K); no native FP8 GGUF |
 | **Native FP8 GGUF weights** | No | No | No `GGML_TYPE_FP8` in ggml today |
 
-**NVFP4 on this stack:** eliza pin + vendor tree include `GGML_TYPE_NVFP4`, CUDA `mmq` / `mmvq` / `convert` / `quantize` kernels, and llama.cpp NVFP4 scale-tensor loading. Expect **correctness on 4090**, not the Blackwell `blackwell_mma_available()` fast path (5080 / sm_120). Binary probe (no GGUF): `./scripts/nvfp4_cuda_probe.sh`. Full lane sign-off still needs an NVFP4 GGUF (e.g. gpt-oss) + short bench on `dual_4090` — not yet on this host’s model store.
+**NVFP4 on this stack:** eliza pin + vendor tree include `GGML_TYPE_NVFP4`, CUDA `mmq` / `mmvq` / `convert` / `quantize` kernels, and llama.cpp NVFP4 scale-tensor loading. Expect **correctness on 4090**, not the Blackwell `blackwell_mma_available()` fast path (5080 / sm_120). Binary probe (no GGUF): `./scripts/nvfp4_cuda_probe.sh`.
+
+**Host fixture (dual-4090, Jul 2026):** [FreedomAISVR/gpt-oss-20B-NVFP4-GGUF](https://huggingface.co/FreedomAISVR/gpt-oss-20B-NVFP4-GGUF) → `/mnt/ssd2/models/nvfp4/gpt-oss-20b/gpt-oss-20b-nvfp4.gguf` (~12 GiB; NVFP4 experts + Q8_0 non-experts). Load smoke on GPU1: `llama-server -c 2048 -ngl 99` → `/health` OK, short `/completion` ~187 tok/s, ~12 GiB VRAM (generic MMQ path).
 
 ### Roadmap
 
 | Priority | Item | Why |
 |----------|------|-----|
 | **P1** | **Native FP8 weights** — `GGML_TYPE_*` for block FP8 (E4M3/E5M2 + scales), CUDA matmul/dequant, HF→GGUF without full dequant | HF FP8 checkpoints increasingly common; today forced through F16 or Q4_K |
-| **P1** | **NVFP4 dual-4090 sign-off** — smoke + L1 gate fixture, document expected perf vs Q4_K / vs 5080 Blackwell path | Binary markers: `./scripts/nvfp4_cuda_probe.sh`. **Open:** NVFP4 GGUF on host + short decode bench |
+| **P1** | **NVFP4 dual-4090 sign-off** — smoke + L1 gate fixture, document expected perf vs Q4_K / vs 5080 Blackwell path | Binary markers + load smoke **Done** (`nvfp4_cuda_probe.sh`; gpt-oss-20B NVFP4 @ `/mnt/ssd2/models/nvfp4/…`). **Open:** formal L1 gate fixture / Q4_K A/B write-up |
 | **P2** | **NVFP4 / MXFP4 on Blackwell** — validate `blackwell_mma_available()` path in container builds (sm_120), bench vs generic MMQ | 5080 lane; NVIDIA gpt-oss collaboration path |
 | **P2** | **Ollama compat + runtime probes** for NVFP4/MXFP4/FP8 in `llama_patch_health` / `/ready` | Fail fast when loader or CUDA arch mismatch |
 | **P3** | **FP8 KV cache** (distinct from weight FP8) | Optional; fork KV uses QJL/Polar/TBQ today |
