@@ -69,17 +69,19 @@ Next decode step recaptures graph (ggml internal; GGML_CUDA_GRAPHS=ON)
 
 ### 1. Rebuild sibling libllama after pull
 
-Invalidation is a **new public API** in the sibling tree (`../llama.cpp`), not in zerollama’s vendor pin alone:
+Invalidation is a **public API** on the unified vendor tree (`vendor/llama-cpp-8f114a9b/`, patch **0072**):
 
 ```bash
 # Mac (Metal — API present, CUDA graphs no-op at runtime)
 ./scripts/build_llama_server.sh
 
-# CUDA 5080 — ensure graphs enabled
+# CUDA — ensure graphs enabled
 GGML_CUDA=ON ./scripts/build_llama_server.sh
+# or container (host CUDA skew):
+./scripts/build_llama_server_container.sh
 ```
 
-**Why rebuild:** Python calls `llama_context_cuda_graph_invalidate` via ctypes or the Phase 15 native extension. Without the symbol, invalidation returns `symbol_missing_rebuild_libllama` and epoch bumps still run but ggml graphs are not cleared.
+**Why rebuild:** Python calls `llama_context_cuda_graph_invalidate` via ctypes or the Phase 15 native extension; subprocess POSTs `/cuda-graph/invalidate`. Without the symbol/route, invalidation returns `symbol_missing` / HTTP 404 and epoch bumps still run but ggml graphs are not cleared.
 
 ### 2. Health and probe
 
