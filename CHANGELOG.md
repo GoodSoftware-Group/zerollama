@@ -17,6 +17,7 @@ All notable changes to this project are documented in this file. The format is b
 - **`LLAMA_CPP_VENDOR_HEAD`** → `95f753fd` (post-0067–0070 tip); patch doctor / build scripts probe `libllama-server-impl*` for `/kv/seq-copy` (thin wrapper no longer embeds the string)
 - Force `-fa on` when fork KV types are TBQ/QJL/Polar (llama.cpp hard-requires FA for quantized V)
 - `l3_radix_prefix_smoke.sh`: derive llama-server port from `ZEROLLAMA_RUNTIME_URL` (never hard-kill prod `:8081`/`:8082`)
+- **0071** — fix `/kv/seq-copy`: do not `prompt_clear` after copy (it `seq_rm`s the KV just written); match `copy_state_to` `-1,-1` ranges; L3 radix live PASS on 4090
 
 **Non-goals:** flipping production `llama_fork` off stock; merging fork profiles as default-on for tok/s.
 
