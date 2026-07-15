@@ -78,15 +78,34 @@ def flags_from_gpu_config(
 
     Returns ``(flags, cache_types_fallback)``. ``cache_types_fallback`` is True
     when stock sanitize rewrote fork KV types to ``q8_0``; always False on fork path.
+
+    Fork KV pairing (when ``fork_enabled``):
+    - ``ZEROLLAMA_LLAMA_FORK_PROFILE=vram`` (default) → ``_eliza_fork_vram_llama_server_flags``
+      if present (typically TBQ — long-ctx VRAM headroom with milder decode cost), else
+      falls back to the speed block.
+    - ``ZEROLLAMA_LLAMA_FORK_PROFILE=speed`` → ``_eliza_fork_llama_server_flags``
+      (typically QJL/Polar — max compression; CUDA ship gates show large tok/s regressions).
     """
     base = dict(cfg.get("llama_server_flags") or {})
     if not fork_enabled:
         return sanitize_llama_flags(base)
 
     merged = dict(base)
-    merged.update(cfg.get("_eliza_fork_llama_server_flags") or {})
     # Legacy key from early L1 port (checkpoints only).
     merged.update(cfg.get("_fork_only_llama_server_flags") or {})
+    # WHY default vram/TBQ: 8f CUDA gates show QJL/Polar (speed) −48…−85% decode
+    # vs TBQ −5…−25% at comparable ctx; FORK=1 without a profile should pick the
+    # operator-useful path, not the experimental compression pairing.
+    profile = os.environ.get("ZEROLLAMA_LLAMA_FORK_PROFILE", "vram").strip().lower()
+    if profile in ("speed", "qjl", "polar", "qjl_polar"):
+        merged.update(cfg.get("_eliza_fork_llama_server_flags") or {})
+    else:
+        # vram / memory / tbq / long-ctx / default / unknown → prefer TBQ block
+        vram_flags = cfg.get("_eliza_fork_vram_llama_server_flags")
+        if isinstance(vram_flags, dict) and vram_flags:
+            merged.update(vram_flags)
+        else:
+            merged.update(cfg.get("_eliza_fork_llama_server_flags") or {})
     for field in ("cache_type_k", "cache_type_v"):
         raw = merged.get(field)
         if raw:
@@ -479,6 +498,21 @@ def llama_argv_from_profile_flags(
     cv = flags.get("cache_type_v")
     if cv:
         args.extend(["--cache-type-v", str(cv)])
+    # WHY force FA for quantized fork KV: llama.cpp rejects TBQ/QJL/Polar V (and
+    # typically K) without Flash Attention — "quantized V cache … requires Flash
+    # Attention". Profile JSON already sets flash_attn on CUDA cards; this guards
+    # manual overrides / Vulkan profiles that leave FA off.
+    if not flags.get("flash_attn"):
+        need_fa = False
+        for raw in (ck, cv):
+            if not raw:
+                continue
+            t = str(raw).lower()
+            if t.startswith(("tbq", "qjl", "q4_polar", "polar")) or "polar" in t:
+                need_fa = True
+                break
+        if need_fa:
+            args.extend(["-fa", "on"])
     if emit_opts.get("mlock", True) and flags.get("mlock"):
         args.append("--mlock")
     if flags.get("no_mmap"):
@@ -563,6 +597,11 @@ def apply_profile_to_config(
         "emit_ctx_size": emit.get("ctx_size", True),
         "emit_mlock": emit.get("mlock", True),
         "llama_fork": fork_enabled,
+        "llama_fork_profile": (
+            os.environ.get("ZEROLLAMA_LLAMA_FORK_PROFILE", "vram").strip().lower() or "vram"
+            if fork_enabled
+            else None
+        ),
         "kv_num_blocks": getattr(config, "num_blocks", None),
         "kv_block_size": getattr(config, "block_size", None),
     }

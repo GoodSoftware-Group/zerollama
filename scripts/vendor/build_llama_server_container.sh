@@ -64,8 +64,10 @@ podman run --rm \
   -e ZEROLLAMA_SKIP_VENDOR_APPLY=1 \
   -e ZEROLLAMA_SKIP_PIN_CHECKOUT=1 \
   -e ZEROLLAMA_SKIP_BUILD_PROBES=1 \
-  -e ZEROLLAMA_BUILD_DIR=/tmp/llama-build \
+  -e ZEROLLAMA_BUILD_DIR=/llama.cpp/build \
+  -e LLAMA_BUILD_UI=OFF \
   -e LLAMA_BUILD_WEBUI=OFF \
+  -e LLAMA_USE_PREBUILT_UI=OFF \
   -e CMAKE_CUDA_ARCHITECTURES="${ARCH}" \
   -e LLAMA_BUILD_JOBS=4 \
   "${IMAGE}" \
@@ -73,7 +75,7 @@ podman run --rm \
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq cmake build-essential git rsync
+    apt-get install -y -qq cmake build-essential git rsync curl ca-certificates
     for d in /usr/local/cuda/lib64/stubs /usr/local/cuda/targets/x86_64-linux/lib/stubs; do
       if [[ -f "${d}/libcuda.so" ]]; then
         export LDFLAGS="-L${d} -Wl,-rpath-link,${d} -lcuda ${LDFLAGS:-}"
@@ -91,11 +93,9 @@ podman run --rm \
     ./scripts/build/build_llama_server.sh
     _build_rc=$?
     set -e
-    if [[ -d /tmp/llama-build/bin ]]; then
-      echo ">>> sync build artifacts → mounted vendor tree"
-      mkdir -p /llama.cpp/build
-      rsync -a --delete /tmp/llama-build/ /llama.cpp/build/
-    else
+    # Build dir is on the mounted vendor tree (ZEROLLAMA_BUILD_DIR=/llama.cpp/build).
+    if [[ ! -x /llama.cpp/build/bin/llama-server ]]; then
+      echo "error: in-container build did not produce /llama.cpp/build/bin/llama-server" >&2
       exit 1
     fi
     if [[ "${_build_rc}" -ne 0 ]]; then
@@ -109,10 +109,26 @@ if [[ -x "${BIN}" ]]; then
   LD_LIBRARY_PATH="${LLAMA_CPP}/build/bin" "${BIN}" --version 2>&1 | head -1 || true
   readelf -d "${BIN}" 2>/dev/null | grep -E 'RUNPATH|RPATH' || true
   bindir="$(dirname "${BIN}")"
-  cuda_lib="${bindir}/libggml-cuda.so.0.12.0"
-  [[ -f "${cuda_lib}" ]] || cuda_lib="${bindir}/libggml-cuda.so.0"
+  cuda_lib=""
+  for cand in \
+    "${bindir}/libggml-cuda.so.0.16.0" \
+    "${bindir}/libggml-cuda.so.0.12.0" \
+    "${bindir}/libggml-cuda.so.0" \
+    "${bindir}/libggml-cuda.so"; do
+    if [[ -e "${cand}" ]]; then
+      cuda_lib="$(readlink -f "${cand}")"
+      break
+    fi
+  done
+  if [[ -z "${cuda_lib}" || ! -f "${cuda_lib}" ]]; then
+    echo "error: libggml-cuda not found under ${bindir}" >&2
+    exit 1
+  fi
   _host_cuda_lib_has_symbol() {
     local sym="$1"
+    # Prefer direct binary grep: `strings | grep` can false-negative on large
+    # freshly-linked libs (pipe/EOF races on bind-mounted vendor builds).
+    grep -aFq "${sym}" "${cuda_lib}" 2>/dev/null && return 0
     strings "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
     command -v nm >/dev/null 2>&1 || return 1
     nm --demangle "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
@@ -128,8 +144,17 @@ if [[ -x "${BIN}" ]]; then
   fi
   echo "OK: libggml-cuda fork KV + fused attn verified"
   if ! strings "${BIN}" | grep -q 'kv/seq-copy'; then
-    echo "error: ${BIN} missing /kv/seq-copy route" >&2
-    exit 1
+    _impl_ok=0
+    for _impl in "$(dirname "${BIN}")"/libllama-server-impl*; do
+      if [[ -f "${_impl}" ]] && strings "${_impl}" | grep -q 'kv/seq-copy'; then
+        _impl_ok=1
+        break
+      fi
+    done
+    if [[ "${_impl_ok}" -ne 1 ]]; then
+      echo "error: ${BIN} missing /kv/seq-copy route (and no libllama-server-impl*)" >&2
+      exit 1
+    fi
   fi
   echo "OK: llama-server embeds /kv/seq-copy"
 else

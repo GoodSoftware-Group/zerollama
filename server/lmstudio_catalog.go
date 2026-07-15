@@ -75,8 +75,10 @@ func mergeLMStudioModels(local []api.ListModelResponse) []api.ListModelResponse 
 			RemoteModel: e.Dir,
 			RemoteHost:  lmstudio.RemoteHost(),
 			Size:        e.Size,
-			ModifiedAt:  modified,
-			Details:     details,
+			// Stock ollama clients panic on empty digests (digest[:12]).
+			Digest:     listCatalogDigest("lmstudio:" + e.Name),
+			ModifiedAt: modified,
+			Details:    details,
 		})
 	}
 	return out

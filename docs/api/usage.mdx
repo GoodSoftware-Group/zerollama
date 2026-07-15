@@ -6,12 +6,17 @@ Ollama's API responses include metrics that can be used for measuring performanc
 
 * `total_duration`: How long the response took to generate
 * `load_duration`: How long the model took to load
-* `prompt_eval_count`: How many input tokens were processed
+* `prompt_eval_count`: How many input tokens were processed (**after** truncation / context shift)
 * `prompt_eval_duration`: How long it took to evaluate the prompt
 * `eval_count`: How many output tokens were processes
 * `eval_duration`: How long it took to generate the output tokens
+* `prompt_truncated`: `true` when the prompt was shortened to fit `num_ctx` (**why:** silent HTTP 200 used to leave only `prompt_eval_count ≈ num_ctx` as a hint)
+* `original_prompt_tokens`: token count **before** truncation when `prompt_truncated` is true
+* `messages_truncated` / `messages_dropped`: older chat turns dropped to fit context
 
 All timing values are measured in nanoseconds.
+
+See also: [Prompt truncation in responses](../scheduling-vram-policy.md#prompt-truncation-in-responses).
 
 ## Example response
 
@@ -32,5 +37,19 @@ For endpoints that return usage metrics, the response body will include the usag
   "eval_duration": 52479709
 }
 ```
+
+When a long prompt is truncated to fit `num_ctx`, the final chunk also includes:
+
+```json
+{
+  "prompt_eval_count": 8184,
+  "prompt_truncated": true,
+  "original_prompt_tokens": 44000,
+  "done": true,
+  "done_reason": "length"
+}
+```
+
+**Why both fields:** `prompt_eval_count` is what the model actually saw; `original_prompt_tokens` is what the client sent before drop. Prefer `prompt_truncated` over inferring overflow from counts alone (`done_reason: "length"` can also mean `num_predict` exhausted).
 
 For endpoints that return **streaming responses**, usage fields are included as part of the final chunk, where `done` is `true`.

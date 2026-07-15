@@ -1,0 +1,70 @@
+{
+  "description": "Qwen-Image-Edit: instruction-based image edit (+ optional Lightning LoRA for fast steps).",
+  "requires": ["prompt", "image"],
+  "bindings": {
+    "prompt": {"node_id": "22", "field": "text"},
+    "negative_prompt": {"node_id": "7", "field": "text"},
+    "seed": {"node_id": "3", "field": "seed"},
+    "steps": {"node_id": "3", "field": "steps"},
+    "image": {"node_id": "20", "field": "image"},
+    "lora_name": {"node_id": "10", "field": "lora_name"},
+    "lora_strength": {"node_id": "10", "field": "strength_model"}
+  },
+  "graph": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "inputs": {"unet_name": "qwen-image-edit-Q4_K_M.gguf"}
+    },
+    "2": {
+      "class_type": "CLIPLoaderGGUF",
+      "inputs": {"clip_name": "qwen_2.5_vl_7b-Q4_K_M.gguf", "type": "qwen_image"}
+    },
+    "9": {
+      "class_type": "VAELoader",
+      "inputs": {"vae_name": "qwen_image_vae.safetensors"}
+    },
+    "10": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {"model": ["1", 0], "lora_name": "Qwen-Image-Lightning-8steps.safetensors", "strength_model": 1.0}
+    },
+    "20": {
+      "class_type": "LoadImage",
+      "inputs": {"image": "agent-input.png"}
+    },
+    "21": {
+      "class_type": "VAEEncode",
+      "inputs": {"pixels": ["20", 0], "vae": ["9", 0]}
+    },
+    "22": {
+      "class_type": "TextEncodeQwenImageEdit",
+      "inputs": {"clip": ["2", 0], "vae": ["9", 0], "image": ["20", 0], "text": ""}
+    },
+    "7": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"clip": ["2", 0], "text": ""}
+    },
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["10", 0],
+        "positive": ["22", 0],
+        "negative": ["7", 0],
+        "latent_image": ["21", 0],
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 0.9
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {"samples": ["3", 0], "vae": ["9", 0]}
+    },
+    "save": {
+      "class_type": "SaveImage",
+      "inputs": {"images": ["8", 0], "filename_prefix": "zerollama_qwen_image_edit"}
+    }
+  }
+}

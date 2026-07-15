@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/runtime/runtime_smoke_lib.sh
 source "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
 
-RUNTIME_URL="${RUNTIME_URL:-http://127.0.0.1:8081}"
+RUNTIME_URL="${RUNTIME_URL:-${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}}"
 
 echo "== Phase 15 batch decode smoke =="
 

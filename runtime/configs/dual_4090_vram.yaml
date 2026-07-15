@@ -1,0 +1,31 @@
+# Dual RTX 4090 — long-ctx / multi-slot VRAM profile (L2 TBQ).
+#
+# WHY a separate file: dual_4090.yaml keeps llama_fork: stock for peak tok/s.
+# This topology enables fork KV compression (TBQ) for ~−27…−35% VRAM at 65k–131k
+# (decode cost depends on path: direct llama-server ~−5…−6%; 8f sidecar ~−20…−21%).
+# Doc: docs/gpu-profiles-l2.md
+#
+# Use:
+#   ZEROLLAMA_RUNTIME_CONFIG=$PWD/runtime/configs/dual_4090_vram.yaml
+#   # or systemd Environment=ZEROLLAMA_RUNTIME_CONFIG=.../dual_4090_vram.yaml
+# Equivalent env: ZEROLLAMA_LLAMA_FORK=1 (FORK_PROFILE defaults to vram/TBQ).
+device_count: 2
+tensor_parallel: 2
+split_mode: layer
+tensor_split: [1, 1]
+main_gpu: 0
+llama_parallel_slots: 4
+serve:
+  max_loaded_models: 1
+  keep_alive: 5m
+  num_parallel: 1
+  llama_fork: 1
+  llama_fork_profile: vram
+vram:
+  clamp_num_ctx: auto
+  check_gpu_vram: 1
+kv:
+  block_size: 16
+  num_blocks_per_device: 8192
+speculative:
+  method: none

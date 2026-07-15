@@ -12,10 +12,6 @@ void llama_set_dflash_target_export(struct llama_context *, const struct llama_m
 struct ggml_tensor * llama_get_dflash_target_features(struct llama_context *) { return nullptr; }
 float * llama_get_dflash_target_features_ith(struct llama_context *, int32_t) { return nullptr; }
 
-bool llama_context_cross_has_v_embd(const struct llama_context *) { return false; }
-int32_t llama_context_cross_n_enc(const struct llama_context *) { return 0; }
-int32_t llama_context_cross_row(const struct llama_context *, int32_t, float *, int32_t) { return -1; }
-void llama_context_cross_upsert_row(struct llama_context *, int32_t, const float *, int32_t) {}
 float * llama_get_dflash_attn_out_ith(struct llama_context *, int32_t) { return nullptr; }
 float * llama_get_dflash_tok_embd_ith(struct llama_context *, int32_t) { return nullptr; }
 float * llama_get_dflash_attn_norm_ith(struct llama_context *, int32_t) { return nullptr; }
@@ -40,3 +36,7 @@ int32_t llama_model_layer_has_swa(const struct llama_model * model, int32_t il) 
     }
     return model->hparams.is_swa((uint32_t) il) ? 1 : 0;
 }
+
+// llama_model_dflash_* metadata getters live in llama-model.cpp (dflash-draft arch).
+
+int32_t llama_context_cross_n_enc(const struct llama_context *) { return 0; }

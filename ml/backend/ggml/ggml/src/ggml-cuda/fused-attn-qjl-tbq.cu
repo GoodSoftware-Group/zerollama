@@ -55,6 +55,8 @@
 // (AGENTS.md §3), not a required kernel — the build-script required-kernel gate
 // does NOT include it.
 
+#include "fused-attn.cuh"
+
 #include "ggml.h"
 #include "ggml-impl.h"
 #include "common.cuh"

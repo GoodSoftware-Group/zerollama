@@ -1,0 +1,11 @@
+{
+  "capabilities": ["image"],
+  "modality_backends": { "image": "comfyui" },
+  "backend_paths": {
+    "comfy_workflow_dir": "scripts/comfyui/qwen-image",
+    "comfy_default_workflow": "t2i"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

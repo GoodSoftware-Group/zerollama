@@ -141,6 +141,11 @@ func (m *Model) Capabilities() []model.Capability {
 		if b := m.Config.ModalityBackends[model.ModalityVideoGeneration]; b != "" && !slices.Contains(capabilities, model.CapabilityVideoGen) {
 			capabilities = append(capabilities, model.CapabilityVideoGen)
 		}
+		// Whisper (and other) STT backends are config-only — surface audio so /api/tags
+		// and show do not report "unknown capabilities".
+		if b := m.Config.ModalityBackends[model.ModalityTranscribe]; b != "" && !slices.Contains(capabilities, model.CapabilityAudio) {
+			capabilities = append(capabilities, model.CapabilityAudio)
+		}
 	}
 
 	if len(capabilities) == 0 {

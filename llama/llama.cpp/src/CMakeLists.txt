@@ -24,11 +24,14 @@ add_library(llama
             llama-io.cpp
             llama-kv-cache.cpp
             llama-kv-cache-iswa.cpp
+            llama-kv-cache-dsa.cpp
+            llama-kv-cache-dsv4.cpp
             llama-memory.cpp
             llama-memory-hybrid.cpp
             llama-memory-hybrid-iswa.cpp
             llama-memory-recurrent.cpp
             llama-memory-kv-ext.cpp
+            llama-dflash-stubs.cpp
             llama-mmap.cpp
             llama-model-loader.cpp
             llama-model-saver.cpp
@@ -42,10 +45,6 @@ add_library(llama
             ollama-compat/llama-ollama-compat-util.cpp
             unicode.h
             ${LLAMA_MODELS_SOURCES}
-            # milady: DFlash draft model
-            models/dflash-draft.cpp
-            # EAGLE3 speculative-decoding scaffolding (upstream PR #18039)
-            llama-eagle3.cpp
             )
 
 set_target_properties(llama PROPERTIES
@@ -64,10 +63,8 @@ target_link_libraries(llama PUBLIC ggml)
 if (BUILD_SHARED_LIBS)
     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
+target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1)
     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
 endif()
-
-# zerollama Phase 15 v33: staging writable KV page-map (llama-kv-ext.h)
-target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1)
 # zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
 target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)

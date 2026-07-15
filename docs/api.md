@@ -1,6 +1,8 @@
 # API
 
-> Note: Ollama's API docs are moving to https://docs.ollama.com/api
+> Live OpenAPI on a running zerollama server: **`/docs`** (Swagger UI), **`/openapi.json`**, **`/openapi.yaml`**.
+>
+> Static Mintlify docs: https://docs.ollama.com/api
 
 ## Endpoints
 
@@ -109,12 +111,17 @@ The final response in the stream also includes additional data about the generat
 
 - `total_duration`: time spent generating the response
 - `load_duration`: time spent in nanoseconds loading the model
-- `prompt_eval_count`: number of tokens in the prompt
+- `prompt_eval_count`: number of tokens in the prompt (**after** any truncation / context shift)
 - `prompt_eval_duration`: time spent in nanoseconds evaluating the prompt
 - `eval_count`: number of tokens in the response
 - `eval_duration`: time in nanoseconds spent generating the response
 - `context`: an encoding of the conversation used in this response, this can be sent in the next request to keep a conversational memory
 - `response`: empty if the response was streamed, if not streamed, this will contain the full response
+- `prompt_truncated`: `true` when the prompt was shortened to fit `num_ctx` (**why:** without this, clients only saw `prompt_eval_count` pinned near the window)
+- `original_prompt_tokens`: token count **before** truncation (use this when `prompt_truncated` is true)
+- `messages_truncated` / `messages_dropped`: older chat turns dropped to fit context (chat/generate with history)
+
+See [Prompt truncation in responses](./scheduling-vram-policy.md#prompt-truncation-in-responses).
 
 To calculate how fast the response is generated in tokens per second (token/s), divide `eval_count` / `eval_duration` \* `10^9`.
 

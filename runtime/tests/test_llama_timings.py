@@ -1,6 +1,6 @@
 """Tests for llama-server timings → Ollama metrics mapping."""
 
-from runtime.llama_timings import metrics_from_llama_chunk
+from runtime.llama_timings import detect_context_overflow, metrics_from_llama_chunk
 
 
 def test_metrics_from_llama_chunk_cache_hit():
@@ -25,3 +25,44 @@ def test_metrics_from_llama_chunk_cache_hit():
 
 def test_metrics_from_llama_chunk_no_timings():
     assert metrics_from_llama_chunk({}) == {}
+
+
+def test_detect_context_overflow_triggered():
+    """44k-token prompt truncated to fit num_ctx=8192."""
+    result = detect_context_overflow(
+        {"prompt_eval_count": 8184},
+        num_ctx=8192,
+        original_prompt_tokens=44000,
+    )
+    assert result["prompt_truncated"] is True
+    assert result["original_prompt_tokens"] == 44000
+
+
+def test_detect_context_overflow_no_overflow():
+    """Small prompt fits in context — no truncation."""
+    result = detect_context_overflow(
+        {"prompt_eval_count": 500},
+        num_ctx=8192,
+        original_prompt_tokens=500,
+    )
+    assert result == {}
+
+
+def test_detect_context_overflow_no_num_ctx():
+    result = detect_context_overflow(
+        {"prompt_eval_count": 8184},
+        num_ctx=None,
+        original_prompt_tokens=44000,
+    )
+    assert result == {}
+
+
+def test_detect_context_overflow_pinned_at_window():
+    """prompt_eval_count near num_ctx with original > actual."""
+    result = detect_context_overflow(
+        {"prompt_eval_count": 8190},
+        num_ctx=8192,
+        original_prompt_tokens=10000,
+    )
+    assert result["prompt_truncated"] is True
+    assert result["original_prompt_tokens"] == 10000

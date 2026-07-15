@@ -87,11 +87,11 @@ Mark **Done** when 1–2 and **3–4** pass on ship hardware. **5** failed on 50
 | 1 | C block pool + Python facade; `phase15_kv_native_ci.sh` | **Done** (code) |
 | 2 | Logical bind, forward plans, `/internal/kv-snapshot`, Go loopback proxy | **Done** (code) |
 | 3 | In-process decode hook (`kv_decode_steps`) + multi-seq (`llama_parallel_slots`>1) | **Done** (code) |
-| 4 | **5080 GPU:** `phase15_inprocess_signoff.sh` (KV hook + multi-seq + batch decode + `kv_page_bind` snapshot) | **Done (RTX 5080 CT 1564, Jun 2026)** — OuteTTS 1B Q8; `kv_decode_steps=56`; `batch_decode_in_c=True`; multiseq + `/internal/generate-batch` PASS |
+| 4 | **CUDA GPU:** `phase15_inprocess_signoff.sh` (KV hook + multi-seq + batch decode + `kv_page_bind` snapshot) | **Done (RTX 5080 CT 1564, Jun 2026)** — OuteTTS 1B Q8; `kv_decode_steps=56`; `batch_decode_in_c=True`; multiseq + `/internal/generate-batch` PASS. **Also Done (dual RTX 4090, Jul 2026)** — edge binary + uv sidecar on `:18083`/`:18081`; llama3.2 3B Q4; same batch gate PASS (`/tmp/phase15-4090-signoff/full.log`) |
 | 5 | **Tensor page bind** — PA `block_ids` → llama KV tensor pages | **Partial (Jul 2026)** — **v8:** seq-position bind; **v19–v20:** cell + tensor verify via `llama-kv-ext.h`; **v33:** fork `llama_memory_kv_page_map` writable spans + `physical_pages_bound` on `/health`; **v34:** multi-layer tensor verify + writable page-map fan-out (`llama_memory_kv_n_layers`); **v35:** transposed-V layout (`llama_memory_kv_cache_layout`, `v_transposed` on page_map, last-probe `/health`); **v36:** GGUF layer-group enrichment (`kv_full_layers`, `kv_swa_layers`, `tensor_layers_expected` for hybrid model bind-success criterion); **v38:** copy descriptors for migration; **v47:** external-buffer alias **validate** (patch 0019 — classifies SAME_POINTER / HOST_REBASE / BLOCKED_* without mutating tensors). **Open:** ggml allocator overlay bind (v48+) |
-| 6 | **Native decode batch** in C wired to `kv_forward_plans` | **Partial (Jun 2026)** — C batch layout + page-aligned chunks; **v9–v11:** plan export; **v12:** libllama link; **v13:** `llama_decode` in C; **v14–v16:** GIL release, sampling in C, `_decode_stream` + engine resume via `current_pos`; **v16b–v18:** resume owner + `/health.kv_resume`; **v19–v20:** tensor bind scaffold + `llama-kv-ext` cell/tensor bind; **v20a:** `native_page_table` on forward plans; **v26–v30:** `kv_decode_loop_run_batch_step`, engine `generate_batch` / `stream_generate_batch`, per-row `smpl_ptrs[]`, `/internal/generate-batch`, **Metal batch sign-off PASS (M4 Max Jun 2026)**, **CUDA 5080 batch sign-off PASS (CT 1564 Jun 2026)** |
+| 6 | **Native decode batch** in C wired to `kv_forward_plans` | **Partial (Jun 2026)** — C batch layout + page-aligned chunks; **v9–v11:** plan export; **v12:** libllama link; **v13:** `llama_decode` in C; **v14–v16:** GIL release, sampling in C, `_decode_stream` + engine resume via `current_pos`; **v16b–v18:** resume owner + `/health.kv_resume`; **v19–v20:** tensor bind scaffold + `llama-kv-ext` cell/tensor bind; **v20a:** `native_page_table` on forward plans; **v26–v30:** `kv_decode_loop_run_batch_step`, engine `generate_batch` / `stream_generate_batch`, per-row `smpl_ptrs[]`, `/internal/generate-batch`, **Metal batch sign-off PASS (M4 Max Jun 2026)**, **CUDA 5080 batch sign-off PASS (CT 1564 Jun 2026)**, **CUDA dual-4090 batch sign-off PASS (Jul 2026)** |
 
-Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial until upstream llama.cpp ships stable writable KV page API for all memory types. CPU gate: `./scripts/phase/phase15_kv_native_ci.sh`. GPU gate: `./scripts/phase/phase15_inprocess_signoff.sh` (Linux embed) + `./scripts/phase/phase15_metal_signoff.sh` (Mac sidecar, includes batch decode step 3/5). **Mac ordered gate (Jun 2026):** `./scripts/phase/phase11_13_15_metal_signoff.sh` (`METAL_SELF_START=1`, vendor libllama via `macos_export_llama_cpp_paths`). **Mac full operator gate:** `./scripts/gpu/metal_signoff.sh` (+ optional `RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest`). Linked tensor bind + batch decode: rebuild libllama from vendor pin + clean `_kv_native` build; sign-off scripts source `phase15_runtime_kv_env.sh`; **`smoke_runtime_assert_kv_snapshot`** accepts **`bound`+`tensor`** when kv-ext linked. See [phase15-native-kv.md](./phase15-native-kv.md).
+Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial until upstream llama.cpp ships stable writable KV page API for all memory types. CPU gate: `./scripts/phase/phase15_kv_native_ci.sh`. GPU gate: `./scripts/phase/phase15_inprocess_signoff.sh` (Linux embed, or uv sidecar when edge-marked / `PHASE15_USE_SIDECAR=1`) + `./scripts/phase/phase15_metal_signoff.sh` (Mac sidecar, includes batch decode step 3/5). **Mac ordered gate (Jun 2026):** `./scripts/phase/phase11_13_15_metal_signoff.sh` (`METAL_SELF_START=1`, vendor libllama via `macos_export_llama_cpp_paths`). **Mac full operator gate:** `./scripts/gpu/metal_signoff.sh` (+ optional `RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest`). Linked tensor bind + batch decode: rebuild libllama from vendor pin + clean `_kv_native` build; sign-off scripts source `phase15_runtime_kv_env.sh`; **`smoke_runtime_assert_kv_snapshot`** accepts **`bound`+`tensor`** when kv-ext linked. See [phase15-native-kv.md](./phase15-native-kv.md).
 
 ### Phase 17 — upstream GGUF path alignment (directional)
 
@@ -106,7 +106,7 @@ Mark **Done** when 1–3 and **4** pass on ship hardware. **5–6** partial unti
 | 4 | Port `llm/llama_server.go` + discovery probe; eligible GGUF uses Go → llama-server | **Done (Jun 2026)** — `--llama-server-backend`; **Linux auto-default**; `discover/llama_server.go`; `LeadingBOSForRenderer`; **`phase17_llama_server_smoke.sh` PASS** — [phase17-llama-server.md](./phase17-llama-server.md) |
 | 5 | Benchmark ggml vs Go-llama-server vs Python runtime on ship hardware | **Done (M7)** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; keep ggml Mac default |
 | 6 | Deprecate `OLLAMA_NEW_ENGINE` / ollamarunner for plain text GGUF | **Done (Jun 2026)** — env ignored for routing; Linux `auto` + explicit llama-server; Mac ggml default |
-| 7 | Coordinate llama.cpp pin with borrowings **L2** (eliza fork kernels vs upstream merge) | **Done (Jul 2026, informational)** — unified pin **`8f114a9b`** + patches 0067–0068; Metal A/B **FAIL merge** @ 8k (stock wins); fork profiles remain opt-in |
+| 7 | Coordinate llama.cpp pin with borrowings **L2** (fork KV profiles vs L1 q8_0) | **Partial** — QJL/Polar/TBQ on ggml-org `8f114a9b` (patches **0026–0030** + CUDA/Metal follow-ups **0067–0072**); **FAIL default profiles** (M4 Max Metal @ 8k stock wins; 5080 @ 8k/27k; 4090 TBQ @ 65k–131k quiet host −20…−21% decode / −27…−34% VRAM). Profiles stay opt-in. `./scripts/phase/phase17_l2_pin_status.sh` |
 
 **Non-goals:** full rebase onto upstream; deleting `runtime/` or training; replacing Eliza with ollama.com.
 
@@ -302,7 +302,7 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 | Milestone | Goal | Owner | Exit criteria |
 |-----------|------|--------|----------------|
 | **L1** | **Per-GPU llama profiles (CUDA + Metal)** | Python | **Done (Jun 2026)** — **Apple:** RAM tiers; M4 Max 128g; `l1_metal_gate.sh`. **NVIDIA 5080:** `rtx-5080.json` (`n_parallel=2`, `batch_size=1024`, `ubatch_size=256`); **concurrent N=2 +~16–20%** on eliza-1 9B (`l1_cuda_full_gate.sh`, Jun 2026); single-stream **−5%** @ 8k (np=2 overhead — informational). Optional supernova GGUF re-run. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](./gpu-profiles-l1.md). |
-| **L2** | **Unified `llama-server` (ggml-org base)** | Repo + C | **Done (Jul 2026, opt-in)** — vendor + runtime @ **`8f114a9b`**; patches **0067–0068** expose fork KV types + Metal TBQ SET_ROWS. Apple M4 Max @ 8k: stock **67.2** vs fork TBQ **53.1** tok/s (**FAIL merge** — keep L1 default). Fork profiles via `ZEROLLAMA_LLAMA_FORK=1`. Doc: [llama-cpp-unification.md](./llama-cpp-unification.md), [gpu-profiles-l2.md](./gpu-profiles-l2.md). |
+| **L2** | **Fork KV profiles on unified `llama-server`** | Repo + C | **Partial (Jul 2026)** — kernels on ggml-org via **0026–0030** + **0067–0072**; pin `8f114a9b`. **Ship gate FAIL** for default tok/s (Metal M4 Max stock **67.2** vs TBQ **53.1** @ 8k; CUDA similar). **VRAM opt-in** = TBQ (`FORK_PROFILE=vram`). **Speed** (QJL/Polar) experimental. Metal TBQ SET_ROWS via **0068**. Doc: [llama-cpp-unification.md](./llama-cpp-unification.md), [gpu-profiles-l2.md](./gpu-profiles-l2.md). |
 | **L3** | **Prompt cache key → slot bridge** | Go + Python | **Done (Jun 2026)** — pinned slots, subprocess + in-process RAM/disk, batch keys, `/health.llama_cache`. **vLLM spike (Jun 2026):** selective-retention policy (`prefix_cache_policy.py`) — SWA/hybrid GGUF classification, draft-spec disables `cache_prompt`+disk, subprocess `seq_pos` from timings + `GET /slots` fallback. **Decode graph invalidation (Jun 2026):** epoch + `llama_context_cuda_graph_invalidate` (in-process) + `POST /cuda-graph/invalidate` (subprocess llama-server); doc [decode-graph-invalidation.md](./decode-graph-invalidation.md). Smokes: `l3_cache_smoke.sh`, `l3_spec_cache_smoke.sh` (`L3_RUN_SPEC_CACHE=1` on full gate). **5080:** `l3_cuda_full_gate.sh` PASS on eliza-1 9B — 8k cached **−42%** vs no-cache; 27k cached **0.72s** vs **1.48s**. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md). |
 
 **vLLM borrowings — spike closed (Jun 2026).** GGUF-first runtime only; no HTTP-to-vLLM.
@@ -483,6 +483,33 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 **Not in v1:** list videos, `DELETE /v1/videos/:id`, Eliza `:cloud` passthrough, in-process Diffusers runner.
 
 **Future tracks:** GGUF Wan2.2 if 16 GB OOMs; upstream proxy for non-Wan stacks; CogVideoX / LTX via `runner: diffusers`.
+
+## Image generation — MLX fast path + ComfyUI utility (partial)
+
+**Why a separate track from Wan / VLM / MLX-only imagegen:** Text understanding (vision encoders), Wan T2V (minute-scale diffusion via training `run_script`), and **still-image generation** share almost no code. Inside still-image generation there are two jobs:
+
+1. **Interactive T2I** on a small set of models → keep in-tree MLX (`x/imagegen`).
+2. **Agent utility** (edit, ControlNet, LoRA, many HF DiTs) → orchestrate ComfyUI rather than reimplement DiTs in Go.
+
+Mixing “port Qwen-Image to MLX” with “agent needs ControlNet” hid the real product decision: **maximum agent utility comes from Comfy graphs**, not from another MLX model family.
+
+**Shipped (v0 — Jul 2026):**
+
+- `modality_backends.image=comfyui` + `server/modality/comfyui` HTTP bridge; OpenAI `/v1/images/*` via existing generate middleware.
+- Named workflows + `GET /api/image/workflows`; config-only `comfy/*` manifests; `PrepareForImageGen` before Comfy jobs.
+- Worked-example workflow JSON for Qwen-Image(+edit), FLUX.1/2-dev, GLM-Image, Klein 9B — **operator-calibrated**, not bit-for-bit verified against every Comfy install.
+
+**Operator guide:** [comfyui-image-backend.md](./comfyui-image-backend.md). Fast path stays [imagegen-zimage-turbo.md](./imagegen-zimage-turbo.md).
+
+| Milestone | Goal | Why |
+|-----------|------|-----|
+| **v0** | Comfy bridge + agent options + discovery | **Done** — unlock utility without MLX DiT ports. |
+| **v0.1** | Calibrate one golden workflow (e.g. Qwen-Image GGUF) on 5080 / ship GPU | Prove templates end-to-end; document exact custom nodes + filenames. |
+| **v0.2** | Cancel /interrupt Comfy on client disconnect | Stop orphaned GPU jobs when agents abort polls. |
+| **v0.3** | Optional `upscale` template + checkpoint override in `backend_paths` | Plan leftover; agents ask for upscale often. |
+| **Later** | Async job shape (Wan-like) for multi-minute GLM/FLUX.2 | Sync HTTP is fine for demos; agents need job ids for minutes-long gens. |
+
+**Non-goals:** shipping ComfyUI inside the Go binary; dropping MLX Z-Image/Klein; guaranteeing interactive latency for GLM-Image / FLUX.2-dev on 16 GB; replacing `external-image` (escape hatch remains).
 
 ## Option 2 — Narrow the gap without SGLang (in-tree over time)
 

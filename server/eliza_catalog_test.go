@@ -61,6 +61,12 @@ func TestMergeElizaCloudModels_AppendsFromUpstream(t *testing.T) {
 	if out[1].Model != "acme/foo:cloud" {
 		t.Fatalf("got %q", out[1].Model)
 	}
+	if out[1].Digest == "" || len(out[1].Digest) < 12 {
+		t.Fatalf("digest too short for stock ollama clients: %q", out[1].Digest)
+	}
+	if out[1].Digest != listCatalogDigest("eliza:acme/foo") {
+		t.Fatalf("digest=%q want stable catalog digest", out[1].Digest)
+	}
 }
 
 func TestMergeElizaCloudModels_DedupesByModelName(t *testing.T) {
@@ -142,6 +148,9 @@ func TestMergeElizaCloudModels_TaggedUpstreamUsesDashCloud(t *testing.T) {
 	}
 	if out[0].RemoteModel != "driaforall/tiny-agent-a:3B" {
 		t.Fatalf("remote_model=%q", out[0].RemoteModel)
+	}
+	if out[0].Digest != listCatalogDigest("eliza:driaforall/tiny-agent-a:3B") {
+		t.Fatalf("digest=%q", out[0].Digest)
 	}
 }
 

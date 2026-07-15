@@ -1,0 +1,4 @@
+# Config-only ComfyUI FLUX.2-dev preset (weights live in ComfyUI's models/ tree, not Ollama blobs).
+# Register with: ../../scripts/register_comfy_models.sh comfy/flux2-dev modelfiles/comfy-flux2-dev/config.json
+# Requires: a running ComfyUI server with low-bit FLUX.2-dev GGUF weights installed. Expect
+# multi-minute generations on 16GB cards — see docs/comfyui-image-backend.md.

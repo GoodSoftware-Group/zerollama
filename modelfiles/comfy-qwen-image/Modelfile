@@ -1,0 +1,4 @@
+# Config-only ComfyUI Qwen-Image preset (weights live in ComfyUI's models/ tree, not Ollama blobs).
+# Register with: ../../scripts/register_comfy_models.sh comfy/qwen-image modelfiles/comfy-qwen-image/config.json
+# Requires: a running ComfyUI server (OLLAMA_COMFYUI_URL, default http://127.0.0.1:8188) with
+# ComfyUI-GGUF custom nodes and qwen-image GGUF weights installed — see docs/comfyui-image-backend.md.

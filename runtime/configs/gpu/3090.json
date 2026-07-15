@@ -29,5 +29,9 @@
     "cache_type_k": "q8_0",
     "cache_type_v": "q4_polar"
   },
-  "_provenance": "eliza-v3 3090.json; Ampere uses q8_0 K + polar V on fork"
+  "_eliza_fork_vram_llama_server_flags": {
+    "cache_type_k": "tbq4_0",
+    "cache_type_v": "tbq3_0"
+  },
+  "_provenance": "eliza-v3 3090.json; Ampere speed=q8_0 K + polar V; FORK=1 defaults to vram/TBQ"
 }

@@ -1,0 +1,4 @@
+# Config-only ComfyUI GLM-Image preset (weights live in ComfyUI's models/ tree, not Ollama blobs).
+# Register with: ../../scripts/register_comfy_models.sh comfy/glm-image modelfiles/comfy-glm-image/config.json
+# Heavy model: document as CPU-offload/async on 16GB cards; expect several minutes per image —
+# see docs/comfyui-image-backend.md.

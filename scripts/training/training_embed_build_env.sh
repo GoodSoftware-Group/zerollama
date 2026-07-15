@@ -28,7 +28,7 @@ fi
 
 _TRAINING_EMBED_PC="${TRAINING_EMBED_PC_DIR:-${_TRAINING_EMBED_ROOT}/.cache/pc-embed-overlay}"
 _PC_SRC=""
-for _d in /usr/lib/x86_64-linux-gnu/pkgconfig /usr/lib/pkgconfig; do
+for _d in /usr/lib64/pkgconfig /usr/lib/x86_64-linux-gnu/pkgconfig /usr/lib/pkgconfig; do
   if [[ -f "${_d}/python-${_TRAINING_EMBED_VER}-embed.pc" ]]; then
     _PC_SRC="${_d}/python-${_TRAINING_EMBED_VER}-embed.pc"
     break

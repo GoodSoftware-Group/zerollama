@@ -1,0 +1,7 @@
+{
+  "voices": [
+    {"id": "default", "name": "Default", "backend": "remote-tts", "description": "Chatterbox default speaker"},
+    {"id": "puppet", "name": "The Puppet", "backend": "remote-tts", "description": "Zero-shot clone from tts_ref_audio"},
+    {"id": "clone", "name": "Clone", "backend": "remote-tts", "description": "Use X-TTS-Ref-Audio / uploaded reference"}
+  ]
+}

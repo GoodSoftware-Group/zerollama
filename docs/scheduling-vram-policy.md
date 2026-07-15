@@ -161,20 +161,32 @@ Code: `server/ggml_num_ctx.go`, `envconfig/ggml_num_ctx.go`, `server/sched.go` (
 
 Full reference: [localai-borrowings.md](./localai-borrowings.md). Code: `server/sched_watchdog.go`, `server/concurrency_groups.go`, `server/images.go`.
 
-### Prompt truncation in responses (Jun 2026)
+### Prompt truncation in responses
 
-When input exceeds effective `num_ctx`, final `/api/chat` and `/api/generate` responses include:
+When input exceeds effective `num_ctx`, final `/api/chat` and `/api/generate` responses (and the last stream chunk) include:
 
-- `prompt_truncated`, `original_prompt_tokens` — runner token trim
-- `messages_truncated`, `messages_dropped` — chat message drop in `chatPrompt`
+| Field | Meaning |
+|-------|---------|
+| `prompt_truncated` | Token-level shorten (Go `chatPrompt` tail-trim, runner trim, or **runtime context-shift detect**) |
+| `original_prompt_tokens` | Size **before** truncation (prefer this over guessing from `prompt_eval_count`) |
+| `messages_truncated` / `messages_dropped` | Oldest chat turns dropped in `chatPrompt` |
 
-Set `"truncate": false` for HTTP **400** instead of silent truncation. **Why:** logs showed `truncating input prompt` while clients saw normal 200.
+**Why:** Runners and llama-server logged truncation / context-shift while clients got a normal 200. Agents treated `prompt_eval_count ≈ num_ctx` as a soft hint instead of an explicit overflow.
 
-**Access log (Jun 2026):** `inference response out` also includes `prompt_tokens`, `original_tokens`, `truncated_tokens`, and `messages_dropped` when applicable — **why:** fleet logs should show prompt sizing without parsing JSON bodies or correlating runner-only warnings.
+**Jul 2026 fix:**
+
+- Go now returns the **pre**-tail-truncate token count from `chatPrompt` (not only the runner's post-trim size).
+- Runtime proxy path (`:8081` / `X-Zerollama-Runtime`) calls `detect_context_overflow` so sidecar responses also set `prompt_truncated` when the admit prompt exceeded `num_ctx`.
+
+Soft companions (not sufficient alone): `prompt_eval_count` pinned near `num_ctx`; `done_reason: "length"` (also means `num_predict` exhausted).
+
+Set `"truncate": false` for HTTP **400** instead of silent truncation on Go paths that honor it.
+
+**Access log:** `inference response out` includes `prompt_tokens`, `original_tokens`, `truncated_tokens`, and `messages_dropped` when applicable — **why:** fleet logs should show prompt sizing without parsing JSON bodies.
 
 **MLX tail truncate:** token-ID front-drop in `chatPrompt` before runner load; see [mlx-agent-prompts.md](./mlx-agent-prompts.md).
 
-Code: `server/truncation.go`, `server/inference_access_log.go`, `llm/server.go`, `runner/*/runner.go`.
+Code: `server/truncation.go`, `server/prompt.go`, `server/inference_access_log.go`, `runtime/llama_timings.py` (`detect_context_overflow`), `llm/server.go`, `runner/*/runner.go`.
 
 ---
 

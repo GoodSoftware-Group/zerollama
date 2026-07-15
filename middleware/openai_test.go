@@ -1745,3 +1745,29 @@ func TestSpeechMiddleware(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.Code, resp.Body.String())
 	}
 }
+
+func TestTranscriptionWriterPassesWhisperJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Status(http.StatusOK)
+	w := &TranscriptionWriter{BaseWriter: BaseWriter{ResponseWriter: c.Writer}}
+
+	body, err := json.Marshal(openai.TranscriptionResponse{Text: "hello from whisper"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("whisper TranscriptionResponse was swallowed by TranscriptionWriter")
+	}
+	var out openai.TranscriptionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+	if out.Text != "hello from whisper" {
+		t.Fatalf("got %q", out.Text)
+	}
+}

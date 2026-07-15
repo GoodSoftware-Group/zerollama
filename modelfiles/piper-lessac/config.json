@@ -1,0 +1,28 @@
+{
+  "capabilities": ["speech"],
+  "modality_backends": { "speech": "piper" },
+  "backend_paths": {
+    "piper_model": "/mnt/ollama_img/speech/piper/en_US-lessac-medium.onnx",
+    "piper_config": "/mnt/ollama_img/speech/piper/en_US-lessac-medium.onnx.json",
+    "piper_voice_alloy": "/mnt/ollama_img/speech/piper/en_US-lessac-medium.onnx",
+    "piper_voice_lessac": "/mnt/ollama_img/speech/piper/en_US-lessac-medium.onnx",
+    "piper_voice_amy": "/mnt/ollama_img/speech/piper/en_US-amy-medium.onnx",
+    "piper_voice_joe": "/mnt/ollama_img/speech/piper/en_US-joe-medium.onnx",
+    "piper_voice_ryan": "/mnt/ollama_img/speech/piper/en_US-ryan-medium.onnx",
+    "piper_voice_arctic": "/mnt/ollama_img/speech/piper/en_US-arctic-medium.onnx",
+    "piper_voice_hfc_female": "/mnt/ollama_img/speech/piper/en_US-hfc_female-medium.onnx",
+    "piper_voice_hfc_male": "/mnt/ollama_img/speech/piper/en_US-hfc_male-medium.onnx",
+    "piper_voice_kusal": "/mnt/ollama_img/speech/piper/en_US-kusal-medium.onnx",
+    "piper_voice_l2arctic": "/mnt/ollama_img/speech/piper/en_US-l2arctic-medium.onnx",
+    "piper_voice_libritts": "/mnt/ollama_img/speech/piper/en_US-libritts-high.onnx",
+    "piper_voice_nova": "/mnt/ollama_img/speech/piper/en_US-amy-medium.onnx",
+    "piper_voice_echo": "/mnt/ollama_img/speech/piper/en_US-ryan-medium.onnx",
+    "piper_voice_fable": "/mnt/ollama_img/speech/piper/en_GB-alba-medium.onnx",
+    "piper_voice_onyx": "/mnt/ollama_img/speech/piper/en_US-joe-medium.onnx",
+    "piper_voice_shimmer": "/mnt/ollama_img/speech/piper/en_US-hfc_female-medium.onnx",
+    "piper_voice_alba": "/mnt/ollama_img/speech/piper/en_GB-alba-medium.onnx"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

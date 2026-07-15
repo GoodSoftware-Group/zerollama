@@ -40,6 +40,7 @@ def _load_vram_block(path: Path) -> dict[str, Any]:
 # YAML ``serve:`` keys → env (Go + runtime share topology YAML).
 _SERVE_ENV_MAP: tuple[tuple[str, str], ...] = (
     ("llama_fork", "ZEROLLAMA_LLAMA_FORK"),
+    ("llama_fork_profile", "ZEROLLAMA_LLAMA_FORK_PROFILE"),
 )
 
 

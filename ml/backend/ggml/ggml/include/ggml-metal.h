@@ -63,7 +63,21 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
         size_t size,
         size_t max_tensor_size);
 
-// P70: pause/resume Metal residency-set keep-alive heartbeat (ANE draft hook).
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// P70 (lab): pause/resume the background residency-set keep-alive heartbeat for this
+// Metal device. Callers holding a long host-side compute window (no GPU submissions on
+// this device) can pause the heartbeat to avoid racing its requestResidency calls
+// against the next command encoder/resource-list mutation, then must resume it
+// afterwards (including on early-return / error paths) via a scope guard. Ref-counted;
+// safe to call from any thread. No-op if device is not Metal or has no residency-set
+// support.
 GGML_BACKEND_API void ggml_backend_metal_dev_rsets_pause (ggml_backend_dev_t device);
 GGML_BACKEND_API void ggml_backend_metal_dev_rsets_resume(ggml_backend_dev_t device);
 

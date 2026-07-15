@@ -35,7 +35,6 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/hbm.h
         ggml-cpu/quants.c
         ggml-cpu/quants.h
-        ggml-cpu/quants-polar.c
         ggml-cpu/traits.cpp
         ggml-cpu/traits.h
         ggml-cpu/amx/amx.cpp
@@ -53,12 +52,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/vec.cpp
         ggml-cpu/ops.h
         ggml-cpu/ops.cpp
-        # QJL 1-bit packed-K quant + attention-score op. Vendored from the
-        # standalone packages/native-plugins/qjl-cpu/ kernel library; the
-        # kernel files themselves carry their own SIMD guards (__AVX2__ /
-        # __ARM_NEON), so we always compile all of them and the dispatcher
-        # picks the right one at link/runtime.
-        # ELIZA-CPU-SIMD-PATCH-V1 — QJL kernel TUs mirrored from packages/native-plugins/qjl-cpu
+        # QJL / TurboQuant / PolarQuant CPU kernels (elizaOS)
+        # Ref quantize/dequantize for QJL live in ggml-base (type_traits).
+        # quants-qjl.c still belongs here: SIMD quantize_row_qjl1_256 +
+        # ggml_compute_forward_attn_score_qjl for the CPU backend.
         ggml-cpu/qjl/quants-qjl.c
         ggml-cpu/qjl/qjl_block.h
         ggml-cpu/qjl/qjl_cpu_features.h
@@ -73,9 +70,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/qjl/qjl_score_avxvnni.c
         ggml-cpu/qjl/qjl_score_neon.c
         ggml-cpu/qjl/qjl_score_dotprod.c
-        # Fused CPU kernels (W3-B). Each per-ISA TU carries its own
-        # __AVX2__ / __ARM_NEON guard so we can compile all three on every
-        # target and let the dispatch entry pick at runtime.
+        ggml-cpu/quants-polar.c
         ggml-cpu/fused-q4-polar-dot.c
         ggml-cpu/fused-q4-polar-dot-avx2.c
         ggml-cpu/fused-q4-polar-dot-neon.c
@@ -83,15 +78,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/fused-attn-qjl-tbq-avx2.c
         ggml-cpu/fused-attn-qjl-tbq-neon.c
         ggml-cpu/fused-hadamard-polar-dot.c
-        # ELIZA-TBQ-POLAR-ATTN-CPU-REF — scalar correctness oracle for the
-        # Metal GGML_OP_ATTN_SCORE_TBQ / GGML_OP_ATTN_SCORE_POLAR kernels.
-        # Wired into ggml_compute_forward so test-backend-ops can compare
-        # backend output against a CPU result. Header sits in quants.h.
         ggml-cpu/attn-score-tbq-polar.c
-        # ELIZA-CPU-POLAR-PREHT-V1 — PolarQuant pre-Hadamard-transposed dot TUs
-        # (mirrored from packages/native-plugins/polarquant-cpu + two
-        # generated fork-shim files). Each per-ISA body self-guards on
-        # __AVX2__ / __ARM_NEON; the dispatcher picks at runtime.
         ggml-cpu/polarquant/polar_dot_preht_ref.c
         ggml-cpu/polarquant/polar_dot_preht_avx2.c
         ggml-cpu/polarquant/polar_dot_preht_neon.c
@@ -100,70 +87,24 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/polarquant/polarquant_preht_dispatch.c
         )
 
-    # qjl/include lets `#include "qjl/qjl.h"` resolve to the vendored kernel
-    # public header without polluting the rest of ggml-cpu's include surface.
-    # qjl/ itself is on the include path so the kernel files reach
-    # `qjl_block.h` (their internal header) the same way they do in the
-    # standalone packages/native-plugins/qjl-cpu/ build.
     target_include_directories(${GGML_CPU_NAME} PRIVATE ggml-cpu/qjl/include ggml-cpu/qjl)
-
-    # ELIZA-CPU-POLAR-PREHT-V1 POLARQUANT include + HAVE_* defines
-    # ggml-cpu/polarquant holds the PolarQuant pre-Hadamard-transposed
-    # dot TUs + the generated fork-shim header. The runtime dispatcher
-    # (polarquant_preht_dispatch.c) picks the best *available* SIMD path
-    # at run time from cpuid/hwcap, but can only call into a path whose
-    # TU was actually compiled — POLARQUANT_HAVE_* records which.
     target_include_directories(${GGML_CPU_NAME} PRIVATE ggml-cpu/polarquant)
-    if (GGML_SYSTEM_ARCH STREQUAL "x86")
-        # POLARQUANT_HAVE_AVX2 must match the actual `__AVX2__` predicate the
-        # per-TU bodies (polar_dot_preht_avx2.c) self-guard on. Variants like
-        # `ggml-cpu-x64` (the Android NDK x86_64 baseline) are compiled
-        # WITHOUT `-mavx2`, so their AVX2 TU compiles to an empty stub. If we
-        # still defined POLARQUANT_HAVE_AVX2 here the dispatcher would emit
-        # an unresolved call to `ggml_vec_dot_q4_polar_preht_f32_avx2` and
-        # the shared library would fail to link.
-        if (GGML_AVX2)
-            target_compile_definitions(${GGML_CPU_NAME} PRIVATE POLARQUANT_HAVE_AVX2=1)
-            if (GGML_AVX_VNNI)
-                target_compile_definitions(${GGML_CPU_NAME} PRIVATE POLARQUANT_HAVE_AVXVNNI=1)
-            endif()
-        endif()
-    elseif (GGML_SYSTEM_ARCH STREQUAL "ARM")
-        target_compile_definitions(${GGML_CPU_NAME} PRIVATE POLARQUANT_HAVE_NEON=1)
-    endif()
 
-    # ELIZA-CPU-SIMD-PATCH-V1 QJL_HAVE_* dispatch defines
-    # The runtime QJL dispatcher (ggml-cpu/qjl/qjl_dispatch.c) picks the
-    # best *available* SIMD path at run time from cpuid/hwcap, but it can
-    # only call into a path whose TU was actually compiled. Expose the
-    # QJL_HAVE_* feature macros so the dispatcher knows which symbols were
-    # linked; the per-TU bodies still self-guard on __AVX2__ / __AVXVNNI__
-    # / __ARM_FEATURE_DOTPROD so a host without the ISA gets a dead body,
-    # never an undefined symbol.
+    # QJL/PolarQuant SIMD dispatch defines
     if (GGML_SYSTEM_ARCH STREQUAL "x86")
-        # QJL_HAVE_AVX2 must match the actual `__AVX2__` predicate the per-TU
-        # bodies (qjl_quantize_avx2.c, qjl_score_avx2.c) self-guard on. The
-        # `ggml-cpu-x64` baseline variant (used by Android NDK x86_64) is
-        # compiled WITHOUT `-mavx2`, so its AVX2 TUs compile to empty stubs.
-        # Defining QJL_HAVE_AVX2 in that case would route the dispatcher to
-        # unresolved symbols at link time.
         if (GGML_AVX2)
-            target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_AVX2=1)
+            target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_AVX2=1 POLARQUANT_HAVE_AVX2=1)
             if (GGML_AVX_VNNI)
-                # build-llama-cpp-dflash.mjs sets -DGGML_AVX_VNNI=ON only for
-                # native x86_64 hosts that report avx_vnni, which is exactly
-                # when the global ARCH_FLAGS make __AVXVNNI__ available.
-                target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_AVXVNNI=1)
+                target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_AVXVNNI=1 POLARQUANT_HAVE_AVXVNNI=1)
             endif()
         endif()
     elseif (GGML_SYSTEM_ARCH STREQUAL "ARM")
-        target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_NEON=1)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_NEON=1 POLARQUANT_HAVE_NEON=1)
         if (GGML_INTERNAL_DOTPROD OR GGML_USE_DOTPROD)
             target_compile_definitions(${GGML_CPU_NAME} PRIVATE QJL_HAVE_NEON_DOTPROD=1)
         endif()
     endif()
 
-    # ELIZA-CPU-SIMD-PATCH-V1 QJL pthread link dependency
     target_link_libraries(${GGML_CPU_NAME} PRIVATE Threads::Threads)
 
     target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
@@ -184,17 +125,9 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         endif()
     endif()
 
-    if (GGML_OPENMP)
-        find_package(OpenMP)
-        if (OpenMP_FOUND)
-            set(GGML_OPENMP_ENABLED "ON" CACHE INTERNAL "")
-            target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_OPENMP)
-
-            target_link_libraries(${GGML_CPU_NAME} PRIVATE OpenMP::OpenMP_C OpenMP::OpenMP_CXX)
-        else()
-            set(GGML_OPENMP_ENABLED "OFF" CACHE INTERNAL "")
-            message(WARNING "OpenMP not found")
-        endif()
+    if (GGML_OPENMP_ENABLED)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_OPENMP)
+        target_link_libraries(${GGML_CPU_NAME} PRIVATE OpenMP::OpenMP_C OpenMP::OpenMP_CXX)
     endif()
 
     if (GGML_LLAMAFILE)
@@ -509,7 +442,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             string(REGEX MATCHALL "POWER *([0-9]+)" MATCHED_STRING "${POWER10_M_UPPER}")
             string(REGEX REPLACE "POWER *([0-9]+)" "\\1" EXTRACTED_NUMBER "${MATCHED_STRING}")
 
-            if (EXTRACTED_NUMBER GREATER_EQUAL 10)
+            if (EXTRACTED_NUMBER EQUAL 10 OR EXTRACTED_NUMBER EQUAL 11)
                 list(APPEND ARCH_FLAGS -mcpu=power10)
             elseif (EXTRACTED_NUMBER EQUAL 9)
                 list(APPEND ARCH_FLAGS -mcpu=power9)
@@ -561,9 +494,6 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             ggml-cpu/arch/riscv/quants.c
             ggml-cpu/arch/riscv/repack.cpp
             )
-        if (GGML_RVV AND GGML_XTHEADVECTOR)
-            message(FATAL_ERROR "GGML_RVV and GGML_XTHEADVECTOR are mutually exclusive")
-        endif()
         if (GGML_CPU_RISCV64_SPACEMIT)
             include(ggml-cpu/cmake/FindSMTIME.cmake)
             target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_CPU_RISCV64_SPACEMIT ${RISCV64_SPACEMIT_IME_SPEC})

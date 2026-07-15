@@ -1,0 +1,12 @@
+{
+  "voices": [
+    {"id": "tara", "name": "Tara", "backend": "remote-tts", "description": "Orpheus preset; emotion via input tags or emotion field"},
+    {"id": "leah", "name": "Leah", "backend": "remote-tts"},
+    {"id": "jess", "name": "Jess", "backend": "remote-tts"},
+    {"id": "leo", "name": "Leo", "backend": "remote-tts"},
+    {"id": "dan", "name": "Dan", "backend": "remote-tts"},
+    {"id": "mia", "name": "Mia", "backend": "remote-tts"},
+    {"id": "zac", "name": "Zac", "backend": "remote-tts"},
+    {"id": "zoe", "name": "Zoe", "backend": "remote-tts"}
+  ]
+}

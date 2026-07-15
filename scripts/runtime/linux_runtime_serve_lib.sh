@@ -114,10 +114,16 @@ linux_runtime_start_sidecar() {
   fi
 
   runtime_uv_venv
-  # WHY default LLAMA_CPP_ROOT to ../llama.cpp (unified elizaOS sibling):
+  # WHY default LLAMA_CPP_ROOT to ../llama.cpp (unified sibling):
   # one llama-server binary; L2 bench legs differ by ZEROLLAMA_LLAMA_FORK only.
   export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-${_LINUX_RT_ROOT}/../llama.cpp}"
   [[ -n "${require_model}" ]] && export LLAMA_MODEL="${require_model}"
+  # WHY PYTHONPATH: package lives at runtime/runtime/; `python -m runtime` needs the
+  # outer runtime/ on sys.path (systemd units set this; bare gate scripts did not).
+  export PYTHONPATH="${_LINUX_RT_ROOT}/runtime${PYTHONPATH:+:${PYTHONPATH}}"
+  # WHY CUDA rpath: vendor/llama-server often links libcudart.so.12 while the host
+  # defaults to CUDA 13 — prefer bin dir + packaged cuda_v12 before system libs.
+  linux_runtime_export_llama_ld_path
   linux_runtime_log_paths
   echo "starting Python runtime sidecar on ${ZEROLLAMA_RUNTIME_URL} (log: ${LINUX_RT_LOG})"
   "${RUNTIME_UV_PYTHON}" -m runtime serve \
@@ -148,14 +154,43 @@ linux_runtime_resume_if_needed() {
   fi
 }
 
-# L1 CUDA gates — prefer patched vendor llama-server (fork QJL/Polar) when built.
+# Prepend llama-server bindir + optional Ollama cuda_v12 to LD_LIBRARY_PATH.
+linux_runtime_export_llama_ld_path() {
+  local bin="${LLAMA_SERVER_BIN:-}"
+  local bin_dir=""
+  local extras=()
+  if [[ -x "${bin}" ]]; then
+    bin_dir="$(cd "$(dirname "${bin}")" && pwd)"
+    extras+=("${bin_dir}")
+  elif [[ -n "${LLAMA_CPP_ROOT:-}" && -d "${LLAMA_CPP_ROOT}/build/bin" ]]; then
+    extras+=("${LLAMA_CPP_ROOT}/build/bin")
+  fi
+  # Prefer packaged CUDA 12 runtime when present (matches many vendor builds).
+  [[ -d /usr/local/lib/ollama/cuda_v12 ]] && extras+=("/usr/local/lib/ollama/cuda_v12")
+  [[ -d /usr/local/lib/ollama ]] && extras+=("/usr/local/lib/ollama")
+  if [[ ${#extras[@]} -gt 0 ]]; then
+    local joined
+    joined="$(IFS=:; echo "${extras[*]}")"
+    export LD_LIBRARY_PATH="${joined}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  fi
+}
+
+# L1/L2 CUDA gates — prefer patched vendor llama-server (fork QJL/Polar) when built.
+# WHY fallback: Makefile.sync pin may advance (e.g. 8f114a9b) before vendor/<pin>
+# is materialised; an older built vendor tree still runs L2 profile A/B.
 l1_vendor_llama_cpp_root() {
   local repo="${1:?}"
-  local pin vendor
+  local pin vendor cand
   pin="$(grep '^FETCH_HEAD=' "${repo}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo c84b3020)"
   vendor="${repo}/vendor/llama-cpp-${pin}"
   if [[ -x "${vendor}/build/bin/llama-server" ]]; then
     echo "${vendor}"
+    return 0
+  fi
+  # Newest mtime among built vendor trees (portable: prefer pin match first above).
+  cand="$(ls -1dt "${repo}"/vendor/llama-cpp-*/build/bin/llama-server 2>/dev/null | head -1 || true)"
+  if [[ -n "${cand}" && -x "${cand}" ]]; then
+    echo "$(cd "$(dirname "${cand}")/../.." && pwd)"
     return 0
   fi
   return 1
@@ -183,8 +218,14 @@ l1_export_llama_binary_env() {
 
 llama_server_supports_fork() {
   local bin="${1:-${LLAMA_SERVER_BIN:-}}"
+  local help_text
   [[ -x "${bin}" ]] || return 1
-  "${bin}" --help 2>&1 | grep -qE 'qjl1_256|ctx-checkpoints'
+  linux_runtime_export_llama_ld_path
+  # Match runtime/llama_fork.probe_fork_llama_server: KV types only (stock may
+  # advertise --ctx-checkpoints without QJL/Polar/TBQ).
+  # WHY no `cmd | grep -q` under pipefail: grep -q closes early → SIGPIPE 141.
+  help_text="$("${bin}" --help 2>&1 || true)"
+  grep -qE 'qjl1_256|q4_polar|tbq3_0|tbq4_0' <<<"${help_text}"
 }
 
 # profile: 0 = OFF baseline (stock q8_0); 1 = ON leg (fork auto when binary supports it).

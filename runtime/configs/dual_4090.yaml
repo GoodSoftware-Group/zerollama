@@ -13,6 +13,10 @@ serve:
   max_loaded_models: 1
   keep_alive: 5m
   num_parallel: 1
+  # WHY stock: L1 q8_0 wins decode tok/s on measured CUDA gates. For long-ctx VRAM
+  # headroom use dual_4090_vram.yaml or ZEROLLAMA_LLAMA_FORK=1 (defaults to TBQ/
+  # FORK_PROFILE=vram). Explicit FORK_PROFILE=speed is QJL/Polar experimental.
+  # Doc: docs/gpu-profiles-l2.md
   llama_fork: stock
 vram:
   clamp_num_ctx: auto

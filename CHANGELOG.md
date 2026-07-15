@@ -4,6 +4,74 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Native FP8 GGUF weights (E4M3 / E5M2) — Jul 2026
+
+**Why:** HF FP8 checkpoints were only usable after full F16/BF16 dequant (or re-quant). That wastes convert time, disk, and VRAM, and leaves no first-class CUDA matmul path for native E4M3/E5M2 GGUF weights. This is **weight** FP8 — not FP8 KV (fork KV stays QJL/Polar/TBQ).
+
+**Shipped:**
+
+- **`GGML_TYPE_FP8_E4M3=51` / `FP8_E5M2=52`** — F16 block scale + 32× IEEE FP8 (34 B / block, Q8_0-shaped)
+- **Patches 0073–0076** — type + CPU quant/dot; CUDA convert/get_rows; MMVQ (float×Q8_1) + MMQ (amax→int8 tiles); convert `--fp8-native` including **128×128** `weight_scale_inv` when `block_size[-1]%32==0`; E5M2 twin
+- **Runtime** — `gguf_estimate` layouts; `/health` / `/ready` `cuda_weight_formats.{fp8_e4m3,fp8_e5m2}` needles
+- **Probes** — `./scripts/fp8_cuda_probe.sh`, `fp8_e4m3_gguf_roundtrip.py`, `fp8_e5m2_gguf_roundtrip.py`
+- **Build** — container SET_ROWS verify uses `grep -aF` first (**why:** `strings|grep` false-negatives on freshly linked bind-mounted libs); build lock `mkdir -p` parent (**why:** failed builds `rm -rf` the build dir and mis-report “lock held”)
+- Packaged `/usr/local/lib/ollama` refreshed from vendor tip in `LLAMA_CPP_VENDOR_HEAD` (restart `zerollama-runtime` to load)
+
+**Doc:** [native-fp8-gguf.md](docs/native-fp8-gguf.md), [cuda-lanes.md](docs/cuda-lanes.md).
+
+**Non-goals:** Blackwell-native FP8/NVFP4 MMA (5080 P2); MLX mxfp8; flipping production `llama_fork` off stock.
+
+### Explicit context-overflow fields (Jul 2026)
+
+
+**Why:** A ~44k-token prompt at `num_ctx=8192` returned HTTP 200 with no `prompt_truncated`. Clients had to infer overflow from `prompt_eval_count` pinned near the window (and sometimes `done_reason: "length"`). Two gaps caused that:
+
+1. **Go `chatPrompt`** — `tailTruncatePrompt` dropped tokens but discarded the pre-truncation count; `recordInferencePromptSize` hardcoded `originalTokens=0`. Runner trim then reported `original_prompt_tokens` as the already-trimmed size (~8192), not ~44k.
+2. **Runtime proxy** — `/api/generate` and `/api/chat` forwarded the raw prompt to the Python sidecar without Go truncation. llama-server context-shifted silently; responses had no truncation metadata.
+
+**Shipped:**
+
+- **`chatPrompt` → `originalPromptTokens`** — propagate pre-drop size through routes into `applyPromptTruncation` / `applyGenerateTruncation` (prefer chatPrompt count over smaller runner count).
+- **Runtime `detect_context_overflow`** — on stream done chunks (and non-stream generate), set `prompt_truncated` / `original_prompt_tokens` when admit-time tokens exceed `num_ctx` or `prompt_eval_count` is pinned near the window.
+- **OpenAPI + docs** — fields documented on Generate/Chat response schemas; see [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#prompt-truncation-in-responses).
+
+**Client check:** `prompt_truncated == true` (or compare `original_prompt_tokens` to `num_ctx`). Soft signals remain: `prompt_eval_count ≈ num_ctx`, `done_reason: "length"`. Set `"truncate": false` for HTTP 400 instead of silent drop on Go paths that honor it.
+
+### L2 CUDA on ggml-org `8f114a9b` (patches 0067–0070) — Jul 2026
+
+**Why:** Rebase onto ggml-org pin broke TBQ load (missing CPU `type_traits` / CUDA SET_ROWS + fattn vec routing). QJL/Polar as the default fork pairing also lost badly on 4090 tok/s.
+
+**Shipped:**
+
+- **0067–0070** — TBQ flash-attn vec helpers, CLI KV types + `-cpent`, CUDA SET_ROWS/GET_ROWS + fattn routing, CPU type_traits/dispatch for TBQ/QJL/Polar
+- **`ZEROLLAMA_LLAMA_FORK_PROFILE` default `vram`** (TBQ) instead of `speed` (QJL/Polar) when `ZEROLLAMA_LLAMA_FORK=1`
+- 4090 gates: TBQ long-ctx **−27…−35% VRAM**; QJL/Polar **−48…−85% decode** @ 8k/27k — speed stays experimental
+- Docs / pin status / `l2_cuda_bench.sh` health alignment; vendor → in-tree sync
+- **`LLAMA_CPP_VENDOR_HEAD`** → `95f753fd` (post-0067–0070 tip); patch doctor / build scripts probe `libllama-server-impl*` for `/kv/seq-copy` (thin wrapper no longer embeds the string)
+- Force `-fa on` when fork KV types are TBQ/QJL/Polar (llama.cpp hard-requires FA for quantized V)
+- `l3_radix_prefix_smoke.sh`: derive llama-server port from `ZEROLLAMA_RUNTIME_URL` (never hard-kill prod `:8081`/`:8082`)
+- **0071** — fix `/kv/seq-copy`: do not `prompt_clear` after copy (it `seq_rm`s the KV just written); match `copy_state_to` `-1,-1` ranges; L3 radix live PASS on 4090
+- Packaged `/usr/local/lib/ollama` refreshed from vendor `5a4d99f0` (0071); L3 cache smoke PASS on 4090 (`/tmp/l3-cache-smoke-8f.json`) — restart `zerollama-runtime` to load new libs
+
+**Non-goals:** flipping production `llama_fork` off stock; merging fork profiles as default-on for tok/s.
+
+### ComfyUI image backend (agent-max utility) — Jul 2026
+
+**Why:** Agents need edit / img2img / ControlNet / LoRA on Qwen-Image, FLUX.1/2-dev, GLM-Image, and Klein 9B — not only MLX Z-Image / Klein 4B. Porting each DiT into `x/imagegen` would take months per family; ComfyUI already packages those graphs. Zerollama **orchestrates** a running ComfyUI (`modality_backends.image=comfyui`) instead of embedding Diffusers or expanding the raw `external-image` hook.
+
+**Shipped:**
+
+- **`BackendComfyUI`** + `handleComfyImageGenerate` — routes `/api/generate` and OpenAI `/v1/images/generations|edits`; calls `vram.PrepareForImageGen` (**why:** exclusive GPU like MLX, unlike historical `external-image`).
+- **`server/modality/comfyui`** — upload → inject bindings → `POST /prompt` → poll `/history` → `/view`; surfaces Comfy `execution_error` details (**why:** `/prompt` often returns 200 before node OOM/missing-checkpoint fails).
+- **Agent options** — `options.workflow`, `negative_prompt`, `lora` / `lora_strength`, `control_image` / `control_strength`; discovery via `GET /api/image/workflows?model=`.
+- **Config-only presets** — `comfy/qwen-image` (+ img2img/controlnet), `comfy/qwen-image-edit`, `comfy/flux1-dev`, `comfy/flux2-dev`, `comfy/glm-image`, `comfy/flux2-klein-9b`; register with `./scripts/register_comfy_models.sh`.
+- **Env** — `OLLAMA_COMFYUI_URL`, `OLLAMA_COMFYUI_TIMEOUT`, `OLLAMA_COMFYUI_WORKFLOWS_ROOT` (**why root:** manifests ship relative `scripts/comfyui/...` paths that otherwise depend on daemon cwd).
+- **Workflow JSON** — worked examples under `scripts/comfyui/`; **not** verified drop-in against every Comfy+custom-node install (calibrate filenames/node types first). No fake default LoRA (`none.safetensors`) — Comfy rejects missing files.
+- **Tests** — unit (render, mock HTTP, path resolve, execution errors); opt-in `RUN_E2E_COMFY=1`.
+- **Doc:** [comfyui-image-backend.md](docs/comfyui-image-backend.md), [multimodal-backends.md](docs/multimodal-backends.md), roadmap image-generation track.
+
+**Non-goals:** bundling ComfyUI in the Go binary; MLX ports of Qwen/GLM/FLUX.1; interactive-speed guarantees for GLM-Image / FLUX.2-dev on 16 GB; cancelling in-flight Comfy jobs on HTTP disconnect (follow-up: `/interrupt`).
+
 ### Qwen3-Next MTP (patch 0065)
 
 **What:** Port [#25589](https://github.com/ggml-org/llama.cpp/pull/25589) for our hybrid MoE stack (qwen3next / eliza-class).
@@ -1699,6 +1767,8 @@ RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=qwen3.6:latest ./scripts/gpu/metal_signoff
 - `messages_truncated: true` and `messages_dropped` when `chatPrompt` removed older messages
 
 Set `"truncate": false` on the request to get HTTP 400 instead of silent truncation.
+
+**Follow-up (Jul 2026):** propagate chatPrompt pre-drop size + runtime `detect_context_overflow` for proxy/sidecar paths — see [Unreleased — Explicit context-overflow fields](#explicit-context-overflow-fields-jul-2026).
 
 ### Model unload after create/stop + manifest `num_ctx` vs load-time KV (Jun 2026)
 

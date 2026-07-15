@@ -212,7 +212,7 @@ Check `GET /health` → `llama_cache.policy`:
 - **SWA sparse retention:** `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` — optional aligned checkpoints for pure SWA models (vLLM analog).
 - **Hybrid coordinator (Jun 2026):** Gemma-style full+SWA layer groups; coordinated `cache_prompt` gate via min SWA window (`kv/hybrid_kv_coordinator.py`).
 - **Prefix block pool (Jun 2026):** auto-on when L3 + `n_parallel > 1`, Radix share, or LMCache URI; hash-chained blocks verify prefix integrity before reuse. **`ZEROLLAMA_PREFIX_BLOCK_POOL=0`** disables. **`ZEROLLAMA_LMCACHE_URI=file://…`** or **`redis://host:6379/0`** (L3-R4 fleet metadata) persists block index for restart/cold-node hydration.
-- **Cross-slot Radix share (Jun 2026):** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` — target slots seed or **catch up** KV from a donor with a longer matching prefix block chain (`llama_memory_seq_cp` in-process; `POST /kv/seq-copy` on llama-server). **Why:** L3 pins one slot per cache key; agents sharing a system prompt but different keys otherwise repeat prefill. **v2 (L3-R2–R5):** warm catch-up on partial targets; ref-count block metadata; optional `redis://` LMCache; Gemma-style hybrid `seq_cp` when prefix ≤ SWA window (`ZEROLLAMA_RADIX_HYBRID_SEQ_COPY`, default on). Requires **vendor** llama-server (patch 0017). Operator guide: [radix-prefix-share.md](./radix-prefix-share.md).
+- **Cross-slot Radix share (Jun 2026):** `ZEROLLAMA_RADIX_PREFIX_SHARE=1` — target slots seed or **catch up** KV from a donor with a longer matching prefix block chain (`llama_memory_seq_cp` in-process; `POST /kv/seq-copy` on llama-server). **Why:** L3 pins one slot per cache key; agents sharing a system prompt but different keys otherwise repeat prefill. **v2 (L3-R2–R5):** warm catch-up on partial targets; ref-count block metadata; optional `redis://` LMCache; Gemma-style hybrid `seq_cp` when prefix ≤ SWA window (`ZEROLLAMA_RADIX_HYBRID_SEQ_COPY`, default on). Requires **vendor** llama-server (patches **0022** + **0071**). Operator guide: [radix-prefix-share.md](./radix-prefix-share.md).
 
 Smoke: `./scripts/phase/l3_spec_cache_smoke.sh` (default `L3_SPEC_METHOD=ngram`). Draft leg: `L3_SPEC_METHOD=eagle3 LLAMA_DRAFT_MODEL=/path/draft.gguf`. Block pool: `./scripts/phase/l3_prefix_block_pool_smoke.sh`. Radix: `./scripts/phase/l3_radix_prefix_smoke.sh` (`L3_RADIX_LIVE=1` for live gate). Implementation: `runtime/runtime/kv_cache_spec.py` + `prefix_cache_policy.py` + `kv/prefix_block_pool.py` + `kv/radix_prefix_share.py`.
 
@@ -335,6 +335,9 @@ Batch keys: `options.prompt_cache_keys: ["key-a", "key-b"]` aligned with `genera
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 27k | **PASS** | `l3_production_gate.sh`: cached **0.72s** vs no-cache **1.48s**; `turn2/turn1=1.02` (strict ratio ≤0.75 not met). Artifact: `/tmp/l3-production-gate.json`. |
 | Metal (M4 Max) | vendor llama-server | **PASS (Radix live)** | `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh` — donor slot 0 → target 2; target **0.58s** vs donor **8.2s**; `radix_seed` 128 tokens; artifact `/tmp/l3-radix-prefix-smoke-live.json` |
 | CUDA 5080 (CT 1564) | eliza-1 9B @ 8k | **PASS (Radix live)** | `CUDA_LLAMA_MODEL=… L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh` — donor slot 1 → target 0; target **0.66s** vs donor **10.6s**; `radix_seed` 128 tokens; `/tmp/l3-radix-prefix-smoke-live.json` |
+| CUDA dual-4090 (Jul 2026) | Toppy-M-7B Q5 @ 8k | **PASS** | `l3_cuda_full_gate.sh` + `L3_RUN_RADIX=1` on `/usr/local` pin **`8f114a9b`+0071**; stock fork; cached **0.53s** vs no-cache **0.73s**. Artifact: `/tmp/l3-cuda-full-gate-toppy7b/smoke-8k.json`. |
+| CUDA dual-4090 (Jul 2026) | Toppy-M-7B Q5 @ 27k | **PASS** | cached **0.73s** vs no-cache **1.10s**; `turn2/turn1=0.98` (strict ≤0.75 not met). Artifact: `/tmp/l3-cuda-full-gate-toppy7b/production-27k.json`. |
+| CUDA dual-4090 (Jul 2026) | Toppy-M-7B Q5 | **PASS (Radix live)** | donor **3.15s** → target **0.21s**; `radix_copy_tokens` **192**; `/tmp/l3-cuda-full-gate-toppy7b/radix-live.json`. Merged: `/tmp/l3-cuda-full-gate-toppy7b/gate.json` → **L3 CUDA full gate PASS**. |
 
 **Why SOFT PASS is OK on 5080:** `l3_gate_report.sh` treats wiring correctness separately from latency improvement. A 1B model with a short smoke prefix is decode-bound, not prefill-bound — cache hit saves little wall time. Production agent threads with multi-kB system prompts are where L3 pays off; run `l3_agent_bench.sh` for agent-scale evidence.
 
@@ -360,18 +363,19 @@ L3_SPEC_METHOD=ngram ./scripts/phase/l3_spec_cache_smoke.sh
 
 **Pass criteria (ship bar):**
 
-| Leg | Threshold | Jun 2026 (CT 1564, eliza-1 9B) |
-|-----|-----------|--------------------------------|
-| 8k smoke | cached turn2 **<** no-cache **or** turn2 **<** turn1 | cached **0.66s** vs no-cache **1.13s** |
-| 27k production | cached **<** no-cache **or** strict ratio ≤ 0.75 | cached **0.72s** vs no-cache **1.48s** (ratio **1.02** — strict optional) |
+| Leg | Threshold | Jun 2026 (CT 1564, eliza-1 9B) | Jul 2026 (dual-4090, Toppy-7B) |
+|-----|-----------|--------------------------------|--------------------------------|
+| 8k smoke | cached turn2 **<** no-cache **or** turn2 **<** turn1 | cached **0.66s** vs no-cache **1.13s** | cached **0.53s** vs no-cache **0.73s** |
+| 27k production | cached **<** no-cache **or** strict ratio ≤ 0.75 | cached **0.72s** vs no-cache **1.48s** (ratio **1.02** — strict optional) | cached **0.73s** vs no-cache **1.10s** (ratio **0.98**) |
 
-Optional supernova-class re-validation when that GGUF is on host — not blocking L3 Done.
+Optional supernova-class / eliza-1 9B re-validation when that GGUF is on host — not blocking L3 Done on 4090 (Toppy-7B proxy PASS).
 
-## Status (Jun 2026)
+## Status (Jun–Jul 2026)
 
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **Subprocess (5080 CUDA)** | **Done** — `l3_cuda_full_gate.sh` on eliza-1 9B | Optional supernova re-run |
+| **Subprocess (dual-4090 CUDA)** | **Done** — Toppy-M-7B Q5 full gate + Radix (`8f114a9b`+0071) | eliza-1 9B re-gate blocked (GGUF missing) |
 | **In-process (Metal)** | **Done** — RAM resume + disk parity; `l3_inprocess_smoke.sh` | `RUN_E2E_L3=1` on `m3_metal_signoff.sh` |
 
 **Deferred:** Go-side explicit cache-key field docs (options passthrough works).

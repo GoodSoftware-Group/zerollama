@@ -376,87 +376,87 @@ type EnvVar struct {
 
 func AsMap() map[string]EnvVar {
 	ret := map[string]EnvVar{
-		"OLLAMA_DEBUG":                        {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
-		"OLLAMA_DEBUG_LOG_REQUESTS":           {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
-		"OLLAMA_FLASH_ATTENTION":              {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
-		"OLLAMA_KV_CACHE_TYPE":                {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
-		"OLLAMA_GPU_OVERHEAD":                 {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
-		"OLLAMA_HOST":                         {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 0.0.0.0:11434)"},
-		"OLLAMA_KEEP_ALIVE":                   {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
-		"OLLAMA_LLM_LIBRARY":                  {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
-		"OLLAMA_LMSTUDIO_IMPORT":              {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches; auto-sync on list/serve and pull shortcut (default true)"},
-		"OLLAMA_LMSTUDIO_LIST_ALL":            {"OLLAMA_LMSTUDIO_LIST_ALL", LMStudioListAll(), "List all LM Studio models even when MLX import needs more disk than available (pull still enforces space)"},
-		"OLLAMA_LMSTUDIO_MODELS":              {"OLLAMA_LMSTUDIO_MODELS", Var("OLLAMA_LMSTUDIO_MODELS"), "Only scan these LM Studio model directories (comma-separated); unset uses default paths"},
-		"OLLAMA_LOAD_TIMEOUT":                 {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
-		"OLLAMA_MAX_LOADED_MODELS":            {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
-		"OLLAMA_MAX_QUEUE":                    {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
-		"OLLAMA_MODELS":                       {"OLLAMA_MODELS", Models(), "The path to the models directory"},
-		"OLLAMA_NO_CLOUD":                     {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
-		"OLLAMA_NOHISTORY":                    {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
-		"OLLAMA_NOPRUNE":                      {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
-		"OLLAMA_TRAINING":                     {"OLLAMA_TRAINING", TrainingEnabled(true), "Enable GPU training (embedded CPython + training.py; HTTP /api/train and optional TCP) (default true)"},
-		"OLLAMA_TRAINING_TCP":                 {"OLLAMA_TRAINING_TCP", Var("OLLAMA_TRAINING_TCP"), "Public training TCP listen address; empty or 1 is :9500; 0 or - disables"},
-		"OLLAMA_TRAINING_PYTHONPATH":          {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Repository root containing training.py; must exist if set (no silent fallback). When unset: walk cwd, then $HOME/zerollama or $HOME/ollama"},
-		"ZEROLLAMA_REPO":                      {"ZEROLLAMA_REPO", Var("ZEROLLAMA_REPO"), "Alias for repo root (training.py and runtime/); same rules as OLLAMA_TRAINING_PYTHONPATH"},
-		"OLLAMA_NUM_PARALLEL":                 {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
-		"OLLAMA_ORIGINS":                      {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
-		"OLLAMA_SCHED_SPREAD":                 {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
-		"OLLAMA_MULTIUSER_CACHE":              {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
-		"OLLAMA_CONTEXT_LENGTH":               {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
-		"OLLAMA_EDITOR":                       {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
-		"OLLAMA_NEW_ENGINE":                   {"OLLAMA_NEW_ENGINE", NewEngine(), "Deprecated — ignored for routing; use ZEROLLAMA_LLAMA_SERVER / --edge (Phase 16/17)"},
-		"OLLAMA_REMOTES":                      {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
-		"ELIZACLOUD_API_KEY":                  {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
-		"OLLAMA_SGLANG_URL":                   {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
-		"ZEROLLAMA_RUNTIME_URL":               {"ZEROLLAMA_RUNTIME_URL", RuntimeURL(), "Base URL for Python GGUF runtime sidecar (PagedAttention)"},
-		"ZEROLLAMA_RUNTIME_EMBED":             {"ZEROLLAMA_RUNTIME_EMBED", RuntimeEmbedDisplay(), "Embed runtime in-process (CGO); default on if URL unset"},
-		"ZEROLLAMA_RUNTIME_EMBED_PORT":        {"ZEROLLAMA_RUNTIME_EMBED_PORT", Var("ZEROLLAMA_RUNTIME_EMBED_PORT"), "Loopback port for embedded runtime HTTP (default 8081)"},
-		"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY": {"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", ggmlPauseWhenRuntimeBusyDisplay(), "Pause new ggml loads when Python runtime queue is deep (auto when runtime configured)"},
+		"OLLAMA_DEBUG":                             {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
+		"OLLAMA_DEBUG_LOG_REQUESTS":                {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
+		"OLLAMA_FLASH_ATTENTION":                   {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
+		"OLLAMA_KV_CACHE_TYPE":                     {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
+		"OLLAMA_GPU_OVERHEAD":                      {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
+		"OLLAMA_HOST":                              {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 0.0.0.0:11434)"},
+		"OLLAMA_KEEP_ALIVE":                        {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
+		"OLLAMA_LLM_LIBRARY":                       {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
+		"OLLAMA_LMSTUDIO_IMPORT":                   {"OLLAMA_LMSTUDIO_IMPORT", LMStudioImport(true), "Reuse LM Studio model caches; auto-sync on list/serve and pull shortcut (default true)"},
+		"OLLAMA_LMSTUDIO_LIST_ALL":                 {"OLLAMA_LMSTUDIO_LIST_ALL", LMStudioListAll(), "List all LM Studio models even when MLX import needs more disk than available (pull still enforces space)"},
+		"OLLAMA_LMSTUDIO_MODELS":                   {"OLLAMA_LMSTUDIO_MODELS", Var("OLLAMA_LMSTUDIO_MODELS"), "Only scan these LM Studio model directories (comma-separated); unset uses default paths"},
+		"OLLAMA_LOAD_TIMEOUT":                      {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
+		"OLLAMA_MAX_LOADED_MODELS":                 {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
+		"OLLAMA_MAX_QUEUE":                         {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
+		"OLLAMA_MODELS":                            {"OLLAMA_MODELS", Models(), "The path to the models directory"},
+		"OLLAMA_NO_CLOUD":                          {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
+		"OLLAMA_NOHISTORY":                         {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
+		"OLLAMA_NOPRUNE":                           {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
+		"OLLAMA_TRAINING":                          {"OLLAMA_TRAINING", TrainingEnabled(true), "Enable GPU training (embedded CPython + training.py; HTTP /api/train and optional TCP) (default true)"},
+		"OLLAMA_TRAINING_TCP":                      {"OLLAMA_TRAINING_TCP", Var("OLLAMA_TRAINING_TCP"), "Public training TCP listen address; empty or 1 is :9500; 0 or - disables"},
+		"OLLAMA_TRAINING_PYTHONPATH":               {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Repository root containing training.py; must exist if set (no silent fallback). When unset: walk cwd, then $HOME/zerollama or $HOME/ollama"},
+		"ZEROLLAMA_REPO":                           {"ZEROLLAMA_REPO", Var("ZEROLLAMA_REPO"), "Alias for repo root (training.py and runtime/); same rules as OLLAMA_TRAINING_PYTHONPATH"},
+		"OLLAMA_NUM_PARALLEL":                      {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
+		"OLLAMA_ORIGINS":                           {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
+		"OLLAMA_SCHED_SPREAD":                      {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
+		"OLLAMA_MULTIUSER_CACHE":                   {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
+		"OLLAMA_CONTEXT_LENGTH":                    {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
+		"OLLAMA_EDITOR":                            {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
+		"OLLAMA_NEW_ENGINE":                        {"OLLAMA_NEW_ENGINE", NewEngine(), "Deprecated — ignored for routing; use ZEROLLAMA_LLAMA_SERVER / --edge (Phase 16/17)"},
+		"OLLAMA_REMOTES":                           {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
+		"ELIZACLOUD_API_KEY":                       {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
+		"OLLAMA_SGLANG_URL":                        {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
+		"ZEROLLAMA_RUNTIME_URL":                    {"ZEROLLAMA_RUNTIME_URL", RuntimeURL(), "Base URL for Python GGUF runtime sidecar (PagedAttention)"},
+		"ZEROLLAMA_RUNTIME_EMBED":                  {"ZEROLLAMA_RUNTIME_EMBED", RuntimeEmbedDisplay(), "Embed runtime in-process (CGO); default on if URL unset"},
+		"ZEROLLAMA_RUNTIME_EMBED_PORT":             {"ZEROLLAMA_RUNTIME_EMBED_PORT", Var("ZEROLLAMA_RUNTIME_EMBED_PORT"), "Loopback port for embedded runtime HTTP (default 8081)"},
+		"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY":   {"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", ggmlPauseWhenRuntimeBusyDisplay(), "Pause new ggml loads when Python runtime queue is deep (auto when runtime configured)"},
 		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
-		"ZEROLLAMA_RUNTIME":                   {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy for text GGUF: 1/on, 0/off; unset=off on Darwin (ggml default), on on Linux when URL set"},
-		"ZEROLLAMA_LLAMA_CPP_BACKEND":         {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
-		"ZEROLLAMA_LLAMA_SERVER":              {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, auto=Linux serve default, 0/off)"},
-		"ZEROLLAMA_FLASH_MOE":                    {"ZEROLLAMA_FLASH_MOE", FlashMoEEnabled(), "Flash-MoE slot-bank via anemll-flash-llama.cpp (1/on)"},
-		"ZEROLLAMA_FLASH_MOE_SIDECAR":            {"ZEROLLAMA_FLASH_MOE_SIDECAR", FlashMoESidecar(), "Routed-expert sidecar directory for Flash-MoE"},
-		"ZEROLLAMA_FLASH_MOE_MODE":               {"ZEROLLAMA_FLASH_MOE_MODE", FlashMoEMode(), "Flash-MoE runtime mode (default slot-bank)"},
-		"ZEROLLAMA_FLASH_MOE_SLOT_BANK":          {"ZEROLLAMA_FLASH_MOE_SLOT_BANK", Var("ZEROLLAMA_FLASH_MOE_SLOT_BANK"), "Resident expert slots per MoE layer"},
-		"ZEROLLAMA_FLASH_MOE_TOPK":               {"ZEROLLAMA_FLASH_MOE_TOPK", Var("ZEROLLAMA_FLASH_MOE_TOPK"), "Routed expert top-k override (0=model default)"},
-		"ZEROLLAMA_FLASH_MOE_PREFETCH":           {"ZEROLLAMA_FLASH_MOE_PREFETCH", FlashMoEPrefetchTemporal(), "One-step temporal expert prefetch (1/on)"},
-		"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN":   {"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN", FlashMoELlamaServerBin(), "Override Flash-MoE llama-server binary path"},
-		"FLASH_MOE_REPO":                         {"FLASH_MOE_REPO", FlashMoERepo(), "anemll-flash-llama.cpp checkout for build script"},
-		"ANE_REPO":                               {"ANE_REPO", ANERepo(), "maderix/ane checkout for ANE probe bridge"},
-		"ZEROLLAMA_ANE_DRAFT":                    {"ZEROLLAMA_ANE_DRAFT", ANEDraftEnabled(), "Route speculative draft to ANE when wired (default off)"},
-		"ZEROLLAMA_EDGE":                       {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
-		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":    {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
-		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":  {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
-		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":       {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
-		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":   {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
-		"ZEROLLAMA_ELIZA_NGRAM":               {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
-		"ZEROLLAMA_FLEET_PEERS":               {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
-		"ZEROLLAMA_FLEET_LISTEN":              {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
-		"ZEROLLAMA_FLEET_POLL_INTERVAL":       {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
-		"ZEROLLAMA_MDNS":                      {"ZEROLLAMA_MDNS", mdnsEnabledDisplay(), "Advertise this zerollama node via mDNS (_zerollama._tcp) on LAN"},
-		"ZEROLLAMA_FLEET_MDNS":                {"ZEROLLAMA_FLEET_MDNS", fleetMDNSDisplay(), "Browse LAN for zerollama nodes via mDNS (merges with ZEROLLAMA_FLEET_PEERS)"},
-		"ZEROLLAMA_FLEET_MDNS_ADVERTISE":      {"ZEROLLAMA_FLEET_MDNS_ADVERTISE", fleetMDNSAdvertiseDisplay(), "Advertise fleet management endpoint via mDNS (_zerollama-fleet._tcp)"},
-		"ZEROLLAMA_GGML_CLAMP_NUM_CTX":        {"ZEROLLAMA_GGML_CLAMP_NUM_CTX", ggmlClampNumCtxDisplay(), "Lower ggml merged num_ctx to suggested_max before load (default off; why: silent clamp broke operator trust — parity with Phase 13 runtime clamp)"},
-		"ZEROLLAMA_GGML_SUGGEST_CTX_MAX":      {"ZEROLLAMA_GGML_SUGGEST_CTX_MAX", Var("ZEROLLAMA_GGML_SUGGEST_CTX_MAX"), "Upper bound for ggml suggested_max_num_ctx binary search (default 131072)"},
-		"ZEROLLAMA_GGML_VRAM_MARGIN":          {"ZEROLLAMA_GGML_VRAM_MARGIN", Var("ZEROLLAMA_GGML_VRAM_MARGIN"), "Multiply ggml load VRAM estimate before compare to free memory (default 1.05; conservative vs GraphSize proxy)"},
-		"ZEROLLAMA_LEGACY_RUNNER":             {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
-		"OLLAMA_RUNTIME_ALL":                  {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
-		"OLLAMA_FFMPEG":                       {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
-		"OLLAMA_VIDEO_MAX_FRAMES":             {"OLLAMA_VIDEO_MAX_FRAMES", VideoMaxFrames(), "Max frames sampled per video (default 32)"},
-		"OLLAMA_VIDEO_SAMPLE_MODE":            {"OLLAMA_VIDEO_SAMPLE_MODE", VideoSampleMode(), "Native sampling: fps (time-uniform) or stride (every Nth frame) (default fps)"},
-		"OLLAMA_VIDEO_STRIDE":                 {"OLLAMA_VIDEO_STRIDE", VideoStride(), "When OLLAMA_VIDEO_SAMPLE_MODE=stride, emit every Nth frame (default 30)"},
-		"OLLAMA_VIDEO_SAMPLE_FPS":             {"OLLAMA_VIDEO_SAMPLE_FPS", VideoSampleFPS(), "ffmpeg fps filter value for sampling (default 1)"},
-		"OLLAMA_VIDEO_MAX_BYTES":              {"OLLAMA_VIDEO_MAX_BYTES", VideoMaxBytes(), "Max video payload size in bytes (default 256MiB)"},
-		"OLLAMA_VIDEO_MAX_PER_MESSAGE":        {"OLLAMA_VIDEO_MAX_PER_MESSAGE", VideoMaxVideosPerMessage(), "Max video_url parts per message (default 1)"},
-		"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE": {"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE", VideoMaxImagesPerMessage(), "Max images after video expansion per message (default 64)"},
-		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":         {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
-		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":    {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
-		"OLLAMA_VIDEO_FETCH_TIMEOUT":          {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
-		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":    {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
-		"OLLAMA_IMAGE_EMBED_CACHE_SIZE":       {"OLLAMA_IMAGE_EMBED_CACHE_SIZE", ImageEmbedCacheSize(), "Per-runner vision embed (ViT) LRU cache slots (default 4; set 32–64 for video agents)"},
-		"OLLAMA_IMAGE_EMBED_CACHE_MAX":        {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64)"},
+		"ZEROLLAMA_RUNTIME":                        {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy for text GGUF: 1/on, 0/off; unset=off on Darwin (ggml default), on on Linux when URL set"},
+		"ZEROLLAMA_LLAMA_CPP_BACKEND":              {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
+		"ZEROLLAMA_LLAMA_SERVER":                   {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, auto=Linux serve default, 0/off)"},
+		"ZEROLLAMA_FLASH_MOE":                      {"ZEROLLAMA_FLASH_MOE", FlashMoEEnabled(), "Flash-MoE slot-bank via anemll-flash-llama.cpp (1/on)"},
+		"ZEROLLAMA_FLASH_MOE_SIDECAR":              {"ZEROLLAMA_FLASH_MOE_SIDECAR", FlashMoESidecar(), "Routed-expert sidecar directory for Flash-MoE"},
+		"ZEROLLAMA_FLASH_MOE_MODE":                 {"ZEROLLAMA_FLASH_MOE_MODE", FlashMoEMode(), "Flash-MoE runtime mode (default slot-bank)"},
+		"ZEROLLAMA_FLASH_MOE_SLOT_BANK":            {"ZEROLLAMA_FLASH_MOE_SLOT_BANK", Var("ZEROLLAMA_FLASH_MOE_SLOT_BANK"), "Resident expert slots per MoE layer"},
+		"ZEROLLAMA_FLASH_MOE_TOPK":                 {"ZEROLLAMA_FLASH_MOE_TOPK", Var("ZEROLLAMA_FLASH_MOE_TOPK"), "Routed expert top-k override (0=model default)"},
+		"ZEROLLAMA_FLASH_MOE_PREFETCH":             {"ZEROLLAMA_FLASH_MOE_PREFETCH", FlashMoEPrefetchTemporal(), "One-step temporal expert prefetch (1/on)"},
+		"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN":     {"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN", FlashMoELlamaServerBin(), "Override Flash-MoE llama-server binary path"},
+		"FLASH_MOE_REPO":                           {"FLASH_MOE_REPO", FlashMoERepo(), "anemll-flash-llama.cpp checkout for build script"},
+		"ANE_REPO":                                 {"ANE_REPO", ANERepo(), "maderix/ane checkout for ANE probe bridge"},
+		"ZEROLLAMA_ANE_DRAFT":                      {"ZEROLLAMA_ANE_DRAFT", ANEDraftEnabled(), "Route speculative draft to ANE when wired (default off)"},
+		"ZEROLLAMA_EDGE":                           {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
+		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":         {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
+		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":       {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
+		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":            {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
+		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":        {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
+		"ZEROLLAMA_ELIZA_NGRAM":                    {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
+		"ZEROLLAMA_FLEET_PEERS":                    {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
+		"ZEROLLAMA_FLEET_LISTEN":                   {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
+		"ZEROLLAMA_FLEET_POLL_INTERVAL":            {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
+		"ZEROLLAMA_MDNS":                           {"ZEROLLAMA_MDNS", mdnsEnabledDisplay(), "Advertise this zerollama node via mDNS (_zerollama._tcp) on LAN"},
+		"ZEROLLAMA_FLEET_MDNS":                     {"ZEROLLAMA_FLEET_MDNS", fleetMDNSDisplay(), "Browse LAN for zerollama nodes via mDNS (merges with ZEROLLAMA_FLEET_PEERS)"},
+		"ZEROLLAMA_FLEET_MDNS_ADVERTISE":           {"ZEROLLAMA_FLEET_MDNS_ADVERTISE", fleetMDNSAdvertiseDisplay(), "Advertise fleet management endpoint via mDNS (_zerollama-fleet._tcp)"},
+		"ZEROLLAMA_GGML_CLAMP_NUM_CTX":             {"ZEROLLAMA_GGML_CLAMP_NUM_CTX", ggmlClampNumCtxDisplay(), "Lower ggml merged num_ctx to suggested_max before load (default off; why: silent clamp broke operator trust — parity with Phase 13 runtime clamp)"},
+		"ZEROLLAMA_GGML_SUGGEST_CTX_MAX":           {"ZEROLLAMA_GGML_SUGGEST_CTX_MAX", Var("ZEROLLAMA_GGML_SUGGEST_CTX_MAX"), "Upper bound for ggml suggested_max_num_ctx binary search (default 131072)"},
+		"ZEROLLAMA_GGML_VRAM_MARGIN":               {"ZEROLLAMA_GGML_VRAM_MARGIN", Var("ZEROLLAMA_GGML_VRAM_MARGIN"), "Multiply ggml load VRAM estimate before compare to free memory (default 1.05; conservative vs GraphSize proxy)"},
+		"ZEROLLAMA_LEGACY_RUNNER":                  {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
+		"OLLAMA_RUNTIME_ALL":                       {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
+		"OLLAMA_FFMPEG":                            {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},
+		"OLLAMA_VIDEO_MAX_FRAMES":                  {"OLLAMA_VIDEO_MAX_FRAMES", VideoMaxFrames(), "Max frames sampled per video (default 32)"},
+		"OLLAMA_VIDEO_SAMPLE_MODE":                 {"OLLAMA_VIDEO_SAMPLE_MODE", VideoSampleMode(), "Native sampling: fps (time-uniform) or stride (every Nth frame) (default fps)"},
+		"OLLAMA_VIDEO_STRIDE":                      {"OLLAMA_VIDEO_STRIDE", VideoStride(), "When OLLAMA_VIDEO_SAMPLE_MODE=stride, emit every Nth frame (default 30)"},
+		"OLLAMA_VIDEO_SAMPLE_FPS":                  {"OLLAMA_VIDEO_SAMPLE_FPS", VideoSampleFPS(), "ffmpeg fps filter value for sampling (default 1)"},
+		"OLLAMA_VIDEO_MAX_BYTES":                   {"OLLAMA_VIDEO_MAX_BYTES", VideoMaxBytes(), "Max video payload size in bytes (default 256MiB)"},
+		"OLLAMA_VIDEO_MAX_PER_MESSAGE":             {"OLLAMA_VIDEO_MAX_PER_MESSAGE", VideoMaxVideosPerMessage(), "Max video_url parts per message (default 1)"},
+		"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE":      {"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE", VideoMaxImagesPerMessage(), "Max images after video expansion per message (default 64)"},
+		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":              {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
+		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":         {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
+		"OLLAMA_VIDEO_FETCH_TIMEOUT":               {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
+		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":         {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
+		"OLLAMA_IMAGE_EMBED_CACHE_SIZE":            {"OLLAMA_IMAGE_EMBED_CACHE_SIZE", ImageEmbedCacheSize(), "Per-runner vision embed (ViT) LRU cache slots (default 4; set 32–64 for video agents)"},
+		"OLLAMA_IMAGE_EMBED_CACHE_MAX":             {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64)"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},
@@ -534,9 +534,44 @@ func ModalityPiperTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_PIPER_TIMEOUT", 5*time.Minute)
 }
 
+// TTSURL is a fleet-wide default base or full URL for modality_backends.speech=remote-tts
+// when backend_paths.tts_url is unset (e.g. http://cozmic:8090 or …/v1/audio/speech).
+func TTSURL() string {
+	return strings.TrimSpace(Var("OLLAMA_TTS_URL"))
+}
+
+// ModalityRemoteTTSTimeout bounds remote TTS HTTP runtime (default 5m).
+func ModalityRemoteTTSTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_TTS_TIMEOUT", 5*time.Minute)
+}
+
 // ModalityExternalImageTimeout bounds external image hook runtime (default 10m).
 func ModalityExternalImageTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_EXTERNAL_IMAGE_TIMEOUT", 10*time.Minute)
+}
+
+// ComfyUIURL is the base URL for a running ComfyUI server when
+// modality_backends.image=comfyui. Defaults to the stock local port.
+// WHY a separate process URL (not in-process Diffusers): Comfy owns custom-node
+// graphs and HF weight layout; Zerollama only injects agent options and polls PNG output.
+func ComfyUIURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(cmp.Or(Var("OLLAMA_COMFYUI_URL"), "http://127.0.0.1:8188")), "/")
+}
+
+// ModalityComfyUITimeout bounds one Comfy workflow (queue + poll + download).
+// WHY default 10m (not the short timeouts used for Whisper/Piper): Qwen-Image GGUF,
+// GLM-Image, and FLUX.2-dev on 16GB cards routinely take minutes per image; a 30s
+// deadline would abort valid agent jobs.
+func ModalityComfyUITimeout() time.Duration {
+	return modalityTimeout("OLLAMA_COMFYUI_TIMEOUT", 10*time.Minute)
+}
+
+// ComfyUIWorkflowsRoot is an optional base for relative backend_paths.comfy_workflow_dir
+// values. WHY: shipped modelfiles use short paths like scripts/comfyui/qwen-image that
+// only resolve if the daemon cwd is the repo root (or this root is set). Absolute and
+// ~/… paths ignore this variable.
+func ComfyUIWorkflowsRoot() string {
+	return Var("OLLAMA_COMFYUI_WORKFLOWS_ROOT")
 }
 
 func modalityTimeout(envKey string, defaultDur time.Duration) time.Duration {

@@ -310,6 +310,7 @@ Regression workflow (`.github/workflows/zerollama-regression.yaml`): runtime pyt
 48. **`phase15_batch_decode_smoke.sh`** — asserts `batch_decode_in_c`, non-stream + stream batch for two prompts.
 49. **`phase15_metal_signoff.sh` PASS (M4 Max)** — step 3/5 batch decode; `phase15_runtime_kv_env.sh` prefers sibling `../llama.cpp` + venv Python build.
 50. **`phase15_inprocess_signoff.sh` PASS (RTX 5080, CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8; `kv_decode_steps=56`, `batch_decode_in_c=True`; multiseq + batch decode PASS. Build notes: host CUDA 12.3 cannot compile **sm_120** — install **cuda-nvcc-12-8** and `-DCMAKE_CUDA_ARCHITECTURES=120-real`; patch **0014** may not apply cleanly to stock sibling b9781 alone — copy kv-ext files from zerollama tree; kill stale `zerollama serve` on `:8080`/`:8081` before embed start. **`ZEROLLAMA_GPU_PROFILE=0`** on multiseq serve (rtx-5080 L1 sets `n_parallel=4` otherwise) — now baked into `phase15_inprocess_multiseq_smoke.sh`.
+50b. **`phase15_inprocess_signoff.sh` PASS (dual RTX 4090, Jul 2026)** — edge-marked Go cannot embed; smokes auto-use Linux uv sidecar (`PHASE15_USE_SIDECAR=1` / edge detect). Ports `:18083`/`:18081`. llama3.2 3B Q4 + `/usr/local` libllama (8f + 0072); `kv_decode_steps=56`, `batch_decode_in_c=True`, multiseq+batch PASS. **`phase15_batch_decode_smoke.sh`** must honor `ZEROLLAMA_RUNTIME_URL` (else hits prod `:8081`).
 
 ### v31 — llama-kv-ext pin tracking + hybrid/iSWA resolve (shipped)
 

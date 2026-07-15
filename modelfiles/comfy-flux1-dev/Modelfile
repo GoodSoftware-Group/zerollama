@@ -1,0 +1,4 @@
+# Config-only ComfyUI FLUX.1-dev preset (weights live in ComfyUI's models/ tree, not Ollama blobs).
+# Register with: ../../scripts/register_comfy_models.sh comfy/flux1-dev modelfiles/comfy-flux1-dev/config.json
+# Requires: a running ComfyUI server with flux1-dev FP8 (or GGUF) weights installed —
+# see docs/comfyui-image-backend.md.

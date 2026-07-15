@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zerollama API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css" crossorigin />
+  <style>
+    html { box-sizing: border-box; }
+    *, *:before, *:after { box-sizing: inherit; }
+    body { margin: 0; background: #fafafa; }
+    .topbar { display: none; }
+    .zl-banner {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      padding: 12px 20px;
+      background: #0b0b0b;
+      color: #f2f2f2;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: baseline;
+    }
+    .zl-banner a { color: #9fd3ff; }
+    .zl-banner strong { letter-spacing: 0.02em; }
+  </style>
+</head>
+<body>
+  <div class="zl-banner">
+    <strong>zerollama API</strong>
+    <span>v{{VERSION}}</span>
+    <a href="/openapi.json">openapi.json</a>
+    <a href="/openapi.yaml">openapi.yaml</a>
+    <a href="/api/version">/api/version</a>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: "/openapi.json",
+      dom_id: "#swagger-ui",
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis],
+      layout: "BaseLayout",
+      tryItOutEnabled: true,
+      validatorUrl: null
+    });
+  </script>
+  <noscript>
+    <p>JavaScript required for Swagger UI. Spec available at <a href="/openapi.json">/openapi.json</a>.</p>
+  </noscript>
+</body>
+</html>

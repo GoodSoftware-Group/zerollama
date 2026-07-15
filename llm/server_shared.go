@@ -311,6 +311,7 @@ type CompletionResponse struct {
 	EvalCount             int           `json:"eval_count"`
 	EvalDuration          time.Duration `json:"eval_duration"`
 
+	// Why: clients need an explicit overflow signal; logs alone left silent 200s.
 	PromptTruncated      bool `json:"prompt_truncated,omitempty"`
 	OriginalPromptTokens int  `json:"original_prompt_tokens,omitempty"`
 

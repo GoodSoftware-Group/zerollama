@@ -43,6 +43,9 @@ func TestMergeLMStudioModels_AppendsFromCache(t *testing.T) {
 	if out[1].Model != "lmstudio-community/gemma-4-31b-it:q8_0" {
 		t.Fatalf("model=%q", out[1].Model)
 	}
+	if out[1].Digest != listCatalogDigest("lmstudio:"+out[1].Model) {
+		t.Fatalf("digest=%q", out[1].Digest)
+	}
 }
 
 func TestMergeLMStudioModels_DedupesLocal(t *testing.T) {

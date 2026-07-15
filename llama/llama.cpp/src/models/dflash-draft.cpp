@@ -22,23 +22,34 @@ void llama_model_dflash_draft::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_DFLASH_MASK_TOKEN_ID,        hparams.dflash_mask_token_id, false);
     ml.get_key(LLM_KV_DFLASH_N_TARGET_FEATURES,    hparams.dflash_n_target_features, false);
 
-    const std::string key = ml.llm_kv(LLM_KV_DFLASH_TARGET_LAYER_IDS);
-    const int kid = gguf_find_key(ml.metadata, key.c_str());
-    if (kid >= 0 && gguf_get_kv_type(ml.metadata, kid) == GGUF_TYPE_ARRAY) {
-        const enum gguf_type arr_type = gguf_get_arr_type(ml.metadata, kid);
-        const size_t n = gguf_get_arr_n(ml.metadata, kid);
-        hparams.dflash_n_target_layers = std::min((uint32_t) n, (uint32_t) 8);
-        const void * data = gguf_get_arr_data(ml.metadata, kid);
+    // Prefer vector get_arr so model->target_layer_ids is populated for speculative APIs.
+    if (ml.get_arr(LLM_KV_DFLASH_TARGET_LAYER_IDS, target_layer_ids, false)) {
+        hparams.dflash_n_target_layers = std::min((uint32_t) target_layer_ids.size(), (uint32_t) 8);
         for (uint32_t i = 0; i < hparams.dflash_n_target_layers; ++i) {
-            if (arr_type == GGUF_TYPE_UINT32) {
-                hparams.dflash_target_layer_ids[i] = ((const uint32_t *) data)[i];
-            } else if (arr_type == GGUF_TYPE_INT32) {
-                hparams.dflash_target_layer_ids[i] = (uint32_t) ((const int32_t *) data)[i];
+            hparams.dflash_target_layer_ids[i] = (uint32_t) target_layer_ids[i];
+        }
+    } else {
+        const std::string key = ml.llm_kv(LLM_KV_DFLASH_TARGET_LAYER_IDS);
+        const int kid = gguf_find_key(ml.metadata, key.c_str());
+        if (kid >= 0 && gguf_get_kv_type(ml.metadata, kid) == GGUF_TYPE_ARRAY) {
+            const enum gguf_type arr_type = gguf_get_arr_type(ml.metadata, kid);
+            const size_t n = gguf_get_arr_n(ml.metadata, kid);
+            hparams.dflash_n_target_layers = std::min((uint32_t) n, (uint32_t) 8);
+            const void * data = gguf_get_arr_data(ml.metadata, kid);
+            target_layer_ids.clear();
+            target_layer_ids.reserve(hparams.dflash_n_target_layers);
+            for (uint32_t i = 0; i < hparams.dflash_n_target_layers; ++i) {
+                if (arr_type == GGUF_TYPE_UINT32) {
+                    hparams.dflash_target_layer_ids[i] = ((const uint32_t *) data)[i];
+                } else if (arr_type == GGUF_TYPE_INT32) {
+                    hparams.dflash_target_layer_ids[i] = (uint32_t) ((const int32_t *) data)[i];
+                }
+                target_layer_ids.push_back((int32_t) hparams.dflash_target_layer_ids[i]);
             }
         }
     }
 
-    switch (hparams.n_layer) {
+    switch (hparams.n_layer()) {
         case 5: type = LLM_TYPE_0_6B; break;
         default: type = LLM_TYPE_UNKNOWN;
     }
@@ -64,7 +75,7 @@ void llama_model_dflash_draft::load_arch_tensors(llama_model_loader &) {
         layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), {n_embd}, 0);
 
         layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight", i), {n_embd, n_embd_head_k * n_head}, 0);
-        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd, n_embd_gqa}, 0);
+        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd, n_embd_k_gqa}, 0);
         layer.wv = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight", i), {n_embd, n_embd_v_gqa}, 0);
         layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
 

@@ -29,7 +29,7 @@ func TestChatPrompt_attachesGridTHWPerVideoFrame(t *testing.T) {
 			GridTHWExplicit: true,
 		}},
 	}}
-	_, images, _, _, err := chatPrompt(context.Background(), m, nil, &api.Options{}, msgs, nil, nil, false, 0, nil)
+	_, images, _, _, _, err := chatPrompt(context.Background(), m, nil, &api.Options{}, msgs, nil, nil, false, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

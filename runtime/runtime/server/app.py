@@ -240,6 +240,11 @@ def create_app(
                 queue=runtime_queue_snapshot(eng),
                 queue_in=runtime_queue_snapshot(eng),
             )
+            # Why: non-stream path previously omitted truncation fields entirely;
+            # stream_generate already attaches detect_context_overflow on done chunks.
+            from runtime.llama_timings import detect_context_overflow, metrics_from_llama_chunk
+            overflow_metrics = metrics_from_llama_chunk(result.llama)
+            overflow = detect_context_overflow(overflow_metrics, num_ctx, None)
             return OllamaGenerateResponse(
                 model=req.model,
                 response=result.content,
@@ -247,6 +252,8 @@ def create_app(
                 done_reason="stop",
                 vram_num_ctx=result.vram_num_ctx,
                 kv_decode_steps=result.kv_decode_steps,
+                prompt_truncated=overflow.get("prompt_truncated") or None,
+                original_prompt_tokens=overflow.get("original_prompt_tokens") or None,
             )
         except PrefillAbortedError:
             log_response_out(

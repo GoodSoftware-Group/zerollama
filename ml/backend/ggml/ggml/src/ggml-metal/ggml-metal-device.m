@@ -23,14 +23,6 @@
 #define GGML_METAL_HAS_RESIDENCY_SETS 1
 #endif
 
-// MTLResourceStorageModeManaged / didModifyRange: / synchronizeResource are
-// macOS-only (discrete-GPU memory model). iOS/tvOS/visionOS have unified
-// memory and the SDK marks these symbols unavailable, so any reference to them
-// must be compile-time excluded on those platforms.
-#if TARGET_OS_OSX
-#define GGML_METAL_HAS_MANAGED_BUFFERS 1
-#endif
-
 // overload of MTLGPUFamilyMetalX (not available in some environments)
 static const NSInteger MTLGPUFamilyMetal3_GGML = 5001;
 static const NSInteger MTLGPUFamilyMetal4_GGML = 5002;
@@ -132,23 +124,12 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         NSString * src = nil;
 
 #if GGML_METAL_EMBED_LIBRARY
-        GGML_LOG_INFO("%s: using embedded compiled metal library\n", __func__);
+        GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
 
         extern const char ggml_metallib_start[];
         extern const char ggml_metallib_end[];
 
-        // // ELIZA-EMBEDDED-METALLIB-LOADER-V1
-        // The build patch embeds compiled default.metallib bytes here, not
-        // Metal source. Loading with newLibraryWithData keeps iOS on the same
-        // multi-TU kernel set as desktop and avoids duplicate declarations
-        // between ggml-metal.metal and the eliza standalone shaders.
-        const NSUInteger metallib_len = (NSUInteger)(ggml_metallib_end - ggml_metallib_start);
-        dispatch_data_t metallib_data = dispatch_data_create(ggml_metallib_start, metallib_len, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-        library = [device newLibraryWithData:metallib_data error:&error];
-        if (error) {
-            GGML_LOG_ERROR("%s: error: %s\n", __func__, [[error description] UTF8String]);
-            return nil;
-        }
+        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
 #else
 
 #ifdef SWIFT_PACKAGE
@@ -245,6 +226,16 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #if GGML_METAL_EMBED_LIBRARY
                 [prep setObject:@"1" forKey:@"GGML_METAL_EMBED_LIBRARY"];
 #endif
+
+                // opt-in Metal flash-attention optimization
+                // enable with GGML_METAL_FA_SKIP_V=1
+                {
+                    const char * env = getenv("GGML_METAL_FA_SKIP_V");
+                    if (env && env[0] == '1') {
+                        [prep setObject:@"1" forKey:@"GGML_METAL_FA_SKIP_V"];
+                        GGML_LOG_INFO("%s: GGML_METAL_FA_SKIP_V enabled\n", __func__);
+                    }
+                }
 
                 MTLCompileOptions * options = [MTLCompileOptions new];
                 options.preprocessorMacros = prep;
@@ -568,10 +559,18 @@ struct ggml_metal_rsets {
     // number of seconds since the last graph computation
     // keep the residency sets wired for that amount of time to avoid being collected by the OS
     int keep_alive_s;
+    int loops_per_s;
+    int time_per_loop_ms;
 
     // background heartbeat thread to keep the residency sets alive
     atomic_bool d_stop;
     atomic_int  d_loop;
+
+    // P70 (lab): let callers temporarily suppress requestResidency calls while they hold
+    // a long host-side compute window on a buffer whose residency set is registered
+    // here, without fully tearing down the set. Ref-counted so nested pause/resume from
+    // multiple call sites (or accidental double-pause) cannot leave the heartbeat stuck off.
+    atomic_int  d_paused;
 
     dispatch_group_t d_group;
 };
@@ -594,10 +593,14 @@ ggml_metal_rsets_t ggml_metal_rsets_init(void) {
         res->keep_alive_s = 3*60;
     }
 
+    res->time_per_loop_ms = 5;
+    res->loops_per_s = 1000/res->time_per_loop_ms;
+
     GGML_LOG_INFO("%s: creating a residency set collection (keep_alive = %d s)\n", __func__, res->keep_alive_s);
 
     atomic_store_explicit(&res->d_stop, false, memory_order_relaxed);
-    atomic_store_explicit(&res->d_loop, 2*res->keep_alive_s, memory_order_relaxed);
+    atomic_store_explicit(&res->d_loop, res->loops_per_s*res->keep_alive_s, memory_order_relaxed);
+    atomic_store_explicit(&res->d_paused, 0, memory_order_relaxed);
 
     res->d_group = dispatch_group_create();
 
@@ -608,7 +611,8 @@ ggml_metal_rsets_t ggml_metal_rsets_init(void) {
 #if defined(GGML_METAL_HAS_RESIDENCY_SETS)
         if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *)) {
               while (!atomic_load_explicit(&res->d_stop, memory_order_relaxed)) {
-                  if (atomic_load_explicit(&res->d_loop, memory_order_relaxed) > 0) {
+                  if (atomic_load_explicit(&res->d_paused, memory_order_relaxed) <= 0 &&
+                      atomic_load_explicit(&res->d_loop, memory_order_relaxed) > 0) {
                       [res->lock lock];
 
                       for (int i = 0; i < (int) res->data.count; ++i) {
@@ -620,8 +624,7 @@ ggml_metal_rsets_t ggml_metal_rsets_init(void) {
                       [res->lock unlock];
                   }
 
-                  // half a second
-                  usleep(500 * 1000);
+                  usleep(res->time_per_loop_ms * 1000);
               }
         }
 #endif
@@ -635,18 +638,84 @@ void ggml_metal_rsets_free(ggml_metal_rsets_t rsets) {
         return;
     }
 
-    // note: if you hit this assert, most likely you haven't deallocated all Metal resources before exiting
-    GGML_ASSERT([rsets->data count] == 0);
-
+    // Stop the keep-alive heartbeat before touching the collection, so the drain below
+    // cannot race the background thread's residency requests.
     atomic_store_explicit(&rsets->d_stop, true, memory_order_relaxed);
 
     dispatch_group_wait(rsets->d_group, DISPATCH_TIME_FOREVER);
     dispatch_release(rsets->d_group);
 
+    // The device is torn down from a C++ static destructor at process exit. If the host did
+    // not free every Metal buffer first, that buffer's residency set is still registered
+    // here, so the array is non-empty. The original code did GGML_ASSERT([rsets->data count]
+    // == 0), which calls abort() and crashes the app on every quit on macOS 15+. The device
+    // does not own the buffers and cannot free them from its destructor, so instead of
+    // aborting, defensively wind down residency on any leftover sets (mirroring
+    // ggml_metal_buffer_rset_free, minus -release, since each set is still owned by its
+    // not-yet-freed buffer) before releasing the collection. The backing buffers are
+    // reclaimed by the OS as the process exits. No behavior change when all buffers were
+    // freed (the array is empty).
+#if defined(GGML_METAL_HAS_RESIDENCY_SETS)
+    if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *)) {
+        if ([rsets->data count] != 0) {
+            GGML_LOG_DEBUG("%s: %ld residency set(s) still registered at teardown; winding down\n",
+                           __func__, (long) [rsets->data count]);
+            for (id rset in rsets->data) {
+                [rset endResidency];
+                [rset removeAllAllocations];
+            }
+        }
+    }
+#endif
+
     [rsets->data release];
     [rsets->lock release];
 
     free(rsets);
+}
+
+static enum ggml_metal_device_id ggml_metal_device_id_parse(const char * name) {
+    if (!name) {
+        return GGML_METAL_DEVICE_GENERIC;
+    }
+
+    static const char prefix[] = "Apple ";
+    if (strncmp(name, prefix, sizeof(prefix) - 1) != 0) {
+        return GGML_METAL_DEVICE_GENERIC;
+    }
+    const char * suffix = name + sizeof(prefix) - 1;
+
+    static const struct {
+        const char * name;
+        enum ggml_metal_device_id id;
+    } table[] = {
+        {"M1",       GGML_METAL_DEVICE_M1},
+        {"M1 Pro",   GGML_METAL_DEVICE_M1_PRO},
+        {"M1 Max",   GGML_METAL_DEVICE_M1_MAX},
+        {"M1 Ultra", GGML_METAL_DEVICE_M1_ULTRA},
+        {"M2",       GGML_METAL_DEVICE_M2},
+        {"M2 Pro",   GGML_METAL_DEVICE_M2_PRO},
+        {"M2 Max",   GGML_METAL_DEVICE_M2_MAX},
+        {"M2 Ultra", GGML_METAL_DEVICE_M2_ULTRA},
+        {"M3",       GGML_METAL_DEVICE_M3},
+        {"M3 Pro",   GGML_METAL_DEVICE_M3_PRO},
+        {"M3 Max",   GGML_METAL_DEVICE_M3_MAX},
+        {"M3 Ultra", GGML_METAL_DEVICE_M3_ULTRA},
+        {"M4",       GGML_METAL_DEVICE_M4},
+        {"M4 Pro",   GGML_METAL_DEVICE_M4_PRO},
+        {"M4 Max",   GGML_METAL_DEVICE_M4_MAX},
+        {"M5",       GGML_METAL_DEVICE_M5},
+        {"M5 Pro",   GGML_METAL_DEVICE_M5_PRO},
+        {"M5 Max",   GGML_METAL_DEVICE_M5_MAX},
+        {"M5 Ultra", GGML_METAL_DEVICE_M5_ULTRA},
+    };
+
+    for (size_t i = 0; i < sizeof(table)/sizeof(table[0]); ++i) {
+        if (strcmp(suffix, table[i].name) == 0) {
+            return table[i].id;
+        }
+    }
+    return GGML_METAL_DEVICE_GENERIC;
 }
 
 ggml_metal_device_t ggml_metal_device_init(int device) {
@@ -814,24 +883,9 @@ ggml_metal_device_t ggml_metal_device_init(int device) {
                 dev->props.use_shared_buffers = true;
             }
 
-            // Use Managed mode on discrete GPUs for cached PCIe reads.
-            // macOS-only: iOS/tvOS/visionOS have unified memory and the
-            // Managed storage-mode APIs are SDK-unavailable there.
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-            dev->props.use_managed_buffers = !dev->props.has_unified_memory;
-#else
-            dev->props.use_managed_buffers = false;
-#endif
-
-            // Environment variable overrides for testing
-            if (getenv("GGML_METAL_MANAGED_BUFFERS_DISABLE") != NULL) {
-                dev->props.use_managed_buffers = false;
-            }
-            if (getenv("GGML_METAL_MANAGED_BUFFERS_ENABLE") != NULL) {
-                dev->props.use_managed_buffers = true;
-            }
-
             dev->props.supports_gpu_family_apple7 = [dev->mtl_device supportsFamily:MTLGPUFamilyApple7];
+
+            dev->props.device_id = ggml_metal_device_id_parse([[dev->mtl_device name] UTF8String]);
 
             dev->props.op_offload_min_batch_size  = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
 
@@ -893,7 +947,6 @@ ggml_metal_device_t ggml_metal_device_init(int device) {
             GGML_LOG_INFO("%s: has tensor            = %s\n", __func__, dev->props.has_tensor              ? "true" : "false");
             GGML_LOG_INFO("%s: use residency sets    = %s\n", __func__, dev->props.use_residency_sets      ? "true" : "false");
             GGML_LOG_INFO("%s: use shared buffers    = %s\n", __func__, dev->props.use_shared_buffers      ? "true" : "false");
-            GGML_LOG_INFO("%s: use managed buffers   = %s\n", __func__, dev->props.use_managed_buffers     ? "true" : "false");
 
 #if TARGET_OS_OSX || (TARGET_OS_IOS && __clang_major__ >= 15)
             if (@available(macOS 10.12, iOS 16.0, *)) {
@@ -972,7 +1025,33 @@ void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev) {
         return;
     }
 
-    atomic_store_explicit(&dev->rsets->d_loop, 2*dev->rsets->keep_alive_s, memory_order_relaxed);
+    atomic_store_explicit(&dev->rsets->d_loop, dev->rsets->loops_per_s*dev->rsets->keep_alive_s, memory_order_relaxed);
+}
+
+// P70 (lab): pause/resume the background requestResidency heartbeat. Ref-counted: the
+// heartbeat stays paused while the count is > 0. Callers must pair every pause with a
+// resume (e.g. via a scope guard) even on early-return/error paths. This does not touch
+// [lock]/[data] membership — it only skips the periodic requestResidency calls, so
+// add/rm from other threads are unaffected and still fully synchronized by
+// dev->rsets->lock as before.
+void ggml_metal_device_rsets_pause(ggml_metal_device_t dev) {
+    if (dev->rsets == NULL) {
+        return;
+    }
+
+    atomic_fetch_add_explicit(&dev->rsets->d_paused, 1, memory_order_relaxed);
+}
+
+void ggml_metal_device_rsets_resume(ggml_metal_device_t dev) {
+    if (dev->rsets == NULL) {
+        return;
+    }
+
+    const int prev = atomic_fetch_sub_explicit(&dev->rsets->d_paused, 1, memory_order_relaxed);
+    if (prev <= 0) {
+        // guard against unbalanced resume (should not happen if callers pair pause/resume)
+        atomic_store_explicit(&dev->rsets->d_paused, 0, memory_order_relaxed);
+    }
 }
 
 struct ggml_metal_event {
@@ -1019,7 +1098,36 @@ void ggml_metal_device_event_free(ggml_metal_device_t dev, ggml_metal_event_t ev
 
 void ggml_metal_device_event_synchronize(ggml_metal_device_t dev, ggml_metal_event_t ev) {
     id<MTLSharedEvent> event = ev->obj;
-    const bool res = [event waitUntilSignaledValue:atomic_load_explicit(&ev->value, memory_order_relaxed) timeoutMS:60000];
+
+    bool res = false;
+    if (@available(macOS 12.0, iOS 15.0, *)) {
+        res = [event waitUntilSignaledValue:atomic_load_explicit(&ev->value, memory_order_relaxed) timeoutMS:60000];
+    } else {
+        const uint64_t value = atomic_load_explicit(&ev->value, memory_order_relaxed);
+        if (event.signaledValue >= value) {
+            res = true;
+        } else {
+            // fallback for older macOS/iOS
+            static MTLSharedEventListener * listener = nil;
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                listener = [[MTLSharedEventListener alloc] init];
+            });
+
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+            [event notifyListener:listener atValue:value block:^(id<MTLSharedEvent> _event, uint64_t val) {
+                GGML_UNUSED(_event);
+                GGML_UNUSED(val);
+                dispatch_semaphore_signal(sem);
+            }];
+
+            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 60LL * NSEC_PER_SEC);
+            res = (dispatch_semaphore_wait(sem, timeout) == 0);
+
+            dispatch_release(sem);
+        }
+    }
+
     if (!res) {
         GGML_ABORT("%s: failed to wait for event\n", __func__);
     }
@@ -1100,7 +1208,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 case GGML_GLU_OP_SWIGLU_OAI:
                 case GGML_GLU_OP_GEGLU_ERF:
                 case GGML_GLU_OP_GEGLU_QUICK:
-                    return ggml_is_contiguous_1(op->src[0]) && op->src[0]->type == GGML_TYPE_F32;
+                    return ggml_is_contiguous_1(op->src[0]) && (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16);
                default:
                     return false;
             }
@@ -1109,8 +1217,28 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_VIEW:
         case GGML_OP_TRANSPOSE:
         case GGML_OP_PERMUTE:
-        case GGML_OP_CONCAT:
             return true;
+        case GGML_OP_CONCAT:
+            {
+                const enum ggml_type src0_type = op->src[0]->type;
+                const enum ggml_type src1_type = op->src[1]->type;
+                if (src0_type != src1_type || src0_type != op->type) {
+                    return false;
+                }
+                switch (src0_type) {
+                    case GGML_TYPE_F32:
+                    case GGML_TYPE_F16:
+                    case GGML_TYPE_I8:
+                    case GGML_TYPE_I16:
+                    case GGML_TYPE_I32:
+                    case GGML_TYPE_I64:
+                        return true;
+                    case GGML_TYPE_BF16:
+                        return has_bfloat;
+                    default:
+                        return false;
+                }
+            }
         case GGML_OP_ADD:
         case GGML_OP_SUB:
         case GGML_OP_MUL:
@@ -1126,6 +1254,11 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 (op->src[0]->type == GGML_TYPE_F16 || op->src[0]->type == GGML_TYPE_F32) &&
                 op->src[1]->type == GGML_TYPE_F32 &&
                 op->type == GGML_TYPE_F32;
+        case GGML_OP_COL2IM_1D:
+            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16 || op->src[0]->type == GGML_TYPE_BF16) &&
+                op->type == op->src[0]->type &&
+                ggml_is_contiguous(op->src[0]) &&
+                ggml_is_contiguous(op);
         case GGML_OP_CONV_3D:
             return ggml_is_contiguous(op->src[0]) &&
                    ggml_is_contiguous(op->src[1]) &&
@@ -1133,6 +1266,15 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                    op->src[1]->type == GGML_TYPE_F32;
         case GGML_OP_SUM:
             return has_simdgroup_reduction && ggml_is_contiguous(op->src[0]);
+        case GGML_OP_OUT_PROD:
+            return ggml_is_contiguous_rows(op->src[0]) &&
+                   ggml_is_contiguous_rows(op->src[1]) &&
+                   (op->src[0]->type == GGML_TYPE_F32 ||
+                    op->src[0]->type == GGML_TYPE_Q4_0 ||
+                    op->src[0]->type == GGML_TYPE_Q4_1 ||
+                    op->src[0]->type == GGML_TYPE_Q8_0 ||
+                    op->src[0]->type == GGML_TYPE_MXFP4) &&
+                   (op->src[1]->type == GGML_TYPE_F32);
         case GGML_OP_TRI:
             return ggml_is_contiguous_rows(op->src[0]);
         case GGML_OP_SUM_ROWS:
@@ -1153,8 +1295,11 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_RMS_NORM:
             return has_simdgroup_reduction && (ggml_is_contiguous_rows(op->src[0]));
         case GGML_OP_ROPE:
+        case GGML_OP_ROPE_BACK:
             return true;
         case GGML_OP_IM2COL:
+            return ggml_is_contiguous(op->src[1]) && op->src[1]->type == GGML_TYPE_F32 && (op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32);
+        case GGML_OP_IM2COL_3D:
             return ggml_is_contiguous(op->src[1]) && op->src[1]->type == GGML_TYPE_F32 && (op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32);
         case GGML_OP_CONV_2D:
             return ggml_is_contiguous(op->src[0]) &&
@@ -1183,93 +1328,11 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_TIMESTEP_EMBEDDING:
         case GGML_OP_LEAKY_RELU:
             return op->src[0]->type == GGML_TYPE_F32;
-        case GGML_OP_ISTFT:
-            // # ELIZA-ISTFT-DISPATCH-V1
-            // mag_phase must be F32 [2, F, T]; output is F32.  Optional
-            // src1 window (when present) must be F32 [win_length].
-            return op->src[0] != NULL &&
-                   op->src[0]->type == GGML_TYPE_F32 &&
-                   op->type == GGML_TYPE_F32 &&
-                   ggml_is_contiguous(op->src[0]) &&
-                   op->src[0]->ne[0] == 2 &&
-                   (op->src[1] == NULL ||
-                    (op->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[1])));
         case GGML_OP_ARGSORT:
         case GGML_OP_TOP_K:
         case GGML_OP_ARANGE:
         case GGML_OP_ROLL:
             return true;
-        case GGML_OP_ATTN_SCORE_TBQ:
-            // // ELIZA-TBQ-POLAR-ATTN-DISPATCH-V1
-            return has_simdgroup_reduction &&
-                op->type == GGML_TYPE_F32 &&
-                op->src[0] != NULL &&
-                op->src[1] != NULL &&
-                op->src[0]->type == GGML_TYPE_F32 &&
-                (op->src[1]->type == GGML_TYPE_TBQ3_0 ||
-                 op->src[1]->type == GGML_TYPE_TBQ4_0 ||
-                 op->src[1]->type == GGML_TYPE_TBQ3_TCQ) &&
-                op->src[0]->ne[0] == 128 &&
-                op->src[1]->ne[0] == 128 &&
-                ggml_is_contiguous_rows(op) &&
-                ggml_is_contiguous_rows(op->src[0]) &&
-                ggml_is_contiguous_rows(op->src[1]);
-        case GGML_OP_ATTN_SCORE_POLAR:
-            return has_simdgroup_reduction &&
-                op->type == GGML_TYPE_F32 &&
-                op->src[0] != NULL &&
-                op->src[1] != NULL &&
-                op->src[0]->type == GGML_TYPE_F32 &&
-                op->src[1]->type == GGML_TYPE_Q4_POLAR &&
-                op->src[0]->ne[0] == 128 &&
-                op->src[1]->ne[0] == 128 &&
-                ggml_is_contiguous_rows(op) &&
-                ggml_is_contiguous_rows(op->src[0]) &&
-                ggml_is_contiguous_rows(op->src[1]);
-        case GGML_OP_FUSED_ATTN_QJL_TBQ:
-            {
-                const int32_t * params = (const int32_t *) op->op_params;
-                const int64_t n_kv_heads = params[0];
-                return has_simdgroup_reduction &&
-                    op->type == GGML_TYPE_F32 &&
-                    op->src[0] != NULL &&
-                    op->src[1] != NULL &&
-                    op->src[2] != NULL &&
-                    op->src[0]->type == GGML_TYPE_F32 &&
-                    op->src[1]->type == GGML_TYPE_QJL1_256 &&
-                    op->src[2]->type == GGML_TYPE_TBQ3_0 &&
-                    op->src[0]->ne[0] == 256 &&
-                    op->src[1]->ne[0] == 128 &&
-                    op->src[2]->ne[0] == 128 &&
-                    op->ne[0] == 128 &&
-                    n_kv_heads > 0 &&
-                    (op->src[0]->ne[1] % n_kv_heads) == 0 &&
-                    op->src[1]->ne[1] == op->src[2]->ne[1] &&
-                    op->src[1]->ne[2] == n_kv_heads &&
-                    op->src[2]->ne[2] == n_kv_heads &&
-                    op->src[1]->ne[3] == op->src[0]->ne[3] &&
-                    op->src[2]->ne[3] == op->src[0]->ne[3] &&
-                    op->ne[1] == op->src[0]->ne[1] &&
-                    op->ne[2] == op->src[0]->ne[2] &&
-                    op->ne[3] == op->src[0]->ne[3] &&
-                    ggml_is_contiguous_rows(op) &&
-                    ggml_is_contiguous_rows(op->src[0]) &&
-                    ggml_is_contiguous_rows(op->src[1]) &&
-                    ggml_is_contiguous_rows(op->src[2]);
-            }
-        case GGML_OP_ATTN_SCORE_QJL:
-            // // ELIZA-QJL-ATTN-DISPATCH-V1
-            return has_simdgroup_reduction &&
-                op->type == GGML_TYPE_F32 &&
-                op->src[0] != NULL &&
-                op->src[1] != NULL &&
-                op->src[0]->type == GGML_TYPE_F32 &&
-                op->src[1]->type == GGML_TYPE_QJL1_256 &&
-                op->src[0]->ne[0] == 256 &&
-                op->src[1]->ne[0] == 128 &&
-                ggml_is_contiguous_rows(op) &&
-                ggml_is_contiguous_rows(op->src[0]) &&
-                ggml_is_contiguous_rows(op->src[1]);
         case GGML_OP_FLASH_ATTN_EXT:
             // for new head sizes, add checks here
             if (op->src[0]->ne[0] != 32 &&
@@ -1299,6 +1362,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 case GGML_TYPE_Q4_1:
                 case GGML_TYPE_Q5_0:
                 case GGML_TYPE_Q5_1:
+                case GGML_TYPE_E8_2:
                     break;
                 case GGML_TYPE_BF16:
                     if (!has_bfloat) {
@@ -1340,6 +1404,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                            case GGML_TYPE_BF16:
                            case GGML_TYPE_Q8_0:
                            case GGML_TYPE_Q1_0:
+                           case GGML_TYPE_Q2_0:
                            case GGML_TYPE_E8_2:
                            case GGML_TYPE_Q4_0:
                            case GGML_TYPE_Q4_1:
@@ -1368,6 +1433,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                                 return false;
                         }
                     case GGML_TYPE_Q1_0:
+                    case GGML_TYPE_Q2_0:
                     case GGML_TYPE_E8_2:
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_Q4_1:
@@ -1388,50 +1454,10 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 };
             }
         case GGML_OP_GET_ROWS:
-            // Metal has get_rows kernels for the standard quants + a few
-            // float types. Eliza custom quants (Q1_0_g32 / Q1_0_g128 / TBQ*
-            // / QJL1_256 / Q4_POLAR / TBQ3_TCQ) only have CPU vec_dot paths
-            // for now — without a Metal kernel,
-            // `ggml_metal_library_compile_pipeline(kernel_get_rows_<type>)`
-            // returns a nil pipeline and the dispatcher segfaults on
-            // `ggml_metal_pipeline_max_theads_per_threadgroup(nil)`. Gate
-            // the supported set explicitly here so test-backend-ops and the
-            // graph scheduler offload these types to CPU.
-            switch (op->src[0]->type) {
-                case GGML_TYPE_F32:
-                case GGML_TYPE_F16:
-                case GGML_TYPE_BF16:
-                case GGML_TYPE_I32:
-                case GGML_TYPE_Q1_0:
-                case GGML_TYPE_E8_2:
-                case GGML_TYPE_Q4_0:
-                case GGML_TYPE_Q4_1:
-                case GGML_TYPE_Q5_0:
-                case GGML_TYPE_Q5_1:
-                case GGML_TYPE_Q8_0:
-                case GGML_TYPE_MXFP4:
-                case GGML_TYPE_NVFP4:
-                case GGML_TYPE_Q2_K:
-                case GGML_TYPE_Q3_K:
-                case GGML_TYPE_Q4_K:
-                case GGML_TYPE_Q5_K:
-                case GGML_TYPE_Q6_K:
-                case GGML_TYPE_IQ2_XXS:
-                case GGML_TYPE_IQ2_XS:
-                case GGML_TYPE_IQ2_S:
-                case GGML_TYPE_IQ3_XXS:
-                case GGML_TYPE_IQ3_S:
-                case GGML_TYPE_IQ1_S:
-                case GGML_TYPE_IQ1_M:
-                case GGML_TYPE_IQ4_NL:
-                case GGML_TYPE_IQ4_XS:
-                    return true;
-                default:
-                    return false;
-            }
+            return true;
         case GGML_OP_SET_ROWS:
             {
-                if (op->src[0]->type != GGML_TYPE_F32) {
+                if (op->src[0]->type != GGML_TYPE_F32 && op->src[0]->type != GGML_TYPE_F16) {
                     return false;
                 }
 
@@ -1440,14 +1466,12 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     case GGML_TYPE_F16:
                     case GGML_TYPE_BF16:
                     case GGML_TYPE_Q8_0:
-                    case GGML_TYPE_E8_2:
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_Q4_1:
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_IQ4_NL:
-                    case GGML_TYPE_QJL1_256:
-                        // // ELIZA-QJL-SET-ROWS-V1
+                    case GGML_TYPE_E8_2:
                         return true;
                     default:
                         return false;
@@ -1455,6 +1479,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
             }
         case GGML_OP_DIAG:
             return true;
+        case GGML_OP_DIAG_MASK_INF:
+            return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_OPT_STEP_ADAMW:
         case GGML_OP_OPT_STEP_SGD:
             return has_simdgroup_reduction;
@@ -1576,16 +1602,6 @@ static void ggml_metal_buffer_rset_free(ggml_metal_buffer_t buf) {
         if (buf->rset) {
             [buf->rset endResidency];
             [buf->rset removeAllAllocations];
-            // Symmetric pairing for ggml_metal_device_rsets_add (called from
-            // ggml_metal_buffer_rset_init): the device-side collection holds
-            // a reference to this rset so the keep-alive heartbeat thread can
-            // requestResidency on it. Without removing it here, the device's
-            // rsets->data array retains a (about-to-be-released) reference,
-            // and ggml_metal_rsets_free on device shutdown asserts
-            // [rsets->data count] == 0 deterministically. (Issue: assertion
-            // fires on macOS 15+ for any consumer that allocates buffers
-            // and then tears down the device.)
-            ggml_metal_device_rsets_rm(buf->dev, buf->rset);
             [buf->rset release];
         }
     }
@@ -1651,25 +1667,10 @@ ggml_metal_buffer_t ggml_metal_buffer_init(ggml_metal_device_t dev, size_t size,
 
         if (size_aligned > 0) {
             if (props_dev->use_shared_buffers && shared) {
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-                MTLResourceOptions storage_mode = props_dev->use_managed_buffers
-                    ? MTLResourceStorageModeManaged
-                    : MTLResourceStorageModeShared;
-#else
-                MTLResourceOptions storage_mode = MTLResourceStorageModeShared;
-#endif
-
                 res->buffers[0].metal = [res->dev->mtl_device newBufferWithBytesNoCopy:res->all_data
                                                                   length:size_aligned
-                                                                 options:storage_mode
+                                                                 options:MTLResourceStorageModeShared
                                                              deallocator:nil];
-
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-                // For Managed buffers, sync CPU→GPU after creation
-                if (props_dev->use_managed_buffers && res->buffers[0].metal) {
-                    [(id<MTLBuffer>)res->buffers[0].metal didModifyRange:NSMakeRange(0, size_aligned)];
-                }
-#endif
             } else {
                 res->buffers[0].metal = [res->dev->mtl_device newBufferWithLength:size_aligned options:MTLResourceStorageModePrivate];
             }
@@ -1735,28 +1736,13 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
         res->buffers[res->n_buffers].metal = nil;
 
         if (size_aligned > 0) {
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-            MTLResourceOptions storage_mode = props_dev->use_managed_buffers
-                ? MTLResourceStorageModeManaged
-                : MTLResourceStorageModeShared;
-#else
-            MTLResourceOptions storage_mode = MTLResourceStorageModeShared;
-#endif
-
-            res->buffers[res->n_buffers].metal = [res->dev->mtl_device newBufferWithBytesNoCopy:ptr length:size_aligned options:storage_mode deallocator:nil];
+            res->buffers[res->n_buffers].metal = [res->dev->mtl_device newBufferWithBytesNoCopy:ptr length:size_aligned options:MTLResourceStorageModeShared deallocator:nil];
 
             if (res->buffers[res->n_buffers].metal == nil) {
                 GGML_LOG_ERROR("%s: error: failed to allocate buffer, size = %8.2f MiB\n", __func__, size_aligned / 1024.0 / 1024.0);
                 free(res);
                 return NULL;
             }
-
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-            // For Managed buffers, sync CPU→GPU after creation
-            if (props_dev->use_managed_buffers) {
-                [(id<MTLBuffer>)res->buffers[res->n_buffers].metal didModifyRange:NSMakeRange(0, size_aligned)];
-            }
-#endif
         }
 
         ggml_metal_log_allocated_size(res->dev->mtl_device, size_aligned);
@@ -1777,28 +1763,13 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
             res->buffers[res->n_buffers].metal = nil;
 
             if (size_step_aligned > 0) {
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-                MTLResourceOptions storage_mode = props_dev->use_managed_buffers
-                    ? MTLResourceStorageModeManaged
-                    : MTLResourceStorageModeShared;
-#else
-                MTLResourceOptions storage_mode = MTLResourceStorageModeShared;
-#endif
-
-                res->buffers[res->n_buffers].metal = [res->dev->mtl_device newBufferWithBytesNoCopy:(void *) ((uint8_t *) ptr + i) length:size_step_aligned options:storage_mode deallocator:nil];
+                res->buffers[res->n_buffers].metal = [res->dev->mtl_device newBufferWithBytesNoCopy:(void *) ((uint8_t *) ptr + i) length:size_step_aligned options:MTLResourceStorageModeShared deallocator:nil];
 
                 if (res->buffers[res->n_buffers].metal == nil) {
                     GGML_LOG_ERROR("%s: error: failed to allocate buffer, size = %8.2f MiB\n", __func__, size_step_aligned / 1024.0 / 1024.0);
                     free(res);
                     return NULL;
                 }
-
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-                // For Managed buffers, sync CPU→GPU after creation
-                if (props_dev->use_managed_buffers) {
-                    [(id<MTLBuffer>)res->buffers[res->n_buffers].metal didModifyRange:NSMakeRange(0, size_step_aligned)];
-                }
-#endif
             }
 
             ggml_metal_log_allocated_size(res->dev->mtl_device, size_step_aligned);
@@ -1891,15 +1862,6 @@ bool ggml_metal_buffer_is_shared(ggml_metal_buffer_t buf) {
 void ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
     if (buf->is_shared) {
         memset((char *) tensor->data + offset, value, size);
-
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-        // Sync Managed buffer after CPU write
-        if (buf->dev->props.use_managed_buffers) {
-            struct ggml_metal_buffer_id bid = ggml_metal_buffer_get_id(buf, tensor);
-            [(id<MTLBuffer>)bid.metal didModifyRange:NSMakeRange(bid.offs + offset, size)];
-        }
-#endif
-
         return;
     }
 
@@ -1928,15 +1890,6 @@ void ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor
 void ggml_metal_buffer_set_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     if (buf->is_shared) {
         memcpy((char *) tensor->data + offset, data, size);
-
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-        // Sync Managed buffer after CPU write
-        if (buf->dev->props.use_managed_buffers) {
-            struct ggml_metal_buffer_id bid = ggml_metal_buffer_get_id(buf, tensor);
-            [(id<MTLBuffer>)bid.metal didModifyRange:NSMakeRange(bid.offs + offset, size)];
-        }
-#endif
-
         return;
     }
 
@@ -1972,7 +1925,10 @@ void ggml_metal_buffer_set_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * 
             [encoder endEncoding];
         }
 
-        [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> __unused cb) {
+        [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                             // TODO: can check for errors here
+            GGML_UNUSED(cb);
+
             dispatch_semaphore_signal(completion_semaphore);
         }];
 
@@ -1987,25 +1943,6 @@ void ggml_metal_buffer_set_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * 
 
 void ggml_metal_buffer_get_tensor(ggml_metal_buffer_t buf, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     if (buf->is_shared) {
-#if GGML_METAL_HAS_MANAGED_BUFFERS
-        // For Managed buffers (discrete GPU), sync GPU→CPU via blit encoder
-        // before reading. synchronizeResource: lives on MTLBlitCommandEncoder,
-        // not on MTLBuffer directly.
-        if (buf->dev->props.use_managed_buffers) {
-            struct ggml_metal_buffer_id bid = ggml_metal_buffer_get_id(buf, tensor);
-            @autoreleasepool {
-                id<MTLCommandBuffer> cmd_buf = [buf->dev->mtl_queue commandBufferWithUnretainedReferences];
-                {
-                    id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
-                    [encoder synchronizeResource:bid.metal];
-                    [encoder endEncoding];
-                }
-                [cmd_buf commit];
-                [cmd_buf waitUntilCompleted];
-            }
-        }
-#endif
-        // Direct memcpy (Shared or Managed after sync)
         memcpy(data, (const char *) tensor->data + offset, size);
         return;
     }
@@ -2084,9 +2021,7 @@ bool ggml_metal_buffer_cpy_tensor(ggml_metal_buffer_t buf_dst, const struct ggml
 }
 
 void ggml_metal_buffer_clear(ggml_metal_buffer_t buf, uint8_t value) {
-    // For Managed buffers, use GPU blit to avoid reading unsynced data
-    if (buf->is_shared && !buf->dev->props.use_managed_buffers) {
-        // True Shared mode (unified memory): direct memset OK
+    if (buf->is_shared) {
         memset(buf->all_data, value, buf->all_size);
         return;
     }

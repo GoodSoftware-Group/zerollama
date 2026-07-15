@@ -1,8 +1,10 @@
-"""Offline llama.cpp patch / vendor health (Radix seq-copy, kv-ext, pin drift).
+"""Offline llama.cpp patch / vendor health (Radix seq-copy, CUDA graph, kv-ext, pin drift).
 
 WHY: patched routes ship via ``llama/patches/`` → vendor ``git am`` → rsync in-tree
 → rebuild llama-server. Operators often run a stale sibling binary and see "lost"
-patches (404 on ``/kv/seq-copy``) while git still looks fine.
+patches (404 on ``/kv/seq-copy`` or ``/cuda-graph/invalidate``) while git still looks fine.
+CUDA weight-format probes (NVFP4/MXFP4/FP8 E4M3/E5M2) catch a stale ``libggml-cuda``
+that lacks kernels before an expensive MoE/FP8 load fails mid-mmap.
 """
 
 from __future__ import annotations
@@ -24,13 +26,23 @@ from runtime.llama_cpp_unified import (
 _REQUIRED_PATCH_SUBSTRINGS = (
     "ollama-llama-kv-ext",  # Phase 15; numbered 0014 historically, 0019 on 8f114a9b
     "ollama-kv-seq-copy-endpoint",  # numbered 0017/0018 historically; 0022 on 8f114a9b
+    "cuda-graph-invalidate",  # 0072 — L3 decode-graph break for subprocess
 )
 
 _IN_TREE_MARKERS = (
     ("llama/llama.cpp/tools/server/server.cpp", '"/kv/seq-copy"'),
+    ("llama/llama.cpp/tools/server/server.cpp#cuda-graph", '"/cuda-graph/invalidate"'),
     ("llama/llama.cpp/include/llama-kv-ext.h", "llama_memory_kv_ext_classify"),
     ("llama/llama.cpp/src/llama-memory-kv-ext.cpp", "llama_memory_kv_cell_for_pos"),
 )
+
+# WHY bytes needles: scan packaged/vendor libggml-cuda without loading CUDA.
+# Prefer short mangled/type-name fragments — demangled templates may be stripped.
+_NVFP4_NEEDLES = (b"GGML_TYPE_NVFP4", b"nvfp4", b"NVFP4")
+# WHY fp8_* lowercase: CUDA objects embed dequantize_fp8_e4m3 / fp8_e4m3; enum spellings may not.
+_FP8_E4M3_NEEDLES = (b"GGML_TYPE_FP8_E4M3", b"fp8_e4m3", b"FP8_E4M3")
+_FP8_E5M2_NEEDLES = (b"GGML_TYPE_FP8_E5M2", b"fp8_e5m2", b"FP8_E5M2")
+_MXFP4_NEEDLES = (b"GGML_TYPE_MXFP4", b"mxfp4", b"MXFP4")
 
 
 def _repo_root(explicit: Path | None = None) -> Path:
@@ -68,15 +80,16 @@ def list_patch_files(repo: Path | None = None) -> list[str]:
 def in_tree_patch_markers(repo: Path | None = None) -> dict[str, bool]:
     root = _repo_root(repo)
     out: dict[str, bool] = {}
-    for rel, needle in _IN_TREE_MARKERS:
+    for key, needle in _IN_TREE_MARKERS:
+        rel = key.split("#", 1)[0]
         path = root / rel
         if not path.is_file():
-            out[rel] = False
+            out[key] = False
             continue
         try:
-            out[rel] = needle in path.read_text(encoding="utf-8", errors="replace")
+            out[key] = needle in path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            out[rel] = False
+            out[key] = False
     return out
 
 
@@ -136,18 +149,140 @@ def _git_rev_list_count(cwd: Path, base_ref: str) -> int | None:
     return int(raw)
 
 
+def binary_embeds_route(path: Path | None, needles: tuple[bytes, ...]) -> bool | None:
+    """True when any *needles* appear in the Mach-O/ELF or ``libllama-server-impl*`` sibling.
+
+    WHY: ggml-org split routes into ``libllama-server-impl.so`` / ``.dylib``; the
+    ``llama-server`` binary is a thin wrapper (~18KB on Linux) that no longer embeds
+    route strings.
+    """
+    if path is None or not path.is_file():
+        return None
+
+    def _has_route(p: Path) -> bool:
+        try:
+            data = p.read_bytes()
+        except OSError:
+            return False
+        return any(n in data for n in needles)
+
+    if _has_route(path):
+        return True
+    for impl in sorted(path.parent.glob("libllama-server-impl*")):
+        if impl.is_file() and _has_route(impl):
+            return True
+    return False
+
+
 def binary_embeds_seq_copy_route(path: Path | None) -> bool | None:
+    """True when ``/kv/seq-copy`` is in the Mach-O/ELF or its server-impl sibling."""
+    return binary_embeds_route(path, (b"/kv/seq-copy", b"kv/seq-copy"))
+
+
+def binary_embeds_cuda_graph_invalidate_route(path: Path | None) -> bool | None:
+    """True when ``/cuda-graph/invalidate`` is in the binary or server-impl sibling (0072)."""
+    return binary_embeds_route(
+        path, (b"/cuda-graph/invalidate", b"cuda-graph/invalidate")
+    )
+
+
+def resolve_ggml_cuda_lib(
+    server_bin: Path | None = None,
+    *,
+    cpp_root: Path | None = None,
+) -> Path | None:
+    """Locate ``libggml-cuda`` next to llama-server / vendor build / packaged cuda_v12."""
+    cands: list[Path] = []
+    if server_bin is not None:
+        parent = server_bin.parent
+        cands.extend(sorted(parent.glob("libggml-cuda.so*")))
+        cands.extend(sorted(parent.glob("libggml-cuda*.dylib")))
+        cands.extend(sorted((parent / "cuda_v12").glob("libggml-cuda.so*")))
+    root = cpp_root
+    if root is None and server_bin is not None:
+        try:
+            # vendor/.../build/bin/llama-server → vendor tree root
+            maybe = server_bin.resolve().parents[2]
+            if (maybe / "build" / "bin").is_dir() or (maybe / "ggml").is_dir():
+                root = maybe
+        except (IndexError, OSError):
+            root = None
+    if root is not None:
+        bindir = root / "build" / "bin"
+        cands.extend(sorted(bindir.glob("libggml-cuda.so*")))
+        cands.extend(sorted(bindir.glob("libggml-cuda*.dylib")))
+    cands.extend(sorted(Path("/usr/local/lib/ollama/cuda_v12").glob("libggml-cuda.so*")))
+    cands.extend(sorted(Path("/usr/local/lib/ollama").glob("libggml-cuda.so*")))
+    seen: set[Path] = set()
+    for p in cands:
+        try:
+            resolved = p.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_file():
+            continue
+        seen.add(resolved)
+        return resolved
+    return None
+
+
+def binary_embeds_needles(path: Path | None, needles: tuple[bytes, ...]) -> bool | None:
+    """True when any *needles* appear in *path* (shared library or executable)."""
     if path is None or not path.is_file():
         return None
     try:
         data = path.read_bytes()
     except OSError:
         return None
-    return b"/kv/seq-copy" in data or b"kv/seq-copy" in data
+    return any(n in data for n in needles)
+
+
+def probe_cuda_weight_formats(
+    server_bin: Path | None = None,
+    *,
+    cpp_root: Path | None = None,
+) -> dict[str, Any]:
+    """Report whether the CUDA backend embeds NVFP4 / MXFP4 / FP8_E4M3 / FP8_E5M2 markers.
+
+    WHY: weight-format GGUFs load only when ``libggml-cuda`` has the type
+    (+ kernels). Missing markers → fail-fast warning before a large mmap.
+    """
+    lib = resolve_ggml_cuda_lib(server_bin, cpp_root=cpp_root)
+    if lib is None:
+        return {
+            "libggml_cuda": None,
+            "nvfp4": None,
+            "mxfp4": None,
+            "fp8_e4m3": None,
+            "fp8_e5m2": None,
+            "skipped": True,
+            "reason": "libggml-cuda not found",
+        }
+    nv = binary_embeds_needles(lib, _NVFP4_NEEDLES)
+    mx = binary_embeds_needles(lib, _MXFP4_NEEDLES)
+    fp8 = binary_embeds_needles(lib, _FP8_E4M3_NEEDLES)
+    fp8_e5m2 = binary_embeds_needles(lib, _FP8_E5M2_NEEDLES)
+    return {
+        "libggml_cuda": str(lib),
+        "nvfp4": nv,
+        "mxfp4": mx,
+        "fp8_e4m3": fp8,
+        "fp8_e5m2": fp8_e5m2,
+        "skipped": False,
+        "reason": None,
+    }
 
 
 def probe_seq_copy_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
-    url = base_url.rstrip("/") + "/kv/seq-copy"
+    return _probe_post_route(base_url, "/kv/seq-copy", timeout=timeout)
+
+
+def probe_cuda_graph_invalidate_http(base_url: str, *, timeout: float = 3.0) -> bool | None:
+    return _probe_post_route(base_url, "/cuda-graph/invalidate", timeout=timeout)
+
+
+def _probe_post_route(base_url: str, route: str, *, timeout: float = 3.0) -> bool | None:
+    url = base_url.rstrip("/") + route
     req = urllib.request.Request(
         url,
         data=b"{}",
@@ -259,6 +394,11 @@ def llama_patch_health(
     under_vendor = _path_under(server_path, vendor_root)
     external_install = _is_external_llama_install(server_path)
     bin_seq = binary_embeds_seq_copy_route(server_path)
+    bin_cuda_graph = binary_embeds_cuda_graph_invalidate_route(server_path)
+    cuda_formats = probe_cuda_weight_formats(
+        server_path,
+        cpp_root=Path(cpp_root) if cpp_root else None,
+    )
     fork_help = False
     if server_path is not None and server_path.is_file():
         from runtime.llama_fork import probe_fork_llama_server
@@ -329,11 +469,54 @@ def llama_patch_health(
     elif external_install and fork_help and bin_seq is not True:
         warnings.append("external binary validated via fork KV --help probe")
 
+    if server_path is not None and bin_cuda_graph is False:
+        if external_install and fork_help:
+            warnings.append(
+                "external binary: /cuda-graph/invalidate embed not found (0072); rebuild recommended"
+            )
+        else:
+            issues.append(
+                f"llama-server binary lacks /cuda-graph/invalidate string — rebuild with patch 0072: "
+                f"./scripts/build_llama_server.sh"
+            )
+    elif external_install and bin_cuda_graph is True:
+        warnings.append("external binary validated via /cuda-graph/invalidate embed")
+
+    if cuda_formats.get("skipped"):
+        warnings.append(f"cuda weight-format probe skipped: {cuda_formats.get('reason')}")
+    else:
+        if cuda_formats.get("nvfp4") is False:
+            warnings.append(
+                f"libggml-cuda lacks NVFP4 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "NVFP4 GGUFs will fail; rebuild CUDA backend"
+            )
+        if cuda_formats.get("mxfp4") is False:
+            warnings.append(
+                f"libggml-cuda lacks MXFP4 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "MXFP4 GGUFs will fail; rebuild CUDA backend"
+            )
+        if cuda_formats.get("fp8_e4m3") is False:
+            warnings.append(
+                f"libggml-cuda lacks FP8_E4M3 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "native FP8 GGUFs will fail; rebuild CUDA backend"
+            )
+        if cuda_formats.get("fp8_e5m2") is False:
+            warnings.append(
+                f"libggml-cuda lacks FP8_E5M2 markers ({cuda_formats.get('libggml_cuda')}) — "
+                "native FP8 GGUFs will fail; rebuild CUDA backend"
+            )
+
     http_probe: bool | None = None
+    http_cuda_graph: bool | None = None
     if probe_http_base:
         http_probe = probe_seq_copy_http(probe_http_base)
         if http_probe is False:
             issues.append(f"live llama-server at {probe_http_base!r} returns 404 for POST /kv/seq-copy")
+        http_cuda_graph = probe_cuda_graph_invalidate_http(probe_http_base)
+        if http_cuda_graph is False:
+            issues.append(
+                f"live llama-server at {probe_http_base!r} returns 404 for POST /cuda-graph/invalidate"
+            )
 
     version_file = root / "LLAMA_CPP_VERSION"
     llama_cpp_version = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else ""
@@ -358,13 +541,17 @@ def llama_patch_health(
         "resolved_llama_cpp_lib": str(cpp_lib) if cpp_lib else None,
         "llama_server_under_vendor": under_vendor,
         "llama_server_binary_seq_copy": bin_seq,
+        "llama_server_binary_cuda_graph_invalidate": bin_cuda_graph,
+        "cuda_weight_formats": cuda_formats,
         "live_seq_copy_probe": http_probe,
+        "live_cuda_graph_invalidate_probe": http_cuda_graph,
         "issues": issues,
         "warnings": warnings,
         "remediation": [
             "./scripts/vendor/rebase_vendor_unified.sh --apply --sync",
             "./scripts/build/build_llama_server.sh",
             "./scripts/phase/phase15_llama_kv_ext_pin_check.sh",
+            "./scripts/gpu/nvfp4_cuda_probe.sh",
             "L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh",
         ],
     }
@@ -391,6 +578,10 @@ def llama_patch_health_summary(
         "resolved_llama_server_bin": full["resolved_llama_server_bin"],
         "llama_server_under_vendor": full["llama_server_under_vendor"],
         "llama_server_binary_seq_copy": full["llama_server_binary_seq_copy"],
+        "llama_server_binary_cuda_graph_invalidate": full.get(
+            "llama_server_binary_cuda_graph_invalidate"
+        ),
+        "cuda_weight_formats": full.get("cuda_weight_formats"),
         "issues": full["issues"],
         "warnings": full["warnings"],
         "doctor": "./scripts/vendor/llama_patch_doctor.sh",

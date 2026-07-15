@@ -25,11 +25,14 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [mtmd `grid_thw` handoff](./mtmd-grid-thw-handoff.md) — **why** client patch grids are hints-only until llama.cpp mtmd accepts them; Go seam + operator signals.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts.
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.
-* [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers.
+* [ComfyUI image backend](./comfyui-image-backend.md) — **why** orchestrate Comfy for agent edit/ControlNet/LoRA instead of porting every HF DiT to MLX; bindings, discovery, VRAM handoff, example workflow calibration.
+* [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers; image drivers (`mlx-imagegen`, `external-image`, `comfyui`).
 * [Roadmap — local voice & llama borrowings (eliza-v3)](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3) — **inference first:** GPU autotune profiles (**L1**), fork kernels (**L2**), KV prefix cache (**L3**); voice **L5+** later.
 * [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; **`l1_cuda_full_gate.sh`**; NVIDIA + Apple tiers; operator env.
 * [llama.cpp backend unification](./llama-cpp-unification.md) — **why** one elizaOS tree @ `LLAMA_CPP_COMMIT` replaces stock + eliza-llama siblings; discovery, doctor, vendor rebase plan.
 * [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
+* [CUDA lanes (dual-4090 / 5080)](./cuda-lanes.md) — **why** shared CUDA playbook vs 5080-only; NVFP4/MXFP4/FP8 weight roadmap; probes + sign-off.
+* [Native FP8 GGUF (E4M3/E5M2)](./native-fp8-gguf.md) — **why** block FP8 types + `--fp8-native` instead of full F16 dequant; patches 0073–0076; MMVQ/MMQ; probes.
 * [Runtime env reference](./runtime-env.md) — **why** profiles/YAML/smart defaults beat dozens of `ZEROLLAMA_*` exports; L3, KV, VRAM; `./scripts/runtime/runtime_env_doctor.sh`.
 * [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation (in-process + subprocess HTTP).
 * [Cross-slot Radix prefix share](./radix-prefix-share.md) — **why** L3 one-slot-per-key leaves duplicate prefills for shared system prompts; donor KV seed + v2 milestones (warm catch-up, ref-count metadata, Redis LMCache, hybrid SWA gate); vendor `POST /kv/seq-copy`; live smoke; **[product gaps](./radix-prefix-share.md#product-gaps)** (v2 vs full RadixAttention).
@@ -62,7 +65,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 
 ### GPU training & scheduling (repo)
 
-* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; prompt truncation API fields.
+* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; **prompt truncation / context-overflow API fields** (`prompt_truncated`, runtime detect).
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
 * [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA10 (metadata, watchdog, fleet score, repair, HF pull, `/api/score`, bench cache); **upstream watch** for LA11+ candidates; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).

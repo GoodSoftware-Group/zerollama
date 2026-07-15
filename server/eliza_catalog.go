@@ -211,7 +211,8 @@ func fetchElizaModelListFromNetwork(ctx context.Context) ([]api.ListModelRespons
 			RemoteHost:   strings.TrimSuffix(cloudProxyBaseURL, "/"),
 			ModifiedAt:   now,
 			Size:         0,
-			Digest:       "",
+			// Stock ollama clients panic on empty digests (digest[:12]).
+			Digest:       listCatalogDigest("eliza:" + id),
 			Details:      api.ModelDetails{Family: "cloud"},
 			Capabilities: inferElizaCloudCapabilities(id),
 		})

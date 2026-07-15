@@ -69,17 +69,19 @@ Next decode step recaptures graph (ggml internal; GGML_CUDA_GRAPHS=ON)
 
 ### 1. Rebuild sibling libllama after pull
 
-Invalidation is a **new public API** in the sibling tree (`../llama.cpp`), not in zerollama’s vendor pin alone:
+Invalidation is a **public API** on the unified vendor tree (`vendor/llama-cpp-8f114a9b/`, patch **0072**):
 
 ```bash
 # Mac (Metal — API present, CUDA graphs no-op at runtime)
 ./scripts/build/build_llama_server.sh
 
-# CUDA 5080 — ensure graphs enabled
+# CUDA — ensure graphs enabled
 GGML_CUDA=ON ./scripts/build/build_llama_server.sh
+# or container (host CUDA skew):
+./scripts/vendor/build_llama_server_container.sh
 ```
 
-**Why rebuild:** Python calls `llama_context_cuda_graph_invalidate` via ctypes or the Phase 15 native extension. Without the symbol, invalidation returns `symbol_missing_rebuild_libllama` and epoch bumps still run but ggml graphs are not cleared.
+**Why rebuild:** Python calls `llama_context_cuda_graph_invalidate` via ctypes or the Phase 15 native extension; subprocess POSTs `/cuda-graph/invalidate`. Without the symbol/route, invalidation returns `symbol_missing` / HTTP 404 and epoch bumps still run but ggml graphs are not cleared.
 
 ### 2. Health and probe
 
@@ -142,7 +144,7 @@ Each trigger bumps **both** slot epoch and global epoch (conservative: any slot 
 - Task handler calls `llama_context_cuda_graph_invalidate(ctx_tgt)`.
 - Response: `{"ok": true, "backends_cleared": N}` (`N=0` on Metal or when graphs disabled).
 
-**Graceful degradation:** if llama-server predates the endpoint (HTTP 404), `cuda_graph_invalidate.py` logs at debug and returns `ok: false`; epoch bumps still run for trace and future capture keys.
+**Graceful degradation:** if llama-server predates the endpoint (HTTP 404), `cuda_graph_invalidate.py` logs at debug and returns `ok: false`; epoch bumps still run for trace and future capture keys. Doctor: `./scripts/llama_patch_doctor.sh` probes `/cuda-graph/invalidate` embed in `libllama-server-impl` (patch **0072**).
 
 ```bash
 curl -s -X POST http://127.0.0.1:8082/cuda-graph/invalidate \

@@ -479,6 +479,10 @@ _GGML_BLOCK_LAYOUT: dict[int, tuple[int, int]] = {
     34: (256, 54),  # TQ1_0
     35: (256, 66),  # TQ2_0
     39: (32, 17),  # MXFP4
+    40: (64, 36),  # NVFP4
+    # WHY (32,34): F16 scale + 32 FP8 bytes — same footprint as Q8_0; VRAM estimate must not treat as F16.
+    51: (32, 34),  # FP8_E4M3
+    52: (32, 34),  # FP8_E5M2
 }
 
 

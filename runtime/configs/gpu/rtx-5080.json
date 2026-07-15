@@ -29,5 +29,9 @@
     "cache_type_k": "qjl1_256",
     "cache_type_v": "q4_polar"
   },
-  "_provenance": "5080 CT 1564 L1 cal Jun 2026: np 4 regressed 1B single-stream (−12%); 9B −1% at np4. Tuned np=2, batch=1024/ub=256 (half 4090 for 16 GiB); fork cache qjl/polar when L2 lands"
+  "_eliza_fork_vram_llama_server_flags": {
+    "cache_type_k": "tbq4_0",
+    "cache_type_v": "tbq3_0"
+  },
+  "_provenance": "5080 CT 1564 L1 cal Jun 2026: np 4 regressed 1B single-stream (−12%); 9B −1% at np4. Tuned np=2, batch=1024/ub=256 (half 4090 for 16 GiB); FORK=1 defaults to vram/TBQ; speed=qjl/polar experimental"
 }

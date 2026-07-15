@@ -24,10 +24,10 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`     // wan-cli; later diffusers | comfy-headless
-	Profile      string `json:"profile,omitempty"`  // wan2.1-t2v-1.3b | wan2.2-ti2v-5b
-	VRAMTier     string `json:"vram_tier,omitempty"`  // 16g | 24g | 32g
-	Size         string `json:"size,omitempty"`       // 832x480
+	Runner       string `json:"runner,omitempty"`    // wan-cli; later diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b
+	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
+	Size         string `json:"size,omitempty"`      // 832x480
 	Frames       int    `json:"frames,omitempty"`
 	Steps        int    `json:"steps,omitempty"`
 	Precision    string `json:"precision,omitempty"` // bf16 | fp16 | fp8
@@ -64,7 +64,7 @@ type ConfigV2 struct {
 	ModelType     string   `json:"model_type"` // shown as Parameter Size
 	FileType      string   `json:"file_type"`  // shown as Quantization Level
 	Renderer      string   `json:"renderer,omitempty"`
-	Parser            string   `json:"parser,omitempty"`
+	Parser        string   `json:"parser,omitempty"`
 	// ConcurrencyGroups declare mutual exclusion with other loaded models (LocalAI pattern).
 	// Why: on tight GPUs, imagegen + chat must not stay resident together.
 	ConcurrencyGroups []string `json:"concurrency_groups,omitempty"`
@@ -91,10 +91,14 @@ type ConfigV2 struct {
 	// "video_generation" (T2V: "wan" with scripts/video/wan_video_generate.py).
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
-	// BackendPaths passes filesystem paths to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
-	// Keys include "whisper_model", "piper_model", "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
+	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
+	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
+	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
+	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
-	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md).
+	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
+	// "comfy_workflow_dir" (Comfy template directory; relative paths need OLLAMA_COMFYUI_WORKFLOWS_ROOT
+	// or an absolute/~/ path — see docs/comfyui-image-backend.md), "comfy_default_workflow" (name, not a path).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
 
 	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md).
