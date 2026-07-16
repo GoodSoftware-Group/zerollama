@@ -109,11 +109,15 @@ func (s *Scheduler) watchdogBusyRunners() {
 
 func (s *Scheduler) findLRUIdleRunner() *runnerRef {
 	s.loadedMu.Lock()
-	defer s.loadedMu.Unlock()
+	runners := make([]*runnerRef, 0, len(s.loaded))
+	for _, runner := range s.loaded {
+		runners = append(runners, runner)
+	}
+	s.loadedMu.Unlock()
 
 	var victim *runnerRef
 	var oldest time.Time
-	for _, runner := range s.loaded {
+	for _, runner := range runners {
 		runner.refMu.Lock()
 		idle := runner.refCount == 0 && !runner.loading && runner.llama != nil
 		lastUsed := runner.lastUsedAt

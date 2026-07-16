@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -874,8 +875,8 @@ func TestSchedNeedsReloadEffectiveNumCtx(t *testing.T) {
 	defer done()
 
 	llm := &mockLlm{
-		vramByGPU:       map[ml.DeviceID]uint64{},
-		contextLength:   4096,
+		vramByGPU:     map[ml.DeviceID]uint64{},
+		contextLength: 4096,
 	}
 	do := api.DefaultOptions()
 	do.NumCtx = 131072 // stored Options still show pre-clamp request
@@ -945,6 +946,111 @@ func TestSchedUnloadAllRunners(t *testing.T) {
 	require.True(t, llm2.closeCalled)
 }
 
+// TestProcessExpiredRunnerDoesNotHoldLocksDuringClose reproduces the production hang:
+// llama.Close blocked while loadedMu was held, so /api/ps and fleet status wedged forever.
+func TestProcessExpiredRunnerDoesNotHoldLocksDuringClose(t *testing.T) {
+	ctx := t.Context()
+	s := InitScheduler(ctx)
+	s.waitForRecovery = 5 * time.Millisecond
+	s.getGpuFn = func(context.Context, []ml.FilteredRunnerDiscovery) []ml.DeviceInfo {
+		return []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA", ID: "0"}, TotalMemory: 16 << 30, FreeMemory: 8 << 30}}
+	}
+
+	block := make(chan struct{})
+	srv := &mockLlm{closeBlock: block, vramByGPU: map[ml.DeviceID]uint64{}}
+	runner := &runnerRef{
+		model:        &Model{ShortName: "gemma:abort"},
+		modelKey:     "gemma-key",
+		modelPath:    "/tmp/gemma",
+		llama:        srv,
+		pid:          4242,
+		gpus:         []ml.DeviceID{{Library: "CUDA", ID: "0"}},
+		discreteGPUs: true,
+		vramSize:     1 << 30,
+	}
+	s.loadedMu.Lock()
+	s.loaded[runner.modelKey] = runner
+	s.loadedMu.Unlock()
+
+	unloadDone := make(chan struct{})
+	go func() {
+		s.processExpiredRunner(runner)
+		close(unloadDone)
+	}()
+
+	// Close is blocked; snapshots must still complete (proves loadedMu is free).
+	deadline := time.Now().Add(2 * time.Second)
+	sawSnapshot := false
+	for time.Now().Before(deadline) {
+		_ = s.ProcessModelsSnapshot()
+		_ = s.InferenceFleetSnapshot()
+		sawSnapshot = true
+		select {
+		case <-unloadDone:
+			t.Fatal("unload finished before Close was unblocked")
+		default:
+		}
+		break
+	}
+	require.True(t, sawSnapshot)
+
+	close(block)
+	select {
+	case <-unloadDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processExpiredRunner did not finish after Close unblocked")
+	}
+	require.True(t, srv.closeCalled)
+	require.Empty(t, s.loaded)
+}
+
+func TestInferenceFleetSnapshotLockOrderWithUnload(t *testing.T) {
+	ctx := t.Context()
+	s := InitScheduler(ctx)
+
+	runner := &runnerRef{
+		model:    &Model{ShortName: "llama3:latest"},
+		modelKey: "test-key",
+		llama:    &mockLlm{},
+		loadedMeta: api.LoadedModelMetadata{
+			NumCtx:   4096,
+			ProbedAt: time.Now().UTC(),
+		},
+	}
+	s.loadedMu.Lock()
+	s.loaded["test-key"] = runner
+	s.loadedMu.Unlock()
+
+	// Old unload order was refMu → loadedMu. Fleet snapshot used to nest the opposite
+	// (loadedMu → refMu), deadlocking the scheduler after llama-server crashes.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		runner.refMu.Lock()
+		time.Sleep(50 * time.Millisecond)
+		s.loadedMu.Lock()
+		s.loadedMu.Unlock()
+		runner.refMu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		time.Sleep(10 * time.Millisecond)
+		_ = s.InferenceFleetSnapshot()
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadlock between unload lock order and InferenceFleetSnapshot")
+	}
+}
+
 func TestSchedUnloadAllRunnersDefersInUse(t *testing.T) {
 	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer done()
@@ -1009,6 +1115,7 @@ type mockLlm struct {
 	detonekizeRespErr error
 	closeResp         error
 	closeCalled       bool
+	closeBlock        chan struct{} // if set, Close waits until closed (hang regression tests)
 	vramSize          uint64
 	totalSize         uint64
 	vramByGPU         map[ml.DeviceID]uint64
@@ -1062,6 +1169,9 @@ func (s *mockLlm) Detokenize(ctx context.Context, tokens []int) (string, error) 
 }
 
 func (s *mockLlm) Close() error {
+	if s.closeBlock != nil {
+		<-s.closeBlock
+	}
 	s.closeCalled = true
 	return s.closeResp
 }

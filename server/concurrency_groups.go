@@ -92,11 +92,7 @@ func (s *Scheduler) findConcurrencyGroupConflict(pending *Model) *runnerRef {
 	pendingKey := schedulerModelKey(pending)
 
 	s.loadedMu.Lock()
-	defer s.loadedMu.Unlock()
-
-	var victim *runnerRef
-	var victimRefs uint
-	var victimLastUsed time.Time
+	candidates := make([]*runnerRef, 0)
 	for key, runner := range s.loaded {
 		if key == pendingKey {
 			continue
@@ -107,6 +103,14 @@ func (s *Scheduler) findConcurrencyGroupConflict(pending *Model) *runnerRef {
 		if !concurrencyGroupsOverlap(pendingGroups, concurrencyGroupsForModel(runner.model)) {
 			continue
 		}
+		candidates = append(candidates, runner)
+	}
+	s.loadedMu.Unlock()
+
+	var victim *runnerRef
+	var victimRefs uint
+	var victimLastUsed time.Time
+	for _, runner := range candidates {
 		runner.refMu.Lock()
 		rc := runner.refCount
 		lastUsed := runner.lastUsedAt

@@ -95,21 +95,21 @@ func boundedNumPredict(numPredict, numCtx int) int {
 // llamaServerRunner wraps an upstream llama-server process and implements the LlamaServer interface.
 // It communicates with llama-server over HTTP.
 type llamaServerRunner struct {
-	port             int
-	cmd              *exec.Cmd
-	done             chan struct{}
-	doneErr          error
-	client           *http.Client
-	memoryMu         sync.RWMutex
+	port               int
+	cmd                *exec.Cmd
+	done               chan struct{}
+	doneErr            error
+	client             *http.Client
+	memoryMu           sync.RWMutex
 	memTotal           uint64 // actual total buffer size parsed from llama-server logs (bytes)
 	memGPU             uint64 // actual GPU buffer size parsed from llama-server logs (bytes)
 	memModelFileBacked uint64 // model weight bytes mirroring on-disk file (mmap + device copies)
 	memCPUMappedModel  uint64 // mmap-backed CPU model buffers (e.g. CPU_Mapped)
 	gpuLayers          uint64 // model layers loaded on GPU, parsed from llama-server logs
-	gpuLayerOverflow int    // number of GPU-selected layers partially overflowed to CPU
-	status           *StatusWriter
-	options          api.Options
-	modelPath        string
+	gpuLayerOverflow   int    // number of GPU-selected layers partially overflowed to CPU
+	status             *StatusWriter
+	options            api.Options
+	modelPath          string
 	// mediaMarker must match the LLAMA_MEDIA_MARKER value passed to llama-server.
 	// llama.cpp randomizes this by default; Ollama renders stable [img-N] markers
 	// and rewrites them before forwarding the request.
@@ -1324,16 +1324,16 @@ func NewLlamaServerRunner(
 		projectors:   slices.Clone(projectors),
 		mmprojMemory: mmprojMemory,
 		modelLayers:  f.KV().BlockCount() + 1,
-		adapters:    slices.Clone(adapters),
-		opts:        opts,
-		numParallel: numParallel,
-		kvCacheType: kvCacheType,
-		embedding:   isEmbedding,
-		config:      config,
-		gpus:        slices.Clone(gpus),
-		gpuLibs:     slices.Clone(gpuLibs),
-		extraEnvs:   cloneStringMap(serverEnvs),
-		ggufKV:      f.KV(),
+		adapters:     slices.Clone(adapters),
+		opts:         opts,
+		numParallel:  numParallel,
+		kvCacheType:  kvCacheType,
+		embedding:    isEmbedding,
+		config:       config,
+		gpus:         slices.Clone(gpus),
+		gpuLibs:      slices.Clone(gpuLibs),
+		extraEnvs:    cloneStringMap(serverEnvs),
+		ggufKV:       f.KV(),
 	}
 
 	s := &llamaServerRunner{
@@ -2987,7 +2987,13 @@ func (s *llamaServerRunner) stopProcess() error {
 		}
 		if s.done != nil {
 			slog.Debug("waiting for llama-server to exit", "pid", s.Pid())
-			<-s.done
+			// Bound wait: a child stuck in uninterruptible GPU teardown must not
+			// block the scheduler forever (Close used to hang under loadedMu).
+			select {
+			case <-s.done:
+			case <-time.After(30 * time.Second):
+				slog.Error("llama-server did not exit after kill; continuing", "pid", s.Pid())
+			}
 		}
 		slog.Debug("llama-server stopped", "pid", s.Pid())
 	}

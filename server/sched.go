@@ -292,10 +292,34 @@ func (s *Scheduler) processFinishedRequest(finished *LlmRequest) {
 
 func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 	schedLogDebug("expiredCh: unload requested", nil, schedRunnerAttrs(runner)...)
+
+	// Canonical nesting: loadedMu then refMu. Never Close under either lock.
+	// The inverse (refMu → loadedMu) deadlocks against fleet/ps snapshots that
+	// briefly nest the other way, and wedged production after llama-server abort.
+	s.loadedMu.Lock()
+	slog.Debug("got lock to unload expired event", "runner", runner)
+	modelKey := runner.modelKey
+	runnerToUnload := s.loaded[modelKey]
+	if runnerToUnload == nil {
+		s.loadedMu.Unlock()
+		slog.Debug("duplicate expired event, ignoring", "runner", runner)
+		return
+	}
+
 	runner.refMu.Lock()
-	refCount := runner.refCount
-	if refCount > 0 {
+	if runner.pid != runnerToUnload.pid {
 		runner.refMu.Unlock()
+		s.loadedMu.Unlock()
+		slog.Debug("orphaned runner shutting down", "orphan", runner, "loaded", runnerToUnload)
+		runner.refMu.Lock()
+		llama := runner.detachServer()
+		runner.refMu.Unlock()
+		closeLlamaServer(llama)
+		return
+	}
+	if runner.refCount > 0 {
+		runner.refMu.Unlock()
+		s.loadedMu.Unlock()
 		schedLogDebug("expiredCh: victim still referenced, will retry", nil, schedRunnerAttrs(runner)...)
 		go func(r *runnerRef) {
 			time.Sleep(10 * time.Millisecond)
@@ -304,33 +328,21 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 		return
 	}
 
-	s.loadedMu.Lock()
-	slog.Debug("got lock to unload expired event", "runner", runner)
-	runnerToUnload := s.loaded[runner.modelKey]
-	if runnerToUnload == nil {
-		s.loadedMu.Unlock()
-		runner.refMu.Unlock()
-		slog.Debug("duplicate expired event, ignoring", "runner", runner)
-		return
-	}
-	if runner.pid != runnerToUnload.pid {
-		slog.Debug("orphaned runner shutting down", "orphan", runner, "loaded", runnerToUnload)
-		runner.unload()
-		s.loadedMu.Unlock()
-		runner.refMu.Unlock()
-		return
-	}
-
 	slog.Debug("starting background wait for VRAM recovery", "runner", runner)
 	runnersSnapshot := make([]ml.FilteredRunnerDiscovery, 0, len(s.loaded))
 	for _, r := range s.loaded {
 		runnersSnapshot = append(runnersSnapshot, r)
 	}
-	finished := s.waitForVRAMRecovery(runner, runnersSnapshot)
-	runner.unload()
-	delete(s.loaded, runner.modelKey)
-	s.loadedMu.Unlock()
+	delete(s.loaded, modelKey)
 	runner.refMu.Unlock()
+	s.loadedMu.Unlock()
+
+	// Baseline GPU query + Close must run outside loadedMu/refMu.
+	finished := s.waitForVRAMRecovery(runner, runnersSnapshot)
+	runner.refMu.Lock()
+	llama := runner.detachServer()
+	runner.refMu.Unlock()
+	closeLlamaServer(llama)
 	go func() {
 		<-finished
 		schedLogDebug("runner unloaded, signaling scheduler", nil, schedRunnerAttrs(runner)...)
@@ -555,9 +567,10 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 		} else {
 			schedLogInfo("victim still in use, forcing expiration after refs drain", pending, "ref_count", evictRefCount)
 		}
+		// Unlock before enqueue so processExpiredRunner can take refMu without waiting on us.
+		runnerToExpire.refMu.Unlock()
 		// Always queue expiration; processExpiredRunner retries until refCount reaches zero.
 		s.expiredCh <- runnerToExpire
-		runnerToExpire.refMu.Unlock()
 
 		evictionPaused := false
 		if !s.loadsPaused.Load() {
@@ -571,8 +584,13 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			}
 		}
 
-		// Wait for the unload to happen
+		// Wait for the unload to happen. Bound the wait so a stuck Close cannot leave
+		// loadsPaused forever (that wedged production after gemma llama-server abort).
 		evictWaitStart := time.Now()
+		evictTimeout := s.waitForRecovery + 30*time.Second
+		if evictTimeout < 35*time.Second {
+			evictTimeout = 35 * time.Second
+		}
 		select {
 		case <-ctx.Done():
 			resumeAfterEvict()
@@ -584,6 +602,11 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			resumeAfterEvict()
 			pending.failIfCanceled()
 			break
+		case <-time.After(evictTimeout):
+			evictAttrs := append([]any{"evict_wait", time.Since(evictWaitStart), "timeout", evictTimeout}, schedRunnerAttrs(runnerToExpire)...)
+			schedLogWarn("eviction unload timed out; resuming loads", pending, evictAttrs...)
+			resumeAfterEvict()
+			continue
 		case <-s.unloadedCh:
 			evictAttrs := append([]any{"evict_wait", time.Since(evictWaitStart)}, schedRunnerAttrs(runnerToExpire)...)
 			schedLogInfo("eviction unload completed", pending, evictAttrs...)
@@ -896,18 +919,23 @@ iGPUScan:
 	runner.numParallel = numParallel
 
 	s.loadedMu.Lock()
-	if oldRunner, ok := s.loaded[runner.modelKey]; ok {
+	var oldRunner *runnerRef
+	if r, ok := s.loaded[runner.modelKey]; ok {
 		// Shouldn't happen, but safeguard against leaking a runner
-		slog.Warn("model was still loaded", "old_runner", oldRunner, "new_runner", runner)
-		oldRunner.refMu.Lock()
-		oldRunner.unload()
-		oldRunner.refMu.Unlock()
+		slog.Warn("model was still loaded", "old_runner", r, "new_runner", runner)
+		oldRunner = r
 	}
 	s.activeLoading = nil
 	s.activeLoadingKey = ""
 	s.loaded[runner.modelKey] = runner
 	slog.Info("loaded runners", "count", len(s.loaded))
 	s.loadedMu.Unlock()
+	if oldRunner != nil {
+		oldRunner.refMu.Lock()
+		leaked := oldRunner.detachServer()
+		oldRunner.refMu.Unlock()
+		closeLlamaServer(leaked)
+	}
 	schedLogDebug("runner registered, waiting for subprocess ready", req,
 		"pid", runner.pid, "vram_size", runner.vramSize, "llama_load_elapsed", time.Since(llamaLoadStart))
 
@@ -1056,28 +1084,45 @@ type runnerRef struct {
 	expireTimer     *time.Timer
 	expiresAt       time.Time
 
-	model       *Model
-	modelPath   string
-	modelKey    string
-	numParallel int
+	model        *Model
+	modelPath    string
+	modelKey     string
+	numParallel  int
 	contextShift bool
-	loadedMeta  api.LoadedModelMetadata
+	loadedMeta   api.LoadedModelMetadata
 	*api.Options
 }
 
 // The refMu must already be held when calling unload
-func (runner *runnerRef) unload() {
+// detachServer clears runner subprocess state and returns the server to Close
+// outside scheduler locks. Why: llama.Close waits on process exit; doing that
+// under loadedMu/refMu deadlocks /api/ps and eviction when the child wedges.
+func (runner *runnerRef) detachServer() llm.LlamaServer {
+	if runner == nil {
+		return nil
+	}
 	if runner.expireTimer != nil {
 		runner.expireTimer.Stop()
 		runner.expireTimer = nil
 	}
-	if runner.llama != nil {
-		runner.llama.Close()
-	}
+	llama := runner.llama
+	runner.llama = nil
 	runner.model = nil
 	runner.Options = nil
 	runner.gpus = nil
 	runner.contextShift = false
+	return llama
+}
+
+func closeLlamaServer(llama llm.LlamaServer) {
+	if llama == nil {
+		return
+	}
+	llama.Close()
+}
+
+func (runner *runnerRef) unload() {
+	closeLlamaServer(runner.detachServer())
 }
 
 // syncRunnerLoadOptions updates runner.Options to the context size actually allocated
@@ -1210,20 +1255,20 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 		if runner.model.IsMLX() {
 			// MLX runs inference on a single worker thread; Ping can block behind prefill
 			// or fail spuriously while the subprocess is healthy.
-		if runner.llama.HasExited() {
-			attrs := []any{"pid", runner.pid}
-			if er, ok := runner.llama.(interface{ ExitError() error }); ok {
-				if err := er.ExitError(); err != nil {
-					attrs = append(attrs, "exit_err", err, "exit", llm.ExitStatusFromError(err))
+			if runner.llama.HasExited() {
+				attrs := []any{"pid", runner.pid}
+				if er, ok := runner.llama.(interface{ ExitError() error }); ok {
+					if err := er.ExitError(); err != nil {
+						attrs = append(attrs, "exit_err", err, "exit", llm.ExitStatusFromError(err))
+					}
 				}
-			}
-			if sr, ok := runner.llama.(interface{ LastStatusError() string }); ok {
-				if msg := sr.LastStatusError(); msg != "" {
-					attrs = append(attrs, "status_err", msg)
+				if sr, ok := runner.llama.(interface{ LastStatusError() string }); ok {
+					if msg := sr.LastStatusError(); msg != "" {
+						attrs = append(attrs, "status_err", msg)
+					}
 				}
+				return reloadReason("mlx_runner_exited", attrs...)
 			}
-			return reloadReason("mlx_runner_exited", attrs...)
-		}
 		} else if runner.llama.Ping(ctx) != nil {
 			return reloadReason("ping_failed")
 		}
@@ -1452,12 +1497,13 @@ func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
 	// so active HTTP streams (image NDJSON) finish instead of losing the client while the
 	// MLX subprocess keeps running orphaned in the background.
 	s.loadedMu.Lock()
+	var activeToClose llm.LlamaServer
 	if s.activeLoading != nil {
 		if keepModelKey != "" && s.activeLoadingKey == keepModelKey {
 			slog.Debug("keeping activeLoading probe for requested model", "model_key", keepModelKey)
 		} else {
 			slog.Debug("shutting down currently loading runner", "model_key", s.activeLoadingKey)
-			s.activeLoading.Close()
+			activeToClose = s.activeLoading
 			s.activeLoading = nil
 			s.activeLoadingKey = ""
 		}
@@ -1491,6 +1537,8 @@ func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
 	}
 	s.loadedMu.Unlock()
 
+	closeLlamaServer(activeToClose)
+
 	for _, runner := range deferred {
 		slog.Info("deferring unload of in-use runner", "model", runner.modelPath, "ref_count", runner.refCount)
 		s.scheduleExpiredRunner(runner)
@@ -1504,10 +1552,11 @@ func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
 		}
 		runner.sessionDuration = 0
 		runner.refCount = 0
+		llama := runner.detachServer()
 		runner.refMu.Unlock()
-		if runner.llama != nil {
+		if llama != nil {
 			slog.Debug("shutting down runner", "model", runner.modelPath, "pid", runner.pid)
-			runner.llama.Close()
+			closeLlamaServer(llama)
 		}
 	}
 }
@@ -1578,11 +1627,11 @@ func (s *Scheduler) oldestGgmlFifoSeq() uint64 {
 
 // InferenceFleetSnapshot is a consistent ggml scheduler view for GET /api/status.
 type InferenceFleetSnapshot struct {
-	Pending      int
-	Active       int
-	Loaded       int
-	LoadsPaused  bool
-	Loading      bool
+	Pending            int
+	Active             int
+	Loaded             int
+	LoadsPaused        bool
+	Loading            bool
 	LoadedModels       []string
 	LoadedModelDetails []api.GgmlLoadedModelStatus
 }
@@ -1602,34 +1651,44 @@ func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 		name string
 		meta api.LoadedModelMetadata
 	}
-	var ready []readyEntry
 
 	s.loadedMu.Lock()
 	snap.Loading = s.activeLoading != nil
+	runners := make([]*runnerRef, 0, len(s.loaded))
 	for _, runner := range s.loaded {
+		runners = append(runners, runner)
+	}
+	s.loadedMu.Unlock()
+
+	var ready []readyEntry
+	for _, runner := range runners {
 		runner.refMu.Lock()
 		if runner.refCount > 0 {
 			snap.Active++
 		}
-		if !runner.loading && runner.model != nil && runner.llama != nil {
-			name := runner.modelKey
+		usable := !runner.loading && runner.model != nil && runner.llama != nil
+		var name string
+		var meta api.LoadedModelMetadata
+		if usable {
+			name = runner.modelKey
 			if runner.model.ShortName != "" {
 				name = runner.model.ShortName
 			}
-			meta := runner.loadedMeta
-			runner.refMu.Unlock()
-			if meta.ProbedAt.IsZero() {
-				meta = probeRunnerMetadata(runner)
-			}
-			ready = append(ready, readyEntry{name: name, meta: meta})
-		} else {
-			runner.refMu.Unlock()
+			meta = runner.loadedMeta
 		}
+		runner.refMu.Unlock()
+		if !usable {
+			continue
+		}
+		// Probe outside locks: LoadModelMetadata can stall on disk; must not hold loadedMu.
+		if meta.ProbedAt.IsZero() {
+			meta = probeRunnerMetadata(runner)
+		}
+		ready = append(ready, readyEntry{name: name, meta: meta})
 	}
 	if snap.Loading {
 		snap.Active++
 	}
-	s.loadedMu.Unlock()
 
 	slices.SortFunc(ready, func(a, b readyEntry) int {
 		return strings.Compare(a.name, b.name)
@@ -1718,17 +1777,22 @@ func (s *Scheduler) InferenceBacklog() (pending int, active int, loaded int) {
 	pending = s.pending.Len()
 	s.loadedMu.Lock()
 	loaded = len(s.loaded)
+	runners := make([]*runnerRef, 0, len(s.loaded))
 	for _, runner := range s.loaded {
+		runners = append(runners, runner)
+	}
+	loading := s.activeLoading != nil
+	s.loadedMu.Unlock()
+	for _, runner := range runners {
 		runner.refMu.Lock()
 		if runner.refCount > 0 {
 			active++
 		}
 		runner.refMu.Unlock()
 	}
-	if s.activeLoading != nil {
+	if loading {
 		active++
 	}
-	s.loadedMu.Unlock()
 	return pending, active, loaded
 }
 
