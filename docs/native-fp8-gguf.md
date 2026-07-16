@@ -50,6 +50,7 @@ python3 convert_hf_to_gguf.py /path/to/hf-fp8 --fp8-native --outfile model-fp8.g
 Supported scale shapes:
 
 - Scalar / per-row (ModelOpt `.weight_scale`)
+- compressed-tensors `float-quantized` with `strategy: tensor|channel` (per-tensor / per-row `.weight_scale`)
 - 2D block maps (e.g. `weight_block_size=[128,128]`) when the **last** block dim is a multiple of 32
 
 Otherwise convert logs a warning and falls back to dequant.
@@ -74,7 +75,10 @@ Install: `sudo ./scripts/install_cuda_llama_server.sh` then restart `zerollama-r
 ./scripts/fp8_cuda_probe.sh          # packaged/vendor libggml-cuda markers (no GGUF)
 PYTHONPATH=vendor/llama-cpp-8f114a9b/gguf-py python3 scripts/fp8_e4m3_gguf_roundtrip.py
 PYTHONPATH=vendor/llama-cpp-8f114a9b/gguf-py python3 scripts/fp8_e5m2_gguf_roundtrip.py
+FP8_GGUF=/path/to/fp8.gguf ./scripts/fp8_cuda_load_smoke.sh   # load + /completion
 ```
+
+**Host fixture (dual-4090, Jul 2026):** [nm-testing/TinyLlama-1.1B-Chat-v1.0-FP8-e2e](https://huggingface.co/nm-testing/TinyLlama-1.1B-Chat-v1.0-FP8-e2e) → `convert_hf_to_gguf.py --fp8-native` → `/mnt/ssd2/models/fp8/tinyllama-fp8-e2e/tinyllama-1.1b-fp8_e4m3.gguf` (~1.3 GiB; 154× `FP8_E4M3`). Load smoke on GPU1: `llama-server -c 2048 -ngl 99` → `/health` OK, `/completion` ~477 tok/s, ~1.6 GiB VRAM. Artifact: `/tmp/fp8-cuda-load-smoke.json`.
 
 Runtime: `/health.llama_patches.cuda_weight_formats` → `{fp8_e4m3, fp8_e5m2, nvfp4, mxfp4, libggml_cuda}` when the serving runtime tree includes the Jul 2026 probe code. Binary probe is authoritative if `/opt` runtime is older.
 
