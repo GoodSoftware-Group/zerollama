@@ -1,18 +1,30 @@
 package envconfig
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+// detectVisibleGPUCount counts NVIDIA GPUs via `nvidia-smi -L`.
+// Overridable in tests. ok=false when the probe is unavailable.
+var detectVisibleGPUCount = detectVisibleGPUCountNvidiaSMI
+
 // ApplyHardwareLaneDefaults reads ``serve:`` and ``vram:`` from the runtime topology
-// YAML (e.g. dual_4090.yaml) and sets Go process env only when the operator has not
-// already set the corresponding variable.
+// YAML and sets Go process env only when the operator has not already set the
+// corresponding variable.
+//
+// Config selection mirrors runtime/autoconfig.py: explicit ZEROLLAMA_RUNTIME_CONFIG,
+// else GPU-count pick (1 → single_gpu.yaml, ≥2 → dual_4090.yaml). Do not hardcode
+// dual_4090 — that mis-lanes single-card hosts (e.g. RTX 5080).
 func ApplyHardwareLaneDefaults() {
 	path := resolvedRuntimeConfigPath()
 	if path == "" {
@@ -33,17 +45,103 @@ func resolvedRuntimeConfigPath() string {
 	if v := strings.TrimSpace(Var("ZEROLLAMA_AUTO_CONFIG")); v == "0" || strings.EqualFold(v, "false") {
 		return ""
 	}
-	repo := strings.TrimSpace(Var("ZEROLLAMA_REPO"))
-	candidates := []string{"/opt/zerollama/runtime/configs/dual_4090.yaml"}
-	if repo != "" {
-		candidates = append(candidates, filepath.Join(repo, "runtime/configs/dual_4090.yaml"))
+	return resolveAutoRuntimeConfigPath()
+}
+
+func resolveAutoRuntimeConfigPath() string {
+	configs := runtimeConfigsDir()
+	if configs == "" {
+		return ""
 	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	apple := filepath.Join(configs, "apple_silicon.yaml")
+	single := filepath.Join(configs, "single_gpu.yaml")
+	dual := filepath.Join(configs, "dual_4090.yaml")
+
+	if runtime.GOOS == "darwin" && fileExists(apple) {
+		slog.Info("hardware lane autoconfig pick",
+			"pick", "apple_silicon",
+			"config", filepath.Base(apple),
+			"reason", "darwin",
+		)
+		return apple
+	}
+
+	n, ok := detectVisibleGPUCount()
+	switch {
+	case ok && n <= 1 && fileExists(single):
+		slog.Info("hardware lane autoconfig pick",
+			"pick", "single_gpu",
+			"config", filepath.Base(single),
+			"visible_gpu_count", n,
+		)
+		return single
+	case ok && n >= 2 && fileExists(dual):
+		slog.Info("hardware lane autoconfig pick",
+			"pick", "dual_4090",
+			"config", filepath.Base(dual),
+			"visible_gpu_count", n,
+		)
+		return dual
+	}
+
+	// Probe failed: prefer single_gpu (safe on one card) over dual tensor-split topology.
+	if fileExists(single) {
+		slog.Warn("hardware lane autoconfig pick",
+			"pick", "single_gpu",
+			"config", filepath.Base(single),
+			"reason", "nvidia-smi unavailable; defaulting to single_gpu (set ZEROLLAMA_RUNTIME_CONFIG to override)",
+		)
+		return single
+	}
+	if fileExists(dual) {
+		slog.Warn("hardware lane autoconfig pick",
+			"pick", "dual_4090",
+			"config", filepath.Base(dual),
+			"reason", "single_gpu.yaml missing; falling back to dual_4090",
+		)
+		return dual
+	}
+	if fileExists(apple) {
+		return apple
+	}
+	return ""
+}
+
+func runtimeConfigsDir() string {
+	repo := strings.TrimSpace(Var("ZEROLLAMA_REPO"))
+	candidates := []string{}
+	if repo != "" {
+		candidates = append(candidates, filepath.Join(repo, "runtime/configs"))
+	}
+	candidates = append(candidates, "/opt/zerollama/runtime/configs")
+	for _, d := range candidates {
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			return d
 		}
 	}
 	return ""
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func detectVisibleGPUCountNvidiaSMI() (n int, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "nvidia-smi", "-L")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, false
+	}
+	count := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "GPU ") {
+			count++
+		}
+	}
+	return count, true
 }
 
 func readYAMLBlock(path string, blockName string) map[string]any {

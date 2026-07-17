@@ -181,3 +181,44 @@ func TestEnrichShowGgmlNumCtxInfo(t *testing.T) {
 		t.Fatalf("num_ctx should stay unset on show, got %d", got.NumCtx)
 	}
 }
+
+func TestSuggestMaxGgmlNumParallel(t *testing.T) {
+	t.Setenv("ZEROLLAMA_GGML_VRAM_MARGIN", "1.0")
+	estimator := func(_ string, _ *ggml.GGML, numCtx int, profile ggmlLoadProfile) uint64 {
+		// Weights 4GiB + KV proportional to ctx×np
+		return 4_000_000_000 + uint64(numCtx)*uint64(profile.numParallel)*100_000
+	}
+	f := &ggml.GGML{}
+	profile := ggmlLoadProfile{batchSize: 512, numParallel: 1, kvCacheType: "f16"}
+	// np=1 → ~4.82e9; np=2 → ~5.64e9; np=3 → ~6.46e9; free 6e9 → max 2
+	got := suggestMaxGgmlNumParallelWith(estimator, f, "m.gguf", 8192, 6_000_000_000, profile, 8)
+	if got != 2 {
+		t.Fatalf("want np=2, got %d", got)
+	}
+	got = suggestMaxGgmlNumParallelWith(estimator, f, "m.gguf", 8192, 4_500_000_000, profile, 8)
+	if got != 1 {
+		t.Fatalf("want np=1 when tight, got %d", got)
+	}
+	got = suggestMaxGgmlNumParallelWith(estimator, f, "m.gguf", 8192, 20_000_000_000, profile, 4)
+	if got != 4 {
+		t.Fatalf("want cap 4, got %d", got)
+	}
+}
+
+func TestResolveGgmlNumParallelAutoOff(t *testing.T) {
+	t.Setenv("ZEROLLAMA_GGML_AUTO_PARALLEL", "0")
+	t.Setenv("OLLAMA_NUM_PARALLEL", "3")
+	m := &Model{
+		ShortName: "t",
+		ModelPath: "m.gguf",
+		Config: model.ConfigV2{
+			ModelFamily:  "llama",
+			ModelFormat:  "gguf",
+			Capabilities: []string{"completion"},
+		},
+	}
+	got := resolveGgmlNumParallel(m, api.Options{Runner: api.Runner{NumCtx: 4096}}, nil, &ggml.GGML{})
+	if got != 3 {
+		t.Fatalf("auto off want 3, got %d", got)
+	}
+}

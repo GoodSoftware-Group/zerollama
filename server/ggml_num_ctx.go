@@ -22,6 +22,7 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/ml"
+	"github.com/ollama/ollama/types/model"
 )
 
 const ggmlFreeVRAMCacheTTL = 2 * time.Second // Why: /api/show is called often; full GPUDevices refresh is ~500ms+.
@@ -43,14 +44,7 @@ func ggmlLoadProfileFor(model *Model, opts api.Options) ggmlLoadProfile {
 	}
 
 	numParallel := max(int(envconfig.NumParallel()), 1)
-	family := model.PrimaryFamily()
-	if family == "" {
-		family = model.Config.ModelFamily
-	}
-	if slices.Contains([]string{
-		"mllama", "qwen3vl", "qwen3vlmoe", "qwen35", "qwen35moe",
-		"qwen3next", "lfm2", "lfm2moe", "nemotron_h", "nemotron_h_moe",
-	}, family) {
+	if ggmlArchitectureForcesParallelOne(model) {
 		numParallel = 1
 	}
 
@@ -110,6 +104,105 @@ func estimateGgmlLoadVRAM(modelPath string, f *ggml.GGML, numCtx int, profile gg
 	}
 
 	return weights + kvTotal + graph
+}
+
+// ggmlForceParallelOne families are not safe with llama-server -np > 1.
+var ggmlForceParallelOne = []string{
+	"mllama", "qwen3vl", "qwen3vlmoe", "qwen35", "qwen35moe",
+	"qwen3next", "lfm2", "lfm2moe", "nemotron_h", "nemotron_h_moe",
+}
+
+func ggmlArchitectureForcesParallelOne(model *Model) bool {
+	if model == nil {
+		return false
+	}
+	family := model.PrimaryFamily()
+	if family == "" {
+		family = model.Config.ModelFamily
+	}
+	return slices.Contains(ggmlForceParallelOne, family)
+}
+
+// suggestMaxGgmlNumParallelWith returns the largest -np in [1, maxCap] whose load
+// estimate fits in free VRAM (after margin). KV scales with num_ctx×np at load time.
+func suggestMaxGgmlNumParallelWith(
+	estimator ggmlVRAMEstimator,
+	f *ggml.GGML,
+	modelPath string,
+	numCtx int,
+	effectiveFree uint64,
+	profile ggmlLoadProfile,
+	maxCap int,
+) int {
+	if estimator == nil || f == nil || numCtx <= 0 || effectiveFree == 0 || maxCap < 1 {
+		return 1
+	}
+	if maxCap > 64 {
+		maxCap = 64
+	}
+	margin := envconfig.GgmlVRAMMargin()
+	best := 1
+	for np := 1; np <= maxCap; np++ {
+		p := profile
+		p.numParallel = np
+		est := uint64(float64(estimator(modelPath, f, numCtx, p)) * margin)
+		if est == 0 || est > effectiveFree {
+			break
+		}
+		best = np
+	}
+	return best
+}
+
+func suggestMaxGgmlNumParallel(f *ggml.GGML, modelPath string, numCtx int, effectiveFree uint64, profile ggmlLoadProfile, maxCap int) int {
+	return suggestMaxGgmlNumParallelWith(estimateGgmlLoadVRAM, f, modelPath, numCtx, effectiveFree, profile, maxCap)
+}
+
+// resolveGgmlNumParallel picks llama-server -np for this load.
+// Auto (default): fit from free VRAM up to PARALLEL_MAX (and OLLAMA_NUM_PARALLEL when set).
+// Auto off: OLLAMA_NUM_PARALLEL exactly. Go completion semaphore matches the chosen -np.
+func resolveGgmlNumParallel(m *Model, opts api.Options, gpus []ml.DeviceInfo, f *ggml.GGML) int {
+	requested := max(int(envconfig.NumParallel()), 1)
+	if m != nil && m.CheckCapabilities(model.CapabilityCompletion) != nil {
+		return 1
+	}
+	if ggmlArchitectureForcesParallelOne(m) {
+		if requested != 1 {
+			slog.Warn("model architecture does not currently support parallel requests",
+				"architecture", m.PrimaryFamily(),
+			)
+		}
+		return 1
+	}
+	if !envconfig.GgmlAutoParallelEnabled() || f == nil || m == nil || m.ModelPath == "" {
+		return requested
+	}
+
+	maxCap := envconfig.GgmlParallelMaxCap()
+	if envconfig.NumParallelExplicit() {
+		maxCap = min(requested, maxCap)
+	}
+	numCtx := opts.NumCtx
+	if numCtx <= 0 {
+		numCtx = api.DefaultOptions().NumCtx
+	}
+	free := effectiveGgmlFreeVRAM(gpus)
+	profile := ggmlLoadProfileFor(m, opts)
+	fitted := suggestMaxGgmlNumParallel(f, m.ModelPath, numCtx, free, profile, maxCap)
+	if fitted < 1 {
+		fitted = 1
+	}
+	if fitted != requested {
+		slog.Info("ggml num_parallel auto-fitted from VRAM",
+			"model", m.ShortName,
+			"num_ctx", numCtx,
+			"requested", requested,
+			"fitted", fitted,
+			"cap", maxCap,
+			"free_vram", format.HumanBytes2(free),
+		)
+	}
+	return fitted
 }
 
 type ggmlVRAMEstimator func(modelPath string, f *ggml.GGML, numCtx int, profile ggmlLoadProfile) uint64

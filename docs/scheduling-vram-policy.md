@@ -141,6 +141,9 @@ Example show when manifest tier default is too high:
 | `ZEROLLAMA_GGML_CLAMP_NUM_CTX` | `0` | Lower merged `num_ctx` to suggestion before load; operators expect requested context unless opted in |
 | `ZEROLLAMA_GGML_SUGGEST_CTX_MAX` | `131072` | Upper bound for binary search (matches runtime `VRAM_SUGGEST_CTX_MAX`) |
 | `ZEROLLAMA_GGML_VRAM_MARGIN` | `1.05` | Conservative multiplier on estimate vs free bytes |
+| `ZEROLLAMA_GGML_AUTO_PARALLEL` | `auto` (on) | Fit llama-server `-np` from free VRAM at load; Go completion semaphore matches `-np` |
+| `ZEROLLAMA_GGML_PARALLEL_MAX` | `8` | Upper bound for auto `-np` when `OLLAMA_NUM_PARALLEL` is unset |
+| `OLLAMA_NUM_PARALLEL` | `1` (upstream default) | Hard **cap** when auto is on (explicit env); exact value when auto is off |
 
 Code: `server/ggml_num_ctx.go`, `envconfig/ggml_num_ctx.go`, `server/sched.go` (`LoadedRunnersForDiscovery`).
 

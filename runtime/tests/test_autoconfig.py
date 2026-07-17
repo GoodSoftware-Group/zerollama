@@ -34,6 +34,17 @@ def test_resolve_dual_when_two_visible(monkeypatch):
     assert path.name == "dual_4090.yaml"
 
 
+def test_resolve_single_gpu_when_probe_unavailable(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_AUTO_CONFIG", "1")
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_CONFIG", raising=False)
+    monkeypatch.setattr("runtime.autoconfig.sys.platform", "linux")
+    monkeypatch.setattr(
+        "runtime.autoconfig.detect_visible_gpu_count", lambda: None
+    )
+    path = resolve_default_config_path()
+    assert path.name == "single_gpu.yaml"
+
+
 def test_load_single_gpu_yaml(monkeypatch):
     monkeypatch.setenv("ZEROLLAMA_GPU_PROFILE", "0")
     path = Path(__file__).resolve().parents[1] / "configs" / "single_gpu.yaml"

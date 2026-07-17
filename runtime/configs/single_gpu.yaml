@@ -23,6 +23,15 @@ split_mode: layer
 main_gpu: 0
 llama_parallel_slots: 1
 # llama_backend: inprocess  # Phase 14 ctypes GPU; after RUN_E2E_INPROCESS=1 phase14_backend_smoke, enable_yaml_inprocess + yaml_config smoke
+# Go daemon defaults (envconfig/hardware_lane.go) — only applied when OLLAMA_* unset.
+# serve.num_parallel is a CAP for ZEROLLAMA_GGML_AUTO_PARALLEL (default on): load picks
+# llama-server -np from free VRAM up to this ceiling. Go completion semaphore matches -np.
+serve:
+  max_loaded_models: 1
+  keep_alive: 5m
+  num_parallel: 8
+  # WHY stock: matches dual_4090 measured decode default; override with ZEROLLAMA_LLAMA_FORK=1.
+  llama_fork: stock
 kv:
   block_size: 16
   num_blocks_per_device: 2048

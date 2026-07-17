@@ -34,7 +34,8 @@ export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:8080}"
 # Runtime → Go /internal/* (cross-queue-seq, render-chat) must use loopback, not the bind address.
 export ZEROLLAMA_GO_URL="${ZEROLLAMA_GO_URL:-http://127.0.0.1:8080}"
 export OLLAMA_LLM_LIBRARY="${OLLAMA_LLM_LIBRARY:-cuda_v13}"
-export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
+export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-8}"
+export ZEROLLAMA_GGML_AUTO_PARALLEL="${ZEROLLAMA_GGML_AUTO_PARALLEL:-auto}"
 export OLLAMA_N_CTX="${OLLAMA_N_CTX:-12288}"
 
 # Runtime YAML + VRAM policy (single-GPU 16GB — tune after measurement).
@@ -153,8 +154,9 @@ export ZEROLLAMA_RUNTIME_EMBED="${ZEROLLAMA_RUNTIME_EMBED:-on}"
 # Logging (pick one):
 #   exec "$ZEROLLAMA_BIN" serve                                    # stdout to screen/tmux
 #   exec "$ZEROLLAMA_BIN" serve >> /tmp/zerollama-serve.log 2>&1 # quiet screen; tail -f log
-#   exec "$ZEROLLAMA_BIN" serve 2>&1 | tee -a /tmp/zerollama-serve.log  # both
+#   "$ZEROLLAMA_BIN" serve 2>&1 | (trap '' INT; tee -a /tmp/log)  # both; trap so tee ignores Ctrl+C
 # WHY log redirect on CT 1564: GIN + runner spam fills screen; operators use tail -f on one file.
+# WHY trap INT on tee: otherwise pipeline SIGINT kills tee first and races force-quit.
 SERVE_LOG="${SERVE_LOG:-}"
 if [[ -n "$SERVE_LOG" ]]; then
   exec "$ZEROLLAMA_BIN" serve >> "$SERVE_LOG" 2>&1

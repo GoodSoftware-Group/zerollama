@@ -34,9 +34,6 @@ struct mtmd_bitmap {
     uint32_t ny = 0;
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
-    bool has_grid_hint = false;
-    int32_t grid_thw[3] = {0, 0, 0};
-
     // Optional SGLang/Qwen [T,H,W] patch grid; dyn_size honors via preprocessor.
     bool has_grid_hint = false;
     int32_t grid_thw[3] = {0, 0, 0};

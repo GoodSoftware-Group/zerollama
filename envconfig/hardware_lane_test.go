@@ -71,3 +71,90 @@ func TestApplyHardwareLaneDefaultsRespectsExplicitEnv(t *testing.T) {
 		t.Fatalf("explicit env overridden: %q", got)
 	}
 }
+
+func TestResolveAutoRuntimeConfigPathPicksSingleGPU(t *testing.T) {
+	repo := t.TempDir()
+	configs := filepath.Join(repo, "runtime", "configs")
+	if err := os.MkdirAll(configs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	single := filepath.Join(configs, "single_gpu.yaml")
+	dual := filepath.Join(configs, "dual_4090.yaml")
+	if err := os.WriteFile(single, []byte("device_count: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dual, []byte("device_count: 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ZEROLLAMA_REPO", repo)
+	t.Setenv("ZEROLLAMA_RUNTIME_CONFIG", "")
+	t.Setenv("ZEROLLAMA_AUTO_CONFIG", "1")
+
+	prev := detectVisibleGPUCount
+	t.Cleanup(func() { detectVisibleGPUCount = prev })
+	detectVisibleGPUCount = func() (int, bool) { return 1, true }
+
+	got := resolveAutoRuntimeConfigPath()
+	if got != single {
+		t.Fatalf("got %q want %q", got, single)
+	}
+}
+
+func TestResolveAutoRuntimeConfigPathPicksDual(t *testing.T) {
+	repo := t.TempDir()
+	configs := filepath.Join(repo, "runtime", "configs")
+	if err := os.MkdirAll(configs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	single := filepath.Join(configs, "single_gpu.yaml")
+	dual := filepath.Join(configs, "dual_4090.yaml")
+	if err := os.WriteFile(single, []byte("device_count: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dual, []byte("device_count: 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ZEROLLAMA_REPO", repo)
+	t.Setenv("ZEROLLAMA_RUNTIME_CONFIG", "")
+	t.Setenv("ZEROLLAMA_AUTO_CONFIG", "1")
+
+	prev := detectVisibleGPUCount
+	t.Cleanup(func() { detectVisibleGPUCount = prev })
+	detectVisibleGPUCount = func() (int, bool) { return 2, true }
+
+	got := resolveAutoRuntimeConfigPath()
+	if got != dual {
+		t.Fatalf("got %q want %q", got, dual)
+	}
+}
+
+func TestResolveAutoRuntimeConfigPathProbeFailPrefersSingle(t *testing.T) {
+	repo := t.TempDir()
+	configs := filepath.Join(repo, "runtime", "configs")
+	if err := os.MkdirAll(configs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	single := filepath.Join(configs, "single_gpu.yaml")
+	dual := filepath.Join(configs, "dual_4090.yaml")
+	if err := os.WriteFile(single, []byte("device_count: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dual, []byte("device_count: 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ZEROLLAMA_REPO", repo)
+	t.Setenv("ZEROLLAMA_RUNTIME_CONFIG", "")
+	t.Setenv("ZEROLLAMA_AUTO_CONFIG", "1")
+
+	prev := detectVisibleGPUCount
+	t.Cleanup(func() { detectVisibleGPUCount = prev })
+	detectVisibleGPUCount = func() (int, bool) { return 0, false }
+
+	got := resolveAutoRuntimeConfigPath()
+	if got != single {
+		t.Fatalf("got %q want %q", got, single)
+	}
+}

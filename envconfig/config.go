@@ -443,6 +443,8 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_GGML_CLAMP_NUM_CTX":             {"ZEROLLAMA_GGML_CLAMP_NUM_CTX", ggmlClampNumCtxDisplay(), "Lower ggml merged num_ctx to suggested_max before load (default off; why: silent clamp broke operator trust — parity with Phase 13 runtime clamp)"},
 		"ZEROLLAMA_GGML_SUGGEST_CTX_MAX":           {"ZEROLLAMA_GGML_SUGGEST_CTX_MAX", Var("ZEROLLAMA_GGML_SUGGEST_CTX_MAX"), "Upper bound for ggml suggested_max_num_ctx binary search (default 131072)"},
 		"ZEROLLAMA_GGML_VRAM_MARGIN":               {"ZEROLLAMA_GGML_VRAM_MARGIN", Var("ZEROLLAMA_GGML_VRAM_MARGIN"), "Multiply ggml load VRAM estimate before compare to free memory (default 1.05; conservative vs GraphSize proxy)"},
+		"ZEROLLAMA_GGML_AUTO_PARALLEL":             {"ZEROLLAMA_GGML_AUTO_PARALLEL", ggmlAutoParallelDisplay(), "Fit llama-server -np from free VRAM at load (default auto/on; Go semaphore still matches -np)"},
+		"ZEROLLAMA_GGML_PARALLEL_MAX":              {"ZEROLLAMA_GGML_PARALLEL_MAX", Var("ZEROLLAMA_GGML_PARALLEL_MAX"), "Upper bound for auto -np fit (default 8)"},
 		"ZEROLLAMA_LEGACY_RUNNER":                  {"ZEROLLAMA_LEGACY_RUNNER", LegacyRunnerForced(), "If 1, always load ggml runner even for models tagged zerollama-runtime"},
 		"OLLAMA_RUNTIME_ALL":                       {"OLLAMA_RUNTIME_ALL", RuntimeProxyAll(), "If 1 and ZEROLLAMA_RUNTIME_URL is set, proxy all local /api/generate to the runtime"},
 		"OLLAMA_FFMPEG":                            {"OLLAMA_FFMPEG", FFmpegBin(), "ffmpeg binary for native video frame sampling (default: ffmpeg on PATH)"},

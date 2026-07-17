@@ -98,6 +98,7 @@ func TestLlamaCppBackend(t *testing.T) {
 	}
 	t.Setenv("ZEROLLAMA_RUNTIME", "")
 	t.Setenv("ZEROLLAMA_AUTO_CONFIG", "")
+	t.Setenv("ZEROLLAMA_RUNTIME_CONFIG", "")
 	ApplyLlamaCppBackendDefaults()
 	if Var("ZEROLLAMA_RUNTIME") != "1" {
 		t.Fatalf("runtime=%q", Var("ZEROLLAMA_RUNTIME"))

@@ -2450,10 +2450,13 @@ func Serve(ln net.Listener) error {
 	go func() {
 		<-signals
 		slog.Info("shutting down server (Ctrl+C again to force quit)")
-		// Second signal must work immediately — do not register after slow teardown.
+		// Second signal must kill the whole process immediately.
 		go func() {
 			<-signals
 			slog.Warn("forced exit on second shutdown signal")
+			// Restore default disposition so a third signal cannot be swallowed
+			// if exitProcess somehow fails to terminate.
+			signal.Reset(syscall.SIGINT, syscall.SIGTERM)
 			exitProcess(1)
 		}()
 
