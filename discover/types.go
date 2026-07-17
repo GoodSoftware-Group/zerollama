@@ -3,11 +3,15 @@ package discover
 import (
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/ml"
+	"github.com/ollama/ollama/version"
 )
 
 type memInfo struct {
@@ -24,6 +28,74 @@ type CPU struct {
 	CoreCount           int
 	EfficiencyCoreCount int // Performance = CoreCount - Efficiency
 	ThreadCount         int
+}
+
+// LogStartupBanner prints version + wall-clock start time before any other serve noise.
+// WHY early: operators need to know which binary/time they launched when grepping long DEBUG logs.
+func LogStartupBanner() {
+	slog.Info("zerollama starting",
+		"version", version.Version,
+		"started_at", time.Now().Format(time.RFC3339),
+		"goos", runtime.GOOS,
+		"goarch", runtime.GOARCH,
+	)
+}
+
+// LogStartupHardware prints a single clear GPU/CUDA (or CPU-only) summary after discovery.
+// Complements LogDetails (per-device rows) so serve boot answers: GPU? which CUDA? which llm library?
+func LogStartupHardware(devices []ml.DeviceInfo) {
+	requested := strings.TrimSpace(envconfig.LLMLibrary())
+	var gpus []ml.DeviceInfo
+	for _, d := range devices {
+		lib := strings.ToLower(d.Library)
+		if lib == "" || lib == "cpu" {
+			continue
+		}
+		gpus = append(gpus, d)
+	}
+
+	if len(gpus) == 0 {
+		slog.Warn("startup hardware: no GPU found — inference will use CPU",
+			"gpu_found", false,
+			"ollama_llm_library", requested,
+			"hint", "check nvidia-smi, /root/nvidia-host in LD_LIBRARY_PATH, and OLLAMA_LLM_LIBRARY (cuda_v12/cuda_v13)",
+		)
+		return
+	}
+
+	// Primary device = highest free memory (same preference as LogDetails).
+	sort.Sort(sort.Reverse(ml.ByFreeMemory(gpus)))
+	dev := gpus[0]
+	var libs []string
+	for _, dir := range dev.LibraryPath {
+		if strings.Contains(dir, filepath.Join("lib", "ollama")) {
+			libs = append(libs, filepath.Base(dir))
+		}
+	}
+	libdirs := strings.Join(libs, ",")
+	if libdirs == "" && len(dev.LibraryPath) > 0 {
+		libdirs = strings.Join(dev.LibraryPath, ",")
+	}
+
+	slog.Info("startup hardware: GPU ready",
+		"gpu_found", true,
+		"gpu_count", len(gpus),
+		"device", firstNonEmpty(dev.Description, dev.Name),
+		"library", dev.Library,
+		"compute", dev.Compute(),
+		"driver", dev.Driver(),
+		"vram_total", format.HumanBytes2(dev.TotalMemory),
+		"vram_available", format.HumanBytes2(dev.FreeMemory),
+		"ollama_llm_library", requested,
+		"libdirs", libdirs,
+		"pci_id", dev.PCIID,
+	)
+	if requested != "" && libdirs != "" && !strings.Contains(libdirs, requested) {
+		slog.Warn("startup hardware: OLLAMA_LLM_LIBRARY does not match discovered libdirs",
+			"ollama_llm_library", requested,
+			"libdirs", libdirs,
+		)
+	}
 }
 
 func LogDetails(devices []ml.DeviceInfo) {

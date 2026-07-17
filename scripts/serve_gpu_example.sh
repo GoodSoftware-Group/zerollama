@@ -33,7 +33,7 @@ export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${OLLAMA_TRAINING_PYTHONPATH}}"
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:8080}"
 # Runtime → Go /internal/* (cross-queue-seq, render-chat) must use loopback, not the bind address.
 export ZEROLLAMA_GO_URL="${ZEROLLAMA_GO_URL:-http://127.0.0.1:8080}"
-export OLLAMA_LLM_LIBRARY="${OLLAMA_LLM_LIBRARY:-cuda_v12}"
+export OLLAMA_LLM_LIBRARY="${OLLAMA_LLM_LIBRARY:-cuda_v13}"
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
 export OLLAMA_N_CTX="${OLLAMA_N_CTX:-12288}"
 
@@ -87,14 +87,14 @@ fi
 export GGML_CUDA_USE_GRAPHS="${GGML_CUDA_USE_GRAPHS:-0}"
 export GGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS:-1}"
 
-# CUDA libs for ggml cuda_v12 — adjust for your install.
+# CUDA libs for ggml cuda_v13 (5080 / Blackwell). Override to cuda_v12 paths on older GPUs.
 # /usr/hostlibs may expose libcudnn older than PyTorch in the Wan venv; keep hostlibs for
 # ggml. Wan run_script subprocesses sanitize LD (prepend venv torch/lib, drop hostlibs).
 # See docs/wan-t2v.md troubleshooting: "cuDNN version incompatibility".
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/hostlibs:/usr/local/cuda-12.6/targets/x86_64-linux/lib}"
-# ggml CUDA backend (chat/completion runners) — without /usr/lib/ollama + cuda_v12, ggml falls back to CPU-only.
-export OLLAMA_LIBRARY_PATH="${OLLAMA_LIBRARY_PATH:-/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12}"
-export LD_LIBRARY_PATH="/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/lib/ollama/mlx_cuda_v12:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/root/nvidia-host:/usr/hostlibs:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda-13.3/targets/x86_64-linux/lib}"
+# ggml CUDA backend (chat/completion runners) — without /usr/lib/ollama + cuda_v13, ggml falls back to CPU-only on 5080.
+export OLLAMA_LIBRARY_PATH="${OLLAMA_LIBRARY_PATH:-/usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/lib/ollama/mlx_cuda_v12}"
+export LD_LIBRARY_PATH="/root/nvidia-host:/usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/lib/ollama/mlx_cuda_v12:${LD_LIBRARY_PATH}"
 
 # Prefer built vendor llama-server (fork QJL + Radix /kv/seq-copy) when present.
 # WHY: 5080 production uses vendor pin for L1 fork profile + seq-copy; sibling b9781 lacks both.

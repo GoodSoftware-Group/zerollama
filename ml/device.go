@@ -687,9 +687,27 @@ func (d DeviceInfo) updateVisibleDevicesEnv(env map[string]string, mustFilter bo
 	if d.FilterID != "" {
 		v = v + d.FilterID
 	} else {
-		v = v + d.ID
+		v = v + visibleDeviceEnvToken(d)
 	}
 	env[envVar] = v
+}
+
+// visibleDeviceEnvToken returns a CUDA_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES value.
+// ggml names CUDA devices "CUDA0"; NVIDIA's CUDA runtime only accepts ordinals or UUIDs.
+// Using "CUDA0" makes cuInit report no devices and discovery filters the GPU as
+// "didn't fully initialize" (RTX 5080 / CT 1564).
+func visibleDeviceEnvToken(d DeviceInfo) string {
+	id := d.ID
+	if d.Library == "CUDA" {
+		if strings.HasPrefix(id, "CUDA") {
+			if n := strings.TrimPrefix(id, "CUDA"); n != "" {
+				if _, err := strconv.Atoi(n); err == nil {
+					return n
+				}
+			}
+		}
+	}
+	return id
 }
 
 type BaseRunner interface {

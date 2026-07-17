@@ -1708,9 +1708,15 @@ func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 
 // ProcessModelsSnapshot returns loaded runners for GET /api/ps (mutex-safe).
 func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
+	return s.ProcessSnapshot().Models
+}
+
+// ProcessSnapshot returns loaded runners plus ggml pending-queue depth for GET /api/ps.
+func (s *Scheduler) ProcessSnapshot() api.ProcessResponse {
 	if s == nil {
-		return nil
+		return api.ProcessResponse{}
 	}
+	pendingByKey := s.pending.CountsByModelKey()
 	s.loadedMu.Lock()
 	runners := make([]*runnerRef, 0, len(s.loaded))
 	for _, r := range s.loaded {
@@ -1739,6 +1745,9 @@ func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
 		if modelKey == "" && runner.model != nil {
 			modelKey = schedulerModelKey(runner.model)
 		}
+		if n := pendingByKey[modelKey]; n > 0 {
+			mr.Pending = n
+		}
 		if sessions := sessionSnap[modelKey]; len(sessions) > 0 {
 			mr.Zerollama = &api.ProcessZerollamaInfo{Sessions: sessions}
 		}
@@ -1748,7 +1757,10 @@ func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
 	slices.SortStableFunc(models, func(i, j api.ProcessModelResponse) int {
 		return cmp.Compare(j.ExpiresAt.Unix(), i.ExpiresAt.Unix())
 	})
-	return models
+	return api.ProcessResponse{
+		Models:  models,
+		Pending: s.pending.Len(),
+	}
 }
 
 // LoadedRunnersForDiscovery returns loaded ggml runners for GPU free-memory refresh.

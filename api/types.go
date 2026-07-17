@@ -1165,6 +1165,9 @@ type ListResponse struct {
 // ProcessResponse is the response from [Client.Process].
 type ProcessResponse struct {
 	Models []ProcessModelResponse `json:"models"`
+	// Pending is the ggml scheduler prompt queue depth (waiting for a runner).
+	// Includes requests for models not yet listed under Models (cold load / eviction).
+	Pending int `json:"pending"`
 }
 
 // ListModelResponse is a single model description in [ListResponse].
@@ -1190,6 +1193,7 @@ type ProcessModelResponse struct {
 	ExpiresAt      time.Time            `json:"expires_at"`
 	SizeVRAM       int64                `json:"size_vram"`
 	ContextLength  int                  `json:"context_length"`
+	Pending        int                  `json:"pending,omitempty"` // queued prompts waiting on this model
 	LoadedMetadata *LoadedModelMetadata `json:"loaded_metadata,omitempty"`
 	Zerollama      *ProcessZerollamaInfo `json:"zerollama,omitempty"`
 }

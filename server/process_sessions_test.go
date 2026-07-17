@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/types/model"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProcessModelsSnapshotIncludesProjectSessions(t *testing.T) {
@@ -81,4 +82,33 @@ func TestProcessProjectLabel(t *testing.T) {
 	if got := formatProcessProjectLabel("", "b"); got != "b" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+func TestProcessSnapshotIncludesPendingQueue(t *testing.T) {
+	sched := InitScheduler(t.Context())
+	m := &Model{
+		ShortName: "gemma4:test",
+		ModelPath: "/models/gemma4-test",
+		Digest:    "abc123",
+		Config:    model.ConfigV2{ModelFormat: "gguf"},
+	}
+	modelKey := schedulerModelKey(m)
+	runner := &runnerRef{
+		model:     m,
+		modelKey:  modelKey,
+		loading:   false,
+		totalSize: 1,
+		vramSize:  1,
+	}
+	sched.loadedMu.Lock()
+	sched.loaded[modelKey] = runner
+	sched.loadedMu.Unlock()
+
+	require.True(t, sched.pending.Push(&LlmRequest{model: m}))
+	require.True(t, sched.pending.Push(&LlmRequest{model: &Model{ModelPath: "/other"}}))
+
+	snap := sched.ProcessSnapshot()
+	require.Equal(t, 2, snap.Pending)
+	require.Len(t, snap.Models, 1)
+	require.Equal(t, 1, snap.Models[0].Pending)
 }

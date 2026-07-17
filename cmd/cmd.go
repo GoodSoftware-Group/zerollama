@@ -1034,42 +1034,51 @@ func ListRunningHandler(cmd *cobra.Command, args []string) error {
 	}
 
 	showProjects := false
+	showQueue := models.Pending > 0
 	for _, row := range rows {
 		if row.project != "" || row.session != "" {
 			showProjects = true
-			break
+		}
+		if row.pending > 0 {
+			showQueue = true
 		}
 	}
 
 	var data [][]string
 	for _, row := range rows {
-		if showProjects {
-			data = append(data, []string{
-				row.name,
-				row.project,
-				row.session,
-				row.digest,
-				row.size,
-				row.processor,
-				row.context,
-				row.until,
-			})
-			continue
+		pending := ""
+		if row.pending > 0 {
+			pending = strconv.Itoa(row.pending)
 		}
-		data = append(data, []string{
-			row.name,
-			row.digest,
-			row.size,
-			row.processor,
-			row.context,
-			row.until,
-		})
+		switch {
+		case showProjects && showQueue:
+			data = append(data, []string{
+				row.name, row.project, row.session, row.digest, row.size, row.processor, row.context, pending, row.until,
+			})
+		case showProjects:
+			data = append(data, []string{
+				row.name, row.project, row.session, row.digest, row.size, row.processor, row.context, row.until,
+			})
+		case showQueue:
+			data = append(data, []string{
+				row.name, row.digest, row.size, row.processor, row.context, pending, row.until,
+			})
+		default:
+			data = append(data, []string{
+				row.name, row.digest, row.size, row.processor, row.context, row.until,
+			})
+		}
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
 	header := []string{"NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"}
-	if showProjects {
+	switch {
+	case showProjects && showQueue:
+		header = []string{"NAME", "PROJECT", "SESSION", "ID", "SIZE", "PROCESSOR", "CONTEXT", "QUEUE", "UNTIL"}
+	case showProjects:
 		header = []string{"NAME", "PROJECT", "SESSION", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"}
+	case showQueue:
+		header = []string{"NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "QUEUE", "UNTIL"}
 	}
 	table.SetHeader(header)
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
@@ -1080,6 +1089,10 @@ func ListRunningHandler(cmd *cobra.Command, args []string) error {
 	table.SetTablePadding("    ")
 	table.AppendBulk(data)
 	table.Render()
+
+	if models.Pending > 0 {
+		fmt.Printf("%d prompt(s) queued\n", models.Pending)
+	}
 
 	return nil
 }
@@ -1092,6 +1105,7 @@ type runningModelRow struct {
 	size      string
 	processor string
 	context   string
+	pending   int
 	until     string
 }
 
@@ -1132,6 +1146,7 @@ func runningModelRowFromAPI(m api.ProcessModelResponse) runningModelRow {
 		size:      format.HumanBytes(m.Size),
 		processor: procStr,
 		context:   strconv.Itoa(m.ContextLength),
+		pending:   m.Pending,
 		until:     until,
 	}
 }

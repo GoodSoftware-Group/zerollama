@@ -34,6 +34,8 @@ struct mtmd_bitmap {
     uint32_t ny = 0;
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
+    bool has_grid_hint = false;
+    int32_t grid_thw[3] = {0, 0, 0};
 
     // lazy-loaded bitmap
     mtmd_bitmap_lazy_callback lazy_callback = nullptr;
@@ -1767,6 +1769,16 @@ void mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id) {
     } else {
         bitmap->id.clear();
     }
+}
+
+void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t grid_thw[3]) {
+    if (!bitmap || !grid_thw) {
+        return;
+    }
+    bitmap->grid_thw[0] = grid_thw[0];
+    bitmap->grid_thw[1] = grid_thw[1];
+    bitmap->grid_thw[2] = grid_thw[2];
+    bitmap->has_grid_hint = true;
 }
 
 mtmd_bitmap * mtmd_bitmap_init_lazy(mtmd_context * ctx,

@@ -111,6 +111,23 @@ func (q *pendingQueue) Len() int {
 	return len(q.items)
 }
 
+// CountsByModelKey returns how many queued prompts wait on each scheduler model key.
+func (q *pendingQueue) CountsByModelKey() map[string]int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(q.items))
+	for _, req := range q.items {
+		if req == nil || req.model == nil {
+			continue
+		}
+		out[schedulerModelKey(req.model)]++
+	}
+	return out
+}
+
 // Remove deletes req from the queue if present. Returns true when removed.
 func (q *pendingQueue) Remove(req *LlmRequest) bool {
 	if req == nil {

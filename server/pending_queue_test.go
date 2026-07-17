@@ -63,3 +63,14 @@ func TestPendingQueueRequeueFront(t *testing.T) {
 	require.Equal(t, "/a2", q.Pop().model.ModelPath)
 	require.Equal(t, "/b", q.Pop().model.ModelPath)
 }
+
+func TestPendingQueueCountsByModelKey(t *testing.T) {
+	q := newPendingQueue(8)
+	require.Nil(t, q.CountsByModelKey())
+	require.True(t, q.Push(&LlmRequest{model: &Model{ModelPath: "/a"}}))
+	require.True(t, q.Push(&LlmRequest{model: &Model{ModelPath: "/b"}}))
+	require.True(t, q.Push(&LlmRequest{model: &Model{ModelPath: "/a"}}))
+	got := q.CountsByModelKey()
+	require.Equal(t, 2, got["/a"])
+	require.Equal(t, 1, got["/b"])
+}

@@ -176,6 +176,9 @@ MTMD_API void                  mtmd_bitmap_free       (mtmd_bitmap * bitmap);
 // these getters/setters are dedicated functions, so you can for example calculate the hash of the image based on mtmd_bitmap_get_data()
 MTMD_API const char * mtmd_bitmap_get_id(const mtmd_bitmap * bitmap);
 MTMD_API void         mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id);
+// Optional [T,H,W] grid hint for M-RoPE vision (Qwen-VL etc.); no-op when unset.
+// Restored for llama/llama.go CGO after ggml-org 8f vendor sync dropped the decl.
+MTMD_API void         mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t grid_thw[3]);
 
 // mtmd_bitmap lazy
 //

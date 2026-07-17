@@ -2232,6 +2232,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 
 func Serve(ln net.Listener) error {
 	slog.SetDefault(logutil.NewLogger(os.Stderr, envconfig.LogLevel()))
+	discover.LogStartupBanner()
 	slog.Info("server config", "env", envconfig.Values())
 	cloudDisabled, _ := internalcloud.Status()
 	slog.Info(fmt.Sprintf("Ollama cloud disabled: %t", cloudDisabled))
@@ -2415,10 +2416,10 @@ func Serve(ln net.Listener) error {
 	if bindHost == "" {
 		bindHost = "0.0.0.0"
 	}
-	slog.Info("server listening",
+	// Do not claim "listening" yet — GPU discovery still runs before Serve accepts.
+	slog.Info("listener prepared",
 		"bind", net.JoinHostPort(bindHost, bindPort),
 		"listener", ln.Addr().String(),
-		"url", envconfig.ConnectableHost().String(),
 		"version", version.Version,
 	)
 	srvr := &http.Server{
@@ -2501,6 +2502,7 @@ func Serve(ln net.Listener) error {
 	// layer layout even on Macs with Metal (see DiscoverBackendDevices / apple-silicon-metal.md).
 	gpus := discover.GPUDevices(ctx, nil)
 	discover.LogDetails(gpus)
+	discover.LogStartupHardware(gpus)
 
 	var totalVRAM uint64
 	for _, gpu := range gpus {
@@ -2518,6 +2520,14 @@ func Serve(ln net.Listener) error {
 		s.defaultNumCtx = 4096
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
+
+	slog.Info("server listening",
+		"bind", net.JoinHostPort(bindHost, bindPort),
+		"listener", ln.Addr().String(),
+		"url", envconfig.ConnectableHost().String(),
+		"version", version.Version,
+		"started_at", time.Now().Format(time.RFC3339),
+	)
 
 	// Register mDNS after startup work so the HTTP listener is about to accept connections.
 	startNodeMDNS(ctx, ln)
@@ -2729,8 +2739,7 @@ func (s *Server) SignoutHandler(c *gin.Context) {
 }
 
 func (s *Server) PsHandler(c *gin.Context) {
-	models := s.sched.ProcessModelsSnapshot()
-	c.JSON(http.StatusOK, api.ProcessResponse{Models: models})
+	c.JSON(http.StatusOK, s.sched.ProcessSnapshot())
 }
 
 func toolCallId() string {

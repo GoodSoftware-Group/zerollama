@@ -70,18 +70,27 @@ export L3_RADIX_OUT="${L3_RADIX_OUT:-/tmp/l3-radix-prefix-smoke-live.json}"
 export CGO_ENABLED="${CGO_ENABLED:-1}"
 export CGO_CFLAGS_ALLOW="${CGO_CFLAGS_ALLOW:--mfma|-mavx2|-O3}"
 
-# --- CUDA 12.8 (sm_120 / RTX 5080 — host 12.3 cannot compile sm_120) ---
-if [[ -d /usr/local/cuda-12.8/bin ]]; then
+# --- CUDA toolkit (prefer 13.3 after driver 610; fall back to 12.8) ---
+if [[ -x /usr/local/cuda/bin/nvcc ]]; then
+  export PATH="/usr/local/cuda/bin:${PATH}"
+  export CUDACXX="${CUDACXX:-/usr/local/cuda/bin/nvcc}"
+  export CUDAToolkit_ROOT="${CUDAToolkit_ROOT:-/usr/local/cuda}"
+elif [[ -x /usr/local/cuda-13.3/bin/nvcc ]]; then
+  export PATH="/usr/local/cuda-13.3/bin:${PATH}"
+  export CUDACXX="${CUDACXX:-/usr/local/cuda-13.3/bin/nvcc}"
+  export CUDAToolkit_ROOT="${CUDAToolkit_ROOT:-/usr/local/cuda-13.3}"
+elif [[ -d /usr/local/cuda-12.8/bin ]]; then
   export PATH="/usr/local/cuda-12.8/bin:${PATH}"
   export CUDACXX="${CUDACXX:-/usr/local/cuda-12.8/bin/nvcc}"
+  export CUDAToolkit_ROOT="${CUDAToolkit_ROOT:-/usr/local/cuda-12.8}"
 fi
 
 # --- Phase 17 defaults ---
 export P17_MODEL="${P17_MODEL:-${RUN_E2E_PROXY_MODEL}}"
 
 5080_setup_cuda() {
-  if [[ ! -x "${CUDACXX:-/usr/local/cuda-12.8/bin/nvcc}" ]]; then
-    echo "5080: install cuda-nvcc-12-8 (sm_120 needs CUDA 12.8 in CT)" >&2
+  if [[ ! -x "${CUDACXX:-/usr/local/cuda/bin/nvcc}" ]]; then
+    echo "5080: install CUDA toolkit (prefer /usr/local/cuda 13.3 for driver 610 / sm_120)" >&2
     return 1
   fi
   export PATH="$(dirname "${CUDACXX}"):${PATH}"

@@ -1,8 +1,11 @@
+// Package ggml CGO bindings. qjl/include is on CPPFLAGS so qjl-quants-base.c
+// can #include "qjl/qjl.h" (CMake already passes that -I; CGO did not).
 package ggml
 
 // #cgo CXXFLAGS: -std=c++17
 // #cgo CPPFLAGS: -DNDEBUG -DGGML_USE_CPU -DGGML_VERSION=0x0 -DGGML_COMMIT=0x0
 // #cgo CPPFLAGS: -I${SRCDIR}/../include -I${SRCDIR}/ggml-cpu
+// #cgo CPPFLAGS: -I${SRCDIR}/ggml-cpu/qjl/include
 // #cgo windows CFLAGS: -Wno-dll-attribute-on-redeclaration
 // #cgo windows LDFLAGS: -lmsvcrt -static -static-libgcc -static-libstdc++
 // #include <stdlib.h>

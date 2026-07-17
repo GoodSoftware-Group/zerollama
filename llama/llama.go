@@ -86,13 +86,19 @@ func EnumerateGPUs() []Devices {
 			C.GGML_BACKEND_DEVICE_TYPE_IGPU:
 			var props C.struct_ggml_backend_dev_props
 			C.ggml_backend_dev_get_props(device, &props)
-			id := C.GoString(props.name)
-			if props.device_id != nil {
-				id = C.GoString(props.device_id)
+			// WHY: shipped libggml-cuda can leave props.name NULL (5080 GoString panic).
+			// Prefer ggml_backend_dev_name / reg_name APIs; never GoString a nil *C.char.
+			id := ""
+			if name := C.ggml_backend_dev_name(device); name != nil {
+				id = C.GoString(name)
+			} else if props.name != nil {
+				id = C.GoString(props.name)
 			}
-			library := C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(device)))
-			if props.library != nil {
-				library = C.GoString(props.library)
+			library := ""
+			if reg := C.ggml_backend_dev_backend_reg(device); reg != nil {
+				if regName := C.ggml_backend_reg_name(reg); regName != nil {
+					library = C.GoString(regName)
+				}
 			}
 			ids = append(ids, Devices{
 				DeviceID: ml.DeviceID{
@@ -584,12 +590,16 @@ func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gri
 	it := C.mtmd_input_text_init(C.mtmd_default_marker(), true, true)
 	defer C.mtmd_input_text_free(it)
 
-	// Initialize a bitmap with the image data
-	bitmap := C.mtmd_helper_bitmap_init_from_buf(c.c, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+	// Initialize a bitmap with the image data (post-8f helper returns a wrapper + placeholder flag).
+	wrap := C.mtmd_helper_bitmap_init_from_buf(c.c, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)), false)
+	bitmap := wrap.bitmap
 	if bitmap == nil {
 		return nil, errors.New("unable to load mtmd bitmap from image data")
 	}
 	defer C.mtmd_bitmap_free(bitmap)
+	if wrap.video_ctx != nil {
+		defer C.mtmd_helper_video_free(wrap.video_ctx)
+	}
 
 	if len(gridTHW) == 3 && gridTHW[0] > 0 && gridTHW[1] > 0 && gridTHW[2] > 0 {
 		var gr [3]C.int32_t

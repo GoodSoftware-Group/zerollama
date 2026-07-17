@@ -881,6 +881,10 @@ components:
         context_length:
           type: integer
           description: Context length for the running model
+        pending:
+          type: integer
+          description: Queued prompts waiting on this loaded model
+          minimum: 0
     PsResponse:
       type: object
       properties:
@@ -889,6 +893,10 @@ components:
           items:
             $ref: "#/components/schemas/Ps"
           description: Currently running models
+        pending:
+          type: integer
+          description: Number of prompts waiting in the ggml scheduler queue
+          minimum: 0
     WebSearchRequest:
       type: object
       required: [query]
@@ -1600,6 +1608,8 @@ paths:
                     expires_at: "2025-10-17T16:47:07.93355-07:00"
                     size_vram: 5333539264
                     context_length: 4096
+                    pending: 1
+                pending: 2
   /api/show:
     post:
       summary: Show model details
