@@ -593,12 +593,8 @@ func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gri
 	defer C.mtmd_bitmap_free(bitmap)
 
 	if len(gridTHW) == 3 && gridTHW[0] > 0 && gridTHW[1] > 0 && gridTHW[2] > 0 {
-		// mtmd_bitmap_set_grid_hint has not landed in the vendored mtmd.h yet —
-		// why no-op instead of cgo call: keep MultimodalTokenize buildable while
-		// tracking the upstream API; wire the C call back in once it lands.
-		slog.Debug("mtmd grid_thw hint not forwarded (upstream API pending)",
-			"grid_thw", gridTHW,
-		)
+		thw := [3]C.int32_t{C.int32_t(gridTHW[0]), C.int32_t(gridTHW[1]), C.int32_t(gridTHW[2])}
+		C.mtmd_bitmap_set_grid_hint(bitmap, &thw[0])
 	}
 
 	bitmaps := [1]*C.mtmd_bitmap{bitmap}

@@ -288,7 +288,10 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
         // B8: stage target pre-norm into cross.v_embd before draft sync-decode (Metal dflash + ANE).
         common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, batch);
 
-        const int ret = llama_decode(ctx_dft, batch);
+        llama_batch batch_dft = batch;
+        batch_dft.logits = nullptr;
+
+        const int ret = llama_decode(ctx_dft, batch_dft);
 
         if (ret != 0) {
             SPC_ERR("failed to decode draft batch, ret = %d\n", ret);

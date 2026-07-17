@@ -6,25 +6,25 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 
 | Field | Value |
 |-------|--------|
-| **Recommended build tree** | `vendor/llama-cpp-8f114a9b/` (patched) — `./scripts/build/build_llama_server.sh` |
+| **Recommended build tree** | `vendor/llama-cpp-86d86ed4/` (patched) — `./scripts/build/build_llama_server.sh` |
 | **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; prefer vendor) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
-| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `8f114a9b573b69035299f9b924047f53c1e22c7e` (master tip; past tag `b9951`) |
+| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `86d86ed4396b4130922f7b9af26e3d9fc11a591b` (master tip; past tag `b10064`) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0077** native FP8 E4M3/E5M2 + compressed-tensors `--fp8-native`; container build: `./scripts/vendor/build_llama_server_container.sh`) |
-| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness **0067–0070** (fattn TBQ helpers, CLI KV types, SET_ROWS, CPU type_traits); Metal TBQ SET_ROWS **0068**. Native FP8 weights **0073–0077** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b cell+tensor+pages COW; **0088** TBQ vec_dot; **0087** Bee loop-guard); container build: `./scripts/vendor/build_llama_server_container.sh`) |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**. |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
 | Field | Value |
 |-------|--------|
-| **Vendor pin** | **`8f114a9b`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-8f114a9b/` |
+| **Vendor pin** | **`86d86ed4`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-86d86ed4/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0077** native FP8; container build: `./scripts/vendor/build_llama_server_container.sh`) |
-| **In-tree Metal dig** | **0062–0064** in CGO `ml/backend/ggml/`: E8_2 at type **43**; TQ2 Metal kernels, concurrency guard. Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0073–0077). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b cell+tensor+pages COW; **0088** TBQ vec_dot; **0087** Bee loop-guard); container build: `./scripts/vendor/build_llama_server_container.sh`) |
+| **In-tree Metal dig** | E8_2 / TQ2 Metal kernels and concurrency guard in the mid series; Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0076–0079). Metal FA-vec per-device (Q,NE) tables **0086** (ported onto monolithic `ggml-metal.metal`; keeps GQA2). |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
-Runtime `llama-server` and in-process ggml share **one ggml-org `8f114a9b` base** + zerollama patches.
+Runtime `llama-server` and in-process ggml share **one ggml-org `86d86ed4` base** + zerollama patches.
 
 Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake fetch time for **llama-server**. In-process **ggml** uses `llama/patches/` on a vendored tree synced via [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
 

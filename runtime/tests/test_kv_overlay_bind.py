@@ -144,8 +144,99 @@ def test_page_bind_health_includes_overlay_bind_fields_disabled(monkeypatch):
 
     h = page_bind_health(native_ext_available=False)
     assert h["overlay_bind_enabled"] is False
+    assert h["overlay_bind_auto"] is False
     assert h["overlay_bind_bound"] is False
     assert h["overlay_bind_bytes"] is None
+    assert h["overlay_page_catalog"] is None
+
+
+def test_overlay_bind_auto_follows_overlay_and_kill_switch(monkeypatch):
+    monkeypatch.delenv("ZEROLLAMA_KV_OVERLAY_BIND", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_OVERLAY_AUTO", raising=False)
+    assert overlay_bind.overlay_bind_auto_enabled() is False
+
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_BIND", "1")
+    assert overlay_bind.overlay_bind_auto_enabled() is True
+
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_AUTO", "0")
+    assert overlay_bind.overlay_bind_auto_enabled() is False
+
+
+def test_estimate_overlay_donor_bytes_env_wins(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_DONOR_BYTES", "12345")
+    size, source = overlay_bind.estimate_overlay_donor_bytes(
+        None, num_ctx=4096, n_seq_max=2
+    )
+    assert source == "env"
+    assert size == overlay_bind.page_align_bytes(12345)
+    assert size % 4096 == 0
+
+
+def test_estimate_overlay_donor_bytes_pads_estimate(monkeypatch):
+    monkeypatch.delenv("ZEROLLAMA_KV_OVERLAY_DONOR_BYTES", raising=False)
+    monkeypatch.setattr(
+        "runtime.gguf_estimate.estimate_kv_cache_bytes",
+        lambda *a, **k: 1_000_000,
+    )
+    monkeypatch.setattr(
+        "runtime.gguf_estimate.gguf_arch_hints",
+        lambda p: object(),
+    )
+    from pathlib import Path
+
+    size, source = overlay_bind.estimate_overlay_donor_bytes(
+        Path("/tmp/fake.gguf"), num_ctx=4096, n_seq_max=2
+    )
+    assert source == "estimate"
+    # 1e6 * 2 streams * 2 pad + 32MiB
+    assert size >= (1_000_000 * 2 * 2) + (32 << 20)
+    assert size % 4096 == 0
+
+
+def test_prepare_auto_donor_skips_when_auto_off(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_BIND", "1")
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_AUTO", "0")
+    assert overlay_bind.prepare_auto_donor(None, num_ctx=512) is None
+
+
+def test_prepare_auto_donor_registers_aligned_buffer(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_BIND", "1")
+    monkeypatch.delenv("ZEROLLAMA_KV_OVERLAY_AUTO", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_DONOR_BYTES", "8192")
+    monkeypatch.setattr(overlay_bind, "donor_buffer_available", lambda: True)
+
+    calls = {}
+
+    class _FakeModule:
+        @staticmethod
+        def register_donor_buffer(ptr, size):
+            calls["ptr"] = ptr
+            calls["size"] = size
+            return 42
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "runtime.kv._kv_native", _FakeModule)
+
+    handle = overlay_bind.prepare_auto_donor(None, num_ctx=512, n_seq_max=2)
+    assert handle is not None
+    assert handle.donor_id == 42
+    assert handle.source == "env"
+    assert handle.size == 8192
+    assert handle.ptr % 4096 == 0
+    assert calls["size"] == 8192
+    assert calls["ptr"] == handle.ptr
+
+
+def test_page_bind_health_includes_overlay_bind_auto(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_KV_OVERLAY_BIND", "1")
+    monkeypatch.delenv("ZEROLLAMA_KV_OVERLAY_AUTO", raising=False)
+    monkeypatch.setattr("runtime.kv.page_bind._native_page_bind_available", lambda: False)
+    from runtime.kv.page_bind import page_bind_health
+
+    h = page_bind_health(native_ext_available=False)
+    assert h["overlay_bind_enabled"] is True
+    assert h["overlay_bind_auto"] is True
 
 
 def test_page_bind_health_overlay_bind_bound_when_donor_consumed(monkeypatch):

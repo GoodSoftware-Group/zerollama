@@ -1,3 +1,1 @@
-# Expected vendor git HEAD after full Ollama patch apply on LLAMA_CPP_COMMIT.
-# Bump when re-applying patches: ./scripts/vendor/rebase_vendor_unified.sh --apply --sync
-1af0f927bb71e483ba089e73db58186d597d4cee
+d4675a5d6c9888b13353a13dee0f2c3eccf3628a

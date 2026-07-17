@@ -39,6 +39,10 @@ type kvCache struct {
 	pagedOutBytes      int64 // total bytes in paged-out snapshot memory across the trie
 	lastPromptCacheKey string
 	lastSessionInputs  []int32
+
+	// draftLookahead is how far the draft caches' entries reference past
+	// their own slot; trie keys pack each token with its look-ahead (see key).
+	draftLookahead int
 }
 
 // pendingSnapshot is a snapshot scheduled to be taken during prefill.
@@ -108,13 +112,13 @@ func (c *kvCache) begin(m base.Model, inputs []int32, promptCacheKey string) *ca
 		}
 	}
 
-	matchPath, matched := findBestMatch(c.root, inputs)
+	matchPath, matched := findBestMatch(c.root, c.key(inputs))
 	originalMatched := matched
 
 	// Always keep at least one token to re-evaluate so the
 	// pipeline can seed token generation from it.
 	if matched == len(inputs) && matched > 0 {
-		matchPath, matched = findBestMatch(c.root, inputs[:len(inputs)-1])
+		matchPath, matched = findBestMatch(c.root, c.key(inputs)[:matched-1])
 	}
 
 	// Switch to the matched path, paging in/out as needed.
@@ -193,6 +197,28 @@ func (c *kvCache) begin(m base.Model, inputs []int32, promptCacheKey string) *ca
 		c.lastPromptCacheKey = key
 	}
 	return session
+}
+
+// key converts tokens to trie keys, one per restorable cache offset. A model
+// that drafts through MTP-style draft caches pairs each cache slot with the
+// token after it, so slot i is reusable only if token i+1 also matched. The
+// key for offset i then packs (token i, token i+1): matching k keys verifies
+// k+1 tokens, making every match a valid restore point.
+func (c *kvCache) key(tokens []int32) []trieKey {
+	keys := make([]trieKey, max(len(tokens)-c.draftLookahead, 0))
+	switch c.draftLookahead {
+	case 0:
+		for i, t := range tokens {
+			keys[i] = trieKey(t)
+		}
+	case 1:
+		for i := range keys {
+			keys[i] = trieKey(uint32(tokens[i]))<<32 | trieKey(uint32(tokens[i+1]))
+		}
+	default:
+		panic(fmt.Sprintf("kvCache: unsupported draft look-ahead %d", c.draftLookahead))
+	}
+	return keys
 }
 
 // tryExtendLiveSession reuses resident MLX KV when the same agent thread extends
@@ -286,7 +312,7 @@ const agentGenStubTokenSlack = 512
 // bootstrapLiveSessionFromTrie reloads agent KV from trie snapshots when live
 // caches were left on an unkeyed sidecar branch between keyed agent turns.
 func (c *kvCache) bootstrapLiveSessionFromTrie(inputs []int32, lcp, minRetain, slidingWindow int) bool {
-	matchPath, matched := findBestMatch(c.root, inputs)
+	matchPath, matched := findBestMatch(c.root, c.key(inputs))
 	if matched < minRetain {
 		return false
 	}
@@ -616,13 +642,10 @@ func (c *kvCache) switchToPath(newPath []*trieNode, matched int) {
 	// Caches already past a node skip it via offset check.
 pageIn:
 	for _, node := range newPath {
-		if node.endOffset > matched {
-			continue
-		}
 		if !node.hasSnapshots() {
 			continue
 		}
-		nodeTarget := node.endOffset
+		nodeTarget := min(node.endOffset, matched)
 		for j, kv := range c.caches {
 			if kv == nil {
 				continue
@@ -690,6 +713,7 @@ func (s *cacheSession) schedulePrefillSnapshots(offsets []int) {
 	c := s.cache
 	base := c.minCacheOffset()
 	for _, offset := range offsets {
+		offset -= c.draftLookahead
 		if offset <= base || offset > len(s.inputs) {
 			continue
 		}
@@ -796,7 +820,7 @@ func (s *cacheSession) attachPrefillSnapshots() {
 	// no captured state. Skip it rather than materialize a node whose edge
 	// claims tokens the cache never wrote. Closing its (nil) row is a no-op.
 	reached := c.minCacheOffset()
-	stored := append(s.inputs, s.outputs...)
+	stored := c.key(append(s.inputs, s.outputs...))
 	for i, p := range pending {
 		if p.offset > reached {
 			// Never crossed by a write, so the row is nil; close any entry
@@ -836,7 +860,7 @@ func (s *cacheSession) attachCapturedSnapshots(node *trieNode, snaps []cache.Sna
 // advancePath advances the active path from the current frontier by matching
 // tokens against existing trie children, splitting partial matches, and
 // appending any remaining tokens as new nodes. Returns the new frontier.
-func (c *kvCache) advancePath(frontier *trieNode, tokens []int32, endOffset int) *trieNode {
+func (c *kvCache) advancePath(frontier *trieNode, tokens []trieKey, endOffset int) *trieNode {
 	// Check if existing children already cover some or all of tokens.
 	// tokens may span multiple trie nodes when extending a previous run's
 	// leaf and this snapshot now overlaps that same range.
@@ -940,9 +964,12 @@ func (s *cacheSession) close() {
 
 	// Advance the trie frontier with any newly generated tokens.
 	c := s.cache
+	stored := c.key(append(s.inputs, s.outputs...))
+	if offset > len(stored) {
+		panic(fmt.Sprintf("cache: offset %d exceeds %d stored keys", offset, len(stored)))
+	}
 	if len(c.activePath) > 0 {
 		frontier := c.activePath[len(c.activePath)-1]
-		stored := append(s.inputs, s.outputs...)
 
 		if offset > frontier.endOffset {
 			newTokens := stored[frontier.endOffset:offset]

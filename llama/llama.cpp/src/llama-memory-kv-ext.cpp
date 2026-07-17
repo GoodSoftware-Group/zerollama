@@ -671,6 +671,64 @@ ggml_backend_buffer_t llama_kv_ext_donor_try_consume(size_t required_size) {
     return nullptr;
 }
 
+/*
+ * Phase 15 v49 — device-buft donor consume (Metal unified-memory zero-copy).
+ *
+ * WHY this exists: v48 only tried ggml_backend_cpu_buffer_from_ptr for
+ * ggml_backend_buft_is_host(buft) groups. On Apple Silicon, the Metal device
+ * ALSO exposes a host-ptr-to-buffer wrapper (caps.buffer_from_host_ptr,
+ * ggml_backend_dev_buffer_from_host_ptr -> newBufferWithBytesNoCopy +
+ * MTLResourceStorageModeShared) — the exact same mechanism llama-model.cpp's
+ * mmap-weight-loading path already uses in production (see the
+ * buffer_from_host_ptr_supported branch in llama_model::load_tensors). Metal's
+ * KV buft groups report is_host()==false (they are NOT literally "host"
+ * buffers — ggml_backend_buffer_is_host gates the CPU compute-op dispatch
+ * path, unrelated to whether the *backing memory* happens to be host RAM), so
+ * v48's is_host() check never reaches this path; a separate device-capability
+ * check is required.
+ *
+ * CUDA does not implement buffer_from_host_ptr (discrete VRAM, no unified
+ * memory) — dev->iface.buffer_from_host_ptr is NULL there, so this function
+ * naturally returns nullptr for CUDA bufts without any CUDA-specific branch.
+ *
+ * max_tensor_size mirrors llama-model.cpp's ggml_get_max_tensor_size(ctx) —
+ * Metal buffers above the device's max_buffer_size are split into
+ * overlapping windows internally by ggml_metal_buffer_map; passing the
+ * largest single tensor size lets that split remain safe (no tensor straddles
+ * a window boundary).
+ */
+ggml_backend_buffer_t llama_kv_ext_donor_try_consume_dev(
+        ggml_backend_dev_t dev,
+        size_t             required_size,
+        size_t             max_tensor_size) {
+    if (!dev) {
+        return nullptr;
+    }
+
+    ggml_backend_dev_props props;
+    ggml_backend_dev_get_props(dev, &props);
+    if (!props.caps.buffer_from_host_ptr) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(g_donor_mutex);
+
+    for (size_t i = 0; i < LLAMA_KV_EXT_DONOR_MAX; ++i) {
+        auto & entry = g_donor_registry[i];
+        if (entry.registered && !entry.bound && entry.size >= required_size) {
+            ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(
+                    dev, entry.ptr, entry.size, max_tensor_size);
+            if (!buf) {
+                continue;
+            }
+            entry.bound      = true;
+            entry.bytes_used = required_size;
+            return buf;
+        }
+    }
+    return nullptr;
+}
+
 #else /* !LLAMA_KV_EXT_DONOR_BUFFER */
 
 int32_t llama_kv_ext_register_donor_buffer(
@@ -685,6 +743,15 @@ int32_t llama_kv_ext_unregister_donor_buffer(uint32_t) {
 int32_t llama_kv_ext_donor_buffer_status(
         uint32_t, int32_t *, uint64_t *) {
     return LLAMA_KV_EXT_UNSUPPORTED;
+}
+
+ggml_backend_buffer_t llama_kv_ext_donor_try_consume(size_t) {
+    return nullptr;
+}
+
+ggml_backend_buffer_t llama_kv_ext_donor_try_consume_dev(
+        ggml_backend_dev_t, size_t, size_t) {
+    return nullptr;
 }
 
 #endif /* LLAMA_KV_EXT_DONOR_BUFFER */

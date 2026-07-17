@@ -335,6 +335,8 @@ After routes are registered, `discover.GPUDevices` spawns a short-lived **ollama
 
 If discovery returns **no GPUs**, the server logs CPU-only compute, `total_vram="0 B"`, and schedules **0 layers to GPU** — even though a separate inference runner subprocess may still initialize Metal later.
 
+**Jul 2026 follow-up:** if the discovery runner aborts with `newLibraryWithSource: source must not be nil` while logs say `using embedded metal library`, the binary embeds a compiled metallib (`MTLB` magic from `build_zerollama_mac.sh`) but the loader still treats it as UTF-8 source. Fixed in `ggml-metal-device.m` via `newLibraryWithData` for metallib embeds.
+
 ### Root cause (fixed Jun 2026)
 
 The ollama-engine `/info` handler used to load a dummy model with **zero GPU layers** to wire up ggml. First init calls `ensureDevices(true)`, which sets `GGML_DISABLE_METAL=1` before `OnceLoad` (`sync.Once` — **first call wins**). Metal never registered; `/info` returned an empty GPU list.

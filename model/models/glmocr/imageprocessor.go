@@ -90,14 +90,25 @@ func (p *ImageProcessor) SmartResize(height, width int) (int, int) {
 	return hBar, wBar
 }
 
-func (p *ImageProcessor) ProcessImage(img image.Image) ([]float32, *Grid, error) {
+func (p *ImageProcessor) ProcessImage(img image.Image, gridTHW []int) ([]float32, *Grid, error) {
 	img = imageproc.Composite(img)
 
 	origWidth := img.Bounds().Dx()
 	origHeight := img.Bounds().Dy()
 
-	// Calculate smart resize dimensions
-	resizedHeight, resizedWidth := p.SmartResize(origHeight, origWidth)
+	var resizedHeight, resizedWidth int
+	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.spatialMergeSize, gridTHW); ok {
+		resizedHeight, resizedWidth = rh, rw
+		slog.Info("grid_thw hint resize",
+			"height", resizedHeight,
+			"width", resizedWidth,
+			"grid_thw", gridTHW,
+			"patch_size", p.patchSize,
+			"engine", "ollama",
+		)
+	} else {
+		resizedHeight, resizedWidth = p.SmartResize(origHeight, origWidth)
+	}
 
 	// Resize image
 	resizedImg := imageproc.Resize(img, image.Point{X: resizedWidth, Y: resizedHeight}, imageproc.ResizeCatmullrom)
@@ -121,6 +132,16 @@ func (p *ImageProcessor) ProcessImage(img image.Image) ([]float32, *Grid, error)
 	}
 
 	return patches, grid, nil
+}
+
+func resizeFromGridHint(patchSize, mergeSize int, gridTHW []int) (height, width int, ok bool) {
+	if len(gridTHW) != 3 || gridTHW[1] <= 0 || gridTHW[2] <= 0 || patchSize <= 0 {
+		return 0, 0, false
+	}
+	if mergeSize > 0 && (gridTHW[1]%mergeSize != 0 || gridTHW[2]%mergeSize != 0) {
+		return 0, 0, false
+	}
+	return gridTHW[1] * patchSize, gridTHW[2] * patchSize, true
 }
 
 func (p *ImageProcessor) createPatches(pixels []float32, height, width int, grid *Grid) ([]float32, error) {

@@ -1,4 +1,4 @@
-From cc1364ff59d49f00e69fc5a37afd733be0e5df29 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Odilitime <janesmith@airmail.cc>
 Date: Sun, 12 Jul 2026 14:46:23 -0700
 Subject: [PATCH] ggml-metal: use explicit IM2COL_3D f32/f16 kernels
@@ -10,10 +10,10 @@ match upstream #16669 with concrete kernels.
  1 file changed, 60 insertions(+), 7 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index e98543b7f..1fa340bef 100644
+index 690d5297..78b0d4c7 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -5271,11 +5271,10 @@ kernel void kernel_im2col_ext(
+@@ -5268,11 +5268,10 @@ kernel void kernel_im2col_ext(
  template [[host_name("kernel_im2col_ext_f32")]] kernel im2col_ext_t kernel_im2col_ext<float>;
  template [[host_name("kernel_im2col_ext_f16")]] kernel im2col_ext_t kernel_im2col_ext<half>;
  
@@ -27,7 +27,7 @@ index e98543b7f..1fa340bef 100644
          uint tpig[[thread_position_in_grid]]) {
      const uint64_t total = args.N * (uint64_t) args.OD * (uint64_t) args.OH * (uint64_t) args.OW;
      if (tpig >= total) {
-@@ -5323,16 +5322,70 @@ kernel void kernel_op_im2col_3d(
+@@ -5320,16 +5319,70 @@ kernel void kernel_op_im2col_3d(
                          val = *(device const float *) (src1 + src_offset);
                      }
  
@@ -102,6 +102,3 @@ index e98543b7f..1fa340bef 100644
  
  template <typename TK>
  kernel void kernel_conv_2d(
--- 
-2.50.1 (Apple Git-155)
-

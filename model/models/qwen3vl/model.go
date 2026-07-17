@@ -26,6 +26,10 @@ type Model struct {
 }
 
 func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input.Multimodal, error) {
+	return m.EncodeMultimodalWithGrid(ctx, multimodalData, nil)
+}
+
+func (m *Model) EncodeMultimodalWithGrid(ctx ml.Context, multimodalData []byte, gridTHW []int) ([]input.Multimodal, error) {
 	if len(m.VisionModel.Layers) == 0 {
 		return nil, model.ErrNoVisionModel
 	}
@@ -35,7 +39,7 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 		return nil, err
 	}
 
-	pixelValues, grid, err := m.ProcessImage(ctx, img)
+	pixelValues, grid, err := m.ProcessImage(ctx, img, gridTHW)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +53,8 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 
 	return mm, nil
 }
+
+var _ model.GridHintMultimodalProcessor = (*Model)(nil)
 
 var (
 	tokenVision      int32 = 151655

@@ -405,6 +405,17 @@ func DraftANEMatmulChain15FFNGateDims(entry ANEDraftEntry, fcOut int) (ic, oc in
 	return ic, oc
 }
 
+// DraftANEMatmulChain15FFNGateDimsForChain returns ffn_gate ic×oc; chain >= 13 uses full wo width.
+func DraftANEMatmulChain15FFNGateDimsForChain(entry ANEDraftEntry, fcOut, matmulChain int) (ic, oc int) {
+	_, ocWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
+	ic = ocWo
+	oc = entry.ProxyChannels
+	if oc <= 0 {
+		oc, _ = DraftANEProxyDims(entry.EmbeddingLength)
+	}
+	return ic, oc
+}
+
 // ResolveChain15FFNGateTensor picks blk.0 ffn_gate for P14 matmul on qwen35 sidecars.
 func ResolveChain15FFNGateTensor(entry ANEDraftEntry) string {
 	if IsNativeDflashDraftSidecar(entry) && DraftSidecarHasTensor(entry, "blk.0.ffn_gate.weight") {
@@ -421,9 +432,24 @@ func DraftANEMatmulChain16FFNUpDims(entry ANEDraftEntry, fcOut int) (ic, oc int)
 	return DraftANEMatmulChain15FFNGateDims(entry, fcOut)
 }
 
+// DraftANEMatmulChain16FFNUpDimsForChain returns ffn_up ic×oc; chain >= 13 uses full wo width.
+func DraftANEMatmulChain16FFNUpDimsForChain(entry ANEDraftEntry, fcOut, matmulChain int) (ic, oc int) {
+	return DraftANEMatmulChain15FFNGateDimsForChain(entry, fcOut, matmulChain)
+}
+
 // DraftANEMatmulChain16FFNDownDims returns ic×oc for SwiGLU @ blk.0 ffn_down (P15 dflash subgraph).
 func DraftANEMatmulChain16FFNDownDims(entry ANEDraftEntry, fcOut int) (ic, oc int) {
 	_, icFF := DraftANEMatmulChain15FFNGateDims(entry, fcOut)
+	oc = fcOut
+	if oc <= 0 {
+		oc = entry.EmbeddingLength
+	}
+	return icFF, oc
+}
+
+// DraftANEMatmulChain16FFNDownDimsForChain returns ffn_down ic×oc; chain >= 13 uses full wo width.
+func DraftANEMatmulChain16FFNDownDimsForChain(entry ANEDraftEntry, fcOut, matmulChain int) (ic, oc int) {
+	_, icFF := DraftANEMatmulChain15FFNGateDimsForChain(entry, fcOut, matmulChain)
 	oc = fcOut
 	if oc <= 0 {
 		oc = entry.EmbeddingLength

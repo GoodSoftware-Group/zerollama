@@ -9,7 +9,7 @@ Subject: [PATCH] ollama: compat loader hook call sites (b9611)
  2 files changed, 30 insertions(+)
 
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 28f8bb793..03ffcc97d 100644
+index 28f8bb79..03ffcc97 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -4,6 +4,7 @@
@@ -75,7 +75,7 @@ index 28f8bb793..03ffcc97d 100644
          if (use_mmap) {
              const auto & mapping = mappings.at(weight->idx);
 diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index d2226b3be..2bfc1ef69 100644
+index b8866506..764c38af 100644
 --- a/tools/mtmd/clip.cpp
 +++ b/tools/mtmd/clip.cpp
 @@ -10,6 +10,8 @@
@@ -87,7 +87,7 @@ index d2226b3be..2bfc1ef69 100644
  #include <algorithm>
  #include <cassert>
  #include <cmath>
-@@ -1070,6 +1072,11 @@ struct clip_model_loader {
+@@ -1072,6 +1074,11 @@ struct clip_model_loader {
  
          ctx_meta.reset(meta);
  
@@ -99,7 +99,7 @@ index d2226b3be..2bfc1ef69 100644
          const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
  
          // print gguf info
-@@ -2829,6 +2836,7 @@ struct clip_model_loader {
+@@ -2840,6 +2847,7 @@ struct clip_model_loader {
                      auto it_off = tensor_offset.find(t->name);
                      GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                      const size_t offset = it_off->second;
@@ -107,7 +107,7 @@ index d2226b3be..2bfc1ef69 100644
                      fin.seekg(offset, std::ios::beg);
                      if (!fin) {
                          throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
-@@ -4526,6 +4534,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
+@@ -4550,6 +4558,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
  }
  
  int clip_n_mmproj_embd(const struct clip_ctx * ctx) {

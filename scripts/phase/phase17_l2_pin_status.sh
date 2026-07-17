@@ -17,7 +17,7 @@ P17_L2_OUT="${P17_L2_OUT:-}"
 VENDOR_PIN="$(grep -E '^FETCH_HEAD=' "${ROOT}/Makefile.sync" | cut -d= -f2)"
 VERSION="$(cat "${ROOT}/LLAMA_CPP_VERSION" 2>/dev/null || true)"
 UNIFIED_REF="$(cat "${ROOT}/LLAMA_CPP_COMMIT" 2>/dev/null | tr -d '[:space:]' || true)"
-UNIFIED_REF="${UNIFIED_REF:-8f114a9b573b69035299f9b924047f53c1e22c7e}"
+UNIFIED_REF="${UNIFIED_REF:-86d86ed4396b4130922f7b9af26e3d9fc11a591b}"
 UNIFIED_DIR="${LLAMA_CPP_ROOT:-${ROOT}/../llama.cpp}"
 VENDOR_DIR="${ROOT}/vendor/llama-cpp-${VENDOR_PIN}"
 

@@ -144,3 +144,144 @@ func TestVisionEmbedCache_sessionOverlay_lruEvictionAtCap(t *testing.T) {
 		t.Fatal("oldest session should be evicted at cap")
 	}
 }
+
+func TestVisionEmbedCache_byteBudgetEviction(t *testing.T) {
+	// 4 float32s = 16 bytes; budget holds one entry + forces eviction before second.
+	cache := VisionEmbedCache{
+		entries:    make([]imageEmbedCache, 4),
+		byteBudget: 20,
+	}
+	a := testCachedEmbed(1, 2, 3, 4)
+	b := testCachedEmbed(5, 6, 7, 8)
+
+	cache.mu.Lock()
+	cache.addGlobalLocked(0x1, a)
+	if cache.totalBytes != 16 {
+		t.Fatalf("totalBytes=%d want 16", cache.totalBytes)
+	}
+	cache.addGlobalLocked(0x2, b)
+	_, errA := cache.findGlobalLocked(0x1)
+	gotB, errB := cache.findGlobalLocked(0x2)
+	cache.mu.Unlock()
+
+	if errA != errVisionEmbedNotFound {
+		t.Fatalf("expected A evicted under byte budget, err=%v", errA)
+	}
+	if errB != nil || !reflect.DeepEqual(gotB, b) {
+		t.Fatalf("B should remain: err=%v got=%v", errB, gotB)
+	}
+	if cache.totalBytes != 16 {
+		t.Fatalf("totalBytes=%d want 16 after eviction", cache.totalBytes)
+	}
+}
+
+func TestVisionEmbedCache_sessionHashCap(t *testing.T) {
+	cache := VisionEmbedCache{
+		entries:          make([]imageEmbedCache, 2),
+		sessionMaxHashes: 2,
+		sessionEmbeds:    make(map[string]sessionEmbedState),
+	}
+	const session = "agent-1"
+
+	cache.mu.Lock()
+	cache.storeSessionEmbedLocked(session, 1, testCachedEmbed(1))
+	cache.storeSessionEmbedLocked(session, 2, testCachedEmbed(2))
+	cache.storeSessionEmbedLocked(session, 3, testCachedEmbed(3))
+	_, ok1 := cache.findSessionEmbedLocked(session, 1)
+	got2, ok2 := cache.findSessionEmbedLocked(session, 2)
+	got3, ok3 := cache.findSessionEmbedLocked(session, 3)
+	cache.mu.Unlock()
+
+	if ok1 {
+		t.Fatal("hash 1 should be evicted at session hash cap")
+	}
+	if !ok2 || !reflect.DeepEqual(got2, testCachedEmbed(2)) {
+		t.Fatalf("hash 2 miss: ok=%v got=%v", ok2, got2)
+	}
+	if !ok3 || !reflect.DeepEqual(got3, testCachedEmbed(3)) {
+		t.Fatalf("hash 3 miss: ok=%v got=%v", ok3, got3)
+	}
+}
+
+func TestVisionEmbedCache_radixGrowsBeyondSlotsUnderBudget(t *testing.T) {
+	// Slot-only LRU of size 2 would thrash; byte budget lets the pool grow.
+	cache := VisionEmbedCache{
+		entries:    make([]imageEmbedCache, 2),
+		byteBudget: 1024,
+	}
+	cache.mu.Lock()
+	for i := 0; i < 6; i++ {
+		cache.addGlobalLocked(uint64(0x100+i), testCachedEmbed(float32(i), float32(i)+0.1))
+	}
+	n := len(cache.entries)
+	_, err0 := cache.findGlobalLocked(0x100)
+	_, err5 := cache.findGlobalLocked(0x105)
+	cache.mu.Unlock()
+
+	if n < 6 {
+		t.Fatalf("slots=%d want >=6 under radix byte budget", n)
+	}
+	if err0 != nil || err5 != nil {
+		t.Fatalf("expected all embeds retained: err0=%v err5=%v", err0, err5)
+	}
+}
+
+func TestVisionEmbedCache_radixCrossSessionHit(t *testing.T) {
+	// Success criterion: different prompt_cache_keys share embeds via content pool
+	// even when the slot-only MAX would have evicted them.
+	cache := VisionEmbedCache{
+		entries:          make([]imageEmbedCache, 2),
+		byteBudget:       4096,
+		sessionMaxHashes: 4,
+		sessionEmbeds:    make(map[string]sessionEmbedState),
+	}
+	shared := testCachedEmbed(1, 2, 3, 4)
+	const hash = uint64(0xfeed)
+
+	cache.mu.Lock()
+	cache.addGlobalLocked(hash, shared)
+	cache.storeSessionEmbedLocked("agent-a", hash, shared)
+	// Fill more distinct hashes than initial slots — radix grows, keeps shared.
+	for i := 0; i < 8; i++ {
+		cache.addGlobalLocked(uint64(0x200+i), testCachedEmbed(float32(i)))
+	}
+	_, okA := cache.findSessionEmbedLocked("agent-a", hash)
+	got, err := cache.findGlobalLocked(hash)
+	_, okB := cache.findSessionEmbedLocked("agent-b", hash)
+	cache.mu.Unlock()
+
+	if !okA {
+		t.Fatal("session-a overlay should still pin")
+	}
+	if err != nil {
+		t.Fatalf("radix pool should keep shared hash across fills: %v", err)
+	}
+	if okB {
+		t.Fatal("session-b must not see session-a overlay pins")
+	}
+	if !reflect.DeepEqual(got, shared) {
+		t.Fatalf("cross-session radix value mismatch: %v", got)
+	}
+
+	// agent-b gets the same embed by content hash (global/radix), then may pin.
+	cache.mu.Lock()
+	cache.storeSessionEmbedLocked("agent-b", hash, got)
+	_, okB2 := cache.findSessionEmbedLocked("agent-b", hash)
+	cache.mu.Unlock()
+	if !okB2 {
+		t.Fatal("agent-b should pin after radix restore")
+	}
+}
+
+func TestVisionEmbedCache_noRadixStillEvictsBySlots(t *testing.T) {
+	cache := VisionEmbedCache{entries: make([]imageEmbedCache, 2)} // byteBudget 0
+	cache.mu.Lock()
+	cache.addGlobalLocked(1, testCachedEmbed(1))
+	cache.addGlobalLocked(2, testCachedEmbed(2))
+	cache.addGlobalLocked(3, testCachedEmbed(3))
+	_, err1 := cache.findGlobalLocked(1)
+	cache.mu.Unlock()
+	if err1 != errVisionEmbedNotFound {
+		t.Fatalf("slot-only mode should evict oldest, err=%v", err1)
+	}
+}

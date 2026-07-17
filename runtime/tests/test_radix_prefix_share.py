@@ -9,7 +9,12 @@ from runtime.kv.prefix_block_pool import (
     get_prefix_block_pool,
     reset_prefix_block_pools_for_tests,
 )
-from runtime.kv.radix_prefix_share import find_radix_share_plan, radix_prefix_share_enabled
+from runtime.kv.radix_prefix_share import (
+    find_radix_share_plan,
+    radix_prefix_share_enabled,
+    radix_share_health,
+    record_radix_copy_cost,
+)
 from runtime.kv.lmcache_tier import reset_lmcache_tier_for_tests
 
 
@@ -143,3 +148,15 @@ def test_find_radix_share_same_slot_no_plan(monkeypatch: pytest.MonkeyPatch):
 
 def test_radix_disabled_by_default():
     assert radix_prefix_share_enabled() is False
+
+
+def test_radix_share_health_tracks_approx_copy_bytes(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
+    before = radix_share_health()
+    prev_bytes = int(before.get("approx_copy_bytes_total") or 0)
+    prev_toks = int(before.get("approx_copy_tokens_total") or 0)
+    got = record_radix_copy_cost(copy_tokens=128, bytes_per_token=100)
+    assert got == 12800
+    after = radix_share_health()
+    assert after["approx_copy_bytes_total"] == prev_bytes + 12800
+    assert after["approx_copy_tokens_total"] == prev_toks + 128

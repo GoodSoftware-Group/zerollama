@@ -15,7 +15,7 @@ pause Metal residency keep-alive during long host compute windows.
  5 files changed, 173 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/include/ggml-metal.h b/ggml/include/ggml-metal.h
-index 433838f0d..24df357b3 100644
+index 433838f0..24df357b 100644
 --- a/ggml/include/ggml-metal.h
 +++ b/ggml/include/ggml-metal.h
 @@ -26,6 +26,7 @@
@@ -58,7 +58,7 @@ index 433838f0d..24df357b3 100644
  }
  #endif
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index d3f9e61ca..349167d5e 100644
+index d3f9e61c..349167d5 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
 @@ -1,6 +1,7 @@
@@ -78,7 +78,7 @@ index d3f9e61ca..349167d5e 100644
  
  if (GGML_METAL_NDEBUG)
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index cdae96c50..418d25b86 100644
+index cdae96c5..418d25b8 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -297,6 +297,12 @@ void ggml_metal_device_rsets_rm (ggml_metal_device_t dev, ggml_metal_rset_t rset
@@ -103,7 +103,7 @@ index cdae96c50..418d25b86 100644
  void   ggml_metal_buffer_free     (ggml_metal_buffer_t buf);
  void * ggml_metal_buffer_get_base (ggml_metal_buffer_t buf);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index b4dafddab..a7a2c51b1 100644
+index e4d2d367..dbbd9cd0 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -5,6 +5,8 @@
@@ -179,7 +179,7 @@ index b4dafddab..a7a2c51b1 100644
  struct ggml_metal_event {
      void * obj; // id<MTLSharedEvent>
  
-@@ -1475,6 +1511,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1479,6 +1515,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
  
      // pointers to global device
      ggml_metal_device_t dev;
@@ -189,7 +189,7 @@ index b4dafddab..a7a2c51b1 100644
  };
  
  static void ggml_metal_log_allocated_size(id<MTLDevice> device, size_t size_aligned) {
-@@ -1740,6 +1779,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
+@@ -1744,6 +1783,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
      return res;
  }
  
@@ -227,7 +227,7 @@ index b4dafddab..a7a2c51b1 100644
  void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
      ggml_metal_device_rsets_rm(buf->dev, buf->rset);
  
-@@ -1757,6 +1827,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
+@@ -1761,6 +1831,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
  #endif
      }
  
@@ -240,7 +240,7 @@ index b4dafddab..a7a2c51b1 100644
  }
  
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 0e5fc9550..41de145f5 100644
+index 0e5fc955..41de145f 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
 @@ -735,6 +735,24 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen

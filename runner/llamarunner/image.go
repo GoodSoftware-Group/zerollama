@@ -1,6 +1,7 @@
 package llamarunner
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -19,6 +20,8 @@ const (
 	// the same eliza thread (prompt_cache_key) still hits session embeds on turn 2+.
 	sessionEmbedMaxSessions = 32
 	sessionEmbedTTL         = 30 * time.Minute
+	// vitRadixHardSlotCap bounds grow-under-budget entry metadata (byte budget caps floats).
+	vitRadixHardSlotCap = 4096
 )
 
 // defaultImageCacheSize is the embed cache size used when the caller does not
@@ -28,7 +31,9 @@ const defaultImageCacheSize = 4
 
 type sessionEmbedState struct {
 	byHash            map[uint64][]llama.MtmdChunk
+	hashLRU           []uint64
 	precomputedByHash map[uint64][]visionChunk
+	precomputedLRU    []uint64
 	updatedAt         time.Time
 }
 
@@ -44,6 +49,10 @@ type ImageContext struct {
 
 	// cache of precomputed embedding rows (SGLang precomputed_embedding path)
 	precomputed []precomputedCache
+
+	// Byte budget across images + precomputed (EffectiveImageEmbedCacheBytes / ViT radix).
+	byteBudget int64
+	totalBytes int64
 
 	// session overlay keyed by prompt_cache_key (agent thread id)
 	sessionEmbeds   map[string]sessionEmbedState
@@ -74,6 +83,13 @@ func NewImageContext(llamaContext *llama.Context, modelPath string, cacheSize in
 	}
 	c.images = make([]imageCache, cacheSize)
 	c.precomputed = make([]precomputedCache, cacheSize)
+	c.byteBudget = envconfig.EffectiveImageEmbedCacheBytes()
+	if c.byteBudget > 0 {
+		slog.Info("vision embed radix pool enabled",
+			"byte_budget", c.byteBudget,
+			"slots", cacheSize,
+		)
+	}
 
 	return &c, nil
 }
@@ -95,10 +111,9 @@ func normalizeSessionKey(sessionKey string) string {
 // MultimodalTokenize returns ViT chunks for image bytes. sessionKey (prompt_cache_key)
 // enables a per-agent overlay that survives global LRU eviction between agent turns.
 //
-// gridTHW is optional [1,H,W] from video_spans (per-frame after expansion). Passed through
-// to mtmd when upstream accepts client patch grids; today used for debug compare only.
-// WHY cache ignores gridTHW: embeds are keyed by raster bytes — same PNG → same ViT output
-// regardless of whether the client attached a layout hint.
+// gridTHW is optional [1,H,W] from video_spans (per-frame after expansion). When set,
+// mtmd dyn_size honors it via mtmd_bitmap_set_grid_hint (M-RoPE / Qwen-VL).
+// Cache keys include grid when present — same PNG + different grid → different embeds.
 func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []byte, sessionKey string, gridTHW []int, sessionOverlay bool) ([]llama.MtmdChunk, error) {
 	if c == nil {
 		return nil, nil
@@ -108,7 +123,7 @@ func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []by
 		return nil, errors.New("received zero length image")
 	}
 
-	hash := c.hashImage(data)
+	hash := c.hashImage(data, gridTHW)
 	sessionKey = normalizeSessionKey(sessionKey)
 
 	c.mu.Lock()
@@ -132,6 +147,9 @@ func (c *ImageContext) MultimodalTokenize(llamaContext *llama.Context, data []by
 		}
 
 		c.addImage(hash, chunks)
+	} else if c.byteBudget > 0 {
+		slog.Info("vision embed radix cache hit")
+		slog.Info("vision embed global cache hit")
 	} else {
 		slog.Info("vision embed global cache hit")
 	}
@@ -158,12 +176,36 @@ func (c *ImageContext) EmbedSize(llamaContext *llama.Context) int {
 type imageCache struct {
 	key      uint64
 	val      []llama.MtmdChunk
+	bytes    int64
 	lastUsed time.Time
 }
 
-func (c *ImageContext) hashImage(image []byte) uint64 {
+func mtmdChunksBytes(chunks []llama.MtmdChunk) int64 {
+	var n int64
+	for _, ch := range chunks {
+		n += int64(len(ch.Embed)) * 4
+	}
+	return n
+}
+
+func visionChunksBytes(chunks []visionChunk) int64 {
+	var n int64
+	for _, ch := range chunks {
+		n += int64(len(ch.embed)) * 4
+	}
+	return n
+}
+
+func (c *ImageContext) hashImage(image []byte, gridTHW []int) uint64 {
 	c.imageHash.Reset()
 	_, _ = c.imageHash.Write(image)
+	if len(gridTHW) == 3 {
+		var buf [24]byte
+		binary.LittleEndian.PutUint64(buf[0:8], uint64(gridTHW[0]))
+		binary.LittleEndian.PutUint64(buf[8:16], uint64(gridTHW[1]))
+		binary.LittleEndian.PutUint64(buf[16:24], uint64(gridTHW[2]))
+		_, _ = c.imageHash.Write(buf[:])
+	}
 	return c.imageHash.Sum64()
 }
 
@@ -181,26 +223,137 @@ func (c *ImageContext) findImage(hash uint64) ([]llama.MtmdChunk, error) {
 	return nil, errImageNotFound
 }
 
+func (c *ImageContext) clearImageEntryLocked(i int) {
+	c.totalBytes -= c.images[i].bytes
+	if c.totalBytes < 0 {
+		c.totalBytes = 0
+	}
+	c.images[i] = imageCache{}
+}
+
+func (c *ImageContext) clearPrecomputedEntryLocked(i int) {
+	c.totalBytes -= c.precomputed[i].bytes
+	if c.totalBytes < 0 {
+		c.totalBytes = 0
+	}
+	c.precomputed[i] = precomputedCache{}
+}
+
+// oldestFilledGlobalLocked returns which pool ("image"|"precomputed") and index of the
+// least-recently-used filled slot across both LRUs. Empty → ("", -1).
+func (c *ImageContext) oldestFilledGlobalLocked() (pool string, idx int) {
+	best := -1
+	bestPool := ""
+	var bestTime time.Time
+	for i := range c.images {
+		if c.images[i].key == 0 && len(c.images[i].val) == 0 {
+			continue
+		}
+		if best < 0 || c.images[i].lastUsed.Compare(bestTime) < 0 {
+			best = i
+			bestTime = c.images[i].lastUsed
+			bestPool = "image"
+		}
+	}
+	for i := range c.precomputed {
+		if c.precomputed[i].key == 0 && len(c.precomputed[i].val) == 0 {
+			continue
+		}
+		if best < 0 || c.precomputed[i].lastUsed.Compare(bestTime) < 0 {
+			best = i
+			bestTime = c.precomputed[i].lastUsed
+			bestPool = "precomputed"
+		}
+	}
+	return bestPool, best
+}
+
+func (c *ImageContext) evictUntilBudgetLocked(need int64) {
+	if c.byteBudget <= 0 {
+		return
+	}
+	for c.totalBytes+need > c.byteBudget {
+		pool, i := c.oldestFilledGlobalLocked()
+		if i < 0 {
+			return
+		}
+		if pool == "image" {
+			c.clearImageEntryLocked(i)
+		} else {
+			c.clearPrecomputedEntryLocked(i)
+		}
+	}
+}
+
 func (c *ImageContext) addImage(hash uint64, embed []llama.MtmdChunk) {
-	best := time.Now()
-	var bestImage int
+	need := mtmdChunksBytes(embed)
 
 	for i := range c.images {
 		if c.images[i].key == hash {
-			bestImage = i
-			break
-		}
-
-		if c.images[i].lastUsed.Compare(best) < 0 {
-			best = c.images[i].lastUsed
-			bestImage = i
+			c.totalBytes -= c.images[i].bytes
+			if c.totalBytes < 0 {
+				c.totalBytes = 0
+			}
+			c.images[i].val = embed
+			c.images[i].bytes = need
+			c.images[i].lastUsed = time.Now()
+			c.totalBytes += need
+			c.evictUntilBudgetLocked(0)
+			return
 		}
 	}
 
-	slog.Debug("storing image embeddings in cache", "entry", bestImage, "used", c.images[bestImage].lastUsed)
+	c.evictUntilBudgetLocked(need)
+
+	bestImage := -1
+	for i := range c.images {
+		if c.images[i].key == 0 && len(c.images[i].val) == 0 {
+			bestImage = i
+			break
+		}
+	}
+
+	if bestImage < 0 && c.canGrowRadixImageLocked(need) {
+		c.images = append(c.images, imageCache{})
+		bestImage = len(c.images) - 1
+		slog.Debug("vision embed radix pool grown",
+			"pool", "image",
+			"slots", len(c.images),
+			"bytes", need,
+		)
+	}
+
+	if bestImage < 0 {
+		best := time.Now()
+		bestImage = 0
+		for i := range c.images {
+			if c.images[i].lastUsed.Compare(best) < 0 {
+				best = c.images[i].lastUsed
+				bestImage = i
+			}
+		}
+		if c.images[bestImage].key != 0 || len(c.images[bestImage].val) != 0 {
+			c.clearImageEntryLocked(bestImage)
+		}
+	}
+
+	slog.Debug("storing image embeddings in cache",
+		"entry", bestImage,
+		"bytes", need,
+		"total_bytes", c.totalBytes+need,
+	)
 	c.images[bestImage].key = hash
 	c.images[bestImage].val = embed
+	c.images[bestImage].bytes = need
 	c.images[bestImage].lastUsed = time.Now()
+	c.totalBytes += need
+}
+
+func (c *ImageContext) canGrowRadixImageLocked(need int64) bool {
+	if c.byteBudget <= 0 || len(c.images) >= vitRadixHardSlotCap {
+		return false
+	}
+	return c.totalBytes+need <= c.byteBudget
 }
 
 // growCacheForDistinctFrames expands the embed LRU when a multimodal turn has more
@@ -249,6 +402,7 @@ func (c *ImageContext) findSessionEmbedLocked(sessionKey string, hash uint64) ([
 		return nil, false
 	}
 	st.updatedAt = time.Now()
+	bumpHashLRU(&st.hashLRU, hash)
 	c.sessionEmbeds[sessionKey] = st
 	c.bumpSessionEmbedLRULocked(sessionKey)
 	slog.Info("vision embed session cache hit", "session_key", sessionKey)
@@ -271,7 +425,6 @@ func (c *ImageContext) storeSessionEmbedLocked(sessionKey string, hash uint64, c
 			byHash:            make(map[uint64][]llama.MtmdChunk),
 			precomputedByHash: make(map[uint64][]visionChunk),
 		}
-		// Key is new: append to tail. No bump needed — it is already at the tail.
 		c.sessionEmbedLRU = append(c.sessionEmbedLRU, sessionKey)
 	} else {
 		if st.byHash == nil {
@@ -280,12 +433,31 @@ func (c *ImageContext) storeSessionEmbedLocked(sessionKey string, hash uint64, c
 		if st.precomputedByHash == nil {
 			st.precomputedByHash = make(map[uint64][]visionChunk)
 		}
-		// Existing session: move to tail so it is evicted last.
 		c.bumpSessionEmbedLRULocked(sessionKey)
 	}
+	_, exists := st.byHash[hash]
+	if !exists {
+		maxHashes := envconfig.ImageEmbedCacheMax()
+		for len(st.byHash) >= maxHashes && len(st.hashLRU) > 0 {
+			victim := st.hashLRU[0]
+			st.hashLRU = st.hashLRU[1:]
+			delete(st.byHash, victim)
+		}
+	}
 	st.byHash[hash] = chunks
+	bumpHashLRU(&st.hashLRU, hash)
 	st.updatedAt = time.Now()
 	c.sessionEmbeds[sessionKey] = st
+}
+
+func bumpHashLRU(lru *[]uint64, hash uint64) {
+	for i, h := range *lru {
+		if h == hash {
+			*lru = append(append((*lru)[:i], (*lru)[i+1:]...), hash)
+			return
+		}
+	}
+	*lru = append(*lru, hash)
 }
 
 func (c *ImageContext) bumpSessionEmbedLRULocked(key string) {
@@ -324,6 +496,7 @@ func (c *ImageContext) findSessionPrecomputedLocked(sessionKey string, hash uint
 		return nil, false
 	}
 	st.updatedAt = time.Now()
+	bumpHashLRU(&st.precomputedLRU, hash)
 	c.sessionEmbeds[sessionKey] = st
 	c.bumpSessionEmbedLRULocked(sessionKey)
 	slog.Info("precomputed_embedding session cache hit", "session_key", sessionKey)
@@ -353,7 +526,18 @@ func (c *ImageContext) storeSessionPrecomputedLocked(sessionKey string, hash uin
 		}
 		c.bumpSessionEmbedLRULocked(sessionKey)
 	}
-	st.precomputedByHash[hash] = cloneVisionChunks(chunks)
+	_, exists := st.precomputedByHash[hash]
+	if !exists {
+		maxHashes := envconfig.ImageEmbedCacheMax()
+		for len(st.precomputedByHash) >= maxHashes && len(st.precomputedLRU) > 0 {
+			victim := st.precomputedLRU[0]
+			st.precomputedLRU = st.precomputedLRU[1:]
+			delete(st.precomputedByHash, victim)
+		}
+	}
+	// Share with global slot — clone only on return to the request path.
+	st.precomputedByHash[hash] = chunks
+	bumpHashLRU(&st.precomputedLRU, hash)
 	st.updatedAt = time.Now()
 	c.sessionEmbeds[sessionKey] = st
 }

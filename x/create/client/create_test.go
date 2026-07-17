@@ -596,6 +596,11 @@ func TestGetParserName(t *testing.T) {
 			want:       "qwen3",
 		},
 		{
+			name:       "qwen3.5 model",
+			configJSON: `{"architectures": ["Qwen3_5ForConditionalGeneration"]}`,
+			want:       "qwen3.5",
+		},
+		{
 			name:       "deepseek model",
 			configJSON: `{"architectures": ["DeepseekV3ForCausalLM"]}`,
 			want:       "deepseek3",
@@ -644,6 +649,11 @@ func TestGetRendererName(t *testing.T) {
 			name:       "qwen3 model",
 			configJSON: `{"architectures": ["Qwen3ForCausalLM"]}`,
 			want:       "qwen3-coder",
+		},
+		{
+			name:       "qwen3.5 model",
+			configJSON: `{"architectures": ["Qwen3_5ForConditionalGeneration"]}`,
+			want:       "qwen3.5",
 		},
 		{
 			name:       "deepseek model",

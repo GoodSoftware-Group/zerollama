@@ -8,11 +8,15 @@ import (
 )
 
 // LogViTEmbedCacheSizing warns when the latest user turn has more image frames than
-// the auto-grow cap (OLLAMA_IMAGE_EMBED_CACHE_MAX).
+// the auto-grow cap (OLLAMA_IMAGE_EMBED_CACHE_MAX) and ViT radix is off.
 //
-// WHY: llamarunner auto-grows the embed LRU up to the max; turns above the cap still
-// re-encode evicted frames — operators grep this to raise OLLAMA_IMAGE_EMBED_CACHE_MAX.
+// WHY: without a byte-budget radix pool, llamarunner stops growing at MAX and re-encodes
+// overflow frames. With OLLAMA_VIT_RADIX (default), the content pool grows under the
+// byte budget — skip the undersized warning.
 func LogViTEmbedCacheSizing(msgs []api.Message) {
+	if envconfig.EffectiveImageEmbedCacheBytes() > 0 {
+		return
+	}
 	maxSlots := envconfig.ImageEmbedCacheMax()
 	idx := lastUserMessageIndex(msgs)
 	if idx < 0 {
@@ -26,7 +30,7 @@ func LogViTEmbedCacheSizing(msgs []api.Message) {
 	attrs := []any{
 		"frames", frames,
 		"cache_max", maxSlots,
-		"hint", "raise OLLAMA_IMAGE_EMBED_CACHE_MAX for larger video clips",
+		"hint", "raise OLLAMA_IMAGE_EMBED_CACHE_MAX or enable OLLAMA_VIT_RADIX for larger video clips",
 	}
 	if len(msg.VideoSpans) > 0 {
 		attrs = append(attrs, "has_video_spans", true)

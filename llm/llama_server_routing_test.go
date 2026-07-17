@@ -43,8 +43,15 @@ func TestUseLlamaServerBackendLinuxAutoPlainText(t *testing.T) {
 
 func TestUseLlamaServerBackendLinuxAutoVision(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "auto")
+	if useLlamaServerBackendForModelGOOS("linux", []string{"/path/to/mmproj.gguf"}, true, LlamaServerConfig{}) {
+		t.Fatal("Linux auto must keep vision GGUF on ggml llamarunner (SGLang precomputed skip-ViT)")
+	}
+}
+
+func TestUseLlamaServerBackendExplicitVisionOnLinux(t *testing.T) {
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
 	if !useLlamaServerBackendForModelGOOS("linux", []string{"/path/to/mmproj.gguf"}, true, LlamaServerConfig{}) {
-		t.Fatal("Linux auto must route vision GGUF through llama-server (upstream parity)")
+		t.Fatal("explicit llama-server must still route vision GGUF (Phase 17 vision smoke)")
 	}
 }
 

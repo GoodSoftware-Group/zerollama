@@ -10,8 +10,8 @@
 # WHY log read is after all HTTP legs: VIDEO_AGENT_INFER_PREPROC=1 and
 # VIDEO_AGENT_INFER_PREFIX_MM_WARN=1 append serve log lines; parsing before those legs caused false failures.
 #
-# WHY VIDEO_AGENT_INFER_PREPROC requires VIDEO_AGENT_GO_LOG: layout restore is proven
-# by log grep, not response body — without serve log the preproc leg is unverifiable.
+# WHY VIDEO_AGENT_INFER_PREPROC / PRECOMPUTED require VIDEO_AGENT_GO_LOG: layout restore
+# and skip-ViT inject are proven by log grep, not response body — unverifiable without serve log.
 #
 # Prerequisite: running zerollama serve with vision model, ffmpeg, L3 enabled
 # (subprocess/llama-server path; MLX-only may soft-pass).
@@ -44,6 +44,11 @@
 #                                 (requires VIDEO_AGENT_GO_LOG; ggml/ollama-engine ViT overlay)
 #   VIDEO_AGENT_INFER_GRID_THW=1 — strict: preproc leg must log grid_thw hint resize or vision grid hint match
 #                                 (requires VIDEO_AGENT_INFER_PREPROC=1 and VIDEO_AGENT_GO_LOG)
+#   VIDEO_AGENT_INFER_PRECOMPUTED=1 — strict skip-ViT: POST padded_input_ids + precomputed_embedding;
+#                                 requires VIDEO_AGENT_GO_LOG; fails without precomputed_embedding runner inject
+#   VIDEO_AGENT_INFER_VIT_RADIX=1 — strict cross-session ViT pool: same clip, two prompt_cache_keys;
+#                                 requires VIDEO_AGENT_GO_LOG; fails without vision embed radix cache hit
+#                                 (serve needs OLLAMA_VIT_RADIX on — default since Jul 2026)
 #   VIDEO_AGENT_INFER_OUT      — JSON report (default /tmp/video-agent-infer-smoke.json)
 #   VIDEO_AGENT_GO_LOG         — optional serve log; grep session cache + access log fields
 set -euo pipefail
@@ -88,6 +93,8 @@ export VIDEO_AGENT_INFER_MIN_CACHED="${VIDEO_AGENT_INFER_MIN_CACHED:-1}"
 export VIDEO_AGENT_INFER_SOFT="${VIDEO_AGENT_INFER_SOFT:-0}"
 export VIDEO_AGENT_INFER_PREPROC="${VIDEO_AGENT_INFER_PREPROC:-0}"
 export VIDEO_AGENT_INFER_PREFIX_MM_WARN="${VIDEO_AGENT_INFER_PREFIX_MM_WARN:-0}"
+export VIDEO_AGENT_INFER_PRECOMPUTED="${VIDEO_AGENT_INFER_PRECOMPUTED:-0}"
+export VIDEO_AGENT_INFER_VIT_RADIX="${VIDEO_AGENT_INFER_VIT_RADIX:-0}"
 
 if [[ "${VIDEO_AGENT_INFER_PREPROC}" == "1" && -z "${GO_LOG}" ]]; then
   echo "VIDEO_AGENT_INFER_PREPROC=1 requires VIDEO_AGENT_GO_LOG (preproc layout cache hit grep)" >&2
@@ -95,6 +102,14 @@ if [[ "${VIDEO_AGENT_INFER_PREPROC}" == "1" && -z "${GO_LOG}" ]]; then
 fi
 if [[ "${VIDEO_AGENT_INFER_PREFIX_MM_WARN}" == "1" && -z "${GO_LOG}" ]]; then
   echo "VIDEO_AGENT_INFER_PREFIX_MM_WARN=1 requires VIDEO_AGENT_GO_LOG (prefix-mm hint grep)" >&2
+  exit 1
+fi
+if [[ "${VIDEO_AGENT_INFER_PRECOMPUTED}" == "1" && -z "${GO_LOG}" ]]; then
+  echo "VIDEO_AGENT_INFER_PRECOMPUTED=1 requires VIDEO_AGENT_GO_LOG (inject log grep)" >&2
+  exit 1
+fi
+if [[ "${VIDEO_AGENT_INFER_VIT_RADIX}" == "1" && -z "${GO_LOG}" ]]; then
+  echo "VIDEO_AGENT_INFER_VIT_RADIX=1 requires VIDEO_AGENT_GO_LOG (radix hit grep)" >&2
   exit 1
 fi
 
@@ -142,6 +157,16 @@ run_grid_thw = os.environ.get("VIDEO_AGENT_INFER_GRID_THW", "0").strip().lower()
     "true",
     "yes",
 )
+run_precomputed = os.environ.get("VIDEO_AGENT_INFER_PRECOMPUTED", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+run_vit_radix = os.environ.get("VIDEO_AGENT_INFER_VIT_RADIX", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 if run_vit_session and not go_log:
     raise SystemExit(
@@ -156,6 +181,16 @@ if run_grid_thw:
             "VIDEO_AGENT_INFER_GRID_THW=1 requires VIDEO_AGENT_GO_LOG "
             "(grid_thw forward is log-only)"
         )
+if run_precomputed and not go_log:
+    raise SystemExit(
+        "VIDEO_AGENT_INFER_PRECOMPUTED=1 requires VIDEO_AGENT_GO_LOG "
+        "(precomputed_embedding runner inject is log-only)"
+    )
+if run_vit_radix and not go_log:
+    raise SystemExit(
+        "VIDEO_AGENT_INFER_VIT_RADIX=1 requires VIDEO_AGENT_GO_LOG "
+        "(vision embed radix cache hit is log-only)"
+    )
 
 tmpdir = tempfile.mkdtemp(prefix="video-agent-infer-")
 import atexit, shutil
@@ -350,6 +385,110 @@ if run_prefix_mm_warn:
     http_json("POST", "/api/chat", warn_payload)
     prefix_mm_warn_report = {"sent_without_session_key": True}
 
+precomputed_report = None
+if run_precomputed:
+    # Skip-ViT: synthetic feature rows + Qwen vision block in padded_input_ids.
+    # WHY /api/show for embd: ollama-engine and llamarunner both require row width == text embd.
+    show = http_json("POST", "/api/show", {"model": model})
+    info = show.get("model_info") or {}
+    embd = 0
+    for k, v in info.items():
+        if str(k).endswith(".embedding_length") and isinstance(v, (int, float)) and int(v) > 0:
+            embd = int(v)
+            break
+    if embd <= 0:
+        details = show.get("details") or {}
+        fam = str(details.get("family") or details.get("families") or "")
+        raise SystemExit(
+            f"precomputed leg: cannot resolve embedding_length from /api/show "
+            f"(family={fam!r}); need model_info '*.embedding_length'"
+        )
+    # Qwen3-VL vision markers (HF/mtmd).
+    vision_start, vision_end, vision_pad = 151652, 151653, 151655
+    n_rows = 4
+    grid_thw = [1, 2, 2]
+    feature = [[0.01 * ((i * embd + j) % 17) for j in range(embd)] for i in range(n_rows)]
+    padded = [1, vision_start] + [vision_pad] * n_rows + [vision_end, 2]
+    precomp_key = cache_key + "-precomputed-infer"
+    precomp_msg = {
+        "role": "user",
+        "content": "precomputed skip-vit probe",
+        "padded_input_ids": padded,
+        "images": [
+            {
+                "format": "precomputed_embedding",
+                "feature": feature,
+                "grid_thw": grid_thw,
+            }
+        ],
+    }
+    out_pc = post_chat([precomp_msg], cache_key_override=precomp_key)
+    m_pc = metrics_from_chat(out_pc)
+    if not m_pc["done"]:
+        raise SystemExit(f"precomputed infer incomplete: {out_pc!r}")
+    # Turn 2: same rows + session key → session/global precomputed cache hit when overlay on.
+    out_pc2 = post_chat(
+        [
+            precomp_msg,
+            {"role": "assistant", "content": "ok"},
+            {
+                "role": "user",
+                "content": "precomputed skip-vit again",
+                "padded_input_ids": padded,
+                "images": [
+                    {
+                        "format": "precomputed_embedding",
+                        "feature": feature,
+                        "grid_thw": grid_thw,
+                    }
+                ],
+            },
+        ],
+        cache_key_override=precomp_key,
+    )
+    m_pc2 = metrics_from_chat(out_pc2)
+    if not m_pc2["done"]:
+        raise SystemExit(f"precomputed turn2 incomplete: {out_pc2!r}")
+    precomputed_report = {
+        "cache_key": precomp_key,
+        "embd": embd,
+        "rows": n_rows,
+        "grid_thw": grid_thw,
+        "turn1_metrics": m_pc,
+        "turn2_metrics": m_pc2,
+        "verdict": "pass",
+    }
+
+vit_radix_report = None
+if run_vit_radix:
+    # Cross-session ViT pool: same clip bytes, different prompt_cache_key.
+    # Session overlay must miss on key-B; radix/global content pool should hit.
+    radix_key_a = cache_key + "-vit-radix-a"
+    radix_key_b = cache_key + "-vit-radix-b"
+    msg_a = {
+        "role": "user",
+        "content": "vit radix donor",
+        "videos": [video_b64],
+    }
+    out_ra = post_chat([msg_a], cache_key_override=radix_key_a)
+    m_ra = metrics_from_chat(out_ra)
+    if not m_ra["done"]:
+        raise SystemExit(f"vit radix donor incomplete: {out_ra!r}")
+    out_rb = post_chat(
+        [{"role": "user", "content": "vit radix consumer", "videos": [video_b64]}],
+        cache_key_override=radix_key_b,
+    )
+    m_rb = metrics_from_chat(out_rb)
+    if not m_rb["done"]:
+        raise SystemExit(f"vit radix consumer incomplete: {out_rb!r}")
+    vit_radix_report = {
+        "donor_key": radix_key_a,
+        "consumer_key": radix_key_b,
+        "donor_metrics": m_ra,
+        "consumer_metrics": m_rb,
+        "verdict": "pass",
+    }
+
 log_text = ""
 if go_log:
     try:
@@ -373,6 +512,7 @@ if go_log:
         "session_cache_hit": "video sample session cache hit" in log_text,
         "vision_embed_session_cache_hit": "vision embed session cache hit" in log_text,
         "vision_embed_global_cache_hit": "vision embed global cache hit" in log_text,
+        "vision_embed_radix_cache_hit": "vision embed radix cache hit" in log_text,
         "vision_embed_engine_ollama": "vision embed session cache hit" in log_text
         and "engine=ollama" in log_text,
         "vision_grid_hints": "vision grid hints" in log_text,
@@ -411,12 +551,40 @@ if go_log:
             "preproc infer OK but VIDEO_AGENT_GO_LOG lacks "
             "'grid_thw hint resize' or 'vision grid hint match'"
         )
+    if run_precomputed and not log_checks.get("precomputed_embedding_runner_inject"):
+        raise SystemExit(
+            "precomputed infer OK but VIDEO_AGENT_GO_LOG lacks "
+            "'precomputed_embedding runner inject' (skip-ViT path not taken)"
+        )
+    if run_vit_radix and not log_checks.get("vision_embed_radix_cache_hit"):
+        raise SystemExit(
+            "vit radix infer OK but VIDEO_AGENT_GO_LOG lacks "
+            "'vision embed radix cache hit' (rebuild serve with OLLAMA_VIT_RADIX default on, "
+            "or set OLLAMA_IMAGE_EMBED_CACHE_BYTES)"
+        )
+    if run_precomputed and precomputed_report is not None:
+        # Prefer session hit on turn 2; global hit also proves cache wire-up.
+        if not (
+            log_checks.get("precomputed_embedding_session_cache_hit")
+            or log_checks.get("precomputed_embedding_global_cache_hit")
+            or log_checks.get("vision_embed_session_cache_hit")
+        ):
+            precomputed_report["verdict"] = "soft"
+            precomputed_report["reason"] = (
+                "inject OK; no precomputed/vision session|global cache hit on turn 2"
+            )
+        else:
+            precomputed_report["verdict"] = "pass"
 
 if run_preproc and preproc_report and preproc_report.get("verdict") == "fail":
     raise SystemExit(
         "preproc turn2 cached_prompt_tokens="
         f"{(preproc_report.get('turn2_metrics') or {}).get('cached_prompt_tokens', 0)} "
         f"want>={min_cached}"
+    )
+if run_precomputed and precomputed_report and precomputed_report.get("verdict") == "fail":
+    raise SystemExit(
+        f"precomputed infer failed: {precomputed_report.get('reason') or precomputed_report}"
     )
 
 # /api/chat turn-2 is the real L3 gate: same prefix, same session key, same message structure.
@@ -458,8 +626,12 @@ report = {
     "log_checks": log_checks or None,
     "preprocessed_infer": preproc_report,
     "prefix_mm_warn_probe": prefix_mm_warn_report,
+    "precomputed_infer": precomputed_report,
+    "vit_radix_infer": vit_radix_report,
     "vit_session_required": run_vit_session,
     "grid_thw_forward_required": run_grid_thw,
+    "precomputed_required": run_precomputed,
+    "vit_radix_required": run_vit_radix,
     "verdict": verdict,
     "reason": reason,
 }

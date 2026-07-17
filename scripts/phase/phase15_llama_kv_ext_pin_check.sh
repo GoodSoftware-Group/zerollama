@@ -23,6 +23,7 @@ IN_TREE=(
   "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
   "${ROOT}/llama/patches/0019-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch"
   "${ROOT}/llama/patches/0021-ollama-llama-kv-ext-donor-buffer-v48.patch"
+  "${ROOT}/llama/patches/0022-ollama-llama-kv-ext-donor-buffer-metal-v49.patch"
 )
 
 for f in "${IN_TREE[@]}"; do
@@ -61,6 +62,13 @@ done
 grep -q 'llama_kv_ext_donor_try_consume' "${ROOT}/llama/llama.cpp/src/llama-kv-cache.cpp"
 grep -q 'LLAMA_KV_EXT_DONOR_BUFFER' "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
 
+# v49: Metal (and any other buffer_from_host_ptr-capable device) donor consume
+# must be declared, implemented, AND wired into the allocation loop — same
+# three-checkpoint pattern as v48's host-only hook above.
+grep -q 'llama_kv_ext_donor_try_consume_dev' "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
+grep -q 'llama_kv_ext_donor_try_consume_dev' "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
+grep -q 'llama_kv_ext_donor_try_consume_dev' "${ROOT}/llama/llama.cpp/src/llama-kv-cache.cpp"
+
 # Upstream stable memory API that llama-kv-ext builds on (must exist at pin).
 UPSTREAM_DEPS=(
   llama_get_memory
@@ -75,6 +83,16 @@ UPSTREAM_DEPS=(
 GGML_BACKEND_H="${ROOT}/ml/backend/ggml/ggml/include/ggml-backend.h"
 if [[ -f "${GGML_BACKEND_H}" ]] && ! grep -q 'ggml_backend_cpu_buffer_from_ptr' "${GGML_BACKEND_H}"; then
   echo "FAIL: upstream ggml_backend_cpu_buffer_from_ptr missing from ${GGML_BACKEND_H#${ROOT}/} — v48 donor-buffer hook needs this primitive" >&2
+  exit 1
+fi
+
+# v49 upstream ggml primitive the Metal device-buft donor hook relies on
+# (buffer_from_host_ptr device capability, e.g. Metal's newBufferWithBytesNoCopy
+# path — llama-model.cpp's mmap weight loader already uses this in production;
+# v49 is the first Phase 15 KV-cache use). No CUDA-specific check needed: CUDA
+# does not implement this device iface slot (discrete VRAM, no unified memory).
+if [[ -f "${GGML_BACKEND_H}" ]] && ! grep -q 'ggml_backend_dev_buffer_from_host_ptr' "${GGML_BACKEND_H}"; then
+  echo "FAIL: upstream ggml_backend_dev_buffer_from_host_ptr missing from ${GGML_BACKEND_H#${ROOT}/} — v49 Metal donor-buffer hook needs this primitive" >&2
   exit 1
 fi
 LLAMA_H="${ROOT}/llama/llama.cpp/include/llama.h"
@@ -141,6 +159,7 @@ report = {
     "llama_cpp_version": os.environ.get("VERSION", ""),
     "patch": "0019-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch",
     "patch_alias": "0021-ollama-llama-kv-ext-donor-buffer-v48.patch",
+    "patch_alias_v49": "0022-ollama-llama-kv-ext-donor-buffer-metal-v49.patch",
     "staging_api": [
         "llama_memory_kv_cell_for_pos",
         "llama_memory_kv_cell_map_range",
@@ -155,6 +174,9 @@ report = {
         "llama_kv_ext_unregister_donor_buffer",
         "llama_kv_ext_donor_buffer_status",
     ],
+    "internal_hooks_v49": [
+        "llama_kv_ext_donor_try_consume_dev",
+    ],
     "upstream_writable_watch_found": json.loads(os.environ.get("WATCH_JSON", "[]")),
     "upstream_writable_watch": [
         "llama_memory_kv_page_map",
@@ -167,4 +189,4 @@ print(f"report: {out}")
 PY
 fi
 
-echo "PASS: llama-kv-ext in-tree + patches 0019/0021 present; upstream memory deps OK at pin ${PIN}"
+echo "PASS: llama-kv-ext in-tree + patches 0019/0021/0022 present; upstream memory deps OK at pin ${PIN}"

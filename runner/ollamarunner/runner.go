@@ -3,6 +3,7 @@ package ollamarunner
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,6 +36,7 @@ import (
 	"github.com/ollama/ollama/ml/nn/pooling"
 	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/model/input"
+	"github.com/ollama/ollama/model/mmradix"
 	"github.com/ollama/ollama/runner/common"
 	"github.com/ollama/ollama/sample"
 	"github.com/ollama/ollama/tokenizer"
@@ -181,6 +183,15 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 		return nil, errors.New("no input provided")
 	}
 
+	if envconfig.KVMMPadRadixEnabled() {
+		if n := mmradix.ApplyToInputs(inputs); n > 0 {
+			slog.Info("kv mm pad_value radix applied",
+				"rewritten", n,
+				"engine", "ollama",
+			)
+		}
+	}
+
 	if params.numKeep < 0 {
 		params.numKeep = int32(len(inputs))
 	}
@@ -267,15 +278,15 @@ func calculateLogprobs(logits []float32, selectedToken int32, topK int, tok toke
 	return common.CalculateLogprobs(logits, int(selectedToken), topK, decoder)
 }
 
-func (s *Server) encodeMultimodalCached(ctx ml.Context, data []byte, sessionKey string, sessionOverlay bool) ([]input.Multimodal, error) {
+func (s *Server) encodeMultimodalCached(ctx ml.Context, data []byte, gridTHW []int, sessionKey string, sessionOverlay bool) ([]input.Multimodal, error) {
 	mp, ok := s.model.(model.MultimodalProcessor)
 	if !ok {
 		return nil, errors.New("model does not support multimodal encoding")
 	}
 	if s.visionCache != nil {
-		return s.visionCache.GetOrEncode(mp, s.model.Backend(), ctx, data, sessionKey, sessionOverlay)
+		return s.visionCache.GetOrEncode(mp, s.model.Backend(), ctx, data, gridTHW, sessionKey, sessionOverlay)
 	}
-	return mp.EncodeMultimodal(ctx, data)
+	return encodeMultimodalOptionalGrid(mp, ctx, data, gridTHW)
 }
 
 // inputs processes the prompt and images into a list of inputs
@@ -373,7 +384,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 					}
 				}
 			default:
-				imageEmbeddings, err = s.encodeMultimodalCached(ctx, img.Data, sessionKey, sessionOverlay)
+				imageEmbeddings, err = s.encodeMultimodalCached(ctx, img.Data, img.GridTHW, sessionKey, sessionOverlay)
 			}
 			if err != nil {
 				return nil, nil, nil, err
@@ -388,6 +399,13 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 			default:
 				s.multimodalHash.Reset()
 				_, _ = s.multimodalHash.Write(img.Data)
+				if len(img.GridTHW) == 3 {
+					var buf [24]byte
+					binary.LittleEndian.PutUint64(buf[0:8], uint64(img.GridTHW[0]))
+					binary.LittleEndian.PutUint64(buf[8:16], uint64(img.GridTHW[1]))
+					binary.LittleEndian.PutUint64(buf[16:24], uint64(img.GridTHW[2]))
+					_, _ = s.multimodalHash.Write(buf[:])
+				}
 				imageHash = s.multimodalHash.Sum64()
 			}
 
@@ -407,6 +425,19 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 	}
 
 	return inputs, ctxs, mmStore, nil
+}
+
+// embedVocabSize is the TokenEmbedding table width for clamp-before-embed of pad_values.
+func (s *Server) embedVocabSize() int32 {
+	tok, ok := s.model.(tokenizer.Tokenizer)
+	if !ok {
+		return 0
+	}
+	v := tok.Vocabulary()
+	if v == nil {
+		return 0
+	}
+	return int32(len(v.Values))
 }
 
 type batchState struct {
@@ -769,10 +800,12 @@ func (s *Server) computeBatch(activeBatch batchState) {
 
 	s.mu.Lock()
 
-	// Gather the actual input token values now that they're ready
+	// Gather the actual input token values now that they're ready.
+	// Clamp SGLang-style pad_values into vocab before TokenEmbedding (vision overwrite follows).
+	vocabSize := s.embedVocabSize()
 	batchInputs := make([]int32, len(activeBatch.batchInputs))
 	for i := range batchInputs {
-		batchInputs[i] = activeBatch.batchInputs[i].Token
+		batchInputs[i] = mmradix.ClampForEmbed(activeBatch.batchInputs[i].Token, vocabSize)
 	}
 
 	// Now we run part of the decoding algorithm to adjust the seq.inputs with placeholder tokens
@@ -1312,7 +1345,7 @@ func (s *Server) reserveWorstCaseGraph(prompt bool) error {
 	batch.Positions = make([]int32, len(inputs))
 	batch.Sequences = make([]int, len(inputs))
 	for i, inp := range inputs {
-		batchInputs[i] = inp.Token
+		batchInputs[i] = mmradix.ClampForEmbed(inp.Token, s.embedVocabSize())
 		if inp.Multimodal != nil {
 			mm, err := mmStore.getMultimodal(s.model.Backend(), ctx, inp.Multimodal, true)
 			if err != nil {

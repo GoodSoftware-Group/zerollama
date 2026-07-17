@@ -191,6 +191,15 @@ if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
         "-framework Foundation"
         "-framework IOSurface"
         "-framework Metal")
+    # Bare `libane_bridge.dylib` install name breaks dyld unless cwd/DYLD is set.
+    # Copy beside llama-server and rewrite to @rpath so L2 probes and serve work.
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_ZEROLLAMA_ANE_BRIDGE}" "${CMAKE_BINARY_DIR}/bin/libane_bridge.dylib"
+        COMMAND install_name_tool -change libane_bridge.dylib @rpath/libane_bridge.dylib
+            "$<TARGET_FILE:${TARGET}>"
+        COMMENT "ANE: stage libane_bridge + @rpath install name")
     message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
 else()
     target_sources(${TARGET} PRIVATE

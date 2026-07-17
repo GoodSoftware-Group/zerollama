@@ -5,7 +5,7 @@ WHY: catches encode/decode and --fp8-native pack bugs without a GPU or HF checkp
 Includes a synthetic 128×128 block-scale map (DeepSeek-style weight_scale_inv).
 
 Usage:
-  PYTHONPATH=vendor/llama-cpp-8f114a9b/gguf-py python3 scripts/fp8_e4m3_gguf_roundtrip.py
+  PYTHONPATH=vendor/llama-cpp-86d86ed4/gguf-py python3 scripts/fp8_e4m3_gguf_roundtrip.py
 """
 from __future__ import annotations
 

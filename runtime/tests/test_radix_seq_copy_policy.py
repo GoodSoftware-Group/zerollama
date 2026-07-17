@@ -22,7 +22,7 @@ def _plan(copy_tokens: int = 128, *, target_seq_pos_before: int = 0) -> RadixSha
     )
 
 
-def _hybrid_spec(*, window: int = 8192) -> KVCacheSpec:
+def _hybrid_spec(*, window: int = 8192, retention: int | None = None) -> KVCacheSpec:
     coord = HybridKVCacheCoordinator(
         kind="hybrid",
         layer_groups=(
@@ -32,6 +32,7 @@ def _hybrid_spec(*, window: int = 8192) -> KVCacheSpec:
         num_layers=4,
         num_ctx=8192,
         swa_effective_window=window,
+        retention_interval=retention,
     )
     return KVCacheSpec(
         kind="hybrid",
@@ -41,6 +42,7 @@ def _hybrid_spec(*, window: int = 8192) -> KVCacheSpec:
         disk_ttl_ms=300_000,
         speculative_draft=False,
         coordinator=coord,
+        retention_interval=retention,
     )
 
 
@@ -77,3 +79,37 @@ def test_hybrid_denied_when_env_off(monkeypatch: pytest.MonkeyPatch):
     ok, reason = radix_seq_copy_allowed(_hybrid_spec(), _plan(128))
     assert ok is False
     assert reason == "hybrid_seq_copy_disabled"
+
+
+def test_hybrid_cold_allowed_under_retention(monkeypatch: pytest.MonkeyPatch):
+    """Marconi analog: cold shared-prefix seed must not die on retention interval."""
+    monkeypatch.setenv("ZEROLLAMA_RADIX_HYBRID_SEQ_COPY", "1")
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL", "1024")
+    # Odd length would fail mid-seq retention; cold pos=0 must still pass.
+    ok, reason = radix_seq_copy_allowed(
+        _hybrid_spec(window=8192, retention=1024),
+        _plan(777),
+    )
+    assert ok is True
+    assert reason is None
+
+
+def test_hybrid_warm_catchup_ignores_retention(monkeypatch: pytest.MonkeyPatch):
+    """Retention is for same-slot resume; warm Radix copies dense donor KV."""
+    monkeypatch.setenv("ZEROLLAMA_RADIX_HYBRID_SEQ_COPY", "1")
+    ok, reason = radix_seq_copy_allowed(
+        _hybrid_spec(window=8192, retention=1024),
+        _plan(2048, target_seq_pos_before=800),
+    )
+    assert ok is True
+    assert reason is None
+
+
+def test_hybrid_warm_denied_past_swa_window(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_HYBRID_SEQ_COPY", "1")
+    ok, reason = radix_seq_copy_allowed(
+        _hybrid_spec(window=512),
+        _plan(256, target_seq_pos_before=600),
+    )
+    assert ok is False
+    assert reason == "hybrid_target_past_swa_window"

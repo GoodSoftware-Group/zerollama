@@ -57,6 +57,9 @@ func (s *Server) pushRuntimeCoordinationFromHealth(ctx context.Context, h runtim
 	for k, v := range s.fifoCoordinationFields() {
 		snap[k] = v
 	}
+	if peers := lmcacheBlobPeersForCoordination(); len(peers) > 0 {
+		snap["lmcache_blob_peers"] = peers
+	}
 	runtimeclient.PushGoCoordination(ctx, snap)
 }
 
@@ -99,6 +102,9 @@ func (s *Server) pushRuntimeCoordinationFinal(ctx context.Context, h runtimeHeal
 	}
 	for k, v := range s.fifoCoordinationFields() {
 		snap[k] = v
+	}
+	if peers := lmcacheBlobPeersForCoordination(); len(peers) > 0 {
+		snap["lmcache_blob_peers"] = peers
 	}
 	runtimeclient.PushGoCoordination(ctx, snap)
 }

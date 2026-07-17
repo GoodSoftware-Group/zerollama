@@ -35,6 +35,10 @@ struct mtmd_bitmap {
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
 
+    // Optional SGLang/Qwen [T,H,W] patch grid; dyn_size honors via preprocessor.
+    bool has_grid_hint = false;
+    int32_t grid_thw[3] = {0, 0, 0};
+
     // lazy-loaded bitmap
     mtmd_bitmap_lazy_callback lazy_callback = nullptr;
     void * lazy_user_data = nullptr;
@@ -628,15 +632,10 @@ struct mtmd_context {
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
                 } break;
             case PROJECTOR_TYPE_DEEPSEEKOCR:
-                {
-                    img_end = "\n"; // prevent empty batch on llama-server
-                    image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);
-                    ov_img_first = false;
-                } break;
             case PROJECTOR_TYPE_DEEPSEEKOCR2:
                 {
                     img_end = "\n"; // prevent empty batch on llama-server
-                    image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr2>(ctx_v);
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);
                     ov_img_first = false;
                 } break;
             case PROJECTOR_TYPE_HUNYUANVL:
@@ -824,7 +823,7 @@ void mtmd_free(mtmd_context * ctx) {
 struct mtmd_tokenizer {
     mtmd_context * ctx;
 
-    std::string input_text;
+    std::string input_text; // note: can contain null bytes; do not use c_str()
     bool add_special;
     bool parse_special;
     const llama_vocab * vocab;
@@ -854,8 +853,9 @@ struct mtmd_tokenizer {
             size_t n_bitmaps) : ctx(ctx) {
         add_special   = text->add_special;
         parse_special = text->parse_special;
-        input_text    = text->text;
         vocab         = ctx->vocab;
+
+        input_text.assign(text->text, text->text_len);
 
         std::vector<const mtmd_bitmap *> bitmaps(bmps, bmps + n_bitmaps);
         auto parts_str = split_text(input_text, ctx->media_marker);
@@ -1088,8 +1088,16 @@ struct mtmd_tokenizer {
                     bmp->is_placeholder());
                 img_u8.cpy_buf(bmp->get_ro_buf());
 
+                // Forward optional client grid_thw into dyn_size (M-RoPE) preprocess.
+                if (bmp->has_grid_hint) {
+                    ctx->image_preproc->set_grid_hint(bmp->grid_thw);
+                } else {
+                    ctx->image_preproc->clear_grid_hint();
+                }
+
                 // preprocess image
                 mtmd_image_preproc_out tmp_preproc_out = ctx->image_preproc->preprocess(img_u8);
+                ctx->image_preproc->clear_grid_hint();
 
                 // move entries and grid dimensions to the "global" preproc_out
                 for (auto & entry : tmp_preproc_out.entries) {
@@ -1142,6 +1150,7 @@ struct mtmd_tokenizer {
 
                 // add slices (or tiles)
                 if (!chunks.empty()) {
+                    LOG_DBG("%s: adding %d slices (%d rows x %d cols)\n", __func__, (int)chunks.size(), n_row, n_col);
                     GGML_ASSERT((int)chunks.size() == n_row * n_col);
                     add_text(ctx->tok_slices_start);
                     for (int y = 0; y < n_row; y++) {
@@ -1184,7 +1193,6 @@ struct mtmd_tokenizer {
                     cur.entries.emplace_back(std::move(ov_chunk));
                     add_text(ctx->tok_ov_img_end);
                 }
-
             } else {
 
                 if (preproc_out.entries.size() == 0) {
@@ -1767,6 +1775,21 @@ void mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id) {
     } else {
         bitmap->id.clear();
     }
+}
+
+void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t * grid_thw) {
+    if (!bitmap) {
+        return;
+    }
+    if (!grid_thw || grid_thw[1] <= 0 || grid_thw[2] <= 0) {
+        bitmap->has_grid_hint = false;
+        bitmap->grid_thw[0] = bitmap->grid_thw[1] = bitmap->grid_thw[2] = 0;
+        return;
+    }
+    bitmap->has_grid_hint = true;
+    bitmap->grid_thw[0] = grid_thw[0];
+    bitmap->grid_thw[1] = grid_thw[1];
+    bitmap->grid_thw[2] = grid_thw[2];
 }
 
 mtmd_bitmap * mtmd_bitmap_init_lazy(mtmd_context * ctx,

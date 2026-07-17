@@ -168,6 +168,9 @@ struct server_task {
         int id_slot;
         int id_slot_src = -1;
         llama_pos pos_end = 0;
+        // SLOT_SEQ_COPY: when true, copy through media chunks (clone+keep_first).
+        // when false, clamp to first media index (pure-text Radix seed).
+        bool allow_media = true;
         std::string filename;
         std::string filepath;
     };

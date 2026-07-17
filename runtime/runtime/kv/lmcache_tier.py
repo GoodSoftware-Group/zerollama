@@ -30,6 +30,8 @@ class LMCacheBlockRecord:
     session_key: str | None
     slot_id: int | None
     blob_path: str | None = None
+    # L3-R7: content digest of federated slot blob (sha256 hex); pull via lmcache_blob.
+    blob_digest: str | None = None
     updated_at_ms: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +48,7 @@ class LMCacheBlockRecord:
             session_key=raw.get("session_key"),
             slot_id=int(raw["slot_id"]) if raw.get("slot_id") is not None else None,
             blob_path=raw.get("blob_path"),
+            blob_digest=raw.get("blob_digest"),
             updated_at_ms=int(raw.get("updated_at_ms") or 0),
         )
 
@@ -154,8 +157,8 @@ def _create_tier_store(uri: str) -> Any:
     if scheme in ("", "file"):
         return LMCacheTierStore(_resolve_file_root(uri))
     if scheme in ("redis", "rediss"):
-        # WHY Redis (L3-R4): fleet nodes share block index without NFS; KV blobs
-        # remain on each host's llama-server slot files — metadata-only tier.
+        # WHY Redis (L3-R4): fleet nodes share block index without NFS.
+        # L3-R7 blobs: set ZEROLLAMA_LMCACHE_BLOB_ROOT (shared FS) for digest pull.
         from dataclasses import replace
 
         from runtime.kv.lmcache_redis import RedisLMCacheTierStore, parse_redis_uri

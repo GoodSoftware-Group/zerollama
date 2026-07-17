@@ -77,7 +77,7 @@ func TestWaitScheduleQoSGgufDefersBehindInteractive(t *testing.T) {
 	)
 	defer cancel()
 
-	gguf := &Model{Digest: "gguf1", Config: model.ConfigV2{ModelFormat: "gguf"}}
+	gguf := &Model{Digest: "gguf1", ModelPath: "/models/gguf1.gguf", Config: model.ConfigV2{ModelFormat: "gguf"}}
 	opts := map[string]any{"zerollama": map[string]any{"qos_class": "background"}}
 
 	start := time.Now()
@@ -109,7 +109,7 @@ func TestAgentSessionBeginGgufRegistersGate(t *testing.T) {
 	}
 	defer release()
 
-	bgKey, _ := scheduleSessionMeta(ctx, gguf, map[string]any{
+	bgKey, _, _ := scheduleSessionMeta(ctx, gguf, map[string]any{
 		"zerollama": map[string]any{"qos_class": "background"},
 	})
 	now := time.Now()

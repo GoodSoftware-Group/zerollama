@@ -41,6 +41,8 @@ def _load_vram_block(path: Path) -> dict[str, Any]:
 _SERVE_ENV_MAP: tuple[tuple[str, str], ...] = (
     ("llama_fork", "ZEROLLAMA_LLAMA_FORK"),
     ("llama_fork_profile", "ZEROLLAMA_LLAMA_FORK_PROFILE"),
+    ("llama_fork_auto_vram", "ZEROLLAMA_LLAMA_FORK_AUTO_VRAM"),
+    ("llama_fork_auto_vram_ctx", "ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX"),
 )
 
 

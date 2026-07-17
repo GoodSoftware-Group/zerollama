@@ -2,7 +2,7 @@
 
 **Audience:** operators running **multiple zerollama hosts** and agents that need warm-model routing.
 
-**Related:** [fleet-scheduling.md](./fleet-scheduling.md) (design principles, anti-patterns), [ROADMAP.md](./ROADMAP.md#fleet-scheduling-multi-node), [testing-smoke.md](./testing-smoke.md) (single-node).
+**Related:** [fleet-scheduling.md](./fleet-scheduling.md) (design principles, anti-patterns), [fleet-playbooks.md](./fleet-playbooks.md) (F6 sticky / warm-only / cancel), [ROADMAP.md](./ROADMAP.md#fleet-scheduling-multi-node), [testing-smoke.md](./testing-smoke.md) (single-node).
 
 ---
 
@@ -57,7 +57,8 @@ curl -s http://192.168.1.11:11434/api/generate -d '{"model":"llama3.2:3b","promp
 |----------|--------|---------|
 | `/health` | GET | Liveness |
 | `/api/fleet/status` | GET | All peer snapshots + `warm_models` map |
-| `/api/fleet/assign` | POST | Return `{url, node_id, warm, queue_depth}` for a model |
+| `/api/fleet/assign` | POST | Return `{url, node_id, warm, queue_depth, assignment_token?}` for a model |
+| `/api/fleet/assign-hold` | POST | **On each node** — register F5 soft hold from a minted token |
 
 ### Assign request
 
@@ -66,7 +67,9 @@ curl -s http://192.168.1.11:11434/api/generate -d '{"model":"llama3.2:3b","promp
   "model": "llama3:latest",
   "prefer_warm": true,
   "warm_only": false,
-  "exclude": ["192.168.1.10:11434"]
+  "exclude": ["192.168.1.10:11434"],
+  "session_key": "agent-thread-1",
+  "prefix_block_hashes": ["abc…", "def…"]
 }
 ```
 
@@ -75,6 +78,8 @@ curl -s http://192.168.1.11:11434/api/generate -d '{"model":"llama3.2:3b","promp
 | `prefer_warm` | Default true — cold load + eviction on a busy fleet is the expensive path; prefer residency. |
 | `warm_only` | SLA gate — reject cold route when no node has the model loaded (HTTP 404). |
 | `exclude` | Retry after cancel-while-queued (F1 stream `status: queued`) without picking the same overloaded node. |
+| `session_key` / `prompt_cache_key` | L3 affinity + soft radix residency score when hashes are absent. |
+| `prefix_block_hashes` | L3-R9 / LA13 — ordered hashes from token 0; longest leading match against peer `inference.runtime.radix.block_hashes`. Build with Go `prefixblock.Hashes` (L3-R11). |
 
 ### Assign response
 
@@ -100,11 +105,53 @@ curl -s http://192.168.1.11:11434/api/generate -d '{"model":"llama3.2:3b","promp
 3. Else if not `warm_only`: pick lowest queue among all available peers (cold route).
 4. Tie-break: prefer node not `loading`, then stable sort by `node_id`.
 
-**Queue depth** = `ggml.pending + ggml.active` plus runtime `waiting + running` when runtime probe is `available` (F2 omits runtime queue fields when probe fails — manager respects that).
+**Queue depth** = `ggml.pending + ggml.active` plus runtime `waiting + running` when runtime probe is `available` (F2 omits runtime queue fields when probe fails — manager respects that). Soft F5 holds are folded into `ggml.pending` (and exposed as `ggml.assign_holds`).
 
 **Model matching:** case-insensitive exact name, or base name before `:` (`llama3` matches `llama3:latest`).
 
-**Non-goals (v0):** remote load/evict, global preemption, assignment tokens (F5).
+**Non-goals (v0):** remote load/evict, global preemption, long reservation markets.
+
+---
+
+## Assignment tokens (F5)
+
+**Why:** two agents can get the same “queue 0” assign within one poll interval and race the warm slot. A **short** hold (~5–10s) bumps reported queue depth until the agent’s chat/generate arrives or the TTL expires — not a 60s quote.
+
+### Enable (same secret on fleet manager + nodes)
+
+```bash
+export ZEROLLAMA_FLEET_ASSIGN_SECRET='shared-fleet-hmac'
+# optional: ZEROLLAMA_FLEET_ASSIGN_TTL=8s  ZEROLLAMA_FLEET_ASSIGN_PUSH=1
+```
+
+### Assign response (when secret set)
+
+```json
+{
+  "url": "http://192.168.1.11:11434",
+  "node_id": "192.168.1.11:11434",
+  "warm": true,
+  "queue_depth": 0,
+  "assignment_token": "…",
+  "expires_at": "2026-07-17T17:45:08Z",
+  "expires_in": 8
+}
+```
+
+Fleet best-effort `POST {url}/api/fleet/assign-hold` with the token so peers see `assign_holds` immediately. Agents still send:
+
+```http
+X-Zerollama-Assignment-Token: <assignment_token>
+```
+
+on `/api/chat` or `/api/generate`. Invalid → **401**; expired → **409**. Missing header remains allowed (non-breaking).
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `ZEROLLAMA_FLEET_ASSIGN_SECRET` | (empty) | HMAC key; empty disables tokens |
+| `ZEROLLAMA_FLEET_ASSIGN_TOKEN` | on if secret | `0` kill-switch |
+| `ZEROLLAMA_FLEET_ASSIGN_TTL` | `8s` | clamp 2–30s |
+| `ZEROLLAMA_FLEET_ASSIGN_PUSH` | on | fleet→node hold register after mint |
 
 ---
 
@@ -154,6 +201,9 @@ Registers **`_zerollama-fleet._tcp`** so agents can find the manager without a f
 | `ZEROLLAMA_FLEET_PEERS` | *(optional with mDNS)* | Static peer list — required unless `ZEROLLAMA_FLEET_MDNS=1`. K8s headless DNS stays static-only. |
 | `ZEROLLAMA_FLEET_LISTEN` | `0.0.0.0:11450` | Separate port from zerollama `:11434` so one host can run both node + manager. |
 | `ZEROLLAMA_FLEET_POLL_INTERVAL` | `3s` | Balance freshness vs load; 1–5s typical per [fleet-scheduling.md](./fleet-scheduling.md). |
+| `ZEROLLAMA_FLEET_ASSIGN_SECRET` | *(empty)* | F5 HMAC secret on **manager + nodes**; empty disables tokens. |
+| `ZEROLLAMA_FLEET_ASSIGN_TTL` | `8s` | Soft-hold window (clamped 2–30s). |
+| `ZEROLLAMA_FLEET_ASSIGN_PUSH` | `1` | Manager POSTs `/api/fleet/assign-hold` after mint. |
 | `ZEROLLAMA_MDNS` | `0` | On inference nodes: advertise `_zerollama._tcp` when `zerollama serve` starts. |
 | `ZEROLLAMA_FLEET_MDNS` | `0` | Fleet manager: browse LAN for `_zerollama._tcp` peers (merged with static list). |
 | `ZEROLLAMA_FLEET_MDNS_ADVERTISE` | `0` | Fleet manager: advertise `_zerollama-fleet._tcp` for agent discovery. |
@@ -225,7 +275,7 @@ For Apple Silicon CI/dev, `./scripts/serve/serve_mac_runtime.sh` starts sidecar 
 
 | Milestone | Why |
 |-----------|-----|
-| **F5 assignment token** | Short TTL hold (~5–10s) so two agents don't race the same queue slot after assign. |
-| **F6 playbooks** | Sticky shards, warm-only SLA, documented cancel policy for operators. |
+| **F5 assignment token** | **Done (Jul 2026)** — see [Assignment tokens (F5)](#assignment-tokens-f5). |
+| **F6 playbooks** | **Done (Jul 2026)** — [fleet-playbooks.md](./fleet-playbooks.md) (sticky shards, warm-only SLA, cancel policy). |
 
 See [fleet-scheduling.md](./fleet-scheduling.md) for anti-patterns (scatter-gather, long quotes).

@@ -389,13 +389,13 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 		if img.HasPrecomputedEmbedding() {
 			return nil, false, 0, api.StatusError{
 				StatusCode:   http.StatusBadRequest,
-				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine for Qwen3-VL",
+				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine (Linux auto already routes vision there — unset ZEROLLAMA_LLAMA_SERVER=1 / --llama-server-backend)",
 			}
 		}
 		if img.HasProcessorOutput() {
 			return nil, false, 0, api.StatusError{
 				StatusCode:   http.StatusBadRequest,
-				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine for Qwen3-VL",
+				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine (Mac) or unset explicit llama-server for vision GGUF",
 			}
 		}
 	}

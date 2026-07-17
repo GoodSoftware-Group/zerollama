@@ -28,6 +28,36 @@ func (c mlxSessionClass) String() string {
 	}
 }
 
+// fulfillmentMode is a request-scoped guarantee above normal qos_class.
+// WHY separate from qos_class: interactive already means "agent thread priority";
+// fulfillment adds no-degradation / exclusive-GPU contracts for benches and critical work.
+type fulfillmentMode int
+
+const (
+	fulfillmentNone fulfillmentMode = iota
+	fulfillmentComplete  // finish without preemption / eviction; allow other idle models
+	fulfillmentBenchmark // exclusive GPU speed path; unload peers; block all other traffic
+)
+
+func (m fulfillmentMode) String() string {
+	switch m {
+	case fulfillmentComplete:
+		return "complete"
+	case fulfillmentBenchmark:
+		return "benchmark"
+	default:
+		return ""
+	}
+}
+
+func (m fulfillmentMode) Exclusive() bool {
+	return m == fulfillmentBenchmark
+}
+
+func (m fulfillmentMode) Active() bool {
+	return m == fulfillmentComplete || m == fulfillmentBenchmark
+}
+
 // mlxQoS is the harness-facing scheduling contract (options.zerollama).
 type mlxQoS struct {
 	Class        mlxSessionClass
@@ -37,7 +67,8 @@ type mlxQoS struct {
 	ProjectID    string // client harness id (zerollama ps / fleet)
 	ProjectName  string // human label (repo, Discord bot, etc.)
 	CacheScope   string // auto | thread | shared
-	Explicit     bool   // client set qos_class or legacy mlx_session_class
+	Fulfillment  fulfillmentMode
+	Explicit     bool // client set qos_class or legacy mlx_session_class
 }
 
 const (
@@ -55,6 +86,28 @@ var qosClassAliases = map[string]mlxSessionClass{
 	"aux":         mlxClassAuxiliary,
 	"background":  mlxClassBackground,
 	"bg":          mlxClassBackground,
+}
+
+// fulfillmentAliases map client-facing names to canonical modes.
+var fulfillmentAliases = map[string]fulfillmentMode{
+	"complete":  fulfillmentComplete,
+	"guarantee": fulfillmentComplete,
+	"reliable":  fulfillmentComplete,
+	"benchmark": fulfillmentBenchmark,
+	"bench":     fulfillmentBenchmark,
+	"speed":     fulfillmentBenchmark,
+	"exclusive": fulfillmentBenchmark,
+}
+
+func parseFulfillmentName(name string) (fulfillmentMode, bool) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" || key == "none" || key == "off" {
+		return fulfillmentNone, key != ""
+	}
+	if mode, ok := fulfillmentAliases[key]; ok {
+		return mode, true
+	}
+	return fulfillmentNone, false
 }
 
 // ephemeralSessionKey matches timestamped one-off session ids (Hermes spawns, etc.).
@@ -182,6 +235,18 @@ func mlxQoSFromOptions(opts map[string]any) mlxQoS {
 	case qosCacheScopeThread, qosCacheScopeShared, qosCacheScopeAuto:
 		q.CacheScope = scope
 	}
+
+	fulfillName := firstNonEmpty(
+		stringFromMap(z, "fulfillment"),
+		stringFromMap(z, "fulfill_mode"),
+		stringFromMap(z, "priority_mode"),
+	)
+	if mode, ok := parseFulfillmentName(fulfillName); ok && mode.Active() {
+		q.Fulfillment = mode
+		// Fulfillment always elevates to interactive so defer policy treats it as a holder.
+		q.Class = mlxClassInteractive
+		q.Explicit = true
+	}
 	return q
 }
 
@@ -228,26 +293,29 @@ func zerollamaVersionCapabilities() map[string]any {
 		"prompt_cache_key": true,
 		"mlx_live_kv":      true,
 		"session_qos_gate": true,
+		"fulfillment":      true,
 		"runner_paths":     zerollamaVersionRunnerPaths(),
 	}
 }
 
 func zerollamaVersionQoS() map[string]any {
 	return map[string]any{
-		"classes":    []string{"interactive", "auxiliary", "background"},
-		"modalities": []string{mlxModalityText, mlxModalityVision, mlxModalityVideoUnderstanding, mlxModalityImageGeneration, mlxModalityVideoGeneration},
+		"classes":      []string{"interactive", "auxiliary", "background"},
+		"fulfillment":  []string{"complete", "benchmark"},
+		"modalities":   []string{mlxModalityText, mlxModalityVision, mlxModalityVideoUnderstanding, mlxModalityImageGeneration, mlxModalityVideoGeneration},
 		"options": map[string]any{
 			"path": "options.zerollama",
 			"fields": map[string]string{
 				"qos_class":      "interactive | auxiliary | background (aliases: primary, aux, bg)",
 				"qos_priority":   "0-100; class inferred when qos_class omitted (>=70 interactive)",
+				"fulfillment":    "complete | benchmark — no-degradation / exclusive speed (aliases: guarantee, reliable / bench, speed, exclusive)",
 				"session_group":  "harness id for shared cache branch (alias: harness)",
 				"session_parent": "parent thread prompt_cache_key",
 				"project_id":     "client harness id (alias: client_id, project)",
 				"project_name":   "human label for zerollama ps (alias: client_name)",
 				"cache_scope":    "auto | thread | shared",
 			},
-			"legacy": []string{"mlx_session_class", "mlx_session_parent"},
+			"legacy": []string{"mlx_session_class", "mlx_session_parent", "fulfill_mode", "priority_mode"},
 		},
 		"openai": map[string]any{
 			"extra_body": []string{"zerollama", "options", "prompt_cache_key"},

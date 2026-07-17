@@ -26,7 +26,7 @@ def test_default_llama_cpp_root_prefers_vendor():
 def test_pinned_version_from_repo():
     pin = pinned_llama_cpp_version()
     assert pin is not None
-    assert pin.startswith("8f114a9b")
+    assert pin.startswith("86d86ed4")
 
 
 def test_read_cmake_cache_bool(tmp_path: Path):

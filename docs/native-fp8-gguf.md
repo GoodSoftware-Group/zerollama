@@ -1,6 +1,6 @@
 # Native FP8 GGUF weights (E4M3 / E5M2)
 
-**Status (Jul 2026):** Built on ggml-org pin `8f114a9b` — patches **0073–0076**, packaged `libggml-cuda` probe **PASS**.
+**Status (Jul 2026):** Built on ggml-org pin `86d86ed4` — patches **0076–0079**, packaged `libggml-cuda` probe **PASS**.
 
 ## Why this exists
 
@@ -73,8 +73,8 @@ Install: `sudo ./scripts/install_cuda_llama_server.sh` then restart `zerollama-r
 
 ```bash
 ./scripts/fp8_cuda_probe.sh          # packaged/vendor libggml-cuda markers (no GGUF)
-PYTHONPATH=vendor/llama-cpp-8f114a9b/gguf-py python3 scripts/fp8_e4m3_gguf_roundtrip.py
-PYTHONPATH=vendor/llama-cpp-8f114a9b/gguf-py python3 scripts/fp8_e5m2_gguf_roundtrip.py
+PYTHONPATH=vendor/llama-cpp-86d86ed4/gguf-py python3 scripts/fp8_e4m3_gguf_roundtrip.py
+PYTHONPATH=vendor/llama-cpp-86d86ed4/gguf-py python3 scripts/fp8_e5m2_gguf_roundtrip.py
 FP8_GGUF=/path/to/fp8.gguf ./scripts/fp8_cuda_load_smoke.sh   # load + /completion
 ```
 

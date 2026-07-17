@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sat, 11 Jul 2026 09:54:34 -0700
+Subject: [PATCH] ggml-metal: optimize pad_reflect_1d with float4 path
+ (upstream #23992)
+
+Use function-constant float4 loads/stores when p0 and row strides are
+16-byte aligned to speed up PAD_REFLECT_1D on Metal.
+---
+ ggml/src/ggml-metal/ggml-metal-device.cpp | 14 ++++++++--
+ ggml/src/ggml-metal/ggml-metal-impl.h     |  2 ++
+ ggml/src/ggml-metal/ggml-metal.metal      | 33 +++++++++++++++++------
+ 3 files changed, 39 insertions(+), 10 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index dbf6f62d..dbeb3a42 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -2076,12 +2076,22 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad_reflect_1d(g
+     char base[256];
+     char name[256];
+ 
++    // require 16-byte aligned row bases and p0 offset to enable float4 loads/stores
++    const int32_t p0 = ((const int32_t *) op->op_params)[0];
++    const bool use_f4 = (p0 % 4 == 0) && (op->src[0]->nb[1] % 16 == 0) && (op->nb[1] % 16 == 0);
++
+     snprintf(base, 256, "kernel_pad_reflect_1d_%s", ggml_type_name(op->src[0]->type));
+-    snprintf(name, 256, "%s", base);
++    snprintf(name, 256, "%s_f4=%d", base, use_f4);
+ 
+     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+     if (!res.pipeline) {
+-        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
++        ggml_metal_cv_t cv = ggml_metal_cv_init();
++
++        ggml_metal_cv_set_bool(cv, use_f4, FC_PAD_REFLECT_1D + 0);
++
++        res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
++
++        ggml_metal_cv_free(cv);
+     }
+ 
+     return res;
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index 1e2e5294..1d167115 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -104,6 +104,8 @@
+ #define FC_SUM_ROWS                    1400
+ #define FC_UPSCALE                     1500
+ #define FC_GATED_DELTA_NET             1600
++#define FC_PAD_REFLECT_1D              1700
++
+ // op-specific constants
+ #define OP_FLASH_ATTN_EXT_NQPSG 8
+ #define OP_FLASH_ATTN_EXT_NQPSG_16 16
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index c258fc6d..04179274 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -5969,7 +5969,9 @@ typedef decltype(kernel_pad_impl<float>) kernel_pad_t;
+ template [[host_name("kernel_pad_f32")]]   kernel kernel_pad_t kernel_pad_impl<float>;
+ template [[host_name("kernel_pad_f32_4")]] kernel kernel_pad_t kernel_pad_impl<float4>;
+ 
+-// TODO: this is slow - optimize
++// set when row bases and p0 offset are 16-byte aligned, enabling float4 loads/stores
++constant bool FC_pad_reflect_1d_use_f4 [[function_constant(FC_PAD_REFLECT_1D + 0)]];
++
+ kernel void kernel_pad_reflect_1d_f32(
+     constant   ggml_metal_kargs_pad_reflect_1d & args,
+     device  const char * src0,
+@@ -5991,15 +5993,30 @@ kernel void kernel_pad_reflect_1d_f32(
+     device       float * dst_ptr  = (device       float *) (dst  +  i3*args.nb3  +  i2*args.nb2  +  i1*args.nb1);
+ 
+     if (i1 < args.ne01 && i2 < args.ne02 && i3 < args.ne03) {
+-        for (int i0 = tpitg.x; i0 < args.ne0; i0 += ntg.x) {
+-            if (i0 < args.p0) {
+-                dst_ptr[i0] = src0_ptr[args.p0 - i0];
+-            } else if (i0 < args.ne0 - args.p1) {
+-                dst_ptr[i0] = src0_ptr[i0 - args.p0];
+-            } else {
+-                dst_ptr[i0] = src0_ptr[(args.ne0 - args.p1 - args.p0) - (args.p1 + 1 - (args.ne0 - i0)) - 1];
++        for (int i0 = tpitg.x; i0 < args.p0; i0 += ntg.x) {
++            dst_ptr[i0] = src0_ptr[args.p0 - i0];
++        }
++
++        const int ne00 = args.ne0 - args.p0 - args.p1;
++
++        if (FC_pad_reflect_1d_use_f4) {
++            device float4 * dst4 = (device float4*)(dst_ptr + args.p0);
++            device const float4 * src4 = (device const float4*)src0_ptr;
++            const int num_float4 = ne00 / 4;
++
++            for (int j = tpitg.x; j < num_float4; j += ntg.x) {
++                dst4[j] = src4[j];
++            }
++        } else {
++            for (int j = tpitg.x; j < ne00; j += ntg.x) {
++                dst_ptr[args.p0 + j] = src0_ptr[j];
+             }
+         }
++
++        const int right_pad_start = args.ne0 - args.p1;
++        for (int i0 = right_pad_start + tpitg.x; i0 < args.ne0; i0 += ntg.x) {
++            dst_ptr[i0] = src0_ptr[(args.ne0 - args.p1 - args.p0) - (args.p1 + 1 - (args.ne0 - i0)) - 1];
++        }
+     }
+ }
+ 

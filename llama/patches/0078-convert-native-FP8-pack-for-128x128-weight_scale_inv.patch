@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 14 Jul 2026 20:47:17 -0700
+Subject: [PATCH] convert: native FP8 pack for 128x128 weight_scale_inv
+
+Expand HF block scales onto GGML 32-wide blocks when block_size[-1]%32==0
+so --fp8-native skips full F16 dequant for DeepSeek-style FP8.
+---
+ conversion/base.py     | 33 +++++++++++++++--
+ convert_hf_to_gguf.py  |  3 +-
+ gguf-py/gguf/quants.py | 84 ++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 100 insertions(+), 20 deletions(-)
+
+diff --git a/conversion/base.py b/conversion/base.py
+index ab4513d7..87d891f9 100644
+--- a/conversion/base.py
++++ b/conversion/base.py
+@@ -160,6 +160,7 @@ class ModelBase:
+         self._fp8_dequantized: set[str] = set()
+         self._fp8_native_tensors: set[str] = set()
+         self._fp8_native_scales: dict[str, Callable[[], Tensor]] = dict()
++        self._fp8_native_block_sizes: dict[str, Sequence[int] | None] = dict()
+         if self._fp8_native and self._fp8_as_q8:
+             logger.warning("--fp8-native overrides --fp8-as-q8")
+             self._fp8_as_q8 = False
+@@ -447,17 +448,28 @@ class ModelBase:
+                             is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
+                         except Exception:
+                             is_fp8_e4m3 = False
+-                        # Native path only for scalar / 1D scales (no 128×128 block map yet).
+-                        if self._fp8_native and is_fp8_e4m3 and block_size is None:
++                        # Native: scalar/1D scales, or block maps whose last dim is a multiple of 32
++                        # (e.g. weight_block_size=[128,128] → one GGML d per 32 cols inside each tile).
++                        can_native = False
++                        if self._fp8_native and is_fp8_e4m3:
++                            if block_size is None:
++                                can_native = True
++                            else:
++                                bs = tuple(int(x) for x in block_size)
++                                can_native = bool(bs) and (bs[-1] % 32 == 0)
++                        if can_native:
+                             self._fp8_native_tensors.add(weight_name)
+                             # scale_inv multiplies dequant; store as-is
+                             self._fp8_native_scales[weight_name] = s
++                            self._fp8_native_block_sizes[weight_name] = (
++                                None if block_size is None else tuple(int(x) for x in block_size)
++                            )
+                             tensors_to_remove.append(name)
+                         else:
+                             if self._fp8_native and is_fp8_e4m3 and block_size is not None:
+                                 logger.warning(
+                                     f"{weight_name}: FP8 weight_block_size={block_size} not supported "
+-                                    "by --fp8-native yet; falling back to dequant"
++                                    "by --fp8-native (need block_size[-1] % 32 == 0); falling back to dequant"
+                                 )
+                             self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
+                             tensors_to_remove.append(name)
+@@ -581,6 +593,7 @@ class ModelBase:
+                             # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
+                             self._fp8_native_tensors.add(weight_name)
+                             self._fp8_native_scales[weight_name] = s
++                            self._fp8_native_block_sizes[weight_name] = None
+                             tensors_to_remove.append(name)
+                         else:
+                             is_fp8_weight = False
+@@ -688,6 +701,18 @@ class ModelBase:
+         scale_t = LazyTorchTensor.to_eager(self._fp8_native_scales[name]())
+         scale = scale_t.detach().float().cpu().numpy()
+         qs = data_torch.view(torch.uint8).cpu().numpy()
++        if qs.ndim == 1:
++            qs = qs.reshape(1, -1)
++        block_size = self._fp8_native_block_sizes.get(name)
++        if block_size is not None:
++            if qs.ndim != 2:
++                raise ValueError(
++                    f"{name}: --fp8-native block_size={block_size} expects 2D weight, got shape {qs.shape}"
++                )
++            block_scales = gguf.quants.FP8_E4M3.expand_block_scales_to_ggml(
++                scale, (qs.shape[0], qs.shape[1]), block_size
++            )
++            return gguf.quants.FP8_E4M3.pack_e4m3_with_scale(qs, block_scales)
+         # Per-row scale: (out_features,) or (out_features, 1); else scalar / broadcast.
+         if scale.ndim >= 1 and scale.size == qs.shape[0]:
+             scale_arg = scale.reshape(qs.shape[0])
+@@ -696,7 +721,7 @@ class ModelBase:
+         else:
+             raise ValueError(
+                 f"{name}: unsupported FP8 scale shape {scale.shape} for --fp8-native "
+-                f"(want scalar or per-row matching {qs.shape[0]})"
++                f"(want scalar, per-row matching {qs.shape[0]}, or block map)"
+             )
+         return gguf.quants.FP8_E4M3.pack_e4m3_with_scale(qs, scale_arg)
+ 
+diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
+index f23b1db7..680d9bc3 100755
+--- a/convert_hf_to_gguf.py
++++ b/convert_hf_to_gguf.py
+@@ -155,7 +155,8 @@ def parse_args() -> argparse.Namespace:
+     parser.add_argument(
+         "--fp8-native", action="store_true",
+         help="Write ModelOpt/FP8 E4M3 weights as GGML FP8_E4M3 (block scale + E4M3 bytes) without full F16 dequant. "
+-             "Requires per-tensor or per-row scales; 128x128 block scales still dequant.",
++             "Supports scalar/per-row scales and weight_block_size whose last dim is a multiple of 32 "
++             "(e.g. [128,128]).",
+     )
+ 
+     parser.add_argument(
+diff --git a/gguf-py/gguf/quants.py b/gguf-py/gguf/quants.py
+index a5d85ac9..c26b516c 100644
+--- a/gguf-py/gguf/quants.py
++++ b/gguf-py/gguf/quants.py
+@@ -837,12 +837,64 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
+         vals = cls.e4m3_to_fp32(qs)
+         return d * vals
+ 
++    @classmethod
++    def expand_block_scales_to_ggml(
++        cls,
++        scale: np.ndarray,
++        shape: tuple[int, int],
++        block_size: Sequence[int],
++    ) -> np.ndarray:
++        """Expand HF block scales to per-GGML-block F32 scales ``(rows, cols/32)``.
++
++        Mirrors ``dequant_simple`` (repeat_interleave + crop), then samples one
++        scale per 32-wide GGML block along the last dim. Requires
++        ``block_size[-1] % 32 == 0`` so each GGML block is uniform.
++        """
++        rows, cols = shape
++        if cols % 32 != 0:
++            raise ValueError(f"FP8_E4M3 pack requires cols % 32 == 0, got {cols}")
++        bs = tuple(int(x) for x in block_size)
++        if not bs or bs[-1] % 32 != 0:
++            raise ValueError(
++                f"FP8_E4M3 block pack needs block_size[-1] % 32 == 0, got {bs}"
++            )
++        scale_arr = np.asarray(scale, dtype=np.float32)
++        # Drop leading singleton dims (e.g. expert batch).
++        while scale_arr.ndim > len(bs) and scale_arr.shape[0] == 1:
++            scale_arr = scale_arr.reshape(scale_arr.shape[1:])
++        if scale_arr.ndim != len(bs):
++            raise ValueError(
++                f"scale ndim {scale_arr.ndim} != len(block_size) {len(bs)} "
++                f"(scale shape {scale_arr.shape}, block_size {bs})"
++            )
++        # Broadcast like dequant_simple onto (rows, cols) for 2D weights.
++        if len(bs) == 1:
++            # scale along last dim only → shape (ceil(cols/bs0),) or (rows, ceil(cols/bs0))
++            if scale_arr.ndim == 1:
++                s = np.repeat(scale_arr, bs[0])[:cols]
++                s = np.broadcast_to(s, (rows, cols)).copy()
++            else:
++                s = np.repeat(scale_arr, bs[0], axis=-1)[..., :cols]
++                if s.shape[0] != rows:
++                    raise ValueError(f"scale rows {s.shape[0]} != weight rows {rows}")
++        else:
++            # Trailing dims match weight; typical FP8: block_size=[128,128].
++            s = scale_arr
++            for i, size in enumerate(bs):
++                s = np.repeat(s, size, axis=i)
++            s = s[:rows, :cols]
++        n_blocks = cols // 32
++        return s[:, 0:cols:32].reshape(rows, n_blocks)
++
+     @classmethod
+     def pack_e4m3_with_scale(cls, qs: np.ndarray, scale: float | np.ndarray) -> np.ndarray:
+-        """Pack raw float8_e4m3fn bytes with per-tensor or per-row F32 scale into blocks.
++        """Pack raw float8_e4m3fn bytes with per-tensor, per-row, or per-block F32 scale.
+ 
+         qs: uint8 array shaped (rows, cols) with cols % 32 == 0.
+-        scale: scalar or per-row array.
++        scale:
++          - scalar / size-1 → broadcast to all blocks
++          - shape (rows,) → same scale for every block in the row
++          - shape (rows, cols/32) → per-GGML-block scale (e.g. from 128×128 maps)
+         Returns uint8 array shaped (rows, (cols/32)*34) for GGUFWriter.
+         """
+         qs = np.asarray(qs, dtype=np.uint8)
+@@ -854,22 +906,24 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
+             raise ValueError(f"FP8_E4M3 pack requires cols % 32 == 0, got {cols}")
+         n_blocks_per_row = cols // 32
+         scale_arr = np.asarray(scale, dtype=np.float32)
+-        if scale_arr.ndim == 0:
+-            scale_arr = np.full((rows,), float(scale_arr), dtype=np.float32)
+-        else:
++        if scale_arr.ndim == 0 or scale_arr.size == 1:
++            block_scales = np.full((rows, n_blocks_per_row), float(scale_arr.reshape(-1)[0]), dtype=np.float32)
++        elif scale_arr.ndim == 1 or (scale_arr.ndim == 2 and scale_arr.shape[1] == 1):
+             scale_arr = scale_arr.reshape(-1)
+-            if scale_arr.size == 1:
+-                scale_arr = np.full((rows,), float(scale_arr[0]), dtype=np.float32)
+             if scale_arr.size != rows:
+                 raise ValueError(f"scale size {scale_arr.size} != rows {rows}")
+-
+-        out = np.empty((rows, n_blocks_per_row, 34), dtype=np.uint8)
+-        for r in range(rows):
+-            d_f16 = np.frombuffer(np.float16(scale_arr[r]).tobytes(), dtype=np.uint8)
+-            for b in range(n_blocks_per_row):
+-                out[r, b, 0:2] = d_f16
+-                out[r, b, 2:] = flat_rows[r, b * 32:(b + 1) * 32]
+-        return out.reshape(rows, n_blocks_per_row * 34)
++            block_scales = np.repeat(scale_arr.reshape(rows, 1), n_blocks_per_row, axis=1)
++        elif scale_arr.ndim == 2 and scale_arr.shape == (rows, n_blocks_per_row):
++            block_scales = scale_arr
++        else:
++            raise ValueError(
++                f"scale shape {scale_arr.shape} unsupported "
++                f"(want scalar, ({rows},), or ({rows}, {n_blocks_per_row}))"
++            )
++
++        d_f16 = block_scales.astype(np.float16).view(np.uint8).reshape(rows, n_blocks_per_row, 2)
++        qs_blocks = flat_rows.reshape(rows, n_blocks_per_row, 32)
++        return np.concatenate([d_f16, qs_blocks], axis=-1).reshape(rows, n_blocks_per_row * 34)
+ 
+ 
+ 

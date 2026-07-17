@@ -22,10 +22,10 @@ echo "== video expand cache unit gate =="
 go test ./server/modality/... -count=1 -run 'Video|Session|Expand|Preflight|Policy|FFmpeg|Agent|Preprocessed|Padded|GridTHW|SessionViT|PrefixMM' -short
 
 echo "== runner ViT session embed overlay (ggml) =="
-go test ./runner/llamarunner/... -count=1 -run 'TestSessionEmbed|TestGrowCache|TestGetPrecomputed|TestMultimodalTokenize' -short
+go test ./runner/llamarunner/... -count=1 -run 'TestSessionEmbed|TestGrowCache|TestGetPrecomputed|TestSessionPrecomputed|TestMultimodalTokenize' -short
 
 echo "== runner ViT session overlay (ollama-engine) =="
-go test ./runner/ollamarunner/... -count=1 -run 'TestLookupCached_precomputed|TestVisionEmbedCache_sessionOverlay' -short
+go test ./runner/ollamarunner/... -count=1 -run 'TestLookupCached_precomputed|TestVisionEmbedCache_' -short
 
 echo "== openai video fetch cache =="
 go test ./openai/... -count=1 -run 'VideoURL' -short

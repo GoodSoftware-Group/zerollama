@@ -164,7 +164,7 @@ On llama-server start, `evict_orphaned_cache_dirs(keep_model_hash=…)` TTL-swee
 | `ZEROLLAMA_LLAMA_CACHE_ROOT` | (XDG / `~/.cache/...`) | Override slot save root |
 | `ZEROLLAMA_LLAMA_CACHE_TTL_MS` | `3600000` (1h) | Disk slot file TTL for llama-server `slot_*.bin` names |
 
-**YAML profile (preferred for agents):** set `l3:` in runtime config instead of many env vars. Example: `runtime/configs/l3_agent_subprocess.yaml` — `radix_share`, `block_size`, `trace`, `lmcache_uri`. Or one env: **`ZEROLLAMA_L3_PROFILE=agent`** (loads that YAML when `ZEROLLAMA_RUNTIME_CONFIG` unset). Env still overrides any field.
+**YAML profile (preferred for agents):** set `l3:` in runtime config instead of many env vars. Example: `runtime/configs/l3_agent_subprocess.yaml` — `radix_share`, `kv_unified` (L3-R6 metadata seq_cp), `block_size`, `trace`, `lmcache_uri`. Or one env: **`ZEROLLAMA_L3_PROFILE=agent`** (loads that YAML when `ZEROLLAMA_RUNTIME_CONFIG` unset). Env still overrides any field. With `kv_unified`, size `-c` for the **sum** of concurrent live tokens across slots.
 
 **Debug tier:** **`ZEROLLAMA_DEBUG=l3`** enables prefix-cache JSONL trace + decode-graph trace logging without separate `ZEROLLAMA_PREFIX_CACHE_TRACE` / `ZEROLLAMA_DECODE_GRAPH_TRACE`. Add `infer` for phase-15 infer spans.
 

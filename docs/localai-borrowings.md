@@ -282,7 +282,8 @@ Refs: [v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6) · [v4.5.0
 | Operator throughput cache | `zerollama bench`, `TOK/S` in `ls` | **LA10** ✓ |
 | Intelligent router (score/colbert policies) | — | **Candidate LA11** |
 | PII middleware (NER + secrets regex) | — | **Candidate LA12** (enterprise) |
-| Fleet radix prefix routing | session affinity only | **Candidate LA13** (needs L3-R4) |
+| Fleet radix prefix routing | **L3-R8 + L3-R9 / LA13** status mirror, residency soft score, content-hash longest-prefix | — |
+| Cross-node KV blob pull | **L3-R10 + L3-R11** HTTP digest fetch; auto peers from `FLEET_PEERS`/coordination; Go `prefixblock` | NIXL/Mooncake RDMA still open |
 | Resumable peer GGUF transfer | — | **Candidate LA14** |
 | Outbound HTTP redirect credential guard | — | **Candidate LA15** |
 | `POST /v1/rerank` (colbert routing tier) | llama.cpp has `/reranking`; not wired in zerollama API | **Candidate LA16** |
@@ -297,7 +298,7 @@ Refs: [v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6) · [v4.5.0
 
 1. **LA11 Intelligent router** — Single client-facing model name → policy table of downstream candidates; classify with `POST /api/score` (or optional rerank/colbert later); log decisions (`correlation_id`, chosen model, scores). LocalAI reference: [middleware routing](https://localai.io/features/middleware/index.html). Zerollama already has score + fleet assign—this is **per-node request middleware**, not NATS.
 
-2. **LA13 Fleet prefix-cache routing** — Extend **LA6** with longest-prefix replica hint (LocalAI v4.4 `pkg/radixtree` pattern). **Blocked on** cross-node KV visibility ([radix-prefix-share.md — Product gaps](./radix-prefix-share.md#product-gaps)); session-key affinity is the v0 substitute.
+2. **LA13 Fleet prefix-cache routing** — **Done (L3-R8 + L3-R9):** `/api/status.inference.runtime.radix` (+ `block_hashes`); fleet soft residency score; assign/score accept `prefix_block_hashes` for longest leading-hash match (`ZEROLLAMA_FLEET_RADIX_HASH_SCORE`).
 
 **Medium fit:**
 

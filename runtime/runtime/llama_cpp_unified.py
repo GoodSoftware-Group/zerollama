@@ -21,7 +21,7 @@ LEGACY_CHECKOUT_NAMES = frozenset(
     }
 )
 
-DEFAULT_PIN = "8f114a9b573b69035299f9b924047f53c1e22c7e"
+DEFAULT_PIN = "86d86ed4396b4130922f7b9af26e3d9fc11a591b"
 UNIFIED_REPO = "https://github.com/ggml-org/llama.cpp.git"
 
 

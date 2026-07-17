@@ -73,8 +73,8 @@ type VideoSpan struct {
 	// GridTHW is optional SGLang/Qwen-style [T,H,W] patch grid for this clip (preprocessed clients).
 	// When set, token estimates use T×H×W / spatial_merge² instead of frame_count × tokens_per_image.
 	GridTHW []int `json:"grid_thw,omitempty"`
-	// GridTHWExplicit marks client-origin grid (forward to ViT/mtmd). Server ffmpeg estimates
-	// may set GridTHW for preflight only with GridTHWExplicit=false.
+	// GridTHWExplicit marks client-origin grid (observability). Server ffmpeg estimates
+	// also set GridTHW and are forwarded to M-RoPE ViT (GridTHWExplicit=false).
 	GridTHWExplicit bool `json:"-"`
 }
 
@@ -1243,6 +1243,7 @@ type GgmlStatus struct {
 	Loaded             int                     `json:"loaded"`
 	LoadsPaused        bool                    `json:"loads_paused"`
 	Loading            bool                    `json:"loading"`
+	AssignHolds        int                     `json:"assign_holds,omitempty"` // F5 soft holds (not yet consumed by chat/generate)
 	LoadedModels       []string                `json:"loaded_models,omitempty"`
 	LoadedModelDetails []GgmlLoadedModelStatus `json:"loaded_model_details,omitempty"`
 }
@@ -1256,12 +1257,33 @@ type GgmlLoadedModelStatus struct {
 // RuntimeStatus is the Python runtime sidecar snapshot on GET /api/status.
 // Queue fields are omitted when enabled is true but available is false (probe failed).
 type RuntimeStatus struct {
-	Enabled     bool   `json:"enabled"`
-	Available   bool   `json:"available"`
-	Waiting     *int   `json:"waiting,omitempty"`
-	Running     *int   `json:"running,omitempty"`
-	LlamaLoaded *bool  `json:"llama_loaded,omitempty"`
-	State       string `json:"state,omitempty"`
+	Enabled     bool               `json:"enabled"`
+	Available   bool               `json:"available"`
+	Waiting     *int               `json:"waiting,omitempty"`
+	Running     *int               `json:"running,omitempty"`
+	LlamaLoaded *bool              `json:"llama_loaded,omitempty"`
+	State       string             `json:"state,omitempty"`
+	// Radix mirrors Python /health.kv_resume.prefix_block_pool (L3-R8 / LA13).
+	Radix *RadixMirrorStatus `json:"radix,omitempty"`
+}
+
+// RadixMirrorStatus is a control-plane mirror of Python Radix / prefix block pool health.
+// Why: fleet assign and /api/status must see L3 residency without curling :8081.
+type RadixMirrorStatus struct {
+	Enabled           bool     `json:"enabled"`
+	EntryCount        int      `json:"entry_count"`
+	SlotCount         int      `json:"slot_count,omitempty"`
+	MultiHolderBlocks int      `json:"multi_holder_blocks,omitempty"`
+	BlobDigestBlocks  int      `json:"blob_digest_blocks,omitempty"`
+	// BlockHashes is a capped newest-first sample from Python prefix_block_pool (L3-R9 / LA13).
+	BlockHashes []string `json:"block_hashes,omitempty"`
+	// BlobDigests is a capped sample of content-addressed slot digests (L3-R11 / peer pull).
+	BlobDigests       []string `json:"blob_digests,omitempty"`
+	RadixShare        bool     `json:"radix_share"`
+	SeqCpMode         string   `json:"seq_cp_mode,omitempty"`
+	KvUnified         bool     `json:"kv_unified,omitempty"`
+	LmcacheBlobs      bool     `json:"lmcache_blobs,omitempty"`
+	L3R6MetadataOK    *bool    `json:"l3_r6_metadata_ok,omitempty"`
 }
 
 // TrainingQueuePolicy summarizes T6 training submit gates on GET /api/status.

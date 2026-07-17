@@ -4,6 +4,439 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fulfillment QoS — complete vs benchmark (Jul 2026)
+
+**Why:** Agent QoS could defer background work but had no request-scoped way to lock in a model for a clean bench or guarantee a critical turn finishes without eviction / peer VRAM pressure (SQL-transaction-like begin→release).
+
+**Shipped:** `options.zerollama.fulfillment`:
+- **`complete`** (`guarantee`, `reliable`) — interactive elevation, wait for clear slot, protect model from eviction, 30m keep-alive floor when unset; other interactive on other models allowed
+- **`benchmark`** (`bench`, `speed`, `exclusive`) — exclusive GPU: wait for idle, unload peer runners, block all other traffic until release, 2h keep-alive floor when unset
+
+Injects `prompt_cache_key` when omitted (`fulfill:{mode}:{project_id}`). Advertised on `GET /api/version` (`capabilities.fulfillment`). Docs: [agent-qos-and-project-tracking.md](./docs/agent-qos-and-project-tracking.md).
+
+### Fix Metal bootstrap discovery abort (total_vram=0) — Jul 2026
+
+**Why:** `build_zerollama_mac.sh` embeds compiled `default.metallib` bytes in `ggml-metal-embed.metal`, but `ggml_metal_library_init` still treated the embed as UTF-8 source for `newLibraryWithSource`. MTLB magic fails UTF-8 → nil NSString → Metal assert abort → ollama-engine `/info` dies → serve logs `library=cpu` / `total_vram="0 B"` / `default_num_ctx=4096`.
+
+- **`ggml-metal-device.m`** — detect `MTLB` magic and load via `newLibraryWithData`; keep source JIT path for text embeds; refuse nil source instead of aborting.
+
+**Verify:** `./zerollama runner --ollama-engine --port 65432` then `curl -s localhost:65432/info` → `Apple M4 Max` with non-zero `total_memory`.
+
+### Phase L3 — media-aware llama-server seq-copy (Jul 2026)
+
+**Why:** `SLOT_SEQ_COPY` used `check_no_mtmd`, which rejected **all** multimodal models even for pure-text prefixes. Per-token `push_back` also threw on `LLAMA_TOKEN_NULL` and dropped `map_idx_to_media`, so media KV could never be cloned safely.
+
+**Shipped:** patch **0090** — `server_tokens::{has_media,first_media_index,safe_prefix_len}`; SEQ_COPY uses `clone()+keep_first` (media-safe); body `allow_media` (default true). `allow_media=false` clamps to text before first media. Python: `ZEROLLAMA_RADIX_MEDIA_SEQ_COPY` (default on) → POST `allow_media`. Rebuild vendor `llama-server` to pick up.
+
+### Phase MM — KV pad_value radix (Jul 2026)
+
+**Why:** Vision soft/pad token IDs are identical across images, so token-id prefix keys cannot tell clips apart (SGLang stamps `pad_value = 1e6 + hash%2^30` on every vision pad). Zerollama already had `MultimodalHash` on the first slot; trailing PostTokenize pads still shared Token=image_pad with hash 0.
+
+**Shipped:** `model/mmradix` — `PadValueFromHash` / `ApplyToInputs` / `ClampForEmbed`. ollama-engine applies after multimodal build (`OLLAMA_KV_MM_PAD_RADIX`, default **on**); stamps Token + MultimodalHash across the SameBatch vision span; clamps to vocab before TokenEmbedding. Log: `kv mm pad_value radix applied`. Kill-switch: `OLLAMA_KV_MM_PAD_RADIX=0`.
+
+### Phase MM — ViT radix cross-request embed pool (Jul 2026)
+
+**Why:** Session overlay pins one `prompt_cache_key`; the small global slot LRU thrashed under fleet load so a second agent with the same clip re-ran ViT. SGLang’s `MultiModalStaticCache` is a server-wide byte-budget pool keyed by content hash.
+
+**Shipped:** `OLLAMA_VIT_RADIX` (default **on**) enables a content-addressed pool with **100 MiB** byte budget (`OLLAMA_IMAGE_EMBED_CACHE_BYTES` overrides). Pool **grows beyond** `OLLAMA_IMAGE_EMBED_CACHE_MAX` under budget (hard cap 4096 slots). Hit log: `vision embed radix cache hit` (plus legacy `global` for greps). ollama-engine + ggml llamarunner. Smoke: `VIDEO_AGENT_INFER_VIT_RADIX=1`. Kill-switch: `OLLAMA_VIT_RADIX=0`.
+
+### Vendor — fix duplicate TBQ vec_dot (0088) (Jul 2026)
+
+**Why:** Patches 0071+0073 both added `ggml_vec_dot_tbq{3,4}_0_f32`, breaking Metal/CPU `llama-server` builds.
+
+**Shipped:** `llama/patches/0088-ggml-cpu-drop-duplicate-TBQ3-TBQ4-vec_dot-defs-0071-.patch`
+
+### Vendor — Bee reasoning-loop guard Lab B0 (0087) (Jul 2026)
+
+**Why:** Qwen think models can loop in hidden reasoning; BeeLlama’s detector is the smallest useful server UX port.
+
+**Shipped:**
+
+- `llama/patches/0087-server-Bee-inspired-reasoning-loop-guard-Lab-B0.patch` on pin `86d86ed4`
+- Opt-in `--reasoning-loop-guard {off,force-close,stop}` (default **off**) + request JSON fields
+- Wired via `process_token` + `reasoning_budget_tracking` (no Bee accept-callbacks on our pin)
+- Native `/completion` JSON: `stop_detail` + `loop_guard.{triggered,action,reason}` when triggered
+- Bonus: `SLOT_SEQ_COPY` uses `check_slot_no_media` (fixes stale `check_no_mtmd`)
+- Lab A: shallow sibling `../llama-cpp-rotorquant` @ `feature/planarquant-kv-cache` (CUDA A/B on 5080 host)
+
+### Phase MM — skip-ViT precomputed infer smoke (Jul 2026)
+
+**Why:** Linux auto→ggml unlocked `precomputed_embedding`, but infer smoke only grepped inject lines as advisory and never POSTed feature rows.
+
+**Shipped:** `VIDEO_AGENT_INFER_PRECOMPUTED=1` (+ `VIDEO_AGENT_GO_LOG`) posts synthetic Qwen vision-block `padded_input_ids` + `precomputed_embedding` (embd from `/api/show`); strict fail without `precomputed_embedding runner inject`; gate report enforces the flag.
+
+### Phase L3 — HiCache host/storage token tiers (Jul 2026)
+
+**Why:** `sglext.cached_tokens_details` and access-log fields existed but always stayed at device-only (`cache_n`). Operators could not see disk-slot vs federated blob restores.
+
+**Shipped:**
+
+- Runtime stamps `cached_tokens_host` on in-process disk restore; `cached_tokens_storage` (+ backend scheme) on L3 blob restore
+- `llm.CompletionResponse` + `/api/chat`/`generate` metrics + access log populate the tiers
+
+### Phase MM — forward ffmpeg `grid_thw` estimates to M-RoPE ViT (Jul 2026)
+
+**Why:** After `mtmd_bitmap_set_grid_hint` shipped, keeping server estimates preflight-only left native video on a second smart_resize path. Forwarding the Qwen-style estimate forces ViT to the same `[H,W]` as preflight/usage.
+
+**Shipped:** `GridTHWPerRaster` forwards any valid span `GridTHW` (client or ffmpeg); `GridTHWExplicit` stays observability-only.
+
+### Phase 17 — Linux auto vision stays on ggml (Jul 2026)
+
+**Why:** Linux `ZEROLLAMA_LLAMA_SERVER=auto` previously routed mmproj GGUF through llama-server, which rejects `precomputed_embedding` / `processor_output` (base64 rasters only). SGLang skip-ViT clients hit 400 on the Linux default path even though llamarunner already splices embed rows.
+
+**Shipped:** Linux auto = plain-text → llama-server; vision (mmproj) → ggml llamarunner (same as Mac). Explicit `ZEROLLAMA_LLAMA_SERVER=1` still forces vision through llama-server for Phase 17 vision smoke.
+
+### Docs/lab — llama.cpp fork watchlist + RotorQuant A/B (Jul 2026)
+
+**Why:** GitHub fork scout found RotorQuant/IsoQuant and BeeLlama server controls beyond ik/anemll; measure before pin patches.
+
+**Shipped:**
+
+- [docs/llama-fork-watchlist.md](docs/llama-fork-watchlist.md) — Lab A RotorQuant, Lab B Bee (B0 **0087** landed; B1 deferred), Lab C TQ3 FP4
+- `./scripts/phase/l2_rotorquant_ab.sh` — multi-leg decode/VRAM A/B on lab port `:18082`
+
+### Phase MM — real M-RoPE `grid_thw` forward (Jul 2026)
+
+**Why:** Docs claimed `mtmd_bitmap_set_grid_hint` shipped while Go still no-op'd; same PNG + client grid drifted from ViT embed count → padded inject misalign.
+
+**Shipped:**
+
+- **`mtmd_bitmap_set_grid_hint`** + dyn_size honor (`W*patch × H*patch`, log `grid_thw hint resize`)
+- **ollama-engine** Qwen3-VL / Qwen2.5-VL / glmocr / qwen3next `EncodeMultimodalWithGrid`
+- ViT embed cache hash includes grid when set; Go bind in `llama/llama.go`
+
+**Non-goals:** non–M-RoPE / llava-uhd / fixed-size families.
+
+### Vendor — hardware PR ports 0080–0086 (Jul 2026)
+
+**Why:** Bring open ggml-org/llama.cpp PRs that matter on M4 Max Metal, RTX 5080 Blackwell, and Ada (dual-4090) onto pin `86d86ed4`.
+
+**Shipped (format-patches):**
+
+- **0080** `#25648` — Metal F16 `mul_mat` null-pipeline crash
+- **0081** `#24565` — CUDA Blackwell fattn MMA config
+- **0082** `#25707` — CUDA Q2_0
+- **0083** `#25788` — Metal `gated_delta_net` cache fusion
+- **0084** `#22587` — CUDA GDN row-per-warp
+- **0085** `#25730` — NVFP4 W4A4 activation quant
+- **0086** `#25750` — Metal FA-vec per-device (Q,NE) tuning (monolithic metal port; GQA2 kept)
+
+**Skipped:** `#20831` (RDNA/AMD MMVQ). Drafts/lab `#25635` `#23440` `#14570` still deferred.
+
+**Vendor HEAD:** `5f7b7879` (`LLAMA_CPP_VENDOR_HEAD`). Rebuild `llama-server` / Mac CGO to pick up kernels.
+
+### Build — dedupe TBQ CPU vec_dot + donor stub (Jul 2026)
+
+**Why:** Vendor rebase left duplicate `ggml_vec_dot_tbq3_0_f32` / `tbq4_0_f32` in `ggml-cpu/quants.c`, and the non-`LLAMA_KV_EXT_DONOR_BUFFER` path omitted `llama_kv_ext_donor_try_consume` — both broke CGO `go test` link.
+
+**Shipped:** remove the second TBQ pair; add nullptr stub for `llama_kv_ext_donor_try_consume` when donor buffer is off.
+
+### Phase MM — deepseekocr processor_output (Jul 2026)
+
+**Why:** Last deferred ollama-engine `processor_output` family — SGLang OCR clients already send HF pixels; falling back to PNG re-ran ProcessImage (aspect tiling + normalize) before SAM+CLIP.
+
+**Shipped:**
+
+- **`processor_output`** — `image_grid_thw [1,rows,cols]` (2–9 tiles); `pixel_values` = row-major `640²×3` locals + `1024²×3` global
+- Shared **`multimodalFromPatches`** with PNG encode
+
+**Non-goals:** llamarunner/mtmd processor_output; non–M-RoPE `grid_thw`.
+
+### Phase MM — llamarunner ViT byte budget (Jul 2026)
+
+**Why:** Close SGLang #28441 on ggml llamarunner — ollama-engine already had `OLLAMA_IMAGE_EMBED_CACHE_BYTES`; slot-only LRU still thrashed mixed tiny embeds vs video frames on the mtmd path.
+
+**Shipped:**
+
+- Shared float32-byte budget across PNG `MtmdChunk` + precomputed global LRUs (`0` = slot-only)
+- Cross-pool oldest eviction under pressure; session overlay hash caps unchanged
+
+**Non-goals:** Mooncake page arena; cross-runner radix ViT share.
+
+### Phase MM — llama4 multi-tile processor_output (Jul 2026)
+
+**Why:** Multi-tile Llama4 clients already pack a local canvas + global tile; rejecting that forced PNG re-encode on ollama-engine.
+
+**Shipped:**
+
+- **`processor_output`** — `image_grid_thw [1,H,W]` local canvas (divisible by `image_size`); multi-tile requires global `image_size²` floats appended (EncodeMultimodal packing)
+- Shared **`multimodalFromPixels`** path with PNG encode (tile separators + global chunk unchanged)
+
+**Non-goals:** llamarunner processor_output.
+
+### Phase MM — LFM2 multi-tile preprocessed ingest (Jul 2026)
+
+**Why:** SGLang high-res LFM2 clients already run the HF processor / ViT; single-tile-only ingest forced PNG decode + server-side split.
+
+**Shipped:**
+
+- **`processor_output`** — `image_grid_thw [1,rows,cols]` packs row-major `tile_size²` tiles (+ optional thumbnail remainder); single-canvas `[1,H,W]` pixels unchanged
+- **`precomputed_embedding`** — same tile grid; equal-sized chunks (+ optional equal-sized thumbnail when rows divisible by tiles+1)
+- **`PostTokenize`** — row/col + thumbnail markers via existing multi-tile layout
+
+**Non-goals:** llamarunner processor_output.
+
+### Vendor rebase to ggml-org master `86d86ed4` (Jul 2026)
+
+**Why:** Pull latest [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) tip and rebase zerollama patches.
+
+- **Pin:** `LLAMA_CPP_VERSION=86d86ed4`, `LLAMA_CPP_COMMIT=86d86ed4396b…`, `Makefile.sync` → `vendor/llama-cpp-86d86ed4` (`BUILD_NUMBER=10065`, past tag `b10064`)
+- **Patches:** **79** format-patches (was 80 on `8f114a9b`); dropped merged upstream Metal ports **snake #25459** and **Q2_0 #25419**
+- **Ports:** CUDA GPU discovery / NVML, fused QJL SET_ROWS, Metal 64×8 mul_mm, FP8 E4M3/E5M2 MMQ load-tiles for the post-rewrite `mmq.cuh`
+- **Backup:** `llama/patches.pre-8f114a9b-20260717/`
+- **Verify:** clean `make -f Makefile.sync clean apply-patches`; `llama_patch_health` **pass**
+
+**Rebuild:** `./scripts/build/build_llama_server.sh` (and Mac CGO via `./scripts/build/build_zerollama_mac.sh` when needed). Do not auto-start on production `:11434`.
+
+### Phase MM — capacity-aware ViT embed cache (Jul 2026)
+
+**Why:** SGLang #28441 moved multimodal caches to capacity-aware pools. Slot-only LRU treats tiny embeds like 32-frame video; unbounded per-session overlay pins can grow without bound under agent churn.
+
+**Shipped:**
+
+- **`OLLAMA_IMAGE_EMBED_CACHE_BYTES`** — optional float32-byte budget on ollama-engine global ViT LRU (0 = slot-only)
+- **Per-session hash cap** — overlay hashes LRU-capped at `OLLAMA_IMAGE_EMBED_CACHE_MAX` (ollamarunner + llamarunner PNG/precomputed)
+- **Shared session refs** — session store pins the same embed value as global (clone on restore/return only)
+
+**Non-goals:** Mooncake page arena; cross-runner radix ViT share.
+
+### F6 — Operator + agent playbooks (Jul 2026)
+
+**Why:** F1–F5 / F7 shipped the control plane; operators and agents still needed one place for sticky shards, warm-only SLA, and cancel-while-queued rules (and explicit non-goals).
+
+**Shipped:** [docs/fleet-playbooks.md](./docs/fleet-playbooks.md) — sticky model shards, `warm_only` / `prefer_warm`, cancel policy (`queued` yes / `loading` no), F5 token usage, anti-patterns (scatter-gather, 60s quotes).
+
+**Non-goals:** new fleet APIs; remote load from the manager.
+
+### F5 — Short-TTL assignment tokens (Jul 2026)
+
+**Why:** Warm-queue races between assign and first chat chunk; long quotes waste GPU.
+
+**Shipped:**
+
+- HMAC `assignment_token` / `expires_at` / `expires_in` on `POST /api/fleet/assign` when `ZEROLLAMA_FLEET_ASSIGN_SECRET` is set
+- Node `POST /api/fleet/assign-hold` registers soft hold; `X-Zerollama-Assignment-Token` on `/api/chat` + `/api/generate` consumes it
+- `/api/status.inference.ggml.assign_holds` (+ folded into `pending`) so fleet scoring sees pressure
+- TTL default **8s** (2–30s clamp); optional push kill-switch `ZEROLLAMA_FLEET_ASSIGN_PUSH=0`
+
+**Non-goals:** multi-minute reservations; remote load (sticky shards / cancel policy → [F6 playbooks](./docs/fleet-playbooks.md)).
+
+### L3-R11 — Go prefix hashes + auto blob peers (Jul 2026)
+
+**Why:** L3-R9 needs agents to send `prefix_block_hashes` without reimplementing the Python SHA-256 chain; L3-R10 peers were easy to leave unset on nodes that already have `ZEROLLAMA_FLEET_PEERS`.
+
+**Shipped:**
+
+- Go package `prefixblock` — `ModelScope` / `Hash` / `Iter` / `Hashes` golden-matched to `runtime/kv/prefix_block_hash.py`
+- Blob peer resolution: `ZEROLLAMA_LMCACHE_BLOB_PEERS` → Go coordination `lmcache_blob_peers` → `ZEROLLAMA_FLEET_PEERS`
+- Go coordination push of fleet/blob peers to Python
+- `blob_digests` on `/health` + `/api/status.inference.runtime.radix`
+- Fleet hash score prefers peers with `blob_digest_blocks` / `blob_digests` (reason `radix_blob`)
+
+### L3-R10 — HTTP peer blob pull (Jul 2026)
+
+**Why:** L3-R7 federated digests still required a shared filesystem (`ZEROLLAMA_LMCACHE_BLOB_ROOT` / NFS). Cold fleet nodes without that mount full-prefilled.
+
+**Shipped:**
+
+- Runtime `GET /kv/blob/{digest}` — raw slot blob octets
+- Go proxy `GET /api/kv/blob/{digest}` → runtime (LAN peer reachable)
+- `materialize_blob` local miss → `ZEROLLAMA_LMCACHE_BLOB_PEERS` pull (`/api/kv/blob` then `/kv/blob`)
+- Optional `ZEROLLAMA_LMCACHE_BLOB_HTTP_TOKEN`; kill-switch `ZEROLLAMA_LMCACHE_BLOB_HTTP=0`
+- Health: `prefix_block_pool.lmcache_blobs.http`
+
+**Non-goals:** NIXL RDMA / Mooncake page arena (upgrade transport later); authenticated mTLS mesh.
+
+### L3-R9 — Fleet content-hash routing / LA13 (Jul 2026)
+
+**Why:** L3-R8 residency score only saw `entry_count`; agents sharing a system prompt need the peer that holds *those* prefix blocks.
+
+**Shipped:**
+
+- Python `/health.kv_resume.prefix_block_pool.block_hashes` — newest-first capped sample (`ZEROLLAMA_RADIX_HEALTH_HASH_CAP`, default 128)
+- `api.RadixMirrorStatus.BlockHashes` on `GET /api/status` → fleet poll
+- `prefix_block_hashes` on `POST /api/fleet/assign` and `/internal/score`
+- Longest leading-hash match soft score (`ZEROLLAMA_FLEET_RADIX_HASH_SCORE`, default on); reason `radix_hash`
+
+**Non-goals:** Go-side hash computation from raw prompts; NIXL RDMA; guaranteed restore (still soft routing).
+
+### L3-R8 — Go Radix mirror + fleet soft score (Jul 2026)
+
+**Why:** Fleet assign only had session-key affinity; operators/fleet could not see Python prefix-block / Radix health without curling the sidecar.
+
+**Shipped:**
+
+- **`api.RadixMirrorStatus`** on `GET /api/status` → `inference.runtime.radix` (parsed from runtime `/health.kv_resume`)
+- Fleet poll already carries `Inference` on `NodeSnapshot` — peers now expose radix residency
+- Soft score bonus when `session_key`/`prompt_cache_key` set and peer has `radix_share` + `entry_count>0` (`ZEROLLAMA_FLEET_RADIX_SCORE`, default on)
+
+**Non-goals:** Go-side `seq_cp`; decode rewrite. Content-hash routing → **L3-R9**.
+
+### L3-R7 — federated LMCache slot blobs (Jul 2026)
+
+**Why:** L3-R4 Redis shared prefix *hashes* but `blob_path` stayed local to the donor node — cold nodes still full-prefilled. Content-addressed blobs close that without NIXL.
+
+**Shipped:**
+
+- **`lmcache_blob.py`** — SHA-256 blob tree under `file://…/blobs` or `ZEROLLAMA_LMCACHE_BLOB_ROOT`
+- **`blob_digest`** on `LMCacheBlockRecord` / prefix pool; publish on `register_prefix`
+- **`find_blob_prefix` / `radix_blob_restore`** — cold restore when live Radix donor absent; in-process `llama_state_seq_load_file`, subprocess materialize to `--slot-save-path`
+- Health: `prefix_block_pool.lmcache_blobs`; env `ZEROLLAMA_LMCACHE_BLOBS` (default on with tier)
+
+**Non-goals:** NIXL RDMA / Mooncake; S3 object store; Go Radix mirror.
+
+### L3-R6b Done — cell + tensor + used-cell pages COW (Jul 2026)
+
+**Why:** Shared `TAG_KV_CACHE_SHARE_CELLS` early-returns blocked diverge writes; Gemma4 share-cb aliases K/V tensors so metadata-only fork was a no-op; full-tensor copy wasted bandwidth when occupancy ≪ `kv_size`.
+
+**Shipped:**
+
+- **`ZEROLLAMA_KV_COW=1`** — `ensure_unique_cells()` deep-copies `llama_kv_cells_vec`
+- **`ZEROLLAMA_KV_COW_TENSORS=1`** — `ensure_unique_tensors()` allocates private K/V + copy from donor
+- **`ZEROLLAMA_KV_COW_PAGES=1`** — copy only used cell ranges (K contiguous / V `v_trans` row-scatter); ≥80% density falls back to full copy; VRAM still full-size
+- Agent YAML `l3.kv_cow` + `kv_cow_tensors` + `kv_cow_pages`; patch **0089**; health `l3_r6b: done`
+
+**Non-goals:** non-agent global default-on; NIXL; sparse/sub-capacity tensor allocation (VRAM reduction).
+
+### Phase 15 v59 — L3-R6 metadata-path readiness (Jul 2026)
+
+**Why:** Close the ops loop on practical shared-prefix KV (v50–v58) with an explicit Done vs deferred split — metadata path shippable; true COW is upstream.
+
+**Shipped:**
+
+- **`l3_r6_metadata_readiness`** — `/health.kv_resume.l3_r6_metadata` (`complete`, checks, deferred)
+- ROADMAP **L3-R6a Done** / **L3-R6b** later Partial (see above)
+
+**Non-goals (at v59):** implementing COW; non-agent global default-on.
+
+### Phase 15 v58 — Radix→unified couple (Jul 2026)
+
+**Why:** Full COW still needs llama cell-allocator work. Radix without unified still buffer-copied — couple closes that footgun.
+
+**Shipped:**
+
+- **`ZEROLLAMA_KV_UNIFIED_WITH_RADIX`** — default on; when Radix enabled, enable unified unless `ZEROLLAMA_KV_UNIFIED=0`
+- **`kv_unified_source`** — `env` | `yaml` | `radix_couple` | `off` on health
+
+**Non-goals:** true COW on diverge; non-agent global default-on.
+
+### Phase 15 v57 — in-process idle-slot purge (Jul 2026)
+
+**Why:** Subprocess already purges idle slots when unified KV is full; in-process multi-seq had no equivalent and could starve the shared cell pool under L3 resume.
+
+**Shipped:**
+
+- **`idle_slot_purge.py`** — on ctypes `llama_decode` fail under `kv_unified`, clear one idle seq and retry
+- **`ZEROLLAMA_KV_UNIFIED_IDLE_PURGE=0`** kill-switch (default on when unified)
+- Health `/health.kv_resume.kv_unified_idle_purge`
+
+**Non-goals:** proactive purge; native decode-loop purge; COW.
+
+### Phase 15 v56 — opt-in strict unified sizing (Jul 2026)
+
+**Why:** v55 made undersize visible; CI/agent fleets need an explicit fail-closed load gate without bricking default agent profile hosts.
+
+**Shipped:**
+
+- **`ZEROLLAMA_KV_UNIFIED_STRICT=1`** — `assert_kv_unified_sizing` / `KvUnifiedSizingError` on subprocess argv + in-process init
+- Health `kv_unified_sizing.strict` + `runtime_env.kv_unified_strict`
+
+**Non-goals:** default-on strict; auto-bump `-c`; COW.
+
+### Phase 15 v55 — unified sizing probe + default-on criteria (Jul 2026)
+
+**Why:** After v54, operators still had only a prose note for shared-pool sizing. Numeric health probe is required before any global default-on.
+
+**Shipped:**
+
+- **`kv_unified_sizing_status`** — `/health.kv_resume.kv_unified_sizing` (`ok` / `recommended_min_ctx` / floor)
+- **`ZEROLLAMA_KV_UNIFIED_MIN_TOKENS_PER_SLOT`** — soft floor (default 512); advisory only
+- **Default-on criteria** documented in phase15 (agent smoke + sizing ok + kill-switch; idle purge/COW still block non-agent default)
+
+**Non-goals:** global default-on; hard admit reject on undersize; COW.
+
+### Phase 15 v54 — agent YAML `l3.kv_unified` (Jul 2026)
+
+**Why:** After v53, agent fleets still needed a second env for metadata Radix share. Profile YAML closes that without global default-on.
+
+**Shipped:**
+
+- **`l3.kv_unified`** — same env-wins pattern as `radix_share` (`ZEROLLAMA_KV_UNIFIED=0/1` overrides)
+- **`l3_agent_subprocess.yaml`** — `kv_unified: true` with sizing WHY comment
+- **`/health.kv_resume.kv_unified_note`** — shared cell-pool sizing advisory when on
+
+**Non-goals:** global default-on; coupling unified to every `radix_share`; numeric undersize fail; COW.
+
+### Phase 15 v53 — subprocess `--kv-unified` argv (Jul 2026)
+
+**Why:** v52 only wired in-process; L3 agent / Radix live path is subprocess. `ZEROLLAMA_KV_UNIFIED=1` was a no-op for that path while health claimed metadata share.
+
+**Shipped:**
+
+- **`with_llama_kv_unified`** — inject `--kv-unified` into llama-server argv when env on; `--no-kv-unified` / `-no-kvu` wins
+- **`_llama_server_start_args`** — calls it after cache argv
+
+**Non-goals:** default-on; agent-profile auto-enable; in-process idle purge; COW.
+
+### Phase 15 v52 — opt-in unified KV stream (Jul 2026)
+
+**Why:** Real L3-R6 share without rewriting llama's cell allocator: `kv_unified` → `n_stream=1` → same-stream `seq_cp` is metadata-only. Default stays off (shared cell pool contention).
+
+**Shipped:**
+
+- **`ZEROLLAMA_KV_UNIFIED=1`** — sets `cparams.kv_unified` on in-process multi-seq load
+- Overlay donor estimate uses `streams=1` when unified
+- In-process Radix `seq_cp` hardened to full-range (`-1,-1`) + trim (server parity)
+- Health/trace: `kv_unified`, `seq_cp_mode` (`metadata` | `buffer_copy`); metadata mode records 0 approx copy bytes
+
+**Non-goals:** default-on; subprocess `--kv-unified`; idle-slot purge; COW.
+
+### Phase 15 v51 — overlay donor page-offset catalog (Jul 2026)
+
+**Why:** L3-R6 needs proof that PA pages are addressable ranges inside the v50-owned donor before any cell-share / skip-`seq_cp` work.
+
+**Shipped:**
+
+- **`overlay_page_catalog.py`** — `span_in_donor` / `page_donor_offsets` / live `map_page` catalog
+- **`/health.kv_page_bind.overlay_page_catalog`** — summary (`all_in_donor`, pages checked; no per-page rows)
+- **`/internal/kv-snapshot.overlay_page_catalog`** — full `pages[]` with `k_offset`/`v_offset`/`block_id`
+- Engine mirrors donor `ptr`/`size` from auto-wire or manual register
+
+**Non-goals:** skip `seq_cp`, COW, `kv_unified`, CUDA donor.
+
+### Phase 15 v50 — overlay donor auto-wire + L3-R6 start (Jul 2026)
+
+**Why:** Physical shared KV pages (true RadixAttention) need the runtime to own the KV byte region before llama can share cells. v48/v49 required manual register-before-load; Radix still `seq_cp`s.
+
+**Shipped:**
+
+- **v50 auto-wire** — with `ZEROLLAMA_KV_OVERLAY_BIND=1`, in-process load allocates a page-aligned host donor (GGUF estimate × streams × 2 + 32 MiB, or `ZEROLLAMA_KV_OVERLAY_DONOR_BYTES`) and registers it before context construction. Kill-switch: `ZEROLLAMA_KV_OVERLAY_AUTO=0`.
+- **`/health.kv_page_bind.overlay_bind_auto`** — operator visibility.
+- **Radix approx copy cost** — `approx_copy_bytes` on share traces + `approx_copy_bytes_total` on `radix_share` health (observability until physical share).
+- **L3-R6 Partial** — ROADMAP milestone opened; multi-seq shared cells + COW still deferred.
+
+**Doc:** [phase15-native-kv.md](docs/phase15-native-kv.md) v50, [radix-prefix-share.md](docs/radix-prefix-share.md).
+
+### L2 auto-VRAM fork flag + track close (Jul 2026)
+
+**Why:** Measured L2 gates FAIL flipping defaults for tok/s (stock faster). TBQ still wins VRAM at long ctx (−27…−35%). Operators needed either manual `ZEROLLAMA_LLAMA_FORK=1` or a topology YAML — not a ctx-aware opt-in.
+
+**Shipped:**
+
+- **`ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1`** — when `FORK` unset, enable fork (TBQ via `FORK_PROFILE=vram`) only if configured ctx ≥ threshold (default **32768** via `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX`). Ctx hint: `ZEROLLAMA_RUNTIME_VRAM_NUM_CTX` / `ZEROLLAMA_LLAMA_CTX` / `LLAMA_ARG_CTX_SIZE`. Explicit `FORK=0/1` still wins.
+- **YAML** — `serve.llama_fork_auto_vram` / `llama_fork_auto_vram_ctx` in `vram_yaml_defaults`.
+- **L2 Done** — ROADMAP / [gpu-profiles-l2.md](docs/gpu-profiles-l2.md): infrastructure + VRAM opt-in complete; defaults stay L1 until tok/s ≥2/3 gate passes.
+
+### Marconi × retention preservation for Radix (Jul 2026)
+
+**Why:** vLLM #47782 fixed selective hybrid retention killing Marconi-style shared-system-prompt cache hits. Zerollama cold seed was already OK at `seq_pos=0`, but (1) Radix applied full `swa_allows_cache_prompt` (including retention) so warm catch-up at non-aligned positions got `hybrid_swa_denied`, and (2) admission skipped Radix entirely when full-prompt `cache_prompt` was denied for SWA window — even when a shorter matched prefix would fit.
+
+**Shipped:**
+
+- **`radix_seq_copy_policy`** — window-only hybrid gate (no retention); retention stays for same-slot resume.
+- **`_prefix_cache_admission`** — try Radix even when `cache_prompt` was denied; successful seed flips `allow` True. Draft/`allow_cache_prompt=false` still skips Radix.
+- **Docs** — [vllm-borrowings.md](docs/vllm-borrowings.md) records the borrow + explicit non-goals (KV watermark, partial hybrid hash hits).
+
 ### Native FP8 GGUF weights (E4M3 / E5M2) — Jul 2026
 
 **Why:** HF FP8 checkpoints were only usable after full F16/BF16 dequant (or re-quant). That wastes convert time, disk, and VRAM, and leaves no first-class CUDA matmul path for native E4M3/E5M2 GGUF weights. This is **weight** FP8 — not FP8 KV (fork KV stays QJL/Polar/TBQ).

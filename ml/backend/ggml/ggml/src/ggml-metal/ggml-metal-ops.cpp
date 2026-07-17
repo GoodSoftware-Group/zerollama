@@ -7,6 +7,7 @@
 #include "ggml-metal-impl.h"
 #include "ggml-metal-common.h"
 #include "ggml-metal-device.h"
+#include "ggml-metal-tuning.h"
 
 #include <cassert>
 #include <algorithm>
@@ -273,55 +274,7 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         case GGML_OP_MUL:
         case GGML_OP_DIV:
             {
-                // Snake activation autofuse: mul -> sin -> sqr -> mul -> add
-                bool fused = false;
-                if (node->op == GGML_OP_MUL && ctx->use_fusion) {
-                    static constexpr ggml_op snake_ops[5] = { GGML_OP_MUL, GGML_OP_SIN, GGML_OP_SQR, GGML_OP_MUL, GGML_OP_ADD };
-                    if (ctx->can_fuse(idx, snake_ops, 5)) {
-                        const ggml_tensor * mul0     = ctx->node(idx + 0);
-                        const ggml_tensor * sin_node = ctx->node(idx + 1);
-                        const ggml_tensor * sqr      = ctx->node(idx + 2);
-                        const ggml_tensor * mul1     = ctx->node(idx + 3);
-                        const ggml_tensor * add      = ctx->node(idx + 4);
-
-                        // x carries the full activation shape, a is the broadcast operand
-                        const ggml_tensor * x = ggml_are_same_shape(mul0, mul0->src[0]) ? mul0->src[0] : mul0->src[1];
-                        const ggml_tensor * a = (x == mul0->src[0]) ? mul0->src[1] : mul0->src[0];
-
-                        // mul1 reads sqr and inv_b in either operand order
-                        const ggml_tensor * inv_b    = (mul1->src[0] == sqr) ? mul1->src[1] : mul1->src[0];
-
-                        // closure check: the trailing add reads the same x as the leading mul
-                        const ggml_tensor * x_in_add = (add->src[0] == mul1) ? add->src[1] : add->src[0];
-
-                        // x is in the supported whitelist and every chain intermediate shares x's type.
-                        // a and inv_b bind as device const float * in the kernel, so they stay F32.
-                        const bool types_ok =
-                            (x->type == GGML_TYPE_F32 || x->type == GGML_TYPE_F16 || x->type == GGML_TYPE_BF16) &&
-                            (a->type    == GGML_TYPE_F32) && (inv_b->type    == GGML_TYPE_F32) &&
-                            (mul0->type == x->type)       && (sin_node->type == x->type) &&
-                            (sqr->type  == x->type)       && (mul1->type     == x->type) &&
-                            (add->type  == x->type);
-                        // a / inv_b collapse to [1, C, 1, 1], x and add stay 2D
-                        const bool shape_ok = ggml_are_same_shape(a, inv_b) && a->ne[0] == 1 && a->ne[1] == x->ne[1];
-                        const bool dim_ok =
-                            (x->ne[2]     == 1) && (x->ne[3]     == 1) &&
-                            (add->ne[2]   == 1) && (add->ne[3]   == 1) &&
-                            (a->ne[2]     == 1) && (a->ne[3]     == 1) &&
-                            (inv_b->ne[2] == 1) && (inv_b->ne[3] == 1);
-                        // kernel reads x[idx] and a[c] / inv_b[c] linearly, so every operand is contiguous
-                        const bool contig_ok =
-                            ggml_is_contiguous(x) && ggml_is_contiguous(add) &&
-                            ggml_is_contiguous(a) && ggml_is_contiguous(inv_b);
-                        if (types_ok && shape_ok && dim_ok && contig_ok && x_in_add == x) {
-                            n_fuse = ggml_metal_op_snake_fused(ctx, idx);
-                            fused = true;
-                        }
-                    }
-                }
-                if (!fused) {
-                    n_fuse = ggml_metal_op_bin(ctx, idx);
-                }
+                n_fuse = ggml_metal_op_bin(ctx, idx);
             } break;
         case GGML_OP_ADD_ID:
             {
@@ -1753,6 +1706,83 @@ int ggml_metal_op_gla(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+// Match gated_delta_net + the trailing cpy that scatters state snapshots into the recurrent cache.
+// Returns 1 (skip the cpy) on success, 0 otherwise.
+static int ggml_metal_try_gdn_cache_fusion(ggml_metal_op_t        ctx,
+                                           int                    idx,
+                                           ggml_metal_buffer_id * cache_buf_id,
+                                           int32_t              * slot_stride) {
+    const ggml_tensor * gdn = ctx->node(idx);
+
+    if (gdn->op != GGML_OP_GATED_DELTA_NET || gdn->type != GGML_TYPE_F32 ||
+        (gdn->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+        return 0;
+    }
+
+    // the snapshot cpy is the first real node after the gdn; it may be separated by
+    // view/no-op nodes and by other compute ops (e.g. the gate sigmoid and the R-cell
+    // scale) that do not read the gdn state tail. walk forward to find it.
+    const int64_t S_v      = gdn->src[2]->ne[0];
+    const int64_t H        = gdn->src[2]->ne[1];
+    const int64_t n_tokens = gdn->src[2]->ne[2];
+    const int64_t n_seqs   = gdn->src[2]->ne[3];
+    const int64_t K        = ggml_get_op_params_i32(gdn, 0);
+    const size_t  tail_off = ggml_row_size(GGML_TYPE_F32, S_v * H * n_tokens * n_seqs);
+
+    const ggml_tensor * cpy = nullptr;
+    int cpy_idx = -1;
+
+    for (int j = idx + 1; j < ctx->n_nodes() && j <= idx + 16; ++j) {
+        const ggml_tensor * n = ctx->node(j);
+        if (ggml_op_is_empty(n->op)) {
+            continue; // view/no-op: skip
+        }
+        if (n->op == GGML_OP_CPY && !(n->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+            cpy = n; // candidate; validated below
+            cpy_idx = j;
+            break;
+        }
+        // another compute op sits before the cpy: it must not read the gdn state tail,
+        // since the fused kernel writes the tail straight to the cache (gdn dst tail unwritten)
+        for (int s = 0; s < GGML_MAX_SRC && n->src[s]; ++s) {
+            const ggml_tensor * r = n->src[s];
+            if (r && r->view_src == gdn && r->view_offs >= tail_off) {
+                return 0; // tail is read before the cpy: unsafe to fuse
+            }
+        }
+    }
+    if (cpy == nullptr) {
+        return 0;
+    }
+
+    const int64_t D = S_v * S_v * H;
+    const int64_t n_written = std::min<int64_t>(n_tokens, K);
+
+    const ggml_tensor * src = cpy->src[0]; // view of the gdn snapshot tail
+    const ggml_tensor * dst = cpy->src[1]; // cache view the kernel writes to
+
+    if (src->view_src != gdn || src->view_offs != tail_off || !ggml_is_contiguous(src)) {
+        return 0;
+    }
+
+    const int64_t expected_ne[GGML_MAX_DIMS] = { D, n_seqs, n_written, 1 };
+    if (dst->type != GGML_TYPE_F32 || dst->data == nullptr ||
+        !std::equal(expected_ne, expected_ne + GGML_MAX_DIMS, dst->ne) ||
+        dst->nb[0] != ggml_type_size(GGML_TYPE_F32) ||
+        dst->nb[1] != (size_t) ggml_row_size(GGML_TYPE_F32, D)) {
+        return 0;
+    }
+
+    *cache_buf_id = ggml_metal_get_buffer_id(dst);
+    *slot_stride = K > 1 ? (int32_t) (dst->nb[2] / sizeof(float)) : 0;
+
+    // skip the trailing cpy: the fused kernel wrote the state straight into the cache.
+    // clearing COMPUTE makes the dispatch loop no-op this node (ggml_metal_op_encode_impl).
+    ctx->node(cpy_idx)->flags &= ~GGML_TENSOR_FLAG_COMPUTE;
+
+    return 1;
+}
+
 int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -1769,7 +1799,20 @@ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
+    // try to fuse the trailing cpy that scatters state snapshots into the recurrent cache
+    ggml_metal_buffer_id cache_buf_id = { nullptr, 0 };
+    int32_t slot_stride = 0;
+    const bool fused = ctx->use_fusion && ggml_metal_try_gdn_cache_fusion(ctx, idx, &cache_buf_id, &slot_stride) > 0;
+
     auto pipeline = ggml_metal_library_get_pipeline_gated_delta_net(lib, op);
+
+    // non-fused: state_out = dst buffer past the attn scores; stride = per-snap size
+    const int32_t state_size_per_snap = ne20 * ne20 * ne21 * ne23;
+    if (!fused) {
+        cache_buf_id  = ggml_metal_get_buffer_id(op);
+        cache_buf_id.offs += (size_t) ggml_row_size(GGML_TYPE_F32, ne20 * ne21 * ne22 * ne23);
+        slot_stride   = state_size_per_snap;
+    }
 
     int ida = 0;
 
@@ -1801,6 +1844,7 @@ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
         /*.ns02 =*/ (int32_t) (nb02/sizeof(float)),
         /*.ns12 =*/ (int32_t) (nb12/sizeof(float)),
         /*.ns22 =*/ (int32_t) (nb22/sizeof(float)),
+        /*.state_out_stride =*/ slot_stride,
         /*.ne0  =*/ ne0,
         /*.ne1  =*/ ne1,
         /*.ne2  =*/ ne2,
@@ -1819,7 +1863,8 @@ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[3]), ida++); // gate
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[4]), ida++); // beta
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[5]), ida++); // state
-    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst (attn scores)
+    ggml_metal_encoder_set_buffer  (enc, cache_buf_id,                         ida++); // state_out
 
     const int nsg = pipeline.nsg;
 
@@ -2194,6 +2239,16 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+// defense in depth: a missing Metal kernel should be a clear, actionable abort instead of
+// a null-pipeline dereference deep in the encoder (ggml_metal_library_compile_pipeline
+// already logs the underlying MTLLibraryErrorDomain error before returning a nil pipeline)
+static void ggml_metal_op_mul_mat_check_pipeline(const ggml_metal_pipeline_with_params & pipeline, const ggml_tensor * op) {
+    if (!pipeline.pipeline) {
+        GGML_ABORT("%s: no Metal kernel for op = %s, src0 type = %s, src1 type = %s",
+                __func__, ggml_op_name(op->op), ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
+    }
+}
+
 int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -2314,6 +2369,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         };
 
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);
+        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
 
         ggml_metal_kargs_mul_mv_ext args = {
             /*.ne00  =*/ ne00,
@@ -2361,6 +2417,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         //}
 
         auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
+        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
 
         ggml_metal_kargs_mul_mm args = {
             /*.ne00 =*/ ne00,
@@ -2396,6 +2453,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
     } else {
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
+        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
 
         const int nr0 = pipeline.nr0;
         const int nr1 = pipeline.nr1;
@@ -2556,6 +2614,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
 
         {
             auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
+            ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
 
             ggml_metal_kargs_mul_mm_id args = {
                 /*.ne00  =*/ ne00,
@@ -2592,6 +2651,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         }
     } else {
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);
+        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
 
         const int nr0 = pipeline.nr0;
         const int nr1 = pipeline.nr1;
@@ -3182,7 +3242,6 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
 #undef FATTN_SMEM
     } else {
         // half4x4 kernel
-        const int nqptg = OP_FLASH_ATTN_EXT_VEC_NQPSG; // queries per threadgroup
         const int ncpsg = OP_FLASH_ATTN_EXT_VEC_NCPSG; // cache values per simdgroup !! sync with kernel template arguments !!
 
         const int64_t gqa_ratio = ne02/ne12;
@@ -3196,8 +3255,19 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
             (!has_mask || ne32 == 1);
         const int nhptg = use_gqa2 ? 2 : 1; // heads per threadgroup
 
+        // GQA2 and multi-query (Q>1) are mutually exclusive: gqa2 requires ne01==1.
+        auto cfg = use_gqa2
+            ? ggml_metal_tuning::fa_vec_baseline_cfg((int) ne00, (int) ne20)
+            : ggml_metal_tuning::fa_vec_pick(
+                    props_dev->device_id,
+                    props_dev->gpu_family,
+                    (int) op->src[1]->type,
+                    (int) ne00, (int) ne20,
+                    ne11, ne01);
+        int nqptg = cfg.Q; // queries per threadgroup
+
         GGML_ASSERT(nqptg <= 32);
-        GGML_ASSERT(nqptg  % 1  == 0);
+        GGML_ASSERT(nqptg == 1 || nqptg == 2 || nqptg == 4); // only instantiated Q values
         GGML_ASSERT(ncpsg  % 32 == 0);
 
         bool need_sync = false;
@@ -3256,7 +3326,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
         // ne20*(nsg)
         // each simdgroup has a full f32 head vector in shared mem to accumulate results
         //
-#define FATTN_SMEM(nsg) (GGML_PAD(((GGML_PAD(ne00, 128) + 4*ncpsg + 2*GGML_PAD(ne20, 128))*(nsg)*(nhptg))*(sizeof(float)/2), 16))
+#define FATTN_SMEM(nsg) (GGML_PAD(((GGML_PAD(ne00, 128) + 4*ncpsg + 2*GGML_PAD(ne20, 128))*(nsg)*(nhptg)*nqptg)*(sizeof(float)/2), 16))
 
         int64_t nsg = 1;
 
@@ -3274,6 +3344,12 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
             while (2*nwg*nsg*ncpsg < ne11 && nsg < 4) {
                 nsg *= 2;
             }
+        }
+
+        // fall back to baseline (Q=1) if the tuned config exceeds threadgroup memory
+        if ((size_t) FATTN_SMEM(nsg) > props_dev->max_theadgroup_memory_size) {
+            cfg   = ggml_metal_tuning::fa_vec_baseline_cfg((int) ne00, (int) ne20);
+            nqptg = cfg.Q;  // = 1
         }
 
         ggml_metal_kargs_flash_attn_ext_vec args = {
@@ -3312,7 +3388,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
         };
 
         auto pipeline = ggml_metal_library_get_pipeline_flash_attn_ext_vec(
-            lib, op, has_mask, has_sinks, has_bias, has_scap, has_kvpad, nsg, nwg, nhptg, use_q8_f16);
+            lib, op, has_mask, has_sinks, has_bias, has_scap, has_kvpad, nqptg, cfg.NE, nsg, nwg, nhptg, use_q8_f16);
 
         GGML_ASSERT(nsg*32 <= ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
 
@@ -3380,7 +3456,58 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+// Snake activation autofuse: mul -> sin -> sqr -> mul -> add
+static bool ggml_metal_op_can_fuse_snake(ggml_metal_op_t ctx, int idx) {
+    static constexpr ggml_op snake_ops[5] = { GGML_OP_MUL, GGML_OP_SIN, GGML_OP_SQR, GGML_OP_MUL, GGML_OP_ADD };
+
+    if (ctx->node(idx)->op != GGML_OP_MUL || !ctx->can_fuse(idx, snake_ops, 5)) {
+        return false;
+    }
+
+    const ggml_tensor * mul0     = ctx->node(idx + 0);
+    const ggml_tensor * sin_node = ctx->node(idx + 1);
+    const ggml_tensor * sqr      = ctx->node(idx + 2);
+    const ggml_tensor * mul1     = ctx->node(idx + 3);
+    const ggml_tensor * add      = ctx->node(idx + 4);
+
+    // x carries the full activation shape, a is the broadcast operand
+    const ggml_tensor * x = ggml_are_same_shape(mul0, mul0->src[0]) ? mul0->src[0] : mul0->src[1];
+    const ggml_tensor * a = (x == mul0->src[0]) ? mul0->src[1] : mul0->src[0];
+
+    // mul1 reads sqr and inv_b in either operand order
+    const ggml_tensor * inv_b    = (mul1->src[0] == sqr) ? mul1->src[1] : mul1->src[0];
+
+    // closure check: the trailing add reads the same x as the leading mul
+    const ggml_tensor * x_in_add = (add->src[0] == mul1) ? add->src[1] : add->src[0];
+
+    // x is in the supported whitelist and every chain intermediate shares x's type.
+    // a and inv_b bind as device const float * in the kernel, so they stay F32.
+    const bool types_ok =
+        (x->type == GGML_TYPE_F32 || x->type == GGML_TYPE_F16 || x->type == GGML_TYPE_BF16) &&
+        (a->type    == GGML_TYPE_F32) && (inv_b->type    == GGML_TYPE_F32) &&
+        (mul0->type == x->type)       && (sin_node->type == x->type) &&
+        (sqr->type  == x->type)       && (mul1->type     == x->type) &&
+        (add->type  == x->type);
+    // a / inv_b collapse to [1, C, 1, 1], x and add stay 2D
+    const bool shape_ok = ggml_are_same_shape(a, inv_b) && a->ne[0] == 1 && a->ne[1] == x->ne[1];
+    const bool dim_ok =
+        (x->ne[2]     == 1) && (x->ne[3]     == 1) &&
+        (add->ne[2]   == 1) && (add->ne[3]   == 1) &&
+        (a->ne[2]     == 1) && (a->ne[3]     == 1) &&
+        (inv_b->ne[2] == 1) && (inv_b->ne[3] == 1);
+    // kernel reads x[idx] and a[c] / inv_b[c] linearly, so every operand is contiguous
+    const bool contig_ok =
+        ggml_is_contiguous(x) && ggml_is_contiguous(add) &&
+        ggml_is_contiguous(a) && ggml_is_contiguous(inv_b);
+
+    return types_ok && shape_ok && dim_ok && contig_ok && x_in_add == x;
+}
+
 int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
+    if (ctx->use_fusion && ggml_metal_op_can_fuse_snake(ctx, idx)) {
+        return ggml_metal_op_snake_fused(ctx, idx);
+    }
+
     ggml_tensor * op = ctx->node(idx);
 
     ggml_metal_library_t lib = ctx->lib;

@@ -435,6 +435,8 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_FLEET_PEERS":                    {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":                   {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":            {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
+		"ZEROLLAMA_FLEET_ASSIGN_SECRET":            {"ZEROLLAMA_FLEET_ASSIGN_SECRET", "(set/unset)", "F5 HMAC secret for assignment tokens (empty disables)"},
+		"ZEROLLAMA_FLEET_ASSIGN_TTL":               {"ZEROLLAMA_FLEET_ASSIGN_TTL", Var("ZEROLLAMA_FLEET_ASSIGN_TTL"), "F5 assign token TTL (default 8s, clamp 2–30s)"},
 		"ZEROLLAMA_MDNS":                           {"ZEROLLAMA_MDNS", mdnsEnabledDisplay(), "Advertise this zerollama node via mDNS (_zerollama._tcp) on LAN"},
 		"ZEROLLAMA_FLEET_MDNS":                     {"ZEROLLAMA_FLEET_MDNS", fleetMDNSDisplay(), "Browse LAN for zerollama nodes via mDNS (merges with ZEROLLAMA_FLEET_PEERS)"},
 		"ZEROLLAMA_FLEET_MDNS_ADVERTISE":           {"ZEROLLAMA_FLEET_MDNS_ADVERTISE", fleetMDNSAdvertiseDisplay(), "Advertise fleet management endpoint via mDNS (_zerollama-fleet._tcp)"},
@@ -456,7 +458,10 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_VIDEO_FETCH_TIMEOUT":               {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
 		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":         {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
 		"OLLAMA_IMAGE_EMBED_CACHE_SIZE":            {"OLLAMA_IMAGE_EMBED_CACHE_SIZE", ImageEmbedCacheSize(), "Per-runner vision embed (ViT) LRU cache slots (default 4; set 32–64 for video agents)"},
-		"OLLAMA_IMAGE_EMBED_CACHE_MAX":             {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64)"},
+		"OLLAMA_IMAGE_EMBED_CACHE_MAX":             {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64; radix pool may grow further under byte budget)"},
+		"OLLAMA_IMAGE_EMBED_CACHE_BYTES":           {"OLLAMA_IMAGE_EMBED_CACHE_BYTES", ImageEmbedCacheBytes(), "ViT embed float byte budget (0=use radix default when OLLAMA_VIT_RADIX on, else slot-only)"},
+		"OLLAMA_VIT_RADIX":                         {"OLLAMA_VIT_RADIX", VitRadixEnabled(), "Cross-request ViT embed pool (SGLang MultiModalStaticCache; default on; 100MiB unless BYTES set)"},
+		"OLLAMA_KV_MM_PAD_RADIX":                   {"OLLAMA_KV_MM_PAD_RADIX", KVMMPadRadixEnabled(), "Stamp vision pad Token ids with content-hash pad_values (SGLang MM radix; default on)"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},
@@ -1231,12 +1236,49 @@ func ImageEmbedCacheSize() int {
 // ImageEmbedCacheMax is the upper bound for auto-grown ViT embed LRU slots per turn.
 // WHY: video agents may send 32 frames while OLLAMA_IMAGE_EMBED_CACHE_SIZE stays at 4;
 // llamarunner grows the cache up to this cap for the loaded runner session.
+// Also caps per-session ViT overlay hashes (SGLang-style capacity under agent churn).
 func ImageEmbedCacheMax() int {
 	n := int(Uint64("OLLAMA_IMAGE_EMBED_CACHE_MAX", 64)())
 	if n < 1 {
 		return 1
 	}
 	return n
+}
+
+// ImageEmbedCacheBytes is an explicit float32-byte budget for the ViT embed pool
+// on ollama-engine and ggml llamarunner (PNG + precomputed share one total on llamarunner).
+// WHY: SGLang #28441 moved MM caches to capacity-aware pools — slot count alone treats a
+// tiny audio embed the same as a 32-frame video. 0 means "unset"; see EffectiveImageEmbedCacheBytes.
+func ImageEmbedCacheBytes() int64 {
+	return int64(Uint64("OLLAMA_IMAGE_EMBED_CACHE_BYTES", 0)())
+}
+
+// DefaultVitRadixBytes matches SGLang's default SGLANG_VLM_CACHE_SIZE_MB (100 MiB).
+const DefaultVitRadixBytes = int64(100 << 20)
+
+// VitRadixEnabled turns on the cross-request content-addressed ViT embed pool
+// (SGLang MultiModalStaticCache). Default on; set OLLAMA_VIT_RADIX=0 for slot-only LRU.
+func VitRadixEnabled() bool {
+	return BoolWithDefault("OLLAMA_VIT_RADIX")(true)
+}
+
+// EffectiveImageEmbedCacheBytes is the runtime byte budget for the ViT pool.
+// Explicit OLLAMA_IMAGE_EMBED_CACHE_BYTES wins; else radix default 100MiB when enabled; else 0 (slot-only).
+func EffectiveImageEmbedCacheBytes() int64 {
+	if b := ImageEmbedCacheBytes(); b > 0 {
+		return b
+	}
+	if VitRadixEnabled() {
+		return DefaultVitRadixBytes
+	}
+	return 0
+}
+
+// KVMMPadRadixEnabled stamps vision soft/pad Token ids with SGLang-style pad_values
+// (1_000_000 + hash%2^30) so input-cache / token-id radix keys distinguish images.
+// Default on; set OLLAMA_KV_MM_PAD_RADIX=0 to keep vocabulary image_pad ids only.
+func KVMMPadRadixEnabled() bool {
+	return BoolWithDefault("OLLAMA_KV_MM_PAD_RADIX")(true)
 }
 
 // serverConfigData holds the parsed fields from ~/.ollama/server.json.

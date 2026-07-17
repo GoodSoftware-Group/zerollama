@@ -1,6 +1,6 @@
 # llama.cpp backend unification
 
-**Status:** Unified (Jul 2026). Runtime + `llama-server` + in-process Go ggml vendor share **ggml-org @ `LLAMA_CPP_COMMIT` (`8f114a9b`)** + **25** Ollama/zerollama patches. Eliza QJL deferred.
+**Status:** Unified (Jul 2026). Runtime + `llama-server` + in-process Go ggml vendor share **ggml-org @ `LLAMA_CPP_COMMIT` (`86d86ed4`)** + **79** Ollama/zerollama patches. Eliza QJL deferred.
 
 **Related:** [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md), [gpu-profiles-l2.md](./gpu-profiles-l2.md), [phase17-llama-server.md](./phase17-llama-server.md), [ggml-b9509-migration.md](./ggml-b9509-migration.md).
 
@@ -31,7 +31,7 @@ Operators were maintaining **multiple llama.cpp trees** with different pins and 
          │  + llama/patches/ (25 Ollama deltas) │
          └─────────────────────────────────────┘
                            │
-              vendor/llama-cpp-8f114a9b + sync
+              vendor/llama-cpp-86d86ed4 + sync
                            │
          ┌─────────────────┴──────────────────────────────┐
          │ ../llama.cpp sibling    in-tree ggml + llama.cpp │

@@ -353,6 +353,39 @@ std::pair<const mtmd::input_chunk_ptr *, size_t> server_tokens::find_next_media_
     return { nullptr, 0 };
 }
 
+size_t server_tokens::first_media_index() const {
+    if (map_idx_to_media.empty()) {
+        return tokens.size();
+    }
+    return map_idx_to_media.begin()->first;
+}
+
+size_t server_tokens::safe_prefix_len(size_t want, bool allow_media) const {
+    size_t n = std::min(want, tokens.size());
+    if (n == 0 || !has_media()) {
+        return n;
+    }
+    const size_t media0 = first_media_index();
+    if (!allow_media) {
+        return std::min(n, media0);
+    }
+    if (n >= tokens.size()) {
+        return tokens.size();
+    }
+    // Mid-chunk: both n-1 and n are media placeholders → clamp to that chunk's start.
+    if (n > 0 && tokens[n - 1] == LLAMA_TOKEN_NULL && tokens[n] == LLAMA_TOKEN_NULL) {
+        for (const auto & it : map_idx_to_media) {
+            const size_t start = it.first;
+            const size_t ntok = mtmd_input_chunk_get_n_tokens(it.second.get());
+            if (start <= (n - 1) && (n - 1) < start + ntok) {
+                return start;
+            }
+        }
+        return media0;
+    }
+    return n;
+}
+
 void server_tokens::push_back(llama_token tok) {
     if (tok == LLAMA_TOKEN_NULL) {
         throw std::runtime_error("Invalid token");

@@ -156,6 +156,8 @@ def test_multi_holder_ref_count(monkeypatch: pytest.MonkeyPatch):
     )
     h = pool.health(scope=scope)
     assert h["multi_holder_blocks"] == 2
+    assert isinstance(h.get("block_hashes"), list)
+    assert len(h["block_hashes"]) == 2
     assert pool.release_slot_holders(1) == 0
     assert pool.health(scope=scope)["multi_holder_blocks"] == 0
     found = pool.find_donor_slot_prefix(
@@ -164,6 +166,22 @@ def test_multi_holder_ref_count(monkeypatch: pytest.MonkeyPatch):
     assert found is not None
     assert found[0] == 2
     assert found[1] == 1024
+
+
+def test_health_block_hashes_capped(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    monkeypatch.setenv("ZEROLLAMA_RADIX_HEALTH_HASH_CAP", "1")
+    scope = build_model_scope(model_hash="cap1")
+    pool = get_prefix_block_pool(model_scope=scope)
+    tokens = _tokens(1024)
+    pool.register_prefix(tokens, scope=scope, seq_pos=1024, session_key="s", slot_id=1)
+    h = pool.health(scope=scope)
+    assert h["entry_count"] == 2
+    assert len(h["block_hashes"]) == 1
+    from runtime.kv.prefix_block_pool import prefix_block_pool_health
+
+    agg = prefix_block_pool_health()
+    assert len(agg["block_hashes"]) == 1
 
 
 def test_best_donor_picks_longest_chain(monkeypatch: pytest.MonkeyPatch):

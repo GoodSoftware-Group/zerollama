@@ -842,7 +842,7 @@ static void dsv4_build_comp_inputs(
         GGML_ASSERT(n_stream > 0);
         GGML_ASSERT(n_tokens%n_stream == 0);
 
-        inp.kq_mask = ggml_new_tensor_4d(ctx, cparams.flash_attn && strcmp(name, "lid") != 0 ? GGML_TYPE_F16 : GGML_TYPE_F32, plan.n_kv, n_tokens/n_stream, 1, n_stream);
+        inp.kq_mask = ggml_new_tensor_4d(ctx, (strcmp(name, "lid") != 0 && cparams.flash_attn) || (strcmp(name, "lid") == 0 && cparams.fused_lid) ? GGML_TYPE_F16 : GGML_TYPE_F32, plan.n_kv, n_tokens/n_stream, 1, n_stream);
         ggml_set_input(inp.kq_mask);
         ggml_set_name(inp.kq_mask, (std::string("dsv4_") + name + "_kq_mask").c_str());
     }
@@ -2449,13 +2449,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
         } else {
         // Fallback: dequantize exotic K-cache types for flash-attn
+        // WHY include TBQ4_0: Apple L2 fork profile uses tbq4_0 K / tbq3_0 V;
+        // Metal FA has no native TBQ kernels (CUDA fattn-vec does).
         if (k->type == GGML_TYPE_QJL1_256 || k->type == GGML_TYPE_TBQ3_TCQ ||
-            k->type == GGML_TYPE_TBQ3_0 || k->type == GGML_TYPE_Q4_POLAR) {
+            k->type == GGML_TYPE_TBQ3_0 || k->type == GGML_TYPE_TBQ4_0 ||
+            k->type == GGML_TYPE_Q4_POLAR) {
             ggml_tensor * k_f32 = ggml_cast(ctx0, k, GGML_TYPE_F32);
             k = ggml_cast(ctx0, k_f32, GGML_TYPE_F16);
         }
-        if (v->type == GGML_TYPE_TBQ3_0 || v->type == GGML_TYPE_Q4_POLAR ||
-            v->type == GGML_TYPE_TBQ3_TCQ) {
+        if (v->type == GGML_TYPE_TBQ3_0 || v->type == GGML_TYPE_TBQ4_0 ||
+            v->type == GGML_TYPE_Q4_POLAR || v->type == GGML_TYPE_TBQ3_TCQ) {
             ggml_tensor * v_f32 = ggml_cast(ctx0, v, GGML_TYPE_F32);
             v = ggml_cast(ctx0, v_f32, GGML_TYPE_F16);
         }
@@ -3074,9 +3077,9 @@ llm_graph_input_attn_k_dsa * llm_graph_context::build_attn_inp_k_dsa() const {
     {
         inp->self_k_idxs_lid = mctx_cur->get_lid()->build_input_k_idxs(ctx0, ubatch);
 
-        // ensure F32 mask
+        // ensure that mask type matches fused lightning indexer use (requires f16 mask)
         auto cparams_copy = cparams;
-        cparams_copy.flash_attn = false;
+        cparams_copy.flash_attn = cparams.fused_lid;
 
         inp->self_kq_mask_lid = build_attn_inp_kq_mask(ctx0, mctx_cur->get_lid(), ubatch, cparams_copy);
         inp->self_kq_mask_lid_cnv = inp->self_kq_mask_lid;

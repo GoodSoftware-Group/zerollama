@@ -69,7 +69,7 @@ Next decode step recaptures graph (ggml internal; GGML_CUDA_GRAPHS=ON)
 
 ### 1. Rebuild sibling libllama after pull
 
-Invalidation is a **public API** on the unified vendor tree (`vendor/llama-cpp-8f114a9b/`, patch **0072**):
+Invalidation is a **public API** on the unified vendor tree (`vendor/llama-cpp-86d86ed4/`, patch **0072**):
 
 ```bash
 # Mac (Metal — API present, CUDA graphs no-op at runtime)

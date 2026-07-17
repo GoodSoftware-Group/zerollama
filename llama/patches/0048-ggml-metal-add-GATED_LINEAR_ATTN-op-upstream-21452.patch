@@ -15,7 +15,7 @@ models keep the op on GPU instead of CPU fallback.
  6 files changed, 169 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index dbeb3a427..0059193bc 100644
+index dbeb3a42..0059193b 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
 @@ -624,6 +624,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
@@ -47,7 +47,7 @@ index dbeb3a427..0059193bc 100644
      char base[256];
      char name[256];
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index a98bc339b..00027e78d 100644
+index a98bc339..00027e78 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -129,6 +129,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv
@@ -59,7 +59,7 @@ index a98bc339b..00027e78d 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 1d78b852e..33e1bc637 100644
+index 1f3baf9c..4cf4e544 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -1321,6 +1321,12 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
@@ -76,7 +76,7 @@ index 1d78b852e..33e1bc637 100644
              return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
          case GGML_OP_SOLVE_TRI:
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index a323ece52..7dd3f532d 100644
+index a20ed3e6..bc3bb3c2 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
 @@ -12,6 +12,7 @@
@@ -87,7 +87,7 @@ index a323ece52..7dd3f532d 100644
  
  static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
      if (!t) {
-@@ -381,6 +382,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -333,6 +334,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
              {
                  n_fuse = ggml_metal_op_rwkv(ctx, idx);
              } break;
@@ -98,7 +98,7 @@ index a323ece52..7dd3f532d 100644
          case GGML_OP_GATED_DELTA_NET:
              {
                  n_fuse = ggml_metal_op_gated_delta_net(ctx, idx);
-@@ -1704,6 +1709,42 @@ int ggml_metal_op_rwkv(ggml_metal_op_t ctx, int idx) {
+@@ -1656,6 +1661,42 @@ int ggml_metal_op_rwkv(ggml_metal_op_t ctx, int idx) {
      return 1;
  }
  
@@ -142,7 +142,7 @@ index a323ece52..7dd3f532d 100644
      ggml_tensor * op = ctx->node(idx);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index 2fa847af0..c3ffaa2e3 100644
+index 2fa847af..c3ffaa2e 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
 @@ -60,6 +60,7 @@ int ggml_metal_op_soft_max          (ggml_metal_op_t ctx, int idx);
@@ -154,10 +154,10 @@ index 2fa847af0..c3ffaa2e3 100644
  int ggml_metal_op_solve_tri         (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_set               (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 5c10251ab..88724d2e2 100644
+index 04179274..9f17ab9b 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -2717,6 +2717,105 @@ kernel void kernel_rwkv_wkv7_f32(
+@@ -2715,6 +2715,105 @@ kernel void kernel_rwkv_wkv7_f32(
      }
  }
  

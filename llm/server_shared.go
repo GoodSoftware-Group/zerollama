@@ -307,9 +307,13 @@ type CompletionResponse struct {
 	PrefillTotal          int           `json:"prefill_total,omitempty"`
 	PromptEvalCount       int           `json:"prompt_eval_count"`
 	PromptEvalCachedCount int           `json:"prompt_eval_cached_count,omitempty"`
-	PromptEvalDuration    time.Duration `json:"prompt_eval_duration"`
-	EvalCount             int           `json:"eval_count"`
-	EvalDuration          time.Duration `json:"eval_duration"`
+	// HiCache-shaped tiers (SGLang sglext); device is PromptEvalCachedCount.
+	PromptEvalCachedHost           int    `json:"prompt_eval_cached_host,omitempty"`
+	PromptEvalCachedStorage        int    `json:"prompt_eval_cached_storage,omitempty"`
+	PromptEvalCachedStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
+	PromptEvalDuration             time.Duration `json:"prompt_eval_duration"`
+	EvalCount                      int           `json:"eval_count"`
+	EvalDuration                   time.Duration `json:"eval_duration"`
 
 	// Why: clients need an explicit overflow signal; logs alone left silent 200s.
 	PromptTruncated      bool `json:"prompt_truncated,omitempty"`
@@ -326,7 +330,10 @@ func (c *CompletionResponse) UnmarshalJSON(data []byte) error {
 	type alias CompletionResponse
 	aux := struct {
 		alias
-		CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
+		CachedPromptTokens         int    `json:"cached_prompt_tokens,omitempty"`
+		CachedTokensHost           int    `json:"cached_tokens_host,omitempty"`
+		CachedTokensStorage        int    `json:"cached_tokens_storage,omitempty"`
+		CachedTokensStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -334,6 +341,15 @@ func (c *CompletionResponse) UnmarshalJSON(data []byte) error {
 	*c = CompletionResponse(aux.alias)
 	if c.PromptEvalCachedCount == 0 && aux.CachedPromptTokens > 0 {
 		c.PromptEvalCachedCount = aux.CachedPromptTokens
+	}
+	if c.PromptEvalCachedHost == 0 && aux.CachedTokensHost > 0 {
+		c.PromptEvalCachedHost = aux.CachedTokensHost
+	}
+	if c.PromptEvalCachedStorage == 0 && aux.CachedTokensStorage > 0 {
+		c.PromptEvalCachedStorage = aux.CachedTokensStorage
+	}
+	if c.PromptEvalCachedStorageBackend == "" && aux.CachedTokensStorageBackend != "" {
+		c.PromptEvalCachedStorageBackend = aux.CachedTokensStorageBackend
 	}
 	return nil
 }

@@ -295,6 +295,10 @@ func (m *Model) buildPositions(ctx ml.Context, batch input.Batch) ml.Tensor {
 }
 
 func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input.Multimodal, error) {
+	return m.EncodeMultimodalWithGrid(ctx, multimodalData, nil)
+}
+
+func (m *Model) EncodeMultimodalWithGrid(ctx ml.Context, multimodalData []byte, gridTHW []int) ([]input.Multimodal, error) {
 	if m.Vision == nil || m.ImageProcessor == nil || len(m.Vision.Layers) == 0 {
 		return nil, model.ErrNoVisionModel
 	}
@@ -304,7 +308,7 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 		return nil, err
 	}
 
-	pixelValues, grid, err := m.ImageProcessor.ProcessImage(ctx, img)
+	pixelValues, grid, err := m.ImageProcessor.ProcessImage(ctx, img, gridTHW)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +321,8 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 
 	return mm, nil
 }
+
+var _ model.GridHintMultimodalProcessor = (*Model)(nil)
 
 func (m *Model) PostTokenize(inputs []*input.Input) ([]*input.Input, error) {
 	m.positionCache = m.positionCache[:0]

@@ -100,6 +100,28 @@ def go_training_gpu_blocked() -> bool:
         return bool(_snapshot.get("training_gpu_blocked"))
 
 
+def go_lmcache_blob_peers() -> list[str]:
+    """L3-R11: peer bases pushed from Go (FLEET_PEERS) for HTTP blob pull."""
+    if not go_coordination_is_fresh():
+        return []
+    with _lock:
+        raw = _snapshot.get("lmcache_blob_peers")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        parts = list(raw)
+    else:
+        return []
+    out: list[str] = []
+    for part in parts:
+        p = str(part).strip().rstrip("/")
+        if p:
+            out.append(p)
+    return out
+
+
 def _int_snapshot_field(key: str) -> int:
     raw = _snapshot.get(key)
     if raw is None:

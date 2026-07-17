@@ -24,7 +24,7 @@ source "${Z5080_ROOT}/scripts/gpu/cuda_common_env.sh"
 export Z5080_CT="${Z5080_CT:-1564}"
 export Z5080_REPO="${Z5080_REPO:-${HOME}/zerollama}"
 export Z5080_LLAMA_CPP="${Z5080_LLAMA_CPP:-${HOME}/llama.cpp}"
-export Z5080_VENDOR_PIN="${Z5080_VENDOR_PIN:-c84b3020}"
+export Z5080_VENDOR_PIN="${Z5080_VENDOR_PIN:-86d86ed4}"
 export Z5080_VENDOR_ROOT="${Z5080_VENDOR_ROOT:-${Z5080_REPO}/vendor/llama-cpp-${Z5080_VENDOR_PIN}}"
 
 # --- GGUF paths ---
