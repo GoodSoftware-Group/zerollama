@@ -12,7 +12,7 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 |-------|-------------------|----------------|
 | Go unit tests | `go test ./server/... ./envconfig/...` | Handlers, cloud catalog merge, runtime proxy logic—no GPU, deterministic CI. **Why `OLLAMA_NO_CLOUD` in `TestMain`:** machines with `ELIZACLOUD_API_KEY` merge hundreds of cloud models and break list/tags tests that expect a small fixture set. |
 | Runtime health | `GET :8081/health` | Sidecar is up; check `llama_model`, `inference_state`, `vram_budget`, `autoconfig`. |
-| VRAM pre-flight | `./scripts/runtime_vram_estimate.sh <gguf>` | **Why:** same as `/internal/vram-estimate` — budget before load ([phase13-runtime-vram.md](./phase13-runtime-vram.md)). |
+| VRAM pre-flight | `./scripts/runtime/runtime_vram_estimate.sh <gguf>` | **Why:** same as `/internal/vram-estimate` — budget before load ([phase13-runtime-vram.md](./phase13-runtime-vram.md)). |
 | Runtime generate | `POST :8081/api/generate` or `RUN_E2E_GPU=1` script | Python → `llama-server` → GGUF (`LLAMA_MODEL`). |
 | Runtime chat | `POST :8081/api/chat` or `RUN_E2E_GPU=1` script | Plain chat; tools use Go `render-chat` when model has a parser (generic JSON path otherwise). |
 | Runtime v1 chat | `POST :8081/v1/chat/completions` or `RUN_E2E_GPU=1` script | Phase 13 `prepare_v1_chat` + optional `vram_num_ctx` when clamp on. |
@@ -24,8 +24,8 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 **One-shot wrapper** (coordination + GPU + proxy, including stream paths):
 
 ```bash
-./scripts/gpu_smoke_all.sh
-./scripts/gpu_health_report.sh   # post-load calibration / autotune hints
+./scripts/gpu/gpu_smoke_all.sh
+./scripts/gpu/gpu_health_report.sh   # post-load calibration / autotune hints
 ```
 
 | Script | Role |
@@ -63,7 +63,7 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `video_expand_cache_smoke.sh` | Native video xfer unit gate — expansion/session/URL LRU + preflight spans — **why:** SGLang Tier 1 caches without GPU/VLM; runs `go test` on `server/modality` + `openai`. Doc: [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
 | `video_agent_cache_smoke.sh` | Agent two-turn session cache — raw video + **pre-expanded** layout restore; modality + OpenAI `video_url` + Qwen3-VL render + runner stub tests; **`RUN_E2E_VIDEO_AGENT=1`** live `/api/chat` + `/v1/chat/completions` + preprocessed turn 2 + ffmpeg lavfi + log grep — **why:** proves resend-clip agent loop across API shapes. Needs `VIDEO_SMOKE_MODEL` for live. |
 | `video_l3_agent_gate.sh` | Combined operator gate — runs `video_agent_cache_smoke.sh`; **`RUN_E2E_L3=1`** adds `l3_cache_smoke.sh` + `l3_gate_report.sh` — **why:** video session cache and L3 prefix KV use the same `prompt_cache_key` discipline but different layers. |
-| `video_agent_infer_smoke.sh` | Live VLM inference gate — two-turn `/api/chat`; strict pass on turn-2 `cached_prompt_tokens` (L3 subprocess or **ollama-engine input cache**); v1 `cached_tokens` advisory — **`RUN_E2E_VIDEO_AGENT_INFER=1`** + `VIDEO_SMOKE_MODEL`; **`VIDEO_AGENT_INFER_SOFT=1`** when MLX/cache off; agent turns send **`enable_prefix_mm_cache: true`** with `prompt_cache_key`; **`VIDEO_AGENT_INFER_PREPROC=1`** optional padded+`grid_thw` infer leg (requires `VIDEO_AGENT_GO_LOG` for `preprocessed layout session cache hit`); **`VIDEO_AGENT_INFER_PREFIX_MM_WARN=1`** optional prefix-mm hint leg (no session key); **`VIDEO_AGENT_INFER_VIT_SESSION=1`** strict ViT session overlay leg (requires `VIDEO_AGENT_GO_LOG`); grep `padded_input_ids runner inject`, `precomputed_embedding runner inject`, `processor_output runner inject`, `vision grid hints`, `vision embed session cache hit`, `vision embed global cache hit`, `precomputed_embedding global cache hit`, `precomputed_embedding session cache hit`, `grid_thw hint resize`. |
+| `video_agent_infer_smoke.sh` | Live VLM inference gate — two-turn `/api/chat`; strict pass on turn-2 `cached_prompt_tokens` (L3 subprocess or **ollama-engine input cache**); v1 `cached_tokens` advisory — **`RUN_E2E_VIDEO_AGENT_INFER=1`** + `VIDEO_SMOKE_MODEL`; **`VIDEO_AGENT_INFER_SOFT=1`** when MLX/cache off; agent turns send **`enable_prefix_mm_cache: true`** with `prompt_cache_key`; **`VIDEO_AGENT_INFER_PREPROC=1`** optional padded+`grid_thw` infer leg (requires `VIDEO_AGENT_GO_LOG` for `preprocessed layout session cache hit`); **`VIDEO_AGENT_INFER_PRECOMPUTED=1`** strict skip-ViT leg (synthetic `precomputed_embedding` + Qwen padded IDs; embd from `/api/show`; requires `VIDEO_AGENT_GO_LOG` for `precomputed_embedding runner inject`); **`VIDEO_AGENT_INFER_PREFIX_MM_WARN=1`** optional prefix-mm hint leg (no session key); **`VIDEO_AGENT_INFER_VIT_SESSION=1`** strict ViT session overlay leg (requires `VIDEO_AGENT_GO_LOG`); grep `padded_input_ids runner inject`, `precomputed_embedding runner inject`, `processor_output runner inject`, `vision grid hints`, `vision embed session cache hit`, `vision embed global cache hit`, `precomputed_embedding global cache hit`, `precomputed_embedding session cache hit`, `grid_thw hint resize`. |
 | `video_agent_infer_gate_report.sh` | Verdict printer for infer JSON report — **why:** operator sign-off like `l3_gate_report.sh`. |
 | `gen_video_testdata.sh` | Writes `server/modality/testdata/lavfi_1s_64x64.mp4` via ffmpeg lavfi — **why:** optional Phase D fixture without committing binary blobs to git. |
 | `l3_cache_smoke.sh` | Two-turn same cache key; JSON timing report — **why:** L3 is prefill-bound; gate checks bridge wiring before agent-scale bench. Needs subprocess backend + L1 `-np > 1`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md) |
@@ -106,14 +106,14 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 
 CI (`.github/workflows/zerollama-regression.yaml`): Phase 12 is covered by `go test ./server/...` (Golden tests) and runtime pytest (`test_go_render_chat.py`), plus `check_gpu_scripts.sh`. Optional self-hosted: `.github/workflows/zerollama-gpu-smoke.yaml` (`workflow_dispatch`; repo vars `GPU_SMOKE_*`, serve must be up).
 
-On a GPU host: `RUN_E2E_PREFLIGHT=1 ./scripts/gpu_smoke_all.sh` or `./scripts/phase12_golden_ci.sh` (all parts).
+On a GPU host: `RUN_E2E_PREFLIGHT=1 ./scripts/gpu/gpu_smoke_all.sh` or `./scripts/phase/phase12_golden_ci.sh` (all parts).
 
-**Phase 12 golden (no GPU):** `go test ./server/... -run Golden` or `./scripts/phase12_golden_ci.sh go`; Python: `./scripts/phase12_golden_ci.sh py` (needs `pip install -e runtime/.[serve]`).
+**Phase 12 golden (no GPU):** `go test ./server/... -run Golden` or `./scripts/phase/phase12_golden_ci.sh go`; Python: `./scripts/phase/phase12_golden_ci.sh py` (needs `pip install -e runtime/.[serve]`).
 
 Optional tools smoke (runtime `/api/chat` with tools — must return HTTP 200 and `done`; 501 means vision/think/logprobs routed to legacy):
 
 ```bash
-RUN_E2E_GPU=1 RUN_E2E_TOOLS=1 ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 RUN_E2E_TOOLS=1 ./scripts/e2e/e2e_runtime_smoke.sh
 ```
 
 Asserts assistant `content` or `tool_calls` on `/api/chat` and `/v1/chat/completions` (does not golden-match a specific tool invocation).
@@ -121,9 +121,9 @@ Asserts assistant `content` or `tool_calls` on `/api/chat` and `/v1/chat/complet
 With proxy smoke (`RUN_E2E_PROXY=1`), the same tools checks run on `:8080` when `RUN_E2E_TOOLS=1` and `RUN_E2E_GPU=1`.
 
 ```bash
-RUN_E2E_GPU=1 RUN_E2E_PROXY=1 RUN_E2E_TOOLS=1 ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 RUN_E2E_PROXY=1 RUN_E2E_TOOLS=1 ./scripts/e2e/e2e_runtime_smoke.sh
 # or:
-RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh
+RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh
 ```
 
 **5080 full stack** (runtime + proxy + optional legacy ggml + tools on a pulled parser model):
@@ -135,7 +135,7 @@ RUN_E2E_PREFLIGHT=1 \
 RUN_E2E_TOOLS=1 \
 RUN_E2E_PROXY_MODEL=your-local-tag \
 RUN_E2E_LEGACY=1 RUN_E2E_LEGACY_MODEL=your-local-tag \
-./scripts/gpu_smoke_all.sh
+./scripts/gpu/gpu_smoke_all.sh
 ```
 
 `gpu_smoke_all` calls `POST :8081/internal/inference/resume` when training handoff or pause blocks loads (after coordination, before proxy/tools, and before health report). Legacy ggml runs **after** runtime/proxy steps (`RUN_E2E_LEGACY_ONLY=1`). `RUN_E2E_LEGACY_MODEL` defaults to `RUN_E2E_PROXY_MODEL` or `llama3.2:3B`. Smokes pass `num_ctx` via `RUN_E2E_NUM_CTX` (default `4096`).
@@ -167,7 +167,7 @@ export CUDACXX="$CUDA_HOME/bin/nvcc"
 export PATH="$CUDA_HOME/bin:$PATH"
 
 cd ~/zerollama
-CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build_llama_server.sh
+CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build/build_llama_server.sh
 export LLAMA_SERVER_BIN=~/llama.cpp/build/bin/llama-server
 ```
 
@@ -203,31 +203,31 @@ export OLLAMA_HOST=http://127.0.0.1:8080   # if not default 11434
 cd ~/zerollama
 
 # Health only (no GPU generate)
-./scripts/e2e_runtime_smoke.sh
+./scripts/e2e/e2e_runtime_smoke.sh
 
 # Direct runtime (:8081)
 export LLAMA_MODEL LLAMA_SERVER_BIN
-RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 ./scripts/e2e/e2e_runtime_smoke.sh
 
 # When LLAMA_MODEL is too large for free VRAM (VRAM pre-check 502), pass a smaller GGUF:
 export RUN_E2E_GGUF=/path/to/small.q8_0.gguf
-RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 ./scripts/e2e/e2e_runtime_smoke.sh
 
 # VRAM estimate only (no generate) — loopback :8081
-./scripts/runtime_vram_estimate.sh /path/to/model.gguf --num-ctx 8192
+./scripts/runtime/runtime_vram_estimate.sh /path/to/model.gguf --num-ctx 8192
 
 # Via Go proxy (:8080) — needs zerollama serve running
 export OLLAMA_HOST=http://127.0.0.1:8080
-RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_PROXY=1 ./scripts/e2e/e2e_runtime_smoke.sh
 
 # Proxy + small GGUF (uses model smoke + X-Zerollama-Runtime, or override on pulled name via options):
 export RUN_E2E_GGUF=/path/to/small.q8_0.gguf
-RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_PROXY=1 ./scripts/e2e/e2e_runtime_smoke.sh
 # Or a pulled tag (manifest gguf; RUN_E2E_GGUF overrides options.gguf when set):
-# RUN_E2E_PROXY_MODEL=llama3.2:3B RUN_E2E_GGUF=... RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
+# RUN_E2E_PROXY_MODEL=llama3.2:3B RUN_E2E_GGUF=... RUN_E2E_PROXY=1 ./scripts/e2e/e2e_runtime_smoke.sh
 
 # Optional: verify Phase 13 clamp is enabled on the running daemon:
-# ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto RUN_E2E_GPU=1 RUN_E2E_VRAM_CLAMP=1 ./scripts/e2e_runtime_smoke.sh
+# ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto RUN_E2E_GPU=1 RUN_E2E_VRAM_CLAMP=1 ./scripts/e2e/e2e_runtime_smoke.sh
 ```
 
 **Proxy without `X-Zerollama-Runtime`:** use a **pulled** local model that is runtime-default eligible (Phase 12) or has `modality_backends.inference: zerollama-runtime`; Go sends `options.gguf` from the manifest (Phase 9). The header is for ad-hoc names (e.g. `smoke`) or **`RUN_E2E_PHASE14=1`** (forces runtime for Phase 14 sign-off). **`RUN_E2E_GGUF`** sets `options.gguf` on the proxied request (same as direct `:8081` smoke). **`OLLAMA_RUNTIME_ALL=1`** proxies every local tag without the header.
@@ -237,17 +237,17 @@ RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh
 **Training ops (no job submit):** with `OLLAMA_TRAINING=true` and `zerollama serve` running:
 
 ```bash
-OLLAMA_HOST=http://127.0.0.1:8080 ./scripts/e2e_training_ops_smoke.sh
+OLLAMA_HOST=http://127.0.0.1:8080 ./scripts/e2e/e2e_training_ops_smoke.sh
 # Optional legacy TCP listener (default :9500):
-RUN_E2E_TRAINING_TCP=1 OLLAMA_TRAINING_TCP=:9500 ./scripts/e2e_training_ops_smoke.sh
+RUN_E2E_TRAINING_TCP=1 OLLAMA_TRAINING_TCP=:9500 ./scripts/e2e/e2e_training_ops_smoke.sh
 ```
 
-Repro ports (`19180` / `:19650`): see `scripts/repro_shared_interpreter_health_hang.sh`.
+Repro ports (`19180` / `:19650`): see `scripts/runtime/repro_shared_interpreter_health_hang.sh`.
 
 **Go↔runtime coordination mirror** (embedded or sidecar runtime):
 
 ```bash
-ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh
+ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e/e2e_coordination_smoke.sh
 ```
 
 ---
@@ -292,9 +292,9 @@ GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD
 | `/health missing llama_backend_source` | Stale serve binary | Rebuild `zerollama` from current tree; restart serve |
 | `RUN_E2E_LLAMA_BACKEND_SOURCE=config` fails | Env still set on serve | Unset `ZEROLLAMA_RUNTIME_LLAMA_BACKEND`; uncomment `llama_backend` in YAML; restart serve |
 | `llama_backend_source=default` on subprocess serve | Expected when autoconfig YAML has no `llama_backend` key | Set env or uncomment YAML key; use `RUN_E2E_LLAMA_BACKEND_SOURCE=default` only to assert packaged default |
-| `address already in use` on `:8081` / embed warns then stale `/health` | Previous `zerollama serve` or `zerollama-runtime` sidecar still listening | `ss -tlnp \| grep 8081`; `5080_stop_serve` or `pkill -f 'zerollama serve'`; unset `ZEROLLAMA_RUNTIME_URL`; use `~/bin/serve.sh` (wrapper) or `scripts/serve_gpu_example.sh` in-repo |
+| `address already in use` on `:8081` / embed warns then stale `/health` | Previous `zerollama serve` or `zerollama-runtime` sidecar still listening | `ss -tlnp \| grep 8081`; `5080_stop_serve` or `pkill -f 'zerollama serve'`; unset `ZEROLLAMA_RUNTIME_URL`; use `~/bin/serve.sh` (wrapper) or `scripts/serve/serve_gpu_example.sh` in-repo |
 | `embedded runtime not started` (port in use) | Go preflight blocked embed (fixed vs silent stale attach) | Free `:8081` before `~/bin/serve.sh`; only one embed listener per host |
-| Serve exits / no `:8080` after `~/bin/serve.sh` | Copied `serve_gpu_example.sh` to `~/bin` — `_ROOT=$HOME` | `cp scripts/serve_production_wrapper.sh ~/bin/serve.sh`; `tail -f /tmp/zerollama-serve.log` |
+| Serve exits / no `:8080` after `~/bin/serve.sh` | Copied `serve_gpu_example.sh` to `~/bin` — `_ROOT=$HOME` | `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh`; `tail -f /tmp/zerollama-serve.log` |
 | Remote client cannot reach API | `OLLAMA_HOST` default `127.0.0.1:11434` (localhost only) | Set `OLLAMA_HOST=0.0.0.0:8080`; verify `ss -tlnp \| grep 8080`; clients use Go `:8080`, not embedded `:8081` |
 | `go build` fails `cpp-httplib/httplib.h` | httplib not vendored in minimal checkout | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` — [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#building-zerollama-cgo-on-proxmox-ct) |
 | Screen shows no serve output | `exec zerollama serve >> /tmp/zerollama-serve.log` | `tail -f /tmp/zerollama-serve.log` — **why:** log redirect keeps screen quiet |
@@ -313,7 +313,7 @@ GPU smokes call `smoke_unload_ggml_runners` (reads `/api/ps`, or `RUN_E2E_UNLOAD
 **Unit (no GPU):**
 
 ```bash
-./scripts/video_expand_cache_smoke.sh
+./scripts/video/video_expand_cache_smoke.sh
 go test ./server/modality/... -run 'PaddedLayoutConsume|Deepseek|qwen25vl'
 ```
 
@@ -325,8 +325,8 @@ go test ./server/modality/... -run 'PaddedLayoutConsume|Deepseek|qwen25vl'
 RUN_E2E_VIDEO_AGENT_INFER=1 \
   VIDEO_SMOKE_MODEL=qwen3-vl:latest \
   VIDEO_AGENT_GO_LOG=/tmp/zerollama-go.log \
-  ./scripts/video_agent_infer_smoke.sh
-./scripts/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
+  ./scripts/video/video_agent_infer_smoke.sh
+./scripts/video/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
 ```
 
 **Preprocessed padded leg** (`VIDEO_AGENT_INFER_PREPROC=1`, requires `VIDEO_AGENT_GO_LOG`): turn-1 sends `padded_input_ids` + `images` + `video_spans` + `grid_thw`; turn-2 resends frames only — strict layout-cache grep + turn-2 `cached_prompt_tokens` (use `VIDEO_AGENT_INFER_SOFT=1` when cache off):
@@ -337,6 +337,15 @@ RUN_E2E_VIDEO_AGENT_INFER=1 \
 | `padded_input_ids runner inject` | Runner consumed pretokenized ids (ollama-engine / llamarunner) |
 | `vision embed session cache hit` | Per-agent ViT overlay on turn 2+ |
 | `vision grid hints` | Client `grid_thw` vs embed-count compare (Info) |
+
+**Skip-ViT precomputed leg** (`VIDEO_AGENT_INFER_PRECOMPUTED=1`, requires `VIDEO_AGENT_GO_LOG`): posts synthetic Qwen vision-block `padded_input_ids` + `precomputed_embedding` (row width from `/api/show` `*.embedding_length`); strict fail without `precomputed_embedding runner inject`. Turn-2 cache hit is soft (`precomputed_embedding` session/global or `vision embed session cache hit`). Works on ollama-engine and ggml llamarunner (Linux auto); not on explicit llama-server vision.
+
+| Log line | Meaning |
+|----------|---------|
+| `precomputed_embedding runner inject` | Feature rows spliced — ViT skipped |
+| `precomputed_embedding global/session cache hit` | Repeat rows restored (llamarunner); ollama-engine may log `vision embed session cache hit` |
+
+**Cross-session ViT radix** (`VIDEO_AGENT_INFER_VIT_RADIX=1`, requires `VIDEO_AGENT_GO_LOG`): same lavfi clip under two `prompt_cache_key`s; strict `vision embed radix cache hit`. Needs rebuild with `OLLAMA_VIT_RADIX` default (or explicit `OLLAMA_IMAGE_EMBED_CACHE_BYTES`).
 
 **Ollama-engine padded families** (native Go VLM inject — grep `layout_consume=` on access log):
 

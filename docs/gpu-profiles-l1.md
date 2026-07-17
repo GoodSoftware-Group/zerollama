@@ -121,16 +121,16 @@ cd runtime && uv run pytest tests/test_gpu_profiles.py -q
 
 **Why not trust eliza port values:** 4090 profile scaled to 16 GiB kept `-np 4 -b 2048`; on a 1B smoke model that regressed single-stream decode **−12.5%** vs profile OFF. Production-sized GGUFs (9B) only showed **−1%** at the same flags — the bug is slot overhead on tiny models, not broken detection.
 
-**Script:** `./scripts/l1_cuda_calibrate.sh` — profile OFF baseline vs ON (+ optional `L1_SWEEP_NP=1,2,4`).
+**Script:** `./scripts/phase/l1_cuda_calibrate.sh` — profile OFF baseline vs ON (+ optional `L1_SWEEP_NP=1,2,4`).
 
 **WHY calibrate env (automatic in script):** `ZEROLLAMA_LLAMA_FORK=0` (stock `q8_0` only — fork QJL is **L2**); `ZEROLLAMA_GPU_PROFILE_CTX=0` (do not emit profile `-c` during 8k bench — `-c 32768` falsely regresses single-stream **~−39%**). Concurrent bench keeps `ZEROLLAMA_GPU_PROFILE_CTX=1` for realistic serve.
 
 ```bash
 export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf   # 7B–9B class on 16GB
 5080_stop_serve                                      # WHY: embedded serve races uv sidecar on :8081
-./scripts/l1_cuda_calibrate.sh
+./scripts/phase/l1_cuda_calibrate.sh
 # Sweep parallel slots after single-stream baseline:
-L1_SWEEP_NP=1,2,4 CUDA_LLAMA_MODEL=/root/your-prod.gguf ./scripts/l1_cuda_calibrate.sh
+L1_SWEEP_NP=1,2,4 CUDA_LLAMA_MODEL=/root/your-prod.gguf ./scripts/phase/l1_cuda_calibrate.sh
 ```
 
 `l2_cuda_bench.sh` honors `ZEROLLAMA_GPU_PROFILE=0|1` (default `1`) for OFF/ON legs.
@@ -142,14 +142,14 @@ L1_SWEEP_NP=1,2,4 CUDA_LLAMA_MODEL=/root/your-prod.gguf ./scripts/l1_cuda_calibr
 | OuteTTS 1B Q8 | 8192 | 43.48 | 43.69 | **+0.5%** |
 | eliza-1 9B | 8192 | **~90** (`np=1`) | **~85** (`np=2`, no profile `-c`) | **−5%** single-stream |
 
-**Concurrent bench:** `./scripts/l1_cuda_concurrent_bench.sh` — fires `L1C_N` parallel `/api/generate` requests simultaneously and measures aggregate tok/s and per-thread wall time, A/B profile OFF vs ON. This is the **production closure** for `n_parallel=2`: single-stream may show small **−5%** np overhead on one request; the win appears under concurrency where two slots amortise prefill.
+**Concurrent bench:** `./scripts/phase/l1_cuda_concurrent_bench.sh` — fires `L1C_N` parallel `/api/generate` requests simultaneously and measures aggregate tok/s and per-thread wall time, A/B profile OFF vs ON. This is the **production closure** for `n_parallel=2`: single-stream may show small **−5%** np overhead on one request; the win appears under concurrency where two slots amortise prefill.
 
 ```bash
 # Default: n_concurrent=2 (matches n_parallel), 9B class model
-CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l1_cuda_concurrent_bench.sh
+CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/phase/l1_cuda_concurrent_bench.sh
 
 # Sweep n_parallel values while N=4 concurrent:
-L1C_N=4 L1C_SWEEP_NP="1,2,4" CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/l1_cuda_concurrent_bench.sh
+L1C_N=4 L1C_SWEEP_NP="1,2,4" CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf ./scripts/phase/l1_cuda_concurrent_bench.sh
 ```
 
 The summary prints aggregate tok/s (sum across all threads) and `%` vs OFF. PASS when ON ≥ OFF at the target concurrency.
@@ -167,17 +167,17 @@ Artifact: `/tmp/l1-production-gate/concurrent/profile-on-default.json` (reruns �
 
 | Platform | Script | L1 validation |
 |----------|--------|----------------|
-| Apple Silicon | `./scripts/l1_metal_gate.sh` or `./scripts/m3_metal_signoff.sh` | RAM-tier pytest + optional live `/health.gpu_profile` |
-| CUDA 5080-class | `./scripts/l1_cuda_full_gate.sh` | Single-stream calibrate + concurrent N=2; merged `gate.json` + verdict |
-| Full 5080 session | `RUN_E2E_L1=1 ./scripts/gpu_5080_session.sh` | Phase 10–13 snapshot + L1 CUDA gate when model set |
+| Apple Silicon | `./scripts/phase/l1_metal_gate.sh` or `./scripts/phase/m3_metal_signoff.sh` | RAM-tier pytest + optional live `/health.gpu_profile` |
+| CUDA 5080-class | `./scripts/phase/l1_cuda_full_gate.sh` | Single-stream calibrate + concurrent N=2; merged `gate.json` + verdict |
+| Full 5080 session | `RUN_E2E_L1=1 ./scripts/gpu/gpu_5080_session.sh` | Phase 10–13 snapshot + L1 CUDA gate when model set |
 
 **Production gate (CUDA):**
 
 ```bash
 export CUDA_LLAMA_MODEL=/root/eliza-1-9b-256k.gguf   # ship proxy on 16GB; supernova optional re-run
-./scripts/l1_cuda_full_gate.sh
+./scripts/phase/l1_cuda_full_gate.sh
 # Artifacts: /tmp/l1-production-gate/{calibrate,concurrent}/ + gate.json
-./scripts/l1_gate_report.sh /tmp/l1-production-gate/gate.json
+./scripts/phase/l1_gate_report.sh /tmp/l1-production-gate/gate.json
 ```
 
 **Pass criteria:**
@@ -192,9 +192,9 @@ Optional supernova-class re-validation when that GGUF is on host — not blockin
 **Metal gate:**
 
 ```bash
-./scripts/l1_metal_gate.sh
+./scripts/phase/l1_metal_gate.sh
 # or platform dispatcher:
-./scripts/l1_full_gate.sh
+./scripts/phase/l1_full_gate.sh
 ```
 
 ---
@@ -212,4 +212,4 @@ Optional supernova-class re-validation when that GGUF is on host — not blockin
 
 ## L2 pointer
 
-When `ZEROLLAMA_LLAMA_FORK=1` or the `llama-server` binary advertises `--ctx-checkpoints`, profiles merge `_eliza_fork_llama_server_flags` (QJL/Polar cache types) and emit checkpoint argv. Build with `./scripts/build_llama_server.sh` (unified elizaOS tree). Full evaluation gate: [gpu-profiles-l2.md](./gpu-profiles-l2.md).
+When `ZEROLLAMA_LLAMA_FORK=1` or the `llama-server` binary advertises `--ctx-checkpoints`, profiles merge `_eliza_fork_llama_server_flags` (QJL/Polar cache types) and emit checkpoint argv. Build with `./scripts/build/build_llama_server.sh` (unified elizaOS tree). Full evaluation gate: [gpu-profiles-l2.md](./gpu-profiles-l2.md).

@@ -134,7 +134,7 @@ func RunANEMatmulBench(ctx context.Context, w io.Writer, quick bool) error {
 func ProbeANEMatmulBench(ctx context.Context, quick bool) (ANEBenchResult, error) {
 	bin := FindANEMatmulBenchBin()
 	if bin == "" {
-		return ANEBenchResult{}, fmt.Errorf("ane-matmul-bench not found — run ./scripts/ane_probe_build.sh")
+		return ANEBenchResult{}, fmt.Errorf("ane-matmul-bench not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	args := []string{}
 	if quick {
@@ -218,7 +218,7 @@ func ProbeANEDraftBench(ctx context.Context, quick bool) (ANEDraftBenchResult, e
 func ProbeANEDraftBenchDims(ctx context.Context, channels, spatial int, quick bool) (ANEDraftBenchResult, error) {
 	bin := FindANEDraftBenchBin()
 	if bin == "" {
-		return ANEDraftBenchResult{}, fmt.Errorf("ane-draft-bench not found — run ./scripts/ane_probe_build.sh")
+		return ANEDraftBenchResult{}, fmt.Errorf("ane-draft-bench not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	args := aneDraftBenchArgs(channels, spatial, quick)
 	out, err := runANETool(ctx, bin, args)

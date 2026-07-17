@@ -14,17 +14,17 @@
 cd ~/zerollama
 git pull
 
-source ./scripts/a380_env.sh
-./scripts/a380_signoff.sh --build
+source ./scripts/gpu/a380_env.sh
+./scripts/gpu/a380_signoff.sh --build
 ```
 
 | Script | Role |
 |--------|------|
-| [`scripts/a380_env.sh`](../scripts/a380_env.sh) | Vulkan env, sign-off model paths, research lane pointer |
-| [`scripts/a380_signoff.sh`](../scripts/a380_signoff.sh) | Tiered sign-off (device → profile → API smoke) |
-| [`scripts/gpu_a380_session.sh`](../scripts/gpu_a380_session.sh) | Quick session when serve is already configured |
-| [`scripts/serve_a380_example.sh`](../scripts/serve_a380_example.sh) | Production-shaped `zerollama serve` for Vulkan |
-| [`scripts/a380_vulkan_smoke.sh`](../scripts/a380_vulkan_smoke.sh) | API benchmark with load_ms / total_duration checks |
+| [`scripts/gpu/a380_env.sh`](../scripts/gpu/a380_env.sh) | Vulkan env, sign-off model paths, research lane pointer |
+| [`scripts/gpu/a380_signoff.sh`](../scripts/gpu/a380_signoff.sh) | Tiered sign-off (device → profile → API smoke) |
+| [`scripts/gpu/gpu_a380_session.sh`](../scripts/gpu/gpu_a380_session.sh) | Quick session when serve is already configured |
+| [`scripts/serve/serve_a380_example.sh`](../scripts/serve/serve_a380_example.sh) | Production-shaped `zerollama serve` for Vulkan |
+| [`scripts/gpu/a380_vulkan_smoke.sh`](../scripts/gpu/a380_vulkan_smoke.sh) | API benchmark with load_ms / total_duration checks |
 
 ---
 
@@ -122,9 +122,9 @@ Zerollama is **two binaries**: `zerollama` (Go API/scheduler) and **vendor `llam
 
 ```bash
 cd ~/zerollama
-./scripts/build_zerollama_a380.sh              # vendor clone + Vulkan llama-server + go build
+./scripts/build/build_zerollama_a380.sh              # vendor clone + Vulkan llama-server + go build
 sudo cp zerollama /usr/bin/zerollama
-sudo ./scripts/install_a380_llama_server.sh    # → /usr/lib/ollama-zerollama + /etc/zerollama/a380-llama.env
+sudo ./scripts/gpu/install_a380_llama_server.sh    # → /usr/lib/ollama-zerollama + /etc/zerollama/a380-llama.env
 sudo cp scripts/zerollama-a380.service /etc/systemd/system/zerollama.service
 sudo ln -sf /usr/bin/zerollama /usr/bin/ollama
 sudo systemctl daemon-reload && sudo systemctl enable --now zerollama
@@ -135,7 +135,7 @@ Verify fork inference binary:
 
 ```bash
 /usr/lib/ollama-zerollama/llama-server --help 2>&1 | grep -E 'tbq3_0|qjl1_256'
-source ./scripts/a380_env.sh && ./scripts/a380_signoff.sh --no-serve
+source ./scripts/gpu/a380_env.sh && ./scripts/gpu/a380_signoff.sh --no-serve
 ```
 
 ---
@@ -146,10 +146,10 @@ source ./scripts/a380_env.sh && ./scripts/a380_signoff.sh --no-serve
 
 ```bash
 # One-time install (see linked docs for deps)
-./scripts/install_stable_diffusion.sh
-./scripts/register_sd_models.sh
-./scripts/install_openvino_diffusion.sh    # optional
-./scripts/register_ov_models.sh
+./scripts/image/install_stable_diffusion.sh
+./scripts/image/register_sd_models.sh
+./scripts/image/install_openvino_diffusion.sh    # optional
+./scripts/image/register_ov_models.sh
 
 # Service env (Vulkan default wrapper)
 # OLLAMA_EXTERNAL_IMAGE_BIN=/usr/lib/ollama-zerollama/sd_external_image.sh
@@ -178,8 +178,8 @@ Docs: [sd-vulkan-a380.md](./sd-vulkan-a380.md), [sd-openvino-a380.md](./sd-openv
 
 ```bash
 # Option A — wrapper (recommended; uses vendor llama-server when installed)
-source ./scripts/a380_env.sh
-bash ./scripts/serve_a380_example.sh
+source ./scripts/gpu/a380_env.sh
+bash ./scripts/serve/serve_a380_example.sh
 
 # Option B — systemd (loads EnvironmentFile=/etc/zerollama/a380-llama.env)
 # See scripts/zerollama-a380.service
@@ -205,7 +205,7 @@ make research-synthesis
 Or from zerollama:
 
 ```bash
-A380_RUN_RESEARCH=1 ./scripts/gpu_a380_session.sh
+A380_RUN_RESEARCH=1 ./scripts/gpu/gpu_a380_session.sh
 ```
 
 ---

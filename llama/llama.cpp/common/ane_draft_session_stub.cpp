@@ -180,11 +180,31 @@ bool ane_draft_session_add_output_row(const float * delta, int n) {
     return false;
 }
 
-bool ane_draft_session_read_dflash_qkv(float * q, float * k, float * v, int n) {
+bool ane_draft_session_write_output_row(const float * row, int n) {
+    (void) row;
+    (void) n;
+    return false;
+}
+
+bool ane_draft_session_read_dflash_qkv(float * q, int oc_q, float * k, float * v, int oc_kv) {
+    (void) q;
+    (void) oc_q;
+    (void) k;
+    (void) v;
+    (void) oc_kv;
+    return false;
+}
+
+bool ane_draft_session_set_dflash_qkv(const float * q, const float * k, const float * v, int oc_q, int oc_kv) {
     (void) q;
     (void) k;
     (void) v;
-    (void) n;
+    (void) oc_q;
+    (void) oc_kv;
+    return false;
+}
+
+bool ane_draft_session_dflash_qkv_host_fp32(void) {
     return false;
 }
 

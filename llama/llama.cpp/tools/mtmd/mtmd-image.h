@@ -30,10 +30,30 @@ struct mtmd_image_preproc_out {
 struct mtmd_image_preprocessor {
     const clip_hparams & hparams;
 
+    // Optional client [T,H,W] patch grid (SGLang / Qwen-VL). Honored by dyn_size.
+    bool has_grid_hint = false;
+    int32_t grid_thw[3] = {0, 0, 0};
+
     mtmd_image_preprocessor(const clip_ctx * ctx): hparams(*clip_get_hparams(ctx)) {}
 
     virtual ~mtmd_image_preprocessor() = default;
     virtual mtmd_image_preproc_out preprocess(const clip_image_u8 & img) = 0;
+
+    void set_grid_hint(const int32_t thw[3]) {
+        if (!thw || thw[1] <= 0 || thw[2] <= 0) {
+            clear_grid_hint();
+            return;
+        }
+        has_grid_hint = true;
+        grid_thw[0] = thw[0];
+        grid_thw[1] = thw[1];
+        grid_thw[2] = thw[2];
+    }
+
+    void clear_grid_hint() {
+        has_grid_hint = false;
+        grid_thw[0] = grid_thw[1] = grid_thw[2] = 0;
+    }
 };
 
 /**
@@ -160,29 +180,29 @@ struct mtmd_image_preprocessor_internvl : mtmd_image_preprocessor_llava_uhd {
     mtmd_image_preproc_out preprocess(const clip_image_u8 & img) override;
 };
 
+// DeepSeek-OCR (v1/v2) global view + optional local tile grid
 struct mtmd_image_preprocessor_deepseekocr : mtmd_image_preprocessor {
-    mtmd_image_preprocessor_deepseekocr(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
-    mtmd_image_preproc_out preprocess(const clip_image_u8 & img) override;
-};
-
-// DeepSeek-OCR-2: a 1024x1024 global view, plus InternVL-style 768x768 local
-// tiles when the image is larger than a tile in either dimension.
-struct mtmd_image_preprocessor_deepseekocr2 : mtmd_image_preprocessor {
-    static constexpr int base_size = 1024; // global view
-    static constexpr int tile_size = 768;  // local tile
-    static constexpr int min_tiles = 2;
-    static constexpr int max_tiles = 6;
-
-    mtmd_image_preprocessor_deepseekocr2(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
+    mtmd_image_preprocessor_deepseekocr(const clip_ctx * ctx)
+        : mtmd_image_preprocessor(ctx),
+            fuse_row(clip_get_projector_type(ctx) == PROJECTOR_TYPE_DEEPSEEKOCR),
+          base_size(hparams.image_size),
+          tile_size(hparams.preproc_tile_size),
+          min_tiles(hparams.preproc_min_tiles),
+          max_tiles(hparams.preproc_max_tiles) {}
     mtmd_image_preproc_out preprocess(const clip_image_u8 & img) override;
 
 private:
-    static std::vector<clip_image_size> get_target_ratios();
-    static clip_image_size              find_closest_aspect_ratio(
-        float                                aspect_ratio,
-        const std::vector<clip_image_size> & target_ratios,
-        int                                  width,
-        int                                  height);
+    bool fuse_row; // v1 fuses a tile-row into one image; v2 keeps tiles separate
+    int base_size; // global view
+    int tile_size; // each tile
+    int min_tiles;
+    int max_tiles;
+
+    std::vector<clip_image_size> get_target_ratios() const;
+    clip_image_size find_closest_aspect_ratio(
+            float aspect_ratio,
+            const std::vector<clip_image_size> & target_ratios,
+            int width, int height) const;
 };
 
 // custom image preprocessing for Step3VL

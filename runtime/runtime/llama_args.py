@@ -206,3 +206,34 @@ def with_llama_num_ctx(argv: list[str], num_ctx: int) -> list[str]:
     if parse_llama_server_args(out).num_ctx != num_ctx:
         out.extend(["-c", str(num_ctx)])
     return out
+
+
+_KV_UNIFIED_ON = frozenset({"-kvu", "--kv-unified"})
+_KV_UNIFIED_OFF = frozenset({"-no-kvu", "--no-kv-unified"})
+
+
+def _argv_has_flag(argv: list[str], flags: frozenset[str]) -> bool:
+    for tok in argv:
+        base = tok.split("=", 1)[0]
+        if base in flags:
+            return True
+    return False
+
+
+def with_llama_kv_unified(argv: list[str], enabled: bool) -> list[str]:
+    """Phase 15 v53: inject ``--kv-unified`` for subprocess when opted in.
+
+    WHY: v52 only set ``cparams.kv_unified`` for in-process; L3 agent / Radix
+    live path is subprocess. Operator ``--no-kv-unified`` / ``-no-kvu`` in
+    ``LLAMA_SERVER_EXTRA_ARGS`` wins (explicit override). When ``enabled`` is
+    false, existing flags are left alone.
+    """
+    out = list(argv)
+    if not enabled:
+        return out
+    if _argv_has_flag(out, _KV_UNIFIED_OFF):
+        return out
+    if _argv_has_flag(out, _KV_UNIFIED_ON):
+        return out
+    out.append("--kv-unified")
+    return out

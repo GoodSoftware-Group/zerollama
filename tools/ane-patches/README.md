@@ -13,20 +13,20 @@ Canonical ANE hook **sources** live in `canonical/common/` so vendor rsync canno
 
 ```bash
 # Automatic on Darwin build (after pin checkout):
-./scripts/build_llama_server.sh
+./scripts/build/build_llama_server.sh
 
 # Manual sync (defaults to vendor/llama-cpp-<pin>, falls back to ../llama.cpp):
-./scripts/sync_ane_hook_to_llama_cpp.sh
+./scripts/vendor/sync_ane_hook_to_llama_cpp.sh
 
 # After vendor rebase (--sync restores in-tree ANE):
-./scripts/rebase_vendor_unified.sh --sync
+./scripts/vendor/rebase_vendor_unified.sh --sync
 
 # Promote to formal patch series (once per hook milestone):
 ./tools/ane-patches/regenerate_0018_patch.sh
 make -f Makefile.sync clean apply-patches
 ```
 
-Skip auto-sync: `ZEROLLAMA_SKIP_ANE_HOOK_SYNC=1 ./scripts/build_llama_server.sh`
+Skip auto-sync: `ZEROLLAMA_SKIP_ANE_HOOK_SYNC=1 ./scripts/build/build_llama_server.sh`
 
 ## Doctor
 

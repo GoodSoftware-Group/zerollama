@@ -97,6 +97,40 @@ def create_app(
             },
         )
 
+    @app.get("/kv/blob/{digest}")
+    def kv_blob_get(digest: str, request: Request):
+        """L3-R10 — serve a content-addressed LMCache slot blob (raw octets)."""
+        from fastapi.responses import FileResponse
+
+        from runtime.kv.lmcache_blob_http import (
+            lmcache_blob_http_enabled,
+            lmcache_blob_http_token,
+            local_blob_path,
+            validate_blob_digest,
+        )
+
+        if not lmcache_blob_http_enabled():
+            raise HTTPException(status_code=404, detail="blob http disabled")
+        d = validate_blob_digest(digest)
+        if d is None:
+            raise HTTPException(status_code=400, detail="invalid digest")
+        required = lmcache_blob_http_token()
+        if required:
+            auth = (request.headers.get("authorization") or "").strip()
+            hdr = (request.headers.get("x-zerollama-blob-token") or "").strip()
+            bearer_ok = auth.lower().startswith("bearer ") and auth[7:].strip() == required
+            if not bearer_ok and hdr != required:
+                raise HTTPException(status_code=401, detail="blob token required")
+        path = local_blob_path(d)
+        if path is None:
+            raise HTTPException(status_code=404, detail="blob not found")
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            filename=f"{d}.bin",
+            headers={"X-Zerollama-Blob-Digest": d},
+        )
+
     @app.post("/v1/completions")
     def completions(req: CompletionRequest = Body()) -> dict[str, Any]:
         try:

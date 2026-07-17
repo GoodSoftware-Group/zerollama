@@ -9,6 +9,8 @@
 #   ZEROLLAMA_RUNTIME_CONFIG=$PWD/runtime/configs/dual_4090_vram.yaml
 #   # or systemd Environment=ZEROLLAMA_RUNTIME_CONFIG=.../dual_4090_vram.yaml
 # Equivalent env: ZEROLLAMA_LLAMA_FORK=1 (FORK_PROFILE defaults to vram/TBQ).
+# Or: ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1 + ZEROLLAMA_RUNTIME_VRAM_NUM_CTX>=32768
+#     (auto TBQ only when configured ctx is large; short ctx stays stock).
 device_count: 2
 tensor_parallel: 2
 split_mode: layer

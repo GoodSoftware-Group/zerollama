@@ -41,9 +41,11 @@ type mlxSessionSlot struct {
 //   - interactive (hermes:agent:*, explicit qos): holds slot; never defers behind lower cooldown
 //   - auxiliary (ephemeral spawns): defers behind primary; shares aux:{model} branch
 //   - background (unkeyed /api/generate, ruby-trivia:bg:*): lowest priority
+//   - fulfillment complete/benchmark: request-scoped no-degradation / exclusive holds
 type mlxAgentGate struct {
-	mu    sync.Mutex
-	slots map[string]*mlxSessionSlot
+	mu      sync.Mutex
+	slots   map[string]*mlxSessionSlot
+	fulfill *fulfillmentHold
 }
 
 func newMLXAgentGate() *mlxAgentGate {
@@ -178,6 +180,10 @@ func (g *mlxAgentGate) shouldDefer(
 	incomingClass mlxSessionClass,
 	now time.Time,
 ) (bool, string, string) {
+	if deferF, policy := g.shouldDeferFulfillment(modelKey, incomingKey, incomingClass); deferF {
+		hold, _ := g.fulfillmentActive(now)
+		return true, policy, hold.sessionKey
+	}
 	hotKey, hotClass, inflight := g.hotSlot(modelKey, now)
 	defer_, policy := mlxDeferPolicy(incomingClass, incomingKey, hotClass, hotKey, inflight)
 	return defer_, policy, hotKey
@@ -243,11 +249,9 @@ func (g *mlxAgentGate) hottestInteractive(now time.Time) (hotKey string, hotClas
 }
 
 // waitBehindAnyInteractive blocks non-interactive GPU media work while any MLX interactive
-// session is hot (Wan video, external imagegen, etc. are not MLX runners).
+// session is hot (Wan video, external imagegen, etc. are not MLX runners). Exclusive
+// fulfillment holds also block other interactive traffic.
 func (g *mlxAgentGate) waitBehindAnyInteractive(ctx context.Context, incomingClass mlxSessionClass, incomingKey string) error {
-	if incomingClass == mlxClassInteractive {
-		return nil
-	}
 	start := time.Now()
 	var blockedByKey, hotModelKey string
 	var blockedByClass mlxSessionClass
@@ -255,18 +259,38 @@ func (g *mlxAgentGate) waitBehindAnyInteractive(ctx context.Context, incomingCla
 	for {
 		g.mu.Lock()
 		now := time.Now()
-		hotKey, hotClass, inflight, mk := g.hottestInteractive(now)
-		defer_, policy := mlxDeferPolicy(incomingClass, incomingKey, hotClass, hotKey, inflight)
-		if defer_ && blockedByKey == "" {
-			blockedByKey = hotKey
-			blockedByClass = hotClass
-			hotModelKey = mk
-			lastPolicy = policy
+		deferNow := false
+		if deferF, policy := g.shouldDeferFulfillment("", incomingKey, incomingClass); deferF {
+			hold, _ := g.fulfillmentActive(now)
+			// complete holds only force non-interactive media behind them globally;
+			// exclusive benchmark holds block everyone including other interactive.
+			if hold.mode.Exclusive() || incomingClass != mlxClassInteractive {
+				deferNow = true
+				if blockedByKey == "" {
+					blockedByKey = hold.sessionKey
+					blockedByClass = mlxClassInteractive
+					hotModelKey = hold.modelKey
+					lastPolicy = policy
+				}
+			}
+		}
+		if !deferNow && incomingClass != mlxClassInteractive {
+			hotKey, hotClass, inflight, mk := g.hottestInteractive(now)
+			defer_, policy := mlxDeferPolicy(incomingClass, incomingKey, hotClass, hotKey, inflight)
+			if defer_ {
+				deferNow = true
+				if blockedByKey == "" {
+					blockedByKey = hotKey
+					blockedByClass = hotClass
+					hotModelKey = mk
+					lastPolicy = policy
+				}
+			}
 		}
 		g.mu.Unlock()
 
-		if !defer_ {
-			if waited := time.Since(start); waited >= 100*time.Millisecond {
+		if !deferNow {
+			if waited := time.Since(start); waited >= 100*time.Millisecond && lastPolicy != "" {
 				slog.Info("mlx global defer",
 					"incoming_key", incomingKey,
 					"incoming_class", incomingClass.String(),

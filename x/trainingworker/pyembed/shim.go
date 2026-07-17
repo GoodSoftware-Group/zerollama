@@ -4,7 +4,7 @@ package pyembed
 // (pkg-config python3-embed) and delegates interpreter calls to training_shim.c.
 //
 // WHY pkg-config name is fixed in source: Go #cgo directives cannot be conditional. On Linux
-// when distro python3-embed is 3.10 but operators want 3.11, source ./scripts/training_embed_build_env.sh
+// when distro python3-embed is 3.10 but operators want 3.11, source ./scripts/training/training_embed_build_env.sh
 // before go build — it overlays PKG_CONFIG_PATH so pkg-config python3-embed resolves to 3.11.
 //
 // Why JSON strings across the boundary: avoids hand-written PyObject glue for every

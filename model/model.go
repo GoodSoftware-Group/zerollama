@@ -97,6 +97,13 @@ type ProcessorOutputMultimodalIngest interface {
 	MultimodalFromProcessorOutput(ctx ml.Context, pixelValues []float32, gridTHW []int) ([]input.Multimodal, error)
 }
 
+// GridHintMultimodalProcessor is optional: M-RoPE VLMs that honor client [1,H,W]
+// patch grids during PNG encode (skip smart_resize → H*patch × W*patch).
+type GridHintMultimodalProcessor interface {
+	MultimodalProcessor
+	EncodeMultimodalWithGrid(ctx ml.Context, data []byte, gridTHW []int) ([]input.Multimodal, error)
+}
+
 // Base implements the common fields and methods for all models
 type Base struct {
 	b ml.Backend

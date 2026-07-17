@@ -12,6 +12,7 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-common.cpp
                          ggml-metal-context.m
                          ggml-metal-ops.cpp
+                         ggml-metal-tuning.cpp
                         )
 
 target_link_libraries(ggml-metal PRIVATE
@@ -100,6 +101,7 @@ else()
         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal -o ${CMAKE_CURRENT_BINARY_DIR}/turbo3_tcq.air
         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal -o ${CMAKE_CURRENT_BINARY_DIR}/qjl.air
         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal -o ${CMAKE_CURRENT_BINARY_DIR}/qjl_set_rows.air
+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/tbq_set_rows.metal -o ${CMAKE_CURRENT_BINARY_DIR}/tbq_set_rows.air
         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal -o ${CMAKE_CURRENT_BINARY_DIR}/polar.air
         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal -o ${CMAKE_CURRENT_BINARY_DIR}/polar_preht.air
         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal -o ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_tbq.air
@@ -111,6 +113,7 @@ else()
             ${CMAKE_CURRENT_BINARY_DIR}/turbo3_tcq.air
             ${CMAKE_CURRENT_BINARY_DIR}/qjl.air
             ${CMAKE_CURRENT_BINARY_DIR}/qjl_set_rows.air
+            ${CMAKE_CURRENT_BINARY_DIR}/tbq_set_rows.air
             ${CMAKE_CURRENT_BINARY_DIR}/polar.air
             ${CMAKE_CURRENT_BINARY_DIR}/polar_preht.air
             ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_tbq.air
@@ -124,6 +127,7 @@ else()
                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal
                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal
                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal
+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/tbq_set_rows.metal
                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal
                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal
                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal

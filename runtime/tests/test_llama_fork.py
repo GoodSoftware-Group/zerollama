@@ -132,6 +132,52 @@ def test_llama_fork_env_off_overrides_probe(monkeypatch, tmp_path):
     assert fork_detection_source(llama_server_bin=fake) == "env_off"
 
 
+def test_auto_vram_high_ctx_enables_fork(monkeypatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM", "1")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_NUM_CTX", "65536")
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX", raising=False)
+    assert llama_fork_enabled() is True
+    assert fork_detection_source() == "auto_vram"
+
+
+def test_auto_vram_low_ctx_stays_stock(monkeypatch, tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM", "1")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_NUM_CTX", "8192")
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX", raising=False)
+    monkeypatch.setattr(
+        "runtime.llama_fork.probe_fork_llama_server",
+        lambda _bin: True,
+    )
+    monkeypatch.setattr(
+        "runtime.llama_fork.cuda_fork_backend_capable",
+        lambda _bin: True,
+    )
+    assert llama_fork_enabled(llama_server_bin=fake) is False
+    assert fork_detection_source(llama_server_bin=fake) == "auto_vram_below_ctx"
+
+
+def test_auto_vram_threshold_overridable(monkeypatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK", raising=False)
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM", "1")
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX", "8192")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_NUM_CTX", "8192")
+    assert llama_fork_enabled() is True
+    assert fork_detection_source() == "auto_vram"
+
+
+def test_fork_zero_beats_auto_vram(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK", "0")
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM", "1")
+    monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_NUM_CTX", "131072")
+    assert llama_fork_enabled() is False
+    assert fork_detection_source() == "env_off"
+
+
 def test_flags_from_gpu_config_stock_path():
     cfg = {
         "llama_server_flags": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},

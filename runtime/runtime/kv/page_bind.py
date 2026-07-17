@@ -205,6 +205,10 @@ def page_bind_health(
     tensor_probe: dict[str, Any] | None = None,
     writable_probe: dict[str, Any] | None = None,
     external_alias_probe: dict[str, Any] | None = None,
+    overlay_bind_donor_id: int | None = None,
+    overlay_donor_base: int | None = None,
+    overlay_donor_size: int | None = None,
+    overlay_catalog_ctx: tuple[int, int, int] | None = None,
     kv_coordinator: "HybridKVCacheCoordinator | None" = None,
     kv_slot: int | None = None,
     block_size: int | None = None,
@@ -222,7 +226,25 @@ def page_bind_health(
     an expected SWA-layer exclusion or a real bind failure on full-attention layers.
     When provided, ``kv_full_layers`` / ``kv_swa_layers`` / ``tensor_layers_expected``
     are added to the output so a correct comparison is possible.
+
+    WHY overlay_bind_donor_id (v48 CPU / v49 Metal): donor-buffer registration
+    happens at model-load time, outside any single decode/probe call — the
+    engine passes the donor id it registered (if any) so operators can see
+    whether the zero-copy KV allocation actually happened
+    (``overlay_bind_bound``) without needing a separate endpoint. Whether the
+    consuming buft was CPU-host (v48) or a device buft like Metal (v49) is an
+    internal vendor-hook decision; this status reflects the outcome either
+    way, not which path was taken.
+
+    WHY overlay_donor_base/size + overlay_catalog_ctx (v51): when the donor is
+    bound, publish a read-only page→donor-offset summary so L3-R6 can prove PA
+    pages are addressable ranges inside the owned buffer (no allocator rewrite).
     """
+    from runtime.kv.overlay_bind import (
+        donor_buffer_status,
+        overlay_bind_auto_enabled,
+        overlay_bind_enabled,
+    )
     from runtime.kv.tensor_probe import (
         external_alias_probe as default_external_alias_probe,
         writable_bind_probe as default_writable_probe,
@@ -245,6 +267,54 @@ def page_bind_health(
         if external_alias_probe is not None
         else default_external_alias_probe()
     )
+
+    # v48/v49/v50: donor-buffer overlay bind status (opt-in; see overlay_bind.py).
+    # v48 consumes CPU-host buft groups, v49 additionally consumes
+    # buffer_from_host_ptr-capable device buft groups (Metal); both paths are
+    # reported identically here since the caller only registers/queries a
+    # donor id and does not choose which buft consumes it.
+    # v50 adds overlay_bind_auto (in-process auto-wire on load).
+    overlay_enabled = overlay_bind_enabled()
+    overlay_auto = overlay_bind_auto_enabled()
+    overlay_bound = False
+    overlay_bytes = None
+    if overlay_enabled and overlay_bind_donor_id is not None:
+        donor_status = donor_buffer_status(int(overlay_bind_donor_id))
+        if donor_status is not None:
+            overlay_bound = bool(donor_status.get("bound"))
+            overlay_bytes = int(donor_status.get("bytes_used") or 0)
+
+    # v51: read-only donor page-offset summary (L3-R6 geometry).
+    overlay_catalog_summary: dict[str, Any] | None = None
+    if (
+        overlay_bound
+        and overlay_donor_base
+        and overlay_donor_size
+        and overlay_catalog_ctx is not None
+        and block_size
+    ):
+        try:
+            from runtime.kv.overlay_page_catalog import (
+                build_overlay_page_catalog,
+                health_page_cap,
+                overlay_page_catalog_summary,
+            )
+
+            ctx_ptr, seq_id, cat_slot = overlay_catalog_ctx
+            full = build_overlay_page_catalog(
+                donor_base=int(overlay_donor_base),
+                donor_size=int(overlay_donor_size),
+                ctx_ptr=int(ctx_ptr),
+                seq_id=int(seq_id),
+                kv_slot=int(cat_slot),
+                block_size=int(block_size),
+                probe=base_probe or None,
+                max_pages=health_page_cap(),
+                include_pages=False,
+            )
+            overlay_catalog_summary = overlay_page_catalog_summary(full)
+        except Exception:
+            overlay_catalog_summary = None
 
     # Normalise int 0/1 from C to bool; None means no probe was run.
     def _bool_probe(key: str) -> bool | None:
@@ -326,6 +396,11 @@ def page_bind_health(
             "external_alias_available": bool(ext_alias.get("external_alias_available")),
             "external_alias_api": ext_alias.get("external_alias_api") or "none",
             "external_alias_blocker": ext_alias.get("external_alias_blocker") or "",
+            "overlay_bind_enabled": overlay_enabled,
+            "overlay_bind_auto": overlay_auto,
+            "overlay_bind_bound": overlay_bound,
+            "overlay_bind_bytes": overlay_bytes,
+            "overlay_page_catalog": overlay_catalog_summary,
             "reason": reason,
             "native_ext_available": True,
             "active_binds": active,
@@ -414,6 +489,11 @@ def page_bind_health(
         "external_alias_available": False,
         "external_alias_api": "none",
         "external_alias_blocker": "native_ext_not_built",
+        "overlay_bind_enabled": overlay_enabled,
+        "overlay_bind_auto": overlay_auto,
+        "overlay_bind_bound": False,
+        "overlay_bind_bytes": None,
+        "overlay_page_catalog": None,
         "reason": (
             "build native ext (cd runtime && python3 setup.py build_ext --inplace); "
             "use kv_forward_plans for logical page tables"

@@ -28,7 +28,11 @@ from runtime.gpu_vram import (
     vram_budget_health,
 )
 from runtime.host_memory import check_gguf_host_budget, format_bytes, read_host_memory
-from runtime.llama_timings import detect_context_overflow, metrics_from_llama_chunk
+from runtime.llama_timings import (
+    detect_context_overflow,
+    merge_cache_tier_details,
+    metrics_from_llama_chunk,
+)
 from runtime.kv.accounting import kv_scheduler_snapshot
 from runtime.kv.block_pool import create_block_pool, kv_backend_health
 from runtime.scheduler.loop import SchedulerLoop
@@ -80,6 +84,17 @@ class InferenceEngine:
     def __init__(self, config: RuntimeConfig | None = None) -> None:
         self.config = config or RuntimeConfig.from_env()
         self._llama_backend_override: LlamaBackendKind | None = None
+        # v48/v49/v50: donor-buffer overlay bind (opt-in, ZEROLLAMA_KV_OVERLAY_BIND=1).
+        # v48 consumes CPU-host KV buft groups; v49 additionally consumes Metal
+        # device buft groups. Both share this same donor id / register-unregister API.
+        # v50 auto-wires a host donor on in-process load when AUTO is not disabled;
+        # manual register_kv_overlay_donor() still works (sets id before start).
+        # WHY buffer keepalive: ctypes donor memory must outlive the consuming
+        # llama_context — held on session (auto) or here (manual).
+        self._kv_overlay_donor_id: int | None = None
+        self._kv_overlay_donor_keepalive: Any | None = None
+        self._kv_overlay_donor_ptr: int | None = None
+        self._kv_overlay_donor_size: int | None = None
         from runtime.env import configure_runtime_env
         from runtime.kv.live_physical import effective_parallel_slots
 
@@ -155,6 +170,11 @@ class InferenceEngine:
         from runtime.decode_graph_policy import bump_all_decode_graph_epochs
 
         bump_all_decode_graph_epochs(reason="server_stop")
+        # v48: unregister the KV overlay donor buffer AFTER the server/session
+        # (and thus its llama_context) has been fully stopped above — freeing
+        # or reusing donor memory while a context is alive is undefined
+        # behavior, same contract as any externally-owned ggml buffer.
+        self.unregister_kv_overlay_donor()
         self._loaded_vram_num_ctx = None
         self._model_swap.reset()
 
@@ -258,6 +278,7 @@ class InferenceEngine:
             raise LlamaServerError("llama forward not configured")
         try:
             self._server.start(extra_args=extra_args)
+            self._sync_kv_overlay_donor_from_session()
         except LlamaServerError as exc:
             if (
                 self._llama_backend_override is None
@@ -289,6 +310,7 @@ class InferenceEngine:
                         config=self.config,
                     )
                     self._server.start(extra_args=extra_args)
+                    self._sync_kv_overlay_donor_from_session()
                     self.invalidate_health_cache()
                     return
             raise
@@ -405,8 +427,9 @@ class InferenceEngine:
         Appends ``--slot-save-path`` via cache_bridge when L3 is enabled. WHY after
         profile/L1 merge: slot dir must reflect final cache-type-k/v and draft model.
         """
-        from runtime.llama_args import with_llama_num_ctx
+        from runtime.llama_args import with_llama_kv_unified, with_llama_num_ctx
         from runtime.cache_bridge import llama_server_cache_argv
+        from runtime.env import assert_kv_unified_sizing, kv_unified_enabled
         from runtime.speculative import resolve_method
 
         base = self.config.llama_server_args()
@@ -428,6 +451,19 @@ class InferenceEngine:
                 draft_model=draft,
                 spec_method=spec.method,
                 num_ctx=ctx,
+            )
+        # v53: subprocess parity with in-process v52 unified KV (Radix metadata seq_cp).
+        unified = kv_unified_enabled()
+        base = with_llama_kv_unified(base, unified)
+        # v56: opt-in fail-closed when unified n_ctx is below soft floor.
+        if unified:
+            from runtime.llama_args import resolve_parallel_slots
+
+            assert_kv_unified_sizing(
+                n_ctx=ctx,
+                n_parallel=resolve_parallel_slots(
+                    base, default=self.config.llama_parallel_slots
+                ),
             )
         return base
 
@@ -530,10 +566,13 @@ class InferenceEngine:
         WHY Radix runs here (not in Go): admission needs live slot occupancy,
         ``KVCacheSpec`` window, and either ctypes or subprocess HTTP — all owned
         by the Python engine on the hot decode path.
+
+        WHY Radix runs even when ``cache_prompt`` was denied: SWA window (or
+        retention on same-slot resume) may reject the *full* prompt while a
+        shorter matched shared prefix still fits — vLLM Marconi + selective
+        retention preservation (#47782). Successful seed flips ``allow`` True.
         """
         allow, resume = self._prefix_cache_request(req, policy)
-        if not allow:
-            return allow, resume
         seq_pos = self._decode_current_pos_for_request(req)
         allow, resume, _trace = self._apply_radix_prefix_share(
             req,
@@ -570,7 +609,10 @@ class InferenceEngine:
         from runtime.kv.radix_seq_copy import execute_radix_share_plan
         from runtime.kv.radix_seq_copy_policy import radix_seq_copy_allowed
 
-        if not allow or not radix_prefix_share_enabled():
+        if not radix_prefix_share_enabled():
+            return allow, resume_pos, None
+        # Draft / disabled base: do not cross-slot seed (same contract as cache_prompt).
+        if not getattr(policy, "allow_cache_prompt", True):
             return allow, resume_pos, None
         if not req.slot_pinned or req.kv_slot is None or req.kv_slot < 0:
             return allow, resume_pos, None
@@ -588,7 +630,15 @@ class InferenceEngine:
             effective_window=spec.effective_window,
         )
         if plan is None:
-            return allow, resume_pos, None
+            # L3-R7: no live donor — try federated slot blob restore.
+            return self._apply_blob_restore(
+                req,
+                model_hash=model_hash,
+                seq_pos=seq_pos,
+                effective_window=spec.effective_window,
+                allow=allow,
+                resume_pos=resume_pos,
+            )
         copy_ok, skip_reason = radix_seq_copy_allowed(spec, plan)
         if not copy_ok:
             return allow, resume_pos, {"skipped": skip_reason or "seq_copy_denied"}
@@ -608,6 +658,17 @@ class InferenceEngine:
                     plan, subprocess_base_url=base
                 )
         if not copied:
+            # Live seq_cp failed (ghost remote slot?) — fall back to blob.
+            blob_out = self._apply_blob_restore(
+                req,
+                model_hash=model_hash,
+                seq_pos=seq_pos,
+                effective_window=spec.effective_window,
+                allow=allow,
+                resume_pos=resume_pos,
+            )
+            if blob_out[2] and blob_out[2].get("ok"):
+                return blob_out
             return allow, resume_pos, {"skipped": "seq_copy_failed"}
 
         from runtime.worker.libllama_ctypes import _ctx_ptr
@@ -626,6 +687,29 @@ class InferenceEngine:
             "warm_catchup": plan.warm_catchup,
             "target_seq_pos_before": plan.target_seq_pos_before,
         }
+        from runtime.kv.radix_prefix_share import (
+            approx_kv_bytes_per_token,
+            record_radix_copy_cost,
+        )
+        from runtime.kv.radix_seq_copy import seq_cp_mode
+
+        mode = seq_cp_mode()
+        trace["seq_cp_mode"] = mode
+        # v52: unified KV → metadata-only share; do not accumulate buffer-copy waste.
+        if mode == "buffer_copy":
+            bpt = approx_kv_bytes_per_token(
+                req.gguf,
+                num_ctx=int(self._loaded_vram_num_ctx or 0) or 4096,
+            )
+            approx_bytes = record_radix_copy_cost(
+                copy_tokens=plan.copy_tokens, bytes_per_token=bpt
+            )
+            if approx_bytes is not None:
+                trace["approx_copy_bytes"] = approx_bytes
+        else:
+            trace["approx_copy_bytes"] = 0
+            # Still count tokens for operator visibility of share volume.
+            record_radix_copy_cost(copy_tokens=plan.copy_tokens, bytes_per_token=0)
         from runtime.worker.factory import LlamaBackendKind
 
         if self._resolved_llama_backend() == LlamaBackendKind.SUBPROCESS:
@@ -639,6 +723,70 @@ class InferenceEngine:
             spec_method=self.config.speculative.method,
         )
         return True, plan.copy_tokens, trace
+
+    def _apply_blob_restore(
+        self,
+        req: Request,
+        *,
+        model_hash: str,
+        seq_pos: int | None,
+        effective_window: int | None,
+        allow: bool,
+        resume_pos: int | None,
+    ) -> tuple[bool, int | None, dict[str, Any] | None]:
+        """L3-R7: materialize federated slot blob when live Radix donor is absent."""
+        from runtime.decode_graph_policy import bump_decode_graph_epoch
+        from runtime.kv.radix_blob_restore import (
+            execute_blob_restore_plan,
+            find_blob_restore_plan,
+        )
+        from runtime.prefix_cache_trace import record_radix_share
+        from runtime.worker.factory import LlamaBackendKind
+        from runtime.worker.libllama_ctypes import _ctx_ptr
+
+        blob_plan = find_blob_restore_plan(
+            req.prompt_tokens,
+            target_slot=int(req.kv_slot),
+            model_hash=model_hash,
+            cache_salt=req.cache_salt,
+            seq_pos=seq_pos,
+            effective_window=effective_window,
+        )
+        if blob_plan is None:
+            return allow, resume_pos, None
+        pair = self._inprocess_ctx_for_health()
+        lib = pair[0] if pair else None
+        ctx = pair[1] if pair else None
+        trace = execute_blob_restore_plan(
+            blob_plan,
+            model_hash=model_hash,
+            inprocess_lib=lib,
+            inprocess_ctx=ctx,
+            token_capacity=int(self._loaded_vram_num_ctx or 0) or None,
+        )
+        if not trace.get("ok"):
+            return allow, resume_pos, trace
+        restored = int(trace.get("restored_tokens") or blob_plan.restore_tokens)
+        # SGLang storage-tier: federated LMCache / radix blob restore.
+        from runtime.llama_timings import lmcache_storage_backend_label
+
+        req.cached_tokens_storage = restored
+        req.cached_tokens_storage_backend = lmcache_storage_backend_label()
+        bump_decode_graph_epoch(
+            blob_plan.target_slot,
+            reason="radix_blob_restore",
+            ctx_ptr=_ctx_ptr(ctx) if ctx is not None else None,
+            base_url=self._subprocess_base_url() if pair is None else None,
+        )
+        if self._resolved_llama_backend() == LlamaBackendKind.SUBPROCESS:
+            self._subprocess_slots.seed_seq_pos(blob_plan.target_slot, restored)
+        record_radix_share(
+            prompt_cache_key=req.prompt_cache_key,
+            id_slot=blob_plan.target_slot,
+            radix_trace=trace,
+            spec_method=self.config.speculative.method,
+        )
+        return True, restored, trace
 
     def _cache_prompt_for_request(self, req: Request, policy: Any) -> bool:
         """L3 ``cache_prompt`` with SWA window + draft-spec policy enforcement."""
@@ -1809,7 +1957,70 @@ class InferenceEngine:
             kv_coordinator=kv_coordinator,
             kv_slot=probe_kv_slot,
             block_size=self.config.block_size,
+            overlay_bind_donor_id=self._kv_overlay_donor_id,
+            overlay_donor_base=self._kv_overlay_donor_ptr,
+            overlay_donor_size=self._kv_overlay_donor_size,
+            overlay_catalog_ctx=self._overlay_catalog_ctx_args(probe_kv_slot),
         )
+
+    def _overlay_catalog_ctx_args(
+        self, kv_slot: int | None
+    ) -> tuple[int, int, int] | None:
+        """``(ctx_ptr, seq_id, kv_slot)`` for v51 donor page catalog, or None."""
+        if kv_slot is None or kv_slot < 0:
+            return None
+        pair = self._inprocess_ctx_for_health()
+        if pair is None:
+            return None
+        from runtime.worker.libllama_ctypes import _ctx_ptr
+
+        ctx_ptr = _ctx_ptr(pair[1])
+        if not ctx_ptr:
+            return None
+        return int(ctx_ptr), int(kv_slot), int(kv_slot)
+
+    def register_kv_overlay_donor(self, ptr: int, size: int) -> int:
+        """Phase 15 v48: register a pre-allocated, correctly-sized host buffer as
+        a KV-cache allocation donor. MUST be called before constructing the
+        context/model that will consume it (see runtime/kv/overlay_bind.py doc).
+        Raises RuntimeError if ZEROLLAMA_KV_OVERLAY_BIND is not set.
+        """
+        from runtime.kv.overlay_bind import register_donor_buffer
+
+        donor_id = register_donor_buffer(ptr, size)
+        self._kv_overlay_donor_id = donor_id
+        self._kv_overlay_donor_ptr = int(ptr)
+        self._kv_overlay_donor_size = int(size)
+        return donor_id
+
+    def unregister_kv_overlay_donor(self) -> None:
+        """Unregister the currently tracked donor buffer, if any. Callers must
+        ensure the context/model that consumed it has already been unloaded —
+        see runtime/kv/overlay_bind.py lifecycle contract."""
+        from runtime.kv.overlay_bind import unregister_donor_buffer
+
+        if self._kv_overlay_donor_id is not None:
+            unregister_donor_buffer(self._kv_overlay_donor_id)
+            self._kv_overlay_donor_id = None
+        self._kv_overlay_donor_keepalive = None
+        self._kv_overlay_donor_ptr = None
+        self._kv_overlay_donor_size = None
+
+    def _sync_kv_overlay_donor_from_session(self) -> None:
+        """v50: pick up auto-wired donor id/ptr from in-process session for /health."""
+        session = self._inprocess_session_for_health()
+        if session is None:
+            return
+        donor_id = getattr(session, "overlay_donor_id", None)
+        if donor_id is None:
+            return
+        self._kv_overlay_donor_id = int(donor_id)
+        # Session owns keepalive; engine mirrors id + geometry for health/catalog.
+        handle = getattr(session, "_overlay_donor", None)
+        if handle is not None:
+            self._kv_overlay_donor_keepalive = getattr(handle, "_keepalive", None)
+            self._kv_overlay_donor_ptr = int(getattr(handle, "ptr", 0) or 0) or None
+            self._kv_overlay_donor_size = int(getattr(handle, "size", 0) or 0) or None
 
     def _kv_decode_loop_health(self) -> dict[str, Any]:
         from runtime.kv.native_decode_loop import decode_loop_status
@@ -1850,12 +2061,20 @@ class InferenceEngine:
         ).to_spec().to_health()
         from runtime.kv.prefix_block_pool import build_model_scope, prefix_block_pool_health
         from runtime.kv.radix_prefix_share import radix_share_health
+        from runtime.env import (
+            kv_unified_enabled,
+            kv_unified_operator_note,
+            kv_unified_sizing_status,
+            kv_unified_source,
+        )
 
         model_hash = self._model_hash_for_cache()
         scope = build_model_scope(model_hash=model_hash) if model_hash else None
         block_pool_health = prefix_block_pool_health(model_scope=scope)
         block_pool_health["radix_share"] = radix_share_health(model_scope=scope)
-        return {
+        session_unified = bool(getattr(session, "kv_unified", False)) if session else False
+        unified = session_unified or kv_unified_enabled()
+        out = {
             "active": active,
             "llama_parallel_slots": parallel,
             "owners_by_slot": owners,
@@ -1867,7 +2086,28 @@ class InferenceEngine:
             "note": note,
             "prefix_cache_spec": spec_health,
             "prefix_block_pool": block_pool_health,
+            "kv_unified": unified,
+            "kv_unified_source": kv_unified_source(),
         }
+        # v54/v55/v57: advisory note + sizing probe + idle purge stats when unified.
+        if unified:
+            out["kv_unified_note"] = kv_unified_operator_note()
+            sizing = kv_unified_sizing_status(
+                n_ctx=self._loaded_vram_num_ctx, n_parallel=parallel
+            )
+            if sizing is not None:
+                out["kv_unified_sizing"] = sizing
+            from runtime.kv.idle_slot_purge import idle_slot_purge_health
+
+            out["kv_unified_idle_purge"] = idle_slot_purge_health()
+        from runtime.kv.l3_r6_readiness import l3_r6_metadata_readiness
+
+        out["l3_r6_metadata"] = l3_r6_metadata_readiness(
+            n_ctx=self._loaded_vram_num_ctx,
+            n_parallel=parallel,
+            backend=backend,
+        )
+        return out
 
     def kv_snapshot(self) -> dict[str, Any]:
         """KV-focused subset for ``/internal/kv-snapshot`` (loopback debug)."""
@@ -1885,10 +2125,72 @@ class InferenceEngine:
             "kv_auto_batch": self._kv_auto_batch_health(),
             "kv_page_bind": self._kv_page_bind_health(),
             "kv_page_migration": self._kv_page_migration_snapshot(),
+            "overlay_page_catalog": self._overlay_page_catalog_snapshot(),
             "kv_decode_loop": self._kv_decode_loop_health(),
             "kv_resume": self._kv_resume_health(),
             "kv_live_physical": self._kv_live_physical_health(),
         }
+
+    def _overlay_page_catalog_snapshot(self) -> dict[str, Any] | None:
+        """v51: full donor page→offset catalog for loopback debug."""
+        if not self._kv_overlay_donor_ptr or not self._kv_overlay_donor_size:
+            return None
+        from runtime.kv.overlay_bind import donor_buffer_status, overlay_bind_enabled
+        from runtime.kv.overlay_page_catalog import build_overlay_page_catalog
+        from runtime.kv.page_bind import page_bind_tensor_probe_for_ctx
+
+        if not overlay_bind_enabled() or self._kv_overlay_donor_id is None:
+            return None
+        status = donor_buffer_status(int(self._kv_overlay_donor_id))
+        if not status or not status.get("bound"):
+            return {
+                "bound": False,
+                "note": "donor registered but not consumed by KV alloc",
+                "donor_bytes": int(self._kv_overlay_donor_size),
+            }
+        pair = self._inprocess_ctx_for_health()
+        if pair is None:
+            return {
+                "bound": True,
+                "note": "no in-process ctx for page_map",
+                "donor_bytes": int(self._kv_overlay_donor_size),
+            }
+        from runtime.worker.libllama_ctypes import _ctx_ptr
+
+        ctx_ptr = _ctx_ptr(pair[1])
+        if not ctx_ptr:
+            return None
+        kv_slot: int | None = None
+        probe: dict[str, Any] | None = None
+        for req in self.scheduler.running:
+            slot = req.kv_slot
+            if slot is not None and slot >= 0:
+                kv_slot = int(slot)
+                probe = page_bind_tensor_probe_for_ctx(
+                    pair[0], pair[1], seq_id=slot, kv_slot=slot
+                )
+                break
+        if kv_slot is None:
+            return {
+                "bound": True,
+                "note": "no running request with kv_slot",
+                "donor_bytes": int(self._kv_overlay_donor_size),
+            }
+        catalog = build_overlay_page_catalog(
+            donor_base=int(self._kv_overlay_donor_ptr),
+            donor_size=int(self._kv_overlay_donor_size),
+            ctx_ptr=int(ctx_ptr),
+            seq_id=kv_slot,
+            kv_slot=kv_slot,
+            block_size=int(self.config.block_size),
+            probe=probe,
+            max_pages=None,
+            include_pages=True,
+        )
+        if catalog is None:
+            return None
+        catalog["bound"] = True
+        return catalog
 
     def _page_migration_summary_for_probe(
         self,
@@ -2534,6 +2836,14 @@ class InferenceEngine:
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
                         out.update(metrics_from_llama_chunk(chunk))
+                        out.update(merge_cache_tier_details(
+                            {},
+                            host=int(getattr(active, "cached_tokens_host", 0) or 0),
+                            storage=int(getattr(active, "cached_tokens_storage", 0) or 0),
+                            storage_backend=str(
+                                getattr(active, "cached_tokens_storage_backend", "") or ""
+                            ),
+                        ))
                         # Why: runtime proxy skips Go chatPrompt; llama-server
                         # context-shifts silently. Admit-time prompt_tokens is
                         # the pre-shift size clients need on the done chunk.
@@ -2609,6 +2919,14 @@ class InferenceEngine:
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
                         out.update(metrics_from_llama_chunk(chunk))
+                        out.update(merge_cache_tier_details(
+                            {},
+                            host=int(getattr(active, "cached_tokens_host", 0) or 0),
+                            storage=int(getattr(active, "cached_tokens_storage", 0) or 0),
+                            storage_backend=str(
+                                getattr(active, "cached_tokens_storage_backend", "") or ""
+                            ),
+                        ))
                         # Why: same as stream auto-batch path — explicit overflow
                         # for proxies that never ran Go-side truncate.
                         out.update(detect_context_overflow(

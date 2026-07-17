@@ -19,9 +19,9 @@
 | **13** VRAM estimates | **Partial** | autotune, clamp default **off** in YAML, `gpu_snapshot`, `vram_yaml_defaults`; [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | **14** in-process llama | **Done** | `phase14_5080_signoff.sh` PASS. [handoff-phase14-inprocess-llama.md](./handoff-phase14-inprocess-llama.md) |
 | **15** native KV | **Partial (v0–v9 ops)** | `phase15_kv_native_ci.sh` (CPU); `phase15_inprocess_signoff.sh` (GPU). [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md) |
-| **5080 gate** | **Shipped (ops)** | `./scripts/gpu_5080_session.sh` PASS on RTX 5080-class host; [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
+| **5080 gate** | **Shipped (ops)** | `./scripts/gpu/gpu_5080_session.sh` PASS on RTX 5080-class host; [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) |
 
-Run **Go tests on the target host** (`go test ./server/... ./x/runtimeworker/... ./x/trainingworker/...`). **Single-GPU acceptance:** `./scripts/gpu_5080_session.sh` after rebuild/restart with smoke GGUF + `LLAMA_SERVER_BIN`.
+Run **Go tests on the target host** (`go test ./server/... ./x/runtimeworker/... ./x/trainingworker/...`). **Single-GPU acceptance:** `./scripts/gpu/gpu_5080_session.sh` after rebuild/restart with smoke GGUF + `LLAMA_SERVER_BIN`.
 
 ---
 
@@ -54,7 +54,7 @@ export LLAMA_SERVER_BIN=/usr/bin/llama-server
 export LLAMA_MODEL=/path/to/small-smoke.gguf   # e.g. 1B Q8
 export RUN_E2E_GGUF=$LLAMA_MODEL
 export RUN_E2E_PROXY_MODEL=llama3.2:3B          # optional
-cd /root/zerollama && ./scripts/gpu_5080_session.sh
+cd /root/zerollama && ./scripts/gpu/gpu_5080_session.sh
 ```
 
 **Do not block release on:** `gpu_harmony_capture.sh` / `gpt-oss:20b` on ~19 GiB host RAM — use `phase12_golden_ci.sh` for Harmony parser coverage.
@@ -315,7 +315,7 @@ Phase 13 estimate envs (`VRAM_MARGIN`, autotune, …): **not** Phase 11 — [pha
 | Snapshot → hints | `runtime/runtime/gpu_snapshot.py` (`python -m runtime.gpu_snapshot`) |
 | Health formatting | `runtime/runtime/gpu_health_report.py` |
 | Go probe | `internal/runtimeclient/vram_estimate.go` |
-| CLI | `scripts/runtime_vram_estimate.sh`, `scripts/gpu_phase13_snapshot.sh` |
+| CLI | `scripts/runtime/runtime_vram_estimate.sh`, `scripts/gpu/gpu_phase13_snapshot.sh` |
 
 **5080 session artifact:** `GPU_PHASE13_SNAPSHOT_OUT` (default `/tmp/5080-session.json`) includes `vram_autotune.persist` — **why:** recommendations distinguish “autotune already seeded for this GGUF” vs “export global factor”.
 
@@ -331,7 +331,7 @@ Phase 8 broker evicts ggml when a **runtime-proxy** `/api/generate` reaches Go. 
 2. Operators used **`pkill`** — races loads and does not match public unload API.
 3. **`pgrep -f "zerollama runner"`** matched shell test commands and looked like unload failed.
 
-**Solution:** `scripts/runtime_smoke_lib.sh` — shared by `gpu_smoke_all.sh`, `e2e_runtime_smoke.sh`, `gpu_harmony_capture.sh`, `gpu_5080_session.sh`.
+**Solution:** `scripts/runtime/runtime_smoke_lib.sh` — shared by `gpu_smoke_all.sh`, `e2e_runtime_smoke.sh`, `gpu_harmony_capture.sh`, `gpu_5080_session.sh`.
 
 ## `smoke_unload_ggml_runners`
 
@@ -386,22 +386,22 @@ go test ./server/... ./envconfig/... ./internal/runtimeclient/...
 
 ```bash
 # No GPU — CI gate
-./scripts/phase12_golden_ci.sh                  # check_gpu_scripts + Go Golden + tools meta pytest
+./scripts/phase/phase12_golden_ci.sh                  # check_gpu_scripts + Go Golden + tools meta pytest
 ./scripts/check_gpu_scripts.sh
 
 # Phase 11 mirrors + admission (no infer)
-ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh
+ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e/e2e_coordination_smoke.sh
 
 # Official 16GB gate (preflight + full GPU smokes + snapshot + hints)
 export LLAMA_MODEL=... LLAMA_SERVER_BIN=... RUN_E2E_GGUF=$LLAMA_MODEL
-./scripts/gpu_5080_session.sh
+./scripts/gpu/gpu_5080_session.sh
 
 # Full GPU runtime + optional proxy (see testing-smoke.md)
-RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh   # generate/chat/v1 + stream on :8081
-RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh # same via :8080 proxy
-RUN_E2E_TOOLS=1 RUN_E2E_GPU=1 ./scripts/e2e_runtime_smoke.sh  # tools on :8081 + proxy when RUN_E2E_PROXY=1
-./scripts/gpu_smoke_all.sh                     # coordination + VRAM prep + GPU + proxy
-RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh     # full smoke + tools
+RUN_E2E_GPU=1 ./scripts/e2e/e2e_runtime_smoke.sh   # generate/chat/v1 + stream on :8081
+RUN_E2E_PROXY=1 ./scripts/e2e/e2e_runtime_smoke.sh # same via :8080 proxy
+RUN_E2E_TOOLS=1 RUN_E2E_GPU=1 ./scripts/e2e/e2e_runtime_smoke.sh  # tools on :8081 + proxy when RUN_E2E_PROXY=1
+./scripts/gpu/gpu_smoke_all.sh                     # coordination + VRAM prep + GPU + proxy
+RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh     # full smoke + tools
 
 # After session — read hints without live server
 python3 -m runtime.gpu_snapshot /tmp/5080-session.json   # from runtime/ with PYTHONPATH=.
@@ -444,7 +444,7 @@ python3 -m runtime.gpu_snapshot /tmp/5080-session.json   # from runtime/ with PY
 
 **Short (every GPU host change):**
 
-1. **Rebuild/restart** `zerollama serve`, then `./scripts/gpu_5080_session.sh` (or at minimum `./scripts/phase12_golden_ci.sh` + `./scripts/gpu_smoke_all.sh`).
+1. **Rebuild/restart** `zerollama serve`, then `./scripts/gpu/gpu_5080_session.sh` (or at minimum `./scripts/phase/phase12_golden_ci.sh` + `./scripts/gpu/gpu_smoke_all.sh`).
 2. `go test ./server/...` on the host; CI runs Golden via regression workflow.
 3. Optional: `RUN_E2E_TOOLS=1` on `gpu_smoke_all` — tools on `:8081` and `:8080` proxy (not legacy 501).
 4. Read `/tmp/5080-session.json` + `python -m runtime.gpu_snapshot` — **why:** per-GGUF autotune persist beats copying smoke `VRAM_ESTIMATE_FACTOR` globally.

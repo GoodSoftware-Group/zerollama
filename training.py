@@ -11,7 +11,7 @@ Why this file is a *library* today:
 What still lives here:
   - Job queue, WorkerState, load/train/run_script paths, and optional idle GPU unload
     (TRAINING_WORKER_IDLE_UNLOAD_SEC).
-  - run_script for Wan T2V (scripts/wan_video_generate.py): same queue as train so only one
+  - run_script for Wan T2V (scripts/video/wan_video_generate.py): same queue as train so only one
     GPU-heavy subprocess runs; python_bin/WAN_VENV avoid running Wan inside embed CPython.
 
 Protocol notes:

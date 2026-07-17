@@ -93,5 +93,5 @@ export DEVELOPER_DIR=/Applications/Xcode_14.1.0.app/Contents/Developer
 
 **Build**
 ```sh
-./scripts/build_darwin.sh
+./scripts/build/build_darwin.sh
 ```

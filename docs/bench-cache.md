@@ -159,8 +159,8 @@ zerollama ls image                 # filter models with image capability
 |------|------|
 | **`zerollama bench`** | Operator cache → `ls` PERF column; minimal flags |
 | **`cmd/bench/bench.go`** | Developer harness; benchstat/CSV; TTFT/prefill/load columns |
-| **`scripts/m4_upstream_vs_zerollama_bench.sh`** | Phase 17 ggml vs upstream llama-server decision |
-| **`scripts/a380_vulkan_smoke.sh`** | A380 chat API with load_ms / total_duration gates |
+| **`scripts/phase/m4_upstream_vs_zerollama_bench.sh`** | Phase 17 ggml vs upstream llama-server decision |
+| **`scripts/gpu/a380_vulkan_smoke.sh`** | A380 chat API with load_ms / total_duration gates |
 | **L1 gates (`l1_cuda_full_gate.sh`)** | CI throughput regression with profile env |
 
 Do not expect PERF in `ls` to match script benchstat lines byte-for-byte — prompts, epochs, and backends differ by design.

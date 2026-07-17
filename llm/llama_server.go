@@ -206,7 +206,7 @@ func (s *llamaServerRunner) HasExited() bool {
 
 // BinaryStale reports whether the llama-server binary this runner was spawned
 // from has since been rebuilt in place (same resolved path, newer mtime) —
-// e.g. via ./scripts/build_llama_server.sh or ./scripts/build_zerollama_mac.sh
+// e.g. via ./scripts/build/build_llama_server.sh or ./scripts/build/build_zerollama_mac.sh
 // while this runner was still alive. The scheduler uses this to force a
 // reload instead of silently keeping a stale subprocess running forever.
 func (s *llamaServerRunner) BinaryStale() bool {
@@ -389,13 +389,13 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 		if img.HasPrecomputedEmbedding() {
 			return nil, false, 0, api.StatusError{
 				StatusCode:   http.StatusBadRequest,
-				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine for Qwen3-VL",
+				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine (Linux auto already routes vision there — unset ZEROLLAMA_LLAMA_SERVER=1 / --llama-server-backend)",
 			}
 		}
 		if img.HasProcessorOutput() {
 			return nil, false, 0, api.StatusError{
 				StatusCode:   http.StatusBadRequest,
-				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine for Qwen3-VL",
+				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine (Mac) or unset explicit llama-server for vision GGUF",
 			}
 		}
 	}

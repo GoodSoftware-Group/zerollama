@@ -1,6 +1,7 @@
 package ollamarunner
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/ollama/ollama/llm"
@@ -79,13 +80,20 @@ func (s *Server) inputsFromPaddedPromptTokens(
 			return s.appendPaddedProcessorOutputImage(&raw, &mmStore, &ctxs, img, consume, sessionKey, sessionViTOverlay)
 		}
 		ctx := s.model.Backend().NewContext()
-		mm, err := s.encodeMultimodalCached(ctx, img.Data, sessionKey, sessionViTOverlay)
+		mm, err := s.encodeMultimodalCached(ctx, img.Data, img.GridTHW, sessionKey, sessionViTOverlay)
 		if err != nil {
 			ctx.Close()
 			return err
 		}
 		s.multimodalHash.Reset()
 		_, _ = s.multimodalHash.Write(img.Data)
+		if len(img.GridTHW) == 3 {
+			var buf [24]byte
+			binary.LittleEndian.PutUint64(buf[0:8], uint64(img.GridTHW[0]))
+			binary.LittleEndian.PutUint64(buf[8:16], uint64(img.GridTHW[1]))
+			binary.LittleEndian.PutUint64(buf[16:24], uint64(img.GridTHW[2]))
+			_, _ = s.multimodalHash.Write(buf[:])
+		}
 		raw = append(raw, &input.Input{Multimodal: mm, MultimodalHash: s.multimodalHash.Sum64()})
 		mmStore.addMultimodal(mm)
 		ctxs = append(ctxs, ctx)

@@ -1,6 +1,6 @@
 # Phase 15 — native scheduler + KV
 
-**Status:** Partial (Jul 2026) — **v0–v47 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase15_inprocess_signoff.sh` (Linux embed, or **uv sidecar** when the binary is edge-marked / `PHASE15_USE_SIDECAR=1`) + `./scripts/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **CUDA dual-4090 PASS (Jul 2026)** — llama3.2 3B Q4, edge binary + sidecar on `:18083`/`:18081` (avoid prod `:2083`/`:8081`), `kv_decode_steps=56`, `batch_decode_in_c=True`, multiseq `n_seq_max=2`; log `/tmp/phase15-4090-signoff/full.log`. **v33 (Jul 2026):** fork writable page-map (`llama_memory_kv_page_map`); Darwin sidecar restarts when `kv_native_build_sha` mismatches build stamp. **v35 (Jul 2026):** `llama_memory_kv_cache_layout` + transposed-V `page_map` visibility; last decode probe on `/health` after bind clear. **v36 (Jul 2026):** GGUF layer-group enrichment (`tensor_layers_expected` for hybrid models). **v37 (Jul 2026):** stream auto-batch for concurrent streaming `/api/generate` (`ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`). **v38 (Jul 2026):** external-buffer copy descriptors + `tensor_layers_bind_complete`. **v39 (Jul 2026):** `kv_page_migration` on `/internal/kv-snapshot`. **v40 (Jul 2026):** `page_migration_summary` on forward plans + snapshot pointer redaction. **v41 (Jul 2026):** operator sign-off smokes for v40 + stream auto-batch GPU gate. **v42 (Jul 2026):** `page_migration_summary` on `/health.kv_page_bind` + snapshot `migration_summary`. **v43 (Jul 2026):** migration summary GPU sign-off (`phase15_migration_summary_smoke.sh`). **v44 (Jul 2026):** non-stream auto-batch GPU smoke (`phase15_auto_batch_smoke.sh`). **v45 (Jul 2026):** auto-batch env wiring + combined sign-off (`RUN_P15_AUTO_BATCH_ALL=1`). **v46 (Jul 2026):** Linux embed auto-batch parity (`RUN_E2E_PHASE15_AUTO_BATCH=1`). **v47 (Jul 2026):** external-buffer alias probe + validate (patch 0019; feasibility only — no tensor mutation). **Open:** ggml allocator overlay bind (`HOST_REBASE` / device alias, v48+).
+**Status:** Partial (Jul 2026) — **v0–v59 ops** shipped (see slices below). Phase 14 in-process forward **Done** (prerequisite). Default block allocator remains **Python**; C pool is opt-in (`ZEROLLAMA_RUNTIME_KV_NATIVE=1`; sign-off scripts enable it). **GPU sign-off:** `./scripts/phase/phase15_inprocess_signoff.sh` (Linux embed, or **uv sidecar** when the binary is edge-marked / `PHASE15_USE_SIDECAR=1`) + `./scripts/phase/phase15_metal_signoff.sh` (Mac uv sidecar) — includes **continuous batch decode** step (v27–v30). **Mac Metal PASS (M4 Max, Jun 2026).** **CUDA 5080 PASS (CT 1564 / cudallama, Jun 2026)** — OuteTTS 1B Q8, `kv_decode_steps=56`, batch decode via `/internal/generate-batch`. **CUDA dual-4090 PASS (Jul 2026)** — llama3.2 3B Q4, edge binary + sidecar on `:18083`/`:18081` (avoid prod `:2083`/`:8081`), `kv_decode_steps=56`, `batch_decode_in_c=True`, multiseq `n_seq_max=2`; log `/tmp/phase15-4090-signoff/full.log`. **v33 (Jul 2026):** fork writable page-map (`llama_memory_kv_page_map`); Darwin sidecar restarts when `kv_native_build_sha` mismatches build stamp. **v35 (Jul 2026):** `llama_memory_kv_cache_layout` + transposed-V `page_map` visibility; last decode probe on `/health` after bind clear. **v36 (Jul 2026):** GGUF layer-group enrichment (`tensor_layers_expected` for hybrid models). **v37 (Jul 2026):** stream auto-batch for concurrent streaming `/api/generate` (`ZEROLLAMA_KV_AUTO_BATCH_STREAM=1`). **v38 (Jul 2026):** external-buffer copy descriptors + `tensor_layers_bind_complete`. **v39 (Jul 2026):** `kv_page_migration` on `/internal/kv-snapshot`. **v40 (Jul 2026):** `page_migration_summary` on forward plans + snapshot pointer redaction. **v41 (Jul 2026):** operator sign-off smokes for v40 + stream auto-batch GPU gate. **v42 (Jul 2026):** `page_migration_summary` on `/health.kv_page_bind` + snapshot `migration_summary`. **v43 (Jul 2026):** migration summary GPU sign-off (`phase15_migration_summary_smoke.sh`). **v44 (Jul 2026):** non-stream auto-batch GPU smoke (`phase15_auto_batch_smoke.sh`). **v45 (Jul 2026):** auto-batch env wiring + combined sign-off (`RUN_P15_AUTO_BATCH_ALL=1`). **v46 (Jul 2026):** Linux embed auto-batch parity (`RUN_E2E_PHASE15_AUTO_BATCH=1`). **v47 (Jul 2026):** external-buffer alias probe + validate (patch 0019; feasibility only — no tensor mutation). **v48 (Jul 2026):** CPU-only donor-buffer registration hook (patch 0021) — zero-copy KV cache allocation into PA-pool-owned host memory, opt-in via `ZEROLLAMA_KV_OVERLAY_BIND=1`; per-page `tensor->data` rebase (the original v48 approach sketched above) was found to be architecturally invalid — see the v48 section below. **v49 (Jul 2026):** Metal device-buft donor consume (patch 0022) — extends v48's donor registry to `buffer_from_host_ptr`-capable device bufts via `ggml_backend_dev_buffer_from_host_ptr` (Metal's unified-memory zero-copy primitive, the same one `llama-model.cpp` already uses for mmap weight loading); verified with real GPU-offloaded decode, byte-identical output vs. non-donor allocation. **v50 (Jul 2026):** auto-wire host donor on in-process load when `ZEROLLAMA_KV_OVERLAY_BIND=1` (estimate or `ZEROLLAMA_KV_OVERLAY_DONOR_BYTES`; kill-switch `ZEROLLAMA_KV_OVERLAY_AUTO=0`) — L3-R6 prerequisite (runtime owns KV bytes; shared cells/COW still open). **v51 (Jul 2026):** overlay donor page-offset catalog — assert `page_map` spans ⊆ donor; `/health` summary + snapshot full offsets. **v52 (Jul 2026):** opt-in `ZEROLLAMA_KV_UNIFIED=1` — `n_stream=1` so Radix `seq_cp` is metadata-only (L3-R6 without cell-allocator rewrite); default remains off. **v53 (Jul 2026):** subprocess `--kv-unified` argv for the same env (L3 agent / Radix live path). **v54 (Jul 2026):** YAML `l3.kv_unified` + agent profile opt-in (env wins); health sizing note. **v55 (Jul 2026):** `/health.kv_unified_sizing` numeric probe + documented default-on criteria (no global flip). **v56 (Jul 2026):** opt-in `ZEROLLAMA_KV_UNIFIED_STRICT=1` hard fail on undersized unified n_ctx. **v57 (Jul 2026):** in-process idle-slot purge on decode fail under unified (vendor try_clear_idle_slots parity). **v58 (Jul 2026):** Radix→unified couple by default (`ZEROLLAMA_KV_UNIFIED_WITH_RADIX`). **v59 (Jul 2026):** L3-R6 metadata-path readiness. **L3-R7 (Jul 2026):** federated slot blobs (`blob_digest` + cold restore). **Open:** CUDA device-buffer donor — no upstream primitive (discrete VRAM, no unified memory).
 
 **Handoff (code map, gaps, next slices):** [handoff-phase15-native-kv.md](./handoff-phase15-native-kv.md)
 
@@ -28,6 +28,19 @@ See also [ROADMAP Phase 15 exit criteria](../ROADMAP.md#phase-15--exit-criteria-
 | **v45** | `phase15_runtime_auto_batch_env_apply()` + `phase15_auto_batch_signoff.sh`; `RUN_P15_AUTO_BATCH_ALL=1`; `smoke_runtime_assert_kv_auto_batch()` |
 | **v46** | Linux embed parity — auto-batch env on `phase15_inprocess_multiseq_smoke.sh`; `RUN_E2E_PHASE15_AUTO_BATCH=1` on 5080 session |
 | **v47** | External-buffer alias probe + validate — patch 0019; `llama_memory_kv_page_alias_validate`; `/health.kv_page_bind.external_alias_*`; `alias_plan` on copy descriptors |
+| **v48** | CPU-only donor-buffer registration hook — patch 0021; `llama_kv_ext_register_donor_buffer`/`unregister`/`donor_buffer_status`; `llama_kv_cache`'s CPU-buft allocation loop substitutes `ggml_backend_cpu_buffer_from_ptr` for a matching donor; opt-in `ZEROLLAMA_KV_OVERLAY_BIND=1`; `/health.kv_page_bind.overlay_bind_*` |
+| **v49** | Metal device-buft donor consume — patch 0022; `llama_kv_ext_donor_try_consume_dev` + `buffer_from_host_ptr` |
+| **v50** | Auto-wire host donor on in-process load (`prepare_auto_donor`); `ZEROLLAMA_KV_OVERLAY_AUTO` / `ZEROLLAMA_KV_OVERLAY_DONOR_BYTES`; `/health.overlay_bind_auto`; Radix `approx_copy_bytes_total` |
+| **v51** | Overlay donor page-offset catalog — assert `page_map` spans ⊆ donor; `/health` summary + `/internal/kv-snapshot` full offsets (L3-R6 geometry) |
+| **v52** | Opt-in `ZEROLLAMA_KV_UNIFIED=1` — `n_stream=1` so Radix `seq_cp` is metadata-only; harden in-process full-range+trim |
+| **v53** | Subprocess `--kv-unified` argv when same env (L3 agent / Radix live path parity) |
+| **v54** | YAML `l3.kv_unified` + agent profile opt-in (env wins); `/health.kv_unified_note` sizing advisory |
+| **v55** | Unified sizing probe + default-on criteria — `/health.kv_unified_sizing`; still no global default flip |
+| **v56** | Opt-in strict unified sizing — `ZEROLLAMA_KV_UNIFIED_STRICT=1` rejects load when below soft floor |
+| **v57** | In-process idle-slot purge on `llama_decode` fail under `kv_unified` (vendor parity); kill-switch `ZEROLLAMA_KV_UNIFIED_IDLE_PURGE=0` |
+| **v58** | Radix→unified couple (default on when radix); `kv_unified_source`; kill-switch `ZEROLLAMA_KV_UNIFIED_WITH_RADIX=0` |
+| **v59** | L3-R6 metadata-complete readiness probe — `/health.kv_resume.l3_r6_metadata`; splits metadata Done vs COW deferred |
+| **v49** | Metal device-buft donor consume — patch 0022; `llama_kv_ext_donor_try_consume_dev` (C++-internal); `llama_kv_cache`'s allocation loop tries `ggml_backend_dev_buffer_from_host_ptr` for `buffer_from_host_ptr`-capable device bufts (Metal) after the v48 host path; same registration API, no CUDA support (no upstream primitive) |
 | **v0** | Native `BlockPool` (`kv_block_pool.c`), `ZEROLLAMA_RUNTIME_KV_NATIVE`, parity tests, `phase15_kv_native_ci.sh` |
 | **v1** | `kv_scheduler` on `/health`, `num_ctx` block reserve, `kv_slot` → subprocess `id_slot` / in-process `seq_id` |
 | **v2** | In-process multi-seq shared `llama_context` when `llama_parallel_slots` > 1 (`resolve_parallel_slots`, `-np` wins) |
@@ -129,7 +142,7 @@ Stream mode (`"stream": true`) returns NDJSON lines with `request_id`, `seq_idx`
 | `ZEROLLAMA_KV_NATIVE_SAMPLE` | `1` | C sampling on prefill + v30 batch rows |
 | `llama_parallel_slots` | `1` | Must be >1 for batch merge (`kv_inprocess_n_seq_max` on `/health`) |
 
-Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one place to enable C pool + native decode + build linked ext against sibling `../llama.cpp`.
+Sign-off scripts source `scripts/phase/phase15_runtime_kv_env.sh` — **why:** one place to enable C pool + native decode + build linked ext against sibling `../llama.cpp`.
 
 ### GPU sign-off (v27–v30 batch step)
 
@@ -139,7 +152,7 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | `phase15_inprocess_signoff.sh` | Linux embed or edge sidecar | End of `phase15_inprocess_multiseq_smoke.sh` |
 | `phase15_batch_decode_smoke.sh` | Either (sidecar must be up, `n_seq_max≥2`) | Standalone |
 
-**Jun 2026:** `./scripts/phase15_metal_signoff.sh` **PASS** on M4 Max — `batch_decode_in_c=True`, non-stream + stream batch returned content for both rows, `kv_decode_steps` incremented, **`kv_page_bind.status=bound`** + **`bind_level=tensor`** on linked vendor kv-ext (full gate via `./scripts/metal_signoff.sh` + `eliza-1-2b:latest` qwen35).
+**Jun 2026:** `./scripts/phase/phase15_metal_signoff.sh` **PASS** on M4 Max — `batch_decode_in_c=True`, non-stream + stream batch returned content for both rows, `kv_decode_steps` incremented, **`kv_page_bind.status=bound`** + **`bind_level=tensor`** on linked vendor kv-ext (full gate via `./scripts/gpu/metal_signoff.sh` + `eliza-1-2b:latest` qwen35).
 
 ---
 
@@ -153,7 +166,7 @@ Sign-off scripts source `scripts/phase15_runtime_kv_env.sh` — **why:** one pla
 | Backend selector | `runtime/runtime/kv/backend.py` | Env `ZEROLLAMA_RUNTIME_KV_NATIVE=1` |
 | Engine wiring | `runtime/runtime/engine.py` | `create_block_pool()`; `/health` → `kv` object |
 | Parity tests | `runtime/tests/test_kv_native_parity.py` | Skips if extension not built |
-| CI helper | `scripts/phase15_kv_native_ci.sh` | build native + KV pytest bundle |
+| CI helper | `scripts/phase/phase15_kv_native_ci.sh` | build native + KV pytest bundle |
 
 ### v1 — scheduler ↔ llama slots
 
@@ -363,7 +376,7 @@ cd runtime && python3 setup.py build_ext --inplace
 | `runtime/setup.py` | Resolves `LLAMA_CPP_ROOT` / `LLAMA_CPP_LIB`; `-lllama` + rpath when flag set |
 | `native/kv_decode_loop.c` | Calls `llama_max_devices()` — no ctx, no inference |
 | `/health.kv_decode_loop` | `available: true`, `llama_max_devices` when linked build |
-| `scripts/phase15_kv_decode_loop_build.sh` | Optional smoke; skips if libllama missing |
+| `scripts/phase/phase15_kv_decode_loop_build.sh` | Optional smoke; skips if libllama missing |
 
 ---
 
@@ -379,7 +392,7 @@ cd runtime && python3 setup.py build_ext --inplace
 | `runtime/kv/native_decode_loop.py` | `run_prefill(ctx_ptr, tokens, *, seq_id, block_size) → int \| None`; `run_step(ctx_ptr, token, *, seq_id, current_pos) → int \| None`; returns `None` when ctypes build |
 | `runtime/worker/libllama_ctypes.py` | `_decode_stream` v13 fast path: C prefill → sample → C step loop; falls back to ctypes when ext not linked or encoder model |
 | Tests | `test_run_prefill_returns_none_when_not_linked` / `test_run_step_returns_none_when_not_linked` |
-| CI | `scripts/phase15_kv_decode_loop_build.sh` — also verifies `decode_loop_prefill` / `decode_loop_step` symbols exported |
+| CI | `scripts/phase/phase15_kv_decode_loop_build.sh` — also verifies `decode_loop_prefill` / `decode_loop_step` symbols exported |
 
 **WHY ctx_ptr is `int`:** ctypes `c_void_p` arrives as a Python `int`; the C binding casts `(void *)(uintptr_t)ctx_ptr` → `struct llama_context *`.  No ABI mismatch because both the ext and `_decode_stream` load the same libllama.
 
@@ -398,7 +411,7 @@ cd runtime && python3 setup.py build_ext --inplace
 | `decode_loop_prefill(..., pos_start=0)` | Python binding extended (`\|i` optional arg) |
 | `runtime/kv/native_decode_loop.py` | `validate_token_positions` before C calls; `greedy_decode_tokens()` for tests |
 | `tests/test_kv_decode_loop_e2e.py` | Gated: `RUN_E2E_DECODE_LOOP=1` + `LLAMA_MODEL` + linked build |
-| `scripts/phase15_kv_decode_loop_build.sh` | Asserts `gil_released`; runs E2E when env set |
+| `scripts/phase/phase15_kv_decode_loop_build.sh` | Asserts `gil_released`; runs E2E when env set |
 
 **WHY GIL release in bindings not in kv_decode_loop.c:** Python owns thread state; only the extension entry points know when it is safe to release before calling into libllama.
 
@@ -502,7 +515,7 @@ If any condition fails, the slot is cleared (safe fallback = pre-v16 behaviour).
 | `owners_by_slot` | `{slot_id: owner_key}` from `resume_owner_snapshot()` |
 | `owner_key_pinned` / `owner_key_unpinned` | Documents v17 owner scheme |
 | `note` | Why inactive (subprocess or single-seq) |
-| `scripts/phase15_metal_signoff.sh` step 4 | Two-turn generate with same `prompt_cache_key`; asserts `kv_resume.active` and non-empty owners |
+| `scripts/phase/phase15_metal_signoff.sh` step 4 | Two-turn generate with same `prompt_cache_key`; asserts `kv_resume.active` and non-empty owners |
 
 ---
 
@@ -524,11 +537,11 @@ If any condition fails, the slot is cleared (safe fallback = pre-v16 behaviour).
 
 ```bash
 cd runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_tensor_bind_probe.sh
+../scripts/phase/phase15_tensor_bind_probe.sh
 # Linked probe (GPU host):
 export ZEROLLAMA_KV_DECODE_LOOP=1 LLAMA_CPP_LIB=/path/to/libllama.dylib
 cd runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_tensor_bind_probe.sh
+../scripts/phase/phase15_tensor_bind_probe.sh
 ```
 
 **Upstream needed for full tensor bind:** public C API returning writable KV page/cell handles keyed by `(layer, page_index)` or equivalent — then wire `block_ids[i]` → handle in `page_bind_tensor_bind()`.
@@ -570,12 +583,12 @@ cd llama/llama.cpp && cmake -B build -DBUILD_SHARED_LIBS=ON && cmake --build bui
 # 2) Link native ext
 export LLAMA_CPP_ROOT=$PWD ZEROLLAMA_KV_DECODE_LOOP=1
 cd ../../runtime && python3 setup.py build_ext --inplace
-../scripts/phase15_tensor_bind_probe.sh
+../scripts/phase/phase15_tensor_bind_probe.sh
 ```
 
 **Limitations:** pure recurrent-only models → `memory_kind_name=unsupported`. SWA window cache is not the PA bind target (base attn cache is). Writable cross-process PA→tensor migration still needs upstream stable page-handle API; v20/v31 is read-verify bind on live decode.
 
-**Pin tracking:** patch `0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` + `./scripts/phase15_llama_kv_ext_pin_check.sh` — see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
+**Pin tracking:** patch `0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch` + `./scripts/phase/phase15_llama_kv_ext_pin_check.sh` — see [phase15-llama-kv-ext-upstream.md](./phase15-llama-kv-ext-upstream.md).
 
 ### v20b ops — audit fixes (Jun 2026)
 
@@ -596,7 +609,7 @@ cd ../../runtime && python3 setup.py build_ext --inplace
 | Piece | Role |
 |-------|------|
 | `runtime/infer_trace.py` | Opt-in phase logging (`ZEROLLAMA_INFER_TRACE=1`) |
-| `scripts/phase15_metal_crash_repro.sh` | Bisect harness (workarounds off) |
+| `scripts/phase/phase15_metal_crash_repro.sh` | Bisect harness (workarounds off) |
 
 ### v23 ops — unified prefill chunker + sign-off defaults (Jun 2026)
 
@@ -606,7 +619,7 @@ cd ../../runtime && python3 setup.py build_ext --inplace
 |-------|------|
 | `iter_prefill_execute_chunks()` | Single source for ctypes prefill + `kv_decode_prefill_plan`; final chunk `logits_last=True` |
 | `libllama_ctypes._prefill_prompt` | Calls shared chunker (v23) |
-| `scripts/phase15_runtime_kv_env.sh` | `ZEROLLAMA_RUNTIME_KV_NATIVE=1`, native decode/sample defaults; optional ext build |
+| `scripts/phase/phase15_runtime_kv_env.sh` | `ZEROLLAMA_RUNTIME_KV_NATIVE=1`, native decode/sample defaults; optional ext build |
 | Sign-off scripts | `phase15_metal_signoff.sh`, `phase15_inprocess_signoff.sh` source env + build ext when `PHASE15_BUILD_KV_EXT=1` |
 
 ---
@@ -797,12 +810,394 @@ Without v36, operators debugging a hybrid model see `tensor_layers_verified=26, 
 **Operator probes:**
 
 ```bash
-./scripts/phase15_llama_kv_ext_pin_check.sh   # asserts 0014 + 0019 symbols
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh   # asserts 0014 + 0019 symbols
 python3 -c "from runtime.kv.tensor_probe import external_alias_probe; print(external_alias_probe())"
 curl -s :8081/health | jq '.kv_page_bind | {external_alias_available, external_alias_api, external_alias_blocker}'
 ```
 
 **Next (v48):** `llama_memory_kv_page_alias_bind` / `unbind` for host overlay; device-buffer strategy for Metal; wire migration loop to call validate before bind.
+
+---
+
+### v48 ops — CPU-only donor-buffer overlay bind (Jul 2026)
+
+**Why the original v48 sketch (`llama_memory_kv_page_alias_bind`/`unbind` mutating `tensor->data` per page) was abandoned:** each KV layer in `llama_kv_cache` is **one `ggml_tensor` covering the entire `kv_size`** (all pages/cells for that layer), allocated once via `ggml_backend_alloc_ctx_tensors_from_buft` — see the ctor's per-buft allocation loop in `llama-kv-cache.cpp`. `llama_memory_kv_page_map`'s `k_data`/`v_data` (v33/v47) are pointer arithmetic (`cell0 * tensor->nb[1]`) into that single tensor, not separate allocations. A `ggml_tensor` has exactly one `data` pointer and one `buffer` — there is no way to alias one page's byte range to different memory while leaving neighboring pages backed by the original buffer; doing so would corrupt stride math for every other page sharing the tensor. This is why v47's `HOST_REBASE` mode was validate-only, with the blocker string literally `host_rebase_overlay_bind_not_implemented` rather than an attempted mutation.
+
+**The only real zero-copy design:** make the external pool's memory *be* the buffer the whole KV layer tensor is allocated into, at construction time — not bind-after-the-fact. This requires no `llama_context_params` signature change (which would ripple through ~10+ `llama_kv_cache` construction call sites in `llama-model.cpp`): instead, an additive process-level **donor-buffer registry**, staged in `llama-kv-ext.h` alongside every other Phase 15 API, is checked once by `llama_kv_cache`'s existing CPU-buft allocation loop.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `llama_kv_ext_register_donor_buffer(ptr, size, &donor_id)` | `llama-kv-ext.h` / `llama-memory-kv-ext.cpp` | Register an external host buffer as a KV-cache allocation donor. Must be called BEFORE constructing the context/model that will use it. Fixed 8-slot static registry, mutex-guarded. |
+| `llama_kv_ext_unregister_donor_buffer(donor_id)` | same | Idempotent (missing id = success). Caller must only call after the consuming context has been freed. |
+| `llama_kv_ext_donor_buffer_status(donor_id, &bound, &bytes_used)` | same | Whether the donor was actually consumed by a cache construction, and how many bytes were used — registration can silently go unconsumed (wrong buft, undersized, no cache built yet). |
+| `llama_kv_ext_donor_try_consume(required_size)` | same (C++-internal, not part of the C ABI) | Called from the allocation loop; returns the first unused donor `ggml_backend_buffer_t` of sufficient size, or `nullptr` to fall through to normal allocation. |
+| `llama_kv_cache`'s CPU-buft allocation loop | `llama-kv-cache.cpp` | When `ggml_backend_buft_is_host(buft)`, queries the exact byte size via `ggml_backend_alloc_ctx_tensors_from_buft_size` (same function `memory_breakdown()` uses), tries the donor registry first, and — on a hit — wraps the donor via `ggml_backend_cpu_buffer_from_ptr` and manually places each tensor's `data`/`buffer` at the correct aligned offset (mirrors the existing `no_alloc` dummy-buffer pattern already in that loop). Device (Metal/CUDA) buft groups never consult the registry. |
+| `runtime/kv/overlay_bind.py` | Python facade | `overlay_bind_enabled()`, `register_donor_buffer()`, `unregister_donor_buffer()`, `donor_buffer_status()`. All bind calls refuse to run unless `ZEROLLAMA_KV_OVERLAY_BIND=1` — this is enforced in Python even though the native call would otherwise succeed, so default behavior is byte-for-byte identical to pre-v48. |
+| `InferenceEngine.register_kv_overlay_donor(ptr, size)` / `unregister_kv_overlay_donor()` | `engine.py` | Engine-level tracking of the current donor id; `unregister_kv_overlay_donor()` is wired into `_stop_server()`, firing only after the server/session (and its `llama_context`) has fully stopped. |
+| `/health.kv_page_bind.overlay_bind_enabled` / `overlay_bind_bound` / `overlay_bind_bytes` | `page_bind.py` | Operator visibility: whether overlay bind is opted in, whether the registered donor was actually consumed, and how many bytes. |
+
+**Guardrails:**
+- CPU buft only — the `offload` branch (`ggml_backend_dev_buffer_type(dev)`, Metal/CUDA) never consults the donor registry. `BLOCKED_DEVICE` semantics from v47's `alias_validate` are unaffected.
+- An undersized or wrong-buft donor is simply never consumed (`donor_buffer_status().bound == False`) — the allocation loop falls through to normal `ggml_backend_alloc_ctx_tensors_from_buft`, never a partial bind.
+- No mutation happens unless a donor was explicitly registered — the default path (no `register_donor_buffer` call) is unchanged from pre-v48 behavior.
+- Sizing is the caller's responsibility: use a two-step flow (dry-run/query the required size, then allocate + register a correctly-sized, page-aligned buffer) rather than guessing ggml's internal alignment math.
+
+**Required load order:** `register_kv_overlay_donor(ptr, size)` → construct the context/model → (serve) → stop/unload → `unregister_kv_overlay_donor()`. Calling `unregister` while the context is still alive, or registering after construction, has no effect on an already-allocated cache (the donor is only consulted at construction time).
+
+**Non-goals (this slice):**
+- Metal/CUDA device-buffer donor — see v49 below, which shipped the Metal half of this; CUDA remains out of scope (no upstream primitive).
+- Any per-page/per-cell tensor mutation — see the "why abandoned" note above.
+- Automatic donor sizing — an incorrect guess at ggml's alignment/padding math would misallocate silently; the two-step query-then-register flow is required.
+
+**Operator probe:**
+
+```bash
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh   # asserts patches 0021/0022 + donor API symbols + allocation-loop wiring
+export ZEROLLAMA_KV_OVERLAY_BIND=1
+./scripts/phase/phase15_overlay_bind_cpu_smoke.sh   # CPU-only; asserts donor consumed + decode still correct + clean unregister
+curl -s :8081/health | jq '.kv_page_bind | {overlay_bind_enabled, overlay_bind_bound, overlay_bind_bytes}'
+```
+
+---
+
+### v49 ops — Metal device-buft donor consume (Jul 2026)
+
+**Why v48's "no upstream primitive for device memory" assumption was wrong for Metal:** v48 gated its donor-consume attempt on `ggml_backend_buft_is_host(buft)`, which is `false` for Metal's KV buft groups — `ggml_backend_buffer_is_host` gates whether the CPU backend can run compute ops directly against a buffer, unrelated to whether the *backing memory* happens to be host RAM. On Apple Silicon's unified memory architecture, GGML's Metal backend separately exposes `ggml_backend_dev_buffer_from_host_ptr()` (device capability `ggml_backend_dev_caps.buffer_from_host_ptr`), which wraps a host pointer as an `MTLBuffer` via `newBufferWithBytesNoCopy` + `MTLResourceStorageModeShared` — genuinely zero-copy. This is not new or experimental: `llama-model.cpp`'s mmap-weight-loading path (`llama_model::load_tensors`) already uses this exact primitive in production when `buffer_from_host_ptr_supported && is_default_buft`. CUDA does not implement this device iface slot (`buffer_from_host_ptr = NULL` — discrete VRAM has no unified-memory equivalent), so v49 is Metal-only in practice without needing an explicit CUDA exclusion; the capability check does that automatically.
+
+**The change:** `llama_kv_cache`'s allocation loop now tries a *second* consume path when the v48 CPU-host path doesn't apply: for any buft, resolve its `ggml_backend_dev_t` via `ggml_backend_buft_get_device(buft)`, and call a new hook (`llama_kv_ext_donor_try_consume_dev`) that checks `caps.buffer_from_host_ptr` before wrapping a registered donor via `ggml_backend_dev_buffer_from_host_ptr(dev, ptr, size, max_tensor_size)`. `max_tensor_size` is `ggml_get_max_tensor_size(ctx)` for the ctx being allocated — Metal splits donor buffers larger than the device's `max_buffer_size` into overlapping windows sized so no tensor straddles a window seam; this mirrors the exact argument `llama-model.cpp` passes at the same call site.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `llama_kv_ext_donor_try_consume_dev(dev, required_size, max_tensor_size)` | `llama-kv-ext.h` / `llama-memory-kv-ext.cpp` (C++-internal, not part of the C ABI) | Checks `ggml_backend_dev_get_props(dev).caps.buffer_from_host_ptr`; if true, tries the same donor registry v48 uses via `ggml_backend_dev_buffer_from_host_ptr` instead of `ggml_backend_cpu_buffer_from_ptr`. Returns `nullptr` for CUDA (capability false), unsupported devices, or no fitting donor. |
+| `llama_kv_cache`'s allocation loop, device branch | `llama-kv-cache.cpp` | Runs after the v48 host-buft branch, only if it didn't produce a buffer. Resolves `buft`'s device and calls the hook above; on a hit, the same view-aware tensor-placement code v48 introduced (handling `k_stream`/`v_stream` views correctly) now runs for either buffer source. |
+| Public C API (`register_donor_buffer` / `unregister_donor_buffer` / `donor_buffer_status`) | unchanged | v48 and v49 share the exact same registration API — callers do not choose CPU vs. Metal; whichever buft the model places a layer's KV cache on (driven by GPU offload / `n_gpu_layers`) determines which internal path consumes the donor. |
+| `/health.kv_page_bind.overlay_bind_*` | `page_bind.py` | Unchanged fields; now also reflect Metal-backed donor consumption, not just CPU. |
+
+**Verification (real model, full GPU offload, `n_gpu_layers=999`):** registered a 256 MiB donor before constructing a context with all 24 KV layers on `dev = MTL0`; log shows `llama_kv_cache: MTL0_Mapped KV buffer backed by external donor (zero-copy, 256.00 MiB)` (the `MTL0_Mapped` buffer-type name is GGML's own name for `ggml_backend_metal_buffer_type_mapped`, confirming the `buffer_from_host_ptr` path — not the normal Metal allocator — was used); `donor_buffer_status()` reported `{'bound': True, 'bytes_used': 6291456}`; greedy-decoded token IDs from an 8-token continuation were **byte-for-byte identical** to a normal (non-donor) fully-GPU-offloaded run of the same prompt.
+
+**Guardrails (same as v48, extended):**
+- The device branch only runs when the v48 host branch didn't already consume a donor for that buft group — no double-consumption.
+- `caps.buffer_from_host_ptr` is queried fresh per device; CUDA and any future backend without this capability transparently fall through to normal `ggml_backend_alloc_ctx_tensors_from_buft` allocation, identical to pre-v49 behavior.
+- No API or registration changes — v48-only callers (registering a donor with a CPU-only workload in mind) see no behavior change; the new path only activates when a model's KV layers land on a `buffer_from_host_ptr`-capable device buft (i.e. GPU offload on Metal).
+
+**Non-goals (this slice):**
+- CUDA device-buffer donor — no upstream primitive; unchanged from v48.
+- Non-Metal `IGPU`/other device types that might someday implement `buffer_from_host_ptr` are automatically supported by the capability check with no code changes required, but none are verified here.
+
+**Operator probe:**
+
+```bash
+./scripts/phase/phase15_llama_kv_ext_pin_check.sh   # now also asserts llama_kv_ext_donor_try_consume_dev wiring + ggml_backend_dev_buffer_from_host_ptr
+export ZEROLLAMA_KV_OVERLAY_BIND=1
+# register a donor, then load a model with n_gpu_layers > 0 (Metal); check consumption:
+curl -s :8081/health | jq '.kv_page_bind | {overlay_bind_enabled, overlay_bind_bound, overlay_bind_bytes}'
+```
+
+---
+
+### v50 ops — auto-wire overlay donor on in-process load (Jul 2026)
+
+**Why:** v48/v49 require a manual two-step register-before-load. Physical shared KV pages (L3-R6 / true RadixAttention) need the runtime to **own** the KV byte region first. v50 closes that gap for the in-process path without rewriting llama's cell allocator yet.
+
+**The change:** when `ZEROLLAMA_KV_OVERLAY_BIND=1` and auto is not disabled (`ZEROLLAMA_KV_OVERLAY_AUTO` defaults on), `LlamaLoadedSession` allocates a page-aligned host donor from a padded GGUF KV estimate (or exact `ZEROLLAMA_KV_OVERLAY_DONOR_BYTES`) and registers it **before** `llama_init_from_model`. Engine mirrors `overlay_donor_id` for `/health`. Undersized donors silently fall through to ggml alloc (`overlay_bind_bound=false`); oversized wastes RAM but is safe.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `prepare_auto_donor` / `estimate_overlay_donor_bytes` | `overlay_bind.py` | Size + allocate + register |
+| `LlamaLoadedSession._maybe_auto_wire_overlay_donor` | `libllama_ctypes.py` | Before shared or first single-seq ctx |
+| `overlay_bind_auto` on `/health.kv_page_bind` | `page_bind.py` | Operator visibility |
+| Radix `approx_copy_bytes_total` | `radix_prefix_share.py` | Observability for seq_cp cost until physical share |
+
+**Non-goals (this slice):** multi-seq shared cells / COW; CUDA device donor; replacing `seq_cp` with pointer share.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_KV_OVERLAY_BIND=1
+# optional exact size: export ZEROLLAMA_KV_OVERLAY_DONOR_BYTES=$((256<<20))
+# in-process load, then:
+curl -s :8081/health | jq '.kv_page_bind | {overlay_bind_enabled, overlay_bind_auto, overlay_bind_bound, overlay_bind_bytes}'
+```
+
+---
+
+### v51 ops — overlay donor page-offset catalog (Jul 2026)
+
+**Why:** v50 owns the KV byte region; L3-R6 still cannot share until PA pages are proven to be addressable ranges *inside* that donor. v51 is read-only geometry — no allocator rewrite, no `seq_cp` change.
+
+**The change:** when overlay bind is bound and the engine knows donor `ptr`/`size`, live `map_page` spans are checked for containment. `/health.kv_page_bind.overlay_page_catalog` carries a summary (`pages_checked`, `all_in_donor`, …); `/internal/kv-snapshot.overlay_page_catalog` includes per-page `k_offset`/`v_offset`/`block_id`.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `overlay_page_catalog.py` | runtime | `span_in_donor`, `page_donor_offsets`, `build_overlay_page_catalog` |
+| Engine donor ptr/size | `engine.py` | Mirrored from auto-wire handle or manual register |
+| Health summary | `page_bind.py` | Cap 8 pages; no full `pages[]` |
+| Snapshot full catalog | `engine._overlay_page_catalog_snapshot` | Loopback debug |
+
+**Non-goals:** skip `seq_cp`; `kv_unified`; PA host allocations; COW; CUDA donor.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_KV_OVERLAY_BIND=1
+# after in-process decode with page bind:
+curl -s :8081/health | jq '.kv_page_bind.overlay_page_catalog'
+curl -s :8081/internal/kv-snapshot | jq '.overlay_page_catalog | {all_in_donor, pages_checked, pages:[.pages[0]]}'
+```
+
+---
+
+### v52 ops — opt-in unified KV stream (Jul 2026)
+
+**Why:** v51 proved pages live inside the donor. Real L3-R6 share without rewriting llama's cell allocator is llama's existing path: `kv_unified=true` → `n_stream=1` → same-stream `seq_cp` is **metadata-only** (`cells.seq_add`). Default stays off — concurrent long independent contexts compete for one cell pool.
+
+**The change:** `ZEROLLAMA_KV_UNIFIED=1` sets `cparams.kv_unified` on in-process multi-seq shared ctx. Overlay donor estimate uses `streams=1`. In-process Radix `seq_cp` hardened to full-range (`-1,-1`) then trim (matches llama-server). Health/trace report `kv_unified` + `seq_cp_mode` (`metadata` | `buffer_copy`).
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `kv_unified_enabled()` | `env.py` | Opt-in gate (default off) |
+| `LlamaLoadedSession._init_shared_context` | `libllama_ctypes.py` | Set `cparams.kv_unified` |
+| Donor estimate | `overlay_bind.py` | `streams=1` when unified |
+| `copy_sequence_prefix_inprocess` | `radix_seq_copy.py` | Full-range + trim |
+| `/health.kv_resume.kv_unified` + radix `seq_cp_mode` | engine / radix health | Operator visibility |
+
+**Non-goals:** making unified the default; idle-slot purge parity; COW; CUDA donor. (Subprocess argv → **v53**.)
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_KV_UNIFIED=1
+export ZEROLLAMA_RADIX_PREFIX_SHARE=1
+# in-process, n_parallel>1, after Radix seed:
+curl -s :8081/health | jq '{kv_unified: .kv_resume.kv_unified, radix: .kv_resume.prefix_block_pool.radix_share | {kv_unified, seq_cp_mode}}'
+```
+
+---
+
+### v53 ops — subprocess `--kv-unified` argv (Jul 2026)
+
+**Why:** v52 only set `cparams.kv_unified` for in-process. L3 agent / Radix live path is **subprocess** (`l3_agent_subprocess.yaml`). Without argv, `ZEROLLAMA_KV_UNIFIED=1` was a no-op for the real agent path and `/health` could claim metadata share while the child still used multi-stream buffer copy.
+
+**The change:** when `ZEROLLAMA_KV_UNIFIED=1`, `_llama_server_start_args` appends `--kv-unified` via `with_llama_kv_unified`. Existing `-kvu` / `--kv-unified` is left alone; `--no-kv-unified` / `-no-kvu` in `LLAMA_SERVER_EXTRA_ARGS` wins (operator override).
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `with_llama_kv_unified` | `llama_args.py` | Inject / respect override |
+| `_llama_server_start_args` | `engine.py` | Call after cache argv |
+| Vendor idle clear | llama-server | Free once unified is on (`try_clear_idle_slots`) |
+
+**Non-goals:** default-on; agent-profile auto-enable; in-process idle-slot purge; COW.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_L3_PROFILE=agent
+export ZEROLLAMA_KV_UNIFIED=1
+# child argv / server log should show kv_unified; Radix seq_cp_mode=metadata
+curl -s :8081/health | jq '.kv_resume | {kv_unified, radix: .prefix_block_pool.radix_share.seq_cp_mode}'
+```
+
+---
+
+### v54 ops — YAML `l3.kv_unified` + agent profile opt-in (Jul 2026)
+
+**Why:** v53 wired subprocess argv, but agent fleets still needed a second env (`ZEROLLAMA_KV_UNIFIED=1`) after `ZEROLLAMA_L3_PROFILE=agent`. Closing that without flipping global defaults.
+
+**The change:** `l3.kv_unified` in YAML (same env-wins pattern as `radix_share`). `l3_agent_subprocess.yaml` sets `kv_unified: true`. `/health` exposes `kv_unified_note` sizing advisory when on. Explicit `ZEROLLAMA_KV_UNIFIED=0` still kills.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `L3Settings.kv_unified` | `env.py` | YAML field |
+| `kv_unified_enabled()` | `env.py` | tri-state env → YAML |
+| `l3_agent_subprocess.yaml` | configs | Profile opt-in |
+| `kv_unified_note` | health / radix | Shared-pool sizing advisory |
+
+**Non-goals:** global default-on; `kv_unified = radix_share` coupling; numeric undersize fail; COW.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_L3_PROFILE=agent
+# no ZEROLLAMA_KV_UNIFIED needed — YAML enables unified
+curl -s :8081/health | jq '.kv_resume | {kv_unified, kv_unified_note}'
+```
+
+### v55 ops — unified sizing probe + default-on criteria (Jul 2026)
+
+**Why:** v54 made agent fleets unified-by-YAML, but operators still had only a prose note for shared-pool sizing. Before any global default-on, health must show a **numeric** risk signal; flipping non-agent defaults without that would strand fleets on undersized `-c`.
+
+**The change:** `kv_unified_sizing_status(n_ctx, n_parallel)` → `/health.kv_resume.kv_unified_sizing` when unified is on. Soft floor: `n_parallel × ZEROLLAMA_KV_UNIFIED_MIN_TOKENS_PER_SLOT` (default **512**). `ok: false` is advisory only — **no admit reject**. Documents when global default-on would be allowed (still **not** flipped).
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `kv_unified_sizing_status` | `env.py` | Probe dict |
+| `kv_unified_min_tokens_per_slot` | `env.py` | Floor override |
+| `/health.kv_resume.kv_unified_sizing` | engine | Operator visibility |
+
+**Default-on criteria (all required; none flip defaults yet):**
+
+1. Agent profile live Radix smoke PASS with `seq_cp_mode=metadata`
+2. Post-load `/health.kv_unified_sizing.ok == true` under agent `-np` / `-c`
+3. Kill-switch (`ZEROLLAMA_KV_UNIFIED=0` / `--no-kv-unified`) verified in docs + smoke
+4. Idle purge **done (v57)**; radix→unified couple **done (v58)**. Still deferred before non-agent default-on: true COW on diverge (llama cell allocator); v56 strict admit remains opt-in
+
+**Non-goals:** global default-on; hard admit fail on undersize; COW; `kv_unified = radix_share` coupling.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_L3_PROFILE=agent
+# after model load:
+curl -s :8081/health | jq '.kv_resume.kv_unified_sizing'
+```
+
+---
+
+### v56 ops — opt-in strict unified sizing (Jul 2026)
+
+**Why:** v55 made undersize visible; fleets that want fail-closed load (CI / agent gate) still needed an explicit hard reject. Default stays advisory so casual `L3_PROFILE=agent` hosts are not bricked by a tight `-c`.
+
+**The change:** `ZEROLLAMA_KV_UNIFIED_STRICT=1` → `assert_kv_unified_sizing` raises `KvUnifiedSizingError` before subprocess argv start and before in-process `llama_init_from_model`. Same soft floor as v55. Health `kv_unified_sizing.strict` mirrors the env. Unknown `n_ctx` does not fail closed.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `kv_unified_strict_sizing_enabled` | `env.py` | Opt-in gate (default off) |
+| `assert_kv_unified_sizing` / `KvUnifiedSizingError` | `env.py` | Fail-closed check |
+| `_llama_server_start_args` | `engine.py` | Subprocess path |
+| `_init_shared_context` | `libllama_ctypes.py` | In-process path |
+
+**Non-goals:** default-on strict; auto-bump `-c`; COW; idle-slot purge.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_L3_PROFILE=agent
+export ZEROLLAMA_KV_UNIFIED_STRICT=1
+# undersized -c should fail at load with KvUnifiedSizingError
+```
+
+---
+
+### v57 ops — in-process idle-slot purge under unified KV (Jul 2026)
+
+**Why:** Subprocess already clears idle slots when unified KV is full (`try_clear_idle_slots`). In-process multi-seq kept idle cells forever under L3 resume, so a shared pool could starve the next decode. Closing that gap without COW.
+
+**The change:** on ctypes `llama_decode` failure with `kv_unified`, clear **one** idle seq (largest `token_cells`, never the active seq), drop its `_seq_last_owner`, bump decode-graph epoch, retry decode once. Default on under unified; kill-switch `ZEROLLAMA_KV_UNIFIED_IDLE_PURGE=0`. Health: `/health.kv_resume.kv_unified_idle_purge`.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `idle_slot_purge.py` | `runtime/kv/` | try/clear + decode wrapper + counters |
+| `_decode_stream` | `libllama_ctypes.py` | ctypes decode paths |
+| `/health.kv_unified_idle_purge` | engine | Operator visibility |
+
+**Non-goals:** proactive purge every request; native C decode-loop purge; COW; `--cache-idle-slots` argv (vendor default when cache-ram set).
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_L3_PROFILE=agent
+# in-process multi-seq: after a pressure decode
+curl -s :8081/health | jq '.kv_resume.kv_unified_idle_purge'
+```
+
+---
+
+### v58 ops — Radix→unified couple (Jul 2026)
+
+**Why:** Full COW-on-diverge still needs an upstream cell-allocator rewrite (`TAG_KV_CACHE_SHARE_CELLS`). The immediate footgun was Radix with multi-stream buffer-copy `seq_cp` while health claimed share. Coupling unified when Radix is on closes that without claiming page-level COW.
+
+**The change:** `kv_unified_enabled()` is true when (in order) env on, YAML `l3.kv_unified`, or Radix on with `ZEROLLAMA_KV_UNIFIED_WITH_RADIX` (default **true**). Explicit `ZEROLLAMA_KV_UNIFIED=0` wins. Health exposes `kv_unified_source` (`env` | `yaml` | `radix_couple` | `off`).
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `kv_unified_source` / `kv_unified_with_radix_enabled` | `env.py` | Couple + observability |
+| `/health.kv_resume.kv_unified_source` | engine | Operator visibility |
+
+**Non-goals:** true COW on diverge; non-agent global default-on; flipping `l3.kv_unified` into every non-agent YAML.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_RADIX_PREFIX_SHARE=1
+# no ZEROLLAMA_KV_UNIFIED needed — couple enables unified
+curl -s :8081/health | jq '.kv_resume | {kv_unified, kv_unified_source}'
+# decouple:
+export ZEROLLAMA_KV_UNIFIED_WITH_RADIX=0
+```
+
+---
+
+### v59 ops — L3-R6 metadata-path readiness (Jul 2026)
+
+**Why:** v50–v58 closed the practical shared-prefix path (unified metadata `seq_cp`). Operators and ROADMAP needed an explicit **Done vs deferred** split: metadata RadixAttention is shippable; full tensor/page COW-on-diverge is not.
+
+**The change:** `l3_r6_metadata_readiness()` → `/health.kv_resume.l3_r6_metadata` with `complete` + per-check flags + `deferred` list + `kv_cow` / `l3_r6b`. Does **not** flip any defaults.
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `l3_r6_readiness.py` | `runtime/kv/` | Probe |
+| `/health.kv_resume.l3_r6_metadata` | engine | Operator visibility |
+| patch **0089** | `llama/patches/` | Cell + tensor + used-cell pages COW |
+
+**L3-R6a (metadata) Done when `complete: true`:** unified on, Radix⇒metadata `seq_cp`, idle purge ready, strict sizing not failing.
+
+**L3-R6b Done:** `ZEROLLAMA_KV_COW` + `_TENSORS` + `_PAGES` (or agent YAML). Used-cell-range copy on diverge; allocation still full `kv_size`.
+
+**Operator probe:**
+
+```bash
+export ZEROLLAMA_L3_PROFILE=agent
+curl -s :8081/health | jq '.kv_resume.l3_r6_metadata | {kv_cow, kv_cow_tensors, kv_cow_pages, l3_r6b}'
+```
+
+---
+
+### L3-R7 — federated LMCache slot blobs (Jul 2026)
+
+**Why:** Redis/file metadata (L3-R4) could not pull KV bytes. Shared-FS content-addressed blobs let a cold node restore a prefix without a live donor `seq_cp`.
+
+**The change:** on `register_prefix`, publish `slot_*.bin` → `{lmcache_root}/blobs/{aa}/{digest}.bin` and store `blob_digest` on the tier record. On Radix miss (or failed seq_cp), `find_blob_restore_plan` → materialize → in-process load / subprocess slot path.
+
+| Piece | Location |
+|-------|----------|
+| `lmcache_blob.py` | publish / materialize / health |
+| `blob_digest` | `LMCacheBlockRecord`, `PrefixBlockEntry` |
+| `find_blob_prefix` | `prefix_block_pool.py` |
+| `radix_blob_restore.py` | plan + execute |
+| engine `_apply_blob_restore` | admission fallback |
+
+**Env:** `ZEROLLAMA_LMCACHE_BLOBS` (default on with tier); `ZEROLLAMA_LMCACHE_BLOB_ROOT` required alongside `redis://` metadata.
+
+**Non-goals:** NIXL/Mooncake RDMA; cross-node VRAM share.
+
+```bash
+export ZEROLLAMA_LMCACHE_URI=file:///shared/lmcache
+# or: redis://… + ZEROLLAMA_LMCACHE_BLOB_ROOT=/shared/lmcache/blobs
+curl -s :8081/health | jq '.kv_resume.prefix_block_pool.lmcache_blobs'
+```
+
+### L3-R10 — HTTP peer blob pull (Jul 2026)
+
+**Why:** Shared FS is not always available across fleet nodes. HTTP digest pull closes cold restore without NIXL.
+
+**The change:** `GET /kv/blob/{digest}` on the runtime; Go proxies `GET /api/kv/blob/{digest}`. On local miss, `materialize_blob` calls `fetch_blob_from_peers` (`ZEROLLAMA_LMCACHE_BLOB_PEERS`).
+
+| Piece | Location |
+|-------|----------|
+| `lmcache_blob_http.py` | peer list, pull, token, health |
+| `materialize_blob` peer miss | `lmcache_blob.py` |
+| Runtime route | `server/app.py` `GET /kv/blob/{digest}` |
+| Go proxy | `server/runtime_kv_blob.go` |
+
+**Env:** `ZEROLLAMA_LMCACHE_BLOB_PEERS`; `ZEROLLAMA_LMCACHE_BLOB_HTTP` (default on with blobs); optional `ZEROLLAMA_LMCACHE_BLOB_HTTP_TOKEN`.
+
+```bash
+# On each cold node:
+export ZEROLLAMA_LMCACHE_BLOB_PEERS=http://192.168.1.11:11434,http://192.168.1.12:11434
+# Optional shared secret on all peers:
+export ZEROLLAMA_LMCACHE_BLOB_HTTP_TOKEN=…
+curl -s :8081/health | jq '.kv_resume.prefix_block_pool.lmcache_blobs.http'
+```
 
 ---
 
@@ -920,6 +1315,20 @@ curl -s http://127.0.0.1:8080/internal/kv-snapshot | python3 -m json.tool
 | `RUN_P15_AUTO_BATCH_ALL` | off | v45: both auto-batch smokes + export env before multiseq sidecar restart |
 | `RUN_E2E_PHASE15_AUTO_BATCH` | off | v46: with `RUN_E2E_PHASE15=1` on 5080 session — sets `RUN_P15_AUTO_BATCH_ALL` |
 | `PHASE15_AUTO_BATCH_SIGNOFF` | off | v45: alias — sets both `ZEROLLAMA_KV_AUTO_BATCH*` on sidecar boot (sign-off scripts) |
+| `ZEROLLAMA_KV_OVERLAY_BIND` | off | v48/v49/v50: opt-in donor-buffer overlay bind (CPU host and Metal device bufts) — required for registration / auto-wire |
+| `ZEROLLAMA_KV_OVERLAY_AUTO` | on (when BIND=1) | v50: auto-allocate/register donor on in-process load; set `0` for manual-only |
+| `ZEROLLAMA_KV_OVERLAY_DONOR_BYTES` | (estimate) | v50: exact donor size override (page-aligned); skips GGUF estimate |
+| `ZEROLLAMA_KV_UNIFIED` | off (YAML may on) | v52–v58: unified KV — in-process + subprocess; YAML / radix couple; env wins; size `n_ctx` for sum of live tokens |
+| `ZEROLLAMA_KV_UNIFIED_MIN_TOKENS_PER_SLOT` | 512 | v55: soft floor for `/health.kv_unified_sizing` (`n_parallel × floor`) |
+| `ZEROLLAMA_KV_UNIFIED_STRICT` | off | v56: hard fail load when unified and `n_ctx` below soft floor |
+| `ZEROLLAMA_KV_UNIFIED_IDLE_PURGE` | on (under unified) | v57: in-process idle seq clear on decode fail; set `0` to disable |
+| `ZEROLLAMA_KV_UNIFIED_WITH_RADIX` | on | v58: when Radix on, couple `kv_unified`; `0` decouples |
+| `ZEROLLAMA_LMCACHE_BLOBS` | on (w/ tier) | L3-R7: publish/pull content-addressed slot blobs; `0` disables |
+| `ZEROLLAMA_LMCACHE_BLOB_ROOT` | (file://…/blobs) | L3-R7: required with redis:// metadata for shared blob tree |
+| `ZEROLLAMA_LMCACHE_BLOB_HTTP` | on (w/ blobs) | L3-R10: serve/pull blobs over HTTP; `0` disables |
+| `ZEROLLAMA_LMCACHE_BLOB_PEERS` | (empty) | L3-R10/R11: comma-separated peer bases; falls back to `ZEROLLAMA_FLEET_PEERS` + Go coordination |
+| `ZEROLLAMA_LMCACHE_BLOB_HTTP_TOKEN` | (empty) | L3-R10: optional Bearer / `X-Zerollama-Blob-Token` gate |
+| (Go) `prefixblock` | — | L3-R11: compute `prefix_block_hashes` for fleet assign (matches Python) |
 | `llama_parallel_slots` / `-np` | yaml / argv | Slot allocator + in-process `n_seq_max` (**argv wins**) |
 | (build) | — | `cd runtime && python3 setup.py build_ext --inplace` |
 
@@ -935,8 +1344,8 @@ export ZEROLLAMA_RUNTIME_KV_NATIVE=1
 
 # Tests + smokes (no GPU)
 cd ..
-./scripts/phase15_kv_native_ci.sh      # includes phase15_health_smoke.sh
-./scripts/phase15_health_smoke.sh      # /health KV keys only
+./scripts/phase/phase15_kv_native_ci.sh      # includes phase15_health_smoke.sh
+./scripts/phase/phase15_health_smoke.sh      # /health KV keys only
 
 # With serve (embed or sidecar):
 export ZEROLLAMA_RUNTIME_KV_NATIVE=1
@@ -947,7 +1356,7 @@ curl -s http://127.0.0.1:8081/internal/kv-snapshot | python3 -m json.tool | head
 # GPU in-process (needs LLAMA_CPP_LIB + small GGUF):
 export LLAMA_MODEL=/path/to/small.q8_0.gguf
 export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
-./scripts/phase15_inprocess_signoff.sh
+./scripts/phase/phase15_inprocess_signoff.sh
 ```
 
 ---
@@ -956,12 +1365,12 @@ export LLAMA_CPP_LIB=$HOME/llama.cpp/build/bin/libllama.so
 
 | Script | Role |
 |--------|------|
-| `scripts/phase15_kv_native_ci.sh` | `build_ext --inplace` + KV pytest + `phase15_health_smoke.sh` |
-| `scripts/phase15_health_smoke.sh` | Engine `/health` KV key assertions (no GPU) |
-| `scripts/phase15_inprocess_signoff.sh` | GPU: KV decode hook + multi-seq (self-contained; needs `LLAMA_CPP_LIB`) |
-| `scripts/phase15_batch_decode_smoke.sh` | GPU: continuous batch decode via `POST /internal/generate-batch` (needs multiseq sidecar) |
-| `scripts/phase15_inprocess_kv_smoke.sh` | GPU: single-seq decode hook only |
-| `scripts/phase15_inprocess_multiseq_smoke.sh` | GPU: `llama_parallel_slots: 2` |
+| `scripts/phase/phase15_kv_native_ci.sh` | `build_ext --inplace` + KV pytest + `phase15_health_smoke.sh` |
+| `scripts/phase/phase15_health_smoke.sh` | Engine `/health` KV key assertions (no GPU) |
+| `scripts/phase/phase15_inprocess_signoff.sh` | GPU: KV decode hook + multi-seq (self-contained; needs `LLAMA_CPP_LIB`) |
+| `scripts/phase/phase15_batch_decode_smoke.sh` | GPU: continuous batch decode via `POST /internal/generate-batch` (needs multiseq sidecar) |
+| `scripts/phase/phase15_inprocess_kv_smoke.sh` | GPU: single-seq decode hook only |
+| `scripts/phase/phase15_inprocess_multiseq_smoke.sh` | GPU: `llama_parallel_slots: 2` |
 | `.github/workflows/zerollama-regression.yaml` | Runtime pytest; native tests **skip** if `.so` missing |
 
 Optional self-hosted: run `phase15_kv_native_ci.sh` after building the extension on the runner.

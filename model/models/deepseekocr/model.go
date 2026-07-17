@@ -1,6 +1,7 @@
 package deepseekocr
 
 import (
+	"fmt"
 	"math"
 	"slices"
 
@@ -31,9 +32,24 @@ type Model struct {
 var _ model.PrecomputedMultimodalIngest = (*Model)(nil)
 
 func (m *Model) EncodeMultimodal(ctx ml.Context, bts []byte) ([]input.Multimodal, error) {
+	if m.Sam == nil || m.Vision == nil || m.Projector == nil {
+		return nil, model.ErrNoVisionModel
+	}
 	patches, original, crop, err := ProcessImage(ctx, bts)
 	if err != nil {
 		return nil, err
+	}
+	return m.multimodalFromPatches(ctx, patches, original, crop)
+}
+
+// multimodalFromPatches runs SAM + CLIP + projector on local crop tiles and the global canvas.
+// crop is [cols, rows] matching ProcessImage.
+func (m *Model) multimodalFromPatches(ctx ml.Context, patches, original ml.Tensor, crop []int) ([]input.Multimodal, error) {
+	if len(crop) != 2 || crop[0] <= 0 || crop[1] <= 0 {
+		return nil, fmt.Errorf("deepseekocr: invalid crop %v", crop)
+	}
+	if m.ImageNewline == nil || m.ViewSeperator == nil {
+		return nil, fmt.Errorf("deepseekocr: missing mm.image_newline or mm.view_seperator")
 	}
 
 	var outputs []ml.Tensor

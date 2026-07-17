@@ -24,6 +24,7 @@
 | **Warm-target Radix catch-up (L3-R2)** | `verify_target_slot_prefix` + donor search past target blocks | Agent thread extended shared prefix while donor already holds longer KV |
 | **Ref-count block DAG (L3-R3)** | `holder_slots` + `release_slot_holders` + `_best_donor_from_chain` | Overlapping slot registrations; pick longest donor chain from token 0 |
 | **Hybrid Radix gate (L3-R5)** | `radix_seq_copy_policy.py` + `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | v1 skipped all hybrid; Gemma full+SWA safe when copy ≤ window; attn+recurrent keeps kill-switch |
+| **Marconi × retention preservation** | Radix window-only gate; try Radix even when full-prompt `cache_prompt` denied | vLLM #47782: selective retention must not kill shared-system-prefix hits; retention is same-slot resume, not donor `seq_cp` |
 
 ---
 
@@ -36,6 +37,8 @@
 | Fleet / cross-node Radix donor | Donor must be same llama-server process — **why:** KV in VRAM; fleet layer routes warm model, not shared-prefix residency |
 | `CUDAGraphDispatcher` + capture handles | ggml internal capture; stub `DecodeGraphCache.lookup` until upstream API — invalidation after Radix seed is wired |
 | Scheduler KV preemption loop | LocalAI watchdog + slot allocator; not vLLM-style block preempt yet |
+| KV-cache **admission watermark** (`free_blocks ≥ needed + watermark`) | Skip — zerollama pre-reserves full prompt+`max_tokens`/`num_ctx` and caps concurrency with fixed `n_parallel` slots; Phase 11 `VRAM_MIN_FREE` is the headroom policy. Revisit if PA allocates mid-decode. |
+| Partial hybrid prefix hits (`hash_block_size` < physical block) | Needs physical pages + COW; our Radix still full-sequence `seq_cp` |
 
 ---
 
@@ -70,7 +73,7 @@
 | **In-process** (`ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess`) | `bump_decode_graph_epoch(..., ctx_ptr=…)` → native/ctypes → `llama_context_cuda_graph_invalidate` | Runtime owns `llama_context` in-process |
 | **Subprocess** (default) | `bump_decode_graph_epoch(..., base_url=…)` → `POST /cuda-graph/invalidate` | llama-server child owns `ctx_tgt`; ctypes from Python would target the wrong address space |
 
-Rebuild llama-server after pull so the HTTP route exists: `./scripts/build_llama_server.sh`.
+Rebuild llama-server after pull so the HTTP route exists: `./scripts/build/build_llama_server.sh`.
 
 ---
 

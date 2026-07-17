@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 17 Jul 2026 09:49:33 -0700
+Subject: [PATCH] common: register Eliza L2 KV cache types and -cpent
+
+---
+ common/arg.cpp  | 7 +++++++
+ common/common.h | 1 +
+ 2 files changed, 8 insertions(+)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index d2f89989..2568f8bf 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1515,6 +1515,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.n_ctx_checkpoints = value;
+         }
+     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
++    add_opt(common_arg(
++        {"-cpent", "--checkpoint-every-n-tokens"}, "N",
++        string_format("create a checkpoint every n tokens during prefill (processing), -1 to disable (default: %d)", params.checkpoint_every_nt),
++        [](common_params & params, int value) {
++            params.checkpoint_every_nt = value;
++        }
++    ).set_env("LLAMA_ARG_CHECKPOINT_EVERY_NT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"-cms", "--checkpoint-min-step"}, "N",
+         string_format("minimum spacing between context checkpoints in tokens (default: %d, 0 = no minimum)", params.checkpoint_min_step),
+diff --git a/common/common.h b/common/common.h
+index bffc1767..95dcc976 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -624,6 +624,7 @@ struct common_params {
+     bool    cache_idle_slots    = true;  // save and clear idle slots upon starting a new task
+     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
+     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
++    int32_t checkpoint_every_nt = 8192;  // L2 fork: checkpoint every n tokens during prefill (-1 disable)
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+ 
+     std::string hostname      = "127.0.0.1";

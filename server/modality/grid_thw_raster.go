@@ -3,7 +3,9 @@ package modality
 import "github.com/ollama/ollama/api"
 
 // GridTHWPerRaster returns optional [1,H,W] per entry in msg.Images (parallel slice).
-// Still-image rasters get nil; each video frame inherits H,W from its VideoSpans clip grid when GridTHWExplicit.
+// Still-image rasters get nil; each video frame inherits H,W from its VideoSpans clip grid.
+// Forwards both client-explicit and server ffmpeg estimates — M-RoPE paths honor the hint
+// (skip smart_resize); other families ignore. GridTHWExplicit remains observability only.
 func GridTHWPerRaster(msg api.Message) [][]int {
 	n := len(msg.Images)
 	if n == 0 {
@@ -22,7 +24,7 @@ func GridTHWPerRaster(msg api.Message) [][]int {
 
 	frameIdx := still
 	for _, sp := range msg.VideoSpans {
-		if len(sp.GridTHW) != 3 || sp.GridTHW[1] <= 0 || sp.GridTHW[2] <= 0 || !sp.GridTHWExplicit {
+		if len(sp.GridTHW) != 3 || sp.GridTHW[1] <= 0 || sp.GridTHW[2] <= 0 {
 			frameIdx += sp.FrameCount
 			continue
 		}

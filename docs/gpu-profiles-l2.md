@@ -2,7 +2,7 @@
 
 **Audience:** Contributors evaluating TurboQuant / QJL / PolarQuant profile wins on the **unified** `llama-server` binary.
 
-**Related:** [gpu-profiles-l1.md](./gpu-profiles-l1.md), [ROADMAP — L2](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), [phase17-llama-server.md](./phase17-llama-server.md), [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
+**Related:** [gpu-profiles-l1.md](./gpu-profiles-l1.md), [ROADMAP — L2](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), [phase17-llama-server.md](./phase17-llama-server.md), [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md), [llama-fork-watchlist.md](./llama-fork-watchlist.md) (RotorQuant / BeeLlama cherry-pick labs).
 
 ---
 
@@ -25,7 +25,7 @@ L2 gates compare **profile modes on the same binary**, not stock vs fork sibling
 
 L1 ships **tuned flags on q8_0** by default. Eliza-v3’s largest wins — **QJL K-cache**, **PolarQuant V-cache**, **TurboQuant** — need fork cache types enabled at runtime. L2 measures whether fork profiles beat L1 on your GPU before we flip defaults.
 
-**In-process ggml** shares the same **ggml-org pin + Ollama/zerollama patches** as the runtime vendor (`vendor/llama-cpp-<FETCH_HEAD>/` → sync). Rebase: `./scripts/rebase_vendor_unified.sh --sync`.
+**In-process ggml** shares the same **ggml-org pin + Ollama/zerollama patches** as the runtime vendor (`vendor/llama-cpp-<FETCH_HEAD>/` → sync). Rebase: `./scripts/vendor/rebase_vendor_unified.sh --sync`.
 
 ---
 
@@ -37,7 +37,7 @@ L1 ships **tuned flags on q8_0** by default. Eliza-v3’s largest wins — **QJL
 | Ref (Jul 2026) | `8f114a9b…` (`LLAMA_CPP_COMMIT` / `Makefile.sync` `FETCH_HEAD`) |
 | QJL/Polar/TBQ | Patches **0026–0030** (+ follow-ups) on the ggml-org vendor tree — not a separate elizaOS checkout |
 | Sibling tree | `../llama.cpp` optional; prefer `vendor/llama-cpp-<pin>/` when built |
-| Build | `./scripts/build_llama_server.sh` |
+| Build | `./scripts/build/build_llama_server.sh` |
 
 **Still measured as L2:** enabling fork **profiles** (`ZEROLLAMA_LLAMA_FORK` → `qjl1_256` / `q4_polar`) vs L1 `q8_0`. Kernel extraction ≠ default-on.
 
@@ -87,7 +87,7 @@ Stored in `runtime/configs/gpu/*.json` under `_eliza_fork_llama_server_flags` (a
 
 ```bash
 # 1. Build unified sibling (Metal)
-./scripts/build_llama_server.sh
+./scripts/build/build_llama_server.sh
 
 # 2. Point runtime at binary; fork profiles auto-probe from --help
 export LLAMA_CPP_ROOT=$PWD/../llama.cpp
@@ -96,28 +96,28 @@ export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.dylib
 export ZEROLLAMA_LLAMA_FORK=1   # or omit: auto-probes when binary set
 
 # 3. Smoke probe + profile argv
-./scripts/l2_fork_eval.sh
+./scripts/phase/l2_fork_eval.sh
 
 # 4. Metal A/B benchmark (L1 vs fork profiles, same binary)
-M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_metal_bench.sh
+M3_LLAMA_MODEL=/path/to/model.gguf ./scripts/phase/l2_metal_bench.sh
 # Output: L2_METAL_BENCH_OUT=/tmp/l2-metal-bench.json (default)
 
 # 5. Runtime subprocess compat (L1 + fork profile legs)
-./scripts/l2_runtime_compat_smoke.sh
+./scripts/phase/l2_runtime_compat_smoke.sh
 
 # 6. Full gate (eval + compat + bench + verdict)
-L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh
+L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/phase/l2_full_gate.sh
 # 131k leg: fork-only, L2_HIGH_CTX_WARMUPS=2 decode warmups before timed runs
 
 # 7. Serve / sign-off
-./scripts/m3_metal_signoff.sh
+./scripts/phase/m3_metal_signoff.sh
 ```
 
 ### Linux / CUDA (RTX 5080-class)
 
 ```bash
 # 1. Build unified sibling (CUDA)
-./scripts/build_llama_server.sh
+./scripts/build/build_llama_server.sh
 # Headless container: LLAMA_BUILD_WEBUI=OFF (default on Linux via build script)
 
 # 2. Point runtime at binary
@@ -127,24 +127,24 @@ export LLAMA_CPP_LIB=$LLAMA_CPP_ROOT/build/bin/libllama.so    # .so on Linux
 export ZEROLLAMA_LLAMA_FORK=1
 
 # 3. Smoke probe + profile argv
-./scripts/l2_fork_eval.sh
+./scripts/phase/l2_fork_eval.sh
 
 # 4. CUDA A/B benchmark (L1 vs fork profiles, same binary)
-CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_bench.sh
+CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/phase/l2_cuda_bench.sh
 # Output: L2_CUDA_BENCH_OUT=/tmp/l2-cuda-bench.json (default)
 # Absolute decode at long ctx (no Python sidecar — preferred for tok/s):
-CUDA_LLAMA_MODEL=/path/to.gguf L2_NUM_CTX=131072 ./scripts/l2_cuda_direct_bench.sh
+CUDA_LLAMA_MODEL=/path/to.gguf L2_NUM_CTX=131072 ./scripts/phase/l2_cuda_direct_bench.sh
 # Output: L2_CUDA_DIRECT_OUT=/tmp/l2-cuda-direct-bench.json
 
 # 5. Runtime compat smoke (Linux variant — uses linux_runtime_serve_lib + .so)
-CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/l2_cuda_runtime_compat_smoke.sh
+CUDA_LLAMA_MODEL=/path/to/model.gguf ./scripts/phase/l2_cuda_runtime_compat_smoke.sh
 
 # 6. Full CUDA gate (eval + compat + bench legs + verdict)
-L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
+L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/phase/l2_cuda_full_gate.sh
 # 131k leg: fork-only, L2_HIGH_CTX_WARMUPS=2 decode warmups before timed runs
 
 # 7. Serve / sign-off
-./scripts/gpu_5080_session.sh
+./scripts/gpu/gpu_5080_session.sh
 ```
 
 **Env:**
@@ -153,10 +153,15 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 |----------|--------|
 | `ZEROLLAMA_LLAMA_FORK=1` | Force fork profile merge (checkpoints + KV types) |
 | `ZEROLLAMA_LLAMA_FORK=0` | Force stock sanitize (L1 default) |
-| *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for fork KV markers |
+| *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for fork KV markers (unless `AUTO_VRAM` below) |
+| `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1` | When `FORK` unset: enable fork **only if** configured ctx ≥ threshold (TBQ via `FORK_PROFILE=vram`) |
+| `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX` | Threshold for `AUTO_VRAM` (default **32768**) |
+| `ZEROLLAMA_RUNTIME_VRAM_NUM_CTX` / `ZEROLLAMA_LLAMA_CTX` / `LLAMA_ARG_CTX_SIZE` | Configured ctx hint for `AUTO_VRAM` (missing → auto stays off) |
 | `ZEROLLAMA_LLAMA_FORK_PROFILE=vram` | **Default** when fork on — TBQ (`_eliza_fork_vram_*`) |
 | `ZEROLLAMA_LLAMA_FORK_PROFILE=speed` | QJL/Polar (`_eliza_fork_*`) — experimental; large CUDA tok/s hit |
 | `LLAMA_CPP_ROOT` / `LLAMA_CPP_COMMIT` | Override clone path / commit (`ensure_llama_cpp_sibling.sh`) |
+
+YAML (`serve:`): `llama_fork_auto_vram` / `llama_fork_auto_vram_ctx` map into the env vars above (same as `llama_fork` / `llama_fork_profile`).
 
 ---
 
@@ -167,33 +172,41 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_cuda_full_gate.sh
 | `runtime/llama_fork.py` | Fork detection (env + binary probe) |
 | `runtime/gpu_profiles.py` | `_eliza_fork_*` / `_eliza_fork_vram_*` merge via `ZEROLLAMA_LLAMA_FORK_PROFILE`; emit `--ctx-checkpoints` when present |
 | `/health` | `llama_fork` object + `gpu_profile.llama_fork` + `llama_fork_profile` |
-| `scripts/build_llama_server.sh` | Unified runtime build (elizaOS base @ LLAMA_CPP_COMMIT) |
-| `scripts/build_eliza_llama_server.sh` | Deprecated alias → `build_llama_server.sh` |
-| `scripts/l2_fork_eval.sh` | Probe + pytest smoke |
-| `scripts/l2_metal_bench.sh` | Darwin A/B: L1 vs fork profiles (same binary) |
-| `scripts/l2_cuda_bench.sh` | Linux/CUDA A/B: L1 vs fork profiles (same binary) |
-| `scripts/l2_runtime_compat_smoke.sh` | Darwin subprocess compat: L1 + fork profile legs |
-| `scripts/l2_cuda_runtime_compat_smoke.sh` | Linux subprocess compat: mirrors compat smoke with `.so` + `linux_runtime_serve_lib` |
-| `scripts/l2_gate_report.sh` | Verdict from one or more bench JSON files |
-| `scripts/l2_full_gate.sh` | Darwin gate orchestrator: eval + compat + bench legs + report |
-| `scripts/l2_cuda_full_gate.sh` | CUDA gate orchestrator: same structure as Metal gate |
-| `scripts/linux_runtime_serve_lib.sh` | Shared sidecar start/stop helpers for Linux (mirrors `macos_runtime_serve_lib.sh`) |
+| `scripts/build/build_llama_server.sh` | Unified runtime build (ggml-org vendor @ LLAMA_CPP_COMMIT) |
+| `scripts/build/build_eliza_llama_server.sh` | Deprecated alias → `build_llama_server.sh` |
+| `scripts/phase/l2_fork_eval.sh` | Probe + pytest smoke |
+| `scripts/phase/l2_metal_bench.sh` | Darwin A/B: L1 vs fork profiles (same binary) |
+| `scripts/phase/l2_cuda_bench.sh` | Linux/CUDA A/B: L1 vs fork profiles (same binary) |
+| `scripts/phase/l2_runtime_compat_smoke.sh` | Darwin subprocess compat: L1 + fork profile legs |
+| `scripts/phase/l2_cuda_runtime_compat_smoke.sh` | Linux subprocess compat: mirrors compat smoke with `.so` + `linux_runtime_serve_lib` |
+| `scripts/phase/l2_gate_report.sh` | Verdict from one or more bench JSON files |
+| `scripts/phase/l2_full_gate.sh` | Darwin gate orchestrator: eval + compat + bench legs + report |
+| `scripts/phase/l2_cuda_full_gate.sh` | CUDA gate orchestrator: same structure as Metal gate |
+| `scripts/runtime/linux_runtime_serve_lib.sh` | Shared sidecar start/stop helpers for Linux (mirrors `macos_runtime_serve_lib.sh`) |
 
 **WHY sibling tree first:** `vendor/llama-cpp-b9781/` + `llama/patches/` stay on b9781 until the gate passes.
 
 ---
 
-## M-series sign-off (Jun 2026, M4 Max 128 GiB)
+## M-series sign-off (Jul 2026, M4 Max 128 GiB, vendor `8f114a9b`)
 
 | Model | ctx | Stock | Fork | Notes |
 |-------|-----|-------|------|-------|
-| eliza-1-2b | 8192 | **37.6 tok/s**, q8_0 | 20.5 tok/s, tbq4_0/tbq3_0 | Stock wins decode + VRAM est |
-| eliza-1-27b | 26624 | 13.2 tok/s, q8_0 | 12.7 tok/s, tbq | Stock wins decode (~4%); VRAM est heuristic favors stock (TBQ not modeled) |
-| eliza-1-27b | 131072 | Rejected (KV est) | **5.0 tok/s** | Fork-only; `ZEROLLAMA_GPU_PROFILE_CTX=0` + `runtime_kv` 8192 blocks |
+| eliza-1-2b | 8192 | **67.2 tok/s**, q8_0 | 53.1 tok/s, tbq4_0/tbq3_0 | Stock wins decode (~21%); TBQ SET_ROWS on Metal (patch 0068) |
+| eliza-1-2b (Jun 2026 ref) | 8192 | **37.6 tok/s**, q8_0 | 20.5 tok/s, tbq | Prior pin; numbers not comparable to Jul vendor rebuild |
 
-JSON: `/tmp/l2-metal-bench.json`, `/tmp/l2-gate/`. **Runtime compat smoke:** PASS (stock + fork subprocess generate).
+JSON: `/tmp/l2-metal-bench.json`. **Runtime compat:** PASS (stock + fork subprocess generate on lab ports).
 
-**Gate status (Metal):** **FAIL merge** at small ctx (stock faster). Fork may still win **max ctx + VRAM** at 27k+ — run `L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/l2_full_gate.sh`.
+**Gate status (Metal):** **FAIL merge** at 8k (stock faster). **Default stays L1** (`ZEROLLAMA_LLAMA_FORK=0`). Fork is opt-in for long-ctx KV experiments.
+
+### Patches that closed the Metal fork load gap
+
+| Patch | What |
+|-------|------|
+| **0067** | Whitelist TBQ/QJL/Polar on `--cache-type-k/v`; checkpoint argv alias |
+| **0068** | Metal SET_ROWS for TBQ3/TBQ4 (embedded metallib); CPU `type_traits` `from_float`; TBQ4_0 flash-attn dequant cast; ane `@rpath` stage |
+
+**WHY 0068:** ggml abort `SET_ROWS` on Metal-preallocated `cache_k_*` when fork types lacked Metal encode kernels.
 
 ### CUDA 5080 sign-off (Jun 2026, CT 1564, RTX 5080)
 
@@ -246,7 +259,7 @@ VRAM deltas at 65k/131k match the c84 reference (−27% / −35%). Absolute tok/
 |-------|-----|--------------|------------|-------|
 | llama3.2 3B | 131072 | **~290 tok/s**, 10650 MiB | ~33 tok/s, 6742 MiB | Decode **−89%**; VRAM **−37%** |
 
-**WHY sidecar under-reports stock:** L2 `l2_cuda_bench.sh` goes Go/Python → llama-server; at 131k the stock leg often lands in the mid-single-digit to ~30 tok/s band even on a quiet GPU, while direct `/completion` is ~290 tok/s. Prefer **`./scripts/l2_cuda_direct_bench.sh`** for absolute decode; sidecar remains OK for relative VRAM nvidia-smi deltas. A sidecar fork-only TBQ load also segfaulted once post-0072 (`libllama` code −11) — direct TBQ load/decode was fine.
+**WHY sidecar under-reports stock:** L2 `l2_cuda_bench.sh` goes Go/Python → llama-server; at 131k the stock leg often lands in the mid-single-digit to ~30 tok/s band even on a quiet GPU, while direct `/completion` is ~290 tok/s. Prefer **`./scripts/phase/l2_cuda_direct_bench.sh`** for absolute decode; sidecar remains OK for relative VRAM nvidia-smi deltas. A sidecar fork-only TBQ load also segfaulted once post-0072 (`libllama` code −11) — direct TBQ load/decode was fine.
 
 **QJL/Polar on llama3.2:** aborts on legacy `c84b3020`. On pin **`8f114a9b` + patches 0067–0070**, QJL/Polar **loads and runs** (no abort). Contended-host sidecar A/B (`L2_FORK_CACHE_TYPE_*=qjl1_256/q4_polar`, prod left up): `/tmp/l2-cuda-gate-8f114a9b-llama32-qjl/`.
 
@@ -267,6 +280,10 @@ export ZEROLLAMA_LLAMA_FORK=1
 # export ZEROLLAMA_LLAMA_FORK_PROFILE=vram   # optional; already the default
 # export ZEROLLAMA_LLAMA_FORK_PROFILE=speed  # QJL/Polar — expect large decode regression on CUDA
 
+# Auto TBQ when configured ctx is large (FORK unset; threshold default 32768)
+# export ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1
+# export ZEROLLAMA_RUNTIME_VRAM_NUM_CTX=65536
+
 # Dual 4090 drop-in YAML (serve.llama_fork + llama_fork_profile)
 export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vram.yaml
 ```
@@ -274,21 +291,34 @@ export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vra
 | Goal | Setting | Why |
 |------|---------|-----|
 | Max decode tok/s | `ZEROLLAMA_LLAMA_FORK=0` / `dual_4090.yaml` (default) | L1 q8_0 wins measured legs |
-| Fit more ctx / slots | `FORK=1` (defaults to TBQ) / `dual_4090_vram.yaml` | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
+| Fit more ctx / slots | `FORK=1` (defaults to TBQ) / `dual_4090_vram.yaml` / `AUTO_VRAM=1` + large ctx | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
 | Max compression (experimental) | `FORK=1` + `FORK_PROFILE=speed` | QJL/Polar — runs on `8f` llama3.2 but **−48…−85%** decode @ 8k/27k; prefer TBQ |
 
 ---
 
-## L2 exit gate (not done until measured)
+## L2 exit gate (measured Jul 2026)
 
 Compare **same model**, **same `num_ctx`**, stock vs fork:
 
-1. Decode tok/s (prefill + generate)
-2. Peak VRAM / unified memory at target ctx
-3. MTP acceptance rate (when `--spec-type` configured)
-4. Mac Metal + CUDA 5080 sign-off scripts pass
+1. Decode tok/s (prefill + generate) — **Metal 8k: stock wins**
+2. Peak VRAM / unified memory at target ctx — **estimate still favors stock** (TBQ not fully modeled)
+3. MTP acceptance rate (when `--spec-type` configured) — not required for exit
+4. Mac Metal + CUDA 5080 sign-off scripts pass — **Metal PASS run; merge FAIL**
 
-**Pass criteria to merge vendor:** fork wins on **≥2 of 3** (tok/s, max ctx, VRAM) on **both** 5080 and M-series without regressing qwen35 compat smoke.
+**Pass criteria to flip defaults:** fork wins on **≥2 of 3** (tok/s, max ctx, VRAM) on **both** 5080 and M-series without regressing qwen35 compat smoke.
+
+**Exit (Jul 2026):** L2 **Done**. Infrastructure + VRAM opt-in shipped; **defaults stay L1** (tok/s FAIL merge). Operators enable TBQ with `ZEROLLAMA_LLAMA_FORK=1` or **`ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1`** when configured ctx ≥ 32768. Flipping global defaults still requires the ≥2/3 tok/s gate above (non-goal until then).
+
+---
+
+## External fork labs (post-L2)
+
+L2 defaults stay L1 for tok/s. New codecs / server controls from public forks are measured **before** pin patches:
+
+| Lab | Script / doc | Goal |
+|-----|--------------|------|
+| RotorQuant `planar3`/`iso3` vs TBQ | `./scripts/phase/l2_rotorquant_ab.sh` | **Next on 5080** — [5080-runbook Tier F](./5080-runbook.md#tier-f--rotorquant--post-l2-labs-jul-2026); remap IDs 44–47 before cherry-pick |
+| BeeLlama loop guard (B0) **0087** | `--reasoning-loop-guard force-close\|stop` (default off) | **Mac smoke PASS**; optional CUDA sanity; B1 adaptive DM deferred |
 
 ---
 

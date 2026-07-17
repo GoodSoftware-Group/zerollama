@@ -135,6 +135,9 @@ type Server struct {
 	ggmlFreeVRAMMu     sync.Mutex
 	ggmlFreeVRAMCached uint64
 	ggmlFreeVRAMAt     time.Time
+
+	// assignHolds — F5 short-TTL soft holds from fleet assign tokens.
+	assignHolds *AssignHoldRegistry
 }
 
 func init() {
@@ -386,6 +389,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 
 	capMLXScheduleOptions(model, &opts)
 	keepAlive = mlxKeepAliveFloor(model, keepAlive)
+	keepAlive = fulfillmentKeepAliveFloor(mlxQoSFromOptions(requestOpts), keepAlive)
 	ggmlCtx := capNumCtxToModelMax(model, &opts)
 	if vram := s.applyGgmlNumCtxClamp(ctx, model, &opts); vram != nil {
 		ggmlCtx = mergeGgmlNumCtxInfo(ggmlCtx, vram)
@@ -856,11 +860,14 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				Response:  cr.Content,
 				Done:      cr.Done,
 				Metrics: api.Metrics{
-					PromptEvalCount:    cr.PromptEvalCount,
-					PromptEvalDuration: cr.PromptEvalDuration,
-					EvalCount:          cr.EvalCount,
-					EvalDuration:       cr.EvalDuration,
-					CachedPromptTokens: cr.PromptEvalCachedCount,
+					PromptEvalCount:            cr.PromptEvalCount,
+					PromptEvalDuration:         cr.PromptEvalDuration,
+					EvalCount:                  cr.EvalCount,
+					EvalDuration:               cr.EvalDuration,
+					CachedPromptTokens:         cr.PromptEvalCachedCount,
+					CachedTokensHost:           cr.PromptEvalCachedHost,
+					CachedTokensStorage:        cr.PromptEvalCachedStorage,
+					CachedTokensStorageBackend: cr.PromptEvalCachedStorageBackend,
 				},
 				Logprobs: toAPILogprobs(cr.Logprobs),
 			}
@@ -893,7 +900,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				applyGenerateTruncation(&res, cr, messagesDropped, originalPromptTokens)
 				applyGgmlNumCtxResponse(&res, ggmlCtx)
 				rememberMLXPromptChain(m, req.Options, prompt, generateChainMessages, r.Tokenize)
-				recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount)
+				recordInferenceCompletionDetails(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount, cr.PromptEvalCachedHost, cr.PromptEvalCachedStorage, cr.PromptEvalCachedStorageBackend)
 				if cr.OriginalPromptTokens > 0 {
 					recordInferencePromptSize(c, cr.PromptEvalCount, cr.OriginalPromptTokens, messagesDropped)
 				}
@@ -2148,6 +2155,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.HEAD("/api/version", VersionHandler)
 	r.GET("/api/version", VersionHandler)
 	r.GET("/api/status", s.StatusHandler)
+	r.GET("/api/kv/blob/:digest", s.KvBlobHandler)
+	r.POST("/api/fleet/assign-hold", s.AssignHoldHandler)
 	internal := r.Group("/internal", internalLoopbackOnly())
 	internal.POST("/cross-queue-seq", s.CrossQueueSeqHandler)
 	internal.POST("/render-chat", s.RenderChatHandler)
@@ -2183,8 +2192,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// Inference
 	r.GET("/api/ps", s.PsHandler)
 	r.GET("/api/image/workflows", s.ImageWorkflowsHandler)
-	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.runtimeGenerateProxy(), s.GenerateHandler)...)
-	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.runtimeChatProxy(), s.ChatHandler)...)
+	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.assignmentTokenMiddleware(), s.runtimeGenerateProxy(), s.GenerateHandler)...)
+	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.assignmentTokenMiddleware(), s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
 	r.POST("/api/score", s.ScoreHandler)
@@ -3186,11 +3195,14 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
 				}
 				metrics := api.Metrics{
-					PromptEvalCount:    r.PromptEvalCount,
-					PromptEvalDuration: r.PromptEvalDuration,
-					EvalCount:          r.EvalCount,
-					EvalDuration:       r.EvalDuration,
-					CachedPromptTokens: r.PromptEvalCachedCount,
+					PromptEvalCount:            r.PromptEvalCount,
+					PromptEvalDuration:         r.PromptEvalDuration,
+					EvalCount:                  r.EvalCount,
+					EvalDuration:               r.EvalDuration,
+					CachedPromptTokens:         r.PromptEvalCachedCount,
+					CachedTokensHost:           r.PromptEvalCachedHost,
+					CachedTokensStorage:        r.PromptEvalCachedStorage,
+					CachedTokensStorageBackend: r.PromptEvalCachedStorageBackend,
 				}
 				if mmTokenEstimate.HasValues() {
 					metrics.ImageTokens = mmTokenEstimate.ImageTokens
@@ -3213,7 +3225,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					applyPromptTruncation(&res, r, messagesDropped, originalPromptTokens)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
 					rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
-					recordInferenceCompletion(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount)
+					recordInferenceCompletionDetails(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount, r.PromptEvalCachedHost, r.PromptEvalCachedStorage, r.PromptEvalCachedStorageBackend)
 					if r.OriginalPromptTokens > 0 {
 						recordInferencePromptSize(c, r.PromptEvalCount, r.OriginalPromptTokens, messagesDropped)
 					}
@@ -3846,7 +3858,7 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 			res.DoneReason = cr.DoneReason.String()
 			res.Metrics.TotalDuration = time.Since(checkpointStart)
 			res.Metrics.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-			recordInferenceCompletion(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount)
+			recordInferenceCompletionDetails(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount, cr.PromptEvalCachedHost, cr.PromptEvalCachedStorage, cr.PromptEvalCachedStorageBackend)
 		}
 
 		if !isStreaming {

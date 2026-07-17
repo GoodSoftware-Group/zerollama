@@ -20,7 +20,7 @@ def test_list_patch_files_includes_required():
     names = list_patch_files()
     assert any("ollama-llama-kv-ext" in n for n in names)
     assert any("ollama-kv-seq-copy-endpoint" in n for n in names)
-    assert any("cuda-graph-invalidate" in n for n in names)
+    assert any("cuda_graph_invalidate" in n for n in names)
 
 
 def test_binary_embeds_seq_copy_checks_server_impl(tmp_path: Path):

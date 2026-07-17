@@ -22,7 +22,7 @@ From repo root after `pip install -e runtime/.[serve]`:
 ```bash
 export LLAMA_SERVER_BIN=.../llama-server
 export LLAMA_MODEL=.../model.gguf
-./scripts/serve_with_runtime.sh
+./scripts/serve/serve_with_runtime.sh
 # or: zerollama-runtime up
 ```
 
@@ -50,7 +50,7 @@ Training remains `training.py` via embedded CPython in the Go daemon.
 |----------|--------|----------------|
 | `POST /internal/training-handoff` | Pause inference; stop `llama-server` | Training OOM path and manual “free GPU” before legacy models |
 | `POST /internal/inference/resume` | Set state back to `running` | After handoff, generate would otherwise 503 until daemon restart |
-| `POST /internal/vram-estimate` | `{"gguf","num_ctx?","options?"}` → `vram_estimate` + `vram_budget` (`host_ram` uses `ZEROLLAMA_RUNTIME_RAM_MARGIN`; present even when GPU free VRAM is unknown) | Loopback-only; same estimate path as `/health` (draft model, `-c` from llama args, parallel slots). CLI: `scripts/runtime_vram_estimate.sh <gguf> [--num-ctx N]`. |
+| `POST /internal/vram-estimate` | `{"gguf","num_ctx?","options?"}` → `vram_estimate` + `vram_budget` (`host_ram` uses `ZEROLLAMA_RUNTIME_RAM_MARGIN`; present even when GPU free VRAM is unknown) | Loopback-only; same estimate path as `/health` (draft model, `-c` from llama args, parallel slots). CLI: `scripts/runtime/runtime_vram_estimate.sh <gguf> [--num-ctx N]`. |
 | `POST /v1/chat/completions` | OpenAI-shaped body; Go proxy on `:8080` injects `options.gguf` from manifest. Direct `:8081` may pass `options` / `num_ctx`. Uses `prepare_v1_chat()` / Phase 13 clamp. Non-stream may include `vram_num_ctx`. |
 
 Runtime exposes loopback-only `POST /internal/tokenize` (`gguf`, `text`) for libllama vocab-only tokenize (Phase 14). Go `/internal/render-chat` uses it when no ggml runner is loaded so `truncate_mode` can be `tokenize` on the runtime inference path.
@@ -116,18 +116,18 @@ Policy across Go + Python (VRAM broker, T6 defer queue, why not one FIFO): [../.
 
 ```bash
 # runtime must be listening on 8081
-./scripts/e2e_runtime_smoke.sh
+./scripts/e2e/e2e_runtime_smoke.sh
 
 # with GPU + model (env must be set on the *serve* process)
-RUN_E2E_GPU=1 LLAMA_MODEL=/path/to/model.gguf LLAMA_SERVER_BIN=.../llama-server ./scripts/e2e_runtime_smoke.sh
+RUN_E2E_GPU=1 LLAMA_MODEL=/path/to/model.gguf LLAMA_SERVER_BIN=.../llama-server ./scripts/e2e/e2e_runtime_smoke.sh
 
 # through zerollama proxy — needs zerollama serve; uses X-Zerollama-Runtime: 1
 export OLLAMA_HOST=http://127.0.0.1:8080
-RUN_E2E_PROXY=1 ./scripts/e2e_runtime_smoke.sh   # generate/chat/v1 + stream via Go proxy
-RUN_E2E_GPU=1 RUN_E2E_TOOLS=1 ./scripts/e2e_runtime_smoke.sh   # optional tools on :8081 (+ proxy when RUN_E2E_PROXY=1)
-./scripts/gpu_smoke_all.sh                       # coordination + full GPU/proxy smokes
-RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh         # full smoke + tools path
-./scripts/gpu_health_report.sh                   # /health tuning summary after a probed load
+RUN_E2E_PROXY=1 ./scripts/e2e/e2e_runtime_smoke.sh   # generate/chat/v1 + stream via Go proxy
+RUN_E2E_GPU=1 RUN_E2E_TOOLS=1 ./scripts/e2e/e2e_runtime_smoke.sh   # optional tools on :8081 (+ proxy when RUN_E2E_PROXY=1)
+./scripts/gpu/gpu_smoke_all.sh                       # coordination + full GPU/proxy smokes
+RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh         # full smoke + tools path
+./scripts/gpu/gpu_health_report.sh                   # /health tuning summary after a probed load
 ```
 
 **Why `smoke` model name in scripts:** placeholder for ad-hoc proxy tests (`X-Zerollama-Runtime: 1`); use `RUN_E2E_GGUF` or `LLAMA_MODEL` on serve. Pulled tags use manifest `options.gguf` via Go proxy (Phase 9).
@@ -136,6 +136,6 @@ RUN_E2E_TOOLS=1 ./scripts/gpu_smoke_all.sh         # full smoke + tools path
 
 ## Build llama-server
 
-See [`../../scripts/build_llama_server.sh`](../../scripts/build_llama_server.sh). **Why arch matters:** RTX 5080 needs `CMAKE_CUDA_ARCHITECTURES=120-real` and a toolkit whose `nvcc` exists (see smoke doc).
+See [`../../scripts/build/build_llama_server.sh`](../../scripts/build/build_llama_server.sh). **Why arch matters:** RTX 5080 needs `CMAKE_CUDA_ARCHITECTURES=120-real` and a toolkit whose `nvcc` exists (see smoke doc).
 
 Optional: `export LLAMA_SERVER_EXTRA_ARGS="-c 8192"` to cap context on tight VRAM.

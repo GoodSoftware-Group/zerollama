@@ -4,109 +4,106 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scripts=(
-  e2e_runtime_smoke.sh
-  e2e_coordination_smoke.sh
-  gpu_smoke_all.sh
-  gpu_health_report.sh
-  runtime_vram_estimate.sh
-  serve_gpu_example.sh
-  serve_production_wrapper.sh
-  phase12_golden_ci.sh
-  runtime_smoke_lib.sh
-  runtime_uv_venv.sh
-  gpu_phase13_snapshot.sh
-  gpu_clamp_smoke.sh
-  phase12_capture_tool_transcript.sh
-  gpu_5080_session.sh
-  5080_env.sh
-  5080_resignoff.sh
-  gpu_harmony_capture.sh
-  macos_metal_smoke.sh
-  gpu_metal_session.sh
-  m3_metal_signoff.sh
-  metal_signoff.sh
-  mac_setup.sh
-  mac_cgo_env.sh
-  build_zerollama_mac.sh
-  build_mlx_dylibs_mac.sh
-  build_production_mac.sh
-  ensure_mlx_sources.sh
-  training_uv_venv.sh
-  serve_mac_runtime.sh
-  phase15_metal_signoff.sh
-  macos_runtime_serve_lib.sh
-  l2_fork_eval.sh
-  l2_metal_bench.sh
-  l2_cuda_bench.sh
-  l2_cuda_direct_bench.sh
-  nvfp4_cuda_probe.sh
-  nvfp4_cuda_signoff.sh
-  l1_cuda_calibrate.sh
-  l1_cuda_concurrent_bench.sh
-  l1_cuda_full_gate.sh
-  l1_gate_report.sh
-  l1_metal_gate.sh
-  l1_full_gate.sh
-  l2_gate_report.sh
-  l2_runtime_compat_smoke.sh
-  l2_cuda_runtime_compat_smoke.sh
-  l2_full_gate.sh
-  l2_cuda_full_gate.sh
-  linux_runtime_serve_lib.sh
-  l3_cache_smoke.sh
-  l3_spec_cache_smoke.sh
-  l3_prefix_cache_trace_replay.sh
-  l3_prefix_block_pool_smoke.sh
-  l3_radix_prefix_smoke.sh
-  l3_gate_report.sh
-  l3_production_gate.sh
-  l3_cuda_full_gate.sh
-  l3_full_gate.sh
-  l3_inprocess_smoke.sh
-  l3_agent_bench.sh
-  build_eliza_llama_server.sh
-  phase14_backend_smoke.sh
-  phase17_llama_server_smoke.sh
-  flash_moe_smoke.sh
-  ane_probe_build.sh
-  ane_probe_smoke.sh
-  build_flash_moe_llama_server.sh
-  flash_moe_extract_sidecar.sh
-  phase16_edge_smoke.sh
-  phase16_edge_build_smoke.sh
-  phase16_edge_binary_smoke.sh
-  phase11_metal_admission_smoke.sh
-  phase13_metal_vram_smoke.sh
-  phase11_13_15_metal_signoff.sh
-  phase17_linux_auto_smoke.sh
-  phase17_l2_pin_status.sh
-  phase15_upstream_kv_watch.sh
-  build_zerollama_edge.sh
-  serve_edge.sh
-  serve_linux_auto.sh
-  phase14_inprocess_smoke.sh
-  phase14_wheel_cpu_smoke.sh
-  phase14_yaml_config_smoke.sh
-  phase14_yaml_config_full_smoke.sh
-  phase14_5080_signoff.sh
-  phase14_subprocess_default_smoke.sh
-  phase14_wheel_gpu_smoke.sh
-  phase14_enable_yaml_inprocess.sh
-  phase14_both_backends.sh
-  phase14_serve_env.sh
-  phase15_inprocess_kv_smoke.sh
-  phase15_inprocess_multiseq_smoke.sh
-  phase15_inprocess_signoff.sh
-  e2e_training_ops_smoke.sh
-  repro_shared_interpreter_health_hang.sh
-  phase15_kv_native_ci.sh
-  phase15_llama_kv_ext_pin_check.sh
-  llama_patch_doctor.sh
-  phase15_health_smoke.sh
-  phase15_migration_summary_smoke.sh
-  phase15_stream_auto_batch_smoke.sh
-  phase15_auto_batch_smoke.sh
-  phase15_auto_batch_signoff.sh
+  e2e/e2e_runtime_smoke.sh
+  e2e/e2e_coordination_smoke.sh
+  gpu/gpu_smoke_all.sh
+  gpu/gpu_health_report.sh
+  runtime/runtime_vram_estimate.sh
+  serve/serve_gpu_example.sh
+  serve/serve_production_wrapper.sh
+  phase/phase12_golden_ci.sh
+  runtime/runtime_smoke_lib.sh
+  runtime/runtime_uv_venv.sh
+  gpu/gpu_phase13_snapshot.sh
+  gpu/gpu_clamp_smoke.sh
+  phase/phase12_capture_tool_transcript.sh
+  gpu/gpu_5080_session.sh
+  gpu/5080_env.sh
+  gpu/5080_resignoff.sh
+  gpu/gpu_harmony_capture.sh
+  gpu/macos_metal_smoke.sh
+  gpu/gpu_metal_session.sh
+  phase/m3_metal_signoff.sh
+  gpu/metal_signoff.sh
+  runtime/mac_setup.sh
+  runtime/mac_cgo_env.sh
+  build/build_zerollama_mac.sh
+  build/build_mlx_dylibs_mac.sh
+  build/build_production_mac.sh
+  mlx/ensure_mlx_sources.sh
+  training/training_uv_venv.sh
+  serve/serve_mac_runtime.sh
+  phase/phase15_metal_signoff.sh
+  runtime/macos_runtime_serve_lib.sh
+  phase/l2_fork_eval.sh
+  phase/l2_metal_bench.sh
+  phase/l2_cuda_bench.sh
+  phase/l1_cuda_calibrate.sh
+  phase/l1_cuda_concurrent_bench.sh
+  phase/l1_cuda_full_gate.sh
+  phase/l1_gate_report.sh
+  phase/l1_metal_gate.sh
+  phase/l1_full_gate.sh
+  phase/l2_gate_report.sh
+  phase/l2_runtime_compat_smoke.sh
+  phase/l2_cuda_runtime_compat_smoke.sh
+  phase/l2_full_gate.sh
+  phase/l2_cuda_full_gate.sh
+  runtime/linux_runtime_serve_lib.sh
+  phase/l3_cache_smoke.sh
+  phase/l3_spec_cache_smoke.sh
+  phase/l3_prefix_cache_trace_replay.sh
+  phase/l3_prefix_block_pool_smoke.sh
+  phase/l3_radix_prefix_smoke.sh
+  phase/l3_gate_report.sh
+  phase/l3_production_gate.sh
+  phase/l3_cuda_full_gate.sh
+  phase/l3_full_gate.sh
+  phase/l3_inprocess_smoke.sh
+  phase/l3_agent_bench.sh
+  build/build_eliza_llama_server.sh
+  phase/phase14_backend_smoke.sh
+  phase/phase17_llama_server_smoke.sh
+  phase/flash_moe_smoke.sh
+  ane/ane_probe_build.sh
+  ane/ane_probe_smoke.sh
+  build/build_flash_moe_llama_server.sh
+  gpu/flash_moe_extract_sidecar.sh
+  phase/phase16_edge_smoke.sh
+  phase/phase16_edge_build_smoke.sh
+  phase/phase16_edge_binary_smoke.sh
+  phase/phase11_metal_admission_smoke.sh
+  phase/phase13_metal_vram_smoke.sh
+  phase/phase11_13_15_metal_signoff.sh
+  phase/phase17_linux_auto_smoke.sh
+  phase/phase17_l2_pin_status.sh
+  phase/phase15_upstream_kv_watch.sh
+  build/build_zerollama_edge.sh
+  serve/serve_edge.sh
+  serve/serve_linux_auto.sh
+  phase/phase14_inprocess_smoke.sh
+  phase/phase14_wheel_cpu_smoke.sh
+  phase/phase14_yaml_config_smoke.sh
+  phase/phase14_yaml_config_full_smoke.sh
+  phase/phase14_5080_signoff.sh
+  phase/phase14_subprocess_default_smoke.sh
+  phase/phase14_wheel_gpu_smoke.sh
+  phase/phase14_enable_yaml_inprocess.sh
+  phase/phase14_both_backends.sh
+  phase/phase14_serve_env.sh
+  phase/phase15_inprocess_kv_smoke.sh
+  phase/phase15_inprocess_multiseq_smoke.sh
+  phase/phase15_inprocess_signoff.sh
+  e2e/e2e_training_ops_smoke.sh
+  runtime/repro_shared_interpreter_health_hang.sh
+  phase/phase15_kv_native_ci.sh
+  phase/phase15_llama_kv_ext_pin_check.sh
+  vendor/llama_patch_doctor.sh
+  phase/phase15_health_smoke.sh
+  phase/phase15_migration_summary_smoke.sh
+  phase/phase15_stream_auto_batch_smoke.sh
+  phase/phase15_auto_batch_smoke.sh
+  phase/phase15_auto_batch_signoff.sh
 )
 
 for s in "${scripts[@]}"; do
@@ -118,171 +115,171 @@ cd "${ROOT}/runtime"
 PYTHONPATH=. python3 -c "from runtime.gpu_health_report import format_gpu_health_tuning_report; print('ok: runtime.gpu_health_report')"
 
 # Smoke script must include proxy tools path when RUN_E2E_TOOLS is documented.
-grep -q 'proxy tools chat' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'proxy v1 tools chat' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'v1 tools chat:' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'RUN_E2E_LEGACY' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'phase12_golden_ci' "${ROOT}/scripts/gpu_smoke_all.sh"
-grep -q 'runtime_resume_if_needed' "${ROOT}/scripts/gpu_smoke_all.sh"
-grep -q 'runtime_smoke_lib.sh' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'smoke_prepare_vram_for_runtime' "${ROOT}/scripts/gpu_smoke_all.sh"
-grep -q 'smoke_unload_ggml_runners' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'smoke_ggml_runner_running' "${ROOT}/scripts/runtime_smoke_lib.sh"
+grep -q 'proxy tools chat' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'proxy v1 tools chat' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'v1 tools chat:' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'RUN_E2E_LEGACY' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'phase12_golden_ci' "${ROOT}/scripts/gpu/gpu_smoke_all.sh"
+grep -q 'runtime_resume_if_needed' "${ROOT}/scripts/gpu/gpu_smoke_all.sh"
+grep -q 'runtime_smoke_lib.sh' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'smoke_prepare_vram_for_runtime' "${ROOT}/scripts/gpu/gpu_smoke_all.sh"
+grep -q 'smoke_unload_ggml_runners' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'smoke_ggml_runner_running' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
 grep -q 'recommend_from_snapshot' "${ROOT}/runtime/runtime/gpu_snapshot.py"
 grep -q 'apply_vram_defaults_from_config' "${ROOT}/runtime/runtime/vram_yaml_defaults.py"
-grep -q 'runtime.gpu_snapshot' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'runtime.gpu_snapshot' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
 grep -q 'metal-unified' "${ROOT}/runtime/runtime/gpu_vram.py"
 grep -q 'apple_silicon.yaml' "${ROOT}/runtime/runtime/autoconfig.py"
 grep -q 'read_host_memory()' "${ROOT}/runtime/runtime/host_memory.py"
-grep -q 'test_host_memory_darwin.py' "${ROOT}/scripts/macos_metal_smoke.sh"
-grep -q 'runtime_uv_venv.sh' "${ROOT}/scripts/macos_metal_smoke.sh"
-grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
-grep -q 'phase14_yaml_config_smoke.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
-grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/serve_mac_runtime.sh"
-grep -q 'macos_runtime_start_sidecar' "${ROOT}/scripts/serve_mac_runtime.sh"
-grep -q 'phase15_metal_signoff.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
-grep -q 'smoke_m3_resolve_signoff_model' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'smoke_m3_resolve_signoff_model' "${ROOT}/scripts/m3_metal_signoff.sh"
-grep -q 'PHASE15_SKIP_BOOT' "${ROOT}/scripts/phase15_metal_signoff.sh"
-grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/serve_mac_runtime.sh"
-grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu_metal_session.sh"
-grep -q 'METAL_SELF_START' "${ROOT}/scripts/gpu_metal_session.sh"
-grep -q 'RUN_E2E_PHASE15=1' "${ROOT}/scripts/metal_signoff.sh"
-grep -q 'RUN_E2E_QWEN35' "${ROOT}/scripts/qwen35_mac_smoke.sh"
-grep -q 'qwen35_mac_smoke.sh' "${ROOT}/scripts/m3_metal_signoff.sh"
-grep -q 'test_m3_model_picker.py' "${ROOT}/scripts/macos_metal_smoke.sh"
+grep -q 'test_host_memory_darwin.py' "${ROOT}/scripts/gpu/macos_metal_smoke.sh"
+grep -q 'runtime_uv_venv.sh' "${ROOT}/scripts/gpu/macos_metal_smoke.sh"
+grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/phase/m3_metal_signoff.sh"
+grep -q 'phase14_yaml_config_smoke.sh' "${ROOT}/scripts/phase/m3_metal_signoff.sh"
+grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/serve/serve_mac_runtime.sh"
+grep -q 'macos_runtime_start_sidecar' "${ROOT}/scripts/serve/serve_mac_runtime.sh"
+grep -q 'phase15_metal_signoff.sh' "${ROOT}/scripts/phase/m3_metal_signoff.sh"
+grep -q 'smoke_m3_resolve_signoff_model' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'smoke_m3_resolve_signoff_model' "${ROOT}/scripts/phase/m3_metal_signoff.sh"
+grep -q 'PHASE15_SKIP_BOOT' "${ROOT}/scripts/phase/phase15_metal_signoff.sh"
+grep -q 'macos_runtime_serve_lib.sh' "${ROOT}/scripts/serve/serve_mac_runtime.sh"
+grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu/gpu_metal_session.sh"
+grep -q 'METAL_SELF_START' "${ROOT}/scripts/gpu/gpu_metal_session.sh"
+grep -q 'RUN_E2E_PHASE15=1' "${ROOT}/scripts/gpu/metal_signoff.sh"
+grep -q 'RUN_E2E_QWEN35' "${ROOT}/scripts/runtime/qwen35_mac_smoke.sh"
+grep -q 'qwen35_mac_smoke.sh' "${ROOT}/scripts/phase/m3_metal_signoff.sh"
+grep -q 'test_m3_model_picker.py' "${ROOT}/scripts/gpu/macos_metal_smoke.sh"
 grep -q 'NewDoctorCommand' "${ROOT}/cmd/cmd.go"
 grep -q 'mac_setup.sh' "${ROOT}/docs/development.md"
-grep -q 'dev_bootstrap.sh' "${ROOT}/scripts/dev_bootstrap.sh"
-grep -q 'ensure_llama_cpp_sibling' "${ROOT}/scripts/mac_setup.sh"
-grep -q 'MAC_SETUP_SIGNOFF:-0' "${ROOT}/scripts/mac_setup.sh"
+grep -q 'dev_bootstrap.sh' "${ROOT}/scripts/runtime/dev_bootstrap.sh"
+grep -q 'ensure_llama_cpp_sibling' "${ROOT}/scripts/runtime/mac_setup.sh"
+grep -q 'MAC_SETUP_SIGNOFF:-0' "${ROOT}/scripts/runtime/mac_setup.sh"
 grep -q 'M14' "${ROOT}/docs/ROADMAP.md"
 grep -q 'Onboarding tiers' "${ROOT}/docs/apple-silicon-metal.md"
 grep -q 'llama_backend_fallback' "${ROOT}/runtime/runtime/engine.py"
-grep -q 'training_uv_venv.sh' "${ROOT}/scripts/mac_setup.sh"
+grep -q 'training_uv_venv.sh' "${ROOT}/scripts/runtime/mac_setup.sh"
 grep -q 'doctor --fix' "${ROOT}/cmd/doctor.go"
 grep -q 'macos-darwin-smoke' "${ROOT}/.github/workflows/zerollama-regression.yaml"
-grep -q 'training_embed_build_env.sh' "${ROOT}/scripts/5080_env.sh"
+grep -q 'training_embed_build_env.sh' "${ROOT}/scripts/gpu/5080_env.sh"
 grep -q 'venv-training/' "${ROOT}/.gitignore"
 grep -q 'training/.venv-training' "${ROOT}/cmd/doctor.go"
 grep -q 'checkTrainingQloraPayload' "${ROOT}/server/training_platform.go"
 grep -q 'zerollama serve' "${ROOT}/cmd/doctor.go"
 grep -q 'BootstrapDarwinSidecar' "${ROOT}/server/routes.go"
-grep -q 'mac_cgo_env' "${ROOT}/scripts/build_zerollama_mac.sh"
+grep -q 'mac_cgo_env' "${ROOT}/scripts/build/build_zerollama_mac.sh"
 grep -q 'mac-dev-setup.md' "${ROOT}/docs/development.md"
 grep -q 'build_zerollama_mac' "${ROOT}/cmd/doctor.go"
 grep -q 'build_production_mac' "${ROOT}/docs/mac-dev-setup.md"
-grep -q 'BUILD_MLX' "${ROOT}/scripts/build_zerollama_mac.sh"
+grep -q 'BUILD_MLX' "${ROOT}/scripts/build/build_zerollama_mac.sh"
 grep -q 'pickOllamaEngine' "${ROOT}/llm/server_shared.go"
 grep -q 'Persistent()' "${ROOT}/kvcache/causal.go"
 grep -q 'darwinSidecarEnabled' "${ROOT}/server/darwin_sidecar.go"
 grep -q 'zerollama serve' "${ROOT}/docs/development.md"
-grep -q 'runtime_url_port' "${ROOT}/scripts/runtime_smoke_lib.sh"
+grep -q 'runtime_url_port' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
 grep -q 'llama_backend: inprocess' "${ROOT}/runtime/configs/apple_silicon.yaml"
 grep -q 'vm.swapusage' "${ROOT}/runtime/runtime/host_memory.py"
 grep -q 'apple_silicon' "${ROOT}/runtime/runtime/gpu_snapshot.py"
 grep -q 'gpu_metal_session' "${ROOT}/docs/apple-silicon-metal.md"
 grep -q 'l2_metal_bench' "${ROOT}/docs/gpu-profiles-l2.md"
-grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_metal_bench.sh"
-grep -q 'l2_metal_bench' "${ROOT}/scripts/l2_fork_eval.sh"
-grep -q 'l2_full_gate' "${ROOT}/scripts/m3_metal_signoff.sh"
+grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/phase/l2_metal_bench.sh"
+grep -q 'l2_metal_bench' "${ROOT}/scripts/phase/l2_fork_eval.sh"
+grep -q 'l2_full_gate' "${ROOT}/scripts/phase/m3_metal_signoff.sh"
 grep -q 'l1_cuda_calibrate' "${ROOT}/docs/gpu-profiles-l1.md"
 grep -q 'l1_cuda_full_gate' "${ROOT}/docs/gpu-profiles-l1.md"
-grep -q 'RUN_E2E_L1' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'ZEROLLAMA_GPU_PROFILE' "${ROOT}/scripts/l1_cuda_calibrate.sh"
+grep -q 'RUN_E2E_L1' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'ZEROLLAMA_GPU_PROFILE' "${ROOT}/scripts/phase/l1_cuda_calibrate.sh"
 grep -q 'l2_cuda_bench' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'l2_cuda_direct_bench' "${ROOT}/docs/gpu-profiles-l2.md"
-grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/l2_cuda_bench.sh"
-grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_bench.sh"
-grep -q '/completion' "${ROOT}/scripts/l2_cuda_direct_bench.sh"
-grep -q 'NVFP4' "${ROOT}/scripts/nvfp4_cuda_probe.sh"
+grep -q 'ZEROLLAMA_RUNTIME_LLAMA_BACKEND=subprocess' "${ROOT}/scripts/phase/l2_cuda_bench.sh"
+grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/phase/l2_cuda_bench.sh"
+grep -q '/completion' "${ROOT}/scripts/phase/l2_cuda_direct_bench.sh"
+grep -q 'NVFP4' "${ROOT}/scripts/gpu/nvfp4_cuda_probe.sh"
 grep -q 'nvfp4_cuda_probe' "${ROOT}/docs/cuda-lanes.md"
 grep -q 'nvfp4_cuda_signoff' "${ROOT}/docs/cuda-lanes.md"
-grep -q 'MXFP4' "${ROOT}/scripts/nvfp4_cuda_signoff.sh"
-grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/l2_cuda_runtime_compat_smoke.sh"
+grep -q 'MXFP4' "${ROOT}/scripts/gpu/nvfp4_cuda_signoff.sh"
+grep -q 'linux_runtime_serve_lib' "${ROOT}/scripts/phase/l2_cuda_runtime_compat_smoke.sh"
 grep -q 'c84b30200' "${ROOT}/docs/gpu-profiles-l2.md"
 grep -q 'llama-cpp-c84b3020' "${ROOT}/Makefile.sync"
-grep -q 'ensure_llama_vendor_patches' "${ROOT}/scripts/build_llama_server.sh"
-grep -q 'ensure_llama_vendor_patches' "${ROOT}/scripts/build_zerollama_mac.sh"
-grep -q '_llama_server_binary_ok' "${ROOT}/scripts/build_zerollama_mac.sh"
-grep -q 'restore_ane_hook_intree' "${ROOT}/scripts/build_zerollama_mac.sh"
-grep -q 'stage_llama_ext_b8_for_vendor' "${ROOT}/scripts/ensure_llama_vendor_patches.sh"
-grep -q 'stage_llama_kv_ext_for_vendor' "${ROOT}/scripts/ensure_llama_vendor_patches.sh"
-grep -q 'BUILD_RUNTIME_KV_EXT' "${ROOT}/scripts/build_zerollama_mac.sh"
-grep -q 'runtime-kv-native.sha' "${ROOT}/scripts/build_zerollama_mac.sh"
+grep -q 'ensure_llama_vendor_patches' "${ROOT}/scripts/build/build_llama_server.sh"
+grep -q 'ensure_llama_vendor_patches' "${ROOT}/scripts/build/build_zerollama_mac.sh"
+grep -q '_llama_server_binary_ok' "${ROOT}/scripts/build/build_zerollama_mac.sh"
+grep -q 'restore_ane_hook_intree' "${ROOT}/scripts/build/build_zerollama_mac.sh"
+grep -q 'stage_llama_ext_b8_for_vendor' "${ROOT}/scripts/vendor/ensure_llama_vendor_patches.sh"
+grep -q 'stage_llama_kv_ext_for_vendor' "${ROOT}/scripts/vendor/ensure_llama_vendor_patches.sh"
+grep -q 'BUILD_RUNTIME_KV_EXT' "${ROOT}/scripts/build/build_zerollama_mac.sh"
+grep -q 'runtime-kv-native.sha' "${ROOT}/scripts/build/build_zerollama_mac.sh"
 grep -q 'kv_native_build_sha' "${ROOT}/server/darwin_sidecar.go"
-grep -q '_acquire_llama_server_build_lock' "${ROOT}/scripts/build_llama_server.sh"
-grep -q 'rebase_vendor_unified' "${ROOT}/scripts/rebase_vendor_unified.sh"
-grep -q 'checkpoint-every-n-tokens' "${ROOT}/scripts/build_llama_server.sh"
-grep -q 'l2_cuda_runtime_compat_smoke' "${ROOT}/scripts/l2_cuda_full_gate.sh"
+grep -q '_acquire_llama_server_build_lock' "${ROOT}/scripts/build/build_llama_server.sh"
+grep -q 'rebase_vendor_unified' "${ROOT}/scripts/vendor/rebase_vendor_unified.sh"
+grep -q 'checkpoint-every-n-tokens' "${ROOT}/scripts/build/build_llama_server.sh"
+grep -q 'l2_cuda_runtime_compat_smoke' "${ROOT}/scripts/phase/l2_cuda_full_gate.sh"
 grep -q 'l3_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
 grep -q 'l3_spec_cache_smoke' "${ROOT}/docs/gpu-profiles-l3.md"
 grep -q 'l3-cuda-full-gate' "${ROOT}/docs/gpu-profiles-l3.md"
-grep -q 'RUN_E2E_L3' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'RUN_E2E_L3' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
 grep -q 'prompt_cache_keys' "${ROOT}/runtime/runtime/cache_bridge.py"
 grep -q 'IsMLX()' "${ROOT}/docs/mlx-routing-policy.md"
 grep -q 'modelUsesRuntimeInference' "${ROOT}/server/runtime_inference_routing.go"
-grep -q 'RUN_E2E_LEGACY=1 with RUN_E2E_GPU' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'RUN_E2E_VRAM_CLAMP' "${ROOT}/scripts/gpu_clamp_smoke.sh"
-grep -q 'phase12_capture_tool_transcript' "${ROOT}/scripts/phase12_capture_tool_transcript.sh" || grep -q 'X-Zerollama-Runtime' "${ROOT}/scripts/phase12_capture_tool_transcript.sh"
-grep -q 'RUN_E2E_PHASE14' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'smoke_runtime_needs_server_bin' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'internal/tokenize' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'smoke_llama_model_config_hint' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'truncate_mode=tokenize' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'smoke_runtime_require_phase14_endpoints' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'smoke_runtime_assert_llama_backend_source' "${ROOT}/scripts/runtime_smoke_lib.sh"
+grep -q 'RUN_E2E_LEGACY=1 with RUN_E2E_GPU' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'RUN_E2E_VRAM_CLAMP' "${ROOT}/scripts/gpu/gpu_clamp_smoke.sh"
+grep -q 'phase12_capture_tool_transcript' "${ROOT}/scripts/phase/phase12_capture_tool_transcript.sh" || grep -q 'X-Zerollama-Runtime' "${ROOT}/scripts/phase/phase12_capture_tool_transcript.sh"
+grep -q 'RUN_E2E_PHASE14' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'smoke_runtime_needs_server_bin' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'internal/tokenize' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'smoke_llama_model_config_hint' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'truncate_mode=tokenize' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'smoke_runtime_require_phase14_endpoints' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'smoke_runtime_assert_llama_backend_source' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
 grep -q 'skip_global_vram_factor_export' "${ROOT}/runtime/runtime/gpu_health_report.py"
 grep -q 'skip_global_vram_factor_export' "${ROOT}/runtime/runtime/gpu_snapshot.py"
 grep -q 'vram_recommendations' "${ROOT}/runtime/runtime/gpu_health_report.py"
 grep -q 'skip_global_vram_factor_export' "${ROOT}/runtime/tests/test_vram_recommendations.py"
-grep -q 'smoke_runtime_apply_backend_flags_from_health' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'inferred from /health' "${ROOT}/scripts/phase14_yaml_config_smoke.sh"
-grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=env' "${ROOT}/scripts/phase14_inprocess_smoke.sh"
-grep -q 'RUN_E2E_INPROCESS=1' "${ROOT}/scripts/phase14_inprocess_smoke.sh"
-grep -q 'RUN_E2E_LLAMA_CPP_PYTHON=1' "${ROOT}/scripts/phase14_wheel_cpu_smoke.sh"
-grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=env' "${ROOT}/scripts/phase14_wheel_cpu_smoke.sh"
-grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=config' "${ROOT}/scripts/phase14_yaml_config_smoke.sh"
-grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=default' "${ROOT}/scripts/phase14_subprocess_default_smoke.sh"
+grep -q 'smoke_runtime_apply_backend_flags_from_health' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'inferred from /health' "${ROOT}/scripts/phase/phase14_yaml_config_smoke.sh"
+grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=env' "${ROOT}/scripts/phase/phase14_inprocess_smoke.sh"
+grep -q 'RUN_E2E_INPROCESS=1' "${ROOT}/scripts/phase/phase14_inprocess_smoke.sh"
+grep -q 'RUN_E2E_LLAMA_CPP_PYTHON=1' "${ROOT}/scripts/phase/phase14_wheel_cpu_smoke.sh"
+grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=env' "${ROOT}/scripts/phase/phase14_wheel_cpu_smoke.sh"
+grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=config' "${ROOT}/scripts/phase/phase14_yaml_config_smoke.sh"
+grep -q 'RUN_E2E_LLAMA_BACKEND_SOURCE=default' "${ROOT}/scripts/phase/phase14_subprocess_default_smoke.sh"
 grep -q 'canonical_llama_backend' "${ROOT}/runtime/runtime/worker/factory.py"
 grep -q 'llama_backend_from_file' "${ROOT}/runtime/runtime/config.py"
-grep -q 'RUN_E2E_PHASE14_SIGNOFF' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q '_saved_phase14_signoff' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'phase14_5080_signoff.sh' "${ROOT}/scripts/gpu_smoke_all.sh"
-grep -q 'phase15_inprocess_signoff.sh' "${ROOT}/scripts/gpu_smoke_all.sh"
-grep -q 'phase15_inprocess_kv_smoke.sh' "${ROOT}/scripts/phase15_inprocess_signoff.sh"
-grep -q 'phase15_inprocess_multiseq_smoke.sh' "${ROOT}/scripts/phase15_inprocess_signoff.sh"
-grep -q 'RUN_E2E_PHASE14' "${ROOT}/scripts/gpu_smoke_all.sh"
+grep -q 'RUN_E2E_PHASE14_SIGNOFF' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'RUN_E2E_PHASE15' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q '_saved_phase14_signoff' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'phase14_5080_signoff.sh' "${ROOT}/scripts/gpu/gpu_smoke_all.sh"
+grep -q 'phase15_inprocess_signoff.sh' "${ROOT}/scripts/gpu/gpu_smoke_all.sh"
+grep -q 'phase15_inprocess_kv_smoke.sh' "${ROOT}/scripts/phase/phase15_inprocess_signoff.sh"
+grep -q 'phase15_inprocess_multiseq_smoke.sh' "${ROOT}/scripts/phase/phase15_inprocess_signoff.sh"
+grep -q 'RUN_E2E_PHASE14' "${ROOT}/scripts/gpu/gpu_smoke_all.sh"
 grep -q 'llama_cpp_wheel_health' "${ROOT}/runtime/runtime/worker/llama_cpp_python.py"
-grep -q 'llama_cpp' "${ROOT}/scripts/gpu_phase13_snapshot.sh"
-grep -q 'smoke_runtime_assert_llama_cpp_gpu' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'RUN_E2E_LLAMA_CPP_PYTHON_GPU=1' "${ROOT}/scripts/phase14_wheel_gpu_smoke.sh"
-grep -q 'phase14_inprocess_smoke.sh' "${ROOT}/scripts/phase14_both_backends.sh"
-grep -q 'phase14_wheel_cpu_smoke.sh' "${ROOT}/scripts/phase14_both_backends.sh"
+grep -q 'llama_cpp' "${ROOT}/scripts/gpu/gpu_phase13_snapshot.sh"
+grep -q 'smoke_runtime_assert_llama_cpp_gpu' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'RUN_E2E_LLAMA_CPP_PYTHON_GPU=1' "${ROOT}/scripts/phase/phase14_wheel_gpu_smoke.sh"
+grep -q 'phase14_inprocess_smoke.sh' "${ROOT}/scripts/phase/phase14_both_backends.sh"
+grep -q 'phase14_wheel_cpu_smoke.sh' "${ROOT}/scripts/phase/phase14_both_backends.sh"
 grep -q 'checkLoopbackPortFree' "${ROOT}/x/runtimeworker/client.go"
 grep -q 'embed_boot' "${ROOT}/runtime/runtime/engine.py"
-grep -q 'kv_decode_steps (generate)' "${ROOT}/scripts/e2e_runtime_smoke.sh"
-grep -q 'phase14_yaml_config_full_smoke.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
-grep -q 'phase15_inprocess_signoff.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
-grep -q 'phase14_both_backends.sh' "${ROOT}/scripts/phase14_5080_signoff.sh"
+grep -q 'kv_decode_steps (generate)' "${ROOT}/scripts/e2e/e2e_runtime_smoke.sh"
+grep -q 'phase14_yaml_config_full_smoke.sh' "${ROOT}/scripts/phase/phase14_5080_signoff.sh"
+grep -q 'phase15_inprocess_signoff.sh' "${ROOT}/scripts/phase/phase14_5080_signoff.sh"
+grep -q 'phase14_both_backends.sh' "${ROOT}/scripts/phase/phase14_5080_signoff.sh"
 grep -q 'phase15_inprocess_kv_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
-grep -q 'phase14_backend_smoke.sh' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
-grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/runtime_smoke_lib.sh"
-grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/phase15_inprocess_kv_smoke.sh"
-grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
-grep -q 'llama_parallel_slots: 2' "${ROOT}/scripts/phase15_inprocess_multiseq_smoke.sh"
-grep -q 'ZEROLLAMA_RUNTIME_CONFIG' "${ROOT}/scripts/phase14_yaml_config_full_smoke.sh"
-grep -q 'phase14_yaml_config_smoke.sh' "${ROOT}/scripts/phase14_yaml_config_full_smoke.sh"
-grep -q '/api/train/status' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
-grep -q 'cmd.*ping' "${ROOT}/scripts/e2e_training_ops_smoke.sh"
+grep -q 'phase14_backend_smoke.sh' "${ROOT}/scripts/phase/phase15_inprocess_kv_smoke.sh"
+grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/phase/phase15_inprocess_kv_smoke.sh"
+grep -q 'smoke_runtime_assert_kv_snapshot' "${ROOT}/scripts/phase/phase15_inprocess_multiseq_smoke.sh"
+grep -q 'llama_parallel_slots: 2' "${ROOT}/scripts/phase/phase15_inprocess_multiseq_smoke.sh"
+grep -q 'ZEROLLAMA_RUNTIME_CONFIG' "${ROOT}/scripts/phase/phase14_yaml_config_full_smoke.sh"
+grep -q 'phase14_yaml_config_smoke.sh' "${ROOT}/scripts/phase/phase14_yaml_config_full_smoke.sh"
+grep -q '/api/train/status' "${ROOT}/scripts/e2e/e2e_training_ops_smoke.sh"
+grep -q 'cmd.*ping' "${ROOT}/scripts/e2e/e2e_training_ops_smoke.sh"
 grep -q 'ZEROLLAMA_RUNTIME_SHARED_PYTHON' "${ROOT}/runtime/runtime/env.py"
-grep -q 'health try' "${ROOT}/scripts/repro_shared_interpreter_health_hang.sh"
-grep -q 'llama_patch_doctor' "${ROOT}/scripts/phase15_kv_native_ci.sh"
-grep -q 'phase15_llama_kv_ext_pin_check' "${ROOT}/scripts/phase15_kv_native_ci.sh"
-grep -q 'test_kv_native_parity' "${ROOT}/scripts/phase15_kv_native_ci.sh"
-grep -q 'test_kv_decode_long_ctx' "${ROOT}/scripts/phase15_kv_native_ci.sh"
-grep -q 'ZEROLLAMA_KV_DECODE_LOOP' "${ROOT}/scripts/phase15_kv_native_ci.sh"
+grep -q 'health try' "${ROOT}/scripts/runtime/repro_shared_interpreter_health_hang.sh"
+grep -q 'llama_patch_doctor' "${ROOT}/scripts/phase/phase15_kv_native_ci.sh"
+grep -q 'phase15_llama_kv_ext_pin_check' "${ROOT}/scripts/phase/phase15_kv_native_ci.sh"
+grep -q 'test_kv_native_parity' "${ROOT}/scripts/phase/phase15_kv_native_ci.sh"
+grep -q 'test_kv_decode_long_ctx' "${ROOT}/scripts/phase/phase15_kv_native_ci.sh"
+grep -q 'ZEROLLAMA_KV_DECODE_LOOP' "${ROOT}/scripts/phase/phase15_kv_native_ci.sh"
 grep -q 'kv_backend_health' "${ROOT}/runtime/runtime/engine.py"
 grep -q 'native_requested' "${ROOT}/runtime/runtime/kv/backend.py"
 grep -q 'kv_scheduler_snapshot' "${ROOT}/runtime/runtime/kv/accounting.py"
@@ -297,33 +294,33 @@ grep -q 'kv_stats' "${ROOT}/runtime/native/kv_block_pool.c"
 grep -q 'kv_forward_plan' "${ROOT}/runtime/runtime/kv/forward_plan.py"
 grep -q 'kv_snapshot' "${ROOT}/runtime/runtime/engine.py"
 grep -q '/internal/kv-snapshot' "${ROOT}/runtime/runtime/server/app.py"
-grep -q 'phase15_health_smoke' "${ROOT}/scripts/phase15_kv_native_ci.sh"
+grep -q 'phase15_health_smoke' "${ROOT}/scripts/phase/phase15_kv_native_ci.sh"
 grep -q 'record_decode_step' "${ROOT}/runtime/runtime/worker/libllama_ctypes.py"
 grep -q 'kv_slot' "${ROOT}/runtime/runtime/scheduler/scheduler.py"
 grep -q 'resolve_parallel_slots' "${ROOT}/runtime/runtime/llama_args.py"
 grep -q '_effective_llama_parallel_slots' "${ROOT}/runtime/runtime/engine.py"
-grep -q 'P17_SERVE_EXTRA' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
-grep -q 'P17_ASSERT_RUNTIME_OFF' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
-grep -q 'phase17_llama_server_smoke.sh' "${ROOT}/scripts/phase16_edge_smoke.sh"
+grep -q 'P17_SERVE_EXTRA' "${ROOT}/scripts/phase/phase17_llama_server_smoke.sh"
+grep -q 'P17_ASSERT_RUNTIME_OFF' "${ROOT}/scripts/phase/phase17_llama_server_smoke.sh"
+grep -q 'phase17_llama_server_smoke.sh' "${ROOT}/scripts/phase/phase16_edge_smoke.sh"
 grep -q 'ApplyServeBackendEnv' "${ROOT}/cmd/cmd.go"
 grep -q 'LinuxLlamaServerAutoEnv' "${ROOT}/envconfig/serve_backend.go"
 grep -q 'EdgeMode()' "${ROOT}/envconfig/config.go"
 grep -q 'ZEROLLAMA_RUNTIME_EMBED' "${ROOT}/envconfig/config.go"
 grep -q 'build_zerollama_edge.sh' "${ROOT}/docs/phase16-thin-edge.md"
-grep -q 'RUN_E2E_EDGE' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'RUN_E2E_P17' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'RUN_E2E_EDGE' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'RUN_E2E_P17' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
 grep -q 'doctorCheckEdgeBuild' "${ROOT}/cmd/doctor.go"
 grep -q 'BackendPolicy' "${ROOT}/api/types.go"
-grep -q 'P17_LINUX_AUTO' "${ROOT}/scripts/phase17_llama_server_smoke.sh"
-grep -q 'RUN_E2E_P17_LINUX_AUTO' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'RUN_E2E_UPSTREAM_GGUF' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'upstream bundle: restart serve' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'serve_production_wrapper' "${ROOT}/scripts/serve_production_wrapper.sh"
-grep -q 'WHY this wrapper exists' "${ROOT}/scripts/serve_production_wrapper.sh"
-grep -q 'cannot find zerollama repo' "${ROOT}/scripts/serve_gpu_example.sh"
-grep -q 'RUN_E2E_P17_VISION' "${ROOT}/scripts/gpu_5080_session.sh"
+grep -q 'P17_LINUX_AUTO' "${ROOT}/scripts/phase/phase17_llama_server_smoke.sh"
+grep -q 'RUN_E2E_P17_LINUX_AUTO' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'RUN_E2E_UPSTREAM_GGUF' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'upstream bundle: restart serve' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'serve_production_wrapper' "${ROOT}/scripts/serve/serve_production_wrapper.sh"
+grep -q 'WHY this wrapper exists' "${ROOT}/scripts/serve/serve_production_wrapper.sh"
+grep -q 'cannot find zerollama repo' "${ROOT}/scripts/serve/serve_gpu_example.sh"
+grep -q 'RUN_E2E_P17_VISION' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
 grep -q 'serve_linux_auto.sh' "${ROOT}/docs/phase17-llama-server.md"
-grep -q 'P15_PIN_JSON' "${ROOT}/scripts/phase15_llama_kv_ext_pin_check.sh"
+grep -q 'P15_PIN_JSON' "${ROOT}/scripts/phase/phase15_llama_kv_ext_pin_check.sh"
 grep -q 'phase16_edge_binary_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
 grep -q 'phase16_edge_build_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'run_upstream_gguf' "${ROOT}/.github/workflows/zerollama-gpu-smoke.yaml"
@@ -336,13 +333,13 @@ grep -q 'schedSkipGgmlRunnerLoad' "${ROOT}/server/sched.go"
 grep -q 'phase17_l2_pin_status.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'phase15_upstream_kv_watch.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'Operator troubleshooting' "${ROOT}/docs/phase17-llama-server.md"
-grep -q '5080_build_vendor_llama_server' "${ROOT}/scripts/5080_env.sh"
+grep -q '5080_build_vendor_llama_server' "${ROOT}/scripts/gpu/5080_env.sh"
 grep -q '5080_resignoff' "${ROOT}/docs/5080-runbook.md"
-grep -q 'RUN_E2E_L3_RADIX' "${ROOT}/scripts/gpu_5080_session.sh"
-grep -q 'L3_RUN_RADIX' "${ROOT}/scripts/l3_cuda_full_gate.sh"
-grep -q 'CUDA_LLAMA_MODEL' "${ROOT}/scripts/l3_radix_prefix_smoke.sh"
+grep -q 'RUN_E2E_L3_RADIX' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'L3_RUN_RADIX' "${ROOT}/scripts/phase/l3_cuda_full_gate.sh"
+grep -q 'CUDA_LLAMA_MODEL' "${ROOT}/scripts/phase/l3_radix_prefix_smoke.sh"
 grep -q 'e2e_t6_queue_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
-grep -q 'inference.training.queue_policy' "${ROOT}/scripts/e2e_t6_queue_smoke.sh"
+grep -q 'inference.training.queue_policy' "${ROOT}/scripts/e2e/e2e_t6_queue_smoke.sh"
 grep -q 'TrainingQueuePolicy' "${ROOT}/api/types.go"
 grep -q 't6-unified-queue.md' "${ROOT}/docs/README.md"
 echo "ok: e2e_runtime_smoke tools markers"

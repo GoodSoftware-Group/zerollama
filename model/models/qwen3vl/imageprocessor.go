@@ -3,6 +3,7 @@ package qwen3vl
 import (
 	"fmt"
 	"image"
+	"log/slog"
 	"math"
 
 	"github.com/ollama/ollama/fs"
@@ -82,14 +83,25 @@ type Grid struct {
 	Temporal int
 }
 
-func (p *ImageProcessor) ProcessImage(ctx ml.Context, img image.Image) (ml.Tensor, *Grid, error) {
+func (p *ImageProcessor) ProcessImage(ctx ml.Context, img image.Image, gridTHW []int) (ml.Tensor, *Grid, error) {
 	img = imageproc.Composite(img)
 
 	origWidth := img.Bounds().Dx()
 	origHeight := img.Bounds().Dy()
 
-	// Calculate smart resize dimensions
-	resizedHeight, resizedWidth := p.SmartResize(origHeight, origWidth)
+	var resizedHeight, resizedWidth int
+	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.mergeSize, gridTHW); ok {
+		resizedHeight, resizedWidth = rh, rw
+		slog.Info("grid_thw hint resize",
+			"height", resizedHeight,
+			"width", resizedWidth,
+			"grid_thw", gridTHW,
+			"patch_size", p.patchSize,
+			"engine", "ollama",
+		)
+	} else {
+		resizedHeight, resizedWidth = p.SmartResize(origHeight, origWidth)
+	}
 
 	// Resize image using existing functions
 	resizedImg := imageproc.Resize(img, image.Point{X: resizedWidth, Y: resizedHeight}, imageproc.ResizeBilinear)
@@ -122,6 +134,18 @@ func (p *ImageProcessor) ProcessImage(ctx ml.Context, img image.Image) (ml.Tenso
 
 	// Return patches and grid dimensions
 	return pixelValues, grid, nil
+}
+
+// resizeFromGridHint maps client [T,H,W] patch grid to pixel size H*patch × W*patch.
+// H/W must be positive and divisible by spatial merge (Qwen factor alignment).
+func resizeFromGridHint(patchSize, mergeSize int, gridTHW []int) (height, width int, ok bool) {
+	if len(gridTHW) != 3 || gridTHW[1] <= 0 || gridTHW[2] <= 0 || patchSize <= 0 {
+		return 0, 0, false
+	}
+	if mergeSize > 0 && (gridTHW[1]%mergeSize != 0 || gridTHW[2]%mergeSize != 0) {
+		return 0, 0, false
+	}
+	return gridTHW[1] * patchSize, gridTHW[2] * patchSize, true
 }
 
 func (p *ImageProcessor) createPatches(pixels []float32, height, width int, grid *Grid) ([]float32, error) {

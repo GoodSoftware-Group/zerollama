@@ -278,6 +278,7 @@ func fetchStatus(ctx context.Context, client *http.Client, base string) (*api.St
 }
 
 func queueDepth(in api.InferenceStatus) int {
+	// Pending already includes AssignHolds on nodes that fold soft holds into pending (F5).
 	depth := in.Ggml.Pending + in.Ggml.Active
 	if in.Runtime.Enabled && in.Runtime.Available {
 		if in.Runtime.Waiting != nil {
@@ -325,10 +326,19 @@ func sortNodes(nodes []NodeSnapshot) {
 	}
 }
 
-// Assign routes a model request to the best node.
+// Assign routes a model request to the best node and optionally mints an F5 hold token.
 func (m *Manager) Assign(req AssignRequest) (AssignResponse, error) {
 	snap := m.Snapshot()
-	return Assign(snap.Nodes, req, m.prefixCache)
+	resp, err := Assign(snap.Nodes, req, m.prefixCache)
+	if err != nil {
+		return resp, err
+	}
+	if AssignPushHoldEnabled() && resp.AssignmentToken != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		m.pushAssignHold(ctx, resp)
+	}
+	return resp, nil
 }
 
 // Score ranks nodes for a model without committing an assign (or updating affinity).

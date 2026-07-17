@@ -91,6 +91,7 @@ def _kv_native_extension() -> Extension:
         define_macros.append(("ZEROLLAMA_KV_DECODE_LOOP", "1"))
         define_macros.append(("LLAMA_KV_EXT_WRITABLE_PAGE_MAP", "1"))
         define_macros.append(("LLAMA_KV_EXT_EXTERNAL_ALIAS", "1"))
+        define_macros.append(("LLAMA_KV_EXT_DONOR_BUFFER", "1"))
         include_dirs.extend(
             [
                 str(cpp_root / "include"),

@@ -1,6 +1,7 @@
 from runtime.llama_args import (
     inprocess_speculative_requested,
     parse_llama_server_args,
+    with_llama_kv_unified,
     with_llama_num_ctx,
 )
 
@@ -37,3 +38,30 @@ def test_inprocess_speculative_requested():
     assert inprocess_speculative_requested(
         parse_llama_server_args(["--spec-type", "draft"])
     )
+
+
+def test_with_llama_kv_unified_injects_when_enabled():
+    out = with_llama_kv_unified(["-np", "4"], True)
+    assert "--kv-unified" in out
+    assert out[-1] == "--kv-unified"
+
+
+def test_with_llama_kv_unified_noop_when_disabled():
+    argv = ["-np", "4"]
+    assert with_llama_kv_unified(argv, False) == argv
+
+
+def test_with_llama_kv_unified_idempotent():
+    argv = ["-np", "2", "--kv-unified"]
+    assert with_llama_kv_unified(argv, True) == argv
+    assert with_llama_kv_unified(["-np", "2", "-kvu"], True) == ["-np", "2", "-kvu"]
+
+
+def test_with_llama_kv_unified_respects_no_flag():
+    argv = ["-np", "2", "--no-kv-unified"]
+    assert with_llama_kv_unified(argv, True) == argv
+    assert with_llama_kv_unified(["-np", "2", "-no-kvu"], True) == [
+        "-np",
+        "2",
+        "-no-kvu",
+    ]

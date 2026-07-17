@@ -744,6 +744,7 @@ func pullModelOnce(ctx context.Context, name string, regOpts *registryOptions, f
 			return err
 		}
 		EnrichManifestAfterPull(n, fn)
+		AutoExtractFlashMoESidecarAfterPull(n, fn)
 		fn(api.ProgressResponse{Status: "success"})
 		return nil
 	}
@@ -813,6 +814,7 @@ func pullModelOnce(ctx context.Context, name string, regOpts *registryOptions, f
 	}
 
 	EnrichManifestAfterPull(n, fn)
+	AutoExtractFlashMoESidecarAfterPull(n, fn)
 	fn(api.ProgressResponse{Status: "success"})
 
 	return nil

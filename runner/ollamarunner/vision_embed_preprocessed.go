@@ -118,7 +118,12 @@ func (c *VisionEmbedCache) lookupCached(
 		if sessionOverlay && sessionKey != "" {
 			c.storeSessionEmbedLocked(sessionKey, hash, cached)
 		}
-		slog.Info(kind+" global cache hit", "engine", "ollama")
+		if c.radixPool() {
+			slog.Info(kind+" radix cache hit", "engine", "ollama")
+			slog.Info(kind+" global cache hit", "engine", "ollama")
+		} else {
+			slog.Info(kind+" global cache hit", "engine", "ollama")
+		}
 		return restoreMultimodal(ctx, cached), true
 	}
 	return nil, false

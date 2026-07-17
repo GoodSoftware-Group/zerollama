@@ -99,7 +99,7 @@ func startDraftDaemonSessionOpts(ctx context.Context, channels, spatial int, lon
 	}
 	bin := FindANEDraftDaemonBin()
 	if bin == "" {
-		return nil, ANEDraftDaemonReady{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane_probe_build.sh")
+		return nil, ANEDraftDaemonReady{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -263,7 +263,7 @@ func ProbeANEDraftDaemonBench(ctx context.Context, channels, spatial int, quick 
 	}
 	bin := FindANEDraftDaemonBin()
 	if bin == "" {
-		return ANEDraftDaemonBench{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane_probe_build.sh")
+		return ANEDraftDaemonBench{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	args := []string{"--bench", "--iters", fmt.Sprintf("%d", draftDaemonBenchIters(quick))}
 	if channels > 0 {

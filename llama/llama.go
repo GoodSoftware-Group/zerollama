@@ -602,14 +602,8 @@ func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gri
 	}
 
 	if len(gridTHW) == 3 && gridTHW[0] > 0 && gridTHW[1] > 0 && gridTHW[2] > 0 {
-		var gr [3]C.int32_t
-		for i := range 3 {
-			gr[i] = C.int32_t(gridTHW[i])
-		}
-		C.mtmd_bitmap_set_grid_hint(bitmap, &gr[0])
-		slog.Debug("mtmd grid_thw hint forwarded",
-			"grid_thw", gridTHW,
-		)
+		thw := [3]C.int32_t{C.int32_t(gridTHW[0]), C.int32_t(gridTHW[1]), C.int32_t(gridTHW[2])}
+		C.mtmd_bitmap_set_grid_hint(bitmap, &thw[0])
 	}
 
 	bitmaps := [1]*C.mtmd_bitmap{bitmap}

@@ -27,6 +27,14 @@ class L3Settings:
     trace_dir: str | None = None
     lmcache_uri: str | None = None
     retention_interval: int | None = None
+    # v54: agent-profile opt-in for unified KV (metadata Radix seq_cp).
+    kv_unified: bool = False
+    # L3-R6b ops: agent-profile opt-in for metadata cell-vector COW (patch 0089).
+    kv_cow: bool = False
+    # L3-R6b: deep-copy aliased K/V tensors on diverge (Gemma4 share). VRAM-heavy.
+    kv_cow_tensors: bool = False
+    # L3-R6b: copy only used cell ranges during tensor fork (bandwidth; VRAM still full).
+    kv_cow_pages: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,7 +77,14 @@ def configure_l3_settings(raw: dict[str, object] | None) -> None:
         trace_dir=str(trace_dir).strip() if trace_dir else None,
         lmcache_uri=str(lmcache_uri).strip() if lmcache_uri else None,
         retention_interval=ri,
+        kv_unified=bool(raw.get("kv_unified", False)),
+        kv_cow=bool(raw.get("kv_cow", False)),
+        kv_cow_tensors=bool(raw.get("kv_cow_tensors", False)),
+        kv_cow_pages=bool(raw.get("kv_cow_pages", False)),
     )
+    sync_kv_cow_environ()
+    sync_kv_cow_tensors_environ()
+    sync_kv_cow_pages_environ()
 
 
 def l3_settings() -> L3Settings:
@@ -184,6 +199,264 @@ def radix_hybrid_seq_copy_enabled() -> bool:
     ``ZEROLLAMA_RADIX_HYBRID_SEQ_COPY=0`` until a model-specific live gate passes.
     """
     return env_bool("ZEROLLAMA_RADIX_HYBRID_SEQ_COPY", default=True)
+
+
+def kv_unified_with_radix_enabled() -> bool:
+    """v58: when Radix is on, couple unified KV so ``seq_cp`` stays metadata-only.
+
+    WHY default on: Radix without ``kv_unified`` still buffer-copies (same-stream
+    ``cells.seq_add`` only when ``n_stream=1``). Kill-switch
+    ``ZEROLLAMA_KV_UNIFIED_WITH_RADIX=0`` restores pre-v58 behavior. Explicit
+    ``ZEROLLAMA_KV_UNIFIED=0`` still wins over this couple.
+    """
+    return env_bool("ZEROLLAMA_KV_UNIFIED_WITH_RADIX", default=True)
+
+
+def kv_unified_source() -> str:
+    """How unified KV became effective: ``env`` | ``yaml`` | ``radix_couple`` | ``off``."""
+    explicit = env_tri_state("ZEROLLAMA_KV_UNIFIED")
+    if explicit is True:
+        return "env"
+    if explicit is False:
+        return "off"
+    if l3_settings().kv_unified:
+        return "yaml"
+    if radix_prefix_share_enabled() and kv_unified_with_radix_enabled():
+        return "radix_couple"
+    return "off"
+
+
+def kv_unified_enabled() -> bool:
+    """Phase 15 v52–v58: unified KV stream (in-process + subprocess).
+
+    WHY off by default (no radix/YAML): unified ``n_stream=1`` shares one cell pool
+    across slots — concurrent long independent contexts compete for ``n_ctx``.
+    When on, Radix ``seq_cp`` is metadata-only (same stream) — L3-R6 share without
+    rewriting llama's cell allocator. Matches llama-server ``--kv-unified``.
+
+    v52: sets ``cparams.kv_unified`` for in-process multi-seq.
+    v53: injects ``--kv-unified`` into subprocess llama-server argv.
+    v54: YAML ``l3.kv_unified`` (agent profile); env ``0/1`` overrides.
+    v58: when Radix is on, couple unified by default (``ZEROLLAMA_KV_UNIFIED_WITH_RADIX``).
+    Explicit ``--no-kv-unified`` in EXTRA_ARGS still wins at argv layer.
+    """
+    return kv_unified_source() != "off"
+
+
+def kv_cow_source() -> str:
+    """How metadata cell COW became effective: ``env`` | ``yaml`` | ``off``.
+
+    ``ZEROLLAMA_KV_COW=0`` always wins (kill-switch). YAML wins over a synced
+    ``=1`` export so agent profile still reports ``yaml``.
+    """
+    explicit = env_tri_state("ZEROLLAMA_KV_COW")
+    if explicit is False:
+        return "off"
+    if l3_settings().kv_cow:
+        return "yaml"
+    if explicit is True:
+        return "env"
+    return "off"
+
+
+def kv_cow_enabled() -> bool:
+    """L3-R6b: metadata cell-vector COW (vendor ``getenv(ZEROLLAMA_KV_COW)``).
+
+    WHY off by default: forks shared cells on diverge; requires patch **0089**.
+    Agent YAML ``l3.kv_cow: true`` + ``sync_kv_cow_environ`` exports the env so
+    llama-server inherits it. ``ZEROLLAMA_KV_COW=0`` kills YAML. Tensor fork is
+    separate (``kv_cow_tensors`` / ``ZEROLLAMA_KV_COW_TENSORS``).
+    """
+    return kv_cow_source() != "off"
+
+
+def sync_kv_cow_environ() -> bool:
+    """Export ``ZEROLLAMA_KV_COW=1`` when YAML enables COW and env is unset.
+
+    Vendor llama only reads getenv (not Python YAML). Subprocess inherits
+    ``os.environ``. Returns True when this call set the env var.
+    """
+    if env_tri_state("ZEROLLAMA_KV_COW") is not None:
+        return False
+    if not l3_settings().kv_cow:
+        return False
+    os.environ["ZEROLLAMA_KV_COW"] = "1"
+    return True
+
+
+def kv_cow_tensors_source() -> str:
+    """How tensor COW became effective: ``env`` | ``yaml`` | ``off``."""
+    explicit = env_tri_state("ZEROLLAMA_KV_COW_TENSORS")
+    if explicit is False:
+        return "off"
+    if l3_settings().kv_cow_tensors:
+        return "yaml"
+    if explicit is True:
+        return "env"
+    return "off"
+
+
+def kv_cow_tensors_enabled() -> bool:
+    """L3-R6b: deep-copy aliased K/V on diverge (``ZEROLLAMA_KV_COW_TENSORS``).
+
+    Requires ``kv_cow`` as well — ``ensure_unique_cells`` gates the tensor fork.
+    Full-buffer ``ggml_backend_tensor_copy`` (not page-granular); can double KV VRAM.
+    """
+    return kv_cow_tensors_source() != "off"
+
+
+def sync_kv_cow_tensors_environ() -> bool:
+    """Export ``ZEROLLAMA_KV_COW_TENSORS=1`` when YAML enables tensor COW."""
+    if env_tri_state("ZEROLLAMA_KV_COW_TENSORS") is not None:
+        return False
+    if not l3_settings().kv_cow_tensors:
+        return False
+    os.environ["ZEROLLAMA_KV_COW_TENSORS"] = "1"
+    # C++ gates tensor fork behind ZEROLLAMA_KV_COW — export if unset.
+    if env_tri_state("ZEROLLAMA_KV_COW") is None:
+        os.environ["ZEROLLAMA_KV_COW"] = "1"
+    return True
+
+
+def kv_cow_pages_source() -> str:
+    """How used-cell-range COW became effective: ``env`` | ``yaml`` | ``off``."""
+    explicit = env_tri_state("ZEROLLAMA_KV_COW_PAGES")
+    if explicit is False:
+        return "off"
+    if l3_settings().kv_cow_pages:
+        return "yaml"
+    if explicit is True:
+        return "env"
+    return "off"
+
+
+def kv_cow_pages_enabled() -> bool:
+    """L3-R6b: used-cell-range copy during tensor fork (``ZEROLLAMA_KV_COW_PAGES``).
+
+    Still allocates full private tensors; skips copying empty capacity. Requires
+    tensor COW. Density ≥80% falls back to full ``ggml_backend_tensor_copy``.
+    """
+    return kv_cow_pages_source() != "off"
+
+
+def sync_kv_cow_pages_environ() -> bool:
+    """Export ``ZEROLLAMA_KV_COW_PAGES=1`` when YAML enables pages mode."""
+    if env_tri_state("ZEROLLAMA_KV_COW_PAGES") is not None:
+        return False
+    if not l3_settings().kv_cow_pages:
+        return False
+    os.environ["ZEROLLAMA_KV_COW_PAGES"] = "1"
+    if env_tri_state("ZEROLLAMA_KV_COW_TENSORS") is None:
+        os.environ["ZEROLLAMA_KV_COW_TENSORS"] = "1"
+    if env_tri_state("ZEROLLAMA_KV_COW") is None:
+        os.environ["ZEROLLAMA_KV_COW"] = "1"
+    return True
+
+
+def kv_unified_operator_note() -> str | None:
+    """Sizing advisory when unified is on (shared cell pool)."""
+    if not kv_unified_enabled():
+        return None
+    src = kv_unified_source()
+    couple = (
+        " (via radix_couple; ZEROLLAMA_KV_UNIFIED_WITH_RADIX=0 to decouple)"
+        if src == "radix_couple"
+        else ""
+    )
+    return (
+        "shared cell pool; size n_ctx for sum of concurrent live tokens across slots "
+        "(not per-slot). Restart after toggle. Kill-switch: ZEROLLAMA_KV_UNIFIED=0 "
+        "or --no-kv-unified in LLAMA_SERVER_EXTRA_ARGS."
+        + couple
+    )
+
+
+def kv_unified_min_tokens_per_slot() -> int:
+    """Floor tokens budgeted per concurrent slot under unified (v55 sizing probe).
+
+    WHY: one cell pool must hold the *sum* of live tokens. A soft floor catches
+    obvious undersize (e.g. ``-c 2048`` with ``-np 4``) without claiming to know
+    real per-slot working sets. Override with ``ZEROLLAMA_KV_UNIFIED_MIN_TOKENS_PER_SLOT``.
+    """
+    return _int_env(
+        "ZEROLLAMA_KV_UNIFIED_MIN_TOKENS_PER_SLOT", default=512, minimum=1
+    )
+
+
+def kv_unified_strict_sizing_enabled() -> bool:
+    """v56: opt-in hard fail when unified ``n_ctx`` is below the soft floor.
+
+    Default off — advisory probe (v55) remains the safe default. Agent fleets that
+    want fail-closed load can set ``ZEROLLAMA_KV_UNIFIED_STRICT=1``.
+    """
+    return env_bool("ZEROLLAMA_KV_UNIFIED_STRICT", default=False)
+
+
+class KvUnifiedSizingError(RuntimeError):
+    """Raised when strict unified sizing rejects an undersized ``n_ctx`` (v56)."""
+
+
+def kv_unified_sizing_status(
+    *,
+    n_ctx: int | None,
+    n_parallel: int,
+) -> dict[str, object] | None:
+    """v55/v56: numeric shared-pool sizing probe for ``/health``.
+
+    Returns ``None`` when unified is off. ``ok`` is False when ``n_ctx`` is known and
+    below ``n_parallel * min_tokens_per_slot``; ``unknown`` when ctx not loaded yet.
+    ``strict`` mirrors ``ZEROLLAMA_KV_UNIFIED_STRICT`` (hard fail on load when on).
+    """
+    if not kv_unified_enabled():
+        return None
+    slots = max(1, int(n_parallel))
+    floor = kv_unified_min_tokens_per_slot()
+    recommended = slots * floor
+    strict = kv_unified_strict_sizing_enabled()
+    ctx = int(n_ctx) if n_ctx is not None and int(n_ctx) > 0 else None
+    if ctx is None:
+        return {
+            "ok": None,
+            "unknown": True,
+            "strict": strict,
+            "n_ctx": None,
+            "n_parallel": slots,
+            "min_tokens_per_slot": floor,
+            "recommended_min_ctx": recommended,
+            "note": "n_ctx unknown until model load; size -c for sum of live tokens",
+        }
+    ok = ctx >= recommended
+    out: dict[str, object] = {
+        "ok": ok,
+        "unknown": False,
+        "strict": strict,
+        "n_ctx": ctx,
+        "n_parallel": slots,
+        "min_tokens_per_slot": floor,
+        "recommended_min_ctx": recommended,
+    }
+    if not ok:
+        out["note"] = (
+            f"n_ctx={ctx} < recommended_min_ctx={recommended} "
+            f"({slots} slots × {floor} tokens); raise -c / num_ctx or lower -np"
+            + ("; strict=on will reject load" if strict else "")
+        )
+    return out
+
+
+def assert_kv_unified_sizing(*, n_ctx: int | None, n_parallel: int) -> None:
+    """v56: raise ``KvUnifiedSizingError`` when strict sizing is on and undersized.
+
+    No-op when unified off, strict off, or ``n_ctx`` unknown (cannot fail closed
+    without a known ctx — health still reports ``unknown``).
+    """
+    if not kv_unified_enabled() or not kv_unified_strict_sizing_enabled():
+        return
+    status = kv_unified_sizing_status(n_ctx=n_ctx, n_parallel=n_parallel)
+    if status is None or status.get("unknown") or status.get("ok") is not False:
+        return
+    note = status.get("note") or "unified n_ctx undersized"
+    raise KvUnifiedSizingError(str(note))
 
 
 def lmcache_tier_enabled() -> bool:
@@ -370,11 +643,25 @@ def runtime_env_health() -> dict[str, object]:
         "llama_cache_disk_explicit": env_tri_state("ZEROLLAMA_LLAMA_CACHE_DISK"),
         "prefix_block_pool": prefix_block_pool_enabled(),
         "radix_share": radix_prefix_share_enabled(),
+        "kv_unified": kv_unified_enabled(),
+        "kv_unified_source": kv_unified_source(),
+        "kv_unified_with_radix": kv_unified_with_radix_enabled(),
+        "kv_unified_strict": kv_unified_strict_sizing_enabled(),
+        "kv_cow": kv_cow_enabled(),
+        "kv_cow_source": kv_cow_source(),
+        "kv_cow_tensors": kv_cow_tensors_enabled(),
+        "kv_cow_tensors_source": kv_cow_tensors_source(),
+        "kv_cow_pages": kv_cow_pages_enabled(),
+        "kv_cow_pages_source": kv_cow_pages_source(),
         "lmcache_tier": lmcache_tier_enabled(),
         "n_parallel_hint": hints.n_parallel,
         "llama_backend_hint": hints.llama_backend,
         "l3_yaml": {
             "radix_share": l3.radix_share,
+            "kv_unified": l3.kv_unified,
+            "kv_cow": l3.kv_cow,
+            "kv_cow_tensors": l3.kv_cow_tensors,
+            "kv_cow_pages": l3.kv_cow_pages,
             "block_size": l3.block_size,
             "trace": l3.trace,
         },

@@ -249,3 +249,76 @@ func TestSessionEmbedOverlay_lruEvictionAtCap(t *testing.T) {
 		t.Fatal("newest session should remain after cap eviction")
 	}
 }
+
+func TestSessionEmbedOverlay_hashCap(t *testing.T) {
+	t.Setenv("OLLAMA_IMAGE_EMBED_CACHE_MAX", "2")
+	cache := ImageContext{
+		images:        make([]imageCache, 2),
+		sessionEmbeds: make(map[string]sessionEmbedState),
+	}
+	const session = "agent-1"
+
+	cache.mu.Lock()
+	cache.storeSessionEmbedLocked(session, 1, []llama.MtmdChunk{{Embed: []float32{1}}})
+	cache.storeSessionEmbedLocked(session, 2, []llama.MtmdChunk{{Embed: []float32{2}}})
+	cache.storeSessionEmbedLocked(session, 3, []llama.MtmdChunk{{Embed: []float32{3}}})
+	_, ok1 := cache.findSessionEmbedLocked(session, 1)
+	got2, ok2 := cache.findSessionEmbedLocked(session, 2)
+	got3, ok3 := cache.findSessionEmbedLocked(session, 3)
+	cache.mu.Unlock()
+
+	if ok1 {
+		t.Fatal("hash 1 should be evicted at session hash cap")
+	}
+	if !ok2 || !reflect.DeepEqual(got2, []llama.MtmdChunk{{Embed: []float32{2}}}) {
+		t.Fatalf("hash 2 miss: ok=%v got=%v", ok2, got2)
+	}
+	if !ok3 || !reflect.DeepEqual(got3, []llama.MtmdChunk{{Embed: []float32{3}}}) {
+		t.Fatalf("hash 3 miss: ok=%v got=%v", ok3, got3)
+	}
+}
+
+func TestImageCache_byteBudgetEviction(t *testing.T) {
+	cache := ImageContext{
+		images:      make([]imageCache, 4),
+		precomputed: make([]precomputedCache, 4),
+		byteBudget:  20,
+	}
+	a := []llama.MtmdChunk{{Embed: []float32{1, 2, 3, 4}}} // 16 bytes
+	b := []llama.MtmdChunk{{Embed: []float32{5, 6, 7, 8}}}
+
+	cache.addImage(0x1, a)
+	if cache.totalBytes != 16 {
+		t.Fatalf("totalBytes=%d want 16", cache.totalBytes)
+	}
+	cache.addImage(0x2, b)
+	_, errA := cache.findImage(0x1)
+	gotB, errB := cache.findImage(0x2)
+	if errA != errImageNotFound {
+		t.Fatalf("expected A evicted, err=%v", errA)
+	}
+	if errB != nil || !reflect.DeepEqual(gotB, b) {
+		t.Fatalf("B should remain: err=%v got=%v", errB, gotB)
+	}
+	if cache.totalBytes != 16 {
+		t.Fatalf("totalBytes=%d want 16", cache.totalBytes)
+	}
+}
+
+func TestImageCache_byteBudgetCrossPool(t *testing.T) {
+	cache := ImageContext{
+		images:      make([]imageCache, 4),
+		precomputed: make([]precomputedCache, 4),
+		byteBudget:  20,
+	}
+	cache.addImage(0x1, []llama.MtmdChunk{{Embed: []float32{1, 2, 3, 4}}})
+	cache.addPrecomputedLocked(0x2, []visionChunk{{embed: []float32{5, 6, 7, 8}}})
+	_, errImg := cache.findImage(0x1)
+	got, errPre := cache.findPrecomputedLocked(0x2)
+	if errImg != errImageNotFound {
+		t.Fatalf("expected image evicted by precomputed insert, err=%v", errImg)
+	}
+	if errPre != nil || len(got) != 1 {
+		t.Fatalf("precomputed should remain: err=%v got=%v", errPre, got)
+	}
+}

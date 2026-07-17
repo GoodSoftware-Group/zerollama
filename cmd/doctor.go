@@ -367,7 +367,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 				Name:    "zerollama binary",
 				Status:  "warn",
 				Detail:  "not found in repo or PATH",
-				FixHint: "./scripts/build_zerollama_mac.sh",
+				FixHint: "./scripts/build/build_zerollama_mac.sh",
 			}
 		}
 	}
@@ -377,7 +377,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 			Name:    "zerollama binary",
 			Status:  "fail",
 			Detail:  fmt.Sprintf("%s serve --help failed: %v", bin, err),
-			FixHint: "./scripts/build_zerollama_mac.sh",
+			FixHint: "./scripts/build/build_zerollama_mac.sh",
 		}
 	}
 	// Stale binary may lack doctor subcommand.
@@ -387,7 +387,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 			Name:    "zerollama binary",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s lacks doctor subcommand (stale build?)", bin),
-			FixHint: "./scripts/build_zerollama_mac.sh",
+			FixHint: "./scripts/build/build_zerollama_mac.sh",
 		}
 	}
 	return doctorCheck{
@@ -403,8 +403,8 @@ func doctorCheckMacCGO(repo string) doctorCheck {
 		return doctorCheck{
 			Name:    "mac cgo build",
 			Status:  "warn",
-			Detail:  "scripts/mac_cgo_env.sh missing",
-			FixHint: "pull latest repo; ./scripts/build_zerollama_mac.sh",
+			Detail:  "scripts/runtime/mac_cgo_env.sh missing",
+			FixHint: "pull latest repo; ./scripts/build/build_zerollama_mac.sh",
 		}
 	}
 	cmd := exec.Command("bash", script, "--check")
@@ -419,7 +419,7 @@ func doctorCheckMacCGO(repo string) doctorCheck {
 			Name:    "mac cgo build",
 			Status:  status,
 			Detail:  text,
-			FixHint: "xcode-select --install; ./scripts/build_zerollama_mac.sh (see docs/mac-dev-setup.md)",
+			FixHint: "xcode-select --install; ./scripts/build/build_zerollama_mac.sh (see docs/mac-dev-setup.md)",
 		}
 	}
 	detail := text
@@ -457,7 +457,7 @@ func doctorCheckRuntimeVenv(repo string) doctorCheck {
 			Name:    "runtime/.venv",
 			Status:  "fail",
 			Detail:  "missing",
-			FixHint: "./scripts/runtime_uv_venv.sh or zerollama doctor --fix",
+			FixHint: "./scripts/runtime/runtime_uv_venv.sh or zerollama doctor --fix",
 		}
 	}
 	cmd := exec.Command(py, "-c", "import fastapi")
@@ -466,7 +466,7 @@ func doctorCheckRuntimeVenv(repo string) doctorCheck {
 			Name:    "runtime/.venv",
 			Status:  "fail",
 			Detail:  "fastapi import failed",
-			FixHint: "RUNTIME_UV_SYNC=1 ./scripts/runtime_uv_venv.sh",
+			FixHint: "RUNTIME_UV_SYNC=1 ./scripts/runtime/runtime_uv_venv.sh",
 		}
 	}
 	return doctorCheck{
@@ -515,7 +515,7 @@ func doctorCheckLibLlama(repo string) doctorCheck {
 		Name:    "libllama",
 		Status:  "fail",
 		Detail:  "Metal/CUDA libllama not found",
-		FixHint: "zerollama doctor --fix (clones ../llama.cpp then builds) or ./scripts/ensure_llama_cpp_sibling.sh",
+		FixHint: "zerollama doctor --fix (clones ../llama.cpp then builds) or ./scripts/vendor/ensure_llama_cpp_sibling.sh",
 	}
 }
 
@@ -590,7 +590,7 @@ func doctorMLXFixHint(repo string) string {
 	if _, err := os.Stat(stale); err == nil {
 		hints = append(hints, "rm "+stale+" if stale (CHECK failed: mlx_distributed_group_new_)")
 	}
-	hints = append(hints, "BUILD_MLX=1 ./scripts/build_zerollama_mac.sh (dev) or ./scripts/build_production_mac.sh (dist/)")
+	hints = append(hints, "BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh (dev) or ./scripts/build/build_production_mac.sh (dist/)")
 	return strings.Join(hints, "; ")
 }
 
@@ -750,8 +750,8 @@ func doctorCheckLlamaCppUnified(repo string) doctorCheck {
 	}
 	if report.UnifiedRoot == "" {
 		status = "warn"
-		report.Detail = "unified llama.cpp not resolved; run ./scripts/rebase_vendor_unified.sh --sync or ./scripts/ensure_llama_cpp_sibling.sh"
-		report.FixHint = "./scripts/build_llama_server.sh"
+		report.Detail = "unified llama.cpp not resolved; run ./scripts/vendor/rebase_vendor_unified.sh --sync or ./scripts/vendor/ensure_llama_cpp_sibling.sh"
+		report.FixHint = "./scripts/build/build_llama_server.sh"
 	}
 	return doctorCheck{
 		Name:    "llama.cpp unified",
@@ -787,10 +787,10 @@ func doctorCheckLlamaServer(repo string) doctorCheck {
 	switch {
 	case envconfig.EdgeMode() || envconfig.LlamaServerBackendExplicit():
 		status = "fail"
-		fix = "./scripts/build_llama_server.sh (Linux CUDA) or build_ollama_llama_server_darwin.sh; or set LLAMA_SERVER_BIN"
+		fix = "./scripts/build/build_llama_server.sh (Linux CUDA) or build_ollama_llama_server_darwin.sh; or set LLAMA_SERVER_BIN"
 	case runtime.GOOS == "linux" && !envconfig.LlamaServerBackendDisabled():
 		status = "warn"
-		fix = "./scripts/build_llama_server.sh — plain Linux serve sets ZEROLLAMA_LLAMA_SERVER=auto when discoverable"
+		fix = "./scripts/build/build_llama_server.sh — plain Linux serve sets ZEROLLAMA_LLAMA_SERVER=auto when discoverable"
 		default:
 		detail = "not discovered (Mac plain GGUF uses ggml; build llama-server for DFlash/MTP/n-gram auto-route)"
 	}
@@ -938,7 +938,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "missing (optional for /api/train MPS LoRA)",
-			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
+			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training/training_uv_venv.sh --embed-py)\" ./scripts/training/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
 		}
 	}
 	cmd := exec.Command(py, "-c", "import torch, peft")
@@ -947,7 +947,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "torch/peft import failed",
-			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify",
+			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training/training_uv_venv.sh --embed-py)\" ./scripts/training/training_uv_venv.sh --verify",
 		}
 	}
 	return doctorCheck{

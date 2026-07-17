@@ -22,6 +22,7 @@ def test_copy_sequence_prefix_subprocess_ok():
         tail_block_hash=None,
     )
     payload = json.dumps({"ok": True, "pos_end": 512}).encode()
+    captured: dict = {}
 
     class FakeResp:
         def read(self):
@@ -33,8 +34,52 @@ def test_copy_sequence_prefix_subprocess_ok():
         def __exit__(self, *args):
             return False
 
-    with patch("urllib.request.urlopen", return_value=FakeResp()):
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode())
+        return FakeResp()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         assert execute_radix_share_plan(plan, subprocess_base_url="http://127.0.0.1:8082")
+    assert captured["body"]["allow_media"] is True
+    assert captured["body"]["src_slot"] == 2
+    assert captured["body"]["dst_slot"] == 5
+
+
+def test_copy_sequence_prefix_subprocess_text_only(monkeypatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_MEDIA_SEQ_COPY", "0")
+    captured: dict = {}
+
+    class FakeResp:
+        def read(self):
+            return json.dumps({"ok": True}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode())
+        return FakeResp()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        assert copy_sequence_prefix_subprocess(
+            "http://127.0.0.1:8082",
+            source_slot=1,
+            target_slot=2,
+            pos_end=128,
+        )
+    assert captured["body"]["allow_media"] is False
+
+
+def test_radix_media_seq_copy_enabled(monkeypatch):
+    from runtime.kv.radix_seq_copy import radix_media_seq_copy_enabled
+
+    monkeypatch.setenv("ZEROLLAMA_RADIX_MEDIA_SEQ_COPY", "1")
+    assert radix_media_seq_copy_enabled() is True
+    monkeypatch.setenv("ZEROLLAMA_RADIX_MEDIA_SEQ_COPY", "text_only")
+    assert radix_media_seq_copy_enabled() is False
 
 
 def test_copy_sequence_prefix_subprocess_404():

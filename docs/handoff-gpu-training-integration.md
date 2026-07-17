@@ -96,11 +96,11 @@ When **embedded runtime + training** share one CPython (`ZEROLLAMA_RUNTIME_SHARE
 ## How to sanity-check
 
 1. **`python3-dev`** + **`pkg-config python3-embed`** for Go build. Training deps: `requirements-training.txt` / [gpu-training.md](./gpu-training.md).  
-2. Start server with `OLLAMA_TRAINING=true` (default). Set `OLLAMA_TRAINING_PYTHONPATH` or `~/zerollama` layout. See [`scripts/serve_production_wrapper.sh`](../scripts/serve_production_wrapper.sh) → `~/bin/serve.sh`.  
-3. `OLLAMA_HOST=http://127.0.0.1:8080 ./scripts/e2e_training_ops_smoke.sh` — `GET /api/train/status` + jobs list; optional `RUN_E2E_TRAINING_TCP=1`.  
-4. **Shared embed:** `./scripts/repro_shared_interpreter_health_hang.sh` — 5× `/health` must not hang (non-prod ports `19180`/`19181`).  
-5. `ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh` — mirrors + `go_training_gpu_busy` on `/health`.  
-6. **5080 session + training ops:** `RUN_E2E_TRAINING_OPS=1 ./scripts/gpu_5080_session.sh` (serve must have `OLLAMA_TRAINING=true`).  
+2. Start server with `OLLAMA_TRAINING=true` (default). Set `OLLAMA_TRAINING_PYTHONPATH` or `~/zerollama` layout. See [`scripts/serve/serve_production_wrapper.sh`](../scripts/serve/serve_production_wrapper.sh) → `~/bin/serve.sh`.  
+3. `OLLAMA_HOST=http://127.0.0.1:8080 ./scripts/e2e/e2e_training_ops_smoke.sh` — `GET /api/train/status` + jobs list; optional `RUN_E2E_TRAINING_TCP=1`.  
+4. **Shared embed:** `./scripts/runtime/repro_shared_interpreter_health_hang.sh` — 5× `/health` must not hang (non-prod ports `19180`/`19181`).  
+5. `ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e/e2e_coordination_smoke.sh` — mirrors + `go_training_gpu_busy` on `/health`.  
+6. **5080 session + training ops:** `RUN_E2E_TRAINING_OPS=1 ./scripts/gpu/gpu_5080_session.sh` (serve must have `OLLAMA_TRAINING=true`).  
 7. `OLLAMA_TRAINING=false` — training routes off.
 
 ---

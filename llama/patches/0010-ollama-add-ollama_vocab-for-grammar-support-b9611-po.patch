@@ -12,7 +12,7 @@ full llama_model. Clone clears o_vocab to avoid double-free.
  3 files changed, 57 insertions(+), 12 deletions(-)
 
 diff --git a/src/llama-grammar.cpp b/src/llama-grammar.cpp
-index badcbfd0f..53995c6f7 100644
+index badcbfd0..53995c6f 100644
 --- a/src/llama-grammar.cpp
 +++ b/src/llama-grammar.cpp
 @@ -1125,6 +1125,7 @@ llama_grammar_candidates llama_grammar_reject_candidates_for_stack(
@@ -139,7 +139,7 @@ index badcbfd0f..53995c6f7 100644
 +}
 +
 diff --git a/src/llama-grammar.h b/src/llama-grammar.h
-index b5a0e588e..ecfeb7144 100644
+index b5a0e588..ecfeb714 100644
 --- a/src/llama-grammar.h
 +++ b/src/llama-grammar.h
 @@ -4,10 +4,20 @@
@@ -187,7 +187,7 @@ index b5a0e588e..ecfeb7144 100644
                        const char * grammar_root,
                                bool lazy,
 diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
-index 2370e91a1..42c9117f9 100644
+index 2370e91a..42c9117f 100644
 --- a/src/llama-sampler.cpp
 +++ b/src/llama-sampler.cpp
 @@ -2477,7 +2477,7 @@ static void llama_sampler_grammar_reset(struct llama_sampler * smpl) {

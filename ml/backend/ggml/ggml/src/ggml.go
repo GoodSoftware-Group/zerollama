@@ -4,8 +4,7 @@ package ggml
 
 // #cgo CXXFLAGS: -std=c++17
 // #cgo CPPFLAGS: -DNDEBUG -DGGML_USE_CPU -DGGML_VERSION=0x0 -DGGML_COMMIT=0x0
-// #cgo CPPFLAGS: -I${SRCDIR}/../include -I${SRCDIR}/ggml-cpu
-// #cgo CPPFLAGS: -I${SRCDIR}/ggml-cpu/qjl/include
+// #cgo CPPFLAGS: -I${SRCDIR}/../include -I${SRCDIR}/ggml-cpu -I${SRCDIR}/ggml-cpu/qjl/include
 // #cgo windows CFLAGS: -Wno-dll-attribute-on-redeclaration
 // #cgo windows LDFLAGS: -lmsvcrt -static -static-libgcc -static-libstdc++
 // #include <stdlib.h>

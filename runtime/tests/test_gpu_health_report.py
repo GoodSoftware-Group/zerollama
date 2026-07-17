@@ -1,4 +1,4 @@
-"""Tests for operator /health formatting (scripts/gpu_health_report.sh)."""
+"""Tests for operator /health formatting (scripts/gpu/gpu_health_report.sh)."""
 
 from runtime.gpu_health_report import format_gpu_health_tuning_report
 

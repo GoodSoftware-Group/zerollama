@@ -3,11 +3,17 @@
 Why dual keys for cache hits: Go subprocess unmarshals CompletionResponse
 (prompt_eval_cached_count); HTTP clients expect cached_prompt_tokens on done chunks.
 prompt_eval_count = cache_n + prompt_n (total prompt tokens presented to the model).
+
+HiCache tiers (SGLang sglext.cached_tokens_details):
+  device  — GPU/slot cache_n (existing cached_prompt_tokens)
+  host    — in-process disk slot restore (complete.disk_restore)
+  storage — L3 federated blob restore (radix blob / LMCache)
 """
 
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 
 def _ms_to_ns(ms: float) -> int:
@@ -16,28 +22,69 @@ def _ms_to_ns(ms: float) -> int:
     return int(ms * 1_000_000)
 
 
-def metrics_from_llama_chunk(chunk: dict[str, Any]) -> dict[str, int]:
+def lmcache_storage_backend_label() -> str:
+    """Scheme from ZEROLLAMA_LMCACHE_URI / YAML (file, redis, …); default file."""
+    try:
+        from runtime.env import lmcache_uri
+
+        uri = (lmcache_uri() or "").strip()
+    except Exception:
+        uri = ""
+    if not uri:
+        return "file"
+    parsed = urlparse(uri)
+    if parsed.scheme:
+        return parsed.scheme
+    return "file"
+
+
+def merge_cache_tier_details(
+    out: dict[str, Any],
+    *,
+    host: int = 0,
+    storage: int = 0,
+    storage_backend: str = "",
+) -> dict[str, Any]:
+    """Attach optional host/storage tier counts (omit zeros)."""
+    if host > 0:
+        out["cached_tokens_host"] = int(host)
+        out["prompt_eval_cached_host"] = int(host)
+    if storage > 0:
+        out["cached_tokens_storage"] = int(storage)
+        out["prompt_eval_cached_storage"] = int(storage)
+        backend = (storage_backend or "").strip() or lmcache_storage_backend_label()
+        out["cached_tokens_storage_backend"] = backend
+    return out
+
+
+def metrics_from_llama_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     """Extract prompt/eval counts and durations from a streaming completion chunk."""
     timings = chunk.get("timings")
-    if not isinstance(timings, dict):
-        return {}
-    cache_n = int(timings.get("cache_n") or 0)
-    prompt_n = int(timings.get("prompt_n") or 0)
-    predict_n = int(timings.get("predicted_n") or timings.get("predict_n") or 0)
-    prompt_ms = float(timings.get("prompt_ms") or 0.0)
-    predict_ms = float(timings.get("predicted_ms") or timings.get("predict_ms") or 0.0)
-    out: dict[str, int] = {}
-    if cache_n > 0:
-        out["prompt_eval_cached_count"] = cache_n
-        out["cached_prompt_tokens"] = cache_n
-    if cache_n + prompt_n > 0:
-        out["prompt_eval_count"] = cache_n + prompt_n
-    if prompt_ms > 0:
-        out["prompt_eval_duration"] = _ms_to_ns(prompt_ms)
-    if predict_n > 0:
-        out["eval_count"] = predict_n
-    if predict_ms > 0:
-        out["eval_duration"] = _ms_to_ns(predict_ms)
+    out: dict[str, Any] = {}
+    if isinstance(timings, dict):
+        cache_n = int(timings.get("cache_n") or 0)
+        prompt_n = int(timings.get("prompt_n") or 0)
+        predict_n = int(timings.get("predicted_n") or timings.get("predict_n") or 0)
+        prompt_ms = float(timings.get("prompt_ms") or 0.0)
+        predict_ms = float(timings.get("predicted_ms") or timings.get("predict_ms") or 0.0)
+        if cache_n > 0:
+            out["prompt_eval_cached_count"] = cache_n
+            out["cached_prompt_tokens"] = cache_n
+        if cache_n + prompt_n > 0:
+            out["prompt_eval_count"] = cache_n + prompt_n
+        if prompt_ms > 0:
+            out["prompt_eval_duration"] = _ms_to_ns(prompt_ms)
+        if predict_n > 0:
+            out["eval_count"] = predict_n
+        if predict_ms > 0:
+            out["eval_duration"] = _ms_to_ns(predict_ms)
+    # Tier fields may be stamped on the chunk by ctypes/engine (not in timings).
+    host = int(chunk.get("cached_tokens_host") or chunk.get("prompt_eval_cached_host") or 0)
+    storage = int(
+        chunk.get("cached_tokens_storage") or chunk.get("prompt_eval_cached_storage") or 0
+    )
+    backend = str(chunk.get("cached_tokens_storage_backend") or "")
+    merge_cache_tier_details(out, host=host, storage=storage, storage_backend=backend)
     return out
 
 

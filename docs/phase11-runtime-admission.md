@@ -53,7 +53,7 @@ Defaults in `runtime/runtime/gpu/admission.py` — override on the host after me
 
 ## Product constants (tune after measurement on 5080)
 
-Defaults in `runtime/runtime/gpu/inference_policy.py`. Override on **serve** after `./scripts/gpu_phase13_snapshot.sh` + coordination smoke (advanced — prefer code defaults until measured):
+Defaults in `runtime/runtime/gpu/inference_policy.py`. Override on **serve** after `./scripts/gpu/gpu_phase13_snapshot.sh` + coordination smoke (advanced — prefer code defaults until measured):
 
 | Constant | Default | Env override |
 |----------|---------|----------------|
@@ -63,7 +63,7 @@ Defaults in `runtime/runtime/gpu/inference_policy.py`. Override on **serve** aft
 | `GGML_SCHED_BACKLOG_MIN` | 1 | `ZEROLLAMA_RUNTIME_GGML_SCHED_BACKLOG_MIN` |
 | `CROSS_QUEUE_PRESSURE_ON` / `CLEAR` | 6 / 4 | `ZEROLLAMA_RUNTIME_CROSS_QUEUE_PRESSURE_ON`, `_CLEAR` |
 
-**5080 session:** `./scripts/gpu_5080_session.sh` — preflight + `gpu_smoke_all` + snapshot JSON + `gpu_snapshot` hints. **Why:** proves admission fits on a 16GB smoke path; does **not** by itself retune backlog thresholds (need load under real chat+training). Guide: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
+**5080 session:** `./scripts/gpu/gpu_5080_session.sh` — preflight + `gpu_smoke_all` + snapshot JSON + `gpu_snapshot` hints. **Why:** proves admission fits on a 16GB smoke path; does **not** by itself retune backlog thresholds (need load under real chat+training). Guide: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
 
 **YAML defaults:** When autoconfig picks `single_gpu.yaml`, the `vram:` block sets min-free / training-reserve / autotune if env is unset — same semantics as the env table above; **why:** one place for 16GB installs. See [phase13-runtime-vram.md](./phase13-runtime-vram.md#why-vram-in-single_gpuyaml).
 
@@ -143,7 +143,7 @@ Python cannot see ggml runner processes. Go pushes `POST /internal/go-coordinati
 | `vram_gate` | Follows `CHECK_GPU_VRAM` |
 | `vram_training_reserve` | Bytes reserved in policy math when training busy |
 
-After deploy, smoke: `./scripts/e2e_coordination_smoke.sh` (expects `low_would_wait` in `gates_active`).
+After deploy, smoke: `./scripts/e2e/e2e_coordination_smoke.sh` (expects `low_would_wait` in `gates_active`).
 
 ---
 
@@ -172,7 +172,7 @@ cd runtime && PYTHONPATH=. python3 -m pytest tests/ -q --ignore=tests/test_super
 Notable tests: `test_admission.py`, `test_inference_policy.py`, `test_scheduler_low_dequeue.py`, `test_admit_vram_precheck.py`, `test_gpu_vram.py`.
 
 ```bash
-ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e_coordination_smoke.sh
+ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e/e2e_coordination_smoke.sh
 ```
 
 ---

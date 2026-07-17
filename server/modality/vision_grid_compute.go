@@ -11,7 +11,7 @@ import (
 
 // Qwen3-VL defaults for grid_thw estimates on native ffmpeg expansion.
 // Why duplicate SmartResize here: modality must not import model/models/qwen3vl (runner graph);
-// this path only feeds preflight/usage heuristics, not vision forward.
+// this path feeds preflight/usage and M-RoPE ViT hints (GridTHWPerRaster → mtmd/ollama-engine).
 const (
 	qwenVLGridPatchSize     = 14
 	qwenVLGridFactor        = 28 // patch_size * spatial_merge_size

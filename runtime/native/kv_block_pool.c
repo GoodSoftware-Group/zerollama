@@ -25,7 +25,7 @@
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
 #include "llama.h"
 #endif
-#if defined(ZEROLLAMA_KV_DECODE_LOOP) || defined(LLAMA_KV_EXT_EXTERNAL_ALIAS)
+#if defined(ZEROLLAMA_KV_DECODE_LOOP) || defined(LLAMA_KV_EXT_EXTERNAL_ALIAS) || defined(LLAMA_KV_EXT_DONOR_BUFFER)
 #include "llama-kv-ext.h"
 #endif
 
@@ -967,6 +967,82 @@ kv_native_page_bind_external_alias_probe(PyObject *Py_UNUSED(self), PyObject *Py
 }
 #endif /* LLAMA_KV_EXT_EXTERNAL_ALIAS */
 
+#ifdef LLAMA_KV_EXT_DONOR_BUFFER
+/*
+ * Phase 15 v48 — CPU-only donor-buffer registration bindings.
+ *
+ * WHY no kv_slot/registry coupling like page_bind_*: donor registration happens
+ * BEFORE a llama_context/model is constructed (and thus before any kv_slot page
+ * bind exists) — see llama_kv_ext_register_donor_buffer doc in llama-kv-ext.h.
+ * These bindings talk directly to the static C registry, not KvPageBind rows.
+ */
+static PyObject *
+kv_native_register_donor_buffer(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    unsigned PY_LONG_LONG ptr = 0;
+    unsigned PY_LONG_LONG size = 0;
+    if (!PyArg_ParseTuple(args, "KK", &ptr, &size)) {
+        return NULL;
+    }
+    if (ptr == 0 || size == 0) {
+        PyErr_SetString(PyExc_ValueError, "ptr and size must be non-zero");
+        return NULL;
+    }
+
+    uint32_t donor_id = 0;
+    const int32_t rc = llama_kv_ext_register_donor_buffer(
+        (void *)(uintptr_t)ptr, (uint64_t)size, &donor_id);
+    if (rc != LLAMA_KV_EXT_OK) {
+        PyErr_Format(PyExc_RuntimeError, "llama_kv_ext_register_donor_buffer failed rc=%d", (int)rc);
+        return NULL;
+    }
+    return PyLong_FromUnsignedLong((unsigned long)donor_id);
+}
+
+static PyObject *
+kv_native_unregister_donor_buffer(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    unsigned int donor_id = 0;
+    if (!PyArg_ParseTuple(args, "I", &donor_id)) {
+        return NULL;
+    }
+    const int32_t rc = llama_kv_ext_unregister_donor_buffer((uint32_t)donor_id);
+    if (rc != LLAMA_KV_EXT_OK && rc != LLAMA_KV_EXT_NOT_FOUND) {
+        PyErr_Format(PyExc_RuntimeError, "llama_kv_ext_unregister_donor_buffer failed rc=%d", (int)rc);
+        return NULL;
+    }
+    /* NOT_FOUND is treated as success (idempotent unregister) — mirrors the
+     * vendor impl's own no-op-on-missing-entry contract. */
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+kv_native_donor_buffer_status(PyObject *Py_UNUSED(self), PyObject *args)
+{
+    unsigned int donor_id = 0;
+    if (!PyArg_ParseTuple(args, "I", &donor_id)) {
+        return NULL;
+    }
+    int32_t bound = 0;
+    uint64_t bytes_used = 0;
+    const int32_t rc = llama_kv_ext_donor_buffer_status((uint32_t)donor_id, &bound, &bytes_used);
+    if (rc == LLAMA_KV_EXT_NOT_FOUND) {
+        PyErr_Format(PyExc_KeyError, "no donor buffer registered with id %u", donor_id);
+        return NULL;
+    }
+    if (rc != LLAMA_KV_EXT_OK) {
+        PyErr_Format(PyExc_RuntimeError, "llama_kv_ext_donor_buffer_status failed rc=%d", (int)rc);
+        return NULL;
+    }
+    return Py_BuildValue(
+        "{s:O,s:K}",
+        "bound",
+        bound ? Py_True : Py_False,
+        "bytes_used",
+        (unsigned PY_LONG_LONG)bytes_used);
+}
+#endif /* LLAMA_KV_EXT_DONOR_BUFFER */
+
 static PyObject *
 kv_native_page_bind_writable_probe(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
 {
@@ -1779,6 +1855,14 @@ static PyMethodDef kv_module_methods[] = {
 #ifdef LLAMA_KV_EXT_EXTERNAL_ALIAS
     {"page_bind_external_alias_probe", kv_native_page_bind_external_alias_probe, METH_NOARGS,
      "Static probe: external buffer alias validate API linked (Phase 15 v47)"},
+#endif
+#ifdef LLAMA_KV_EXT_DONOR_BUFFER
+    {"register_donor_buffer", kv_native_register_donor_buffer, METH_VARARGS,
+     "Register external CPU host buffer (ptr, size) as a KV-cache alloc donor (Phase 15 v48) -> donor_id"},
+    {"unregister_donor_buffer", kv_native_unregister_donor_buffer, METH_VARARGS,
+     "Unregister donor buffer by id; call only after context/model teardown"},
+    {"donor_buffer_status", kv_native_donor_buffer_status, METH_VARARGS,
+     "Query whether donor_id was consumed by a KV cache construction -> {bound, bytes_used}"},
 #endif
 #ifdef ZEROLLAMA_KV_DECODE_LOOP
     {"page_bind_tensor_probe", kv_native_page_bind_tensor_probe, METH_VARARGS,

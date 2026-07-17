@@ -24,7 +24,7 @@
 | **`dual_4090`** | 2+ GPUs | `dual_4090.yaml` | `rtx-4090.json` (per card) | External sidecar + Go (`ZEROLLAMA_RUNTIME_URL`) |
 | **`single_cuda`** | 1 GPU, other VRAM | `single_gpu.yaml` | bucket from `index.json` | Same as 5080 unless overridden |
 
-Autodetect: `source scripts/cuda_common_env.sh && cuda_lane_detect`  
+Autodetect: `source scripts/gpu/cuda_common_env.sh && cuda_lane_detect`  
 Override: `CUDA_LANE=dual_4090`
 
 ---
@@ -37,8 +37,8 @@ These do **not** assume 16 GiB, sm_120, or tensor parallel.
 
 | Artifact | Role |
 |----------|------|
-| [`scripts/cuda_common_env.sh`](../scripts/cuda_common_env.sh) | Shared libs, CGO flags, llama-server discovery, lane detect |
-| [`scripts/cuda_common_gate.sh`](../scripts/cuda_common_gate.sh) | Tier-0 + optional GPU smokes — **run on every CUDA host** |
+| [`scripts/gpu/cuda_common_env.sh`](../scripts/gpu/cuda_common_env.sh) | Shared libs, CGO flags, llama-server discovery, lane detect |
+| [`scripts/gpu/cuda_common_gate.sh`](../scripts/gpu/cuda_common_gate.sh) | Tier-0 + optional GPU smokes — **run on every CUDA host** |
 
 ### Tests (no topology tuning)
 
@@ -63,8 +63,8 @@ These do **not** assume 16 GiB, sm_120, or tensor parallel.
 ## Lane-specific: RTX 5080 (16 GiB single-GPU)
 
 **Doc:** [5080-runbook.md](./5080-runbook.md)  
-**Env:** `source scripts/5080_env.sh`  
-**Session:** `./scripts/gpu_5080_session.sh` or `./scripts/5080_resignoff.sh --build`
+**Env:** `source scripts/gpu/5080_env.sh`  
+**Session:** `./scripts/gpu/gpu_5080_session.sh` or `./scripts/gpu/5080_resignoff.sh --build`
 
 | Concern | 5080-specific |
 |---------|---------------|
@@ -80,8 +80,8 @@ These do **not** assume 16 GiB, sm_120, or tensor parallel.
 
 ## Lane-specific: dual RTX 4090
 
-**Env:** `source scripts/dual_4090_env.sh`  
-**Session:** `./scripts/gpu_lane_session.sh`
+**Env:** `source scripts/gpu/dual_4090_env.sh`  
+**Session:** `./scripts/gpu/gpu_lane_session.sh`
 
 | Concern | dual-4090-specific |
 |---------|---------------------|
@@ -112,21 +112,21 @@ curl -s http://127.0.0.1:2083/api/status | jq .inference
 ## Decision tree
 
 ```
-1. source scripts/cuda_common_env.sh && cuda_print_lane_summary
-2. ./scripts/cuda_common_gate.sh
+1. source scripts/gpu/cuda_common_env.sh && cuda_print_lane_summary
+2. ./scripts/gpu/cuda_common_gate.sh
      RUN_E2E_GPU=1 RUN_E2E_PROXY=1 LLAMA_MODEL=... LLAMA_SERVER_BIN=...
 
 If rtx_5080:
-  source scripts/5080_env.sh
-  ./scripts/5080_resignoff.sh  OR  gpu_5080_session.sh
+  source scripts/gpu/5080_env.sh
+  ./scripts/gpu/5080_resignoff.sh  OR  gpu_5080_session.sh
 
 If dual_4090:
-  source scripts/dual_4090_env.sh
+  source scripts/gpu/dual_4090_env.sh
   dual_4090_health_check
   optional: l1_cuda_full_gate.sh / l3_cuda_full_gate.sh
 ```
 
-One-shot: `./scripts/gpu_lane_session.sh`
+One-shot: `./scripts/gpu/gpu_lane_session.sh`
 
 ---
 
@@ -145,13 +145,13 @@ Weight formats the **Go → Python runtime → patched llama-server** path can l
 | **HF FP8 safetensors** | Via convert | N/A until GGUF | Default convert **dequants** → F16/BF16; **`--fp8-native`** writes types 51/52 — see [native-fp8-gguf.md](./native-fp8-gguf.md) |
 | **Native FP8 GGUF weights** | Yes | Yes (MMVQ float + MMQ amax→int8) | `GGML_TYPE_FP8_E4M3=51` / `GGML_TYPE_FP8_E5M2=52` (F16 scale + 32×FP8); CUDA convert/get_rows + MMVQ/MMQ; convert `--fp8-native` (ModelOpt/per-row + compressed-tensors `strategy:tensor` + **128×128** `weight_scale_inv`). Probe: `./scripts/fp8_cuda_probe.sh`; load: `./scripts/fp8_cuda_load_smoke.sh` |
 
-**NVFP4 on this stack:** eliza pin + vendor tree include `GGML_TYPE_NVFP4`, CUDA `mmq` / `mmvq` / `convert` / `quantize` kernels, and llama.cpp NVFP4 scale-tensor loading. Expect **correctness on 4090**, not the Blackwell `blackwell_mma_available()` fast path (5080 / sm_120). Binary probe (no GGUF): `./scripts/nvfp4_cuda_probe.sh`.
+**NVFP4 on this stack:** eliza pin + vendor tree include `GGML_TYPE_NVFP4`, CUDA `mmq` / `mmvq` / `convert` / `quantize` kernels, and llama.cpp NVFP4 scale-tensor loading. Expect **correctness on 4090**, not the Blackwell `blackwell_mma_available()` fast path (5080 / sm_120). Binary probe (no GGUF): `./scripts/gpu/nvfp4_cuda_probe.sh`.
 
 **Host fixture (dual-4090, Jul 2026):**
 - NVFP4: [FreedomAISVR/gpt-oss-20B-NVFP4-GGUF](https://huggingface.co/FreedomAISVR/gpt-oss-20B-NVFP4-GGUF) → `/mnt/ssd2/models/nvfp4/gpt-oss-20b/gpt-oss-20b-nvfp4.gguf` (~12 GiB; NVFP4 experts + Q8_0 non-experts)
 - MXFP4 (A/B): [ggml-org/gpt-oss-20b-GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF) → `/mnt/ssd2/models/nvfp4/gpt-oss-20b-mxfp4/gpt-oss-20b-mxfp4.gguf`
 
-**Sign-off:** `./scripts/nvfp4_cuda_signoff.sh` (probe + direct `/completion` @ 8k ctx). Artifact: `/tmp/nvfp4-cuda-signoff.json`. Runtime doctor: `/health.llama_patches.cuda_weight_formats` reports `{nvfp4, mxfp4, fp8_e4m3, fp8_e5m2, libggml_cuda}` from the resolved CUDA backend.
+**Sign-off:** `./scripts/gpu/nvfp4_cuda_signoff.sh` (probe + direct `/completion` @ 8k ctx). Artifact: `/tmp/nvfp4-cuda-signoff.json`. Runtime doctor: `/health.llama_patches.cuda_weight_formats` reports `{nvfp4, mxfp4, fp8_e4m3, fp8_e5m2, libggml_cuda}` from the resolved CUDA backend.
 
 **Native FP8 (no GGUF required):** `./scripts/fp8_cuda_probe.sh` — full operator doc [native-fp8-gguf.md](./native-fp8-gguf.md). Load smoke: `./scripts/fp8_cuda_load_smoke.sh`.
 

@@ -133,9 +133,12 @@ func TestExpandVideosInChatRequest_setsGridTHWFromHook(t *testing.T) {
 		t.Fatal("ffmpeg expand must not mark grid as client-explicit")
 	}
 	got := GridTHWPerRaster(req.Messages[0])
-	for _, g := range got {
-		if g != nil {
-			t.Fatalf("server estimate must not forward to runner: %v", got)
+	if len(got) != 2 {
+		t.Fatalf("raster grids len=%d want 2", len(got))
+	}
+	for i, g := range got {
+		if len(g) != 3 || g[0] != 1 || g[1] != sp.GridTHW[1] || g[2] != sp.GridTHW[2] {
+			t.Fatalf("raster %d grid=%v want [1,%d,%d] from ffmpeg estimate", i, g, sp.GridTHW[1], sp.GridTHW[2])
 		}
 	}
 }

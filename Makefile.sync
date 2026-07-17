@@ -1,12 +1,12 @@
 # Unified llama.cpp vendor sync (ggml-org master + Ollama/zerollama patches).
 # Runtime sibling and in-process ggml share LLAMA_CPP_COMMIT.
 UPSTREAM=https://github.com/ggml-org/llama.cpp.git
-WORKDIR=vendor/llama-cpp-8f114a9b
-FETCH_HEAD=8f114a9b
+WORKDIR=vendor/llama-cpp-86d86ed4
+FETCH_HEAD=86d86ed4
 # Full git ref for checkout / rev-list (see repo-root LLAMA_CPP_COMMIT).
-FETCH_REF=8f114a9b573b69035299f9b924047f53c1e22c7e
-# build-info.cpp int field (past latest tag b9951 on master tip).
-BUILD_NUMBER=9952
+FETCH_REF=86d86ed4396b4130922f7b9af26e3d9fc11a591b
+# build-info.cpp int field (past latest tag b10064 on master tip).
+BUILD_NUMBER=10065
 
 # WHY sync order matters: build-info.cpp only stamps FETCH_HEAD/BUILD_NUMBER via sed.
 # If rsync from vendor/ is skipped, binaries report the new pin while in-tree
@@ -17,7 +17,7 @@ BUILD_NUMBER=9952
 # FETCH_REF and destroys Ollama patch commits before rsync — you would ship an
 # unpatch tree while build-info still says ad56033f. Use:
 #   make -f Makefile.sync clean apply-patches   # once per pin bump
-#   ./scripts/sync_vendor_llama.sh              # after every vendor edit
+#   ./scripts/vendor/sync_vendor_llama.sh              # after every vendor edit
 # `make sync` is a thin alias for the script (no git checkout).
 
 .PHONY: help
@@ -34,7 +34,7 @@ help:
 
 .PHONY: sync sync-from-vendor
 sync sync-from-vendor:
-	./scripts/sync_vendor_llama.sh
+	./scripts/vendor/sync_vendor_llama.sh
 
 # Legacy granular targets (rsync only — never reset vendor checkout)
 llama/build-info.cpp: llama/build-info.cpp.in llama/llama.cpp

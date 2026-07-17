@@ -72,7 +72,7 @@ func RunANEProbe(ctx context.Context, w io.Writer) error {
 
 	bin := FindANEProbeBin()
 	if bin == "" {
-		return fmt.Errorf("ane-probe binary not found — run ./scripts/ane_probe_build.sh (set ANE_REPO if needed)")
+		return fmt.Errorf("ane-probe binary not found — run ./scripts/ane/ane_probe_build.sh (set ANE_REPO if needed)")
 	}
 
 	if ctx == nil {

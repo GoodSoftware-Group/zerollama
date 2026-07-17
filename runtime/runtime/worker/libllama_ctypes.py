@@ -1,7 +1,7 @@
 """ctypes bindings to pinned libllama.so (Phase 14).
 
 WHY ctypes against the same tree as llama-server: no second vendored llama.cpp via pip;
-operators already build ``build/bin/libllama.so`` with ``scripts/build_llama_server.sh``.
+operators already build ``build/bin/libllama.so`` with ``scripts/build/build_llama_server.sh``.
 """
 
 from __future__ import annotations
@@ -594,7 +594,30 @@ def _try_restore_slot_cache_disk(
     if not hasattr(lib, "llama_state_seq_load_file"):
         return 0
     path = slot_cache_file_path(model_hash, seq_id)
-    if not path.is_file():
+    return load_slot_cache_disk_file(
+        lib, ctx, seq_id=seq_id, path=path, token_capacity=token_capacity
+    )
+
+
+def load_slot_cache_disk_file(
+    lib: ctypes.CDLL,
+    ctx: ctypes.c_void_p,
+    *,
+    seq_id: int,
+    path: Any,
+    token_capacity: int,
+) -> int:
+    """Load a concrete slot blob path into ``seq_id`` (L3-R7 federated restore).
+
+    Unlike ``_try_restore_slot_cache_disk``, this does not re-check the disk-cache
+    env gate — caller already decided to materialize/restore.
+    """
+    from pathlib import Path
+
+    if not hasattr(lib, "llama_state_seq_load_file"):
+        return 0
+    p = Path(path)
+    if not p.is_file():
         return 0
     cap = max(1, int(token_capacity))
     out_buf = (LLAMA_TOKEN * cap)()
@@ -602,7 +625,7 @@ def _try_restore_slot_cache_disk(
     nread = int(
         lib.llama_state_seq_load_file(
             ctx,
-            str(path).encode(),
+            str(p).encode(),
             ctypes.c_int32(seq_id),
             out_buf,
             ctypes.c_size_t(cap),
@@ -698,6 +721,11 @@ class LlamaLoadedSession:
         self.cpp_root = cpp_root
         self._lib = get_lib(lib_path, cpp_root)
         self._ctx: ctypes.c_void_p | None = None
+        # Phase 15 v50: auto-wired overlay donor (owned until close()).
+        self._overlay_donor: Any | None = None
+        self.overlay_donor_id: int | None = None
+        # Phase 15 v52: unified KV stream (n_stream=1) when opted in.
+        self.kv_unified = False
         # WHY _seq_last_owner: guards the skip-clear path in complete().
         # We only skip _clear_sequence when the same owner last wrote this
         # slot — otherwise a new session would resume into stale KV from a
@@ -724,11 +752,36 @@ class LlamaLoadedSession:
             raise LlamaServerError(f"failed to load model: {model_path}")
         self._vocab = self._lib.llama_model_get_vocab(self._model)
         if self.n_seq_max > 1:
+            self._maybe_auto_wire_overlay_donor()
             self._init_shared_context(n_prompt_budget=512)
+
+    def _maybe_auto_wire_overlay_donor(self) -> None:
+        """Phase 15 v50: register a host KV donor before context construction."""
+        if self._overlay_donor is not None:
+            return
+        from runtime.env import kv_unified_enabled
+        from runtime.kv.overlay_bind import prepare_auto_donor
+
+        need = self.num_ctx if self.num_ctx and self.num_ctx > 0 else 4096
+        if self.kv_pool_token_cap is not None:
+            need = min(need, self.kv_pool_token_cap)
+        handle = prepare_auto_donor(
+            self.model_path,
+            num_ctx=int(need),
+            n_seq_max=self.n_seq_max,
+            n_gpu_layers=self.n_gpu_layers,
+            kv_unified=kv_unified_enabled(),
+        )
+        if handle is None:
+            return
+        self._overlay_donor = handle
+        self.overlay_donor_id = int(handle.donor_id)
 
     def _init_shared_context(self, *, n_prompt_budget: int) -> None:
         if self._ctx is not None:
             return
+        from runtime.env import assert_kv_unified_sizing, kv_unified_enabled
+
         cparams = self._lib.llama_context_default_params()
         need = self.num_ctx if self.num_ctx and self.num_ctx > 0 else 4096
         if self.kv_pool_token_cap is not None:
@@ -739,6 +792,14 @@ class LlamaLoadedSession:
         cparams.n_batch = min(
             cparams.n_ctx, max(n_prompt_budget, self.n_seq_max, 512)
         )
+        # v52: unified stream → Radix seq_cp is metadata-only (L3-R6).
+        self.kv_unified = bool(kv_unified_enabled())
+        cparams.kv_unified = self.kv_unified
+        # v56: opt-in fail-closed before allocating a shared undersized pool.
+        if self.kv_unified:
+            assert_kv_unified_sizing(
+                n_ctx=int(cparams.n_ctx), n_parallel=int(self.n_seq_max)
+            )
         self._ctx = self._lib.llama_init_from_model(self._model, cparams)
         if not self._ctx:
             raise LlamaServerError("llama_init_from_model failed (multi-seq)")
@@ -775,6 +836,13 @@ class LlamaLoadedSession:
             # WHY clear owners on teardown: a future in-place reload must not match
             # resume against KV from a prior model/context on the same slot index.
             self._seq_last_owner.clear()
+            # v50: unregister donor only after ctx/model free (externally-owned ggml).
+            if self._overlay_donor is not None:
+                from runtime.kv.overlay_bind import release_auto_donor
+
+                release_auto_donor(self._overlay_donor)
+                self._overlay_donor = None
+                self.overlay_donor_id = None
 
     def _physical_check_after_decode(
         self,
@@ -971,6 +1039,12 @@ class LlamaLoadedSession:
                         restored_tokens=restored,
                         decode_pos=decode_pos,
                     )
+                    # Stamp Request for SGLang host-tier metrics (HiCache).
+                    if kv_bind_req is not None:
+                        try:
+                            kv_bind_req.cached_tokens_host = int(restored)
+                        except Exception:
+                            pass
         if is_resume:
             live_pos = self._resolve_decode_current_pos(ctx, sid, None)
             if live_pos > decode_pos:
@@ -1376,6 +1450,16 @@ class LlamaLoadedSession:
             def _release_smpl() -> None:
                 self._lib.llama_sampler_free(smpl)
 
+            def _on_idle_purge(cleared_sid: int) -> None:
+                self._seq_last_owner.pop(int(cleared_sid), None)
+                from runtime.decode_graph_policy import bump_decode_graph_epoch
+
+                bump_decode_graph_epoch(
+                    int(cleared_sid),
+                    reason="unified_idle_purge",
+                    ctx_ptr=_ctx_ptr(self._ctx),
+                )
+
             if not stream:
                 try:
                     text = _decode_non_stream(
@@ -1392,6 +1476,8 @@ class LlamaLoadedSession:
                         kv_block_size=kv_block_size,
                         current_pos=decode_pos,
                         prefill_cancel=prefill_cancel,
+                        kv_unified=bool(self.kv_unified),
+                        on_idle_purge=_on_idle_purge,
                     )
                     if incoming_owner is not None:
                         # Record owner so next turn (possibly new request_id) can resume.
@@ -1439,6 +1525,8 @@ class LlamaLoadedSession:
                         kv_block_size=kv_block_size,
                         current_pos=decode_pos,
                         prefill_cancel=prefill_cancel,
+                        kv_unified=bool(self.kv_unified),
+                        on_idle_purge=_on_idle_purge,
                     )
                 finally:
                     # Record owner in finally so a partial stream still
@@ -1481,6 +1569,8 @@ class LlamaLoadedSession:
             )
         cparams.n_ctx = need_ctx
         cparams.n_batch = min(cparams.n_ctx, max(n_prompt, 512))
+        # v50: first single-seq ctx can consume an auto donor (one-shot).
+        self._maybe_auto_wire_overlay_donor()
         ctx = self._lib.llama_init_from_model(self._model, cparams)
         if not ctx:
             raise LlamaServerError("llama_init_from_model failed")
@@ -1587,6 +1677,8 @@ def _decode_non_stream(
     kv_block_size: int | None = None,
     current_pos: int = 0,
     prefill_cancel: Any | None = None,
+    kv_unified: bool = False,
+    on_idle_purge: Any | None = None,
 ) -> str:
     pieces: list[str] = []
     for chunk in _decode_stream(
@@ -1603,6 +1695,8 @@ def _decode_non_stream(
         kv_block_size=kv_block_size,
         current_pos=current_pos,
         prefill_cancel=prefill_cancel,
+        kv_unified=kv_unified,
+        on_idle_purge=on_idle_purge,
     ):
         if chunk.get("content"):
             pieces.append(str(chunk["content"]))
@@ -1624,6 +1718,8 @@ def _decode_stream(
     kv_block_size: int | None = None,
     current_pos: int = 0,
     prefill_cancel: Any | None = None,
+    kv_unified: bool = False,
+    on_idle_purge: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Token streaming decode with optional Phase 15 v8–v15 native decode loop.
 
@@ -1646,6 +1742,22 @@ def _decode_stream(
     def _raise_if_cancelled() -> None:
         if prefill_cancel is not None and prefill_cancel.is_cancelled():
             raise PrefillAbortedError("KV prefill aborted (client disconnect)")
+
+    from runtime.kv.idle_slot_purge import llama_decode_with_idle_purge
+
+    def _decode_batch(batch_obj: Any) -> None:
+        rc = llama_decode_with_idle_purge(
+            lib,
+            ctx,
+            batch_obj,
+            keep_seq=seq_id,
+            n_seq_max=n_seq_max,
+            kv_unified=kv_unified,
+            on_purge=on_idle_purge,
+            clear_fn=_clear_sequence,
+        )
+        if rc != 0:
+            raise LlamaServerError("llama_decode failed")
 
     n_prompt = len(prompt_tokens)
     limit = max(0, n_predict)
@@ -1786,9 +1898,11 @@ def _decode_stream(
                         logits_last=logits_last,
                         pos_start=chunk_pos,
                     )
-                    if lib.llama_decode(ctx, chunk_batch) != 0:
+                    try:
+                        _decode_batch(chunk_batch)
+                    except LlamaServerError:
                         lib.llama_batch_free(chunk_batch)
-                        raise LlamaServerError("llama_decode failed")
+                        raise
                     record_decode_step(1)
                     lib.llama_batch_free(chunk_batch)
                 return None, n_prompt
@@ -1908,8 +2022,7 @@ def _decode_stream(
             _raise_if_cancelled()
             if batch is None:
                 raise LlamaServerError("decode state: missing batch")
-            if lib.llama_decode(ctx, batch) != 0:
-                raise LlamaServerError("llama_decode failed")
+            _decode_batch(batch)
             record_decode_step(1)
             n_pos += batch.n_tokens
             if n_pos >= target:

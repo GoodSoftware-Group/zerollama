@@ -341,7 +341,7 @@ func ensureDarwinRuntimeVenv(ctx context.Context, repoRoot string) error {
 		slog.Info("darwin sidecar: runtime/.venv already ready", "python", py)
 		return nil
 	}
-	return runRepoBash(ctx, repoRoot, "source scripts/runtime_uv_venv.sh && runtime_uv_venv")
+	return runRepoBash(ctx, repoRoot, "source scripts/runtime/runtime_uv_venv.sh && runtime_uv_venv")
 }
 
 func darwinVenvImportOK(ctx context.Context, py, module string) bool {
@@ -391,7 +391,7 @@ func ensureDarwinTrainingVenv(ctx context.Context, repoRoot string) error {
 		slog.Info("darwin training: .venv-training already ready", "python", py)
 		return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)
 	}
-	if err := runRepoBash(ctx, repoRoot, "source scripts/training_uv_venv.sh && training_uv_venv"); err != nil {
+	if err := runRepoBash(ctx, repoRoot, "source scripts/training/training_uv_venv.sh && training_uv_venv"); err != nil {
 		return err
 	}
 	return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)

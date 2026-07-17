@@ -75,7 +75,7 @@ if m.IsMLX() {
 | Opt model out of runtime default | Modelfile `MODALITY inference ggml` (future) or legacy caps |
 | Keep ggml only | `ZEROLLAMA_LEGACY_RUNNER=1` |
 | Route text GGUF via Python llama.cpp (experimental) | `./zerollama serve --llama-cpp-backend` or `ZEROLLAMA_LLAMA_CPP_BACKEND=1` |
-| MLX build | [apple-silicon-metal.md](./apple-silicon-metal.md#mlx-engine-optional) — **why** safetensors + `libmlxc.dylib`; rebuild at `MLX_VERSION` via `BUILD_MLX=1 ./scripts/build_zerollama_mac.sh` or `./scripts/build_production_mac.sh` |
+| MLX build | [apple-silicon-metal.md](./apple-silicon-metal.md#mlx-engine-optional) — **why** safetensors + `libmlxc.dylib`; rebuild at `MLX_VERSION` via `BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh` or `./scripts/build/build_production_mac.sh` |
 | LM Studio MLX import | `OLLAMA_LMSTUDIO_IMPORT` (default on); `OLLAMA_LMSTUDIO_LIST_ALL=1` lists MLX even when disk tight — **why:** MLX repacks ~full model size into `OLLAMA_MODELS`; GGUF symlinks are near-zero copy |
 
 ---
@@ -101,7 +101,7 @@ Code: `internal/lmstudio/lmstudio.go` (`ImportCopyBytes`), `server/lmstudio_cata
 1. **General chat (GGUF):** `zerollama serve` — ggml Metal unless manifest/default routes to runtime.
 2. **Tools on runtime-routed text:** ensure runtime embed + Phase 12 path; see [apple-silicon-metal.md](./apple-silicon-metal.md).
 3. **safetensors / MLX create:** build MLX component; model uses `IsMLX()` path automatically.
-4. **Session gate:** `./scripts/gpu_metal_session.sh` (smoke + snapshot); optional `RUN_E2E_PHASE14=1` for inprocess Metal.
+4. **Session gate:** `./scripts/gpu/gpu_metal_session.sh` (smoke + snapshot); optional `RUN_E2E_PHASE14=1` for inprocess Metal.
 5. **Agent megaprompts (MLX):** see [mlx-agent-prompts.md](./mlx-agent-prompts.md) — context cap, truncate, tokenize cache, **M15a live-session** (`prompt_cache_key`, `fast_path`), keepalive logs.
 
 ---

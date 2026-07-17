@@ -239,7 +239,93 @@ LLAMA_API int32_t llama_memory_kv_page_alias_validate(
         uint64_t                  ext_v_span_bytes,
         llama_kv_page_alias_plan * out);
 
+/*
+ * Phase 15 v48 — CPU-only donor-buffer registration for the ggml allocator.
+ *
+ * WHY not per-page tensor->data rebase: each KV layer is ONE ggml_tensor covering
+ * the entire kv_size (see llama_kv_cache ctor in llama-kv-cache.cpp) — page_map's
+ * k_data/v_data are pointer arithmetic into that single tensor, not separate
+ * allocations. Mutating a sub-range's data pointer would corrupt stride math for
+ * every other page sharing the tensor. The only real zero-copy path is to make
+ * the external pool's memory BE the buffer the whole layer tensor is allocated
+ * into, at construction time — not bind-after-the-fact.
+ *
+ * Usage: caller registers an external host buffer (ptr, size) BEFORE constructing
+ * the llama_context/model that will use it. When llama_kv_cache allocates its CPU
+ * KV tensors, it checks this registry; if an unused donor of sufficient size is
+ * found for a CPU buft group, ggml_backend_cpu_buffer_from_ptr() is used instead
+ * of ggml's own allocator, and the donor is marked consumed. Device (Metal/CUDA)
+ * buft groups never consult this registry.
+ *
+ * Sizing: callers should determine the exact required size via a dry run (see
+ * ggml_backend_alloc_ctx_tensors_from_buft_size, used internally) before
+ * allocating and registering the donor buffer for a real load.
+ */
+#define LLAMA_KV_EXT_DONOR_MAX 8
+
+/* Register an external CPU host buffer as a KV-cache allocation donor.
+ * ptr must be TENSOR_ALIGNMENT-aligned (see ggml_backend_cpu_buffer_from_ptr).
+ * Returns LLAMA_KV_EXT_ARG if the registry is full or args are invalid. */
+LLAMA_API int32_t llama_kv_ext_register_donor_buffer(
+        void *     ptr,
+        uint64_t   size,
+        uint32_t * out_donor_id);
+
+/* Unregister a donor buffer. Caller must ensure no llama_context still uses the
+ * memory (i.e. call only after llama_free()/model unload) — freeing or reusing
+ * the memory while a context is alive is undefined behavior, same as any
+ * externally-owned ggml buffer. */
+LLAMA_API int32_t llama_kv_ext_unregister_donor_buffer(uint32_t donor_id);
+
+/* Query whether a registered donor was actually consumed by a KV cache
+ * construction (out_bound=1) and how many bytes were used. WHY: registration
+ * can silently fail to be consumed (wrong buft, undersized, or no cache built
+ * yet) — operators must be able to tell whether zero-copy actually happened. */
+LLAMA_API int32_t llama_kv_ext_donor_buffer_status(
+        uint32_t    donor_id,
+        int32_t *   out_bound,
+        uint64_t *  out_bytes_used);
+
 #ifdef __cplusplus
 }
+
+/* C++-only internal hook (not part of the C ABI): called from llama_kv_cache's
+ * CPU-buft allocation loop (llama-kv-cache.cpp) to try consuming a registered
+ * donor buffer for a given allocation size. Returns nullptr when no donor of
+ * sufficient size is available/unconsumed, or when built without
+ * LLAMA_KV_EXT_DONOR_BUFFER, in which case the caller must fall through to its
+ * normal ggml_backend_alloc_ctx_tensors_from_buft allocation path.
+ *
+ * WHY declared here rather than a new header: llama-kv-cache.cpp must
+ * '#include "llama-kv-ext.h"' explicitly to use this hook (it is not pulled
+ * in transitively otherwise). */
+struct ggml_backend_buffer;
+struct ggml_backend_buffer * llama_kv_ext_donor_try_consume(size_t required_size);
+
+/*
+ * Phase 15 v49 — device-buft donor consume (C++-only internal hook, not part
+ * of the C ABI). Called from llama_kv_cache's allocation loop for buft groups
+ * whose device advertises ggml_backend_dev_caps.buffer_from_host_ptr (Metal on
+ * Apple Silicon; CUDA does not implement this — no separate CUDA branch
+ * needed, the capability check alone excludes it). Uses
+ * ggml_backend_dev_buffer_from_host_ptr — the same zero-copy-mmap mechanism
+ * llama-model.cpp's weight loader already uses in production — instead of
+ * ggml_backend_cpu_buffer_from_ptr. max_tensor_size should be
+ * ggml_get_max_tensor_size(ctx) for the ctx being allocated (Metal splits
+ * donor buffers larger than the device's max_buffer_size into overlapping
+ * windows sized so no single tensor straddles a window boundary; an
+ * incorrect/too-small max_tensor_size could otherwise let a tensor cross a
+ * window seam).
+ *
+ * Returns nullptr (no side effects) when: dev is null, the device does not
+ * support buffer_from_host_ptr (including all CUDA devices), no donor of
+ * sufficient size is registered/unconsumed, or LLAMA_KV_EXT_DONOR_BUFFER is
+ * not defined at build time.
+ */
+struct ggml_backend_device;
+struct ggml_backend_buffer * llama_kv_ext_donor_try_consume_dev(
+        struct ggml_backend_device * dev,
+        size_t                       required_size,
+        size_t                       max_tensor_size);
 #endif
 

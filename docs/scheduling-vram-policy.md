@@ -321,7 +321,7 @@ export ZEROLLAMA_TRAINING_WAIT_GGML_LOADED=1 # default with idle-wait
 
 **Opt-in context clamp:** `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX` default **`0`**. `auto` or `1` (with GPU checks) lowers request `num_ctx` to `vram_budget.suggested_max_num_ctx` at enqueue. Responses include `vram_num_ctx` when clamped. **Why default off:** operators expect requested context unless they opt in.
 
-**Operator pre-flight:** `scripts/runtime_vram_estimate.sh` → `POST /internal/vram-estimate` (loopback). Go proxy may call the same path asynchronously (`LogVramBudgetIfTight`). **Why:** choose quant/ctx before load; same math as `/health`.
+**Operator pre-flight:** `scripts/runtime/runtime_vram_estimate.sh` → `POST /internal/vram-estimate` (loopback). Go proxy may call the same path asynchronously (`LogVramBudgetIfTight`). **Why:** choose quant/ctx before load; same math as `/health`.
 
 **IQ/TQ KV sizing:** exact KV uses `max(ggml block bytes/element, F16)` for IQ/TQ/MXFP metadata types so estimates stay conservative when llama-server uses an F16 cache.
 

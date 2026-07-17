@@ -1,4 +1,4 @@
-From ab726a7c298791818dd80add42b20e6eda4bc877 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Odilitime <janesmith@airmail.cc>
 Date: Sun, 12 Jul 2026 14:34:39 -0700
 Subject: [PATCH] ggml: unify ARGMAX tie-breaking to first index (upstream
@@ -12,7 +12,7 @@ ties to match torch/numpy and other backends.
  2 files changed, 9 insertions(+), 4 deletions(-)
 
 diff --git a/ggml/src/ggml-cpu/vec.h b/ggml/src/ggml-cpu/vec.h
-index 5de9cb5b7..adb96d78e 100644
+index 5de9cb5b..adb96d78 100644
 --- a/ggml/src/ggml-cpu/vec.h
 +++ b/ggml/src/ggml-cpu/vec.h
 @@ -1559,8 +1559,11 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
@@ -30,10 +30,10 @@ index 5de9cb5b7..adb96d78e 100644
      *s = idx;
  }
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index b9e12cec6..0d1e7b78b 100644
+index 9e8b89b9..a6bbe480 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -3243,7 +3243,9 @@ kernel void kernel_argmax_f32(
+@@ -3241,7 +3241,9 @@ kernel void kernel_argmax_f32(
  
      // find the argmax value in the block
      float max_val = simd_max(lmax);
@@ -44,7 +44,7 @@ index b9e12cec6..0d1e7b78b 100644
  
      device int32_t * dst_i32 = (device int32_t *) dst;
  
-@@ -3269,7 +3271,7 @@ kernel void kernel_argmax_f32(
+@@ -3267,7 +3269,7 @@ kernel void kernel_argmax_f32(
          arg_val = shared_argmax[tiisg];
  
          float max_val_reduced   = simd_max(max_val);
@@ -53,6 +53,3 @@ index b9e12cec6..0d1e7b78b 100644
  
          dst_i32[tgpig] = arg_val_reduced;
  
--- 
-2.50.1 (Apple Git-155)
-

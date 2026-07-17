@@ -12,6 +12,7 @@ Donor search picks the slot with the longest contiguous chain from token 0.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -37,6 +38,7 @@ class PrefixBlockEntry:
     holder_slots: frozenset[int] = field(default_factory=frozenset)
     updated_at_ms: float = field(default_factory=lambda: time.time() * 1000)
     blob_path: str | None = None
+    blob_digest: str | None = None
 
 
 def _holder_slots(entry: PrefixBlockEntry) -> frozenset[int]:
@@ -61,6 +63,17 @@ class PrefixBlockMatch:
 class _PrefixChainBlock:
     token_end: int
     holders: frozenset[int]
+
+
+@dataclass(frozen=True)
+class PrefixBlobMatch:
+    """Longest prefix with a federated blob digest (L3-R7 cold restore)."""
+
+    matched_tokens: int
+    matched_blocks: int
+    tail_hash: str | None
+    blob_digest: str
+    source_slot_id: int | None = None
 
 
 class PrefixBlockPool:
@@ -272,6 +285,57 @@ class PrefixBlockPool:
             min_matched=min_matched,
         )
 
+    def find_blob_prefix(
+        self,
+        tokens: list[int],
+        *,
+        scope: str,
+        max_tokens: int | None = None,
+        min_matched: int = 0,
+        block_size: int | None = None,
+    ) -> PrefixBlobMatch | None:
+        """Longest contiguous prefix that has a federated ``blob_digest`` (L3-R7).
+
+        WHY separate from donor search: hydrated Redis records carry a remote
+        ``slot_id`` that is meaningless locally; live ``seq_cp`` fails, but the
+        content-addressed blob can still restore the target slot from disk.
+        """
+        from runtime.kv.lmcache_blob import lmcache_blobs_enabled
+
+        if not lmcache_blobs_enabled() or not tokens:
+            return None
+        limit = len(tokens) if max_tokens is None else min(len(tokens), int(max_tokens))
+        if limit <= 0:
+            return None
+        bs = max(1, int(block_size or prefix_cache_block_size()))
+        tier = lmcache_tier()
+        best: PrefixBlobMatch | None = None
+        with self._lock:
+            for idx, _start, end, _parent, bh in iter_prefix_blocks(
+                tokens, block_size=bs, scope=scope, max_tokens=limit
+            ):
+                entry = self._blocks.get(bh)
+                if entry is None:
+                    rec = tier.get(model_scope=scope, block_hash=bh)
+                    if rec is not None:
+                        entry = self._hydrate_from_lmcache(rec)
+                if entry is None or entry.model_scope != scope:
+                    break
+                digest = (entry.blob_digest or "").strip()
+                if not digest:
+                    # Keep walking — earlier blocks may lack digest; later may have it.
+                    continue
+                if end < min_matched:
+                    continue
+                best = PrefixBlobMatch(
+                    matched_tokens=end,
+                    matched_blocks=idx + 1,
+                    tail_hash=bh,
+                    blob_digest=digest,
+                    source_slot_id=entry.slot_id,
+                )
+        return best
+
     def register_prefix(
         self,
         tokens: list[int],
@@ -290,6 +354,11 @@ class PrefixBlockPool:
         now = time.time() * 1000
         sid = int(slot_id)
         out: list[str] = []
+        blob_digest: str | None = None
+        if blob_path and lmcache_tier_enabled():
+            from runtime.kv.lmcache_blob import publish_slot_blob
+
+            blob_digest = publish_slot_blob(blob_path)
 
         with self._lock:
             for _idx, _start, end, parent, bh in iter_prefix_blocks(
@@ -312,6 +381,8 @@ class PrefixBlockPool:
                     ref_count=len(holders),
                     updated_at_ms=now,
                     blob_path=blob_path or (existing.blob_path if existing else None),
+                    blob_digest=blob_digest
+                    or (existing.blob_digest if existing else None),
                 )
                 self._blocks[bh] = entry
                 out.append(bh)
@@ -326,6 +397,7 @@ class PrefixBlockPool:
                             session_key=session_key,
                             slot_id=sid,
                             blob_path=entry.blob_path,
+                            blob_digest=entry.blob_digest,
                             updated_at_ms=int(now),
                         )
                     )
@@ -376,6 +448,7 @@ class PrefixBlockPool:
             holder_slots=holders,
             ref_count=len(holders) or 1,
             blob_path=rec.blob_path,
+            blob_digest=rec.blob_digest,
             updated_at_ms=float(rec.updated_at_ms or time.time() * 1000),
         )
         self._blocks[rec.block_hash] = entry
@@ -415,6 +488,9 @@ class PrefixBlockPool:
         for e in entries:
             slots.update(_holder_slots(e))
         multi_holder = sum(1 for e in entries if len(_holder_slots(e)) > 1)
+        with_digest = sum(1 for e in entries if e.blob_digest)
+        from runtime.kv.lmcache_blob import blob_store_health
+
         return {
             "enabled": prefix_block_pool_enabled(),
             "block_size": prefix_cache_block_size(),
@@ -423,8 +499,21 @@ class PrefixBlockPool:
             "session_count": len(sessions),
             "slot_count": len(slots),
             "multi_holder_blocks": multi_holder,
+            "blob_digest_blocks": with_digest,
+            # L3-R9 / LA13: capped sample for fleet content-hash routing (newest first).
+            "block_hashes": _sample_block_hashes(entries),
+            # L3-R11: digests that can be HTTP-pulled (pairs with block_hashes when present).
+            "blob_digests": _sample_blob_digests(entries),
             "lmcache_tier": lmcache_tier().health(),
+            "lmcache_blobs": blob_store_health(),
         }
+
+    def snapshot_entries(self, *, scope: str | None = None) -> list[PrefixBlockEntry]:
+        with self._lock:
+            entries = list(self._blocks.values())
+        if scope is not None:
+            return [e for e in entries if e.model_scope == scope]
+        return entries
 
 
 _POOLS_LOCK = threading.Lock()
@@ -440,6 +529,54 @@ def get_prefix_block_pool(*, model_scope: str) -> PrefixBlockPool:
         return pool
 
 
+def _radix_health_hash_cap() -> int:
+    raw = (os.environ.get("ZEROLLAMA_RADIX_HEALTH_HASH_CAP") or "").strip()
+    if not raw:
+        return 128
+    try:
+        return max(0, min(1024, int(raw)))
+    except ValueError:
+        return 128
+
+
+def _sample_block_hashes(entries: list[PrefixBlockEntry], *, cap: int | None = None) -> list[str]:
+    """Newest-first unique block hashes for /health → fleet LA13 matching."""
+    limit = _radix_health_hash_cap() if cap is None else cap
+    if limit <= 0 or not entries:
+        return []
+    ordered = sorted(entries, key=lambda e: e.updated_at_ms, reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in ordered:
+        bh = str(entry.block_hash or "").strip()
+        if not bh or bh in seen:
+            continue
+        seen.add(bh)
+        out.append(bh)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _sample_blob_digests(entries: list[PrefixBlockEntry], *, cap: int | None = None) -> list[str]:
+    """Newest-first unique blob digests for fleet / peer-pull hints."""
+    limit = _radix_health_hash_cap() if cap is None else cap
+    if limit <= 0 or not entries:
+        return []
+    ordered = sorted(entries, key=lambda e: e.updated_at_ms, reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in ordered:
+        dig = str(entry.blob_digest or "").strip().lower()
+        if not dig or dig in seen:
+            continue
+        seen.add(dig)
+        out.append(dig)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def prefix_block_pool_health(*, model_scope: str | None = None) -> dict[str, Any]:
     if not prefix_block_pool_enabled():
         return {
@@ -453,16 +590,24 @@ def prefix_block_pool_health(*, model_scope: str | None = None) -> dict[str, Any
         scopes = list(_POOLS.keys())
     total = 0
     multi = 0
+    digest_blocks = 0
+    sampled: list[PrefixBlockEntry] = []
     for scope in scopes:
-        h = get_prefix_block_pool(model_scope=scope).health(scope=scope)
+        pool = get_prefix_block_pool(model_scope=scope)
+        h = pool.health(scope=scope)
         total += h["entry_count"]
         multi += h.get("multi_holder_blocks", 0)
+        digest_blocks += int(h.get("blob_digest_blocks") or 0)
+        sampled.extend(pool.snapshot_entries(scope=scope))
     return {
         "enabled": True,
         "block_size": prefix_cache_block_size(),
         "scope_count": len(scopes),
         "entry_count": total,
         "multi_holder_blocks": multi,
+        "blob_digest_blocks": digest_blocks,
+        "block_hashes": _sample_block_hashes(sampled),
+        "blob_digests": _sample_blob_digests(sampled),
         "lmcache_tier": lmcache_tier().health(),
     }
 

@@ -1,6 +1,6 @@
 # Phase 14 — in-process llama forward
 
-**Status:** **Done** (Jun 2026 on 5080 dev host; **Mac Metal** via `./scripts/m3_metal_signoff.sh`). Subprocess `llama-server` remains the packaged default on Linux; **darwin autoconfig** sets `llama_backend: inprocess` in `apple_silicon.yaml`. Opt in elsewhere with env or YAML. In-process forward + libllama tokenize for Go render-chat shipped. **One-shot sign-off:** `./scripts/phase14_5080_signoff.sh` (5080, both backends, YAML config, Phase 15 multi-seq); **Mac:** `./scripts/m3_metal_signoff.sh` (sidecar + yaml config smoke).
+**Status:** **Done** (Jun 2026 on 5080 dev host; **Mac Metal** via `./scripts/phase/m3_metal_signoff.sh`). Subprocess `llama-server` remains the packaged default on Linux; **darwin autoconfig** sets `llama_backend: inprocess` in `apple_silicon.yaml`. Opt in elsewhere with env or YAML. In-process forward + libllama tokenize for Go render-chat shipped. **One-shot sign-off:** `./scripts/phase/phase14_5080_signoff.sh` (5080, both backends, YAML config, Phase 15 multi-seq); **Mac:** `./scripts/phase/m3_metal_signoff.sh` (sidecar + yaml config smoke).
 
 **Upstream context:** Vanilla Ollama integrates llama-server from **Go** (`llm/llama_server.go`), not Python ctypes. Phase 14 remains valuable for PA/KV experiments; [Phase 17](./ROADMAP.md#phase-17--upstream-gguf-path-alignment-directional) targets Go→llama-server for default GGUF — [upstream-ollama-diff.md](./upstream-ollama-diff.md).
 
@@ -9,7 +9,7 @@
 **Embed vs sidecar:** If `ZEROLLAMA_RUNTIME_URL` is set in the shell, Go will **not** embed Python on `:8081` (expects an external sidecar). For single-process smokes:
 
 ```bash
-source ./scripts/phase14_serve_env.sh
+source ./scripts/phase/phase14_serve_env.sh
 export LLAMA_MODEL=/path/to/model.gguf
 export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 ./zerollama serve
@@ -18,13 +18,13 @@ export ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 **Mac (recommended):** sidecar + uv venv — embed needs system Python 3.10+ with torch; macOS often ships 3.9.
 
 ```bash
-LLAMA_CPP_ROOT=../llama.cpp ./scripts/build_llama_server.sh
+LLAMA_CPP_ROOT=../llama.cpp ./scripts/build/build_llama_server.sh
 export LLAMA_MODEL=/path/to/text-only.gguf
-./scripts/serve_mac_runtime.sh
+./scripts/serve/serve_mac_runtime.sh
 # apple_silicon.yaml sets llama_backend: inprocess; do not set ZEROLLAMA_RUNTIME_LLAMA_BACKEND
 ```
 
-Sign-off: `./scripts/m3_metal_signoff.sh` (Phase 13 snapshot + `phase14_yaml_config_smoke.sh`).
+Sign-off: `./scripts/phase/m3_metal_signoff.sh` (Phase 13 snapshot + `phase14_yaml_config_smoke.sh`).
 
 ---
 
@@ -172,20 +172,20 @@ See also [ROADMAP Phase 14 exit criteria](../ROADMAP.md#phase-14--exit-criteria-
 
 | Script | Why |
 |--------|-----|
-| `scripts/phase14_serve_env.sh` | Unsets `ZEROLLAMA_RUNTIME_URL` so Go **embeds** Python; sets `ZEROLLAMA_RUNTIME_EMBED=on`. **Why:** exporting URL in the shell is the #1 reason `:8081` never listens during smokes. |
-| `scripts/phase14_backend_smoke.sh` | One backend against **already running** serve; `RUN_E2E_PHASE14=1`; strict `/health` + `/internal/tokenize` preflight. **Why:** catch stale binaries before a 20‑minute GPU run. |
-| `scripts/phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off (`RUN_E2E_INPROCESS=1`, `llama_backend_source=env`). |
-| `scripts/phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers `RUN_E2E_*` flags from `/health` (`inprocess` or `llama-cpp-python`, rejects `subprocess`). |
-| `scripts/phase14_yaml_config_full_smoke.sh` | Self-contained optional #6: temp YAML + serve restart + yaml config smoke (no repo edit). |
-| `scripts/phase14_subprocess_default_smoke.sh` | Same but requires `llama_backend_source=default` (packaged subprocess on autoconfig). |
-| `scripts/phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_backend_source=env`). |
-| `scripts/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate). |
-| `scripts/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after ctypes smoke passes. |
-| `scripts/phase14_both_backends.sh` | Restarts serve per backend; embed-safe; clears stale `RUN_E2E_*` env. **Why:** backend is fixed at process start — cannot flip in-process → wheel without restart. |
-| `scripts/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 sign-off |
-| `scripts/phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq (self-contained restarts). |
-| `scripts/phase15_inprocess_kv_smoke.sh` | Self-contained inprocess serve + `kv_decode_steps` on generate and `/health`. |
-| `scripts/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; asserts `kv_inprocess_n_seq_max` + generate. |
+| `scripts/phase/phase14_serve_env.sh` | Unsets `ZEROLLAMA_RUNTIME_URL` so Go **embeds** Python; sets `ZEROLLAMA_RUNTIME_EMBED=on`. **Why:** exporting URL in the shell is the #1 reason `:8081` never listens during smokes. |
+| `scripts/phase/phase14_backend_smoke.sh` | One backend against **already running** serve; `RUN_E2E_PHASE14=1`; strict `/health` + `/internal/tokenize` preflight. **Why:** catch stale binaries before a 20‑minute GPU run. |
+| `scripts/phase/phase14_inprocess_smoke.sh` | 5080 ctypes GPU sign-off (`RUN_E2E_INPROCESS=1`, `llama_backend_source=env`). |
+| `scripts/phase/phase14_yaml_config_smoke.sh` | Backend smoke with `llama_backend_source=config`; infers `RUN_E2E_*` flags from `/health` (`inprocess` or `llama-cpp-python`, rejects `subprocess`). |
+| `scripts/phase/phase14_yaml_config_full_smoke.sh` | Self-contained optional #6: temp YAML + serve restart + yaml config smoke (no repo edit). |
+| `scripts/phase/phase14_subprocess_default_smoke.sh` | Same but requires `llama_backend_source=default` (packaged subprocess on autoconfig). |
+| `scripts/phase/phase14_wheel_cpu_smoke.sh` | Wheel CPU sign-off (`RUN_E2E_LLAMA_CPP_PYTHON=1`, `llama_backend_source=env`). |
+| `scripts/phase/phase14_wheel_gpu_smoke.sh` | Optional wheel GPU (`llama_cpp.gpu_mode=gpu` after generate). |
+| `scripts/phase/phase14_enable_yaml_inprocess.sh` | Uncomment `llama_backend: inprocess` in `single_gpu.yaml` after ctypes smoke passes. |
+| `scripts/phase/phase14_both_backends.sh` | Restarts serve per backend; embed-safe; clears stale `RUN_E2E_*` env. **Why:** backend is fixed at process start — cannot flip in-process → wheel without restart. |
+| `scripts/phase/phase14_5080_signoff.sh` | One-shot 5080 gate: both backends + YAML config full + Phase 15 sign-off |
+| `scripts/phase/phase15_inprocess_signoff.sh` | One-shot Phase 15 GPU gate: KV decode hook + multi-seq (self-contained restarts). |
+| `scripts/phase/phase15_inprocess_kv_smoke.sh` | Self-contained inprocess serve + `kv_decode_steps` on generate and `/health`. |
+| `scripts/phase/phase15_inprocess_multiseq_smoke.sh` | Temp YAML `llama_parallel_slots: 2`; asserts `kv_inprocess_n_seq_max` + generate. |
 | `RUN_E2E_PHASE14=1` in `e2e_runtime_smoke.sh` | Sends `X-Zerollama-Runtime: 1` on Go proxy steps. **Why:** sign-off must hit runtime + `truncate_mode=tokenize`, not accidental ggml for pulled tags. **Smoke-only** — not production default-on. |
 
 **5080 checklist:** [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md#phase-14-sign-off-in-process-llama).

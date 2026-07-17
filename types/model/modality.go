@@ -25,7 +25,7 @@ const (
 	BackendVideoNative      = "native"            // ffmpeg frame sampling inside Ollama (default when unset)
 	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
-	BackendWan              = "wan"               // Wan2.x via scripts/wan_video_generate.py (see docs/wan-t2v.md)
+	BackendWan              = "wan"               // Wan2.x via scripts/video/wan_video_generate.py (see docs/wan-t2v.md)
 	// BackendComfyUI orchestrates a running ComfyUI server for agent-max image utility
 	// (edit/img2img/ControlNet/LoRA on Qwen/FLUX/GLM graphs). WHY not mlx-imagegen:
 	// porting each HF DiT into x/imagegen costs months; Comfy already packs those

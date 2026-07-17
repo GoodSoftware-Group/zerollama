@@ -19,8 +19,8 @@ import (
 //	OLLAMA_IMAGE_PROMPT, OLLAMA_IMAGE_WIDTH, OLLAMA_IMAGE_HEIGHT, OLLAMA_IMAGE_SEED, OLLAMA_IMAGE_OUTPUT
 //
 // Backends:
-//   - stable-diffusion.cpp: OLLAMA_SD_* from backend_paths sd_cli/sd_model (scripts/sd_external_image.sh)
-//   - OpenVINO GenAI: OLLAMA_OV_* from backend_paths ov_model_dir/ov_python (scripts/ov_external_image.sh)
+//   - stable-diffusion.cpp: OLLAMA_SD_* from backend_paths sd_cli/sd_model (scripts/image/sd_external_image.sh)
+//   - OpenVINO GenAI: OLLAMA_OV_* from backend_paths ov_model_dir/ov_python (scripts/image/ov_external_image.sh)
 //
 // WHY subprocess: diffusion stacks (UNet/VAE) are not ggml chat runners; isolating them keeps
 // scheduler state and VRAM accounting for chat models unchanged. WHY per-model bin: Vulkan SD

@@ -27,6 +27,10 @@ from runtime.env import radix_prefix_share_enabled
 from runtime.kv.prefix_block_pool import build_model_scope, get_prefix_block_pool
 from runtime.kv_cache_spec import prefix_cache_block_size
 
+# Cumulative approximate bytes moved by successful seq_cp (observability only).
+_approx_copy_bytes_total = 0
+_approx_copy_tokens_total = 0
+
 
 @dataclass(frozen=True)
 class RadixSharePlan:
@@ -106,9 +110,58 @@ def find_radix_share_plan(
     )
 
 
+def approx_kv_bytes_per_token(
+    gguf: Any | None,
+    *,
+    num_ctx: int,
+    n_gpu_layers: int | None = None,
+) -> int | None:
+    """Rough bytes/token for Radix seq_cp cost (not ggml-exact)."""
+    if gguf is None or not num_ctx or num_ctx <= 0:
+        return None
+    try:
+        from pathlib import Path
+
+        from runtime.gguf_estimate import estimate_kv_cache_bytes, gguf_arch_hints
+
+        hints = gguf_arch_hints(Path(gguf))
+        total = estimate_kv_cache_bytes(
+            hints, int(num_ctx), n_gpu_layers=n_gpu_layers
+        )
+    except Exception:
+        return None
+    if not total or total <= 0:
+        return None
+    return max(1, int(total) // int(num_ctx))
+
+
+def record_radix_copy_cost(*, copy_tokens: int, bytes_per_token: int | None) -> int | None:
+    """Accumulate approximate seq_cp byte cost; return this copy's approx bytes."""
+    global _approx_copy_bytes_total, _approx_copy_tokens_total
+    toks = max(0, int(copy_tokens))
+    _approx_copy_tokens_total += toks
+    if bytes_per_token is None or toks <= 0:
+        return None
+    approx = toks * max(0, int(bytes_per_token))
+    _approx_copy_bytes_total += approx
+    return approx
+
+
 def radix_share_health(*, model_scope: str | None = None) -> dict[str, Any]:
+    from runtime.env import kv_unified_enabled, kv_unified_operator_note
+    from runtime.kv.radix_seq_copy import seq_cp_mode
+
     return {
         "enabled": radix_prefix_share_enabled(),
         "requires_prefix_block_pool": True,
         "model_scope": model_scope,
+        # WHY approx: page-granular COW would cut buffer copy further; L3-R6b
+        # tensor deep-copy already forks full aliased K/V on diverge.
+        # path (L3-R6a / v59) already zeros this under kv_unified (seq_cp_mode=metadata).
+        "approx_copy_tokens_total": _approx_copy_tokens_total,
+        "approx_copy_bytes_total": _approx_copy_bytes_total,
+        # v52/v54/v58: metadata = unified stream (no buffer copy); buffer_copy = default.
+        "kv_unified": kv_unified_enabled(),
+        "seq_cp_mode": seq_cp_mode(),
+        "kv_unified_note": kv_unified_operator_note(),
     }

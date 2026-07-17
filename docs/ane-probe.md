@@ -51,15 +51,15 @@ discover/ProbeANE()  ──exec──►  build/ane-probe-darwin/bin/ane-probe
 
 ```bash
 git clone https://github.com/maderix/ane ~/Sites/inference/ane
-./scripts/ane_probe_build.sh
+./scripts/ane/ane_probe_build.sh
 ./build/ane-probe-darwin/bin/ane-probe          # smoke JSON
 ./zerollama ane-probe                           # hidden subcommand; same JSON
 ./zerollama ane-bench                           # peak conv-stack TFLOPS proxy
 ./zerollama ane-bench --quick                   # shorter depth for CI
 ./zerollama ane-draft-bench                     # draft-step latency proxy
 ./zerollama doctor                              # includes ANE check (warn if missing)
-./scripts/ane_probe_smoke.sh                    # build + run end-to-end
-./scripts/ane_prefill_smoke.sh                  # prefill ANE vs Metal compare + sweep
+./scripts/ane/ane_probe_smoke.sh                    # build + run end-to-end
+./scripts/ane/ane_prefill_smoke.sh                  # prefill ANE vs Metal compare + sweep
 ```
 
 **Bench tools (M17 follow-on):**
@@ -79,7 +79,7 @@ git clone https://github.com/maderix/ane ~/Sites/inference/ane
 | `ane-ggml-map-smoke` | Parent-side `ggml_metal_buffer_map` equivalent on IOSurface base |
 
 ```bash
-./scripts/ane_bridge_patch.sh                 # IOSurface export API on maderix/ane bridge (once)
+./scripts/ane/ane_bridge_patch.sh                 # IOSurface export API on maderix/ane bridge (once)
 ./zerollama ane-handoff-smoke                 # CPU producer IOSurface path
 ./zerollama ane-handoff-smoke --metal         # Metal compute fill on shared IOSurface
 ./zerollama ane-handoff-smoke --suite         # probe + draft + iosurface + metal
@@ -106,7 +106,7 @@ git clone https://github.com/maderix/ane ~/Sites/inference/ane
 ZEROLLAMA_ANE_DRAFT=1 ./zerollama ane-draft-router-smoke --model eliza-1-2b-dflash --quick  # auto sidecar weight cache
 ./zerollama ane-inprocess-smoke --model eliza-1-27b-256k-dflash --quick  # same-PID ggml map + ANE eval (B1)
 ./zerollama ane-hybrid-smoke --model eliza-1-2b --quick     # any GGUF tag (not only -dflash)
-./scripts/ane_crossover_report.sh                           # ANE vs MPS crossover table
+./scripts/ane/ane_crossover_report.sh                           # ANE vs MPS crossover table
 ./zerollama ane-prefill-handoff-smoke --model eliza-1-2b --tokens 128 --quick
 ```
 
@@ -141,7 +141,7 @@ Both appear in `zerollama envconfig` via `envconfig.ANERepo()`.
 `zerollama doctor` runs the ANE check on **darwin only**:
 
 1. Bridge dylib present at `$ANE_REPO/bridge/libane_bridge.dylib`
-2. `ane-probe` built (`./scripts/ane_probe_build.sh`)
+2. `ane-probe` built (`./scripts/ane/ane_probe_build.sh`)
 3. Live probe succeeds (compile + eval)
 
 **Why warn, not fail:** ANE is experimental. Missing bridge must not block Metal serve or Flash-MoE setup.

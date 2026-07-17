@@ -58,12 +58,16 @@ func New(c fs.Config) (model.Model, error) {
 }
 
 func (m *Model) PixelValues(ctx ml.Context, multimodalData []byte) (ml.Tensor, *Grid, error) {
+	return m.PixelValuesWithGrid(ctx, multimodalData, nil)
+}
+
+func (m *Model) PixelValuesWithGrid(ctx ml.Context, multimodalData []byte, gridTHW []int) (ml.Tensor, *Grid, error) {
 	img, _, err := image.Decode(bytes.NewReader(multimodalData))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	f32s, grid, err := m.ImageProcessor.ProcessImage(img)
+	f32s, grid, err := m.ImageProcessor.ProcessImage(img, gridTHW)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -78,11 +82,15 @@ func (m *Model) PixelValues(ctx ml.Context, multimodalData []byte) (ml.Tensor, *
 }
 
 func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input.Multimodal, error) {
+	return m.EncodeMultimodalWithGrid(ctx, multimodalData, nil)
+}
+
+func (m *Model) EncodeMultimodalWithGrid(ctx ml.Context, multimodalData []byte, gridTHW []int) ([]input.Multimodal, error) {
 	if len(m.VisionModel.Layers) == 0 {
 		return nil, model.ErrNoVisionModel
 	}
 
-	pixels, grid, err := m.PixelValues(ctx, multimodalData)
+	pixels, grid, err := m.PixelValuesWithGrid(ctx, multimodalData, gridTHW)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +98,8 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 	visionOutputs := m.VisionModel.Forward(ctx, pixels, grid)
 	return []input.Multimodal{{Tensor: visionOutputs, Data: grid}}, nil
 }
+
+var _ model.GridHintMultimodalProcessor = (*Model)(nil)
 
 // PostTokenize arranges Qwen-2.5-VL's inputs for the forward pass
 func (m *Model) PostTokenize(inputs []*input.Input) ([]*input.Input, error) {

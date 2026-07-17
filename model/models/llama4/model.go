@@ -2,6 +2,7 @@ package llama4
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"slices"
 
@@ -81,6 +82,19 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 		return nil, err
 	}
 
+	return m.multimodalFromPixels(ctx, pixelsLocal, pixelsGlobal, size)
+}
+
+// multimodalFromPixels runs vision + projector and slices local tiles (+ optional global)
+// into PostTokenize-ready Multimodal chunks. size is the local padded canvas.
+func (m *Model) multimodalFromPixels(ctx ml.Context, pixelsLocal, pixelsGlobal []float32, size image.Point) ([]input.Multimodal, error) {
+	if m.imageSize <= 0 {
+		return nil, fmt.Errorf("llama4: invalid vision image_size")
+	}
+	if size.X%m.imageSize != 0 || size.Y%m.imageSize != 0 {
+		return nil, fmt.Errorf("llama4 canvas %dx%d not divisible by image_size %d", size.X, size.Y, m.imageSize)
+	}
+
 	tilesLocal := ctx.Input().FromFloats(pixelsLocal, size.X, size.Y, m.numChannels)
 
 	ratioW, ratioH := size.X/m.imageSize, size.Y/m.imageSize
@@ -111,13 +125,13 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 		for range aspectRatio.Y {
 			for x := range aspectRatio.X {
 				view := projectedOutputs.Slice(ctx, 1, offset, offset+patchesPerChunk, 1)
-				var separator separator
+				var sep separator
 				if x < aspectRatio.X-1 {
-					separator.x = true // <|tile_x_separator|>
+					sep.x = true // <|tile_x_separator|>
 				} else {
-					separator.y = true // <|tile_y_separator|>
+					sep.y = true // <|tile_y_separator|>
 				}
-				multimodal = append(multimodal, input.Multimodal{Tensor: view, Data: &separator})
+				multimodal = append(multimodal, input.Multimodal{Tensor: view, Data: &sep})
 				offset += patchesPerChunk
 			}
 		}

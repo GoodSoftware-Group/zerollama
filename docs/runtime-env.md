@@ -18,14 +18,14 @@
 Check effective values (no running server required):
 
 ```bash
-./scripts/runtime_env_doctor.sh
+./scripts/runtime/runtime_env_doctor.sh
 # or live:
 curl -s :8081/health | jq '.llama_cache.runtime_env, .autoconfig'
 
 # llama.cpp patches / vendor / llama-server binary (offline):
-./scripts/llama_patch_doctor.sh
+./scripts/vendor/llama_patch_doctor.sh
 # optional live route probe:
-LLAMA_PATCH_PROBE_URL=http://127.0.0.1:8082 ./scripts/llama_patch_doctor.sh
+LLAMA_PATCH_PROBE_URL=http://127.0.0.1:8082 ./scripts/vendor/llama_patch_doctor.sh
 ```
 
 ---
@@ -96,7 +96,7 @@ Doc: [phase13-runtime-vram.md](./phase13-runtime-vram.md), [scheduling-vram-poli
 | `LLAMA_CPP_ROOT` | Bare sibling `../llama.cpp` → **vendor pin** preferred (patched routes) |
 | `LLAMA_SERVER_BIN` | Explicit path wins; else under resolved root |
 
-**Patch drift:** `./scripts/llama_patch_doctor.sh` — patch file count, in-tree `/kv/seq-copy`, vendor commit count, resolved binary path. Included in `./scripts/runtime_env_doctor.sh` as `llama_patches`.
+**Patch drift:** `./scripts/vendor/llama_patch_doctor.sh` — patch file count, in-tree `/kv/seq-copy`, vendor commit count, resolved binary path. Included in `./scripts/runtime/runtime_env_doctor.sh` as `llama_patches`.
 | `LLAMA_SERVER_BIN` | Explicit override, else root → vendor fallback |
 | `LLAMA_CPP_LIB` | Follows same root order |
 
@@ -104,6 +104,6 @@ Doc: [phase13-runtime-vram.md](./phase13-runtime-vram.md), [scheduling-vram-poli
 
 ## Anti-patterns
 
-1. **Exporting Metal tuning env then running CUDA smokes** — disk cache and profile ctx leak. Use profiles or `./scripts/runtime_env_doctor.sh`.
+1. **Exporting Metal tuning env then running CUDA smokes** — disk cache and profile ctx leak. Use profiles or `./scripts/runtime/runtime_env_doctor.sh`.
 2. **Six L3 env vars when one profile suffices** — use `ZEROLLAMA_L3_PROFILE=agent`.
 3. **St stale `LLAMA_CPP_ROOT=../llama.cpp`** — runtime auto-prefers vendor; rebuild vendor if `/kv/seq-copy` 404s.

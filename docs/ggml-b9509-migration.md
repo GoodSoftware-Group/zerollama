@@ -1,8 +1,8 @@
 # ggml @ llama.cpp — vendor migration guide
 
-> **Current pin:** **`c84b3020`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). Unified **elizaOS/llama.cpp** @ `c84b30200c8d512c00c9d61c96bed078f1c0024d` (supersedes upstream Ollama tag **`b9781`** / v0.30.11).
+> **Current pin:** **`86d86ed4`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `86d86ed4396b4130922f7b9af26e3d9fc11a591b` (master tip past `b10064`; supersedes **`8f114a9b`**, elizaOS **`ad56033f`**, and Ollama-aligned **`b9888`**).
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June 2026 migration rebased from an old fork snapshot onto **`b9509`**, then **`b9611`**, **`b9672`**, **`b9781`**, and **`c84b3020`** (elizaOS unified) with **19** formal patches on the pin.
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June–July 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b9888`** / eliza **`ad56033f`** → **`8f114a9b`** → **`86d86ed4`** (ggml-org master) with **79** formal patch commits on the pin.
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -44,25 +44,42 @@ zerollama serve
 
 | File | Purpose |
 |------|---------|
-| `LLAMA_CPP_VERSION` | Human pin (`c84b3020`) — scripts grep this without Make |
+| `LLAMA_CPP_VERSION` | Human pin (`86d86ed4`) — scripts grep this without Make |
 | `LLAMA_CPP_COMMIT` | Full git ref for vendor checkout |
 | `LLAMA_CPP_VENDOR_HEAD` | Expected vendor HEAD after full patch apply (CI/doctor) |
-| `Makefile.sync` | `FETCH_HEAD=c84b3020`, `WORKDIR=vendor/llama-cpp-c84b3020` |
-| `vendor/llama-cpp-c84b3020/` | Fresh clone + Ollama patch commits (gitignored) |
-| `llama/patches/` | **19** format-patches on `c84b3020` |
-| `llama/patches.pre-b9509-20260612/` | Backup of pre-migration patch series |
+| `Makefile.sync` | `FETCH_HEAD=86d86ed4`, `WORKDIR=vendor/llama-cpp-86d86ed4`, `UPSTREAM=ggml-org` |
+| `vendor/llama-cpp-86d86ed4/` | Fresh clone + Ollama patch commits (gitignored) |
+| `llama/patches/` | format-patches; **79** on `86d86ed4` (merged upstream Metal ports dropped: snake #25459, Q2_0 #25419) |
+| `llama/patches.pre-8f114a9b-20260717/` | Backup of pre-`86d86ed4` series |
 
-**Patch drift:** `./scripts/llama_patch_doctor.sh` · `./scripts/runtime_env_doctor.sh` (`llama_patches`) · `/health.llama_patches`
+**Patch drift:** `./scripts/vendor/llama_patch_doctor.sh` · `./scripts/runtime/runtime_env_doctor.sh` (`llama_patches`) · `/health.llama_patches`
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
 
-**Why pin bumps rebase patches, not chase llama.cpp HEAD:** upstream Ollama pins a tag per release; zerollama matches elizaOS unified @ `LLAMA_CPP_COMMIT` so Phase 17 diffs and zerollama-only routes (`POST /kv/seq-copy`) stay reviewable. Chasing HEAD would rewrite the patch series weekly.
+**Why pin bumps rebase patches, not chase llama.cpp HEAD daily:** keep a reviewed tip so Phase 17 diffs and zerollama-only routes (`POST /kv/seq-copy`) stay reviewable. This pin is intentionally **ggml-org master** at the time of the Jul 2026 bump.
 
 ---
 
 ## Patch series (current pin)
 
-Applied on top of **`c84b3020`** via `llama/patches/*.patch` (includes historical b9781 series + zerollama deltas **0017** seq-copy, **0018** ANE lab hook). See `./scripts/llama_patch_doctor.sh` for live file list.
+Applied on top of **`8f114a9b`** via `llama/patches/*.patch`. Clean re-apply: **`fail=0`** for all **25**.
+
+### Applied on `8f114a9b` (25 commits)
+
+| # | Subject |
+|---|---------|
+| 0001 | chore: stage compat + kv-ext |
+| 0002–0013 | grammar → MoE split / ctx-checkpoints (core Ollama + zerollama) |
+| 0014 | wire ANE into `common/CMakeLists.txt` |
+| 0015–0018 | string-arr KV, CUDA q6_k get_rows, GPU discovery, mtmd C API |
+| 0019–0022 | kv-ext Phase 15, compat hooks, cell_index/CMake, seq-copy |
+| 0023–0025 | ANE dflash lab, multi-GPU SWA/mmproj, `n_ubatch` SWA cap |
+
+### Deferred on ggml-org
+
+| Topic | Status |
+|-------|--------|
+| Eliza fused QJL/Polar/TBQ CUDA | **Applied** — patches 0026-0030 extract types/ops/kernels from elizaOS into ggml-org vendor |
 
 | # | Subject | Why Ollama/zerollama still needs it |
 |---|---------|-------------------------------------|
@@ -83,12 +100,9 @@ Applied on top of **`c84b3020`** via `llama/patches/*.patch` (includes historica
 | 0015 | **compat loader hooks** | Call sites for `llama/compat/` — canonical patch; symlinked as `llama/compat/001-llama-cpp-hooks.patch` |
 | 0016 | **ggml scheduler + Metal gate** | `GGML_SCHED_MAX_SPLIT_INPUTS 128`, `alloc_buffers` guard for LoadOperationFit, `GGML_DISABLE_METAL` runtime gate |
 | 0017 | **kv seq-copy endpoint** | Radix cross-slot KV seed (`POST /kv/seq-copy`) |
-| 0018 | **ANE dflash hook (lab)** | In-process IOSurface draft hook — optional Mac lab build |
+| 0018 | **ANE dflash hook (lab)** | In-process IOSurface draft hook — optional Mac lab build — **needs rebase** |
 | 0019 | **llama-kv-ext alias validate (v47)** | External PA buffer alias feasibility probe + validate (no tensor mutation) |
-
-**Patch vs compat ownership:** GGUF translation logic lives in `llama/compat/*.cpp`. Numbered patches carry **ggml/llama.cpp deltas** that compat cannot replace (scheduler, grammar, kv-ext, CGO hooks). Overlap removed: BakLLaVA MLP default (was 0007) is compat-only.
-
-**CGO-only (not patches):** `jinja_wrap.cpp`, `httplib_wrap.cpp`, `llama/build-info.cpp`; exclude mtmd CLI mains after sync.
+| 0020–0029 | See table above | Eliza L2 + SWA follow-ups |
 
 ---
 
@@ -150,19 +164,19 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 
 ```bash
 # 1. Ensure vendor exists (once per pin bump)
-./scripts/rebase_vendor_unified.sh --apply --sync
+./scripts/vendor/rebase_vendor_unified.sh --apply --sync
 # or manually:
 # git clone https://github.com/elizaOS/llama.cpp.git vendor/llama-cpp-c84b3020
 # cd vendor/llama-cpp-c84b3020 && git checkout c84b3020
 # make -f Makefile.sync clean apply-patches
 
 # 2. Rsync into in-tree vendored trees (preserves zerollama-only files)
-./scripts/sync_vendor_llama.sh
+./scripts/vendor/sync_vendor_llama.sh
 # or: make -f Makefile.sync sync   # alias — does NOT git checkout vendor
 
 # 4. Build + doctor
-eval "$(./scripts/mac_cgo_env.sh --export)"
-./scripts/build_zerollama_mac.sh
+eval "$(./scripts/runtime/mac_cgo_env.sh --export)"
+./scripts/build/build_zerollama_mac.sh
 ./zerollama doctor
 ```
 
@@ -172,7 +186,7 @@ eval "$(./scripts/mac_cgo_env.sh --export)"
 
 **Why `GOFLAGS=-mod=mod` in `build_zerollama_mac.sh`:** `go build` must not fail on inconsistent `vendor/` when only CGO trees are synced.
 
-**Legacy shim:** `./scripts/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin tracks `Makefile.sync` `FETCH_HEAD`.
+**Legacy shim:** `./scripts/vendor/sync_vendor_b9509.sh` forwards to `sync_vendor_llama.sh` — **why kept:** old docs/scripts referenced the b9509 name; pin tracks `Makefile.sync` `FETCH_HEAD`.
 
 ### cpp-httplib on CUDA / Proxmox CT (CGO build)
 
@@ -181,7 +195,7 @@ eval "$(./scripts/mac_cgo_env.sh --export)"
 | Symptom | Fix |
 |---------|-----|
 | `cpp-httplib/httplib.h: No such file or directory` | `rsync -a ~/llama.cpp/vendor/cpp-httplib/ llama/llama.cpp/vendor/cpp-httplib/` then `CGO_ENABLED=1 go build -o zerollama .` |
-| GPU gate fails on Go golden, not GPU | `RUN_E2E_PREFLIGHT=0 ./scripts/gpu_5080_session.sh` |
+| GPU gate fails on Go golden, not GPU | `RUN_E2E_PREFLIGHT=0 ./scripts/gpu/gpu_5080_session.sh` |
 
 ---
 
@@ -190,7 +204,7 @@ eval "$(./scripts/mac_cgo_env.sh --export)"
 ```bash
 # Edit commits in vendor/llama-cpp-b9781 (on top of b9781)
 make -f Makefile.sync format-patches   # writes llama/patches/*.patch
-./scripts/sync_vendor_llama.sh
+./scripts/vendor/sync_vendor_llama.sh
 # build + smoke
 ```
 

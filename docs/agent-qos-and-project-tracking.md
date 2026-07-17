@@ -63,11 +63,55 @@ curl -s http://127.0.0.1:11434/api/version | jq '{
 | Field | Purpose | Why |
 |-------|---------|-----|
 | `qos_class` | `interactive` \| `auxiliary` \| `background` | Prevents background batch jobs from clobbering live agent KV |
+| `fulfillment` | `complete` \| `benchmark` | Request-scoped no-degradation contract (see below) |
 | `session_group` | Harness namespace (`hermes-agent`, `ruby-trivia`) | Collapses ephemeral aux/bg keys onto shared branches where safe |
 | `session_parent` | Parent thread `prompt_cache_key` | Spawns defer behind main thread; observability for subagents |
 | `project_id` | Stable client id | Fleet / `zerollama ps` — which app owns GPU time |
 | `project_name` | Human label (Discord channel, audit phase) | Operator grep without parsing cache keys |
 | `cache_scope` | `thread` \| `shared` \| `auto` | MLX trie vs shared branch policy |
+
+### Fulfillment modes (`options.zerollama.fulfillment`)
+
+**Why:** Normal QoS defers lower-priority work but does not give a SQL-transaction-like guarantee that *this* request finishes without degradation (eviction, peer VRAM pressure, concurrent interactive noise). Fulfillment is **request-scoped** (`begin` → infer → `release`) — not a multi-minute fleet lease.
+
+| Mode | Aliases | Behavior |
+|------|---------|----------|
+| **`complete`** | `guarantee`, `reliable` | Elevate to interactive; wait for a clear slot on this model; block aux/bg (and same-model peers) while held; floor `keep_alive` to 30m when unset; protect this model from eviction. Other interactive sessions on **other** models may still run. |
+| **`benchmark`** | `bench`, `speed`, `exclusive` | Everything `complete` does, plus **exclusive GPU**: wait until no competing inflight/hot interactive sessions; unload peer runners before load; block **all** other traffic (including other interactive) until release; floor `keep_alive` to 2h when unset. |
+
+**Example (bench suite):**
+
+```json
+{
+  "model": "llama3.2:3b",
+  "prompt": "Hello",
+  "options": {
+    "zerollama": {
+      "fulfillment": "benchmark",
+      "project_id": "zerollama-bench",
+      "project_name": "tok/s gate"
+    }
+  }
+}
+```
+
+**Example (critical agent turn — finish without eviction):**
+
+```json
+{
+  "model": "gemma4",
+  "messages": [{"role": "user", "content": "..."}],
+  "options": {
+    "zerollama": {
+      "fulfillment": "complete",
+      "qos_class": "interactive",
+      "project_id": "hermes-lean"
+    }
+  }
+}
+```
+
+Probe: `GET /api/version` → `zerollama.capabilities.fulfillment` and `zerollama.qos.fulfillment`.
 
 Full field table and examples: [mlx-agent-prompts.md § Harness QoS API](./mlx-agent-prompts.md#harness-qos-api-generic-jul-2026).
 

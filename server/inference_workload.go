@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 )
 
@@ -66,6 +67,7 @@ type runtimeHealthSnapshot struct {
 	llamaLoaded bool
 	fifoOldest  uint64
 	ok          bool // false when runtime URL is set but /health could not be read
+	radix       *api.RadixMirrorStatus
 }
 
 func (s *Server) schedWorkload(st *InferenceWorkloadStatus) {
@@ -171,16 +173,38 @@ func fetchRuntimeInferenceHealth(ctx context.Context, base string) runtimeHealth
 		return runtimeHealthSnapshot{}
 	}
 	var body struct {
-		Waiting            int    `json:"waiting"`
-		Running            int    `json:"running"`
-		InferenceState     string `json:"inference_state"`
-		LlamaServer        bool   `json:"llama_server"`
-		FifoRuntimeOldest  uint64 `json:"fifo_runtime_oldest"`
+		Waiting           int    `json:"waiting"`
+		Running           int    `json:"running"`
+		InferenceState    string `json:"inference_state"`
+		LlamaServer       bool   `json:"llama_server"`
+		FifoRuntimeOldest uint64 `json:"fifo_runtime_oldest"`
+		KvResume          *struct {
+			PrefixBlockPool *struct {
+				Enabled           bool     `json:"enabled"`
+				EntryCount        int      `json:"entry_count"`
+				SlotCount         int      `json:"slot_count"`
+				MultiHolderBlocks int      `json:"multi_holder_blocks"`
+				BlobDigestBlocks  int      `json:"blob_digest_blocks"`
+				BlockHashes       []string `json:"block_hashes"`
+				BlobDigests       []string `json:"blob_digests"`
+				RadixShare        *struct {
+					Enabled   bool   `json:"enabled"`
+					SeqCpMode string `json:"seq_cp_mode"`
+					KvUnified bool   `json:"kv_unified"`
+				} `json:"radix_share"`
+				LmcacheBlobs *struct {
+					Enabled bool `json:"enabled"`
+				} `json:"lmcache_blobs"`
+			} `json:"prefix_block_pool"`
+			L3R6Metadata *struct {
+				Complete bool `json:"complete"`
+			} `json:"l3_r6_metadata"`
+		} `json:"kv_resume"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&body) != nil {
 		return runtimeHealthSnapshot{}
 	}
-	return runtimeHealthSnapshot{
+	snap := runtimeHealthSnapshot{
 		waiting:     body.Waiting,
 		running:     body.Running,
 		state:       body.InferenceState,
@@ -188,6 +212,32 @@ func fetchRuntimeInferenceHealth(ctx context.Context, base string) runtimeHealth
 		fifoOldest:  body.FifoRuntimeOldest,
 		ok:          true,
 	}
+	if body.KvResume != nil && body.KvResume.PrefixBlockPool != nil {
+		p := body.KvResume.PrefixBlockPool
+		r := &api.RadixMirrorStatus{
+			Enabled:           p.Enabled,
+			EntryCount:        p.EntryCount,
+			SlotCount:         p.SlotCount,
+			MultiHolderBlocks: p.MultiHolderBlocks,
+			BlobDigestBlocks:  p.BlobDigestBlocks,
+			BlockHashes:       append([]string(nil), p.BlockHashes...),
+			BlobDigests:       append([]string(nil), p.BlobDigests...),
+		}
+		if p.RadixShare != nil {
+			r.RadixShare = p.RadixShare.Enabled
+			r.SeqCpMode = p.RadixShare.SeqCpMode
+			r.KvUnified = p.RadixShare.KvUnified
+		}
+		if p.LmcacheBlobs != nil {
+			r.LmcacheBlobs = p.LmcacheBlobs.Enabled
+		}
+		if body.KvResume.L3R6Metadata != nil {
+			ok := body.KvResume.L3R6Metadata.Complete
+			r.L3R6MetadataOK = &ok
+		}
+		snap.radix = r
+	}
+	return snap
 }
 
 // runtimeSidecarModelLoaded reports whether the Python sidecar currently holds a loaded

@@ -54,7 +54,7 @@ jobs:
 
       - name: Phase 12 preflight
         if: inputs.run_tools || inputs.run_legacy || inputs.run_clamp
-        run: ./scripts/phase12_golden_ci.sh
+        run: ./scripts/phase/phase12_golden_ci.sh
 
       - name: GPU smoke (coordination + runtime + proxy)
         if: inputs.run_tools || inputs.run_legacy || inputs.run_clamp
@@ -68,7 +68,7 @@ jobs:
           RUN_E2E_TOOLS: ${{ inputs.run_tools == true && '1' || '0' }}
           RUN_E2E_LEGACY: ${{ inputs.run_legacy == true && '1' || '0' }}
           RUN_E2E_PHASE13_SNAPSHOT: '1'
-        run: ./scripts/gpu_smoke_all.sh
+        run: ./scripts/gpu/gpu_smoke_all.sh
 
       - name: VRAM clamp smoke
         if: inputs.run_clamp
@@ -78,7 +78,7 @@ jobs:
           LLAMA_MODEL: ${{ vars.GPU_SMOKE_LLAMA_MODEL }}
           LLAMA_SERVER_BIN: ${{ vars.GPU_SMOKE_LLAMA_SERVER_BIN }}
           RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
-        run: ./scripts/gpu_clamp_smoke.sh
+        run: ./scripts/gpu/gpu_clamp_smoke.sh
 
       - name: Phase 17 llama-server smoke
         if: inputs.run_p17
@@ -87,7 +87,7 @@ jobs:
           LLAMA_SERVER_BIN: ${{ vars.GPU_SMOKE_LLAMA_SERVER_BIN }}
           RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
           P17_MODEL: ${{ vars.GPU_SMOKE_PROXY_MODEL }}
-        run: ./scripts/phase17_llama_server_smoke.sh
+        run: ./scripts/phase/phase17_llama_server_smoke.sh
 
       - name: Phase 16 edge smoke
         if: inputs.run_edge
@@ -96,7 +96,7 @@ jobs:
           LLAMA_SERVER_BIN: ${{ vars.GPU_SMOKE_LLAMA_SERVER_BIN }}
           RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
           P16_MODEL: ${{ vars.GPU_SMOKE_PROXY_MODEL }}
-        run: ./scripts/phase16_edge_smoke.sh
+        run: ./scripts/phase/phase16_edge_smoke.sh
 
       - name: Phase 17 Linux auto smoke
         if: inputs.run_p17_linux_auto
@@ -105,7 +105,7 @@ jobs:
           LLAMA_SERVER_BIN: ${{ vars.GPU_SMOKE_LLAMA_SERVER_BIN }}
           RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
           P17_MODEL: ${{ vars.GPU_SMOKE_PROXY_MODEL }}
-        run: ./scripts/phase17_linux_auto_smoke.sh
+        run: ./scripts/phase/phase17_linux_auto_smoke.sh
 
       - name: Upstream GGUF bundle (5080 session legs)
         if: inputs.run_upstream_gguf
@@ -116,7 +116,7 @@ jobs:
           RUN_E2E_PROXY_MODEL: ${{ vars.GPU_SMOKE_PROXY_MODEL }}
           RUN_E2E_PREFLIGHT: '0'
           RUN_E2E_UPSTREAM_GGUF: '1'
-        run: ./scripts/gpu_5080_session.sh
+        run: ./scripts/gpu/gpu_5080_session.sh
 
       - name: Phase 17 vision smoke
         if: inputs.run_p17_vision
@@ -126,4 +126,4 @@ jobs:
           RUN_E2E_GGUF: ${{ vars.GPU_SMOKE_GGUF }}
           RUN_E2E_P17_VISION: '1'
           P17_VISION_MODEL: ${{ vars.GPU_SMOKE_VISION_MODEL }}
-        run: ./scripts/phase17_llama_server_vision_smoke.sh
+        run: ./scripts/phase/phase17_llama_server_vision_smoke.sh
