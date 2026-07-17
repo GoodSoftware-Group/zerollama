@@ -2,7 +2,7 @@
 
 **Audience:** Contributors evaluating TurboQuant / QJL / PolarQuant profile wins on the **unified** `llama-server` binary.
 
-**Related:** [gpu-profiles-l1.md](./gpu-profiles-l1.md), [ROADMAP — L2](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), [phase17-llama-server.md](./phase17-llama-server.md), [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
+**Related:** [gpu-profiles-l1.md](./gpu-profiles-l1.md), [ROADMAP — L2](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), [phase17-llama-server.md](./phase17-llama-server.md), [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md), [llama-fork-watchlist.md](./llama-fork-watchlist.md) (RotorQuant / BeeLlama cherry-pick labs).
 
 ---
 
@@ -153,10 +153,15 @@ L2_RUN_27K=1 L2_RUN_131K_FORK=1 ./scripts/phase/l2_cuda_full_gate.sh
 |----------|--------|
 | `ZEROLLAMA_LLAMA_FORK=1` | Force fork profile merge (checkpoints + KV types) |
 | `ZEROLLAMA_LLAMA_FORK=0` | Force stock sanitize (L1 default) |
-| *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for fork KV markers |
+| *(unset)* | Auto: probe `LLAMA_SERVER_BIN --help` for fork KV markers (unless `AUTO_VRAM` below) |
+| `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1` | When `FORK` unset: enable fork **only if** configured ctx ≥ threshold (TBQ via `FORK_PROFILE=vram`) |
+| `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX` | Threshold for `AUTO_VRAM` (default **32768**) |
+| `ZEROLLAMA_RUNTIME_VRAM_NUM_CTX` / `ZEROLLAMA_LLAMA_CTX` / `LLAMA_ARG_CTX_SIZE` | Configured ctx hint for `AUTO_VRAM` (missing → auto stays off) |
 | `ZEROLLAMA_LLAMA_FORK_PROFILE=vram` | **Default** when fork on — TBQ (`_eliza_fork_vram_*`) |
 | `ZEROLLAMA_LLAMA_FORK_PROFILE=speed` | QJL/Polar (`_eliza_fork_*`) — experimental; large CUDA tok/s hit |
 | `LLAMA_CPP_ROOT` / `LLAMA_CPP_COMMIT` | Override clone path / commit (`ensure_llama_cpp_sibling.sh`) |
+
+YAML (`serve:`): `llama_fork_auto_vram` / `llama_fork_auto_vram_ctx` map into the env vars above (same as `llama_fork` / `llama_fork_profile`).
 
 ---
 
@@ -275,6 +280,10 @@ export ZEROLLAMA_LLAMA_FORK=1
 # export ZEROLLAMA_LLAMA_FORK_PROFILE=vram   # optional; already the default
 # export ZEROLLAMA_LLAMA_FORK_PROFILE=speed  # QJL/Polar — expect large decode regression on CUDA
 
+# Auto TBQ when configured ctx is large (FORK unset; threshold default 32768)
+# export ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1
+# export ZEROLLAMA_RUNTIME_VRAM_NUM_CTX=65536
+
 # Dual 4090 drop-in YAML (serve.llama_fork + llama_fork_profile)
 export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vram.yaml
 ```
@@ -282,7 +291,7 @@ export ZEROLLAMA_RUNTIME_CONFIG=/path/to/zerollama/runtime/configs/dual_4090_vra
 | Goal | Setting | Why |
 |------|---------|-----|
 | Max decode tok/s | `ZEROLLAMA_LLAMA_FORK=0` / `dual_4090.yaml` (default) | L1 q8_0 wins measured legs |
-| Fit more ctx / slots | `FORK=1` (defaults to TBQ) / `dual_4090_vram.yaml` | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
+| Fit more ctx / slots | `FORK=1` (defaults to TBQ) / `dual_4090_vram.yaml` / `AUTO_VRAM=1` + large ctx | TBQ −27…−35% VRAM @ 65k–131k on 4090 |
 | Max compression (experimental) | `FORK=1` + `FORK_PROFILE=speed` | QJL/Polar — runs on `8f` llama3.2 but **−48…−85%** decode @ 8k/27k; prefer TBQ |
 
 ---
@@ -298,7 +307,18 @@ Compare **same model**, **same `num_ctx`**, stock vs fork:
 
 **Pass criteria to flip defaults:** fork wins on **≥2 of 3** (tok/s, max ctx, VRAM) on **both** 5080 and M-series without regressing qwen35 compat smoke.
 
-**Exit (Jul 2026):** L2 **infrastructure Done** on unified pin; **defaults stay L1**. Operators opt into fork with `ZEROLLAMA_LLAMA_FORK=1`.
+**Exit (Jul 2026):** L2 **Done**. Infrastructure + VRAM opt-in shipped; **defaults stay L1** (tok/s FAIL merge). Operators enable TBQ with `ZEROLLAMA_LLAMA_FORK=1` or **`ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1`** when configured ctx ≥ 32768. Flipping global defaults still requires the ≥2/3 tok/s gate above (non-goal until then).
+
+---
+
+## External fork labs (post-L2)
+
+L2 defaults stay L1 for tok/s. New codecs / server controls from public forks are measured **before** pin patches:
+
+| Lab | Script / doc | Goal |
+|-----|--------------|------|
+| RotorQuant `planar3`/`iso3` vs TBQ | `./scripts/phase/l2_rotorquant_ab.sh` | Beat TBQ decode/VRAM/PPL on 5080 |
+| BeeLlama loop guard (B0) **0087** | `--reasoning-loop-guard force-close\|stop` (default off) | Rebuild llama-server; A/B on Qwen think; B1 adaptive DM still deferred |
 
 ---
 
