@@ -90,7 +90,7 @@ We already have DFlash + TBQ/TCQ-class KV. Bee adds **server-facing** controls w
 
 | Priority | Feature | Surface | Size / risk | Verdict |
 |----------|---------|---------|-------------|---------|
-| **B0** | Reasoning-loop guard | `server-loop-guard.{h,cpp}` + CLI/schema + `process_token` wiring | **Landed as patch 0087** (default **off**; force-close/stop opt-in). Uses `reasoning_budget_tracking` + `process_token` (no Bee accept-callbacks on our pin). | **Done in tree** — rebuild `llama-server` to use |
+| **B0** | Reasoning-loop guard | `server-loop-guard.{h,cpp}` + CLI/schema + `process_token` wiring | **Landed as patch 0087** (default **off**; force-close/stop opt-in). Uses `reasoning_budget_tracking` + `process_token` (no Bee accept-callbacks on our pin). | **Done** — Mac lab `:18082` smoke PASS; optional CUDA sanity on 5080 |
 | **B1** | Adaptive draft-max | `server-adaptive-dm.h` (**~1680 LOC**, mostly header) + `common.h` dm_* fields + **~58** hooks in Bee `server-context.cpp` | Bee `server-context.cpp` is **~8.7k** LOC vs our **~5.6k** — not a clean format-patch | **Dedicated port**, not drive-by; needs DFlash accept/reject telemetry we may lack |
 | **B2** | DDTree / sampled draft | `--spec-branch-budget`, `--spec-draft-temp` | Tied to Bee DFlash tree path | After flat DFlash acceptance is solid |
 | **B3** | CopySpec / suffix / recycle | `--spec-type copyspec` etc. | Separate speculative backends | Low–med |
@@ -168,7 +168,8 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 
 ## Suggested operator sequence
 
-1. Run `./scripts/phase/l2_rotorquant_ab.sh` on **5080** (then dual-4090) at 8k and one long-ctx leg.
-2. If RotorQuant wins → plan type-slot + FA cherry-pick onto vendor (new patches after 0087).
-3. If not → leave TBQ defaults; **B0 loop guard is in 0087** — rebuild + A/B on Qwen think; defer **B1 adaptive DM**.
-4. Revisit turbo-tan only with TQ3 models in the fleet.
+1. **Mac (done):** pin `86d86ed4` through **0088**; B0 smoke; Metal L2 stock vs TBQ (FAIL merge — expected).
+2. **5080 next:** [5080-runbook Tier F](./5080-runbook.md#tier-f--rotorquant--post-l2-labs-jul-2026) — rebuild vendor CUDA `llama-server`, then `./scripts/phase/l2_rotorquant_ab.sh` at 8k + one long-ctx leg (lab port **18082**).
+3. If RotorQuant wins → plan type-slot remap (IDs **44–47**) + FA cherry-pick onto vendor (new patches after **0088**); dual-4090 A/B.
+4. If not → leave TBQ VRAM opt-in; optional B0 CUDA sanity; defer **B1 adaptive DM**.
+5. Revisit turbo-tan only with TQ3 models in the fleet.

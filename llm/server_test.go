@@ -300,3 +300,22 @@ func TestCompletionResponseUnmarshalCachedPromptTokensAlias(t *testing.T) {
 		t.Fatalf("PromptEvalCount=%d, want 128", resp.PromptEvalCount)
 	}
 }
+
+func TestCompletionResponseUnmarshalCacheTier(t *testing.T) {
+	var resp CompletionResponse
+	if err := json.Unmarshal([]byte(`{
+		"done": true,
+		"cached_prompt_tokens": 100,
+		"cached_tokens_host": 40,
+		"cached_tokens_storage": 10,
+		"cached_tokens_storage_backend": "redis"
+	}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PromptEvalCachedCount != 100 || resp.PromptEvalCachedHost != 40 || resp.PromptEvalCachedStorage != 10 {
+		t.Fatalf("tiers device=%d host=%d storage=%d", resp.PromptEvalCachedCount, resp.PromptEvalCachedHost, resp.PromptEvalCachedStorage)
+	}
+	if resp.PromptEvalCachedStorageBackend != "redis" {
+		t.Fatalf("backend=%q", resp.PromptEvalCachedStorageBackend)
+	}
+}

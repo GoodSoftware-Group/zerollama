@@ -197,8 +197,6 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
 
 void ggml_metal_free(ggml_metal_t ctx) {
     GGML_LOG_INFO("%s: deallocating\n", __func__);
-    ggml_metal_op_mul_mat_id_log_stats();
-    ggml_metal_op_mul_mat_id_reset_stats();
 
     for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         if (ctx->cmd_bufs[i].obj) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 )
 
 // Package-level note: QoS scheduling for agent harnesses.
@@ -15,18 +16,23 @@ import (
 // and cache_n. Unkeyed GGUF traffic is a no-op — CUDA batch endpoints must not wait
 // behind MLX agent cooldown they do not participate in.
 //
+// WHY fulfillment: complete/benchmark are request-scoped no-degradation contracts
+// (SQL-transaction-like begin→release). They force interactive class, inject a gate
+// key when omitted, and for benchmark unload peer models for exclusive GPU speed.
+//
 // See docs/agent-qos-and-project-tracking.md.
 
 // scheduleSessionMeta resolves gate session key + class for MLX and GGUF runners.
-func scheduleSessionMeta(ctx context.Context, m *Model, opts map[string]any) (sessionKey string, class mlxSessionClass) {
+func scheduleSessionMeta(ctx context.Context, m *Model, opts map[string]any) (sessionKey string, class mlxSessionClass, qos mlxQoS) {
 	if m == nil {
-		return "", mlxClassUnknown
+		return "", mlxClassUnknown, mlxQoS{}
 	}
 	hints := mlxScheduleHintsFromCtx(ctx)
 	if opts == nil {
 		opts = map[string]any{}
 	}
 	ensureQoSDefaults(opts, hints)
+	qos = mlxQoSFromOptions(opts)
 
 	if m.IsMLX() {
 		_, meta := prepareMLXSession(ctx, m, opts)
@@ -36,16 +42,26 @@ func scheduleSessionMeta(ctx context.Context, m *Model, opts map[string]any) (se
 		}
 		class = meta.Class
 		if class == mlxClassUnknown {
-			class, _ = classifyMLXSession(meta.RawKey, hints, opts)
+			class, qos = classifyMLXSession(meta.RawKey, hints, opts)
+		} else {
+			qos = meta.QoS
 		}
-		return sessionKey, class
+		if qos.Fulfillment.Active() {
+			sessionKey = ensureFulfillmentSessionKey(opts, qos)
+			class = mlxClassInteractive
+		}
+		return sessionKey, class, qos
 	}
 
-	rawKey := mlxSessionKey(opts)
-	class, qos := classifyMLXSession(rawKey, hints, opts)
+	rawKey := ensureFulfillmentSessionKey(opts, qos)
+	class, qos = classifyMLXSession(rawKey, hints, opts)
+	if qos.Fulfillment.Active() {
+		class = mlxClassInteractive
+		rawKey = ensureFulfillmentSessionKey(opts, qos)
+	}
 	modelKey := schedulerModelKey(m)
 	sessionKey = gateSessionKey(m, modelKey, rawKey, class, qos)
-	return sessionKey, class
+	return sessionKey, class, qos
 }
 
 // waitScheduleQoS blocks until session policy allows scheduling. MLX and GGUF text
@@ -58,11 +74,18 @@ func (s *Server) waitScheduleQoS(ctx context.Context, m *Model, opts map[string]
 // reserveScheduleQoS waits for session policy, then immediately claims the gate slot
 // so concurrent requests cannot pass defer checks while this one waits for a runner.
 func (s *Server) reserveScheduleQoS(ctx context.Context, m *Model, opts map[string]any) (func(), error) {
-	if s == nil || s.sched == nil || m == nil || !modelSupportsSessionQoS(m) {
+	if s == nil || s.sched == nil || m == nil {
 		return func() {}, nil
 	}
-	sessionKey, class := scheduleSessionMeta(ctx, m, opts)
+	sessionKey, class, qos := scheduleSessionMeta(ctx, m, opts)
 	modelKey := schedulerModelKey(m)
+
+	// Fulfillment opts into the gate even when modelSupportsSessionQoS would skip,
+	// as long as we have a session key (injected if needed).
+	if !qos.Fulfillment.Active() && !modelSupportsSessionQoS(m) {
+		return func() {}, nil
+	}
+
 	if sessionKey == "" {
 		// No session key: MLX unkeyed traffic waits behind any hot interactive slot
 		// (preserves KV trie for agent sessions). Non-MLX runners are unaffected —
@@ -75,14 +98,36 @@ func (s *Server) reserveScheduleQoS(ctx context.Context, m *Model, opts map[stri
 		}
 		return func() {}, nil
 	}
+
+	if qos.Fulfillment.Active() {
+		if err := s.sched.mlxGate.waitForFulfillment(ctx, modelKey, sessionKey, qos.Fulfillment); err != nil {
+			return func() {}, err
+		}
+	}
 	if err := s.sched.mlxGate.waitForSlot(ctx, modelKey, sessionKey, class); err != nil {
 		return func() {}, err
 	}
 	if err := s.sched.mlxGate.waitBehindAnyInteractive(ctx, class, sessionKey); err != nil {
 		return func() {}, err
 	}
-	qos := mlxQoSFromOptions(opts)
-	return s.sched.mlxGate.begin(modelKey, sessionKey, class, qos), nil
+
+	releaseSession := s.sched.mlxGate.begin(modelKey, sessionKey, class, qos)
+	releaseFulfill := s.sched.mlxGate.beginFulfillment(modelKey, sessionKey, qos.Fulfillment)
+
+	if qos.Fulfillment.Exclusive() {
+		// Benchmark mode: free peer VRAM so the speed path is not degraded by
+		// concurrent resident models. Keep this model if already loaded.
+		s.sched.unloadRunnersExcept(modelKey)
+		slog.Info("fulfillment benchmark: unloaded peer runners",
+			"model_key", modelKey,
+			"session_key", sessionKey,
+		)
+	}
+
+	return func() {
+		releaseFulfill()
+		releaseSession()
+	}, nil
 }
 
 // agentSessionBegin is deprecated; reserveScheduleQoS claims the gate before runner wait.

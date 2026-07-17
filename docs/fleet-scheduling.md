@@ -5,6 +5,8 @@ This document describes the **directional** plan for running **many zerollama no
 It complements:
 
 - [ROADMAP.md](./ROADMAP.md) — fleet track milestones **F1–F6**
+- [fleet-management.md](./fleet-management.md) — F3 management node how-to
+- [fleet-playbooks.md](./fleet-playbooks.md) — **F6** sticky shards, warm-only SLA, cancel policy
 - [scheduling-vram-policy.md](./scheduling-vram-policy.md) — **per-node** queues, VRAM broker, training coordination
 - [testing-smoke.md](./testing-smoke.md) — single-host smoke
 
@@ -289,8 +291,8 @@ See [ROADMAP.md — Fleet scheduling track](./ROADMAP.md#fleet-scheduling-multi-
 | **F2** | **`GET /api/status`** inference snapshot for management polling |
 | **F3** | Management node v0: static peer list + warm-model map + assign URL | **Shipped** |
 | **F4** | **Shipped** — mDNS `_zerollama._tcp` / `_zerollama-fleet._tcp`; fleet `--mdns` browse; static peers still supported |
-| **F5** | Short-TTL assignment token (optional header) |
-| **F6** | Operator docs: sticky shards, SLA classes, when to reject cold route |
+| **F5** | **Done (Jul 2026)** — HMAC assign token + node soft-hold (`assign_holds`); see [fleet-management.md](./fleet-management.md#assignment-tokens-f5) |
+| **F6** | **Done (Jul 2026)** — [fleet-playbooks.md](./fleet-playbooks.md): sticky shards, warm-only SLA, cancel policy |
 
 ---
 

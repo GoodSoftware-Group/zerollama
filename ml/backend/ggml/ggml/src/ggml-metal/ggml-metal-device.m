@@ -27,211 +27,6 @@
 static const NSInteger MTLGPUFamilyMetal3_GGML = 5001;
 static const NSInteger MTLGPUFamilyMetal4_GGML = 5002;
 
-static bool ggml_metal_experimental_env_enabled(const char * name) {
-    const char * value = getenv(name);
-    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
-}
-
-static bool ggml_metal_env_list_contains_token(const char * list, const char * token) {
-    if (list == NULL || list[0] == '\0' || token == NULL || token[0] == '\0') {
-        return false;
-    }
-
-    const size_t token_len = strlen(token);
-    const char * cur = list;
-
-    while (*cur != '\0') {
-        while (*cur == ' ' || *cur == '\t' || *cur == '\n' || *cur == ',' || *cur == ';' || *cur == ':') {
-            ++cur;
-        }
-
-        const char * start = cur;
-        while (*cur != '\0' && *cur != ' ' && *cur != '\t' && *cur != '\n' && *cur != ',' && *cur != ';' && *cur != ':') {
-            ++cur;
-        }
-
-        const size_t cur_len = (size_t) (cur - start);
-        if (cur_len == token_len && strncmp(start, token, token_len) == 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool ggml_metal_name_contains_any(const char * name, const char * const * needles, size_t count) {
-    if (name == NULL || name[0] == '\0') {
-        return false;
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        if (needles[i] != NULL && strstr(name, needles[i]) != NULL) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static const char * ggml_metal_tensor_name_or_view_src(const struct ggml_tensor * t) {
-    if (t == NULL) {
-        return NULL;
-    }
-
-    const char * name = ggml_get_name(t);
-    if (name != NULL && name[0] != '\0') {
-        return name;
-    }
-
-    if (t->view_src != NULL) {
-        name = ggml_get_name(t->view_src);
-        if (name != NULL && name[0] != '\0') {
-            return name;
-        }
-    }
-
-    return NULL;
-}
-
-static bool ggml_metal_flash_moe_tensor_is_routed(const struct ggml_tensor * t) {
-    static const char * const routed_needles[] = {
-        ".ffn_gate_exps",
-        ".ffn_up_exps",
-        ".ffn_down_exps",
-        "ffn_moe_",
-        "selected_experts",
-        "slot_ids",
-    };
-
-    return ggml_metal_name_contains_any(
-            ggml_metal_tensor_name_or_view_src(t),
-            routed_needles,
-            sizeof(routed_needles)/sizeof(routed_needles[0]));
-}
-
-static bool ggml_metal_flash_moe_tensor_is_shared(const struct ggml_tensor * t) {
-    static const char * const shared_needles[] = {
-        ".ffn_gate_shexp",
-        ".ffn_up_shexp",
-        ".ffn_down_shexp",
-        ".ffn_gate_inp_shexp",
-        "ffn_shexp",
-        "shared_gate",
-    };
-
-    return ggml_metal_name_contains_any(
-            ggml_metal_tensor_name_or_view_src(t),
-            shared_needles,
-            sizeof(shared_needles)/sizeof(shared_needles[0]));
-}
-
-static bool ggml_metal_flash_moe_tensor_is_routed_post(const struct ggml_tensor * t) {
-    static const char * const routed_post_needles[] = {
-        "ffn_moe_swiglu",
-        "ffn_moe_silu",
-        "ffn_moe_geglu",
-        "ffn_moe_gelu",
-        "ffn_moe_reglu",
-        "ffn_moe_relu",
-        "ffn_moe_down",
-        "ffn_moe_weighted",
-        "ffn_moe_out",
-    };
-
-    return ggml_metal_name_contains_any(
-            ggml_metal_tensor_name_or_view_src(t),
-            routed_post_needles,
-            sizeof(routed_post_needles)/sizeof(routed_post_needles[0]));
-}
-
-static bool ggml_metal_flash_moe_op_is_routed(const struct ggml_tensor * op) {
-    if (ggml_metal_flash_moe_tensor_is_routed(op)) {
-        return true;
-    }
-
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
-        if (ggml_metal_flash_moe_tensor_is_routed(op->src[i])) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool ggml_metal_flash_moe_op_is_routed_post(const struct ggml_tensor * op) {
-    if (ggml_metal_flash_moe_tensor_is_routed_post(op)) {
-        return true;
-    }
-
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
-        if (ggml_metal_flash_moe_tensor_is_routed_post(op->src[i])) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool ggml_metal_flash_moe_op_is_shared(const struct ggml_tensor * op) {
-    if (ggml_metal_flash_moe_tensor_is_shared(op)) {
-        return true;
-    }
-
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
-        if (ggml_metal_flash_moe_tensor_is_shared(op->src[i])) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool ggml_metal_flash_moe_disable_routed_enabled(void) {
-    return ggml_metal_experimental_env_enabled("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_ROUTED");
-}
-
-static bool ggml_metal_flash_moe_routed_only_enabled(void) {
-    return ggml_metal_experimental_env_enabled("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_ROUTED_ONLY");
-}
-
-static bool ggml_metal_flash_moe_disable_routed_post_enabled(void) {
-    return ggml_metal_experimental_env_enabled("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_ROUTED_POST");
-}
-
-static const char * ggml_metal_flash_moe_disable_routed_types_env(void) {
-    return getenv("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_ROUTED_TYPES");
-}
-
-static const char * ggml_metal_flash_moe_disable_shared_types_env(void) {
-    return getenv("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_SHARED_TYPES");
-}
-
-static bool ggml_metal_tensor_type_matches_env_list(const struct ggml_tensor * t, const char * list) {
-    if (t == NULL || list == NULL || list[0] == '\0') {
-        return false;
-    }
-
-    return ggml_metal_env_list_contains_token(list, ggml_type_name(t->type));
-}
-
-static bool ggml_metal_flash_moe_op_matches_type_filter(const struct ggml_tensor * op, const char * list) {
-    if (op == NULL || list == NULL || list[0] == '\0') {
-        return false;
-    }
-
-    if (ggml_metal_tensor_type_matches_env_list(op, list)) {
-        return true;
-    }
-
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
-        if (ggml_metal_tensor_type_matches_env_list(op->src[i], list)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 #if !GGML_METAL_EMBED_LIBRARY
 // Here to assist with NSBundle Path Hack
 @interface GGMLMetalClass : NSObject
@@ -329,12 +124,41 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         NSString * src = nil;
 
 #if GGML_METAL_EMBED_LIBRARY
+        // Why two formats: build_zerollama_mac.sh embeds compiled default.metallib
+        // bytes (MTLB magic + eliza-shipped kernels) via .incbin; upstream ollama
+        // embeds Metal source for JIT newLibraryWithSource. Treating metallib as
+        // UTF-8 source returns nil NSString → newLibraryWithSource aborts →
+        // bootstrap /info dies → total_vram=0 / CPU-only scheduling.
         GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
 
         extern const char ggml_metallib_start[];
         extern const char ggml_metallib_end[];
 
-        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
+        const size_t embed_size = (size_t) (ggml_metallib_end - ggml_metallib_start);
+        const unsigned char * embed = (const unsigned char *) ggml_metallib_start;
+        const bool is_metallib = embed_size >= 4
+            && embed[0] == 'M' && embed[1] == 'T' && embed[2] == 'L' && embed[3] == 'B';
+
+        if (is_metallib) {
+            GGML_LOG_INFO("%s: loading embedded metallib (%zu bytes)\n", __func__, embed_size);
+            dispatch_data_t data = dispatch_data_create(embed, embed_size, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+            library = [device newLibraryWithData:data error:&error];
+#if !__has_feature(objc_arc)
+            dispatch_release(data);
+#endif
+            if (error || library == nil) {
+                GGML_LOG_ERROR("%s: error loading embedded metallib: %s\n", __func__,
+                    error ? [[error description] UTF8String] : "nil library");
+                return nil;
+            }
+        } else {
+            src = [[NSString alloc] initWithBytes:ggml_metallib_start length:embed_size encoding:NSUTF8StringEncoding];
+            if (src == nil) {
+                GGML_LOG_ERROR("%s: embedded metal payload is neither metallib nor UTF-8 source (%zu bytes)\n",
+                    __func__, embed_size);
+                return nil;
+            }
+        }
 #else
 
 #ifdef SWIFT_PACKAGE
@@ -416,6 +240,10 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #endif
 
         if (!library) {
+            if (src == nil) {
+                GGML_LOG_ERROR("%s: no metal library source available\n", __func__);
+                return nil;
+            }
             @autoreleasepool {
                 // dictionary of preprocessor macros
                 NSMutableDictionary * prep = [NSMutableDictionary dictionary];
@@ -460,7 +288,9 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         }
 
 #if GGML_METAL_EMBED_LIBRARY
-        [src release];
+        if (src != nil) {
+            [src release];
+        }
 #endif // GGML_METAL_EMBED_LIBRARY
 
         GGML_LOG_INFO("%s: loaded in %.3f sec\n", __func__, (ggml_time_us() - t_start) / 1e6);
@@ -722,14 +552,6 @@ void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder
     [encoder->obj setThreadgroupMemoryLength:size atIndex:idx];
 }
 
-void ggml_metal_encoder_use_resource(ggml_metal_encoder_t encoder, struct ggml_metal_buffer_id buffer, uint32_t usage) {
-    if (buffer.metal == nil || usage == 0) {
-        return;
-    }
-
-    [encoder->obj useResource:(id<MTLResource>) buffer.metal usage:(MTLResourceUsage) usage];
-}
-
 void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2) {
     [encoder->obj dispatchThreadgroups:MTLSizeMake(tg0, tg1, tg2) threadsPerThreadgroup:MTLSizeMake(tptg0, tptg1, tptg2)];
 }
@@ -740,175 +562,6 @@ void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
 
 void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder) {
     [encoder->obj endEncoding];
-}
-
-struct ggml_metal_owned_buffer {
-    id<MTLBuffer> obj;
-};
-
-ggml_metal_owned_buffer_t ggml_metal_owned_buffer_init(ggml_metal_device_t dev, const void * data, size_t size) {
-    if (dev == NULL || size == 0) {
-        return NULL;
-    }
-
-    ggml_metal_owned_buffer_t res = calloc(1, sizeof(struct ggml_metal_owned_buffer));
-    if (res == NULL) {
-        return NULL;
-    }
-
-    id<MTLDevice> device = (id<MTLDevice>) ggml_metal_device_get_obj(dev);
-    res->obj = [device newBufferWithLength:size options:MTLResourceStorageModeShared];
-    if (res->obj == nil) {
-        free(res);
-        return NULL;
-    }
-
-    if (data != NULL) {
-        memcpy([res->obj contents], data, size);
-    }
-
-    return res;
-}
-
-void ggml_metal_owned_buffer_free(ggml_metal_owned_buffer_t buffer) {
-    if (buffer == NULL) {
-        return;
-    }
-
-    [buffer->obj release];
-    free(buffer);
-}
-
-struct ggml_metal_buffer_id ggml_metal_owned_buffer_get_id(ggml_metal_owned_buffer_t buffer) {
-    struct ggml_metal_buffer_id res = {
-        /* .metal = */ nil,
-        /* .offs  = */ 0,
-    };
-
-    if (buffer != NULL) {
-        res.metal = buffer->obj;
-    }
-
-    return res;
-}
-
-struct ggml_metal_icb {
-    id<MTLIndirectCommandBuffer> obj;
-};
-
-bool ggml_metal_device_supports_compute_icb(ggml_metal_device_t dev) {
-    GGML_UNUSED(dev);
-
-    if (@available(macOS 11.0, iOS 13.0, tvOS 14.0, visionOS 1.0, *)) {
-        return true;
-    }
-
-    return false;
-}
-
-ggml_metal_icb_t ggml_metal_icb_compute_init(
-        ggml_metal_device_t dev,
-        size_t max_command_count,
-        size_t max_kernel_buffer_bind_count) {
-    if (dev == NULL || max_command_count == 0) {
-        return NULL;
-    }
-
-    if (!ggml_metal_device_supports_compute_icb(dev)) {
-        return NULL;
-    }
-
-    ggml_metal_icb_t res = calloc(1, sizeof(struct ggml_metal_icb));
-    if (res == NULL) {
-        return NULL;
-    }
-
-    if (@available(macOS 11.0, iOS 13.0, tvOS 14.0, visionOS 1.0, *)) {
-        id<MTLDevice> device = (id<MTLDevice>) ggml_metal_device_get_obj(dev);
-        MTLIndirectCommandBufferDescriptor * desc = [[MTLIndirectCommandBufferDescriptor alloc] init];
-        desc.commandTypes = MTLIndirectCommandTypeConcurrentDispatch;
-        desc.inheritPipelineState = YES;
-        desc.inheritBuffers = NO;
-        desc.maxKernelBufferBindCount = max_kernel_buffer_bind_count;
-
-        if (@available(macOS 14.0, iOS 17.0, tvOS 17.0, visionOS 1.0, *)) {
-            desc.maxKernelThreadgroupMemoryBindCount = 1;
-        }
-
-        res->obj = [device newIndirectCommandBufferWithDescriptor:desc
-                                                  maxCommandCount:max_command_count
-                                                          options:MTLResourceStorageModeShared];
-        [desc release];
-    }
-
-    if (res->obj == nil) {
-        free(res);
-        return NULL;
-    }
-
-    return res;
-}
-
-void ggml_metal_icb_free(ggml_metal_icb_t icb) {
-    if (icb == NULL) {
-        return;
-    }
-
-    [icb->obj release];
-    free(icb);
-}
-
-bool ggml_metal_icb_encode_compute_dispatch(
-        ggml_metal_icb_t icb,
-        size_t command_index,
-        struct ggml_metal_pipeline_with_params pipeline,
-        struct ggml_metal_buffer_id args,
-        struct ggml_metal_buffer_id src0,
-        struct ggml_metal_buffer_id src1,
-        struct ggml_metal_buffer_id dst,
-        size_t threadgroup_memory_size,
-        int tg0,
-        int tg1,
-        int tg2,
-        int tptg0,
-        int tptg1,
-        int tptg2) {
-    if (icb == NULL || icb->obj == nil || pipeline.pipeline == NULL || pipeline.pipeline->obj == nil) {
-        return false;
-    }
-
-    if (args.metal == nil || src0.metal == nil || src1.metal == nil || dst.metal == nil) {
-        return false;
-    }
-
-    if (@available(macOS 11.0, iOS 13.0, tvOS 14.0, visionOS 1.0, *)) {
-        id<MTLIndirectComputeCommand> cmd = [icb->obj indirectComputeCommandAtIndex:command_index];
-        [cmd reset];
-        [cmd setKernelBuffer:(id<MTLBuffer>) args.metal offset:args.offs atIndex:0];
-        [cmd setKernelBuffer:(id<MTLBuffer>) src0.metal offset:src0.offs atIndex:1];
-        [cmd setKernelBuffer:(id<MTLBuffer>) src1.metal offset:src1.offs atIndex:2];
-        [cmd setKernelBuffer:(id<MTLBuffer>) dst.metal  offset:dst.offs  atIndex:3];
-        [cmd setThreadgroupMemoryLength:threadgroup_memory_size atIndex:0];
-
-        [cmd concurrentDispatchThreadgroups:MTLSizeMake(tg0, tg1, tg2)
-                      threadsPerThreadgroup:MTLSizeMake(tptg0, tptg1, tptg2)];
-        return true;
-    }
-
-    return false;
-}
-
-bool ggml_metal_encoder_execute_icb(ggml_metal_encoder_t encoder, ggml_metal_icb_t icb, size_t n_commands) {
-    if (encoder == NULL || icb == NULL || icb->obj == nil || n_commands == 0) {
-        return false;
-    }
-
-    if (@available(macOS 11.0, iOS 13.0, tvOS 14.0, visionOS 1.0, *)) {
-        [encoder->obj executeCommandsInBuffer:icb->obj withRange:NSMakeRange(0, n_commands)];
-        return true;
-    }
-
-    return false;
 }
 
 struct ggml_metal_device {
@@ -1302,7 +955,8 @@ ggml_metal_device_t ggml_metal_device_init(int device) {
             {
                 for (int i = MTLGPUFamilyApple1 + 20; i >= MTLGPUFamilyApple1; --i) {
                     if ([dev->mtl_device supportsFamily:i]) {
-                        GGML_LOG_INFO("%s: GPU family: MTLGPUFamilyApple%d  (%d)\n", __func__, i - (int) MTLGPUFamilyApple1 + 1, i);
+                        dev->props.gpu_family = i - (int) MTLGPUFamilyApple1 + 1;
+                        GGML_LOG_INFO("%s: GPU family: MTLGPUFamilyApple%d  (%d)\n", __func__, dev->props.gpu_family, i);
                         break;
                     }
                 }
@@ -1531,32 +1185,6 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
     const bool has_simdgroup_mm        = dev->props.has_simdgroup_mm;
     const bool has_simdgroup_reduction = dev->props.has_simdgroup_reduction;
     const bool has_bfloat              = dev->props.has_bfloat;
-    const bool flash_moe_routed        = ggml_metal_flash_moe_op_is_routed(op);
-    const bool flash_moe_routed_post   = ggml_metal_flash_moe_op_is_routed_post(op);
-    const bool flash_moe_shared        = ggml_metal_flash_moe_op_is_shared(op);
-    const bool flash_moe_isolation_eligible = op->op != GGML_OP_NONE && (flash_moe_routed || flash_moe_shared);
-
-    if (flash_moe_isolation_eligible && ggml_metal_flash_moe_disable_routed_enabled() && flash_moe_routed) {
-        return false;
-    }
-
-    if (flash_moe_isolation_eligible && ggml_metal_flash_moe_routed_only_enabled() && !flash_moe_routed) {
-        return false;
-    }
-
-    if (flash_moe_isolation_eligible && ggml_metal_flash_moe_disable_routed_post_enabled() && flash_moe_routed_post) {
-        return false;
-    }
-
-    if (flash_moe_isolation_eligible && flash_moe_routed &&
-        ggml_metal_flash_moe_op_matches_type_filter(op, ggml_metal_flash_moe_disable_routed_types_env())) {
-        return false;
-    }
-
-    if (flash_moe_isolation_eligible && flash_moe_shared &&
-        ggml_metal_flash_moe_op_matches_type_filter(op, ggml_metal_flash_moe_disable_shared_types_env())) {
-        return false;
-    }
 
     if (!has_bfloat) {
         if (op->type == GGML_TYPE_BF16) {
@@ -1796,57 +1424,53 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_GATED_DELTA_NET:
             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
         case GGML_OP_SOLVE_TRI:
-        case GGML_OP_MUL_MAT:
-            if (ggml_metal_experimental_env_enabled("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_OP_MUL_MAT")) {
-                return false;
-            }
             return has_simdgroup_reduction && op->src[0]->type != GGML_TYPE_NVFP4;
-        case GGML_OP_MUL_MAT_F16:
-            if (ggml_metal_experimental_env_enabled("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_OP_MUL_MAT")) {
-                return false;
-            }
-            return has_simdgroup_reduction &&
-                   has_simdgroup_mm &&
-                   op->type == GGML_TYPE_F16 &&
-                   op->src[0]->type != GGML_TYPE_NVFP4 &&
-                   op->src[1]->type == GGML_TYPE_F32 &&
-                   op->src[1]->ne[1] > 8;
-        case GGML_OP_FLASHMOE_SPLIT_GLU: {
-            if (ggml_metal_experimental_env_enabled("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_DISABLE_OP_MUL_MAT")) {
-                return false;
-            }
+        case GGML_OP_MUL_MAT:
+            {
+                if (!has_simdgroup_reduction || op->src[0]->type == GGML_TYPE_NVFP4) {
+                    return false;
+                }
 
-            const int32_t glu_op = ggml_get_op_params_i32(op, 0);
-            if (glu_op != GGML_GLU_OP_SWIGLU && glu_op != GGML_GLU_OP_GEGLU) {
-                return false;
-            }
+                // the mat-vec kernels only have an f16 x f16 variant when src0 is F16;
+                // for BF16 there is no f16-src1 kernel at all (mat-mat included), and for
+                // F32/quantized src0 there is no kernel_mul_mv_<type>_f16 (only _f32), so
+                // those shapes must take the mat-mat path instead, which does have full
+                // f16 coverage (see ggml_metal_op_mul_mat for the matching dispatch logic)
+                if (op->src[1]->type == GGML_TYPE_F16 && op->src[0]->type != GGML_TYPE_F16) {
+                    if (op->src[0]->type == GGML_TYPE_BF16) {
+                        return false;
+                    }
 
-            return has_simdgroup_reduction &&
-                   has_simdgroup_mm &&
-                   dev->props.has_tensor &&
-                   op->type == GGML_TYPE_F32 &&
-                   op->src[0] != NULL &&
-                   op->src[1] != NULL &&
-                   op->src[2] != NULL &&
-                   op->src[3] != NULL &&
-                   op->src[3]->type == GGML_TYPE_F32 &&
-                   op->src[3]->ne[1] > 8 &&
-                   op->src[3]->ne[2] == 1 &&
-                   op->src[3]->ne[3] == 1 &&
-                   op->ne[2] == 1 &&
-                   op->ne[3] == 1 &&
-                   ggml_is_contiguous_1(op->src[3]) &&
-                   ggml_is_contiguous_1(op) &&
-                   op->src[0]->type == op->src[1]->type &&
-                   (op->src[0]->type == GGML_TYPE_Q4_K ||
-                    op->src[0]->type == GGML_TYPE_Q5_K ||
-                    op->src[0]->type == GGML_TYPE_Q6_K) &&
-                   (op->src[2]->type == GGML_TYPE_Q4_K ||
-                    op->src[2]->type == GGML_TYPE_Q5_K ||
-                    op->src[2]->type == GGML_TYPE_Q6_K);
-        }
+                    return !ggml_is_transposed(op->src[0]) &&
+                           !ggml_is_transposed(op->src[1]) &&
+                           has_simdgroup_mm &&
+                           op->src[0]->ne[0] >= 64 &&
+                           op->src[1]->ne[1] > 8;
+                }
+
+                return true;
+            }
         case GGML_OP_MUL_MAT_ID:
-            return has_simdgroup_reduction;
+            {
+                if (!has_simdgroup_reduction || op->src[0]->type == GGML_TYPE_NVFP4) {
+                    return false;
+                }
+
+                // the mat-vec-id kernels have no f16-src1 variant for any src0 type (only
+                // f32); f16 src1 is only supported via the mat-mat-id path, and even that
+                // path has no f16-src1 kernel for BF16 src0
+                if (op->src[1]->type == GGML_TYPE_F16) {
+                    if (op->src[0]->type == GGML_TYPE_BF16) {
+                        return false;
+                    }
+
+                    return has_simdgroup_mm &&
+                           op->src[0]->ne[0] >= 64 &&
+                           op->src[2]->ne[1] >= 32;
+                }
+
+                return true;
+            }
         case GGML_OP_SET:
         case GGML_OP_CPY:
         case GGML_OP_DUP:
@@ -1903,12 +1527,6 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                             default:
                                 return false;
                         }
-                    case GGML_TYPE_Q2_K:
-                    case GGML_TYPE_Q3_K:
-                    case GGML_TYPE_Q4_K:
-                    case GGML_TYPE_Q5_K:
-                    case GGML_TYPE_Q6_K:
-                        return op->type == GGML_TYPE_F16;
                     case GGML_TYPE_I32:
                         return op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_I32;
                     default:
@@ -1919,7 +1537,11 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
             return true;
         case GGML_OP_SET_ROWS:
             {
-                if (op->src[0]->type != GGML_TYPE_F32 && op->src[0]->type != GGML_TYPE_F16) {
+                if (op->src[0]->type == GGML_TYPE_F16) {
+                    return op->type == GGML_TYPE_F16;
+                }
+
+                if (op->src[0]->type != GGML_TYPE_F32) {
                     return false;
                 }
 
@@ -1934,6 +1556,10 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_E8_2:
+                    case GGML_TYPE_TBQ3_0:
+                    case GGML_TYPE_TBQ4_0:
+                    case GGML_TYPE_QJL1_256:
+                        // ELIZA-TBQ-SET-ROWS-V1 / ELIZA-QJL-SET-ROWS-V1
                         return true;
                     default:
                         return false;

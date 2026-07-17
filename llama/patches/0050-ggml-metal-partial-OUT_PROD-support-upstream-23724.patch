@@ -19,7 +19,7 @@ so OUT_PROD stays on GPU instead of CPU fallback.
  7 files changed, 301 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index 8c14115b0..b0972ebcf 100644
+index 8c14115b..b0972ebc 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
 @@ -2254,3 +2254,26 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_count_equal(ggml
@@ -50,7 +50,7 @@ index 8c14115b0..b0972ebcf 100644
 +    return res;
 +}
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 00027e78d..cdae96c50 100644
+index 00027e78..cdae96c5 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -167,6 +167,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_opt_step_
@@ -62,7 +62,7 @@ index 00027e78d..cdae96c50 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_pad(
          ggml_metal_library_t lib,
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 43d3c4722..b4dafddab 100644
+index fa7b8b17..e4d2d367 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -1220,6 +1220,15 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
@@ -82,7 +82,7 @@ index 43d3c4722..b4dafddab 100644
              return ggml_is_contiguous_rows(op->src[0]);
          case GGML_OP_SUM_ROWS:
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 254aef858..63a0e785c 100644
+index 254aef85..63a0e785 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
 @@ -956,6 +956,33 @@ typedef struct {
@@ -120,10 +120,10 @@ index 254aef858..63a0e785c 100644
      int32_t  ne00;
      int32_t  ne01;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 3131ea35a..fdbd9f1cc 100644
+index 079913f6..7dd43e16 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -538,6 +538,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -490,6 +490,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
              {
                  n_fuse = ggml_metal_op_count_equal(ctx, idx);
              } break;
@@ -134,7 +134,7 @@ index 3131ea35a..fdbd9f1cc 100644
          default:
              {
                  GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));
-@@ -5142,3 +5146,64 @@ int ggml_metal_op_count_equal(ggml_metal_op_t ctx, int idx) {
+@@ -5145,3 +5149,64 @@ int ggml_metal_op_count_equal(ggml_metal_op_t ctx, int idx) {
  
      return 1;
  }
@@ -200,7 +200,7 @@ index 3131ea35a..fdbd9f1cc 100644
 +    return 1;
 +}
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index c3ffaa2e3..de6a15006 100644
+index c3ffaa2e..de6a1500 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
 @@ -97,6 +97,7 @@ int ggml_metal_op_tri               (ggml_metal_op_t ctx, int idx);
@@ -212,10 +212,10 @@ index c3ffaa2e3..de6a15006 100644
  #ifdef __cplusplus
  }
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 8e145b8ee..b9e12cec6 100644
+index c0f77b63..9e8b89b9 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -6116,6 +6116,181 @@ kernel void kernel_roll_f32(
+@@ -6113,6 +6113,181 @@ kernel void kernel_roll_f32(
      }
  }
  

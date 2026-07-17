@@ -3,8 +3,6 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
-#include <cstdlib>
-#include <cstring>
 #include <vector>
 
 // represents a memory range (i.e. an interval from a starting address p0 to an ending address p1 in a given buffer pb)
@@ -209,43 +207,6 @@ struct node_info {
 };
 
 static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node_info> & nodes) {
-    const auto & split_glu_contiguous_enabled = []() {
-        static int enabled = -1;
-        if (enabled == -1) {
-            const char * value = getenv("LLAMA_FLASH_MOE_EXPERIMENTAL_METAL_SPLIT_GLU");
-            enabled = (value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
-        }
-        return enabled == 1;
-    };
-
-    const auto & wants_routed_glu_contiguous = [&](const node_info & node0, const node_info & node1) {
-        if (!split_glu_contiguous_enabled()) {
-            return false;
-        }
-
-        const ggml_tensor * t0 = node0.node;
-        const ggml_tensor * t1 = node1.node;
-        if (t0 == nullptr || t1 == nullptr || t0->name[0] == '\0' || t1->name[0] == '\0') {
-            return false;
-        }
-
-        const bool routed_head =
-                strstr(t0->name, "ffn_moe_gate-") != nullptr ||
-                strstr(t0->name, "ffn_moe_up-") != nullptr;
-        if (!routed_head) {
-            return false;
-        }
-
-        const bool shared_path =
-                strstr(t1->name, "ffn_gate-") != nullptr ||
-                strstr(t1->name, "ffn_up-") != nullptr ||
-                strstr(t1->name, "shared_expert_gate-") != nullptr ||
-                strstr(t1->name, "ffn_swiglu-") != nullptr ||
-                strstr(t1->name, "ffn_shexp") != nullptr;
-
-        return shared_path;
-    };
-
     // helper to add node src and dst ranges
     const auto & h_add = [](ggml_mem_ranges_t mrs, const node_info & node) {
         for (int i = 0; i < GGML_MAX_SRC; i++) {
@@ -298,8 +259,6 @@ static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node
     const auto & h_safe = [](ggml_op op) {
         switch (op) {
             case GGML_OP_MUL_MAT:
-            case GGML_OP_MUL_MAT_F16:
-            case GGML_OP_FLASHMOE_SPLIT_GLU:
             case GGML_OP_MUL_MAT_ID:
             case GGML_OP_ROPE:
             case GGML_OP_NORM:
@@ -375,10 +334,6 @@ static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node
 
                 // disallow reordering of certain ops
                 if (!h_safe(node1.op())) {
-                    break;
-                }
-
-                if (wants_routed_glu_contiguous(node0, node1)) {
                     break;
                 }
 

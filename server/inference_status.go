@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/ollama/ollama/api"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
@@ -30,6 +31,12 @@ func (s *Server) inferenceStatus(ctx context.Context) api.InferenceStatus {
 		ggml.LoadedModels = snap.LoadedModels
 		ggml.LoadedModelDetails = snap.LoadedModelDetails
 	}
+	if s != nil {
+		ggml.AssignHolds = s.ensureAssignHolds().ActiveCount(time.Now())
+		// Soft holds count toward fleet queue_depth via AssignHolds; also fold into
+		// Pending so older pollers that only sum pending+active still see pressure.
+		ggml.Pending += ggml.AssignHolds
+	}
 
 	training := &api.TrainingStatus{
 		QueuePolicy: trainingQueuePolicy(s),
@@ -56,6 +63,7 @@ func runtimeStatusFromHealth(ctx context.Context, enabled bool) api.RuntimeStatu
 	runtime.Running = intPtr(h.running)
 	runtime.LlamaLoaded = boolPtr(h.llamaLoaded)
 	runtime.State = h.state
+	runtime.Radix = h.radix
 	return runtime
 }
 

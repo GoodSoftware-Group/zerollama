@@ -68,6 +68,10 @@ func New(c fs.Config) (model.Model, error) {
 }
 
 func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input.Multimodal, error) {
+	return m.EncodeMultimodalWithGrid(ctx, multimodalData, nil)
+}
+
+func (m *Model) EncodeMultimodalWithGrid(ctx ml.Context, multimodalData []byte, gridTHW []int) ([]input.Multimodal, error) {
 	if len(m.VisionModel.Blocks) == 0 {
 		return nil, model.ErrNoVisionModel
 	}
@@ -77,7 +81,7 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 		return nil, err
 	}
 
-	f32s, grid, err := m.ImageProcessor.ProcessImage(img)
+	f32s, grid, err := m.ImageProcessor.ProcessImage(img, gridTHW)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +109,8 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 
 	return []input.Multimodal{{Tensor: visionOutputs, Data: grid}}, nil
 }
+
+var _ model.GridHintMultimodalProcessor = (*Model)(nil)
 
 func (m *Model) PostTokenize(inputs []*input.Input) ([]*input.Input, error) {
 	var result []*input.Input

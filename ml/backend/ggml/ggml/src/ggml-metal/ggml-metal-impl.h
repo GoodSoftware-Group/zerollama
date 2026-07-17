@@ -112,10 +112,6 @@
 #define FC_GATED_DELTA_NET             1600
 #define FC_PAD_REFLECT_1D              1700
 
-#define GGML_METAL_MUL_MM_WALK_LEGACY  0
-#define GGML_METAL_MUL_MM_WALK_REGULAR 1
-#define GGML_METAL_MUL_MM_WALK_MORTON  2
-
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
 #define OP_FLASH_ATTN_EXT_NQPSG_16 16
@@ -482,18 +478,6 @@ typedef struct {
 } ggml_metal_kargs_mul_mm;
 
 typedef struct {
-    int32_t  n_embd_in;
-    int32_t  n_ff;
-    int32_t  n_tokens;
-    int32_t  n_out;
-    uint64_t gate_nb01;
-    uint64_t up_nb01;
-    uint64_t down_nb01;
-    uint64_t in_nb1;
-    uint64_t out_nb1;
-} ggml_metal_kargs_flashmoe_split_mlp;
-
-typedef struct {
     int32_t  ne00;
     int32_t  ne01;
     int32_t  ne02;
@@ -513,9 +497,6 @@ typedef struct {
     int32_t  nr0;
     int16_t  r2;
     int16_t  r3;
-    uint64_t src0_byte_off;
-    uint64_t src1_byte_off;
-    uint64_t dst_byte_off;
 } ggml_metal_kargs_mul_mv;
 
 typedef struct {
@@ -998,6 +979,7 @@ typedef struct {
     int32_t  ns02;
     int32_t  ns12;
     int32_t  ns22;
+    int32_t  state_out_stride; // stride between snapshot slots in the state_out buffer
     int32_t  ne0;
     int32_t  ne1;
     int32_t  ne2;

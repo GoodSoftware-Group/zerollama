@@ -84,50 +84,12 @@ void ggml_metal_encoder_set_bytes (ggml_metal_encoder_t encoder, void * data, si
 void ggml_metal_encoder_set_buffer(ggml_metal_encoder_t encoder, struct ggml_metal_buffer_id buffer, int idx);
 
 void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder, size_t size, int idx);
-void ggml_metal_encoder_use_resource(ggml_metal_encoder_t encoder, struct ggml_metal_buffer_id buffer, uint32_t usage);
 
 void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2);
 
 void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder);
 
 void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder);
-
-// Flash-MoE (M16 port): indirect command buffer support, used by the mul_mat_id
-// decode-replay cache in ggml-metal-ops.cpp (routed-expert MoE decode fast path).
-typedef struct ggml_metal_owned_buffer * ggml_metal_owned_buffer_t;
-
-ggml_metal_owned_buffer_t ggml_metal_owned_buffer_init(ggml_metal_device_t dev, const void * data, size_t size);
-void ggml_metal_owned_buffer_free(ggml_metal_owned_buffer_t buffer);
-
-struct ggml_metal_buffer_id ggml_metal_owned_buffer_get_id(ggml_metal_owned_buffer_t buffer);
-
-typedef struct ggml_metal_icb * ggml_metal_icb_t;
-
-bool ggml_metal_device_supports_compute_icb(ggml_metal_device_t dev);
-
-ggml_metal_icb_t ggml_metal_icb_compute_init(
-        ggml_metal_device_t dev,
-        size_t max_command_count,
-        size_t max_kernel_buffer_bind_count);
-void ggml_metal_icb_free(ggml_metal_icb_t icb);
-
-bool ggml_metal_icb_encode_compute_dispatch(
-        ggml_metal_icb_t icb,
-        size_t command_index,
-        struct ggml_metal_pipeline_with_params pipeline,
-        struct ggml_metal_buffer_id args,
-        struct ggml_metal_buffer_id src0,
-        struct ggml_metal_buffer_id src1,
-        struct ggml_metal_buffer_id dst,
-        size_t threadgroup_memory_size,
-        int tg0,
-        int tg1,
-        int tg2,
-        int tptg0,
-        int tptg1,
-        int tptg2);
-
-bool ggml_metal_encoder_execute_icb(ggml_metal_encoder_t encoder, ggml_metal_icb_t icb, size_t n_commands);
 
 //
 // MTLLibrary wrapper
@@ -157,7 +119,6 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_repeat   
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_concat            (ggml_metal_library_t lib, enum ggml_type tsrc);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary             (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_glu               (ggml_metal_library_t lib, const struct ggml_tensor * op);
-struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_glu_scaled        (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_sum               (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_sum_rows          (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cumsum_blk        (ggml_metal_library_t lib, const struct ggml_tensor * op);
@@ -172,18 +133,11 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla      
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net   (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
-// use_m5_expert: Flash-MoE (M16 port) M5-tensor-core fast path for routed-expert prefill
-// matmuls. Inert unless props_dev->has_tensor && device name contains "M5" (see
-// ggml_metal_mul_mat_use_m5_expert_pipeline in ggml-metal-ops.cpp) — no effect on non-M5
-// hardware or non-Flash-MoE tensors.
-struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm            (ggml_metal_library_t lib, const struct ggml_tensor * op, bool use_m5_expert);
-// Flash-MoE (M16 port): fused dequant+GEMM+SwiGLU/GeGLU for routed-expert MLP. Metal-tensor-API only.
-struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flashmoe_split_glu(ggml_metal_library_t lib, const struct ggml_tensor * op);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0    (ggml_metal_library_t lib, int ne02, int ne20);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id         (ggml_metal_library_t lib, const struct ggml_tensor * op);
-struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_pair       (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argmax            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort           (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort_merge     (ggml_metal_library_t lib, const struct ggml_tensor * op);
@@ -251,6 +205,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att
         bool    has_bias,
         bool    has_scap,
         bool    has_kvpad,
+        int32_t nqpsg,
+        int32_t ne,
         int32_t nsg,
         int32_t nwg,
         int32_t nhptg,
@@ -320,6 +276,7 @@ struct ggml_metal_device_props {
     bool supports_gpu_family_apple7;
 
     enum ggml_metal_device_id device_id;
+    int gpu_family;
 
     int op_offload_min_batch_size;
 };

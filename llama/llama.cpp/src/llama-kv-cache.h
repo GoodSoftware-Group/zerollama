@@ -282,8 +282,37 @@ private:
 
     llama_kv_cache * other = nullptr;
 
+    // Shared cell metadata (draft/target or multi-owner). COW fork replaces the
+    // shared_ptr and rebinds v_cells so writers never mutate a sibling's vector.
     std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
-    llama_kv_cells_vec & v_cells;
+    llama_kv_cells_vec * v_cells = nullptr; // always == v_cells_impl.get()
+
+    // True when any layer k/v tensor pointer aliases `other` (Gemma4 share cb).
+    // Cleared after ensure_unique_tensors deep-copies private K/V buffers.
+    bool layers_aliased = false;
+
+    struct cell_ranges_t {
+        uint32_t strm;
+        std::vector<std::pair<uint32_t, uint32_t>> data; // ranges, from inclusive, to exclusive
+    };
+
+    // L3-R6b: fork cell vector (+ optional tensors / used-cell pages) before mutate.
+    // Env: ZEROLLAMA_KV_COW, ZEROLLAMA_KV_COW_TENSORS, ZEROLLAMA_KV_COW_PAGES.
+    bool ensure_unique_cells(const char * reason);
+    bool ensure_unique_tensors(const char * reason);
+    bool layer_tensor_owned(const ggml_tensor * t) const;
+    cell_ranges_t build_used_cell_ranges(uint32_t strm) const;
+    size_t copy_tensor_cell_ranges(
+            const ggml_tensor * src,
+                  ggml_tensor * dst,
+            const cell_ranges_t & cr,
+            bool is_v) const;
+    static bool kv_cow_enabled();
+    static bool kv_cow_tensors_enabled();
+    static bool kv_cow_pages_enabled();
+    uint64_t cow_forks_total = 0;
+    uint64_t cow_tensor_forks_total = 0;
+    uint64_t cow_pages_bytes_copied = 0;
 
     // maps from a sequence id to a stream id
     std::vector<uint32_t> seq_to_stream;
@@ -333,12 +362,6 @@ private:
     ggml_cgraph * build_graph_shift(
                llm_graph_result * res,
                   llama_context * lctx) const;
-
-    struct cell_ranges_t {
-        uint32_t strm;
-
-        std::vector<std::pair<uint32_t, uint32_t>> data; // ranges, from inclusive, to exclusive
-    };
 
     void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;

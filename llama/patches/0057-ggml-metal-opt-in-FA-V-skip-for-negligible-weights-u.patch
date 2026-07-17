@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 12 Jul 2026 14:34:39 -0700
+Subject: [PATCH] ggml-metal: opt-in FA V-skip for negligible weights (upstream
+ #21119)
+
+Enable with GGML_METAL_FA_SKIP_V=1. Skips V dequant/accumulation when all
+heads' post-softmax weights in a chunk are below 1e-6.
+---
+ ggml/src/ggml-metal/ggml-metal-device.m | 10 ++++++++++
+ ggml/src/ggml-metal/ggml-metal.metal    | 21 +++++++++++++++++++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index dbbd9cd0..f2c04408 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -227,6 +227,16 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+                 [prep setObject:@"1" forKey:@"GGML_METAL_EMBED_LIBRARY"];
+ #endif
+ 
++                // opt-in Metal flash-attention optimization
++                // enable with GGML_METAL_FA_SKIP_V=1
++                {
++                    const char * env = getenv("GGML_METAL_FA_SKIP_V");
++                    if (env && env[0] == '1') {
++                        [prep setObject:@"1" forKey:@"GGML_METAL_FA_SKIP_V"];
++                        GGML_LOG_INFO("%s: GGML_METAL_FA_SKIP_V enabled\n", __func__);
++                    }
++                }
++
+                 MTLCompileOptions * options = [MTLCompileOptions new];
+                 options.preprocessorMacros = prep;
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index a6bbe480..ccb5e763 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -8028,6 +8028,16 @@ kernel void kernel_flash_attn_ext_vec(
+                     pv4 += ty*NS20/4 + tx;
+ 
+                     FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
++#if GGML_METAL_FA_SKIP_V
++                        {
++                            float attn_max = 0.0f;
++                            FOR_UNROLL (short ih = 0; ih < H; ++ih) {
++                                threadgroup s_t * ssh = ss + (sgitg*H + ih)*(SH/2);
++                                attn_max = max(attn_max, float(ssh[NE*cc + ty]));
++                            }
++                            if (attn_max < 1e-6f) continue;
++                        }
++#endif
+                         FOR_UNROLL (short ii = 0; ii < DV4/NL; ++ii) {
+                             const v4_t mv = pv4[cc*NE*NS20/4 + ii*NL];
+ 
+@@ -8039,6 +8049,17 @@ kernel void kernel_flash_attn_ext_vec(
+                     }
+                 } else {
+                     FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
++#if GGML_METAL_FA_SKIP_V
++                        // skip V dequant / accumulation when all heads' post-softmax weights are negligible
++                        {
++                            float attn_max = 0.0f;
++                            FOR_UNROLL (short ih = 0; ih < H; ++ih) {
++                                threadgroup s_t * ssh = ss + (sgitg*H + ih)*(SH/2);
++                                attn_max = max(attn_max, float(ssh[NE*cc + ty]));
++                            }
++                            if (attn_max < 1e-6f) continue;
++                        }
++#endif
+                         device const vd4_t * pv4 = (device const vd4_t *) (v + ((ic + NE*cc + ty)*args.nb21));
+ 
+                         FOR_UNROLL (short ii = 0; ii < DV4/NL; ++ii) {

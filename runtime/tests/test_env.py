@@ -81,9 +81,91 @@ def test_env_tri_state():
 
 def test_l3_yaml_radix_without_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ZEROLLAMA_RADIX_PREFIX_SHARE", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_UNIFIED", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_UNIFIED_WITH_RADIX", raising=False)
+    from runtime.env import kv_unified_enabled, kv_unified_source, reset_runtime_env_for_tests
+
+    reset_runtime_env_for_tests()
     configure_l3_settings({"radix_share": True, "block_size": 128})
     assert radix_prefix_share_enabled() is True
     assert prefix_cache_block_size() == 128
+    # v58: radix YAML couples unified by default
+    assert kv_unified_enabled() is True
+    assert kv_unified_source() == "radix_couple"
+
+
+def test_l3_yaml_kv_unified_without_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_KV_UNIFIED", raising=False)
+    from runtime.env import kv_unified_enabled, reset_runtime_env_for_tests
+
+    reset_runtime_env_for_tests()
+    configure_l3_settings({"kv_unified": True})
+    assert kv_unified_enabled() is True
+
+
+def test_l3_yaml_kv_unified_env_wins(monkeypatch: pytest.MonkeyPatch):
+    from runtime.env import kv_unified_enabled, reset_runtime_env_for_tests
+
+    reset_runtime_env_for_tests()
+    configure_l3_settings({"kv_unified": True})
+    monkeypatch.setenv("ZEROLLAMA_KV_UNIFIED", "0")
+    assert kv_unified_enabled() is False
+    monkeypatch.setenv("ZEROLLAMA_KV_UNIFIED", "1")
+    configure_l3_settings({"kv_unified": False})
+    assert kv_unified_enabled() is True
+
+
+def test_l3_yaml_kv_cow_syncs_environ(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_KV_COW", raising=False)
+    from runtime.env import kv_cow_enabled, kv_cow_source, reset_runtime_env_for_tests
+    import os
+
+    reset_runtime_env_for_tests()
+    configure_l3_settings({"kv_cow": True})
+    assert kv_cow_enabled() is True
+    assert kv_cow_source() == "yaml"
+    assert os.environ.get("ZEROLLAMA_KV_COW") == "1"
+
+
+def test_l3_yaml_kv_cow_env_kill_switch(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_KV_COW", "0")
+    from runtime.env import kv_cow_enabled, reset_runtime_env_for_tests
+
+    reset_runtime_env_for_tests()
+    configure_l3_settings({"kv_cow": True})
+    assert kv_cow_enabled() is False
+
+
+def test_l3_yaml_kv_cow_tensors_sync(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_KV_COW", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_COW_TENSORS", raising=False)
+    from runtime.env import (
+        kv_cow_enabled,
+        kv_cow_tensors_enabled,
+        reset_runtime_env_for_tests,
+    )
+    import os
+
+    reset_runtime_env_for_tests()
+    configure_l3_settings({"kv_cow": True, "kv_cow_tensors": True})
+    assert kv_cow_enabled() is True
+    assert kv_cow_tensors_enabled() is True
+    assert os.environ.get("ZEROLLAMA_KV_COW_TENSORS") == "1"
+
+
+def test_l3_yaml_kv_cow_pages_sync(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_KV_COW", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_COW_TENSORS", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_KV_COW_PAGES", raising=False)
+    from runtime.env import kv_cow_pages_enabled, reset_runtime_env_for_tests
+    import os
+
+    reset_runtime_env_for_tests()
+    configure_l3_settings({"kv_cow_pages": True})
+    assert kv_cow_pages_enabled() is True
+    assert os.environ.get("ZEROLLAMA_KV_COW_PAGES") == "1"
+    assert os.environ.get("ZEROLLAMA_KV_COW_TENSORS") == "1"
+    assert os.environ.get("ZEROLLAMA_KV_COW") == "1"
 
 
 def test_l3_profile_resolves_config(monkeypatch: pytest.MonkeyPatch):

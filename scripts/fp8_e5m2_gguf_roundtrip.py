@@ -4,7 +4,7 @@
 WHY: E5M2 twin of fp8_e4m3_gguf_roundtrip.py — same pack/layout, different IEEE codec.
 
 Usage:
-  PYTHONPATH=vendor/llama-cpp-8f114a9b/gguf-py python3 scripts/fp8_e5m2_gguf_roundtrip.py
+  PYTHONPATH=vendor/llama-cpp-86d86ed4/gguf-py python3 scripts/fp8_e5m2_gguf_roundtrip.py
 """
 from __future__ import annotations
 

@@ -51,10 +51,12 @@ func useLlamaServerBackend(projectors []string) bool {
 
 // useLlamaServerBackendForModel decides engine routing for one model load.
 //
-// Explicit: ZEROLLAMA_LLAMA_SERVER=1 or --llama-server-backend — all GGUF.
-// Linux auto: all GGUF when llama-server is discoverable.
+// Explicit: ZEROLLAMA_LLAMA_SERVER=1 or --llama-server-backend — all GGUF (incl. vision).
+// Linux auto: plain-text GGUF when llama-server is discoverable.
+// Vision (mmproj): ggml llamarunner / ollama-engine unless explicit opt-in —
+// why: llama-server multimodal_data is base64 rasters only; SGLang
+// precomputed_embedding (skip-ViT) and processor_output need llamarunner/ollama-engine.
 // Darwin spec auto: speculative tags only (plain GGUF keeps ggml Metal default).
-// Vision split mmproj on Darwin still requires explicit opt-in (Linux auto includes vision).
 func useLlamaServerBackendForModel(projectors []string, config LlamaServerConfig) bool {
 	return useLlamaServerBackendForModelGOOS(runtime.GOOS, projectors, LlamaServerDiscoverable(), config)
 }
@@ -66,7 +68,10 @@ func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discove
 	if envconfig.LlamaServerBackendExplicit() {
 		return true
 	}
-	if len(projectors) > 0 && goos != "linux" {
+	// Split mmproj / vision GGUF: stay on ggml unless operator explicitly opted into
+	// llama-server (Phase 17 vision smoke / upstream parity). Linux auto used to send
+	// vision through llama-server too — that blocked skip-ViT for SGLang clients.
+	if len(projectors) > 0 {
 		return false
 	}
 	if ModelNeedsLlamaServerSpec(config) && discoverable {
@@ -87,8 +92,7 @@ func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discove
 	if !discoverable {
 		return false
 	}
-	_ = projectors
-	slog.Debug("Phase 17: routing GGUF through llama-server (Linux auto-default)")
+	slog.Debug("Phase 17: routing plain-text GGUF through llama-server (Linux auto-default)")
 	return true
 }
 

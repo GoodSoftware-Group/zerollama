@@ -5,8 +5,8 @@
 
 // CGO has no CMake configure step; Makefile.sync / sync_vendor_llama.sh substitute
 // placeholders from Makefile.sync FETCH_HEAD (e.g. b9672 → BUILD_NUMBER 9672).
-int LLAMA_BUILD_NUMBER = 9952;
-char const * LLAMA_COMMIT = "8f114a9b";
+int LLAMA_BUILD_NUMBER = 10065;
+char const * LLAMA_COMMIT = "86d86ed4";
 char const * LLAMA_COMPILER = "";
 char const * LLAMA_BUILD_TARGET = "";
 

@@ -10,7 +10,7 @@ implementation used by Phase 15 / hybrid memory.
  1 file changed, 11 insertions(+), 2 deletions(-)
 
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index a6a88304d..ac72812bd 100644
+index a6a88304..ac72812b 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -5,6 +5,7 @@

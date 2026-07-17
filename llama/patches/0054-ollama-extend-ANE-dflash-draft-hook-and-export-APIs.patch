@@ -1,13 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: zerollama <zerollama@local>
-Date: Sun, 12 Jul 2026 11:55:26 -0700
+From: nobody <>
+Date: Fri, 17 Jul 2026 09:49:18 -0700
 Subject: [PATCH] ollama: extend ANE dflash draft hook and export APIs
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Add pre-norm/dflash export surfaces and draft-hook session wiring needed
-for in-process ANE speculative lab beyond the B1–B7 baseline patch.
 ---
  common/ane_draft_hook.cpp   | 369 ++++++++++++++++++++++++++++++++++--
  common/ane_draft_hook.h     |  14 ++
@@ -18,7 +13,7 @@ for in-process ANE speculative lab beyond the B1–B7 baseline patch.
  6 files changed, 578 insertions(+), 35 deletions(-)
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
-index 849963b64..07a24ba07 100644
+index 849963b6..07a24ba0 100644
 --- a/common/ane_draft_hook.cpp
 +++ b/common/ane_draft_hook.cpp
 @@ -11,11 +11,46 @@
@@ -567,7 +562,7 @@ index 849963b64..07a24ba07 100644
 +#endif
 +}
 diff --git a/common/ane_draft_hook.h b/common/ane_draft_hook.h
-index ea7576d54..365229216 100644
+index ea7576d5..36522921 100644
 --- a/common/ane_draft_hook.h
 +++ b/common/ane_draft_hook.h
 @@ -57,6 +57,20 @@ bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_
@@ -592,7 +587,7 @@ index ea7576d54..365229216 100644
  bool ane_dflash_qkv_host_fp32_enabled(void);
  
 diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
-index 3cf6f5038..2215d5c23 100644
+index 3cf6f503..2215d5c2 100644
 --- a/common/ane_draft_session.mm
 +++ b/common/ane_draft_session.mm
 @@ -2807,12 +2807,23 @@ static bool ane_session_eval_dflash_chain12(int seq) {
@@ -721,7 +716,7 @@ index 3cf6f5038..2215d5c23 100644
          memcpy(g_session.lastDflashQ, q, (size_t) qn * sizeof(float));
      }
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 580728a20..977160778 100644
+index 3cb08767..67c17812 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -1,5 +1,7 @@
@@ -762,10 +757,10 @@ index 580728a20..977160778 100644
 +        // B8: stage target pre-norm into cross.v_embd before draft sync-decode (Metal dflash + ANE).
 +        common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, batch);
 +
-         const int ret = llama_decode(ctx_dft, batch);
+         llama_batch batch_dft = batch;
+         batch_dft.logits = nullptr;
  
-         if (ret != 0) {
-@@ -274,6 +295,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -277,6 +298,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
      void draft(common_speculative_draft_params_vec & dparams) override {
          auto & ctx_dft = params.ctx_dft;
  
@@ -774,7 +769,7 @@ index 580728a20..977160778 100644
          common_batch_clear(batch);
  
          // keep track of which sequences are still drafting
-@@ -300,6 +323,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -303,6 +326,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
              return;
          }
  
@@ -784,7 +779,7 @@ index 580728a20..977160778 100644
          int i = 0;
  
          while (n_drafting > 0) {
-@@ -325,11 +351,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -328,11 +354,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                              common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
                  }
  
@@ -817,7 +812,7 @@ index 580728a20..977160778 100644
                      drafting[seq_id] = false;
                      n_drafting--;
  
-@@ -364,6 +408,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -367,6 +411,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                  break;
              }
  
@@ -828,10 +823,10 @@ index 580728a20..977160778 100644
          }
  
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 6e6ad533e..b5bf088e0 100644
+index de6ecb8d..a458b26f 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -3721,6 +3721,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
+@@ -3767,6 +3767,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
      ctx->set_nextn_layer_offset(offset);
  }
  
@@ -859,7 +854,7 @@ index 6e6ad533e..b5bf088e0 100644
      if (!ctx) {
          return nullptr;
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 562571b6e..7c16d8ecf 100644
+index 562571b6..7c16d8ec 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
 @@ -145,3 +145,86 @@ LLAMA_API void llama_context_cross_upsert_row(

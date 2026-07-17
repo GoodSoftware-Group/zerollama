@@ -1,10 +1,12 @@
-# RTX 5080 runbook — complete operator guide (Jun 2026)
+# RTX 5080 runbook — complete operator guide (Jun 2026; **continue Jul 2026**)
 
 **CUDA lane map (common vs 5080 vs dual 4090):** [cuda-lanes.md](./cuda-lanes.md)
 
-**Status (CT 1564):** **Full re-sign-off PASS** — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
+**Status (CT 1564):** **Full re-sign-off PASS** (Jun 2026) — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
 
-**This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`.
+**Continue here (Jul 2026):** pin **`86d86ed4`** (+ patches through **0088**). Mac already smoked Bee **B0** loop-guard + Metal L2 A/B. **Next on this host:** [Tier F — RotorQuant / post-L2 labs](#tier-f--rotorquant--post-l2-labs-jul-2026).
+
+**This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`. Fork labs: [llama-fork-watchlist.md](./llama-fork-watchlist.md).
 
 ---
 
@@ -25,16 +27,17 @@
 13. [VRAM prep during smokes](#vram-prep-during-smokes)
 14. [L1 profile (`rtx-5080.json`)](#l1-profile-rtx-5080json)
 15. [L2 fork eval (informational)](#l2-fork-eval-informational)
-16. [L3 + Radix criteria](#l3--radix-criteria)
-17. [Phase 14 sign-off](#phase-14-sign-off)
-18. [Harmony / host RAM](#harmony--host-ram-not-vram)
-19. [Environment reference](#environment-reference)
-20. [Full re-sign-off sequence](#recommended-full-re-sign-off-sequence)
-21. [Status matrix](#status-matrix-jun-28-2026-re-sign-off-ct-1564)
-22. [Troubleshooting](#troubleshooting-ct-1564)
-23. [After green](#after-a-green-re-sign-off)
-24. [Code map](#code-map)
-25. [Optional: MLX imagegen](#optional-mlx-imagegen)
+16. [**Tier F — RotorQuant / post-L2 labs (Jul 2026)**](#tier-f--rotorquant--post-l2-labs-jul-2026)
+17. [L3 + Radix criteria](#l3--radix-criteria)
+18. [Phase 14 sign-off](#phase-14-sign-off)
+19. [Harmony / host RAM](#harmony--host-ram-not-vram)
+20. [Environment reference](#environment-reference)
+21. [Full re-sign-off sequence](#recommended-full-re-sign-off-sequence)
+22. [Status matrix](#status-matrix-jun-28-2026-re-sign-off-ct-1564)
+23. [Troubleshooting](#troubleshooting-ct-1564)
+24. [After green](#after-a-green-re-sign-off)
+25. [Code map](#code-map)
+26. [Optional: MLX imagegen](#optional-mlx-imagegen)
 
 ---
 
@@ -82,7 +85,7 @@ source ./scripts/gpu/5080_env.sh
 | `5080_start_serve` | stop + background serve + health wait |
 | `5080_cd_repo` | `cd $Z5080_REPO` |
 
-**Defaults set by sourcing:** `RUN_E2E_PREFLIGHT=0`, `OLLAMA_HOST=http://127.0.0.1:8080`, `unset ZEROLLAMA_RUNTIME_URL`, `PYTHONPATH=runtime/.venv + .venv-training`, prefer vendor `llama-server` when built, `Z5080_VENDOR_PIN=c84b3020`.
+**Defaults set by sourcing:** `RUN_E2E_PREFLIGHT=0`, `OLLAMA_HOST=http://127.0.0.1:8080`, `unset ZEROLLAMA_RUNTIME_URL`, `PYTHONPATH=runtime/.venv + .venv-training`, prefer vendor `llama-server` when built, `Z5080_VENDOR_PIN=86d86ed4`.
 
 ### Daily ops (no full re-sign-off)
 
@@ -197,8 +200,8 @@ source ./scripts/gpu/5080_env.sh
 
 ```bash
 source ./scripts/gpu/5080_env.sh
-# First time: vendor tree
-cd ~/zerollama && make -f Makefile.sync vendor   # → vendor/llama-cpp-c84b3020
+# First time / after pin bump: vendor tree @ 86d86ed4
+cd ~/zerollama && make -f Makefile.sync vendor   # → vendor/llama-cpp-86d86ed4
 
 5080_build_vendor_llama_server    # build + llama_patch_doctor.sh
 5080_patch_doctor                 # optional live probe on :8082
@@ -526,12 +529,15 @@ python -m runtime.gpu_snapshot /tmp/5080-session.json
 
 ## L2 fork eval (informational)
 
-**Status:** **FAIL merge @ 8k** — stock wins decode; **expected**; does not block re-sign-off.
+**Status:** **FAIL merge @ 8k** — stock wins decode; **expected**; does not block re-sign-off. **L2 Done (Jul 2026)** on pin `86d86ed4` — TBQ is **VRAM opt-in** (`ZEROLLAMA_LLAMA_FORK=1` / `AUTO_VRAM`), not default.
 
 ```bash
 export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-/root/eliza-1-9b-256k.gguf}"
-# First time fork build:
-L2_BUILD_FORK=1 ./scripts/phase/l2_cuda_full_gate.sh
+export LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-$HOME/zerollama/vendor/llama-cpp-86d86ed4}"
+# First time / after pull: rebuild vendor CUDA llama-server
+5080_build_vendor_llama_server
+# Gate:
+L2_BUILD_FORK=0 ./scripts/phase/l2_cuda_full_gate.sh   # uses existing bin when present
 ./scripts/phase/l2_gate_report.sh /tmp/l2-cuda-gate/bench-*.json
 # Or cross-platform pin report (no GPU):
 ./scripts/phase/phase17_l2_pin_status.sh
@@ -543,10 +549,99 @@ L2_BUILD_FORK=1 ./scripts/phase/l2_cuda_full_gate.sh
 | 9B eliza-1 | **18.6** | 14.4 | Stock wins |
 | 27k | ~−22% fork | same pattern | Informational |
 | 131k fork | blocked | 9B VRAM; 1B QJL head | Optional `L2_RUN_131K_FORK=1` |
+| **Mac M4 Max (Jul 2026, eliza-1-2b)** | **68.8** | **48.9** TBQ (−29%) | Same FAIL-merge pattern; `/tmp/l2-metal-bench-0088.json` |
 
 **Artifacts:** `/tmp/l2-cuda-gate/`. **WHY headless:** `L2_BUILD_FORK=1` sets `LLAMA_BUILD_WEBUI=OFF` on Linux — WebUI build fails on CT.
 
-**Phase 17 #7:** vendor merge still blocked — fork profiles remain **opt-in** via `ZEROLLAMA_LLAMA_FORK=1`.
+**Phase 17 #7:** vendor merge still blocked for **tok/s defaults** — fork profiles remain **opt-in**.
+
+---
+
+## Tier F — RotorQuant / post-L2 labs (Jul 2026)
+
+**Why this tier:** Mac finished Bee **B0** (`--reasoning-loop-guard`, patch **0087**) + Metal L2 smoke. The decision that can change the pin next is **RotorQuant `planar3`/`iso3` vs TBQ** on CUDA FA — not runnable meaningfully on Metal.
+
+**Hand-off from Mac (already done):**
+
+| Item | Status |
+|------|--------|
+| Pin `86d86ed4` + patches **0080–0088** | Committed (`a6120879` lineage) |
+| Metal `llama-server` rebuild | OK (`d4675a5d` vendor HEAD) |
+| B0 stop / force-close smoke | PASS on lab `:18082` |
+| Metal L2 stock vs TBQ @ 8k | Stock wins decode (−29% fork) |
+| RotorQuant sibling scout | `../llama-cpp-rotorquant` @ `feature/planarquant-kv-cache` (Mac); **rebuild on CT** |
+
+**Do not** touch production Go `:8080` / embed `:8081` for these labs. Use **`:18082`** (harness default) or another free lab port.
+
+### F0 — sync + rebuild vendor CUDA binary
+
+```bash
+cd ~/zerollama && git pull
+source ./scripts/gpu/5080_env.sh    # Z5080_VENDOR_PIN=86d86ed4
+5080_setup_cuda
+make -f Makefile.sync vendor        # if vendor/llama-cpp-86d86ed4 missing/stale
+5080_build_vendor_llama_server      # sm_120 llama-server + patch doctor
+./vendor/llama-cpp-86d86ed4/build/bin/llama-server --help | grep -E 'reasoning-loop|cache-type'
+```
+
+### F1 — RotorQuant A/B (primary)
+
+```bash
+# Clone / update fork (CUDA CT)
+git clone -b feature/planarquant-kv-cache \
+  https://github.com/johndpope/llama-cpp-turboquant.git ~/llama-cpp-rotorquant \
+  || (cd ~/llama-cpp-rotorquant && git fetch && git checkout feature/planarquant-kv-cache && git pull)
+
+cmake -S ~/llama-cpp-rotorquant -B ~/llama-cpp-rotorquant/build \
+  -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_WEBUI=OFF
+cmake --build ~/llama-cpp-rotorquant/build -j --target llama-server llama-bench
+
+# Lab ports only — never :8080/:8081
+export CUDA_LLAMA_MODEL="${CUDA_LLAMA_MODEL:-/root/eliza-1-9b-256k.gguf}"
+export LLAMA_SERVER_BIN=~/zerollama/vendor/llama-cpp-86d86ed4/build/bin/llama-server
+export ROTORQUANT_LLAMA_SERVER_BIN=~/llama-cpp-rotorquant/build/bin/llama-server
+export L2_PORT=18082
+export L2_NUM_CTX=8192
+export L2_RQ_ALSO_LLAMA_BENCH=1
+export L2_RQ_OUT=/tmp/l2-rotorquant-ab.json
+
+cd ~/zerollama
+./scripts/phase/l2_rotorquant_ab.sh
+# Optional long-ctx leg:
+L2_NUM_CTX=26624 L2_RQ_OUT=/tmp/l2-rotorquant-ab-27k.json ./scripts/phase/l2_rotorquant_ab.sh
+```
+
+**Exit before cherry-pick** (from [llama-fork-watchlist.md](./llama-fork-watchlist.md)):
+
+1. `planar3` or `iso3` decode ≥ TBQ at same ctx, **or** clear VRAM win with acceptable PPL / prefill.
+2. Prefill (`llama-bench -p`) not much worse than TBQ.
+3. FA path stable on 5080 (then dual-4090).
+4. **Type IDs collide** — RotorQuant `PLANAR3=44` / `ISO3=45` / `PLANAR4=46` / `ISO4=47` overlap our `TBQ3`/`TBQ4`/`QJL`. Remap to free IDs (≥53 or unused gaps) before any vendor patch.
+
+**If it fails:** leave as external lab binary; keep TBQ opt-in.
+
+### F2 — Bee B0 on CUDA (optional sanity)
+
+Mac already PASSed. Optional on 5080 with a think-capable GGUF (lab port):
+
+```bash
+# Lab only
+./vendor/llama-cpp-86d86ed4/build/bin/llama-server \
+  -m "$CUDA_LLAMA_MODEL" -c 8192 -ngl 99 \
+  --host 127.0.0.1 --port 18082 \
+  --reasoning-loop-guard force-close
+# POST /completion with reasoning_budget_* tags + forced loop → expect loop_guard / stop_detail
+```
+
+### F3 — after RotorQuant result
+
+| Outcome | Next |
+|---------|------|
+| RotorQuant wins | New patches after **0088** (types + CUDA FA/SET_ROWS); remap IDs; dual-4090 A/B |
+| TBQ holds | No codec merge; defer **B1 adaptive draft-max**; optional TQ3 FP4 (Lab C) only with TQ3 weights |
+| Dual-4090 | Same harness; `CUDA_VISIBLE_DEVICES=1` sidecar style — see [cuda-lanes.md](./cuda-lanes.md) |
+
+Doc: [llama-fork-watchlist.md](./llama-fork-watchlist.md) · harness: `scripts/phase/l2_rotorquant_ab.sh`
 
 ---
 
@@ -713,7 +808,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 |----------|-------------------|------|
 | `Z5080_REPO` | `~/zerollama` | Repo root |
 | `Z5080_LLAMA_CPP` | `~/llama.cpp` | Sibling pin b9781 + kv-ext |
-| `Z5080_VENDOR_PIN` | `c84b3020` | Vendor tree for Radix |
+| `Z5080_VENDOR_PIN` | `86d86ed4` | Vendor tree (Radix + L2 patches through **0088**) |
 | `LLAMA_MODEL` | `/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf` | Tier 1 smoke |
 | `CUDA_LLAMA_MODEL` | `/root/eliza-1-9b-256k.gguf` | L1/L3 production |
 | `RUN_E2E_GGUF` | `$LLAMA_MODEL` | Runtime load path in smokes |
@@ -785,13 +880,15 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | L3 | `l3_cuda_full_gate.sh` / production @ 27k | **PASS** |
 | Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** |
 | Phase 14 | `phase14_5080_signoff.sh` | **PASS** (historical) |
-| L2 @ 8k | `l2_full_gate.sh` | **FAIL merge** (stock wins — expected) |
+| L2 @ 8k | `l2_cuda_full_gate.sh` / Metal A/B | **FAIL merge** (stock wins — expected); **Done** as VRAM opt-in on pin `86d86ed4` |
 | Radix live | `l3_radix_prefix_smoke.sh` | **PASS** (Mac + 5080 Jun 2026) — donor **10.6s** → target **0.66s** on CT 1564; `RUN_E2E_L3_RADIX=1` |
 | Phase 17 P17 | `phase17_llama_server_smoke.sh` | **PASS** |
 | Phase 17 Linux auto | `phase17_linux_auto_smoke.sh` | **PASS** |
 | Phase 16 edge CUDA | `phase16_edge_smoke.sh` | **PASS** (`P17_NUM_PREDICT=32`) |
 | `RUN_E2E_UPSTREAM_GGUF=1` bundle | full session wrapper | **PASS** — auto-restarts serve profile-off before base smokes (fixes qjl1_256 × 1B after L1/L2) |
-| Phase 17 L2 pin merge | criterion #7 | **Partial** |
+| Phase 17 L2 pin merge | criterion #7 | **Partial** (defaults stay L1) |
+| **Tier F RotorQuant** | `l2_rotorquant_ab.sh` | **Next on CT** (Jul 2026) — Mac scout only |
+| Bee B0 loop-guard | patch **0087** | **Landed** — Mac smoke PASS; optional CUDA sanity |
 
 **Not required on 5080:** `gpt-oss:20b` harmony real-weight (~40+ GiB host RAM); Mac `metal_signoff.sh`.
 
@@ -830,6 +927,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 2. **Optional clamp:** `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` only if you accept automatic `num_ctx` lowering in API responses.
 3. **Do not** copy smoke-only global `VRAM_ESTIMATE_FACTOR` when autotune persist is on.
 4. **Phase 11 thresholds:** tune backlog env only under measured chat+training load — idle smoke proves fit, not contention policy.
+5. **Jul 2026 continue:** [Tier F — RotorQuant](#tier-f--rotorquant--post-l2-labs-jul-2026) on this host before more vendor KV patches; defer Bee **B1** until that result.
 
 ---
 
@@ -848,6 +946,8 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | Phase 14 smokes | `scripts/phase/phase14_serve_env.sh`, `phase14_backend_smoke.sh`, `phase14_5080_signoff.sh` |
 | Phase 15 smokes | `scripts/phase/phase15_inprocess_signoff.sh`, `phase15_runtime_kv_env.sh` |
 | L2 / L3 gates | `scripts/phase/l2_cuda_full_gate.sh`, `l3_cuda_full_gate.sh`, `l3_radix_prefix_smoke.sh` |
+| RotorQuant A/B | `scripts/phase/l2_rotorquant_ab.sh` |
+| Fork labs | `docs/llama-fork-watchlist.md`, `docs/gpu-profiles-l2.md` |
 | Eliza fork build | `scripts/build/build_eliza_llama_server.sh` |
 | Phase 17 / edge | `scripts/phase/phase17_llama_server_smoke.sh`, `phase17_linux_auto_smoke.sh`, `phase16_edge_smoke.sh` |
 | Production serve | `scripts/serve/serve_production_wrapper.sh` → `scripts/serve/serve_gpu_example.sh` |

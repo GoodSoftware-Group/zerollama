@@ -23,6 +23,29 @@ def test_metrics_from_llama_chunk_cache_hit():
     assert out["eval_duration"] == 40_000_000
 
 
+def test_metrics_from_llama_chunk_host_storage_tiers():
+    out = metrics_from_llama_chunk(
+        {
+            "timings": {"cache_n": 50, "prompt_n": 5},
+            "cached_tokens_host": 40,
+            "cached_tokens_storage": 10,
+            "cached_tokens_storage_backend": "redis",
+        }
+    )
+    assert out["cached_prompt_tokens"] == 50
+    assert out["cached_tokens_host"] == 40
+    assert out["cached_tokens_storage"] == 10
+    assert out["cached_tokens_storage_backend"] == "redis"
+
+
+def test_merge_cache_tier_details_omits_zeros():
+    from runtime.llama_timings import merge_cache_tier_details
+
+    assert merge_cache_tier_details({}) == {}
+    out = merge_cache_tier_details({}, host=12, storage=0)
+    assert out == {"cached_tokens_host": 12, "prompt_eval_cached_host": 12}
+
+
 def test_metrics_from_llama_chunk_no_timings():
     assert metrics_from_llama_chunk({}) == {}
 

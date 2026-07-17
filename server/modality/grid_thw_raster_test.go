@@ -32,7 +32,7 @@ func TestGridTHWPerRaster_stillsAndVideoFrames(t *testing.T) {
 	}
 }
 
-func TestGridTHWPerRaster_skipsServerEstimate(t *testing.T) {
+func TestGridTHWPerRaster_forwardsServerEstimate(t *testing.T) {
 	msg := api.Message{
 		Images: make([]api.ImageData, 2),
 		VideoSpans: []api.VideoSpan{
@@ -40,8 +40,11 @@ func TestGridTHWPerRaster_skipsServerEstimate(t *testing.T) {
 		},
 	}
 	got := GridTHWPerRaster(msg)
-	if got[0] != nil || got[1] != nil {
-		t.Fatalf("server estimate must not forward to runner: %v", got)
+	want := []int{1, 8, 8}
+	for i := 0; i < 2; i++ {
+		if len(got[i]) != 3 || got[i][0] != want[0] || got[i][1] != want[1] || got[i][2] != want[2] {
+			t.Fatalf("frame %d grid=%v want %v (server estimate must forward after M-RoPE hint honor)", i, got[i], want)
+		}
 	}
 }
 

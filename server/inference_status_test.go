@@ -41,6 +41,23 @@ func TestInferenceStatusWithRuntimeHealth(t *testing.T) {
 			"running":         1,
 			"inference_state": "running",
 			"llama_server":    true,
+			"kv_resume": map[string]any{
+				"prefix_block_pool": map[string]any{
+					"enabled":             true,
+					"entry_count":         12,
+					"slot_count":          4,
+					"blob_digest_blocks":  3,
+					"block_hashes":        []string{"aaa", "bbb"},
+					"blob_digests":        []string{"ddd"},
+					"radix_share": map[string]any{
+						"enabled":     true,
+						"seq_cp_mode": "metadata",
+						"kv_unified":  true,
+					},
+					"lmcache_blobs": map[string]any{"enabled": true},
+				},
+				"l3_r6_metadata": map[string]any{"complete": true},
+			},
 		})
 	}))
 	defer rt.Close()
@@ -61,6 +78,24 @@ func TestInferenceStatusWithRuntimeHealth(t *testing.T) {
 	}
 	if st.Runtime.State != "running" {
 		t.Fatalf("state=%q", st.Runtime.State)
+	}
+	if st.Runtime.Radix == nil {
+		t.Fatal("expected radix mirror on runtime status")
+	}
+	if !st.Runtime.Radix.Enabled || !st.Runtime.Radix.RadixShare || st.Runtime.Radix.EntryCount != 12 {
+		t.Fatalf("radix=%+v", st.Runtime.Radix)
+	}
+	if st.Runtime.Radix.SeqCpMode != "metadata" || !st.Runtime.Radix.KvUnified {
+		t.Fatalf("radix mode=%+v", st.Runtime.Radix)
+	}
+	if st.Runtime.Radix.L3R6MetadataOK == nil || !*st.Runtime.Radix.L3R6MetadataOK {
+		t.Fatal("expected l3_r6_metadata_ok true")
+	}
+	if len(st.Runtime.Radix.BlockHashes) != 2 || st.Runtime.Radix.BlockHashes[0] != "aaa" {
+		t.Fatalf("block_hashes=%v", st.Runtime.Radix.BlockHashes)
+	}
+	if len(st.Runtime.Radix.BlobDigests) != 1 || st.Runtime.Radix.BlobDigests[0] != "ddd" {
+		t.Fatalf("blob_digests=%v", st.Runtime.Radix.BlobDigests)
 	}
 }
 

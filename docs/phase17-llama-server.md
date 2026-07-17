@@ -32,7 +32,7 @@ Zerollama harness:     Client → Go → Python runtime → llama-server  (--lla
 | `llm/llama_server.go` | **Done** | Upstream-shaped subprocess runner; DisableJinja, context shift, MTP |
 | `LeadingBOSForRenderer` | **Done** | llama-server with `--no-jinja` must not double-emit BOS tokens Go already rendered |
 | `discover/llama_server.go` | **Done** | CUDA arch + ROCm gfx filtering matches upstream scheduler inputs |
-| Linux auto-default | **Done** | Plain text + vision GGUF when `ZEROLLAMA_LLAMA_SERVER=auto` (Linux serve default) |
+| Linux auto-default | **Done** | Plain-text GGUF when `ZEROLLAMA_LLAMA_SERVER=auto` (Linux serve default); **vision (mmproj) stays on ggml** unless explicit |
 | Mac default | **Unchanged (ggml)** | M7 bench: ggml ~166 vs llama-server ~155 tok/s @ 4k ctx |
 | `LLAMA_CPP_VERSION=b9781` | **Done** | Vendor + in-tree sync @ b9781 (Jun 2026) |
 | Native `gpu-discover` | **Done** | Enriches llama-server probe with PCI/CC/gfx from crash-isolated subprocess |
@@ -96,7 +96,7 @@ LLAMA_SERVER_BIN=../ollama-upstream/build/llama-server-darwin/bin/llama-server \
 
 Smoke: `./scripts/phase/phase17_llama_server_smoke.sh` (requires pulled local tag — auto-resolved from smallest text GGUF blob, or set `P17_MODEL=your-tag:latest`)
 
-**Vision/thinking:** with `--llama-server-backend` or Linux `auto`, all GGUF (split mmproj, inline vision tensors `v.*`, thinking) routes through `NewLlamaServerRunner`. Split mmproj needs `--mmproj`. Thinking models use `enable_thinking` chat-template kwargs. Linux auto sends vision GGUF to llama-server the same as text — no plain-text-only restriction.
+**Vision/thinking:** with `--llama-server-backend` / `ZEROLLAMA_LLAMA_SERVER=1`, all GGUF (split mmproj, inline vision tensors `v.*`, thinking) routes through `NewLlamaServerRunner`. Split mmproj needs `--mmproj`. Thinking models use `enable_thinking` chat-template kwargs. **Linux auto** sends **plain-text** GGUF to llama-server; **vision (mmproj) stays on ggml llamarunner** so SGLang `precomputed_embedding` skip-ViT works without opting out of auto. Explicit opt-in still forces vision through llama-server (Phase 17 vision smoke).
 
 Vision E2E (opt-in, needs projector model pulled):
 
@@ -111,12 +111,12 @@ RUN_E2E_P17_VISION=1 P17_VISION_MODEL=llava:latest ./scripts/phase/phase17_llama
 | Flag / env | Text GGUF path | Why |
 |------------|----------------|-----|
 | (default Mac) | ggml Metal | Faster on ship hardware; sidecar stays for tokenize/VRAM |
-| Linux serve (default) | Go → llama-server (`auto`) | All GGUF when binary found — upstream parity |
+| Linux serve (default) | Go → llama-server (`auto`) for **text**; vision → ggml | Text: upstream L3 shape; vision: SGLang skip-ViT on llamarunner |
 | `--llama-server-backend` or `ZEROLLAMA_LLAMA_SERVER=1` | Go → llama-server (all GGUF) | Explicit opt-in on any OS: text, vision, thinking |
 | `ZEROLLAMA_LLAMA_SERVER=0` | Disable auto + explicit | Operators forcing ggml |
 | `--edge` / `ZEROLLAMA_EDGE=1` | Go → llama-server + runtime chat off | Phase 16 upstream-shaped edge — [phase16-thin-edge.md](./phase16-thin-edge.md); scheduler rejects ggml when llama-server off |
 | `--llama-cpp-backend` | Go → Python → llama | Phase 12–15 harness; not long-term default |
-| Vision/thinking without explicit flag (Mac) | ggml or Python | Mac stays ggml default; Linux auto includes vision |
+| Vision without explicit flag | ggml (Mac + Linux auto) | llama-server vision requires explicit opt-in |
 
 `ApplyLlamaServerBackendDefaults()` sets `ZEROLLAMA_LEGACY_RUNNER=1` when unset so Darwin sidecar runtime routing does not intercept eligible text models.
 
@@ -218,7 +218,7 @@ Session ViT overlay + input-cache prefix hits surface as `cached_prompt_tokens` 
 
 **Still `deferred_non_qwen3vl`:** text-only architectures (e.g. **gemma3n**, **glm4moelite**) and VLMs without a native Go `MultimodalProcessor` path on ollama-engine.
 
-**`grid_thw` runner hints:** `llm.ImageData.GridTHW` per raster from `video_spans`; Info log `vision grid hints` after encode on llamarunner (mtmd) and ollama-engine (Mac default). **Go seam:** `MultimodalTokenize(..., gridTHW)` on llamarunner (debug until mtmd C API); mtmd forward override deferred — [mtmd-grid-thw-handoff.md](./mtmd-grid-thw-handoff.md).
+**`grid_thw` runner hints:** `llm.ImageData.GridTHW` per raster from client-explicit `video_spans`; M-RoPE paths honor via `mtmd_bitmap_set_grid_hint` / `EncodeMultimodalWithGrid` (`grid_thw hint resize`). [mtmd-grid-thw-handoff.md](./mtmd-grid-thw-handoff.md).
 
 ---
 
@@ -230,11 +230,11 @@ Env `OLLAMA_STREAM_KEEPALIVE_INTERVAL` (default `15`, `0` = off). Emits `status:
 
 ---
 
-## llama.cpp pin (`8f114a9b`)
+## llama.cpp pin (`86d86ed4`)
 
-Zerollama pins **ggml-org/llama.cpp** @ **`8f114a9b`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). QJL/Polar/TBQ and related fork features land as **format-patches** (0026+) on that tree — see [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
+Zerollama pins **ggml-org/llama.cpp** @ **`86d86ed4`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). QJL/Polar/TBQ and related fork features land as **format-patches** (0026+) on that tree — see [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
 
-**Vendor tree:** `vendor/llama-cpp-8f114a9b/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`. Older built trees (e.g. `vendor/llama-cpp-c84b3020/`) may remain as a local fallback until the pin tree is materialised and rebuilt.
+**Vendor tree:** `vendor/llama-cpp-86d86ed4/` + `./scripts/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`. Older built trees (e.g. `vendor/llama-cpp-8f114a9b/`) may remain as a local fallback until the pin tree is materialised and rebuilt.
 
 **Why `sync_vendor_llama.sh` checks patch count:** syncing bare pin (no commits on top) ships upstream-only ggml while `build-info.cpp` still reports the new pin — CGO then misses kv-ext, scheduler, and `/kv/seq-copy` deltas.
 
@@ -273,7 +273,7 @@ Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh`
 9. ~~**Vision/thinking on llama-server**~~ — explicit or Linux `auto`; vision E2E: `phase17_llama_server_vision_smoke.sh`
 10. ~~**Launch model inventory**~~ — [launch-model-inventory.md](./launch-model-inventory.md)
 11. ~~**Phase 16 edge mode**~~ — [phase16-thin-edge.md](./phase16-thin-edge.md)
-12. **L2 fork profiles** — flip QJL/Polar defaults when benches pass (**ship: FAIL @ 8k CUDA/Metal**, Jul 2026 — stock faster; kernels already extracted — see `./scripts/phase/phase17_l2_pin_status.sh` and [gpu-profiles-l2.md](./gpu-profiles-l2.md))
+12. **L2 fork profiles** — **Done (Jul 2026):** kernels extracted; **defaults stay L1** (tok/s FAIL @ 8k CUDA/Metal). VRAM opt-in: `ZEROLLAMA_LLAMA_FORK=1` or `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1` (ctx ≥ 32768). See [gpu-profiles-l2.md](./gpu-profiles-l2.md).
 13. **Flash-MoE (anemll)** — **Partial (Jun 2026):** flag passthrough, Modelfile `moe_*` options, `build_flash_moe_llama_server.sh`, **`flash_moe_smoke.sh`**, doctor check — [flash-moe.md](./flash-moe.md). **Why llama-server only:** slot-bank lives in anemll fork, not ggml Metal. **Open:** `pull` sidecar extract, vendor pin merge.
 14. **ANE probe (maderix)** — **Partial (Jun 2026):** subprocess smoke + doctor — [ane-probe.md](./ane-probe.md). **Why subprocess:** private ANE APIs must not ship inside main Go binary. **Open:** hybrid inference research, not hot path.
 

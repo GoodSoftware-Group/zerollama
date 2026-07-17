@@ -6,7 +6,7 @@
 # markers (generic MMQ path on sm_89; not Blackwell MMA).
 #
 #   ./scripts/gpu/nvfp4_cuda_probe.sh
-#   LLAMA_CPP_ROOT=vendor/llama-cpp-8f114a9b ./scripts/gpu/nvfp4_cuda_probe.sh
+#   LLAMA_CPP_ROOT=vendor/llama-cpp-86d86ed4 ./scripts/gpu/nvfp4_cuda_probe.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

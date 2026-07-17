@@ -17,13 +17,6 @@
 struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
-struct llama_flash_moe_sidecar_entry;
-
-// Flash-MoE (M16): sidecar repacked-expert storage format.
-enum class llama_flash_moe_sidecar_format : uint8_t {
-    gguf_bytes = 0,
-    affine_2bit_qwen397b = 1,
-};
 
 // available models
 enum llm_type {
@@ -746,19 +739,6 @@ struct llama_model_base : public llama_model {
 };
 
 const char * llm_type_name(llm_type type);
-
-// Flash-MoE (M16): one repacked routed-expert tensor tracked by the sidecar loader.
-struct llama_flash_moe_sidecar_entry {
-    int32_t                         layer             = -1;
-    std::string                     tensor_name;
-    std::string                     tensor_family;
-    std::string                     repacked_path;
-    ggml_type                       quant_type        = GGML_TYPE_COUNT;
-    llama_flash_moe_sidecar_format  source_format     = llama_flash_moe_sidecar_format::gguf_bytes;
-    size_t                          repacked_offset   = 0;
-    size_t                          exact_byte_length = 0;
-    size_t                          bytes_per_expert  = 0;
-};
 
 // convenience macro for loading local variables for load_tensors() in llama_model_base
 // note: cast to int64_t since we will use these for the tensor dimensions

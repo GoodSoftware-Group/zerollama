@@ -8,7 +8,7 @@ Subject: [PATCH] ollama: wire ANE draft sources into llama-common CMake
  1 file changed, 32 insertions(+)
 
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 4cf580a05..4cb5668a2 100644
+index 4cf580a0..4cb5668a 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
 @@ -56,6 +56,8 @@ set(TARGET llama-common)

@@ -42,6 +42,11 @@ class Request:
     # When True, kv_slot was derived from prompt_cache_key; llama-server keeps KV
     # after complete() — allocator releases tracking only, not llama slot contents.
     slot_pinned: bool = False
+    # HiCache-shaped tier breakdown (SGLang sglext.cached_tokens_details).
+    # host = in-process disk slot restore; storage = L3 federated blob restore.
+    cached_tokens_host: int = 0
+    cached_tokens_storage: int = 0
+    cached_tokens_storage_backend: str = ""
 
     @property
     def num_prompt_tokens(self) -> int:

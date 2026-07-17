@@ -9,6 +9,7 @@ import (
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/model/input"
+	"github.com/ollama/ollama/model/mmradix"
 	"github.com/ollama/ollama/runner/common"
 	"github.com/ollama/ollama/tokenizer"
 )
@@ -87,7 +88,7 @@ func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize,
 	var logits []float32
 	for i, inp := range promptInputs {
 		wantLogits := i == len(promptInputs)-1
-		logits, err = s.scoreDecodeLocked(slot, inp.Token, wantLogits)
+		logits, err = s.scoreDecodeLocked(slot, mmradix.ClampForEmbed(inp.Token, s.embedVocabSize()), wantLogits)
 		if err != nil {
 			return llm.CandidateScore{}, err
 		}

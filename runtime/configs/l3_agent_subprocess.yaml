@@ -16,9 +16,26 @@ speculative:
   method: none
 l3:
   radix_share: true
+  # WHY kv_unified (L3-R6 v54): agent fleets share large system prefixes — metadata
+  # seq_cp avoids buffer copy. Size -c / num_ctx for SUM of concurrent live tokens
+  # across slots (one shared cell pool), not per-slot. Kill-switch:
+  # ZEROLLAMA_KV_UNIFIED=0 or --no-kv-unified in LLAMA_SERVER_EXTRA_ARGS.
+  kv_unified: true
+  # L3-R6b: metadata cell-vector COW on diverge (vendor patch 0089). Exports
+  # ZEROLLAMA_KV_COW=1 for llama-server getenv. Kill-switch: ZEROLLAMA_KV_COW=0.
+  kv_cow: true
+  # L3-R6b: deep-copy aliased K/V tensors on diverge (Gemma4 share-cb). Can
+  # roughly double KV VRAM at fork. Kill-switch: ZEROLLAMA_KV_COW_TENSORS=0.
+  kv_cow_tensors: true
+  # L3-R6b: copy only used cell ranges during tensor fork (bandwidth win;
+  # allocation still full-size). Kill-switch: ZEROLLAMA_KV_COW_PAGES=0.
+  kv_cow_pages: true
   block_size: 512
   trace: false
-  # WHY Redis (L3-R4): fleet-shared prefix block index; KV blobs stay local per node
+  # WHY Redis (L3-R4): fleet-shared prefix block index.
+  # L3-R7: with file:// URI, slot blobs federate under …/blobs; with redis:// set
+  # ZEROLLAMA_LMCACHE_BLOB_ROOT to a shared FS for cold-node restore.
+  # lmcache_uri: file:///shared/zerollama-lmcache
   # lmcache_uri: redis://127.0.0.1:6379/0
 vram:
   min_free: 1GiB

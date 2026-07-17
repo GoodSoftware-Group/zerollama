@@ -9,7 +9,7 @@ Subject: [PATCH] CUDA get_rows q6_k support
  2 files changed, 80 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
-index 0e1570709..d02114e2d 100644
+index 0e157070..d02114e2 100644
 --- a/ggml/src/ggml-cuda/getrows.cu
 +++ b/ggml/src/ggml-cuda/getrows.cu
 @@ -176,6 +176,81 @@ static void get_rows_cuda_float(
@@ -108,10 +108,10 @@ index 0e1570709..d02114e2d 100644
              break;
      }
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index db367c423..abb02c43d 100644
+index 997312f0..2f876af1 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -4704,6 +4704,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -4834,6 +4834,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_Q5_0:
                      case GGML_TYPE_Q5_1:
                      case GGML_TYPE_Q8_0:

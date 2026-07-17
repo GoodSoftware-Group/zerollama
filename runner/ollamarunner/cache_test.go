@@ -9,6 +9,7 @@ import (
 
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model/input"
+	"github.com/ollama/ollama/model/mmradix"
 )
 
 func TestCountCommon(t *testing.T) {
@@ -589,5 +590,33 @@ func TestShiftCacheSlot(t *testing.T) {
 				t.Errorf("Slot inputs length after operation: got %v, want %v", len(slot.Inputs), tt.wantInputsLen)
 			}
 		})
+	}
+}
+
+func TestCountCommonPrefix_padValueTokens(t *testing.T) {
+	hash := uint64(0x111)
+	pad := mmradix.PadValueFromHash(hash)
+	a := []*input.Input{
+		{Token: 1},
+		{Token: pad, MultimodalHash: hash},
+		{Token: pad, MultimodalHash: hash},
+		{Token: 9},
+	}
+	b := []*input.Input{
+		{Token: 1},
+		{Token: pad, MultimodalHash: hash},
+		{Token: pad, MultimodalHash: hash},
+		{Token: 8},
+	}
+	if got := countCommonPrefix(a, b); got != 3 {
+		t.Fatalf("same image pad_values: got %d want 3", got)
+	}
+	other := mmradix.PadValueFromHash(0x222)
+	b[1].Token = other
+	b[1].MultimodalHash = 0x222
+	b[2].Token = other
+	b[2].MultimodalHash = 0x222
+	if got := countCommonPrefix(a, b); got != 1 {
+		t.Fatalf("different images diverge at vision: got %d want 1", got)
 	}
 }

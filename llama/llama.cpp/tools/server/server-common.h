@@ -207,6 +207,17 @@ public:
 
     bool empty() const { return tokens.empty(); }
 
+    // true if the sequence actually contains image/audio chunks.
+    bool has_media() const { return !map_idx_to_media.empty(); }
+
+    // Index of the first media chunk, or size() when text-only.
+    size_t first_media_index() const;
+
+    // Largest prefix length ≤ want that keep_first can accept.
+    // allow_media=false → clamp before first media (pure-text Radix seed).
+    // allow_media=true → include full media chunks; never split mid-chunk.
+    size_t safe_prefix_len(size_t want, bool allow_media) const;
+
     void clear() {
         map_idx_to_media.clear();
         tokens.clear();

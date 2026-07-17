@@ -552,8 +552,7 @@ static inline uint8_t ggml_fp32_to_ue4m3(float x) {
     return (uint8_t) ((ue4m3_exp << 3) | ue4m3_man);
 }
 
-// IEEE float8_e4m3fn (OCP / PyTorch): signed, 4 exp bits (bias=7), 3 mantissa; no Inf; NaN when exp==15 && mant==7.
-// WHY soft convert: CUDA may use __nv_fp8_e4m3; CPU path must match for roundtrip / --fp8-native pack.
+// IEEE float8_e4m3fn (OCP / PyTorch): signed, 4 exp bits (bias=7), 3 mantissa; no Inf; NaN when exp==15
 static inline float ggml_fp8_e4m3_to_fp32(uint8_t x) {
     const int sign = (x >> 7) & 1;
     const int exp  = (x >> 3) & 0xF;
@@ -616,7 +615,6 @@ static inline uint8_t ggml_fp32_to_fp8_e4m3(float x) {
 }
 
 // IEEE float8_e5m2: signed, 5 exp bits (bias=15), 2 mantissa; Inf/NaN when exp==31.
-// WHY soft convert: match CUDA/__nv_fp8_e5m2 and gguf-py for --fp8-native roundtrips.
 static inline float ggml_fp8_e5m2_to_fp32(uint8_t x) {
     const int sign = (x >> 7) & 1;
     const int exp  = (x >> 2) & 0x1F;

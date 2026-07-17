@@ -1,0 +1,320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 17 Jul 2026 09:46:14 -0700
+Subject: [PATCH] ggml-metal: add 64x8 mul_mm tile for q4_0 small batches
+ (upstream #25377)
+
+---
+ ggml/src/ggml-metal/ggml-metal-device.cpp |  12 +-
+ ggml/src/ggml-metal/ggml-metal-ops.cpp    |  12 +-
+ ggml/src/ggml-metal/ggml-metal.metal      | 212 ++++++++++++++++++++++
+ 3 files changed, 230 insertions(+), 6 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index 270c1411..19a5f2cf 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -715,9 +715,15 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
+ 
+     const bool has_tensor = ggml_metal_device_get_props(ggml_metal_library_get_device(lib))->has_tensor;
+ 
++    // small batches use 64x8 tiles to avoid processing mostly zero-padded 64x32 tiles
++    const bool use_nr8 = !has_tensor &&
++        op->ne[1] <= 16 &&
++        tsrc0 == GGML_TYPE_Q4_0 &&
++        tsrc1 == GGML_TYPE_F32;
++
+     const bool bc_out = has_tensor
+         ? (op->ne[0] % NRA != 0 || op->ne[1] % NRB != 0)
+-        : (op->ne[0] % 64  != 0 || op->ne[1] % 32  != 0);
++        : (op->ne[0] % 64  != 0 || op->ne[1] % (use_nr8 ? 8 : 32) != 0);
+ 
+     GGML_ASSERT(op->src[1]->ne[2] <= INT16_MAX && op->src[1]->ne[3] <= INT16_MAX);
+     const int16_t ne12 = (int16_t) op->src[1]->ne[2];
+@@ -725,7 +731,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
+     const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
+     const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
+ 
+-    snprintf(base, 256, "kernel_mul_mm_%s_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
++    snprintf(base, 256, "kernel_mul_mm%s_%s_%s", use_nr8 ? "_nr8" : "", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
+     snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d",
+              base, bc_inp, bc_out, ne12, ne13, r2, r3);
+ 
+@@ -753,7 +759,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
+         res.smem = smem_a;
+     } else {
+         res.nr0 = 64;
+-        res.nr1 = 32;
++        res.nr1 = use_nr8 ? 8 : 32;
+ 
+         res.smem = bc_out ? 8192 : (4096 + 2048);
+     }
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index b36f482a..638b1c7a 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2065,10 +2065,12 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+ 
+     // find the break-even point where the matrix-matrix kernel becomes more efficient compared
+     // to the matrix-vector kernel
+-    const int ne11_mm_min = 8;
++    // for Q4_0 the mat-mv kernels are compute-bound and scale ~linearly with the batch size,
++    // so hand over to the 64x8 mul_mm tiles earlier
++    const int ne11_mm_min = op->src[0]->type == GGML_TYPE_Q4_0 ? 4 : 8;
+ 
+     // first try to use small-batch mat-mv kernels
+-    // these should be efficient for BS [2, ~8]
++    // these should be efficient for BS [2, ~8] (and up to 16 for non-Q4_0; upstream #25453)
+     if (op->src[1]->type == GGML_TYPE_F32 && (ne00%128 == 0) &&
+         (
+          (
+@@ -2078,7 +2080,6 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+            op->src[0]->type == GGML_TYPE_BF16 ||
+            op->src[0]->type == GGML_TYPE_Q1_0 ||
+            op->src[0]->type == GGML_TYPE_Q2_0 ||
+-           op->src[0]->type == GGML_TYPE_Q4_0 ||
+            op->src[0]->type == GGML_TYPE_Q4_1 ||
+            op->src[0]->type == GGML_TYPE_Q5_0 ||
+            op->src[0]->type == GGML_TYPE_Q5_1 ||
+@@ -2087,6 +2088,11 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+            op->src[0]->type == GGML_TYPE_IQ4_NL ||
+            false) && (ne11 >= 2 && ne11 <= 16)
+          ) ||
++         (
++          (
++           op->src[0]->type == GGML_TYPE_Q4_0 ||
++           false) && (ne11 >= 2 && ne11 <= ne11_mm_min)
++         ) ||
+          (
+           (
+            op->src[0]->type == GGML_TYPE_Q4_K ||
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 969fddfa..ac83eabe 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -10302,6 +10302,212 @@ kernel void kernel_mul_mm(
+     }
+ }
+ 
++#ifndef GGML_METAL_HAS_TENSOR
++
++// skinny-tile variant of kernel_mul_mm for small batch sizes (ne11 <= 16):
++// 64x8 output tiles instead of 64x32, all 4 simdgroups along the src0-row dimension.
++// avoids the 4x zero-row padding waste of the 64x32 kernel in the speculative-decoding
++// verify-batch regime while keeping simdgroup-matrix throughput.
++template<
++    typename S0, typename S0_4x4, typename S0_8x8,
++    typename S1, typename S1_2x4, typename S1_8x8,
++    typename block_q, short nl, void (*dequantize_func)(device const block_q *, short, thread S0_4x4 &),
++    typename T0, typename T0_4x4, typename T1, typename T1_2x4>
++kernel void kernel_mul_mm_nr8(
++        constant ggml_metal_kargs_mul_mm & args,
++        device const char * src0,
++        device const char * src1,
++        device       char * dst,
++        threadgroup  char * shmem [[threadgroup(0)]],
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiitg[[thread_index_in_threadgroup]],
++        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
++
++    threadgroup S0 * sa = (threadgroup S0 *)(shmem);
++    threadgroup S1 * sb = (threadgroup S1 *)(shmem + 4096);
++
++    constexpr int NR0 = 64;
++    constexpr int NR1 = 8;
++
++    constexpr int NK  = 32;
++    constexpr int NL0 = NK/16;
++    constexpr int NL1 = NK/8;
++
++    const int im = tgpig.z;
++    const int r0 = tgpig.y*NR0;
++    const int r1 = tgpig.x*NR1;
++
++    const short nr0 = (args.ne0 - r0 < NR0) ? (args.ne0 - r0) : NR0;
++    const short nr1 = (args.ne1 - r1 < NR1) ? (args.ne1 - r1) : NR1;
++
++    const short lr0 = ((short)tiitg/NL0) < nr0 ? ((short)tiitg/NL0) : nr0 - 1;
++    const short lr1 = ((short)tiitg/NL1) < nr1 ? ((short)tiitg/NL1) : nr1 - 1;
++
++    const short il0 = (tiitg % NL0);
++
++    short il = il0;
++
++    const int i12 = im % FC_mul_mm_ne12;
++    const int i13 = im / FC_mul_mm_ne12;
++
++    const uint64_t offset0 = (i12/FC_mul_mm_r2)*args.nb02 + (i13/FC_mul_mm_r3)*args.nb03;
++    const short    offset1 = il0/nl;
++
++    device const block_q * x = (device const block_q *)(src0 + args.nb01*(r0 + lr0) + offset0) + offset1;
++
++    const short iy = 8*(tiitg % NL1);
++
++    device const T1 * y = (device const T1 *)(src1
++        + args.nb13*i13
++        + args.nb12*i12
++        + args.nb11*(r1 + lr1)
++        + args.nb10*iy);
++
++    S0_8x8 ma[2];
++    S1_8x8 mb;
++
++    simdgroup_float8x8 mc[2];
++
++    for (short i = 0; i < 2; i++){
++        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.f);
++    }
++
++    for (int loop_k = 0; loop_k < args.ne00; loop_k += NK) {
++        if (is_same<T0_4x4, block_q>::value && FC_mul_mm_bc_inp) {
++            threadgroup_barrier(mem_flags::mem_threadgroup);
++
++            for (short i = 0; i < 16; i++) {
++                const short sx = 2*il0 + i/8;
++                const short sy = (tiitg/NL0)/8;
++
++                const short lx = (tiitg/NL0)%8;
++                const short ly = i%8;
++
++                const short ib = 8*sx + sy;
++
++                *(sa + 64*ib + 8*ly + lx) = loop_k + 16*il + i < args.ne00 ? *((device T0 *) x + i) : 0;
++            }
++        } else {
++            S0_4x4 temp_a;
++            dequantize_func(x, il, temp_a);
++
++            threadgroup_barrier(mem_flags::mem_threadgroup);
++
++            FOR_UNROLL (short i = 0; i < 16; i++) {
++                const short sx = 2*il0 + i/8;
++                const short sy = (tiitg/NL0)/8;
++
++                const short lx = (tiitg/NL0)%8;
++                const short ly = i%8;
++
++                const short ib = 8*sx + sy;
++
++                *(sa + 64*ib + 8*ly + lx) = temp_a[i/4][i%4];
++            }
++        }
++
++        // only the first NR1 rows of the B tile exist
++        if ((short)(tiitg/NL1) < NR1) {
++            if (FC_mul_mm_bc_inp) {
++                for (short i = 0; i < 8; ++i) {
++                    const short sx = (tiitg%NL1);
++                    const short sy = (tiitg/NL1)/8;
++
++                    const short lx = i;
++                    const short ly = (tiitg/NL1)%8;
++
++                    const short ib = 4*sx + sy;
++
++                    *(sb + 64*ib + 8*ly + lx) = loop_k + iy + i < args.ne00 ? (S1) *((device T1 *) y + i) : 0;
++                }
++            } else {
++                const short sx = (tiitg%NL1);
++                const short sy = (tiitg/NL1)/8;
++
++                const short ly = (tiitg/NL1)%8;
++
++                const short ib = 4*sx + sy;
++
++                *(threadgroup S1_2x4 *)(sb + 64*ib + 8*ly) = (S1_2x4)(*((device T1_2x4 *) y));
++            }
++        }
++
++        il = (il + 2 < nl) ? il + 2 : il % 2;
++        x  = (il < 2) ? x + (2 + nl - 1)/nl : x;
++
++        y += NK;
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        // each simdgroup covers 16 src0 rows x all 8 src1 rows
++        threadgroup const S0 * lsma = (sa + 2*64*sgitg);
++        threadgroup const S1 * lsmb = (sb);
++
++        FOR_UNROLL (short ik = 0; ik < NK/8; ik++) {
++            simdgroup_barrier(mem_flags::mem_none);
++
++            FOR_UNROLL (short i = 0; i < 2; i++) {
++                simdgroup_load(ma[i], lsma + 64*i, 8, 0, false);
++            }
++
++            simdgroup_barrier(mem_flags::mem_none);
++
++            simdgroup_load(mb, lsmb, 8, 0, false);
++
++            simdgroup_barrier(mem_flags::mem_none);
++
++            FOR_UNROLL (short i = 0; i < 2; i++){
++                simdgroup_multiply_accumulate(mc[i], mb, ma[i], mc[i]);
++            }
++
++            lsma += 8*64;
++            lsmb += 4*64;
++        }
++    }
++
++    if (!FC_mul_mm_bc_out || (r0 + NR0 <= args.ne0 && r1 + NR1 <= args.ne1)) {
++        device float * C = (device float *) dst +
++            (r0 + 16*sgitg) + \
++            (r1              ) * args.ne0 + im*args.ne1*args.ne0;
++
++        for (short i = 0; i < 2; i++) {
++            simdgroup_store(mc[i], C + 8*i, args.ne0, 0, false);
++        }
++    } else {
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        threadgroup float * temp_str = ((threadgroup float *) shmem) + 16*sgitg;
++
++        for (short i = 0; i < 2; i++) {
++            simdgroup_store(mc[i], temp_str + 8*i, NR0, 0, false);
++        }
++
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        if (sgitg == 0) {
++            for (int j = tiitg; j < nr1; j += NR1) {
++                device float  * D  = (device float  *) dst + r0 + (r1 + j)*args.ne0 + im*args.ne1*args.ne0;
++                device float4 * D4 = (device float4 *) D;
++
++                threadgroup float  * C  = temp_str + (j*NR0);
++                threadgroup float4 * C4 = (threadgroup float4 *) C;
++
++                int i = 0;
++                for (; i < nr0/4; i++) {
++                    *(D4 + i) = *(C4 + i);
++                }
++
++                i *= 4;
++                for (; i < nr0; i++) {
++                    *(D + i) = *(C + i);
++                }
++            }
++        }
++    }
++}
++
++#endif // !GGML_METAL_HAS_TENSOR
++
+ #endif // GGML_METAL_HAS_TENSOR
+ 
+ template<short ne20> // n_expert_used
+@@ -10689,6 +10895,12 @@ template [[host_name("kernel_mul_mm_bf16_f32")]]    kernel mul_mm_t kernel_mul_m
+ template [[host_name("kernel_mul_mm_q1_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q1_0,    8,     dequantize_q1_0,    float,  float4x4,  float, float2x4>;
+ template [[host_name("kernel_mul_mm_q2_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q2_0,    4,     dequantize_q2_0,    float,  float4x4,  float, float2x4>;
+ template [[host_name("kernel_mul_mm_q4_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_0,    2,     dequantize_q4_0,    float,  float4x4,  float, float2x4>;
++
++#ifndef GGML_METAL_HAS_TENSOR
++typedef decltype(kernel_mul_mm_nr8<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_q4_0, 2, dequantize_q4_0, float, float4x4, float, float2x4>) mul_mm_nr8_t;
++
++template [[host_name("kernel_mul_mm_nr8_q4_0_f32")]] kernel mul_mm_nr8_t kernel_mul_mm_nr8<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_0,    2,     dequantize_q4_0,    float,  float4x4,  float, float2x4>;
++#endif
+ template [[host_name("kernel_mul_mm_q4_1_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_1,    2,     dequantize_q4_1,    float,  float4x4,  float, float2x4>;
+ template [[host_name("kernel_mul_mm_q5_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q5_0,    2,     dequantize_q5_0,    float,  float4x4,  float, float2x4>;
+ template [[host_name("kernel_mul_mm_q5_1_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q5_1,    2,     dequantize_q5_1,    float,  float4x4,  float, float2x4>;

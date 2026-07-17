@@ -301,5 +301,31 @@ LLAMA_API int32_t llama_kv_ext_donor_buffer_status(
  * in transitively otherwise). */
 struct ggml_backend_buffer;
 struct ggml_backend_buffer * llama_kv_ext_donor_try_consume(size_t required_size);
+
+/*
+ * Phase 15 v49 — device-buft donor consume (C++-only internal hook, not part
+ * of the C ABI). Called from llama_kv_cache's allocation loop for buft groups
+ * whose device advertises ggml_backend_dev_caps.buffer_from_host_ptr (Metal on
+ * Apple Silicon; CUDA does not implement this — no separate CUDA branch
+ * needed, the capability check alone excludes it). Uses
+ * ggml_backend_dev_buffer_from_host_ptr — the same zero-copy-mmap mechanism
+ * llama-model.cpp's weight loader already uses in production — instead of
+ * ggml_backend_cpu_buffer_from_ptr. max_tensor_size should be
+ * ggml_get_max_tensor_size(ctx) for the ctx being allocated (Metal splits
+ * donor buffers larger than the device's max_buffer_size into overlapping
+ * windows sized so no single tensor straddles a window boundary; an
+ * incorrect/too-small max_tensor_size could otherwise let a tensor cross a
+ * window seam).
+ *
+ * Returns nullptr (no side effects) when: dev is null, the device does not
+ * support buffer_from_host_ptr (including all CUDA devices), no donor of
+ * sufficient size is registered/unconsumed, or LLAMA_KV_EXT_DONOR_BUFFER is
+ * not defined at build time.
+ */
+struct ggml_backend_device;
+struct ggml_backend_buffer * llama_kv_ext_donor_try_consume_dev(
+        struct ggml_backend_device * dev,
+        size_t                       required_size,
+        size_t                       max_tensor_size);
 #endif
 

@@ -2695,12 +2695,13 @@ private:
                 } break;
             case SERVER_TASK_TYPE_SLOT_SEQ_COPY:
                 {
-                    if (!check_no_mtmd(task.id)) {
-                        break;
-                    }
+                    // Media-aware Radix seed: clone+keep_first copies mtmd chunks when
+                    // allow_media; otherwise clamp to pure-text prefix before first media.
+                    // Replaces check_no_mtmd (blocked all multimodal models even for text slots).
                     const int id_dst = task.slot_action.id_slot;
                     const int id_src = task.slot_action.id_slot_src;
                     const llama_pos pos_end = task.slot_action.pos_end;
+                    const bool allow_media = task.slot_action.allow_media;
                     server_slot * slot_dst = get_slot_by_id(id_dst);
                     server_slot * slot_src = get_slot_by_id(id_src);
                     if (slot_dst == nullptr || slot_src == nullptr) {
@@ -2714,6 +2715,16 @@ private:
                     }
                     if (id_src == id_dst || pos_end <= 0) {
                         send_error(task, "Invalid seq-copy range", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    const size_t n_copy = slot_src->prompt.tokens.safe_prefix_len((size_t) pos_end, allow_media);
+                    if (n_copy == 0) {
+                        send_error(task,
+                            allow_media
+                                ? "seq-copy prefix is empty"
+                                : "This operation is not supported while the slot holds image/audio tokens at position 0 (a pure-text prefix is supported)",
+                            ERROR_TYPE_NOT_SUPPORTED);
                         break;
                     }
 
@@ -2734,30 +2745,33 @@ private:
                             send_error(task, "seq-copy produced empty KV (source slot may lack cache)", ERROR_TYPE_INVALID_REQUEST);
                             break;
                         }
-                        // Trim to requested prefix when full-seq copy is longer than pos_end.
-                        // Partial seq_cp p1 is unsafe on some KV backends — rm the tail instead.
+                        // Trim to effective prefix (may be < pos_end when media-clamped).
                         const llama_pos pos_max = llama_memory_seq_pos_max(mem, id_dst);
-                        if (pos_max >= pos_end) {
-                            common_context_seq_rm(ctx_tgt, id_dst, pos_end, -1);
+                        const llama_pos eff_end = (llama_pos) n_copy;
+                        if (pos_max >= eff_end) {
+                            common_context_seq_rm(ctx_tgt, id_dst, eff_end, -1);
                             if (ctx_dft) {
-                                common_context_seq_rm(ctx_dft, id_dst, pos_end, -1);
+                                common_context_seq_rm(ctx_dft, id_dst, eff_end, -1);
                             }
                         }
                     }
 
-                    // WHY not prompt_clear: that seq_rm's the dst KV we just copied.
-                    slot_dst->prompt.tokens.clear();
-                    const llama_tokens & src_tokens = slot_src->prompt.tokens.get_tokens();
-                    const size_t n_copy = std::min<size_t>(src_tokens.size(), (size_t) pos_end);
-                    for (size_t i = 0; i < n_copy; ++i) {
-                        slot_dst->prompt.tokens.push_back(src_tokens[i]);
+                    // WHY clone+keep_first: per-token push_back throws on LLAMA_TOKEN_NULL and
+                    // drops map_idx_to_media — required for media-aware Radix seeds.
+                    try {
+                        server_tokens prefix = slot_src->prompt.tokens.clone();
+                        prefix.keep_first(n_copy);
+                        slot_dst->prompt.tokens = std::move(prefix);
+                    } catch (const std::exception & e) {
+                        send_error(task, std::string("seq-copy token rebuild failed: ") + e.what(), ERROR_TYPE_SERVER);
+                        break;
                     }
 
                     auto res = std::make_unique<server_task_result_slot_seq_copy>();
                     res->id            = task.id;
                     res->id_slot       = id_dst;
                     res->id_slot_src   = id_src;
-                    res->pos_end       = pos_end;
+                    res->pos_end       = (llama_pos) n_copy;
                     res->n_tokens_copied = n_copy;
                     queue_results.send(std::move(res));
                 } break;
@@ -5374,6 +5388,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
     const int id_src = body.at("src_slot");
     const int id_dst = body.at("dst_slot");
     const llama_pos pos_end = body.at("pos_end");
+    // Default true: media-aware Radix seed (clone mtmd chunks). Set false for text-only clamp.
+    const bool allow_media = body.value("allow_media", true);
     auto & rd = res->rd;
     {
         server_task task(SERVER_TASK_TYPE_SLOT_SEQ_COPY);
@@ -5381,6 +5397,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
         task.slot_action.id_slot = id_dst;
         task.slot_action.id_slot_src = id_src;
         task.slot_action.pos_end = pos_end;
+        task.slot_action.allow_media = allow_media;
         rd.post_task(std::move(task));
     }
     auto result = rd.next(req.should_stop);

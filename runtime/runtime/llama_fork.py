@@ -4,6 +4,9 @@ WHY separate from gpu_profiles: fork gating is about the *binary* (does this
 llama-server understand QJL/Polar/TurboQuant and --ctx-checkpoints?), not which
 GPU JSON we selected. Operators may point LLAMA_SERVER_BIN at a fork build while
 keeping stock vendor ggml in the Go binary during evaluation.
+
+L2 Done (Jul 2026): defaults stay L1 (tok/s). VRAM opt-in via ``ZEROLLAMA_LLAMA_FORK=1``
+or ``ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1`` when configured ctx ≥ threshold.
 """
 
 from __future__ import annotations
@@ -126,6 +129,63 @@ def llama_fork_env_override() -> bool | None:
     return None
 
 
+# WHY separate from ZEROLLAMA_LLAMA_FORK default: short-ctx wants stock q8_0 tok/s;
+# long-ctx wants TBQ VRAM without forcing FORK=1 globally. Explicit FORK=0/1 wins.
+DEFAULT_AUTO_VRAM_CTX_THRESHOLD = 32768
+
+
+def llama_fork_auto_vram_enabled() -> bool:
+    """``ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1`` — enable TBQ fork when configured ctx is large."""
+    from runtime.env import env_bool
+
+    return env_bool("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM", default=False)
+
+
+def auto_vram_ctx_threshold() -> int:
+    """Min configured ``num_ctx`` to auto-enable fork (default 32768)."""
+    raw = os.environ.get("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX", "").strip()
+    if not raw:
+        return DEFAULT_AUTO_VRAM_CTX_THRESHOLD
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_AUTO_VRAM_CTX_THRESHOLD
+
+
+def configured_num_ctx_hint() -> int | None:
+    """Serve/default context for AUTO_VRAM gating (not per-request).
+
+    Precedence: ``ZEROLLAMA_RUNTIME_VRAM_NUM_CTX`` → ``ZEROLLAMA_LLAMA_CTX`` →
+    ``LLAMA_ARG_CTX_SIZE`` / ``LLAMA_N_CTX``. Missing → None (AUTO_VRAM stays off).
+    """
+    from runtime.env import vram_num_ctx_override
+
+    override = vram_num_ctx_override()
+    if override is not None:
+        return override
+    for key in ("ZEROLLAMA_LLAMA_CTX", "LLAMA_ARG_CTX_SIZE", "LLAMA_N_CTX"):
+        raw = os.environ.get(key, "").strip()
+        if not raw:
+            continue
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            continue
+    return None
+
+
+def auto_vram_ctx_threshold_met() -> bool:
+    """True when AUTO_VRAM is on and configured ctx ≥ threshold."""
+    if not llama_fork_auto_vram_enabled():
+        return False
+    ctx = configured_num_ctx_hint()
+    if ctx is None:
+        return False
+    return ctx >= auto_vram_ctx_threshold()
+
+
 def clear_fork_probe_cache() -> None:
     """Test helper: drop cached --help probe results."""
     probe_fork_llama_server.cache_clear()
@@ -154,21 +214,32 @@ def probe_fork_llama_server(binary: str) -> bool:
     return any(marker in text for marker in ("qjl1_256", "q4_polar", "tbq3_0", "tbq4_0"))
 
 
+def _binary_fork_capable(llama_server_bin: Path | str) -> bool:
+    if not probe_fork_llama_server(str(llama_server_bin)):
+        return False
+    if not auto_fork_kv_supported():
+        return False
+    if sys.platform.startswith("linux") and not cuda_fork_backend_capable(
+        str(llama_server_bin)
+    ):
+        return False
+    return True
+
+
 def llama_fork_enabled(*, llama_server_bin: Path | str | None = None) -> bool:
     """Whether to emit fork KV types and --ctx-checkpoints from GPU profiles."""
     override = llama_fork_env_override()
     if override is not None:
         return override
-    if llama_server_bin is not None:
-        if not probe_fork_llama_server(str(llama_server_bin)):
+    # AUTO_VRAM: long configured ctx → TBQ profile; short ctx stays stock.
+    if llama_fork_auto_vram_enabled():
+        if not auto_vram_ctx_threshold_met():
             return False
-        if not auto_fork_kv_supported():
-            return False
-        if sys.platform.startswith("linux") and not cuda_fork_backend_capable(
-            str(llama_server_bin)
-        ):
-            return False
+        if llama_server_bin is not None:
+            return _binary_fork_capable(llama_server_bin)
         return True
+    if llama_server_bin is not None:
+        return _binary_fork_capable(llama_server_bin)
     return False
 
 
@@ -178,6 +249,20 @@ def fork_detection_source(*, llama_server_bin: Path | str | None = None) -> str:
         return "env"
     if override is False:
         return "env_off"
+    if llama_fork_auto_vram_enabled():
+        if auto_vram_ctx_threshold_met():
+            if llama_server_bin is not None and not _binary_fork_capable(llama_server_bin):
+                if not probe_fork_llama_server(str(llama_server_bin)):
+                    return "auto_vram_binary_stock"
+                if not auto_fork_kv_supported():
+                    return "probe_disabled_platform"
+                if sys.platform.startswith("linux") and not cuda_fork_backend_capable(
+                    str(llama_server_bin)
+                ):
+                    return "probe_disabled_cuda_backend"
+                return "auto_vram_binary_stock"
+            return "auto_vram"
+        return "auto_vram_below_ctx"
     if llama_server_bin is not None and probe_fork_llama_server(str(llama_server_bin)):
         if not auto_fork_kv_supported():
             return "probe_disabled_platform"
@@ -196,6 +281,9 @@ def fork_health(*, llama_server_bin: Path | str | None = None) -> dict[str, obje
         "source": fork_detection_source(llama_server_bin=llama_server_bin),
         "pin_ref": ELIZA_LLAMA_CPP_DEFAULT_REF,
         "repo": ELIZA_LLAMA_CPP_REPO,
+        "auto_vram": llama_fork_auto_vram_enabled(),
+        "auto_vram_ctx_threshold": auto_vram_ctx_threshold(),
+        "configured_num_ctx_hint": configured_num_ctx_hint(),
     }
     if llama_server_bin is not None:
         bin_path = Path(llama_server_bin)

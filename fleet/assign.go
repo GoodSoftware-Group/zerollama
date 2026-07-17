@@ -26,12 +26,13 @@ func Assign(nodes []NodeSnapshot, req AssignRequest, cache *PrefixCache) (Assign
 	}
 
 	scoreReq := ScoreRequest{
-		Model:          model,
-		PreferWarm:     req.PreferWarm,
-		WarmOnly:       req.WarmOnly,
-		Exclude:        req.Exclude,
-		SessionKey:     req.SessionKey,
-		PromptCacheKey: req.PromptCacheKey,
+		Model:             model,
+		PreferWarm:        req.PreferWarm,
+		WarmOnly:          req.WarmOnly,
+		Exclude:           req.Exclude,
+		SessionKey:        req.SessionKey,
+		PromptCacheKey:    req.PromptCacheKey,
+		PrefixBlockHashes: req.PrefixBlockHashes,
 	}
 	result := ScoreCandidates(nodes, scoreReq, cache)
 	if result.Best == nil {
@@ -52,6 +53,7 @@ func Assign(nodes []NodeSnapshot, req AssignRequest, cache *PrefixCache) (Assign
 	}
 
 	resp := assignFromScored(*best, now)
+	resp = withAssignmentToken(resp, model, now)
 	return resp, nil
 }
 

@@ -11,6 +11,13 @@ WHY not blanket-skip hybrid like v1:
   ``KVCacheSpec.kind == hybrid`` classifies GGUF full+SWA layouts, not only
   ``llama_memory_hybrid`` attn+recurrent — blocking all hybrid denied Radix on
   common agent models (Gemma) with no upstream bug.
+
+WHY window-only (not full ``swa_allows_cache_prompt`` / retention):
+  ``ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL`` sparsifies *same-slot resume*
+  checkpoints. Radix copies live dense donor KV verified by the block pool.
+  Applying retention here denied warm catch-up at non-aligned ``seq_pos`` and
+  fights shared-system-prompt seed under selective retention — same class of
+  footgun as vLLM #47782 (Marconi + hybrid retention).
 """
 
 from __future__ import annotations
@@ -28,8 +35,9 @@ def radix_seq_copy_allowed(
 
     Skip reasons (trace ``radix_seed.skipped``):
       ``hybrid_seq_copy_disabled`` — operator kill-switch for attn+recurrent probes.
+      ``hybrid_missing_effective_window`` — hybrid without a resolved SWA window.
+      ``hybrid_target_past_swa_window`` — warm target already past SWA window.
       ``hybrid_prefix_exceeds_swa_window`` — copy longer than ``effective_window``.
-      ``hybrid_swa_denied`` — coordinator/window policy rejects prompt at target pos.
     """
     if spec.kind in ("standard", "sliding_window"):
         return True, None
@@ -45,13 +53,11 @@ def radix_seq_copy_allowed(
     if window is None or window <= 0:
         return False, "hybrid_missing_effective_window"
 
+    pos = max(0, int(plan.target_seq_pos_before))
+    if pos >= window:
+        return False, "hybrid_target_past_swa_window"
+
     if plan.copy_tokens > window:
         return False, "hybrid_prefix_exceeds_swa_window"
-
-    if not spec.swa_allows_cache_prompt(
-        seq_pos=plan.target_seq_pos_before,
-        prompt_tokens=plan.copy_tokens,
-    ):
-        return False, "hybrid_swa_denied"
 
     return True, None

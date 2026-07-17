@@ -23,7 +23,7 @@ Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
 new file mode 100644
-index 000000000..32705a314
+index 00000000..32705a31
 --- /dev/null
 +++ b/include/llama-kv-ext.h
 @@ -0,0 +1,245 @@
@@ -273,7 +273,7 @@ index 000000000..32705a314
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 320784c3a..ebb3a1cd3 100644
+index 320784c3..ebb3a1cd 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -30,6 +30,7 @@ add_library(llama
@@ -311,7 +311,7 @@ index 320784c3a..ebb3a1cd3 100644
 +# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
 +target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 531d99dbd..a6a88304d 100644
+index 531d99db..a6a88304 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -93,12 +93,8 @@ public:
@@ -407,7 +407,7 @@ index 531d99dbd..a6a88304d 100644
  
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
 new file mode 100644
-index 000000000..d4bef15b4
+index 00000000..d4bef15b
 --- /dev/null
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -0,0 +1,553 @@
@@ -966,7 +966,7 @@ index 000000000..d4bef15b4
 +}
 diff --git a/src/ollama-compat/llama-ollama-compat-util.cpp b/src/ollama-compat/llama-ollama-compat-util.cpp
 new file mode 120000
-index 000000000..916a18ff8
+index 00000000..916a18ff
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat-util.cpp
 @@ -0,0 +1 @@
@@ -974,7 +974,7 @@ index 000000000..916a18ff8
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat-util.h b/src/ollama-compat/llama-ollama-compat-util.h
 new file mode 120000
-index 000000000..74c23f92d
+index 00000000..74c23f92
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat-util.h
 @@ -0,0 +1 @@
@@ -982,7 +982,7 @@ index 000000000..74c23f92d
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat.cpp b/src/ollama-compat/llama-ollama-compat.cpp
 new file mode 120000
-index 000000000..9af5aa24f
+index 00000000..9af5aa24
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat.cpp
 @@ -0,0 +1 @@
@@ -990,14 +990,14 @@ index 000000000..9af5aa24f
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat.h b/src/ollama-compat/llama-ollama-compat.h
 new file mode 120000
-index 000000000..05760aa00
+index 00000000..05760aa0
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat.h
 @@ -0,0 +1 @@
 +/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
 \ No newline at end of file
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index ea684d9f1..1b510fba4 100644
+index ea684d9f..1b510fba 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
 @@ -64,6 +64,8 @@ target_link_libraries     (mtmd PRIVATE Threads::Threads)

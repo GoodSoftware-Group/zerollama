@@ -74,7 +74,8 @@ type PromptTokensDetails struct {
 }
 
 // CachedTokensDetails breaks down prefix-cache hits by tier (SGLang sglext shape).
-// Native path maps L3 / llama-server cache_n to device until host/storage tiers land.
+// Native path maps L3 disk restore → host and federated blob → storage;
+// device remains llama-server / slot cache_n (CachedPromptTokens).
 type CachedTokensDetails struct {
 	Device         int     `json:"device,omitempty"`
 	Host           int     `json:"host,omitempty"`

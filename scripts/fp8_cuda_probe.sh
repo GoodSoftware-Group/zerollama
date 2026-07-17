@@ -5,7 +5,7 @@
 # libggml-cuda embeds FP8 type/kernel markers (MMVQ/MMQ + convert).
 #
 #   ./scripts/fp8_cuda_probe.sh
-#   LLAMA_CPP_ROOT=vendor/llama-cpp-8f114a9b ./scripts/fp8_cuda_probe.sh
+#   LLAMA_CPP_ROOT=vendor/llama-cpp-86d86ed4 ./scripts/fp8_cuda_probe.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

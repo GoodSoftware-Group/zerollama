@@ -10,24 +10,21 @@
 
 SGLang/Qwen-VL clients size `padded_input_ids` from a **client-side** patch grid (`img_grid_thw` / `video_grid_thw`). Zerollama expands video with ffmpeg and encodes frames with mtmd from **pixels** — resize and smart-crop policy can differ. When embed token count ≠ client grid, pretokenized layouts misalign with actual ViT output → context drift and degraded answers.
 
-**Why not block hints until upstream lands:** operators need preflight/usage parity and debug visibility (`vision grid hints`) today; blocking the Go wire would force a second refactor when mtmd adds `mtmd_bitmap_set_grid_hint`. The seam accepts `gridTHW` now, logs at Debug when present, and leaves pixel-derived encode unchanged.
-
 ---
 
-## Current state (zerollama Jun 2026)
+## Current state (zerollama Jul 2026)
 
 | Layer | Behavior |
 |-------|----------|
 | **Preflight / usage** | `VisionTokensFromGridTHW([T,H,W], merge)` on `video_spans` — preflight, OpenAI `prompt_tokens_details` |
 | **Expansion cache** | `grid_thw` stored with PNG frames in global + session LRU |
-| **Runner payload** | `llm.ImageData.GridTHW` optional `[1,H,W]` per raster (`server/modality/grid_thw_raster.go`) |
-| **llamarunner seam** | `MtmdContext.MultimodalTokenize(..., gridTHW)` forwards hint via `mtmd_bitmap_set_grid_hint` |
-| **mtmd forward (Jun 2026)** | M-RoPE models: hint resize to `W*patch x H*patch`, skip `smart_resize`; log `grid_thw hint resize` |
-| **Observability** | `vision grid hints` summary; **`vision grid hint match`** at Info when client grid aligns with mtmd output |
+| **Runner payload** | `llm.ImageData.GridTHW` optional `[1,H,W]` per raster (`server/modality/grid_thw_raster.go`); client-explicit **and** server ffmpeg estimates |
+| **llamarunner / mtmd** | `mtmd_bitmap_set_grid_hint` → dyn_size resize to `W*patch × H*patch`, skip smart_resize; log `grid_thw hint resize` |
+| **ollama-engine** | Qwen3-VL / Qwen2.5-VL / glmocr / qwen3next `EncodeMultimodalWithGrid` same contract |
+| **ViT cache** | PNG embed hash includes grid when set (same bytes + different grid → miss) |
+| **Observability** | `vision grid hints` summary; **`vision grid hint match`** at Info when client grid aligns with embed count |
 
-**Client vs server grid:** Only **client-origin** `grid_thw` on pre-expanded `video_spans` is forwarded to mtmd (`VideoSpan.GridTHWExplicit`). Server ffmpeg estimates populate `grid_thw` on spans for **preflight/usage** but do not override ViT resize (Go smart_resize ≠ mtmd smart_resize).
-
-**Not shipped:** M-RoPE **decoder positions** still derived from mtmd output dimensions (aligned when hint matches). Non–M-RoPE families ignore hints. llava-uhd tiling unchanged.
+**Not shipped:** Non–M-RoPE / fixed-size / llava-uhd families ignore hints. Decoder M-RoPE positions still come from mtmd output dims (aligned when hint matches).
 
 ---
 
@@ -73,23 +70,12 @@ MTMD_API void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bmp, const int32_t grid_th
 
 ---
 
-## Zerollama wiring checklist (post-upstream)
-
-1. Bump `LLAMA_CPP_VERSION` + regen Metal embed if needed.
-2. ~~Replace debug log in `llama.MtmdContext.MultimodalTokenize(..., gridTHW)` with `mtmd_bitmap_set_grid_hint`~~ **Done (Jun 2026)** — only **client explicit** grids forwarded via `GridTHWPerRaster` + `VideoSpan.GridTHWExplicit`.
-3. Remove or downgrade `vision grid hint mismatch` logs once hints are authoritative.
-4. E2E: `RUN_E2E_VIDEO_AGENT_INFER=1` with pre-expanded `video_spans` + `grid_thw` on Qwen3-VL; optional `VIDEO_AGENT_INFER_PREPROC=1` for padded infer leg.
-
----
-
-## Operator signals today
+## Operator signals
 
 ```bash
-# Debug: compare client grid vs mtmd embed count per frame
-OLLAMA_DEBUG=1 ollama serve 2>&1 | rg 'vision grid hint'
+# Hint applied (mtmd or ollama-engine):
+rg 'grid_thw hint resize|vision grid hint match'
 
-# Preflight already uses grid when present on video_spans
-curl .../api/chat -d '{"messages":[{"role":"user","video_spans":[{"frame_count":4,"grid_thw":[4,24,32]}],...}]}'
+# E2E: VIDEO_AGENT_INFER_GRID_THW=1 with VIDEO_AGENT_INFER_PREPROC=1
+RUN_E2E_VIDEO_AGENT_INFER=1 VIDEO_AGENT_INFER_GRID_THW=1 ./scripts/video/video_agent_infer_smoke.sh
 ```
-
-Mismatch logs are **expected** until upstream accepts hints — mtmd still pixel-derives layout.

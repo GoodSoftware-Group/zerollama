@@ -25,6 +25,8 @@
 #   TRAINING_UV_PYTHON_VER — uv --python spec (default: embedded_training_python_ver)
 #   TRAINING_UV_SYNC=1     — force reinstall requirements-training.txt
 #   ZEROLLAMA_BIN          — zerollama path for ldd-based version detect
+#   TRAINING_UV_CPU_ONLY=1 — Linux: install CPU-only torch wheels instead of cu128 (T4 CI /
+#                            CPU-only hosts; health/import checks do not need a GPU build).
 set -euo pipefail
 
 TRAINING_UV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -75,6 +77,12 @@ training_uv_venv() {
   if [[ "${TRAINING_UV_SYNC:-0}" == "1" ]] || ! "${py}" -c "import torch, peft" 2>/dev/null; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
       "${uv_bin}" pip install --python "${py}" -r "${TRAINING_UV_ROOT}/requirements-training.txt"
+    elif [[ "${TRAINING_UV_CPU_ONLY:-0}" == "1" ]]; then
+      # WHY --index-url (not --extra-index-url): CPU wheel index does not host bitsandbytes
+      # or other non-torch deps; --extra-index-url keeps PyPI as the primary source for those
+      # while still preferring the CPU torch build over any CUDA default from PyPI.
+      "${uv_bin}" pip install --python "${py}" -r "${TRAINING_UV_ROOT}/requirements-training.txt" \
+        --extra-index-url https://download.pytorch.org/whl/cpu
     else
       "${uv_bin}" pip install --python "${py}" -r "${TRAINING_UV_ROOT}/requirements-training.txt" \
         --extra-index-url https://download.pytorch.org/whl/cu128

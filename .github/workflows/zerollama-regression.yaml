@@ -79,6 +79,35 @@ jobs:
           P15_UPSTREAM_JSON: /tmp/phase15-upstream-kv-watch.json
         run: ./scripts/phase/phase15_upstream_kv_watch.sh
 
+  training-embed-health:
+    # T4: prove the OTHER half of the embedded-Python health story — not just that Go route
+    # wiring survives without libpython (see go-server's ./server/... test, which accepts 502),
+    # but that a real ABI-matched .venv-training + CPU torch actually reaches "initialized" and
+    # reports status=ok. CPU-only torch is sufficient: health/import checks don't need a GPU.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Install build deps (embedded training / pyembed)
+        run: sudo apt-get update && sudo apt-get install -y python3-dev pkg-config
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Provision CPU-only .venv-training (ABI-matched to linked libpython)
+        env:
+          TRAINING_UV_CPU_ONLY: '1'
+        run: source ./scripts/training/training_uv_venv.sh && training_uv_venv
+      - name: go test (real embedded Python init + health)
+        env:
+          CGO_ENABLED: '1'
+          OLLAMA_TRAINING_PYTHONPATH: ${{ github.workspace }}
+          RUN_E2E_TRAINING_EMBED: '1'
+        run: go test -count=1 -run TestEmbeddedTrainingHealthReal -v ./x/trainingworker/...
+
   runtime-pytest:
     runs-on: ubuntu-latest
     defaults:

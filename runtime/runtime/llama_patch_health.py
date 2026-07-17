@@ -26,7 +26,7 @@ from runtime.llama_cpp_unified import (
 _REQUIRED_PATCH_SUBSTRINGS = (
     "ollama-llama-kv-ext",  # Phase 15; numbered 0014 historically, 0019 on 8f114a9b
     "ollama-kv-seq-copy-endpoint",  # numbered 0017/0018 historically; 0022 on 8f114a9b
-    "cuda-graph-invalidate",  # 0072 — L3 decode-graph break for subprocess
+    "cuda_graph_invalidate",  # 0075 — L3 decode-graph break for subprocess
 )
 
 _IN_TREE_MARKERS = (

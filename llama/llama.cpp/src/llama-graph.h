@@ -30,27 +30,6 @@ class llama_memory_recurrent_context;
 class llama_memory_hybrid_context;
 class llama_memory_hybrid_iswa_context;
 
-// Flash-MoE (M16): interface implemented by llama_flash_moe_slot_runtime (llama-context.cpp)
-// and consumed by the graph builder to route routed-expert MLP tensors through the
-// slot-bank runtime instead of the default mul_mat_id path.
-struct llm_flash_moe_slot_runtime_i {
-    virtual ~llm_flash_moe_slot_runtime_i() = default;
-    virtual bool uses_layer(int layer) const = 0;
-    virtual bool uses_native_slot_map(int layer) const = 0;
-    virtual bool uses_dedicated_prefill_moe(int layer) const = 0;
-    virtual void bind_slot_ids_input(int layer, ggml_tensor * slot_ids) = 0;
-    virtual ggml_tensor * build_slot_ids_tensor(ggml_context * ctx0, ggml_tensor * selected_experts, int layer) = 0;
-    virtual ggml_tensor * build_prefill_moe_tensor(
-            ggml_context * ctx0,
-            ggml_tensor * cur,
-            ggml_tensor * selected_experts,
-            ggml_tensor * weights,
-            int layer) = 0;
-    virtual ggml_tensor * select_routed_weight_tensor(int layer, ggml_tensor * tensor) = 0;
-    virtual bool wants_tensor(const ggml_tensor * tensor) const = 0;
-    virtual bool handle_tensor(ggml_tensor * tensor) = 0;
-};
-
 // certain models (typically multi-modal) can produce different types of graphs
 enum llm_graph_type {
     LLM_GRAPH_TYPE_DEFAULT,
@@ -63,6 +42,10 @@ enum llm_fused_op {
     LLM_FUSED_OP_FLASH_ATTN,
     LLM_FUSED_OP_GDN_AR,
     LLM_FUSED_OP_GDN_CH,
+    LLM_FUSED_OP_LIGHTNING_INDEXER,
+    LLM_FUSED_OP_DSV4_HC_PRE,
+    LLM_FUSED_OP_DSV4_HC_COMB,
+    LLM_FUSED_OP_DSV4_HC_POST,
 };
 
 enum llm_ffn_op_type : int {

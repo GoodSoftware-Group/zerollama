@@ -3,7 +3,8 @@
 #
 # WHY: operators need a one-line PASS/FAIL like l3_gate_report.sh after live VLM smoke;
 # JSON report holds main verdict + optional preproc / prefix-mm legs separately.
-# Log checks (precomputed/processor inject, prefix-mm hint) are advisory — proof lives in serve log.
+# Log checks (prefix-mm hint) remain advisory unless a strict VIDEO_AGENT_INFER_* flag
+# required them. Precomputed skip-ViT is strict when VIDEO_AGENT_INFER_PRECOMPUTED=1.
 #
 # Usage:
 #   ./scripts/video/video_agent_infer_gate_report.sh /tmp/video-agent-infer-smoke.json
@@ -43,6 +44,7 @@ if log_checks:
     print(f"log session_cache_hit: {log_checks.get('session_cache_hit')}")
     print(f"log vision_embed_session_cache_hit: {log_checks.get('vision_embed_session_cache_hit')}")
     print(f"log vision_embed_global_cache_hit: {log_checks.get('vision_embed_global_cache_hit')}")
+    print(f"log vision_embed_radix_cache_hit: {log_checks.get('vision_embed_radix_cache_hit')}")
     print(f"log vision_embed_engine_ollama: {log_checks.get('vision_embed_engine_ollama')}")
     print(f"log vision_grid_hints: {log_checks.get('vision_grid_hints')}")
     print(f"log padded_runner_inject: {log_checks.get('padded_runner_inject')}")
@@ -55,6 +57,8 @@ if log_checks:
     print(f"log prefix_mm_cache_without_session_key: {log_checks.get('prefix_mm_cache_without_session_key')}")
     print(f"log vit_session_required: {data.get('vit_session_required')}")
     print(f"log grid_thw_forward_required: {data.get('grid_thw_forward_required')}")
+    print(f"log precomputed_required: {data.get('precomputed_required')}")
+    print(f"log vit_radix_required: {data.get('vit_radix_required')}")
     print(f"log grid_thw_hint_resize: {log_checks.get('grid_thw_hint_resize')}")
     print(f"log vision_grid_hint_match: {log_checks.get('vision_grid_hint_match')}")
     print(f"log access_cached_prompt_tokens: {log_checks.get('access_cached_prompt_tokens')}")
@@ -65,11 +69,33 @@ if pre:
     print(f"preproc turn2 cached_prompt_tokens: {(pre.get('turn2_metrics') or {}).get('cached_prompt_tokens')}")
     print(f"preproc turn2_cached_ok: {pre.get('turn2_cached_ok')}")
     print(f"preproc grid_thw: {pre.get('grid_thw')}")
+pc = data.get("precomputed_infer")
+if pc:
+    print(f"precomputed verdict: {pc.get('verdict')}")
+    print(f"precomputed embd: {pc.get('embd')} rows: {pc.get('rows')}")
+    print(f"precomputed grid_thw: {pc.get('grid_thw')}")
+    if pc.get("reason"):
+        print(f"precomputed reason: {pc.get('reason')}")
+vr = data.get("vit_radix_infer")
+if vr:
+    print(f"vit_radix verdict: {vr.get('verdict')}")
+    print(f"vit_radix donor_key: {vr.get('donor_key')}")
+    print(f"vit_radix consumer_key: {vr.get('consumer_key')}")
 
 if verdict == "fail":
     sys.exit(1)
 if pre and pre.get("verdict") == "fail":
     sys.exit(1)
+if pc and pc.get("verdict") == "fail":
+    sys.exit(1)
+if data.get("precomputed_required") and log_checks and not log_checks.get("precomputed_embedding_runner_inject"):
+    print("FAIL: precomputed_required but inject log missing", file=sys.stderr)
+    sys.exit(1)
+if data.get("vit_radix_required") and log_checks and not log_checks.get("vision_embed_radix_cache_hit"):
+    print("FAIL: vit_radix_required but radix hit log missing", file=sys.stderr)
+    sys.exit(1)
 if pre and pre.get("verdict") == "soft":
     print("preproc SOFT PASS: turn2 cached_prompt_tokens below minimum", file=sys.stderr)
+if pc and pc.get("verdict") == "soft":
+    print("precomputed SOFT PASS: inject OK without session/global cache hit", file=sys.stderr)
 PY

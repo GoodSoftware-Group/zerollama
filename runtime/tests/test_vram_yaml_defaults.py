@@ -103,6 +103,31 @@ serve:
         os.environ.pop(key, None)
 
 
+def test_apply_serve_llama_fork_auto_vram(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cfg = tmp_path / "auto_vram.yaml"
+    cfg.write_text(
+        """
+serve:
+  llama_fork_auto_vram: true
+  llama_fork_auto_vram_ctx: 32768
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX", raising=False)
+    import runtime.vram_yaml_defaults as mod
+
+    mod._APPLIED = False
+    mod._APPLY_RESULT = None
+    result = apply_vram_defaults_from_config(cfg, force=True)
+    assert "ZEROLLAMA_LLAMA_FORK_AUTO_VRAM" in result["applied"]
+    assert "ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX" in result["applied"]
+    assert os.environ["ZEROLLAMA_LLAMA_FORK_AUTO_VRAM"] == "True"
+    assert os.environ["ZEROLLAMA_LLAMA_FORK_AUTO_VRAM_CTX"] == "32768"
+    for key in result["applied"]:
+        os.environ.pop(key, None)
+
+
 def test_dual_4090_vram_repo_config_exists():
     path = Path(__file__).resolve().parents[1] / "configs" / "dual_4090_vram.yaml"
     assert path.is_file()

@@ -14,6 +14,12 @@ import (
 const (
 	scoreWarmBonus       = -10_000
 	scoreAffinityBonus   = -5_000
+	scoreRadixBonus      = -2_000 // L3-R8/LA13: prefer peers with warm prefix block pool + radix_share
+	scoreRadixPerBlock   = -2     // soft density hint (capped)
+	scoreRadixBlockCap   = 500
+	scoreRadixHashBlock  = -80    // L3-R9: per leading matched content-hash block
+	scoreRadixHashCap    = 64
+	scoreRadixDigestBonus = -400 // L3-R11: peer can HTTP-serve slot blobs for matched prefix
 	scoreQueueWeight     = 100
 	scoreLoadingPenalty  = 500
 	scoreColdPenalty     = 2_000 // applied only when prefer_warm and no warm nodes remain after filter
@@ -23,12 +29,13 @@ const (
 
 // ScoreRequest is POST /internal/score (and the scoring input for assign).
 type ScoreRequest struct {
-	Model          string   `json:"model"`
-	PreferWarm     *bool    `json:"prefer_warm,omitempty"`
-	WarmOnly       bool     `json:"warm_only,omitempty"`
-	Exclude        []string `json:"exclude,omitempty"`
-	SessionKey     string   `json:"session_key,omitempty"`
-	PromptCacheKey string   `json:"prompt_cache_key,omitempty"`
+	Model             string   `json:"model"`
+	PreferWarm        *bool    `json:"prefer_warm,omitempty"`
+	WarmOnly          bool     `json:"warm_only,omitempty"`
+	Exclude           []string `json:"exclude,omitempty"`
+	SessionKey        string   `json:"session_key,omitempty"`
+	PromptCacheKey    string   `json:"prompt_cache_key,omitempty"`
+	PrefixBlockHashes []string `json:"prefix_block_hashes,omitempty"` // L3-R9 / LA13 ordered hashes from token 0
 }
 
 // ScoredNode is one ranked fleet peer for a model request.
@@ -77,7 +84,7 @@ func ScoreCandidates(nodes []NodeSnapshot, req ScoreRequest, cache *PrefixCache)
 	for _, n := range candidates {
 		affinity := affinityID != "" && strings.EqualFold(n.ID, affinityID)
 		warm := nodeHasModel(n, model)
-		score, reasons := nodeScore(n, model, warm, affinity, preferWarm)
+		score, reasons := nodeScore(n, model, warm, affinity, preferWarm, sessionKey != "", req.PrefixBlockHashes)
 		scored = append(scored, ScoredNode{
 			NodeSnapshot: n,
 			Score:        score,
@@ -103,9 +110,9 @@ func ScoreCandidates(nodes []NodeSnapshot, req ScoreRequest, cache *PrefixCache)
 	}
 }
 
-func nodeScore(n NodeSnapshot, assignModel string, warm, affinity, preferWarm bool) (float64, []string) {
+func nodeScore(n NodeSnapshot, assignModel string, warm, affinity, preferWarm, sessionHint bool, prefixHashes []string) (float64, []string) {
 	var score float64
-	reasons := make([]string, 0, 6)
+	reasons := make([]string, 0, 8)
 
 	if warm {
 		score += scoreWarmBonus
@@ -118,6 +125,16 @@ func nodeScore(n NodeSnapshot, assignModel string, warm, affinity, preferWarm bo
 	if affinity {
 		score += scoreAffinityBonus
 		reasons = append(reasons, "affinity")
+	}
+
+	if hashBonus, why := nodeRadixHashBonus(n, prefixHashes); hashBonus != 0 {
+		score += hashBonus
+		reasons = append(reasons, why...)
+	} else if sessionHint {
+		if bonus, why := nodeRadixResidencyBonus(n); bonus != 0 {
+			score += bonus
+			reasons = append(reasons, why...)
+		}
 	}
 
 	if n.QueueDepth > 0 {
@@ -135,6 +152,56 @@ func nodeScore(n NodeSnapshot, assignModel string, warm, affinity, preferWarm bo
 	}
 
 	return score, reasons
+}
+
+// nodeRadixHashBonus prefers peers whose advertised block_hashes cover the
+// client's leading prefix chain (L3-R9 / full LA13). Soft — agents still pay
+// for cold restore if hashes are stale.
+func nodeRadixHashBonus(n NodeSnapshot, want []string) (float64, []string) {
+	if !fleetRadixHashScoreEnabled() || len(want) == 0 {
+		return 0, nil
+	}
+	r := n.Inference.Runtime.Radix
+	if r == nil || !r.Enabled || len(r.BlockHashes) == 0 {
+		return 0, nil
+	}
+	matched := longestPrefixHashMatch(want, r.BlockHashes)
+	if matched <= 0 {
+		return 0, nil
+	}
+	if matched > scoreRadixHashCap {
+		matched = scoreRadixHashCap
+	}
+	bonus := float64(matched) * scoreRadixHashBlock
+	// Keep a light residency nudge when radix_share is on (same peer likely can seed).
+	if r.RadixShare {
+		bonus += float64(scoreRadixBonus) / 4
+	}
+	// Prefer peers that advertise pullable digests (L3-R10/R11 cold restore path).
+	if r.BlobDigestBlocks > 0 || len(r.BlobDigests) > 0 {
+		bonus += float64(scoreRadixDigestBonus)
+		return bonus, []string{"radix_hash", "radix_blob"}
+	}
+	return bonus, []string{"radix_hash"}
+}
+
+// nodeRadixResidencyBonus prefers peers whose /api/status mirrors a warm Python
+// prefix block pool with radix_share (L3-R8). Soft signal when hashes are absent.
+func nodeRadixResidencyBonus(n NodeSnapshot) (float64, []string) {
+	if !fleetRadixScoreEnabled() {
+		return 0, nil
+	}
+	r := n.Inference.Runtime.Radix
+	if r == nil || !r.Enabled || !r.RadixShare || r.EntryCount <= 0 {
+		return 0, nil
+	}
+	bonus := float64(scoreRadixBonus)
+	blocks := r.EntryCount
+	if blocks > scoreRadixBlockCap {
+		blocks = scoreRadixBlockCap
+	}
+	bonus += float64(blocks) * scoreRadixPerBlock
+	return bonus, []string{"radix"}
 }
 
 func nodeCapacityPenalty(n NodeSnapshot, assignModel string) (float64, []string) {

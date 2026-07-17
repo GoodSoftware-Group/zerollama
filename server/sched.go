@@ -1430,8 +1430,13 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 	// e.g., if we have multiple options, will one make room for the request?
 	sort.Sort(ByDurationAndName(runnerList))
 
-	// First try to find a runner that's already idle
+	protected := s.mlxGate.protectedModelKeys()
+
+	// First try to find a runner that's already idle (skip fulfillment-protected models).
 	for _, runner := range runnerList {
+		if _, skip := protected[runner.modelKey]; skip {
+			continue
+		}
 		runner.refMu.Lock()
 		rc := runner.refCount
 		runner.refMu.Unlock()
@@ -1440,10 +1445,19 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 			return runner
 		}
 	}
-	// None appear idle, just wait for the one with the shortest duration
-	victimAttrs := append([]any{"runner_count", len(runnerList)}, schedRunnerAttrs(runnerList[0])...)
-	schedLogDebug("findRunnerToUnload: no idle runners, picking shortest keep-alive", nil, victimAttrs...)
-	return runnerList[0]
+	// None appear idle, just wait for the one with the shortest duration (still skip protected).
+	for _, runner := range runnerList {
+		if _, skip := protected[runner.modelKey]; skip {
+			continue
+		}
+		victimAttrs := append([]any{"runner_count", len(runnerList)}, schedRunnerAttrs(runner)...)
+		schedLogDebug("findRunnerToUnload: no idle runners, picking shortest keep-alive", nil, victimAttrs...)
+		return runner
+	}
+	if len(protected) > 0 {
+		slog.Debug("findRunnerToUnload: only fulfillment-protected runners loaded", "protected", len(protected))
+	}
+	return nil
 }
 
 func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {

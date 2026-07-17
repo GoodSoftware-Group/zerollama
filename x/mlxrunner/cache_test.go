@@ -674,7 +674,7 @@ func TestBranchCreationAndReuse(t *testing.T) {
 		env.assertAllTokens(t, "after A", []int32{1, 2, 3, 4, 5, 6, 7, 8, 20, 21})
 
 		// Verify trie was populated by close().
-		_, mA := findBestMatch(kvc.root, []int32{1, 2, 3, 4, 5, 6, 7, 8, 20, 21})
+		_, mA := findBestMatch(kvc.root, kvc.key([]int32{1, 2, 3, 4, 5, 6, 7, 8, 20, 21}))
 		if mA != 10 {
 			t.Fatalf("A findable: expected 10 matched, got %d", mA)
 		}
@@ -702,11 +702,11 @@ func TestBranchCreationAndReuse(t *testing.T) {
 		env.assertAllTokens(t, "after B", []int32{1, 2, 3, 4, 5, 10, 11, 12, 30, 31})
 
 		// Both A and B should be findable in the trie.
-		_, mA2 := findBestMatch(kvc.root, []int32{1, 2, 3, 4, 5, 6, 7, 8, 20, 21})
+		_, mA2 := findBestMatch(kvc.root, kvc.key([]int32{1, 2, 3, 4, 5, 6, 7, 8, 20, 21}))
 		if mA2 < 5 {
 			t.Fatalf("A still findable: expected >= 5 matched, got %d", mA2)
 		}
-		_, mB := findBestMatch(kvc.root, []int32{1, 2, 3, 4, 5, 10, 11, 12, 30, 31})
+		_, mB := findBestMatch(kvc.root, kvc.key([]int32{1, 2, 3, 4, 5, 10, 11, 12, 30, 31}))
 		if mB < 5 {
 			t.Fatalf("B findable: expected >= 5 matched, got %d", mB)
 		}
@@ -834,7 +834,7 @@ func TestEvictionPreservesActiveConversations(t *testing.T) {
 
 		// System prompt prefix should still be findable (multi-child
 		// branch points are protected from eviction entirely).
-		_, matched := findBestMatch(kvc.root, systemPrompt)
+		_, matched := findBestMatch(kvc.root, kvc.key(systemPrompt))
 		if matched < len(systemPrompt) {
 			t.Fatalf("system prompt match = %d, want %d", matched, len(systemPrompt))
 		}
@@ -1101,7 +1101,7 @@ func TestPagedOutBytesUpdatesOnMaterialize(t *testing.T) {
 	kvc := &kvCache{}
 	kvc.ensureRoot()
 
-	node := &trieNode{parent: kvc.root, tokens: []int32{1, 2, 3}, endOffset: 3}
+	node := &trieNode{parent: kvc.root, tokens: []trieKey{1, 2, 3}, endOffset: 3}
 	kvc.root.children = append(kvc.root.children, node)
 
 	snap := &fakeSnapshot{from: 0, to: 3, byteSize: 0}
@@ -1127,7 +1127,7 @@ func TestSwapSnapshotsDetachesHook(t *testing.T) {
 	kvc := &kvCache{}
 	kvc.ensureRoot()
 
-	node := &trieNode{parent: kvc.root, tokens: []int32{1, 2, 3}, endOffset: 3}
+	node := &trieNode{parent: kvc.root, tokens: []trieKey{1, 2, 3}, endOffset: 3}
 	kvc.root.children = append(kvc.root.children, node)
 
 	snap := &fakeSnapshot{from: 0, to: 3, byteSize: 0}

@@ -382,6 +382,7 @@ Any client can detect zerollama via `GET /api/version` (`distribution: zerollama
 |-------|--------|---------|
 | `qos_class` | `interactive` \| `auxiliary` \| `background` | Scheduling intent (aliases: `primary`, `aux`, `bg`) |
 | `qos_priority` | `0–100` | Class inferred when `qos_class` omitted (`≥70` interactive) |
+| `fulfillment` | `complete` \| `benchmark` | No-degradation / exclusive speed (aliases: `guarantee`, `reliable` / `bench`, `speed`, `exclusive`) — see [agent-qos fulfillment](./agent-qos-and-project-tracking.md) |
 | `session_group` | string | Harness id for shared cache branch (`aux:{model}:{group}`) |
 | `session_parent` | string | Parent thread `prompt_cache_key` (logging / future parent-aware defer) |
 | `project_id` | string | Client harness id for fleet / `zerollama ps` (aliases: `client_id`, `project`) |
@@ -391,6 +392,19 @@ Any client can detect zerollama via `GET /api/version` (`distribution: zerollama
 Legacy flat fields still honored: `mlx_session_class`, `mlx_session_parent`.
 
 ### Examples
+
+**Benchmark (exclusive GPU, no peer models):**
+
+```json
+{
+  "options": {
+    "zerollama": {
+      "fulfillment": "benchmark",
+      "project_id": "zerollama-bench"
+    }
+  }
+}
+```
 
 **Interactive agent (any harness):**
 
