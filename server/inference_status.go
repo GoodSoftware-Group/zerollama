@@ -41,10 +41,12 @@ func (s *Server) inferenceStatus(ctx context.Context) api.InferenceStatus {
 	training := &api.TrainingStatus{
 		QueuePolicy: trainingQueuePolicy(s),
 	}
+	runtime := runtimeStatusFromHealth(ctx, runtimeHealthProbeRequired())
 	return api.InferenceStatus{
 		Ggml:     ggml,
-		Runtime:  runtimeStatusFromHealth(ctx, runtimeHealthProbeRequired()),
+		Runtime:  runtime,
 		Backend:  inferenceBackendPolicy(),
+		Config:   s.inferenceConfigStatus(ctx, runtime),
 		Training: training,
 	}
 }

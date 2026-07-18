@@ -65,6 +65,7 @@ type runtimeHealthSnapshot struct {
 	running     int
 	state       string
 	llamaLoaded bool
+	loadedGGUF  string // /health model_swap.loaded_gguf when set (not __default__)
 	fifoOldest  uint64
 	ok          bool // false when runtime URL is set but /health could not be read
 	radix       *api.RadixMirrorStatus
@@ -178,7 +179,10 @@ func fetchRuntimeInferenceHealth(ctx context.Context, base string) runtimeHealth
 		InferenceState    string `json:"inference_state"`
 		LlamaServer       bool   `json:"llama_server"`
 		FifoRuntimeOldest uint64 `json:"fifo_runtime_oldest"`
-		KvResume          *struct {
+		ModelSwap         *struct {
+			LoadedGGUF string `json:"loaded_gguf"`
+		} `json:"model_swap"`
+		KvResume *struct {
 			PrefixBlockPool *struct {
 				Enabled           bool     `json:"enabled"`
 				EntryCount        int      `json:"entry_count"`
@@ -211,6 +215,12 @@ func fetchRuntimeInferenceHealth(ctx context.Context, base string) runtimeHealth
 		llamaLoaded: body.LlamaServer,
 		fifoOldest:  body.FifoRuntimeOldest,
 		ok:          true,
+	}
+	if body.ModelSwap != nil {
+		loaded := strings.TrimSpace(body.ModelSwap.LoadedGGUF)
+		if loaded != "" && loaded != "__default__" {
+			snap.loadedGGUF = loaded
+		}
 	}
 	if body.KvResume != nil && body.KvResume.PrefixBlockPool != nil {
 		p := body.KvResume.PrefixBlockPool

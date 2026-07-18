@@ -112,10 +112,13 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			return
 		}
 		if status >= 300 {
+			respBody = injectRuntimeRetryAfter(c, status, respBody)
+			recordRuntimeProxyErrorMetrics(status, respBody)
 			c.Data(status, "application/json", respBody)
 			c.Abort()
 			return
 		}
+		metricsIncRequestResult("ok")
 		c.Data(http.StatusOK, "application/json", respBody)
 		c.Abort()
 	}

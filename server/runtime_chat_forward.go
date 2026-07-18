@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ollama/ollama/api"
@@ -69,6 +71,42 @@ func runtimeChatPayload(
 	return payload
 }
 
+func recordRuntimeProxyErrorMetrics(status int, respBody []byte) {
+	if status == http.StatusServiceUnavailable {
+		metricsIncQueueReject()
+	}
+	errText := string(respBody)
+	var errObj map[string]any
+	if json.Unmarshal(respBody, &errObj) == nil {
+		if e, ok := errObj["error"].(string); ok {
+			errText = e
+		}
+	}
+	if isHostUnstableError(strings.ToLower(errText)) {
+		metricsIncRunnerCrash()
+		metricsIncRequestResult("host_unstable")
+		return
+	}
+	metricsIncRequestResult("error")
+}
+
+func injectRuntimeRetryAfter(c *gin.Context, status int, respBody []byte) []byte {
+	if status != http.StatusServiceUnavailable {
+		return respBody
+	}
+	c.Header("Retry-After", strconv.Itoa(defaultBusyRetryAfterSec))
+	var obj map[string]any
+	if json.Unmarshal(respBody, &obj) == nil {
+		if _, has := obj["retry_after"]; !has {
+			obj["retry_after"] = defaultBusyRetryAfterSec
+		}
+		if patched, err := json.Marshal(obj); err == nil {
+			return patched
+		}
+	}
+	return respBody
+}
+
 func forwardRuntimeChatJSON(
 	c *gin.Context,
 	payload map[string]any,
@@ -100,10 +138,13 @@ func forwardRuntimeChatJSON(
 		return err
 	}
 	if resp.StatusCode >= 300 {
+		respBody = injectRuntimeRetryAfter(c, resp.StatusCode, respBody)
+		recordRuntimeProxyErrorMetrics(resp.StatusCode, respBody)
 		c.Data(resp.StatusCode, "application/json", respBody)
 		c.Abort()
 		return nil
 	}
+	metricsIncRequestResult("ok")
 	c.Data(http.StatusOK, "application/json", respBody)
 	c.Abort()
 	return nil

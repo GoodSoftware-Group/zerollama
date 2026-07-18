@@ -66,6 +66,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 ### GPU training & scheduling (repo)
 
 * [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; **prompt truncation / context-overflow API fields** (`prompt_truncated`, runtime detect).
+* [Inference wishlist — host capacity (Phase A)](./inference-wishlist-host.md) — **why** Orient/Decide need `/api/status` config, `POST /api/can-load`, `/api/metrics`, Retry-After, empty-gen vs `host_unstable`; fail-closed dry-run; Phase B swap/pin/propose deferred; findings from audit.
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
 * [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA10 (metadata, watchdog, fleet score, repair, HF pull, `/api/score`, bench cache); **upstream watch** for LA11+ candidates; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).

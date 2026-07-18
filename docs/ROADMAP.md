@@ -155,6 +155,11 @@ Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (
 
 ### Phase 8 — shipped
 
+**Host wishlist Phase A (capacity + admission) — shipped Jul 2026.**  
+**Why:** agents need readable config, dry-run admit, metrics, and Retry-After without guessing env or starting loads.  
+**Doc:** [inference-wishlist-host.md](./inference-wishlist-host.md) — `/api/status` config, `POST /api/can-load` (exact vs heuristic; fail closed), `/api/metrics`, Retry-After on busy 503s, error timings, empty-gen classify.  
+**Phase B deferred:** stable multi-model swap, pin/reserve leases, propose sidecar (scheduler redesign; interim: serialize under thrash, self-propose, `fulfillment`/`keep_alive` soft pin).
+
 See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked). **L2 Done** — VRAM opt-in, no default tok/s flip. **Done on 5080 (Jun 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF` bundle. **Continue on 5080 (Jul 2026):** Tier F RotorQuant A/B before more KV patches. **Production serve:** [`serve_production_wrapper.sh`](../scripts/serve/serve_production_wrapper.sh) → `~/bin/serve.sh` (WHY: in-repo `serve_gpu_example.sh` must not be copied verbatim to `~/bin`).
 
 ---

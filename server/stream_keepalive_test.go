@@ -16,15 +16,17 @@ func TestEnqueueChatStreamErrorEmitsFinishBeforeError(t *testing.T) {
 	close(ch)
 
 	var gotFinish, gotError bool
+	var errCause any
 	for v := range ch {
-		switch t := v.(type) {
+		switch msg := v.(type) {
 		case api.ChatResponse:
-			if t.Done && t.DoneReason == "stop" {
+			if msg.Done && msg.DoneReason == "stop" {
 				gotFinish = true
 			}
 		case gin.H:
-			if t["error"] == "runner exited" {
+			if msg["error"] == "runner exited" {
 				gotError = true
+				errCause = msg["cause"]
 			}
 		}
 	}
@@ -33,6 +35,9 @@ func TestEnqueueChatStreamErrorEmitsFinishBeforeError(t *testing.T) {
 	}
 	if !gotError {
 		t.Fatal("expected error chunk after finish")
+	}
+	if errCause != causeHostUnstable {
+		t.Fatalf("expected cause=host_unstable, got %v", errCause)
 	}
 	if !sentDone {
 		t.Fatal("expected sentDone to be set")

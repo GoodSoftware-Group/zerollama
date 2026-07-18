@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Host wishlist Phase A — capacity & admission APIs (Jul 2026)
+
+**Why:** Orient Inventory / Decide / hire-map clients could detect `distribution=zerollama` but still guessed capacity from env folklore. They had no public dry-run admit, no Prometheus scrape, no Retry-After on busy 503s, and empty generations looked like semantic refusals. Stable multi-model swap / pin / propose stay deferred (scheduler redesign).
+
+**Shipped:**
+
+| Surface | What |
+|---------|------|
+| `GET /api/status` → `inference.config` | `NUM_PARALLEL`, effective/configured `MAX_LOADED_MODELS`, `MAX_QUEUE`, keep-alive, residency owner, slots-vs-models |
+| `POST /api/can-load` | Dry-run; never `GetRunner`. Runtime `confidence=exact` via `ProbeVramEstimate`; ggml `heuristic`. Fail closed if estimate/GGUF missing. `already_loaded` requires GGUF path match |
+| `GET /api/metrics` | Hand-rolled Prometheus text (queue gauges + result counters); runtime proxy paths instrumented |
+| Busy `503` | `Retry-After: 2` + JSON `retry_after` (ggml queue, Metal contention, runtime admit) |
+| Errors / empty | Partial timings on error JSON; `cause=host_unstable`; `done_reason=empty_generation` |
+| `GET /api/version` | Progressive-probe caps (`can_load`, `metrics`, …) + honest `false` for swap/pin/propose |
+| OpenAPI | `/api/status`, `/api/can-load`, `/api/metrics`, `InferenceError`, 503 docs |
+
+**Learnings (audit fixes):** do not set `already_loaded` from “any llama loaded”; fail closed when VRAM estimate is unavailable; keep `host_unstable` matchers tight; instrument runtime proxy metrics.
+
+Doc: [inference-wishlist-host.md](./docs/inference-wishlist-host.md).
+
 ### Fulfillment QoS — complete vs benchmark (Jul 2026)
 
 **Why:** Agent QoS could defer background work but had no request-scoped way to lock in a model for a clean bench or guarantee a critical turn finishes without eviction / peer VRAM pressure (SQL-transaction-like begin→release).

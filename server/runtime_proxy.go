@@ -138,6 +138,8 @@ func forwardRuntimeNDJSON(
 
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
+		respBody = injectRuntimeRetryAfter(c, resp.StatusCode, respBody)
+		recordRuntimeProxyErrorMetrics(resp.StatusCode, respBody)
 		c.Data(resp.StatusCode, "application/json", respBody)
 		c.Abort()
 		return nil
@@ -146,8 +148,10 @@ func forwardRuntimeNDJSON(
 	c.Header("Content-Type", "application/x-ndjson")
 	c.Status(http.StatusOK)
 	if err := copyRuntimeResponseBody(c.Writer, resp.Body); err != nil {
+		metricsIncRequestResult("error")
 		return err
 	}
+	metricsIncRequestResult("ok")
 	c.Abort()
 	return nil
 }
@@ -295,7 +299,14 @@ func chatNeedsLegacyRunner(messages []api.Message, req api.ChatRequest) bool {
 
 func writeRuntimeProxyError(c *gin.Context, err error) {
 	slog.Warn("runtime proxy: request failed", "error", err)
-	c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+	msg := err.Error()
+	if isHostUnstableError(strings.ToLower(msg)) {
+		metricsIncRunnerCrash()
+		metricsIncRequestResult("host_unstable")
+	} else {
+		metricsIncRequestResult("error")
+	}
+	c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": msg})
 }
 
 // copyRuntimeResponseBody streams a runtime response to the client with flush after

@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -829,6 +830,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			close(ch)
 		}()
 		firstToken := true
+		var firstTokenAt time.Time
 		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
@@ -849,6 +851,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 			if firstToken {
 				firstToken = false
+				firstTokenAt = time.Now()
 				if streamKeepalive != nil {
 					streamKeepalive.StopKeepalive()
 				}
@@ -875,7 +878,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			if builtinParser != nil {
 				content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
 				if err != nil {
-					enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
+					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
+						errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 					return
 				}
 				res.Response = content
@@ -890,7 +894,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 
 			if _, err := sb.WriteString(cr.Content); err != nil {
-				enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
+				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
+					errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 			}
 
 			if cr.Done {
@@ -904,11 +909,13 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				if cr.OriginalPromptTokens > 0 {
 					recordInferencePromptSize(c, cr.PromptEvalCount, cr.OriginalPromptTokens, messagesDropped)
 				}
+				applyEmptyGenClassifyGenerate(&res, opts.NumPredict, !checkpointLoaded.IsZero())
 
 				if !req.Raw {
 					tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
 					if err != nil {
-						enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
+						enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
+							errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 						return
 					}
 					res.Context = tokens
@@ -933,10 +940,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 		}); err != nil {
 			var serr api.StatusError
+			extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
 			if errors.As(err, &serr) {
-				enqueueGenerateStreamError(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode)
+				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
 			} else {
-				enqueueGenerateStreamError(ch, req.Model, &sentDone, err.Error(), 0)
+				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
 			}
 		}
 	}()
@@ -2155,6 +2163,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.HEAD("/api/version", VersionHandler)
 	r.GET("/api/version", VersionHandler)
 	r.GET("/api/status", s.StatusHandler)
+	r.POST("/api/can-load", s.CanLoadHandler)
+	r.GET("/api/metrics", s.MetricsHandler)
 	r.GET("/api/kv/blob/:digest", s.KvBlobHandler)
 	r.POST("/api/fleet/assign-hold", s.AssignHoldHandler)
 	internal := r.Group("/internal", internalLoopbackOnly())
@@ -3149,6 +3159,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 		structuredOutputsState := structuredOutputsState_None
 		firstToken := true
+		var firstTokenAt time.Time
 
 		for {
 			var tb strings.Builder
@@ -3192,6 +3203,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 				if firstToken {
 					firstToken = false
+					firstTokenAt = time.Now()
 					if streamKeepalive != nil {
 						streamKeepalive.StopKeepalive()
 					}
@@ -3240,7 +3252,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 					content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
 					if err != nil {
-						enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
+						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
+							errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 						return
 					}
 
@@ -3261,6 +3274,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 					if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || r.Done || len(res.Logprobs) > 0 {
 						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser output", "parser", m.Config.Parser, "content", content, "thinking", thinking, "toolCalls", toolCalls, "done", r.Done)
+						if r.Done {
+							applyEmptyGenClassifyChat(&res, opts.NumPredict, !checkpointLoaded.IsZero())
+						}
 						ch <- res
 					} else {
 						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser empty output", "parser", m.Config.Parser)
@@ -3321,6 +3337,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.Message.Content = stripChatControlTokens(res.Message.Content)
 				}
 
+				if r.Done {
+					applyEmptyGenClassifyChat(&res, opts.NumPredict, !checkpointLoaded.IsZero())
+				}
 				ch <- res
 			})
 			if err != nil {
@@ -3332,11 +3351,12 @@ func (s *Server) ChatHandler(c *gin.Context) {
 						"error", err,
 						"client_canceled", c.Request.Context().Err() != nil,
 					)
+					extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
 					var serr api.StatusError
 					if errors.As(err, &serr) {
-						enqueueChatStreamError(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode)
+						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
 					} else {
-						enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
+						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
 					}
 					return
 				}
@@ -3437,7 +3457,8 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	case errors.Is(err, context.Canceled):
 		c.JSON(499, gin.H{"error": "request canceled"})
 	case errors.Is(err, ErrMaxQueue):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		metricsIncQueueReject()
+		writeBusyUnavailable(c, err.Error())
 	case errors.Is(err, os.ErrNotExist):
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model %q not found, try pulling it first", name)})
 	// Why 400: model is configured for the Python runtime sidecar; the legacy ggml
@@ -3447,12 +3468,20 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	// Why 503: runtime sidecar holds Metal; a second ggml runner would contend on the
 	// same device. Caller should unload the runtime model or use runtime routing.
 	case errors.Is(err, ErrDarwinMetalContention):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		writeBusyUnavailable(c, err.Error())
 	case errors.Is(err, ErrEdgeGgmlRunnerDisabled), errors.Is(err, llm.ErrGgmlRunnerUnlinked):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}
+}
+
+func writeBusyUnavailable(c *gin.Context, errMsg string) {
+	c.Header("Retry-After", strconv.Itoa(defaultBusyRetryAfterSec))
+	c.JSON(http.StatusServiceUnavailable, gin.H{
+		"error":       errMsg,
+		"retry_after": defaultBusyRetryAfterSec,
+	})
 }
 
 // handleExternalImageGenerate runs modality_backends.image=external-image via OLLAMA_EXTERNAL_IMAGE_BIN.

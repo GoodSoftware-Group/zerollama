@@ -403,6 +403,12 @@ Code: `server/runtime_inference_routing.go`, `server/runtime_*_proxy.go`, `serve
 | Family tool output parsers ([Phase 12](./ROADMAP.md)) | **Done** — runtime streams via Go `parse-tool-output/session` + `chunk` (same parsers as ggml) |
 | Exact KV from tensor metadata ([Phase 13](./ROADMAP.md)) | **Partial** — `attn_k`/`attn_v` shapes infer head dims when metadata sparse; `/health` `vram_estimate` + `vram_budget`; clamp + `resolve_num_ctx_for_request` shipped — doc [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | Auth on `/api/train` ([T2](./ROADMAP.md)) | Same threat model as main API pending |
+| Host capacity APIs (can-load, metrics, Retry-After) | **Phase A shipped** — [inference-wishlist-host.md](./inference-wishlist-host.md); Phase B = swap/pin/propose |
+| Stable multi-model swap / pin / propose | **Phase B** — Python single-resident + broker thrash; interim soft-pin + self-propose |
+
+**Readable config / residency:** `GET /api/status` → `inference.config`; progressive-probe flags on `GET /api/version` → `zerollama.capabilities`. **Dry-run:** `POST /api/can-load` (runtime `confidence=exact`, ggml `heuristic`; fail closed if estimate missing; `already_loaded` is path-matched). **Metrics:** `GET /api/metrics` (ggml + runtime proxy). Busy `503` includes `Retry-After`.
+
+**Code map addenda:** `server/can_load.go`, `server/metrics.go`, `server/empty_gen.go`, `server/inference_config.go`.
 
 ---
 

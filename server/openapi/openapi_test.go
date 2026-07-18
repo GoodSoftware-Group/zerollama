@@ -28,9 +28,18 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		t.Fatalf("server url=%v", srv["url"])
 	}
 	paths := doc["paths"].(map[string]any)
-	for _, p := range []string{"/v1/audio/speech", "/v1/audio/voices", "/openapi.json", "/docs"} {
+	for _, p := range []string{
+		"/v1/audio/speech", "/v1/audio/voices", "/openapi.json", "/docs",
+		"/api/status", "/api/can-load", "/api/metrics", "/api/version",
+	} {
 		if _, ok := paths[p]; !ok {
 			t.Fatalf("missing path %s", p)
+		}
+	}
+	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	for _, s := range []string{"FleetStatusResponse", "CanLoadRequest", "CanLoadResponse", "InferenceError", "InferenceConfigStatus"} {
+		if _, ok := schemas[s]; !ok {
+			t.Fatalf("missing schema %s", s)
 		}
 	}
 }

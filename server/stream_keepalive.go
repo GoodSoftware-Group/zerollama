@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -124,6 +125,10 @@ func emitSyntheticGenerateFinish(ch chan<- any, model string) {
 }
 
 func enqueueChatStreamError(ch chan<- any, model string, sentDone *bool, errMsg string, status int) {
+	enqueueChatStreamErrorExtra(ch, model, sentDone, errMsg, status, inferenceErrorExtra{})
+}
+
+func enqueueChatStreamErrorExtra(ch chan<- any, model string, sentDone *bool, errMsg string, status int, extra inferenceErrorExtra) {
 	if ch == nil {
 		return
 	}
@@ -131,14 +136,24 @@ func enqueueChatStreamError(ch chan<- any, model string, sentDone *bool, errMsg 
 		emitSyntheticChatFinish(ch, model)
 		*sentDone = true
 	}
-	if status != 0 {
-		ch <- gin.H{"error": errMsg, "status": status}
+	if extra.Cause == "" && isHostUnstableError(errMsg) {
+		extra.Cause = causeHostUnstable
+		metricsIncRunnerCrash()
+		metricsIncRequestResult("host_unstable")
+	} else if extra.Cause == causeHostUnstable {
+		metricsIncRunnerCrash()
+		metricsIncRequestResult("host_unstable")
 	} else {
-		ch <- gin.H{"error": errMsg}
+		metricsIncRequestResult("error")
 	}
+	ch <- gin.H(inferenceErrorMap(errMsg, status, extra))
 }
 
 func enqueueGenerateStreamError(ch chan<- any, model string, sentDone *bool, errMsg string, status int) {
+	enqueueGenerateStreamErrorExtra(ch, model, sentDone, errMsg, status, inferenceErrorExtra{})
+}
+
+func enqueueGenerateStreamErrorExtra(ch chan<- any, model string, sentDone *bool, errMsg string, status int, extra inferenceErrorExtra) {
 	if ch == nil {
 		return
 	}
@@ -146,21 +161,38 @@ func enqueueGenerateStreamError(ch chan<- any, model string, sentDone *bool, err
 		emitSyntheticGenerateFinish(ch, model)
 		*sentDone = true
 	}
-	if status != 0 {
-		ch <- gin.H{"error": errMsg, "status": status}
+	if extra.Cause == "" && isHostUnstableError(errMsg) {
+		extra.Cause = causeHostUnstable
+		metricsIncRunnerCrash()
+		metricsIncRequestResult("host_unstable")
+	} else if extra.Cause == causeHostUnstable {
+		metricsIncRunnerCrash()
+		metricsIncRequestResult("host_unstable")
 	} else {
-		ch <- gin.H{"error": errMsg}
+		metricsIncRequestResult("error")
 	}
+	ch <- gin.H(inferenceErrorMap(errMsg, status, extra))
 }
 
 func abortChatStream(sess *chatStreamSession, ch chan any, model, errMsg string) {
+	abortChatStreamExtra(sess, ch, model, errMsg, inferenceErrorExtra{})
+}
+
+func abortChatStreamExtra(sess *chatStreamSession, ch chan any, model, errMsg string, extra inferenceErrorExtra) {
 	if sess == nil {
 		return
 	}
 	sess.StopKeepalive()
 	if ch != nil && errMsg != "" {
 		emitSyntheticChatFinish(ch, model)
-		ch <- gin.H{"error": errMsg}
+		if extra.Cause == "" && isHostUnstableError(errMsg) {
+			extra.Cause = causeHostUnstable
+			metricsIncRunnerCrash()
+			metricsIncRequestResult("host_unstable")
+		} else if extra.Cause == "" {
+			metricsIncRequestResult("error")
+		}
+		ch <- gin.H(inferenceErrorMap(errMsg, 0, extra))
 	}
 	close(ch)
 	sess.Wait()
@@ -168,9 +200,20 @@ func abortChatStream(sess *chatStreamSession, ch chan any, model, errMsg string)
 
 // abortStreamingJSON ends a streaming response with an error, or writes JSON when not streaming.
 func abortStreamingJSON(c *gin.Context, sess *chatStreamSession, ch chan any, model string, status int, errMsg string) {
+	abortStreamingJSONExtra(c, sess, ch, model, status, errMsg, inferenceErrorExtra{})
+}
+
+func abortStreamingJSONExtra(c *gin.Context, sess *chatStreamSession, ch chan any, model string, status int, errMsg string, extra inferenceErrorExtra) {
 	if sess != nil && ch != nil {
-		abortChatStream(sess, ch, model, errMsg)
+		abortChatStreamExtra(sess, ch, model, errMsg, extra)
 		return
 	}
-	c.JSON(status, gin.H{"error": errMsg})
+	if extra.Cause == "" && isHostUnstableError(errMsg) {
+		extra.Cause = causeHostUnstable
+	}
+	if status == http.StatusServiceUnavailable && extra.RetryAfter == 0 {
+		extra.RetryAfter = defaultBusyRetryAfterSec
+		c.Header("Retry-After", strconv.Itoa(defaultBusyRetryAfterSec))
+	}
+	c.JSON(status, inferenceErrorMap(errMsg, 0, extra))
 }

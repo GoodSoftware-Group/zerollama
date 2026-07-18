@@ -288,13 +288,35 @@ func zerollamaVersionCapabilities() map[string]any {
 	// Advertised on GET /api/version so clients probe once and send Tier 2 hints only
 	// on zerollama nodes. runner_paths prevents sending MLX-specific options to nodes
 	// that only run gguf_ggml or vanilla-compatible paths.
+	//
+	// Phase A capacity flags (can_load, metrics, …): progressive probe without SSH.
+	// Honest false for swap/pin/propose: clients must not assume Phase B exists.
 	return map[string]any{
-		"mlx_qos":          true,
-		"prompt_cache_key": true,
-		"mlx_live_kv":      true,
-		"session_qos_gate": true,
-		"fulfillment":      true,
-		"runner_paths":     zerollamaVersionRunnerPaths(),
+		"mlx_qos":                true,
+		"prompt_cache_key":       true,
+		"mlx_live_kv":            true,
+		"session_qos_gate":       true,
+		"fulfillment":            true,
+		"runner_paths":           zerollamaVersionRunnerPaths(),
+		"runtime_config":         true,
+		"can_load":               true,
+		"metrics":                true,
+		"admission_retry_after":  true,
+		"error_timings":          true,
+		"empty_gen_classify":       true,
+		"priority_queues": map[string]any{
+			"session_qos_class": []string{"interactive", "auxiliary", "background"},
+			"runtime_priority":  []string{"high", "normal", "low"},
+			"note":              "existing; Phase A does not add new queue code",
+		},
+		"residency_policy": map[string]any{
+			"same_model_multi_copy": false,
+			"max_loaded_models_env": "OLLAMA_MAX_LOADED_MODELS",
+			"num_parallel_means":    "slots_inside_one_runner",
+		},
+		"stable_multi_model_swap": false,
+		"pin_reserve":             false,
+		"propose_sidecar":         false,
 	}
 }
 

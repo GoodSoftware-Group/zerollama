@@ -278,7 +278,11 @@ components:
           description: Indicates whether generation has finished
         done_reason:
           type: string
-          description: Reason the generation stopped
+          description: >
+            Reason the generation stopped (e.g. stop, length).
+            Zerollama may set `empty_generation` when the done chunk has empty
+            response+thinking and zero eval tokens (not a semantic refusal).
+            Runner crashes use error NDJSON with `cause=host_unstable` instead.
         total_duration:
           type: integer
           description: Time spent generating the response in nanoseconds
@@ -516,7 +520,10 @@ components:
           description: Indicates whether the chat response has finished
         done_reason:
           type: string
-          description: Reason the response finished
+          description: >
+            Reason the response finished. Zerollama may set `empty_generation`
+            for empty done chunks (not a semantic refusal). Runner crashes use
+            error NDJSON with `cause=host_unstable`.
         total_duration:
           type: integer
           description: Total time spent generating in nanoseconds
@@ -972,16 +979,166 @@ components:
           description: True for edge builds (llama-server path only, no in-process ggml runner)
         zerollama:
           type: object
-          description: Fleet capability + QoS advertisement (see docs/multimodal-backends.md, docs/scheduling-vram-policy.md)
+          description: Fleet capability + QoS advertisement (see docs/multimodal-backends.md, docs/scheduling-vram-policy.md, docs/inference-wishlist-host.md)
           properties:
             capabilities:
               type: object
               additionalProperties: true
-              description: Feature flags (mlx_qos, mlx_live_kv, prompt_cache_key, session_qos_gate, runner_paths, ...)
+              description: >
+                Feature flags. Phase A capacity/admission: runtime_config, can_load,
+                metrics, admission_retry_after, error_timings, empty_gen_classify,
+                priority_queues, residency_policy. Deferred (false): stable_multi_model_swap,
+                pin_reserve, propose_sidecar. Also mlx_qos, mlx_live_kv, prompt_cache_key,
+                session_qos_gate, runner_paths, fulfillment.
             qos:
               type: object
               additionalProperties: true
               description: options.zerollama field reference, per-modality scheduling defaults, and route map (see ZerollamaQoS schema)
+    InferenceError:
+      type: object
+      description: >
+        Error body on generate/chat (JSON or NDJSON). Busy 503s include retry_after;
+        stream/runner failures may include cause=host_unstable and partial timings.
+      required: [error]
+      properties:
+        error:
+          type: string
+        status:
+          type: integer
+        retry_after:
+          type: integer
+          description: Seconds to wait before retry (also sent as Retry-After header on 503)
+        cause:
+          type: string
+          description: "host_unstable when runner/process exit detected"
+        total_duration:
+          type: integer
+          description: Nanoseconds wall time until failure
+        load_duration:
+          type: integer
+          description: Nanoseconds spent loading before failure
+        time_to_first_token:
+          type: integer
+          description: Nanoseconds to first token when a token was emitted
+    InferenceConfigStatus:
+      type: object
+      description: Effective scheduler knobs on GET /api/status (inference.config)
+      properties:
+        num_parallel:
+          type: integer
+        num_parallel_auto:
+          type: boolean
+        max_loaded_models:
+          type: integer
+          description: Effective cap (after 0 → 3×GPU default)
+        max_loaded_configured:
+          type: integer
+          description: Raw OLLAMA_MAX_LOADED_MODELS
+        max_queue:
+          type: integer
+        keep_alive:
+          type: string
+        load_timeout:
+          type: string
+        runtime_max_queue:
+          type: integer
+        same_model_multi_copy:
+          type: boolean
+        residency_owner:
+          type: string
+          description: go_sched | runtime_swap | mixed
+        num_parallel_means_slots:
+          type: boolean
+          description: Always true — NUM_PARALLEL is slots inside one runner
+    FleetStatusResponse:
+      type: object
+      description: >
+        Response for GET /api/status (fleet inference snapshot). Distinct from
+        pull/create StatusResponse which is only {status}.
+      properties:
+        cloud:
+          type: object
+          properties:
+            disabled:
+              type: boolean
+            source:
+              type: string
+        inference:
+          type: object
+          properties:
+            ggml:
+              type: object
+              additionalProperties: true
+              description: pending/active/loaded/loads_paused/loaded_models
+            runtime:
+              type: object
+              additionalProperties: true
+              description: enabled/available/waiting/running/llama_loaded
+            backend:
+              type: object
+              additionalProperties: true
+            config:
+              $ref: "#/components/schemas/InferenceConfigStatus"
+            training:
+              type: object
+              additionalProperties: true
+    CanLoadRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+        options:
+          type: object
+          additionalProperties: true
+          description: Optional num_ctx, gguf, etc.
+    CanLoadResponse:
+      type: object
+      description: >
+        Always HTTP 200. confidence=exact uses runtime VRAM estimate; heuristic
+        is ggml count/concurrency only (does not guarantee VRAM fit).
+      properties:
+        model:
+          type: string
+        backend:
+          type: string
+        can_load:
+          type: boolean
+        confidence:
+          type: string
+          enum: [exact, heuristic]
+        already_loaded:
+          type: boolean
+        needs_eviction:
+          type: boolean
+        eviction_reason:
+          type: string
+        busy:
+          type: boolean
+        busy_reason:
+          type: string
+        loads_paused:
+          type: boolean
+        queue:
+          type: object
+          additionalProperties: true
+        warm:
+          type: object
+          additionalProperties: true
+        vram_estimate:
+          type: object
+          additionalProperties: true
+        vram_budget:
+          type: object
+          additionalProperties: true
+        suggested_max_num_ctx:
+          type: integer
+        max_loaded_models:
+          type: integer
+        loaded_count:
+          type: integer
+        notes:
+          type: string
     TokenLogprob:
       type: object
       description: Log probability information for a single token alternative
@@ -1290,6 +1447,22 @@ paths:
             application/x-ndjson:
               schema:
                 $ref: "#/components/schemas/GenerateStreamEvent"
+        "503":
+          description: >
+            Server busy (max queue exceeded) or Darwin Metal contention.
+            Includes Retry-After header and retry_after body field.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+              example:
+                error: "server busy, please try again.  maximum pending requests exceeded"
+                retry_after: 2
   /api/chat:
     post:
       summary: Generate a chat message
@@ -1464,6 +1637,22 @@ paths:
             application/x-ndjson:
               schema:
                 $ref: "#/components/schemas/ChatStreamEvent"
+        "503":
+          description: >
+            Server busy (max queue exceeded) or Darwin Metal contention.
+            Includes Retry-After header and retry_after body field.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+              example:
+                error: "server busy, please try again.  maximum pending requests exceeded"
+                retry_after: 2
   /api/embed:
     post:
       summary: Generate embeddings
@@ -1884,6 +2073,84 @@ paths:
       responses:
         "200":
           description: Model successfully deleted
+  /api/status:
+    get:
+      summary: Fleet inference status and runtime config
+      description: >
+        Live ggml/runtime queue snapshot plus `inference.config` (NUM_PARALLEL,
+        MAX_LOADED_MODELS, MAX_QUEUE, keep-alive, residency policy). See
+        docs/inference-wishlist-host.md.
+      operationId: status
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/status
+      responses:
+        "200":
+          description: Fleet status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetStatusResponse"
+  /api/can-load:
+    post:
+      summary: Capacity dry-run (admit without loading)
+      description: >
+        Returns whether a model can be admitted under known checks without calling
+        GetRunner. Always HTTP 200 with structured fields. Runtime path uses
+        VRAM estimate (confidence=exact); ggml is count/group heuristic only.
+        Fail closed when estimate/GGUF is unavailable. already_loaded requires
+        GGUF path match (not merely any loaded model). needs_eviction means a
+        swap would occur — thrash-sensitive clients should require !needs_eviction.
+      operationId: canLoad
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/can-load -d '{"model":"llama3.2:latest","options":{"num_ctx":8192}}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CanLoadRequest"
+      responses:
+        "200":
+          description: Dry-run result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanLoadResponse"
+        "400":
+          description: Missing model or invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/metrics:
+    get:
+      summary: Prometheus metrics
+      description: >
+        Prometheus text exposition (queue gauges and inference result counters).
+        Content-Type text/plain; version=0.0.4.
+      operationId: metrics
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/metrics
+      responses:
+        "200":
+          description: Prometheus text
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP zerollama_ggml_pending GGML scheduler pending queue depth
+                # TYPE zerollama_ggml_pending gauge
+                zerollama_ggml_pending 0
   /api/version:
     get:
       summary: Get version and fleet capabilities
@@ -1914,6 +2181,15 @@ paths:
                     mlx_live_kv: true
                     prompt_cache_key: true
                     session_qos_gate: true
+                    runtime_config: true
+                    can_load: true
+                    metrics: true
+                    admission_retry_after: true
+                    error_timings: true
+                    empty_gen_classify: true
+                    pin_reserve: false
+                    propose_sidecar: false
+                    stable_multi_model_swap: false
                     runner_paths: ["mlx", "gguf_ggml", "gguf_llama_server", "runtime"]
                   qos:
                     classes: ["interactive", "auxiliary", "background"]

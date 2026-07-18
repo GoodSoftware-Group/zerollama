@@ -1309,12 +1309,70 @@ type TrainingStatus struct {
 	QueuePolicy TrainingQueuePolicy `json:"queue_policy"`
 }
 
+// InferenceConfigStatus advertises effective scheduler knobs on GET /api/status
+// so clients (Orient Inventory / Decide) need not guess env on the host.
+type InferenceConfigStatus struct {
+	NumParallel             uint   `json:"num_parallel"`
+	NumParallelAuto         bool   `json:"num_parallel_auto,omitempty"`
+	MaxLoadedModels         uint   `json:"max_loaded_models"`
+	MaxLoadedConfigured     uint   `json:"max_loaded_configured"`
+	MaxQueue                uint   `json:"max_queue"`
+	KeepAlive               string `json:"keep_alive"`
+	LoadTimeout             string `json:"load_timeout"`
+	RuntimeMaxQueue         *uint  `json:"runtime_max_queue,omitempty"`
+	SameModelMultiCopy      bool   `json:"same_model_multi_copy"`
+	ResidencyOwner          string `json:"residency_owner"`
+	NumParallelMeansSlots   bool   `json:"num_parallel_means_slots"`
+}
+
 // InferenceStatus summarizes local inference load for fleet management polling.
 type InferenceStatus struct {
-	Ggml     GgmlStatus     `json:"ggml"`
-	Runtime  RuntimeStatus  `json:"runtime"`
-	Backend  BackendPolicy  `json:"backend"`
-	Training *TrainingStatus `json:"training,omitempty"`
+	Ggml     GgmlStatus             `json:"ggml"`
+	Runtime  RuntimeStatus          `json:"runtime"`
+	Backend  BackendPolicy          `json:"backend"`
+	Config   InferenceConfigStatus  `json:"config"`
+	Training *TrainingStatus        `json:"training,omitempty"`
+}
+
+// CanLoadRequest is the body for POST /api/can-load (capacity dry-run).
+// Why a dedicated endpoint: loopback /internal/vram-estimate was not a public product API.
+type CanLoadRequest struct {
+	Model   string         `json:"model"`
+	Options map[string]any `json:"options,omitempty"`
+}
+
+// CanLoadQueueSnapshot is queue pressure included in CanLoadResponse.
+type CanLoadQueueSnapshot struct {
+	GgmlPending      int  `json:"ggml_pending"`
+	GgmlMaxQueue     uint `json:"ggml_max_queue"`
+	RuntimeWaiting   int  `json:"runtime_waiting,omitempty"`
+	RuntimeMaxQueue  uint `json:"runtime_max_queue,omitempty"`
+}
+
+// CanLoadResponse is the dry-run result for POST /api/can-load (always HTTP 200).
+//
+// Why fields: can_load vs needs_eviction are orthogonal (admit-by-swap vs thrash-free);
+// confidence separates runtime VRAM math from ggml heuristics; already_loaded is
+// path-matched (not "any llama warm") so single-resident runtimes do not lie.
+type CanLoadResponse struct {
+	Model               string                `json:"model"`
+	Backend             string                `json:"backend"`
+	CanLoad             bool                  `json:"can_load"`
+	Confidence          string                `json:"confidence"` // exact | heuristic
+	AlreadyLoaded       bool                  `json:"already_loaded"`
+	NeedsEviction       bool                  `json:"needs_eviction"`
+	EvictionReason      string                `json:"eviction_reason,omitempty"`
+	Busy                bool                  `json:"busy"`
+	BusyReason          string                `json:"busy_reason,omitempty"`
+	LoadsPaused         bool                  `json:"loads_paused"`
+	Queue               CanLoadQueueSnapshot  `json:"queue"`
+	Warm                ProcessResponse       `json:"warm"`
+	VramEstimate        map[string]any        `json:"vram_estimate,omitempty"`
+	VramBudget          map[string]any        `json:"vram_budget,omitempty"`
+	SuggestedMaxNumCtx  *int                  `json:"suggested_max_num_ctx,omitempty"`
+	MaxLoadedModels     uint                  `json:"max_loaded_models"`
+	LoadedCount         int                   `json:"loaded_count"`
+	Notes               string                `json:"notes,omitempty"`
 }
 
 // BackendPolicy describes Phase 16/17 local GGUF routing for GET /api/status.
