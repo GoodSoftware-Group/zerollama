@@ -73,6 +73,7 @@ scripts=(
   phase/phase16_edge_build_smoke.sh
   phase/phase16_edge_binary_smoke.sh
   phase/phase11_metal_admission_smoke.sh
+  phase/phase11_5080_contention_smoke.sh
   phase/phase13_metal_vram_smoke.sh
   phase/phase11_13_15_metal_signoff.sh
   phase/phase17_linux_auto_smoke.sh
@@ -342,6 +343,9 @@ grep -q 'e2e_t6_queue_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
 grep -q 'inference.training.queue_policy' "${ROOT}/scripts/e2e/e2e_t6_queue_smoke.sh"
 grep -q 'TrainingQueuePolicy' "${ROOT}/api/types.go"
 grep -q 't6-unified-queue.md' "${ROOT}/docs/README.md"
+grep -q 'phase11_5080_contention_smoke.sh' "${ROOT}/scripts/check_gpu_scripts.sh"
+grep -q 'RUN_E2E_PHASE11_CONTENTION' "${ROOT}/scripts/gpu/gpu_5080_session.sh"
+grep -q 'phase11_5080_contention' "${ROOT}/docs/phase11-runtime-admission.md"
 echo "ok: e2e_runtime_smoke tools markers"
 
 echo "PASS: check_gpu_scripts"

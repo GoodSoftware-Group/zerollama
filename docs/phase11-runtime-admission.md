@@ -63,7 +63,7 @@ Defaults in `runtime/runtime/gpu/inference_policy.py`. Override on **serve** aft
 | `GGML_SCHED_BACKLOG_MIN` | 1 | `ZEROLLAMA_RUNTIME_GGML_SCHED_BACKLOG_MIN` |
 | `CROSS_QUEUE_PRESSURE_ON` / `CLEAR` | 6 / 4 | `ZEROLLAMA_RUNTIME_CROSS_QUEUE_PRESSURE_ON`, `_CLEAR` |
 
-**5080 session:** `./scripts/gpu/gpu_5080_session.sh` — preflight + `gpu_smoke_all` + snapshot JSON + `gpu_snapshot` hints. **Why:** proves admission fits on a 16GB smoke path; does **not** by itself retune backlog thresholds (need load under real chat+training). Guide: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
+**5080 session:** `./scripts/gpu/gpu_5080_session.sh` — preflight + `gpu_smoke_all` + snapshot JSON + `gpu_snapshot` hints. **Why:** proves admission fits on a 16GB smoke path. **Under load:** `./scripts/phase/phase11_5080_contention_smoke.sh` or `RUN_E2E_PHASE11_CONTENTION=1` on the session (see [What remains](#what-remains-phase-11-partial)). Guide: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
 
 **YAML defaults:** When autoconfig picks `single_gpu.yaml`, the `vram:` block sets min-free / training-reserve / autotune if env is unset — same semantics as the env table above; **why:** one place for 16GB installs. See [phase13-runtime-vram.md](./phase13-runtime-vram.md#why-vram-in-single_gpuyaml).
 
@@ -152,6 +152,8 @@ After deploy, smoke: `./scripts/e2e/e2e_coordination_smoke.sh` (expects `low_wou
 | Concern | Path |
 |---------|------|
 | Admission API | `runtime/runtime/gpu/admission.py` |
+| Inference-first thresholds | `runtime/runtime/gpu/inference_policy.py` |
+| 5080 contention harness | `scripts/phase/phase11_5080_contention_smoke.sh` |
 | Thresholds + backpressure | `runtime/runtime/gpu/inference_policy.py` |
 | Priority parsing | `runtime/runtime/gpu/priority.py` |
 | VRAM probe + budget | `runtime/runtime/gpu_vram.py` |
@@ -179,6 +181,30 @@ ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:8081 ./scripts/e2e/e2e_coordination_smoke
 
 ## What remains (Phase 11 partial)
 
-- Tune `TRAINING_VRAM_RESERVE_BYTES` and thresholds on target hardware (e.g. RTX 5080).
+- ~~Tune thresholds on RTX 5080 under load~~ → use the contention harness below; **defaults OK on CT 1564 unless the JSON shows systematic `normal` 503s** (then set env on serve — do not add new flags).
 - Heuristic estimates can still false-reject/accept — use Phase 13 autotune/calibration, not more admission flags.
 - Phase 14 (in-process llama) reduces loopback overhead; admission logic stays valid.
+
+### 5080 contention harness (chat + low)
+
+**Why:** `e2e_coordination_smoke.sh` only checks idle mirrors. Tuning backlog / reserve needs concurrent `priority=normal` + `priority=low` while sampling `/health` `gates_active`.
+
+```bash
+# Serve already up (production wrapper or 5080_start_serve)
+source ./scripts/gpu/5080_env.sh
+./scripts/phase/phase11_5080_contention_smoke.sh
+# Or folded into session (off by default):
+RUN_E2E_PHASE11_CONTENTION=1 ./scripts/gpu/gpu_5080_session.sh
+```
+
+| Artifact field | How to read it |
+|----------------|----------------|
+| `summary.normal.http_503` | Must stay near **0** — inference-first must not block `normal` |
+| `summary.low` | May be slower / occasionally 503 under backlog — expected |
+| `mid_gates_true.runtime_backlog_pressure` | Often true when `P11_NUM_LOW` ≥ 4 and work overlaps |
+| `admission.vram_*_configured` | Confirms 1 GiB / 2 GiB (or serve overrides) |
+| `fail_reasons` | Non-empty → script exits 1 |
+
+Artifact: `/tmp/phase11-5080-contention.json` (`P11_OUT`).
+
+**5080 recommendation (Jul 2026 CT 1564):** measured PASS with `llama3.2:3b` — `summary.normal` 2/2 OK (0×503), `summary.low` 6/6 OK; configured min-free **1 GiB** / training reserve **2 GiB**; thresholds `BACKLOG_BATCH_MIN=4`, cross-queue 6/4. **Keep code defaults.** Re-run harness after serve/policy changes; override env only if `fail_reasons` is non-empty. Note: stale `go_coordination` at idle is warn-only (fail-open).

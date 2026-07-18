@@ -34,6 +34,7 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | `gpu_health_report.sh` | `/health` tuning summary (Python `runtime.gpu_health_report`) |
 | `runtime_vram_estimate.sh` | Pre-load VRAM budget for a GGUF + `num_ctx` |
 | `e2e_coordination_smoke.sh` | Go↔runtime mirror fields only |
+| `phase11_5080_contention_smoke.sh` | **Linux/5080** concurrent `priority=normal` + `low` generates; JSON `/tmp/phase11-5080-contention.json` |
 | `serve_gpu_example.sh` | In-repo production env for 5080-class single-GPU serve (`OLLAMA_HOST`, PYTHONPATH, vendor llama-server) |
 | `serve_production_wrapper.sh` | Install as `~/bin/serve.sh` — **WHY:** do not copy `serve_gpu_example.sh` to `~/bin` (breaks repo root) |
 | `check_gpu_scripts.sh` | `bash -n` GPU scripts + import `runtime.gpu_health_report` (no GPU) |

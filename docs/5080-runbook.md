@@ -741,6 +741,7 @@ Uncomment `llama_backend: inprocess` in `runtime/configs/single_gpu.yaml` — `/
 | Goal | Command | Why |
 |------|---------|-----|
 | **Training ops** | `RUN_E2E_TRAINING_OPS=1` (serve needs `OLLAMA_TRAINING=true`) | Embedded training HTTP/TCP without blocking inference smokes |
+| **Phase 11 contention** | `./scripts/phase/phase11_5080_contention_smoke.sh` or `RUN_E2E_PHASE11_CONTENTION=1` | Concurrent normal + low generates; JSON `/tmp/phase11-5080-contention.json` — [phase11-runtime-admission.md](./phase11-runtime-admission.md) |
 | **Tools chat** | `RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh` | Runtime `/api/chat` with tools — 501 means wrong route |
 | **VRAM clamp** | `RUN_E2E_VRAM_CLAMP=1` + `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` on serve | Opt-in clamp policy — default off in YAML |
 | **L2 fork eval** | `./scripts/phase/l2_full_gate.sh` | Compare stock vs eliza fork @ 8k; long-ctx fork-only legs optional |
@@ -868,6 +869,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | `RUN_E2E_TOOLS=1` | Tools chat smoke |
 | `RUN_E2E_VRAM_CLAMP=1` | Opt-in clamp policy smoke |
 | `RUN_E2E_PHASE13_SNAPSHOT=1` | Default on in session |
+| `RUN_E2E_PHASE11_CONTENTION=1` | `phase11_5080_contention_smoke.sh` — chat+low admission under load |
 
 ---
 
@@ -876,6 +878,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | Track | Gate | Status |
 |-------|------|--------|
 | Phase 11–13 | `gpu_5080_session.sh` | **PASS** |
+| Phase 11 contention | `phase11_5080_contention_smoke.sh` | **PASS (Jul 2026)** — normal 2/2, low 6/6, 0×503; min-free 1 GiB + reserve 2 GiB; **keep code defaults** |
 | L1 | `l1_cuda_full_gate.sh` | **PASS (concurrent)** — single-stream **−5%** @ 8k (np=2 overhead); concurrent **+~16–20%** @ 8k |
 | L3 | `l3_cuda_full_gate.sh` / production @ 27k | **PASS** |
 | Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** |
@@ -887,7 +890,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | Phase 16 edge CUDA | `phase16_edge_smoke.sh` | **PASS** (`P17_NUM_PREDICT=32`) |
 | `RUN_E2E_UPSTREAM_GGUF=1` bundle | full session wrapper | **PASS** — auto-restarts serve profile-off before base smokes (fixes qjl1_256 × 1B after L1/L2) |
 | Phase 17 L2 pin merge | criterion #7 | **Partial** (defaults stay L1) |
-| **Tier F RotorQuant** | `l2_rotorquant_ab.sh` | **Next on CT** (Jul 2026) — Mac scout only |
+| **Tier F RotorQuant** | `l2_rotorquant_ab.sh` | **No-merge (Jul 2026)** — planar/iso abort on SET_ROWS; TBQ holds as VRAM opt-in |
 | Bee B0 loop-guard | patch **0087** | **Landed** — Mac smoke PASS; optional CUDA sanity |
 
 **Not required on 5080:** `gpt-oss:20b` harmony real-weight (~40+ GiB host RAM); Mac `metal_signoff.sh`.
@@ -926,8 +929,8 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 1. **Production quant:** one real load so autotune persists under `~/.cache/zerollama/vram_autotune.json`.
 2. **Optional clamp:** `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` only if you accept automatic `num_ctx` lowering in API responses.
 3. **Do not** copy smoke-only global `VRAM_ESTIMATE_FACTOR` when autotune persist is on.
-4. **Phase 11 thresholds:** tune backlog env only under measured chat+training load — idle smoke proves fit, not contention policy.
-5. **Jul 2026 continue:** [Tier F — RotorQuant](#tier-f--rotorquant--post-l2-labs-jul-2026) on this host before more vendor KV patches; defer Bee **B1** until that result.
+4. **Phase 11 under load:** `./scripts/phase/phase11_5080_contention_smoke.sh` — confirm `summary.normal` stays healthy; keep backlog/reserve defaults unless `fail_reasons` is non-empty.
+5. **Jul 2026 continue:** Tier F RotorQuant **no-merge** (SET_ROWS abort); defer Bee **B1**; optional TQ3 FP4 only with TQ3 weights.
 
 ---
 

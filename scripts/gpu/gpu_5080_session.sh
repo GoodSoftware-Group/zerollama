@@ -28,6 +28,7 @@
 #   RUN_E2E_EDGE=1                                           # phase16_edge_smoke (serve --edge, runtime off)
 #   RUN_E2E_UPSTREAM_GGUF=1                                  # bundle P17 + P17_LINUX_AUTO + EDGE (upstream GGUF path)
 #   RUN_E2E_P17_VISION=1                                     # phase17_llama_server_vision_smoke (heavy; needs projector tag)
+#   RUN_E2E_PHASE11_CONTENTION=1                             # phase11_5080_contention_smoke (chat+low under load)
 #   GPU_PHASE13_SNAPSHOT_OUT=/tmp/5080-session.json
 set -euo pipefail
 
@@ -238,6 +239,14 @@ if [[ "${RUN_E2E_P17_VISION:-0}" == "1" ]]; then
   echo "== Phase 17 llama-server vision smoke =="
   RUN_E2E_P17_VISION=1 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN}" \
     "${ROOT}/scripts/phase/phase17_llama_server_vision_smoke.sh"
+fi
+
+if [[ "${RUN_E2E_PHASE11_CONTENTION:-0}" == "1" ]]; then
+  echo ""
+  echo "== Phase 11 admission contention (chat + low) =="
+  export P11_MODEL="${P11_MODEL:-${RUN_E2E_PROXY_MODEL:-llama3.2:3b}}"
+  export P11_OUT="${P11_OUT:-/tmp/phase11-5080-contention.json}"
+  "${ROOT}/scripts/phase/phase11_5080_contention_smoke.sh"
 fi
 
 echo "PASS: gpu_5080_session (snapshot: ${GPU_PHASE13_SNAPSHOT_OUT})"
