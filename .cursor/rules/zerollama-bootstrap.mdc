@@ -1,0 +1,76 @@
+---
+description: Zerollama environment, architecture, and agent constraints (CT 1564 / GPU box)
+alwaysApply: true
+---
+
+# Zerollama bootstrap (environment + architecture)
+
+You are working in the **zerollama** repo (Ollama fork): local GGUF inference + embedded Python runtime + optional GPU training + Eliza cloud proxy.
+
+## Workspace & toolchain (this host: Proxmox CT 1564)
+
+- **Repo root:** `/var/lib/vz/private/1564/root/zerollama` (operators may also use `~/zerollama` on cudallama GPU box)
+- **Go module:** `github.com/ollama/ollama` — build from repo root: `CGO_ENABLED=1 go build -o zerollama .` or `go run . serve`
+- **Go on CT 1564:** `/var/lib/vz/private/1564/usr/local/go/bin/go` (go1.24.x); inside CT shell `.bashrc` uses `/usr/local/go/bin`. Do **not** use `.../root/usr/local/go` on the host (empty).
+- **CLI name:** `zerollama` (plain `go build` may emit `ollama` unless `-o zerollama`)
+- **Python runtime package:** `runtime/` — install with `cd runtime && pip install -e ".[serve]"` (FastAPI/uvicorn). Tests: `cd runtime && PYTHONPATH=. python3 -m pytest tests/` (needs pytest in env)
+- **Embedded CPython (training):** `x/trainingworker/pyembed` — CGO links libpython3; needs `python3-dev` + `pkg-config python3-embed`. Loads repo-root `training.py` in-process (not a separate training daemon on a public port).
+- **llama.cpp:** sibling checkout e.g. `~/llama.cpp`; build `llama-server` via `scripts/build_llama_server.sh` with correct `CMAKE_CUDA_ARCHITECTURES` for the GPU (5080 = `120-real`, 4090 = `89`). Set `LLAMA_SERVER_BIN` to `.../build/bin/llama-server`.
+
+## Process layout when serving
+
+| Port | Role |
+|------|------|
+| `:8080` | Go daemon (`zerollama serve`): registry, `/api/generate`, `/api/chat`, Eliza cloud, ggml scheduler (`server/sched.go`), runtime proxies, `/api/train/*` |
+| `:8081` | Embedded or sidecar Python runtime (`ZEROLLAMA_RUNTIME_EMBED` default on): FastAPI in `runtime/runtime/server/app.py`, `InferenceEngine` + PA scheduler, subprocess `llama-server` on loopback `port+1` |
+| Training | Same Go process embeds Python; job queue in `training.py`; optional TCP `:9500` (Go listener, newline JSON) |
+
+## Two inference stacks + VRAM (Phase 8 shipped)
+
+- **Legacy ggml runner** — `GetRunner` / manifest models on `:8080`
+- **Python runtime** — `llama-server` + GGUF; proxy when `ZEROLLAMA_RUNTIME_URL` or embed + `ZEROLLAMA_RUNTIME=1` or per-model `modality_backends.inference: zerollama-runtime`
+- **VRAM broker:** `server/vram/broker.go` — before legacy load → `training-handoff`; before runtime proxy → `UnloadAllRunners` + `/internal/inference/resume`; before training submit → both. No public unload API.
+
+**Phase 9 shipped:** Go proxy sets `options.gguf` from manifest (`server/runtime_manifest.go`); Python `ensure_gguf_loaded()` in `runtime/runtime/engine.py`.
+
+**Phase 11 (partial):** opinionated runtime admission — `INFERENCE_POLICY`, `CHECK_GPU_VRAM`; constants in `runtime/runtime/gpu/admission.py`. Doc: `docs/phase11-runtime-admission.md`.
+
+**Scheduler / admission:** Go `pending_queue.go` (drain + `PopPreferringKeys`); Python `model_swap.py`, `gpu/admission.py` (opinionated policy: `INFERENCE_POLICY`, `CHECK_GPU_VRAM`; optional `MAX_QUEUE` cap); `autoconfig.py` → `configs/single_gpu.yaml` when 1 GPU; `host_memory.check_gguf_host_budget()` before load. CI: `.github/workflows/zerollama-regression.yaml`.
+
+## Key env vars
+
+| Var | Role |
+|-----|------|
+| `ZEROLLAMA_RUNTIME_EMBED` | Embed runtime in Go process (default on if URL unset) |
+| `ZEROLLAMA_RUNTIME_URL` | External runtime base (e.g. `http://127.0.0.1:8081`) |
+| `ZEROLLAMA_RUNTIME` / `OLLAMA_RUNTIME_ALL` | Proxy local generate/chat to runtime |
+| `LLAMA_SERVER_BIN`, `LLAMA_MODEL` | Runtime llama-server; MODEL optional for proxy if pulled model sends `options.gguf` |
+| `OLLAMA_TRAINING` | Embed training (`true` default); `false` if no torch |
+| `OLLAMA_TRAINING_PYTHONPATH` | Repo root containing `training.py` |
+| `ELIZACLOUD_API_KEY` | Cloud merge; tests use `OLLAMA_NO_CLOUD=true` in `server/sched_test.go` `TestMain` |
+| `OLLAMA_MAX_LOADED_MODELS` | Cap concurrent ggml runners (use `1` on tight RAM hosts) |
+
+## Tests & smoke
+
+- **CI (Phase 10):** `.github/workflows/zerollama-regression.yaml` — `go test ./server/... ./envconfig/...` + runtime pytest + `scripts/check_gpu_scripts.sh`
+- **GPU smoke:** `docs/testing-smoke.md`, `scripts/gpu_smoke_all.sh`, `scripts/e2e_runtime_smoke.sh` (`RUN_E2E_GPU=1`, `RUN_E2E_PROXY=1`, optional `RUN_E2E_TOOLS=1`, `RUN_E2E_VRAM_CLAMP=1` when clamp on serve), `scripts/gpu_health_report.sh`
+
+## Roadmap status (read `docs/ROADMAP.md`)
+
+- **Done:** Phases 0–10 (CI gate), 8–9 (VRAM broker, manifest→gguf), 11 (admission; 5080 keep defaults), 12 tools path, 13 core VRAM/autotune (5080 production calibrate), training T1
+- **Partial / next:** Phase 15 / L3 polish; Phase 12 tokenize-accurate render; optional Phase 13 clamp-on smoke
+- **Product model:** many stakeholders → inference queues (Go + Python schedulers) + separate training job queue; unified “train when idle” orchestrator is **not** shipped yet (T6 + Phase 11)
+
+## Important code paths
+
+- **Go proxy:** `server/runtime_*_proxy.go`, `server/runtime_manifest.go`, `server/vram/`
+- **Python:** `runtime/runtime/engine.py`, `runtime/runtime/server/app.py`, `runtime/runtime/worker/llama_server.py`
+- **Training:** `x/trainingworker/client.go`, `training.py`
+- **Docs:** `docs/ROADMAP.md`, `docs/python-migration.md`, `docs/testing-smoke.md`, `docs/gpu-training.md`, `docs/runtime-embed.md`
+
+## Constraints for the agent
+
+- Real shell/network; run commands to verify
+- Do **not** commit unless asked
+- Match existing code style; focused diffs only
+- User GPU box: RTX 5080 class — quantized GGUF, `runtime/configs/single_gpu.yaml`, CUDA arch `120-real`

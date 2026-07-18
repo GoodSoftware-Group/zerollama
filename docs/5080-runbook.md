@@ -4,7 +4,7 @@
 
 **Status (CT 1564):** **Full re-sign-off PASS** (Jun 2026) — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
 
-**Continue here (Jul 2026):** pin **`86d86ed4`** (+ patches through **0088**). Mac already smoked Bee **B0** loop-guard + Metal L2 A/B. **Next on this host:** [Tier F — RotorQuant / post-L2 labs](#tier-f--rotorquant--post-l2-labs-jul-2026).
+**Continue here (Jul 2026):** pin **`86d86ed4`** (+ patches through **0088**). Tier F RotorQuant **no-merge**; Phase 11 contention **PASS** (keep defaults); Phase 13 production calibrate **PASS** (`eliza-1-9b` factor **0.739** persist). **Next on this host:** Phase 15 / L3 polish, or optional clamp-on smoke — not more estimate knobs.
 
 **This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`. Fork labs: [llama-fork-watchlist.md](./llama-fork-watchlist.md).
 
@@ -879,6 +879,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 |-------|------|--------|
 | Phase 11–13 | `gpu_5080_session.sh` | **PASS** |
 | Phase 11 contention | `phase11_5080_contention_smoke.sh` | **PASS (Jul 2026)** — normal 2/2, low 6/6, 0×503; min-free 1 GiB + reserve 2 GiB; **keep code defaults** |
+| Phase 13 calibrate | load `eliza-1-9b-256k` @ 8k + `gpu_phase13_snapshot.sh` | **PASS (Jul 2026)** — observed ~5.44 GiB, factor **0.739** → autotune persist; **no** global `VRAM_ESTIMATE_FACTOR`; clamp stays off |
 | L1 | `l1_cuda_full_gate.sh` | **PASS (concurrent)** — single-stream **−5%** @ 8k (np=2 overhead); concurrent **+~16–20%** @ 8k |
 | L3 | `l3_cuda_full_gate.sh` / production @ 27k | **PASS** |
 | Phase 15 | `phase15_inprocess_signoff.sh` | **PASS** |
@@ -926,11 +927,11 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 
 ## After a green re-sign-off
 
-1. **Production quant:** one real load so autotune persists under `~/.cache/zerollama/vram_autotune.json`.
+1. **Production quant:** ~~one real load so autotune persists~~ **Done (Jul 2026)** — `eliza-1-9b-256k` factor **0.739** in `~/.cache/zerollama/vram_autotune.json`; snapshot `/tmp/phase13-5080-eliza9b.json`.
 2. **Optional clamp:** `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` only if you accept automatic `num_ctx` lowering in API responses.
-3. **Do not** copy smoke-only global `VRAM_ESTIMATE_FACTOR` when autotune persist is on.
-4. **Phase 11 under load:** `./scripts/phase/phase11_5080_contention_smoke.sh` — confirm `summary.normal` stays healthy; keep backlog/reserve defaults unless `fail_reasons` is non-empty.
-5. **Jul 2026 continue:** Tier F RotorQuant **no-merge** (SET_ROWS abort); defer Bee **B1**; optional TQ3 FP4 only with TQ3 weights.
+3. **Do not** copy smoke-only global `VRAM_ESTIMATE_FACTOR` when autotune persist is on (health report agrees).
+4. **Phase 11 under load:** ~~contention smoke~~ **Done** — keep backlog/reserve defaults.
+5. **Jul 2026 continue:** Tier F RotorQuant **no-merge** (SET_ROWS abort); defer Bee **B1**; optional TQ3 FP4 only with TQ3 weights; kill orphan `llama/llama.cpp` servers if free VRAM looks ~1 GiB with `llama_server=false`.
 
 ---
 

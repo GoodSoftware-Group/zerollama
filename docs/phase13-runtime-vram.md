@@ -155,3 +155,22 @@ Full narrative: [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md).
 9. `./scripts/gpu/gpu_smoke_all.sh` — coordination + full inference smokes after rebuild.
 10. Optional: `RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh` — `/api/chat` with tools on `:8081` and `:8080` proxy (not legacy 501).
 11. Optional: `RUN_E2E_VRAM_CLAMP=1` with `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` on serve — smoke asserts `vram_num_ctx_policy.clamp_enabled` and probes high `num_ctx`.
+
+---
+
+## 5080 Jul 2026 measurement (CT 1564)
+
+**Host:** RTX 5080 16 GB, `single_gpu.yaml`, probe calibrate + autotune persist on.
+
+| Step | Result |
+|------|--------|
+| Clear orphans | Two stray `llama/llama.cpp` `llama-server` held ~14.8 GiB → kill → **15.5 GiB** free |
+| Pre-check `eliza-1-9b-256k.gguf` @ 8k | `fits_with_margin=true`, `admission_fits=true`, `suggested_max_num_ctx=122835`, catalog factor **0.659** |
+| Probed load (`/v1/chat/completions`) | Observed **~5.44 GiB**; `suggested_estimate_factor=**0.739**` (raw ~7.37 GiB × factor) |
+| Persist | `~/.cache/zerollama/vram_autotune.json` updated for `/var/lib/vz/private/1564/root/eliza-1-9b-256k.gguf` |
+| Snapshot | `GPU_PHASE13_SNAPSHOT_OUT=/tmp/phase13-5080-eliza9b.json` via `gpu_phase13_snapshot.sh` |
+| Health report | Autotune active; **no** global `VRAM_ESTIMATE_FACTOR` export |
+
+**Decision: keep code / YAML defaults** (`estimate_factor=1.0`, `estimate_factor_autotune=auto`, clamp **off**). Do **not** copy `0.739` into a global env — per-GGUF persist already applies it. Stale orphan servers (wrong `LLAMA_SERVER_BIN` tree) are the usual “only ~1 GiB free” false fail before estimate.
+
+**Operator tip:** `runtime_vram_estimate.sh` formats `*_bytes` fields (budget also ships human strings like `free_bottleneck: "992.0 MiB"`).

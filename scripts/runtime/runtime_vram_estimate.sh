@@ -97,8 +97,11 @@ if src:
 kv = est.get("kv_cache_bytes")
 if kv is not None:
     print("kv_cache:", fmt_b(kv))
-if bud.get("free_bottleneck") is not None:
-    print("free_bottleneck:", fmt_b(bud.get("free_bottleneck")))
+# Prefer *_bytes — budget also ships human strings (e.g. free_bottleneck: "992.0 MiB").
+if bud.get("free_bottleneck_bytes") is not None:
+    print("free_bottleneck:", fmt_b(bud.get("free_bottleneck_bytes")))
+elif bud.get("free_bottleneck") is not None:
+    print("free_bottleneck:", bud.get("free_bottleneck"))
 if bud.get("fits_with_margin") is not None:
     print("fits_with_margin:", bud.get("fits_with_margin"))
 if bud.get("admission_fits") is not None:
