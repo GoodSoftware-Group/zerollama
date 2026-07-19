@@ -174,8 +174,9 @@ components:
       description: |
         Fleet-scheduling hints under `options.zerollama` (also readable via the OpenAI
         `extra_body.zerollama` shape). Advertised live on `GET /api/version` under
-        `zerollama.qos` so agents can probe once and only send these on zerollama nodes.
-        Lets many concurrent agents/models share one host without starving each other.
+        `zerollama.qos.options.fields` — prefer that probe over this schema when they
+        disagree. Lets many concurrent agents/models share one host without starving
+        each other.
       properties:
         qos_class:
           type: string
@@ -189,6 +190,15 @@ components:
           minimum: 0
           maximum: 100
           description: 0-100; class is inferred from this when qos_class is omitted (>=70 → interactive).
+        fulfillment:
+          type: string
+          enum: [complete, benchmark]
+          description: >
+            Request-scoped guarantee above qos_class. complete (aliases guarantee,
+            reliable) finishes without preemption/eviction while allowing other idle
+            models; benchmark (aliases bench, speed, exclusive) takes exclusive GPU —
+            unload peers, block other traffic, force-clear pins. Why separate from
+            qos_class: class is fair-share priority; fulfillment is a hard contract.
         session_group:
           type: string
           description: Harness id (alias `harness`) for a shared prompt-cache branch across requests/agents.
@@ -205,6 +215,89 @@ components:
           type: string
           enum: [auto, thread, shared]
           description: KV/prompt-cache branch scope for this request.
+      additionalProperties: true
+    ZerollamaVersionQoS:
+      type: object
+      description: >
+        Live advertisement on GET /api/version → zerollama.qos (from server/mlx_qos.go
+        zerollamaVersionQoS). Prefer this probe over static OpenAPI examples.
+      properties:
+        classes:
+          type: array
+          items:
+            type: string
+            enum: [interactive, auxiliary, background]
+        fulfillment:
+          type: array
+          items:
+            type: string
+            enum: [complete, benchmark]
+          description: Supported fulfillment modes for options.zerollama.fulfillment
+        modalities:
+          type: array
+          items:
+            type: string
+            enum: [text, vision, video_understanding, image_generation, video_generation]
+        options:
+          type: object
+          properties:
+            path:
+              type: string
+              example: options.zerollama
+            fields:
+              type: object
+              description: Per-field help strings clients may display
+              additionalProperties:
+                type: string
+              properties:
+                qos_class:
+                  type: string
+                qos_priority:
+                  type: string
+                fulfillment:
+                  type: string
+                session_group:
+                  type: string
+                session_parent:
+                  type: string
+                project_id:
+                  type: string
+                project_name:
+                  type: string
+                cache_scope:
+                  type: string
+            legacy:
+              type: array
+              items:
+                type: string
+              description: Deprecated option keys still accepted
+        openai:
+          type: object
+          properties:
+            extra_body:
+              type: array
+              items:
+                type: string
+        routes:
+          type: object
+          additionalProperties:
+            type: string
+          description: Modality → HTTP route map
+        defaults:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Default qos_class by modality (vision/video_understanding are stream-aware).
+          properties:
+            image_generation:
+              type: string
+            video_generation:
+              type: string
+            vision:
+              type: string
+            video_understanding:
+              type: string
       additionalProperties: true
     GenerateRequest:
       type: object
@@ -985,16 +1078,13 @@ components:
               type: object
               additionalProperties: true
               description: >
-                Feature flags. Phase A capacity/admission: runtime_config, can_load,
-                metrics, admission_retry_after, error_timings, empty_gen_classify,
-                priority_queues, residency_policy, pin_reserve, propose_sidecar.
-                Deferred (false): stable_multi_model_swap (Python single-GGUF; B0/B1 dampen only).
-                Also mlx_qos, mlx_live_kv, prompt_cache_key,
-                session_qos_gate, runner_paths, fulfillment.
+                Feature flags. Prefer live GET /api/version. Includes mlx_qos,
+                fulfillment, session_qos_gate, runner_paths; Phase A/B capacity
+                (runtime_config, can_load, metrics, admission_retry_after,
+                error_timings, empty_gen_classify, priority_queues, residency_policy,
+                pin_reserve, propose_sidecar). Deferred false: stable_multi_model_swap.
             qos:
-              type: object
-              additionalProperties: true
-              description: options.zerollama field reference, per-modality scheduling defaults, and route map (see ZerollamaQoS schema)
+              $ref: "#/components/schemas/ZerollamaVersionQoS"
     InferenceError:
       type: object
       description: >
@@ -2390,7 +2480,9 @@ paths:
       description: >
         Retrieve the version of zerollama, plus a `zerollama` block advertising QoS/session
         capabilities. Agents should call this once per node and only send `options.zerollama`
-        hints (qos_class, session_group, ...) when `zerollama.capabilities.mlx_qos` is present.
+        hints (qos_class, fulfillment, project_*, session_group, ...) when
+        `zerollama.capabilities.mlx_qos` is present. Prefer live `/api/version` over
+        static OpenAPI examples when they diverge.
       operationId: version
       x-codeSamples:
         - lang: bash
@@ -2407,13 +2499,14 @@ paths:
               example:
                 version: "0.30.11"
                 distribution: "zerollama"
-                edge_build: true
+                edge_build: false
                 zerollama:
                   capabilities:
                     mlx_qos: true
                     mlx_live_kv: true
                     prompt_cache_key: true
                     session_qos_gate: true
+                    fulfillment: true
                     runtime_config: true
                     can_load: true
                     metrics: true
@@ -2423,19 +2516,49 @@ paths:
                     pin_reserve: true
                     propose_sidecar: true
                     stable_multi_model_swap: false
-                    runner_paths: ["mlx", "gguf_ggml", "gguf_llama_server", "runtime"]
+                    runner_paths: ["mlx", "gguf_ggml", "gguf_llama_server"]
+                    priority_queues:
+                      session_qos_class: ["interactive", "auxiliary", "background"]
+                      runtime_priority: ["high", "normal", "low"]
+                      note: "existing; Phase A does not add new queue code"
+                    residency_policy:
+                      same_model_multi_copy: false
+                      max_loaded_models_env: "OLLAMA_MAX_LOADED_MODELS"
+                      num_parallel_means: "slots_inside_one_runner"
                   qos:
                     classes: ["interactive", "auxiliary", "background"]
+                    fulfillment: ["complete", "benchmark"]
+                    modalities:
+                      - text
+                      - vision
+                      - video_understanding
+                      - image_generation
+                      - video_generation
                     options:
                       path: "options.zerollama"
                       fields:
                         qos_class: "interactive | auxiliary | background (aliases: primary, aux, bg)"
                         qos_priority: "0-100; class inferred when qos_class omitted (>=70 interactive)"
+                        fulfillment: "complete | benchmark — no-degradation / exclusive speed (aliases: guarantee, reliable / bench, speed, exclusive)"
                         session_group: "harness id for shared cache branch (alias: harness)"
                         session_parent: "parent thread prompt_cache_key"
+                        project_id: "client harness id (alias: client_id, project)"
+                        project_name: "human label for zerollama ps (alias: client_name)"
                         cache_scope: "auto | thread | shared"
+                      legacy: ["mlx_session_class", "mlx_session_parent", "fulfill_mode", "priority_mode"]
+                    openai:
+                      extra_body: ["zerollama", "options", "prompt_cache_key"]
                     routes:
                       text: "/api/generate, /api/chat, /v1/chat/completions"
+                      vision: "/api/chat, /v1/chat/completions (images in messages)"
+                      video_understanding: "/api/chat, /v1/chat/completions (videos in messages)"
+                      image_generation: "/api/generate (image models), /v1/images/generations, /v1/images/edits"
+                      video_generation: "POST /v1/videos"
+                    defaults:
+                      image_generation: "background"
+                      video_generation: "background"
+                      vision: "auxiliary (stream) / background (non-stream)"
+                      video_understanding: "auxiliary (stream) / background (non-stream)"
 
   /v1/models:
     get:

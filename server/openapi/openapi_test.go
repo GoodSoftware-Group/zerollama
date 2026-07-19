@@ -40,10 +40,22 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	for _, s := range []string{
 		"FleetStatusResponse", "CanLoadRequest", "CanLoadResponse", "InferenceError",
 		"InferenceConfigStatus", "PinRequest", "PinResponse", "PinStatus",
-		"ProposeLoadRequest", "ProposeLoadResponse",
+		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",
 	} {
 		if _, ok := schemas[s]; !ok {
 			t.Fatalf("missing schema %s", s)
+		}
+	}
+	qosProps := schemas["ZerollamaQoS"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"fulfillment", "project_id", "project_name", "qos_class", "cache_scope"} {
+		if _, ok := qosProps[f]; !ok {
+			t.Fatalf("ZerollamaQoS missing %s", f)
+		}
+	}
+	vq := schemas["ZerollamaVersionQoS"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"fulfillment", "modalities", "defaults", "options", "routes"} {
+		if _, ok := vq[f]; !ok {
+			t.Fatalf("ZerollamaVersionQoS missing %s", f)
 		}
 	}
 	inference := schemas["FleetStatusResponse"].(map[string]any)["properties"].(map[string]any)["inference"].(map[string]any)
