@@ -244,8 +244,6 @@ chmod +x ~/bin/serve.sh
 
 ```bash
 ~/bin/serve.sh                    # blocks; logs → /tmp/zerollama-serve.log
-tail -f /tmp/zerollama-serve.log
-
 # Install / refresh the binary the CT actually runs (not the Proxmox host /usr/bin):
 #   cp -a ~/zerollama/zerollama /usr/bin/zerollama   # inside CT 1564 / cudallama
 # Sign-off scripts that start a temp serve on 127.0.0.1:8080 must tear it down —
