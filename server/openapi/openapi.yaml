@@ -999,7 +999,8 @@ components:
       type: object
       description: >
         Error body on generate/chat (JSON or NDJSON). Busy 503s include retry_after;
-        stream/runner failures may include cause=host_unstable and partial timings.
+        stream/runner failures may include cause=host_unstable and partial timings;
+        pin/VRAM conflicts use cause=runtime_pin_gguf or runtime_pin_ggml.
       required: [error]
       properties:
         error:
@@ -1011,7 +1012,16 @@ components:
           description: Seconds to wait before retry (also sent as Retry-After header on 503)
         cause:
           type: string
-          description: "host_unstable when runner/process exit detected"
+          description: >
+            host_unstable (runner/process exit); runtime_pin_gguf (active pin holds a
+            different Python GGUF); runtime_pin_ggml (pinned/in-use ggml still resident
+            after pin-respecting unload — resume blocked to avoid dual-stack OOM);
+            runtime_vram (other prepareRuntimeVRAM failures).
+          enum:
+            - host_unstable
+            - runtime_pin_gguf
+            - runtime_pin_ggml
+            - runtime_vram
         total_duration:
           type: integer
           description: Nanoseconds wall time until failure
@@ -1080,9 +1090,35 @@ components:
               additionalProperties: true
             config:
               $ref: "#/components/schemas/InferenceConfigStatus"
+            pins:
+              type: array
+              description: >
+                Active /api/pin leases (Phase B). Soft UnloadAllRunners respects these;
+                conflicting runtime GGUF or residual pinned ggml yields 503 on chat/generate.
+              items:
+                $ref: "#/components/schemas/PinStatus"
             training:
               type: object
               additionalProperties: true
+    PinStatus:
+      type: object
+      description: One active pin on GET /api/status → inference.pins
+      properties:
+        pin_id:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+        project_id:
+          type: string
+        co_resident:
+          type: boolean
+        notes:
+          type: string
     CanLoadRequest:
       type: object
       required: [model]
@@ -1523,7 +1559,8 @@ paths:
                 $ref: "#/components/schemas/GenerateStreamEvent"
         "503":
           description: >
-            Server busy (max queue exceeded) or Darwin Metal contention.
+            Server busy (max queue exceeded), Darwin Metal contention, or Phase B
+            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml).
             Includes Retry-After header and retry_after body field.
           headers:
             Retry-After:
@@ -1534,9 +1571,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
-              example:
-                error: "server busy, please try again.  maximum pending requests exceeded"
-                retry_after: 2
+              examples:
+                queue_busy:
+                  summary: Max pending queue
+                  value:
+                    error: "server busy, please try again.  maximum pending requests exceeded"
+                    retry_after: 2
+                runtime_pin_gguf:
+                  summary: Pin holds a different runtime GGUF
+                  value:
+                    error: "runtime inference blocked: active pin holds a different GGUF; release the pin or use the pinned model"
+                    retry_after: 2
+                    cause: runtime_pin_gguf
+                runtime_pin_ggml:
+                  summary: Pinned ggml still resident
+                  value:
+                    error: "runtime inference blocked: ggml runners still resident (pin, fulfillment, or in-use); release pins or retry"
+                    retry_after: 2
+                    cause: runtime_pin_ggml
   /api/chat:
     post:
       summary: Generate a chat message
@@ -1713,7 +1765,8 @@ paths:
                 $ref: "#/components/schemas/ChatStreamEvent"
         "503":
           description: >
-            Server busy (max queue exceeded) or Darwin Metal contention.
+            Server busy (max queue exceeded), Darwin Metal contention, or Phase B
+            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml).
             Includes Retry-After header and retry_after body field.
           headers:
             Retry-After:
@@ -1724,9 +1777,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
-              example:
-                error: "server busy, please try again.  maximum pending requests exceeded"
-                retry_after: 2
+              examples:
+                queue_busy:
+                  summary: Max pending queue
+                  value:
+                    error: "server busy, please try again.  maximum pending requests exceeded"
+                    retry_after: 2
+                runtime_pin_gguf:
+                  summary: Pin holds a different runtime GGUF
+                  value:
+                    error: "runtime inference blocked: active pin holds a different GGUF; release the pin or use the pinned model"
+                    retry_after: 2
+                    cause: runtime_pin_gguf
+                runtime_pin_ggml:
+                  summary: Pinned ggml still resident
+                  value:
+                    error: "runtime inference blocked: ggml runners still resident (pin, fulfillment, or in-use); release pins or retry"
+                    retry_after: 2
+                    cause: runtime_pin_ggml
   /api/embed:
     post:
       summary: Generate embeddings
@@ -2152,7 +2220,8 @@ paths:
       summary: Fleet inference status and runtime config
       description: >
         Live ggml/runtime queue snapshot plus `inference.config` (NUM_PARALLEL,
-        MAX_LOADED_MODELS, MAX_QUEUE, keep-alive, residency policy). See
+        MAX_LOADED_MODELS, MAX_QUEUE, keep-alive, residency policy) and
+        `inference.pins` (active Phase B pin leases). See
         docs/inference-wishlist-host.md.
       operationId: status
       x-codeSamples:

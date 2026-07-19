@@ -37,10 +37,31 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		}
 	}
 	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
-	for _, s := range []string{"FleetStatusResponse", "CanLoadRequest", "CanLoadResponse", "InferenceError", "InferenceConfigStatus"} {
+	for _, s := range []string{
+		"FleetStatusResponse", "CanLoadRequest", "CanLoadResponse", "InferenceError",
+		"InferenceConfigStatus", "PinRequest", "PinResponse", "PinStatus",
+		"ProposeLoadRequest", "ProposeLoadResponse",
+	} {
 		if _, ok := schemas[s]; !ok {
 			t.Fatalf("missing schema %s", s)
 		}
+	}
+	inference := schemas["FleetStatusResponse"].(map[string]any)["properties"].(map[string]any)["inference"].(map[string]any)
+	infProps := inference["properties"].(map[string]any)
+	if _, ok := infProps["pins"]; !ok {
+		t.Fatal("FleetStatusResponse.inference missing pins")
+	}
+	cause := schemas["InferenceError"].(map[string]any)["properties"].(map[string]any)["cause"].(map[string]any)
+	enums, _ := cause["enum"].([]any)
+	wantCauses := map[string]bool{
+		"host_unstable": true, "runtime_pin_gguf": true,
+		"runtime_pin_ggml": true, "runtime_vram": true,
+	}
+	for _, e := range enums {
+		delete(wantCauses, e.(string))
+	}
+	if len(wantCauses) > 0 {
+		t.Fatalf("InferenceError.cause missing enums %v", wantCauses)
 	}
 }
 
