@@ -987,8 +987,9 @@ components:
               description: >
                 Feature flags. Phase A capacity/admission: runtime_config, can_load,
                 metrics, admission_retry_after, error_timings, empty_gen_classify,
-                priority_queues, residency_policy. Deferred (false): stable_multi_model_swap,
-                pin_reserve, propose_sidecar. Also mlx_qos, mlx_live_kv, prompt_cache_key,
+                priority_queues, residency_policy, pin_reserve, propose_sidecar.
+                Deferred (false): stable_multi_model_swap (Python single-GGUF; B0/B1 dampen only).
+                Also mlx_qos, mlx_live_kv, prompt_cache_key,
                 session_qos_gate, runner_paths, fulfillment.
             qos:
               type: object
@@ -1137,6 +1138,79 @@ components:
           type: integer
         loaded_count:
           type: integer
+        notes:
+          type: string
+    ProposeLoadRequest:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/CanLoadRequest"
+    ProposeLoadResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanLoadResponse"
+        plan:
+          type: object
+          properties:
+            fits_without_eviction:
+              type: boolean
+            co_resident:
+              type: boolean
+              description: False when batch has two or more distinct runtime GGUFs
+            serialize_required:
+              type: boolean
+            load_order:
+              type: array
+              items:
+                type: string
+            evict_candidates:
+              type: array
+              items:
+                type: string
+            confidence:
+              type: string
+            notes:
+              type: string
+        warm:
+          type: object
+          additionalProperties: true
+    PinRequest:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          items:
+            type: string
+        ttl_seconds:
+          type: integer
+        project_id:
+          type: string
+    PinResponse:
+      type: object
+      properties:
+        pin_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        models:
+          type: array
+          items:
+            type: string
+        project_id:
+          type: string
+        co_resident:
+          type: boolean
+        can_pin:
+          type: boolean
         notes:
           type: string
     TokenLogprob:
@@ -2128,6 +2202,96 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
+  /api/propose-load:
+    post:
+      summary: Multi-model capacity plan (dry-run)
+      description: >
+        Batch can-load with an honest co-residency plan. Never loads models.
+        Why serialize_required: when the batch includes two or more distinct runtime
+        GGUFs, plan.co_resident is false and serialize_required is true — Python holds
+        one GGUF; implying co-resident warmth would thrash Orient interview graphs.
+      operationId: proposeLoad
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/propose-load -d '{"models":[{"model":"llama3.2:latest"},{"model":"qwen2.5:latest"}]}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProposeLoadRequest"
+      responses:
+        "200":
+          description: Plan result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProposeLoadResponse"
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/pin:
+    post:
+      summary: Pin models against eviction (session lease)
+      description: >
+        Blocks eviction for listed model keys for a TTL. Does not load models.
+        Soft UnloadAllRunners (runtime broker) respects pins; training / exclusive
+        bench use Forced unload. Runtime GGUF paths are soft-pinned in Go — a later
+        chat for a different GGUF returns 503 runtime_pin_gguf until the lease ends.
+        Fail closed if the set (or another active lease) would yield two or more
+        distinct runtime GGUFs (runtime_single_resident). Why fail closed: a successful
+        dual pin would lie about Python residency.
+      operationId: pinModels
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/pin -d '{"models":["llama3.2:latest"],"ttl_seconds":1800}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PinRequest"
+      responses:
+        "200":
+          description: Pin created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinResponse"
+        "400":
+          description: Rejected (multi-runtime or over max)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "409":
+          description: Conflicts with exclusive fulfillment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/pin/{id}:
+    delete:
+      summary: Release a pin lease early
+      operationId: unpinModels
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Released
+        "404":
+          description: Pin not found or expired
   /api/metrics:
     get:
       summary: Prometheus metrics
@@ -2187,8 +2351,8 @@ paths:
                     admission_retry_after: true
                     error_timings: true
                     empty_gen_classify: true
-                    pin_reserve: false
-                    propose_sidecar: false
+                    pin_reserve: true
+                    propose_sidecar: true
                     stable_multi_model_swap: false
                     runner_paths: ["mlx", "gguf_ggml", "gguf_llama_server", "runtime"]
                   qos:

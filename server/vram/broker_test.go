@@ -32,6 +32,12 @@ func (m *mockEvictor) UnloadAllRunners() {
 	m.mu.Unlock()
 }
 
+func (m *mockEvictor) UnloadAllRunnersForced() {
+	m.mu.Lock()
+	m.order = append(m.order, "unload_forced")
+	m.mu.Unlock()
+}
+
 func (m *mockEvictor) steps() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -43,7 +49,7 @@ func (m *mockEvictor) steps() []string {
 func TestPrepareForTrainingOrder(t *testing.T) {
 	ev := &mockEvictor{}
 	PrepareForTraining(context.Background(), ev)
-	want := []string{"pause", "unload"}
+	want := []string{"pause", "unload_forced"}
 	got := ev.steps()
 	if len(got) != len(want) {
 		t.Fatalf("steps %v want %v", got, want)
@@ -80,6 +86,46 @@ func TestPrepareForRuntimeInferenceOrder(t *testing.T) {
 		t.Fatal("expected resume request")
 	}
 	_ = handoff
+}
+
+func TestPrepareForRuntimeInferenceSkipUnload(t *testing.T) {
+	var resume bool
+	rt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/inference/resume" {
+			resume = true
+		}
+	}))
+	defer rt.Close()
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", rt.URL)
+
+	ev := &mockEvictor{}
+	PrepareForRuntimeInference(context.Background(), ev, PrepareRuntimeOpts{SkipUnload: true})
+	if got := ev.steps(); len(got) != 0 {
+		t.Fatalf("expected no unload, got %v", got)
+	}
+	if !resume {
+		t.Fatal("expected resume request")
+	}
+}
+
+func TestPrepareForRuntimeInferenceForceUnload(t *testing.T) {
+	var resume bool
+	rt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/inference/resume" {
+			resume = true
+		}
+	}))
+	defer rt.Close()
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", rt.URL)
+
+	ev := &mockEvictor{}
+	PrepareForRuntimeInference(context.Background(), ev, PrepareRuntimeOpts{ForceUnload: true})
+	if got := ev.steps(); len(got) != 1 || got[0] != "unload_forced" {
+		t.Fatalf("evictor steps %v want [unload_forced]", got)
+	}
+	if !resume {
+		t.Fatal("expected resume request")
+	}
 }
 
 func TestPrepareForLegacyRunnerHandoff(t *testing.T) {

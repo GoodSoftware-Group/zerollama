@@ -41,13 +41,13 @@ func TestVersionHandler(t *testing.T) {
 		t.Fatalf("capabilities=%v", z["capabilities"])
 	}
 	caps := z["capabilities"].(map[string]any)
-	for _, key := range []string{"runtime_config", "can_load", "metrics", "admission_retry_after", "error_timings", "empty_gen_classify"} {
+	for _, key := range []string{"runtime_config", "can_load", "metrics", "admission_retry_after", "error_timings", "empty_gen_classify", "pin_reserve", "propose_sidecar"} {
 		if caps[key] != true {
 			t.Fatalf("expected %s true, caps=%v", key, caps)
 		}
 	}
-	if caps["pin_reserve"] != false || caps["propose_sidecar"] != false || caps["stable_multi_model_swap"] != false {
-		t.Fatalf("expected deferred caps false, caps=%v", caps)
+	if caps["stable_multi_model_swap"] != false {
+		t.Fatalf("expected stable_multi_model_swap false, caps=%v", caps)
 	}
 }
 

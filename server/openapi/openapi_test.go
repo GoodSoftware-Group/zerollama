@@ -30,7 +30,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	paths := doc["paths"].(map[string]any)
 	for _, p := range []string{
 		"/v1/audio/speech", "/v1/audio/voices", "/openapi.json", "/docs",
-		"/api/status", "/api/can-load", "/api/metrics", "/api/version",
+		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin", "/api/metrics", "/api/version",
 	} {
 		if _, ok := paths[p]; !ok {
 			t.Fatalf("missing path %s", p)

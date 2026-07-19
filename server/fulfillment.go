@@ -222,6 +222,8 @@ func (g *mlxAgentGate) shouldDeferFulfillment(
 }
 
 // protectedModelKeys returns model keys that must not be eviction victims.
+// WHY: fulfillment holds + /api/pin leases share one protection set consulted by both
+// findRunnerToUnload (victim pick) and unloadRunnersExceptOpts (broker wipe).
 func (g *mlxAgentGate) protectedModelKeys() map[string]struct{} {
 	out := make(map[string]struct{})
 	if g == nil {
@@ -229,8 +231,20 @@ func (g *mlxAgentGate) protectedModelKeys() map[string]struct{} {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if hold, ok := g.fulfillmentActive(time.Now()); ok {
+	now := time.Now()
+	if hold, ok := g.fulfillmentActive(now); ok {
 		out[hold.modelKey] = struct{}{}
+	}
+	g.expirePinsLocked(now)
+	for _, lease := range g.pins {
+		if lease == nil {
+			continue
+		}
+		for _, mk := range lease.ModelKeys {
+			if mk != "" {
+				out[mk] = struct{}{}
+			}
+		}
 	}
 	return out
 }

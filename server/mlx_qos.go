@@ -289,8 +289,10 @@ func zerollamaVersionCapabilities() map[string]any {
 	// on zerollama nodes. runner_paths prevents sending MLX-specific options to nodes
 	// that only run gguf_ggml or vanilla-compatible paths.
 	//
-	// Phase A capacity flags (can_load, metrics, …): progressive probe without SSH.
-	// Honest false for swap/pin/propose: clients must not assume Phase B exists.
+	// Phase A/B capacity flags: progressive probe without SSH.
+	// WHY stable_multi_model_swap=false: B0/B1 + soft-pin dampen thrash; they do not make
+	// Python multi-resident. Hire maps that key on this flag must stay conservative.
+	// WHY pin_reserve/propose_sidecar=true: advertise shipped surfaces; clients still honor serialize_required.
 	return map[string]any{
 		"mlx_qos":                true,
 		"prompt_cache_key":       true,
@@ -314,9 +316,9 @@ func zerollamaVersionCapabilities() map[string]any {
 			"max_loaded_models_env": "OLLAMA_MAX_LOADED_MODELS",
 			"num_parallel_means":    "slots_inside_one_runner",
 		},
-		"stable_multi_model_swap": false,
-		"pin_reserve":             false,
-		"propose_sidecar":         false,
+		"stable_multi_model_swap": false, // B0/B1 dampen thrash only; Python still single-GGUF
+		"pin_reserve":             true,
+		"propose_sidecar":         true,
 	}
 }
 

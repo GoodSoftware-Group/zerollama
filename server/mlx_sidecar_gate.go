@@ -42,14 +42,21 @@ type mlxSessionSlot struct {
 //   - auxiliary (ephemeral spawns): defers behind primary; shares aux:{model} branch
 //   - background (unkeyed /api/generate, ruby-trivia:bg:*): lowest priority
 //   - fulfillment complete/benchmark: request-scoped no-degradation / exclusive holds
+//   - pins: session TTL leases that block eviction without loading (Phase B3).
+//     Soft UnloadAllRunners respects them; Forced (training/bench) does not.
+//     RuntimeGGUFs soft-pin Python residency in Go (503 on conflicting GGUF).
 type mlxAgentGate struct {
 	mu      sync.Mutex
 	slots   map[string]*mlxSessionSlot
 	fulfill *fulfillmentHold
+	pins    map[string]*pinLease // pin_id → lease
 }
 
 func newMLXAgentGate() *mlxAgentGate {
-	return &mlxAgentGate{slots: make(map[string]*mlxSessionSlot)}
+	return &mlxAgentGate{
+		slots: make(map[string]*mlxSessionSlot),
+		pins:  make(map[string]*pinLease),
+	}
 }
 
 func (g *mlxAgentGate) begin(modelKey, sessionKey string, class mlxSessionClass, qos mlxQoS) func() {

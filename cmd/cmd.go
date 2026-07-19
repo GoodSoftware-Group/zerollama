@@ -2015,6 +2015,15 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 }
 
 func checkConnectableHostAvailable(bindURL, connectURL *url.URL) error {
+	if bindURL == nil {
+		return nil
+	}
+
+	// Probe the actual bind address first — catches a second serve on the same host:port.
+	if err := probeTCPListenFree(bindURL.Host); err != nil {
+		return fmt.Errorf("cannot serve %s: address already occupied (%v); stop the other zerollama/serve process (check screen/orphans) or set OLLAMA_HOST to a free address", bindURL.Host, err)
+	}
+
 	bindHost, bindPort, err := net.SplitHostPort(bindURL.Host)
 	if err != nil {
 		return nil
@@ -2025,18 +2034,27 @@ func checkConnectableHostAvailable(bindURL, connectURL *url.URL) error {
 		return nil
 	}
 
+	if connectURL == nil {
+		return nil
+	}
 	connectHost, connectPort, err := net.SplitHostPort(connectURL.Host)
 	if err != nil || connectPort != bindPort {
 		return nil
 	}
 
-	ln, err := net.Listen("tcp", net.JoinHostPort(connectHost, connectPort))
-	if err == nil {
-		_ = ln.Close()
-		return nil
+	if err := probeTCPListenFree(net.JoinHostPort(connectHost, connectPort)); err != nil {
+		return fmt.Errorf("cannot serve %s: client address %s is already occupied (%v); close the process using that loopback port or set OLLAMA_HOST to a free address such as 127.0.0.1:11435", bindURL.Host, connectURL.Host, err)
 	}
+	return nil
+}
 
-	return fmt.Errorf("cannot serve %s: client address %s is already occupied; close the process using that loopback port or set OLLAMA_HOST to a free address such as 127.0.0.1:11435", bindURL.Host, connectURL.Host)
+func probeTCPListenFree(hostport string) error {
+	ln, err := net.Listen("tcp", hostport)
+	if err != nil {
+		return err
+	}
+	_ = ln.Close()
+	return nil
 }
 
 func initializeKeypair() error {

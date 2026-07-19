@@ -1480,19 +1480,38 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 	sort.Sort(ByDurationAndName(runnerList))
 
 	protected := s.mlxGate.protectedModelKeys()
+	hyst := envconfig.WarmHysteresis()
+	now := time.Now()
 
-	// First try to find a runner that's already idle (skip fulfillment-protected models).
-	for _, runner := range runnerList {
-		if _, skip := protected[runner.modelKey]; skip {
-			continue
-		}
-		runner.refMu.Lock()
-		rc := runner.refCount
-		runner.refMu.Unlock()
-		if rc == 0 {
-			schedLogDebug("findRunnerToUnload: idle victim", nil, schedRunnerAttrs(runner)...)
+	pickIdle := func(requireCold bool) *runnerRef {
+		for _, runner := range runnerList {
+			if _, skip := protected[runner.modelKey]; skip {
+				continue
+			}
+			runner.refMu.Lock()
+			rc := runner.refCount
+			lastUsed := runner.lastUsedAt
+			runner.refMu.Unlock()
+			if rc != 0 {
+				continue
+			}
+			if requireCold && hyst > 0 && !lastUsed.IsZero() && now.Sub(lastUsed) < hyst {
+				continue
+			}
+			schedLogDebug("findRunnerToUnload: idle victim", nil, append(schedRunnerAttrs(runner),
+				"hysteresis", hyst.String(), "require_cold", requireCold)...)
 			return runner
 		}
+		return nil
+	}
+
+	// Prefer idle runners outside the warm hysteresis window (Phase B1).
+	if victim := pickIdle(true); victim != nil {
+		return victim
+	}
+	// Fall back to any idle runner (including recently used).
+	if victim := pickIdle(false); victim != nil {
+		return victim
 	}
 	// None appear idle, just wait for the one with the shortest duration (still skip protected).
 	for _, runner := range runnerList {
@@ -1510,15 +1529,33 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 }
 
 func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
+	s.unloadRunnersExceptOpts(keepModelKey, false)
+}
+
+// unloadRunnersExceptOpts evicts loaded runners except keepModelKey.
+// force=false keeps pin/fulfillment-protected keys (broker path).
+// force=true ignores protection (training OOM, exclusive benchmark).
+func (s *Scheduler) unloadRunnersExceptOpts(keepModelKey string, force bool) {
 	// keepModelKey: preserve one loaded model during targeted VRAM prep (e.g. imagegen
 	// reload). Empty keepModelKey means UnloadAllRunners — defer runners with refCount>0
 	// so active HTTP streams (image NDJSON) finish instead of losing the client while the
 	// MLX subprocess keeps running orphaned in the background.
+	var protected map[string]struct{}
+	if !force {
+		protected = s.mlxGate.protectedModelKeys()
+	}
+
 	s.loadedMu.Lock()
 	var activeToClose llm.LlamaServer
 	if s.activeLoading != nil {
-		if keepModelKey != "" && s.activeLoadingKey == keepModelKey {
-			slog.Debug("keeping activeLoading probe for requested model", "model_key", keepModelKey)
+		keepActive := keepModelKey != "" && s.activeLoadingKey == keepModelKey
+		if !keepActive && !force && protected != nil {
+			if _, skip := protected[s.activeLoadingKey]; skip {
+				keepActive = true
+			}
+		}
+		if keepActive {
+			slog.Debug("keeping activeLoading probe", "model_key", s.activeLoadingKey)
 		} else {
 			slog.Debug("shutting down currently loading runner", "model_key", s.activeLoadingKey)
 			activeToClose = s.activeLoading
@@ -1529,9 +1566,22 @@ func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
 
 	runners := make([]*runnerRef, 0, len(s.loaded))
 	deferred := make([]*runnerRef, 0)
+	keptProtected := 0
 	for key, runner := range s.loaded {
 		if keepModelKey != "" && key == keepModelKey {
 			continue
+		}
+		if !force && protected != nil {
+			if _, skip := protected[key]; skip {
+				keptProtected++
+				continue
+			}
+			if mk := runner.modelKey; mk != "" {
+				if _, skip := protected[mk]; skip {
+					keptProtected++
+					continue
+				}
+			}
 		}
 		runner.refMu.Lock()
 		refs := runner.refCount
@@ -1554,6 +1604,10 @@ func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
 		delete(s.loaded, key)
 	}
 	s.loadedMu.Unlock()
+
+	if keptProtected > 0 {
+		slog.Info("unload skipped pin/fulfillment-protected runners", "kept", keptProtected, "force", force)
+	}
 
 	closeLlamaServer(activeToClose)
 
@@ -1592,7 +1646,7 @@ func (s *Scheduler) keepModelKeyForUnload(m *Model) string {
 }
 
 func (s *Scheduler) unloadAllRunners() {
-	s.unloadRunnersExcept("")
+	s.unloadRunnersExceptOpts("", false)
 }
 
 // PauseNewLoads blocks new inference runner scheduling until [Scheduler.ResumeLoads].
@@ -1615,14 +1669,34 @@ func (s *Scheduler) ResumeLoads() {
 	s.pending.notify()
 }
 
-// UnloadAllRunners evicts all loaded inference models (exported for training worker).
+// UnloadAllRunners evicts loaded models but keeps pin/fulfillment-protected keys.
+// WHY soft: otherwise POST /api/pin is a no-op against the runtime VRAM broker
+// (every chat called UnloadAllRunners and wiped the lease).
 func (s *Scheduler) UnloadAllRunners() {
-	s.unloadAllRunners()
+	s.unloadRunnersExceptOpts("", false)
+}
+
+// UnloadAllRunnersForced evicts every runner including pins (training OOM, exclusive benchmark).
+// WHY Forced: soft pin must not strand training CUDA OOM recovery or exclusive benches.
+func (s *Scheduler) UnloadAllRunnersForced() {
+	s.unloadRunnersExceptOpts("", true)
+}
+
+// ggmlRunnersLoaded reports whether any ggml runner is resident or actively loading.
+// WHY exported to prepareRuntimeVRAM: B0 skip-unload is only safe when this is false.
+func (s *Scheduler) ggmlRunnersLoaded() bool {
+	if s == nil {
+		return false
+	}
+	s.loadedMu.Lock()
+	defer s.loadedMu.Unlock()
+	return len(s.loaded) > 0 || s.activeLoading != nil
 }
 
 // UnloadOtherRunners evicts loaded models except keepModelKey (empty keepModelKey evicts all).
+// Respects pin/fulfillment protection (same as UnloadAllRunners).
 func (s *Scheduler) UnloadOtherRunners(keepModelKey string) {
-	s.unloadRunnersExcept(keepModelKey)
+	s.unloadRunnersExceptOpts(keepModelKey, false)
 }
 
 // pendingOldestFifoSeq is the smallest FIFO ticket among ggml pending loads (0 if none).

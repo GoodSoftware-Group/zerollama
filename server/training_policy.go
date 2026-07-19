@@ -59,7 +59,9 @@ func (s *Server) syncTrainingVRAMCoordination(ctx context.Context, block bool) {
 	if block {
 		vram.ReleaseRuntimeVRAM(ctx)
 		if s.sched != nil {
-			s.sched.UnloadAllRunners()
+			// WHY Forced: training must reclaim GPU even when /api/pin leases are active.
+			// Soft UnloadAllRunners would leave pinned ggml resident and training OOM loops.
+			s.sched.UnloadAllRunnersForced()
 		}
 		return
 	}

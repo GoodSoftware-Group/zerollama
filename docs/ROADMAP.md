@@ -158,7 +158,20 @@ Mark **v0 Done** when 1–5 pass and criterion 4 smoke passes on ship hardware (
 **Host wishlist Phase A (capacity + admission) — shipped Jul 2026.**  
 **Why:** agents need readable config, dry-run admit, metrics, and Retry-After without guessing env or starting loads.  
 **Doc:** [inference-wishlist-host.md](./inference-wishlist-host.md) — `/api/status` config, `POST /api/can-load` (exact vs heuristic; fail closed), `/api/metrics`, Retry-After on busy 503s, error timings, empty-gen classify.  
-**Phase B deferred:** stable multi-model swap, pin/reserve leases, propose sidecar (scheduler redesign; interim: serialize under thrash, self-propose, `fulfillment`/`keep_alive` soft pin).
+
+**Host wishlist Phase B (pin / propose / thrash dampen) — shipped Jul 2026.**  
+**Why:** session leases + honest multi-model plans without pretending multi-resident Python exists; reduce ggml↔runtime thrash on same-GGUF chat.  
+**Shipped:**
+- B0: skip broker unload when same GGUF warm **and** ggml empty (**why:** GGUF match alone left leftover ggml → OOM risk).
+- B1: `ZEROLLAMA_WARM_HYSTERESIS` on ggml eviction victims.
+- `POST /api/pin` / `DELETE /api/pin/:id`: TTL leases, global distinct-key budget, host-wide one runtime GGUF, `RuntimeGGUFs` soft-pin.
+- Broker respects pins (`UnloadAllRunners`); training / exclusive bench use `UnloadAllRunnersForced` (**why:** soft pin vs reclaim-GPU are different contracts).
+- Residual pinned ggml or conflicting runtime GGUF → `503` before `ResumeInference` (**why:** fail closed beats dual-stack OOM / silent swap).
+- `POST /api/propose-load` with `serialize_required` when co-residency is impossible.
+- Single-serve occupied-bind error (orphan loopback).  
+**Still false:** `stable_multi_model_swap` (Phase B+ multi-GGUF runtime).  
+**Doc:** [inference-wishlist-host.md](./inference-wishlist-host.md) (findings + pin/broker semantics).  
+**Deferred (B+):** Python `ModelSwapGate` hard-pin; multi-GGUF residency; co-residency calibrator.
 
 See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardware):** Phase **11** admission tuning; Phase **15** writable tensor bind (upstream-blocked). **L2 Done** — VRAM opt-in, no default tok/s flip. **Done on 5080 (Jun 2026):** [5080-runbook.md](./5080-runbook.md) tiers 1–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF` bundle. **Continue on 5080 (Jul 2026):** Tier F RotorQuant A/B before more KV patches. **Production serve:** [`serve_production_wrapper.sh`](../scripts/serve/serve_production_wrapper.sh) → `~/bin/serve.sh` (WHY: in-repo `serve_gpu_example.sh` must not be copied verbatim to `~/bin`).
 

@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Host wishlist Phase B — pin, propose, thrash dampen (Jul 2026)
+
+**Why:** Phase A gave dry-run admit but Decide still lacked session pins, multi-model plans, and less ggml↔runtime unload thrash — without lying that Python can hold two GGUFs.
+
+**Why an audit pass after first ship:** the first Phase B cut wired pin into `findRunnerToUnload` only. The runtime VRAM broker still called `UnloadAllRunners`, so pins were wiped every chat turn on runtime-default hosts — clients trusted a lease that did nothing. B0 also skipped unload on GGUF match alone while leftover ggml could still hold VRAM (OOM). Per-lease pin caps allowed N leases to stack past `MAX_LOADED`. Soft-pin of runtime GGUFs was missing, so Python could still swap under a “pinned” model.
+
+**Shipped:**
+
+| Surface | What | Why |
+|---------|------|-----|
+| Broker B0 | Skip `UnloadAllRunners` when request GGUF matches `/health.model_swap.loaded_gguf` **and** ggml scheduler is empty | Same-GGUF chat should not thrash; leftover ggml must still be cleared |
+| Sched B1 | `ZEROLLAMA_WARM_HYSTERESIS` (default 3m) prefers keep recently used ggml victims | Reduce ping-pong eviction among warm ggml runners |
+| `POST /api/pin` + `DELETE /api/pin/:id` | TTL eviction leases; fail closed on 2+ distinct runtime GGUFs (per request **and** cross-lease); **global distinct-key budget**; stores `RuntimeGGUFs`; status `inference.pins` | Session residency without loading; honest single-resident Python |
+| Pin vs broker | `UnloadAllRunners` / `UnloadOtherRunners` keep pin+fulfillment keys; training / exclusive bench use `UnloadAllRunnersForced` | Soft pin must survive the broker; training/bench must reclaim GPU |
+| Pin vs runtime | Residual pinned/in-use ggml → 503 (`runtime_pin_ggml`) **before** `ResumeInference`; other GGUF while runtime pin active → 503 (`runtime_pin_gguf`) | Fail closed beats dual-stack OOM or silent GGUF swap |
+| `POST /api/propose-load` | Batch can-load + `co_resident` / `serialize_required` plan | Decide needs multi-model honesty without a calibrator |
+| Caps | `pin_reserve` + `propose_sidecar` true; **`stable_multi_model_swap` false** | Advertise what works; do not claim multi-GGUF swap |
+| Single-serve | Stronger occupied-bind error before Listen | Orphan loopback `:8080` stole production APIs |
+
+**Learnings (audit):** pin without broker respect is worse than no pin; B0 needs ggml-empty; global pin budget; 503 before resume when pins block clear; Go must soft-pin runtime GGUF paths. Detail: [inference-wishlist-host.md](./docs/inference-wishlist-host.md#findings--learnings-phase-a--b).
+
+Doc: [inference-wishlist-host.md](./docs/inference-wishlist-host.md).
+
 ### Host wishlist Phase A — capacity & admission APIs (Jul 2026)
 
 **Why:** Orient Inventory / Decide / hire-map clients could detect `distribution=zerollama` but still guessed capacity from env folklore. They had no public dry-run admit, no Prometheus scrape, no Retry-After on busy 503s, and empty generations looked like semantic refusals. Stable multi-model swap / pin / propose stay deferred (scheduler redesign).

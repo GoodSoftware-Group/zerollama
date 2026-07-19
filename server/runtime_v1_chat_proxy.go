@@ -62,16 +62,18 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 			return
 		}
 
-		s.prepareRuntimeVRAM(c.Request.Context())
-
 		rtOpts := runtimeV1ProxyOptions(oreq.Model, bodyMap)
+		gguf, _ := rtOpts["gguf"].(string)
+		if s.abortIfPrepareRuntimeVRAMFailed(c, s.prepareRuntimeVRAM(c.Request.Context(), gguf, runtimeForceUnload(s, proxyOptsFromV1Body(bodyMap)))) {
+			return
+		}
 		bodyMap["options"] = rtOpts
 		proxyBody, err := json.Marshal(bodyMap)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if gguf, ok := rtOpts["gguf"].(string); ok && strings.TrimSpace(gguf) != "" {
+		if gguf != "" && strings.TrimSpace(gguf) != "" {
 			runtimeclient.LogVramBudgetIfTight(c.Request.Context(), oreq.Model, gguf, rtOpts)
 		}
 

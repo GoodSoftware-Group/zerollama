@@ -351,6 +351,70 @@ func SchedWatchdogInterval() time.Duration {
 	return d
 }
 
+// WarmHysteresis is how recently a ggml runner must have been used to prefer keeping it
+// when choosing an eviction victim (Phase B1). Zero disables. Default 3m.
+// WHY: without a warm window, alternating chat models thrash eviction every turn even when
+// both would fit under MAX_LOADED if given a short grace period.
+func WarmHysteresis() time.Duration {
+	s := Var("ZEROLLAMA_WARM_HYSTERESIS")
+	if s == "" {
+		return 3 * time.Minute
+	}
+	if s == "0" || strings.EqualFold(s, "off") || strings.EqualFold(s, "false") {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return time.Duration(n) * time.Second
+		}
+		slog.Warn("invalid ZEROLLAMA_WARM_HYSTERESIS, using 3m", "value", s)
+		return 3 * time.Minute
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// PinMax is the maximum number of distinct model keys across pin leases (Phase B3).
+// Zero means use effective MAX_LOADED_MODELS at pin time (server-side).
+// WHY: bound soft-residency bookkeeping so leases cannot invent infinite protected keys.
+func PinMax() uint {
+	s := Var("ZEROLLAMA_PIN_MAX")
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		slog.Warn("invalid ZEROLLAMA_PIN_MAX, using 0 (derive from MAX_LOADED)", "value", s)
+		return 0
+	}
+	return uint(n)
+}
+
+// PinDefaultTTL is the default pin lease duration when the client omits ttl_seconds.
+// WHY default 30m: long enough for an Orient interview graph; short enough that abandoned
+// leases do not permanently block runtime prepare.
+func PinDefaultTTL() time.Duration {
+	s := Var("ZEROLLAMA_PIN_TTL")
+	if s == "" {
+		return 30 * time.Minute
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return time.Duration(n) * time.Second
+		}
+		slog.Warn("invalid ZEROLLAMA_PIN_TTL, using 30m", "value", s)
+		return 30 * time.Minute
+	}
+	if d <= 0 {
+		return 30 * time.Minute
+	}
+	return d
+}
+
 func Uint64(key string, defaultValue uint64) func() uint64 {
 	return func() uint64 {
 		if s := Var(key); s != "" {

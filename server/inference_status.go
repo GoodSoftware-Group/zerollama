@@ -42,13 +42,17 @@ func (s *Server) inferenceStatus(ctx context.Context) api.InferenceStatus {
 		QueuePolicy: trainingQueuePolicy(s),
 	}
 	runtime := runtimeStatusFromHealth(ctx, runtimeHealthProbeRequired())
-	return api.InferenceStatus{
+	st := api.InferenceStatus{
 		Ggml:     ggml,
 		Runtime:  runtime,
 		Backend:  inferenceBackendPolicy(),
 		Config:   s.inferenceConfigStatus(ctx, runtime),
 		Training: training,
 	}
+	if s != nil && s.sched != nil {
+		st.Pins = s.sched.mlxGate.listPins()
+	}
+	return st
 }
 
 func runtimeStatusFromHealth(ctx context.Context, enabled bool) api.RuntimeStatus {

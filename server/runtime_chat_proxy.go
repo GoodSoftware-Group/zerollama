@@ -59,11 +59,13 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			return
 		}
 
-		s.prepareRuntimeVRAM(c.Request.Context())
-
 		nPredict, limited := numPredictFromOptions(req.Options)
 		rtOpts := runtimeProxyOptions(req.Model, nPredict, limited, req.Options)
-		if gguf, ok := rtOpts["gguf"].(string); ok {
+		gguf, _ := rtOpts["gguf"].(string)
+		if s.abortIfPrepareRuntimeVRAMFailed(c, s.prepareRuntimeVRAM(c.Request.Context(), gguf, runtimeForceUnload(s, req.Options))) {
+			return
+		}
+		if gguf != "" {
 			runtimeclient.LogVramBudgetIfTight(c.Request.Context(), req.Model, gguf, rtOpts)
 		}
 

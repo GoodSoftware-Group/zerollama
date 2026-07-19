@@ -246,6 +246,12 @@ chmod +x ~/bin/serve.sh
 ~/bin/serve.sh                    # blocks; logs → /tmp/zerollama-serve.log
 tail -f /tmp/zerollama-serve.log
 
+# Install / refresh the binary the CT actually runs (not the Proxmox host /usr/bin):
+#   cp -a ~/zerollama/zerollama /usr/bin/zerollama   # inside CT 1564 / cudallama
+# Sign-off scripts that start a temp serve on 127.0.0.1:8080 must tear it down —
+# a second `zerollama serve` now refuses with a clear occupied-bind error.
+tail -f /tmp/zerollama-serve.log
+
 curl -s http://127.0.0.1:8080/api/version | jq .
 curl -s http://127.0.0.1:8081/health | jq '{status, profile: .gpu_profile.id, backend: .llama_backend}'
 curl -s http://127.0.0.1:8080/api/train/status | jq .

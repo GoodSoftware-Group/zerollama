@@ -1327,11 +1327,12 @@ type InferenceConfigStatus struct {
 
 // InferenceStatus summarizes local inference load for fleet management polling.
 type InferenceStatus struct {
-	Ggml     GgmlStatus             `json:"ggml"`
-	Runtime  RuntimeStatus          `json:"runtime"`
-	Backend  BackendPolicy          `json:"backend"`
-	Config   InferenceConfigStatus  `json:"config"`
-	Training *TrainingStatus        `json:"training,omitempty"`
+	Ggml     GgmlStatus            `json:"ggml"`
+	Runtime  RuntimeStatus         `json:"runtime"`
+	Backend  BackendPolicy         `json:"backend"`
+	Config   InferenceConfigStatus `json:"config"`
+	Pins     []PinStatus           `json:"pins,omitempty"`
+	Training *TrainingStatus       `json:"training,omitempty"`
 }
 
 // CanLoadRequest is the body for POST /api/can-load (capacity dry-run).
@@ -1373,6 +1374,60 @@ type CanLoadResponse struct {
 	MaxLoadedModels     uint                  `json:"max_loaded_models"`
 	LoadedCount         int                   `json:"loaded_count"`
 	Notes               string                `json:"notes,omitempty"`
+}
+
+// PinRequest is the body for POST /api/pin (session eviction lease; does not load).
+// WHY no load: reserve residency intent for Orient/Decide without GetRunner cost.
+type PinRequest struct {
+	Models     []string `json:"models"`
+	TTLSeconds *int     `json:"ttl_seconds,omitempty"`
+	ProjectID  string   `json:"project_id,omitempty"`
+}
+
+// PinResponse is returned by POST /api/pin.
+// CanPin false + error notes when multi-runtime GGUF or budget exceeded (fail closed).
+type PinResponse struct {
+	PinID      string    `json:"pin_id"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Models     []string  `json:"models"`
+	ProjectID  string    `json:"project_id,omitempty"`
+	CoResident bool      `json:"co_resident"`
+	CanPin     bool      `json:"can_pin"`
+	Notes      string    `json:"notes,omitempty"`
+}
+
+// PinStatus is one active pin on GET /api/status → inference.pins.
+type PinStatus struct {
+	PinID      string    `json:"pin_id"`
+	Models     []string  `json:"models"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	ProjectID  string    `json:"project_id,omitempty"`
+	CoResident bool      `json:"co_resident"`
+	Notes      string    `json:"notes,omitempty"`
+}
+
+// ProposeLoadRequest is the body for POST /api/propose-load.
+type ProposeLoadRequest struct {
+	Models []CanLoadRequest `json:"models"`
+}
+
+// ProposeLoadPlan aggregates batch can-load into an honest co-residency plan.
+// WHY serialize_required: Python holds one GGUF — never imply two runtime models stay warm.
+type ProposeLoadPlan struct {
+	FitsWithoutEviction bool     `json:"fits_without_eviction"`
+	CoResident          bool     `json:"co_resident"`
+	SerializeRequired   bool     `json:"serialize_required"`
+	LoadOrder           []string `json:"load_order"`
+	EvictCandidates     []string `json:"evict_candidates,omitempty"`
+	Confidence          string   `json:"confidence"` // exact | heuristic | mixed
+	Notes               string   `json:"notes,omitempty"`
+}
+
+// ProposeLoadResponse is the dry-run multi-model plan (never loads).
+type ProposeLoadResponse struct {
+	Models []CanLoadResponse `json:"models"`
+	Plan   ProposeLoadPlan   `json:"plan"`
+	Warm   ProcessResponse   `json:"warm"`
 }
 
 // BackendPolicy describes Phase 16/17 local GGUF routing for GET /api/status.

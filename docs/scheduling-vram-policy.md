@@ -59,12 +59,27 @@ Shared resources
 | Trigger | Action | Why |
 |---------|--------|-----|
 | Legacy ggml load (runtime model) | `training-handoff` | Runtime holds `llama-server`; must free VRAM first |
-| Runtime proxy inference | `UnloadAllRunners` + `inference/resume` | ggml keep-alive models would otherwise stay resident |
+| Runtime proxy inference | `UnloadAllRunners` (+ pins kept) + resume only if ggml clear; same-GGUF+empty skip; pin GGUF mismatch / residual ggml → 503; exclusive bench → `Forced` | Avoid OOM and lying multi-GGUF warm |
+| Training / runtime broker | `UnloadAllRunnersForced`, `training-handoff` | Free VRAM before another stack uses the GPU (pins ignored) |
 | Training submit / OOM | `PrepareForTraining` | Same card; training needs a predictable empty budget |
 
 **Why no public `/api/runtime/unload`:** automatic eviction avoids operators forgetting resume and leaving inference 503 until restart ([ROADMAP](./ROADMAP.md) deprioritizes public unload).
 
 Code: `server/vram/broker.go`, wired from `server/routes.go` and `x/trainingworker`.
+
+### Phase B addenda (pin / thrash dampen)
+
+**Why this belongs in the VRAM policy doc:** Phase B is not a new scheduler — it changes *when* the Phase 8 broker unloads and *who* unload may keep.
+
+| Mechanism | Behavior | Why |
+|-----------|----------|-----|
+| Soft `UnloadAllRunners` | Keeps pin + fulfillment-protected ggml keys | Otherwise `/api/pin` is a no-op against every runtime chat |
+| `UnloadAllRunnersForced` | Clears protected keys too | Training OOM and exclusive bench must reclaim the card |
+| B0 skip unload | Same GGUF warm **and** ggml map empty | Match alone left ggml resident → dual-stack OOM |
+| Pin residual / GGUF conflict | `503` before `ResumeInference` | Fail closed; do not resume Python on top of pinned ggml |
+| Warm hysteresis | Prefer cold idle victims for `ZEROLLAMA_WARM_HYSTERESIS` | Reduce ggml ping-pong among recently used runners |
+
+Full client contract: [inference-wishlist-host.md](./inference-wishlist-host.md).
 
 ---
 
@@ -79,7 +94,7 @@ Code: `server/vram/broker.go`, wired from `server/routes.go` and `x/trainingwork
 | `zerollama stop MODEL` | `POST /api/generate` with `"prompt":""`, `"keep_alive":0` | Same contract as upstream Ollama; avoids a second unload API |
 | Chat unload | `POST /api/chat` with `"messages":[]`, `"keep_alive":0` | Symmetric with generate |
 | Post-create eviction | Successful `/api/create` → `expireRunner` | Manifest options changed; warm runner must not keep old `num_ctx` |
-| Training / runtime broker | `UnloadAllRunners`, `training-handoff` | Free VRAM before another stack uses the GPU |
+| Training / runtime broker | `UnloadAllRunnersForced`, `training-handoff` | Free VRAM before another stack uses the GPU |
 
 **Verify:** `GET /api/ps` should list no models after unload. If a model remains, an inference request may still hold a ref (`refCount > 0`); unload retries until refs drop.
 
@@ -403,12 +418,13 @@ Code: `server/runtime_inference_routing.go`, `server/runtime_*_proxy.go`, `serve
 | Family tool output parsers ([Phase 12](./ROADMAP.md)) | **Done** — runtime streams via Go `parse-tool-output/session` + `chunk` (same parsers as ggml) |
 | Exact KV from tensor metadata ([Phase 13](./ROADMAP.md)) | **Partial** — `attn_k`/`attn_v` shapes infer head dims when metadata sparse; `/health` `vram_estimate` + `vram_budget`; clamp + `resolve_num_ctx_for_request` shipped — doc [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | Auth on `/api/train` ([T2](./ROADMAP.md)) | Same threat model as main API pending |
-| Host capacity APIs (can-load, metrics, Retry-After) | **Phase A shipped** — [inference-wishlist-host.md](./inference-wishlist-host.md); Phase B = swap/pin/propose |
-| Stable multi-model swap / pin / propose | **Phase B** — Python single-resident + broker thrash; interim soft-pin + self-propose |
+| Host capacity APIs (can-load, metrics, Retry-After) | **Phase A shipped** — [inference-wishlist-host.md](./inference-wishlist-host.md) |
+| Host pin / propose / thrash dampen | **Phase B shipped** — broker-respecting pins; B0 ggml-empty; 503 on pin/runtime conflict; propose `serialize_required`; `stable_multi_model_swap` still false |
+| True multi-GGUF stable swap | **Phase B+ deferred** — Python single-resident; Go soft-pin is interim |
 
-**Readable config / residency:** `GET /api/status` → `inference.config`; progressive-probe flags on `GET /api/version` → `zerollama.capabilities`. **Dry-run:** `POST /api/can-load` (runtime `confidence=exact`, ggml `heuristic`; fail closed if estimate missing; `already_loaded` is path-matched). **Metrics:** `GET /api/metrics` (ggml + runtime proxy). Busy `503` includes `Retry-After`.
+**Readable config / residency:** `GET /api/status` → `inference.config` (+ `pins`); progressive-probe flags on `GET /api/version` → `zerollama.capabilities`. **Dry-run:** `POST /api/can-load` (runtime `confidence=exact`, ggml `heuristic`; fail closed if estimate missing; `already_loaded` is path-matched). **Propose / pin:** `POST /api/propose-load`, `POST /api/pin`. **Metrics:** `GET /api/metrics` (ggml + runtime proxy). Busy `503` includes `Retry-After` (queues, Metal, pin/runtime VRAM conflicts).
 
-**Code map addenda:** `server/can_load.go`, `server/metrics.go`, `server/empty_gen.go`, `server/inference_config.go`.
+**Code map addenda:** `server/can_load.go`, `server/propose.go`, `server/pin.go`, `server/runtime_broker.go`, `server/metrics.go`, `server/empty_gen.go`, `server/inference_config.go`.
 
 ---
 
