@@ -706,14 +706,14 @@ func pinDraftLimit(spec *speculationSession, limit int) {
 // this request, with the draft length pinned to a fixed width; tests close it
 // explicitly so close-time effects are visible to assertions.
 func testDecoder(r *Runner, req Request, caches []cache.Cache, seed []int32, position int) decoder {
-	seedArr := mlx.FromValues(seed, 1, len(seed))
+	seedArr := mlx.FromValues(seed, len(seed))
 	if spec := r.spec.open(req, caches); spec != nil {
 		if spec.enabled {
 			pinDraftLimit(spec, 4)
 		}
 		return spec.decoder(seedArr, position)
 	}
-	return r.pipelinedDecoder(nil, caches, seedArr.ExpandDims(-1), position)
+	return r.pipelinedDecoder(nil, caches, seedArr.ExpandDims(0), position)
 }
 
 func TestDecodeKVDraft(t *testing.T) {

@@ -132,7 +132,9 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 	if spec != nil {
 		d = spec.decoder(seed, position)
 	} else {
-		d = r.pipelinedDecoder(nil, caches, seed.ExpandDims(-1), position)
+		// Prefill seed is 1-D token ids (same layout as sampler.Result.Token);
+		// ExpandDims(0) yields InputIDs [1, L] for Forward.
+		d = r.pipelinedDecoder(nil, caches, seed.ExpandDims(0), position)
 	}
 	defer d.close()
 	return r.decode(ctx, request, session, d, promptEval)
@@ -253,7 +255,8 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 	// Settle before attaching: snapshots attach only at offsets every cache
 	// has crossed, and the draft caches stay a pair short of the target
 	// until the seed completes the frontier pair.
-	seed := mlx.FromValues(tokens[processed:], 1, len(tokens)-processed)
+	// Seed is 1-D token ids (matches sampler.Result.Token / settle / draft propose).
+	seed := mlx.FromValues(tokens[processed:], len(tokens)-processed)
 	if spec != nil {
 		spec.settle(seed)
 	}
