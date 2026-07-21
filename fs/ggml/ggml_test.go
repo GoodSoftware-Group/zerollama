@@ -196,6 +196,9 @@ func TestTensorTypes(t *testing.T) {
 		{28, 1, 8},
 		{29, 256, 56},
 		{30, 1, 2},
+		{40, 64, 36},  // NVFP4
+		{41, 128, 18}, // Q1_0
+		{42, 64, 18},  // Q2_0
 	}
 
 	for _, tt := range cases {

@@ -227,6 +227,9 @@ const (
 	tensorTypeIQ4_NL_4_8 // unused by GGML
 	tensorTypeIQ4_NL_8_8 // unused by GGML
 	TensorTypeMXFP4
+	TensorTypeNVFP4 // = 40; GGML_TYPE_NVFP4
+	TensorTypeQ1_0  // = 41; Bonsai 1-bit (QK=128)
+	TensorTypeQ2_0  // = 42; ternary / Bonsai Q2_0 (QK=64)
 )
 
 // ParseTensorType parses the provided GGUF tensor type
@@ -267,6 +270,12 @@ func ParseTensorType(s string) (TensorType, error) {
 		return TensorTypeBF16, nil
 	case "MXFP4":
 		return TensorTypeMXFP4, nil
+	case "NVFP4":
+		return TensorTypeNVFP4, nil
+	case "Q1_0":
+		return TensorTypeQ1_0, nil
+	case "Q2_0":
+		return TensorTypeQ2_0, nil
 	default:
 		return 0, fmt.Errorf("unsupported quantization type %s", s)
 	}
@@ -321,6 +330,12 @@ func (t TensorType) String() string {
 		return "BF16"
 	case 4, TensorTypeMXFP4:
 		return "MXFP4"
+	case TensorTypeNVFP4:
+		return "NVFP4"
+	case TensorTypeQ1_0:
+		return "Q1_0"
+	case TensorTypeQ2_0:
+		return "Q2_0"
 	default:
 		return "unknown"
 	}
