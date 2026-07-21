@@ -17,17 +17,43 @@ const (
 	// between rapid Discord turns where a competing session would otherwise
 	// switchToPath and destroy live KV.
 	mlxSidecarAgentCooldown = 90 * time.Second
+
+	// mlxKeyHotCap bounds per-model session keys tracked for multiplexed
+	// wait_parent (many agents on one connection).
+	mlxKeyHotCap = 64
 )
 
-// mlxSessionSlot tracks a single keyed session for one MLX runner (model key).
+// mlxSessionSlot tracks the primary keyed session for one runner (model key).
+// Interactive fairness still uses this single primary; multiplex parent waits
+// use the per-key hot map alongside it.
 type mlxSessionSlot struct {
 	sessionKey   string
 	sessionClass mlxSessionClass
 	sessionGroup string
+	parentKey    string
 	projectID    string
 	projectName  string
+	cacheScope   string
+	cacheLevel   string
+	fulfillment  string
 	inflight     int
 	hotUntil     time.Time
+}
+
+// mlxKeyHotEntry tracks one prompt_cache_key's inflight/cooldown on a model.
+type mlxKeyHotEntry struct {
+	sessionKey   string
+	sessionClass mlxSessionClass
+	sessionGroup string
+	parentKey    string
+	projectID    string
+	projectName  string
+	cacheScope   string
+	cacheLevel   string
+	fulfillment  string
+	inflight     int
+	hotUntil     time.Time
+	lastUsed     time.Time
 }
 
 // mlxAgentGate serialises competing prompt_cache_key sessions on each model runner
@@ -42,37 +68,39 @@ type mlxSessionSlot struct {
 //   - auxiliary (ephemeral spawns): defers behind primary; shares aux:{model} branch
 //   - background (unkeyed /api/generate, ruby-trivia:bg:*): lowest priority
 //   - fulfillment complete/benchmark: request-scoped no-degradation / exclusive holds
+//   - session_parent: wait_parent when parent key is inflight/cooldown (multiplex-aware
+//     key hot-map — WHY: primary alone fails when another agent claimed last)
 //   - pins: session TTL leases that block eviction without loading (Phase B3).
 //     Soft UnloadAllRunners respects them; Forced (training/bench) does not.
 //     RuntimeGGUFs soft-pin Python residency in Go (503 on conflicting GGUF).
+//
+// WHY primary is derived from keyHot: begin used to ++slot.inflight and overwrite
+// sessionKey; end only decremented on key match → concurrent claims leaked hot
+// fairness. keyHot is the source of truth; slots is the fairness/ps projection.
 type mlxAgentGate struct {
 	mu      sync.Mutex
 	slots   map[string]*mlxSessionSlot
+	keyHot  map[string]map[string]*mlxKeyHotEntry // modelKey → sessionKey → entry
 	fulfill *fulfillmentHold
 	pins    map[string]*pinLease // pin_id → lease
 }
 
 func newMLXAgentGate() *mlxAgentGate {
 	return &mlxAgentGate{
-		slots: make(map[string]*mlxSessionSlot),
-		pins:  make(map[string]*pinLease),
+		slots:  make(map[string]*mlxSessionSlot),
+		keyHot: make(map[string]map[string]*mlxKeyHotEntry),
+		pins:   make(map[string]*pinLease),
 	}
 }
 
-func (g *mlxAgentGate) begin(modelKey, sessionKey string, class mlxSessionClass, qos mlxQoS) func() {
-	if modelKey == "" || sessionKey == "" {
-		return func() {}
-	}
-	g.mu.Lock()
-	slot := g.slots[modelKey]
-	if slot == nil {
-		slot = &mlxSessionSlot{}
-		g.slots[modelKey] = slot
-	}
+func applyQoSToSlot(slot *mlxSessionSlot, sessionKey string, class mlxSessionClass, qos mlxQoS) {
 	slot.sessionKey = sessionKey
 	slot.sessionClass = class
 	if qos.SessionGroup != "" {
 		slot.sessionGroup = qos.SessionGroup
+	}
+	if qos.ParentKey != "" {
+		slot.parentKey = qos.ParentKey
 	}
 	if qos.ProjectID != "" {
 		slot.projectID = qos.ProjectID
@@ -80,9 +108,225 @@ func (g *mlxAgentGate) begin(modelKey, sessionKey string, class mlxSessionClass,
 	if qos.ProjectName != "" {
 		slot.projectName = qos.ProjectName
 	}
-	slot.inflight++
+	if qos.CacheScope != "" {
+		slot.cacheScope = qos.CacheScope
+	}
+	if qos.CacheLevel != "" {
+		slot.cacheLevel = qos.CacheLevel
+	}
+	if qos.Fulfillment.Active() {
+		slot.fulfillment = qos.Fulfillment.String()
+	}
+}
+
+func (g *mlxAgentGate) begin(modelKey, sessionKey string, class mlxSessionClass, qos mlxQoS) func() {
+	if modelKey == "" || sessionKey == "" {
+		return func() {}
+	}
+	now := time.Now()
+	g.mu.Lock()
+	g.beginLocked(modelKey, sessionKey, class, qos, now)
 	g.mu.Unlock()
 	return func() { g.end(modelKey, sessionKey) }
+}
+
+// beginLocked claims a session key under g.mu. Primary-slot display/hotness is
+// derived from the key hot-map so concurrent claims cannot leak inflight.
+func (g *mlxAgentGate) beginLocked(modelKey, sessionKey string, class mlxSessionClass, qos mlxQoS, now time.Time) {
+	if g.slots == nil {
+		g.slots = make(map[string]*mlxSessionSlot)
+	}
+	if g.keyHot == nil {
+		g.keyHot = make(map[string]map[string]*mlxKeyHotEntry)
+	}
+	if g.slots[modelKey] == nil {
+		g.slots[modelKey] = &mlxSessionSlot{}
+	}
+	g.upsertKeyHotLocked(modelKey, sessionKey, class, qos, now, +1)
+	g.refreshPrimaryFromKeyHotLocked(modelKey, now)
+}
+
+func (g *mlxAgentGate) upsertKeyHotLocked(modelKey, sessionKey string, class mlxSessionClass, qos mlxQoS, now time.Time, deltaInflight int) {
+	m := g.keyHot[modelKey]
+	if m == nil {
+		m = make(map[string]*mlxKeyHotEntry)
+		g.keyHot[modelKey] = m
+	}
+	entry := m[sessionKey]
+	if entry == nil {
+		entry = &mlxKeyHotEntry{sessionKey: sessionKey}
+		m[sessionKey] = entry
+	}
+	entry.sessionClass = class
+	if qos.SessionGroup != "" {
+		entry.sessionGroup = qos.SessionGroup
+	}
+	if qos.ParentKey != "" {
+		entry.parentKey = qos.ParentKey
+	}
+	if qos.ProjectID != "" {
+		entry.projectID = qos.ProjectID
+	}
+	if qos.ProjectName != "" {
+		entry.projectName = qos.ProjectName
+	}
+	if qos.CacheScope != "" {
+		entry.cacheScope = qos.CacheScope
+	}
+	if qos.CacheLevel != "" {
+		entry.cacheLevel = qos.CacheLevel
+	}
+	if qos.Fulfillment.Active() {
+		entry.fulfillment = qos.Fulfillment.String()
+	}
+	entry.inflight += deltaInflight
+	if entry.inflight < 0 {
+		entry.inflight = 0
+	}
+	entry.lastUsed = now
+	g.evictKeyHotLocked(modelKey, now)
+}
+
+// refreshPrimaryFromKeyHotLocked picks the fairness "primary" from keyHot:
+// interactive inflight > interactive cooldown > any inflight > any cooldown.
+func (g *mlxAgentGate) refreshPrimaryFromKeyHotLocked(modelKey string, now time.Time) {
+	slot := g.slots[modelKey]
+	if slot == nil {
+		slot = &mlxSessionSlot{}
+		g.slots[modelKey] = slot
+	}
+	m := g.keyHot[modelKey]
+	var best *mlxKeyHotEntry
+	bestScore := -1
+	totalInflight := 0
+	for _, e := range m {
+		if e == nil {
+			continue
+		}
+		if e.inflight > 0 {
+			totalInflight += e.inflight
+		}
+		if !e.isHot(now) {
+			continue
+		}
+		score := 0
+		if e.sessionClass == mlxClassInteractive {
+			score += 4
+		}
+		if e.inflight > 0 {
+			score += 2
+		} else {
+			score += 1
+		}
+		if score > bestScore || (score == bestScore && best != nil && e.lastUsed.After(best.lastUsed)) {
+			best = e
+			bestScore = score
+		}
+	}
+	if best == nil {
+		slot.inflight = 0
+		slot.hotUntil = time.Time{}
+		return
+	}
+	slot.sessionKey = best.sessionKey
+	slot.sessionClass = best.sessionClass
+	slot.sessionGroup = best.sessionGroup
+	slot.parentKey = best.parentKey
+	slot.projectID = best.projectID
+	slot.projectName = best.projectName
+	slot.cacheScope = best.cacheScope
+	slot.cacheLevel = best.cacheLevel
+	slot.fulfillment = best.fulfillment
+	slot.inflight = totalInflight
+	if best.inflight > 0 {
+		slot.hotUntil = time.Time{}
+	} else {
+		slot.hotUntil = best.hotUntil
+	}
+}
+
+func (g *mlxAgentGate) evictKeyHotLocked(modelKey string, now time.Time) {
+	m := g.keyHot[modelKey]
+	if m == nil {
+		return
+	}
+	// Drop expired cooldown entries first.
+	for k, e := range m {
+		if e.inflight > 0 || now.Before(e.hotUntil) {
+			continue
+		}
+		delete(m, k)
+	}
+	for len(m) > mlxKeyHotCap {
+		var oldestKey string
+		var oldest time.Time
+		for k, e := range m {
+			if e.inflight > 0 {
+				continue
+			}
+			if oldestKey == "" || e.lastUsed.Before(oldest) {
+				oldestKey = k
+				oldest = e.lastUsed
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(m, oldestKey)
+	}
+}
+
+func (e *mlxKeyHotEntry) isHot(now time.Time) bool {
+	return e != nil && (e.inflight > 0 || now.Before(e.hotUntil))
+}
+
+// parentKeyCandidates expands session_parent to gate keys that may have been
+// rewritten via injectMLXSessionKey (aux:/bg: shared branches).
+//
+// WHY: children usually send the raw parent prompt_cache_key; MLX may have
+// claimed the parent under aux:{model}[:group]. Exact match alone misses wait_parent.
+func parentKeyCandidates(modelKey, parentKey string, qos mlxQoS) []string {
+	key := strings.TrimSpace(parentKey)
+	if key == "" {
+		return nil
+	}
+	seen := map[string]struct{}{key: {}}
+	out := []string{key}
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, class := range []mlxSessionClass{mlxClassInteractive, mlxClassAuxiliary, mlxClassBackground} {
+		add(injectMLXSessionKey(modelKey, key, class, qos))
+		if qos.SessionGroup != "" {
+			add(injectMLXSessionKey(modelKey, key, class, mlxQoS{}))
+		}
+	}
+	return out
+}
+
+func (g *mlxAgentGate) parentHotLocked(modelKey, parentKey string, qos mlxQoS, now time.Time) (bool, string) {
+	parentKey = strings.TrimSpace(parentKey)
+	if parentKey == "" || modelKey == "" {
+		return false, ""
+	}
+	m := g.keyHot[modelKey]
+	if m == nil {
+		return false, ""
+	}
+	for _, candidate := range parentKeyCandidates(modelKey, parentKey, qos) {
+		if m[candidate].isHot(now) {
+			return true, candidate
+		}
+	}
+	return false, ""
 }
 
 // activeSessionsForModel returns hot or in-flight gate sessions for GET /api/ps.
@@ -92,14 +336,7 @@ func (g *mlxAgentGate) activeSessionsForModel(modelKey string, now time.Time) []
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	slot := g.slots[modelKey]
-	if slot == nil || slot.sessionKey == "" {
-		return nil
-	}
-	if slot.inflight <= 0 && !now.Before(slot.hotUntil) {
-		return nil
-	}
-	return []api.ProcessSessionInfo{slot.processSessionInfo(now)}
+	return g.sessionsForModelLocked(modelKey, now)
 }
 
 // activeSessionsSnapshot returns all hot/in-flight sessions across loaded models.
@@ -110,29 +347,80 @@ func (g *mlxAgentGate) activeSessionsSnapshot(now time.Time) map[string][]api.Pr
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	out := make(map[string][]api.ProcessSessionInfo)
-	for modelKey, slot := range g.slots {
-		if slot == nil || slot.sessionKey == "" {
+	for modelKey := range g.slots {
+		if sessions := g.sessionsForModelLocked(modelKey, now); len(sessions) > 0 {
+			out[modelKey] = sessions
+		}
+	}
+	// Include models that only have key-hot entries (primary cleared).
+	for modelKey := range g.keyHot {
+		if _, ok := out[modelKey]; ok {
 			continue
 		}
-		if slot.inflight <= 0 && !now.Before(slot.hotUntil) {
+		if sessions := g.sessionsForModelLocked(modelKey, now); len(sessions) > 0 {
+			out[modelKey] = sessions
+		}
+	}
+	return out
+}
+
+func (g *mlxAgentGate) sessionsForModelLocked(modelKey string, now time.Time) []api.ProcessSessionInfo {
+	seen := make(map[string]struct{})
+	var out []api.ProcessSessionInfo
+
+	if slot := g.slots[modelKey]; slot != nil && slot.sessionKey != "" {
+		if slot.inflight > 0 || now.Before(slot.hotUntil) {
+			out = append(out, slot.processSessionInfo(now))
+			seen[slot.sessionKey] = struct{}{}
+		}
+	}
+	for key, entry := range g.keyHot[modelKey] {
+		if entry == nil || !entry.isHot(now) {
 			continue
 		}
-		out[modelKey] = []api.ProcessSessionInfo{slot.processSessionInfo(now)}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		out = append(out, entry.processSessionInfo(now))
+		seen[key] = struct{}{}
 	}
 	return out
 }
 
 func (s *mlxSessionSlot) processSessionInfo(now time.Time) api.ProcessSessionInfo {
 	info := api.ProcessSessionInfo{
-		SessionKey:   s.sessionKey,
-		SessionClass: s.sessionClass.String(),
-		SessionGroup: s.sessionGroup,
-		ProjectID:    s.projectID,
-		ProjectName:  s.projectName,
-		Inflight:     s.inflight,
+		SessionKey:    s.sessionKey,
+		SessionClass:  s.sessionClass.String(),
+		SessionGroup:  s.sessionGroup,
+		SessionParent: s.parentKey,
+		ProjectID:     s.projectID,
+		ProjectName:   s.projectName,
+		CacheScope:    s.cacheScope,
+		CacheLevel:    s.cacheLevel,
+		Fulfillment:   s.fulfillment,
+		Inflight:      s.inflight,
 	}
 	if s.inflight <= 0 && now.Before(s.hotUntil) {
 		info.HotUntil = s.hotUntil
+	}
+	return info
+}
+
+func (e *mlxKeyHotEntry) processSessionInfo(now time.Time) api.ProcessSessionInfo {
+	info := api.ProcessSessionInfo{
+		SessionKey:    e.sessionKey,
+		SessionClass:  e.sessionClass.String(),
+		SessionGroup:  e.sessionGroup,
+		SessionParent: e.parentKey,
+		ProjectID:     e.projectID,
+		ProjectName:   e.projectName,
+		CacheScope:    e.cacheScope,
+		CacheLevel:    e.cacheLevel,
+		Fulfillment:   e.fulfillment,
+		Inflight:      e.inflight,
+	}
+	if e.inflight <= 0 && now.Before(e.hotUntil) {
+		info.HotUntil = e.hotUntil
 	}
 	return info
 }
@@ -159,15 +447,19 @@ func (g *mlxAgentGate) end(modelKey, sessionKey string) {
 	now := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	slot := g.slots[modelKey]
-	if slot == nil || slot.sessionKey != sessionKey {
-		return
+	if m := g.keyHot[modelKey]; m != nil {
+		if entry := m[sessionKey]; entry != nil {
+			entry.inflight--
+			if entry.inflight <= 0 {
+				entry.inflight = 0
+				entry.hotUntil = now.Add(mlxSidecarAgentCooldown)
+			}
+			entry.lastUsed = now
+		}
 	}
-	slot.inflight--
-	if slot.inflight <= 0 {
-		slot.inflight = 0
-		slot.hotUntil = now.Add(mlxSidecarAgentCooldown)
-	}
+	// Primary fairness state is derived from keyHot — never match-and-decrement
+	// slot.sessionKey (that leaked inflight when a later begin overwrote the key).
+	g.refreshPrimaryFromKeyHotLocked(modelKey, now)
 }
 
 func (g *mlxAgentGate) hotSlot(modelKey string, now time.Time) (sessionKey string, class mlxSessionClass, inflight int) {
@@ -184,12 +476,17 @@ func (g *mlxAgentGate) hotSlot(modelKey string, now time.Time) (sessionKey strin
 func (g *mlxAgentGate) shouldDefer(
 	modelKey string,
 	incomingKey string,
+	parentKey string,
 	incomingClass mlxSessionClass,
+	qos mlxQoS,
 	now time.Time,
 ) (bool, string, string) {
 	if deferF, policy := g.shouldDeferFulfillment(modelKey, incomingKey, incomingClass); deferF {
 		hold, _ := g.fulfillmentActive(now)
 		return true, policy, hold.sessionKey
+	}
+	if hot, matched := g.parentHotLocked(modelKey, parentKey, qos, now); hot {
+		return true, "wait_parent", matched
 	}
 	hotKey, hotClass, inflight := g.hotSlot(modelKey, now)
 	defer_, policy := mlxDeferPolicy(incomingClass, incomingKey, hotClass, hotKey, inflight)
@@ -200,7 +497,9 @@ func (g *mlxAgentGate) waitForSlot(
 	ctx context.Context,
 	modelKey string,
 	incomingKey string,
+	parentKey string,
 	incomingClass mlxSessionClass,
+	qos mlxQoS,
 ) error {
 	if modelKey == "" {
 		return nil
@@ -212,10 +511,13 @@ func (g *mlxAgentGate) waitForSlot(
 	for {
 		g.mu.Lock()
 		now := time.Now()
-		defer_, policy, hotKey := g.shouldDefer(modelKey, incomingKey, incomingClass, now)
+		defer_, policy, hotKey := g.shouldDefer(modelKey, incomingKey, parentKey, incomingClass, qos, now)
 		if defer_ && blockedByKey == "" {
 			blockedByKey = hotKey
 			_, blockedByClass, _ = g.hotSlot(modelKey, now)
+			if policy == "wait_parent" {
+				blockedByClass = mlxClassInteractive
+			}
 			lastPolicy = policy
 		}
 		g.mu.Unlock()
@@ -330,7 +632,7 @@ func (g *mlxAgentGate) mlxNeedsDefer(
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	defer_, policy, _ := g.shouldDefer(modelKey, incomingKey, incomingClass, time.Now())
+	defer_, policy, _ := g.shouldDefer(modelKey, incomingKey, "", incomingClass, mlxQoS{}, time.Now())
 	return defer_, policy
 }
 

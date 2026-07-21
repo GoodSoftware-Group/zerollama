@@ -20,6 +20,10 @@ import (
 // (SQL-transaction-like begin→release). They force interactive class, inject a gate
 // key when omitted, and for benchmark unload peer models for exclusive GPU speed.
 //
+// WHY ParentKey is passed into waitForSlot: multiplex wait_parent checks the key
+// hot-map (and inject candidates), not only the fairness primary — otherwise a child
+// waits forever behind the wrong agent or never waits when parent is still hot.
+//
 // See docs/agent-qos-and-project-tracking.md.
 
 // scheduleSessionMeta resolves gate session key + class for MLX and GGUF runners.
@@ -104,7 +108,7 @@ func (s *Server) reserveScheduleQoS(ctx context.Context, m *Model, opts map[stri
 			return func() {}, err
 		}
 	}
-	if err := s.sched.mlxGate.waitForSlot(ctx, modelKey, sessionKey, class); err != nil {
+	if err := s.sched.mlxGate.waitForSlot(ctx, modelKey, sessionKey, qos.ParentKey, class, qos); err != nil {
 		return func() {}, err
 	}
 	if err := s.sched.mlxGate.waitBehindAnyInteractive(ctx, class, sessionKey); err != nil {

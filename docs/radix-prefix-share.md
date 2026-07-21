@@ -26,6 +26,18 @@ vLLM’s **RadixAttention** solves this with a content-addressed block pool and 
 
 **Why v1 is enough for agents:** most agent fleets repeat one large system prompt across many conversation IDs. Donor→target seed removes the dominant prefill cost without a full scheduler rewrite.
 
+### Session QoS interaction (`cache_reset` / parent prefer)
+
+**Why document here:** Radix admission historically ran even when same-slot `cache_prompt` was denied (SWA window / shorter shared prefix). That is correct for catch-up — and wrong when the client set `options.zerollama.cache_reset: true`.
+
+| Intent | Radix behavior | Why |
+|--------|----------------|-----|
+| Normal / SWA deny | May still seed from donor | Shorter matched prefix can fit the window |
+| `cache_reset: true` | **Skipped entirely** | Client asked for no KV reuse under the same key this turn |
+| `session_parent` / `session_group` | Prefer that donor on **equal-length** ties only | Still hash-verified; relation is tie-break, not override |
+
+Full loop: [agent-qos-and-project-tracking.md](./agent-qos-and-project-tracking.md#session--cache-great-loop-jul-2026).
+
 ---
 
 ## Architecture

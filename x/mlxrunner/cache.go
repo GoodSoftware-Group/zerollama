@@ -97,22 +97,33 @@ func (c *kvCache) ensureRoot() {
 
 // begin prepares caches for a new request. It finds the nearest
 // matching cache or creates new caches if none match.
-func (c *kvCache) begin(m base.Model, inputs []int32, promptCacheKey string) *cacheSession {
+//
+// WHY cacheReset: harnesses ask for a miss under the same promptCacheKey
+// (options.zerollama.cache_reset) without inventing a cold: key namespace.
+// Skip live extend and trie hit for this turn only; trie branches may remain
+// for later content matches after compaction — enough for "don't resume now."
+func (c *kvCache) begin(m base.Model, inputs []int32, promptCacheKey string, cacheReset bool) *cacheSession {
 	c.ensureCaches(m)
 	c.ensureRoot()
 
 	key := strings.TrimSpace(promptCacheKey)
-	if key != "" && key != c.lastPromptCacheKey {
+	if cacheReset || (key != "" && key != c.lastPromptCacheKey) {
 		c.lastSessionInputs = nil
 	}
-	if key != "" && key == c.lastPromptCacheKey {
+	if !cacheReset && key != "" && key == c.lastPromptCacheKey {
 		if session, ok := c.tryExtendLiveSession(modelSlidingWindow(m), inputs); ok {
 			c.lastPromptCacheKey = key
 			return session
 		}
 	}
 
-	matchPath, matched := findBestMatch(c.root, c.key(inputs))
+	var matchPath []*trieNode
+	var matched int
+	if cacheReset {
+		matchPath, matched = []*trieNode{c.root}, 0
+	} else {
+		matchPath, matched = findBestMatch(c.root, c.key(inputs))
+	}
 	originalMatched := matched
 
 	// Always keep at least one token to re-evaluate so the

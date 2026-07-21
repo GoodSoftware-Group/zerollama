@@ -111,7 +111,7 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 
 	inputs := request.Tokens
 
-	session := r.cache.begin(r.Model, inputs, request.PromptCacheKey)
+	session := r.cache.begin(r.Model, inputs, request.PromptCacheKey, request.CacheReset)
 	defer session.close()
 	caches := session.caches
 

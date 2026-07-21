@@ -59,14 +59,20 @@ func (m fulfillmentMode) Active() bool {
 }
 
 // mlxQoS is the harness-facing scheduling contract (options.zerollama).
+//
+// WHY this shape (declare → schedule → retain → hit): agent harnesses need to
+// communicate session/cache intent without cold: key prefixes or client TTLs that
+// fight keep_alive. See docs/agent-qos-and-project-tracking.md.
 type mlxQoS struct {
 	Class        mlxSessionClass
 	Priority     int    // 0–100; used when Class unknown
-	SessionGroup string // shared trie branch namespace (harness id)
-	ParentKey    string // parent thread key (observability / future parent-aware defer)
+	SessionGroup string // shared trie branch namespace (harness id); Radix prefer on ties
+	ParentKey    string // parent prompt_cache_key — wait_parent (keyHot + inject candidates) + Radix prefer
 	ProjectID    string // client harness id (zerollama ps / fleet)
 	ProjectName  string // human label (repo, Discord bot, etc.)
 	CacheScope   string // auto | thread | shared
+	CacheLevel   string // auto | gpu | dram | disk — WHY auto default: no surprise vs heuristics; gpu≈dram forbids disk
+	CacheReset   bool   // force miss under same prompt_cache_key this request (skips Radix too)
 	Fulfillment  fulfillmentMode
 	Explicit     bool // client set qos_class or legacy mlx_session_class
 }
@@ -75,7 +81,51 @@ const (
 	qosCacheScopeAuto   = "auto"
 	qosCacheScopeThread = "thread"
 	qosCacheScopeShared = "shared"
+
+	qosCacheLevelAuto = "auto"
+	qosCacheLevelGPU  = "gpu"
+	qosCacheLevelDRAM = "dram"
+	qosCacheLevelDisk = "disk"
 )
+
+// qosCacheLevelAliases map client-facing names to canonical cache_level values.
+var qosCacheLevelAliases = map[string]string{
+	"auto":    qosCacheLevelAuto,
+	"gpu":     qosCacheLevelGPU,
+	"vram":    qosCacheLevelGPU,
+	"dram":    qosCacheLevelDRAM,
+	"ram":     qosCacheLevelDRAM,
+	"memory":  qosCacheLevelDRAM,
+	"disk":    qosCacheLevelDisk,
+	"ssd":     qosCacheLevelDisk,
+	"persist": qosCacheLevelDisk,
+}
+
+func parseCacheLevelName(name string) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return qosCacheLevelAuto
+	}
+	if level, ok := qosCacheLevelAliases[key]; ok {
+		return level
+	}
+	return qosCacheLevelAuto
+}
+
+// ForbidsDiskPersist reports whether an explicit cache_level disables disk slot blobs.
+func (q mlxQoS) ForbidsDiskPersist() bool {
+	switch q.CacheLevel {
+	case qosCacheLevelGPU, qosCacheLevelDRAM:
+		return true
+	default:
+		return false
+	}
+}
+
+// WantsDiskPersist reports whether the client explicitly asked for disk when policy allows.
+func (q mlxQoS) WantsDiskPersist() bool {
+	return q.CacheLevel == qosCacheLevelDisk
+}
 
 // qosClassAliases map harness-friendly names to canonical classes.
 var qosClassAliases = map[string]mlxSessionClass{
@@ -175,6 +225,28 @@ func intFromMap(m map[string]any, key string) (int, bool) {
 	}
 }
 
+func boolFromMap(m map[string]any, key string) (bool, bool) {
+	if m == nil {
+		return false, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	switch b := v.(type) {
+	case bool:
+		return b, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(b)) {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
 // zerollamaBlockFromOptions returns the nested options.zerollama map.
 func zerollamaBlockFromOptions(opts map[string]any) map[string]any {
 	if opts == nil {
@@ -188,7 +260,7 @@ func zerollamaBlockFromOptions(opts map[string]any) map[string]any {
 
 // mlxQoSFromOptions parses harness QoS from options.zerollama and legacy flat fields.
 func mlxQoSFromOptions(opts map[string]any) mlxQoS {
-	q := mlxQoS{CacheScope: qosCacheScopeAuto}
+	q := mlxQoS{CacheScope: qosCacheScopeAuto, CacheLevel: qosCacheLevelAuto}
 	if opts == nil {
 		return q
 	}
@@ -234,6 +306,15 @@ func mlxQoSFromOptions(opts map[string]any) mlxQoS {
 	switch scope {
 	case qosCacheScopeThread, qosCacheScopeShared, qosCacheScopeAuto:
 		q.CacheScope = scope
+	}
+
+	q.CacheLevel = parseCacheLevelName(firstNonEmpty(
+		stringFromMap(z, "cache_level"),
+		stringFromMap(z, "cache_tier"),
+	))
+
+	if reset, ok := boolFromMap(z, "cache_reset"); ok {
+		q.CacheReset = reset
 	}
 
 	fulfillName := firstNonEmpty(
@@ -298,6 +379,10 @@ func zerollamaVersionCapabilities() map[string]any {
 		"prompt_cache_key":       true,
 		"mlx_live_kv":            true,
 		"session_qos_gate":       true,
+		"session_parent_defer":   true,
+		"cache_reset":            true,
+		"cache_level":            []string{qosCacheLevelAuto, qosCacheLevelGPU, qosCacheLevelDRAM, qosCacheLevelDisk},
+		"radix_prefer_parent":    true,
 		"fulfillment":            true,
 		"runner_paths":           zerollamaVersionRunnerPaths(),
 		"runtime_config":         true,
@@ -334,10 +419,12 @@ func zerollamaVersionQoS() map[string]any {
 				"qos_priority":   "0-100; class inferred when qos_class omitted (>=70 interactive)",
 				"fulfillment":    "complete | benchmark — no-degradation / exclusive speed (aliases: guarantee, reliable / bench, speed, exclusive)",
 				"session_group":  "harness id for shared cache branch (alias: harness)",
-				"session_parent": "parent thread prompt_cache_key",
+				"session_parent": "parent thread prompt_cache_key — wait_parent defer + Radix donor prefer",
 				"project_id":     "client harness id (alias: client_id, project)",
 				"project_name":   "human label for zerollama ps (alias: client_name)",
 				"cache_scope":    "auto | thread | shared",
+				"cache_level":    "auto | gpu | dram | disk — KV tier (auto=heuristics; gpu≈dram=no disk until spill)",
+				"cache_reset":    "true — force miss under same prompt_cache_key this request",
 			},
 			"legacy": []string{"mlx_session_class", "mlx_session_parent", "fulfill_mode", "priority_mode"},
 		},

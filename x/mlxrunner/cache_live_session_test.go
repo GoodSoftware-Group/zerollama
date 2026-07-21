@@ -171,7 +171,7 @@ func slicesCloneNodes(path []*trieNode) []*trieNode {
 
 func simulateKeyedRequest(t *testing.T, kvc *kvCache, key string, inputs, generated []int32, userSnapshotAt ...int) {
 	t.Helper()
-	session := kvc.begin(nil, inputs, key)
+	session := kvc.begin(nil, inputs, key, false)
 	var snapshotOffsets []int
 	for _, at := range userSnapshotAt {
 		if at > 0 {

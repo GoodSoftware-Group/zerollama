@@ -204,7 +204,10 @@ components:
           description: Harness id (alias `harness`) for a shared prompt-cache branch across requests/agents.
         session_parent:
           type: string
-          description: Parent thread's prompt_cache_key, for observability and future parent-aware scheduling.
+          description: >
+            Parent thread's prompt_cache_key. Spawns wait (`wait_parent`) while the
+            parent key is inflight or in cooldown (multiplex-aware), and Radix prefers
+            that donor on equal-length hash ties.
         project_id:
           type: string
           description: Client/harness id shown in `zerollama ps` (aliases client_id, project).
@@ -215,6 +218,15 @@ components:
           type: string
           enum: [auto, thread, shared]
           description: KV/prompt-cache branch scope for this request.
+        cache_level:
+          type: string
+          enum: [auto, gpu, dram, disk]
+          description: >
+            KV retention tier. auto (default) keeps existing heuristics; gpu/dram forbid
+            disk persist (gpu≈dram until spill exists); disk allows slot blobs when policy permits.
+        cache_reset:
+          type: boolean
+          description: Force a miss under the same prompt_cache_key for this request only.
       additionalProperties: true
     ZerollamaVersionQoS:
       type: object
@@ -2506,6 +2518,10 @@ paths:
                     mlx_live_kv: true
                     prompt_cache_key: true
                     session_qos_gate: true
+                    session_parent_defer: true
+                    cache_reset: true
+                    cache_level: ["auto", "gpu", "dram", "disk"]
+                    radix_prefer_parent: true
                     fulfillment: true
                     runtime_config: true
                     can_load: true
@@ -2541,10 +2557,12 @@ paths:
                         qos_priority: "0-100; class inferred when qos_class omitted (>=70 interactive)"
                         fulfillment: "complete | benchmark — no-degradation / exclusive speed (aliases: guarantee, reliable / bench, speed, exclusive)"
                         session_group: "harness id for shared cache branch (alias: harness)"
-                        session_parent: "parent thread prompt_cache_key"
+                        session_parent: "parent thread prompt_cache_key — wait_parent + Radix prefer"
                         project_id: "client harness id (alias: client_id, project)"
                         project_name: "human label for zerollama ps (alias: client_name)"
                         cache_scope: "auto | thread | shared"
+                        cache_level: "auto | gpu | dram | disk — KV tier (auto=heuristics)"
+                        cache_reset: "true — force miss under same prompt_cache_key this request"
                       legacy: ["mlx_session_class", "mlx_session_parent", "fulfill_mode", "priority_mode"]
                     openai:
                       extra_body: ["zerollama", "options", "prompt_cache_key"]

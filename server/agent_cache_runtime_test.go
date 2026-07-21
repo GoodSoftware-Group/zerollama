@@ -113,7 +113,7 @@ func TestAgentSessionBeginGgufRegistersGate(t *testing.T) {
 		"zerollama": map[string]any{"qos_class": "background"},
 	})
 	now := time.Now()
-	if defer_, _, _ := g.shouldDefer(modelKey, bgKey, mlxClassBackground, now); !defer_ {
+	if defer_, _, _ := g.shouldDefer(modelKey, bgKey, "", mlxClassBackground, mlxQoS{}, now); !defer_ {
 		t.Fatalf("background %q should defer behind gguf interactive session", bgKey)
 	}
 }
@@ -147,7 +147,7 @@ func TestReserveScheduleQoSClaimsBeforeRunnerWait(t *testing.T) {
 	}
 
 	now := time.Now()
-	if defer_, _, _ := s.sched.mlxGate.shouldDefer(modelKey, "hermes:20260704_ephemeral", mlxClassAuxiliary, now); !defer_ {
+	if defer_, _, _ := s.sched.mlxGate.shouldDefer(modelKey, "hermes:20260704_ephemeral", "", mlxClassAuxiliary, mlxQoS{}, now); !defer_ {
 		t.Fatal("gate should show primary inflight during reserved slot")
 	}
 }

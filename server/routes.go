@@ -844,6 +844,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			Logprobs:          req.Logprobs,
 			TopLogprobs:       req.TopLogprobs,
 			PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
+			CacheReset:        mlxQoSFromOptions(req.Options).CacheReset,
 			SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
 		}, func(cr llm.CompletionResponse) {
 			if emitMLXPrefillGenerateStatus(ch, req.Model, cr.PrefillProcessed, cr.PrefillTotal, cr.Content, cr.Done) {
@@ -3198,6 +3199,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				Logprobs:            req.Logprobs,
 				TopLogprobs:         req.TopLogprobs,
 				PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
+				CacheReset:          mlxQoSFromOptions(req.Options).CacheReset,
 				SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
 				Gemma4PaddedMedia:   gemma4PaddedMedia,
 			}, func(r llm.CompletionResponse) {

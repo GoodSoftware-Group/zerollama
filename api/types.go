@@ -1205,13 +1205,17 @@ type ProcessZerollamaInfo struct {
 
 // ProcessSessionInfo describes a hot or in-flight prompt_cache_key session on a runner.
 type ProcessSessionInfo struct {
-	SessionKey   string    `json:"session_key,omitempty"`
-	SessionClass string    `json:"session_class,omitempty"`
-	SessionGroup string    `json:"session_group,omitempty"`
-	ProjectID    string    `json:"project_id,omitempty"`
-	ProjectName  string    `json:"project_name,omitempty"`
-	Inflight     int       `json:"inflight,omitempty"`
-	HotUntil     time.Time `json:"hot_until,omitempty"`
+	SessionKey    string    `json:"session_key,omitempty"`
+	SessionClass  string    `json:"session_class,omitempty"`
+	SessionGroup  string    `json:"session_group,omitempty"`
+	SessionParent string    `json:"session_parent,omitempty"`
+	ProjectID     string    `json:"project_id,omitempty"`
+	ProjectName   string    `json:"project_name,omitempty"`
+	CacheScope    string    `json:"cache_scope,omitempty"`
+	CacheLevel    string    `json:"cache_level,omitempty"`
+	Fulfillment   string    `json:"fulfillment,omitempty"`
+	Inflight      int       `json:"inflight,omitempty"`
+	HotUntil      time.Time `json:"hot_until,omitempty"`
 }
 
 // LoadedModelMetadata is probed from the runner after load (ground truth vs manifest).

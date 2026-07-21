@@ -249,6 +249,8 @@ type CompletionRequest struct {
 	PromptTokens        []int  `json:"prompt_tokens,omitempty"`
 	PaddedLayoutConsume string `json:"padded_layout_consume,omitempty"`
 	PromptCacheKey      string `json:"prompt_cache_key,omitempty"`
+	// CacheReset forces a miss under the same PromptCacheKey for this request.
+	CacheReset bool `json:"cache_reset,omitempty"`
 	// SessionViTOverlay enables SGLang-style per-thread ViT embed pinning (see modality.SessionViTOverlayEnabled).
 	SessionViTOverlay   bool `json:"session_vit_overlay,omitempty"`
 	Gemma4PaddedMedia   Gemma4PaddedMediaSchedule `json:"gemma4_padded_media,omitempty"`

@@ -99,12 +99,13 @@ func (c *Client) WaitUntilRunning(ctx context.Context) error {
 }
 
 type CompletionRequest struct {
-	Prompt          string       `json:"prompt"`
-	Tokens          []int32      `json:"tokens,omitempty"`
-	PromptCacheKey  string       `json:"prompt_cache_key,omitempty"`
-	Options         api.Options  `json:"options"`
-	Logprobs        bool         `json:"logprobs,omitempty"`
-	TopLogprobs     int          `json:"top_logprobs,omitempty"`
+	Prompt         string      `json:"prompt"`
+	Tokens         []int32     `json:"tokens,omitempty"`
+	PromptCacheKey string      `json:"prompt_cache_key,omitempty"`
+	CacheReset     bool        `json:"cache_reset,omitempty"`
+	Options        api.Options `json:"options"`
+	Logprobs       bool        `json:"logprobs,omitempty"`
+	TopLogprobs    int         `json:"top_logprobs,omitempty"`
 }
 
 type CompletionResponse struct {
@@ -149,6 +150,7 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 	creq := CompletionRequest{
 		Prompt:         req.Prompt,
 		PromptCacheKey: strings.TrimSpace(req.PromptCacheKey),
+		CacheReset:     req.CacheReset,
 		Logprobs:       req.Logprobs,
 		TopLogprobs:    req.TopLogprobs,
 	}

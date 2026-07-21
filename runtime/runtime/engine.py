@@ -471,7 +471,10 @@ class InferenceEngine:
         self,
         gguf: Path | None = None,
         num_ctx: int | None = None,
+        *,
+        cache_level: str | None = None,
     ):
+        from runtime.cache_bridge import apply_cache_level_to_policy
         from runtime.prefix_cache_policy import resolve_prefix_cache_policy
 
         path = gguf
@@ -479,11 +482,12 @@ class InferenceEngine:
             path = Path(self.config.llama_model)
         resolved_ctx = num_ctx if num_ctx is not None else self._loaded_vram_num_ctx
         file_path = path if path is not None and Path(path).is_file() else None
-        return resolve_prefix_cache_policy(
+        policy = resolve_prefix_cache_policy(
             gguf=file_path,
             num_ctx=resolved_ctx,
             spec_method=self.config.speculative.method,
         )
+        return apply_cache_level_to_policy(policy, cache_level)
 
     def _prefix_cache_request(self, req: Request, policy: Any) -> tuple[bool, int | None]:
         """Return ``(cache_prompt, resume_pos)`` with one seq_pos read per request.
@@ -493,6 +497,7 @@ class InferenceEngine:
         llama-server — ggml CUDA graphs keyed by topology must be cleared in that
         process via ``POST /cuda-graph/invalidate``, not only epoch-bumped here.
         """
+        from runtime.cache_bridge import apply_cache_level_to_policy
         from runtime.prefix_cache_trace import record_prefix_cache_decision
         from runtime.prefix_cache_policy import (
             decode_graph_invalidation_reason,
@@ -501,6 +506,44 @@ class InferenceEngine:
         )
         from runtime.worker.factory import LlamaBackendKind
 
+        if getattr(req, "cache_reset", False):
+            # WHY under the same prompt_cache_key: clients already have a stable
+            # interactive key; a cold: prefix would fragment L3/ps continuity.
+            # WHY hard invalidate (epoch + seq_pos/seq_rm): denying cache_prompt
+            # alone left residual warm state that looked like a soft resume.
+            # WHY skip Radix in admission: cross-slot seed would undo "no reuse."
+            slot = self._id_slot_for_request(req)
+            subprocess = self._resolved_llama_backend() == LlamaBackendKind.SUBPROCESS
+            if slot >= 0:
+                from runtime.decode_graph_policy import bump_decode_graph_epoch
+
+                bump_decode_graph_epoch(
+                    slot,
+                    reason="cache_reset",
+                    ctx_ptr=None,
+                    base_url=self._subprocess_base_url() if subprocess else None,
+                )
+                if subprocess:
+                    self._subprocess_slots.seed_seq_pos(slot, 0)
+                else:
+                    self._clear_inprocess_slot_kv(slot)
+            record_prefix_cache_decision(
+                spec=apply_cache_level_to_policy(
+                    policy, getattr(req, "cache_level", None)
+                ).to_spec(),
+                prompt_cache_key=req.prompt_cache_key,
+                seq_pos=0,
+                prompt_tokens=req.num_prompt_tokens,
+                cache_prompt=False,
+                resume_pos=None,
+                spec_method=self.config.speculative.method,
+                id_slot=slot if slot >= 0 else None,
+                deny_reason="cache_reset",
+                prefix_block_match=None,
+            )
+            return False, None
+
+        policy = apply_cache_level_to_policy(policy, getattr(req, "cache_level", None))
         spec = policy.to_spec()
         slot = self._id_slot_for_request(req)
         seq_pos = self._decode_current_pos_for_request(req)
@@ -571,8 +614,14 @@ class InferenceEngine:
         retention on same-slot resume) may reject the *full* prompt while a
         shorter matched shared prefix still fits — vLLM Marconi + selective
         retention preservation (#47782). Successful seed flips ``allow`` True.
+
+        WHY ``cache_reset`` skips Radix: client asked for no KV reuse under the
+        same key this turn; cross-slot seed would undo that contract.
         """
         allow, resume = self._prefix_cache_request(req, policy)
+        # cache_reset means no KV reuse this turn — including cross-slot Radix seed.
+        if getattr(req, "cache_reset", False):
+            return allow, resume
         seq_pos = self._decode_current_pos_for_request(req)
         allow, resume, _trace = self._apply_radix_prefix_share(
             req,
@@ -582,6 +631,21 @@ class InferenceEngine:
             seq_pos=seq_pos,
         )
         return allow, resume
+
+    def _clear_inprocess_slot_kv(self, slot: int) -> None:
+        """Drop all tokens on an in-process seq after ``cache_reset``."""
+        if slot < 0:
+            return
+        pair = self._inprocess_ctx_for_health()
+        if pair is None:
+            return
+        lib, ctx = pair
+        try:
+            from runtime.worker.libllama_ctypes import _clear_sequence
+
+            _clear_sequence(lib, ctx, int(slot))
+        except Exception:
+            pass
 
     def _apply_radix_prefix_share(
         self,
@@ -603,12 +667,16 @@ class InferenceEngine:
         invalidates captured decode graphs on the target slot.
         WHY ``seed_seq_pos`` on subprocess: SWA/draft policy reads slot pos before
         first completion; seq-copy does not update Python-side slot metadata alone.
+        WHY skip on ``cache_reset``: client asked for no reuse under the same key;
+        Radix seed would undo that.
         """
         from runtime.decode_graph_policy import bump_decode_graph_epoch
         from runtime.kv.radix_prefix_share import find_radix_share_plan, radix_prefix_share_enabled
         from runtime.kv.radix_seq_copy import execute_radix_share_plan
         from runtime.kv.radix_seq_copy_policy import radix_seq_copy_allowed
 
+        if getattr(req, "cache_reset", False):
+            return allow, resume_pos, None
         if not radix_prefix_share_enabled():
             return allow, resume_pos, None
         # Draft / disabled base: do not cross-slot seed (same contract as cache_prompt).
@@ -628,6 +696,8 @@ class InferenceEngine:
             cache_salt=req.cache_salt,
             seq_pos=seq_pos,
             effective_window=spec.effective_window,
+            prefer_session_key=getattr(req, "session_parent", None),
+            prefer_session_group=getattr(req, "session_group", None),
         )
         if plan is None:
             # L3-R7: no live donor — try federated slot blob restore.
@@ -1650,6 +1720,7 @@ class InferenceEngine:
             session_key=req.prompt_cache_key,
             slot_id=slot if slot >= 0 else None,
             blob_path=blob_path,
+            session_group=getattr(req, "session_group", None),
         )
 
     def _decode_current_pos_for_request(self, req: Request) -> int | None:
@@ -2418,7 +2489,13 @@ class InferenceEngine:
                 resolved_gguf = gguf.resolve()
             except OSError:
                 resolved_gguf = gguf
-        from runtime.cache_bridge import cache_pin_from_options
+        from runtime.cache_bridge import (
+            cache_pin_from_options,
+            extract_cache_level,
+            extract_cache_reset,
+            extract_session_group,
+            extract_session_parent,
+        )
 
         # L3: pin llama-server slot before tick so /completion sees stable id_slot.
         prompt_cache_key, kv_slot, slot_pinned, cache_salt = cache_pin_from_options(
@@ -2436,6 +2513,10 @@ class InferenceEngine:
             vram_num_ctx_meta=clamp_meta or None,
             prompt_cache_key=prompt_cache_key,
             cache_salt=cache_salt,
+            session_parent=extract_session_parent(options),
+            session_group=extract_session_group(options),
+            cache_reset=extract_cache_reset(options),
+            cache_level=extract_cache_level(options),
             kv_slot=kv_slot,
             slot_pinned=slot_pinned,
         )
@@ -3044,7 +3125,13 @@ class InferenceEngine:
         if batch_opts.get("priority") is None:
             batch_opts["priority"] = "batch"
         priority = priority_from_options(batch_opts)
-        from runtime.cache_bridge import cache_pin_from_options
+        from runtime.cache_bridge import (
+            cache_pin_from_options,
+            extract_cache_level,
+            extract_cache_reset,
+            extract_session_group,
+            extract_session_parent,
+        )
         from runtime.gpu_vram import resolve_vram_num_ctx
         from runtime.server.gguf_path import peek_gguf_path
 
@@ -3108,6 +3195,10 @@ class InferenceEngine:
                 vram_options=vram_opts,
                 prompt_cache_key=cache_key,
                 cache_salt=cache_salt,
+                session_parent=extract_session_parent(batch_opts),
+                session_group=extract_session_group(batch_opts),
+                cache_reset=extract_cache_reset(batch_opts),
+                cache_level=extract_cache_level(batch_opts),
                 kv_slot=kv_slot,
                 slot_pinned=slot_pinned,
             )
@@ -3209,7 +3300,13 @@ class InferenceEngine:
         if batch_opts.get("priority") is None:
             batch_opts["priority"] = "batch"
         priority = priority_from_options(batch_opts)
-        from runtime.cache_bridge import cache_pin_from_options
+        from runtime.cache_bridge import (
+            cache_pin_from_options,
+            extract_cache_level,
+            extract_cache_reset,
+            extract_session_group,
+            extract_session_parent,
+        )
         from runtime.gpu_vram import resolve_vram_num_ctx
         from runtime.server.gguf_path import peek_gguf_path
 
@@ -3271,6 +3368,10 @@ class InferenceEngine:
                 vram_options=vram_opts,
                 prompt_cache_key=cache_key,
                 cache_salt=cache_salt,
+                session_parent=extract_session_parent(batch_opts),
+                session_group=extract_session_group(batch_opts),
+                cache_reset=extract_cache_reset(batch_opts),
+                cache_level=extract_cache_level(batch_opts),
                 kv_slot=kv_slot,
                 slot_pinned=slot_pinned,
             )

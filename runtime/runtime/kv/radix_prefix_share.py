@@ -51,6 +51,8 @@ def find_radix_share_plan(
     cache_salt: str | None = None,
     seq_pos: int | None = None,
     effective_window: int | None = None,
+    prefer_session_key: str | None = None,
+    prefer_session_group: str | None = None,
 ) -> RadixSharePlan | None:
     """Plan donor→target KV seed for cold slots or warm catch-up behind donor.
 
@@ -87,6 +89,8 @@ def find_radix_share_plan(
         max_tokens=len(tokens),
         exclude_slot=target_slot,
         min_matched=target_pos,
+        prefer_session_key=prefer_session_key,
+        prefer_session_group=prefer_session_group,
     )
     if found is None:
         return None

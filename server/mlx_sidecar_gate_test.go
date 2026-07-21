@@ -20,7 +20,7 @@ func TestMLXAgentGateWaitWhileInflight(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := g.waitForSlot(ctx, modelKey, "hermes:other:2", mlxClassAuxiliary)
+	err := g.waitForSlot(ctx, modelKey, "hermes:other:2", "", mlxClassAuxiliary, mlxQoS{})
 	waited := time.Since(start)
 	if err == nil {
 		t.Fatal("expected context cancellation while primary inflight")
@@ -39,7 +39,7 @@ func TestMLXAgentGateSameSessionNoDefer(t *testing.T) {
 	defer release()
 
 	start := time.Now()
-	if err := g.waitForSlot(context.Background(), modelKey, sessionKey, mlxClassInteractive); err != nil {
+	if err := g.waitForSlot(context.Background(), modelKey, sessionKey, "", mlxClassInteractive, mlxQoS{}); err != nil {
 		t.Fatalf("waitForSlot: %v", err)
 	}
 	if waited := time.Since(start); waited > 50*time.Millisecond {
@@ -50,7 +50,7 @@ func TestMLXAgentGateSameSessionNoDefer(t *testing.T) {
 func TestMLXAgentGateProceedWhenIdle(t *testing.T) {
 	g := newMLXAgentGate()
 	start := time.Now()
-	if err := g.waitForSlot(context.Background(), "digest:idle", "hermes:any", mlxClassAuxiliary); err != nil {
+	if err := g.waitForSlot(context.Background(), "digest:idle", "hermes:any", "", mlxClassAuxiliary, mlxQoS{}); err != nil {
 		t.Fatalf("waitForSlot: %v", err)
 	}
 	if time.Since(start) > 50*time.Millisecond {
@@ -67,14 +67,14 @@ func TestMLXAgentGateCooldownBlocksDifferentKey(t *testing.T) {
 	release()
 
 	now := time.Now()
-	if defer_, _, _ := g.shouldDefer(modelKey, "hermes:other", mlxClassAuxiliary, now); !defer_ {
+	if defer_, _, _ := g.shouldDefer(modelKey, "hermes:other", "", mlxClassAuxiliary, mlxQoS{}, now); !defer_ {
 		t.Fatal("different auxiliary key should defer during primary cooldown")
 	}
-	if defer_, _, _ := g.shouldDefer(modelKey, sessionKey, mlxClassInteractive, now); defer_ {
+	if defer_, _, _ := g.shouldDefer(modelKey, sessionKey, "", mlxClassInteractive, mlxQoS{}, now); defer_ {
 		t.Fatal("same primary key should not defer during cooldown")
 	}
 	future := now.Add(mlxSidecarAgentCooldown + time.Second)
-	if defer_, _, _ := g.shouldDefer(modelKey, "hermes:other", mlxClassAuxiliary, future); defer_ {
+	if defer_, _, _ := g.shouldDefer(modelKey, "hermes:other", "", mlxClassAuxiliary, mlxQoS{}, future); defer_ {
 		t.Fatal("should not defer after cooldown expires")
 	}
 }
@@ -87,7 +87,7 @@ func TestMLXAgentGatePrimaryPreemptsAuxiliaryCooldown(t *testing.T) {
 	release()
 
 	now := time.Now()
-	defer_, policy, _ := g.shouldDefer(modelKey, "hermes:agent:discord:1", mlxClassInteractive, now)
+	defer_, policy, _ := g.shouldDefer(modelKey, "hermes:agent:discord:1", "", mlxClassInteractive, mlxQoS{}, now)
 	if defer_ {
 		t.Fatalf("primary should preempt auxiliary cooldown, policy=%s", policy)
 	}
@@ -104,7 +104,7 @@ func TestMLXAgentGateAuxiliaryWaitsForPrimary(t *testing.T) {
 	release := g.begin(modelKey, primary, mlxClassInteractive, mlxQoS{})
 	defer release()
 
-	defer_, policy, _ := g.shouldDefer(modelKey, "aux:digest:test", mlxClassAuxiliary, time.Now())
+	defer_, policy, _ := g.shouldDefer(modelKey, "aux:digest:test", "", mlxClassAuxiliary, mlxQoS{}, time.Now())
 	if !defer_ {
 		t.Fatal("auxiliary should defer behind active primary")
 	}
@@ -123,7 +123,7 @@ func TestMLXAgentGateContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err := g.waitForSlot(ctx, modelKey, "hermes:other", mlxClassAuxiliary)
+	err := g.waitForSlot(ctx, modelKey, "hermes:other", "", mlxClassAuxiliary, mlxQoS{})
 	if err == nil {
 		t.Fatal("expected context error")
 	}

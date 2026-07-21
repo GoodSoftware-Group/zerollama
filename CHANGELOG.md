@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Session → cache great loop (M15c) — Jul 2026
+
+**Why:** Agent harnesses on one connection need to declare session/cache intent (`parent` / `reset` / `level`), have the server schedule and retain on that intent, then hit MLX/L3/Radix when safe — without `cold:` key prefixes or client TTL floors that fight `keep_alive`.
+
+**Shipped (contract + enforcement):**
+
+| Surface | What | Why |
+|---------|------|-----|
+| `options.zerollama.cache_reset` | Force miss under the **same** `prompt_cache_key` this turn | Soft “new branch” without a second key namespace |
+| `options.zerollama.cache_level` | `auto`\|`gpu`\|`dram`\|`disk` (default auto) | Retention hint; auto = heuristics (no surprise) |
+| `session_parent` / `session_group` | Multiplex **key hot-map** `wait_parent`; Radix prefer on equal-length ties | Many agents on one runner; donors stay hash-verified |
+| Gate primary | Derived from keyHot on begin/end | Stops primary `inflight` leak when concurrent begins overwrite the slot |
+| Parent match | Expand raw parent via `injectMLXSessionKey` candidates | Children send raw ids; MLX may have rewritten aux/bg branches |
+| GGUF reset | Deny resume **and** bump decode-graph + `seed_seq_pos(0)` / `seq_rm`; **skip Radix** | Soft deny alone left residual warm state; Radix seed undid reset |
+| Version / OpenAPI / ps | Caps + `ProcessSessionInfo` parent/level/fulfillment | Progressive probe + fleet visibility |
+
+**Learnings (audit):** primary-slot match-end leaks; soft GGUF reset is not invalidate; Radix-after-deny undoes reset; parent must resolve to gate keys; `gpu`≈`dram` is honest until spill exists. Detail: [agent-qos-and-project-tracking.md](./docs/agent-qos-and-project-tracking.md#findings--learnings-session--cache).
+
+Doc: [agent-qos-and-project-tracking.md](./docs/agent-qos-and-project-tracking.md), [mlx-agent-prompts.md](./docs/mlx-agent-prompts.md), [radix-prefix-share.md](./docs/radix-prefix-share.md).
+
 ### Host wishlist Phase B — pin, propose, thrash dampen (Jul 2026)
 
 **Why:** Phase A gave dry-run admit but Decide still lacked session pins, multi-model plans, and less ggml↔runtime unload thrash — without lying that Python can hold two GGUFs.

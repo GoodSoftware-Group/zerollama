@@ -524,6 +524,103 @@ def cache_pin_from_options(
     return key, kv_slot, slot_pinned, cache_salt
 
 
+def zerollama_block_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(options, dict):
+        return {}
+    z = options.get("zerollama")
+    return z if isinstance(z, dict) else {}
+
+
+def extract_session_parent(options: dict[str, Any] | None) -> str | None:
+    """Parent thread prompt_cache_key for Radix prefer (Go gate does wait_parent).
+
+    WHY passed through to admission: equal-length donor ties break toward parent
+    without overriding hash verification.
+    """
+    z = zerollama_block_from_options(options)
+    for key in ("session_parent",):
+        raw = z.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    raw = (options or {}).get("mlx_session_parent") if isinstance(options, dict) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def extract_session_group(options: dict[str, Any] | None) -> str | None:
+    z = zerollama_block_from_options(options)
+    for key in ("session_group", "harness"):
+        raw = z.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def extract_cache_reset(options: dict[str, Any] | None) -> bool:
+    """Force miss under the same prompt_cache_key this turn.
+
+    WHY same key (not a cold: prefix): harnesses already own a stable interactive
+    key; resetting validity is orthogonal to identity. Engine skips L3 resume and
+    Radix seed when True — see docs/agent-qos-and-project-tracking.md.
+    """
+    z = zerollama_block_from_options(options)
+    raw = z.get("cache_reset")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
+_CACHE_LEVEL_ALIASES = {
+    "auto": "auto",
+    "gpu": "gpu",
+    "vram": "gpu",
+    "dram": "dram",
+    "ram": "dram",
+    "memory": "dram",
+    "disk": "disk",
+    "ssd": "disk",
+    "persist": "disk",
+}
+
+
+def extract_cache_level(options: dict[str, Any] | None) -> str:
+    """KV retention tier.
+
+    WHY auto default: Tier-1 clients must not surprise-flip disk.
+    WHY gpu≈dram: both forbid disk persist until a real VRAM↔host spill path exists.
+    """
+    z = zerollama_block_from_options(options)
+    raw = z.get("cache_level")
+    if raw is None:
+        raw = z.get("cache_tier")
+    if not isinstance(raw, str) or not raw.strip():
+        return "auto"
+    return _CACHE_LEVEL_ALIASES.get(raw.strip().lower(), "auto")
+
+
+def apply_cache_level_to_policy(policy: Any, cache_level: str | None) -> Any:
+    """Override disk persist from options.zerollama.cache_level.
+
+    ``auto`` / unset leaves policy unchanged. ``gpu``/``dram`` forbid disk.
+    ``disk`` allows disk when hard denies (draft-spec) do not apply.
+    """
+    from dataclasses import replace
+
+    level = (cache_level or "auto").strip().lower() or "auto"
+    if level == "auto":
+        return policy
+    if level in ("gpu", "dram", "vram", "ram", "memory"):
+        return replace(policy, allow_disk_persist=False)
+    if level in ("disk", "ssd", "persist"):
+        if getattr(policy, "speculative_draft", False):
+            return policy
+        return replace(policy, allow_disk_persist=True)
+    return policy
+
+
 def slot_resume_owner_key(kv_bind_req: Any | None) -> str | None:
     """Stable owner id for in-process KV resume (Phase 15 v17).
 

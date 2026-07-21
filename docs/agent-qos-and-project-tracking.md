@@ -64,11 +64,13 @@ curl -s http://127.0.0.1:11434/api/version | jq '{
 |-------|---------|-----|
 | `qos_class` | `interactive` \| `auxiliary` \| `background` | Prevents background batch jobs from clobbering live agent KV |
 | `fulfillment` | `complete` \| `benchmark` | Request-scoped no-degradation contract (see below) |
-| `session_group` | Harness namespace (`hermes-agent`, `ruby-trivia`) | Collapses ephemeral aux/bg keys onto shared branches where safe |
-| `session_parent` | Parent thread `prompt_cache_key` | Spawns defer behind main thread; observability for subagents |
+| `session_group` | Harness namespace (`hermes-agent`, `ruby-trivia`) | Collapses ephemeral aux/bg keys onto shared branches where safe; Radix prefers same-group donors on ties |
+| `session_parent` | Parent thread `prompt_cache_key` | `wait_parent` while parent key is hot (multiplex-aware); Radix prefers that donor on equal-length ties |
 | `project_id` | Stable client id | Fleet / `zerollama ps` — which app owns GPU time |
 | `project_name` | Human label (Discord channel, audit phase) | Operator grep without parsing cache keys |
 | `cache_scope` | `thread` \| `shared` \| `auto` | MLX trie vs shared branch policy |
+| `cache_level` | `auto` \| `gpu` \| `dram` \| `disk` | KV tier (`auto` = heuristics; `gpu`/`dram` = no disk; `disk` = allow blobs when policy permits) |
+| `cache_reset` | `true` | Force miss under the **same** `prompt_cache_key` this request |
 
 ### Fulfillment modes (`options.zerollama.fulfillment`)
 
@@ -129,9 +131,9 @@ gemma4    hermes-lean/discord:dm:1   hermes:agent:main:discord:dm:1  ...
 qwen3.6   ruby-trivia/audit          ruby-trivia:bg:audit              ...
 ```
 
-**API:** `GET /api/ps` → `models[].zerollama.sessions[]` with `session_key`, `session_class`, `project_id`, `project_name`, `inflight`, `hot_until`.
+**API:** `GET /api/ps` → `models[].zerollama.sessions[]` with `session_key`, `session_class`, `session_group`, `session_parent`, `project_id`, `project_name`, `cache_scope`, `cache_level`, `fulfillment`, `inflight`, `hot_until`.
 
-**Why gate stores project fields:** Sessions are registered at `reserveScheduleQoS` claim time — the same moment we fix the TOCTOU race — so ps reflects in-flight work, not post-hoc log parsing.
+**Why gate stores project fields:** Sessions are registered at `reserveScheduleQoS` claim time — the same moment we fix the TOCTOU race — so ps reflects in-flight work, not post-hoc log parsing. Multiplex key-hot entries appear even when they are not the fairness “primary.”
 
 ---
 
@@ -146,6 +148,70 @@ Request → reserveScheduleQoS (claim gate) → GetRunner (load/wait) → infer 
 ```
 
 Code: `server/schedule_qos.go`, `server/routes.go` (`scheduleRunner`).
+
+---
+
+## Session → cache great loop (Jul 2026)
+
+**Why a “loop” not more knobs:** Agent harnesses (many threads on one connection) need to *declare* intent, have the server *schedule* on it, *retain* KV accordingly, and *hit* cache when safe. Extra client TTLs and `cold:` key prefixes were rejected — they fight L3/`keep_alive` and fragment the trie.
+
+| Axis | Field | Server behavior | Why this shape |
+|------|-------|-----------------|----------------|
+| Identity | `prompt_cache_key` | Live extend / L3 slot pin / ps label | Same key = same conversation owner |
+| Relation | `session_parent`, `session_group` | `wait_parent`; Radix prefer on equal-length ties | Spawns must not clobber parent KV; donors stay hash-verified |
+| Validity | `cache_reset: true` | Force miss **under the same key** this turn | Soft “new branch” without inventing a second key namespace |
+| Tier | `cache_level` | `auto`\|`gpu`\|`dram`\|`disk` | Retention hint; `auto` = no surprise vs heuristics |
+| Urgency | existing `qos_class` / `fulfillment` | Unchanged | Defer vs exclusive are orthogonal to cache identity |
+
+```text
+declare (parent / reset / level)
+    → schedule (multiplex-aware wait_parent + key hot-map)
+    → retain (cache_level → disk persist policy)
+    → hit (MLX trie / L3 resume / Radix prefer parent|group)
+```
+
+### Multiplex-aware `wait_parent`
+
+**Why the primary slot alone failed:** With many agents on one runner, the “primary” holder is whoever claimed last. A child’s `session_parent` could still be inflight/cooldown while primary pointed at an unrelated thread — `wait_parent` never fired.
+
+**Fix:** Per-model **key hot-map** (cap 64). Parent defer checks the map, not only the primary slot. Primary fairness display is **derived from** the map after each begin/end.
+
+**Why normalize parent keys:** MLX may rewrite aux/bg keys to `aux:{model}` / `bg:{model}[:group]`. Children usually send the **raw** parent id. `parentKeyCandidates` expands `session_parent` through `injectMLXSessionKey` so `wait_parent` still matches.
+
+### `cache_reset` contract
+
+**Why under the same key:** Harnesses already have a stable interactive key; inventing `cold:…` forces clients to manage two namespaces and breaks ps continuity.
+
+| Path | Behavior | Why |
+|------|----------|-----|
+| MLX | Skip live extend + trie hit for this turn | Enough to force re-prefill; trie branches may remain for later content matches |
+| GGUF L3 | Deny `cache_prompt` / resume; bump decode-graph epoch; `seed_seq_pos(0)` or in-process `seq_rm` | Soft deny alone left residual slot pos / graphs that could soft-resume |
+| Radix | **Skipped** when `cache_reset` | Cross-slot seed would undo “no KV reuse this turn” |
+
+**Honesty:** `gpu` ≈ `dram` today (both forbid disk persist). Advertise both so clients can pin intent before spill exists.
+
+### `cache_level`
+
+| Value | Effect | Why |
+|-------|--------|-----|
+| `auto` (default) | Existing heuristics | No surprise for Tier-1 clients |
+| `gpu` / `dram` | Forbid disk blob persist | Keep warm path off SSD |
+| `disk` / `ssd` | Allow disk when policy permits | Still cannot override draft-spec hard deny |
+
+---
+
+## Findings / learnings (session → cache)
+
+**Why write these down:** the first multiplex/`cache_*` ship was a coherent API with soft edges. An audit found concurrency and reset holes that would reappear as “QoS is flaky” / “reset didn’t clear.”
+
+1. **Primary-slot `inflight++` + overwrite leaks fairness.** `begin` used to bump primary and set `sessionKey`; `end` only decremented when keys still matched. Concurrent A then B left A’s end as a no-op → stuck hot primary. **Why fix:** derive primary from keyHot; end only mutates the key entry.
+2. **`waitForSlot` then separate `begin` is still TOCTOU-ish** for claim ordering, but keyHot accounting removes the leak that made races sticky. Full atomic waitAndBegin remains optional polish.
+3. **`cache_reset` that only denies resume is soft on GGUF.** Slot `seq_pos` and CUDA graphs can still look “warm.” **Why hard invalidate:** bump epoch + zero seq_pos / `seq_rm` so the next completion cannot pretend continuity.
+4. **Radix after deny undoes reset.** Admission historically seeded when full-prompt resume was denied (SWA window case). Reset must short-circuit Radix. **Why:** “no reuse this turn” means no donor seed either.
+5. **`session_parent` must resolve to the gate key, not only the client string.** Aux rewrite breaks exact match. **Why candidates:** children should not need to know inject rules.
+6. **`gpu` vs `dram` identical is intentional honesty**, not a bug. **Why document:** capability text must say so or harnesses invent false VRAM pinning.
+7. **Zero-value gate maps panic under incomplete test schedulers.** Defensive `slots`/`keyHot` init in `beginLocked`. **Why:** `assignment to entry in nil map` on debug routes was worse than a soft no-op.
+8. **Harness updates stay out of scope for the server loop.** Server advertises; clients probe `/api/version`. **Why:** progressive ladder already ships in Hermes / ruby-trivia / simpleagent.
 
 ---
 
@@ -222,16 +288,20 @@ Doc: [mlx-agent-prompts.md](./mlx-agent-prompts.md), [gpu-profiles-l3.md](./gpu-
 
 ## Code map
 
-| Area | Path |
-|------|------|
-| Inference path detection | `server/inference_path.go` |
-| QoS reserve + TOCTOU fix | `server/schedule_qos.go` |
-| Session gate | `server/mlx_sidecar_gate.go` |
-| QoS parse + version API | `server/mlx_qos.go` |
-| Agent cache / eliza gating | `server/agent_prompt_cache.go` |
-| `/api/ps` session snapshot | `server/sched.go` |
-| CLI ps columns | `cmd/cmd.go` |
-| Tests | `server/inference_path_test.go`, `server/agent_cache_runtime_test.go`, `server/process_sessions_test.go` |
+| Area | Path | Why this file |
+|------|------|---------------|
+| Inference path detection | `server/inference_path.go` | Backend-aware gate / eliza branching |
+| QoS reserve + TOCTOU claim | `server/schedule_qos.go` | Claim before GetRunner |
+| Session gate + key hot-map | `server/mlx_sidecar_gate.go` | Multiplex `wait_parent`; primary from keyHot |
+| QoS parse + version caps | `server/mlx_qos.go` | `cache_reset` / `cache_level` + progressive probe |
+| Agent cache / eliza gating | `server/agent_prompt_cache.go` | Tier-2 metadata only when harness hints |
+| MLX trie reset | `x/mlxrunner/cache.go` | `cacheReset` skips live extend + trie hit |
+| GGUF admission + hard reset | `runtime/runtime/engine.py` | Deny resume; skip Radix; epoch + seq clear |
+| Cache field extract | `runtime/runtime/cache_bridge.py` | Shared Python helpers for level/reset/parent |
+| Radix prefer parent/group | `runtime/runtime/kv/prefix_block_pool.py` | Tie-break only; still hash-verified |
+| `/api/ps` session snapshot | `server/sched.go` | Fleet visibility |
+| CLI ps columns | `cmd/cmd.go` | Operator PROJECT/SESSION |
+| Contract tests | `server/session_cache_contract_test.go`, `runtime/tests/test_session_cache_contract.py`, `runtime/tests/test_radix_engine_guard.py` | Inflight leak, parent normalize, reset↛Radix |
 
 ---
 
@@ -240,3 +310,5 @@ Doc: [mlx-agent-prompts.md](./mlx-agent-prompts.md), [gpu-profiles-l3.md](./gpu-
 - Replacing per-node schedulers with a global multi-GPU optimizer ([fleet-scheduling.md](./fleet-scheduling.md) picks **which node**, not how MLX trie works).
 - Requiring every Ollama client to send `options.zerollama` — Tier 1 remains valid forever on compatible servers.
 - Hardcoding Hermes-only behavior in the Go server — harness prefixes are conventions; `project_id` is the stable contract.
+- Client harness rewrites (Hermes / ruby-trivia / simpleagent) as part of the server “great loop” — those stay in their repos; server advertises capabilities.
+- Distinct `gpu` vs `dram` spill tiers until a real VRAM↔host spill path exists — both forbid disk today on purpose.

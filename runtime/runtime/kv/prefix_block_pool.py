@@ -33,6 +33,7 @@ class PrefixBlockEntry:
     model_scope: str
     session_key: str | None
     slot_id: int | None
+    session_group: str | None = None
     tier: str = "ram"
     ref_count: int = 1
     holder_slots: frozenset[int] = field(default_factory=frozenset)
@@ -215,11 +216,17 @@ class PrefixBlockPool:
         target_slot: int,
         skip_slot: int | None,
         min_matched: int,
+        prefer_session_key: str | None = None,
+        prefer_session_group: str | None = None,
+        slot_meta: dict[int, tuple[str | None, str | None]] | None = None,
     ) -> tuple[int, int, int] | None:
         """Pick donor with longest contiguous prefix from token 0 (L3-R3).
 
         ``skip_slot`` (usually target): blocks held only by skip still advance the
         chain position for warm catch-up; donor must hold every non-skip block.
+
+        When matched lengths tie, prefer ``prefer_session_key`` (session_parent)
+        then ``prefer_session_group`` over arbitrary slot order.
         """
         if not chain:
             return None
@@ -231,7 +238,21 @@ class PrefixBlockPool:
         if skip != target_slot:
             candidates.discard(skip)
 
+        prefer_key = (prefer_session_key or "").strip() or None
+        prefer_group = (prefer_session_group or "").strip() or None
+        meta = slot_meta or {}
+
+        def _rank(slot: int) -> tuple[int, int]:
+            # Lower is better. (0,0)=parent key, (0,1)=group, (1,0)=other.
+            sk, sg = meta.get(int(slot), (None, None))
+            if prefer_key and sk and sk == prefer_key:
+                return (0, 0)
+            if prefer_group and sg and sg == prefer_group:
+                return (0, 1)
+            return (1, 0)
+
         best: tuple[int, int, int] | None = None
+        best_rank = (2, 0)
         for cand in sorted(candidates):
             matched = 0
             blocks = 0
@@ -247,9 +268,27 @@ class PrefixBlockPool:
                 break
             if matched <= min_matched:
                 continue
-            if best is None or matched > best[1]:
+            rank = _rank(cand)
+            if best is None or matched > best[1] or (matched == best[1] and rank < best_rank):
                 best = (cand, matched, blocks)
+                best_rank = rank
         return best
+
+    def _slot_session_meta_locked(self) -> dict[int, tuple[str | None, str | None]]:
+        out: dict[int, tuple[str | None, str | None]] = {}
+        for entry in self._blocks.values():
+            if entry.slot_id is None:
+                continue
+            sid = int(entry.slot_id)
+            prev = out.get(sid)
+            sk = entry.session_key
+            sg = getattr(entry, "session_group", None)
+            if prev is None:
+                out[sid] = (sk, sg)
+                continue
+            # Prefer non-empty metadata when merging multiple blocks for a slot.
+            out[sid] = (sk or prev[0], sg or prev[1])
+        return out
 
     def find_donor_slot_prefix(
         self,
@@ -261,6 +300,8 @@ class PrefixBlockPool:
         block_size: int | None = None,
         exclude_slot: int | None = None,
         min_matched: int = 0,
+        prefer_session_key: str | None = None,
+        prefer_session_group: str | None = None,
     ) -> tuple[int, int, int] | None:
         """Return ``(donor_slot, matched_tokens, matched_blocks)`` for cross-slot seed.
 
@@ -278,11 +319,16 @@ class PrefixBlockPool:
             limit=limit,
             block_size=block_size,
         )
+        with self._lock:
+            slot_meta = self._slot_session_meta_locked()
         return self._best_donor_from_chain(
             chain,
             target_slot=target_slot,
             skip_slot=exclude_slot,
             min_matched=min_matched,
+            prefer_session_key=prefer_session_key,
+            prefer_session_group=prefer_session_group,
+            slot_meta=slot_meta,
         )
 
     def find_blob_prefix(
@@ -346,6 +392,7 @@ class PrefixBlockPool:
         slot_id: int | None,
         blob_path: str | None = None,
         block_size: int | None = None,
+        session_group: str | None = None,
     ) -> list[str]:
         if seq_pos <= 0 or not tokens or slot_id is None:
             return []
@@ -376,6 +423,8 @@ class PrefixBlockPool:
                     model_scope=scope,
                     session_key=session_key,
                     slot_id=sid,
+                    session_group=session_group
+                    or (getattr(existing, "session_group", None) if existing else None),
                     tier="lmcache" if lmcache_tier_enabled() else "ram",
                     holder_slots=holders,
                     ref_count=len(holders),

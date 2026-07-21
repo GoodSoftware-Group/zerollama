@@ -384,7 +384,9 @@ Any client can detect zerollama via `GET /api/version` (`distribution: zerollama
 | `qos_priority` | `0–100` | Class inferred when `qos_class` omitted (`≥70` interactive) |
 | `fulfillment` | `complete` \| `benchmark` | No-degradation / exclusive speed (aliases: `guarantee`, `reliable` / `bench`, `speed`, `exclusive`) — see [agent-qos fulfillment](./agent-qos-and-project-tracking.md) |
 | `session_group` | string | Harness id for shared cache branch (`aux:{model}:{group}`) |
-| `session_parent` | string | Parent thread `prompt_cache_key` (logging / future parent-aware defer) |
+| `session_parent` | string | Parent thread `prompt_cache_key` (`wait_parent` + Radix prefer). **Why:** spawns must wait while parent is hot even when another agent holds the primary slot; server expands raw ids through aux/bg inject candidates. |
+| `cache_level` | string | `auto` \| `gpu` \| `dram` \| `disk` (default auto = heuristics). **Why:** retention hint without inventing client TTLs; `gpu`≈`dram` (both forbid disk) until spill exists. |
+| `cache_reset` | bool | Force miss under same `prompt_cache_key` this request. **Why:** soft “new branch” under one key; skips MLX live/trie hit, GGUF resume, **and** Radix seed for that turn. |
 | `project_id` | string | Client harness id for fleet / `zerollama ps` (aliases: `client_id`, `project`) |
 | `project_name` | string | Human label — Discord channel, audit phase, workspace name (aliases: `client_name`) |
 | `cache_scope` | `auto` \| `thread` \| `shared` | `thread` = keep key as-is (live KV); `shared` = collapse ephemeral to shared branch |
@@ -525,6 +527,9 @@ Send stable **`project_id`** (app/repo) and optional **`project_name`** (thread,
 | `TestMLXPromptChain*` / `TestMLXPromptChainInvalidate` | `server` | Stable-prefix splice, fingerprint on equal count, invalidate on truncate |
 | `TestInferencePath*` / `TestGateSessionKey*` / `TestAgentSessionMetadataEnabled` | `server` | GGUF preserves client keys; eliza gated; embedding-only skips QoS |
 | `TestReserveScheduleQoSClaimsBeforeRunnerWait` | `server` | TOCTOU: gate claimed before runner wait |
+| `TestWaitParent*` / `TestBeginEndOverwriteNoInflightLeak` | `server` | Multiplex parent hot-map; primary inflight no-leak; aux parent normalize |
+| `TestMLXQoSCacheLevelAndReset` | `server` | Parse `cache_level` / `cache_reset` + version caps |
+| `test_apply_radix_skipped_on_cache_reset` | `runtime` | `cache_reset` short-circuits Radix seed |
 | `TestStreamKeepalive*` | `server` | keepalive session lifecycle |
 
 ---

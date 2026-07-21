@@ -233,3 +233,72 @@ def test_apply_radix_skipped_when_draft_disables_cache(monkeypatch: pytest.Monke
     assert allow is False
     assert resume is None
     assert trace is None
+
+
+def test_apply_radix_skipped_on_cache_reset(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+
+    from runtime.engine import InferenceEngine
+    from runtime.scheduler.scheduler import Request
+
+    req = Request(
+        request_id="r1",
+        prompt_tokens=list(range(128)),
+        max_tokens=8,
+        prompt_cache_key="k",
+        kv_slot=2,
+        slot_pinned=True,
+        cache_reset=True,
+    )
+
+    engine = MagicMock(spec=InferenceEngine)
+    engine._apply_radix_prefix_share = InferenceEngine._apply_radix_prefix_share.__get__(
+        engine, InferenceEngine
+    )
+    engine._model_hash_for_cache = MagicMock(return_value="mh")
+
+    with patch("runtime.kv.radix_prefix_share.find_radix_share_plan") as find_plan:
+        allow, resume, trace = engine._apply_radix_prefix_share(
+            req,
+            _hybrid_policy(),
+            allow=False,
+            resume_pos=None,
+        )
+        find_plan.assert_not_called()
+
+    assert allow is False
+    assert resume is None
+    assert trace is None
+
+
+def test_prefix_cache_admission_skips_radix_on_cache_reset(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
+
+    from runtime.engine import InferenceEngine
+    from runtime.scheduler.scheduler import Request
+
+    req = Request(
+        request_id="r1",
+        prompt_tokens=list(range(64)),
+        max_tokens=8,
+        prompt_cache_key="k",
+        kv_slot=1,
+        slot_pinned=True,
+        cache_reset=True,
+    )
+
+    engine = MagicMock(spec=InferenceEngine)
+    engine._prefix_cache_admission = InferenceEngine._prefix_cache_admission.__get__(
+        engine, InferenceEngine
+    )
+    engine._prefix_cache_request = MagicMock(return_value=(False, None))
+    engine._apply_radix_prefix_share = MagicMock(
+        return_value=(True, 64, {"copy_tokens": 64})
+    )
+    engine._decode_current_pos_for_request = MagicMock(return_value=0)
+
+    allow, resume = engine._prefix_cache_admission(req, _hybrid_policy())
+    assert allow is False
+    assert resume is None
+    engine._apply_radix_prefix_share.assert_not_called()

@@ -39,6 +39,13 @@ class Request:
     prompt_cache_key: str | None = None
     # vLLM cache_salt — tenant isolation for slot hash + in-process owner key.
     cache_salt: str | None = None
+    # options.zerollama.session_parent / session_group — Radix donor preference.
+    session_parent: str | None = None
+    session_group: str | None = None
+    # options.zerollama.cache_reset — force miss under same key this turn.
+    cache_reset: bool = False
+    # options.zerollama.cache_level — auto|gpu|dram|disk (auto = heuristics).
+    cache_level: str | None = None
     # When True, kv_slot was derived from prompt_cache_key; llama-server keeps KV
     # after complete() — allocator releases tracking only, not llama slot contents.
     slot_pinned: bool = False
