@@ -10,6 +10,8 @@
 # Why validate nvcc: CMAKE may find headers under cuda-12.8 while CUDACXX points at a
 # missing cuda-13/bin/nvcc. RTX 5080: CMAKE_CUDA_ARCHITECTURES=120-real (see docs/testing-smoke.md).
 # macOS (M3): GGML_METAL=ON, GGML_CUDA=OFF — produces libllama.dylib + llama-server.
+# Darwin UMA (M22): BUILD_UMA=auto|1 links libuma_llama.a; BUILD_UMA=0 disables.
+# Runtime escape hatch (no rebuild): ZEROLLAMA_UMA_SCHED=off
 set -euo pipefail
 
 _ZEROLLAMA_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
