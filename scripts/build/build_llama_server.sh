@@ -251,6 +251,22 @@ _probe_seq_copy_route() {
   fi
 }
 
+# Zerollama ships llama-server only — never Kokoro / OmniVoice / libelizainference.
+# Those live on elizaOS/llama.cpp; our ggml-org pin omits tools/kokoro + tools/omnivoice.
+_zerollama_refuse_eliza_voice() {
+  if [[ "${ZEROLLAMA_ALLOW_ELIZA_VOICE:-0}" == "1" ]]; then
+    return 0
+  fi
+  local d
+  for d in kokoro omnivoice; do
+    if [[ -d "${ROOT}/tools/${d}" ]]; then
+      echo "error: ${ROOT}/tools/${d} present — Eliza voice/FFI is not part of the zerollama llama-server binary." >&2
+      echo "  Remove it, or set ZEROLLAMA_ALLOW_ELIZA_VOICE=1 only for an explicit Eliza-fused experiment." >&2
+      exit 1
+    fi
+  done
+}
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
   ZEROLLAMA_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
   # shellcheck source=scripts/runtime/mac_cgo_env.sh
@@ -262,8 +278,40 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     export CXX="$(xcrun --find clang++)"
   fi
   echo "Building llama-server in ${ROOT} (Metal) CC=${CC} CXX=${CXX}"
+  _zerollama_refuse_eliza_voice
   _acquire_llama_server_build_lock
   rm -rf "${BUILD}"
+
+  # Optional UMA broker admission (M22). Default auto when toolkit + glue present.
+  _UMA_CMAKE=()
+  _BUILD_UMA="${BUILD_UMA:-auto}"
+  _UMA_DIR="${ZEROLLAMA_ROOT}/x/mlxrunner/uma"
+  _UMA_TOOLKIT="${BMTL_UMA_TOOLKIT:-${ZEROLLAMA_ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit}"
+  if [[ "${_BUILD_UMA}" == "1" || "${_BUILD_UMA}" == "on" || "${_BUILD_UMA}" == "true" ]]; then
+    _do_uma=1
+  elif [[ "${_BUILD_UMA}" == "0" || "${_BUILD_UMA}" == "off" || "${_BUILD_UMA}" == "false" ]]; then
+    _do_uma=0
+  else
+    # auto
+    if [[ -f "${_UMA_TOOLKIT}/uma_client.c" && -f "${_UMA_DIR}/Makefile" ]]; then
+      _do_uma=1
+    else
+      _do_uma=0
+    fi
+  fi
+  if [[ "${_do_uma}" == "1" ]]; then
+    echo "Building libuma_llama.a for llama-server (BUILD_UMA=${_BUILD_UMA})"
+    make -C "${_UMA_DIR}" llama
+    _UMA_CMAKE=(
+      -DZEROLLAMA_UMA=ON
+      -DZEROLLAMA_UMA_INCLUDE="${_UMA_DIR}"
+      -DZEROLLAMA_UMA_LIB="${_UMA_DIR}/libuma_llama.a"
+    )
+  else
+    echo "UMA for llama-server disabled (BUILD_UMA=${_BUILD_UMA})"
+  fi
+
+  # Force Eliza voice options OFF when CMake defines them (no-op on stock pin).
   cmake -S "${ROOT}" -B "${BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER="${CC}" \
@@ -273,7 +321,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -DBUILD_SHARED_LIBS=ON \
     -DLLAMA_CURL=OFF \
     -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}" \
-    -DLLAMA_BUILD_UI="${LLAMA_BUILD_UI:-${LLAMA_BUILD_WEBUI:-OFF}}"
+    -DLLAMA_BUILD_UI="${LLAMA_BUILD_UI:-${LLAMA_BUILD_WEBUI:-OFF}}" \
+    -DLLAMA_BUILD_KOKORO=OFF \
+    -DLLAMA_BUILD_OMNIVOICE=OFF \
+    "${_UMA_CMAKE[@]}"
   cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
     echo "error: llama-server build failed; cleaning ${BUILD}" >&2
     rm -rf "${BUILD}"
@@ -281,6 +332,15 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   }
   BIN="${BUILD}/bin/llama-server"
   LIB="${BUILD}/bin/libllama.dylib"
+  if [[ "${_do_uma}" == "1" ]]; then
+    if ! nm -gU "${LIB}" 2>/dev/null | grep -q 'uma_mlx_lease_begin'; then
+      # dylib may hide static archive symbols — check server binary
+      if ! nm -gU "${BIN}" 2>/dev/null | grep -q 'uma_mlx_acquire'; then
+        echo "WARN: uma symbols not visible in nm (may still be linked statically)" >&2
+      fi
+    fi
+    echo "OK: llama-server built with ZEROLLAMA_UMA"
+  fi
   ANE_REPO="${ANE_REPO:-${HOME}/Sites/inference/ane}"
   ANE_BRIDGE="${ANE_REPO}/bridge/libane_bridge.dylib"
   if [[ -f "${ANE_BRIDGE}" ]]; then
@@ -312,6 +372,7 @@ export LLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}"
 
 if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
   echo "Building llama-server in ${ROOT} (Vulkan)"
+  _zerollama_refuse_eliza_voice
   rm -rf "${BUILD}"
   cmake -S "${ROOT}" -B "${BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -320,7 +381,9 @@ if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
     -DGGML_METAL=OFF \
     -DBUILD_SHARED_LIBS=ON \
     -DLLAMA_CURL=ON \
-    -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI}"
+    -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI}" \
+    -DLLAMA_BUILD_KOKORO=OFF \
+    -DLLAMA_BUILD_OMNIVOICE=OFF
   cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
   BIN="${BUILD}/bin/llama-server"
   if [[ -x "${BIN}" ]]; then
@@ -409,6 +472,7 @@ if [[ -z "${_LLAMA_PREBUILT_UI}" ]]; then
     _LLAMA_PREBUILT_UI=OFF
   fi
 fi
+_zerollama_refuse_eliza_voice
 cmake -S "${ROOT}" -B "${BUILD}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA="${GGML_CUDA:-ON}" \
@@ -420,6 +484,8 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DLLAMA_BUILD_WEBUI="${_LLAMA_UI}" \
   -DLLAMA_USE_PREBUILT_UI="${_LLAMA_PREBUILT_UI}" \
   -DLLAMA_USE_PREBUILT_WEBUI="${_LLAMA_PREBUILT_UI}" \
+  -DLLAMA_BUILD_KOKORO=OFF \
+  -DLLAMA_BUILD_OMNIVOICE=OFF \
   "${CMAKE_EXTRA[@]}"
 
 cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
