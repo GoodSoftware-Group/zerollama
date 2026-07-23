@@ -269,7 +269,87 @@ if ! grep -qE 'wait_ms=[1-9][0-9]{2,}' "${LOG_DIR}/server.log"; then
   echo "WARN: no large wait_ms line found (still OK if wall delay passed)" >&2
 fi
 
+echo ""
+echo "== [4] ZEROLLAMA_UMA_SCHED=off ignores HOLD =="
+_stop_lab
+: >"${LOG_DIR}/server-off.log"
+env ZEROLLAMA_UMA_SCHED=off \
+  ZEROLLAMA_UMA_SCHED_LOG=1 \
+  DYLD_LIBRARY_PATH="${LIB_DIR}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  "${BIN}" --model "${MODEL}" --port "${M22_PORT}" --host 127.0.0.1 \
+  --no-webui -c 1024 -ngl 99 \
+  >>"${LOG_DIR}/server-off.log" 2>&1 &
+for i in $(seq 1 90); do
+  curl -sf -m 3 "${M22_URL}/health" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+curl -sS --max-time 180 "${M22_URL}/completion" \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"hi","n_predict":2,"temperature":0,"stream":false}' >/dev/null
+: >"${LOG_DIR}/competitor-off.log"
+python3 - "${UMA_SOCK:-/tmp/uma_daemon.sock}" <<'PY' >"${LOG_DIR}/competitor-off.log" 2>&1 &
+import re, socket, sys, time
+sock = sys.argv[1]
+
+def tx(line, timeout=30.0):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock)
+    s.sendall((line + "\n").encode())
+    data = b""
+    while b"\n" not in data:
+        chunk = s.recv(8192)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    return data.decode(errors="replace").strip()
+
+r = tx("SUBMIT name=m22-off-competitor HOLD_GPU")
+m = re.search(r"ticket=(\d+)", r)
+assert m, r
+tid = int(m.group(1))
+for _ in range(5000):
+    j = tx(f"JOB {tid}")
+    if "phase=holding" in j:
+        break
+    time.sleep(0.01)
+else:
+    raise SystemExit("hold timeout")
+print(f"competitor holding ticket={tid}", flush=True)
+time.sleep(5.0)
+print(tx(f"RELEASE {tid}"), flush=True)
+print(tx(f"WAIT {tid} 30"), flush=True)
+PY
+COMP_PID=$!
+for i in $(seq 1 200); do
+  grep -q 'competitor holding' "${LOG_DIR}/competitor-off.log" 2>/dev/null && break
+  sleep 0.05
+done
+T0=$(python3 -c 'import time; print(time.time())')
+curl -sS --max-time 60 "${M22_URL}/completion" \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Say hi","n_predict":4,"temperature":0,"stream":false}' \
+  | tee "${LOG_DIR}/off-contend.json" >/dev/null
+T1=$(python3 -c 'import time; print(time.time())')
+wait "${COMP_PID}"
+ELAPSED=$(python3 -c "import sys; print(f'{float(sys.argv[1])-float(sys.argv[2]):.2f}')" "${T1}" "${T0}")
+if grep -qE 'uma_mlx: connected|lease begin' "${LOG_DIR}/server-off.log"; then
+  echo "FAIL: uma still active under ZEROLLAMA_UMA_SCHED=off" >&2
+  rg -n 'uma_mlx' "${LOG_DIR}/server-off.log" | head -10 >&2 || true
+  exit 1
+fi
+python3 -c "
+import json
+d=json.load(open('${LOG_DIR}/off-contend.json'))
+assert d.get('tokens_predicted', 0) >= 1 or d.get('content') is not None, d
+elapsed=float('${ELAPSED}')
+assert elapsed < 2.0, f'off mode must not queue under HOLD, elapsed={elapsed}s'
+print(f'PASS: off mode ungated under HOLD (wall={elapsed}s)')
+"
+
 _stop_lab
 echo ""
 echo "M22 llama-server UMA sign-off PASS (logs ${LOG_DIR})"
 echo "Note: Python runtime inherits this gate when LLAMA_SERVER_BIN points at this binary."
+echo "Disable: ZEROLLAMA_UMA_SCHED=off (runtime) or BUILD_UMA=0 (compile out)."

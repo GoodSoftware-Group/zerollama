@@ -394,6 +394,84 @@ if ! grep -qE 'project=llamarunner|name=llamarunner-(prefill|decode)|uma_mlx: co
 fi
 echo "PASS: legacy llamarunner path under UMA"
 
+echo ""
+echo "== [5] ZEROLLAMA_UMA_SCHED=off ignores HOLD (ollamarunner) =="
+_stop_lab
+: >"${LOG_DIR}/serve-off.log"
+env OLLAMA_HOST="${M21_HOST}" \
+  ZEROLLAMA_UMA_SCHED=off \
+  ZEROLLAMA_UMA_SCHED_LOG=1 \
+  ZEROLLAMA_LLAMA_SERVER=0 \
+  ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0 \
+  ZEROLLAMA_RUNTIME=0 \
+  "${BIN}" serve >>"${LOG_DIR}/serve-off.log" 2>&1 &
+_wait_tags
+curl -sS --max-time 300 "${M21_URL}/api/generate" \
+  -d "{\"model\":\"${M21_MODEL}\",\"prompt\":\"hi\",\"raw\":true,\"stream\":false,\"options\":{\"num_predict\":2,\"temperature\":0,\"num_ctx\":1024}}" \
+  >/dev/null
+: >"${LOG_DIR}/competitor-off.log"
+python3 - "${UMA_SOCK:-/tmp/uma_daemon.sock}" <<'PY' >"${LOG_DIR}/competitor-off.log" 2>&1 &
+import re, socket, sys, time
+sock = sys.argv[1]
+
+def tx(line, timeout=30.0):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock)
+    s.sendall((line + "\n").encode())
+    data = b""
+    while b"\n" not in data:
+        chunk = s.recv(8192)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    return data.decode(errors="replace").strip()
+
+r = tx("SUBMIT name=m21-off-competitor HOLD_GPU")
+m = re.search(r"ticket=(\d+)", r)
+assert m, r
+tid = int(m.group(1))
+for _ in range(5000):
+    j = tx(f"JOB {tid}")
+    if "phase=holding" in j:
+        break
+    time.sleep(0.01)
+else:
+    raise SystemExit("hold timeout")
+print(f"competitor holding ticket={tid}", flush=True)
+time.sleep(5.0)
+print(tx(f"RELEASE {tid}"), flush=True)
+print(tx(f"WAIT {tid} 30"), flush=True)
+PY
+COMP_PID=$!
+for i in $(seq 1 200); do
+  grep -q 'competitor holding' "${LOG_DIR}/competitor-off.log" 2>/dev/null && break
+  sleep 0.05
+done
+T0=$(python3 -c 'import time; print(time.time())')
+curl -sS --max-time 120 "${M21_URL}/api/generate" \
+  -d "{\"model\":\"${M21_MODEL}\",\"prompt\":\"Say hi\",\"raw\":true,\"stream\":false,\"options\":{\"num_predict\":4,\"temperature\":0,\"num_ctx\":1024}}" \
+  | tee "${LOG_DIR}/gen-off-contend.json" >/dev/null
+T1=$(python3 -c 'import time; print(time.time())')
+wait "${COMP_PID}"
+ELAPSED=$(python3 -c "import sys; print(f'{float(sys.argv[1])-float(sys.argv[2]):.2f}')" "${T1}" "${T0}")
+if grep -qE 'uma_mlx: connected|lease begin|uma broker gate active' "${LOG_DIR}/serve-off.log"; then
+  echo "FAIL: uma still active under ZEROLLAMA_UMA_SCHED=off" >&2
+  rg -n 'uma_mlx|uma broker' "${LOG_DIR}/serve-off.log" | head -10 >&2 || true
+  exit 1
+fi
+python3 -c "
+import json
+d=json.load(open('${LOG_DIR}/gen-off-contend.json'))
+assert not d.get('error'), d
+assert d.get('done'), d
+elapsed=float('${ELAPSED}')
+assert elapsed < 2.0, f'off mode must not queue under HOLD, elapsed={elapsed}s'
+print(f'PASS: off mode ungated under HOLD (wall={elapsed}s)')
+"
+
 _stop_lab
 echo ""
 echo "M21 GGUF UMA sign-off PASS (logs ${LOG_DIR})"
+echo "Disable: ZEROLLAMA_UMA_SCHED=off (runtime) or BUILD_UMA=0 (compile out)."
