@@ -40,6 +40,7 @@ import (
 	"github.com/ollama/ollama/runner/common"
 	"github.com/ollama/ollama/sample"
 	"github.com/ollama/ollama/tokenizer"
+	"github.com/ollama/ollama/x/mlxrunner/uma"
 
 	_ "github.com/ollama/ollama/model/models"
 )
@@ -1615,6 +1616,15 @@ func Execute(args []string) error {
 	}
 	slog.SetDefault(logutil.NewLogger(os.Stderr, envconfig.LogLevel()))
 	slog.Info("starting ollama engine")
+
+	// Machine-wide UMA broker (same env as mlxrunner). Default project ollamarunner.
+	if os.Getenv("UMA_JOB_NAME") == "" && os.Getenv("UMA_PROJECT") == "" {
+		_ = os.Setenv("UMA_JOB_NAME", "ollamarunner")
+	}
+	if err := uma.Acquire(); err != nil {
+		return fmt.Errorf("uma broker: %w", err)
+	}
+	defer uma.Release()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

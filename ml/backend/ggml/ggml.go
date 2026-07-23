@@ -36,6 +36,7 @@ import (
 	"github.com/ollama/ollama/ml"
 	ggml "github.com/ollama/ollama/ml/backend/ggml/ggml/src"
 	"github.com/ollama/ollama/ml/nn/rope"
+	"github.com/ollama/ollama/x/mlxrunner/uma"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -922,19 +923,26 @@ func (c *Context) ComputeWithNotify(cb func(), tensors ...ml.Tensor) {
 		go cb()
 	}
 
-	if status := C.ggml_backend_sched_graph_compute_async(c.b.sched, c.graph); status != C.GGML_STATUS_SUCCESS {
-		panic(fmt.Errorf("error computing ggml graph: %v", status))
-	}
-	C.ggml_backend_sched_reset(c.b.sched)
-
-	needSync := true
-	sync := func() {
-		if needSync {
-			C.ggml_backend_sched_synchronize(c.b.sched)
-			needSync = false
+	// Darwin -tags uma: admit Metal graph compute + drain under HOLD_GPU so
+	// RELEASE cannot race sched_synchronize (M21 PoC; see docs/ggml-uma-sched.md).
+	var computeErr error
+	run := func() {
+		if status := C.ggml_backend_sched_graph_compute_async(c.b.sched, c.graph); status != C.GGML_STATUS_SUCCESS {
+			computeErr = fmt.Errorf("error computing ggml graph: %v", status)
+			return
 		}
+		C.ggml_backend_sched_reset(c.b.sched)
+		C.ggml_backend_sched_synchronize(c.b.sched)
+	}
+	if err := uma.RunGPU(run); err != nil {
+		panic(err)
+	}
+	if computeErr != nil {
+		panic(computeErr)
 	}
 
+	// Already synchronized under the lease; keep Tensor.sync API as a no-op.
+	sync := func() {}
 	for _, t := range tensors {
 		if C.ggml_nbytes(t.(*Tensor).t) > 0 {
 			t.(*Tensor).sync = sync
