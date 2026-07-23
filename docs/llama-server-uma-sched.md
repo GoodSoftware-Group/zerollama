@@ -23,6 +23,15 @@ Requires vendor patch `llama/patches/0094-darwin-uma-hold-graph-compute.patch` (
 
 Same env as M20/M21: `ZEROLLAMA_UMA_SCHED=auto|require|degraded|off`, `ZEROLLAMA_UMA_SCHED_LOG=1`.
 
+### Disabling
+
+| Knob | Effect |
+|------|--------|
+| `ZEROLLAMA_UMA_SCHED=off` | No acquire in `llama_backend_init`; `graph_compute` runs ungated (no rebuild) |
+| `BUILD_UMA=0 ./scripts/build/build_llama_server.sh` | No `ZEROLLAMA_UMA` / no `libuma_llama.a` in the binary |
+
+See [mlx-uma-sched.md — Disabling UMA](./mlx-uma-sched.md#disabling-uma-build--runtime).
+
 Lab smoke (port **18082**, never 11434/8081):
 
 ```bash

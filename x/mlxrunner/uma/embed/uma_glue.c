@@ -1,7 +1,7 @@
 /*
  * mlxrunner UMA glue — machine-wide uma_daemon only (PACKAGING.md).
  *
- * Modes: ZEROLLAMA_UMA_SCHED=auto (default)|require|degraded|0
+ * Modes: ZEROLLAMA_UMA_SCHED=auto (default)|require|degraded|off|0|disabled
  * Coarse leases: LeaseBegin/End around load, prefill chunks, decode steps.
  * Persistent socket via uma_client fd.
  */
@@ -78,7 +78,8 @@ static int parse_mode(void) {
   if (e[0] == '0' && e[1] == '\0')
     return UMA_MODE_OFF;
   if (!strcmp(e, "false") || !strcmp(e, "False") || !strcmp(e, "no") ||
-      !strcmp(e, "off") || !strcmp(e, "OFF"))
+      !strcmp(e, "off") || !strcmp(e, "OFF") || !strcmp(e, "disabled") ||
+      !strcmp(e, "disable") || !strcmp(e, "none") || !strcmp(e, "NONE"))
     return UMA_MODE_OFF;
   if (!strcmp(e, "auto") || !strcmp(e, "AUTO"))
     return UMA_MODE_AUTO;

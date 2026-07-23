@@ -16,7 +16,7 @@ int uma_mlx_runtime_enabled(void);
  * Connect to broker.
  * Modes (ZEROLLAMA_UMA_SCHED):
  *   unset/auto      — connect if broker up; else warn and stay inactive (default)
- *   0/off           — no-op success
+ *   0/off/disabled  — no-op success (gate fully off)
  *   1/on/require    — require broker + HOLD_GPU
  *   degraded        — require connect; lease failures fall back to ungated
  * Returns 0 ok, -1 hard failure (require/degraded cannot connect).

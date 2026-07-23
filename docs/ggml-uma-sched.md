@@ -42,6 +42,13 @@ Gate covers:
 
 Requests use `"raw":true` to skip native Jinja `ApplyChatTemplate`.
 
+## Disabling
+
+Same knobs as [mlx-uma-sched.md](./mlx-uma-sched.md#disabling-uma-build--runtime):
+
+- **Runtime:** `ZEROLLAMA_UMA_SCHED=off` (no HOLD; no rebuild)
+- **Build:** `BUILD_UMA=0 ./scripts/build/build_zerollama_mac.sh` (no `-tags uma`)
+
 ## Wishlist
 
 `bmtl/.../uma_toolkit/WISHLIST_GGML.md`

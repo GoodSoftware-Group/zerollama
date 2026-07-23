@@ -19,7 +19,7 @@ func doctorCheckUMABroker() doctorCheck {
 			Name:    name,
 			Status:  "warn",
 			Detail:  "not running (" + sock + ")",
-			FixHint: "make -C ../bmtl/hardware_lab/lanes/m4/uma_toolkit uma-daemon-install (or open UMAStatus.app); default ZEROLLAMA_UMA_SCHED=auto gates mlxrunner when broker is up",
+			FixHint: "make -C ../bmtl/hardware_lab/lanes/m4/uma_toolkit uma-daemon-install (or open UMAStatus.app); default ZEROLLAMA_UMA_SCHED=auto gates when broker is up; set off to disable",
 		}
 	}
 	defer c.Close()

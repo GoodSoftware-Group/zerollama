@@ -37,13 +37,33 @@ make -C ../bmtl/hardware_lab/lanes/m4/uma_toolkit uma-daemon-install
 # or: open …/UMAStatus.app
 ```
 
+## Disabling UMA (build + runtime)
+
+Two independent knobs — use either or both:
+
+| Knob | Effect |
+|------|--------|
+| **Runtime** `ZEROLLAMA_UMA_SCHED=off` (also `0` / `false` / `disabled` / `none`) | No broker connect, no HOLD — Metal runs ungated. Works for mlxrunner, ollamarunner, llamarunner, and UMA-linked llama-server **without rebuild**. |
+| **Build** `BUILD_UMA=0` | Omit client entirely: Mac `build_zerollama_mac.sh` skips `-tags uma`; `build_llama_server.sh` skips `libuma_llama.a` / `ZEROLLAMA_UMA`. |
+
+```bash
+# daily escape hatch (any UMA-capable binary)
+ZEROLLAMA_UMA_SCHED=off ./zerollama serve
+
+# compile out
+BUILD_UMA=0 ./scripts/build/build_zerollama_mac.sh
+BUILD_UMA=0 ./scripts/build/build_llama_server.sh
+```
+
+Default remains **`auto`** (gate only when `uma_daemon` is up). Doctor still reports broker health; it does not force the gate on.
+
 ## Runtime (`ZEROLLAMA_UMA_SCHED`)
 
 | Value | Behavior |
 |-------|----------|
 | **unset / `auto`** | **Default** — use broker if up + `HOLD_GPU`; else warn and run ungated |
-| `0` / `off` | Gate off |
-| `1` / `require` / `on` | **Require** broker; fail mlxrunner start or lease on error |
+| `0` / `off` / `disabled` / `none` / `false` | **Gate off** — no connect, no HOLD |
+| `1` / `require` / `on` | **Require** broker; fail start or lease on error |
 | `degraded` | Connect required; lease failures fall back to ungated (lab only) |
 
 Other:
