@@ -1,14 +1,14 @@
-# Build libuma_client + glue for mlxrunner (no embedded uma_sched).
+# Build libuma_client + glue for Darwin Metal clients (no embedded uma_sched).
 #
 # Adopters speak the broker protocol only (PACKAGING.md).
 # C sources live in embed/ so cgo does not compile them twice.
 #
-#   make -C x/mlxrunner/uma
+#   make -C x/uma
 #   CGO_ENABLED=1 go build -tags uma -o zerollama .
 #
 # llama-server (no Go): also build libuma_llama.a (glue + goUmaMlxJob stub).
 
-BMTL_ROOT ?= $(abspath $(CURDIR)/../../../../bmtl)
+BMTL_ROOT ?= $(abspath $(CURDIR)/../../../bmtl)
 BMTL_UMA_TOOLKIT ?= $(BMTL_ROOT)/hardware_lab/lanes/m4/uma_toolkit
 
 SDK   = $(shell xcrun --sdk macosx --show-sdk-path)

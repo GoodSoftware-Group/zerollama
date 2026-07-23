@@ -18,7 +18,7 @@ import (
 	"github.com/ollama/ollama/x/internal/mlxthread"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/mlxrunner/sample"
-	"github.com/ollama/ollama/x/mlxrunner/uma"
+	"github.com/ollama/ollama/x/uma"
 )
 
 func Execute(args []string) error {

@@ -12,7 +12,7 @@ llama-server (Darwin Metal)
 ## Build
 
 ```bash
-BUILD_UMA=auto ./scripts/build/build_llama_server.sh   # Darwin Metal; links x/mlxrunner/uma/libuma_llama.a
+BUILD_UMA=auto ./scripts/build/build_llama_server.sh   # Darwin Metal; links x/uma/libuma_llama.a
 ```
 
 Requires vendor patch `llama/patches/0094-darwin-uma-hold-graph-compute.patch` (applied by `apply_llama_vendor_patches.sh`).

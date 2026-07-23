@@ -287,7 +287,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # Optional UMA broker admission (M22). Default auto when toolkit + glue present.
   _UMA_CMAKE=()
   _BUILD_UMA="${BUILD_UMA:-auto}"
-  _UMA_DIR="${ZEROLLAMA_ROOT}/x/mlxrunner/uma"
+  _UMA_DIR="${ZEROLLAMA_ROOT}/x/uma"
   _UMA_TOOLKIT="${BMTL_UMA_TOOLKIT:-${ZEROLLAMA_ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit}"
   if [[ "${_BUILD_UMA}" == "1" || "${_BUILD_UMA}" == "on" || "${_BUILD_UMA}" == "true" ]]; then
     _do_uma=1

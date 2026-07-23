@@ -16,7 +16,7 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/model"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	"github.com/ollama/ollama/x/mlxrunner/sample"
-	"github.com/ollama/ollama/x/mlxrunner/uma"
+	"github.com/ollama/ollama/x/uma"
 	"github.com/ollama/ollama/x/tokenizer"
 )
 

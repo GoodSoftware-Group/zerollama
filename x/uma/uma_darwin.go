@@ -1,7 +1,7 @@
 //go:build darwin && uma
 
-// Package uma gates mlxrunner MLX Eval through the machine-wide uma_daemon.
-// Build with -tags uma after: make -C x/mlxrunner/uma
+// Package uma gates Darwin Metal clients (mlxrunner, ggml runners, llama-server) MLX Eval through the machine-wide uma_daemon.
+// Build with -tags uma after: make -C x/uma
 package uma
 
 /*

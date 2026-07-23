@@ -10,6 +10,8 @@
 
 Python runtime **subprocess** (`llama-server` child) and **inprocess** (ctypes → same `libllama.dylib`) both inherit M22 when the dylib is UMA-linked. No separate Python HOLD wrap.
 
+Client glue lives in **`x/uma`** (`libuma_embed.a` for Go `-tags uma`, `libuma_llama.a` for llama-server).
+
 ## Defaults
 
 - **Runtime:** `ZEROLLAMA_UMA_SCHED` unset → **`auto`** (gate if broker up; else ungated)

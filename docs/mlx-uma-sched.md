@@ -26,7 +26,7 @@ BUILD_UMA=0 ./scripts/build/build_zerollama_mac.sh   # skip
 Manual:
 
 ```bash
-make -C x/mlxrunner/uma
+make -C x/uma
 CGO_ENABLED=1 go build -tags uma -o zerollama .
 ```
 

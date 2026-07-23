@@ -40,7 +40,7 @@ import (
 	"github.com/ollama/ollama/runner/common"
 	"github.com/ollama/ollama/sample"
 	"github.com/ollama/ollama/tokenizer"
-	"github.com/ollama/ollama/x/mlxrunner/uma"
+	"github.com/ollama/ollama/x/uma"
 
 	_ "github.com/ollama/ollama/model/models"
 )

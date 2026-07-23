@@ -415,9 +415,9 @@ fi
 GO_TAGS=()
 if _should_build_uma; then
   echo ">>> building uma broker client (BUILD_UMA=${BUILD_UMA})" >&2
-  make -C "${ROOT}/x/mlxrunner/uma" "BMTL_UMA_TOOLKIT=$(_uma_toolkit_root)"
+  make -C "${ROOT}/x/uma" "BMTL_UMA_TOOLKIT=$(_uma_toolkit_root)"
   # cgo may not re-link when only libuma_embed.a changes
-  touch "${ROOT}/x/mlxrunner/uma/uma_darwin.go"
+  touch "${ROOT}/x/uma/uma_darwin.go"
   GO_TAGS+=(uma)
 fi
 
@@ -428,7 +428,7 @@ fi
 GOFLAGS=-mod=mod go build "${GO_BUILD_ARGS[@]}" .
 if ((${#GO_TAGS[@]})) && ! strings "${OUT}" | grep -q 'cum_leases'; then
   echo ">>> uma: cgo miss — rebuilding with -a" >&2
-  touch "${ROOT}/x/mlxrunner/uma/uma_darwin.go"
+  touch "${ROOT}/x/uma/uma_darwin.go"
   GOFLAGS=-mod=mod go build -a "${GO_BUILD_ARGS[@]}" .
 fi
 echo ">>> wrote ${OUT} (version ${VERSION}${GO_TAGS:+ tags=${GO_TAGS[*]}})" >&2

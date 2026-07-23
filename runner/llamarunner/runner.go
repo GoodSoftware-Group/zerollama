@@ -28,7 +28,7 @@ import (
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/runner/common"
-	"github.com/ollama/ollama/x/mlxrunner/uma"
+	"github.com/ollama/ollama/x/uma"
 )
 
 // response contains a piece of generated text along with optional logprobs

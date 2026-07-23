@@ -36,7 +36,7 @@ import (
 	"github.com/ollama/ollama/ml"
 	ggml "github.com/ollama/ollama/ml/backend/ggml/ggml/src"
 	"github.com/ollama/ollama/ml/nn/rope"
-	"github.com/ollama/ollama/x/mlxrunner/uma"
+	"github.com/ollama/ollama/x/uma"
 	"golang.org/x/sync/errgroup"
 )
 

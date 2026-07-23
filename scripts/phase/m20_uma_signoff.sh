@@ -184,9 +184,9 @@ if [[ "${M20_SKIP_BUILD:-0}" != "1" ]]; then
   source "${ROOT}/scripts/runtime/mac_cgo_env.sh"
   mac_cgo_env_warn_path
   mac_cgo_env
-  make -C "${ROOT}/x/mlxrunner/uma"
+  make -C "${ROOT}/x/uma"
   # cgo may not re-link when only libuma_embed.a changes
-  touch "${ROOT}/x/mlxrunner/uma/uma_darwin.go"
+  touch "${ROOT}/x/uma/uma_darwin.go"
   OUT_BIN="${M20_BIN:-/tmp/zerollama-uma}"
   CGO_ENABLED=1 go build -a -tags uma -o "${OUT_BIN}" .
   if ! strings "${OUT_BIN}" | grep -q 'cum_leases'; then

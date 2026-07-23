@@ -38,7 +38,7 @@ import "C"
 import (
 	"runtime"
 
-	"github.com/ollama/ollama/x/mlxrunner/uma"
+	"github.com/ollama/ollama/x/uma"
 )
 
 func init() {

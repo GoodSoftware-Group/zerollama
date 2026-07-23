@@ -25,7 +25,7 @@ Default ticket projects: **`ollamarunner`** / **`llamarunner`** (override with `
 
 ## Why Go wrap (not C++ Metal)
 
-Reuse `x/mlxrunner/uma` + `-tags uma` without vendor patches. llama-server needs a separate cmake/`libuma_client` link later.
+Reuse `x/uma` + `-tags uma`. llama-server / runtime inprocess share the same glue via `libuma_llama.a` (M22).
 
 ## Lab smoke
 
