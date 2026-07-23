@@ -42,6 +42,24 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 0
 fi
 
+_broker_ping() {
+  python3 - "${UMA_SOCK:-/tmp/uma_daemon.sock}" <<'PY'
+import os, socket, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(1)
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(2)
+try:
+    s.connect(path)
+    s.sendall(b"PING\n")
+    r = s.recv(64)
+except OSError:
+    sys.exit(1)
+sys.exit(0 if r.startswith(b"OK") else 1)
+PY
+}
+
 _pick_bin() {
   if [[ -n "${M20_BIN:-}" && -x "${M20_BIN}" ]]; then
     echo "${M20_BIN}"
@@ -90,6 +108,18 @@ _start_lab() {
   local log="${LOG_DIR}/serve-${mode}.log"
   _stop_lab
   : >"${log}"
+  # Ensure machine broker for gated modes (stale sock / UMAStatus quit).
+  if [[ "${mode}" == "require" || "${mode}" == "auto" ]]; then
+    if ! _broker_ping 2>/dev/null; then
+      if [[ -d "${ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit/UMAStatus.app" ]]; then
+        open "${ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit/UMAStatus.app" || true
+        for _ in $(seq 1 40); do
+          _broker_ping 2>/dev/null && break
+          sleep 0.5
+        done
+      fi
+    fi
+  fi
   # Lab only: never bind/start production runtime sidecar on :8081.
   env OLLAMA_HOST="${M20_HOST}" \
     ZEROLLAMA_UMA_SCHED="${mode}" \
@@ -171,7 +201,8 @@ trap '_stop_lab' EXIT INT TERM
 
 echo ""
 echo "== [1] doctor uma broker =="
-if ! "${BIN}" doctor 2>&1 | tee "${LOG_DIR}/doctor.txt" | grep -q '\[ok\] uma broker'; then
+"${BIN}" doctor 2>&1 | tee "${LOG_DIR}/doctor.txt" >/dev/null || true
+if ! grep -q '\[ok\] uma broker' "${LOG_DIR}/doctor.txt"; then
   echo "FAIL: uma broker not ok (install: make -C ../bmtl/.../uma_toolkit uma-daemon-install)" >&2
   grep -A2 'uma broker' "${LOG_DIR}/doctor.txt" || true
   exit 1
@@ -210,7 +241,11 @@ if [[ "${AUTO_CTX}" != "${REQ_CTX}" ]]; then
   echo "FAIL: auto context differs from require" >&2
   exit 1
 fi
-grep -E 'connected mode=2|lease begin phase=load' "${LOG_DIR}/serve-auto.log" >/dev/null
+if ! grep -Eq 'connected mode=2|lease begin phase=load' "${LOG_DIR}/serve-auto.log"; then
+  echo "FAIL: auto mode did not gate (broker down or ungated)" >&2
+  grep -E 'uma_mlx:|broker' "${LOG_DIR}/serve-auto.log" | tail -5 || true
+  exit 1
+fi
 echo "PASS: auto gates and matches tokens"
 
 if [[ "${RUN_E2E_UMA_AGENT:-1}" == "1" ]]; then
@@ -248,24 +283,7 @@ if [[ -z "${UMA_CLI}" ]]; then
   exit 1
 fi
 
-_broker_ping() {
-  python3 - "${UMA_SOCK:-/tmp/uma_daemon.sock}" <<'PY'
-import os, socket, sys
-path = sys.argv[1]
-if not os.path.exists(path):
-    sys.exit(1)
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.settimeout(2)
-try:
-    s.connect(path)
-    s.sendall(b"PING\n")
-    r = s.recv(64)
-except OSError:
-    sys.exit(1)
-sys.exit(0 if r.startswith(b"OK") else 1)
-PY
-}
-
+# RUN_NOP / ATTN / HYBRID contention below use _broker_ping (defined earlier).
 _start_lab require
 # Competitor holds GPU long enough that OptiQ manifest I/O (ungated) finishes
 # while still held, so LeaseBegin(load) must queue (non-zero wait_ms).
@@ -537,6 +555,12 @@ if ! grep -q 'cum_leases=' "${LOG_DIR}/serve-require.log"; then
   echo "FAIL: missing cum_leases in lease logs" >&2
   exit 1
 fi
+# Phase project names (mlxrunner-load|prefill|decode) unless flat.
+if ! grep -qE 'name=mlxrunner-(load|prefill|decode)' "${LOG_DIR}/serve-require.log"; then
+  echo "FAIL: missing phase project names (mlxrunner-load|prefill|decode)" >&2
+  exit 1
+fi
+echo "PASS: phase project names present"
 # Prefer disconnect stats; unload is best-effort (runner may be SIGKILL'd).
 curl -sS --max-time 120 "${M20_URL}/api/generate" \
   -d "{\"model\":\"${M20_MODEL}\",\"keep_alive\":0}" \

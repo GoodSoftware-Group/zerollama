@@ -99,7 +99,7 @@ static int env_truthy(const char *name) {
   return 1;
 }
 
-static const char *project_name(void) {
+static const char *project_base(void) {
   const char *e = getenv("UMA_JOB_NAME");
   if (e && e[0])
     return e;
@@ -108,6 +108,35 @@ static const char *project_name(void) {
     return e;
   return "mlxrunner";
 }
+
+/*
+ * Prefill vs decode project names (wishlist): broker UI / QUEUE show
+ * mlxrunner-load|prefill|decode unless UMA_PROJECT_FLAT=1.
+ */
+static const char *project_name_for_phase(const char *phase) {
+  static char buf[160];
+  const char *base = project_base();
+  if (env_truthy("UMA_PROJECT_FLAT")) {
+    snprintf(buf, sizeof(buf), "%s", base);
+    return buf;
+  }
+  const char *suffix = NULL;
+  if (phase && phase[0]) {
+    if (!strcmp(phase, "load"))
+      suffix = "load";
+    else if (!strcmp(phase, "prefill") || !strcmp(phase, "prefill-seed"))
+      suffix = "prefill";
+    else if (!strcmp(phase, "decode") || !strcmp(phase, "decode-prime"))
+      suffix = "decode";
+  }
+  if (!suffix)
+    snprintf(buf, sizeof(buf), "%s", base);
+  else
+    snprintf(buf, sizeof(buf), "%s-%s", base, suffix);
+  return buf;
+}
+
+static const char *project_name(void) { return project_name_for_phase(NULL); }
 
 int uma_mlx_runtime_enabled(void) {
   if (g_force_off)
@@ -231,9 +260,11 @@ static int wait_holding(uint64_t ticket, double *wait_ms_out) {
   return -1;
 }
 
-static int hold_gpu_once(uint64_t *ticket_out, double *wait_ms_out) {
+static int hold_gpu_once(const char *phase, uint64_t *ticket_out,
+                         double *wait_ms_out) {
   uint64_t ticket = 0;
-  if (uma_client_submit(g_client, project_name(), "HOLD_GPU", &ticket) != 0 ||
+  if (uma_client_submit(g_client, project_name_for_phase(phase), "HOLD_GPU",
+                        &ticket) != 0 ||
       ticket == 0)
     return -1;
   if (wait_holding(ticket, wait_ms_out) != 0) {
@@ -275,6 +306,16 @@ static void release_gpu_once(uint64_t ticket) {
 
 int uma_mlx_lease_begin(const char *phase) {
   clear_err();
+  /* auto: if acquire saw a down broker, re-probe so a late UMAStatus.app works. */
+  if (g_force_off && g_mode == UMA_MODE_AUTO) {
+    g_force_off = 0;
+    if (g_client) {
+      uma_client_close(g_client);
+      g_client = NULL;
+    }
+    if (uma_mlx_acquire() != 0)
+      return 0; /* still ungated */
+  }
   if (!uma_mlx_active())
     return 0;
   if (g_lease_depth++ > 0)
@@ -282,7 +323,7 @@ int uma_mlx_lease_begin(const char *phase) {
 
   uint64_t ticket = 0;
   double wait_ms = 0;
-  if (hold_gpu_once(&ticket, &wait_ms) != 0) {
+  if (hold_gpu_once(phase, &ticket, &wait_ms) != 0) {
     g_lease_depth = 0;
     if (g_mode == UMA_MODE_DEGRADED) {
       logf_uma("uma_mlx: degraded — HOLD_GPU failed, ungated for this lease\n");
@@ -297,8 +338,9 @@ int uma_mlx_lease_begin(const char *phase) {
   g_lease_wait_ms = wait_ms;
   g_lease_hold_start_ms = now_ms();
   if (g_log)
-    logf_uma("uma_mlx: lease begin phase=%s ticket=%llu wait_ms=%.1f\n",
-             phase ? phase : "?", (unsigned long long)ticket, wait_ms);
+    logf_uma("uma_mlx: lease begin phase=%s project=%s ticket=%llu wait_ms=%.1f\n",
+             phase ? phase : "?", project_name_for_phase(phase),
+             (unsigned long long)ticket, wait_ms);
   return 0;
 }
 
@@ -332,7 +374,7 @@ void uma_mlx_run_gpu(void) {
   /* One-shot lease when caller forgot LeaseBegin. */
   uint64_t ticket = 0;
   double wait_ms = 0;
-  if (hold_gpu_once(&ticket, &wait_ms) != 0) {
+  if (hold_gpu_once("eval", &ticket, &wait_ms) != 0) {
     if (g_mode == UMA_MODE_DEGRADED) {
       logf_uma("uma_mlx: degraded — one-shot HOLD failed, ungated eval\n");
       goUmaMlxJob(NULL);

@@ -51,7 +51,8 @@ Other:
 |-----|---------|
 | `ZEROLLAMA_UMA_SCHED_LOG=1` | Lease begin/end lines (`wait_ms`, `hold_ms`, `evals`) + disconnect `stats` summary |
 | `UMA_SOCK` | Socket (default `/tmp/uma_daemon.sock`) |
-| `UMA_JOB_NAME` / `UMA_PROJECT` | Ticket project (default `mlxrunner`) |
+| `UMA_JOB_NAME` / `UMA_PROJECT` | Ticket project base (default `mlxrunner`) |
+| `UMA_PROJECT_FLAT=1` | Single project name (no `-load`/`-prefill`/`-decode` suffix) |
 
 ```bash
 # lab (strict)
