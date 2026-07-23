@@ -124,6 +124,12 @@ Full guide: [mlx-agent-prompts.md](./mlx-agent-prompts.md).
 
 ---
 
+## UMA broker admission (M20)
+
+Gate of mlxrunner GPU work through the machine-wide bmtl `uma_daemon` for thermal/queue policy. Does **not** relocate MLX kernels. See [mlx-uma-sched.md](./mlx-uma-sched.md). Mac builds: `BUILD_UMA=auto`; runtime default `ZEROLLAMA_UMA_SCHED=auto`.
+
+---
+
 ## Non-goals
 
 - Replacing ggml Metal with MLX for all GGUF models.

@@ -35,7 +35,11 @@ package mlx
 // }
 import "C"
 
-import "runtime"
+import (
+	"runtime"
+
+	"github.com/ollama/ollama/x/mlxrunner/uma"
+)
 
 func init() {
 	// Replace the default exit(-1) error handler with one that captures
@@ -74,21 +78,27 @@ func doEval(outputs []*Array, async bool) {
 		return
 	}
 
-	vector := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(vector)
+	// Gate mlx.Eval through machine-wide uma_daemon when -tags uma (default auto).
+	if err := uma.RunGPU(func() {
+		vector := C.mlx_vector_array_new()
+		defer C.mlx_vector_array_free(vector)
 
-	for _, output := range outputs {
-		if output != nil && output.Valid() {
-			C.mlx_vector_array_append_value(vector, output.ctx)
+		for _, output := range outputs {
+			if output != nil && output.Valid() {
+				C.mlx_vector_array_append_value(vector, output.ctx)
+			}
 		}
+
+		mlxCheck("eval failed", func() C.int {
+			if async {
+				return C.mlx_async_eval(vector)
+			}
+			return C.mlx_eval(vector)
+		})
+	}); err != nil {
+		// Match mlxCheck: Eval has no error return; surface admission failures.
+		panic(err.Error())
 	}
-
-	mlxCheck("eval failed", func() C.int {
-		if async {
-			return C.mlx_async_eval(vector)
-		}
-		return C.mlx_eval(vector)
-	})
 }
 
 func AsyncEval(outputs ...*Array) {

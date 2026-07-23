@@ -192,6 +192,10 @@ BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh
 - Creation: `zerollama create --experimental …`
 - **Excluded** from Phase 12 runtime-default routing (`modelEligibleForRuntimeDefault` rejects `IsMLX()`).
 
+### UMA broker admission (M20)
+
+Default on Mac builds when sibling bmtl toolkit is present (`BUILD_UMA=auto`): mlxrunner gates GPU use through machine-wide `uma_daemon` (`ZEROLLAMA_UMA_SCHED` defaults to `auto`). Admission only — MLX still runs Metal kernels. Details: [mlx-uma-sched.md](./mlx-uma-sched.md).
+
 **Startup noise:** `CHECK failed: mlx_distributed_group_new_` usually means a **stale** flat `build/lib/ollama/libmlxc.dylib`. Remove it or use the production layout; `zerollama doctor` warns.
 
 **Why keep MLX:** Apple-native weights and image pipelines; **why not merge into runtime yet:** different weight format, subprocess, and long-term may stay a side path (see [python-migration.md](./python-migration.md) Phase 6).

@@ -11,10 +11,16 @@
 # libmlx/libmlxc under build/metal-v*/lib/ollama/ so repo-root ./zerollama works.
 # Set BUILD_MLX=0 for a fast ggml-only rebuild; BUILD_MLX=1 to force MLX rebuild.
 #
+# UMA broker client (mlxrunner GPU admission): BUILD_UMA=auto (default) links
+# -tags uma when sibling bmtl uma_toolkit is present. BUILD_UMA=1 forces;
+# BUILD_UMA=0 skips. Runtime default is ZEROLLAMA_UMA_SCHED=auto (gate if
+# uma_daemon is up; else ungated MLX).
+#
 # Usage:
 #   ./scripts/build/build_zerollama_mac.sh
 #   BUILD_MLX=0 ./scripts/build/build_zerollama_mac.sh          # ggml only (fast)
 #   BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh          # force MLX dylib rebuild
+#   BUILD_UMA=0 ./scripts/build/build_zerollama_mac.sh          # no uma client
 #   BUILD_LLAMA_SERVER=auto  (default) ensure patches + build llama-server when missing/stale
 #   BUILD_LLAMA_SERVER=1     force llama-server rebuild
 #   BUILD_LLAMA_SERVER=0     skip vendor patch check and llama-server build
@@ -36,6 +42,7 @@ if [[ -z "${VERSION:-}" ]]; then
   fi
 fi
 BUILD_MLX="${BUILD_MLX:-auto}"
+BUILD_UMA="${BUILD_UMA:-auto}"
 
 # shellcheck source=scripts/runtime/mac_cgo_env.sh
 source "${ROOT}/scripts/runtime/mac_cgo_env.sh"
@@ -75,6 +82,30 @@ _should_build_mlx() {
   esac
 }
 
+_uma_toolkit_root() {
+  echo "${UMA_TOOLKIT:-${ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit}"
+}
+
+_should_build_uma() {
+  case "${BUILD_UMA}" in
+    0) return 1 ;;
+    1) return 0 ;;
+    auto)
+      local tk
+      tk="$(_uma_toolkit_root)"
+      if [[ -f "${tk}/uma_client.c" && -f "${tk}/include/uma/client.h" ]]; then
+        return 0
+      fi
+      echo ">>> BUILD_UMA=auto: skip uma (no toolkit at ${tk})" >&2
+      return 1
+      ;;
+    *)
+      echo "error: BUILD_UMA must be 0, 1, or auto (got ${BUILD_UMA})" >&2
+      exit 1
+      ;;
+  esac
+}
+
 _llama_vendor_paths() {
   FETCH_HEAD="$(grep '^FETCH_HEAD=' "${ROOT}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo c84b3020)"
   VENDOR="${ROOT}/vendor/llama-cpp-${FETCH_HEAD}"
@@ -106,8 +137,12 @@ _llama_server_binary_ok() {
 }
 
 _llama_lib_has_kv_page_map() {
-  [[ -f "${LLAMA_LIB}" ]] \
-    && strings "${LLAMA_LIB}" 2>/dev/null | grep -qF 'llama_memory_kv_page_map'
+  # Prefer nm: `strings` can miss freshly-linked Mach-O exports under some PATH/toolchains.
+  [[ -f "${LLAMA_LIB}" ]] || return 1
+  if command -v nm >/dev/null 2>&1; then
+    nm -gU "${LLAMA_LIB}" 2>/dev/null | grep -qE '[[:space:]]_?llama_memory_kv_page_map$' && return 0
+  fi
+  strings "${LLAMA_LIB}" 2>/dev/null | grep -qF 'llama_memory_kv_page_map'
 }
 
 _mac_sha_files() {
@@ -377,5 +412,23 @@ if [[ "$(uname -s)" == Darwin && -f "${ROOT}/scripts/vendor/restore_ane_hook_int
   "${ROOT}/scripts/vendor/restore_ane_hook_intree.sh"
 fi
 
-GOFLAGS=-mod=mod go build -ldflags="-s -w -X=github.com/ollama/ollama/version.Version=${VERSION}" -o "${OUT}" .
-echo ">>> wrote ${OUT} (version ${VERSION})" >&2
+GO_TAGS=()
+if _should_build_uma; then
+  echo ">>> building uma broker client (BUILD_UMA=${BUILD_UMA})" >&2
+  make -C "${ROOT}/x/mlxrunner/uma" "BMTL_UMA_TOOLKIT=$(_uma_toolkit_root)"
+  # cgo may not re-link when only libuma_embed.a changes
+  touch "${ROOT}/x/mlxrunner/uma/uma_darwin.go"
+  GO_TAGS+=(uma)
+fi
+
+GO_BUILD_ARGS=(-ldflags="-s -w -X=github.com/ollama/ollama/version.Version=${VERSION}" -o "${OUT}")
+if ((${#GO_TAGS[@]})); then
+  GO_BUILD_ARGS+=(-tags "$(IFS=,; echo "${GO_TAGS[*]}")")
+fi
+GOFLAGS=-mod=mod go build "${GO_BUILD_ARGS[@]}" .
+if ((${#GO_TAGS[@]})) && ! strings "${OUT}" | grep -q 'cum_leases'; then
+  echo ">>> uma: cgo miss — rebuilding with -a" >&2
+  touch "${ROOT}/x/mlxrunner/uma/uma_darwin.go"
+  GOFLAGS=-mod=mod go build -a "${GO_BUILD_ARGS[@]}" .
+fi
+echo ">>> wrote ${OUT} (version ${VERSION}${GO_TAGS:+ tags=${GO_TAGS[*]}})" >&2

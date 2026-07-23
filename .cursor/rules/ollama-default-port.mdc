@@ -1,0 +1,59 @@
+---
+description: Never bind to, kill, or replace user production servers (11434, 8081, etc.)
+alwaysApply: true
+---
+
+# Production ports — hands off
+
+The user runs **production** inference locally. Agents must not stop, replace, or compete with those processes.
+
+## Reserved production ports (never touch)
+
+| Port | Service | Who runs it |
+|------|---------|-------------|
+| **11434** | `./zerollama serve` (default `OLLAMA_HOST`) | **User** |
+| **8081** | Python runtime sidecar (`ZEROLLAMA_RUNTIME_URL`, auto on Darwin serve) | **User** (via serve) |
+
+Treat any `zerollama`, `ollama`, `llama-server`, or `runtime serve` listening on these ports as **production**. Do not kill, `pkill`, `kill`, `launchctl stop`, or `docker stop` them to “free” the port or “fix” a conflict.
+
+If the user has other long-running servers they started (e.g. `llama-server` on a fixed port they chose), **do not stop those either** unless they explicitly say “kill my server on port X”.
+
+## Never do this
+
+- Start `zerollama serve`, `ollama serve`, or bind HTTP on **11434** or **8081**
+- Set `OLLAMA_HOST` to `:11434` / `127.0.0.1:11434` when **starting** a server from the agent
+- Set `ZEROLLAMA_RUNTIME_URL` to `:8081` when **starting** a sidecar from the agent (unless user asked for a dedicated lab sidecar on another port)
+- **Kill or stop** any process listening on **11434** or **8081** (including Cursor, Ollama, zerollama, llama-server, Python runtime)
+- Run `./zerollama serve` or `./scripts/build_zerollama_mac.sh && ./zerollama serve` in the background to “verify the build” without explicit user request
+- Rebuild and auto-start serve on production ports after a code change
+
+## When the agent must run servers (lab only)
+
+Use **non-production** ports and state that in commands:
+
+```bash
+# zerollama lab
+OLLAMA_HOST=127.0.0.1:11435 ./zerollama serve
+
+# runtime lab sidecar
+ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:18081 ./scripts/serve_mac_runtime.sh  # if script allows override
+
+# llama-server subprocess smoke
+--port 18082   # never 8081 or 11434
+```
+
+CI/smoke defaults (`:8080` Go, `:8081` sidecar) apply only inside **`./scripts/*_smoke.sh`** — not against the user’s daily `:11434` stack.
+
+Prefer **read-only** checks against production when it is already up (`curl http://127.0.0.1:11434/api/tags`) instead of starting a second server.
+
+## Port already in use
+
+1. Report which port and process (e.g. `lsof -nP -iTCP:11434 -sTCP:LISTEN`) **read-only**
+2. Ask the **user** to stop their server or pick a lab port for agent work
+3. **Do not** kill the listener unless the user explicitly requests freeing that **specific** port
+
+## Builds and tests
+
+- `./scripts/build_zerollama_mac.sh` — build binary only; **do not** chain `./zerollama serve` on 11434
+- Tests/smokes — bind lab ports (`11435`, `11499`, `8080`, `18081`, `18082`); never production ports
+- If a test fails with “address already in use”, change the test port — **do not** kill production

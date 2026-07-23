@@ -18,6 +18,7 @@ import (
 	"github.com/ollama/ollama/x/internal/mlxthread"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/mlxrunner/sample"
+	"github.com/ollama/ollama/x/mlxrunner/uma"
 )
 
 func Execute(args []string) error {
@@ -46,12 +47,21 @@ func Execute(args []string) error {
 			slog.Info("MLX engine initialized", "MLX version", mlx.Version(), "device", "cpu")
 		}
 
+		// Broker client only (machine-wide uma_daemon). Default auto when -tags uma.
+		if err := uma.Acquire(); err != nil {
+			return fmt.Errorf("uma broker: %w", err)
+		}
+		if uma.Active() {
+			slog.Info("uma broker gate active for mlx.Eval", "sock", "/tmp/uma_daemon.sock")
+		}
+
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 	defer worker.Stop(context.Background(), func() {
+		uma.Release()
 		mlx.Sweep()
 		mlx.ClearCache()
 	})

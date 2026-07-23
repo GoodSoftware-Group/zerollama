@@ -308,6 +308,7 @@ func runDoctorChecks(repo string) []doctorCheck {
 
 	if runtime.GOOS == "darwin" {
 		out = append(out, doctorCheckMLX(repo))
+		out = append(out, doctorCheckUMABroker())
 		out = append(out, doctorCheckDarwinSidecarBootstrap())
 		out = append(out, doctorCheckServeModes())
 		out = append(out, doctorCheckTrainingVenv(repo))

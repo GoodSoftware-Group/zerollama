@@ -1,0 +1,5 @@
+# Ignore compiled UMA embed artifacts
+*.o
+libuma_embed.a
+libuma_sched_core.a
+

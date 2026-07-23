@@ -16,6 +16,7 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/model"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	"github.com/ollama/ollama/x/mlxrunner/sample"
+	"github.com/ollama/ollama/x/mlxrunner/uma"
 	"github.com/ollama/ollama/x/tokenizer"
 )
 
@@ -64,51 +65,62 @@ func (r *Runner) Load(modelName string) error {
 		return err
 	}
 
-	// Assign weights to model (model-specific logic). Target and draft weights
-	// must be loaded before sweeping so tensors from a combined manifest are
-	// not discarded before the draft model can retain them.
-	if err := m.LoadWeights(tensors); err != nil {
-		return err
-	}
-
+	// One GPU lease for weight materialization + pin/sweep/eval + compile enable.
 	var draftModel base.DraftModel
-	draft, err := base.NewDraft(root, m)
-	if err != nil {
-		return err
-	}
-	if draft != nil {
-		if err := draft.LoadWeights(tensors); err != nil {
+	if err := func() error {
+		if err := uma.LeaseBegin("load"); err != nil {
 			return err
 		}
-		draftModel = draft
-	} else if sd, ok := m.(base.SelfDraft); ok {
-		// Inline draft head: already loaded with the target; nil if none shipped.
-		draftModel = sd.SelfDraft()
-	}
+		defer uma.LeaseEnd()
 
-	collected := mlx.Collect(m)
-	if draft != nil {
-		draftArrays := mlx.Collect(draft)
-		collected = append(collected, draftArrays...)
-		if root.Draft != nil {
-			slog.Info("Loaded draft model", "tensor_prefix", root.Draft.TensorPrefix, "config", root.Draft.Config, "arrays", len(draftArrays))
-		} else {
-			slog.Info("Loaded draft model", "arrays", len(draftArrays))
+		// Assign weights to model (model-specific logic). Target and draft weights
+		// must be loaded before sweeping so tensors from a combined manifest are
+		// not discarded before the draft model can retain them.
+		if err := m.LoadWeights(tensors); err != nil {
+			return err
 		}
-	}
-	for _, arr := range collected {
-		mlx.Pin(arr)
-	}
-	mlx.Sweep()
-	mlx.Eval(collected...)
 
-	r.Model = m
-	r.Tokenizer = m.Tokenizer()
-	r.contextLength = m.MaxContextLength()
-	r.Sampler = sample.New(r.contextLength)
-	r.spec = newSpeculation(r, draftModel)
+		draft, err := base.NewDraft(root, m)
+		if err != nil {
+			return err
+		}
+		if draft != nil {
+			if err := draft.LoadWeights(tensors); err != nil {
+				return err
+			}
+			draftModel = draft
+		} else if sd, ok := m.(base.SelfDraft); ok {
+			// Inline draft head: already loaded with the target; nil if none shipped.
+			draftModel = sd.SelfDraft()
+		}
 
-	mlx.EnableCompile()
+		collected := mlx.Collect(m)
+		if draft != nil {
+			draftArrays := mlx.Collect(draft)
+			collected = append(collected, draftArrays...)
+			if root.Draft != nil {
+				slog.Info("Loaded draft model", "tensor_prefix", root.Draft.TensorPrefix, "config", root.Draft.Config, "arrays", len(draftArrays))
+			} else {
+				slog.Info("Loaded draft model", "arrays", len(draftArrays))
+			}
+		}
+		for _, arr := range collected {
+			mlx.Pin(arr)
+		}
+		mlx.Sweep()
+		mlx.Eval(collected...)
+
+		r.Model = m
+		r.Tokenizer = m.Tokenizer()
+		r.contextLength = m.MaxContextLength()
+		r.Sampler = sample.New(r.contextLength)
+		r.spec = newSpeculation(r, draftModel)
+
+		mlx.EnableCompile()
+		return nil
+	}(); err != nil {
+		return err
+	}
 
 	return nil
 }

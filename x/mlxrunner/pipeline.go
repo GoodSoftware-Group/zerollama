@@ -17,6 +17,7 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	sampler "github.com/ollama/ollama/x/mlxrunner/sample"
+	"github.com/ollama/ollama/x/mlxrunner/uma"
 	"github.com/ollama/ollama/x/tokenizer"
 )
 
@@ -125,16 +126,25 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 		return err
 	}
 
-	// Register the sampler after prefill completes.
-	r.Sampler.Add(pipelineSlot, request.SamplerOpts, inputs)
-
+	// Sampler registration + first dispatch/prime can Eval before decode's
+	// per-step leases; hold one admission window for that setup.
 	var d decoder
-	if spec != nil {
-		d = spec.decoder(seed, position)
-	} else {
-		// Prefill seed is 1-D token ids (same layout as sampler.Result.Token);
-		// ExpandDims(0) yields InputIDs [1, L] for Forward.
-		d = r.pipelinedDecoder(nil, caches, seed.ExpandDims(0), position)
+	if err := func() error {
+		if err := uma.LeaseBegin("decode-prime"); err != nil {
+			return err
+		}
+		defer uma.LeaseEnd()
+		r.Sampler.Add(pipelineSlot, request.SamplerOpts, inputs)
+		if spec != nil {
+			d = spec.decoder(seed, position)
+		} else {
+			// Prefill seed is 1-D token ids (same layout as sampler.Result.Token);
+			// ExpandDims(0) yields InputIDs [1, L] for Forward.
+			d = r.pipelinedDecoder(nil, caches, seed.ExpandDims(0), position)
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
 	defer d.close()
 	return r.decode(ctx, request, session, d, promptEval)
@@ -207,25 +217,36 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 		chunkIdx++
 
 		tForwardStart := time.Now()
-		chunkIDs := mlx.FromValues(tokens[processed:processed+n], 1, n)
-		hidden := r.Model.Forward(&batch.Batch{
-			InputIDs:     chunkIDs,
-			SeqOffsets:   []int32{int32(position)},
-			SeqQueryLens: []int32{int32(n)},
-		}, caches)
-		spec.committed(chunkIDs, hidden, position)
-		tForward := time.Since(tForwardStart)
+		var (
+			tForward, tSweep, tMaterialize time.Duration
+		)
+		if err := func() error {
+			if err := uma.LeaseBegin("prefill"); err != nil {
+				return err
+			}
+			defer uma.LeaseEnd()
+			chunkIDs := mlx.FromValues(tokens[processed:processed+n], 1, n)
+			hidden := r.Model.Forward(&batch.Batch{
+				InputIDs:     chunkIDs,
+				SeqOffsets:   []int32{int32(position)},
+				SeqQueryLens: []int32{int32(n)},
+			}, caches)
+			spec.committed(chunkIDs, hidden, position)
+			tForward = time.Since(tForwardStart)
 
-		tSweepStart := time.Now()
-		mlx.Sweep()
-		tSweep := time.Since(tSweepStart)
+			tSweepStart := time.Now()
+			mlx.Sweep()
+			tSweep = time.Since(tSweepStart)
 
-		var tMaterialize time.Duration
-		shouldMaterialize := cfg.materializeEvery <= 1 || chunkIdx%cfg.materializeEvery == 0 || isLastChunk
-		if shouldMaterialize {
-			tMatStart := time.Now()
-			materializeCaches()
-			tMaterialize = time.Since(tMatStart)
+			shouldMaterialize := cfg.materializeEvery <= 1 || chunkIdx%cfg.materializeEvery == 0 || isLastChunk
+			if shouldMaterialize {
+				tMatStart := time.Now()
+				materializeCaches()
+				tMaterialize = time.Since(tMatStart)
+			}
+			return nil
+		}(); err != nil {
+			return nil, 0, 0, err
 		}
 
 		processed += n
@@ -256,14 +277,25 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 	// has crossed, and the draft caches stay a pair short of the target
 	// until the seed completes the frontier pair.
 	// Seed is 1-D token ids (matches sampler.Result.Token / settle / draft propose).
-	seed := mlx.FromValues(tokens[processed:], len(tokens)-processed)
-	if spec != nil {
-		spec.settle(seed)
+	var seed *mlx.Array
+	var attachMs int64
+	if err := func() error {
+		if err := uma.LeaseBegin("prefill-seed"); err != nil {
+			return err
+		}
+		defer uma.LeaseEnd()
+		seed = mlx.FromValues(tokens[processed:], len(tokens)-processed)
+		if spec != nil {
+			spec.settle(seed)
+		}
+		tAttachStart := time.Now()
+		session.attachPrefillSnapshots()
+		attachMs = time.Since(tAttachStart).Milliseconds()
+		return nil
+	}(); err != nil {
+		return nil, 0, 0, err
 	}
-
-	tAttachStart := time.Now()
-	session.attachPrefillSnapshots()
-	slog.Debug("mlx prefill snapshots attached", "elapsed_ms", time.Since(tAttachStart).Milliseconds())
+	slog.Debug("mlx prefill snapshots attached", "elapsed_ms", attachMs)
 
 	promptEval := time.Since(start)
 	prefillTokens := processed
@@ -355,8 +387,16 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 			return err
 		}
 
-		results, err := d.next(request.Options.NumPredict - generated)
-		if err != nil {
+		var results []sampler.Result
+		if err := func() error {
+			if err := uma.LeaseBegin("decode"); err != nil {
+				return err
+			}
+			defer uma.LeaseEnd()
+			var nextErr error
+			results, nextErr = d.next(request.Options.NumPredict - generated)
+			return nextErr
+		}(); err != nil {
 			return err
 		}
 
