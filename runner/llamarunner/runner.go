@@ -28,6 +28,7 @@ import (
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/runner/common"
+	"github.com/ollama/ollama/x/mlxrunner/uma"
 )
 
 // response contains a piece of generated text along with optional logprobs
@@ -617,13 +618,38 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 		return nil
 	}
 
-	t := time.Now()
-	if err := s.lc.Decode(batch); err != nil {
-		return fmt.Errorf("failed to decode batch: %w", err)
+	// Coarse UMA lease: prefill while any seq still has prompt tokens queued
+	// after this batch fill; decode when every participating seq will sample.
+	phase := "decode"
+	for _, seq := range s.seqs {
+		if seq == nil || len(seq.pendingInputs) == 0 {
+			continue
+		}
+		if len(seq.inputs) != 0 || seq.numDecoded == 0 {
+			phase = "prefill"
+			break
+		}
 	}
+	if err := uma.LeaseBegin(phase); err != nil {
+		return fmt.Errorf("uma lease begin %s: %w", phase, err)
+	}
+	defer uma.LeaseEnd()
 
-	if numOutputs > 0 {
-		s.lc.Synchronize()
+	t := time.Now()
+	var decodeErr error
+	if err := uma.RunGPU(func() {
+		if err := s.lc.Decode(batch); err != nil {
+			decodeErr = err
+			return
+		}
+		if numOutputs > 0 {
+			s.lc.Synchronize()
+		}
+	}); err != nil {
+		return fmt.Errorf("uma run gpu: %w", err)
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("failed to decode batch: %w", decodeErr)
 	}
 
 	for i, seq := range s.seqs {
@@ -1101,6 +1127,15 @@ func Execute(args []string) error {
 	}
 	slog.SetDefault(logutil.NewLogger(os.Stderr, envconfig.LogLevel()))
 	slog.Info("starting go runner")
+
+	// Machine-wide UMA broker (same env as ollamarunner / mlxrunner).
+	if os.Getenv("UMA_JOB_NAME") == "" && os.Getenv("UMA_PROJECT") == "" {
+		_ = os.Setenv("UMA_JOB_NAME", "llamarunner")
+	}
+	if err := uma.Acquire(); err != nil {
+		return fmt.Errorf("uma broker: %w", err)
+	}
+	defer uma.Release()
 
 	llama.BackendInit()
 

@@ -862,6 +862,24 @@ func (s *Server) computeBatch(activeBatch batchState) {
 	s.mu.Unlock()
 
 	activeBatch.batch.Inputs.FromInts(batchInputs)
+
+	// Coarse UMA lease: prefill while any seq in this batch is still prompt-only;
+	// decode when every participating seq needs a sampled token.
+	phase := "decode"
+	for i, seq := range activeBatch.seqs {
+		if seq == nil {
+			continue
+		}
+		if nextBatchTokens[i] == nil {
+			phase = "prefill"
+			break
+		}
+	}
+	if err := uma.LeaseBegin(phase); err != nil {
+		panic(fmt.Errorf("uma lease begin %s: %w", phase, err))
+	}
+	defer uma.LeaseEnd()
+
 	activeBatch.ctx.ComputeWithNotify(
 		func() {
 			logutil.Trace("computeBatch: signaling computeStartedCh", "batchID", activeBatch.id)

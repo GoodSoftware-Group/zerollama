@@ -3,20 +3,25 @@
 **Status:** PoC (Jul 2026). **Admission only** — same machine-wide `uma_daemon` as [mlx-uma-sched.md](./mlx-uma-sched.md). Does **not** run ggml ops inside `uma_sched`.
 
 ```text
-ollamarunner (in-process Metal)
+ollamarunner / llamarunner (Darwin Metal)
   Acquire → libuma_client
-  ComputeWithNotify → HOLD_GPU → graph_compute_async + sched_synchronize → RELEASE
+  LeaseBegin(prefill|decode) → HOLD_GPU
+    ollamarunner: ComputeWithNotify (async + sync)
+    llamarunner:  llama.Decode + Synchronize
+  → RELEASE
 ```
 
 ## Scope
 
 | Covered | Not covered (yet) |
 |---------|-------------------|
-| Darwin **ollamarunner** CGO Metal (`ml/backend/ggml` `ComputeWithNotify`) | llama-server / Python runtime Metal |
-| Eager synchronize under HOLD (no RELEASE race) | C++ `ggml-metal` vendor wrap |
-| Same `ZEROLLAMA_UMA_SCHED` / `BUILD_UMA` as M20 | Coarse prefill/decode project names (optional later) |
+| Darwin **ollamarunner** (`ComputeWithNotify`) | llama-server / Python runtime Metal |
+| Darwin **llamarunner** (`llama.Decode` + sync under `RunGPU`) | C++ `ggml-metal` vendor wrap |
+| Eager synchronize under HOLD (no RELEASE race) | |
+| Same `ZEROLLAMA_UMA_SCHED` / `BUILD_UMA` as M20 | |
+| Coarse `LeaseBegin(prefill\|decode)` project names | |
 
-Default ticket project: **`ollamarunner`** (override with `UMA_JOB_NAME`).
+Default ticket projects: **`ollamarunner`** / **`llamarunner`** (override with `UMA_JOB_NAME`).
 
 ## Why Go wrap (not C++ Metal)
 
@@ -25,13 +30,17 @@ Reuse `x/mlxrunner/uma` + `-tags uma` without vendor patches. llama-server needs
 ## Lab smoke
 
 ```bash
-# lab :11435 — GGUF text model (e.g. llama3.2:3b / eliza-1-2b)
+./scripts/phase/m21_ggml_uma_signoff.sh
+# or:
 OLLAMA_HOST=127.0.0.1:11435 ZEROLLAMA_UMA_SCHED=require ZEROLLAMA_UMA_SCHED_LOG=1 \
-  ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0 ./zerollama serve
-# generate; serve log should show uma broker gate + ollamarunner HOLD tickets
+  ZEROLLAMA_LLAMA_SERVER=0 ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0 ./zerollama serve
 ```
 
-Never bind production `:11434` / `:8081` from agent lab scripts.
+Gate covers:
+1. **ollamarunner** — creates **`m21-ggml:latest`** from `eliza-1-2b` with `spec_type=off` (avoids Darwin draft-eagle → llama-server).
+2. **llamarunner** — plain `llama3.2:3b` (legacy Go runner, CGO `llama_decode`).
+
+Requests use `"raw":true` to skip native Jinja `ApplyChatTemplate`.
 
 ## Wishlist
 
