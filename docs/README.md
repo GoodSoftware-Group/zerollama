@@ -59,6 +59,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** compat + Metal embed; Go ollama-engine; **full `metal_signoff.sh` + qwen35** (qwen35 before Phase 15; canonical **`eliza-1-2b:latest`**); manifest `num_ctx` vs request options; thinking-model fields.
 * [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **why** `:11434` daily vs `:8080` CI; CGO; auto-clone `../llama.cpp`.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
+* [UMA admission overview (Darwin)](./uma-admission.md) — M20–M22 surfaces, defaults, disable knobs.
 * [MLX UMA broker admission (M20)](./mlx-uma-sched.md) — machine-wide `uma_daemon` gate around mlxrunner `Eval` (`BUILD_UMA=auto`, default `ZEROLLAMA_UMA_SCHED=auto`).
 * [GGUF ggml UMA admission (M21 PoC)](./ggml-uma-sched.md) — same broker for ollamarunner / llamarunner Metal.
 * [llama-server UMA admission (M22 PoC)](./llama-server-uma-sched.md) — vendor `graph_compute` HOLD + sync (`BUILD_UMA` → `libuma_llama.a`).
