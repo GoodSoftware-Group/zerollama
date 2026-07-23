@@ -26,11 +26,12 @@ Same env as M20/M21: `ZEROLLAMA_UMA_SCHED=auto|require|degraded|off`, `ZEROLLAMA
 Lab smoke (port **18082**, never 11434/8081):
 
 ```bash
-BUILD_UMA=1 ./scripts/build/build_llama_server.sh
-ZEROLLAMA_UMA_SCHED=require ZEROLLAMA_UMA_SCHED_LOG=1 \
-  ./vendor/llama-cpp-*/build/bin/llama-server --model "$GGUF" --port 18082 --host 127.0.0.1 -c 1024
-# competitor HOLD_GPU ~5s → /completion should queue (wall ≥2s)
+./scripts/phase/m22_llama_server_uma_signoff.sh
+# or skip rebuild:
+M22_SKIP_BUILD=1 ./scripts/phase/m22_llama_server_uma_signoff.sh
 ```
+
+**Python runtime:** if `LLAMA_SERVER_BIN` (or the vendor build path the runtime discovers) is this UMA-linked binary, the sidecar’s subprocess Metal path is admitted the same way — no separate Python wrap. Rebuild runtime’s llama-server with `BUILD_UMA=auto` after pulling patch **0094**.
 
 ## Wishlist
 
