@@ -134,6 +134,7 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 			return err
 		}
 		defer uma.LeaseEnd()
+		defer mlx.Synchronize() // first AsyncEval must finish under HOLD
 		r.Sampler.Add(pipelineSlot, request.SamplerOpts, inputs)
 		if spec != nil {
 			d = spec.decoder(seed, position)
@@ -225,6 +226,7 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 				return err
 			}
 			defer uma.LeaseEnd()
+			defer mlx.Synchronize()
 			chunkIDs := mlx.FromValues(tokens[processed:processed+n], 1, n)
 			hidden := r.Model.Forward(&batch.Batch{
 				InputIDs:     chunkIDs,
@@ -284,6 +286,7 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 			return err
 		}
 		defer uma.LeaseEnd()
+		defer mlx.Synchronize()
 		seed = mlx.FromValues(tokens[processed:], len(tokens)-processed)
 		if spec != nil {
 			spec.settle(seed)
@@ -393,6 +396,7 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 				return err
 			}
 			defer uma.LeaseEnd()
+			defer mlx.Synchronize() // AsyncEval drain before RELEASE; Int() after is host-side
 			var nextErr error
 			results, nextErr = d.next(request.Options.NumPredict - generated)
 			return nextErr

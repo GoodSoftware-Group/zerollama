@@ -9,7 +9,8 @@ mlxrunner admits MLX materialization through the **one** machine-wide `uma_daemo
 ```text
 mlxrunner
   LeaseBegin(load|prefill|decode) → SUBMIT HOLD_GPU → phase=holding
-  mlx.Eval… (many) under lease
+  mlx.Eval / AsyncEval… under lease
+  mlx.Synchronize (still leased) → drain Metal
   LeaseEnd → RELEASE → WAIT
 ```
 

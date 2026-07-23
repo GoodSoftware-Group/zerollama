@@ -109,6 +109,19 @@ func Eval(outputs ...*Array) {
 	doEval(outputs, false)
 }
 
+// Synchronize waits for the default MLX stream to finish. When UMA admission
+// is active this runs under HOLD_GPU (nested in a coarse lease or one-shot)
+// so Metal drain does not race RELEASE.
+func Synchronize() {
+	if err := uma.RunGPU(func() {
+		mlxCheck("synchronize failed", func() C.int {
+			return C.mlx_synchronize(DefaultStream().ctx)
+		})
+	}); err != nil {
+		panic(err.Error())
+	}
+}
+
 // MetalIsAvailable returns true if a Metal GPU is available.
 func MetalIsAvailable() bool {
 	var available C._Bool

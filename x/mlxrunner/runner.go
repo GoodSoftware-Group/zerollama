@@ -72,6 +72,7 @@ func (r *Runner) Load(modelName string) error {
 			return err
 		}
 		defer uma.LeaseEnd()
+		defer mlx.Synchronize() // drain Metal before RELEASE (wishlist)
 
 		// Assign weights to model (model-specific logic). Target and draft weights
 		// must be loaded before sweeping so tensors from a combined manifest are
