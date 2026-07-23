@@ -351,5 +351,5 @@ print(f'PASS: off mode ungated under HOLD (wall={elapsed}s)')
 _stop_lab
 echo ""
 echo "M22 llama-server UMA sign-off PASS (logs ${LOG_DIR})"
-echo "Note: Python runtime inherits this gate when LLAMA_SERVER_BIN points at this binary."
+echo "Note: runtime subprocess + inprocess inherit this gate via the same libllama.dylib."
 echo "Disable: ZEROLLAMA_UMA_SCHED=off (runtime) or BUILD_UMA=0 (compile out)."

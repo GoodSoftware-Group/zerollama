@@ -6,9 +6,9 @@
 |-------|---------|------|
 | **M20** | mlxrunner | `./scripts/phase/m20_uma_signoff.sh` |
 | **M21** | ollamarunner + llamarunner | `./scripts/phase/m21_ggml_uma_signoff.sh` |
-| **M22** | llama-server (`libllama`) | `./scripts/phase/m22_llama_server_uma_signoff.sh` |
+| **M22** | llama-server + **runtime inprocess/subprocess** via `libllama` | `./scripts/phase/m22_llama_server_uma_signoff.sh` |
 
-Python runtime **subprocess** path inherits M22 when `LLAMA_SERVER_BIN` is a UMA-linked build. In-process runtime Metal (no llama-server child) is still ungated.
+Python runtime **subprocess** (`llama-server` child) and **inprocess** (ctypes → same `libllama.dylib`) both inherit M22 when the dylib is UMA-linked. No separate Python HOLD wrap.
 
 ## Defaults
 

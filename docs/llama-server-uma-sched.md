@@ -40,7 +40,7 @@ Lab smoke (port **18082**, never 11434/8081):
 M22_SKIP_BUILD=1 ./scripts/phase/m22_llama_server_uma_signoff.sh
 ```
 
-**Python runtime:** if `LLAMA_SERVER_BIN` (or the vendor build path the runtime discovers) is this UMA-linked binary, the sidecar’s subprocess Metal path is admitted the same way — no separate Python wrap. Rebuild runtime’s llama-server with `BUILD_UMA=auto` after pulling patch **0094**.
+**Python runtime:** subprocess and **inprocess** (ctypes → same `libllama.dylib`) both inherit M22 when the dylib was built with `BUILD_UMA`. Set `ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess` and point `LLAMA_CPP_LIB` / vendor paths at that build. Optional: `UMA_JOB_NAME=inprocess` (auto when backend env is `inprocess`). Rebuild with `BUILD_UMA=auto` after patch **0094**.
 
 ## Wishlist
 

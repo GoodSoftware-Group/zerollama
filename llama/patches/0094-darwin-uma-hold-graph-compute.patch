@@ -1,4 +1,4 @@
-From 65adc1e7311a54475c72e6b9d405d99fae46a8f2 Mon Sep 17 00:00:00 2001
+From ee5cf3830647ff47c190f265cd6656d7b06ad22d Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
 Date: Wed, 22 Jul 2026 23:25:07 -0700
 Subject: [PATCH] Darwin UMA HOLD_GPU around llama_context::graph_compute
@@ -10,8 +10,8 @@ race Metal drain.
 ---
  src/CMakeLists.txt    | 11 +++++++++++
  src/llama-context.cpp | 26 ++++++++++++++++++++++++++
- src/llama.cpp         | 21 +++++++++++++++++++++
- 3 files changed, 58 insertions(+)
+ src/llama.cpp         | 28 ++++++++++++++++++++++++++++
+ 3 files changed, 65 insertions(+)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index f4cfb133..cc031cec 100644
@@ -85,7 +85,7 @@ index da9c4cd8..71cc7c88 100644
  
      return status;
 diff --git a/src/llama.cpp b/src/llama.cpp
-index 0de6048f..0ad8791a 100644
+index 0de6048f..f87ec166 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -15,6 +15,11 @@
@@ -100,7 +100,7 @@ index 0de6048f..0ad8791a 100644
  #include <algorithm>
  #include <cassert>
  #include <cinttypes>
-@@ -99,6 +104,19 @@ void llama_backend_init(void) {
+@@ -99,6 +104,26 @@ void llama_backend_init(void) {
      if (!ggml_backend_reg_count()) {
          ggml_backend_load_all();
      }
@@ -109,7 +109,14 @@ index 0de6048f..0ad8791a 100644
 +    // Single glue copy in libllama. Skip entirely when ZEROLLAMA_UMA_SCHED=off.
 +    if (uma_mlx_runtime_enabled()) {
 +        if (getenv("UMA_JOB_NAME") == nullptr && getenv("UMA_PROJECT") == nullptr) {
-+            setenv("UMA_JOB_NAME", "llama-server", 1);
++            const char * backend = getenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND");
++            if (backend != nullptr &&
++                (strcmp(backend, "inprocess") == 0 || strcmp(backend, "in-process") == 0 ||
++                 strcmp(backend, "llama-cpp") == 0)) {
++                setenv("UMA_JOB_NAME", "inprocess", 1);
++            } else {
++                setenv("UMA_JOB_NAME", "llama-server", 1);
++            }
 +        }
 +        if (uma_mlx_acquire() != 0) {
 +            fprintf(stderr, "uma broker: %s\n", uma_mlx_last_error());
@@ -120,7 +127,7 @@ index 0de6048f..0ad8791a 100644
  }
  
  void llama_numa_init(enum ggml_numa_strategy numa) {
-@@ -114,6 +132,9 @@ void llama_numa_init(enum ggml_numa_strategy numa) {
+@@ -114,6 +139,9 @@ void llama_numa_init(enum ggml_numa_strategy numa) {
  }
  
  void llama_backend_free(void) {
