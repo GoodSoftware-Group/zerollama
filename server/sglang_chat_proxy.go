@@ -23,8 +23,26 @@ var sglangProxyClient = func() *http.Client {
 	return &http.Client{Transport: t}
 }()
 
-// sglangChatCompletionsProxy forwards the full JSON body to SGLang's OpenAI-compatible endpoint when
-// video_url is present—partial rewriting would duplicate SGLang's parser and drift over time.
+// sglangShouldProxyChat reports whether this OpenAI chat body should be forwarded to SGLang.
+//
+// Two independent opt-ins share OLLAMA_SGLANG_URL:
+//   - modality_backends.inference=sglang — Dual Chunk Attention / HF long-ctx (all chat)
+//   - modality_backends.video_understanding=sglang — only when the body has video_url
+func sglangShouldProxyChat(m *Model, hasVideoURL bool) bool {
+	if m == nil || envconfig.SGLangURL() == "" {
+		return false
+	}
+	if modelInferenceBackend(m) == model.BackendSGLang {
+		return true
+	}
+	if !hasVideoURL || m.Config.ModalityBackends == nil {
+		return false
+	}
+	return m.Config.ModalityBackends[model.ModalityVideoUnderstanding] == model.BackendSGLang
+}
+
+// sglangChatCompletionsProxy forwards the full JSON body to SGLang's OpenAI-compatible endpoint.
+// Partial rewriting would duplicate SGLang's parser and drift over time.
 func (s *Server) sglangChatCompletionsProxy() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost || c.Request.URL.Path != "/v1/chat/completions" {
@@ -44,10 +62,7 @@ func (s *Server) sglangChatCompletionsProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if !openai.ChatCompletionRequestHasVideoURL(&oreq) {
-			c.Next()
-			return
-		}
+		hasVideo := openai.ChatCompletionRequestHasVideoURL(&oreq)
 
 		modelRef, err := parseAndValidateModelRef(oreq.Model)
 		if err != nil {
@@ -71,16 +86,12 @@ func (s *Server) sglangChatCompletionsProxy() gin.HandlerFunc {
 			return
 		}
 
-		backend := ""
-		if m.Config.ModalityBackends != nil {
-			backend = m.Config.ModalityBackends[model.ModalityVideoUnderstanding]
-		}
-		base := envconfig.SGLangURL()
-		if backend != model.BackendSGLang || base == "" {
+		if !sglangShouldProxyChat(m, hasVideo) {
 			c.Next()
 			return
 		}
 
+		base := envconfig.SGLangURL()
 		target := strings.TrimSuffix(base, "/") + "/v1/chat/completions"
 		outReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, target, bytes.NewReader(body))
 		if err != nil {
@@ -99,6 +110,13 @@ func (s *Server) sglangChatCompletionsProxy() gin.HandlerFunc {
 		if auth := c.GetHeader("Authorization"); auth != "" {
 			outReq.Header.Set("Authorization", auth)
 		}
+
+		slog.Debug("sglang proxy: forwarding chat",
+			"model", oreq.Model,
+			"inference_backend", modelInferenceBackend(m),
+			"has_video", hasVideo,
+			"target", target,
+		)
 
 		resp, err := sglangProxyClient.Do(outReq)
 		if err != nil {

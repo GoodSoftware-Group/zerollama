@@ -85,8 +85,9 @@ Measured with `llama-bench` on RTX 5080 16 GB, FA on. Artifacts: `/var/lib/vz/
 | Llama-3.2-3B Q4_K_M | Stock **f16** wins tg; rotor **turbo3** ~0.82× tg (best compressed); **planar3/iso3** prefill collapses (~0.11–0.16× pp2048) |
 | Llama-3.1-8B Q4_K_M | Stock **q8_0** beats f16 (**157 vs 113** tg); matches L1 `rtx-5080.json` |
 | 8B depth tg @ 8k/16k | **q8_0** still best; adaptive **turbo2** near f16 at 16k; **turbo3** falls off hard; planar/iso not competitive |
+| 8B depth tg @ 32k/65k | **q8_0 ≈ f16** (**85/59** vs **88/58** tg); turbo2/3 collapse (~51/32, ~25/14) — VRAM labs only |
 
-**Verdict:** Do **not** cherry-pick planar/iso. Keep TBQ as VRAM opt-in only. Optional external lab: [craftogrammer/llama.cpp-adaptive-turboquant](https://github.com/craftogrammer/llama.cpp-adaptive-turboquant) `turbo2` for long-ctx (built here on CUDA 12.8 + `GGML_CUDA_NO_MXFP4`).
+**Verdict:** Do **not** cherry-pick planar/iso. Keep TBQ as VRAM opt-in only. Production stock stays **q8_0** (see `serve_gpu_example.sh` / `rtx-5080.json`). Optional external lab: [craftogrammer/llama.cpp-adaptive-turboquant](https://github.com/craftogrammer/llama.cpp-adaptive-turboquant) `turbo2` (CUDA **12.9** + `GGML_CUDA_NO_MXFP4` rebuild available under `bench-5080-alpha`).
 
 **Harness fix:** patch **0093** — `llama-bench` `-ctk/-ctv` now accepts Eliza TBQ/QJL/Polar names (was rejecting while `llama-server`/`common` already worked).
 
@@ -180,10 +181,27 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 
 ---
 
+## Lab Q — Dual Chunk Attention / Qwen long-ctx (Jul 2026)
+
+**Claim:** Qwen 1M / official long-ctx needs DCA (3-way FA + DualChunk RoPE), not YaRN alone. Upstream ggml-org has no DCA; vLLM V0 backend removed; SGLang still has `dual_chunk_flash_attn` (**oracle only**).
+
+| Piece | Status |
+|-------|--------|
+| Native DualChunk RoPE + 3× FA + LSE merge (Qwen2/2.5) | **In vendor** — hparams `dca.*`, `llama-dca.h`, `qwen2.cpp` `build_attn_dca`, FA `ggml_flash_attn_ext_set_lse`; patches **0095+** |
+| GGUF `*.attention.dca.*` on convert | **0094** keys + convert stamp |
+| Oracle: SGLang dense vs native logits | `scripts/dca_oracle_logits.py` (n=0 ≈ stock FA; n≥1 ≈ SGLang) |
+| Serve path | **Stock llama-server / zerollama-runtime** with stamped GGUF |
+| SGLang sidecar `inference=sglang` | **Lab / legacy only** — not product long-ctx |
+
+**Product model:** native ggml DCA. Fail ship on oracle drift. Sparse deferred.
+
+---
+
 ## Suggested operator sequence
 
 1. **Mac (done):** pin `86d86ed4` through **0088**; B0 smoke; Metal L2 stock vs TBQ (FAIL merge — expected).
 2. **5080 (done Jul 2026):** RotorQuant/planar/iso + vendor TBQ A/B — **no-merge** (see table above). Stock path stays **q8_0**. Patch **0093** unblocks fork names in `llama-bench`.
 3. Optional: adaptive-turboquant **turbo2** long-ctx lab (external binary); CUDA **12.9** if chasing NVFP4 / their Windows-tuned path.
-4. Defer **B1 adaptive DM** until a clear DFlash acceptance win.
-5. Revisit turbo-tan only with TQ3 models in the fleet.
+4. **Qwen 1M / DCA:** native GGUF + patched llama-server; gate with `scripts/dca_oracle_logits.py` (SGLang = oracle recipe only).
+5. Defer **B1 adaptive DM** until a clear DFlash acceptance win.
+6. Revisit turbo-tan only with TQ3 models in the fleet.
