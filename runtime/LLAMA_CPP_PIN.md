@@ -11,8 +11,8 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
 | **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `86d86ed4396b4130922f7b9af26e3d9fc11a591b` (master tip; past tag `b10064`) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b cell+tensor+pages COW; **0088** TBQ vec_dot; **0087** Bee loop-guard); container build: `./scripts/vendor/build_llama_server_container.sh`) |
-| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**. |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0098** Metal fused QJL+Polar attn / **0097** Polar+QJL SET_ROWS embed; **0096** Metal #11612 nil-pipeline/bf16 library gate; **0093** llama-bench Eliza L2 KV names; **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b COW; **0088** TBQ vec_dot; **0087** Bee loop-guard); container build: `./scripts/vendor/build_llama_server_container.sh`) |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; Metal recoverable nil pipeline + bf16 library gate **0096** (Eliza #11612); Metal Polar/QJL SET_ROWS + fused QJL+Polar attn **0097–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge). **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (voice/FFI stay out of our binary). |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
@@ -20,8 +20,8 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`86d86ed4`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-86d86ed4/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b cell+tensor+pages COW; **0088** TBQ vec_dot; **0087** Bee loop-guard); container build: `./scripts/vendor/build_llama_server_container.sh`) |
-| **In-tree Metal dig** | E8_2 / TQ2 Metal kernels and concurrency guard in the mid series; Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0076–0079). Metal FA-vec per-device (Q,NE) tables **0086** (ported onto monolithic `ggml-metal.metal`; keeps GQA2). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0098** Metal fused QJL+Polar / **0097** SET_ROWS embed; **0096** Metal #11612; **0093** llama-bench Eliza L2 KV names; **0090** media seq-copy; **0089** L3-R6b COW; **0088** TBQ vec_dot; **0087** Bee loop-guard); container build: `./scripts/vendor/build_llama_server_container.sh`) |
+| **In-tree Metal dig** | E8_2 / TQ2 Metal kernels and concurrency guard in the mid series; Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0076–0079). Metal FA-vec per-device (Q,NE) tables **0086**. Recoverable nil pipeline + bf16 library gate **0096**. Polar/QJL SET_ROWS + fused QJL+Polar attn **0097–0098**. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
 Runtime `llama-server` and in-process ggml share **one ggml-org `86d86ed4` base** + zerollama patches.
@@ -56,7 +56,8 @@ See [docs/apple-silicon-metal.md](../docs/apple-silicon-metal.md#mlx-engine-opti
 |----------|---------|
 | `LLAMA_CPP_ROOT` | Root of llama.cpp checkout (default: `../llama.cpp` relative to repo) |
 | `LLAMA_SERVER_BIN` | Override path to `llama-server` executable |
-| `LLAMA_CPP_REPO` | Override clone URL (default: elizaOS/llama.cpp) |
+| `LLAMA_CPP_REPO` | Override clone URL (default historically elizaOS; **pin is ggml-org** via `Makefile.sync`) |
+| `ZEROLLAMA_ALLOW_ELIZA_VOICE` | `1` = allow `tools/kokoro` / `tools/omnivoice` in build tree (default refuse — zerollama binary shape) |
 | `ZEROLLAMA_LLAMA_FORK` | `0` = L1 q8_0 profiles; unset/`1` = auto-probe fork KV types |
 | `OLLAMA_MLX_SOURCE` / `OLLAMA_MLX_C_SOURCE` | Override MLX sibling paths |
 

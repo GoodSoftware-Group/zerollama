@@ -4,7 +4,7 @@
 
 **Status (CT 1564):** **Full re-sign-off PASS** (Jun 2026) — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
 
-**Continue here (Jul 2026):** pin **`86d86ed4`** (+ patches through **0088**). Tier F RotorQuant **no-merge**; Phase 11 contention **PASS** (keep defaults); Phase 13 production calibrate **PASS** (`eliza-1-9b` factor **0.739** persist). **Next on this host:** Phase 15 / L3 polish, or optional clamp-on smoke — not more estimate knobs.
+**Continue here (Jul 2026):** pin **`86d86ed4`** (+ patches through **0098** on Mac Lab D; 5080 stack validated through **0088**+Tier F). Tier F RotorQuant **no-merge**; Phase 11 contention **PASS** (keep defaults); Phase 13 production calibrate **PASS** (`eliza-1-9b` factor **0.739** persist). **Next on this host:** Phase 15 / L3 polish, or optional clamp-on smoke — not more estimate knobs.
 
 **This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`. Fork labs: [llama-fork-watchlist.md](./llama-fork-watchlist.md).
 
@@ -563,17 +563,18 @@ L2_BUILD_FORK=0 ./scripts/phase/l2_cuda_full_gate.sh   # uses existing bin when 
 
 ## Tier F — RotorQuant / post-L2 labs (Jul 2026)
 
-**Why this tier:** Mac finished Bee **B0** (`--reasoning-loop-guard`, patch **0087**) + Metal L2 smoke. The decision that can change the pin next is **RotorQuant `planar3`/`iso3` vs TBQ** on CUDA FA — not runnable meaningfully on Metal.
+**Why this tier:** Mac finished Bee **B0** + Metal L2 smoke + **Metal Lab A** (Jul 2026 quiet GPU). RotorQuant `planar3`/`iso3` vs TBQ measured on **both** CUDA FA and Metal — **no-merge** everywhere.
 
 **Hand-off from Mac (already done):**
 
 | Item | Status |
 |------|--------|
-| Pin `86d86ed4` + patches **0080–0088** | Committed (`a6120879` lineage) |
-| Metal `llama-server` rebuild | OK (`d4675a5d` vendor HEAD) |
+| Pin `86d86ed4` + patches **0080–0088** (+ **0093** llama-bench names) | Committed |
+| Metal `llama-server` rebuild | OK |
 | B0 stop / force-close smoke | PASS on lab `:18082` |
 | Metal L2 stock vs TBQ @ 8k | Stock wins decode (−29% fork) |
-| RotorQuant sibling scout | `../llama-cpp-rotorquant` @ `feature/planarquant-kv-cache` (Mac); **rebuild on CT** |
+| **Metal Lab A** Llama-3.2-3B planar/iso/TBQ/QJL | **No-merge** planar/iso; stock **f16**; `speed` unblocked by **0097+0098** (tg ~37, still FAIL merge); `tmp/metal-ab/v2/` + `d1b/` |
+| RotorQuant sibling scout | `../llama-cpp-rotorquant` @ `feature/planarquant-kv-cache` (Metal build OK) |
 
 **Do not** touch production Go `:8080` / embed `:8081` for these labs. Use **`:18082`** (harness default) or another free lab port.
 

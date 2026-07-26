@@ -4,11 +4,31 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Mac Metal Lab D1b fused QJL+Polar attn (0098) — Jul 2026
+
+**Why:** After **0097** SET_ROWS, `qjl1_256/q4_polar` still aborted in CPU fused attn (Metal shaders existed but were not wired; embed omitted them).
+
+**Shipped:** Patch `0098` — Metal `supports_op` + encode for `GGML_OP_FUSED_ATTN_QJL_TBQ` (Polar V), `kernel_qjl_project_q_f32`, embed append of fused polar. Smoke: pp512 ~961, tg128 ~37 on Llama-3.2-3B (still ~0.24× stock f16).
+
+### Mac Metal Lab D1 Polar + QJL SET_ROWS (0097) — Jul 2026
+
+**Why:** `FORK_PROFILE=speed` aborted on Metal because `SET_ROWS` lacked `q4_polar` encode, and the embed path never included eliza-shipped QJL SET_ROWS.
+
+**Shipped:** Patch `0097` — `quantize_q4_polar` + SET_ROWS templates in `ggml-metal.metal`, device allowlist, QJL host-name fix, embed append of QJL encode. Smoke: `f16/q4_polar` PASS (tg ~33 on 3B). Full speed profile completed by **0098**.
+
 ### 5080 KV alpha A/B + llama-bench fork types (0093) — Jul 2026
 
 **Why:** Lab RotorQuant/planar/iso and vendor TBQ/QJL needed apples-to-apples `llama-bench -ctk`, but `llama-bench` hardcodes type names separately from `common/arg.cpp` and rejected Eliza L2 names.
 
 **Shipped:** Patch `0093` — accept `tbq3_0` / `tbq4_0` / `tbq3_k` / `tbq4_k` / `qjl1_256` / `q4_polar` / `tbq3_tcq` / `e8_2` in `tools/llama-bench`. Watchlist updated with CT 1564 results: **no-merge** planar/iso; stock **q8_0** confirmed fastest on Llama-3.1-8B; TBQ remains VRAM opt-in.
+
+### Mac Metal Lab A RotorQuant A/B — Jul 2026
+
+**Why:** 5080 no-merge was CUDA-only; Apple Silicon needed its own quiet-GPU measurement before closing planar/iso.
+
+**Measured (M4 Max, Llama-3.2-3B Q4_K_M, `tmp/metal-ab/v2/`):** stock **f16** best (tg ~151); q8_0 ~0.91×; planar/iso **no-merge** (pp2048 collapse); TBQ/turbo3 VRAM-only. QJL/Polar later unblocked by **0097–0098** (still tok/s FAIL merge).
+
+**Docs:** `docs/llama-fork-watchlist.md` (Metal table), `tmp/metal-ab/RESULTS.md`.
 
 
 ### Session → cache great loop (M15c) — Jul 2026
