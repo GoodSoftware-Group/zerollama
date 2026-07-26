@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### 5080 KV alpha A/B + llama-bench fork types (0093) — Jul 2026
+
+**Why:** Lab RotorQuant/planar/iso and vendor TBQ/QJL needed apples-to-apples `llama-bench -ctk`, but `llama-bench` hardcodes type names separately from `common/arg.cpp` and rejected Eliza L2 names.
+
+**Shipped:** Patch `0093` — accept `tbq3_0` / `tbq4_0` / `tbq3_k` / `tbq4_k` / `qjl1_256` / `q4_polar` / `tbq3_tcq` / `e8_2` in `tools/llama-bench`. Watchlist updated with CT 1564 results: **no-merge** planar/iso; stock **q8_0** confirmed fastest on Llama-3.1-8B; TBQ remains VRAM opt-in.
+
+
 ### Session → cache great loop (M15c) — Jul 2026
 
 **Why:** Agent harnesses on one connection need to declare session/cache intent (`parent` / `reset` / `level`), have the server schedule and retain on that intent, then hit MLX/L3/Radix when safe — without `cold:` key prefixes or client TTL floors that fight `keep_alive`.

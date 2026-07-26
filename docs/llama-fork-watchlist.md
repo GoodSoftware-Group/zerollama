@@ -76,6 +76,20 @@ Default legs: `stock,tbq,qjl,planar3,iso3` (stock/tbq/qjl on **our** binary; pla
 
 **If it fails:** leave as external lab binary; do not merge.
 
+### 5080 live A/B (Jul 2026, CT 1564) — **no-merge**
+
+Measured with `llama-bench` on RTX 5080 16 GB, FA on. Artifacts: `/var/lib/vz/private/1564/root/bench-5080-alpha/RESULTS.md`.
+
+| Model | Finding |
+|-------|---------|
+| Llama-3.2-3B Q4_K_M | Stock **f16** wins tg; rotor **turbo3** ~0.82× tg (best compressed); **planar3/iso3** prefill collapses (~0.11–0.16× pp2048) |
+| Llama-3.1-8B Q4_K_M | Stock **q8_0** beats f16 (**157 vs 113** tg); matches L1 `rtx-5080.json` |
+| 8B depth tg @ 8k/16k | **q8_0** still best; adaptive **turbo2** near f16 at 16k; **turbo3** falls off hard; planar/iso not competitive |
+
+**Verdict:** Do **not** cherry-pick planar/iso. Keep TBQ as VRAM opt-in only. Optional external lab: [craftogrammer/llama.cpp-adaptive-turboquant](https://github.com/craftogrammer/llama.cpp-adaptive-turboquant) `turbo2` for long-ctx (built here on CUDA 12.8 + `GGML_CUDA_NO_MXFP4`).
+
+**Harness fix:** patch **0093** — `llama-bench` `-ctk/-ctv` now accepts Eliza TBQ/QJL/Polar names (was rejecting while `llama-server`/`common` already worked).
+
 ---
 
 ## Lab B — BeeLlama server controls (product UX)
@@ -169,7 +183,7 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 ## Suggested operator sequence
 
 1. **Mac (done):** pin `86d86ed4` through **0088**; B0 smoke; Metal L2 stock vs TBQ (FAIL merge — expected).
-2. **5080 next:** [5080-runbook Tier F](./5080-runbook.md#tier-f--rotorquant--post-l2-labs-jul-2026) — rebuild vendor CUDA `llama-server`, then `./scripts/phase/l2_rotorquant_ab.sh` at 8k + one long-ctx leg (lab port **18082**).
-3. If RotorQuant wins → plan type-slot remap (IDs **44–47**) + FA cherry-pick onto vendor (new patches after **0088**); dual-4090 A/B.
-4. If not → leave TBQ VRAM opt-in; optional B0 CUDA sanity; defer **B1 adaptive DM**.
+2. **5080 (done Jul 2026):** RotorQuant/planar/iso + vendor TBQ A/B — **no-merge** (see table above). Stock path stays **q8_0**. Patch **0093** unblocks fork names in `llama-bench`.
+3. Optional: adaptive-turboquant **turbo2** long-ctx lab (external binary); CUDA **12.9** if chasing NVFP4 / their Windows-tuned path.
+4. Defer **B1 adaptive DM** until a clear DFlash acceptance win.
 5. Revisit turbo-tan only with TQ3 models in the fleet.
