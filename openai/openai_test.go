@@ -204,9 +204,9 @@ func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
 		Messages: []Message{
 			{Role: "user", Content: "hi"},
 		},
-		PromptCacheKey:        &key,
-		CacheSalt:             &salt,
-		EnablePrefixMMCache:   &enablePrefix,
+		PromptCacheKey:      &key,
+		CacheSalt:           &salt,
+		EnablePrefixMMCache: &enablePrefix,
 		Options: map[string]any{
 			"num_ctx": float64(8192),
 		},
@@ -226,6 +226,40 @@ func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
 	}
 	if out.Options["num_ctx"] != float64(8192) {
 		t.Fatalf("num_ctx=%v", out.Options["num_ctx"])
+	}
+}
+
+func TestFromChatRequest_SessionIDAliasesPromptCacheKey(t *testing.T) {
+	sid := "sglang-session-9"
+	req := ChatCompletionRequest{
+		Model:     "m",
+		Messages:  []Message{{Role: "user", Content: "hi"}},
+		SessionID: &sid,
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Options["prompt_cache_key"] != sid {
+		t.Fatalf("prompt_cache_key=%v want session_id alias", out.Options["prompt_cache_key"])
+	}
+}
+
+func TestFromChatRequest_PromptCacheKeyWinsOverSessionID(t *testing.T) {
+	key := "explicit-cache"
+	sid := "sglang-session"
+	req := ChatCompletionRequest{
+		Model:          "m",
+		Messages:       []Message{{Role: "user", Content: "hi"}},
+		PromptCacheKey: &key,
+		SessionID:      &sid,
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Options["prompt_cache_key"] != key {
+		t.Fatalf("prompt_cache_key=%v want %q", out.Options["prompt_cache_key"], key)
 	}
 }
 

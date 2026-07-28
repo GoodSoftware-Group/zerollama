@@ -2960,8 +2960,14 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	// SGLang #31832: demux WebM/MP4 input_audio containers to WAV before prompt flatten.
+	if err := modality.ExpandAudioClipsInChatRequest(c.Request.Context(), &req); err != nil {
+		c.JSON(modality.MediaHTTPStatus(err), gin.H{"error": err.Error()})
+		return
+	}
+	// SGLang #31417: client media → 400; missing ffmpeg / host IO → 500.
 	if err := modality.ExpandVideosInChatRequest(c.Request.Context(), policy, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(modality.MediaHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	if modality.ChatRequestHasMultimodalPayload(&req) {

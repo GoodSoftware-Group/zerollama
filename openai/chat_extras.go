@@ -45,6 +45,13 @@ func mergeChatExtraBody(req *ChatCompletionRequest, extra json.RawMessage) {
 	if req.PromptCacheKey == nil {
 		if s := rawString(flat["prompt_cache_key"]); s != "" {
 			req.PromptCacheKey = &s
+		} else if s := rawString(flat["session_id"]); s != "" {
+			req.SessionID = &s
+		}
+	}
+	if req.SessionID == nil {
+		if s := rawString(flat["session_id"]); s != "" {
+			req.SessionID = &s
 		}
 	}
 	if req.EnablePrefixMMCache == nil {
@@ -88,6 +95,15 @@ func mergeOptionsPromptCacheKey(req *ChatCompletionRequest) {
 		if s, ok := req.Options["prompt_cache_key"].(string); ok && strings.TrimSpace(s) != "" {
 			key := strings.TrimSpace(s)
 			req.PromptCacheKey = &key
+		} else if s, ok := req.Options["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+			key := strings.TrimSpace(s)
+			req.SessionID = &key
+		}
+	}
+	if req.SessionID == nil {
+		if s, ok := req.Options["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+			key := strings.TrimSpace(s)
+			req.SessionID = &key
 		}
 	}
 }

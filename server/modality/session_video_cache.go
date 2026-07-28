@@ -53,6 +53,10 @@ func ExtractPromptCacheKey(opts map[string]any) string {
 	if v, ok := opts["prompt_cache_key"].(string); ok && v != "" {
 		return v
 	}
+	// SGLang session_id (#29436) — same thread pin when clients use that field name.
+	if v, ok := opts["session_id"].(string); ok && v != "" {
+		return v
+	}
 	if v, ok := opts["conversation_id"].(string); ok && v != "" {
 		return v
 	}

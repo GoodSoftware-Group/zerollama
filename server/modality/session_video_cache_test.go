@@ -196,6 +196,15 @@ func TestExtractPromptCacheKey_elizaAndFlat(t *testing.T) {
 	if got := ExtractPromptCacheKey(map[string]any{"prompt_cache_key": "flat-key"}); got != "flat-key" {
 		t.Fatalf("flat key=%q", got)
 	}
+	if got := ExtractPromptCacheKey(map[string]any{"session_id": "sgl-sess"}); got != "sgl-sess" {
+		t.Fatalf("session_id=%q", got)
+	}
+	if got := ExtractPromptCacheKey(map[string]any{
+		"prompt_cache_key": "p",
+		"session_id":       "s",
+	}); got != "p" {
+		t.Fatalf("prompt_cache_key should win over session_id, got %q", got)
+	}
 }
 
 func TestExpandVideosInChatRequest_skipsPreprocessed(t *testing.T) {

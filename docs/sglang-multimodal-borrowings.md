@@ -6,6 +6,22 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 **Related:** [video-understanding.md](./video-understanding.md) (native pipeline), [video-parity.md](./video-parity.md) (matrix), [gpu-profiles-l3.md](./gpu-profiles-l3.md) (KV prefix cache), [ROADMAP.md](./ROADMAP.md) Option 2.
 
+**Last scanned:** 2026-07-28 — sibling `../sglang` tip **`4e5a05148a`** (was `4a76699dfc`, ~1157 commits). HiCache/Radix in this range are infrastructure-only (no `sglext.cached_tokens_details` API change).
+
+### Upstream delta triage (`4a76699dfc..4e5a05148a`)
+
+| Priority | SGLang | Action |
+|----------|--------|--------|
+| **Brought** | [#31417](https://github.com/sgl-project/sglang/pull/31417) `32c30c0f96` — 400 for unfetchable/unparseable MM | `ClientMediaError` / `ServerMediaError` + `MediaHTTPStatus` in expand/demux (`server/modality/media_errors.go`) |
+| **Brought** | [#31438](https://github.com/sgl-project/sglang/pull/31438) `4682ded472` — parallel MM preprocess workers | `errgroup` + `OLLAMA_MM_IO_WORKERS` (default 4) in `ExpandVideosInChatRequest` |
+| **Brought** | [#31832](https://github.com/sgl-project/sglang/pull/31832) `962c076934` — decode `input_audio` containers (WebM/MP4) | `ExpandAudioClipsInChatRequest` ffmpeg demux → WAV; invalid/no-audio → 400 |
+| **Brought** | [#29436](https://github.com/sgl-project/sglang/pull/29436) `aaa31eb0a1` — first-class `session_id` | OpenAI `session_id` aliases `prompt_cache_key` when unset; `ExtractPromptCacheKey` reads `session_id` |
+| **Watch** | [#24013](https://github.com/sgl-project/sglang/pull/24013) batch cross-request ViT encode | Needs continuous-batch encode queue; we already have ViT radix *reuse*, not cross-req batch |
+| **Watch** | [#31298](https://github.com/sgl-project/sglang/pull/31298) Kimi VLM encoder warmup | Pattern for cold Metal/compile if we ship those families |
+| **Watch** | [#30260](https://github.com/sgl-project/sglang/pull/30260) mm-process-config vs video metadata | If `VideoSamplingPolicy` + pre-expanded spans fight |
+| **Skip** | [#30904](https://github.com/sgl-project/sglang/pull/30904) / [#30602](https://github.com/sgl-project/sglang/pull/30602) MM CUDA-IPC / `/dev/shm` | Multiprocess tokenizer transport — not Go/ffmpeg |
+| **Skip** | Breakable prefill CG (#31391 / #30620 / #30006), MoonViT FA3 (#30878), GLM-Image `n>1` (#31027) | CUDA / diffusion / Phase 15 |
+
 ---
 
 ## Shipped (Tier 1 + follow-up)
@@ -441,7 +457,7 @@ VIDEO_AGENT_INFER_VIT_RADIX=1 ...  # cross-session ViT content pool
 
 ## Operator checklist
 
-1. **Agent thread with repeat video:** set `options.prompt_cache_key` (or `eliza.conversationId`) on every turn — enables session expansion cache **and** L3 KV reuse. OpenAI clients: `prompt_cache_key` on `/v1/chat/completions` or `options` on `/api/chat`. Add **`enable_prefix_mm_cache: true`** when you want SGLang-compatible session ViT pinning (overlay still requires the session key).
+1. **Agent thread with repeat video:** set `options.prompt_cache_key` (or eliza aliases / OpenAI **`session_id`**) on every turn — enables session expansion cache **and** L3 KV reuse. OpenAI clients: `prompt_cache_key` or `session_id` on `/v1/chat/completions` or `options` on `/api/chat`. Add **`enable_prefix_mm_cache: true`** when you want SGLang-compatible session ViT pinning (overlay still requires the session key).
 2. **OpenAI clients:** inspect `usage.prompt_tokens_details` for `image_tokens`, `video_tokens`, `cached_tokens`; optional SGLang clients may read `sglext.cached_tokens_details`.
 3. **Fleet logs:** grep `inference response out` for `image_tokens`, `video_tokens`, `audio_tokens`, `cached_prompt_tokens`, `cached_tokens_device`.
 4. **L3 path:** `curl -s :8081/health | jq .llama_cache` — prefix policy and slot stats.
@@ -478,6 +494,9 @@ VIDEO_AGENT_INFER_VIT_RADIX=1 ...  # cross-session ViT content pool
 | Padded prompt splice + runner inject | `server/modality/build_padded_prompt.go`, `server/modality/padded_layout_consume.go`, `runner/llamarunner/padded_inputs.go`, `runner/llamarunner/padded_families.go`, `runner/ollamarunner/padded_inputs.go`, `runner/ollamarunner/padded_{lfm2,glmocr,mistral3,deepseekocr}.go`, `llm/padded_prompt_llama_server.go` |
 | Padded inject audit (tool spans, fallback) | `server/ggml_padded_prompt.go`, `model/renderers/qwen3vl.go`, `server/routes.go` |
 | ViT embed cache | `runner/llamarunner/image.go`, `runner/ollamarunner/vision_embed_cache.go`, `envconfig/config.go` (`ImageEmbedCacheSize` / `Max` / `Bytes`), `server/modality/vit_embed_cache.go` |
+| Media error taxonomy (#31417) | `server/modality/media_errors.go`, `server/routes.go` (`MediaHTTPStatus`) |
+| Parallel MM IO (#31438) | `server/modality/video_frames.go` (`sampleVideosParallel`), `envconfig.MMIOWorkers` |
+| `input_audio` container demux (#31832) | `server/modality/audio_demux.go` (`ExpandAudioClipsInChatRequest`) |
 | Session ViT embed overlay | `runner/llamarunner/image.go` (`MultimodalTokenize`), `runner/ollamarunner/vision_embed_cache.go`, `llm/server.go` (`PromptCacheKey`), `server/modality/session_video_cache.go` (`ExtractPromptCacheKey`), `server/modality/prefix_mm_cache.go` |
 | Precomputed ingest | `server/modality/precomputed_embedding.go`, `api/preprocessed_parse.go`, `runner/ollamarunner/precomputed_embedding.go`, `runner/llamarunner/precomputed_embedding.go`, `model/models/*/precomputed.go` |
 | Processor output ingest | `server/modality/processor_output.go`, `api/types.go` (`ProcessorOutput`), `runner/ollamarunner/precomputed_embedding.go` (`appendPaddedProcessorOutputImage`), `model/models/*/processor_output.go` |

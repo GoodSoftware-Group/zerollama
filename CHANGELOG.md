@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### SGLang multimodal ports (#31417 / #31438 / #31832) — Jul 2026
+
+**Why:** Weekly SGLang scan (`4a76699dfc..4e5a05148a`) flagged portable agent-facing MM patterns; CUDA-IPC / breakable CG / HiCache infra skipped.
+
+**Shipped:**
+- `ClientMediaError` / `ServerMediaError` — corrupt/unfetchable media → **400**; missing ffmpeg / host IO → **500** (`MediaHTTPStatus` on chat expand)
+- `OLLAMA_MM_IO_WORKERS` (default 4) — parallel multi-clip ffmpeg expand with ordered spans
+- `ExpandAudioClipsInChatRequest` — demux WebM/MP4/AVI `input_audio` containers to WAV via ffmpeg
+- OpenAI / options `session_id` → `prompt_cache_key` alias (SGLang #29436)
+
+Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md).
+
 ### vLLM L3 pattern ports (#48123 / #48596 / #48535 / #48911) — Jul 2026
 
 **Why:** Weekly vLLM scan flagged high-ROI KV/cache patterns that map cleanly onto LMCache + prefix block pool without OffloadingConnector.

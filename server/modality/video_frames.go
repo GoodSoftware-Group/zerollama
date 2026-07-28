@@ -3,7 +3,6 @@ package modality
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -11,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
@@ -22,9 +23,15 @@ import (
 //
 // Why VideoSpans: the runner still sees a flat image list; spans record which images came from
 // which clip so renderers can group placeholders when a model cares (see docs/video-understanding.md).
+//
+// Multi-clip turns sample in parallel up to OLLAMA_MM_IO_WORKERS (SGLang #31438); span/image order
+// is preserved.
 func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, req *api.ChatRequest) error {
 	if req == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	sessionKey := ExtractPromptCacheKey(req.Options)
 	lastUser := lastUserMessageIndex(req.Messages)
@@ -38,20 +45,23 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 		}
 		maxV := policy.MaxVideosPerMessage
 		if len(req.Messages[i].Videos) > maxV {
-			return fmt.Errorf("too many videos in one message (max %d)", maxV)
+			return ClientMediaf("too many videos in one message (max %d)", maxV)
 		}
-		var spans []api.VideoSpan
-		singleClip := len(req.Messages[i].Videos) == 1
+		videos := req.Messages[i].Videos
+		singleClip := len(videos) == 1
 		paddedForClip := req.Messages[i].PaddedInputIDs
 		if !singleClip {
 			paddedForClip = nil // layout cache is per single-clip agent messages only
 		}
+
+		samples, err := sampleVideosParallel(ctx, policy, sessionKey, videos, paddedForClip)
+		if err != nil {
+			return err
+		}
+
+		var spans []api.VideoSpan
 		var cachedPadded []int
-		for _, vid := range req.Messages[i].Videos {
-			sample, err := sampleVideoToPNGs(ctx, policy, sessionKey, vid, paddedForClip)
-			if err != nil {
-				return err
-			}
+		for _, sample := range samples {
 			if len(sample.paddedInputIDs) > 0 {
 				cachedPadded = sample.paddedInputIDs
 			}
@@ -70,10 +80,44 @@ func ExpandVideosInChatRequest(ctx context.Context, policy VideoSamplingPolicy, 
 			)
 		}
 		if len(req.Messages[i].Images) > policy.MaxImagesAfterExpand {
-			return fmt.Errorf("too many images after video expansion (max %d)", policy.MaxImagesAfterExpand)
+			return ClientMediaf("too many images after video expansion (max %d)", policy.MaxImagesAfterExpand)
 		}
 	}
 	return nil
+}
+
+func sampleVideosParallel(ctx context.Context, policy VideoSamplingPolicy, sessionKey string, videos []api.VideoData, paddedForClip []int) ([]videoExpandEntry, error) {
+	n := len(videos)
+	if n == 0 {
+		return nil, nil
+	}
+	out := make([]videoExpandEntry, n)
+	if n == 1 {
+		sample, err := sampleVideoToPNGs(ctx, policy, sessionKey, videos[0], paddedForClip)
+		if err != nil {
+			return nil, err
+		}
+		out[0] = sample
+		return out, nil
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(envconfig.MMIOWorkers())
+	for i := range videos {
+		i, vid := i, videos[i]
+		g.Go(func() error {
+			sample, err := sampleVideoToPNGs(gctx, policy, sessionKey, vid, paddedForClip)
+			if err != nil {
+				return err
+			}
+			out[i] = sample
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func validatePreexpandedVideoMessage(msg *api.Message) error {
@@ -85,7 +129,7 @@ func validatePreexpandedVideoMessage(msg *api.Message) error {
 	frames := 0
 	for i := range msg.VideoSpans {
 		if err := validateVideoSpanGridTHW(msg.VideoSpans[i]); err != nil {
-			return err
+			return WrapClientMedia(err, "invalid video_spans")
 		}
 		if len(msg.VideoSpans[i].GridTHW) == 3 {
 			// Client sent grid_thw with pre-expanded frames — safe to forward to mtmd.
@@ -94,10 +138,10 @@ func validatePreexpandedVideoMessage(msg *api.Message) error {
 		frames += msg.VideoSpans[i].FrameCount
 	}
 	if err := validatePaddedInputIDs(msg.PaddedInputIDs); err != nil {
-		return err
+		return WrapClientMedia(err, "invalid padded_input_ids")
 	}
 	if frames > len(msg.Images) {
-		return fmt.Errorf("video_spans claim %d frames but message has %d images", frames, len(msg.Images))
+		return ClientMediaf("video_spans claim %d frames but message has %d images", frames, len(msg.Images))
 	}
 	return nil
 }
@@ -105,14 +149,14 @@ func validatePreexpandedVideoMessage(msg *api.Message) error {
 func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionKey string, data []byte, paddedInputIDs []int) (videoExpandEntry, error) {
 	var empty videoExpandEntry
 	if err := validatePaddedInputIDs(paddedInputIDs); err != nil {
-		return empty, err
+		return empty, WrapClientMedia(err, "invalid padded_input_ids")
 	}
 	// Enforce empty/size invariants before ExternalVideoDecodeHook so custom decoders match ffmpeg’s contract.
 	if len(data) == 0 {
-		return empty, errors.New("empty video data")
+		return empty, ClientMedia("empty video data")
 	}
 	if int64(len(data)) > policy.MaxBytes {
-		return empty, fmt.Errorf("video exceeds max size (%d bytes)", policy.MaxBytes)
+		return empty, ClientMediaf("video exceeds max size (%d bytes)", policy.MaxBytes)
 	}
 	// Lookup order: session (agent thread) → global (any client) → ffmpeg.
 	// Why session first: global LRU may have evicted this clip under fleet load.
@@ -141,38 +185,43 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionK
 	if ExternalVideoDecodeHook != nil {
 		frames, err := ExternalVideoDecodeHook(ctx, policy, data)
 		if err != nil {
-			return empty, err
+			return empty, WrapClientMedia(err, "video decode")
 		}
 		grid := computeVideoGridTHWFromFrames(frames, policy)
 		rememberVideoExpandCache(policy, data, frames, grid)
 		rememberSessionVideoExpand(sessionKey, policy, data, frames, grid, paddedInputIDs)
 		return videoExpandEntry{frames: frames, gridTHW: grid, paddedInputIDs: cloneIntSlice(paddedInputIDs)}, nil
 	}
+
+	ffmpeg := envconfig.FFmpegBin()
+	if _, err := exec.LookPath(ffmpeg); err != nil {
+		return empty, WrapServerMedia(err, "ffmpeg not found for video sampling (is ffmpeg installed and on PATH?)")
+	}
+
 	tmp, err := os.CreateTemp("", "ollama-vid-*."+sniffVideoExt(data))
 	if err != nil {
-		return empty, err
+		return empty, WrapServerMedia(err, "temp video file")
 	}
 	path := tmp.Name()
 	defer os.Remove(path)
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return empty, err
+		return empty, WrapServerMedia(err, "write temp video")
 	}
 	if err := tmp.Close(); err != nil {
-		return empty, err
+		return empty, WrapServerMedia(err, "close temp video")
 	}
 
 	outDir, err := os.MkdirTemp("", "ollama-vframes-*")
 	if err != nil {
-		return empty, err
+		return empty, WrapServerMedia(err, "temp frame dir")
 	}
 	defer os.RemoveAll(outDir)
 
 	ctx, cancel := context.WithTimeout(ctx, policy.FFmpegTimeout)
 	defer cancel()
 
-	ffmpeg := envconfig.FFmpegBin()
 	vf := BuildFFmpegVideoFilter(policy)
 	maxFrames := policy.MaxFrames
 	outPattern := filepath.Join(outDir, "frame_%04d.png")
@@ -192,15 +241,18 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionK
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			return empty, fmt.Errorf("ffmpeg: %w: %s", err, msg)
+		if isFFmpegMissingError(err) {
+			return empty, WrapServerMedia(err, "ffmpeg failed (is ffmpeg installed and on PATH?)")
 		}
-		return empty, fmt.Errorf("ffmpeg failed: %w (is ffmpeg installed and on PATH?)", err)
+		if msg != "" {
+			return empty, WrapClientMedia(err, "ffmpeg: "+msg)
+		}
+		return empty, WrapClientMedia(err, "ffmpeg failed to decode video")
 	}
 
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
-		return empty, err
+		return empty, WrapServerMedia(err, "read frame dir")
 	}
 	var names []string
 	for _, e := range entries {
@@ -210,7 +262,7 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionK
 		names = append(names, e.Name())
 	}
 	if len(names) == 0 {
-		return empty, errors.New("ffmpeg produced no frames (unsupported or empty video?)")
+		return empty, ClientMedia("ffmpeg produced no frames (unsupported or empty video?)")
 	}
 	sort.Strings(names)
 
@@ -218,7 +270,7 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionK
 	for _, name := range names {
 		b, err := os.ReadFile(filepath.Join(outDir, name))
 		if err != nil {
-			return empty, err
+			return empty, WrapServerMedia(err, "read sampled frame")
 		}
 		out = append(out, b)
 	}
@@ -236,6 +288,18 @@ func sampleVideoToPNGs(ctx context.Context, policy VideoSamplingPolicy, sessionK
 	rememberVideoExpandCache(policy, data, out, grid)
 	rememberSessionVideoExpand(sessionKey, policy, data, out, grid, paddedInputIDs)
 	return videoExpandEntry{frames: out, gridTHW: grid, paddedInputIDs: cloneIntSlice(paddedInputIDs)}, nil
+}
+
+func isFFmpegMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "executable file not found") ||
+		strings.Contains(s, "no such file or directory")
 }
 
 func cloneIntSlice(in []int) []int {

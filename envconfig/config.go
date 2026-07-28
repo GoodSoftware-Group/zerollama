@@ -522,6 +522,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":              {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
 		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":         {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
 		"OLLAMA_VIDEO_FETCH_TIMEOUT":               {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
+		"OLLAMA_MM_IO_WORKERS":                     {"OLLAMA_MM_IO_WORKERS", MMIOWorkers(), "Parallel ffmpeg workers for multi-clip video expand (SGLang mm_io_worker_num; default 4)"},
 		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":         {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
 		"OLLAMA_IMAGE_EMBED_CACHE_SIZE":            {"OLLAMA_IMAGE_EMBED_CACHE_SIZE", ImageEmbedCacheSize(), "Per-runner vision embed (ViT) LRU cache slots (default 4; set 32–64 for video agents)"},
 		"OLLAMA_IMAGE_EMBED_CACHE_MAX":             {"OLLAMA_IMAGE_EMBED_CACHE_MAX", ImageEmbedCacheMax(), "Auto-grow ViT embed LRU up to this cap when a turn has more frames (default 64; radix pool may grow further under byte budget)"},
@@ -1269,6 +1270,16 @@ func VideoAllowInsecureHTTP() bool {
 // VideoFetchTimeout bounds the entire remote GET for video_url (connect + response headers + body read, default 10m).
 func VideoFetchTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_VIDEO_FETCH_TIMEOUT", 10*time.Minute)
+}
+
+// MMIOWorkers caps concurrent ffmpeg sampling when a message has multiple videos
+// (SGLang mm_io_worker_num / #31438). Default 4; minimum 1.
+func MMIOWorkers() int {
+	n := int(Uint64("OLLAMA_MM_IO_WORKERS", 4)())
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // LimitMMDataPerRequest parses OLLAMA_LIMIT_MM_DATA_PER_REQUEST JSON, e.g.

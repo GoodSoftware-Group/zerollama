@@ -146,6 +146,10 @@ type ChatCompletionRequest struct {
 	// options.prompt_cache_key). Why on OpenAI surface: repeat video_url agent loops need per-thread
 	// ffmpeg cache without forcing clients to use the native /api/chat JSON shape.
 	PromptCacheKey *string `json:"prompt_cache_key,omitempty"`
+	// SessionID is SGLang's first-class session identity (#29436). When prompt_cache_key is
+	// unset, it aliases into options.prompt_cache_key so OpenAI/SGLang clients share L3 +
+	// session video/ViT caches without a second field name.
+	SessionID *string `json:"session_id,omitempty"`
 	// EnablePrefixMMCache mirrors SGLang server flag. WHY top-level field: OpenAI clients
 	// send this beside prompt_cache_key without nesting in options. Session ViT overlay
 	// still requires prompt_cache_key — flag alone logs a hint on /api/chat (see prefix_mm_cache.go).
@@ -797,8 +801,11 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		}
 	}
 	// Top-level prompt_cache_key wins over options map — explicit agent thread id for caches.
+	// SGLang session_id (#29436) fills the same slot when prompt_cache_key is omitted.
 	if r.PromptCacheKey != nil && strings.TrimSpace(*r.PromptCacheKey) != "" {
 		options["prompt_cache_key"] = strings.TrimSpace(*r.PromptCacheKey)
+	} else if r.SessionID != nil && strings.TrimSpace(*r.SessionID) != "" {
+		options["prompt_cache_key"] = strings.TrimSpace(*r.SessionID)
 	}
 	if r.EnablePrefixMMCache != nil && *r.EnablePrefixMMCache {
 		options["enable_prefix_mm_cache"] = true
