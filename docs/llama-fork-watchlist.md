@@ -160,8 +160,9 @@ Measured with `llama-bench` on RTX 5080 16 GB, FA on. Artifacts: `/var/lib/vz/
 | Llama-3.2-3B Q4_K_M | Stock **f16** wins tg; rotor **turbo3** ~0.82× tg (best compressed); **planar3/iso3** prefill collapses (~0.11–0.16× pp2048) |
 | Llama-3.1-8B Q4_K_M | Stock **q8_0** beats f16 (**157 vs 113** tg); matches L1 `rtx-5080.json` |
 | 8B depth tg @ 8k/16k | **q8_0** still best; adaptive **turbo2** near f16 at 16k; **turbo3** falls off hard; planar/iso not competitive |
+| 8B depth tg @ 32k/65k | **q8_0 ≈ f16** (**85/59** vs **88/58** tg); turbo2/3 collapse (~51/32, ~25/14) — VRAM labs only |
 
-**Verdict:** Do **not** cherry-pick planar/iso. Keep TBQ as VRAM opt-in only. Optional external lab: [craftogrammer/llama.cpp-adaptive-turboquant](https://github.com/craftogrammer/llama.cpp-adaptive-turboquant) `turbo2` for long-ctx (built here on CUDA 12.8 + `GGML_CUDA_NO_MXFP4`).
+**Verdict:** Do **not** cherry-pick planar/iso. Keep TBQ as VRAM opt-in only. Production stock stays **q8_0** (see `serve_gpu_example.sh` / `rtx-5080.json`). Optional external lab: [craftogrammer/llama.cpp-adaptive-turboquant](https://github.com/craftogrammer/llama.cpp-adaptive-turboquant) `turbo2` (CUDA **12.9** + `GGML_CUDA_NO_MXFP4` rebuild available under `bench-5080-alpha`).
 
 **Harness fix:** patch **0093** — `llama-bench` `-ctk/-ctv` now accepts Eliza TBQ/QJL/Polar names (was rejecting while `llama-server`/`common` already worked).
 
@@ -283,7 +284,25 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 | Kobold / Unsloth network forks | Product packaging |
 | BigMoeOnEdge | Interesting **API-only** MoE streaming; watch for Anemll alternatives later |
 | llama-swap | Control-plane proxy — fleet/LA ideas, not kernels |
-| PrismML Q2_0 g128 | Upstream Q2_0 g64 already moving |
+| PrismML Q2_0 **g128** / `PQ2_0` | Fork-only / future type id — do not merge onto pin |
+| PrismML ternary **g64** | On pin (`QK2_0=64` + CUDA **0082**). Use `*-Q2_g64.gguf`. Doc: [prism-ternary.md](./prism-ternary.md) |
+| Dual llama-server (TTS + vendor) | Retire via **0099–0101** — [llama-server-unify.md](./llama-server-unify.md) |
+
+---
+
+## Lab Q — Dual Chunk Attention / Qwen long-ctx (Jul 2026)
+
+**Claim:** Qwen 1M / official long-ctx needs DCA (3-way FA + DualChunk RoPE), not YaRN alone. Upstream ggml-org has no DCA; vLLM V0 backend removed; SGLang still has `dual_chunk_flash_attn` (**oracle only**).
+
+| Piece | Status |
+|-------|--------|
+| Native DualChunk RoPE + 3× FA + LSE merge (Qwen2/2.5) | **In vendor** — hparams `dca.*`, `llama-dca.h`, `qwen2.cpp` `build_attn_dca`, FA `ggml_flash_attn_ext_set_lse`; patches **0095+** |
+| GGUF `*.attention.dca.*` on convert | **0094** keys + convert stamp |
+| Oracle: SGLang dense vs native logits | `scripts/dca_oracle_logits.py` (n=0 ≈ stock FA; n≥1 ≈ SGLang) |
+| Serve path | **Stock llama-server / zerollama-runtime** with stamped GGUF |
+| SGLang sidecar `inference=sglang` | **Lab / legacy only** — not product long-ctx |
+
+**Product model:** native ggml DCA. Fail ship on oracle drift. Sparse deferred.
 
 ---
 
@@ -294,6 +313,7 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 3. **Mac Metal Lab A (done Jul 2026):** Llama-3.2-3B planar/iso/TBQ/QJL A/B — **no-merge** planar/iso; stock **f16**.
 4. Optional: adaptive-turboquant **turbo2** long-ctx lab (external binary; CUDA **12.9** / NVFP4 is 5080-only).
 5. **Mac Lab D:** D1 SET_ROWS **0097** + D1b fused **0098** done (`speed` runs, tok/s FAIL); asymmetric TBQ-V already measured — no tg win.
-6. Defer **B1 adaptive DM** until a clear DFlash acceptance win.
-7. Revisit turbo-tan only with TQ3 models in the fleet.
-8. **Later (optional):** Eliza PRs per [roadmap](#eliza-pr-roadmap-draft--do-not-open-yet) — **start with PR 0 upstream sync**, then feature PRs only if that lands.
+6. **Qwen 1M / DCA:** native GGUF + patched llama-server; gate with `scripts/dca_oracle_logits.py` (SGLang = oracle recipe only).
+7. Defer **B1 adaptive DM** until a clear DFlash acceptance win.
+8. Revisit turbo-tan only with TQ3 models in the fleet.
+9. **Later (optional):** Eliza PRs per [roadmap](#eliza-pr-roadmap-draft--do-not-open-yet) — **start with PR 0 upstream sync**, then feature PRs only if that lands.

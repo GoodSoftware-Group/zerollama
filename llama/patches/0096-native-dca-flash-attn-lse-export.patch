@@ -1,0 +1,359 @@
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index eadcaaf6f..46b30a7d5 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -2456,6 +2456,16 @@ extern "C" {
+             struct ggml_tensor * a,
+             struct ggml_tensor * sinks);
+ 
++    // Attach F32 LSE output tensor to FLASH_ATTN_EXT.
++    // Shape must be [1, n_tokens, n_head, n_stream] (matches CUDA meta→LSE write order).
++    // FA dst is [head_dim, n_head, n_tokens, n_stream]; permute LSE to [1,n_head,n_tokens,n_stream] for broadcast.
++    GGML_API void ggml_flash_attn_ext_set_lse(
++            struct ggml_tensor * a,
++            struct ggml_tensor * lse);
++
++    GGML_API struct ggml_tensor * ggml_flash_attn_ext_get_lse(
++            const struct ggml_tensor * a);
++
+     // TODO: needs to be adapted to ggml_flash_attn_ext
+     GGML_API struct ggml_tensor * ggml_flash_attn_back(
+            struct ggml_context * ctx,
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 0b20ff640..540eaec31 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -9096,6 +9096,13 @@ static void ggml_flash_attn_ext_reduce_partials(
+             const float S_inv = 1.0f / S_final;
+             ggml_vec_scale_f32(DV, VKQ_final, S_inv);
+         }
++
++        const ggml_tensor * lse = dst->src[5];
++        if (lse) {
++            float * lse_row = (float *) ((char *) lse->data + q_head*lse->nb[1]);
++            *lse_row = M_final + logf(fmaxf(S_final, 1e-20f));
++        }
++
+         // iq1=0, iq3=0 for decode
+         memcpy((char *) dst->data + (0*ne2*ne1 + q_head + 0*ne1)*nb1, VKQ_final, nb1);
+     }
+diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
+index b8e940ad8..f4125d0b4 100644
+--- a/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -1041,7 +1041,8 @@ __launch_bounds__(D, 1)
+ static __global__ void flash_attn_combine_results(
+         const float  * VKQ_parts_ptr,
+         const float2 * VKQ_meta_ptr,
+-        float * dst_ptr,
++        float        * dst_ptr,
++        float        * dst_lse_ptr,
+         const int parallel_blocks) {
+     ggml_cuda_pdl_lc();
+     const float  * GGML_CUDA_RESTRICT VKQ_parts = VKQ_parts_ptr;
+@@ -1092,6 +1093,27 @@ static __global__ void flash_attn_combine_results(
+     }
+ 
+     dst[tid] = VKQ_numerator / VKQ_denominator;
++
++    if (tid == 0 && dst_lse_ptr != nullptr) {
++        const int lse_idx = sequence*ne02*ne01 + head*ne01 + col;
++        dst_lse_ptr[lse_idx] = kqmax + logf(fmaxf(VKQ_denominator, 1e-20f));
++    }
++}
++
++static __global__ void flash_attn_meta_to_lse(
++        const float2 * meta_ptr,
++        float        * lse_ptr,
++        const int      ne01,
++        const int      ne02) {
++    const int col      = blockIdx.x;
++    const int head     = blockIdx.y;
++    const int sequence = blockIdx.z;
++
++    const int j_dst_unrolled = (sequence*ne01 + col)*ne02 + head;
++    const int lse_idx        = sequence*ne02*ne01 + head*ne01 + col;
++
++    const float2 m = meta_ptr[j_dst_unrolled];
++    lse_ptr[lse_idx] = m.x + logf(fmaxf(m.y, 1e-20f));
+ }
+ 
+ template <int DV, int ncols1, int ncols2>
+@@ -1112,6 +1134,9 @@ void launch_fattn(
+ 
+     ggml_tensor * KQV = dst;
+ 
++    const bool export_lse = KQV->src[5] != nullptr;
++    float    * lse_out    = export_lse ? (float *) KQV->src[5]->data : nullptr;
++
+     GGML_ASSERT(Q->type == GGML_TYPE_F32);
+     GGML_ASSERT(KQV->type == GGML_TYPE_F32);
+ 
+@@ -1248,7 +1273,11 @@ void launch_fattn(
+         const int tiles_nwaves = (ntiles_dst + max_blocks - 1) / max_blocks;
+         const int tiles_efficiency_percent = 100 * ntiles_dst / (max_blocks*tiles_nwaves);
+ 
+-        const bool use_stream_k = cc >= GGML_CUDA_CC_ADA_LOVELACE || amd_wmma_available(cc) || tiles_efficiency_percent < 75;
++        bool use_stream_k = cc >= GGML_CUDA_CC_ADA_LOVELACE || amd_wmma_available(cc) || tiles_efficiency_percent < 75;
++
++        if (export_lse) {
++            use_stream_k = false;
++        }
+ 
+         blocks_num.x = ntiles_dst;
+         blocks_num.y = 1;
+@@ -1270,7 +1299,9 @@ void launch_fattn(
+             blocks_num.x = nblocks_stream_k;
+         }
+ 
+-        if (ntiles_dst % blocks_num.x != 0) { // Fixup is only needed if the SMs work on fractional tiles.
++        if (export_lse) {
++            dst_tmp_meta.alloc(ggml_nrows(KQV));
++        } else if (ntiles_dst % blocks_num.x != 0) { // Fixup is only needed if the SMs work on fractional tiles.
+             dst_tmp_meta.alloc((size_t(blocks_num.x) * ncols * (2 + DV/2)));
+         }
+     } else {
+@@ -1306,9 +1337,20 @@ void launch_fattn(
+         if (parallel_blocks > 1) {
+             dst_tmp.alloc(parallel_blocks*ggml_nelements(KQV));
+             dst_tmp_meta.alloc(parallel_blocks*ggml_nrows(KQV));
++        } else if (export_lse) {
++            dst_tmp_meta.alloc(ggml_nrows(KQV));
+         }
+     }
+ 
++    float2 * dst_meta_ptr = nullptr;
++    if (export_lse) {
++        dst_meta_ptr = dst_tmp_meta.ptr;
++    } else if (!stream_k && parallel_blocks > 1) {
++        dst_meta_ptr = dst_tmp_meta.ptr;
++    } else if (stream_k && dst_tmp_meta.ptr != nullptr) {
++        dst_meta_ptr = dst_tmp_meta.ptr;
++    }
++
+     float scale         = 1.0f;
+     float max_bias      = 0.0f;
+     float logit_softcap = 0.0f;
+@@ -1340,7 +1382,7 @@ void launch_fattn(
+         mask ? ((const char *) mask->data) : nullptr,
+         sinks ? ((const char *) sinks->data) : nullptr,
+         KV_max.ptr,
+-        !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, dst_tmp_meta.ptr,
++        !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, dst_meta_ptr,
+         scale, max_bias, m0, m1, n_head_log2, logit_softcap,
+         Q->ne[0], ne01,     Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],
+         K->ne[0], K->ne[1], K->ne[2], K->ne[3], nb11, nb12, nb13,
+@@ -1386,6 +1428,14 @@ void launch_fattn(
+                  Q->ne[1], Q->ne[2], gqa_ratio, total_work,
+                  fd_k_j_z_ne12, fd_k_j_z, fd_k_j, fd_k);
+         }
++
++        if (export_lse && dst_tmp_meta.ptr != nullptr) {
++            const dim3 blocks_num_lse(Q->ne[1], Q->ne[2], Q->ne[3]);
++            const dim3 block_dim_lse(1, 1, 1);
++            const ggml_cuda_kernel_launch_params launch_params_lse = ggml_cuda_kernel_launch_params(blocks_num_lse, block_dim_lse, 0, main_stream);
++            ggml_cuda_kernel_launch(flash_attn_meta_to_lse, launch_params_lse,
++                dst_tmp_meta.ptr, lse_out, Q->ne[1], Q->ne[2]);
++        }
+     } else if (parallel_blocks > 1) {
+         const dim3 block_dim_combine(DV, 1, 1);
+         const dim3 blocks_num_combine(Q->ne[1], Q->ne[2], Q->ne[3]);
+@@ -1393,7 +1443,13 @@ void launch_fattn(
+ 
+         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_combine, block_dim_combine, nbytes_shared_combine, main_stream);
+         ggml_cuda_kernel_launch(flash_attn_combine_results<DV>, launch_params,
+-            dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data, parallel_blocks);
++            dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data, lse_out, parallel_blocks);
++    } else if (export_lse && dst_tmp_meta.ptr != nullptr) {
++        const dim3 blocks_num_lse(Q->ne[1], Q->ne[2], Q->ne[3]);
++        const dim3 block_dim_lse(1, 1, 1);
++        const ggml_cuda_kernel_launch_params launch_params_lse = ggml_cuda_kernel_launch_params(blocks_num_lse, block_dim_lse, 0, main_stream);
++        ggml_cuda_kernel_launch(flash_attn_meta_to_lse, launch_params_lse,
++            dst_tmp_meta.ptr, lse_out, Q->ne[1], Q->ne[2]);
+     }
+     CUDA_CHECK(cudaGetLastError());
+ }
+diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+index 617968f6b..0be6c22cb 100644
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -1164,6 +1164,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+         const int stride_K,
+         const int stride_V,
+         const int stride_mask,
++        const int sequence,
++        const int zt_Q,
+         const int jt,
+         const int zt_gqa,
+         const int kb0_start,
+@@ -1721,11 +1723,48 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+             __syncthreads();
+         }
+     }
++
++    if (dstk_fixup != nullptr && !needs_fixup && !is_fixup && np == 1) {
++        int jc;
++        int col;
++        bool thread_should_write;
++
++        if constexpr (cols_per_warp == 8) {
++            const int jc_cwmo = (threadIdx.x % (2*T_C_VKQ::J)) / T_C_VKQ::J;
++            jc = threadIdx.y*(2*T_C_VKQ::J) + jc_cwmo;
++            col = jc_cwmo;
++            thread_should_write = threadIdx.x < 2*T_C_VKQ::J;
++        } else {
++#if defined(TURING_MMA_AVAILABLE)
++            jc = threadIdx.y*cols_per_warp + T_C_VKQ::get_i(threadIdx.x % 4);
++            col = threadIdx.x % cols_per_thread;
++            thread_should_write = threadIdx.x % 4 < cols_per_thread;
++#elif defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
++            jc = threadIdx.y*cols_per_warp + T_C_VKQ::get_i(0);
++            col = 0;
++            thread_should_write = threadIdx.x / 16 < cols_per_thread;
++#else // Volta
++            jc = threadIdx.y*cols_per_warp + T_C_KQ::get_i(threadIdx.x & 2);
++            col = (threadIdx.x & 2) / 2;
++            thread_should_write = T_C_KQ::J == 8 || T_C_KQ::get_j(threadIdx.x & 2) < 8;
++#endif
++        }
++
++        if (thread_should_write && jc < ncols) {
++            const int j_dst = jc / ncols2;
++            const int c_dst = jc % ncols2;
++            if (!((ncols1 > 1 && jt*ncols1 + j_dst >= int(ne01.z)) ||
++                  (ncols2 > 1 && zt_gqa*ncols2 + c_dst >= gqa_ratio))) {
++                const int row = (sequence*int(ne01.z) + jt*ncols1 + j_dst)*ne02 + zt_Q + c_dst;
++                dstk_fixup[row] = make_float2(KQ_max[col], KQ_rowsum[col]);
++            }
++        }
++    }
+ #else
+     GGML_UNUSED_VARS(Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dstk_fixup,
+         scale, slope, logit_softcap, ne01, ne02, gqa_ratio,
+         stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
+-        jt, kb0_start, kb0_stop);
++        sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
+     NO_DEVICE_CODE;
+ #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
+ }
+@@ -1861,12 +1900,14 @@ static __global__ void flash_attn_ext_f16(
+             constexpr bool needs_fixup = false; // CUDA block is working on an entire tile.
+             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
+                 (Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
+-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
++                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
++                 sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
+         } else {
+             constexpr bool needs_fixup = true; // CUDA block is missing the beginning of a tile.
+             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
+                 (Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
+-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
++                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
++                 sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
+         }
+ 
+         kbc += iter_k;
+@@ -1907,7 +1948,8 @@ static __global__ void flash_attn_ext_f16(
+     constexpr bool needs_fixup = false;
+     flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
+         (Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
+-         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
++         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
++         sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
+ #else
+     GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale,
+         max_bias, m0, m1, n_head_log2, logit_softcap,
+diff --git a/ggml/src/ggml-cuda/fattn-tile.cuh b/ggml/src/ggml-cuda/fattn-tile.cuh
+index 3e07a9f7e..575e3381a 100644
+--- a/ggml/src/ggml-cuda/fattn-tile.cuh
++++ b/ggml/src/ggml-cuda/fattn-tile.cuh
+@@ -1133,7 +1133,7 @@ static __global__ void flash_attn_tile(
+         }
+ #endif // FAST_FP16_AVAILABLE
+ 
+-        if (gridDim.y != 1 && threadIdx.x == 0) {
++        if (dst_meta != nullptr && threadIdx.x == 0) {
+             dst_meta[j_dst_unrolled] = make_float2(KQ_max[jc0], KQ_sum[jc0]);
+         }
+     }
+diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
+index 69dd93686..fdb8d3507 100644
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -510,7 +510,7 @@ static __global__ void flash_attn_ext_vec(
+ 
+     }
+ 
+-    if (gridDim.y != 1 && tid < ncols && (ncols == 1 || ic0 + tid < int(ne01.z))) {
++    if (dst_meta != nullptr && tid < ncols && (ncols == 1 || ic0 + tid < int(ne01.z))) {
+         dst_meta[((sequence*int(ne01.z) + ic0 + tid)*ne02 + head)*gridDim.y + blockIdx.y] = make_float2(KQ_max[tid], KQ_sum[tid]);
+     }
+ #else
+diff --git a/ggml/src/ggml-cuda/fattn-wmma-f16.cu b/ggml/src/ggml-cuda/fattn-wmma-f16.cu
+index 6850716fc..dd5b07e08 100644
+--- a/ggml/src/ggml-cuda/fattn-wmma-f16.cu
++++ b/ggml/src/ggml-cuda/fattn-wmma-f16.cu
+@@ -488,7 +488,7 @@ static __global__ void flash_attn_ext_f16(
+             dst[j_dst_unrolled*D + i] = dst_val;
+         }
+ 
+-        if (gridDim.y == 1 || threadIdx.x != 0) {
++        if (dst_meta == nullptr || threadIdx.x != 0) {
+             continue;
+         }
+ 
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index d14fe8859..ba05d1b31 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2573,6 +2573,14 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+             }
+         }
+ 
++        // Dual Chunk Attention: FA with LSE export — disable CUDA graphs (masks/topology vary with chunk index)
++        if (node->op == GGML_OP_FLASH_ATTN_EXT && node->src[5] != nullptr) {
++            use_cuda_graph = false;
++#ifndef NDEBUG
++            GGML_LOG_DEBUG("%s: disabling CUDA graphs due to DCA flash-attn LSE export\n", __func__);
++#endif
++        }
++
+         if (!use_cuda_graph) {
+             break;
+         }
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 4e2df3ed5..9fad72052 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -5577,6 +5577,31 @@ void ggml_flash_attn_ext_add_sinks(
+     a->src[4] = sinks;
+ }
+ 
++void ggml_flash_attn_ext_set_lse(
++        struct ggml_tensor * a,
++        struct ggml_tensor * lse) {
++    if (!lse) {
++        a->src[5] = NULL;
++        return;
++    }
++
++    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
++    GGML_ASSERT(lse->type == GGML_TYPE_F32);
++    GGML_ASSERT(lse->ne[0] == 1);
++    GGML_ASSERT(lse->ne[1] == a->ne[2]);
++    GGML_ASSERT(lse->ne[2] == a->ne[1]);
++    GGML_ASSERT(lse->ne[3] == a->ne[3]);
++
++    a->src[5] = lse;
++}
++
++struct ggml_tensor * ggml_flash_attn_ext_get_lse(
++        const struct ggml_tensor * a) {
++    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
++
++    return a->src[5];
++}
++
+ // ggml_flash_attn_back
+ 
+ struct ggml_tensor * ggml_flash_attn_back(

@@ -1,0 +1,7 @@
+{
+  "modality_backends": {
+    "inference": "sglang"
+  },
+  "capabilities": ["completion"],
+  "_comment": "Lab / legacy: Dual Chunk Attention via SGLang oracle. Set OLLAMA_SGLANG_URL (e.g. http://127.0.0.1:30000) and launch scripts/serve/sglang_dca_example.sh with a HF Qwen2.5-*-Instruct-1M (config.json must have dual_chunk_attention_config). Clients use POST /v1/chat/completions. Product path is native ggml DCA (patches 0094–0098) on stamped GGUF + stock llama-server / zerollama-runtime — see docs/dca-dual-chunk-attention.md."
+}

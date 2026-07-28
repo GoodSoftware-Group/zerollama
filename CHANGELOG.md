@@ -16,6 +16,26 @@ All notable changes to this project are documented in this file. The format is b
 
 **Shipped:** Patch `0097` — `quantize_q4_polar` + SET_ROWS templates in `ggml-metal.metal`, device allowlist, QJL host-name fix, embed append of QJL encode. Smoke: `f16/q4_polar` PASS (tg ~33 on 3B). Full speed profile completed by **0098**.
 
+### Native Dual Chunk Attention in llama.cpp (Qwen2/2.5) — Jul 2026
+
+**Why:** Qwen 1M / official long-ctx needs DCA; YaRN alone is not the algorithm. Product path is patched ggml CUDA, not a separate engine.
+
+**Shipped:** Vendor `86d86ed4` + patches **0095–0098** — load `*.attention.dca.*`, DualChunk RoPE + `s(L)`, FA LSE export, Qwen2 graph `build_attn_dca` (3× FA + masks + LSE merge; CUDA graphs off). Prefill uses the same three stage masks. Serve via stock `llama-server` / zerollama-runtime. Oracle: `scripts/dca_oracle_logits.py` (n=0 ≈ stock FA; n≥1 ≈ SGLang dense); helper `scripts/dca_unit_ref.py`. Doc [dca-dual-chunk-attention.md](docs/dca-dual-chunk-attention.md).
+
+**5080 validation:** n=0 PASS on stamped Qwen2.5-3B (`chunk_len=192`, max \|Δlogprob\| ≈ 0.05 vs stock FA). **0098** — prefer fattn-tile when exporting LSE (MMA left meta uninit when `np>1` → NaN); bump graph node budget when DCA on. Graph LSE path uses GPU-backed buffer + FA→consumer barrier. n≥1 vs SGLang dense still needs a local HF Instruct-1M tree.
+
+### Dual Chunk Attention SGLang sidecar (lab / legacy) — Jul 2026
+
+**Why:** Earlier interim path; retained for oracle / experiments. **Not** the Qwen long-ctx product path.
+
+**Shipped:** `/v1/chat/completions` proxies when `modality_backends.inference=sglang` + `OLLAMA_SGLANG_URL`. Launch helper `scripts/serve/sglang_dca_example.sh`; patch **0094** GGUF `*.attention.dca.*` key names.
+
+### 5080 serve pins stock q8_0 KV; CUDA 12.9 + 32k/65k depth — Jul 2026
+
+**Why:** L1 `rtx-5080.json` already had `q8_0`, but production shells could still inherit `ZEROLLAMA_LLAMA_FORK=1` (QJL/TBQ) and skip the stock path. Long-ctx A/B needed confirmation past 16k.
+
+**Shipped:** `serve_gpu_example.sh` defaults `ZEROLLAMA_GPU_PROFILE=1` + `ZEROLLAMA_LLAMA_FORK=0`; `single_gpu.yaml` / runbook note the Jul 2026 bench. Host: CUDA **12.9** nvcc + cublas installed. Depth on Llama-3.1-8B: q8_0 ≈ f16 at 32k/65k (**85/59** vs **88/58** tg) — keep stock q8_0.
+
 ### 5080 KV alpha A/B + llama-bench fork types (0093) — Jul 2026
 
 **Why:** Lab RotorQuant/planar/iso and vendor TBQ/QJL needed apples-to-apples `llama-bench -ctk`, but `llama-bench` hardcodes type names separately from `common/arg.cpp` and rejected Eliza L2 names.

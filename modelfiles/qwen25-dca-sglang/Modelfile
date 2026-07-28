@@ -1,0 +1,10 @@
+# Dual Chunk Attention (SGLang). This directory is a template — merge
+# config.json into a real model tag (or create with your usual FROM GGUF +
+# overlay modality_backends). Weights for DCA run in SGLang (HF), not GGUF.
+#
+#   ./scripts/serve/sglang_dca_example.sh /path/to/Qwen2.5-14B-Instruct-1M
+#   export OLLAMA_SGLANG_URL=http://127.0.0.1:30000
+#   # in model config.json:
+#   #   "modality_backends": { "inference": "sglang" }
+#
+# Clients: POST /v1/chat/completions — see docs/dca-dual-chunk-attention.md

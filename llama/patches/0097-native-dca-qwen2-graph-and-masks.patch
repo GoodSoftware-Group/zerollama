@@ -1,0 +1,603 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 0ba419434..3f54b00ec 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -4,6 +4,7 @@
+ #include "llama-model.h"
+ #include "llama-batch.h"
+ #include "llama-cparams.h"
++#include "llama-dca.h"
+ 
+ #include "llama-kv-cache.h"
+ #include "llama-kv-cache-iswa.h"
+@@ -498,6 +499,69 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
+     return res;
+ }
+ 
++void llm_graph_input_attn_kv_dca::set_input(const llama_ubatch * ubatch) {
++    mctx->set_input_k_idxs(self_k_idxs, ubatch);
++    mctx->set_input_v_idxs(self_v_idxs, ubatch);
++
++    if (self_kq_mask_intra && self_kq_mask_intra->buffer) {
++        mctx->set_input_kq_mask_dca(self_kq_mask_intra, ubatch, 0);
++    }
++    if (self_kq_mask_succ && self_kq_mask_succ->buffer) {
++        mctx->set_input_kq_mask_dca(self_kq_mask_succ, ubatch, 1);
++    }
++    if (self_kq_mask_inter && self_kq_mask_inter->buffer) {
++        mctx->set_input_kq_mask_dca(self_kq_mask_inter, ubatch, 2);
++    }
++
++    const uint32_t c_len = hparams.dca_chunk_len();
++    const uint32_t c_sz  = hparams.dca_chunk_size;
++    const int64_t n_tok  = ubatch->n_tokens;
++
++    if (pos_k && ubatch->pos) {
++        std::vector<llama_pos> pk(n_tok), pqi(n_tok), pqs(n_tok), pqo(n_tok);
++        std::vector<float> scale(n_tok), gs(n_tok), gi(n_tok);
++        for (int64_t i = 0; i < n_tok; ++i) {
++            const llama_pos p = ubatch->pos[i];
++            const uint32_t n  = llama_dca::chunk_index(p, c_len);
++            // Sequence length for s(L): after this token is written, S = p+1
++            const uint32_t L = uint32_t(p) + 1;
++            pk[i]  = llama_dca::pos_k(p, c_len);
++            pqi[i] = llama_dca::pos_q_intra(p, c_len);
++            pqs[i] = llama_dca::pos_q_succ(p, c_len, c_sz);
++            pqo[i] = llama_dca::pos_q_inter(c_sz);
++            scale[i] = llama_dca::length_scale(L, hparams.dca_orig_ctx);
++            gs[i] = n >= 1 ? 1.0f : 0.0f;
++            gi[i] = n >= 2 ? 1.0f : 0.0f;
++        }
++        ggml_backend_tensor_set(pos_k,       pk.data(),    0, n_tok * sizeof(llama_pos));
++        ggml_backend_tensor_set(pos_q_intra, pqi.data(),   0, n_tok * sizeof(llama_pos));
++        ggml_backend_tensor_set(pos_q_succ,  pqs.data(),   0, n_tok * sizeof(llama_pos));
++        ggml_backend_tensor_set(pos_q_inter, pqo.data(),   0, n_tok * sizeof(llama_pos));
++        if (length_scale && length_scale->buffer) {
++            ggml_backend_tensor_set(length_scale, scale.data(), 0, n_tok * sizeof(float));
++        }
++        if (gate_succ && gate_succ->buffer) {
++            ggml_backend_tensor_set(gate_succ, gs.data(), 0, n_tok * sizeof(float));
++        }
++        if (gate_inter && gate_inter->buffer) {
++            ggml_backend_tensor_set(gate_inter, gi.data(), 0, n_tok * sizeof(float));
++        }
++    }
++}
++
++bool llm_graph_input_attn_kv_dca::can_reuse(const llm_graph_params & params) {
++    const auto * mctx = static_cast<const llama_kv_cache_context *>(params.mctx);
++    this->mctx = mctx;
++
++    bool res = true;
++    res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;
++    res &= can_reuse_kq_mask(self_kq_mask_intra, mctx, params.ubatch, params.cparams);
++    res &= can_reuse_kq_mask(self_kq_mask_succ,  mctx, params.ubatch, params.cparams);
++    res &= can_reuse_kq_mask(self_kq_mask_inter, mctx, params.ubatch, params.cparams);
++    res &= pos_k && pos_k->ne[0] == params.ubatch.n_tokens;
++    return res;
++}
++
+ void llm_graph_input_attn_k::set_input(const llama_ubatch * ubatch) {
+     mctx->set_input_k_idxs(self_k_idxs, ubatch);
+ 
+@@ -2678,6 +2742,186 @@ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
+     return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
+ }
+ 
++llm_graph_input_attn_kv_dca * llm_graph_context::build_attn_inp_kv_dca() const {
++    const auto * mctx_cur = static_cast<const llama_kv_cache_context *>(mctx);
++    GGML_ASSERT(hparams.dca_enabled());
++
++    auto inp = std::make_unique<llm_graph_input_attn_kv_dca>(hparams, cparams, mctx_cur);
++
++    GGML_ASSERT(hparams.swa_type == LLAMA_SWA_TYPE_NONE);
++
++    inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);
++    inp->self_v_idxs = mctx_cur->build_input_v_idxs(ctx0, ubatch);
++
++    inp->self_kq_mask_intra = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);
++    inp->self_kq_mask_succ  = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);
++    inp->self_kq_mask_inter = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);
++    ggml_set_name(inp->self_kq_mask_intra, "attn_dca_mask_intra");
++    ggml_set_name(inp->self_kq_mask_succ,  "attn_dca_mask_succ");
++    ggml_set_name(inp->self_kq_mask_inter, "attn_dca_mask_inter");
++
++    inp->pos_k       = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    inp->pos_q_intra = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    inp->pos_q_succ  = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    inp->pos_q_inter = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    ggml_set_input(inp->pos_k);
++    ggml_set_input(inp->pos_q_intra);
++    ggml_set_input(inp->pos_q_succ);
++    ggml_set_input(inp->pos_q_inter);
++
++    // [1,1,n_tokens] for broadcast onto [head_dim, n_head, n_tokens]
++    inp->length_scale = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, 1, n_tokens);
++    inp->gate_succ    = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, 1, n_tokens);
++    inp->gate_inter   = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, 1, n_tokens);
++    ggml_set_input(inp->length_scale);
++    ggml_set_input(inp->gate_succ);
++    ggml_set_input(inp->gate_inter);
++
++    return (llm_graph_input_attn_kv_dca *) res->add_input(std::move(inp));
++}
++
++static ggml_tensor * dca_lse_merge(
++        ggml_context * ctx0,
++        ggml_tensor * o0, ggml_tensor * l0,
++        ggml_tensor * o1, ggml_tensor * l1,
++        ggml_tensor * o2, ggml_tensor * l2) {
++    // Softmax over the 3 stage LSEs (as 2D [3,N]), then weighted sum of O.
++    const int64_t H = l0->ne[1];
++    const int64_t T = l0->ne[2];
++    const int64_t S = l0->ne[3];
++    const int64_t N = H * T * S;
++
++    ggml_tensor * l_cat = ggml_concat(ctx0, l0, l1, 0);
++    l_cat = ggml_concat(ctx0, l_cat, l2, 0);
++    l_cat = ggml_reshape_2d(ctx0, ggml_cont(ctx0, l_cat), 3, N);
++    ggml_tensor * w = ggml_soft_max(ctx0, l_cat);
++    w = ggml_cont(ctx0, ggml_reshape_4d(ctx0, w, 3, H, T, S));
++
++    ggml_tensor * w0 = ggml_cont(ctx0, ggml_view_4d(ctx0, w, 1, H, T, S, w->nb[1], w->nb[2], w->nb[3], 0));
++    ggml_tensor * w1 = ggml_cont(ctx0, ggml_view_4d(ctx0, w, 1, H, T, S, w->nb[1], w->nb[2], w->nb[3], w->nb[0]));
++    ggml_tensor * w2 = ggml_cont(ctx0, ggml_view_4d(ctx0, w, 1, H, T, S, w->nb[1], w->nb[2], w->nb[3], 2 * w->nb[0]));
++
++    return ggml_add(ctx0,
++            ggml_add(ctx0, ggml_mul(ctx0, o0, w0), ggml_mul(ctx0, o1, w1)),
++            ggml_mul(ctx0, o2, w2));
++}
++
++ggml_tensor * llm_graph_context::build_attn_dca(
++        llm_graph_input_attn_kv_dca * inp,
++        ggml_tensor * wo,
++        ggml_tensor * wo_b,
++        ggml_tensor * wo_s,
++        ggml_tensor * q_intra,
++        ggml_tensor * q_succ,
++        ggml_tensor * q_inter,
++        ggml_tensor * k_cur,
++        ggml_tensor * v_cur,
++        ggml_tensor * kq_b,
++        ggml_tensor * sinks,
++            float     kq_scale,
++            int       il) const {
++    GGML_ASSERT(kq_b == nullptr && "DCA does not support KQ bias");
++    GGML_ASSERT(cparams.flash_attn && "DCA requires flash attention");
++
++    // Scale Q and K by s(L) (match SGLang dense)
++    q_intra = ggml_mul(ctx0, q_intra, inp->length_scale);
++    q_succ  = ggml_mul(ctx0, q_succ,  inp->length_scale);
++    q_inter = ggml_mul(ctx0, q_inter, inp->length_scale);
++    k_cur   = ggml_mul(ctx0, k_cur,   inp->length_scale);
++
++    ggml_build_forward_expand(gf, q_intra);
++    ggml_build_forward_expand(gf, q_succ);
++    ggml_build_forward_expand(gf, q_inter);
++    ggml_build_forward_expand(gf, v_cur);
++    ggml_build_forward_expand(gf, k_cur);
++
++    const auto * mctx_cur = inp->mctx;
++    {
++        const auto & k_idxs = inp->get_k_idxs();
++        const auto & v_idxs = inp->get_v_idxs();
++        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
++        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
++    }
++
++    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
++    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
++
++    auto prep_qkv = [&](ggml_tensor * q) {
++        const auto n_stream = k->ne[3];
++        q = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream, q->nb[1], q->nb[2], q->nb[3]/n_stream, 0);
++        q = ggml_permute(ctx0, q, 0, 2, 1, 3);
++        return q;
++    };
++
++    ggml_tensor * k_fa = ggml_permute(ctx0, k, 0, 2, 1, 3);
++    ggml_tensor * v_fa = ggml_permute(ctx0, v, 0, 2, 1, 3);
++    if (v->nb[1] > v->nb[2]) {
++        v_fa = ggml_transpose(ctx0, v_fa);
++    }
++    if (k_fa->type == GGML_TYPE_F32) {
++        k_fa = ggml_cast(ctx0, k_fa, GGML_TYPE_F16);
++    }
++    if (v_fa->type == GGML_TYPE_F32) {
++        v_fa = ggml_cast(ctx0, v_fa, GGML_TYPE_F16);
++    }
++
++    const float softcap = hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f;
++
++    ggml_tensor * lse_intra = nullptr;
++    ggml_tensor * lse_succ  = nullptr;
++    ggml_tensor * lse_inter = nullptr;
++
++    // Run FA without early reshape — keep 4d for merge
++    auto run_fa = [&](ggml_tensor * q_cur, ggml_tensor * mask, ggml_tensor ** lse) {
++        ggml_tensor * q = prep_qkv(q_cur);
++        ggml_tensor * cur = ggml_flash_attn_ext(ctx0, q, k_fa, v_fa, mask, kq_scale, hparams.f_max_alibi_bias, softcap);
++        res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il});
++        ggml_flash_attn_ext_add_sinks(cur, sinks);
++        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
++        int64_t lse_ne[4] = { 1, cur->ne[2], cur->ne[1], cur->ne[3] }; // [1, n_tokens, n_head, n_stream]
++        // Materialize a GPU buffer (repeat of 0 from Q) — bare leaves may not get device memory.
++        ggml_tensor * lse_shape = ggml_new_tensor(ctx0, GGML_TYPE_F32, 4, lse_ne);
++        ggml_tensor * z = ggml_reshape_4d(ctx0, ggml_scale(ctx0, ggml_view_1d(ctx0, q, 1, 0), 0.0f), 1, 1, 1, 1);
++        ggml_tensor * lse_buf = ggml_repeat(ctx0, z, lse_shape);
++        ggml_build_forward_expand(gf, lse_buf);
++        ggml_flash_attn_ext_set_lse(cur, lse_buf);
++        ggml_build_forward_expand(gf, cur);
++        // FA writes LSE as a side-effect; tie consumers to `cur` so they wait for FA.
++        ggml_tensor * lse_one = ggml_reshape_4d(ctx0, ggml_scale_bias(ctx0, ggml_view_1d(ctx0, cur, 1, 0), 0.0f, 1.0f), 1, 1, 1, 1);
++        *lse = ggml_mul(ctx0, lse_buf, ggml_repeat(ctx0, lse_one, lse_buf));
++        *lse = ggml_cont(ctx0, ggml_permute(ctx0, *lse, 0, 2, 1, 3)); // [1, H, T, S]
++        return cur; // [D, H, T, S]
++    };
++
++    ggml_tensor * o_intra = run_fa(q_intra, inp->get_kq_mask_intra(), &lse_intra);
++    ggml_tensor * o_succ  = run_fa(q_succ,  inp->get_kq_mask_succ(),  &lse_succ);
++    ggml_tensor * o_inter = run_fa(q_inter, inp->get_kq_mask_inter(), &lse_inter);
++
++    // Gate empty succ/inter stages
++    {
++        ggml_tensor * gs = ggml_reshape_4d(ctx0, inp->gate_succ,  1, 1, n_tokens, 1);
++        ggml_tensor * gi = ggml_reshape_4d(ctx0, inp->gate_inter, 1, 1, n_tokens, 1);
++        o_succ  = ggml_mul(ctx0, o_succ,  gs);
++        o_inter = ggml_mul(ctx0, o_inter, gi);
++        // lse = gate*lse + (1-gate)*(-1e9)
++        auto gate_lse = [&](ggml_tensor * lse, ggml_tensor * g) {
++            ggml_tensor * neg = ggml_scale_bias(ctx0, g, 0.0f, -1e9f);
++            ggml_tensor * one_minus = ggml_add(ctx0, ggml_scale(ctx0, g, -1.0f), ggml_scale_bias(ctx0, g, 0.0f, 1.0f));
++            return ggml_add(ctx0, ggml_mul(ctx0, lse, g), ggml_mul(ctx0, neg, one_minus));
++        };
++        lse_succ  = gate_lse(lse_succ,  gs);
++        lse_inter = gate_lse(lse_inter, gi);
++    }
++
++    ggml_tensor * cur = dca_lse_merge(ctx0, o_intra, lse_intra, o_succ, lse_succ, o_inter, lse_inter);
++    cur = ggml_cont(ctx0, cur);
++    cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
++    cb(cur, "kqv_out_dca", il);
++
++    if (wo) {
++        cur = build_lora_mm(wo, cur, wo_s);
++    }
++    if (wo_b) {
++        cur = ggml_add(ctx0, cur, wo_b);
++    }
++    return cur;
++}
++
+ ggml_tensor * llm_graph_context::build_attn(
+         llm_graph_input_attn_kv * inp,
+         ggml_tensor * wo,
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 7ed490ce6..ec3902d47 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -354,6 +354,53 @@ public:
+     const llama_kv_cache_context * mctx;
+ };
+ 
++// Dual Chunk Attention inputs: DualChunk RoPE positions, s(L), and 3 stage masks.
++class llm_graph_input_attn_kv_dca : public llm_graph_input_i {
++public:
++    llm_graph_input_attn_kv_dca(
++            const llama_hparams & hparams,
++            const llama_cparams & cparams,
++            const llama_kv_cache_context * mctx) :
++        hparams(hparams),
++        cparams(cparams),
++        mctx(mctx) {
++    }
++    ~llm_graph_input_attn_kv_dca() = default;
++
++    void set_input(const llama_ubatch * ubatch) override;
++
++    bool can_reuse(const llm_graph_params & params) override;
++
++    ggml_tensor * get_k_idxs() const { return self_k_idxs; }
++    ggml_tensor * get_v_idxs() const { return self_v_idxs; }
++
++    ggml_tensor * get_kq_mask_intra() const { return self_kq_mask_intra; }
++    ggml_tensor * get_kq_mask_succ()  const { return self_kq_mask_succ; }
++    ggml_tensor * get_kq_mask_inter() const { return self_kq_mask_inter; }
++
++    ggml_tensor * self_k_idxs = nullptr;
++    ggml_tensor * self_v_idxs = nullptr;
++
++    ggml_tensor * pos_k       = nullptr; // I32 DualChunk K positions
++    ggml_tensor * pos_q_intra = nullptr;
++    ggml_tensor * pos_q_succ  = nullptr;
++    ggml_tensor * pos_q_inter = nullptr;
++
++    ggml_tensor * length_scale = nullptr; // F32 [1,1,n_tokens] s(L)
++
++    // Per-token stage gates (1 = active). Used to zero empty succ/inter rows.
++    ggml_tensor * gate_succ  = nullptr; // F32 [1,1,n_tokens]
++    ggml_tensor * gate_inter = nullptr;
++
++    ggml_tensor * self_kq_mask_intra = nullptr;
++    ggml_tensor * self_kq_mask_succ  = nullptr;
++    ggml_tensor * self_kq_mask_inter = nullptr;
++
++    const llama_hparams hparams;
++    const llama_cparams cparams;
++    const llama_kv_cache_context * mctx;
++};
++
+ // V-less input for the KV cache
+ // ref: https://github.com/ggml-org/llama.cpp/pull/19067
+ class llm_graph_input_attn_k : public llm_graph_input_i {
+@@ -1094,6 +1141,8 @@ struct llm_graph_context {
+ 
+     llm_graph_input_attn_kv * build_attn_inp_kv() const;
+ 
++    llm_graph_input_attn_kv_dca * build_attn_inp_kv_dca() const;
++
+     ggml_tensor * build_attn(
+             llm_graph_input_attn_kv * inp,
+             ggml_tensor * wo,
+@@ -1108,6 +1157,22 @@ struct llm_graph_context {
+                   float   kq_scale,
+                     int   il) const;
+ 
++    // Dual Chunk Attention: 3× FA (intra/succ/inter) + LSE merge. Qs already DualChunk-RoPE'd.
++    ggml_tensor * build_attn_dca(
++            llm_graph_input_attn_kv_dca * inp,
++            ggml_tensor * wo,
++            ggml_tensor * wo_b,
++            ggml_tensor * wo_s,
++            ggml_tensor * q_intra,
++            ggml_tensor * q_succ,
++            ggml_tensor * q_inter,
++            ggml_tensor * k_cur,
++            ggml_tensor * v_cur,
++            ggml_tensor * kq_b,
++            ggml_tensor * sinks,
++                  float   kq_scale,
++                    int   il) const;
++
+     llm_graph_input_attn_k  * build_attn_inp_k() const;
+ 
+     ggml_tensor * build_attn(
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 866a0f1f1..67c7d7bab 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-kv-cache.h"
+ 
++#include "llama-dca.h"
+ #include "llama-impl.h"
+ #include "llama-io.h"
+ #include "llama-model.h"
+@@ -16,6 +17,7 @@
+ #include <limits>
+ #include <map>
+ #include <stdexcept>
++#include <type_traits>
+ #include <vector>
+ 
+ static bool ggml_is_power_of_2(int n) {
+@@ -2247,6 +2249,72 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
+ }
+ 
++void llama_kv_cache::set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const {
++    const uint32_t n_tokens = ubatch->n_tokens;
++
++    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
++    GGML_ASSERT(hparams.dca_enabled());
++    GGML_ASSERT(dca_stage >= 0 && dca_stage <= 2);
++
++    const int64_t n_kv     = dst->ne[0];
++    const int64_t n_stream = dst->ne[3];
++    GGML_ASSERT(n_tokens % n_stream == 0);
++    const int64_t n_tps = n_tokens / n_stream;
++
++    const uint32_t c_len = hparams.dca_chunk_len();
++    const llama_dca::mask_kind kind =
++        dca_stage == 0 ? llama_dca::mask_kind::INTRA :
++        dca_stage == 1 ? llama_dca::mask_kind::SUCC  :
++                         llama_dca::mask_kind::INTER;
++
++    auto fill = [&](auto * data) {
++        using T = std::remove_reference_t<decltype(*data)>;
++        const T mask_keep = llama_cast<T>(0.0f);
++        const T mask_drop = llama_cast<T>(-INFINITY);
++
++        for (uint32_t s = 0; s < n_stream; ++s) {
++            for (uint32_t ii = 0; ii < n_tps; ++ii) {
++                const uint32_t i = s * n_tps + ii;
++                const llama_seq_id seq_id = ubatch->seq_id[i][0];
++                const auto & cells = (*v_cells).at(seq_to_stream[seq_id]);
++                const llama_pos p1 = ubatch->pos[i];
++                const uint64_t idst = n_kv * i;
++
++                bool any_keep = false;
++                int32_t fallback_j = -1;
++
++                for (uint32_t j = 0; j < n_kv; ++j) {
++                    if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
++                        data[idst + j] = mask_drop;
++                        continue;
++                    }
++                    const llama_pos p0 = cells.pos_get(j);
++                    if (fallback_j < 0) {
++                        fallback_j = (int32_t) j;
++                    }
++                    if (llama_dca::allow_key(kind, p1, p0, c_len)) {
++                        data[idst + j] = mask_keep;
++                        any_keep = true;
++                    } else {
++                        data[idst + j] = mask_drop;
++                    }
++                }
++
++                // Empty stage: keep one key so FA stays finite; caller gates O/LSE to 0/-inf.
++                if (!any_keep && fallback_j >= 0) {
++                    data[idst + fallback_j] = mask_keep;
++                }
++            }
++        }
++    };
++
++    if (dst->type == GGML_TYPE_F16) {
++        fill((ggml_fp16_t *) dst->data);
++    } else {
++        fill((float *) dst->data);
++    }
++}
++
+ void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+     const int64_t n_tokens = ubatch->n_tokens;
+ 
+@@ -3111,6 +3179,10 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
+     kv->set_input_kq_mask(dst, ubatch, causal_attn);
+ }
+ 
++void llama_kv_cache_context::set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const {
++    kv->set_input_kq_mask_dca(dst, ubatch, dca_stage);
++}
++
+ void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+     kv->set_input_pos_bucket(dst, ubatch);
+ }
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index 4468a2084..60d9cc51c 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -223,6 +223,8 @@ public:
+     void set_input_k_shift(ggml_tensor * dst) const;
+ 
+     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
++    // Dual Chunk Attention stage mask: dca_stage 0=intra, 1=succ, 2=inter
++    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
+     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+ 
+     void set_input_k_rot(ggml_tensor * dst) const;
+@@ -444,6 +446,8 @@ public:
+ 
+     void set_input_k_shift   (ggml_tensor * dst) const;
+     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
++    // Dual Chunk Attention stage masks (intra / succ / inter). See llama-dca.h.
++    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
+     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+ 
+     void set_input_k_rot(ggml_tensor * dst) const;
+diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
+index e9c2ea80a..7c2d45e70 100644
+--- a/src/models/qwen2.cpp
++++ b/src/models/qwen2.cpp
+@@ -56,15 +56,23 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
+     GGML_ASSERT(n_embd_head == n_rot);
+ 
++    const bool use_dca = hparams.dca_enabled();
++
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+     inpL = build_inp_embd(model.tok_embd);
+ 
+-    // inp_pos - contains the positions
+-    ggml_tensor * inp_pos = build_inp_pos();
++    // inp_pos - contains the positions (stock path)
++    ggml_tensor * inp_pos = use_dca ? nullptr : build_inp_pos();
+ 
+-    auto * inp_attn = build_attn_inp_kv();
++    llm_graph_input_attn_kv     * inp_attn     = nullptr;
++    llm_graph_input_attn_kv_dca * inp_attn_dca = nullptr;
++    if (use_dca) {
++        inp_attn_dca = build_attn_inp_kv_dca();
++    } else {
++        inp_attn = build_attn_inp_kv();
++    }
+ 
+     ggml_tensor * inp_out_ids = build_inp_out_ids();
+ 
+@@ -79,29 +87,62 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+ 
+         // self-attention
+         {
+-            // compute Q and K and RoPE them
+             auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
+                     n_embd_head, n_head, n_head_kv, il);
+ 
+-            Qcur = ggml_rope_ext(
+-                    ctx0, Qcur, inp_pos, nullptr,
+-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+-                    ext_factor, attn_factor, beta_fast, beta_slow
+-                    );
+-
+-            Kcur = ggml_rope_ext(
+-                    ctx0, Kcur, inp_pos, nullptr,
+-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+-                    ext_factor, attn_factor, beta_fast, beta_slow
+-                    );
+-
+-            cb(Qcur, "Qcur", il);
+-            cb(Kcur, "Kcur", il);
+-            cb(Vcur, "Vcur", il);
+-
+-            cur = build_attn(inp_attn,
+-                    model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
++            if (use_dca) {
++                // DualChunk RoPE: three Q streams + remapped K (SGLang DualChunkRotaryEmbedding)
++                ggml_tensor * Q_intra = ggml_rope_ext(
++                        ctx0, Qcur, inp_attn_dca->pos_q_intra, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow);
++
++                ggml_tensor * Q_succ = ggml_rope_ext(
++                        ctx0, Qcur, inp_attn_dca->pos_q_succ, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow);
++
++                ggml_tensor * Q_inter = ggml_rope_ext(
++                        ctx0, Qcur, inp_attn_dca->pos_q_inter, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow);
++
++                Kcur = ggml_rope_ext(
++                        ctx0, Kcur, inp_attn_dca->pos_k, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow);
++
++                cb(Q_intra, "Q_intra", il);
++                cb(Q_succ,  "Q_succ",  il);
++                cb(Q_inter, "Q_inter", il);
++                cb(Kcur,    "Kcur",    il);
++                cb(Vcur,    "Vcur",    il);
++
++                cur = build_attn_dca(inp_attn_dca,
++                        model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
++                        Q_intra, Q_succ, Q_inter, Kcur, Vcur, nullptr, nullptr,
++                        1.0f/sqrtf(float(n_embd_head)), il);
++            } else {
++                Qcur = ggml_rope_ext(
++                        ctx0, Qcur, inp_pos, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow
++                        );
++
++                Kcur = ggml_rope_ext(
++                        ctx0, Kcur, inp_pos, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow
++                        );
++
++                cb(Qcur, "Qcur", il);
++                cb(Kcur, "Kcur", il);
++                cb(Vcur, "Vcur", il);
++
++                cur = build_attn(inp_attn,
++                        model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
++                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
++            }
+         }
+         if (il == n_layer - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
