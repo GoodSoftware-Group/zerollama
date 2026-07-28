@@ -57,3 +57,22 @@ func TestBindChatCompletionRequest_TopLevelEnableThinking(t *testing.T) {
 		t.Fatalf("Think=%v, want true", out.Think)
 	}
 }
+
+func TestFromChatRequest_ReasoningEffortHighSetsThinkFromAlias(t *testing.T) {
+	effort := "high"
+	req := ChatCompletionRequest{
+		Model:           "qwen2.5:0.5b",
+		Messages:        []Message{{Role: "user", Content: "hi"}},
+		ReasoningEffort: &effort,
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Think == nil || !out.Think.Bool() {
+		t.Fatalf("Think=%v", out.Think)
+	}
+	if !out.ThinkFromAlias {
+		t.Fatal("expected ThinkFromAlias so non-thinking models soft-ignore reasoning_effort")
+	}
+}

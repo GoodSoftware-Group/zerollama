@@ -46,9 +46,9 @@ OLLAMA_HOST=127.0.0.1:11435  model=qwen2.5:0.5b  build=0.30.11
 
 | Bucket | Result |
 |--------|--------|
-| **PROBLEMS** | **none** (lab re-run Jul 28 after thinking-alias mapping) |
-| **CLEAN** | **77**, **78**, **12** (content at cap), **23** (stream content), **07**, **19**, **26**, mm-* |
-| Coverage | `problems 0` · executed CLEAN includes **12**, **19**, **77**, **78**, **23**, **07** |
+| **PROBLEMS** | **none** (lab re-run Jul 28; OpenAI `reasoning_effort` soft on non-thinking models) |
+| **CLEAN** | **77**, **78**, **12**, **23**, **02** (no orphan `</think>`), **07**, **19**, **26**, mm-* |
+| Coverage | `problems 0` · **03/29** still N/A on non-thinking `qwen2.5:0.5b` (toggle map needs a reasoning lane) |
 
 ### Earlier baseline (pre-fix)
 
@@ -83,8 +83,8 @@ base-url=http://127.0.0.1:11435/v1
 
 ### INCONCLUSIVE / COULD NOT CHECK (highlights)
 
-- **02** orphaned `</think>` — partial arm failures
-- **03/29** thinking-toggle map — not all arms returned
+- **02** orphaned `</think>` — CLEAN after all three toggle arms return
+- **03/29** thinking-toggle map — needs a reasoning-capable model (0.5b has no reasoning channel; all arms return but none fire)
 - **04/20/25** assembled-prompt inspection — no render/`/apply-template` path on this Ollama-shaped stack for the upstream doctor
 - **07/10/17/21** need `--hf-repo` or readable chat template
 

@@ -822,11 +822,16 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 
 	var think *api.ThinkValue
 	var effort string
+	// OpenAI reasoning_* / enable_thinking / chat_template_kwargs are soft on
+	// non-thinking models (ThinkFromAlias). Native /api/chat think remains strict.
+	thinkFromAlias := false
 
 	if r.Reasoning != nil {
 		effort = r.Reasoning.Effort
+		thinkFromAlias = true
 	} else if r.ReasoningEffort != nil {
 		effort = *r.ReasoningEffort
+		thinkFromAlias = true
 	}
 
 	if effort != "" {
@@ -842,7 +847,6 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 	}
 
 	// Harness aliases (chat_template_kwargs / enable_thinking) after OpenAI reasoning_*.
-	thinkFromAlias := false
 	if think == nil {
 		if t, err := thinkFromEnableThinkingAliases(r.EnableThinking, r.ChatTemplateKwargs); err != nil {
 			return nil, err
