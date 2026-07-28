@@ -319,3 +319,17 @@ func TestCompletionResponseUnmarshalCacheTier(t *testing.T) {
 		t.Fatalf("backend=%q", resp.PromptEvalCachedStorageBackend)
 	}
 }
+
+func TestCompletionResponseUnmarshalCacheCreation(t *testing.T) {
+	var resp CompletionResponse
+	if err := json.Unmarshal([]byte(`{
+		"done": true,
+		"cached_prompt_tokens": 20,
+		"cache_creation_tokens": 80
+	}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PromptEvalCacheCreationCount != 80 {
+		t.Fatalf("PromptEvalCacheCreationCount=%d, want 80", resp.PromptEvalCacheCreationCount)
+	}
+}

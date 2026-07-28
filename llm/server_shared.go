@@ -313,6 +313,8 @@ type CompletionResponse struct {
 	PromptEvalCachedHost           int    `json:"prompt_eval_cached_host,omitempty"`
 	PromptEvalCachedStorage        int    `json:"prompt_eval_cached_storage,omitempty"`
 	PromptEvalCachedStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
+	// PromptEvalCacheCreationCount — tokens newly written to prefix cache this turn.
+	PromptEvalCacheCreationCount int `json:"prompt_eval_cache_creation_count,omitempty"`
 	PromptEvalDuration             time.Duration `json:"prompt_eval_duration"`
 	EvalCount                      int           `json:"eval_count"`
 	EvalDuration                   time.Duration `json:"eval_duration"`
@@ -322,6 +324,10 @@ type CompletionResponse struct {
 	OriginalPromptTokens int  `json:"original_prompt_tokens,omitempty"`
 
 	Logprobs []Logprob `json:"logprobs,omitempty"`
+
+	// Tokens is the sampled prompt+generated id list when the runner provides
+	// it (MLX Done chunk). Prefer over re-tokenizing response text (F0686).
+	Tokens []int `json:"tokens,omitempty"`
 
 	Image      string `json:"image,omitempty"`
 	Step       int    `json:"step,omitempty"`
@@ -336,6 +342,8 @@ func (c *CompletionResponse) UnmarshalJSON(data []byte) error {
 		CachedTokensHost           int    `json:"cached_tokens_host,omitempty"`
 		CachedTokensStorage        int    `json:"cached_tokens_storage,omitempty"`
 		CachedTokensStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
+		CacheCreationTokens        int    `json:"cache_creation_tokens,omitempty"`
+		CreatedCacheTokens         int    `json:"created_cache_tokens,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -352,6 +360,13 @@ func (c *CompletionResponse) UnmarshalJSON(data []byte) error {
 	}
 	if c.PromptEvalCachedStorageBackend == "" && aux.CachedTokensStorageBackend != "" {
 		c.PromptEvalCachedStorageBackend = aux.CachedTokensStorageBackend
+	}
+	if c.PromptEvalCacheCreationCount == 0 {
+		if aux.CacheCreationTokens > 0 {
+			c.PromptEvalCacheCreationCount = aux.CacheCreationTokens
+		} else if aux.CreatedCacheTokens > 0 {
+			c.PromptEvalCacheCreationCount = aux.CreatedCacheTokens
+		}
 	}
 	return nil
 }

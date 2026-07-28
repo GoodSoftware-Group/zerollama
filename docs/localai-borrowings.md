@@ -238,7 +238,7 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 
 ## Upstream watch (LocalAI v4.5.6, checked Jul 2026)
 
-Periodic scan of [mudler/LocalAI](https://github.com/mudler/LocalAI) via GitHub releases and the local tree at **`~/Sites/inference/LocalAI`** (`v4.5.6`). Last checked **2026-07-03**. Use this to decide **LA11+** candidates.
+Periodic scan of [mudler/LocalAI](https://github.com/mudler/LocalAI) via GitHub releases and the local tree at **`~/Sites/inference/LocalAI`** (`v4.5.6`). Last checked **2026-07-03**. Use this to decide **LA11+** candidates. Sibling map: [upstream-siblings.md](./upstream-siblings.md).
 
 ### LocalAI v4.5 highlights (since v4.4)
 

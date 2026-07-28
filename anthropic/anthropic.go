@@ -212,8 +212,10 @@ type MessagesResponse struct {
 
 // Usage contains token usage information
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // Streaming event types
@@ -268,8 +270,10 @@ type MessageDelta struct {
 
 // DeltaUsage contains cumulative token usage
 type DeltaUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // MessageStopEvent signals the end of the message
@@ -675,10 +679,26 @@ func ToMessagesResponse(id string, r api.ChatResponse) MessagesResponse {
 		Model:      r.Model,
 		Content:    content,
 		StopReason: stopReason,
-		Usage: Usage{
-			InputTokens:  r.Metrics.PromptEvalCount,
-			OutputTokens: r.Metrics.EvalCount,
-		},
+		Usage:      usageFromMetrics(r.Metrics),
+	}
+}
+
+// usageFromMetrics maps Ollama metrics to Anthropic usage (vLLM #48535).
+//
+// Anthropic invariant: total_input = input_tokens + cache_read + cache_creation.
+// PromptEvalCount is total prompt tokens presented; subtract read + creation.
+func usageFromMetrics(m api.Metrics) Usage {
+	read := m.CachedPromptTokens
+	create := m.CacheCreationTokens
+	input := m.PromptEvalCount - read - create
+	if input < 0 {
+		input = 0
+	}
+	return Usage{
+		InputTokens:              input,
+		OutputTokens:             m.EvalCount,
+		CacheReadInputTokens:     read,
+		CacheCreationInputTokens: create,
 	}
 }
 
@@ -709,6 +729,8 @@ type StreamConverter struct {
 	contentIndex         int
 	inputTokens          int
 	outputTokens         int
+	cacheReadTokens      int
+	cacheCreationTokens  int
 	estimatedInputTokens int // Estimated tokens from request (used when actual metrics are 0)
 	thinkingStarted      bool
 	thinkingDone         bool
@@ -739,8 +761,11 @@ func (c *StreamConverter) Process(r api.ChatResponse) []StreamEvent {
 	if c.firstWrite {
 		c.firstWrite = false
 		// Use actual metrics if available, otherwise use estimate
-		c.inputTokens = r.Metrics.PromptEvalCount
-		if c.inputTokens == 0 && c.estimatedInputTokens > 0 {
+		u := usageFromMetrics(r.Metrics)
+		c.inputTokens = u.InputTokens
+		c.cacheReadTokens = u.CacheReadInputTokens
+		c.cacheCreationTokens = u.CacheCreationInputTokens
+		if c.inputTokens == 0 && c.cacheReadTokens == 0 && c.cacheCreationTokens == 0 && c.estimatedInputTokens > 0 {
 			c.inputTokens = c.estimatedInputTokens
 		}
 
@@ -755,8 +780,10 @@ func (c *StreamConverter) Process(r api.ChatResponse) []StreamEvent {
 					Model:   c.Model,
 					Content: []ContentBlock{},
 					Usage: Usage{
-						InputTokens:  c.inputTokens,
-						OutputTokens: 0,
+						InputTokens:              c.inputTokens,
+						OutputTokens:             0,
+						CacheReadInputTokens:     c.cacheReadTokens,
+						CacheCreationInputTokens: c.cacheCreationTokens,
 					},
 				},
 			},
@@ -925,8 +952,11 @@ func (c *StreamConverter) Process(r api.ChatResponse) []StreamEvent {
 			})
 		}
 
-		c.inputTokens = r.Metrics.PromptEvalCount
-		c.outputTokens = r.Metrics.EvalCount
+		u := usageFromMetrics(r.Metrics)
+		c.inputTokens = u.InputTokens
+		c.outputTokens = u.OutputTokens
+		c.cacheReadTokens = u.CacheReadInputTokens
+		c.cacheCreationTokens = u.CacheCreationInputTokens
 		stopReason := mapStopReason(r.DoneReason, len(c.toolCallsSent) > 0)
 
 		events = append(events, StreamEvent{
@@ -937,8 +967,10 @@ func (c *StreamConverter) Process(r api.ChatResponse) []StreamEvent {
 					StopReason: stopReason,
 				},
 				Usage: DeltaUsage{
-					InputTokens:  c.inputTokens,
-					OutputTokens: c.outputTokens,
+					InputTokens:              c.inputTokens,
+					OutputTokens:             c.outputTokens,
+					CacheReadInputTokens:     c.cacheReadTokens,
+					CacheCreationInputTokens: c.cacheCreationTokens,
 				},
 			},
 		})

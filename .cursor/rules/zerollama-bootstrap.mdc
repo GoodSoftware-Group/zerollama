@@ -15,7 +15,8 @@ You are working in the **zerollama** repo (Ollama fork): local GGUF inference + 
 - **CLI name:** `zerollama` (plain `go build` may emit `ollama` unless `-o zerollama`)
 - **Python runtime package:** `runtime/` — install with `cd runtime && pip install -e ".[serve]"` (FastAPI/uvicorn). Tests: `cd runtime && PYTHONPATH=. python3 -m pytest tests/` (needs pytest in env)
 - **Embedded CPython (training):** `x/trainingworker/pyembed` — CGO links libpython3; needs `python3-dev` + `pkg-config python3-embed`. Loads repo-root `training.py` in-process (not a separate training daemon on a public port).
-- **llama.cpp:** sibling checkout e.g. `~/llama.cpp`; build `llama-server` via `scripts/build_llama_server.sh` with correct `CMAKE_CUDA_ARCHITECTURES` for the GPU (5080 = `120-real`, 4090 = `89`). Set `LLAMA_SERVER_BIN` to `.../build/bin/llama-server`.
+- **llama.cpp:** sibling checkout e.g. `~/llama.cpp` or Mac lab `../llama.cpp`; build `llama-server` via `scripts/build_llama_server.sh` with correct `CMAKE_CUDA_ARCHITECTURES` for the GPU (5080 = `120-real`, 4090 = `89`). Set `LLAMA_SERVER_BIN` to `.../build/bin/llama-server`.
+- **Weekly upstream siblings (vLLM / LocalAI / SGLang / …):** repo-root [AGENTS.md](../../AGENTS.md) + [docs/upstream-siblings.md](../../docs/upstream-siblings.md) — Mac lab parent `~/Sites/inference/` (`../vllm`, `../LocalAI`, …).
 
 ## Process layout when serving
 

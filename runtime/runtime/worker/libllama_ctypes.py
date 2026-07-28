@@ -529,6 +529,35 @@ def _ctx_ptr(ctx: ctypes.c_void_p | None) -> int | None:
     return val if val else None
 
 
+def _finalize_lmcache_blob_after_disk_save(
+    *,
+    model_hash: str,
+    seq_id: int,
+    kv_bind_req: Any | None,
+) -> None:
+    """Publish deferred LMCache blob once slot ``.bin`` is on disk (vLLM #48596)."""
+    if not model_hash or seq_id < 0:
+        return
+    try:
+        from runtime.cache_bridge import slot_cache_file_path
+        from runtime.kv.prefix_block_pool import (
+            build_model_scope,
+            get_prefix_block_pool,
+            prefix_block_pool_enabled,
+        )
+
+        if not prefix_block_pool_enabled():
+            return
+        salt = getattr(kv_bind_req, "cache_salt", None) if kv_bind_req else None
+        scope = build_model_scope(model_hash=model_hash, cache_salt=salt)
+        path = str(slot_cache_file_path(model_hash, seq_id, 0))
+        get_prefix_block_pool(model_scope=scope).finalize_slot_blob(
+            scope=scope, slot_id=int(seq_id), blob_path=path
+        )
+    except Exception:
+        pass
+
+
 def _save_slot_cache_disk(
     lib: ctypes.CDLL,
     ctx: ctypes.c_void_p,
@@ -1020,14 +1049,23 @@ class LlamaLoadedSession:
             and self.slot_cache_model_hash
             and self.slot_cache_disk_persist
         ):
-            n_ctx_cap = int(self._lib.llama_n_ctx(ctx))
-            restored = _try_restore_slot_cache_disk(
-                self._lib,
-                ctx,
-                seq_id=sid,
-                model_hash=self.slot_cache_model_hash,
-                token_capacity=n_ctx_cap,
-            )
+            filt = getattr(kv_bind_req, "load_tier_filter", None)
+            allow_host = True
+            if filt is not None:
+                try:
+                    allow_host = bool(filt.allows_host_disk())
+                except Exception:
+                    allow_host = True
+            restored = 0
+            if allow_host:
+                n_ctx_cap = int(self._lib.llama_n_ctx(ctx))
+                restored = _try_restore_slot_cache_disk(
+                    self._lib,
+                    ctx,
+                    seq_id=sid,
+                    model_hash=self.slot_cache_model_hash,
+                    token_capacity=n_ctx_cap,
+                )
             if restored > 0:
                 decode_pos = self._resolve_decode_current_pos(ctx, sid, None)
                 if decode_pos > 0:
@@ -1045,6 +1083,12 @@ class LlamaLoadedSession:
                             kv_bind_req.cached_tokens_host = int(restored)
                         except Exception:
                             pass
+                    # Hit-at-admit for cache_creation accounting.
+                    try:
+                        prev = int(getattr(kv_bind_req, "cached_tokens_at_admit", 0) or 0)
+                        kv_bind_req.cached_tokens_at_admit = max(prev, int(restored))
+                    except Exception:
+                        pass
         if is_resume:
             live_pos = self._resolve_decode_current_pos(ctx, sid, None)
             if live_pos > decode_pos:
@@ -1210,6 +1254,11 @@ class LlamaLoadedSession:
                         "complete.disk_save",
                         seq_id=job.seq_id,
                         nbytes=saved,
+                    )
+                    _finalize_lmcache_blob_after_disk_save(
+                        model_hash=self.slot_cache_model_hash,
+                        seq_id=job.seq_id,
+                        kv_bind_req=job.kv_bind_req,
                     )
 
     def complete_parallel(
@@ -1499,6 +1548,11 @@ class LlamaLoadedSession:
                                 seq_id=sid,
                                 nbytes=saved,
                             )
+                            _finalize_lmcache_blob_after_disk_save(
+                                model_hash=self.slot_cache_model_hash,
+                                seq_id=sid,
+                                kv_bind_req=kv_bind_req,
+                            )
                     self._physical_check_after_decode(
                         self._ctx,
                         sid,
@@ -1539,12 +1593,18 @@ class LlamaLoadedSession:
                         and self.slot_cache_model_hash
                         and self.slot_cache_disk_persist
                     ):
-                        _save_slot_cache_disk(
+                        saved = _save_slot_cache_disk(
                             self._lib,
                             self._ctx,
                             seq_id=sid,
                             model_hash=self.slot_cache_model_hash,
                         )
+                        if saved:
+                            _finalize_lmcache_blob_after_disk_save(
+                                model_hash=self.slot_cache_model_hash,
+                                seq_id=sid,
+                                kv_bind_req=kv_bind_req,
+                            )
                     self._physical_check_after_decode(
                         self._ctx,
                         sid,

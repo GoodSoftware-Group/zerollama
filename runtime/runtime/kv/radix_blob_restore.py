@@ -33,6 +33,7 @@ def find_blob_restore_plan(
     cache_salt: str | None = None,
     seq_pos: int | None = None,
     effective_window: int | None = None,
+    load_tier_filter: Any = None,
 ) -> BlobRestorePlan | None:
     """Plan cold restore when live Radix donor is absent but a blob digest exists."""
     from runtime.kv.lmcache_blob import lmcache_blobs_enabled
@@ -52,6 +53,7 @@ def find_blob_restore_plan(
         scope=scope,
         max_tokens=len(tokens),
         min_matched=1,
+        load_tier_filter=load_tier_filter,
     )
     if found is None:
         return None

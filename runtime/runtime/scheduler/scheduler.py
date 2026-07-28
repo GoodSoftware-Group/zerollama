@@ -46,6 +46,8 @@ class Request:
     cache_reset: bool = False
     # options.zerollama.cache_level — auto|gpu|dram|disk (auto = heuristics).
     cache_level: str | None = None
+    # vLLM #48123 — per-request secondary-tier load filter (parsed TierFilter).
+    load_tier_filter: Any = None
     # When True, kv_slot was derived from prompt_cache_key; llama-server keeps KV
     # after complete() — allocator releases tracking only, not llama slot contents.
     slot_pinned: bool = False
@@ -54,6 +56,9 @@ class Request:
     cached_tokens_host: int = 0
     cached_tokens_storage: int = 0
     cached_tokens_storage_backend: str = ""
+    # vLLM #48535 — prefix tokens already hit at admit vs newly written this turn.
+    cached_tokens_at_admit: int = 0
+    cache_creation_tokens: int = 0
 
     @property
     def num_prompt_tokens(self) -> int:

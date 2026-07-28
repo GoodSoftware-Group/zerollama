@@ -872,6 +872,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 					CachedTokensHost:           cr.PromptEvalCachedHost,
 					CachedTokensStorage:        cr.PromptEvalCachedStorage,
 					CachedTokensStorageBackend: cr.PromptEvalCachedStorageBackend,
+					CacheCreationTokens:        cr.PromptEvalCacheCreationCount,
 				},
 				Logprobs: toAPILogprobs(cr.Logprobs),
 			}
@@ -913,13 +914,18 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				applyEmptyGenClassifyGenerate(&res, opts.NumPredict, !checkpointLoaded.IsZero())
 
 				if !req.Raw {
-					tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
-					if err != nil {
-						enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
-							errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
-						return
+					if len(cr.Tokens) > 0 {
+						// F0686: sampled ids from mlxrunner (weight-parity oracle).
+						res.Context = append([]int(nil), cr.Tokens...)
+					} else {
+						tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
+						if err != nil {
+							enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
+								errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+							return
+						}
+						res.Context = tokens
 					}
-					res.Context = tokens
 				}
 			}
 
@@ -2986,6 +2992,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			if _, ok := c.Get("relax_thinking"); ok {
 				slog.Warn("model does not support thinking, relaxing thinking to nil", "model", req.Model)
 				req.Think = nil
+			} else if req.ThinkFromAlias {
+				// Harness aliases on a non-thinking model are no-ops (minefield ceiling/stream probes).
+				req.Think = nil
+			} else if _, ok := c.Get("think_from_alias"); ok {
+				req.Think = nil
 			} else {
 				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
 				return
@@ -3240,6 +3251,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					CachedTokensHost:           r.PromptEvalCachedHost,
 					CachedTokensStorage:        r.PromptEvalCachedStorage,
 					CachedTokensStorageBackend: r.PromptEvalCachedStorageBackend,
+					CacheCreationTokens:        r.PromptEvalCacheCreationCount,
 				}
 				if mmTokenEstimate.HasValues() {
 					metrics.ImageTokens = mmTokenEstimate.ImageTokens

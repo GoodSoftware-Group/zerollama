@@ -282,6 +282,11 @@ type ChatRequest struct {
 
 	// ChatTemplateKwargs carries template knobs. Unknown nested keys are rejected (trap 07/77).
 	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
+
+	// ThinkFromAlias is true when Think was derived from enable_thinking /
+	// chat_template_kwargs rather than an explicit think / reasoning_effort field.
+	// Non-thinking models ignore alias-only Think instead of HTTP 400 (minefield ceiling probes).
+	ThinkFromAlias bool `json:"-"`
 }
 
 type Tools []Tool
@@ -818,6 +823,10 @@ type Metrics struct {
 	// CachedTokensStorage is prefix KV served from L3 storage backend when wired.
 	CachedTokensStorage        int    `json:"cached_tokens_storage,omitempty"`
 	CachedTokensStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
+	// CacheCreationTokens is prefix KV newly written this turn (vLLM #48535 /
+	// Anthropic cache_creation_input_tokens). Distinct from CachedPromptTokens
+	// (read hits at schedule time).
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
 }
 
 // Options specified in [GenerateRequest].  If you add a new option here, also

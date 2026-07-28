@@ -543,6 +543,35 @@ func TestToMessagesResponse_Basic(t *testing.T) {
 	}
 }
 
+func TestToMessagesResponse_CacheUsage(t *testing.T) {
+	resp := api.ChatResponse{
+		Model: "test-model",
+		Message: api.Message{
+			Role:    "assistant",
+			Content: "ok",
+		},
+		Done:       true,
+		DoneReason: "stop",
+		Metrics: api.Metrics{
+			PromptEvalCount:     200,
+			EvalCount:           3,
+			CachedPromptTokens:  50,
+			CacheCreationTokens: 100,
+		},
+	}
+	result := ToMessagesResponse("msg_cache", resp)
+	// Anthropic: input = total - read - creation
+	if result.Usage.InputTokens != 50 {
+		t.Fatalf("input_tokens=%d, want 50", result.Usage.InputTokens)
+	}
+	if result.Usage.CacheReadInputTokens != 50 {
+		t.Fatalf("cache_read=%d, want 50", result.Usage.CacheReadInputTokens)
+	}
+	if result.Usage.CacheCreationInputTokens != 100 {
+		t.Fatalf("cache_creation=%d, want 100", result.Usage.CacheCreationInputTokens)
+	}
+}
+
 func TestToMessagesResponse_WithToolCalls(t *testing.T) {
 	resp := api.ChatResponse{
 		Model: "test-model",

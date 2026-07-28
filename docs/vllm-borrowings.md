@@ -4,6 +4,10 @@
 
 **Related:** [gpu-profiles-l3.md](./gpu-profiles-l3.md), [decode-graph-invalidation.md](./decode-graph-invalidation.md), [ROADMAP — borrowings L3](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3).
 
+**Local tree:** `../vllm` (Mac: `~/Sites/inference/vllm`). Sibling map + weekly pull ritual: [upstream-siblings.md](./upstream-siblings.md).
+
+**Last checked:** 2026-07-28 — tip `118bcde44` on `main`. Next weekly: `git pull` in `../vllm`, then triage bring/watch/skip into this doc (and the table in [upstream-siblings.md](./upstream-siblings.md)).
+
 ---
 
 ## Taken (Jun 2026)
@@ -25,6 +29,10 @@
 | **Ref-count block DAG (L3-R3)** | `holder_slots` + `release_slot_holders` + `_best_donor_from_chain` | Overlapping slot registrations; pick longest donor chain from token 0 |
 | **Hybrid Radix gate (L3-R5)** | `radix_seq_copy_policy.py` + `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | v1 skipped all hybrid; Gemma full+SWA safe when copy ≤ window; attn+recurrent keeps kill-switch |
 | **Marconi × retention preservation** | Radix window-only gate; try Radix even when full-prompt `cache_prompt` denied | vLLM #47782: selective retention must not kill shared-system-prefix hits; retention is same-slot resume, not donor `seq_cp` |
+| **Per-request load-tier filter** | `kv/tier_filter.py` + `options.zerollama.kv_load_tiers` | vLLM #48123: skip LMCache/blob secondary lookup when request denies STORAGE |
+| **Finish-time / defer blob finalize** | `register_prefix(finalize_blob=…)` + `finalize_slot_blob` / reuse flush | vLLM #48596/#49671: metadata first; publish when slot `.bin` exists; flush before slot reuse |
+| **Cache creation vs read tokens** | `cache_creation_tokens` / OpenAI `created_cache_tokens` / Anthropic `cache_creation_input_tokens` | vLLM #48535: `creation = newly_cached − hit_at_admit` |
+| **SWA reachable-tail store filter** | `kv/swa_store_filter.py` → `register_prefix(store_block_mask=…)` | vLLM #48911: do not federate blocks outside SWA reachable tail |
 
 ---
 
@@ -39,6 +47,7 @@
 | Scheduler KV preemption loop | LocalAI watchdog + slot allocator; not vLLM-style block preempt yet |
 | KV-cache **admission watermark** (`free_blocks ≥ needed + watermark`) | Skip — zerollama pre-reserves full prompt+`max_tokens`/`num_ctx` and caps concurrency with fixed `n_parallel` slots; Phase 11 `VRAM_MIN_FREE` is the headroom policy. Revisit if PA allocates mid-decode. |
 | Partial hybrid prefix hits (`hash_block_size` < physical block) | Needs physical pages + COW; our Radix still full-sequence `seq_cp` |
+| Full OffloadingConnector / NIXL workers | Pattern ports only (#48123/#48596/#48535/#48911); not the CUDA offload scheduler |
 
 ---
 
@@ -61,6 +70,8 @@
 | `ZEROLLAMA_RADIX_PREFIX_SHARE` | `0` | Cross-slot Radix prefix seed (implies block pool) |
 | `ZEROLLAMA_RADIX_HYBRID_SEQ_COPY` | `1` | Allow hybrid GGUF Radix `seq_cp` when prefix ≤ SWA window (L3-R5); `0` = skip all hybrid copy |
 | `ZEROLLAMA_DECODE_GRAPH_INVALIDATE` | `1` | ggml CUDA graph clear on slot invalidation (in-process native/ctypes or subprocess HTTP) |
+
+**Request options:** `options.zerollama.kv_load_tiers` — JSON list of `{medium, locality}` (vLLM #48123). Omit = all secondaries; `[]` = deny LMCache/blob restore.
 
 **Radix operator guide:** [radix-prefix-share.md](./radix-prefix-share.md) — **why** vendor llama-server, live smoke, hybrid SWA gate, trace events.
 

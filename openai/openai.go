@@ -67,10 +67,11 @@ type CompleteChunkChoice struct {
 }
 
 type PromptTokensDetails struct {
-	CachedTokens *int `json:"cached_tokens,omitempty"`
-	ImageTokens  *int `json:"image_tokens,omitempty"`
-	AudioTokens  *int `json:"audio_tokens,omitempty"`
-	VideoTokens  *int `json:"video_tokens,omitempty"`
+	CachedTokens        *int `json:"cached_tokens,omitempty"`
+	CreatedCacheTokens  *int `json:"created_cache_tokens,omitempty"`
+	ImageTokens         *int `json:"image_tokens,omitempty"`
+	AudioTokens         *int `json:"audio_tokens,omitempty"`
+	VideoTokens         *int `json:"video_tokens,omitempty"`
 }
 
 // CachedTokensDetails breaks down prefix-cache hits by tier (SGLang sglext shape).
@@ -330,13 +331,17 @@ func cachedTokensDetailsFromMetrics(m api.Metrics) *CachedTokensDetails {
 
 func promptTokensDetailsFromMetrics(m api.Metrics) *PromptTokensDetails {
 	// OpenAI-shaped breakdown; zeros omitted so clients see a sparse object only when useful.
-	if m.ImageTokens == 0 && m.VideoTokens == 0 && m.AudioTokens == 0 && m.CachedPromptTokens == 0 {
+	if m.ImageTokens == 0 && m.VideoTokens == 0 && m.AudioTokens == 0 && m.CachedPromptTokens == 0 && m.CacheCreationTokens == 0 {
 		return nil
 	}
 	d := &PromptTokensDetails{}
 	if m.CachedPromptTokens > 0 {
 		v := m.CachedPromptTokens
 		d.CachedTokens = &v
+	}
+	if m.CacheCreationTokens > 0 {
+		v := m.CacheCreationTokens
+		d.CreatedCacheTokens = &v
 	}
 	if m.ImageTokens > 0 {
 		v := m.ImageTokens
@@ -837,11 +842,13 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 	}
 
 	// Harness aliases (chat_template_kwargs / enable_thinking) after OpenAI reasoning_*.
+	thinkFromAlias := false
 	if think == nil {
 		if t, err := thinkFromEnableThinkingAliases(r.EnableThinking, r.ChatTemplateKwargs); err != nil {
 			return nil, err
 		} else if t != nil {
 			think = t
+			thinkFromAlias = true
 		}
 	}
 
@@ -859,6 +866,7 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		Stream:          &r.Stream,
 		Tools:           tools,
 		Think:           think,
+		ThinkFromAlias:  thinkFromAlias,
 		Logprobs:        r.Logprobs != nil && *r.Logprobs,
 		TopLogprobs:     r.TopLogprobs,
 		DebugRenderOnly: r.DebugRenderOnly,

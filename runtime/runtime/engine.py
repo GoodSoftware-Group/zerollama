@@ -558,6 +558,7 @@ class InferenceEngine:
             model_hash=model_hash,
             cache_salt=req.cache_salt,
             subprocess=subprocess,
+            load_tier_filter=getattr(req, "load_tier_filter", None),
         )
         block_pool = prefix_block_pool_snapshot(
             prompt_token_ids=req.prompt_tokens,
@@ -565,6 +566,7 @@ class InferenceEngine:
             cache_salt=req.cache_salt,
             seq_pos=seq_pos,
             resume=resume,
+            load_tier_filter=getattr(req, "load_tier_filter", None),
         )
         inv_reason = decode_graph_invalidation_reason(
             allow=allow,
@@ -594,6 +596,12 @@ class InferenceEngine:
             deny_reason=deny_reason,
             prefix_block_match=block_pool,
         )
+        # Hit count at admit for cache_creation = newly_cached − hit (vLLM #48535).
+        if allow and resume is not None and resume > 0:
+            req.cached_tokens_at_admit = max(
+                int(getattr(req, "cached_tokens_at_admit", 0) or 0),
+                int(resume),
+            )
         return allow, resume
 
     def _is_kv_slot_busy(self, slot: int) -> bool:
@@ -821,6 +829,7 @@ class InferenceEngine:
             cache_salt=req.cache_salt,
             seq_pos=seq_pos,
             effective_window=effective_window,
+            load_tier_filter=getattr(req, "load_tier_filter", None),
         )
         if blob_plan is None:
             return allow, resume_pos, None
@@ -1689,14 +1698,23 @@ class InferenceEngine:
                 self._id_slot_for_request(req), result
             )
         self._register_prefix_block_pool(req, result)
+        created = int(getattr(req, "cache_creation_tokens", 0) or 0)
+        if created > 0 and isinstance(result, dict):
+            result["cache_creation_tokens"] = created
+            result["prompt_eval_cache_creation_count"] = created
+            result["created_cache_tokens"] = created
 
     def _register_prefix_block_pool(self, req: Request, result: dict[str, Any]) -> None:
+        from pathlib import Path
+
         from runtime.cache_bridge import slot_cache_file_path
         from runtime.kv.prefix_block_pool import (
             build_model_scope,
             get_prefix_block_pool,
             prefix_block_pool_enabled,
         )
+        from runtime.kv.swa_store_filter import swa_reachable_store_mask
+        from runtime.kv_cache_spec import prefix_cache_block_size
 
         if not prefix_block_pool_enabled():
             return
@@ -1713,7 +1731,38 @@ class InferenceEngine:
         slot = self._id_slot_for_request(req)
         if slot >= 0:
             blob_path = str(slot_cache_file_path(model_hash, slot, 0))
-        get_prefix_block_pool(model_scope=scope).register_prefix(
+        pool = get_prefix_block_pool(model_scope=scope)
+        # Reuse-race: flush any pending finalize for this slot before overwrite.
+        if slot >= 0:
+            pool.flush_pending_blob_before_reuse(scope=scope, slot_id=slot)
+
+        store_mask = None
+        policy = self._prefix_cache_policy(
+            req.gguf,
+            req.num_ctx,
+            cache_level=getattr(req, "cache_level", None),
+        )
+        if policy is not None:
+            spec = policy.to_spec() if hasattr(policy, "to_spec") else policy
+            window = getattr(spec, "effective_window", None)
+            if window is None and getattr(spec, "coordinator", None) is not None:
+                window = getattr(spec.coordinator, "min_window", None)
+            kind = getattr(spec, "kind", None)
+            if kind in ("sliding_window", "hybrid") and window:
+                bs = prefix_cache_block_size()
+                num_blocks = seq_pos // max(1, bs)
+                retention = getattr(spec, "retention_interval", None)
+                draft = bool(getattr(spec, "drop_last_block_on_resume", False))
+                store_mask = swa_reachable_store_mask(
+                    num_blocks,
+                    block_size=bs,
+                    sliding_window=int(window),
+                    retention_interval=retention,
+                    draft_extra=draft,
+                )
+
+        # Auto finalize: publish only when slot blob exists (defer otherwise).
+        reg = pool.register_prefix(
             req.prompt_tokens,
             scope=scope,
             seq_pos=seq_pos,
@@ -1721,7 +1770,21 @@ class InferenceEngine:
             slot_id=slot if slot >= 0 else None,
             blob_path=blob_path,
             session_group=getattr(req, "session_group", None),
+            finalize_blob=None,
+            store_block_mask=store_mask,
         )
+        if (
+            not reg.blob_finalized
+            and blob_path
+            and Path(blob_path).is_file()
+            and slot >= 0
+        ):
+            pool.finalize_slot_blob(scope=scope, slot_id=slot, blob_path=blob_path)
+
+        # vLLM #48535 — creation = newly cached − already hit at admit.
+        hit = max(0, int(getattr(req, "cached_tokens_at_admit", 0) or 0))
+        created = max(0, min(seq_pos, len(req.prompt_tokens)) - hit)
+        req.cache_creation_tokens = created
 
     def _decode_current_pos_for_request(self, req: Request) -> int | None:
         """Live llama write position for KV resume / SWA cache policy.
@@ -2493,9 +2556,11 @@ class InferenceEngine:
             cache_pin_from_options,
             extract_cache_level,
             extract_cache_reset,
+            extract_kv_load_tiers,
             extract_session_group,
             extract_session_parent,
         )
+        from runtime.kv.tier_filter import parse_tier_filter
 
         # L3: pin llama-server slot before tick so /completion sees stable id_slot.
         prompt_cache_key, kv_slot, slot_pinned, cache_salt = cache_pin_from_options(
@@ -2517,6 +2582,7 @@ class InferenceEngine:
             session_group=extract_session_group(options),
             cache_reset=extract_cache_reset(options),
             cache_level=extract_cache_level(options),
+            load_tier_filter=parse_tier_filter(extract_kv_load_tiers(options)),
             kv_slot=kv_slot,
             slot_pinned=slot_pinned,
         )
@@ -2924,6 +2990,7 @@ class InferenceEngine:
                             storage_backend=str(
                                 getattr(active, "cached_tokens_storage_backend", "") or ""
                             ),
+                            creation=int(getattr(active, "cache_creation_tokens", 0) or 0),
                         ))
                         # Why: runtime proxy skips Go chatPrompt; llama-server
                         # context-shifts silently. Admit-time prompt_tokens is
@@ -3007,6 +3074,7 @@ class InferenceEngine:
                             storage_backend=str(
                                 getattr(active, "cached_tokens_storage_backend", "") or ""
                             ),
+                            creation=int(getattr(active, "cache_creation_tokens", 0) or 0),
                         ))
                         # Why: same as stream auto-batch path — explicit overflow
                         # for proxies that never ran Go-side truncate.
@@ -3129,10 +3197,12 @@ class InferenceEngine:
             cache_pin_from_options,
             extract_cache_level,
             extract_cache_reset,
+            extract_kv_load_tiers,
             extract_session_group,
             extract_session_parent,
         )
         from runtime.gpu_vram import resolve_vram_num_ctx
+        from runtime.kv.tier_filter import parse_tier_filter
         from runtime.server.gguf_path import peek_gguf_path
 
         batch_gguf = peek_gguf_path(batch_opts)
@@ -3199,6 +3269,7 @@ class InferenceEngine:
                 session_group=extract_session_group(batch_opts),
                 cache_reset=extract_cache_reset(batch_opts),
                 cache_level=extract_cache_level(batch_opts),
+                load_tier_filter=parse_tier_filter(extract_kv_load_tiers(batch_opts)),
                 kv_slot=kv_slot,
                 slot_pinned=slot_pinned,
             )
@@ -3304,10 +3375,12 @@ class InferenceEngine:
             cache_pin_from_options,
             extract_cache_level,
             extract_cache_reset,
+            extract_kv_load_tiers,
             extract_session_group,
             extract_session_parent,
         )
         from runtime.gpu_vram import resolve_vram_num_ctx
+        from runtime.kv.tier_filter import parse_tier_filter
         from runtime.server.gguf_path import peek_gguf_path
 
         batch_gguf = peek_gguf_path(batch_opts)
@@ -3372,6 +3445,7 @@ class InferenceEngine:
                 session_group=extract_session_group(batch_opts),
                 cache_reset=extract_cache_reset(batch_opts),
                 cache_level=extract_cache_level(batch_opts),
+                load_tier_filter=parse_tier_filter(extract_kv_load_tiers(batch_opts)),
                 kv_slot=kv_slot,
                 slot_pinned=slot_pinned,
             )

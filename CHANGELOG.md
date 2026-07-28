@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### vLLM L3 pattern ports (#48123 / #48596 / #48535 / #48911) — Jul 2026
+
+**Why:** Weekly vLLM scan flagged high-ROI KV/cache patterns that map cleanly onto LMCache + prefix block pool without OffloadingConnector.
+
+**Shipped:**
+- Per-request `options.zerollama.kv_load_tiers` → `TierFilter` (skip LMCache/blob secondary lookup; host disk restore gated)
+- Defer blob finalize until slot `.bin` exists; `finalize_slot_blob` + reuse-race flush + post-disk-save finalize
+- `cache_creation_tokens` / OpenAI `created_cache_tokens` / Anthropic `cache_creation_input_tokens` (`creation = newly_cached − hit_at_admit`)
+- SWA reachable-tail store mask on `register_prefix`
+
+Doc: [vllm-borrowings.md](docs/vllm-borrowings.md), [upstream-siblings.md](docs/upstream-siblings.md).
+
 ### Mac Metal Lab D1b fused QJL+Polar attn (0098) — Jul 2026
 
 **Why:** After **0097** SET_ROWS, `qjl1_256/q4_polar` still aborted in CPU fused attn (Metal shaders existed but were not wired; embed omitted them).

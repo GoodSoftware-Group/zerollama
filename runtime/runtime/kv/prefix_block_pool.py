@@ -16,11 +16,13 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 from runtime.env import lmcache_tier_enabled, prefix_block_pool_enabled, prefix_block_pool_max_entries
 from runtime.kv.lmcache_tier import LMCacheBlockRecord, lmcache_tier
 from runtime.kv.prefix_block_hash import iter_prefix_blocks, model_scope_key
+from runtime.kv.tier_filter import TierFilter, lmcache_is_remote
 from runtime.kv_cache_spec import prefix_cache_block_size
 
 
@@ -77,6 +79,45 @@ class PrefixBlobMatch:
     source_slot_id: int | None = None
 
 
+@dataclass(frozen=True)
+class RegisterPrefixResult:
+    """Outcome of ``register_prefix`` (vLLM finish-time / creation accounting)."""
+
+    block_hashes: list[str] = field(default_factory=list)
+    registered_tokens: int = 0
+    blob_digest: str | None = None
+    blob_finalized: bool = False
+    skipped_swa_blocks: int = 0
+
+    def __iter__(self):
+        return iter(self.block_hashes)
+
+    def __len__(self) -> int:
+        return len(self.block_hashes)
+
+    def __bool__(self) -> bool:
+        return bool(self.block_hashes)
+
+    def __getitem__(self, index: int) -> str:
+        return self.block_hashes[index]
+
+
+# Pending blob finalize after metadata register (vLLM #48596/#49671).
+# Keyed by (model_scope, slot_id) → blob_path awaiting publish.
+_pending_blob_finalize: dict[tuple[str, int], str] = {}
+_pending_lock = threading.Lock()
+
+
+def pending_blob_finalize_count() -> int:
+    with _pending_lock:
+        return len(_pending_blob_finalize)
+
+
+def reset_pending_blob_finalize_for_tests() -> None:
+    with _pending_lock:
+        _pending_blob_finalize.clear()
+
+
 class PrefixBlockPool:
     def __init__(self, *, max_entries: int) -> None:
         self.max_entries = max_entries
@@ -89,9 +130,11 @@ class PrefixBlockPool:
         *,
         scope: str,
         tier: Any,
+        load_tier_filter: TierFilter | None = None,
     ) -> PrefixBlockEntry | None:
         entry = self._blocks.get(bh)
-        if entry is None:
+        filt = load_tier_filter or TierFilter.ALL
+        if entry is None and filt.allows_lmcache(remote=lmcache_is_remote()):
             rec = tier.get(model_scope=scope, block_hash=bh)
             if rec is not None:
                 entry = self._hydrate_from_lmcache(rec)
@@ -106,9 +149,12 @@ class PrefixBlockPool:
         scope: str,
         limit: int,
         block_size: int | None = None,
+        load_tier_filter: TierFilter | None = None,
     ) -> tuple[list[_PrefixChainBlock], int]:
         bs = max(1, int(block_size or prefix_cache_block_size()))
         tier = lmcache_tier()
+        filt = load_tier_filter or TierFilter.ALL
+        allow_lmcache = filt.allows_lmcache(remote=lmcache_is_remote())
         chain: list[_PrefixChainBlock] = []
         lmcache_hits = 0
         with self._lock:
@@ -116,7 +162,7 @@ class PrefixBlockPool:
                 tokens, block_size=bs, scope=scope, max_tokens=limit
             ):
                 entry = self._blocks.get(bh)
-                if entry is None:
+                if entry is None and allow_lmcache:
                     rec = tier.get(model_scope=scope, block_hash=bh)
                     if rec is not None:
                         entry = self._hydrate_from_lmcache(rec)
@@ -136,6 +182,7 @@ class PrefixBlockPool:
         scope: str,
         seq_pos: int | None,
         block_size: int | None = None,
+        load_tier_filter: TierFilter | None = None,
     ) -> PrefixBlockMatch:
         bs = max(1, int(block_size or prefix_cache_block_size()))
         limit = len(tokens)
@@ -145,7 +192,11 @@ class PrefixBlockPool:
             return PrefixBlockMatch(0, 0, None, verified=True)
 
         chain, lmcache_hits = self._build_prefix_chain(
-            tokens, scope=scope, limit=limit, block_size=bs
+            tokens,
+            scope=scope,
+            limit=limit,
+            block_size=bs,
+            load_tier_filter=load_tier_filter,
         )
         matched = chain[-1].token_end if chain else 0
         blocks = len(chain)
@@ -302,6 +353,7 @@ class PrefixBlockPool:
         min_matched: int = 0,
         prefer_session_key: str | None = None,
         prefer_session_group: str | None = None,
+        load_tier_filter: TierFilter | None = None,
     ) -> tuple[int, int, int] | None:
         """Return ``(donor_slot, matched_tokens, matched_blocks)`` for cross-slot seed.
 
@@ -318,6 +370,7 @@ class PrefixBlockPool:
             scope=scope,
             limit=limit,
             block_size=block_size,
+            load_tier_filter=load_tier_filter,
         )
         with self._lock:
             slot_meta = self._slot_session_meta_locked()
@@ -339,6 +392,7 @@ class PrefixBlockPool:
         max_tokens: int | None = None,
         min_matched: int = 0,
         block_size: int | None = None,
+        load_tier_filter: TierFilter | None = None,
     ) -> PrefixBlobMatch | None:
         """Longest contiguous prefix that has a federated ``blob_digest`` (L3-R7).
 
@@ -349,6 +403,9 @@ class PrefixBlockPool:
         from runtime.kv.lmcache_blob import lmcache_blobs_enabled
 
         if not lmcache_blobs_enabled() or not tokens:
+            return None
+        filt = load_tier_filter or TierFilter.ALL
+        if not filt.allows_lmcache(remote=lmcache_is_remote()):
             return None
         limit = len(tokens) if max_tokens is None else min(len(tokens), int(max_tokens))
         if limit <= 0:
@@ -393,16 +450,33 @@ class PrefixBlockPool:
         blob_path: str | None = None,
         block_size: int | None = None,
         session_group: str | None = None,
-    ) -> list[str]:
+        finalize_blob: bool | None = None,
+        store_block_mask: list[bool] | None = None,
+    ) -> RegisterPrefixResult:
+        """Register full prefix blocks; optionally defer blob publish (vLLM #48596).
+
+        ``finalize_blob``:
+          - ``True`` — publish immediately when ``blob_path`` set
+          - ``False`` — metadata only; queue pending finalize
+          - ``None`` (auto) — publish only when ``blob_path`` exists on disk
+
+        ``store_block_mask``: SWA reachable-tail filter; ``None`` stores all
+        full blocks. Masked-out blocks skip pool + LMCache put.
+        """
         if seq_pos <= 0 or not tokens or slot_id is None:
-            return []
+            return RegisterPrefixResult()
         bs = max(1, int(block_size or prefix_cache_block_size()))
         tier = lmcache_tier()
         now = time.time() * 1000
         sid = int(slot_id)
         out: list[str] = []
+        skipped_swa = 0
+        registered_tokens = 0
         blob_digest: str | None = None
-        if blob_path and lmcache_tier_enabled():
+        do_finalize = finalize_blob
+        if do_finalize is None:
+            do_finalize = bool(blob_path) and Path(blob_path).is_file()
+        if do_finalize and blob_path and lmcache_tier_enabled():
             from runtime.kv.lmcache_blob import publish_slot_blob
 
             blob_digest = publish_slot_blob(blob_path)
@@ -411,6 +485,10 @@ class PrefixBlockPool:
             for _idx, _start, end, parent, bh in iter_prefix_blocks(
                 tokens, block_size=bs, scope=scope, max_tokens=seq_pos
             ):
+                if store_block_mask is not None:
+                    if _idx >= len(store_block_mask) or not store_block_mask[_idx]:
+                        skipped_swa += 1
+                        continue
                 existing = self._blocks.get(bh)
                 holders = frozenset({sid})
                 if existing is not None:
@@ -435,6 +513,7 @@ class PrefixBlockPool:
                 )
                 self._blocks[bh] = entry
                 out.append(bh)
+                registered_tokens = end
                 if lmcache_tier_enabled():
                     tier.put(
                         LMCacheBlockRecord(
@@ -452,7 +531,98 @@ class PrefixBlockPool:
                     )
             self._evict_if_needed()
 
-        return out
+        blob_finalized = bool(blob_digest)
+        if blob_path and lmcache_tier_enabled() and not blob_finalized:
+            with _pending_lock:
+                _pending_blob_finalize[(scope, sid)] = str(blob_path)
+        elif blob_finalized:
+            with _pending_lock:
+                _pending_blob_finalize.pop((scope, sid), None)
+
+        return RegisterPrefixResult(
+            block_hashes=out,
+            registered_tokens=registered_tokens,
+            blob_digest=blob_digest,
+            blob_finalized=blob_finalized,
+            skipped_swa_blocks=skipped_swa,
+        )
+
+    def finalize_slot_blob(
+        self,
+        *,
+        scope: str,
+        slot_id: int,
+        blob_path: str | None = None,
+    ) -> str | None:
+        """Publish deferred slot blob and attach digests (vLLM finish-time store).
+
+        Call after disk save completes or before slot reuse when a finalize is
+        pending. Returns digest or None.
+        """
+        if slot_id < 0:
+            return None
+        sid = int(slot_id)
+        path = blob_path
+        with _pending_lock:
+            if not path:
+                path = _pending_blob_finalize.get((scope, sid))
+        if not path:
+            return None
+        if not Path(path).is_file():
+            return None
+        if not lmcache_tier_enabled():
+            return None
+        from runtime.kv.lmcache_blob import publish_slot_blob
+
+        digest = publish_slot_blob(path)
+        if not digest:
+            return None
+        now = time.time() * 1000
+        tier = lmcache_tier()
+        with self._lock:
+            for bh, entry in list(self._blocks.items()):
+                if entry.model_scope != scope:
+                    continue
+                holders = _holder_slots(entry)
+                if sid not in holders:
+                    continue
+                updated = replace(
+                    entry,
+                    blob_path=path,
+                    blob_digest=digest,
+                    updated_at_ms=now,
+                )
+                self._blocks[bh] = updated
+                if lmcache_tier_enabled():
+                    tier.put(
+                        LMCacheBlockRecord(
+                            block_hash=bh,
+                            parent_hash=entry.parent_hash,
+                            block_index=entry.block_index,
+                            token_end=entry.token_end,
+                            model_scope=scope,
+                            session_key=entry.session_key,
+                            slot_id=sid,
+                            blob_path=path,
+                            blob_digest=digest,
+                            updated_at_ms=int(now),
+                        )
+                    )
+        with _pending_lock:
+            _pending_blob_finalize.pop((scope, sid), None)
+        return digest
+
+    def flush_pending_blob_before_reuse(
+        self,
+        *,
+        scope: str,
+        slot_id: int,
+        blob_path: str | None = None,
+    ) -> str | None:
+        """Reuse-race flush: finalize before another request claims ``slot_id``."""
+        return self.finalize_slot_blob(
+            scope=scope, slot_id=slot_id, blob_path=blob_path
+        )
 
     def release_slot_holders(self, slot_id: int) -> int:
         """Drop ``slot_id`` from all block holder sets; remove entries with no holders.
@@ -664,6 +834,7 @@ def prefix_block_pool_health(*, model_scope: str | None = None) -> dict[str, Any
 def reset_prefix_block_pools_for_tests() -> None:
     with _POOLS_LOCK:
         _POOLS.clear()
+    reset_pending_blob_finalize_for_tests()
 
 
 def build_model_scope(

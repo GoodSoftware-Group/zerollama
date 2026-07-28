@@ -367,6 +367,23 @@ func TestToUsage_cachedPromptTokens(t *testing.T) {
 	}
 }
 
+func TestToUsage_createdCacheTokens(t *testing.T) {
+	resp := api.ChatResponse{
+		Metrics: api.Metrics{
+			PromptEvalCount:     200,
+			CachedPromptTokens:  50,
+			CacheCreationTokens: 150,
+		},
+	}
+	usage := ToUsage(resp)
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CreatedCacheTokens == nil {
+		t.Fatal("expected created_cache_tokens")
+	}
+	if *usage.PromptTokensDetails.CreatedCacheTokens != 150 {
+		t.Fatalf("created_cache_tokens=%d, want 150", *usage.PromptTokensDetails.CreatedCacheTokens)
+	}
+}
+
 func TestSglExtFromMetrics(t *testing.T) {
 	ext := SglExtFromMetrics(api.Metrics{
 		CachedPromptTokens:         100,

@@ -44,8 +44,9 @@ def merge_cache_tier_details(
     host: int = 0,
     storage: int = 0,
     storage_backend: str = "",
+    creation: int = 0,
 ) -> dict[str, Any]:
-    """Attach optional host/storage tier counts (omit zeros)."""
+    """Attach optional host/storage/creation tier counts (omit zeros)."""
     if host > 0:
         out["cached_tokens_host"] = int(host)
         out["prompt_eval_cached_host"] = int(host)
@@ -54,6 +55,10 @@ def merge_cache_tier_details(
         out["prompt_eval_cached_storage"] = int(storage)
         backend = (storage_backend or "").strip() or lmcache_storage_backend_label()
         out["cached_tokens_storage_backend"] = backend
+    if creation > 0:
+        out["cache_creation_tokens"] = int(creation)
+        out["prompt_eval_cache_creation_count"] = int(creation)
+        out["created_cache_tokens"] = int(creation)
     return out
 
 
@@ -84,7 +89,15 @@ def metrics_from_llama_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         chunk.get("cached_tokens_storage") or chunk.get("prompt_eval_cached_storage") or 0
     )
     backend = str(chunk.get("cached_tokens_storage_backend") or "")
-    merge_cache_tier_details(out, host=host, storage=storage, storage_backend=backend)
+    creation = int(
+        chunk.get("cache_creation_tokens")
+        or chunk.get("prompt_eval_cache_creation_count")
+        or chunk.get("created_cache_tokens")
+        or 0
+    )
+    merge_cache_tier_details(
+        out, host=host, storage=storage, storage_backend=backend, creation=creation
+    )
     return out
 
 

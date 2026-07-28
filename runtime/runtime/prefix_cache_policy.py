@@ -125,6 +125,7 @@ def _apply_prefix_block_pool(
     model_hash: str | None,
     cache_salt: str | None,
     seq_pos: int | None,
+    load_tier_filter: Any = None,
 ) -> tuple[bool, int | None, str | None]:
     """Hash-chain verification for pinned prefix reuse (optional env)."""
     from runtime.kv.prefix_block_pool import (
@@ -147,6 +148,7 @@ def _apply_prefix_block_pool(
         prompt_token_ids,
         scope=scope,
         seq_pos=verify_pos,
+        load_tier_filter=load_tier_filter,
     )
     from runtime.kv_cache_spec import prefix_cache_block_size
 
@@ -164,6 +166,7 @@ def prefix_block_pool_snapshot(
     cache_salt: str | None,
     seq_pos: int | None,
     resume: int | None,
+    load_tier_filter: Any = None,
 ) -> dict[str, Any] | None:
     """Operator/trace snapshot of hash-chain prefix verification."""
     from runtime.kv.prefix_block_pool import (
@@ -184,6 +187,7 @@ def prefix_block_pool_snapshot(
         prompt_token_ids,
         scope=scope,
         seq_pos=verify_pos,
+        load_tier_filter=load_tier_filter,
     )
     from runtime.kv_cache_spec import prefix_cache_block_size
 
@@ -209,6 +213,7 @@ def prefix_cache_decision(
     model_hash: str | None = None,
     cache_salt: str | None = None,
     subprocess: bool = False,
+    load_tier_filter: Any = None,
 ) -> tuple[bool, int | None, str | None]:
     """Return ``(cache_prompt, resume_pos, deny_reason)`` for one admission.
 
@@ -243,6 +248,7 @@ def prefix_cache_decision(
         model_hash=model_hash,
         cache_salt=cache_salt,
         seq_pos=seq_pos,
+        load_tier_filter=load_tier_filter,
     )
 
 

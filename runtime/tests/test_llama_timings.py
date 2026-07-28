@@ -38,6 +38,19 @@ def test_metrics_from_llama_chunk_host_storage_tiers():
     assert out["cached_tokens_storage_backend"] == "redis"
 
 
+def test_metrics_from_llama_chunk_cache_creation():
+    out = metrics_from_llama_chunk(
+        {
+            "timings": {"cache_n": 100, "prompt_n": 20},
+            "cache_creation_tokens": 80,
+        }
+    )
+    assert out["cached_prompt_tokens"] == 100
+    assert out["cache_creation_tokens"] == 80
+    assert out["created_cache_tokens"] == 80
+    assert out["prompt_eval_cache_creation_count"] == 80
+
+
 def test_merge_cache_tier_details_omits_zeros():
     from runtime.llama_timings import merge_cache_tier_details
 

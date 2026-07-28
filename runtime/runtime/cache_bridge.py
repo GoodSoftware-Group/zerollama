@@ -601,6 +601,23 @@ def extract_cache_level(options: dict[str, Any] | None) -> str:
     return _CACHE_LEVEL_ALIASES.get(raw.strip().lower(), "auto")
 
 
+def extract_kv_load_tiers(options: dict[str, Any] | None) -> Any:
+    """Per-request secondary-tier load filter (vLLM #48123 ``kv_load_tiers``).
+
+    Prefer ``options.zerollama.kv_load_tiers``; fall back to top-level
+    ``kv_load_tiers`` / ``kvLoadTiers``. Returns raw JSON list or None.
+    """
+    z = zerollama_block_from_options(options)
+    raw = z.get("kv_load_tiers")
+    if raw is None:
+        raw = z.get("kvLoadTiers")
+    if raw is None and isinstance(options, dict):
+        raw = options.get("kv_load_tiers")
+        if raw is None:
+            raw = options.get("kvLoadTiers")
+    return raw
+
+
 def apply_cache_level_to_policy(policy: Any, cache_level: str | None) -> Any:
     """Override disk persist from options.zerollama.cache_level.
 

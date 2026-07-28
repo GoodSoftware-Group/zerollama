@@ -99,6 +99,58 @@ def test_register_prefix_publishes_digest(tmp_path: Path):
     assert found.matched_tokens == 512
 
 
+def test_register_prefix_defers_blob_until_finalize(tmp_path: Path):
+    """vLLM #48596 — metadata first; publish when slot file appears."""
+    from runtime.kv.prefix_block_pool import pending_blob_finalize_count
+
+    scope = build_model_scope(model_hash="mh-defer")
+    tokens = _tokens(512)
+    missing = tmp_path / "not-yet.bin"
+    pool = get_prefix_block_pool(model_scope=scope)
+    reg = pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=512,
+        session_key="a",
+        slot_id=7,
+        blob_path=str(missing),
+        block_size=512,
+        finalize_blob=None,
+    )
+    assert reg.block_hashes
+    assert not reg.blob_finalized
+    assert pending_blob_finalize_count() >= 1
+    entry = pool._blocks[reg.block_hashes[0]]
+    assert entry.blob_digest is None
+
+    missing.write_bytes(b"late-slot-bytes")
+    digest = pool.finalize_slot_blob(
+        scope=scope, slot_id=7, blob_path=str(missing)
+    )
+    assert digest and len(digest) == 64
+    assert pool._blocks[reg.block_hashes[0]].blob_digest == digest
+    assert pending_blob_finalize_count() == 0
+
+
+def test_register_prefix_swa_store_mask_skips_unreachable(tmp_path: Path):
+    scope = build_model_scope(model_hash="mh-swa")
+    # 4 full blocks of size 256 → 1024 tokens; mask keeps only last two.
+    tokens = _tokens(1024)
+    pool = get_prefix_block_pool(model_scope=scope)
+    mask = [False, False, True, True]
+    reg = pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=1024,
+        session_key="s",
+        slot_id=1,
+        block_size=256,
+        store_block_mask=mask,
+    )
+    assert reg.skipped_swa_blocks == 2
+    assert len(reg.block_hashes) == 2
+
+
 def test_find_blob_restore_plan_and_execute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_ROOT", str(tmp_path / "cache"))
     scope = build_model_scope(model_hash="mh-restore")
