@@ -124,7 +124,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; raw kwargs can still hit upstream |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
-| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1/chat/completions` and `/api/chat` → HTTP 400 (`CheckUnknownChatCompletionFields` / `CheckUnknownChatFields`); assert on response still required for known-but-unread knobs |
+| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1` + `/api/chat` → 400; `chat_template_kwargs` / `enable_thinking` accepted and mapped to `think`, with unknown nested kwargs rejected (traps 07/12/23) |
 | **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
 
 ### Model config (also in native doctor)

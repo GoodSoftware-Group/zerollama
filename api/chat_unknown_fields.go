@@ -10,8 +10,9 @@ import (
 )
 
 // chatPassthroughFields are recognized native /api/chat keys that may not appear
-// on ChatRequest but must not 400. Keep empty unless a real SDK field is needed;
-// enable_thinking / chat_template_kwargs stay excluded (minefield trap 77).
+// on ChatRequest but must not 400. Keep empty unless a real SDK field is needed.
+// enable_thinking / chat_template_kwargs are on ChatRequest and validated in
+// ApplyChatThinkingAliases (unknown nested kwargs → 400).
 var chatPassthroughFields = []string{}
 
 var (

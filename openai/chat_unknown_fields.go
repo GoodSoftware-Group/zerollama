@@ -11,8 +11,8 @@ import (
 
 // chatCompletionPassthroughFields are recognized OpenAI / Ollama request keys that
 // may not appear on ChatCompletionRequest but must not 400 (SDKs send them).
-// Deliberately excludes enable_thinking / chat_template_kwargs — those are the
-// silent-ignore arms in minefield trap 77; use think / reasoning_effort instead.
+// enable_thinking / chat_template_kwargs live on ChatCompletionRequest and are
+// validated/mapped in chat_thinking_aliases.go (unknown nested kwargs → 400).
 var chatCompletionPassthroughFields = []string{
 	"extra_body",
 	"n",

@@ -38,6 +38,10 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			return
 		}
 		EnsureAgentPromptCacheKey(&req)
+		if err := api.ApplyChatThinkingAliases(&req); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		if len(req.Messages) == 0 && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
 			c.Next()
 			return

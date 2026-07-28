@@ -2815,6 +2815,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	if err := api.ApplyChatThinkingAliases(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	EnsureAgentPromptCacheKey(&req)
 	recordInferenceAccessCacheKey(c, modality.ExtractPromptCacheKey(req.Options))
 	modality.WarnPrefixMMCacheWithoutSessionKey(&req)

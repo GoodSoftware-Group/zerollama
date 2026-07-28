@@ -31,6 +31,9 @@ func BindChatCompletionRequest(body []byte) (ChatCompletionRequest, error) {
 		mergeChatExtraBody(&req, eb)
 	}
 	mergeOptionsPromptCacheKey(&req)
+	if err := validateChatTemplateKwargs(req.ChatTemplateKwargs); err != nil {
+		return req, err
+	}
 	return req, nil
 }
 

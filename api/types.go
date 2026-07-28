@@ -276,6 +276,12 @@ type ChatRequest struct {
 	// each with an associated log probability. Only applies when Logprobs is true.
 	// Valid values are 0-20. Default is 0 (only return the selected token's logprob).
 	TopLogprobs int `json:"top_logprobs,omitempty"`
+
+	// EnableThinking is a harness alias (vLLM/SGLang). Mapped onto Think when Think is unset.
+	EnableThinking *bool `json:"enable_thinking,omitempty"`
+
+	// ChatTemplateKwargs carries template knobs. Unknown nested keys are rejected (trap 07/77).
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type Tools []Tool

@@ -156,6 +156,12 @@ type ChatCompletionRequest struct {
 	Options map[string]any `json:"options,omitempty"`
 	// KeepAlive mirrors /api/chat keep_alive (e.g. "30m") so agent clients pin MLX runners.
 	KeepAlive *api.Duration `json:"keep_alive,omitempty"`
+	// EnableThinking is a common harness alias (vLLM/SGLang). Mapped to Think in FromChatRequest.
+	// Prefer think / reasoning_effort on this stack; accepted so thinking-off arms are not silent no-ops.
+	EnableThinking *bool `json:"enable_thinking,omitempty"`
+	// ChatTemplateKwargs carries template knobs (enable_thinking, reasoning_effort).
+	// Unknown nested keys are rejected (minefield traps 07 + 77).
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type ChatCompletion struct {
@@ -827,6 +833,15 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 			think = &api.ThinkValue{Value: false}
 		} else {
 			think = &api.ThinkValue{Value: effort}
+		}
+	}
+
+	// Harness aliases (chat_template_kwargs / enable_thinking) after OpenAI reasoning_*.
+	if think == nil {
+		if t, err := thinkFromEnableThinkingAliases(r.EnableThinking, r.ChatTemplateKwargs); err != nil {
+			return nil, err
+		} else if t != nil {
+			think = t
 		}
 	}
 
