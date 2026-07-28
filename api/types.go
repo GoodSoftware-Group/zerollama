@@ -226,6 +226,12 @@ type GenerateRequest struct {
 	// Steps is the number of diffusion steps for image generation.
 	// Only used for image generation models.
 	Steps int32 `json:"steps,omitempty"`
+
+	// EnableThinking is a harness alias. Mapped onto Think when Think is unset.
+	EnableThinking *bool `json:"enable_thinking,omitempty"`
+
+	// ChatTemplateKwargs carries template knobs. Unknown nested keys are rejected (trap 07/77).
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 // ChatRequest describes a request sent by [Client.Chat].

@@ -123,7 +123,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | **29** | Server thinking-off is not a gate | **optional gate** | Default still allows client re-enable. Set `ZEROLLAMA_THINKING_GATE=deny` (400) or `strip` (force off) on lanes sized for non-thinking budgets ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
-| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1` + `/api/chat` → 400; known nested kwargs validated |
+| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1`, `/api/chat`, and `/api/generate` → 400; known nested kwargs validated |
 | **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
 
 ### Model config (also in native doctor)

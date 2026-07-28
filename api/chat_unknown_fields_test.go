@@ -62,3 +62,42 @@ func TestApplyChatThinkingAliases_BogusKwarg(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestCheckUnknownGenerateFields_RejectsMinefieldProbe(t *testing.T) {
+	err := CheckUnknownGenerateFields([]byte(`{
+		"model": "qwen2.5:0.5b",
+		"prompt": "hi",
+		"__minefield_unvalidated_field_probe__": true
+	}`))
+	if err == nil {
+		t.Fatal("expected unknown field error")
+	}
+	if !strings.Contains(err.Error(), "__minefield_unvalidated_field_probe__") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCheckUnknownGenerateFields_AllowsKnown(t *testing.T) {
+	err := CheckUnknownGenerateFields([]byte(`{
+		"model": "qwen2.5:0.5b",
+		"prompt": "hi",
+		"stream": false,
+		"think": false,
+		"enable_thinking": false,
+		"options": {"temperature": 0}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyGenerateThinkingAliases(t *testing.T) {
+	on := true
+	req := &GenerateRequest{EnableThinking: &on}
+	if err := ApplyGenerateThinkingAliases(req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Think == nil || !req.Think.Bool() {
+		t.Fatalf("Think=%v", req.Think)
+	}
+}

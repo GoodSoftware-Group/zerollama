@@ -474,11 +474,29 @@ func signinURL() (string, error) {
 
 func (s *Server) GenerateHandler(c *gin.Context) {
 	checkpointStart := time.Now()
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Trap 77: reject invented top-level keys on native /api/generate (parity with /api/chat).
+	if err := api.CheckUnknownGenerateFields(body); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
 	var req api.GenerateRequest
 	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
 		return
 	} else if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := api.ApplyGenerateThinkingAliases(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

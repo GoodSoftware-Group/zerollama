@@ -34,11 +34,19 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if err := api.CheckUnknownGenerateFields(body); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 
 		var req api.GenerateRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			c.Next()
+			return
+		}
+		if err := api.ApplyGenerateThinkingAliases(&req); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		EnsureGeneratePromptCacheKey(&req)

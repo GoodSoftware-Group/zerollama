@@ -29,36 +29,35 @@ func validateChatTemplateKwargs(kwargs map[string]any) error {
 	return fmt.Errorf("unknown field: chat_template_kwargs.%s", strings.Join(unknown, ", "))
 }
 
-// ApplyChatThinkingAliases maps enable_thinking / chat_template_kwargs onto Think
-// when Think is unset, and rejects unknown nested kwargs (minefield traps 07 + 77).
-func ApplyChatThinkingAliases(req *ChatRequest) error {
-	if req == nil {
-		return nil
-	}
-	if err := validateChatTemplateKwargs(req.ChatTemplateKwargs); err != nil {
+func applyThinkingAliasFields(think **ThinkValue, enable *bool, kwargs map[string]any, fromAlias *bool) error {
+	if err := validateChatTemplateKwargs(kwargs); err != nil {
 		return err
 	}
-	if req.Think != nil {
+	if think == nil || *think != nil {
 		return nil
 	}
-	if req.EnableThinking != nil {
-		req.Think = &ThinkValue{Value: *req.EnableThinking}
-		req.ThinkFromAlias = true
+	set := func(v *ThinkValue) {
+		*think = v
+		if fromAlias != nil {
+			*fromAlias = true
+		}
+	}
+	if enable != nil {
+		set(&ThinkValue{Value: *enable})
 		return nil
 	}
-	if req.ChatTemplateKwargs == nil {
+	if kwargs == nil {
 		return nil
 	}
-	if v, ok := req.ChatTemplateKwargs["enable_thinking"]; ok {
+	if v, ok := kwargs["enable_thinking"]; ok {
 		b, ok := v.(bool)
 		if !ok {
 			return fmt.Errorf("invalid chat_template_kwargs.enable_thinking: must be boolean")
 		}
-		req.Think = &ThinkValue{Value: b}
-		req.ThinkFromAlias = true
+		set(&ThinkValue{Value: b})
 		return nil
 	}
-	if v, ok := req.ChatTemplateKwargs["reasoning_effort"]; ok {
+	if v, ok := kwargs["reasoning_effort"]; ok {
 		s, ok := v.(string)
 		if !ok {
 			return fmt.Errorf("invalid chat_template_kwargs.reasoning_effort: must be string")
@@ -68,11 +67,27 @@ func ApplyChatThinkingAliases(req *ChatRequest) error {
 			return fmt.Errorf("invalid reasoning value: '%s' (must be \"high\", \"medium\", \"low\", or \"none\")", effort)
 		}
 		if effort == "none" {
-			req.Think = &ThinkValue{Value: false}
+			set(&ThinkValue{Value: false})
 		} else {
-			req.Think = &ThinkValue{Value: effort}
+			set(&ThinkValue{Value: effort})
 		}
-		req.ThinkFromAlias = true
 	}
 	return nil
+}
+
+// ApplyChatThinkingAliases maps enable_thinking / chat_template_kwargs onto Think
+// when Think is unset, and rejects unknown nested kwargs (minefield traps 07 + 77).
+func ApplyChatThinkingAliases(req *ChatRequest) error {
+	if req == nil {
+		return nil
+	}
+	return applyThinkingAliasFields(&req.Think, req.EnableThinking, req.ChatTemplateKwargs, &req.ThinkFromAlias)
+}
+
+// ApplyGenerateThinkingAliases is the /api/generate counterpart of ApplyChatThinkingAliases.
+func ApplyGenerateThinkingAliases(req *GenerateRequest) error {
+	if req == nil {
+		return nil
+	}
+	return applyThinkingAliasFields(&req.Think, req.EnableThinking, req.ChatTemplateKwargs, nil)
 }
