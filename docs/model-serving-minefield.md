@@ -48,7 +48,7 @@ model=qwen3:0.6b  build=0.30.11  tool=minefield_doctor.py
 
 | Bucket | Result |
 |--------|--------|
-| **PROBLEMS** | **12** (empty content at `max_tokens=512` with long reasoning — conversion floor; size budgets for thinking), **29** (default thinking-off is not a gate: client `reasoning_effort` / aliases can re-enable per request) |
+| **PROBLEMS** | **12** (empty content at `max_tokens=512` with long reasoning — conversion floor; size budgets for thinking), **29** (default thinking-off is not a gate: client `reasoning_effort` / aliases can re-enable per request — mitigate with `ZEROLLAMA_THINKING_GATE=deny\|strip`) |
 | **CLEAN** | **77**, **78**, **01**, **03** (toggle map separable), **02**, **23**, **07**, **19**, **26**, mm-* |
 | Coverage | `problems 2` · `clean 9` numbered · Core executed **01, 03, 12, 19, 77** |
 
@@ -120,7 +120,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | 04 | History reasoning stripping | `covered via test` / code | [`server/chat_sanitize.go`](../server/chat_sanitize.go) |
 | 12 | Empty content at token ceiling | `documented` / model-dependent | CLEAN on `qwen2.5:0.5b` @ 512; **PROBLEM** on `qwen3:0.6b` @ 512 (honest truncation into reasoning) |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
-| **29** | Server thinking-off is not a gate | `documented` | Client kwargs can re-enable; strip at gateway if you need a hard off |
+| **29** | Server thinking-off is not a gate | **optional gate** | Default still allows client re-enable. Set `ZEROLLAMA_THINKING_GATE=deny` (400) or `strip` (force off) on lanes sized for non-thinking budgets ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
 | **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1` + `/api/chat` → 400; known nested kwargs validated |

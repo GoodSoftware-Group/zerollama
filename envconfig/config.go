@@ -478,6 +478,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY":   {"ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY", ggmlPauseWhenRuntimeBusyDisplay(), "Pause new ggml loads when Python runtime queue is deep (auto when runtime configured)"},
 		"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG": {"ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG", Var("ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG"), "Runtime waiting+running threshold to pause ggml (default 4)"},
 		"ZEROLLAMA_RUNTIME":                        {"ZEROLLAMA_RUNTIME", runtimeEnvDisplay(), "Python runtime proxy for text GGUF: 1/on, 0/off; unset=off on Darwin (ggml default), on on Linux when URL set"},
+		"ZEROLLAMA_THINKING_GATE":                  {"ZEROLLAMA_THINKING_GATE", ThinkingGate(), "Trap 29: deny|strip client thinking enable (empty=default allow)"},
 		"ZEROLLAMA_LLAMA_CPP_BACKEND":              {"ZEROLLAMA_LLAMA_CPP_BACKEND", LlamaCppBackend(), "If 1, route eligible GGUF text inference through llama.cpp (Python runtime) instead of ggml runner"},
 		"ZEROLLAMA_LLAMA_SERVER":                   {"ZEROLLAMA_LLAMA_SERVER", LlamaServerBackend(), "Go → llama-server for GGUF (1/on, auto=Linux serve default, 0/off)"},
 		"ZEROLLAMA_FLASH_MOE":                      {"ZEROLLAMA_FLASH_MOE", FlashMoEEnabled(), "Flash-MoE slot-bank via anemll-flash-llama.cpp (1/on)"},

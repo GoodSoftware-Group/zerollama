@@ -597,6 +597,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 	}
 
+	if err := applyThinkingGate(&req.Think); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	streaming := req.Stream == nil || *req.Stream
 	var streamCh chan any
 	if streaming {
@@ -3008,6 +3013,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				return
 			}
 		}
+	}
+
+	if err := applyThinkingGate(&req.Think); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	streaming := req.Stream == nil || *req.Stream
