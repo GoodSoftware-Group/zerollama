@@ -43,6 +43,7 @@ func ApplyChatThinkingAliases(req *ChatRequest) error {
 	}
 	if req.EnableThinking != nil {
 		req.Think = &ThinkValue{Value: *req.EnableThinking}
+		req.ThinkFromAlias = true
 		return nil
 	}
 	if req.ChatTemplateKwargs == nil {
@@ -54,6 +55,7 @@ func ApplyChatThinkingAliases(req *ChatRequest) error {
 			return fmt.Errorf("invalid chat_template_kwargs.enable_thinking: must be boolean")
 		}
 		req.Think = &ThinkValue{Value: b}
+		req.ThinkFromAlias = true
 		return nil
 	}
 	if v, ok := req.ChatTemplateKwargs["reasoning_effort"]; ok {
@@ -70,6 +72,7 @@ func ApplyChatThinkingAliases(req *ChatRequest) error {
 		} else {
 			req.Think = &ThinkValue{Value: effort}
 		}
+		req.ThinkFromAlias = true
 	}
 	return nil
 }

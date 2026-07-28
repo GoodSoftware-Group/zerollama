@@ -46,9 +46,9 @@ OLLAMA_HOST=127.0.0.1:11435  model=qwen2.5:0.5b  build=0.30.11
 
 | Bucket | Result |
 |--------|--------|
-| **PROBLEMS** | **none** (lab re-run Jul 28 after traps **77** + **78**) |
-| **CLEAN** | **77** (unknown field → 400), **78** (`tool_choice none`), **19**, **07** (dead `chat_template_kwargs` loud), **26**, mm-* |
-| Coverage | `problems 0` · executed CLEAN includes **77** and **78** |
+| **PROBLEMS** | **none** (lab re-run Jul 28 after thinking-alias mapping) |
+| **CLEAN** | **77**, **78**, **12** (content at cap), **23** (stream content), **07**, **19**, **26**, mm-* |
+| Coverage | `problems 0` · executed CLEAN includes **12**, **19**, **77**, **78**, **23**, **07** |
 
 ### Earlier baseline (pre-fix)
 

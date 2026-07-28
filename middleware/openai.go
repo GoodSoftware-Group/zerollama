@@ -466,6 +466,10 @@ func ChatMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
 		}
+		if chatReq.ThinkFromAlias {
+			// Survives JSON re-encode of ChatRequest (ThinkFromAlias is json:"-").
+			c.Set("think_from_alias", true)
+		}
 
 		if err := json.NewEncoder(&b).Encode(chatReq); err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
