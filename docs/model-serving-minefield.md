@@ -36,59 +36,56 @@ These traps matter because zerollama **spawns llama-server** and owns VRAM admis
 
 ---
 
-## 2. Lab minefield-doctor run
+## 2. Lab minefield-doctor runs
 
-### Re-verify after trap 78 fix (2026-07-28, same lab layout)
+Lab only (`OLLAMA_HOST=127.0.0.1:11435`, `ZEROLLAMA_RUNTIME=0`, `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0`). Never production `:11434` / `:8081`.
+
+### Thinking lane — `qwen3:0.6b` (2026-07-28)
 
 ```text
-OLLAMA_HOST=127.0.0.1:11435  model=qwen2.5:0.5b  build=0.30.11
+model=qwen3:0.6b  build=0.30.11  tool=minefield_doctor.py
 ```
 
 | Bucket | Result |
 |--------|--------|
-| **PROBLEMS** | **none** (lab re-run Jul 28; OpenAI `reasoning_effort` soft on non-thinking models) |
-| **CLEAN** | **77**, **78**, **12**, **23**, **02** (no orphan `</think>`), **07**, **19**, **26**, mm-* |
-| Coverage | `problems 0` · **03/29** still N/A on non-thinking `qwen2.5:0.5b` (toggle map needs a reasoning lane) |
+| **PROBLEMS** | **12** (empty content at `max_tokens=512` with long reasoning — conversion floor; size budgets for thinking), **29** (default thinking-off is not a gate: client `reasoning_effort` / aliases can re-enable per request) |
+| **CLEAN** | **77**, **78**, **01**, **03** (toggle map separable), **02**, **23**, **07**, **19**, **26**, mm-* |
+| Coverage | `problems 2` · `clean 9` numbered · Core executed **01, 03, 12, 19, 77** |
+
+**Operator takeaway (12 / 29):** On thinking models, a 512 ceiling can score as capability collapse while the model is still reasoning. Treat server thinking-off as a **default**, not a hard gate, unless your gateway strips thinking kwargs.
+
+### Non-thinking lane — `qwen2.5:0.5b` (2026-07-28)
+
+```text
+model=qwen2.5:0.5b  build=0.30.11
+```
+
+| Bucket | Result |
+|--------|--------|
+| **PROBLEMS** | **none** |
+| **CLEAN** | **77**, **78**, **12**, **23**, **02**, **07**, **19**, **26**, mm-* |
+| Coverage | **03/29** N/A (no reasoning channel; arms return but none fire) |
 
 ### Earlier baseline (pre-fix)
 
-Empirical baseline against a **lab** stack only (never production `:11434` / `:8081`):
-
 ```text
-OLLAMA_HOST=127.0.0.1:11435
-ZEROLLAMA_RUNTIME=0
-ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0
-model=qwen2.5:0.5b
-build=0.30.11
-tool=minefield_doctor.py (upstream registry)
-base-url=http://127.0.0.1:11435/v1
+model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 ```
 
 #### PROBLEMS (2) — pre-fix
 
 | Trap | Finding |
 |------|---------|
-| **77** | Invented top-level field `__minefield_unvalidated_field_probe__` accepted with HTTP 200 — request surface is largely unvalidated; thinking-off / typo arms can measure the wrong configuration. **Fixed:** `/v1/chat/completions` and `/api/chat` reject unknown top-level keys with HTTP 400 ([`openai/chat_unknown_fields.go`](../openai/chat_unknown_fields.go), [`api/chat_unknown_fields.go`](../api/chat_unknown_fields.go)). |
-| **78** | `tool_choice: "none"` was accepted and ignored (fails open). **Fixed:** `tool_choice: "none"` now omits tools from `/v1/chat/completions` and `/v1/responses` conversion ([`openai/openai.go`](../openai/openai.go), [`openai/responses.go`](../openai/responses.go)). |
+| **77** | Invented top-level field accepted with HTTP 200. **Fixed:** `/v1` + `/api/chat` reject unknown keys; `chat_template_kwargs` / `enable_thinking` mapped to `think` with nested-kwarg validation. |
+| **78** | `tool_choice: "none"` accepted and ignored. **Fixed:** omits tools in chat + responses conversion. |
 
-### CHECKED AND CLEAN (selected)
+### Still out of reach for the upstream doctor here
 
-| Trap / advisory | Result |
-|-----------------|--------|
-| **19** | Structured `tool_calls` on forced tool probe (`get_time`) |
-| **12** | Cap reached (`finish=length`) but content still returned at `max_tokens=512` (this budget / sample only) |
-| **23** | Streamed answer in `content` deltas |
-| **26** | Tool markup parsed into `tool_calls`, not left in reasoning/content text |
-| mm-surface / mm-usage / mm-errors | Inline image accepted; usage attributes media tokens; bad media path → HTTP 400 |
+- **04/20/25** — no render/`/apply-template` path on this Ollama-shaped stack
+- **10/17/21** — need `--hf-repo` or a readable chat template for full checks
+- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (hand-run per CORE.md)
 
-### INCONCLUSIVE / COULD NOT CHECK (highlights)
-
-- **02** orphaned `</think>` — CLEAN after all three toggle arms return
-- **03/29** thinking-toggle map — needs a reasoning-capable model (0.5b has no reasoning channel; all arms return but none fire)
-- **04/20/25** assembled-prompt inspection — no render/`/apply-template` path on this Ollama-shaped stack for the upstream doctor
-- **07/10/17/21** need `--hf-repo` or readable chat template
-
-Coverage line from the tool: `implemented 19/103 | executed 6 | clean 4 | problems 2 | …` — a clean subsection is **not** a bill of health for the full registry.
+Coverage lines from the tool are **not** a bill of health for the full registry (103 entries; doctor implements ~19).
 
 ---
 
@@ -118,13 +115,15 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 
 | Trap | Topic | Status | Where |
 |------|-------|--------|-------|
-| 01 | Wrong reasoning field name | `covered via doctor` | `doctorCheckReasoningField` |
+| 01 | Wrong reasoning field name | `covered via doctor` | Lab CLEAN on `qwen3:0.6b` (`reasoning`); `doctorCheckReasoningField` |
+| 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
 | 04 | History reasoning stripping | `covered via test` / code | [`server/chat_sanitize.go`](../server/chat_sanitize.go) |
-| 12 | Empty content at token ceiling | `covered via doctor` | Think roundtrip + lab clean on 0.5b @ 512 |
+| 12 | Empty content at token ceiling | `documented` / model-dependent | CLEAN on `qwen2.5:0.5b` @ 512; **PROBLEM** on `qwen3:0.6b` @ 512 (honest truncation into reasoning) |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
-| 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; raw kwargs can still hit upstream |
+| **29** | Server thinking-off is not a gate | `documented` | Client kwargs can re-enable; strip at gateway if you need a hard off |
+| 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
-| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1` + `/api/chat` → 400; `chat_template_kwargs` / `enable_thinking` accepted and mapped to `think`, with unknown nested kwargs rejected (traps 07/12/23) |
+| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1` + `/api/chat` → 400; known nested kwargs validated |
 | **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
 
 ### Model config (also in native doctor)
