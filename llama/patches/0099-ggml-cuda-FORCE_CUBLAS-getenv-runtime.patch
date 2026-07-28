@@ -1,0 +1,59 @@
+From 65e45970d2a75cec5ffdc408085c696e570f4765 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 28 Jul 2026 00:06:58 +0000
+Subject: [PATCH 099/101] ggml-cuda: honor GGML_CUDA_FORCE_CUBLAS at runtime
+ via getenv
+
+Upstream only gates MMQ with compile-time -DGGML_CUDA_FORCE_CUBLAS.
+5080 serve scripts export the env var for cuBLAS stability; port the
+Eliza TTS runtime override so one vendor binary matches that contract.
+---
+ ggml/src/ggml-cuda/mmq.cu | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index 352b21e4a..665220d60 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -1,5 +1,6 @@
+ #include "common.cuh"
+ #include "mmq.cuh"
++#include <cstdlib>
+ #include "quantize.cuh"
+ #include "mmid.cuh"
+ 
+@@ -272,6 +273,31 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
+     return false;
+ #endif // GGML_CUDA_FORCE_CUBLAS
+ 
++    // Runtime override: upstream only honored cmake -DGGML_CUDA_FORCE_CUBLAS.
++    // serve.sh exports GGML_CUDA_FORCE_CUBLAS=1 for RTX 5080 / CUDA 13 IQ* stability
++    // (MMQ launch_mul_mat_q / cudaFuncSetAttribute abort). "0"/"false"/"off" keep MMQ.
++    {
++        static int force_cublas_env = -1;
++        if (force_cublas_env < 0) {
++            const char * v = getenv("GGML_CUDA_FORCE_CUBLAS");
++            force_cublas_env = 0;
++            if (v && v[0]) {
++                const bool off =
++                    (v[0] == '0' && v[1] == '\0') ||
++                    (v[0] == 'f' || v[0] == 'F') ||
++                    (v[0] == 'n' || v[0] == 'N') ||
++                    ((v[0] == 'o' || v[0] == 'O') && (v[1] == 'f' || v[1] == 'F'));
++                force_cublas_env = off ? 0 : 1;
++            }
++            if (force_cublas_env) {
++                GGML_LOG_INFO("GGML_CUDA_FORCE_CUBLAS env set — disabling MMQ (cuBLAS path)\n");
++            }
++        }
++        if (force_cublas_env) {
++            return false;
++        }
++    }
++
+     bool mmq_supported;
+ 
+     switch (type) {
+-- 
+2.34.1
+

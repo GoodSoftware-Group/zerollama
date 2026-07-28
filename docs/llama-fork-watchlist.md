@@ -177,7 +177,9 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 | Kobold / Unsloth network forks | Product packaging |
 | BigMoeOnEdge | Interesting **API-only** MoE streaming; watch for Anemll alternatives later |
 | llama-swap | Control-plane proxy — fleet/LA ideas, not kernels |
-| PrismML Q2_0 g128 | Upstream Q2_0 g64 already moving |
+| PrismML Q2_0 **g128** / `PQ2_0` | Fork-only / future type id — do not merge onto pin |
+| PrismML ternary **g64** | On pin (`QK2_0=64` + CUDA **0082**). Use `*-Q2_g64.gguf`. Doc: [prism-ternary.md](./prism-ternary.md) |
+| Dual llama-server (TTS + vendor) | Retire via **0099–0101** — [llama-server-unify.md](./llama-server-unify.md) |
 
 ---
 
