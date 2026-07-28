@@ -46,9 +46,9 @@ OLLAMA_HOST=127.0.0.1:11435  model=qwen2.5:0.5b  build=0.30.11
 
 | Bucket | Result |
 |--------|--------|
-| **PROBLEMS** | **77** only (unknown top-level field still accepted — OpenAI-compat by design) |
-| **CLEAN** | **78** (`tool_choice none` binds — suppression attributable), plus 19, 12, 23, 26, mm-* |
-| Coverage | `problems on: 77` · trap **78 no longer listed under PROBLEMS** |
+| **PROBLEMS** | none after trap **77** + **78** fixes (re-run doctor on lab `:11435` to confirm) |
+| **CLEAN** | **77** (unknown top-level field rejected), **78** (`tool_choice none` binds), plus 19, 12, 23, 26, mm-* |
+| Coverage | trap **77** and **78** no longer listed under PROBLEMS once binary includes the fixes |
 
 ### Earlier baseline (pre-fix)
 
@@ -68,7 +68,7 @@ base-url=http://127.0.0.1:11435/v1
 
 | Trap | Finding |
 |------|---------|
-| **77** | Invented top-level field `__minefield_unvalidated_field_probe__` accepted with HTTP 200 — request surface is largely unvalidated; thinking-off / typo arms can measure the wrong configuration. **Still open by design** (OpenAI-compat ignores unknown keys). Assert on response fields, not status codes. |
+| **77** | Invented top-level field `__minefield_unvalidated_field_probe__` accepted with HTTP 200 — request surface is largely unvalidated; thinking-off / typo arms can measure the wrong configuration. **Fixed:** `/v1/chat/completions` rejects unknown top-level keys with HTTP 400 ([`openai/chat_unknown_fields.go`](../openai/chat_unknown_fields.go), [`BindChatCompletionRequest`](../openai/chat_extras.go), runtime v1 proxy). |
 | **78** | `tool_choice: "none"` was accepted and ignored (fails open). **Fixed:** `tool_choice: "none"` now omits tools from `/v1/chat/completions` and `/v1/responses` conversion ([`openai/openai.go`](../openai/openai.go), [`openai/responses.go`](../openai/responses.go)). |
 
 ### CHECKED AND CLEAN (selected)
@@ -124,7 +124,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; raw kwargs can still hit upstream |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
-| **77** | Only one request field validated | **gap** (OpenAI-compat) | Unknown top-level keys still ignored; assert on response, not HTTP 200 |
+| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1/chat/completions` → HTTP 400 (`CheckUnknownChatCompletionFields`); assert on response still required for known-but-unread knobs |
 | **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
 
 ### Model config (also in native doctor)

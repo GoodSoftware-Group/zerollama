@@ -16,11 +16,15 @@ func BindChatCompletionRequest(body []byte) (ChatCompletionRequest, error) {
 	if len(body) == 0 {
 		return req, nil
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return req, err
-	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
+		return req, err
+	}
+	// Trap 77: reject invented top-level keys so HTTP 200 is not silent fail-open.
+	if err := rejectUnknownChatCompletionFields(raw); err != nil {
+		return req, err
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		return req, err
 	}
 	if eb, ok := raw["extra_body"]; ok {

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -87,25 +88,40 @@ func TestFromResponsesRequest_ToolChoiceNoneOmitsTools(t *testing.T) {
 	}
 }
 
-// TestChatCompletionRequest_UnknownTopLevelFieldAccepted documents minefield trap 77:
-// invented top-level fields do not fail unmarshal (OpenAI-compat). HTTP 200 alone
-// cannot confirm the request surface was validated — assert on response fields.
-func TestChatCompletionRequest_UnknownTopLevelFieldAccepted(t *testing.T) {
+// TestBindChatCompletionRequest_UnknownTopLevelFieldRejected locks minefield trap 77:
+// invented top-level fields must 400 so typos / wrong knobs are loud, not silent.
+func TestBindChatCompletionRequest_UnknownTopLevelFieldRejected(t *testing.T) {
 	raw := []byte(`{
 		"model": "qwen2.5:0.5b",
 		"messages": [{"role": "user", "content": "hi"}],
 		"__minefield_unvalidated_field_probe__": true
 	}`)
-	var req ChatCompletionRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		t.Fatalf("unknown field should be ignored, not error: %v", err)
+	_, err := BindChatCompletionRequest(raw)
+	if err == nil {
+		t.Fatal("expected unknown field error")
 	}
-	out, err := FromChatRequest(req)
+	if !strings.Contains(err.Error(), "__minefield_unvalidated_field_probe__") {
+		t.Fatalf("error = %v, want probe field name", err)
+	}
+}
+
+func TestBindChatCompletionRequest_KnownFieldsStillOK(t *testing.T) {
+	raw := []byte(`{
+		"model": "qwen2.5:0.5b",
+		"messages": [{"role": "user", "content": "hi"}],
+		"temperature": 0,
+		"user": "minefield",
+		"extra_body": {"prompt_cache_key": "k"}
+	}`)
+	req, err := BindChatCompletionRequest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Model != "qwen2.5:0.5b" {
-		t.Fatalf("converted model = %q", out.Model)
+	if req.Model != "qwen2.5:0.5b" {
+		t.Fatalf("model = %q", req.Model)
+	}
+	if req.PromptCacheKey == nil || *req.PromptCacheKey != "k" {
+		t.Fatalf("PromptCacheKey=%v", req.PromptCacheKey)
 	}
 }
 

@@ -30,6 +30,12 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 
+		// Trap 77: reject unknown top-level fields before runtime forward (same floor as ChatMiddleware).
+		if err := openai.CheckUnknownChatCompletionFields(body); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+
 		var oreq openai.ChatCompletionRequest
 		if err := json.Unmarshal(body, &oreq); err != nil {
 			c.Next()
