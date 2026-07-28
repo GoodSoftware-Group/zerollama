@@ -46,9 +46,9 @@ OLLAMA_HOST=127.0.0.1:11435  model=qwen2.5:0.5b  build=0.30.11
 
 | Bucket | Result |
 |--------|--------|
-| **PROBLEMS** | none after trap **77** + **78** fixes (re-run doctor on lab `:11435` to confirm) |
-| **CLEAN** | **77** (unknown top-level field rejected), **78** (`tool_choice none` binds), plus 19, 12, 23, 26, mm-* |
-| Coverage | trap **77** and **78** no longer listed under PROBLEMS once binary includes the fixes |
+| **PROBLEMS** | **none** (lab re-run Jul 28 after traps **77** + **78**) |
+| **CLEAN** | **77** (unknown field → 400), **78** (`tool_choice none`), **19**, **07** (dead `chat_template_kwargs` loud), **26**, mm-* |
+| Coverage | `problems 0` · executed CLEAN includes **77** and **78** |
 
 ### Earlier baseline (pre-fix)
 
