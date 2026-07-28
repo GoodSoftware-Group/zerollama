@@ -25,6 +25,11 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		// Trap 77: reject unknown top-level fields before runtime forward.
+		if err := api.CheckUnknownChatFields(body); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
 
 		var req api.ChatRequest

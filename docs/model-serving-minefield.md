@@ -68,7 +68,7 @@ base-url=http://127.0.0.1:11435/v1
 
 | Trap | Finding |
 |------|---------|
-| **77** | Invented top-level field `__minefield_unvalidated_field_probe__` accepted with HTTP 200 — request surface is largely unvalidated; thinking-off / typo arms can measure the wrong configuration. **Fixed:** `/v1/chat/completions` rejects unknown top-level keys with HTTP 400 ([`openai/chat_unknown_fields.go`](../openai/chat_unknown_fields.go), [`BindChatCompletionRequest`](../openai/chat_extras.go), runtime v1 proxy). |
+| **77** | Invented top-level field `__minefield_unvalidated_field_probe__` accepted with HTTP 200 — request surface is largely unvalidated; thinking-off / typo arms can measure the wrong configuration. **Fixed:** `/v1/chat/completions` and `/api/chat` reject unknown top-level keys with HTTP 400 ([`openai/chat_unknown_fields.go`](../openai/chat_unknown_fields.go), [`api/chat_unknown_fields.go`](../api/chat_unknown_fields.go)). |
 | **78** | `tool_choice: "none"` was accepted and ignored (fails open). **Fixed:** `tool_choice: "none"` now omits tools from `/v1/chat/completions` and `/v1/responses` conversion ([`openai/openai.go`](../openai/openai.go), [`openai/responses.go`](../openai/responses.go)). |
 
 ### CHECKED AND CLEAN (selected)
@@ -124,7 +124,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; raw kwargs can still hit upstream |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
-| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1/chat/completions` → HTTP 400 (`CheckUnknownChatCompletionFields`); assert on response still required for known-but-unread knobs |
+| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1/chat/completions` and `/api/chat` → HTTP 400 (`CheckUnknownChatCompletionFields` / `CheckUnknownChatFields`); assert on response still required for known-but-unread knobs |
 | **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
 
 ### Model config (also in native doctor)

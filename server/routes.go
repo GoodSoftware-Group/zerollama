@@ -2794,6 +2794,18 @@ func toolCallTagForCompletion(toolParser *tools.Parser) string {
 func (s *Server) ChatHandler(c *gin.Context) {
 	checkpointStart := time.Now()
 
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Trap 77: reject invented top-level keys on native /api/chat (parity with /v1).
+	if err := api.CheckUnknownChatFields(body); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
 	var req api.ChatRequest
 	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
@@ -2986,7 +2998,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 
 	chatRoute := "chat"
-	if strings.HasPrefix(c.Request.URL.Path, "/v1/") {
+	if c.Request.URL != nil && strings.HasPrefix(c.Request.URL.Path, "/v1/") {
 		chatRoute = "openai"
 	}
 	chatModality := mlxModalityFromChat(&req)
