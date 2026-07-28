@@ -328,8 +328,32 @@ func parseLlamaServerDevicesWithNative(output, nativeOutput string, libDirs []st
 
 		nativeDevice, hasNativeDevice := nativeByIndex[library][deviceIndex]
 		totalBytes := totalMiB * 1024 * 1024
+		freeBytes := freeMiB * 1024 * 1024
+		// Trap 96: --list-devices can report host available memory as device free.
+		// Free exceeding total is not a valid per-device figure — clamp and warn.
+		if freeBytes > totalBytes && totalBytes > 0 {
+			slog.Warn("list-devices free exceeds device total; clamping to total (minefield trap 96)",
+				"device", description,
+				"library", library,
+				"total_mib", totalMiB,
+				"free_mib", freeMiB)
+			freeBytes = totalBytes
+		}
 		if hasNativeDevice && !nativeProbeMatchesLlamaServerDevice(library, description, totalBytes, nativeDevice) {
 			hasNativeDevice = false
+		}
+		// Prefer NVML/ROCm native free over list-devices when available (trap 96).
+		if hasNativeDevice {
+			if preferred, ok := preferNativeDeviceFree(library, freeBytes, totalBytes, nativeDevice.FreeMemory); ok {
+				if preferred != freeBytes {
+					slog.Info("preferring native probe free over list-devices (minefield trap 96)",
+						"device", description,
+						"library", library,
+						"list_devices_free", freeBytes,
+						"native_free", preferred)
+				}
+				freeBytes = preferred
+			}
 		}
 		computeMajor, computeMinor := computeVersion(library, deviceIndex, gfxByIndex, ccByIndex)
 		dev := ml.DeviceInfo{
@@ -340,7 +364,7 @@ func parseLlamaServerDevicesWithNative(output, nativeOutput string, libDirs []st
 			Name:         name,
 			Description:  description,
 			TotalMemory:  totalBytes,
-			FreeMemory:   freeMiB * 1024 * 1024,
+			FreeMemory:   freeBytes,
 			ComputeMajor: computeMajor,
 			ComputeMinor: computeMinor,
 			LibraryPath:  libDirs,
@@ -406,6 +430,24 @@ func nativeProbeMatchesLlamaServerDevice(library, description string, totalBytes
 	}
 
 	return true
+}
+
+// preferNativeDeviceFree returns native free memory for discrete CUDA/ROCm when
+// the native probe reported a positive free figure (minefield trap 96). Metal
+// keeps list-devices / unified-host accounting.
+func preferNativeDeviceFree(library string, listFree, total, nativeFree uint64) (uint64, bool) {
+	switch library {
+	case "CUDA", "ROCm":
+	default:
+		return 0, false
+	}
+	if nativeFree == 0 {
+		return 0, false
+	}
+	if total > 0 && nativeFree > total {
+		nativeFree = total
+	}
+	return nativeFree, true
 }
 
 func cudaRuntimeVersion(libDirs []string) (int, int, bool) {

@@ -21,6 +21,8 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 
 **Smoke complete** when health + `RUN_E2E_GPU=1` + `RUN_E2E_PROXY=1` + at least one legacy model request succeed.
 
+**Temp-0 / reproducibility caveat (minefield traps 91–92):** many smoke payloads use `"temperature": 0` as a convenience sampling setting. That does **not** guarantee bit-identical outputs across runs: continuous batching can diverge above a prompt-length floor, and prefix-cache state can outlive a single request. When asserting reproducibility, state the prompt-length regime and isolate or reset cache between arms. See [model-serving-minefield.md](./model-serving-minefield.md).
+
 **One-shot wrapper** (coordination + GPU + proxy, including stream paths):
 
 ```bash

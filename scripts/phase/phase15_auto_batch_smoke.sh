@@ -5,6 +5,10 @@
 # /internal/generate-batch; v32 auto-batch coalesces concurrent public
 # /api/generate stream=false requests when ZEROLLAMA_KV_AUTO_BATCH=1.
 #
+# Temp-0 note (minefield traps 91–92): temperature=0 in payloads is for short
+# stable smoke text under concurrency — not a bit-identical reproducibility
+# guarantee (continuous batching + shared cache). See docs/model-serving-minefield.md.
+#
 # Prerequisites (sidecar must already be running):
 #   - kv_inprocess_n_seq_max >= 2
 #   - Linked native batch decode (batch_decode_in_c)

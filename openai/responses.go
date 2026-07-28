@@ -393,9 +393,9 @@ type ResponsesRequest struct {
 
 	Tools []ResponsesTool `json:"tools,omitempty"`
 
-	// TODO(drifkin): tool_choice is not supported. We could support "none" by not
-	// passing tools, but the other controls like `"required"` cannot be generally
-	// supported.
+	// ToolChoice: "none" omits tools for this turn (minefield trap 78).
+	// "required" / named-tool object forms are not generally supported yet.
+	ToolChoice any `json:"tool_choice,omitempty"`
 
 	// optional, default is false
 	Stream *bool `json:"stream,omitempty"`
@@ -525,14 +525,17 @@ func FromResponsesRequest(r ResponsesRequest) (*api.ChatRequest, error) {
 		options["num_predict"] = *r.MaxOutputTokens
 	}
 
-	// Convert tools from Responses API format to api.Tool format
+	// Convert tools from Responses API format to api.Tool format.
+	// tool_choice "none" omits tools (trap 78); other values keep tools attached.
 	var tools []api.Tool
-	for _, t := range r.Tools {
-		tool, err := convertTool(t)
-		if err != nil {
-			return nil, err
+	if !toolChoiceMeansNone(r.ToolChoice) {
+		for _, t := range r.Tools {
+			tool, err := convertTool(t)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, tool)
 		}
-		tools = append(tools, tool)
 	}
 
 	// Handle text format (e.g. json_schema)

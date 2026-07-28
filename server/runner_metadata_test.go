@@ -53,6 +53,29 @@ func TestProbeRunnerMetadata(t *testing.T) {
 	}
 }
 
+type mockLLMWithOffload struct {
+	mockLlm
+	offloaded, total uint64
+}
+
+func (m *mockLLMWithOffload) GPULayerOffload() (uint64, uint64) {
+	return m.offloaded, m.total
+}
+
+func TestProbeRunnerMetadataGPULayers(t *testing.T) {
+	runner := &runnerRef{
+		model: &Model{ShortName: "partial"},
+		Options: &api.Options{
+			Runner: api.Runner{NumCtx: 4096, NumGPU: 12},
+		},
+		llama: &mockLLMWithOffload{offloaded: 12, total: 32},
+	}
+	meta := probeRunnerMetadata(runner)
+	if meta.GPULayersOffloaded != 12 || meta.GPULayersTotal != 32 {
+		t.Fatalf("gpu layers = %d/%d, want 12/32", meta.GPULayersOffloaded, meta.GPULayersTotal)
+	}
+}
+
 func TestProcessModelsSnapshotSkipsLoading(t *testing.T) {
 	sched := InitScheduler(t.Context())
 	ready := &runnerRef{
@@ -90,7 +113,7 @@ func TestSyncRunnerLoadOptionsProbesMetadata(t *testing.T) {
 		Options: &api.Options{
 			Runner: api.Runner{NumCtx: 999},
 		},
-		llama:   &mockLlm{contextLength: 4096},
+		llama: &mockLlm{contextLength: 4096},
 	}
 	syncRunnerLoadOptions(runner)
 	if runner.loadedMeta.ProbedAt.IsZero() {

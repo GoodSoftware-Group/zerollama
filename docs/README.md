@@ -59,10 +59,10 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** compat + Metal embed; Go ollama-engine; **full `metal_signoff.sh` + qwen35** (qwen35 before Phase 15; canonical **`eliza-1-2b:latest`**); manifest `num_ctx` vs request options; thinking-model fields.
 * [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **why** `:11434` daily vs `:8080` CI; CGO; auto-clone `../llama.cpp`.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
-* [UMA admission overview (Darwin)](./uma-admission.md) — M20–M22 surfaces, defaults, disable knobs.
+* [UMA admission overview (Darwin)](./uma-admission.md) — M20–M23 surfaces, multi-unit HOLD, `mac_uma_signoff.sh` ladder, disable knobs.
 * [MLX UMA broker admission (M20)](./mlx-uma-sched.md) — machine-wide `uma_daemon` gate around mlxrunner `Eval` (`BUILD_UMA=auto`, default `ZEROLLAMA_UMA_SCHED=auto`).
-* [GGUF ggml UMA admission (M21 PoC)](./ggml-uma-sched.md) — same broker for ollamarunner / llamarunner Metal.
-* [llama-server UMA admission (M22 PoC)](./llama-server-uma-sched.md) — vendor `graph_compute` HOLD + sync (`BUILD_UMA` → `libuma_llama.a`).
+* [GGUF ggml UMA admission (M21)](./ggml-uma-sched.md) — same broker for ollamarunner / llamarunner Metal.
+* [llama-server UMA admission (M22)](./llama-server-uma-sched.md) — vendor `graph_compute` HOLD + sync (`BUILD_UMA` → `libuma_llama.a`).
 * [MLX agent prompts](./mlx-agent-prompts.md) — **why** context cap, tail truncate, `PromptTokens`, tokenize cache, keep-alive floor, SSE keepalive, **M15a live-session + rotating-KV restore** (`fast_path`, `messages_dropped`), and operator logs for agent megaprompts on safetensors models.
 * [Agent QoS and project tracking](./agent-qos-and-project-tracking.md) — **why** session gate TOCTOU fix, multiplex key hot-map / `wait_parent`, session→cache great loop (`cache_reset` / `cache_level`), `project_id` / `zerollama ps`, inference-path branching, and progressive client ladder; keeps Tier 2 options off vanilla Ollama and unkeyed CUDA traffic.
 * [LM Studio cache import](./lmstudio-import.md) — **why** pull-from-cache, MLX copy vs GGUF symlink, disk policy, env vars, troubleshooting.
@@ -86,6 +86,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.
+* [Model serving minefield](./model-serving-minefield.md) — trap registry mapped onto `zerollama doctor` (config + live serving checks) and known gaps.
 * [5080 runbook — start here](./5080-runbook.md) — **`source scripts/gpu/5080_env.sh`** + **`./scripts/gpu/5080_resignoff.sh`**; ordered tiers; CT 1564 status; Radix vendor build.
 * [GPU 5080 operator guide](./gpu-5080-operator-guide.md) — extended reference (VRAM, MLX, production serve) — use runbook for daily gates.
 * [Embedded Python runtime](./runtime-embed.md) — **why** embed vs sidecar; **remote clients use Go `:8080` only**; port conflicts; log redirect pattern.

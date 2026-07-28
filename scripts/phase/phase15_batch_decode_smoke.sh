@@ -5,6 +5,10 @@
 # Metal/Linux sign-off must prove linked ext + multiseq sidecar + real
 # generate_batch/stream_generate_batch over HTTP (POST /internal/generate-batch).
 #
+# Temp-0 note (minefield traps 91–92): options.temperature=0 is for stable short
+# smoke text, not bit-identical reproducibility under continuous batching or
+# shared prefix cache. See docs/model-serving-minefield.md.
+#
 # Requires:
 #   - Running runtime at RUNTIME_URL (default :8081)
 #   - kv_inprocess_n_seq_max >= 2

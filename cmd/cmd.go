@@ -1123,6 +1123,18 @@ func runningModelRowFromAPI(m api.ProcessModelResponse) runningModelRow {
 		cpuPercent := math.Round(float64(sizeCPU) / float64(m.Size) * 100)
 		procStr = fmt.Sprintf("%d%%/%d%% CPU/GPU", int(cpuPercent), int(100-cpuPercent))
 	}
+	// Trap 97: prefer explicit layer offload over VRAM-ratio guessing when known.
+	if m.LoadedMetadata != nil && m.LoadedMetadata.GPULayersTotal > 0 {
+		off := m.LoadedMetadata.GPULayersOffloaded
+		tot := m.LoadedMetadata.GPULayersTotal
+		if off >= tot {
+			procStr = fmt.Sprintf("100%% GPU (%d/%d layers)", off, tot)
+		} else if off == 0 {
+			procStr = fmt.Sprintf("100%% CPU (0/%d layers)", tot)
+		} else {
+			procStr = fmt.Sprintf("%d/%d GPU layers", off, tot)
+		}
+	}
 
 	var until string
 	delta := time.Since(m.ExpiresAt)

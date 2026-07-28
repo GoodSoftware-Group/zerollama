@@ -133,11 +133,14 @@ type ChatCompletionRequest struct {
 	TopP             *float64        `json:"top_p"`
 	ResponseFormat   *ResponseFormat `json:"response_format"`
 	Tools            []api.Tool      `json:"tools"`
-	Reasoning        *Reasoning      `json:"reasoning,omitempty"`
-	ReasoningEffort  *string         `json:"reasoning_effort,omitempty"`
-	Logprobs         *bool           `json:"logprobs"`
-	TopLogprobs      int             `json:"top_logprobs"`
-	DebugRenderOnly  bool            `json:"_debug_render_only"`
+	// ToolChoice gates tools for this turn ("none" | "auto" | "required" | object).
+	// "none" omits tools from the underlying chat request (minefield trap 78).
+	ToolChoice      any        `json:"tool_choice,omitempty"`
+	Reasoning       *Reasoning `json:"reasoning,omitempty"`
+	ReasoningEffort *string    `json:"reasoning_effort,omitempty"`
+	Logprobs        *bool      `json:"logprobs"`
+	TopLogprobs     int        `json:"top_logprobs"`
+	DebugRenderOnly bool       `json:"_debug_render_only"`
 	// PromptCacheKey pins L3 prefix cache + session video expansion (same semantics as /api/chat
 	// options.prompt_cache_key). Why on OpenAI surface: repeat video_url agent loops need per-thread
 	// ffmpeg cache without forcing clients to use the native /api/chat JSON shape.
@@ -827,19 +830,40 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		}
 	}
 
+	tools := r.Tools
+	if toolChoiceMeansNone(r.ToolChoice) {
+		// Trap 78: tool_choice "none" must actually gate the turn (omit tools).
+		tools = nil
+	}
+
 	return &api.ChatRequest{
 		Model:           r.Model,
 		Messages:        messages,
 		Format:          format,
 		Options:         options,
 		Stream:          &r.Stream,
-		Tools:           r.Tools,
+		Tools:           tools,
 		Think:           think,
 		Logprobs:        r.Logprobs != nil && *r.Logprobs,
 		TopLogprobs:     r.TopLogprobs,
 		DebugRenderOnly: r.DebugRenderOnly,
 		KeepAlive:       chatKeepAliveFromRequest(r, options),
 	}, nil
+}
+
+// toolChoiceMeansNone reports whether tool_choice is the string "none"
+// (OpenAI Chat Completions / Responses). Object forms are never "none".
+func toolChoiceMeansNone(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "none")
+	case json.RawMessage:
+		var s string
+		if err := json.Unmarshal(t, &s); err == nil {
+			return strings.EqualFold(strings.TrimSpace(s), "none")
+		}
+	}
+	return false
 }
 
 func chatKeepAliveFromRequest(r ChatCompletionRequest, options map[string]any) *api.Duration {

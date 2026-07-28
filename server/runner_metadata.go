@@ -58,9 +58,29 @@ func probeRunnerMetadata(runner *runnerRef) api.LoadedModelMetadata {
 		if effective := runner.llama.ContextLength(); effective > 0 {
 			meta.NumCtx = effective
 		}
+		// Trap 97: surface actual layer offload, not VRAM-only residency.
+		if off, tot, ok := gpuLayerOffloadFromRunner(runner.llama); ok && tot > 0 {
+			meta.GPULayersOffloaded = off
+			meta.GPULayersTotal = tot
+		}
 	}
 
 	return meta
+}
+
+// gpuLayerOffloadReporter is implemented by llama-server runners that parse
+// "offloaded N/M layers to GPU" from load logs.
+type gpuLayerOffloadReporter interface {
+	GPULayerOffload() (offloaded, total uint64)
+}
+
+func gpuLayerOffloadFromRunner(llama llm.LlamaServer) (offloaded, total int, ok bool) {
+	reporter, is := llama.(gpuLayerOffloadReporter)
+	if !is {
+		return 0, 0, false
+	}
+	o, t := reporter.GPULayerOffload()
+	return int(o), int(t), true
 }
 
 func manifestNumCtxFromModel(model *Model) int {

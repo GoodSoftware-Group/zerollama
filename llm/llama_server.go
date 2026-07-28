@@ -3077,6 +3077,14 @@ func (s *llamaServerRunner) MemorySize() (total, vram uint64) {
 	return total, vram
 }
 
+// GPULayerOffload returns layers on GPU vs total offloadable layers from load logs.
+// Used by /api/ps loaded_metadata (minefield trap 97 — partial offload must be visible).
+func (s *llamaServerRunner) GPULayerOffload() (offloaded, total uint64) {
+	s.memoryMu.RLock()
+	defer s.memoryMu.RUnlock()
+	return s.gpuLayers, s.totalLayers
+}
+
 // PredictServerVRAM estimates VRAM usage for a model without spawning llama-server.
 // Uses model file size as a proxy for weights plus a rough KV cache estimate.
 // This is intentionally conservative — it overestimates to avoid VRAM contention.

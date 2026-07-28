@@ -46,7 +46,13 @@ func NewDoctorCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
-		Long:  "Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.",
+		Long: `Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.
+
+Also runs model-serving-minefield style checks:
+  - model config traps (quant label, generation defaults, chat template, context)
+  - live serving probes against warm /api/ps models (reasoning field, think empty-content, tool_calls)
+
+See docs/model-serving-minefield.md.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if auditStorage {
 				report, err := blobaudit.Audit()
@@ -153,6 +159,31 @@ func buildDoctorModelsReport() doctorReport {
 			Detail:  modelhealth.FormatSummary(r),
 			FixHint: r.FixHint,
 		})
+	}
+
+	// Minefield-style config traps (quant label, generation defaults, template, context).
+	if trapReports, err := modelhealth.CheckConfigTrapsAll(); err != nil {
+		checks = append(checks, doctorCheck{
+			Name:   "model config traps",
+			Status: "warn",
+			Detail: err.Error(),
+		})
+	} else {
+		for _, r := range trapReports {
+			status := "ok"
+			switch r.Status {
+			case modelhealth.StatusRepairable:
+				status = "warn"
+			case modelhealth.StatusOrphaned, modelhealth.StatusBroken:
+				status = "fail"
+			}
+			checks = append(checks, doctorCheck{
+				Name:    r.Name,
+				Status:  status,
+				Detail:  r.Detail,
+				FixHint: r.FixHint,
+			})
+		}
 	}
 
 	report := doctorReport{Checks: checks}
@@ -324,6 +355,9 @@ func runDoctorChecks(repo string) []doctorCheck {
 			Detail: "full sidecar checks run on darwin only",
 		})
 	}
+	// Live serving minefield probes (reasoning field, think roundtrip, tool_calls).
+	// Read-only against whatever is already listening; skips cleanly with no warm model.
+	out = append(out, doctorCheckServingTraps()...)
 	return out
 }
 
@@ -792,7 +826,7 @@ func doctorCheckLlamaServer(repo string) doctorCheck {
 	case runtime.GOOS == "linux" && !envconfig.LlamaServerBackendDisabled():
 		status = "warn"
 		fix = "./scripts/build/build_llama_server.sh — plain Linux serve sets ZEROLLAMA_LLAMA_SERVER=auto when discoverable"
-		default:
+	default:
 		detail = "not discovered (Mac plain GGUF uses ggml; build llama-server for DFlash/MTP/n-gram auto-route)"
 	}
 	return doctorCheck{
@@ -871,7 +905,7 @@ func doctorSidecarLogHint() string {
 func doctorCheckDarwinSidecarBootstrap() doctorCheck {
 	if u := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_URL")); u != "" {
 		base := strings.TrimSuffix(u, "/")
-		if doctorHTTPReachable(base+"/health") {
+		if doctorHTTPReachable(base + "/health") {
 			return doctorCheck{
 				Name:   "darwin sidecar bootstrap",
 				Status: "ok",

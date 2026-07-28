@@ -318,9 +318,9 @@ type Message struct {
 	// ProcessorOutputs holds SGLang processor_output payloads (pixel_values + grid). Populated from
 	// images[] objects or processor_outputs on the message.
 	ProcessorOutputs []ProcessorOutput `json:"processor_outputs,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolName   string      `json:"tool_name,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
+	ToolName         string            `json:"tool_name,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
 }
 
 func (m *Message) UnmarshalJSON(b []byte) error {
@@ -810,7 +810,7 @@ type Metrics struct {
 	// CachedTokensHost is prefix KV served from host-tier cache (HiCache); 0 on native-only paths.
 	CachedTokensHost int `json:"cached_tokens_host,omitempty"`
 	// CachedTokensStorage is prefix KV served from L3 storage backend when wired.
-	CachedTokensStorage int `json:"cached_tokens_storage,omitempty"`
+	CachedTokensStorage        int    `json:"cached_tokens_storage,omitempty"`
 	CachedTokensStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
 }
 
@@ -1126,7 +1126,7 @@ type RepairResponse struct {
 // PullRequest is the request passed to [Client.Pull].
 type PullRequest struct {
 	Model    string `json:"model"`
-	Source   string `json:"source,omitempty"` // huggingface:// URI; Model is the local tag name
+	Source   string `json:"source,omitempty"`   // huggingface:// URI; Model is the local tag name
 	Insecure bool   `json:"insecure,omitempty"` // Deprecated: ignored
 	Username string `json:"username"`           // Deprecated: ignored
 	Password string `json:"password"`           // Deprecated: ignored
@@ -1185,16 +1185,16 @@ type ListModelResponse struct {
 
 // ProcessModelResponse is a single model description in [ProcessResponse].
 type ProcessModelResponse struct {
-	Name           string               `json:"name"`
-	Model          string               `json:"model"`
-	Size           int64                `json:"size"`
-	Digest         string               `json:"digest"`
-	Details        ModelDetails         `json:"details,omitempty"`
-	ExpiresAt      time.Time            `json:"expires_at"`
-	SizeVRAM       int64                `json:"size_vram"`
-	ContextLength  int                  `json:"context_length"`
-	Pending        int                  `json:"pending,omitempty"` // queued prompts waiting on this model
-	LoadedMetadata *LoadedModelMetadata `json:"loaded_metadata,omitempty"`
+	Name           string                `json:"name"`
+	Model          string                `json:"model"`
+	Size           int64                 `json:"size"`
+	Digest         string                `json:"digest"`
+	Details        ModelDetails          `json:"details,omitempty"`
+	ExpiresAt      time.Time             `json:"expires_at"`
+	SizeVRAM       int64                 `json:"size_vram"`
+	ContextLength  int                   `json:"context_length"`
+	Pending        int                   `json:"pending,omitempty"` // queued prompts waiting on this model
+	LoadedMetadata *LoadedModelMetadata  `json:"loaded_metadata,omitempty"`
 	Zerollama      *ProcessZerollamaInfo `json:"zerollama,omitempty"`
 }
 
@@ -1222,16 +1222,20 @@ type ProcessSessionInfo struct {
 // Why: manifest num_ctx and parser often drift; fleet and /api/ps expose effective
 // values without re-reading weights on every request. See docs/localai-borrowings.md.
 type LoadedModelMetadata struct {
-	NumCtx             int       `json:"num_ctx"`
-	TrainContextLength int       `json:"train_context_length,omitempty"`
-	ManifestNumCtx     int       `json:"manifest_num_ctx,omitempty"`
-	NumParallel        int       `json:"num_parallel,omitempty"`
-	NumGPU             int       `json:"num_gpu,omitempty"`
-	Backend            string    `json:"backend,omitempty"`
-	Parser             string    `json:"parser,omitempty"`
-	SupportsThinking   bool      `json:"supports_thinking,omitempty"`
-	SupportsTools      bool      `json:"supports_tools,omitempty"`
-	HasChatTemplate    bool      `json:"has_chat_template,omitempty"`
+	NumCtx             int    `json:"num_ctx"`
+	TrainContextLength int    `json:"train_context_length,omitempty"`
+	ManifestNumCtx     int    `json:"manifest_num_ctx,omitempty"`
+	NumParallel        int    `json:"num_parallel,omitempty"`
+	NumGPU             int    `json:"num_gpu,omitempty"`
+	Backend            string `json:"backend,omitempty"`
+	Parser             string `json:"parser,omitempty"`
+	SupportsThinking   bool   `json:"supports_thinking,omitempty"`
+	SupportsTools      bool   `json:"supports_tools,omitempty"`
+	HasChatTemplate    bool   `json:"has_chat_template,omitempty"`
+	// GPULayersOffloaded / GPULayersTotal are parsed from llama-server
+	// "offloaded N/M layers to GPU" (minefield trap 97). Zero total means unknown.
+	GPULayersOffloaded int       `json:"gpu_layers_offloaded,omitempty"`
+	GPULayersTotal     int       `json:"gpu_layers_total,omitempty"`
 	ProbedAt           time.Time `json:"probed_at"`
 }
 
@@ -1265,12 +1269,12 @@ type GgmlLoadedModelStatus struct {
 // RuntimeStatus is the Python runtime sidecar snapshot on GET /api/status.
 // Queue fields are omitted when enabled is true but available is false (probe failed).
 type RuntimeStatus struct {
-	Enabled     bool               `json:"enabled"`
-	Available   bool               `json:"available"`
-	Waiting     *int               `json:"waiting,omitempty"`
-	Running     *int               `json:"running,omitempty"`
-	LlamaLoaded *bool              `json:"llama_loaded,omitempty"`
-	State       string             `json:"state,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Available   bool   `json:"available"`
+	Waiting     *int   `json:"waiting,omitempty"`
+	Running     *int   `json:"running,omitempty"`
+	LlamaLoaded *bool  `json:"llama_loaded,omitempty"`
+	State       string `json:"state,omitempty"`
 	// Radix mirrors Python /health.kv_resume.prefix_block_pool (L3-R8 / LA13).
 	Radix *RadixMirrorStatus `json:"radix,omitempty"`
 }
@@ -1278,34 +1282,34 @@ type RuntimeStatus struct {
 // RadixMirrorStatus is a control-plane mirror of Python Radix / prefix block pool health.
 // Why: fleet assign and /api/status must see L3 residency without curling :8081.
 type RadixMirrorStatus struct {
-	Enabled           bool     `json:"enabled"`
-	EntryCount        int      `json:"entry_count"`
-	SlotCount         int      `json:"slot_count,omitempty"`
-	MultiHolderBlocks int      `json:"multi_holder_blocks,omitempty"`
-	BlobDigestBlocks  int      `json:"blob_digest_blocks,omitempty"`
+	Enabled           bool `json:"enabled"`
+	EntryCount        int  `json:"entry_count"`
+	SlotCount         int  `json:"slot_count,omitempty"`
+	MultiHolderBlocks int  `json:"multi_holder_blocks,omitempty"`
+	BlobDigestBlocks  int  `json:"blob_digest_blocks,omitempty"`
 	// BlockHashes is a capped newest-first sample from Python prefix_block_pool (L3-R9 / LA13).
 	BlockHashes []string `json:"block_hashes,omitempty"`
 	// BlobDigests is a capped sample of content-addressed slot digests (L3-R11 / peer pull).
-	BlobDigests       []string `json:"blob_digests,omitempty"`
-	RadixShare        bool     `json:"radix_share"`
-	SeqCpMode         string   `json:"seq_cp_mode,omitempty"`
-	KvUnified         bool     `json:"kv_unified,omitempty"`
-	LmcacheBlobs      bool     `json:"lmcache_blobs,omitempty"`
-	L3R6MetadataOK    *bool    `json:"l3_r6_metadata_ok,omitempty"`
+	BlobDigests    []string `json:"blob_digests,omitempty"`
+	RadixShare     bool     `json:"radix_share"`
+	SeqCpMode      string   `json:"seq_cp_mode,omitempty"`
+	KvUnified      bool     `json:"kv_unified,omitempty"`
+	LmcacheBlobs   bool     `json:"lmcache_blobs,omitempty"`
+	L3R6MetadataOK *bool    `json:"l3_r6_metadata_ok,omitempty"`
 }
 
 // TrainingQueuePolicy summarizes T6 training submit gates on GET /api/status.
 type TrainingQueuePolicy struct {
-	WaitInferenceIdle       bool   `json:"wait_inference_idle"`
-	WaitGgmlLoaded          bool   `json:"wait_ggml_loaded"`
-	WaitFailClosed          bool   `json:"wait_fail_closed"`
-	QueueOnBusy             bool   `json:"queue_on_busy"`
-	AllowedWindow           string `json:"allowed_window,omitempty"`
-	AllowedWindowEnabled    bool   `json:"allowed_window_enabled"`
-	AllowedWindowMisconfigured bool  `json:"allowed_window_misconfigured,omitempty"`
-	CrossQueueFifo          bool   `json:"cross_queue_fifo"`
-	DeferWaiting            int    `json:"defer_waiting,omitempty"`
-	DeferTracked            int    `json:"defer_tracked,omitempty"`
+	WaitInferenceIdle          bool   `json:"wait_inference_idle"`
+	WaitGgmlLoaded             bool   `json:"wait_ggml_loaded"`
+	WaitFailClosed             bool   `json:"wait_fail_closed"`
+	QueueOnBusy                bool   `json:"queue_on_busy"`
+	AllowedWindow              string `json:"allowed_window,omitempty"`
+	AllowedWindowEnabled       bool   `json:"allowed_window_enabled"`
+	AllowedWindowMisconfigured bool   `json:"allowed_window_misconfigured,omitempty"`
+	CrossQueueFifo             bool   `json:"cross_queue_fifo"`
+	DeferWaiting               int    `json:"defer_waiting,omitempty"`
+	DeferTracked               int    `json:"defer_tracked,omitempty"`
 }
 
 // TrainingStatus is the training-side snapshot on GET /api/status.
@@ -1316,17 +1320,17 @@ type TrainingStatus struct {
 // InferenceConfigStatus advertises effective scheduler knobs on GET /api/status
 // so clients (Orient Inventory / Decide) need not guess env on the host.
 type InferenceConfigStatus struct {
-	NumParallel             uint   `json:"num_parallel"`
-	NumParallelAuto         bool   `json:"num_parallel_auto,omitempty"`
-	MaxLoadedModels         uint   `json:"max_loaded_models"`
-	MaxLoadedConfigured     uint   `json:"max_loaded_configured"`
-	MaxQueue                uint   `json:"max_queue"`
-	KeepAlive               string `json:"keep_alive"`
-	LoadTimeout             string `json:"load_timeout"`
-	RuntimeMaxQueue         *uint  `json:"runtime_max_queue,omitempty"`
-	SameModelMultiCopy      bool   `json:"same_model_multi_copy"`
-	ResidencyOwner          string `json:"residency_owner"`
-	NumParallelMeansSlots   bool   `json:"num_parallel_means_slots"`
+	NumParallel           uint   `json:"num_parallel"`
+	NumParallelAuto       bool   `json:"num_parallel_auto,omitempty"`
+	MaxLoadedModels       uint   `json:"max_loaded_models"`
+	MaxLoadedConfigured   uint   `json:"max_loaded_configured"`
+	MaxQueue              uint   `json:"max_queue"`
+	KeepAlive             string `json:"keep_alive"`
+	LoadTimeout           string `json:"load_timeout"`
+	RuntimeMaxQueue       *uint  `json:"runtime_max_queue,omitempty"`
+	SameModelMultiCopy    bool   `json:"same_model_multi_copy"`
+	ResidencyOwner        string `json:"residency_owner"`
+	NumParallelMeansSlots bool   `json:"num_parallel_means_slots"`
 }
 
 // InferenceStatus summarizes local inference load for fleet management polling.
@@ -1348,10 +1352,10 @@ type CanLoadRequest struct {
 
 // CanLoadQueueSnapshot is queue pressure included in CanLoadResponse.
 type CanLoadQueueSnapshot struct {
-	GgmlPending      int  `json:"ggml_pending"`
-	GgmlMaxQueue     uint `json:"ggml_max_queue"`
-	RuntimeWaiting   int  `json:"runtime_waiting,omitempty"`
-	RuntimeMaxQueue  uint `json:"runtime_max_queue,omitempty"`
+	GgmlPending     int  `json:"ggml_pending"`
+	GgmlMaxQueue    uint `json:"ggml_max_queue"`
+	RuntimeWaiting  int  `json:"runtime_waiting,omitempty"`
+	RuntimeMaxQueue uint `json:"runtime_max_queue,omitempty"`
 }
 
 // CanLoadResponse is the dry-run result for POST /api/can-load (always HTTP 200).
@@ -1360,24 +1364,24 @@ type CanLoadQueueSnapshot struct {
 // confidence separates runtime VRAM math from ggml heuristics; already_loaded is
 // path-matched (not "any llama warm") so single-resident runtimes do not lie.
 type CanLoadResponse struct {
-	Model               string                `json:"model"`
-	Backend             string                `json:"backend"`
-	CanLoad             bool                  `json:"can_load"`
-	Confidence          string                `json:"confidence"` // exact | heuristic
-	AlreadyLoaded       bool                  `json:"already_loaded"`
-	NeedsEviction       bool                  `json:"needs_eviction"`
-	EvictionReason      string                `json:"eviction_reason,omitempty"`
-	Busy                bool                  `json:"busy"`
-	BusyReason          string                `json:"busy_reason,omitempty"`
-	LoadsPaused         bool                  `json:"loads_paused"`
-	Queue               CanLoadQueueSnapshot  `json:"queue"`
-	Warm                ProcessResponse       `json:"warm"`
-	VramEstimate        map[string]any        `json:"vram_estimate,omitempty"`
-	VramBudget          map[string]any        `json:"vram_budget,omitempty"`
-	SuggestedMaxNumCtx  *int                  `json:"suggested_max_num_ctx,omitempty"`
-	MaxLoadedModels     uint                  `json:"max_loaded_models"`
-	LoadedCount         int                   `json:"loaded_count"`
-	Notes               string                `json:"notes,omitempty"`
+	Model              string               `json:"model"`
+	Backend            string               `json:"backend"`
+	CanLoad            bool                 `json:"can_load"`
+	Confidence         string               `json:"confidence"` // exact | heuristic
+	AlreadyLoaded      bool                 `json:"already_loaded"`
+	NeedsEviction      bool                 `json:"needs_eviction"`
+	EvictionReason     string               `json:"eviction_reason,omitempty"`
+	Busy               bool                 `json:"busy"`
+	BusyReason         string               `json:"busy_reason,omitempty"`
+	LoadsPaused        bool                 `json:"loads_paused"`
+	Queue              CanLoadQueueSnapshot `json:"queue"`
+	Warm               ProcessResponse      `json:"warm"`
+	VramEstimate       map[string]any       `json:"vram_estimate,omitempty"`
+	VramBudget         map[string]any       `json:"vram_budget,omitempty"`
+	SuggestedMaxNumCtx *int                 `json:"suggested_max_num_ctx,omitempty"`
+	MaxLoadedModels    uint                 `json:"max_loaded_models"`
+	LoadedCount        int                  `json:"loaded_count"`
+	Notes              string               `json:"notes,omitempty"`
 }
 
 // PinRequest is the body for POST /api/pin (session eviction lease; does not load).
@@ -1439,7 +1443,7 @@ type BackendPolicy struct {
 	Edge            bool   `json:"edge"`
 	EdgeBuild       bool   `json:"edge_build"`
 	GgmlLinked      bool   `json:"ggml_linked"`
-	LlamaServer     string `json:"llama_server"` // off | auto | explicit
+	LlamaServer     string `json:"llama_server"`              // off | auto | explicit
 	SpecAutoRoute   bool   `json:"spec_auto_route,omitempty"` // Darwin: spec tags → llama-server when binary present
 	LlamaCppHarness bool   `json:"llama_cpp_harness,omitempty"`
 	RuntimeChat     string `json:"runtime_chat"` // on | off
