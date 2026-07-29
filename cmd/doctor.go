@@ -50,7 +50,8 @@ func NewDoctorCommand() *cobra.Command {
 
 Also runs model-serving-minefield style checks:
   - model config traps (quant label, generation defaults, chat template, context)
-  - live serving probes against warm /api/ps models (reasoning field, think empty-content, tool_calls)
+  - serve identity (trap 53) and thinking gate (trap 29)
+  - live serving probes against warm /api/ps models (77, 78, reasoning, think empty-content, tool_calls)
 
 See docs/model-serving-minefield.md.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
