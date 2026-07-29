@@ -58,6 +58,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	out = append(out, doctorCheckToolChoiceNone(base, pick))
 	out = append(out, doctorCheckStreamContent(base, pick))
 	out = append(out, doctorCheckHistoryAssembly(base, pick))
+	out = append(out, doctorCheckReasoningRoundTrip(base, pick))
 	out = append(out, doctorCheckOrphanedThinkClose(base, pick))
 	out = append(out, doctorCheckThinkToggleInjection(base, pick))
 	out = append(out, doctorCheckLatencyReconciliation(base, pick))

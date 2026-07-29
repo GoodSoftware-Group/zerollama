@@ -85,7 +85,7 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 
 - **04/20/25** — upstream `minefield_doctor.py` has no `/apply-template` on this Ollama-shaped stack; **zerollama doctor** covers them via `/api/chat` `_debug_render_only` (see §2.2)
 - **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
-- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **61** behavioural via lab scripts; **55/61** arithmetic in doctor.
+- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **54** / **61** (+ **60** cold/warm) via lab scripts; **55/61** arithmetic in doctor; **63** via history round-trip doctor; **09** documented (VL).
 
 Coverage lines from the tool are **not** a bill of health for the full registry (103 entries; doctor implements ~19).
 
@@ -110,6 +110,36 @@ Zerollama ships a tiny same-process harness for a first look:
 ```
 
 Use your real benchmark’s per-item JSON for publishable floors. Temp-0 still has a prompt-length / prefix-cache floor (traps **91/92**).
+
+#### Trap 63 — reasoning round-trip has one correct shape
+
+Nemotron-style stacks need `reasoning` + `truncate_history_thinking: false` (inverted polarity vs `preserve_thinking`). On zerollama the **only** preserve shape is:
+
+1. Resend prior reasoning under native `thinking` (OpenAI `/v1` write field `reasoning` maps into it).
+2. Keep `think` on so `preservePriorThinkingForRender` re-embeds history markers.
+3. Do **not** send `reasoning_content` on `/api/chat` — it is dropped before render.
+4. Do **not** port `truncate_history_thinking` — unknown kwargs **400** (trap **07**), which is intentional loudness.
+
+`zerollama doctor` runs `serving trap-63 (reasoning round-trip)` on a warm thinking model.
+
+#### Trap 09 — image choice changes outcome
+
+Multimodal / vision stack only: the same text prompt with different image encodings (resize, tile, JPEG quality, empty image) can move the answer. Zerollama has no Mac-primary live doctor for this yet; when scoring VL models, pin the image pipeline in the protocol and treat encoding as a confound (trap **17** sibling).
+
+#### Trap 54 — run order / warm cache / cross-session drift
+
+A clean speedup (or temp=0 hash change) can be **whichever arm ran second**, not your feature. Upstream also saw identical temp=0 requests diverge once a warm prefix slot existed.
+
+```bash
+# lab :11435 — hash drift + short↔long order reverse on prompt_eval_duration
+./scripts/minefield_warm_cache_check.sh qwen2.5:0.5b
+```
+
+Before publishing a latency win: reverse A↔B, re-measure baseline in the **same** session/binary, and prefer a null-build disproof. Peak memory spikes ≠ trend leaks (see also traps **106/107**).
+
+#### Trap 34 — winning against a baseline you degraded yourself
+
+Methodological (no doctor probe): if the reference arm is a non-default top-k / quant / template / budget **you** chose, a “significant win” may only recover your own handicap. Always report against the **shipped** default as well (third arm), or say explicitly that the number is vs a non-shipped reference. Related: traps **17** (arm confound) and **35** (agreement floor).
 
 #### Trap 53 — config edit never took effect
 
@@ -136,23 +166,24 @@ Zerollama surfaces the **arithmetic** half:
 - Manifest doctor: `trap-55/61 (context)` when advertised / `num_ctx` / GGUF trained diverge ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go))
 - Live doctor: `context ceilings … (trap 55/61)` from `/api/ps` `loaded_metadata`
 
-The **behavioural** half remains a hand-run (cold only — warm prefix cache lies; see upstream trap 60):
+The **behavioural** half remains a hand-run (cold *and* warm — see upstream traps **60** / **61**):
 
 1. Plant a fact at position 0, unique filler, decoy at the tail, ask for the fact.
 2. Ladder depths (1k → served `num_ctx`); compare local tokenize vs response `prompt_eval_count` / usage.
-3. Record recovery + `done_reason` / finish reason each rung.
-4. Treat **trained** context from `loaded_metadata.train_context_length` as the supported window; advertised/served above that are capability claims, not guarantees.
+3. At each depth: **cold** (`cache_reset`) then immediate **warm** re-send; if fact recovery or `done_reason` flips, that is trap **60** (do not publish only the warm retry).
+4. Record recovery + `done_reason` / finish reason each rung.
+5. Treat **trained** context from `loaded_metadata.train_context_length` as the supported window; advertised/served above that are capability claims, not guarantees.
 
 ```bash
 # warm runner already loaded — arithmetic only
 curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,train_context_length}'
 
-# behavioural cold ladder (lab :11435)
+# behavioural cold+warm ladder (lab :11435)
 ./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
 # DEPTHS=512,1024,2048 ./scripts/minefield_cold_ladder.sh qwen3:0.6b
 ```
 
-### 2.2 History render (04 / 20 / 25) via `_debug_render_only`
+### 2.2 History render (04 / 20 / 25 / 63) via `_debug_render_only`
 
 Upstream doctor skips these without `/apply-template`. Zerollama exposes the assembled prompt on `/api/chat` with `"_debug_render_only": true` → `debug_info.rendered_template`.
 
@@ -161,6 +192,7 @@ Upstream doctor skips these without `/apply-template`. Zerollama exposes the ass
 1. **04** — three-turn history with prior `thinking` markers; warns if markers are absent. Zerollama **re-embeds** resent prior `.Thinking` into Content when `think` is on (non-tool turns), so stock Go templates that only emit `.Thinking` after `lastUserIdx` still surface the marker.
 2. **25** — counts empty `<think></think>` shells in that render
 3. **20** — last-assistant arm: `thinking` must appear; bare `reasoning` on `/api/chat` must not (native write field is `thinking`; OpenAI maps `reasoning` → `thinking`)
+4. **63** — four-arm-style round trip: `thinking` preserves; `reasoning` / `reasoning_content` must not; `truncate_history_thinking` must **400** (not a silent Nemotron preserve)
 
 Manual probe:
 
@@ -191,7 +223,7 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_roundtrip.go`](../cmd/doctor_roundtrip.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -205,6 +237,7 @@ Hand-run Core scripts (lab `:11435`):
 ```bash
 ./scripts/minefield_ceiling_probe.sh qwen3:0.6b
 ./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
+./scripts/minefield_warm_cache_check.sh qwen2.5:0.5b
 ./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
 ./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
 ./scripts/minefield_pull_checks.sh qwen3:0.6b   # upstream budget/tokenize/cache checks
@@ -251,6 +284,10 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 |------|--------|-------|
 | 10, 21, 55/61, 56 | `covered via doctor` | 55/61 = arithmetic; 61 behavioural ladder = §2.1 hand-run |
 | **35** | `documented` + script | [`scripts/minefield_agreement_floor.sh`](../scripts/minefield_agreement_floor.sh) — agreement-floor protocol in §2.1 |
+| **54** | `documented` + script | [`scripts/minefield_warm_cache_check.sh`](../scripts/minefield_warm_cache_check.sh) — temp=0 hash + order reverse (§2.1) |
+| **60** | `documented` + script | [`scripts/minefield_cold_ladder.sh`](../scripts/minefield_cold_ladder.sh) — cold then warm per depth |
+| **63** | `covered via doctor` | `doctorCheckReasoningRoundTrip` — thinking-only preserve; foreign gate 400 |
+| **09** | `documented` | VL image-pipeline confound (§2.1); no Mac live doctor yet |
 | **53** | `covered via doctor` | `doctorCheckServeIdentity` — pid/start/version of answering process |
 | **79** | Oversized `num_ctx` silent empty | **mitigated** + `covered via doctor` | Clamp + `doctorCheckOversizedNumCtx` |
 | **U02** | Go runner drops sampling penalties | **fixed** | [`sample/penalties.go`](../sample/penalties.go) + ollamarunner `WithPenalties` |
@@ -293,6 +330,8 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 | Trap **07** kwarg deadness | Doctor: invented `chat_template_kwargs.bogus_kwarg_zzq` must 400 with control OK (loud rejection vs silent accept). |
 | Trap **26** tool-in-think | **Fixed:** thinking parser treats `<tool_call>` as implicit `</think>`; doctor forced-tool probe. |
 | Registry size | Upstream doctor reports **107** numbered traps (was ~103). |
+| Core **54** | Lab script [`minefield_warm_cache_check.sh`](../scripts/minefield_warm_cache_check.sh) — order reverse + identical temp=0 hash series. |
+| Core **63** / **60** / **09** | Doctor round-trip (**63**); cold+warm ladder (**60**); VL confound documented (**09**). |
 
 ---
 

@@ -4,6 +4,9 @@
 # Not a full MMLU harness: runs a fixed item list twice at temperature=0 and
 # reports per-item agreement. Lab only — refuses :11434 / :8081.
 #
+# For run-order / warm-cache artifacts (trap 54), also run:
+#   ./scripts/minefield_warm_cache_check.sh <model>
+#
 #   ./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
 #
 # Env: BASE_URL, NUM_PREDICT (default 16)

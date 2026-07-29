@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Minefield trap 61 — cold needle ladder (behavioural half).
+# Also trap 60 — cold then warm on the same prompt (cache_reset vs reuse).
 #
-# Plants a fact at position 0, unique filler, decoy at the tail. Runs cold
-# (cache_reset) at a few token depths. Lab only — refuses :11434 / :8081.
+# Plants a fact at position 0, unique filler, decoy at the tail. Each depth:
+#   1) cold (zerollama.cache_reset)
+#   2) warm re-send byte-identical without reset
+# Lab only — refuses :11434 / :8081.
 #
 #   ./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
 #
@@ -31,11 +34,11 @@ IFS=',' read -r -a DEPTH_ARR <<<"${DEPTHS}"
 for depth in "${DEPTH_ARR[@]}"; do
   depth="$(echo "$depth" | tr -d '[:space:]')"
   [[ -n "$depth" ]] || continue
-  req="$(mktemp)"; resp="$(mktemp)"
-  python3 - <<PY >"$req"
-import json
-fact, decoy, depth = "${FACT}", "${DECOY}", int("${depth}")
-# Rough char budget: ~4 chars/token for filler words.
+  python3 - "$BASE_URL" "$MODEL" "$depth" "$NUM_PREDICT" "$FACT" "$DECOY" <<'PY'
+import json, sys, urllib.request
+
+base, model, depth_s, npred_s, fact, decoy = sys.argv[1:7]
+depth, npred = int(depth_s), int(npred_s)
 need = max(0, depth * 4 - 80)
 words = []
 i = 0
@@ -49,37 +52,55 @@ prompt = (
     f"Decoy at the end: {decoy}. "
     f"What is the secret code? Reply with only the code."
 )
-print(json.dumps({
-  "model": "${MODEL}",
-  "stream": False,
-  "prompt": prompt,
-  "options": {
-    "temperature": 0,
-    "num_predict": int("${NUM_PREDICT}"),
-    "zerollama": {"cache_reset": True},
-  },
-}))
+
+def run(label: str, cache_reset: bool) -> dict:
+    opts = {"temperature": 0, "num_predict": npred}
+    if cache_reset:
+        opts["zerollama"] = {"cache_reset": True}
+    body = json.dumps({
+        "model": model,
+        "stream": False,
+        "prompt": prompt,
+        "options": opts,
+    }).encode()
+    req = urllib.request.Request(
+        base + "/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        j = json.load(resp)
+    text = (j.get("response") or "").strip()
+    row = {
+        "label": label,
+        "prompt_eval_count": j.get("prompt_eval_count"),
+        "done_reason": j.get("done_reason") or "",
+        "fact_recovered": fact in text,
+        "decoy_leaked": decoy in text,
+        "reply": text[:80],
+        "prompt_eval_duration": j.get("prompt_eval_duration"),
+    }
+    print(
+        f"depth≈{depth} {label} prompt_eval_count={row['prompt_eval_count']} "
+        f"done_reason={row['done_reason']!r} fact_recovered={row['fact_recovered']} "
+        f"decoy_leaked={row['decoy_leaked']} reply={row['reply']!r}"
+    )
+    return row
+
+cold = run("cold", True)
+warm = run("warm", False)
+if cold["fact_recovered"] != warm["fact_recovered"] or cold["done_reason"] != warm["done_reason"]:
+    print(
+        f"depth≈{depth} Trap 60 SIGNAL: cold≠warm "
+        f"fact {cold['fact_recovered']}→{warm['fact_recovered']} "
+        f"done_reason {cold['done_reason']!r}→{warm['done_reason']!r}"
+    )
+elif cold["reply"] != warm["reply"]:
+    print(f"depth≈{depth} Trap 60 soft: replies differ at temp=0 (hash/byte channel)")
+else:
+    print(f"depth≈{depth} Trap 60: cold/warm agreed on fact+done_reason this depth")
 PY
-  code="$(curl -sS -m 300 -o "$resp" -w '%{http_code}' "${BASE_URL}/api/generate" \
-    -H 'Content-Type: application/json' -d @"$req")"
-  python3 - "$resp" "$code" "$depth" "$FACT" "$DECOY" <<'PY'
-import json, sys
-path, http, depth, fact, decoy = sys.argv[1:6]
-raw = open(path).read()
-try:
-    j = json.loads(raw)
-except Exception:
-    print(f"depth={depth} http={http} parse_error body={raw[:200]!r}")
-    sys.exit(0)
-resp = (j.get("response") or "").strip()
-eval_count = j.get("prompt_eval_count")
-done = j.get("done_reason") or ""
-hit = fact in resp
-decoy_hit = decoy in resp
-print(f"depth≈{depth} http={http} prompt_eval_count={eval_count} done_reason={done!r} "
-      f"fact_recovered={hit} decoy_leaked={decoy_hit} reply={resp[:80]!r}")
-PY
-  rm -f "$req" "$resp"
 done
 echo "Note: depths are approximate char budgets, not tokenizer-exact. Compare prompt_eval_count."
 echo "Trap 61: HTTP 200 + exact prompt tokens with fact_recovered=false is the silent-fail signature."
+echo "Trap 60: report cold and warm as separate numbers; do not score only the warm retry."
