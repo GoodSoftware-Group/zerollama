@@ -12,14 +12,16 @@ Ternary CUDA `Q2_0` already lives on the vendor pin (`QK2_0=64` + patch **0082**
 | Q2_0 CUDA | `llama/patches/0082-…25707.patch` (already on pin) |
 | `GGML_CUDA_FORCE_CUBLAS` getenv | **0099** (5080 serve contract) |
 | Kokoro `/v1/audio/speech` | **0100** + **0101** (replaces `run/llama-server-tts` for Kokoro) |
+| Bee B1 adaptive draft-max | **0102** (`--spec-dm-adaptive` / `ZEROLLAMA_SPEC_DM_ADAPTIVE`; default off) |
 | OmniVoice monolith | Deferred (ROADMAP L7/L8) |
 | Native `GGML_OP_ISTFT` | Optional follow-up; Kokoro uses CPU `istft_hann` until then |
 
-Apply **0099–0101**, rebuild vendor `llama-server`, point serve at that binary only:
+Apply **0099–0102**, rebuild vendor `llama-server`, point serve at that binary only:
 
 ```bash
 ./scripts/vendor/sync_vendor_llama.sh   # or your usual apply-patches path
-# rebuild vendor llama-server with -DLLAMA_BUILD_KOKORO=ON (default in 0101)
+# rebuild vendor llama-server; TTS: LLAMA_BUILD_KOKORO=ON
+LLAMA_BUILD_KOKORO=ON ./scripts/build/build_llama_server.sh
 export LLAMA_SERVER_BIN=/root/zerollama/vendor/llama-cpp-86d86ed4/build/bin/llama-server
 # unset ZEROLLAMA_KEEP_LLAMA_SERVER_BIN so ApplyUnifiedLlamaCppEnv can keep vendor
 ```

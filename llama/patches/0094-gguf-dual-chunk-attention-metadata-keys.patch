@@ -1,3 +1,9 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 28 Jul 2026 00:00:00 +0000
+Subject: [PATCH] gguf: Dual Chunk Attention metadata keys
+
+---
 diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
 index c6a9e55e9..ba444a7b9 100644
 --- a/gguf-py/gguf/constants.py

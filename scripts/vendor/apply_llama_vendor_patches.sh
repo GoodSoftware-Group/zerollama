@@ -210,6 +210,21 @@ for patch in "${PATCH_DIR}"/*.patch; do
     rm -rf "${VENDOR}/.git/rebase-apply"
     touch "${PATCH_DIR}/.${base}.patched"
     skipped=$((skipped + 1))
+  elif git -C "${VENDOR}" apply --reverse --check "${patch}" >/dev/null 2>&1; then
+    # Stage scripts often leave the same hunks dirty in the working tree;
+    # git am -3 then refuses ("local changes would be overwritten"). Commit
+    # the already-present content under the patch subject and continue.
+    echo ">>> commit dirty working-tree hunks as: ${base}"
+    "${GIT_AM[@]}" am --abort 2>/dev/null || true
+    rm -rf "${VENDOR}/.git/rebase-apply"
+    if [[ -n "${subj}" ]]; then
+      git -C "${VENDOR}" add -u -- .
+      if ! git -C "${VENDOR}" diff --cached --quiet; then
+        "${GIT_AM[@]}" commit -m "${subj}" >/dev/null
+      fi
+    fi
+    touch "${PATCH_DIR}/.${base}.patched"
+    applied=$((applied + 1))
   else
     echo "error: git am failed on ${patch}" >&2
     echo "  resolve in ${VENDOR} then: git am --continue" >&2

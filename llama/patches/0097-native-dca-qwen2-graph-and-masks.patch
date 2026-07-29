@@ -1,3 +1,9 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 28 Jul 2026 00:00:00 +0000
+Subject: [PATCH] llama: native DCA Qwen2 graph and masks
+
+---
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
 index 0ba419434..3f54b00ec 100644
 --- a/src/llama-graph.cpp

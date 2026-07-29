@@ -253,20 +253,27 @@ _probe_seq_copy_route() {
   fi
 }
 
-# Zerollama ships llama-server only — never Kokoro / OmniVoice / libelizainference.
-# Those live on elizaOS/llama.cpp; our ggml-org pin omits tools/kokoro + tools/omnivoice.
+# OmniVoice / libelizainference stay out of the zerollama binary.
+# Kokoro subtree is first-class via patches 0100–0101 (unify); default build still
+# passes -DLLAMA_BUILD_KOKORO=OFF unless LLAMA_BUILD_KOKORO=ON (5080 TTS / prism).
 _zerollama_refuse_eliza_voice() {
   if [[ "${ZEROLLAMA_ALLOW_ELIZA_VOICE:-0}" == "1" ]]; then
     return 0
   fi
-  local d
-  for d in kokoro omnivoice; do
-    if [[ -d "${ROOT}/tools/${d}" ]]; then
-      echo "error: ${ROOT}/tools/${d} present — Eliza voice/FFI is not part of the zerollama llama-server binary." >&2
-      echo "  Remove it, or set ZEROLLAMA_ALLOW_ELIZA_VOICE=1 only for an explicit Eliza-fused experiment." >&2
-      exit 1
-    fi
-  done
+  if [[ -d "${ROOT}/tools/omnivoice" ]]; then
+    echo "error: ${ROOT}/tools/omnivoice present — OmniVoice is not part of the zerollama llama-server binary." >&2
+    echo "  Remove it, or set ZEROLLAMA_ALLOW_ELIZA_VOICE=1 only for an explicit Eliza-fused experiment." >&2
+    exit 1
+  fi
+}
+
+_zerollama_kokoro_cmake() {
+  # Default OFF (chat/Metal/CUDA without TTS). Unify TTS: LLAMA_BUILD_KOKORO=ON.
+  local v="${LLAMA_BUILD_KOKORO:-OFF}"
+  case "${v}" in
+    1|on|ON|true|TRUE|yes|YES) echo ON ;;
+    *) echo OFF ;;
+  esac
 }
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -324,7 +331,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -DLLAMA_CURL=OFF \
     -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI:-OFF}" \
     -DLLAMA_BUILD_UI="${LLAMA_BUILD_UI:-${LLAMA_BUILD_WEBUI:-OFF}}" \
-    -DLLAMA_BUILD_KOKORO=OFF \
+    -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
     -DLLAMA_BUILD_OMNIVOICE=OFF \
     "${_UMA_CMAKE[@]}"
   cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
@@ -384,7 +391,7 @@ if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
     -DBUILD_SHARED_LIBS=ON \
     -DLLAMA_CURL=ON \
     -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI}" \
-    -DLLAMA_BUILD_KOKORO=OFF \
+    -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
     -DLLAMA_BUILD_OMNIVOICE=OFF
   cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
   BIN="${BUILD}/bin/llama-server"
@@ -486,7 +493,7 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DLLAMA_BUILD_WEBUI="${_LLAMA_UI}" \
   -DLLAMA_USE_PREBUILT_UI="${_LLAMA_PREBUILT_UI}" \
   -DLLAMA_USE_PREBUILT_WEBUI="${_LLAMA_PREBUILT_UI}" \
-  -DLLAMA_BUILD_KOKORO=OFF \
+  -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
   -DLLAMA_BUILD_OMNIVOICE=OFF \
   "${CMAKE_EXTRA[@]}"
 

@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Bee B1 + llama-server unify (0099–0102) — Jul 2026
+
+**Why:** One vendor `llama-server` for chat + Kokoro TTS; adaptive DFlash draft-max (Bee profit) behind opt-in.
+
+**Shipped:**
+- **0099** — `GGML_CUDA_FORCE_CUBLAS` getenv (5080 serve contract)
+- **0100–0101** — `tools/kokoro` + optional `LLAMA_BUILD_KOKORO` `/v1/audio/speech` (replaces dual TTS binary)
+- **0102** — Bee B1 `--spec-dm-adaptive profit` (default off); Go `ZEROLLAMA_SPEC_DM_ADAPTIVE`
+- Build: kokoro tree allowed; `LLAMA_BUILD_KOKORO=ON` opt-in; OmniVoice still refused
+
+Doc: [llama-server-unify.md](docs/llama-server-unify.md), [llama-fork-watchlist.md](docs/llama-fork-watchlist.md).
+
 ### SGLang multimodal ports (#31417 / #31438 / #31832) — Jul 2026
 
 **Why:** Weekly SGLang scan (`4a76699dfc..4e5a05148a`) flagged portable agent-facing MM patterns; CUDA-IPC / breakable CG / HiCache infra skipped.
@@ -226,7 +238,7 @@ Injects `prompt_cache_key` when omitted (`fulfill:{mode}:{project_id}`). Adverti
 
 **Shipped:**
 
-- [docs/llama-fork-watchlist.md](docs/llama-fork-watchlist.md) — Lab A RotorQuant, Lab B Bee (B0 **0087** landed; B1 deferred), Lab C TQ3 FP4
+- [docs/llama-fork-watchlist.md](docs/llama-fork-watchlist.md) — Lab A RotorQuant, Lab B Bee (B0 **0087** + B1 **0102** landed), Lab C TQ3 FP4
 - `./scripts/phase/l2_rotorquant_ab.sh` — multi-leg decode/VRAM A/B on lab port `:18082`
 
 ### Phase MM — real M-RoPE `grid_thw` forward (Jul 2026)

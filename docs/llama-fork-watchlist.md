@@ -34,14 +34,15 @@ Scout: `../eliza-llama.cpp` @ `ad56033` vs vendor `86d86ed4` + patches.
 
 | Item | Verdict |
 |------|---------|
-| `tools/kokoro`, `tools/omnivoice`, `libelizainference` | **Skip forever** for our binary — build refuses if trees appear (`ZEROLLAMA_ALLOW_ELIZA_VOICE=1` override only) |
+| `tools/omnivoice`, `libelizainference` | **Skip forever** — build refuses `tools/omnivoice` (`ZEROLLAMA_ALLOW_ELIZA_VOICE=1` override only) |
+| `tools/kokoro` | **First-class** via **0100–0101**; build allows tree; `LLAMA_BUILD_KOKORO=ON` opt-in for `/v1/audio/speech` |
 | `eliza-shipped/turbo3.metal` / `turbo4.metal` | **Already match** (TBQ revert already in vendor) |
 | `tbq_set_rows.metal` | **Ours only** (keep) |
 | Metal #11612 nil-pipeline recover + bf16 library gate | **Imported as 0096** (was draft-0093; remote took **0093** for llama-bench) |
 | gemma4-assistant | Already on vendor |
 | Kokoro Accelerate / OmniVoice diarizer | Voice product — skip |
 
-**Binary gates:** `./scripts/build/build_llama_server.sh` passes `-DLLAMA_BUILD_KOKORO=OFF -DLLAMA_BUILD_OMNIVOICE=OFF` and exits if `tools/kokoro` or `tools/omnivoice` exist unless `ZEROLLAMA_ALLOW_ELIZA_VOICE=1`.
+**Binary gates:** `./scripts/build/build_llama_server.sh` passes `-DLLAMA_BUILD_OMNIVOICE=OFF` and exits if `tools/omnivoice` exists unless `ZEROLLAMA_ALLOW_ELIZA_VOICE=1`. Kokoro: `-DLLAMA_BUILD_KOKORO` from env (`ON` for TTS unify).
 
 ---
 
@@ -200,7 +201,7 @@ We already have DFlash + TBQ/TCQ-class KV. Bee adds **server-facing** controls w
 | Priority | Feature | Surface | Size / risk | Verdict |
 |----------|---------|---------|-------------|---------|
 | **B0** | Reasoning-loop guard | `server-loop-guard.{h,cpp}` + CLI/schema + `process_token` wiring | **Landed as patch 0087** (default **off**; force-close/stop opt-in). Uses `reasoning_budget_tracking` + `process_token` (no Bee accept-callbacks on our pin). | **Done** — Mac lab `:18082` smoke PASS; optional CUDA sanity on 5080 |
-| **B1** | Adaptive draft-max | `server-adaptive-dm.h` (**~1680 LOC**, mostly header) + `common.h` dm_* fields + **~58** hooks in Bee `server-context.cpp` | Bee `server-context.cpp` is **~8.7k** LOC vs our **~5.6k** — not a clean format-patch | **Dedicated port**, not drive-by; needs DFlash accept/reject telemetry we may lack |
+| **B1** | Adaptive draft-max | `server-adaptive-dm.h` + `common.h` dm_* + DFlash hooks in `server-context.cpp` | **Landed as patch 0102** (default **off**; `--spec-dm-adaptive profit` / `ZEROLLAMA_SPEC_DM_ADAPTIVE`) | **Done** — compile on vendor; A/B on 5080 with `eliza-*-dflash` still open |
 | **B2** | DDTree / sampled draft | `--spec-branch-budget`, `--spec-draft-temp` | Tied to Bee DFlash tree path | After flat DFlash acceptance is solid |
 | **B3** | CopySpec / suffix / recycle | `--spec-type copyspec` etc. | Separate speculative backends | Low–med |
 | **B4** | Multi-GPU DFlash tape | Bee CUDA accept path | Dual-4090 only | Measure vs our speculative path first |
@@ -236,20 +237,19 @@ CUDA_LLAMA_MODEL=/path/to.gguf \
   ./scripts/phase/l2_rotorquant_ab.sh
 ```
 
-### B1 — adaptive DM (why it’s heavy)
+### B1 — adaptive DM (**0102**, landed)
 
-- Controller logic is concentrated in `tools/server/server-adaptive-dm.h` (`profit` / `fringe`, EWMA, probe/off-dwell).
-- Runtime effect is **not** a drop-in: Bee overrides `get_n_draft_max`-equivalent paths using DFlash cycle stats (`adaptive_n_max`, profit keys, continuation preserve).
-- Our pin already has static `--spec-draft-n-max` + slot `get_n_draft_max()` (ctx/remaining clamp only) in `tools/server/server-context.cpp` — the integration seam is there, but Bee’s hooks assume richer DFlash metrics.
+**Usage (lab `llama-server` only — not production `:11434`):**
 
-**Minimum viable port (if we proceed):**
+```bash
+./build/bin/llama-server ... --spec-type draft-dflash ... --spec-dm-adaptive profit
+# or via Go subprocess:
+ZEROLLAMA_SPEC_DM_ADAPTIVE=profit   # profit / 1 / on
+```
 
-1. Add `dm_*` fields to `common_params_speculative` + CLI (mirror Bee names).
-2. Copy `server-adaptive-dm.h` as-is (header-only helpers).
-3. Inherit/compose state on `server_slot`; call update on draft accept/reject with **acceptance rate + cycle time** we already log.
-4. Gate behind `--spec-dm-adaptive` default **off** until A/B on 5080 with `eliza-*-dflash`.
+**Adaptation vs Bee:** Profit controller only (fringe removed). Hooks clamp `get_n_draft_max()` from accept count + cycle time EWMA; depth-0 baseline probes still observe. Default controller is **off**.
 
-**Defer** B1 until a clear DFlash acceptance win (Lab A RotorQuant closed no-merge on both 5080 + Mac — don’t stack B1 on top).
+**Exit:** On DFlash hosts, adaptive depth moves without regressing non-DFlash / default-off chat; A/B tok/s vs static `--spec-draft-n-max` on 5080 still to record.
 
 Lineage Bee cites: [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant), [spiritbuun/buun-llama-cpp](https://github.com/spiritbuun/buun-llama-cpp).
 
@@ -314,6 +314,6 @@ Only worth it if we adopt TQ3 weights. Orthogonal to KV RotorQuant. Env knobs: `
 4. Optional: adaptive-turboquant **turbo2** long-ctx lab (external binary; CUDA **12.9** / NVFP4 is 5080-only).
 5. **Mac Lab D:** D1 SET_ROWS **0097** + D1b fused **0098** done (`speed` runs, tok/s FAIL); asymmetric TBQ-V already measured — no tg win.
 6. **Qwen 1M / DCA:** native GGUF + patched llama-server; gate with `scripts/dca_oracle_logits.py` (SGLang = oracle recipe only).
-7. Defer **B1 adaptive DM** until a clear DFlash acceptance win.
+7. **B1 adaptive DM (0102):** landed opt-in; A/B vs static `--spec-draft-n-max` on 5080 DFlash still open.
 8. Revisit turbo-tan only with TQ3 models in the fleet.
 9. **Later (optional):** Eliza PRs per [roadmap](#eliza-pr-roadmap-draft--do-not-open-yet) — **start with PR 0 upstream sync**, then feature PRs only if that lands.

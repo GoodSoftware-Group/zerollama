@@ -1,3 +1,9 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 28 Jul 2026 00:00:00 +0000
+Subject: [PATCH] ggml: native DCA flash-attn LSE export
+
+---
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
 index eadcaaf6f..46b30a7d5 100644
 --- a/ggml/include/ggml.h

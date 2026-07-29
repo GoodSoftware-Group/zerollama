@@ -686,7 +686,7 @@ func FindLlamaServer() (string, error) {
 		if abs, err := filepath.Abs(override); err == nil {
 			override = abs
 		}
-		if _, err := os.Stat(override); err == nil {
+		if isUsableLlamaServerBin(override) {
 			return override, nil
 		}
 		return "", fmt.Errorf("llama-server binary not found at LLAMA_SERVER_BIN=%s", override)
@@ -1172,8 +1172,8 @@ func appendSpeculativeArgs(params []string, serverBin string, config LlamaServer
 			"--spec-ngram-simple-min-hits", strconv.Itoa(minHits),
 		)
 	case "dflash", "draft-dflash":
-		// ggml-org renamed the CLI token to draft-dflash (patch 0031); keep
-		// accepting legacy "dflash" from model Modelfile / eliza tags.
+		// CLI token differs by fork: ggml-org uses draft-dflash; eliza/c84
+		// vendor builds still advertise plain "dflash".
 		if config.DraftModelPath == "" {
 			return params
 		}
@@ -1181,12 +1181,14 @@ func appendSpeculativeArgs(params []string, serverBin string, config LlamaServer
 		if nMax <= 0 {
 			nMax = 4
 		}
+		cliType := resolveDFlashSpecType(serverBin)
 		params = append(params,
-			"--spec-type", "draft-dflash",
+			"--spec-type", cliType,
 			"--spec-draft-model", config.DraftModelPath,
 			"--spec-draft-n-max", strconv.Itoa(nMax),
 		)
-		return appendSpecDraftBackendSamplingArg(params, serverBin)
+		params = appendSpecDraftBackendSamplingArg(params, serverBin)
+		return appendSpecDmAdaptiveArg(params, serverBin)
 	case "draft-eagle3", "eagle3":
 		if config.DraftModelPath == "" {
 			return params

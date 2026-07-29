@@ -6,6 +6,7 @@
 #include "server-queue.h"
 #include "server-schema.h"
 #include "server-stream.h"
+#include "server-adaptive-dm.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -341,6 +342,12 @@ struct server_slot {
     int32_t n_draft_verif_steps = 0; // Total draft token verification steps by the target model
     std::vector<int32_t> n_accepted_per_pos; // Accepted tokens per draft position
 
+    // Bee B1 adaptive draft-max (profit controller). Retained per slot across compatible requests.
+    server_adaptive_dm_state adaptive_dm;
+    int64_t adaptive_cycle_start_us = 0;
+    float adaptive_draft_ms = 0.0f;
+    int32_t adaptive_requested_n_max = 0;
+
     void reset() {
         SLT_DBG(*this, "%s", "\n");
 
@@ -458,6 +465,16 @@ struct server_slot {
         return !!spec;
     }
 
+    bool uses_dflash() const {
+        if (!task) {
+            return false;
+        }
+        return std::find(
+                   task->params.speculative.types.begin(),
+                   task->params.speculative.types.end(),
+                   COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != task->params.speculative.types.end();
+    }
+
     void add_token(const completion_token_output & token) {
         if (!is_processing()) {
             SLT_WRN(*this, "%s", "slot is not processing\n");
@@ -481,6 +498,10 @@ struct server_slot {
 
         if (n_remaining > 0) {
             n_draft_max = std::min(n_draft_max, n_remaining - 1);
+        }
+
+        if (uses_dflash() && adaptive_dm.dm_adaptive && adaptive_dm.adaptive_n_max >= 0) {
+            n_draft_max = std::min(n_draft_max, adaptive_dm.adaptive_n_max);
         }
 
         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
@@ -1881,6 +1902,32 @@ private:
             slot.smpl.reset();
         }
 
+        {
+            const bool task_uses_dflash = std::find(
+                    task.params.speculative.types.begin(),
+                    task.params.speculative.types.end(),
+                    COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != task.params.speculative.types.end();
+            if (slot.can_speculate() && task_uses_dflash) {
+                slot.adaptive_dm.configure(task.params.speculative);
+                const int base_n_max = common_speculative_n_max(&task.params.speculative);
+                slot.adaptive_dm.reset_profit_if_config_changed(
+                        task.params.speculative, base_n_max, (int32_t) task.tokens.size(), &task.params.sampling);
+                slot.adaptive_dm.reset_request_state();
+                if (slot.adaptive_dm.dm_adaptive) {
+                    slot.adaptive_dm.apply_profit_recommendation(
+                            slot.adaptive_dm.decide_profit_n_max(base_n_max));
+                } else {
+                    slot.adaptive_dm.adaptive_n_max = -1;
+                }
+            } else {
+                slot.adaptive_dm.dm_adaptive = false;
+                slot.adaptive_dm.adaptive_n_max = -1;
+            }
+            slot.adaptive_cycle_start_us = 0;
+            slot.adaptive_draft_ms = 0.0f;
+            slot.adaptive_requested_n_max = 0;
+        }
+
         slot.task = std::make_unique<const server_task>(std::move(task));
 
         slot.state = slot.task->is_child()
@@ -1892,6 +1939,24 @@ private:
 
         SLT_INF(slot, "processing task, is_child = %d\n", slot.task->is_child());
         return true;
+    }
+
+    void apply_adaptive_profit_decision(server_slot & slot) {
+        if (!slot.uses_dflash() || !slot.adaptive_dm.dm_adaptive) {
+            return;
+        }
+
+        const int base_n_max = common_speculative_n_max(&slot.task->params.speculative);
+        const int previous_n_max = slot.adaptive_dm.adaptive_n_max;
+        const int recommended_n_max = slot.adaptive_dm.decide_profit_n_max(base_n_max);
+        slot.adaptive_dm.apply_profit_recommendation(recommended_n_max);
+
+        if (slot.adaptive_dm.adaptive_n_max != previous_n_max) {
+            SLT_INF(slot, "adaptive draft-max profit: %d -> %d (score=%.2f)\n",
+                    previous_n_max,
+                    slot.adaptive_dm.adaptive_n_max,
+                    (double) slot.adaptive_dm.profit_current_score);
+        }
     }
 
     bool process_token(completion_token_output & result, server_slot & slot) {
@@ -3076,6 +3141,12 @@ private:
 
             generating.push_back(&slot);
 
+            if (slot.uses_dflash() && slot.adaptive_dm.dm_adaptive) {
+                slot.adaptive_cycle_start_us = ggml_time_us();
+                slot.adaptive_draft_ms = 0.0f;
+                slot.adaptive_requested_n_max = 0;
+            }
+
             if (spec) {
                 common_speculative_get_draft_params(spec.get(), slot.id).drafting = false;
 
@@ -3085,6 +3156,9 @@ private:
                 const int n_draft_max = slot.get_n_draft_max();
 
                 if (n_draft_max > 0) {
+                    if (slot.uses_dflash() && slot.adaptive_dm.dm_adaptive) {
+                        slot.adaptive_requested_n_max = n_draft_max;
+                    }
                     GGML_ASSERT(slot.can_speculate());
 
                     if (!slot.spec_draft.empty()) {
@@ -3117,6 +3191,14 @@ private:
 
                         drafting.push_back(&slot);
                     }
+                } else if (slot.uses_dflash() && slot.adaptive_dm.dm_adaptive && slot.adaptive_cycle_start_us > 0) {
+                    // Profit baseline / dwell: adaptive_n_max forced depth 0 — still record cycle.
+                    const int64_t t_now = ggml_time_us();
+                    const float cycle_ms = std::max(0.001f,
+                            (float) (t_now - slot.adaptive_cycle_start_us) / 1000.0f);
+                    slot.adaptive_dm.observe_profit_timing(0, 0, 0, 0.0f, cycle_ms, 0.0f, cycle_ms);
+                    apply_adaptive_profit_decision(slot);
+                    slot.adaptive_cycle_start_us = 0;
                 }
             }
         });
@@ -4033,6 +4115,24 @@ private:
             // update how many tokens out of those tested were accepted
             slot.n_draft_accepted += ids.size() - 1;
             slot.n_draft_verif_steps += 1;
+
+            if (slot.uses_dflash() && slot.adaptive_dm.dm_adaptive && slot.adaptive_cycle_start_us > 0) {
+                const int n_accepted = std::max(0, (int) ids.size() - 1);
+                const float cycle_ms = std::max(0.001f,
+                        (float) (t_now - slot.adaptive_cycle_start_us) / 1000.0f);
+                slot.adaptive_dm.observe_profit_acceptance((int) n_draft, n_accepted);
+                slot.adaptive_dm.observe_profit_timing(
+                        slot.adaptive_requested_n_max > 0
+                            ? slot.adaptive_requested_n_max
+                            : (int) n_draft,
+                        (int) n_draft,
+                        n_accepted,
+                        slot.adaptive_draft_ms,
+                        0.0f,
+                        0.0f,
+                        cycle_ms);
+                apply_adaptive_profit_decision(slot);
+            }
 
             if (slot.n_accepted_per_pos.empty()) {
                 slot.n_accepted_per_pos.resize(common_speculative_n_max(&params_base.speculative), 0);

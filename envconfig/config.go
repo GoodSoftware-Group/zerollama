@@ -497,6 +497,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":            {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
 		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":        {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
 		"ZEROLLAMA_ELIZA_NGRAM":                    {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
+		"ZEROLLAMA_SPEC_DM_ADAPTIVE":               {"ZEROLLAMA_SPEC_DM_ADAPTIVE", SpecDmAdaptive(), "Bee B1 adaptive DFlash draft-max: profit/1/on (default off)"},
 		"ZEROLLAMA_FLEET_PEERS":                    {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":                   {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":            {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
@@ -754,6 +755,21 @@ func darwinSidecarEnvDisplay() string {
 func ElizaNgramDefault() bool {
 	v := strings.TrimSpace(Var("ZEROLLAMA_ELIZA_NGRAM"))
 	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// SpecDmAdaptive returns the Bee B1 --spec-dm-adaptive mode for llama-server when
+// ZEROLLAMA_SPEC_DM_ADAPTIVE is set. Empty means omit the flag (server default off).
+// Accepted: 1/on/true/yes/profit → "profit"; 0/off/false → "".
+func SpecDmAdaptive() string {
+	v := strings.ToLower(strings.TrimSpace(Var("ZEROLLAMA_SPEC_DM_ADAPTIVE")))
+	switch v {
+	case "", "0", "off", "false", "no":
+		return ""
+	case "1", "on", "true", "yes", "profit":
+		return "profit"
+	default:
+		return ""
+	}
 }
 
 // LlamaServerBackend routes eligible GGUF inference through Go → llama-server

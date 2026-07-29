@@ -936,7 +936,7 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 2. **Optional clamp:** `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` only if you accept automatic `num_ctx` lowering in API responses.
 3. **Do not** copy smoke-only global `VRAM_ESTIMATE_FACTOR` when autotune persist is on (health report agrees).
 4. **Phase 11 under load:** ~~contention smoke~~ **Done** — keep backlog/reserve defaults.
-5. **Jul 2026 continue:** Tier F RotorQuant **no-merge** (SET_ROWS abort); defer Bee **B1**; optional TQ3 FP4 only with TQ3 weights; kill orphan `llama/llama.cpp` servers if free VRAM looks ~1 GiB with `llama_server=false`.
+5. **Jul 2026 continue:** Tier F RotorQuant **no-merge** (SET_ROWS abort); Bee **B1** (**0102**) opt-in A/B vs static draft-n-max; optional TQ3 FP4 only with TQ3 weights; kill orphan `llama/llama.cpp` servers if free VRAM looks ~1 GiB with `llama_server=false`.
 
 ---
 

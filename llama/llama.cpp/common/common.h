@@ -368,6 +368,13 @@ struct common_params_speculative_ngram_cache {
     std::string lookup_cache_dynamic; // path of dynamic ngram cache file for lookup decoding
 };
 
+// BeeLlama adaptive draft-max (Lab B1). Controllers only choose DFlash draft horizon;
+// upstream remains authoritative for draft modes. Default OFF until A/B on DFlash hosts.
+enum common_speculative_dm_controller {
+    COMMON_SPECULATIVE_DM_CONTROLLER_OFF,
+    COMMON_SPECULATIVE_DM_CONTROLLER_PROFIT,
+};
+
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
@@ -380,6 +387,17 @@ struct common_params_speculative {
     common_params_speculative_ngram_map ngram_map_k4v;
 
     common_params_speculative_ngram_cache ngram_cache;
+
+    // Adaptive DFlash draft horizon (Bee profit controller). Zerollama defaults off.
+    bool draft_n_max_explicit = false;
+    common_speculative_dm_controller dm_controller = COMMON_SPECULATIVE_DM_CONTROLLER_OFF;
+    float   dm_profit_min               = 0.05f;
+    float   dm_profit_raise_margin      = 0.05f;
+    float   dm_profit_lower_margin      = 0.05f;
+    float   dm_profit_ewma_alpha        = 0.15f;
+    int32_t dm_profit_min_samples       = 3;
+    int32_t dm_profit_warmup            = 0;
+    int32_t dm_profit_baseline_interval = 1024;
 
     bool has_dft() const {
         return !draft.mparams.empty();

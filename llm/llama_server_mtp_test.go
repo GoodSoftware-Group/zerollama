@@ -22,6 +22,8 @@ func TestAppendSpeculativeArgsNgram(t *testing.T) {
 }
 
 func TestAppendSpeculativeArgsDFlash(t *testing.T) {
+	t.Cleanup(resetLlamaServerHelpCache)
+	// No binary → prefer ggml-org draft-dflash name.
 	for _, specType := range []string{"dflash", "draft-dflash"} {
 		got := appendSpeculativeArgs([]string{"base"}, "", LlamaServerConfig{
 			SpecType:       specType,
@@ -35,6 +37,21 @@ func TestAppendSpeculativeArgsDFlash(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Fatalf("appendSpeculativeArgs(%q) = %v, want %v", specType, got, want)
 		}
+	}
+
+	const bin = "/tmp/llama-server-dflash-legacy"
+	llamaServerHelpCache.Store(bin, "--spec-type none,draft-eagle3,draft-mtp,ngram-simple,dflash\n")
+	got := appendSpeculativeArgs([]string{"base"}, bin, LlamaServerConfig{
+		SpecType:       "dflash",
+		DraftModelPath: "drafter.gguf",
+	}, api.Options{Runner: api.Runner{DraftNumPredict: 6}})
+	want := []string{
+		"base", "--spec-type", "dflash",
+		"--spec-draft-model", "drafter.gguf",
+		"--spec-draft-n-max", "6",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("legacy dflash token = %v, want %v", got, want)
 	}
 }
 

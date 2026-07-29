@@ -318,7 +318,7 @@ L2 defaults stay L1 for tok/s. New codecs / server controls from public forks ar
 | Lab | Script / doc | Goal |
 |-----|--------------|------|
 | RotorQuant `planar3`/`iso3` vs TBQ | `./scripts/phase/l2_rotorquant_ab.sh` | **Next on 5080** — [5080-runbook Tier F](./5080-runbook.md#tier-f--rotorquant--post-l2-labs-jul-2026); remap IDs 44–47 before cherry-pick |
-| BeeLlama loop guard (B0) **0087** | `--reasoning-loop-guard force-close\|stop` (default off) | **Mac smoke PASS**; optional CUDA sanity; B1 adaptive DM deferred |
+| BeeLlama loop guard (B0) **0087** | `--reasoning-loop-guard force-close\|stop` (default off) | **Mac smoke PASS**; optional CUDA sanity; B1 adaptive DM **0102** (default off) |
 
 ---
 

@@ -11,8 +11,8 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
 | **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `86d86ed4396b4130922f7b9af26e3d9fc11a591b` (master tip; past tag `b10064`) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0101** Kokoro `/v1/audio/speech`; **0100** Kokoro subtree; **0099** FORCE_CUBLAS getenv; DCA **0094–0098**; Metal Lab D / #11612 **0096–0098** Metal Polar/QJL+fused; Darwin UMA **0094–0095**; **0093** llama-bench Eliza L2 KV names; **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b COW; **0088** TBQ vec_dot; **0087** Bee loop-guard). Note: some numbers are shared across parallel patch series — apply by filename. Container: `./scripts/vendor/build_llama_server_container.sh` |
-| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (voice/FFI stay out of our binary). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0102** Bee B1 adaptive DM; **0101** Kokoro `/v1/audio/speech`; **0100** Kokoro subtree; **0099** FORCE_CUBLAS getenv; DCA **0094–0098**; Metal Lab D / #11612 **0096–0098** Metal Polar/QJL+fused; Darwin UMA **0094–0095**; **0093** llama-bench Eliza L2 KV names; **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b COW; **0088** TBQ vec_dot; **0087** Bee loop-guard). Note: some numbers are shared across parallel patch series — apply by filename. Container: `./scripts/vendor/build_llama_server_container.sh` |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
@@ -20,7 +20,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`86d86ed4`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-86d86ed4/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as runtime table above (through **0101**; DCA + Metal Lab D + Darwin UMA share some **009x** numbers — apply by filename). |
+| **Ollama patches** | Same series as runtime table above (through **0102**; DCA + Metal Lab D + Darwin UMA share some **009x** numbers — apply by filename). |
 | **In-tree Metal dig** | E8_2 / TQ2 Metal kernels and concurrency guard in the mid series; Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0076–0079). Metal FA-vec per-device (Q,NE) tables **0086** (ported onto monolithic `ggml-metal.metal`; keeps GQA2). Recoverable nil pipeline + bf16 library gate **0096**. Polar/QJL SET_ROWS + fused QJL+Polar attn **0097–0098**. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
@@ -57,7 +57,9 @@ See [docs/apple-silicon-metal.md](../docs/apple-silicon-metal.md#mlx-engine-opti
 | `LLAMA_CPP_ROOT` | Root of llama.cpp checkout (default: `../llama.cpp` relative to repo) |
 | `LLAMA_SERVER_BIN` | Override path to `llama-server` executable |
 | `LLAMA_CPP_REPO` | Override clone URL (default historically elizaOS; **pin is ggml-org** via `Makefile.sync`) |
-| `ZEROLLAMA_ALLOW_ELIZA_VOICE` | `1` = allow `tools/kokoro` / `tools/omnivoice` in build tree (default refuse — zerollama binary shape) |
+| `ZEROLLAMA_ALLOW_ELIZA_VOICE` | `1` = allow `tools/omnivoice` in build tree (default refuse). Kokoro is allowed; enable with `LLAMA_BUILD_KOKORO=ON` |
+| `LLAMA_BUILD_KOKORO` | `ON` = mount `/v1/audio/speech` (patches **0100–0101**); default OFF |
+| `ZEROLLAMA_SPEC_DM_ADAPTIVE` | `profit`/`1`/`on` = Bee B1 adaptive DFlash draft-max (**0102**); default off |
 | `ZEROLLAMA_LLAMA_FORK` | `0` = L1 q8_0 profiles; unset/`1` = auto-probe fork KV types |
 | `OLLAMA_MLX_SOURCE` / `OLLAMA_MLX_C_SOURCE` | Override MLX sibling paths |
 

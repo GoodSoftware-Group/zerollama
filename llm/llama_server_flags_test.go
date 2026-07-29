@@ -55,16 +55,41 @@ func TestAppendSpecDraftBackendSamplingArgSkipsElizaFork(t *testing.T) {
 	}
 }
 
-func TestAppendSpecDraftBackendSamplingArgIncludesWhenSupported(t *testing.T) {
+func TestAppendSpecDmAdaptiveArgOptIn(t *testing.T) {
 	t.Cleanup(resetLlamaServerHelpCache)
-	const bin = "/tmp/llama-server-new"
-	llamaServerHelpCache.Store(bin, "--spec-draft-backend-sampling, --no-spec-draft-backend-sampling\n")
+	t.Setenv("ZEROLLAMA_SPEC_DM_ADAPTIVE", "profit")
+	const bin = "/tmp/llama-server-b1"
+	llamaServerHelpCache.Store(bin, "--spec-type draft-dflash\n--spec-dm-adaptive\n--spec-draft-backend-sampling\n")
 
-	got := appendMTPDraftArgs([]string{"base"}, bin, LlamaServerConfig{EnableMTP: true}, api.Options{
-		Runner: api.Runner{DraftNumPredict: 4},
-	})
-	want := []string{"base", "--spec-type", "draft-mtp", "--spec-draft-n-max", "4", "--spec-draft-backend-sampling"}
+	got := appendSpeculativeArgs([]string{"base"}, bin, LlamaServerConfig{
+		SpecType:       "dflash",
+		DraftModelPath: "draft.gguf",
+	}, api.Options{Runner: api.Runner{DraftNumPredict: 4}})
+	want := []string{
+		"base", "--spec-type", "draft-dflash",
+		"--spec-draft-model", "draft.gguf",
+		"--spec-draft-n-max", "4",
+		"--spec-draft-backend-sampling",
+		"--spec-dm-adaptive", "profit",
+	}
 	if !slices.Equal(got, want) {
-		t.Fatalf("appendMTPDraftArgs = %v, want %v", got, want)
+		t.Fatalf("appendSpeculativeArgs = %v, want %v", got, want)
+	}
+}
+
+func TestAppendSpecDmAdaptiveArgDefaultOff(t *testing.T) {
+	t.Cleanup(resetLlamaServerHelpCache)
+	t.Setenv("ZEROLLAMA_SPEC_DM_ADAPTIVE", "")
+	const bin = "/tmp/llama-server-b1-off"
+	llamaServerHelpCache.Store(bin, "--spec-type draft-dflash\n--spec-dm-adaptive\n")
+
+	got := appendSpeculativeArgs([]string{"base"}, bin, LlamaServerConfig{
+		SpecType:       "dflash",
+		DraftModelPath: "draft.gguf",
+	}, api.Options{Runner: api.Runner{DraftNumPredict: 4}})
+	for _, arg := range got {
+		if arg == specDmAdaptiveFlag {
+			t.Fatalf("default must omit %s, got %v", specDmAdaptiveFlag, got)
+		}
 	}
 }
