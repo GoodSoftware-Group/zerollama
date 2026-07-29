@@ -52,6 +52,8 @@ model=qwen3:0.6b  build=0.30.11  tool=minefield_doctor.py
 | **CLEAN** | **77**, **78**, **01**, **03** (toggle map separable), **02**, **23**, **07**, **19**, **26**, mm-* |
 | Coverage | `problems 2` · `clean 9` numbered · Core executed **01, 03, 12, 19, 77** |
 
+Native `zerollama doctor` on the same warm model (lab `:11435`, 2026-07-28): **77/78/01/12 ok**; **04** warns (prior `.Thinking` stripped from assembled prompt — stock Go template); **29** warns when gate unset; **55/61** may warn on context ceilings.
+
 **Operator takeaway (12 / 29):** On thinking models, a 512 ceiling can score as capability collapse while the model is still reasoning. Treat server thinking-off as a **default**, not a hard gate, unless your gateway strips thinking kwargs.
 
 ### Non-thinking lane — `qwen2.5:0.5b` (2026-07-28)
@@ -81,8 +83,8 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 
 ### Still out of reach for the upstream doctor here
 
-- **04/20/25** — no render/`/apply-template` path on this Ollama-shaped stack
-- **10/17/21** — need `--hf-repo` or a readable chat template for full checks
+- **04/20/25** — upstream `minefield_doctor.py` has no `/apply-template` on this Ollama-shaped stack; **zerollama doctor** covers them via `/api/chat` `_debug_render_only` (see §2.2)
+- **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
 - Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** (serve identity) and **55/61 arithmetic** in `zerollama doctor`; **35** and the **61 behavioural ladder** stay operator-run.
 
 Coverage lines from the tool are **not** a bill of health for the full registry (103 entries; doctor implements ~19).
@@ -139,6 +141,29 @@ The **behavioural** half remains a hand-run (cold only — warm prefix cache lie
 curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,train_context_length}'
 ```
 
+### 2.2 History render (04 / 20 / 25) via `_debug_render_only`
+
+Upstream doctor skips these without `/apply-template`. Zerollama exposes the assembled prompt on `/api/chat` with `"_debug_render_only": true` → `debug_info.rendered_template`.
+
+`zerollama doctor` (warm thinking model) runs:
+
+1. **04** — three-turn history with prior `thinking` markers; warns if markers are absent from the render (stock Qwen3 Go templates drop `.Thinking` before the last user index)
+2. **25** — counts empty `<think></think>` shells in that render
+3. **20** — last-assistant arm: `thinking` must appear; bare `reasoning` on `/api/chat` must not (native write field is `thinking`; OpenAI maps `reasoning` → `thinking`)
+
+Manual probe:
+
+```bash
+curl -s http://127.0.0.1:11435/api/chat -d '{
+  "model":"qwen3:0.6b","think":true,"_debug_render_only":true,"stream":false,
+  "messages":[
+    {"role":"user","content":"Step 1"},
+    {"role":"assistant","content":"ok","thinking":"MARKER_UNIQUE"},
+    {"role":"user","content":"Step 2"}
+  ]
+}' | jq -r '.debug_info.rendered_template' | grep -n MARKER_UNIQUE || echo "stripped (trap 04)"
+```
+
 ---
 
 ## 3. `zerollama doctor` coverage (native)
@@ -147,7 +172,7 @@ curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,t
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go)): **29** (gate), **77**, **78**, **55/61** ceilings, **01/03**, **12/64/65**, **19** — warm `/api/ps` preferred; warn (not fail) when inconclusive
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go)): **29**, **77**, **78**, **04/20/25**, **55/61** ceilings, **01/03**, **12/64/65**, **19** — warm `/api/ps` preferred; warn (not fail) when inconclusive
 
 ```bash
 ./zerollama doctor
@@ -173,9 +198,11 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 |------|-------|--------|-------|
 | 01 | Wrong reasoning field name | `covered via doctor` | Lab CLEAN on `qwen3:0.6b` (`reasoning`); `doctorCheckReasoningField` |
 | 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
-| 04 | History reasoning stripping | `covered via test` / code | [`server/chat_sanitize.go`](../server/chat_sanitize.go) |
+| 04 | History reasoning stripping | `covered via doctor` + test | `_debug_render_only` probe; stock Qwen3 templates strip prior `.Thinking` ([`server/chat_sanitize.go`](../server/chat_sanitize.go) also strips in-content tags) |
 | 12 | Empty content at token ceiling | `documented` / model-dependent | CLEAN on `qwen2.5:0.5b` @ 512; **PROBLEM** on `qwen3:0.6b` @ 512 (honest truncation into reasoning) |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
+| 20 | Reasoning write field name | `covered via doctor` | Native write field `thinking`; OpenAI `reasoning` mapped in ([`openai/openai.go`](../openai/openai.go)) |
+| 25 | Empty think shells in history | `covered via doctor` | Counted in history-render probe |
 | **29** | Server thinking-off is not a gate | **optional gate** + `covered via doctor` | `doctorCheckThinkingGate`; set `ZEROLLAMA_THINKING_GATE=deny\|strip` ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
