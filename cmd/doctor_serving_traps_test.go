@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -36,11 +37,17 @@ func TestDoctorCheckServingTrapsNoAPI(t *testing.T) {
 	// serving traps should warn rather than fail.
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:1")
 	checks := doctorCheckServingTraps()
-	if len(checks) == 0 {
-		t.Fatal("expected at least one check")
+	if len(checks) < 2 {
+		t.Fatalf("expected gate + serving skip, got %d", len(checks))
 	}
-	if checks[0].Status != "warn" {
-		t.Fatalf("status=%s want warn (%s)", checks[0].Status, checks[0].Detail)
+	var foundWarn bool
+	for _, c := range checks {
+		if c.Status == "warn" && strings.Contains(c.Name, "serving") {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Fatalf("expected serving traps warn, got %+v", checks)
 	}
 }
 

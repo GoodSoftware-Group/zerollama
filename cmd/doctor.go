@@ -355,10 +355,7 @@ func runDoctorChecks(repo string) []doctorCheck {
 			Detail: "full sidecar checks run on darwin only",
 		})
 	}
-	// Trap 53: identity of the process answering OLLAMA_HOST (not restart exit codes).
 	out = append(out, doctorCheckServeIdentity())
-	// Live serving minefield probes (reasoning field, think roundtrip, tool_calls).
-	// Read-only against whatever is already listening; skips cleanly with no warm model.
 	out = append(out, doctorCheckServingTraps()...)
 	return out
 }

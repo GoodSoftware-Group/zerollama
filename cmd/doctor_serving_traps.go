@@ -16,33 +16,45 @@ import (
 func doctorCheckServingTraps() []doctorCheck {
 	base, _ := doctorProbeGoAPI()
 	if base == "" {
-		return []doctorCheck{{
-			Name:    "serving traps",
-			Status:  "warn",
-			Detail:  "no Go API reachable — skip live minefield probes",
-			FixHint: "run zerollama serve, then re-run doctor with a warm model (zerollama run …)",
-		}}
+		return []doctorCheck{
+			doctorCheckThinkingGate(false),
+			{
+				Name:    "serving traps",
+				Status:  "warn",
+				Detail:  "no Go API reachable — skip live minefield probes",
+				FixHint: "run zerollama serve, then re-run doctor with a warm model (zerollama run …)",
+			},
+		}
 	}
 
 	loaded, err := doctorFetchLoadedModels(base)
 	if err != nil {
-		return []doctorCheck{{
-			Name:   "serving traps",
-			Status: "warn",
-			Detail: "could not read /api/ps: " + err.Error(),
-		}}
+		return []doctorCheck{
+			doctorCheckThinkingGate(false),
+			{
+				Name:   "serving traps",
+				Status: "warn",
+				Detail: "could not read /api/ps: " + err.Error(),
+			},
+		}
 	}
 	if len(loaded) == 0 {
-		return []doctorCheck{{
-			Name:    "serving traps",
-			Status:  "warn",
-			Detail:  "no loaded model — live traps need a warm runner (minefield doctor coverage)",
-			FixHint: "zerollama run <model> then re-run doctor; checks cover traps 55/61 ceilings, 01/03, 12/64/65, 19",
-		}}
+		return []doctorCheck{
+			doctorCheckThinkingGate(false),
+			{
+				Name:    "serving traps",
+				Status:  "warn",
+				Detail:  "no loaded model — live traps need a warm runner (minefield doctor coverage)",
+				FixHint: "zerollama run <model> then re-run doctor; checks cover traps 77, 78, 55/61, 01/03, 12/64/65, 19",
+			},
+		}
 	}
 
 	pick := loaded[0]
 	var out []doctorCheck
+	out = append(out, doctorCheckThinkingGate(pick.SupportsThinking))
+	out = append(out, doctorCheckUnknownFields(base, pick))
+	out = append(out, doctorCheckToolChoiceNone(base, pick))
 	out = append(out, doctorCheckContextCeilings(pick))
 	out = append(out, doctorCheckReasoningField(base, pick))
 	out = append(out, doctorCheckThinkRoundtrip(base, pick))

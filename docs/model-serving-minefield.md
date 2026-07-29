@@ -147,7 +147,7 @@ curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,t
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go)): **55/61** ceilings on warm `/api/ps`, **01/03**, **12/64/65**, **19** — warn (not fail) when inconclusive
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go)): **29** (gate), **77**, **78**, **55/61** ceilings, **01/03**, **12/64/65**, **19** — warm `/api/ps` preferred; warn (not fail) when inconclusive
 
 ```bash
 ./zerollama doctor
@@ -158,6 +158,9 @@ curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,t
 External upstream doctor (lab ports only):
 
 ```bash
+# after lab serve on :11435
+./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
+# or:
 curl -sO https://raw.githubusercontent.com/Blackwellboy/model-serving-minefield/main/doctor/minefield_doctor.py
 python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 ```
@@ -173,11 +176,11 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | 04 | History reasoning stripping | `covered via test` / code | [`server/chat_sanitize.go`](../server/chat_sanitize.go) |
 | 12 | Empty content at token ceiling | `documented` / model-dependent | CLEAN on `qwen2.5:0.5b` @ 512; **PROBLEM** on `qwen3:0.6b` @ 512 (honest truncation into reasoning) |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
-| **29** | Server thinking-off is not a gate | **optional gate** | Default still allows client re-enable. Set `ZEROLLAMA_THINKING_GATE=deny` (400) or `strip` (force off) on lanes sized for non-thinking budgets ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
+| **29** | Server thinking-off is not a gate | **optional gate** + `covered via doctor` | `doctorCheckThinkingGate`; set `ZEROLLAMA_THINKING_GATE=deny\|strip` ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
-| **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1`, `/api/chat`, and `/api/generate` → 400; known nested kwargs validated |
-| **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
+| **77** | Only one request field validated | **fixed** + `covered via doctor` | Live probe rejects `__minefield_unvalidated_field_probe__` on `/api/chat` + `/v1` |
+| **78** | `tool_choice` fails open | **fixed** + `covered via doctor` | Live `/v1` `tool_choice=none` must not return `tool_calls` |
 
 ### Model config / Core gaps (also in native doctor)
 
