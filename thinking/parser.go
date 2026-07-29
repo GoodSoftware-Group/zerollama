@@ -51,6 +51,15 @@ type Parser struct {
 	acc        strings.Builder
 }
 
+// ImplicitThinkEndMarkers close an open think block when the model skips
+// </think> and jumps into tool markup (minefield trap 26). Remaining text
+// (including the marker) is returned as content for the tool parser.
+var ImplicitThinkEndMarkers = []string{
+	"<tool_call>",
+	"<|tool_calls_begin|>",
+	"<|tool▁calls▁begin|>",
+}
+
 // AddContent returns the thinking content and the non-thinking content that
 // should be immediately sent to the user. It will internally buffer if it needs
 // to see more raw content to disambiguate
@@ -146,12 +155,26 @@ func eat(s *Parser) (string, string, bool) {
 				s.state = thinkingState_ThinkingDone
 			}
 			return thinking, remaining, false
+		}
+		if _, idx := earliestMarker(acc, ImplicitThinkEndMarkers); idx >= 0 {
+			// Model skipped </think> before tool markup — end thinking here.
+			thinking := strings.TrimRightFunc(acc[:idx], unicode.IsSpace)
+			remaining := acc[idx:]
+			s.acc.Reset()
+			s.state = thinkingState_ThinkingDone
+			return thinking, remaining, false
 		} else if overlapLen := overlap(acc, s.ClosingTag); overlapLen > 0 {
 			thinking := acc[:len(acc)-overlapLen]
 			remaining := acc[len(acc)-overlapLen:]
 			s.acc.Reset()
 			// keep track of the candidate closing tag. We have to buffer it until it
 			// becomes disambiguated
+			s.acc.WriteString(remaining)
+			return thinking, "", false
+		} else if overlapLen := longestMarkerPrefixOverlap(acc, ImplicitThinkEndMarkers); overlapLen > 0 {
+			thinking := acc[:len(acc)-overlapLen]
+			remaining := acc[len(acc)-overlapLen:]
+			s.acc.Reset()
 			s.acc.WriteString(remaining)
 			return thinking, "", false
 		} else {
@@ -185,4 +208,29 @@ func overlap(s, delim string) int {
 		}
 	}
 	return 0
+}
+
+func earliestMarker(s string, markers []string) (string, int) {
+	bestIdx := -1
+	best := ""
+	for _, m := range markers {
+		if m == "" {
+			continue
+		}
+		if i := strings.Index(s, m); i >= 0 && (bestIdx < 0 || i < bestIdx) {
+			bestIdx = i
+			best = m
+		}
+	}
+	return best, bestIdx
+}
+
+func longestMarkerPrefixOverlap(s string, markers []string) int {
+	best := 0
+	for _, m := range markers {
+		if n := overlap(s, m); n > best {
+			best = n
+		}
+	}
+	return best
 }

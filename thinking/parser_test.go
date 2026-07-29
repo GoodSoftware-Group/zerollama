@@ -39,6 +39,12 @@ func TestExtractThinking(t *testing.T) {
 			wantThink:   "",
 			wantContent: "",
 		},
+		{
+			// trap 26: skip </think>, jump into tool_call
+			in:          "<think>need a tool\n<tool_call>{\"name\":\"get_time\"}</tool_call>",
+			wantThink:   "need a tool",
+			wantContent: "<tool_call>{\"name\":\"get_time\"}</tool_call>",
+		},
 	}
 	for i, tt := range tests {
 		parser := Parser{
@@ -293,6 +299,28 @@ func TestThinkingStreaming(t *testing.T) {
 					input:          "nk>\nOK",
 					wantThinking:   "",
 					wantContent:    "OK",
+					wantStateAfter: thinkingState_ThinkingDone,
+				},
+			},
+		},
+		{
+			desc: "tool_call ends think without closer (trap 26)",
+			steps: []step{
+				{
+					input:          "<think>planning ",
+					wantThinking:   "planning ",
+					wantStateAfter: thinkingState_Thinking,
+				},
+				{
+					input:          "<tool",
+					wantThinking:   "",
+					wantContent:    "",
+					wantStateAfter: thinkingState_Thinking,
+				},
+				{
+					input:          "_call>{\"name\":\"t\"}</tool_call>",
+					wantThinking:   "",
+					wantContent:    "<tool_call>{\"name\":\"t\"}</tool_call>",
 					wantStateAfter: thinkingState_ThinkingDone,
 				},
 			},
