@@ -363,7 +363,13 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
                 ggml_backend_tensor_copy(pf.src_v, pf.dst_v);
             }
         }
-        layers[pf.li] = { pf.il, pf.dst_k, pf.dst_v, std::move(pf.k_stream), std::move(pf.v_stream) };
+        // Preserve MSA indexer tensors (k_idx); COW currently forks K/V only.
+        ggml_tensor * k_idx = old_layer.k_idx;
+        auto k_idx_stream = old_layer.k_idx_stream;
+        layers[pf.li] = {
+            pf.il, pf.dst_k, pf.dst_v, k_idx,
+            std::move(pf.k_stream), std::move(pf.v_stream), std::move(k_idx_stream),
+        };
     }
     for (auto & nb : new_bufs) {
         ctxs_bufs.emplace_back(std::move(nb));
@@ -884,7 +890,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
                 continue;
             }
 
-            const auto & cells = v_cells[seq_to_stream[sid]];
+            const auto & cells = (*v_cells)[seq_to_stream[sid]];
 
             const llama_pos pmin = cells.seq_pos_min(sid);
             const llama_pos pmax = cells.seq_pos_max(sid);

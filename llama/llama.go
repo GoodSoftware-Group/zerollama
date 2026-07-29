@@ -290,7 +290,11 @@ func LoadModelFromFile(modelPath string, params ModelParams) (*Model, error) {
 	cparams := C.llama_model_default_params()
 	cparams.n_gpu_layers = C.int(params.NumGpuLayers)
 	cparams.main_gpu = C.int32_t(params.MainGpu)
-	cparams.use_mmap = C.bool(params.UseMmap)
+	if params.UseMmap {
+		cparams.load_mode = C.LLAMA_LOAD_MODE_MMAP
+	} else {
+		cparams.load_mode = C.LLAMA_LOAD_MODE_NONE
+	}
 	cparams.vocab_only = C.bool(params.VocabOnly)
 
 	var devices []C.ggml_backend_dev_t

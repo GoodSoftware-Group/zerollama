@@ -52,7 +52,7 @@ model=qwen3:0.6b  build=0.30.11  tool=minefield_doctor.py
 | **CLEAN** | **77**, **78**, **01**, **03** (toggle map separable), **02**, **23**, **07**, **19**, **26**, mm-* |
 | Coverage | `problems 2` · `clean 9` numbered · Core executed **01, 03, 12, 19, 77** |
 
-Native `zerollama doctor` on the same warm model (lab `:11435`, 2026-07-28): **77/78/01/12 ok**; **04** was warn (prior `.Thinking` stripped) until preserve-prior-thinking landed — re-check should CLEAN when clients resend `thinking`; **29** warns when gate unset; **55/61** may warn on context ceilings.
+Native `zerollama doctor` on the same warm model (lab `:11435`, 2026-07-28): **77/78/01/12 ok**; **04** was warn (prior `.Thinking` stripped) until preserve-prior-thinking landed — re-check should CLEAN when clients resend `thinking`; **29** warns when gate unset; **55/61** may warn on context ceilings. **66** re-check 2026-07-29: **ok** (inject observed, assistant cleaned).
 
 **Operator takeaway (12 / 29):** On thinking models, a 512 ceiling can score as capability collapse while the model is still reasoning. Treat server thinking-off as a **default**, not a hard gate, unless your gateway strips thinking kwargs.
 
@@ -266,3 +266,13 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 | Upstream `checks/*` | [`scripts/minefield_pull_checks.sh`](../scripts/minefield_pull_checks.sh) fetches and runs budget / tokenize / cache probes against lab `:11435/v1`. |
 | **[PR #8](https://github.com/Blackwellboy/model-serving-minefield/pull/8)** draft SGLang | Still watch-only until merge. |
 | Traps **99–103** gfx1151 | Skip for Mac Metal primary. |
+
+---
+
+## 6. Upstream deltas (2026-07-29 morning)
+
+| Item | Zerollama action |
+|------|------------------|
+| Mining candidates (persona suppressor, presence_penalty greeting latency, Codex findings on PR #9/#10) | **Watch / document only** — not promoted traps; Mac Metal primary does not run the GB10/NVFP4/vLLM confirmation lanes. Greeting-latency check: reconcile client vs server timing (trap **48** class) before blaming samplers. |
+| Trap **66** lab re-check | **CLEAN** on `qwen3:0.6b` lab `:11435` after strip + doctor (`template injects…; assistant output cleaned`). |
+| Pin `b10159` Mac CGO | Restored post-sync: KV COW `k_idx` assign + `(*v_cells)` MSA path, `mtmd_bitmap_set_grid_hint`, `load_mode` vs `use_mmap`; local `llama/llama.cpp/vendor/{nlohmann,miniaudio,stb}` (gitignored under `vendor/`). |
