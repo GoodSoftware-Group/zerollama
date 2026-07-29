@@ -59,6 +59,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	out = append(out, doctorCheckContextCeilings(pick))
 	out = append(out, doctorCheckReasoningField(base, pick))
 	out = append(out, doctorCheckThinkRoundtrip(base, pick))
+	out = append(out, doctorCheckTokenCeiling(base, pick))
 	out = append(out, doctorCheckToolCallShape(base, pick))
 	return out
 }

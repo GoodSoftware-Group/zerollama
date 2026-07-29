@@ -85,7 +85,7 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 
 - **04/20/25** — upstream `minefield_doctor.py` has no `/apply-template` on this Ollama-shaped stack; **zerollama doctor** covers them via `/api/chat` `_debug_render_only` (see §2.2)
 - **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
-- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** (serve identity) and **55/61 arithmetic** in `zerollama doctor`; **35** and the **61 behavioural ladder** stay operator-run.
+- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **61** behavioural via lab scripts; **55/61** arithmetic in doctor.
 
 Coverage lines from the tool are **not** a bill of health for the full registry (103 entries; doctor implements ~19).
 
@@ -102,7 +102,14 @@ Not a serving bug. Before publishing small eval deltas on zerollama (ggml or run
 3. Report **per-item agreement**, not only score delta.
 4. Treat the observed score spread as your minimum detectable effect; do not assemble paired arms across machines without quoting that floor.
 
-Zerollama does not ship an agreement-floor harness; use your benchmark’s per-item JSON. Temp-0 still has a prompt-length / prefix-cache floor (traps **91/92**).
+Zerollama ships a tiny same-process harness for a first look:
+
+```bash
+# lab serve on :11435 first
+./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
+```
+
+Use your real benchmark’s per-item JSON for publishable floors. Temp-0 still has a prompt-length / prefix-cache floor (traps **91/92**).
 
 #### Trap 53 — config edit never took effect
 
@@ -139,6 +146,10 @@ The **behavioural** half remains a hand-run (cold only — warm prefix cache lie
 ```bash
 # warm runner already loaded — arithmetic only
 curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,train_context_length}'
+
+# behavioural cold ladder (lab :11435)
+./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
+# DEPTHS=512,1024,2048 ./scripts/minefield_cold_ladder.sh qwen3:0.6b
 ```
 
 ### 2.2 History render (04 / 20 / 25) via `_debug_render_only`
@@ -172,22 +183,28 @@ curl -s http://127.0.0.1:11435/api/chat -d '{
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go)): **29**, **77**, **78**, **04/20/25**, **55/61** ceilings, **01/03**, **12/64/65**, **19** — warm `/api/ps` preferred; warn (not fail) when inconclusive
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go)): **29**, **77**, **78**, **04/20/25**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
 ./zerollama doctor --models
 ./zerollama run <model> && ./zerollama doctor   # enable live serving probes
+ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor     # also run trap-12 ceiling @ 512
+```
+
+Hand-run Core scripts (lab `:11435`):
+
+```bash
+./scripts/minefield_ceiling_probe.sh qwen3:0.6b
+./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
+./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
+./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
 ```
 
 External upstream doctor (lab ports only):
 
 ```bash
-# after lab serve on :11435
-./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
-# or:
-curl -sO https://raw.githubusercontent.com/Blackwellboy/model-serving-minefield/main/doctor/minefield_doctor.py
-python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
+python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 ```
 
 ---
@@ -199,7 +216,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | 01 | Wrong reasoning field name | `covered via doctor` | Lab CLEAN on `qwen3:0.6b` (`reasoning`); `doctorCheckReasoningField` |
 | 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
 | 04 | History reasoning stripping | **fixed** + `covered via doctor` | `preservePriorThinkingForRender` re-embeds prior `.Thinking` into Content when `think` is on (skips tool-call turns); qwen3.5/vl renderers preserve non-tool history thinking |
-| 12 | Empty content at token ceiling | `documented` / model-dependent | CLEAN on `qwen2.5:0.5b` @ 512; **PROBLEM** on `qwen3:0.6b` @ 512 (honest truncation into reasoning) |
+| 12 | Empty content at token ceiling | `covered via doctor` (deep) + script | Default doctor skips; `ZEROLLAMA_DOCTOR_DEEP=1` or [`scripts/minefield_ceiling_probe.sh`](../scripts/minefield_ceiling_probe.sh). Lab PROBLEM on `qwen3:0.6b` @ 512 |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
 | 20 | Reasoning write field name | `covered via doctor` | Native write field `thinking`; OpenAI `reasoning` mapped in ([`openai/openai.go`](../openai/openai.go)) |
 | 25 | Empty think shells in history | `covered via doctor` | Counted in history-render probe |
@@ -214,8 +231,9 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | Trap | Status | Where |
 |------|--------|-------|
 | 10, 21, 55/61, 56 | `covered via doctor` | 55/61 = arithmetic; 61 behavioural ladder = §2.1 hand-run |
-| **35** | `documented` | Agreement-floor protocol in §2.1 — no automated doctor check |
+| **35** | `documented` + script | [`scripts/minefield_agreement_floor.sh`](../scripts/minefield_agreement_floor.sh) — agreement-floor protocol in §2.1 |
 | **53** | `covered via doctor` | `doctorCheckServeIdentity` — pid/start/version of answering process |
+| **61** | arithmetic `covered via doctor`; behavioural script | [`scripts/minefield_cold_ladder.sh`](../scripts/minefield_cold_ladder.sh) |
 
 ---
 
