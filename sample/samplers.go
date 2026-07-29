@@ -23,11 +23,16 @@ type Sampler struct {
 	minP        float32
 	temperature float32
 	grammar     *GrammarSampler
+	penalties   Penalties
 }
 
-func (s *Sampler) Sample(logits []float32) (int32, error) {
+func (s *Sampler) Sample(logits []float32, prevTokens ...int32) (int32, error) {
 	if len(logits) == 0 {
 		return -1, errors.New("sample: no logits provided to sample")
+	}
+
+	if len(prevTokens) > 0 && s.penalties.active() {
+		logits = applyPenalties(logits, prevTokens, s.penalties)
 	}
 
 	tokens := make([]token, len(logits))
@@ -162,6 +167,18 @@ func NewSampler(temperature float32, topK int, topP float32, minP float32, seed 
 		temperature: temperature,
 		grammar:     grammar,
 	}
+}
+
+// WithPenalties returns a copy of the sampler that applies repeat/presence/frequency
+// penalties using recent token ids passed to Sample (minefield U02).
+func (s Sampler) WithPenalties(lastN int, repeat, presence, frequency float32) Sampler {
+	s.penalties = Penalties{
+		LastN:     lastN,
+		Repeat:    repeat,
+		Presence:  presence,
+		Frequency: frequency,
+	}
+	return s
 }
 
 type GrammarSampler struct {

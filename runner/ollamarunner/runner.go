@@ -145,6 +145,22 @@ type NewSequenceParams struct {
 
 var errorInputTooLong = errors.New("the input length exceeds the context length")
 
+// recentTokenIDs returns token ids already in the sequence (prompt + generated)
+// for sampling penalties (minefield U02).
+func recentTokenIDs(seq *Sequence) []int32 {
+	if seq == nil || seq.cache == nil {
+		return nil
+	}
+	out := make([]int32, 0, len(seq.cache.Inputs))
+	for _, inp := range seq.cache.Inputs {
+		if inp == nil {
+			continue
+		}
+		out = append(out, inp.Token)
+	}
+	return out
+}
+
 func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSequenceParams) (*Sequence, error) {
 	s.ready.Wait()
 
@@ -924,7 +940,7 @@ func (s *Server) computeBatch(activeBatch batchState) {
 		vocabSize := len(outputs) / activeBatch.batch.Outputs.Dim(0)
 		logutil.Trace("computeBatch: vocab details", "batchID", activeBatch.id, "seqIdx", i, "len(logits)", len(outputs), "len(activeBatch.batch.Outputs)", activeBatch.batch.Outputs.Dim(0), "vocabSize", vocabSize, "iBatches", iBatches)
 		logits := outputs[iBatches[i]*vocabSize : (iBatches[i]+1)*vocabSize]
-		token, err := seq.sampler.Sample(logits)
+		token, err := seq.sampler.Sample(logits, recentTokenIDs(seq)...)
 		if err != nil {
 			panic("failed to sample token")
 		}
@@ -1061,6 +1077,11 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		req.Options.MinP,
 		req.Options.Seed,
 		grammar,
+	).WithPenalties(
+		req.Options.RepeatLastN,
+		req.Options.RepeatPenalty,
+		req.Options.PresencePenalty,
+		req.Options.FrequencyPenalty,
 	)
 
 	params := NewSequenceParams{

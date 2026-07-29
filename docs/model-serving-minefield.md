@@ -199,6 +199,7 @@ Hand-run Core scripts (lab `:11435`):
 ./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
 ./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
 ./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
+./scripts/minefield_pull_checks.sh qwen3:0.6b   # upstream budget/tokenize/cache checks
 ```
 
 External upstream doctor (lab ports only):
@@ -233,7 +234,8 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | 10, 21, 55/61, 56 | `covered via doctor` | 55/61 = arithmetic; 61 behavioural ladder = §2.1 hand-run |
 | **35** | `documented` + script | [`scripts/minefield_agreement_floor.sh`](../scripts/minefield_agreement_floor.sh) — agreement-floor protocol in §2.1 |
 | **53** | `covered via doctor` | `doctorCheckServeIdentity` — pid/start/version of answering process |
-| **61** | arithmetic `covered via doctor`; behavioural script | [`scripts/minefield_cold_ladder.sh`](../scripts/minefield_cold_ladder.sh) |
+| **79** | Oversized `num_ctx` silent empty | **mitigated** + `covered via doctor` | Clamp + `doctorCheckOversizedNumCtx` |
+| **U02** | Go runner drops sampling penalties | **fixed** | [`sample/penalties.go`](../sample/penalties.go) + ollamarunner `WithPenalties` |
 
 ---
 
@@ -243,15 +245,15 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 
 ---
 
-## 5. Upstream watchlist (pulled 2026-07-28 evening)
+## 5. Pulled from upstream (2026-07-28 evening)
 
-[`minefield_doctor.py`](https://github.com/Blackwellboy/model-serving-minefield/blob/main/doctor/minefield_doctor.py) is **unchanged** vs our morning cache — no doctor pull needed. Useful registry deltas:
+[`minefield_doctor.py`](https://github.com/Blackwellboy/model-serving-minefield/blob/main/doctor/minefield_doctor.py) itself was unchanged — we pulled **findings and checks**, not a doctor diff.
 
-| Item | Relevance to zerollama | Action |
-|------|------------------------|--------|
-| **[PR #8](https://github.com/Blackwellboy/model-serving-minefield/pull/8)** (draft) SGLang NVFP4 + doctor `/v1/models` ID | Closest to our OpenAI surface; may improve stack detection | Watch merge; re-diff doctor |
-| Trap **79** oversized `num_ctx` → 200 / empty / `length` | We **clamp** via `capNumCtxToModelMax` / `ggml_num_ctx` and can surface clamp on the response ([`server/routes.go`](../server/routes.go)) — not the silent Ollama 0.32.5 failure mode | Treat as **mitigated**; keep clamp visible to clients |
-| **[U02](https://github.com/Blackwellboy/model-serving-minefield/blob/main/upstream/U02-ollama-go-runner-drops-sampling-penalties.md)** penalties accepted and dropped on Go runner | Upstream-reported, disputed headline; llama-server + llamarunner paths pass penalties through here | **Watchlist** — confirm ollamaengine / MLX paths if loops appear with `presence_penalty` set |
-| Trap **104** stale launch script reverts config | Mirror of **53** (stale process vs stale startup artifact) | Operator rule already in §2.1; apply to `scripts/*serve*` / launchd / docs |
-| Traps **99–104** gfx1151 / NVFP4 MoE profiling | Mostly AMD desktop / Spark; **102** is a redirect (BF16 GEMM vs MoE time) | Skip unless shipping gfx1151 or NVFP4 MoE |
-| `checks/*.py` from PR #7 | Offline probes (cache hit, reasoning budget, tokenized length, …) | Optional lab later; not wired into `zerollama doctor` |
+| Item | What we did |
+|------|-------------|
+| **[U02](https://github.com/Blackwellboy/model-serving-minefield/blob/main/upstream/U02-ollama-go-runner-drops-sampling-penalties.md)** | **Fixed:** `ollamarunner` now applies `repeat_penalty` / `presence_penalty` / `frequency_penalty` via [`sample.WithPenalties`](../sample/penalties.go) (llamarunner / llama-server already did). |
+| Trap **79** oversized `num_ctx` | Already clamped; **doctor probe** `serving trap-79` watches for the empty/`length` signature without a clamp report. |
+| Trap **104** | Documented as mirror of **53** (stale startup artifact vs stale process). |
+| Upstream `checks/*` | [`scripts/minefield_pull_checks.sh`](../scripts/minefield_pull_checks.sh) fetches and runs budget / tokenize / cache probes against lab `:11435/v1`. |
+| **[PR #8](https://github.com/Blackwellboy/model-serving-minefield/pull/8)** draft SGLang | Still watch-only until merge. |
+| Traps **99–103** gfx1151 | Skip for Mac Metal primary. |

@@ -57,6 +57,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	out = append(out, doctorCheckToolChoiceNone(base, pick))
 	out = append(out, doctorCheckHistoryAssembly(base, pick))
 	out = append(out, doctorCheckContextCeilings(pick))
+	out = append(out, doctorCheckOversizedNumCtx(base, pick))
 	out = append(out, doctorCheckReasoningField(base, pick))
 	out = append(out, doctorCheckThinkRoundtrip(base, pick))
 	out = append(out, doctorCheckTokenCeiling(base, pick))
