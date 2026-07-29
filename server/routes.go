@@ -907,7 +907,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 						errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 					return
 				}
-				res.Response = content
+				res.Response = sanitizeAssistantContent(content)
 				res.Thinking = thinking
 				if cr.Done && len(toolCalls) > 0 {
 					res.ToolCalls = toolCalls
@@ -915,7 +915,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			} else if thinkingState != nil {
 				thinking, content := thinkingState.AddContent(cr.Content)
 				res.Thinking = thinking
-				res.Response = content
+				res.Response = sanitizeAssistantContent(content)
 			}
 
 			if _, err := sb.WriteString(cr.Content); err != nil {
@@ -1014,7 +1014,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 
 		r.Thinking = sbThinking.String()
-		r.Response = sbContent.String()
+		r.Response = sanitizeAssistantContent(sbContent.String())
 		r.Logprobs = allLogprobs
 
 		c.JSON(http.StatusOK, r)
@@ -3403,7 +3403,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 
 				if r.Done && usesQwenStyleChat(m) {
-					res.Message.Content = stripChatControlTokens(res.Message.Content)
+					res.Message.Content = sanitizeAssistantContent(res.Message.Content)
 				}
 
 				if r.Done {
@@ -3502,7 +3502,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			}
 		}
 
-		resp.Message.Content = sbContent.String()
+		resp.Message.Content = sanitizeAssistantContent(sbContent.String())
 		resp.Message.Thinking = sbThinking.String()
 		resp.Logprobs = allLogprobs
 

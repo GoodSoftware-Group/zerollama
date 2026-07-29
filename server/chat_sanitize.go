@@ -1,6 +1,7 @@
 package server
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -27,6 +28,22 @@ func stripChatControlTokens(s string) string {
 		}
 	}
 	return strings.TrimRight(s, " \t\n\r")
+}
+
+// thinkToggleTrailRe matches template-injected Qwen think toggles that models
+// often echo (minefield trap 66 mirror). Only trailing markers are stripped so
+// paths like src/think/main.py are left alone.
+var thinkToggleTrailRe = regexp.MustCompile(`(?i)(?:[ \t]+/(?:no_)?think)+\s*$`)
+
+// stripThinkToggleMarkers removes trailing " /think" / " /no_think" from
+// assistant content so harness scoring is not poisoned by template injection.
+func stripThinkToggleMarkers(s string) string {
+	return strings.TrimRight(thinkToggleTrailRe.ReplaceAllString(s, ""), " \t\n\r")
+}
+
+// sanitizeAssistantContent strips control tokens and think-toggle echo.
+func sanitizeAssistantContent(s string) string {
+	return stripThinkToggleMarkers(stripChatControlTokens(s))
 }
 
 func usesQwenStyleChat(m *Model) bool {

@@ -16,6 +16,28 @@ func TestStripChatControlTokens(t *testing.T) {
 	}
 }
 
+func TestStripThinkToggleMarkers(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"OK /think", "OK"},
+		{"OK /no_think", "OK"},
+		{"OK /think /no_think", "OK"},
+		{"OK", "OK"},
+		{"Open src/think/main.py", "Open src/think/main.py"},
+		{"Compare and/think versus", "Compare and/think versus"}, // not a trailing " /think"
+		{"hi\n/think", "hi\n/think"},                             // newline-only form not used by Ollama inject
+	}
+	for _, tc := range cases {
+		if got := stripThinkToggleMarkers(tc.in); got != tc.want {
+			t.Fatalf("in=%q got=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+	if got := sanitizeAssistantContent("OK /think<|" + "im_end" + "|>"); got != "OK" {
+		t.Fatalf("sanitize=%q", got)
+	}
+}
+
 func TestDefaultRendererForFamilyQwen35(t *testing.T) {
 	got := defaultRendererForFamily(&Model{Config: model.ConfigV2{ModelFamily: "qwen35"}})
 	if got != "qwen3.5" {

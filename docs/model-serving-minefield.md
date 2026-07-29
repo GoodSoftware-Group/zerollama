@@ -175,6 +175,14 @@ curl -s http://127.0.0.1:11435/api/chat -d '{
 }' | jq -r '._debug_info.rendered_template' | grep -n MARKER_UNIQUE || echo "stripped (trap 04)"
 ```
 
+### 2.3 Think-toggle echo (66)
+
+Stock Qwen chat templates append ` /think` or ` /no_think` to the last user turn (Ollama mirror). Models often echo that marker into the answer, poisoning harnesses that score exact match.
+
+Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` / generate `response` ([`sanitizeAssistantContent`](../server/chat_sanitize.go)). Paths like `src/think/` are left alone.
+
+`zerollama doctor` (warm thinking model) runs `serving trap-66`: debug-render should show injection; chat `"Reply with exactly: OK"` + `think:true` must not leave a trailing toggle on content.
+
 ---
 
 ## 3. `zerollama doctor` coverage (native)
@@ -183,7 +191,7 @@ curl -s http://127.0.0.1:11435/api/chat -d '{
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go)): **29**, **77**, **78**, **04/20/25**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go)): **29**, **77**, **78**, **04/20/25**, **66**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -222,6 +230,7 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | 20 | Reasoning write field name | `covered via doctor` | Native write field `thinking`; OpenAI `reasoning` mapped in ([`openai/openai.go`](../openai/openai.go)) |
 | 25 | Empty think shells in history | `covered via doctor` | Counted in history-render probe |
 | **29** | Server thinking-off is not a gate | **optional gate** + `covered via doctor` | `doctorCheckThinkingGate`; set `ZEROLLAMA_THINKING_GATE=deny\|strip` ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
+| **66** | Template injects `/think`/`/no_think`; model may echo | **fixed** + `covered via doctor` | Trailing toggle strip in [`server/chat_sanitize.go`](../server/chat_sanitize.go); `doctorCheckThinkToggleInjection` |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
 | **77** | Only one request field validated | **fixed** + `covered via doctor` | Live probe rejects `__minefield_unvalidated_field_probe__` on `/api/chat` + `/v1` |
