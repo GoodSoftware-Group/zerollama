@@ -47,6 +47,14 @@ export ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE="${ZEROLLAMA_RUNTIME_TRAINING_VRA
 export ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE="${ZEROLLAMA_RUNTIME_VRAM_PROBE_CALIBRATE:-auto}"
 export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE="${ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE:-auto}"
 
+# L1 GPU profile (5080 → runtime/configs/gpu/rtx-5080.json): stock q8_0 KV + np=2.
+# WHY explicit: empty env already defaults ON in gpu_profiles_enabled(), but production
+# must not silently inherit ZEROLLAMA_LLAMA_FORK=1 (QJL/polar) from a prior lab shell.
+# Jul 2026 llama-bench: Llama-3.1-8B q8_0 beats f16 tg on this card — keep stock path.
+export ZEROLLAMA_GPU_PROFILE="${ZEROLLAMA_GPU_PROFILE:-1}"
+export ZEROLLAMA_LLAMA_FORK="${ZEROLLAMA_LLAMA_FORK:-0}"
+# Optional force: export ZEROLLAMA_GPU_PROFILE_ID=rtx-5080
+
 # Training: Go listens on :9500 and /api/train/* (embedded CPython, not a python sidecar).
 export OLLAMA_TRAINING="${OLLAMA_TRAINING:-true}"
 export OLLAMA_TRAINING_TCP="${OLLAMA_TRAINING_TCP:-:9500}"
@@ -86,7 +94,10 @@ fi
 
 # Stability on new GPU architectures (optional).
 export GGML_CUDA_USE_GRAPHS="${GGML_CUDA_USE_GRAPHS:-0}"
+# Prefer 1 on 5080/CUDA 13: skip MMQ (upstream: #21371 #24399). 0 = MMQ if CUDA 12.8 build.
 export GGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS:-1}"
+# Clamp absurd client num_ctx before load (5080 / single-GPU hosts).
+export ZEROLLAMA_GGML_CLAMP_NUM_CTX="${ZEROLLAMA_GGML_CLAMP_NUM_CTX:-1}"
 
 # CUDA libs for ggml cuda_v13 (5080 / Blackwell). Override to cuda_v12 paths on older GPUs.
 # /usr/hostlibs may expose libcudnn older than PyTorch in the Wan venv; keep hostlibs for
@@ -99,7 +110,7 @@ export LD_LIBRARY_PATH="/root/nvidia-host:/usr/lib/ollama:/usr/lib/ollama/cuda_v
 
 # Prefer built vendor llama-server (fork QJL + Radix /kv/seq-copy) when present.
 # WHY: 5080 production uses vendor pin for L1 fork profile + seq-copy; sibling b9781 lacks both.
-_VENDOR_PIN="${Z5080_VENDOR_PIN:-c84b3020}"
+_VENDOR_PIN="${Z5080_VENDOR_PIN:-$(grep '^FETCH_HEAD=' "${ZEROLLAMA_REPO}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo f95de977)}"
 _VENDOR_ROOT="${ZEROLLAMA_VENDOR_ROOT:-${ZEROLLAMA_REPO}/vendor/llama-cpp-${_VENDOR_PIN}}"
 if [[ -z "${LLAMA_SERVER_BIN:-}" && -x "${_VENDOR_ROOT}/build/bin/llama-server" ]]; then
   export LLAMA_CPP_ROOT="${_VENDOR_ROOT}"
@@ -116,10 +127,16 @@ fi
 #   && cmake --install build-mlx --component MLX --strip
 #   && sudo cp -a dist/lib/ollama/mlx_cuda_v12/* /usr/lib/ollama/mlx_cuda_v12/
 
+# CUDA 12.8 for MLX imagegen NVRTC (include/cuda/std/tuple).
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.8}"
+export CUDA_PATH="${CUDA_PATH:-$CUDA_HOME}"
+
 # Wan T2V on 16g / SM120 (5080 class); unset to use manifest-only defaults.
+# VAE_CPU default 0 — CPU VAE spikes host RAM and OOMs ~24G CTs (see docs/wan-t2v.md).
 export ZEROLLAMA_WAN_FORCE_SDPA="${ZEROLLAMA_WAN_FORCE_SDPA:-1}"
-export ZEROLLAMA_WAN_VAE_CPU="${ZEROLLAMA_WAN_VAE_CPU:-1}"
+export ZEROLLAMA_WAN_VAE_CPU="${ZEROLLAMA_WAN_VAE_CPU:-0}"
 export ZEROLLAMA_WAN_UNLOAD_T5="${ZEROLLAMA_WAN_UNLOAD_T5:-1}"
+export ZEROLLAMA_WAN_MIN_HOST_RAM_GIB="${ZEROLLAMA_WAN_MIN_HOST_RAM_GIB:-14}"
 
 ZEROLLAMA_BIN="${ZEROLLAMA_BIN:-/usr/bin/zerollama}"
 if [[ ! -x "$ZEROLLAMA_BIN" ]]; then

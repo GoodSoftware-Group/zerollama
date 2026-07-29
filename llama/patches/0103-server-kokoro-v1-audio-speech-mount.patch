@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 28 Jul 2026 22:49:06 -0700
+Subject: [PATCH] server: kokoro /v1/audio/speech mount (0101)
+
+---
+ CMakeLists.txt              |  4 ++++
+ tools/CMakeLists.txt        |  4 ++++
+ tools/server/CMakeLists.txt |  7 +++++++
+ tools/server/server.cpp     | 39 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 54 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3df1d82db..4ed396813 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -116,6 +116,10 @@ option(LLAMA_BUILD_TESTS     "llama: build tests"
+ option(LLAMA_BUILD_TOOLS     "llama: build tools"                                                                ${LLAMA_STANDALONE})
+ option(LLAMA_BUILD_EXAMPLES  "llama: build examples"                                                             ${LLAMA_STANDALONE})
+ option(LLAMA_BUILD_SERVER    "llama: build server example"                                                       ${LLAMA_STANDALONE})
++
++# Kokoro-82M TTS (Eliza port). Optional; enables /v1/audio/speech when linked into llama-server.
++# WHY on the vendor pin: one llama-server binary for Q2_0 ternary + Kokoro (retire run/llama-server-tts).
++option(LLAMA_BUILD_KOKORO "Build Kokoro TTS (tools/kokoro/) and mount /v1/audio/speech" ON)
+ option(LLAMA_BUILD_APP       "llama: build the unified binary"                                                   ${LLAMA_STANDALONE})
+ option(LLAMA_BUILD_UI        "llama: build the embedded Web UI for server"                                       ON)
+ option(LLAMA_USE_PREBUILT_UI "llama: use prebuilt UI from HF Bucket when available (requires LLAMA_BUILD_UI=ON)" ON)
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index 780df3266..35b506456 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -24,6 +24,10 @@ else()
+     if (LLAMA_BUILD_SERVER)
+         add_subdirectory(ui)
+         add_subdirectory(cli)
++        if (LLAMA_BUILD_KOKORO)
++            # Kokoro-82M StyleTTS-2 port (Eliza). Build before server so kokoro_lib exists to link.
++            add_subdirectory(kokoro)
++        endif()
+         add_subdirectory(server)
+     endif()
+     add_subdirectory(tokenize)
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index e439e4038..418897c71 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -65,3 +65,10 @@ install(TARGETS ${TARGET} RUNTIME)
+ 
+ target_link_libraries(${TARGET} PRIVATE llama-server-impl)
+ target_compile_features(${TARGET} PRIVATE cxx_std_17)
++
++# Kokoro TTS — link kokoro_lib when enabled (owns /v1/audio/speech with --kokoro-model).
++if (LLAMA_BUILD_KOKORO)
++    target_include_directories(${TARGET} PRIVATE ../kokoro/include)
++    target_link_libraries(${TARGET} PRIVATE kokoro_lib)
++    target_compile_definitions(${TARGET} PRIVATE LLAMA_BUILD_KOKORO)
++endif()
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index b4f7bb5f6..7e3e6a28b 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -12,11 +12,18 @@
+ #include "llama.h"
+ #include "log.h"
+ 
++#ifdef LLAMA_BUILD_KOKORO
++#include "kokoro-server-mount.h"
++#endif
++
+ #include <atomic>
++
+ #include <clocale>
+ #include <exception>
+ #include <signal.h>
+ #include <thread> // for std::thread::hardware_concurrency
++#include <string>
++#include <vector>
+ 
+ #if defined(_WIN32)
+ #include <windows.h>
+@@ -102,6 +109,31 @@ int llama_server(int argc, char ** argv) {
+     // touch it. lifecycle is symmetric, stop_gc() runs in clean_up() before backend free
+     server_stream_session_manager_start();
+ 
++#ifdef LLAMA_BUILD_KOKORO
++    // Strip Kokoro flags before common_params_parse (unknown to upstream arg parser).
++    {
++        std::vector<char *> kept;
++        kept.reserve((size_t) argc);
++        kept.push_back(argv[0]);
++        for (int i = 1; i < argc; ++i) {
++            const std::string a = argv[i] ? argv[i] : "";
++            if ((a == "--kokoro-model" || a == "--kokoro-voices-dir") && i + 1 < argc) {
++                if (a == "--kokoro-model") {
++                    eliza_kokoro::g_model_path = argv[++i];
++                } else {
++                    eliza_kokoro::g_voices_dir = argv[++i];
++                }
++                continue;
++            }
++            kept.push_back(argv[i]);
++        }
++        argc = (int) kept.size();
++        for (int i = 0; i < argc; ++i) {
++            argv[i] = kept[(size_t) i];
++        }
++    }
++#endif
++
+     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
+         return 1;
+     }
+@@ -247,6 +279,13 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
+     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
+     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
++#ifdef LLAMA_BUILD_KOKORO
++    if (eliza_kokoro::is_enabled()) {
++        ctx_http.post("/v1/audio/speech",      ex_wrapper(eliza_kokoro::audio_speech_handler()));
++        ctx_http.post("/audio/speech",         ex_wrapper(eliza_kokoro::audio_speech_handler()));
++    }
++#endif
++
+     ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
+     ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
+     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy

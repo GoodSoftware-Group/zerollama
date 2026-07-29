@@ -1,8 +1,8 @@
 # ggml @ llama.cpp — vendor migration guide
 
-> **Current pin:** **`86d86ed4`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `86d86ed4396b4130922f7b9af26e3d9fc11a591b` (master tip past `b10064`; supersedes **`8f114a9b`**, elizaOS **`ad56033f`**, and Ollama-aligned **`b9888`**).
+> **Current pin:** **`f95de977`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `f95de9776b5b90dd993f36d2bd66a3eee21c887f` (master tip tag **b10159**; supersedes **`8f114a9b`**, elizaOS **`ad56033f`**, and Ollama-aligned **`b9888`**).
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June–July 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b9888`** / eliza **`ad56033f`** → **`8f114a9b`** → **`86d86ed4`** (ggml-org master) with **79** formal patch commits on the pin.
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June–July 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b9888`** / eliza **`ad56033f`** → **`8f114a9b`** → **`86d86ed4`** → **`f95de977`** (ggml-org **b10159**, Nanbeige4.2) with **97** formal patch commits on the pin.
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -47,8 +47,8 @@ zerollama serve
 | `LLAMA_CPP_VERSION` | Human pin (`86d86ed4`) — scripts grep this without Make |
 | `LLAMA_CPP_COMMIT` | Full git ref for vendor checkout |
 | `LLAMA_CPP_VENDOR_HEAD` | Expected vendor HEAD after full patch apply (CI/doctor) |
-| `Makefile.sync` | `FETCH_HEAD=86d86ed4`, `WORKDIR=vendor/llama-cpp-86d86ed4`, `UPSTREAM=ggml-org` |
-| `vendor/llama-cpp-86d86ed4/` | Fresh clone + Ollama patch commits (gitignored) |
+| `Makefile.sync` | `FETCH_HEAD=f95de977`, `WORKDIR=vendor/llama-cpp-f95de977`, `UPSTREAM=ggml-org` |
+| `vendor/llama-cpp-f95de977/` | Fresh clone + Ollama patch commits (gitignored) |
 | `llama/patches/` | format-patches; **79** on `86d86ed4` (merged upstream Metal ports dropped: snake #25459, Q2_0 #25419) |
 | `llama/patches.pre-8f114a9b-20260717/` | Backup of pre-`86d86ed4` series |
 

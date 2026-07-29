@@ -1,0 +1,878 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 10 Jul 2026 12:00:00 -0700
+Subject: [PATCH] =?UTF-8?q?L3-R6b:=20KV=20COW=20=E2=80=94=20cells,=20tenso?=
+ =?UTF-8?q?rs,=20used-cell-range=20pages?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ZEROLLAMA_KV_COW=1 forks shared llama_kv_cells_vec.
+ZEROLLAMA_KV_COW_TENSORS=1 allocates private K/V and copies from donor.
+ZEROLLAMA_KV_COW_PAGES=1 copies only used cell ranges (v_trans-aware);
+falls back to full copy at >=80% density. VRAM still full-size.
+---
+ src/llama-kv-cache.cpp | 481 +++++++++++++++++++++++++++++++++++------
+ src/llama-kv-cache.h   |  37 +++-
+ 2 files changed, 447 insertions(+), 71 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index a5dc8accc..a1fae1066 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -9,12 +9,14 @@
+ #include "ggml-alloc.h"
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <cassert>
+ #include <cmath>
+ #include <cstring>
+ #include <limits>
+ #include <map>
+ #include <stdexcept>
++#include <vector>
+ 
+ static bool ggml_is_power_of_2(int n) {
+     return (n & (n - 1)) == 0;
+@@ -60,6 +62,354 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
+     }
+ }
+ 
++
++// L3-R6b — metadata + tensor copy-on-write (TAG_KV_CACHE_SHARE_CELLS).
++bool llama_kv_cache::kv_cow_enabled() {
++    static int cached = -1;
++    if (cached < 0) {
++        const char * e = getenv("ZEROLLAMA_KV_COW");
++        cached = (e && (e[0] == '1' || e[0] == 't' || e[0] == 'T' || e[0] == 'y' || e[0] == 'Y' ||
++                        (e[0] == 'o' && e[1] == 'n'))) ? 1 : 0;
++    }
++    return cached == 1;
++}
++
++bool llama_kv_cache::kv_cow_tensors_enabled() {
++    static int cached = -1;
++    if (cached < 0) {
++        const char * e = getenv("ZEROLLAMA_KV_COW_TENSORS");
++        cached = (e && (e[0] == '1' || e[0] == 't' || e[0] == 'T' || e[0] == 'y' || e[0] == 'Y' ||
++                        (e[0] == 'o' && e[1] == 'n'))) ? 1 : 0;
++    }
++    return cached == 1;
++}
++
++bool llama_kv_cache::kv_cow_pages_enabled() {
++    static int cached = -1;
++    if (cached < 0) {
++        const char * e = getenv("ZEROLLAMA_KV_COW_PAGES");
++        cached = (e && (e[0] == '1' || e[0] == 't' || e[0] == 'T' || e[0] == 'y' || e[0] == 'Y' ||
++                        (e[0] == 'o' && e[1] == 'n'))) ? 1 : 0;
++    }
++    return cached == 1;
++}
++
++bool llama_kv_cache::layer_tensor_owned(const ggml_tensor * t) const {
++    if (!t || !t->buffer) {
++        return false;
++    }
++    for (const auto & [ctx, buf] : ctxs_bufs) {
++        GGML_UNUSED(ctx);
++        if (buf.get() == t->buffer) {
++            return true;
++        }
++    }
++    return false;
++}
++
++llama_kv_cache::cell_ranges_t llama_kv_cache::build_used_cell_ranges(uint32_t strm) const {
++    cell_ranges_t cr { strm, {} };
++    const auto & cells = (*v_cells)[strm];
++    uint32_t begin = cells.size();
++    for (uint32_t i = 0; i < cells.size(); ++i) {
++        if (!cells.is_empty(i)) {
++            if (begin == cells.size()) {
++                begin = i;
++            }
++        } else if (begin != cells.size()) {
++            cr.data.emplace_back(begin, i);
++            begin = cells.size();
++        }
++    }
++    if (begin != cells.size()) {
++        cr.data.emplace_back(begin, cells.size());
++    }
++    return cr;
++}
++
++static void cow_copy_bytes(const ggml_tensor * src, ggml_tensor * dst, size_t offset, size_t size) {
++    if (size == 0) {
++        return;
++    }
++    if (src->buffer && dst->buffer &&
++            ggml_backend_buffer_is_host(src->buffer) &&
++            ggml_backend_buffer_is_host(dst->buffer) &&
++            src->data && dst->data) {
++        memcpy((char *) dst->data + offset, (const char *) src->data + offset, size);
++        return;
++    }
++    std::vector<uint8_t> tmp(size);
++    ggml_backend_tensor_get(src, tmp.data(), offset, size);
++    ggml_backend_tensor_set(dst, tmp.data(), offset, size);
++}
++
++size_t llama_kv_cache::copy_tensor_cell_ranges(
++        const ggml_tensor * src,
++              ggml_tensor * dst,
++        const cell_ranges_t & cr,
++        bool is_v) const {
++    if (!src || !dst || cr.data.empty()) {
++        return 0;
++    }
++
++    size_t bytes = 0;
++    if (!is_v || !v_trans) {
++        // Contiguous rows: offset = cell * row_size
++        const size_t row = src->nb[1];
++        for (const auto & range : cr.data) {
++            const size_t n = range.second - range.first;
++            const size_t off = (size_t) range.first * row;
++            const size_t sz = n * row;
++            cow_copy_bytes(src, dst, off, sz);
++            bytes += sz;
++        }
++        return bytes;
++    }
++
++    // v_trans: per-embedding-row scatter (matches state_write_data)
++    const uint32_t kv_size = (uint32_t) src->ne[1]; // cells along dim1 for stream view
++    const uint32_t n_embd = (uint32_t) src->ne[0];
++    const size_t el = ggml_type_size(src->type);
++    for (uint32_t j = 0; j < n_embd; ++j) {
++        for (const auto & range : cr.data) {
++            const size_t n = range.second - range.first;
++            const size_t off = ((size_t) range.first + (size_t) j * kv_size) * el;
++            const size_t sz = n * el;
++            cow_copy_bytes(src, dst, off, sz);
++            bytes += sz;
++        }
++    }
++    return bytes;
++}
++
++bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
++    if (!layers_aliased) {
++        return true;
++    }
++    if (!kv_cow_tensors_enabled()) {
++        return false;
++    }
++
++    // Collect layers whose K/V still live in another cache's buffer.
++    std::vector<size_t> fork_idxs;
++    fork_idxs.reserve(layers.size());
++    for (size_t li = 0; li < layers.size(); ++li) {
++        if (layers[li].k && !layer_tensor_owned(layers[li].k)) {
++            fork_idxs.push_back(li);
++        }
++    }
++    if (fork_idxs.empty()) {
++        layers_aliased = false;
++        return true;
++    }
++
++    const bool is_mla = hparams.is_mla();
++    const uint32_t kv_size = get_size();
++    if (kv_size == 0) {
++        LLAMA_LOG_WARN("%s: COW tensor skip (%s) — empty kv_size\n", __func__, reason ? reason : "?");
++        return false;
++    }
++
++    struct ggml_backend_buft_comparator {
++        bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
++            return strcmp(ggml_backend_buft_name(lhs), ggml_backend_buft_name(rhs)) < 0;
++        }
++    };
++    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
++
++    auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
++        auto it = ctx_map.find(buft);
++        if (it == ctx_map.end()) {
++            ggml_init_params params = {
++                /*.mem_size   =*/ size_t(2u * (1 + n_stream) * fork_idxs.size() * ggml_tensor_overhead()),
++                /*.mem_buffer =*/ NULL,
++                /*.no_alloc   =*/ true,
++            };
++            ggml_context * ctx = ggml_init(params);
++            if (!ctx) {
++                return nullptr;
++            }
++            ctx_map.emplace(buft, ctx);
++            return ctx;
++        }
++        return it->second.get();
++    };
++
++    struct pending_fork {
++        size_t        li = 0;
++        uint32_t      il = 0;
++        ggml_tensor * src_k = nullptr;
++        ggml_tensor * src_v = nullptr;
++        ggml_tensor * dst_k = nullptr;
++        ggml_tensor * dst_v = nullptr;
++        std::vector<ggml_tensor *> k_stream;
++        std::vector<ggml_tensor *> v_stream;
++    };
++    std::vector<pending_fork> pending;
++    pending.reserve(fork_idxs.size());
++
++    for (size_t li : fork_idxs) {
++        const kv_layer & layer = layers[li];
++        ggml_tensor * src_k = layer.k;
++        ggml_tensor * src_v = layer.v;
++        GGML_ASSERT(src_k && src_k->buffer);
++
++        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(src_k->buffer);
++        ggml_context * ctx = ctx_for_buft(buft);
++        if (!ctx) {
++            LLAMA_LOG_ERROR("%s: COW tensor fork failed (%s) — ggml_init\n", __func__, reason ? reason : "?");
++            return false;
++        }
++
++        const uint32_t il = layer.il;
++        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
++        const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
++        const bool has_v = !is_mla && src_v != nullptr;
++
++        ggml_tensor * k = ggml_new_tensor_3d(ctx, src_k->type, n_embd_k_gqa, kv_size, n_stream);
++        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, src_v->type, n_embd_v_gqa, kv_size, n_stream) : nullptr;
++        ggml_format_name(k, "cache_k_cow_l%d", il);
++        if (v) {
++            ggml_format_name(v, "cache_v_cow_l%d", il);
++        }
++
++        pending_fork pf;
++        pf.li = li;
++        pf.il = il;
++        pf.src_k = src_k;
++        pf.src_v = src_v;
++        pf.dst_k = k;
++        pf.dst_v = v;
++        pf.k_stream.reserve(n_stream);
++        pf.v_stream.reserve(n_stream);
++        for (uint32_t s = 0; s < n_stream; ++s) {
++            pf.k_stream.push_back(ggml_view_2d(ctx, k, n_embd_k_gqa, kv_size, k->nb[1], s * k->nb[2]));
++            pf.v_stream.push_back(v ? ggml_view_2d(ctx, v, n_embd_v_gqa, kv_size, v->nb[1], s * v->nb[2]) : nullptr);
++        }
++        pending.push_back(std::move(pf));
++    }
++
++    // Allocate private buffers before rebinding layers (all-or-nothing).
++    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> new_bufs;
++    new_bufs.reserve(ctx_map.size());
++    for (auto & [buft, ctx] : ctx_map) {
++        ggml_backend_buffer_t buf = nullptr;
++        if (hparams.no_alloc) {
++            buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0);
++            for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
++                t->buffer = buf;
++            }
++        } else {
++            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
++        }
++        if (!buf) {
++            LLAMA_LOG_ERROR("%s: COW tensor fork failed (%s) — buffer alloc (%s)\n",
++                    __func__, reason ? reason : "?", ggml_backend_buft_name(buft));
++            return false; // pending tensors die with ctx_map; layers unchanged
++        }
++        LLAMA_LOG_INFO("%s: COW tensor buffer %s = %8.2f MiB (%s)\n",
++                __func__, ggml_backend_buffer_name(buf),
++                ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0,
++                reason ? reason : "?");
++        // Zero so unused cells are defined when pages mode copies only used spans.
++        if (!hparams.no_alloc) {
++            ggml_backend_buffer_clear(buf, 0);
++        }
++        new_bufs.emplace_back(std::move(ctx), buf);
++    }
++
++    const bool pages = kv_cow_pages_enabled();
++    size_t pages_bytes = 0;
++
++    // Commit: rebind layers, then copy from donor (full tensor or used-cell ranges).
++    for (auto & pf : pending) {
++        const kv_layer & old_layer = layers[pf.li];
++        if (pages) {
++            for (uint32_t s = 0; s < n_stream; ++s) {
++                const cell_ranges_t cr = build_used_cell_ranges(s);
++                uint32_t used_cells = 0;
++                for (const auto & r : cr.data) {
++                    used_cells += r.second - r.first;
++                }
++                const bool dense = kv_size > 0 && (used_cells * 5 >= kv_size * 4); // ≥80%
++                if (cr.data.empty()) {
++                    continue;
++                }
++                if (dense) {
++                    if (old_layer.k_stream[s] && pf.k_stream[s]) {
++                        ggml_backend_tensor_copy(old_layer.k_stream[s], pf.k_stream[s]);
++                        pages_bytes += ggml_nbytes(pf.k_stream[s]);
++                    }
++                    if (old_layer.v_stream[s] && pf.v_stream[s]) {
++                        ggml_backend_tensor_copy(old_layer.v_stream[s], pf.v_stream[s]);
++                        pages_bytes += ggml_nbytes(pf.v_stream[s]);
++                    }
++                } else {
++                    if (old_layer.k_stream[s] && pf.k_stream[s]) {
++                        pages_bytes += copy_tensor_cell_ranges(old_layer.k_stream[s], pf.k_stream[s], cr, /*is_v=*/false);
++                    }
++                    if (old_layer.v_stream[s] && pf.v_stream[s]) {
++                        pages_bytes += copy_tensor_cell_ranges(old_layer.v_stream[s], pf.v_stream[s], cr, /*is_v=*/true);
++                    }
++                }
++            }
++        } else {
++            if (pf.dst_k && pf.src_k) {
++                ggml_backend_tensor_copy(pf.src_k, pf.dst_k);
++            }
++            if (pf.dst_v && pf.src_v) {
++                ggml_backend_tensor_copy(pf.src_v, pf.dst_v);
++            }
++        }
++        layers[pf.li] = { pf.il, pf.dst_k, pf.dst_v, std::move(pf.k_stream), std::move(pf.v_stream) };
++    }
++    for (auto & nb : new_bufs) {
++        ctxs_bufs.emplace_back(std::move(nb));
++    }
++
++    layers_aliased = false;
++    ++cow_tensor_forks_total;
++    if (pages) {
++        cow_pages_bytes_copied += pages_bytes;
++        LLAMA_LOG_INFO("%s: COW fork tensors pages (%s) layers=%zu bytes=%zu forks=%llu\n",
++                __func__, reason ? reason : "?", fork_idxs.size(), pages_bytes,
++                (unsigned long long) cow_tensor_forks_total);
++    } else {
++        LLAMA_LOG_INFO("%s: COW fork tensors (%s) layers=%zu forks=%llu\n",
++                __func__, reason ? reason : "?", fork_idxs.size(),
++                (unsigned long long) cow_tensor_forks_total);
++    }
++    return true;
++}
++
++bool llama_kv_cache::ensure_unique_cells(const char * reason) {
++    const bool shared = (other != nullptr) || (v_cells_impl && v_cells_impl.use_count() > 1);
++    if (!shared && !layers_aliased) {
++        return true;
++    }
++    if (!kv_cow_enabled()) {
++        return false;
++    }
++    if (layers_aliased) {
++        if (!ensure_unique_tensors(reason)) {
++            LLAMA_LOG_WARN("%s: COW skip (%s) — K/V still aliased; set ZEROLLAMA_KV_COW_TENSORS=1 for tensor fork\n",
++                    __func__, reason ? reason : "?");
++            return false;
++        }
++    }
++    if (!shared) {
++        return true;
++    }
++    // Deep-copy cell metadata into a private vector; detach from sibling cache.
++    v_cells_impl = std::make_shared<llama_kv_cells_vec>(*v_cells_impl);
++    v_cells = v_cells_impl.get();
++    other = nullptr;
++    ++cow_forks_total;
++    LLAMA_LOG_INFO("%s: COW fork cells (%s) forks=%llu\n",
++            __func__, reason ? reason : "?", (unsigned long long) cow_forks_total);
++    return true;
++}
++
+ //
+ // llama_kv_cache
+ //
+@@ -84,8 +434,8 @@ llama_kv_cache::llama_kv_cache(
+     model(model), hparams(hparams), v_trans(v_trans),
+     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type),
+     other(static_cast<llama_kv_cache *>(mem_other)),
+-    v_cells_impl(other ? other->v_cells_impl : std::make_shared<llama_kv_cells_vec>()),
+-    v_cells(*v_cells_impl) {
++    v_cells_impl(other ? other->v_cells_impl : std::make_shared<llama_kv_cells_vec>()) {
++    v_cells = v_cells_impl.get();
+ 
+     // shared cells view the source cache's K/V tensors, so the cell count
+     // follows the source allocation: a fitted target can be smaller than the
+@@ -140,9 +490,9 @@ llama_kv_cache::llama_kv_cache(
+         v_heads[s] = 0;
+     }
+ 
+-    v_cells.resize(n_stream);
++    v_cells->resize(n_stream);
+     for (uint32_t s = 0; s < n_stream; ++s) {
+-        v_cells[s].resize(kv_size);
++        (*v_cells)[s].resize(kv_size);
+     }
+ 
+     // by default, all sequence ids are mapped to the 0th stream
+@@ -187,6 +537,7 @@ llama_kv_cache::llama_kv_cache(
+ 
+                 layers.push_back(layer_share);
+                 layers.back().il = il;
++                layers_aliased = true;
+ 
+                 continue;
+             }
+@@ -477,8 +828,21 @@ llama_kv_cache::llama_kv_cache(
+ }
+ 
+ void llama_kv_cache::clear(bool data) {
++    // Shared cells: fork before wipe (legacy: clear still mutated sibling metadata!).
++    if ((other || (v_cells_impl && v_cells_impl.use_count() > 1)) &&
++            !ensure_unique_cells("clear")) {
++        // COW off / tensor-aliased: refuse to wipe shared metadata; still clear
++        // private buffers only when data=true and we own distinct tensors.
++        if (data && !layers_aliased) {
++            for (auto & [_, buf] : ctxs_bufs) {
++                ggml_backend_buffer_clear(buf.get(), 0);
++            }
++        }
++        return;
++    }
++
+     for (uint32_t s = 0; s < n_stream; ++s) {
+-        v_cells[s].reset();
++        (*v_cells)[s].reset();
+         v_heads[s] = 0;
+     }
+ 
+@@ -490,8 +854,8 @@ void llama_kv_cache::clear(bool data) {
+ }
+ 
+ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    // L3-R6b: fork shared cells then mutate; legacy no-op when COW off / tensor-aliased.
++    if (other && !ensure_unique_cells("seq_rm")) {
+         return true;
+     }
+ 
+@@ -539,7 +903,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+     }
+ 
+     if (seq_id >= 0) {
+-        auto & cells = v_cells[seq_to_stream[seq_id]];
++        auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+         auto & head  = v_heads[seq_to_stream[seq_id]];
+ 
+         uint32_t new_head = cells.size();
+@@ -563,7 +927,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+     } else {
+         // match any sequence
+         for (uint32_t s = 0; s < n_stream; ++s) {
+-            auto & cells = v_cells[s];
++            auto & cells = (*v_cells)[s];
+             auto & head  = v_heads[s];
+ 
+             uint32_t new_head = cells.size();
+@@ -591,8 +955,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+ }
+ 
+ void llama_kv_cache::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("seq_cp")) {
+         return;
+     }
+ 
+@@ -606,7 +969,7 @@ void llama_kv_cache::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, ll
+         // since both sequences are in the same stream, no data copy is necessary
+         // we just have to update the cells meta data
+ 
+-        auto & cells = v_cells[s0];
++        auto & cells = (*v_cells)[s0];
+ 
+         if (seq_id_src == seq_id_dst) {
+             return;
+@@ -651,46 +1014,45 @@ void llama_kv_cache::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, ll
+     sc_info.ssrc.push_back(s0);
+     sc_info.sdst.push_back(s1);
+ 
+-    v_cells[s1].reset();
+-    for (uint32_t i = 0; i < v_cells[s0].size(); ++i) {
+-        if (v_cells[s0].seq_has(i, seq_id_src)) {
+-            llama_pos pos   = v_cells[s0].pos_get(i);
+-            llama_pos shift = v_cells[s0].get_shift(i);
++    (*v_cells)[s1].reset();
++    for (uint32_t i = 0; i < (*v_cells)[s0].size(); ++i) {
++        if ((*v_cells)[s0].seq_has(i, seq_id_src)) {
++            llama_pos pos   = (*v_cells)[s0].pos_get(i);
++            llama_pos shift = (*v_cells)[s0].get_shift(i);
+ 
+-            llama_kv_cell_ext ext = v_cells[s0].ext_get(i);
++            llama_kv_cell_ext ext = (*v_cells)[s0].ext_get(i);
+ 
+             if (shift != 0) {
+                 pos -= shift;
+                 assert(pos >= 0);
+             }
+ 
+-            v_cells[s1].pos_set(i, pos);
+-            v_cells[s1].seq_add(i, seq_id_dst);
++            (*v_cells)[s1].pos_set(i, pos);
++            (*v_cells)[s1].seq_add(i, seq_id_dst);
+ 
+             if (shift != 0) {
+-                v_cells[s1].pos_add(i, shift);
++                (*v_cells)[s1].pos_add(i, shift);
+             }
+ 
+-            v_cells[s1].ext_set(i, ext);
++            (*v_cells)[s1].ext_set(i, ext);
+         }
+     }
+ 
+     v_heads[s1] = v_heads[s0];
+ 
+     //for (uint32_t s = 0; s < n_stream; ++s) {
+-    //    LLAMA_LOG_WARN("%s: seq %d: min = %d, max = %d\n", __func__, s, v_cells[s].seq_pos_min(s), v_cells[s].seq_pos_max(s));
++    //    LLAMA_LOG_WARN("%s: seq %d: min = %d, max = %d\n", __func__, s, (*v_cells)[s].seq_pos_min(s), (*v_cells)[s].seq_pos_max(s));
+     //}
+ }
+ 
+ void llama_kv_cache::seq_keep(llama_seq_id seq_id) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("seq_keep")) {
+         return;
+     }
+ 
+     GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+ 
+-    auto & cells = v_cells[seq_to_stream[seq_id]];
++    auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+     auto & head  = v_heads[seq_to_stream[seq_id]];
+ 
+     uint32_t new_head = cells.size();
+@@ -710,15 +1072,14 @@ void llama_kv_cache::seq_keep(llama_seq_id seq_id) {
+ }
+ 
+ void llama_kv_cache::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos shift) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("seq_add")) {
+         return;
+     }
+ 
+     GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+     GGML_ASSERT(hparams.n_pos_per_embd() == 1 && "seq_add() is only supported for n_pos_per_embd() == 1");
+ 
+-    auto & cells = v_cells[seq_to_stream[seq_id]];
++    auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+     auto & head  = v_heads[seq_to_stream[seq_id]];
+ 
+     if (shift == 0) {
+@@ -760,15 +1121,14 @@ void llama_kv_cache::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, ll
+ }
+ 
+ void llama_kv_cache::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("seq_div")) {
+         return;
+     }
+ 
+     GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+     GGML_ASSERT(hparams.n_pos_per_embd() == 1 && "seq_div() is only supported for n_pos_per_embd() == 1");
+ 
+-    auto & cells = v_cells[seq_to_stream[seq_id]];
++    auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+ 
+     if (d == 1) {
+         return;
+@@ -806,7 +1166,7 @@ llama_pos llama_kv_cache::seq_pos_min(llama_seq_id seq_id) const {
+ 
+     GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+ 
+-    const auto & cells = v_cells[seq_to_stream[seq_id]];
++    const auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+ 
+     return cells.seq_pos_min(seq_id);
+ }
+@@ -819,7 +1179,7 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
+ 
+     GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+ 
+-    const auto & cells = v_cells[seq_to_stream[seq_id]];
++    const auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+ 
+     return cells.seq_pos_max(seq_id);
+ }
+@@ -830,7 +1190,7 @@ int32_t llama_kv_cache::cell_index_for(llama_seq_id seq_id, llama_pos pos, uint3
+     }
+ 
+     const uint32_t stream = seq_to_stream[seq_id];
+-    const auto & cells = v_cells[stream];
++    const auto & cells = (*v_cells)[stream];
+ 
+     for (uint32_t i = 0; i < cells.size(); ++i) {
+         if (cells.is_empty(i)) {
+@@ -971,7 +1331,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
+             state_t state = { sinfo_new, v_heads, {} };
+ 
+             for (uint32_t s = 0; s < sinfo_new.n_stream(); ++s) {
+-                auto & cells = v_cells[sinfo_new.strm[s]];
++                auto & cells = (*v_cells)[sinfo_new.strm[s]];
+ 
+                 state.v_cells.push_back(cells.cp(sinfo_new.idxs[s]));
+             }
+@@ -990,7 +1350,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
+         const auto & sinfo = it->sinfo;
+ 
+         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+-            auto & cells = v_cells[sinfo.strm[s]];
++            auto & cells = (*v_cells)[sinfo.strm[s]];
+             auto & head  = v_heads[sinfo.strm[s]];
+ 
+             cells.set(sinfo.idxs[s], it->v_cells[s]);
+@@ -1006,8 +1366,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
+ }
+ 
+ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_copy_info & sc_info) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("update")) {
+         return true;
+     }
+ 
+@@ -1081,7 +1440,7 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
+         }
+ 
+         for (uint32_t s = 0; s < n_stream; ++s) {
+-            auto & cells = v_cells[s];
++            auto & cells = (*v_cells)[s];
+ 
+             cells.reset_shift();
+         }
+@@ -1096,7 +1455,7 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+         for (uint32_t s = 0; s < ubatch.n_seqs_unq; ++s) {
+             const auto seq_id = ubatch.seq_id_unq[s];
+             const auto stream_id = seq_to_stream[seq_id];
+-            const auto & cells = v_cells[stream_id];
++            const auto & cells = (*v_cells)[stream_id];
+             const uint32_t head_cur = v_heads[stream_id];
+ 
+             LLAMA_LOG_DEBUG("%s: stream[%d], n = %5d, used = %5d, head = %5d, size = %5d, n_swa = %5d\n",
+@@ -1191,7 +1550,7 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+         res.strm[s] = seq_to_stream[seq_id];
+         res.idxs[s].reserve(n_tokens);
+ 
+-        const auto & cells = v_cells[seq_to_stream[seq_id]];
++        const auto & cells = (*v_cells)[seq_to_stream[seq_id]];
+ 
+         if (n_tokens > cells.size()) {
+             LLAMA_LOG_ERROR("%s: n_tokens = %d > size = %u\n", __func__, n_tokens, cells.size());
+@@ -1323,8 +1682,7 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
+ }
+ 
+ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("apply_ubatch")) {
+         return;
+     }
+ 
+@@ -1341,7 +1699,7 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+         for (uint32_t ii = 0; ii < sinfo.size(); ++ii) {
+             const uint32_t i = s*sinfo.size() + ii;
+ 
+-            auto & cells = v_cells[sinfo.strm[s]];
++            auto & cells = (*v_cells)[sinfo.strm[s]];
+ 
+             const auto idx = sinfo.idxs[s][ii];
+ 
+@@ -1391,7 +1749,7 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+ 
+         GGML_ASSERT(s < seq_to_stream.size());
+ 
+-        auto & cells = v_cells[seq_to_stream[s]];
++        auto & cells = (*v_cells)[seq_to_stream[s]];
+ 
+         if (cells.seq_pos_min(s) <= seq_pos_max_rm[s]) {
+             LLAMA_LOG_DEBUG("%s: purging positions [%d, %d] of sequence %d from KV cache\n",
+@@ -1428,7 +1786,7 @@ bool llama_kv_cache::get_can_shift() const {
+ }
+ 
+ uint32_t llama_kv_cache::get_size() const {
+-    const auto & cells = v_cells[seq_to_stream[0]];
++    const auto & cells = (*v_cells)[seq_to_stream[0]];
+ 
+     return cells.size();
+ }
+@@ -1441,7 +1799,7 @@ bool llama_kv_cache::get_has_shift() const {
+     bool result = false;
+ 
+     for (uint32_t s = 0; s < n_stream; ++s) {
+-        result |= v_cells[s].get_has_shift();
++        result |= (*v_cells)[s].get_has_shift();
+     }
+ 
+     return result;
+@@ -1480,7 +1838,7 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
+     const uint32_t n_pad_cur = std::max(n_pad, 256u);
+ 
+     for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+-        const auto & cells = v_cells[sinfo.strm[s]];
++        const auto & cells = (*v_cells)[sinfo.strm[s]];
+ 
+         result = std::max(std::min(cells.size(), std::max(n_pad_cur, GGML_PAD(cells.used_max_p1(), n_pad_cur))), result);
+     }
+@@ -1792,7 +2150,7 @@ void llama_kv_cache::set_input_k_shift(ggml_tensor * dst) const {
+     int32_t * data = (int32_t *) dst->data;
+ 
+     for (uint32_t s = 0; s < n_stream; ++s) {
+-        const auto & cells = v_cells[s];
++        const auto & cells = (*v_cells)[s];
+ 
+         for (uint32_t i = 0; i < cells.size(); ++i) {
+             data[s*cells.size() + i] = cells.is_empty(i) ? 0 : cells.get_shift(i);
+@@ -2021,7 +2379,7 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+     const args_set_input_kq_mask args = {
+         /*.hparams          =*/ hparams,
+         /*.ubatch           =*/ ubatch,
+-        /*.v_cells          =*/ v_cells,
++        /*.v_cells          =*/ *v_cells,
+         /*.seq_to_stream    =*/ seq_to_stream,
+         /*.n_swa            =*/ n_swa,
+         /*.swa_type         =*/ swa_type,
+@@ -2045,7 +2403,7 @@ void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch
+     const int64_t n_tokens = ubatch->n_tokens;
+ 
+     GGML_ASSERT(n_stream == 1 && "TODO: support multiple streams");
+-    const auto & cells = v_cells[0];
++    const auto & cells = (*v_cells)[0];
+ 
+     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+     GGML_ASSERT(!ubatch->equal_seqs()); // TODO: use ubatch->n_seqs instead of failing
+@@ -2254,11 +2612,7 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
+ }
+ 
+ void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
+-        return;
+-    }
+-
++    // Shared cells: metadata is the same vector — write from this view (read-only).
+     GGML_UNUSED(flags);
+ 
+     io.write(&n_stream, sizeof(n_stream));
+@@ -2268,7 +2622,7 @@ void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, lla
+ 
+         uint32_t cell_count = 0;
+ 
+-        const auto & cells = v_cells[s];
++        const auto & cells = (*v_cells)[s];
+ 
+         // Count the number of cells with the specified seq_id
+         // Find all the ranges of cells with this seq id (or all, when -1)
+@@ -2324,8 +2678,7 @@ void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, lla
+ }
+ 
+ void llama_kv_cache::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
+-    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+-    if (other) {
++    if (other && !ensure_unique_cells("state_read")) {
+         return;
+     }
+ 
+@@ -2372,7 +2725,7 @@ void llama_kv_cache::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama
+ }
+ 
+ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id) const {
+-    const auto & cells = v_cells[cr.strm];
++    const auto & cells = (*v_cells)[cr.strm];
+ 
+     for (const auto & range : cr.data) {
+         for (uint32_t i = range.first; i < range.second; ++i) {
+@@ -2405,7 +2758,7 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
+ }
+ 
+ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const {
+-    const auto & cells = v_cells[cr.strm];
++    const auto & cells = (*v_cells)[cr.strm];
+ 
+     const uint32_t v_trans = this->v_trans ? 1 : 0;
+     const uint32_t n_layer = layers.size();
+@@ -2534,7 +2887,7 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+ }
+ 
+ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, slot_info & sinfo, llama_seq_id dest_seq_id) {
+-    auto & cells = v_cells[strm];
++    auto & cells = (*v_cells)[strm];
+     auto & head  = v_heads[strm];
+ 
+     if (dest_seq_id != -1) {
+@@ -2653,7 +3006,7 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
+ }
+ 
+ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo) {
+-    auto & cells = v_cells[strm];
++    auto & cells = (*v_cells)[strm];
+ 
+     uint32_t v_trans;
+     uint32_t n_layer;
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index da6a2afdb..29cbbbd6f 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -289,8 +289,37 @@ private:
+ 
+     llama_kv_cache * other = nullptr;
+ 
++    // Shared cell metadata (draft/target or multi-owner). COW fork replaces the
++    // shared_ptr and rebinds v_cells so writers never mutate a sibling's vector.
+     std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
+-    llama_kv_cells_vec & v_cells;
++    llama_kv_cells_vec * v_cells = nullptr; // always == v_cells_impl.get()
++
++    // True when any layer k/v tensor pointer aliases `other` (Gemma4 share cb).
++    // Cleared after ensure_unique_tensors deep-copies private K/V buffers.
++    bool layers_aliased = false;
++
++    struct cell_ranges_t {
++        uint32_t strm;
++        std::vector<std::pair<uint32_t, uint32_t>> data; // ranges, from inclusive, to exclusive
++    };
++
++    // L3-R6b: fork cell vector (+ optional tensors / used-cell pages) before mutate.
++    // Env: ZEROLLAMA_KV_COW, ZEROLLAMA_KV_COW_TENSORS, ZEROLLAMA_KV_COW_PAGES.
++    bool ensure_unique_cells(const char * reason);
++    bool ensure_unique_tensors(const char * reason);
++    bool layer_tensor_owned(const ggml_tensor * t) const;
++    cell_ranges_t build_used_cell_ranges(uint32_t strm) const;
++    size_t copy_tensor_cell_ranges(
++            const ggml_tensor * src,
++                  ggml_tensor * dst,
++            const cell_ranges_t & cr,
++            bool is_v) const;
++    static bool kv_cow_enabled();
++    static bool kv_cow_tensors_enabled();
++    static bool kv_cow_pages_enabled();
++    uint64_t cow_forks_total = 0;
++    uint64_t cow_tensor_forks_total = 0;
++    uint64_t cow_pages_bytes_copied = 0;
+ 
+     // maps from a sequence id to a stream id
+     std::vector<uint32_t> seq_to_stream;
+@@ -342,12 +371,6 @@ private:
+                llm_graph_result * res,
+                   llama_context * lctx) const;
+ 
+-    struct cell_ranges_t {
+-        uint32_t strm;
+-
+-        std::vector<std::pair<uint32_t, uint32_t>> data; // ranges, from inclusive, to exclusive
+-    };
+-
+     void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id = -1) const;
+     void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;
+ 

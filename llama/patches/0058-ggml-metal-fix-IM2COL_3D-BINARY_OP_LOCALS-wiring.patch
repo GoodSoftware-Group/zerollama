@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 12 Jul 2026 14:44:55 -0700
+Subject: [PATCH] ggml-metal: fix IM2COL_3D BINARY_OP_LOCALS wiring
+
+GGML_TENSOR_BINARY_OP_LOCALS expects src0/src1/dst locals.
+---
+ ggml/src/ggml-metal/ggml-metal-ops.cpp | 30 ++++++++++++++------------
+ 1 file changed, 16 insertions(+), 14 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 066b8de03..b2aa98ba0 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -4065,7 +4065,9 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
+ }
+ 
+ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+-    ggml_tensor * op = ctx->node(idx);
++    ggml_tensor * dst = ctx->node(idx);
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
+ 
+     ggml_metal_library_t lib = ctx->lib;
+     ggml_metal_encoder_t enc = ctx->enc;
+@@ -4073,16 +4075,16 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+     GGML_TENSOR_BINARY_OP_LOCALS;
+ 
+     ggml_metal_kargs_im2col_3d args = {
+-        /*.s0 =*/ ggml_get_op_params_i32(op, 0),
+-        /*.s1 =*/ ggml_get_op_params_i32(op, 1),
+-        /*.s2 =*/ ggml_get_op_params_i32(op, 2),
+-        /*.p0 =*/ ggml_get_op_params_i32(op, 3),
+-        /*.p1 =*/ ggml_get_op_params_i32(op, 4),
+-        /*.p2 =*/ ggml_get_op_params_i32(op, 5),
+-        /*.d0 =*/ ggml_get_op_params_i32(op, 6),
+-        /*.d1 =*/ ggml_get_op_params_i32(op, 7),
+-        /*.d2 =*/ ggml_get_op_params_i32(op, 8),
+-        /*.IC =*/ ggml_get_op_params_i32(op, 9),
++        /*.s0 =*/ ggml_get_op_params_i32(dst, 0),
++        /*.s1 =*/ ggml_get_op_params_i32(dst, 1),
++        /*.s2 =*/ ggml_get_op_params_i32(dst, 2),
++        /*.p0 =*/ ggml_get_op_params_i32(dst, 3),
++        /*.p1 =*/ ggml_get_op_params_i32(dst, 4),
++        /*.p2 =*/ ggml_get_op_params_i32(dst, 5),
++        /*.d0 =*/ ggml_get_op_params_i32(dst, 6),
++        /*.d1 =*/ ggml_get_op_params_i32(dst, 7),
++        /*.d2 =*/ ggml_get_op_params_i32(dst, 8),
++        /*.IC =*/ ggml_get_op_params_i32(dst, 9),
+         /*.ID =*/ (int32_t) ne12,
+         /*.IH =*/ (int32_t) ne11,
+         /*.IW =*/ (int32_t) ne10,
+@@ -4108,7 +4110,7 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+     args.KD_KH_KW    = (uint64_t) args.KD * args.KH_KW;
+     args.IC_KD_KH_KW = (uint64_t) args.IC * args.KD_KH_KW;
+ 
+-    auto pipeline = ggml_metal_library_get_pipeline_im2col_3d(lib, op);
++    auto pipeline = ggml_metal_library_get_pipeline_im2col_3d(lib, dst);
+ 
+     const uint64_t total = args.N * (uint64_t) args.OD * (uint64_t) args.OH * (uint64_t) args.OW;
+     const int nth = 64;
+@@ -4116,8 +4118,8 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+ 
+     ggml_metal_encoder_set_pipeline(enc, pipeline);
+     ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
+-    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[1]), 1);
+-    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op), 2);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(src1), 1);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(dst), 2);
+     ggml_metal_encoder_dispatch_threadgroups(enc, ntg, 1, 1, nth, 1, 1);
+ 
+     return 1;

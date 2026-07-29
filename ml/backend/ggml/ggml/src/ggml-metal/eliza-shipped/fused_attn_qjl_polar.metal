@@ -41,9 +41,11 @@ using namespace metal;
 #define QJL_RESIDUAL_BYTES  (QK_POLAR / 8)
 #define POLAR_Q4_N_LEVELS   16
 
+// Field names match ggml-common.h (signs + d) so embed and metallib share one ABI
+// with Metal SET_ROWS / CUDA fused_attn.
 struct block_qjl1_256 {
-    uint8_t  qs[QJL_PACKED_BYTES];
-    ushort   norm_bf16;
+    uint8_t  signs[QJL_PACKED_BYTES];
+    ushort   d;
 };
 
 struct block_q4_polar {
@@ -129,7 +131,7 @@ static inline float qjl_score_one_token(
         device const block_qjl1_256 * pk_head,
         float4 q0, float4 q1, uint t, float sm_scale, uint tid) {
     device const block_qjl1_256 & blk = pk_head[t];
-    uint bits  = blk.qs[tid];
+    uint bits  = blk.signs[tid];
     float4 s0 = float4(
         float(int(((bits >> 0) & 1u) << 1) - 1),
         float(int(((bits >> 1) & 1u) << 1) - 1),
@@ -143,7 +145,7 @@ static inline float qjl_score_one_token(
     float4 acc4 = fma(q0, s0, fma(q1, s1, float4(0.0f)));
     float acc = acc4.x + acc4.y + acc4.z + acc4.w;
     float dot_v = simd_sum(acc);
-    return QJL_SCORE_SCALE * bf16_to_fp32(blk.norm_bf16) * dot_v * sm_scale;
+    return QJL_SCORE_SCALE * bf16_to_fp32(blk.d) * dot_v * sm_scale;
 }
 
 // Decode one block_q4_polar -> 128 real head-dim V values via v_buf, FMA into

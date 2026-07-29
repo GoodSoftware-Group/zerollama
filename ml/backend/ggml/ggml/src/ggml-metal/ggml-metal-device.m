@@ -27,6 +27,24 @@
 static const NSInteger MTLGPUFamilyMetal3_GGML = 5001;
 static const NSInteger MTLGPUFamilyMetal4_GGML = 5002;
 
+// GGML_METAL_ABORT_ON_NIL_PIPELINE=1 restores the legacy hard-abort so a
+// debugger stops at the first nil compute pipeline. The default is the
+// recoverable path: the failure is latched on the encoder and the graph
+// returns GGML_STATUS_FAILED instead of crashing the process (issue #11612 —
+// devices can fail to compile individual mul_mat pipelines at runtime).
+static bool ggml_metal_abort_on_nil_pipeline(void) {
+    static atomic_int state = 0; // 0 = unchecked, 1 = abort, -1 = recover
+
+    int cur = atomic_load_explicit(&state, memory_order_relaxed);
+    if (cur == 0) {
+        const char * env = getenv("GGML_METAL_ABORT_ON_NIL_PIPELINE");
+        cur = (env != NULL && env[0] != '\0' && env[0] != '0') ? 1 : -1;
+        atomic_store_explicit(&state, cur, memory_order_relaxed);
+    }
+
+    return cur == 1;
+}
+
 #if !GGML_METAL_EMBED_LIBRARY
 // Here to assist with NSBundle Path Hack
 @interface GGMLMetalClass : NSObject
@@ -93,6 +111,16 @@ void ggml_metal_pipeline_free(ggml_metal_pipeline_t pipeline) {
 }
 
 int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_with_params pipeline) {
+    if (!pipeline.pipeline || !pipeline.pipeline->obj) {
+        GGML_LOG_ERROR("%s: error: Metal compute pipeline is nil\n", __func__);
+        if (ggml_metal_abort_on_nil_pipeline()) {
+            GGML_ABORT("nil Metal compute pipeline");
+        }
+        // safe placeholder: the op will latch the failure on its encoder via
+        // ggml_metal_encoder_set_pipeline before anything is dispatched
+        return 1;
+    }
+
     return pipeline.pipeline->obj.maxTotalThreadsPerThreadgroup;
 }
 
@@ -124,41 +152,12 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         NSString * src = nil;
 
 #if GGML_METAL_EMBED_LIBRARY
-        // Why two formats: build_zerollama_mac.sh embeds compiled default.metallib
-        // bytes (MTLB magic + eliza-shipped kernels) via .incbin; upstream ollama
-        // embeds Metal source for JIT newLibraryWithSource. Treating metallib as
-        // UTF-8 source returns nil NSString → newLibraryWithSource aborts →
-        // bootstrap /info dies → total_vram=0 / CPU-only scheduling.
         GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
 
         extern const char ggml_metallib_start[];
         extern const char ggml_metallib_end[];
 
-        const size_t embed_size = (size_t) (ggml_metallib_end - ggml_metallib_start);
-        const unsigned char * embed = (const unsigned char *) ggml_metallib_start;
-        const bool is_metallib = embed_size >= 4
-            && embed[0] == 'M' && embed[1] == 'T' && embed[2] == 'L' && embed[3] == 'B';
-
-        if (is_metallib) {
-            GGML_LOG_INFO("%s: loading embedded metallib (%zu bytes)\n", __func__, embed_size);
-            dispatch_data_t data = dispatch_data_create(embed, embed_size, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-            library = [device newLibraryWithData:data error:&error];
-#if !__has_feature(objc_arc)
-            dispatch_release(data);
-#endif
-            if (error || library == nil) {
-                GGML_LOG_ERROR("%s: error loading embedded metallib: %s\n", __func__,
-                    error ? [[error description] UTF8String] : "nil library");
-                return nil;
-            }
-        } else {
-            src = [[NSString alloc] initWithBytes:ggml_metallib_start length:embed_size encoding:NSUTF8StringEncoding];
-            if (src == nil) {
-                GGML_LOG_ERROR("%s: embedded metal payload is neither metallib nor UTF-8 source (%zu bytes)\n",
-                    __func__, embed_size);
-                return nil;
-            }
-        }
+        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
 #else
 
 #ifdef SWIFT_PACKAGE
@@ -240,10 +239,6 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #endif
 
         if (!library) {
-            if (src == nil) {
-                GGML_LOG_ERROR("%s: no metal library source available\n", __func__);
-                return nil;
-            }
             @autoreleasepool {
                 // dictionary of preprocessor macros
                 NSMutableDictionary * prep = [NSMutableDictionary dictionary];
@@ -288,9 +283,7 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         }
 
 #if GGML_METAL_EMBED_LIBRARY
-        if (src != nil) {
-            [src release];
-        }
+        [src release];
 #endif // GGML_METAL_EMBED_LIBRARY
 
         GGML_LOG_INFO("%s: loaded in %.3f sec\n", __func__, (ggml_time_us() - t_start) / 1e6);
@@ -505,6 +498,12 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
 
 struct ggml_metal_encoder {
     id<MTLComputeCommandEncoder> obj;
+
+    // latched when a required compute pipeline is nil. once set, every encode
+    // call on this encoder becomes a no-op (never dispatch with unset/stale
+    // pipeline state) and ggml_metal_op_encode aborts the graph so it fails
+    // with GGML_STATUS_FAILED instead of crashing (issue #11612)
+    bool encode_failed;
 };
 
 ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, bool concurrent) {
@@ -537,30 +536,73 @@ void ggml_metal_encoder_debug_group_pop (ggml_metal_encoder_t encoder) {
 }
 
 void ggml_metal_encoder_set_pipeline(ggml_metal_encoder_t encoder, struct ggml_metal_pipeline_with_params pipeline) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
+    if (!pipeline.pipeline || !pipeline.pipeline->obj) {
+        GGML_LOG_ERROR("%s: error: Metal compute pipeline is nil - failing this graph instead of dispatching\n", __func__);
+        if (ggml_metal_abort_on_nil_pipeline()) {
+            GGML_ABORT("nil Metal compute pipeline");
+        }
+
+        encoder->encode_failed = true;
+
+        return;
+    }
+
     [encoder->obj setComputePipelineState:pipeline.pipeline->obj];
 }
 
+bool ggml_metal_encoder_encode_failed(ggml_metal_encoder_t encoder) {
+    return encoder->encode_failed;
+}
+
 void ggml_metal_encoder_set_bytes(ggml_metal_encoder_t encoder, void * data, size_t size, int idx) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
     [encoder->obj setBytes:data length:size atIndex:idx];
 }
 
 void ggml_metal_encoder_set_buffer(ggml_metal_encoder_t encoder, struct ggml_metal_buffer_id buffer, int idx) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
     [encoder->obj setBuffer:buffer.metal offset:buffer.offs atIndex:idx];
 }
 
 void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder, size_t size, int idx) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
     [encoder->obj setThreadgroupMemoryLength:size atIndex:idx];
 }
 
 void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
     [encoder->obj dispatchThreadgroups:MTLSizeMake(tg0, tg1, tg2) threadsPerThreadgroup:MTLSizeMake(tptg0, tptg1, tptg2)];
 }
 
 void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
     [encoder->obj memoryBarrierWithScope:MTLBarrierScopeBuffers];
 }
 
 void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder) {
+    if (encoder->encode_failed) {
+        return;
+    }
+
     [encoder->obj endEncoding];
 }
 
@@ -938,6 +980,25 @@ ggml_metal_device_t ggml_metal_device_init(int device) {
             dev->library = ggml_metal_library_init(dev);
             if (!dev->library) {
                 GGML_LOG_ERROR("%s: error: failed to create library\n", __func__);
+            }
+
+            // // ELIZA-METAL-BF16-LIBRARY-GATE (#11612)
+            // has_bfloat reflects GPU-family capability, but a precompiled
+            // (embedded) metallib built with MSL < 3.1 has every bf16 kernel
+            // #if'd out. Selecting a bf16 kernel that is not in the library
+            // fails pipeline creation at graph time. Gate has_bfloat on the
+            // library actually containing the bf16 mul_mm kernel.
+            if (dev->props.has_bfloat && dev->library) {
+                id<MTLFunction> bf16_probe = [dev->library->obj newFunctionWithName:@"kernel_mul_mm_bf16_f32"];
+                if (bf16_probe == nil) {
+                    GGML_LOG_WARN("%s: the Metal library does not contain bf16 kernels (compiled with MSL < 3.1?) - disabling bfloat support\n", __func__);
+                    dev->props.has_bfloat = false;
+                } else {
+#if !__has_feature(objc_arc)
+                    [bf16_probe release];
+#endif
+                    bf16_probe = nil;
+                }
             }
 
             if (dev->props.use_residency_sets) {
@@ -1362,8 +1423,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                    (ggml_get_op_params_i32(op, 4) == 0) && (ggml_get_op_params_i32(op, 6) == 0);
         case GGML_OP_PAD_REFLECT_1D:
         case GGML_OP_TIMESTEP_EMBEDDING:
-        case GGML_OP_LEAKY_RELU:
             return op->src[0]->type == GGML_TYPE_F32;
+        case GGML_OP_LEAKY_RELU:
+            return op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16;
         case GGML_OP_ARGSORT:
         case GGML_OP_TOP_K:
         case GGML_OP_ARANGE:
@@ -1420,6 +1482,33 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 const int64_t C = op->ne[0];
                 const int64_t H = op->src[0]->ne[1];
                 return op->src[4]->type == GGML_TYPE_F32 && C % H == 0 && (C / H == 64 || C / H == 128);
+            }
+        case GGML_OP_FUSED_ATTN_QJL_TBQ:
+            // Lab D1b — Metal fused QJL-K + Polar-V (TBQ-V stays CPU for now).
+            {
+                if (!has_simdgroup_reduction) {
+                    return false;
+                }
+                if (!op->src[0] || !op->src[1] || !op->src[2]) {
+                    return false;
+                }
+                if (op->src[0]->type != GGML_TYPE_F32 ||
+                    op->src[1]->type != GGML_TYPE_QJL1_256 ||
+                    op->src[2]->type != GGML_TYPE_Q4_POLAR ||
+                    op->type != GGML_TYPE_F32) {
+                    return false;
+                }
+                // head_dim 128 (project) or 256 (pre-sketched); K/V head dim 128
+                if ((op->src[0]->ne[0] != 128 && op->src[0]->ne[0] != 256) ||
+                    op->src[1]->ne[0] != 128 ||
+                    op->src[2]->ne[0] != 128 ||
+                    op->ne[0] != 128) {
+                    return false;
+                }
+                if (op->src[0]->ne[1] % op->src[1]->ne[2] != 0) {
+                    return false;
+                }
+                return true;
             }
         case GGML_OP_GATED_DELTA_NET:
             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
@@ -1559,7 +1648,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     case GGML_TYPE_TBQ3_0:
                     case GGML_TYPE_TBQ4_0:
                     case GGML_TYPE_QJL1_256:
-                        // ELIZA-TBQ-SET-ROWS-V1 / ELIZA-QJL-SET-ROWS-V1
+                    case GGML_TYPE_Q4_POLAR:
+                        // ELIZA-TBQ-SET-ROWS-V1 / ELIZA-QJL-SET-ROWS-V1 / ELIZA-POLAR-SET-ROWS-V1
                         return true;
                     default:
                         return false;

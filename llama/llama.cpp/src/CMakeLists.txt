@@ -60,6 +60,17 @@ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
 
 target_link_libraries(llama PUBLIC ggml)
 
+# zerollama M22: optional UMA broker client for Darwin Metal admission (libuma_client only).
+if (ZEROLLAMA_UMA)
+    if (NOT ZEROLLAMA_UMA_INCLUDE OR NOT ZEROLLAMA_UMA_LIB)
+        message(FATAL_ERROR "ZEROLLAMA_UMA=ON requires -DZEROLLAMA_UMA_INCLUDE=... and -DZEROLLAMA_UMA_LIB=...")
+    endif()
+    target_compile_definitions(llama PRIVATE ZEROLLAMA_UMA=1)
+    target_include_directories(llama PRIVATE "${ZEROLLAMA_UMA_INCLUDE}")
+    target_link_libraries(llama PRIVATE "${ZEROLLAMA_UMA_LIB}")
+    message(STATUS "ZEROLLAMA_UMA: linking ${ZEROLLAMA_UMA_LIB}")
+endif()
+
 if (BUILD_SHARED_LIBS)
     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)

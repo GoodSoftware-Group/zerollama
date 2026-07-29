@@ -2456,6 +2456,16 @@ extern "C" {
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
 
+    // Attach F32 LSE output tensor to FLASH_ATTN_EXT.
+    // Shape must be [1, n_tokens, n_head, n_stream] (matches CUDA meta→LSE write order).
+    // FA dst is [head_dim, n_head, n_tokens, n_stream]; permute LSE to [1,n_head,n_tokens,n_stream] for broadcast.
+    GGML_API void ggml_flash_attn_ext_set_lse(
+            struct ggml_tensor * a,
+            struct ggml_tensor * lse);
+
+    GGML_API struct ggml_tensor * ggml_flash_attn_ext_get_lse(
+            const struct ggml_tensor * a);
+
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(
            struct ggml_context * ctx,

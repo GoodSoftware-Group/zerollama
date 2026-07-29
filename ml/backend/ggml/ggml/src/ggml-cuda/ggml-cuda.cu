@@ -2573,6 +2573,14 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
             }
         }
 
+        // Dual Chunk Attention: FA with LSE export — disable CUDA graphs (masks/topology vary with chunk index)
+        if (node->op == GGML_OP_FLASH_ATTN_EXT && node->src[5] != nullptr) {
+            use_cuda_graph = false;
+#ifndef NDEBUG
+            GGML_LOG_DEBUG("%s: disabling CUDA graphs due to DCA flash-attn LSE export\n", __func__);
+#endif
+        }
+
         if (!use_cuda_graph) {
             break;
         }
@@ -2694,6 +2702,13 @@ static bool ggml_cuda_should_fuse_rope_set_rows(const ggml_tensor * rope,
 // (slot i -> rollback group i, slot 0 newest), so the kernel can write them and skip the cpy.
 static int ggml_cuda_try_gdn_cache_fusion(
         const ggml_cgraph * cgraph, int node_idx, ggml_cuda_gated_delta_net_fused_cache & fused_state_cpy) {
+    // WHY disabled: patch 0084 rewrote GDN kernels and removed ggml_cuda_op_gated_delta_net_fused_cache
+    // implementation; matching here would skip cpy nodes without writing the fused cache.
+    (void) cgraph;
+    (void) node_idx;
+    (void) fused_state_cpy;
+    return 0;
+#if 0
     const ggml_tensor * gdn = cgraph->nodes[node_idx];
     // the kernel skips the snapshot tail, so the gdn output must not be a graph output
     if (gdn->op != GGML_OP_GATED_DELTA_NET || gdn->type != GGML_TYPE_F32 ||
@@ -2752,10 +2767,12 @@ static int ggml_cuda_try_gdn_cache_fusion(
     fused_state_cpy.data        = (float *) dst->data; // rollback group 0 (newest)
     fused_state_cpy.slot_stride = K > 1 ? (int64_t) (dst->nb[2] / sizeof(float)) : 0;
     return skip;
+#endif
 }
 
 static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, ggml_cuda_topk_moe_args & args) {
     args.sigmoid         = false;
+    args.sqrt_softplus   = false;
     args.softmax         = false;
     args.delayed_softmax = false;
     args.prob_bias       = false;
@@ -2769,10 +2786,17 @@ static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int nod
     }
 
     if (nodes[node_idx]->op == GGML_OP_UNARY) {
-        if (ggml_get_unary_op(nodes[node_idx]) != GGML_UNARY_OP_SIGMOID) {
+        const ggml_unary_op unary_op = ggml_get_unary_op(nodes[node_idx]);
+        if (unary_op == GGML_UNARY_OP_SIGMOID) {
+            args.sigmoid = true;
+        } else if (unary_op == GGML_UNARY_OP_SOFTPLUS && node_idx + 1 < n_nodes &&
+                   nodes[node_idx + 1]->op == GGML_OP_SQRT && nodes[node_idx + 1]->src[0] == nodes[node_idx]) {
+            // sqrt(softplus(x)) scoring (DeepSeek-V4)
+            args.sqrt_softplus = true;
+            node_idx++;
+        } else {
             return false;
         }
-        args.sigmoid = true;
     }
 
     if (nodes[node_idx]->op == GGML_OP_ARGSORT) {
@@ -2781,7 +2805,7 @@ static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int nod
 
     node_idx++;
 
-    if (args.sigmoid || args.softmax) {
+    if (args.sigmoid || args.sqrt_softplus || args.softmax) {
         // SOFTMAX -> RESHAPE
         if (node_idx >= n_nodes || nodes[node_idx]->op != GGML_OP_RESHAPE ||
                 nodes[node_idx]->src[0] != nodes[node_idx - 1]) {
@@ -3225,21 +3249,27 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             const ggml_tensor * scale   = nullptr;
 
             if (!args.delayed_softmax) {
-                ggml_op gating_op = args.sigmoid ? GGML_OP_UNARY : GGML_OP_SOFT_MAX;
-                int     out_nodes[2];  // nodes which can't be elided
+                int out_nodes[2];  // nodes which can't be elided
+
+                if (args.sigmoid) {
+                    ops.insert(ops.end(), { GGML_OP_UNARY });
+                } else if (args.sqrt_softplus) {
+                    ops.insert(ops.end(), { GGML_OP_UNARY, GGML_OP_SQRT });
+                } else {
+                    ops.insert(ops.end(), { GGML_OP_SOFT_MAX });
+                }
+                const int i_probs = i + (int) ops.size() - 1;  // last node of the gating activation
 
                 if (args.prob_bias) {
-                    bias = cgraph->nodes[i + 2]->src[1];
-                    ops.insert(ops.end(), { gating_op, GGML_OP_RESHAPE, GGML_OP_ADD, GGML_OP_ARGSORT, GGML_OP_VIEW,
+                    bias = cgraph->nodes[i_probs + 2]->src[1];
+                    ops.insert(ops.end(), { GGML_OP_RESHAPE, GGML_OP_ADD, GGML_OP_ARGSORT, GGML_OP_VIEW,
                                             GGML_OP_GET_ROWS });
-                    out_nodes[0] = i + 4;
-                    ids          = cgraph->nodes[i + 4];
+                    out_nodes[0] = i_probs + 4;
                 } else {
-                    ops.insert(ops.end(),
-                               { gating_op, GGML_OP_RESHAPE, GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS });
-                    out_nodes[0] = i + 3;
-                    ids          = cgraph->nodes[i + 3];
+                    ops.insert(ops.end(), { GGML_OP_RESHAPE, GGML_OP_ARGSORT, GGML_OP_VIEW, GGML_OP_GET_ROWS });
+                    out_nodes[0] = i_probs + 3;
                 }
+                ids = cgraph->nodes[out_nodes[0]];
 
                 if (args.norm) {
                     ops.insert(ops.end(),
@@ -4678,6 +4708,13 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
     std::lock_guard<std::mutex> lock(ctx->device_mutex);
 #endif
 
+    // Declared before any goto share_split — nvcc rejects goto past C++ initialization.
+#if defined(__linux__)
+    bool uma_env = false;
+    bool is_uma = false;
+    cudaDeviceProp prop;
+#endif
+
     ggml_cuda_set_device(ctx->device);
 
 #if defined(GGML_USE_HIP)
@@ -4715,12 +4752,11 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
 // ref: https://github.com/ggml-org/llama.cpp/pull/17368
 #if defined(__linux__)
     // Check if this is a UMA (Unified Memory Architecture) system
-    cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, ggml_cuda_get_physical_device(ctx->device)));
 
     // Check if UMA is explicitly enabled via environment variable
-    bool uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
-    bool is_uma = prop.integrated > 0 || uma_env;
+    uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
+    is_uma = prop.integrated > 0 || uma_env;
 
     if (is_uma) {
         // For UMA systems (like DGX Spark), use system memory info
@@ -4944,12 +4980,29 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
+                    case GGML_TYPE_Q2_K:
+                    case GGML_TYPE_Q3_K:
+                    case GGML_TYPE_Q4_K:
+                    case GGML_TYPE_Q5_K:
                     case GGML_TYPE_FP8_E4M3:
                     case GGML_TYPE_FP8_E5M2:
                     case GGML_TYPE_Q6_K:
+                    case GGML_TYPE_IQ2_XXS:
+                    case GGML_TYPE_IQ2_XS:
+                    case GGML_TYPE_IQ2_S:
+                    case GGML_TYPE_IQ3_XXS:
+                    case GGML_TYPE_IQ3_S:
+                    case GGML_TYPE_IQ1_S:
+                    case GGML_TYPE_IQ1_M:
+                    case GGML_TYPE_IQ4_XS:
                     case GGML_TYPE_TBQ3_0:
                     case GGML_TYPE_TBQ4_0:
                         return true;
+                    case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_MXFP4:
+                        // 32-value sub-blocks, the row size does not guarantee
+                        // the QK_K super-blocks the get_rows kernel iterates on
+                        return op->src[0]->ne[0] % QK_K == 0;
                     default:
                         return false;
                 }

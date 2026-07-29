@@ -1,0 +1,265 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sat, 11 Jul 2026 10:12:45 -0700
+Subject: [PATCH] ggml-metal: add GATED_LINEAR_ATTN op (upstream #21452)
+
+Port Metal GLA kernels for head sizes 64/128 so gated-linear attention
+models keep the op on GPU instead of CPU fallback.
+---
+ ggml/src/ggml-metal/ggml-metal-device.cpp | 21 +++++
+ ggml/src/ggml-metal/ggml-metal-device.h   |  1 +
+ ggml/src/ggml-metal/ggml-metal-device.m   |  6 ++
+ ggml/src/ggml-metal/ggml-metal-ops.cpp    | 41 ++++++++++
+ ggml/src/ggml-metal/ggml-metal-ops.h      |  1 +
+ ggml/src/ggml-metal/ggml-metal.metal      | 99 +++++++++++++++++++++++
+ 6 files changed, 169 insertions(+)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index c47e211b6..138d91ea9 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -624,6 +624,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
+     return res;
+ }
+ 
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla(ggml_metal_library_t lib, const ggml_tensor * op) {
++    char name[256];
++
++    const int64_t C = op->ne[0];
++    const int64_t H = op->src[0]->ne[1];
++    const int64_t head_size = C / H;
++
++    GGML_ASSERT(op->src[4]->type == GGML_TYPE_F32);
++    GGML_ASSERT(C % H == 0);
++    GGML_ASSERT(head_size == 64 || head_size == 128);
++
++    snprintf(name, 256, "kernel_gla_f32_hs%d", (int)head_size);
++
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++    }
++
++    return res;
++}
++
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(ggml_metal_library_t lib, const ggml_tensor * op) {
+     char base[256];
+     char name[256];
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 1863e73b1..4028f7aee 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -129,6 +129,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv_batched  (ggml_metal_library_t lib, const struct ggml_tensor * op, int ssm_conv_bs);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan          (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv              (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla               (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net   (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index db1126dcb..152364e38 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1322,6 +1322,12 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+         case GGML_OP_RWKV_WKV6:
+         case GGML_OP_RWKV_WKV7:
+             return true;
++        case GGML_OP_GATED_LINEAR_ATTN:
++            {
++                const int64_t C = op->ne[0];
++                const int64_t H = op->src[0]->ne[1];
++                return op->src[4]->type == GGML_TYPE_F32 && C % H == 0 && (C / H == 64 || C / H == 128);
++            }
+         case GGML_OP_GATED_DELTA_NET:
+             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
+         case GGML_OP_SOLVE_TRI:
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 1397ec06b..95b136539 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <limits>
+ #include <cmath>
++#include <cstring>
+ 
+ static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
+     if (!t) {
+@@ -333,6 +334,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+             {
+                 n_fuse = ggml_metal_op_rwkv(ctx, idx);
+             } break;
++        case GGML_OP_GATED_LINEAR_ATTN:
++            {
++                n_fuse = ggml_metal_op_gla(ctx, idx);
++            } break;
+         case GGML_OP_GATED_DELTA_NET:
+             {
+                 n_fuse = ggml_metal_op_gated_delta_net(ctx, idx);
+@@ -1656,6 +1661,42 @@ int ggml_metal_op_rwkv(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+ 
++int ggml_metal_op_gla(ggml_metal_op_t ctx, int idx) {
++    ggml_tensor * op = ctx->node(idx);
++
++    ggml_metal_library_t lib = ctx->lib;
++    ggml_metal_encoder_t enc = ctx->enc;
++
++    const int64_t B = op->src[4]->ne[1];
++    const int64_t T = op->src[0]->ne[2];
++    const int64_t C = op->ne[0];
++    const int64_t H = op->src[0]->ne[1];
++
++    float scale;
++    memcpy(&scale, (float *)op->op_params, sizeof(float));
++
++    auto pipeline = ggml_metal_library_get_pipeline_gla(lib, op);
++
++    int ida = 0;
++
++    ggml_metal_encoder_set_pipeline(enc, pipeline);
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), ida++); // k
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), ida++); // v
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[2]), ida++); // q
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[3]), ida++); // gate
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[4]), ida++); // state
++    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst
++    ggml_metal_encoder_set_bytes   (enc, (void *) &B,     sizeof(B),     ida++);
++    ggml_metal_encoder_set_bytes   (enc, (void *) &T,     sizeof(T),     ida++);
++    ggml_metal_encoder_set_bytes   (enc, (void *) &C,     sizeof(C),     ida++);
++    ggml_metal_encoder_set_bytes   (enc, (void *) &H,     sizeof(H),     ida++);
++    ggml_metal_encoder_set_bytes   (enc, (void *) &scale, sizeof(scale), ida++);
++
++    ggml_metal_encoder_dispatch_threadgroups(enc, B * H, 1, 1, C/H, 1, 1);
++
++    return 1;
++}
++
+ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
+index b7444e35b..a1f04b49d 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -60,6 +60,7 @@ int ggml_metal_op_soft_max          (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_ssm_conv          (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_ssm_scan          (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_rwkv              (ggml_metal_op_t ctx, int idx);
++int ggml_metal_op_gla               (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_gated_delta_net   (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_solve_tri         (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_set               (ggml_metal_op_t ctx, int idx);
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index dc6fcd508..06f693075 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -2715,6 +2715,105 @@ kernel void kernel_rwkv_wkv7_f32(
+     }
+ }
+ 
++// GLA (Gated Linear Attention)
++// src[0]=k, src[1]=v, src[2]=q, src[3]=gate, src[4]=state
++// dst = [attention_output (C x T), new_state (C x head_size x B)]
++template<uint HEAD_SIZE>
++kernel void kernel_gla_f32(
++    device const float * k,
++    device const float * v,
++    device const float * q,
++    device const float * gate,
++    device const float * state_in,
++    device       float * dst,
++    constant    uint & B,
++    constant    uint & T,
++    constant    uint & C,
++    constant    uint & H,
++    constant   float & scale,
++    uint3 tgpig[[threadgroup_position_in_grid]],
++    uint3 tpitg[[thread_position_in_threadgroup]],
++    uint3   ntg[[threads_per_threadgroup]]) {
++
++    const uint head_size = HEAD_SIZE;
++    const uint batch_id = tgpig.x / H;
++    const uint head_id = tgpig.x % H;
++    const uint tid = tpitg.x;
++
++    if (batch_id >= B || head_id >= H) {
++        return;
++    }
++
++    const uint state_size = C * head_size;
++    const uint n_seq_tokens = T / B;
++
++    threadgroup float _k[HEAD_SIZE];
++    threadgroup float _q[HEAD_SIZE];
++    threadgroup float _gate[HEAD_SIZE];
++
++    float state[HEAD_SIZE];
++
++    // Load initial state
++    for (uint i = 0; i < head_size; i++) {
++        state[i] = state_in[batch_id * state_size + head_id * head_size * head_size
++                          + i * head_size + tid];
++    }
++
++    const uint start_t = batch_id * n_seq_tokens * C + head_id * head_size + tid;
++    const uint end_t = (batch_id + 1) * n_seq_tokens * C + head_id * head_size + tid;
++
++    for (uint t = start_t; t < end_t; t += C) {
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++        _k[tid] = k[t];
++        _q[tid] = q[t];
++        _gate[tid] = gate[t];
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++
++        const float _v = v[t];
++        float y = 0.0f;
++
++        for (uint j = 0; j < head_size; j += 4) {
++            float4 k_vec   = float4(_k[j], _k[j+1], _k[j+2], _k[j+3]);
++            float4 q_vec   = float4(_q[j], _q[j+1], _q[j+2], _q[j+3]);
++            float4 g_vec   = float4(_gate[j], _gate[j+1], _gate[j+2], _gate[j+3]);
++            float4 s_vec   = float4(state[j], state[j+1], state[j+2], state[j+3]);
++
++            float4 kv = k_vec * _v;
++
++            // state = state * gate + kv
++            s_vec = s_vec * g_vec + kv;
++
++            // y += state * q
++            y += dot(q_vec, s_vec);
++
++            state[j]   = s_vec[0];
++            state[j+1] = s_vec[1];
++            state[j+2] = s_vec[2];
++            state[j+3] = s_vec[3];
++        }
++
++        dst[t] = y * scale;
++    }
++
++    // Write final state
++    for (uint i = 0; i < head_size; i++) {
++        dst[T * C + batch_id * state_size + head_id * head_size * head_size
++            + i * head_size + tid] = state[i];
++    }
++}
++
++template [[host_name("kernel_gla_f32_hs64")]]  kernel void kernel_gla_f32<64>(
++    device const float *, device const float *, device const float *,
++    device const float *, device const float *, device float *,
++    constant uint &, constant uint &, constant uint &, constant uint &, constant float &,
++    uint3, uint3, uint3);
++
++template [[host_name("kernel_gla_f32_hs128")]] kernel void kernel_gla_f32<128>(
++    device const float *, device const float *, device const float *,
++    device const float *, device const float *, device float *,
++    constant uint &, constant uint &, constant uint &, constant uint &, constant float &,
++    uint3, uint3, uint3);
++
+ constant short FC_gated_delta_net_ne20 [[function_constant(FC_GATED_DELTA_NET + 0)]];
+ constant short FC_gated_delta_net_ne30 [[function_constant(FC_GATED_DELTA_NET + 1)]];
+ constant short FC_gated_delta_net_K    [[function_constant(FC_GATED_DELTA_NET + 2)]];

@@ -461,6 +461,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_flash_attn_ext(ctx, idx);
             } break;
+        case GGML_OP_FUSED_ATTN_QJL_TBQ:
+            {
+                n_fuse = ggml_metal_op_fused_attn_qjl_tbq(ctx, idx);
+            } break;
         case GGML_OP_SET:
             {
                 n_fuse = ggml_metal_op_set(ctx, idx);
@@ -528,6 +532,22 @@ int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx) {
     }
 
     int res = ggml_metal_op_encode_impl(ctx, idx);
+
+    // a nil compute pipeline latches encode_failed on the encoder (the op body
+    // becomes a no-op instead of dispatching). abort the graph encode here so
+    // ggml_metal_graph_compute returns GGML_STATUS_FAILED and llama_decode
+    // surfaces an error instead of the process crashing (issue #11612)
+    if (ggml_metal_encoder_encode_failed(ctx->enc)) {
+        GGML_LOG_ERROR("%s: error: node %d (op = %s, name = '%s') requires a Metal pipeline that failed to compile - failing graph\n",
+                __func__, idx, ggml_op_desc(ctx->node(idx)), ctx->node(idx)->name);
+
+        if (ctx->use_capture) {
+            ggml_metal_encoder_debug_group_pop(ctx->enc);
+        }
+
+        return 0;
+    }
+
     if (idx + res > ctx->n_nodes()) {
         GGML_ABORT("fusion error: nodes spanning multiple encoders have been fused. this indicates a bug in the fusion logic %s",
                 "https://github.com/ggml-org/llama.cpp/pull/14849");
@@ -2178,6 +2198,46 @@ int ggml_metal_op_pool_1d(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+// supported FWHT sizes, must stay in sync with the
+// kernel_fwht_f32_<N> templates in ggml-metal.metal
+static bool ggml_metal_fwht_supported_size(int64_t n) {
+    return n == 64 || n == 128 || n == 256 || n == 512;
+}
+
+int ggml_metal_op_fwht(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    ggml_tensor * src1 = op->src[1];
+
+    const int64_t n = src1->ne[0];
+    const int64_t nrows = ggml_nrows(src1);
+
+    ggml_metal_kargs_fwht args = {
+        /*.nrows = */ (int32_t) nrows,
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_fwht(lib, n);
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(src1), 1);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op), 2);
+
+    const int th_max = ggml_metal_pipeline_max_theads_per_threadgroup(pipeline);
+    const int simd_size = 32;
+
+    int sg_per_tg = 2;
+    sg_per_tg = std::min(sg_per_tg, th_max/simd_size);
+    sg_per_tg = std::max(sg_per_tg, 1);
+
+    const int64_t n_tg = (nrows + sg_per_tg - 1) / sg_per_tg;
+    ggml_metal_encoder_dispatch_threadgroups(enc, n_tg, 1, 1, 32*sg_per_tg, 1, 1);
+
+    return 1;
+}
 
 int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
@@ -2255,6 +2315,18 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
 
+    const int32_t hint = ggml_get_op_params_i32(op, 1);
+
+    if (hint == GGML_HINT_SRC0_IS_HADAMARD) {
+        if (op->src[1]->type == GGML_TYPE_F32 &&
+            op->type == GGML_TYPE_F32 &&
+            ggml_is_contiguous(op->src[1]) &&
+            ggml_is_contiguous(op) &&
+            ggml_are_same_shape(op->src[1], op) &&
+            ggml_metal_fwht_supported_size(op->src[1]->ne[0])) {
+            return ggml_metal_op_fwht(ctx, idx);
+        }
+    }
     const ggml_metal_device_props * props_dev = ggml_metal_device_get_props(ctx->dev);
 
     GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
@@ -2924,6 +2996,141 @@ size_t ggml_metal_op_flash_attn_ext_extra_q8_f16(const ggml_tensor * op) {
         (size_t) op->src[2]->ne[0]*op->src[2]->ne[1]*op->src[2]->ne[2]*op->src[2]->ne[3], 16);
 
     return k_size + v_size;
+}
+
+size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const ggml_tensor * op) {
+    assert(op->op == GGML_OP_FUSED_ATTN_QJL_TBQ);
+    if (!op->src[0] || op->src[0]->ne[0] != 128) {
+        return 0;
+    }
+    // [n_q_pos][n_heads][256] f32 sketch scratch after dst nbytes
+    const int64_t n_heads = op->src[0]->ne[1];
+    const int64_t n_q_pos = op->src[0]->ne[2];
+    const int64_t ne3     = op->src[0]->ne[3];
+    return (size_t) n_q_pos * (size_t) n_heads * 256u * sizeof(float) * (size_t) ne3;
+}
+
+int ggml_metal_op_fused_attn_qjl_tbq(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    GGML_ASSERT(op->op == GGML_OP_FUSED_ATTN_QJL_TBQ);
+    GGML_ASSERT(op->src[0] && op->src[1] && op->src[2]);
+    GGML_ASSERT(op->src[2]->type == GGML_TYPE_Q4_POLAR);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const ggml_tensor * q  = op->src[0];
+    const ggml_tensor * pk = op->src[1];
+    const ggml_tensor * pv = op->src[2];
+
+    const int32_t * params = (const int32_t *) op->op_params;
+    const int n_kv_heads = params[0];
+    union { int32_t i; float f; } scale_bits;
+    scale_bits.i = params[1];
+    const uint32_t v_use_qjl = (uint32_t) params[2];
+    const uint32_t kv_tile   = (uint32_t) params[3];
+    const uint32_t causal    = (uint32_t) params[4];
+    const uint32_t q_pos_base = (uint32_t) params[5];
+
+    const int n_heads = (int) q->ne[1];
+    const int n_q_pos = (int) q->ne[2];
+    const int n_kv    = (int) pk->ne[1];
+    const int64_t ne3 = q->ne[3];
+    const int head_dim = (int) q->ne[0];
+    const bool project_q = head_dim == 128;
+
+    GGML_ASSERT(n_kv_heads > 0);
+    GGML_ASSERT((n_heads % n_kv_heads) == 0);
+    GGML_ASSERT(pk->ne[0] == 128 && pv->ne[0] == 128 && op->ne[0] == 128);
+    GGML_ASSERT(pk->ne[2] == n_kv_heads && pv->ne[2] == n_kv_heads);
+    GGML_ASSERT(pv->ne[1] == n_kv);
+    GGML_ASSERT(op->ne[1] == n_heads && op->ne[2] == n_q_pos);
+    GGML_ASSERT(head_dim == 128 || head_dim == 256);
+
+    ggml_metal_buffer_id bid_q   = ggml_metal_get_buffer_id(q);
+    ggml_metal_buffer_id bid_pk  = ggml_metal_get_buffer_id(pk);
+    ggml_metal_buffer_id bid_pv  = ggml_metal_get_buffer_id(pv);
+    ggml_metal_buffer_id bid_dst = ggml_metal_get_buffer_id(op);
+
+    ggml_metal_buffer_id bid_sketch = bid_dst;
+    bid_sketch.offs += ggml_nbytes(op);
+
+    auto pipe_proj = project_q ? ggml_metal_library_get_pipeline_qjl_project_q(lib)
+                               : ggml_metal_pipeline_with_params{};
+    auto pipe_fused = ggml_metal_library_get_pipeline_fused_attn_qjl(lib, op);
+    if (!pipe_fused.pipeline) {
+        GGML_LOG_ERROR("%s: missing kernel_fused_attn_qjl_polar_f32\n", __func__);
+        return 0;
+    }
+    if (project_q && !pipe_proj.pipeline) {
+        GGML_LOG_ERROR("%s: missing kernel_qjl_project_q_f32\n", __func__);
+        return 0;
+    }
+
+    const int proj_dim = 256;
+    const size_t sketch_elems_i3 = (size_t) n_q_pos * (size_t) n_heads * (size_t) proj_dim;
+    const size_t sketch_bytes_i3 = sketch_elems_i3 * sizeof(float);
+
+    for (int64_t i3 = 0; i3 < ne3; ++i3) {
+        ggml_metal_buffer_id bid_q_i  = bid_q;
+        ggml_metal_buffer_id bid_pk_i = bid_pk;
+        ggml_metal_buffer_id bid_pv_i = bid_pv;
+        ggml_metal_buffer_id bid_o_i  = bid_dst;
+        ggml_metal_buffer_id bid_s_i  = bid_sketch;
+
+        bid_q_i.offs  += (size_t) i3 * q->nb[3];
+        bid_pk_i.offs += (size_t) i3 * pk->nb[3];
+        bid_pv_i.offs += (size_t) i3 * pv->nb[3];
+        bid_o_i.offs  += (size_t) i3 * op->nb[3];
+        bid_s_i.offs  += (size_t) i3 * sketch_bytes_i3;
+
+        ggml_metal_buffer_id bid_q_sketch = project_q ? bid_s_i : bid_q_i;
+
+        if (project_q) {
+            int hd = head_dim;
+            int pd = proj_dim;
+            int nh = n_heads;
+            int nq = n_q_pos;
+
+            ggml_metal_encoder_set_pipeline(enc, pipe_proj);
+            ggml_metal_encoder_set_buffer (enc, bid_q_i, 0);
+            ggml_metal_encoder_set_buffer (enc, bid_s_i, 1);
+            ggml_metal_encoder_set_bytes  (enc, &hd, sizeof(hd), 2);
+            ggml_metal_encoder_set_bytes  (enc, &pd, sizeof(pd), 3);
+            ggml_metal_encoder_set_bytes  (enc, &nh, sizeof(nh), 4);
+            ggml_metal_encoder_set_bytes  (enc, &nq, sizeof(nq), 5);
+            // (ceil(proj/32), n_heads, n_q_pos) groups × 32 threads
+            const int ntg_x = (proj_dim + 31) / 32;
+            ggml_metal_encoder_dispatch_threadgroups(enc, ntg_x, n_heads, n_q_pos, 32, 1, 1);
+            ggml_metal_op_concurrency_reset(ctx);
+        }
+
+        ggml_metal_kargs_fused_attn_qjl args = {
+            /*.head_dim   =*/ 128u,
+            /*.proj_dim   =*/ (uint32_t) proj_dim,
+            /*.n_heads    =*/ (uint32_t) n_heads,
+            /*.n_kv_heads =*/ (uint32_t) n_kv_heads,
+            /*.n_q_pos    =*/ (uint32_t) n_q_pos,
+            /*.n_kv       =*/ (uint32_t) n_kv,
+            /*.kv_tile    =*/ kv_tile,
+            /*.v_use_qjl  =*/ v_use_qjl,
+            /*.scale      =*/ scale_bits.f,
+            /*.causal     =*/ causal,
+            /*.q_pos_base =*/ q_pos_base,
+        };
+
+        ggml_metal_encoder_set_pipeline(enc, pipe_fused);
+        ggml_metal_encoder_set_buffer (enc, bid_q_sketch, 0);
+        ggml_metal_encoder_set_buffer (enc, bid_pk_i,     1);
+        ggml_metal_encoder_set_buffer (enc, bid_pv_i,     2);
+        ggml_metal_encoder_set_buffer (enc, bid_o_i,      3);
+        ggml_metal_encoder_set_bytes  (enc, &args, sizeof(args), 4);
+        ggml_metal_encoder_dispatch_threadgroups(enc, n_heads, n_q_pos, 1, 32, 1, 1);
+        ggml_metal_op_concurrency_reset(ctx);
+    }
+
+    return 1;
 }
 
 int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {

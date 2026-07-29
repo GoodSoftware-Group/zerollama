@@ -291,27 +291,15 @@ void common_ane_draft_reset_handoff(void) {
 }
 
 void common_ane_draft_note_handoff_token(llama_token tok) {
-#if defined(__APPLE__)
     g_dflash_handoff_token = tok;
-#else
-    GGML_UNUSED(tok);
-#endif
 }
 
 void common_ane_draft_note_handoff_pos(llama_pos pos) {
-#if defined(__APPLE__)
     g_dflash_handoff_pos = pos;
-#else
-    GGML_UNUSED(pos);
-#endif
 }
 
 llama_token common_ane_draft_last_handoff_token(void) {
-#if defined(__APPLE__)
     return g_dflash_handoff_token;
-#else
-    return LLAMA_TOKEN_NULL;
-#endif
 }
 
 #if defined(__APPLE__)
@@ -6737,11 +6725,6 @@ void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
         return;
     }
 
-#if !defined(__APPLE__)
-    GGML_UNUSED(draft_n_embd);
-    LOG_WRN("%s: ZEROLLAMA_ANE_DRAFT=1 ignored on non-Apple platform\n", __func__);
-    return;
-#else
     static std::atomic<bool> logged { false };
     if (logged.exchange(true)) {
         return;
@@ -6883,7 +6866,6 @@ void common_ane_draft_log_init(common_speculative_type type, int draft_n_embd) {
                     drive == COMMON_ANE_DRAFT_DRIVE_FORCE ? "force" : "shadow");
         }
     }
-#endif
 }
 
 #if defined(__APPLE__)
@@ -7110,7 +7092,6 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
     if (!common_ane_draft_enabled() || !ane_draft_session_ready() || !ctx_dft) {
         return;
     }
-#if defined(__APPLE__)
     g_handoff_ctx_dft = ctx_dft;
 
     const int step = g_handoff_step.fetch_add(1) + 1;
@@ -7181,6 +7162,7 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
         return;
     }
 
+#if defined(__APPLE__)
     const bool use_async_eval = ane_draft_session_eval_async_enabled() &&
                                 common_ane_draft_get_drive_mode() == COMMON_ANE_DRAFT_DRIVE_OFF;
     if (use_async_eval) {
@@ -7317,8 +7299,10 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
         LOG_DBG("%s: step=%d handoff+eval ok\n", __func__, step);
     }
 #else
-    GGML_UNUSED(ctx_dft);
-    GGML_UNUSED(i_batch);
+    GGML_UNUSED(step);
+    GGML_UNUSED(log_info);
+    GGML_UNUSED(emb);
+    GGML_UNUSED(pack_len);
     LOG_WRN("%s: handoff skipped (not Apple platform)\n", __func__);
 #endif
 }

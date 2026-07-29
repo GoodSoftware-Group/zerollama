@@ -12,6 +12,10 @@
 #include "llama-ext.h"
 #include "llama.h"
 
+#if defined(ZEROLLAMA_UMA)
+#include "uma_glue.h"
+#endif
+
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -185,6 +189,13 @@ llama_context::llama_context(
 
     if (rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_NONE) {
         cparams.rope_freq_scale = 1.0f; // never scale if scaling type is none
+    }
+
+    // Dual Chunk Attention: DualChunk RoPE replaces YaRN — force ext_factor off.
+    if (hparams.dca_enabled()) {
+        cparams.rope_freq_scale = 1.0f;
+        cparams.yarn_ext_factor = 0.0f;
+        rope_scaling_type = LLAMA_ROPE_SCALING_TYPE_NONE;
     }
 
     if (cparams.yarn_ext_factor < 0.0f) { // negative indicates 'not set'
@@ -2381,10 +2392,14 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
         model.arch == LLM_ARCH_KIMI_LINEAR ||
         model.arch == LLM_ARCH_QWEN35 ||
         model.arch == LLM_ARCH_QWEN35MOE ||
-        model.arch == LLM_ARCH_DEEPSEEK4) {
+        model.arch == LLM_ARCH_DEEPSEEK4 ||
+        model.arch == LLM_ARCH_NANBEIGE ||
+        model.arch == LLM_ARCH_MINIMAX_M3) {
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
-    uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
+    // Dual Chunk Attention: 3× FA + LSE merge / barriers per layer
+    uint32_t mult = model.hparams.dca_enabled() ? 24u : 8u;
+    uint32_t res = std::max<uint32_t>(1024u, mult * model.n_tensors());
     for (const auto & lora : model.loras) {
         res += lora->get_n_nodes();
     }
@@ -2497,10 +2512,32 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
+#if defined(ZEROLLAMA_UMA)
+    // Admission only: HOLD_GPU around Metal graph compute + drain (M21 lesson —
+    // RELEASE must not race ggml_backend_sched_synchronize).
+    const char * uma_phase = batched ? "prefill" : "decode";
+    const bool uma_gate = uma_mlx_runtime_enabled();
+    if (uma_gate) {
+        if (uma_mlx_lease_begin(uma_phase) != 0) {
+            LLAMA_LOG_ERROR("%s: uma lease begin (%s) failed: %s\n", __func__, uma_phase, uma_mlx_last_error());
+            return GGML_STATUS_FAILED;
+        }
+    }
+#endif
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
+
+#if defined(ZEROLLAMA_UMA)
+    if (uma_gate) {
+        if (status == GGML_STATUS_SUCCESS) {
+            ggml_backend_sched_synchronize(sched.get());
+        }
+        uma_mlx_lease_end();
+    }
+#endif
 
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
 
@@ -2515,11 +2552,12 @@ llm_graph_cb llama_context::graph_get_cb() const {
             ggml_set_name(cur, name);
         }
 
-        // norm may be automatically assigned to the backend of the previous layer, increasing data transfer between backends
+        // - norm may be automatically assigned to the backend of the previous layer, increasing data transfer between backends
+        // - force the last op of the layer on the specified backend to avoid running it on the backend of the next layer due to scheduling
         // FIXME: fix in ggml_backend_sched
         const bool full_offload = model.n_gpu_layers() > model.hparams.n_layer_all;
         if (ubatch.n_tokens < 32 || full_offload) {
-            if (il != -1 && strcmp(name, "norm") == 0) {
+            if (il != -1 && (strcmp(name, "norm") == 0 || strcmp(name, "l_last") == 0)) {
                 const auto & dev_layer = model.dev_layer(il);
                 for (const auto & backend : backends) {
                     if (ggml_backend_get_device(backend.get()) == dev_layer) {

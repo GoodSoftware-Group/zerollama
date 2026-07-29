@@ -704,6 +704,13 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         }
     }
 
+    // encoding runs synchronously above (main-thread encode_async + the
+    // dispatch_apply barrier), so an encode failure is visible here
+    if (ctx->has_error) {
+        GGML_LOG_ERROR("%s: graph encode failed (nil compute pipeline or encoder error) - returning GGML_STATUS_FAILED\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
     return GGML_STATUS_SUCCESS;
 }
 
@@ -800,6 +807,10 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
         for (int idx = 0; idx < ggml_metal_op_n_nodes(ctx_op); ++idx) {
             const int res = ggml_metal_op_encode(ctx_op, idx);
             if (res == 0) {
+                // encode failure (e.g. nil compute pipeline, issue #11612) -
+                // latch the backend error state so graph_compute reports
+                // GGML_STATUS_FAILED instead of consuming a partial graph
+                ctx->has_error = true;
                 break;
             }
 

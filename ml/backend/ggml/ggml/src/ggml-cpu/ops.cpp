@@ -9096,6 +9096,13 @@ static void ggml_flash_attn_ext_reduce_partials(
             const float S_inv = 1.0f / S_final;
             ggml_vec_scale_f32(DV, VKQ_final, S_inv);
         }
+
+        const ggml_tensor * lse = dst->src[5];
+        if (lse) {
+            float * lse_row = (float *) ((char *) lse->data + q_head*lse->nb[1]);
+            *lse_row = M_final + logf(fmaxf(S_final, 1e-20f));
+        }
+
         // iq1=0, iq3=0 for decode
         memcpy((char *) dst->data + (0*ne2*ne1 + q_head + 0*ne1)*nb1, VKQ_final, nb1);
     }

@@ -34,9 +34,6 @@ struct mtmd_bitmap {
     uint32_t ny = 0;
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
-    // Optional SGLang/Qwen [T,H,W] patch grid; dyn_size honors via preprocessor.
-    bool has_grid_hint = false;
-    int32_t grid_thw[3] = {0, 0, 0};
 
     // lazy-loaded bitmap
     mtmd_bitmap_lazy_callback lazy_callback = nullptr;
@@ -476,6 +473,13 @@ struct mtmd_context {
                     img_end = "<|vision_end|>";
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
                 } break;
+            case PROJECTOR_TYPE_MINIMAX_M3:
+                {
+                    // ]<]start of image[>[ ... (image embeddings) ... ]<]end of image[>[
+                    img_beg = "]<]start of image[>[";
+                    img_end = "]<]end of image[>[";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
             case PROJECTOR_TYPE_YOUTUVL:
                 {
                     // <|vision_start|> ... (image embeddings) ... <|vision_end|>
@@ -568,9 +572,17 @@ struct mtmd_context {
                 } break;
             case PROJECTOR_TYPE_KIMIK25:
                 {
-                    // <|media_begin|> ... (image embeddings) ... <|media_end|>
-                    img_beg = "<|media_begin|>";
-                    img_end = "<|media_end|>";
+                    // GLM-5.2-V reuses the Kimi-K2.5 vision encoder and projector, but marks
+                    // images with its own tokens, so decide based on the text model vocab
+                    if (lookup_token("<|begin_of_image|>") != LLAMA_TOKEN_NULL) {
+                        // <|begin_of_image|> ... (image embeddings) ... <|end_of_image|>
+                        img_beg = "<|begin_of_image|>";
+                        img_end = "<|end_of_image|>";
+                    } else {
+                        // <|media_begin|> ... (image embeddings) ... <|media_end|>
+                        img_beg = "<|media_begin|>";
+                        img_end = "<|media_end|>";
+                    }
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
                 } break;
             case PROJECTOR_TYPE_LIGHTONOCR:
@@ -727,6 +739,12 @@ struct mtmd_context {
                     aud_beg = "<|audio>";
                     aud_end = "<audio|>";
                     audio_preproc = std::make_unique<mtmd_audio_preprocessor_gemma4ua>(ctx_a);
+                } break;
+            case PROJECTOR_TYPE_MIMO_AUDIO:
+                {
+                    aud_beg = "<|mimo_audio_start|>";
+                    aud_end = "<|mimo_audio_end|>";
+                    audio_preproc = std::make_unique<mtmd_audio_preprocessor_mimo_audio>(ctx_a);
                 } break;
             default:
                 throw std::runtime_error(string_format("%s: unexpected audio projector type %d\n", __func__, proj));
@@ -1087,16 +1105,8 @@ struct mtmd_tokenizer {
                     bmp->is_placeholder());
                 img_u8.cpy_buf(bmp->get_ro_buf());
 
-                // Forward optional client grid_thw into dyn_size (M-RoPE) preprocess.
-                if (bmp->has_grid_hint) {
-                    ctx->image_preproc->set_grid_hint(bmp->grid_thw);
-                } else {
-                    ctx->image_preproc->clear_grid_hint();
-                }
-
                 // preprocess image
                 mtmd_image_preproc_out tmp_preproc_out = ctx->image_preproc->preprocess(img_u8);
-                ctx->image_preproc->clear_grid_hint();
 
                 // move entries and grid dimensions to the "global" preproc_out
                 for (auto & entry : tmp_preproc_out.entries) {
@@ -1774,21 +1784,6 @@ void mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id) {
     } else {
         bitmap->id.clear();
     }
-}
-
-void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t * grid_thw) {
-    if (!bitmap) {
-        return;
-    }
-    if (!grid_thw || grid_thw[1] <= 0 || grid_thw[2] <= 0) {
-        bitmap->has_grid_hint = false;
-        bitmap->grid_thw[0] = bitmap->grid_thw[1] = bitmap->grid_thw[2] = 0;
-        return;
-    }
-    bitmap->has_grid_hint = true;
-    bitmap->grid_thw[0] = grid_thw[0];
-    bitmap->grid_thw[1] = grid_thw[1];
-    bitmap->grid_thw[2] = grid_thw[2];
 }
 
 mtmd_bitmap * mtmd_bitmap_init_lazy(mtmd_context * ctx,

@@ -15,6 +15,11 @@
 #include "ggml-backend.h"
 #include "gguf.h"
 
+#if defined(ZEROLLAMA_UMA)
+#include "uma_glue.h"
+#include <cstdlib>
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -44,6 +49,31 @@ const char * llama_flash_attn_type_name(enum llama_flash_attn_type flash_attn_ty
             return "enabled";
     }
     GGML_ABORT("fatal error");
+}
+
+const char * llama_load_mode_name(enum llama_load_mode load_mode) {
+    switch (load_mode) {
+        case LLAMA_LOAD_MODE_NONE:
+            return "none";
+        case LLAMA_LOAD_MODE_MMAP:
+            return "mmap";
+        case LLAMA_LOAD_MODE_MLOCK:
+            return "mlock";
+        case LLAMA_LOAD_MODE_MMAP_MLOCK:
+            return "mmap+mlock";
+        case LLAMA_LOAD_MODE_DIRECT_IO:
+            return "dio";
+    }
+    GGML_ABORT("fatal error");
+}
+
+enum llama_load_mode llama_load_mode_from_str(const char * str) {
+    if (std::strcmp(str, "none") == 0)       { return LLAMA_LOAD_MODE_NONE;       }
+    if (std::strcmp(str, "mmap") == 0)       { return LLAMA_LOAD_MODE_MMAP;       }
+    if (std::strcmp(str, "mlock") == 0)      { return LLAMA_LOAD_MODE_MLOCK;      }
+    if (std::strcmp(str, "mmap+mlock") == 0) { return LLAMA_LOAD_MODE_MMAP_MLOCK; }
+    if (std::strcmp(str, "dio") == 0)        { return LLAMA_LOAD_MODE_DIRECT_IO;  }
+    throw std::invalid_argument(std::string("unknown load mode: ") + str);
 }
 
 struct llama_sampler_chain_params llama_sampler_chain_default_params() {
@@ -99,6 +129,26 @@ void llama_backend_init(void) {
     if (!ggml_backend_reg_count()) {
         ggml_backend_load_all();
     }
+
+#if defined(ZEROLLAMA_UMA)
+    // Single glue copy in libllama. Skip entirely when ZEROLLAMA_UMA_SCHED=off.
+    if (uma_mlx_runtime_enabled()) {
+        if (getenv("UMA_JOB_NAME") == nullptr && getenv("UMA_PROJECT") == nullptr) {
+            const char * backend = getenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND");
+            if (backend != nullptr &&
+                (strcmp(backend, "inprocess") == 0 || strcmp(backend, "in-process") == 0 ||
+                 strcmp(backend, "llama-cpp") == 0)) {
+                setenv("UMA_JOB_NAME", "inprocess", 1);
+            } else {
+                setenv("UMA_JOB_NAME", "llama-server", 1);
+            }
+        }
+        if (uma_mlx_acquire() != 0) {
+            fprintf(stderr, "uma broker: %s\n", uma_mlx_last_error());
+            abort();
+        }
+    }
+#endif
 }
 
 void llama_numa_init(enum ggml_numa_strategy numa) {
@@ -114,6 +164,9 @@ void llama_numa_init(enum ggml_numa_strategy numa) {
 }
 
 void llama_backend_free(void) {
+#if defined(ZEROLLAMA_UMA)
+    uma_mlx_release();
+#endif
     ggml_quantize_free();
 }
 
@@ -279,7 +332,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
 static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
     try {
-        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.use_mmap, params.use_direct_io,
+        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
             params.check_tensors, params.no_alloc, params.kv_overrides, params.tensor_buft_overrides);
 
         ml.print_info();
@@ -412,7 +465,7 @@ struct llama_model * llama_model_init_from_user(
     GGML_ASSERT(metadata != nullptr);
     std::string path_model;
     std::vector<std::string> splits = {};
-    params.use_mmap = false;
+    params.load_mode = LLAMA_LOAD_MODE_NONE;
     params.use_extra_bufts = false;
     return llama_model_load_from_file_impl(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, /*file*/ nullptr, params);
 }

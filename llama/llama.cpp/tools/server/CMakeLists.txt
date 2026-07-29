@@ -19,8 +19,12 @@ add_library(${TARGET} STATIC
     server-stream.h
     server-tools.cpp
     server-tools.h
+    server-mcp.cpp
+    server-mcp.h
     server-schema.cpp
     server-schema.h
+    server-loop-guard.cpp
+    server-loop-guard.h
 )
 
 if (BUILD_SHARED_LIBS)
@@ -61,3 +65,10 @@ install(TARGETS ${TARGET} RUNTIME)
 
 target_link_libraries(${TARGET} PRIVATE llama-server-impl)
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
+
+# Kokoro TTS — link kokoro_lib when enabled (owns /v1/audio/speech with --kokoro-model).
+if (LLAMA_BUILD_KOKORO)
+    target_include_directories(${TARGET} PRIVATE ../kokoro/include)
+    target_link_libraries(${TARGET} PRIVATE kokoro_lib)
+    target_compile_definitions(${TARGET} PRIVATE LLAMA_BUILD_KOKORO)
+endif()

@@ -1075,6 +1075,22 @@ typedef struct {
     uint64_t nb3;
 } ggml_metal_kargs_set_rows;
 
+// Lab D1b — fused QJL-K + Polar-V attention (matches fused_attn_args in
+// eliza-shipped/fused_attn_qjl_polar.metal).
+typedef struct {
+    uint32_t head_dim;
+    uint32_t proj_dim;
+    uint32_t n_heads;
+    uint32_t n_kv_heads;
+    uint32_t n_q_pos;
+    uint32_t n_kv;
+    uint32_t kv_tile;
+    uint32_t v_use_qjl;
+    float    scale;
+    uint32_t causal;
+    uint32_t q_pos_base;
+} ggml_metal_kargs_fused_attn_qjl;
+
 typedef struct {
     int32_t  ne00;
     int32_t  ne01;
@@ -1258,6 +1274,10 @@ typedef struct {
     int32_t  top_k;
     int32_t  len;
 } ggml_metal_kargs_argsort_merge;
+
+typedef struct {
+    int32_t nrows;
+} ggml_metal_kargs_fwht;
 
 typedef struct {
     int64_t  ne0;

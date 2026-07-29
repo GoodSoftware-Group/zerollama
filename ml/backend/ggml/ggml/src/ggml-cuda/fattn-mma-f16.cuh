@@ -1164,6 +1164,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
         const int stride_K,
         const int stride_V,
         const int stride_mask,
+        const int sequence,
+        const int zt_Q,
         const int jt,
         const int zt_gqa,
         const int kb0_start,
@@ -1721,11 +1723,48 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
             __syncthreads();
         }
     }
+
+    if (dstk_fixup != nullptr && !needs_fixup && !is_fixup && np == 1) {
+        int jc;
+        int col;
+        bool thread_should_write;
+
+        if constexpr (cols_per_warp == 8) {
+            const int jc_cwmo = (threadIdx.x % (2*T_C_VKQ::J)) / T_C_VKQ::J;
+            jc = threadIdx.y*(2*T_C_VKQ::J) + jc_cwmo;
+            col = jc_cwmo;
+            thread_should_write = threadIdx.x < 2*T_C_VKQ::J;
+        } else {
+#if defined(TURING_MMA_AVAILABLE)
+            jc = threadIdx.y*cols_per_warp + T_C_VKQ::get_i(threadIdx.x % 4);
+            col = threadIdx.x % cols_per_thread;
+            thread_should_write = threadIdx.x % 4 < cols_per_thread;
+#elif defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
+            jc = threadIdx.y*cols_per_warp + T_C_VKQ::get_i(0);
+            col = 0;
+            thread_should_write = threadIdx.x / 16 < cols_per_thread;
+#else // Volta
+            jc = threadIdx.y*cols_per_warp + T_C_KQ::get_i(threadIdx.x & 2);
+            col = (threadIdx.x & 2) / 2;
+            thread_should_write = T_C_KQ::J == 8 || T_C_KQ::get_j(threadIdx.x & 2) < 8;
+#endif
+        }
+
+        if (thread_should_write && jc < ncols) {
+            const int j_dst = jc / ncols2;
+            const int c_dst = jc % ncols2;
+            if (!((ncols1 > 1 && jt*ncols1 + j_dst >= int(ne01.z)) ||
+                  (ncols2 > 1 && zt_gqa*ncols2 + c_dst >= gqa_ratio))) {
+                const int row = (sequence*int(ne01.z) + jt*ncols1 + j_dst)*ne02 + zt_Q + c_dst;
+                dstk_fixup[row] = make_float2(KQ_max[col], KQ_rowsum[col]);
+            }
+        }
+    }
 #else
     GGML_UNUSED_VARS(Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dstk_fixup,
         scale, slope, logit_softcap, ne01, ne02, gqa_ratio,
         stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
-        jt, kb0_start, kb0_stop);
+        sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
     NO_DEVICE_CODE;
 #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
 }
@@ -1861,12 +1900,14 @@ static __global__ void flash_attn_ext_f16(
             constexpr bool needs_fixup = false; // CUDA block is working on an entire tile.
             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
                 (Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
+                 sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
         } else {
             constexpr bool needs_fixup = true; // CUDA block is missing the beginning of a tile.
             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
                 (Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
+                 sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
         }
 
         kbc += iter_k;
@@ -1907,7 +1948,8 @@ static __global__ void flash_attn_ext_f16(
     constexpr bool needs_fixup = false;
     flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
         (Q_f2, K_h2, V_h2, mask_h, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
-         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask,
+         sequence, zt_Q, jt, zt_gqa, kb0_start, kb0_stop);
 #else
     GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,

@@ -4,15 +4,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-### Bee B1 + llama-server unify (0099–0102) — Jul 2026
+### Bee B1 + llama-server unify (0100–0103) — Jul 2026
 
 **Why:** One vendor `llama-server` for chat + Kokoro TTS; adaptive DFlash draft-max (Bee profit) behind opt-in.
 
 **Shipped:**
-- **0099** — `GGML_CUDA_FORCE_CUBLAS` getenv (5080 serve contract)
-- **0100–0101** — `tools/kokoro` + optional `LLAMA_BUILD_KOKORO` `/v1/audio/speech` (replaces dual TTS binary)
+- **0100** — `GGML_CUDA_FORCE_CUBLAS` getenv (5080 serve contract)
+- **0101** / **0103** — `tools/kokoro` + optional `LLAMA_BUILD_KOKORO` `/v1/audio/speech` (replaces dual TTS binary)
 - **0102** — Bee B1 `--spec-dm-adaptive profit` (default off); Go `ZEROLLAMA_SPEC_DM_ADAPTIVE`
 - Build: kokoro tree allowed; `LLAMA_BUILD_KOKORO=ON` opt-in; OmniVoice still refused
+- Patch **0099** is native DCA (see Dual Chunk Attention below); darwin/Metal occupy **0094–0098**
 
 Doc: [llama-server-unify.md](docs/llama-server-unify.md), [llama-fork-watchlist.md](docs/llama-fork-watchlist.md).
 
@@ -51,14 +52,22 @@ Doc: [vllm-borrowings.md](docs/vllm-borrowings.md), [upstream-siblings.md](docs/
 **Why:** `FORK_PROFILE=speed` aborted on Metal because `SET_ROWS` lacked `q4_polar` encode, and the embed path never included eliza-shipped QJL SET_ROWS.
 
 **Shipped:** Patch `0097` — `quantize_q4_polar` + SET_ROWS templates in `ggml-metal.metal`, device allowlist, QJL host-name fix, embed append of QJL encode. Smoke: `f16/q4_polar` PASS (tg ~33 on 3B). Full speed profile completed by **0098**.
+### Vendor rebase to ggml-org b10159 (`f95de977`) — Jul 2026
+
+**Why:** Nanbeige4.2 needs `LLM_ARCH_NANBEIGE` (upstream #25994). Pin `86d86ed4` could not load those GGUFs; Q8/bf16 need a current llama-server.
+
+**Shipped:**
+- `LLAMA_CPP_VERSION=f95de977`, `LLAMA_CPP_COMMIT=f95de9776b5b…`, `Makefile.sync` → `vendor/llama-cpp-f95de977` (`BUILD_NUMBER=10159` / tag **b10159**)
+- Rebased **103** Ollama/zerollama patches onto the new base (verify: `make -f Makefile.sync clean apply-patches`); skipped absorbed Q6_K get_rows + NVFP4 #25730; resolved Metal FA↔FWHT, nanbeige+dflash arch, FP8/TBQ, Bee budget API
+- `serve.sh` / `5080_env.sh` / `serve_gpu_example.sh` resolve vendor pin from `Makefile.sync`
 
 ### Native Dual Chunk Attention in llama.cpp (Qwen2/2.5) — Jul 2026
 
 **Why:** Qwen 1M / official long-ctx needs DCA; YaRN alone is not the algorithm. Product path is patched ggml CUDA, not a separate engine.
 
-**Shipped:** Vendor `86d86ed4` + patches **0095–0098** — load `*.attention.dca.*`, DualChunk RoPE + `s(L)`, FA LSE export, Qwen2 graph `build_attn_dca` (3× FA + masks + LSE merge; CUDA graphs off). Prefill uses the same three stage masks. Serve via stock `llama-server` / zerollama-runtime. Oracle: `scripts/dca_oracle_logits.py` (n=0 ≈ stock FA; n≥1 ≈ SGLang dense); helper `scripts/dca_unit_ref.py`. Doc [dca-dual-chunk-attention.md](docs/dca-dual-chunk-attention.md).
+**Shipped:** Vendor pin + patches **0099** (DCA series on b10159; after darwin/Metal 0094–0098) — load `*.attention.dca.*`, DualChunk RoPE + `s(L)`, FA LSE export, Qwen2 graph `build_attn_dca` (3× FA + masks + LSE merge; CUDA graphs off). Prefill uses the same three stage masks. Serve via stock `llama-server` / zerollama-runtime. Oracle: `scripts/dca_oracle_logits.py` (n=0 ≈ stock FA; n≥1 ≈ SGLang dense); helper `scripts/dca_unit_ref.py`. Doc [dca-dual-chunk-attention.md](docs/dca-dual-chunk-attention.md).
 
-**5080 validation:** n=0 PASS on stamped Qwen2.5-3B (`chunk_len=192`, max \|Δlogprob\| ≈ 0.05 vs stock FA). **0098** — prefer fattn-tile when exporting LSE (MMA left meta uninit when `np>1` → NaN); bump graph node budget when DCA on. Graph LSE path uses GPU-backed buffer + FA→consumer barrier. n≥1 vs SGLang dense still needs a local HF Instruct-1M tree.
+**5080 validation:** n=0 PASS on stamped Qwen2.5-3B (`chunk_len=192`, max \|Δlogprob\| ≈ 0.05 vs stock FA). Graph LSE path uses GPU-backed buffer + FA→consumer barrier. n≥1 vs SGLang dense still needs a local HF Instruct-1M tree.
 
 ### Dual Chunk Attention SGLang sidecar (lab / legacy) — Jul 2026
 

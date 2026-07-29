@@ -56,15 +56,23 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
     GGML_ASSERT(n_embd_head == n_rot);
 
+    const bool use_dca = hparams.dca_enabled();
+
     ggml_tensor * cur;
     ggml_tensor * inpL;
 
     inpL = build_inp_embd(model.tok_embd);
 
-    // inp_pos - contains the positions
-    ggml_tensor * inp_pos = build_inp_pos();
+    // inp_pos - contains the positions (stock path)
+    ggml_tensor * inp_pos = use_dca ? nullptr : build_inp_pos();
 
-    auto * inp_attn = build_attn_inp_kv();
+    llm_graph_input_attn_kv     * inp_attn     = nullptr;
+    llm_graph_input_attn_kv_dca * inp_attn_dca = nullptr;
+    if (use_dca) {
+        inp_attn_dca = build_attn_inp_kv_dca();
+    } else {
+        inp_attn = build_attn_inp_kv();
+    }
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
@@ -79,29 +87,62 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
 
         // self-attention
         {
-            // compute Q and K and RoPE them
             auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
                     n_embd_head, n_head, n_head_kv, il);
 
-            Qcur = ggml_rope_ext(
-                    ctx0, Qcur, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            if (use_dca) {
+                // DualChunk RoPE: three Q streams + remapped K (SGLang DualChunkRotaryEmbedding)
+                ggml_tensor * Q_intra = ggml_rope_ext(
+                        ctx0, Qcur, inp_attn_dca->pos_q_intra, nullptr,
+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow);
 
-            Kcur = ggml_rope_ext(
-                    ctx0, Kcur, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+                ggml_tensor * Q_succ = ggml_rope_ext(
+                        ctx0, Qcur, inp_attn_dca->pos_q_succ, nullptr,
+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow);
 
-            cb(Qcur, "Qcur", il);
-            cb(Kcur, "Kcur", il);
-            cb(Vcur, "Vcur", il);
+                ggml_tensor * Q_inter = ggml_rope_ext(
+                        ctx0, Qcur, inp_attn_dca->pos_q_inter, nullptr,
+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow);
 
-            cur = build_attn(inp_attn,
-                    model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+                Kcur = ggml_rope_ext(
+                        ctx0, Kcur, inp_attn_dca->pos_k, nullptr,
+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow);
+
+                cb(Q_intra, "Q_intra", il);
+                cb(Q_succ,  "Q_succ",  il);
+                cb(Q_inter, "Q_inter", il);
+                cb(Kcur,    "Kcur",    il);
+                cb(Vcur,    "Vcur",    il);
+
+                cur = build_attn_dca(inp_attn_dca,
+                        model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                        Q_intra, Q_succ, Q_inter, Kcur, Vcur, nullptr, nullptr,
+                        1.0f/sqrtf(float(n_embd_head)), il);
+            } else {
+                Qcur = ggml_rope_ext(
+                        ctx0, Qcur, inp_pos, nullptr,
+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow
+                        );
+
+                Kcur = ggml_rope_ext(
+                        ctx0, Kcur, inp_pos, nullptr,
+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow
+                        );
+
+                cb(Qcur, "Qcur", il);
+                cb(Kcur, "Kcur", il);
+                cb(Vcur, "Vcur", il);
+
+                cur = build_attn(inp_attn,
+                        model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+            }
         }
         if (il == n_layer - 1 && inp_out_ids) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);

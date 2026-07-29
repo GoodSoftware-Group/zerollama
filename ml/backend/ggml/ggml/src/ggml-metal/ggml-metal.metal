@@ -454,6 +454,88 @@ void quantize_tbq4_0(device const float * src, device block_tbq4_0 & dst) {
     }
 }
 
+// ELIZA-POLAR-SET-ROWS-V1 — Metal encode for Q4_POLAR KV writes (ggml-quants.c)
+constant float k_polar_q4_centroids_metal[16] = {
+    -2.754354807e+00f, -2.093562707e+00f, -1.643041510e+00f, -1.279739752e+00f,
+    -9.626409783e-01f, -6.723921169e-01f, -3.978971029e-01f, -1.317577823e-01f,
+     1.317577823e-01f,  3.978971029e-01f,  6.723921169e-01f,  9.626409783e-01f,
+     1.279739752e+00f,  1.643041510e+00f,  2.093562707e+00f,  2.754354807e+00f,
+};
+constant float k_polar_q4_boundaries_metal[15] = {
+    -2.423958757e+00f, -1.868302108e+00f, -1.461390631e+00f, -1.121190365e+00f,
+    -8.175165476e-01f, -5.351446099e-01f, -2.648274426e-01f,  4.996003611e-16f,
+     2.648274426e-01f,  5.351446099e-01f,  8.175165476e-01f,  1.121190365e+00f,
+     1.461390631e+00f,  1.868302108e+00f,  2.423958757e+00f,
+};
+
+static inline void polar_hadamard128_metal(thread float * x) {
+    for (int h = 1; h < QK_POLAR; h <<= 1) {
+        for (int i = 0; i < QK_POLAR; i += (h << 1)) {
+            for (int j = i; j < i + h; j++) {
+                const float a = x[j];
+                const float b = x[j + h];
+                x[j]     = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+}
+
+static inline void polar_qjl_signs_metal(thread float * out) {
+    uint state = 42u;
+    for (int i = 0; i < QK_POLAR; i++) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        out[i] = (state & 1u) ? 1.0f : -1.0f;
+    }
+}
+
+static inline uint8_t polar_q4_bucketize_metal(float v) {
+    uint8_t code = 0;
+    for (int i = 0; i < 15; i++) {
+        if (v > k_polar_q4_boundaries_metal[i]) {
+            code = (uint8_t)(i + 1);
+        }
+    }
+    return code;
+}
+
+void quantize_q4_polar(device const float * src, device block_q4_polar & dst) {
+    float qjl_signs[QK_POLAR];
+    polar_qjl_signs_metal(qjl_signs);
+
+    float sumsq = 0.0f;
+    for (int i = 0; i < QK_POLAR; i++) {
+        sumsq += src[i] * src[i];
+    }
+    const float l2     = sqrt(sumsq);
+    const float inv_l2 = (l2 > 1e-10f) ? (1.0f / l2) : 0.0f;
+    dst.d = (half) l2;
+
+    float buf[QK_POLAR];
+    for (int i = 0; i < QK_POLAR; i++) {
+        buf[i] = src[i] * inv_l2;
+    }
+    polar_hadamard128_metal(buf);
+
+    uint8_t codes[QK_POLAR];
+    for (int i = 0; i < QK_POLAR; i++) {
+        codes[i] = polar_q4_bucketize_metal(buf[i]);
+    }
+    for (int i = 0; i < QK_POLAR / 2; i++) {
+        dst.qs[i] = (uint8_t)((codes[2 * i + 1] << 4) | (codes[2 * i] & 0x0F));
+    }
+    for (int i = 0; i < QJL_RESIDUAL_BYTES; i++) {
+        dst.qjl[i] = 0;
+    }
+    float proj = 0.0f;
+    for (int i = 0; i < QK_POLAR; i++) {
+        proj += (buf[i] - k_polar_q4_centroids_metal[codes[i]]) * qjl_signs[i];
+    }
+    dst.qjl[0] = (proj >= 0.0f) ? 1u : 0u;
+}
+
 void quantize_q1_0(device const float * src, device block_q1_0 & dst) {
     float sum_abs = 0.0f;
     for (int j = 0; j < QK1_0; j++) {
@@ -6348,7 +6430,7 @@ kernel void kernel_upscale_bicubic_f32(
     const float w_y2 = bicubic_weight1(1.0f - fd1);
     const float w_y3 = bicubic_weight2(2.0f - fd1);
 
-    const device const char * src_slice = src0 + i03 * args.nb03 + i02 * args.nb02;
+    const device char * src_slice = src0 + i03 * args.nb03 + i02 * args.nb02;
 
     device float * dst_ptr = (device float *)(dst + i3 * args.nb3 + i2 * args.nb2 + i1 * args.nb1);
 
@@ -6949,6 +7031,68 @@ kernel void kernel_argsort_merge_f32_i32(
 
 template [[host_name("kernel_argsort_merge_f32_i32_asc")]]  kernel argsort_merge_t kernel_argsort_merge_f32_i32<GGML_SORT_ORDER_ASC>;
 template [[host_name("kernel_argsort_merge_f32_i32_desc")]] kernel argsort_merge_t kernel_argsort_merge_f32_i32<GGML_SORT_ORDER_DESC>;
+
+template<int N>
+kernel void kernel_fwht_f32(
+        constant ggml_metal_kargs_fwht & args,
+        device const float * src,
+        device float * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort3  ntg[[threads_per_threadgroup]]) {
+
+    constexpr int NW = N_SIMDWIDTH;
+    constexpr int NE = N / NW;
+
+    const float scale = 1.0f / sqrt((float) N);
+
+    const int sg_per_tg = ntg.x / NW;
+    const int64_t r = tgpig.x * sg_per_tg + sgitg;
+    if (r >= args.nrows) {
+        return;
+    }
+
+    src += r * N;
+    dst += r * N;
+
+    const int lane = tiisg;
+
+    float reg[NE];
+    for (int i = 0; i < NE; i++) {
+        reg[i] = src[i*NW + lane]*scale;
+    }
+    for (int i = 1; i < NW; i *= 2) {
+        for (int j = 0; j < NE; j++) {
+            const float val = reg[j];
+            const float val2 = simd_shuffle_xor(val, i);
+            reg[j] = (lane & i) == 0 ? val2 + val : val2 - val;
+        }
+    }
+
+    for (int i = NW; i < N; i *= 2) {
+        const int step = i / NW;
+        for (int j = 0; j < NE; j += (2 * step)) {
+            for (int k = 0; k < step; k++) {
+                const float x = reg[j + k ];
+                const float y = reg[j + k + step];
+                reg[j + k]        = x + y;
+                reg[j + k + step] = x - y;
+            }
+        }
+    }
+
+    for (int i = 0; i < NE; i++) {
+        dst[i*NW + lane] = reg[i];
+    }
+}
+
+typedef decltype(kernel_fwht_f32<64>) kernel_fwht_t;
+
+template [[host_name("kernel_fwht_f32_64")]]  kernel kernel_fwht_t kernel_fwht_f32<64>;
+template [[host_name("kernel_fwht_f32_128")]] kernel kernel_fwht_t kernel_fwht_f32<128>;
+template [[host_name("kernel_fwht_f32_256")]] kernel kernel_fwht_t kernel_fwht_f32<256>;
+template [[host_name("kernel_fwht_f32_512")]] kernel kernel_fwht_t kernel_fwht_f32<512>;
 
 kernel void kernel_flash_attn_ext_q8_0_to_f16(
         constant ggml_metal_kargs_flash_attn_ext_q8_0_to_f16 & args,
@@ -11930,6 +12074,9 @@ template [[host_name("kernel_set_rows_f32_i32_tbq3_0")]] kernel set_rows_tbq3_t 
 typedef decltype(kernel_set_rows_q<float, int64_t, QK_TBQ, block_tbq4_0, quantize_tbq4_0>) set_rows_tbq4_t;
 template [[host_name("kernel_set_rows_f32_i64_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_q<float, int64_t, QK_TBQ, block_tbq4_0, quantize_tbq4_0>;
 template [[host_name("kernel_set_rows_f32_i32_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_q<float, int32_t, QK_TBQ, block_tbq4_0, quantize_tbq4_0>;
+typedef decltype(kernel_set_rows_q<float, int64_t, QK_POLAR, block_q4_polar, quantize_q4_polar>) set_rows_q4_polar_t;
+template [[host_name("kernel_set_rows_f32_i64_q4_polar")]] kernel set_rows_q4_polar_t kernel_set_rows_q<float, int64_t, QK_POLAR, block_q4_polar, quantize_q4_polar>;
+template [[host_name("kernel_set_rows_f32_i32_q4_polar")]] kernel set_rows_q4_polar_t kernel_set_rows_q<float, int32_t, QK_POLAR, block_q4_polar, quantize_q4_polar>;
 
 kernel void kernel_diag_f32(
         constant ggml_metal_kargs_diag & args,

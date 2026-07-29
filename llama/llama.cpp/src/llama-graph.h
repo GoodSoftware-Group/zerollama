@@ -354,6 +354,53 @@ public:
     const llama_kv_cache_context * mctx;
 };
 
+// Dual Chunk Attention inputs: DualChunk RoPE positions, s(L), and 3 stage masks.
+class llm_graph_input_attn_kv_dca : public llm_graph_input_i {
+public:
+    llm_graph_input_attn_kv_dca(
+            const llama_hparams & hparams,
+            const llama_cparams & cparams,
+            const llama_kv_cache_context * mctx) :
+        hparams(hparams),
+        cparams(cparams),
+        mctx(mctx) {
+    }
+    ~llm_graph_input_attn_kv_dca() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    ggml_tensor * get_k_idxs() const { return self_k_idxs; }
+    ggml_tensor * get_v_idxs() const { return self_v_idxs; }
+
+    ggml_tensor * get_kq_mask_intra() const { return self_kq_mask_intra; }
+    ggml_tensor * get_kq_mask_succ()  const { return self_kq_mask_succ; }
+    ggml_tensor * get_kq_mask_inter() const { return self_kq_mask_inter; }
+
+    ggml_tensor * self_k_idxs = nullptr;
+    ggml_tensor * self_v_idxs = nullptr;
+
+    ggml_tensor * pos_k       = nullptr; // I32 DualChunk K positions
+    ggml_tensor * pos_q_intra = nullptr;
+    ggml_tensor * pos_q_succ  = nullptr;
+    ggml_tensor * pos_q_inter = nullptr;
+
+    ggml_tensor * length_scale = nullptr; // F32 [1,1,n_tokens] s(L)
+
+    // Per-token stage gates (1 = active). Used to zero empty succ/inter rows.
+    ggml_tensor * gate_succ  = nullptr; // F32 [1,1,n_tokens]
+    ggml_tensor * gate_inter = nullptr;
+
+    ggml_tensor * self_kq_mask_intra = nullptr;
+    ggml_tensor * self_kq_mask_succ  = nullptr;
+    ggml_tensor * self_kq_mask_inter = nullptr;
+
+    const llama_hparams hparams;
+    const llama_cparams cparams;
+    const llama_kv_cache_context * mctx;
+};
+
 // V-less input for the KV cache
 // ref: https://github.com/ggml-org/llama.cpp/pull/19067
 class llm_graph_input_attn_k : public llm_graph_input_i {
@@ -1094,6 +1141,8 @@ struct llm_graph_context {
 
     llm_graph_input_attn_kv * build_attn_inp_kv() const;
 
+    llm_graph_input_attn_kv_dca * build_attn_inp_kv_dca() const;
+
     ggml_tensor * build_attn(
             llm_graph_input_attn_kv * inp,
             ggml_tensor * wo,
@@ -1105,6 +1154,22 @@ struct llm_graph_context {
             ggml_tensor * kq_b,
             ggml_tensor * sinks, // [n_head_q]
             ggml_tensor * v_mla, // [n_embd_head_v_mla, n_embd_head_v, n_head_v] // TODO: remove
+                  float   kq_scale,
+                    int   il) const;
+
+    // Dual Chunk Attention: 3× FA (intra/succ/inter) + LSE merge. Qs already DualChunk-RoPE'd.
+    ggml_tensor * build_attn_dca(
+            llm_graph_input_attn_kv_dca * inp,
+            ggml_tensor * wo,
+            ggml_tensor * wo_b,
+            ggml_tensor * wo_s,
+            ggml_tensor * q_intra,
+            ggml_tensor * q_succ,
+            ggml_tensor * q_inter,
+            ggml_tensor * k_cur,
+            ggml_tensor * v_cur,
+            ggml_tensor * kq_b,
+            ggml_tensor * sinks,
                   float   kq_scale,
                     int   il) const;
 

@@ -9,7 +9,7 @@ Subject: [PATCH] ggml-cuda: row-per-warp kernel for GATED_DELTA_NET (upstream
  1 file changed, 189 insertions(+), 208 deletions(-)
 
 diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu
-index 1b431a72..8a7bdb3b 100644
+index 1b431a724..8a7bdb3bb 100644
 --- a/ggml/src/ggml-cuda/gated_delta_net.cu
 +++ b/ggml/src/ggml-cuda/gated_delta_net.cu
 @@ -1,227 +1,239 @@

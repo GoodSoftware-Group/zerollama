@@ -1041,7 +1041,8 @@ __launch_bounds__(D, 1)
 static __global__ void flash_attn_combine_results(
         const float  * VKQ_parts_ptr,
         const float2 * VKQ_meta_ptr,
-        float * dst_ptr,
+        float        * dst_ptr,
+        float        * dst_lse_ptr,
         const int parallel_blocks) {
     ggml_cuda_pdl_lc();
     const float  * GGML_CUDA_RESTRICT VKQ_parts = VKQ_parts_ptr;
@@ -1092,6 +1093,27 @@ static __global__ void flash_attn_combine_results(
     }
 
     dst[tid] = VKQ_numerator / VKQ_denominator;
+
+    if (tid == 0 && dst_lse_ptr != nullptr) {
+        const int lse_idx = sequence*ne02*ne01 + head*ne01 + col;
+        dst_lse_ptr[lse_idx] = kqmax + logf(fmaxf(VKQ_denominator, 1e-20f));
+    }
+}
+
+static __global__ void flash_attn_meta_to_lse(
+        const float2 * meta_ptr,
+        float        * lse_ptr,
+        const int      ne01,
+        const int      ne02) {
+    const int col      = blockIdx.x;
+    const int head     = blockIdx.y;
+    const int sequence = blockIdx.z;
+
+    const int j_dst_unrolled = (sequence*ne01 + col)*ne02 + head;
+    const int lse_idx        = sequence*ne02*ne01 + head*ne01 + col;
+
+    const float2 m = meta_ptr[j_dst_unrolled];
+    lse_ptr[lse_idx] = m.x + logf(fmaxf(m.y, 1e-20f));
 }
 
 template <int DV, int ncols1, int ncols2>
@@ -1111,6 +1133,9 @@ void launch_fattn(
     const ggml_tensor * sinks = dst->src[4];
 
     ggml_tensor * KQV = dst;
+
+    const bool export_lse = KQV->src[5] != nullptr;
+    float    * lse_out    = export_lse ? (float *) KQV->src[5]->data : nullptr;
 
     GGML_ASSERT(Q->type == GGML_TYPE_F32);
     GGML_ASSERT(KQV->type == GGML_TYPE_F32);
@@ -1248,7 +1273,11 @@ void launch_fattn(
         const int tiles_nwaves = (ntiles_dst + max_blocks - 1) / max_blocks;
         const int tiles_efficiency_percent = 100 * ntiles_dst / (max_blocks*tiles_nwaves);
 
-        const bool use_stream_k = cc >= GGML_CUDA_CC_ADA_LOVELACE || amd_wmma_available(cc) || tiles_efficiency_percent < 75;
+        bool use_stream_k = cc >= GGML_CUDA_CC_ADA_LOVELACE || amd_wmma_available(cc) || tiles_efficiency_percent < 75;
+
+        if (export_lse) {
+            use_stream_k = false;
+        }
 
         blocks_num.x = ntiles_dst;
         blocks_num.y = 1;
@@ -1270,7 +1299,9 @@ void launch_fattn(
             blocks_num.x = nblocks_stream_k;
         }
 
-        if (ntiles_dst % blocks_num.x != 0) { // Fixup is only needed if the SMs work on fractional tiles.
+        if (export_lse) {
+            dst_tmp_meta.alloc(ggml_nrows(KQV));
+        } else if (ntiles_dst % blocks_num.x != 0) { // Fixup is only needed if the SMs work on fractional tiles.
             dst_tmp_meta.alloc((size_t(blocks_num.x) * ncols * (2 + DV/2)));
         }
     } else {
@@ -1306,7 +1337,18 @@ void launch_fattn(
         if (parallel_blocks > 1) {
             dst_tmp.alloc(parallel_blocks*ggml_nelements(KQV));
             dst_tmp_meta.alloc(parallel_blocks*ggml_nrows(KQV));
+        } else if (export_lse) {
+            dst_tmp_meta.alloc(ggml_nrows(KQV));
         }
+    }
+
+    float2 * dst_meta_ptr = nullptr;
+    if (export_lse) {
+        dst_meta_ptr = dst_tmp_meta.ptr;
+    } else if (!stream_k && parallel_blocks > 1) {
+        dst_meta_ptr = dst_tmp_meta.ptr;
+    } else if (stream_k && dst_tmp_meta.ptr != nullptr) {
+        dst_meta_ptr = dst_tmp_meta.ptr;
     }
 
     float scale         = 1.0f;
@@ -1340,7 +1382,7 @@ void launch_fattn(
         mask ? ((const char *) mask->data) : nullptr,
         sinks ? ((const char *) sinks->data) : nullptr,
         KV_max.ptr,
-        !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, dst_tmp_meta.ptr,
+        !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, dst_meta_ptr,
         scale, max_bias, m0, m1, n_head_log2, logit_softcap,
         Q->ne[0], ne01,     Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],
         K->ne[0], K->ne[1], K->ne[2], K->ne[3], nb11, nb12, nb13,
@@ -1386,6 +1428,14 @@ void launch_fattn(
                  Q->ne[1], Q->ne[2], gqa_ratio, total_work,
                  fd_k_j_z_ne12, fd_k_j_z, fd_k_j, fd_k);
         }
+
+        if (export_lse && dst_tmp_meta.ptr != nullptr) {
+            const dim3 blocks_num_lse(Q->ne[1], Q->ne[2], Q->ne[3]);
+            const dim3 block_dim_lse(1, 1, 1);
+            const ggml_cuda_kernel_launch_params launch_params_lse = ggml_cuda_kernel_launch_params(blocks_num_lse, block_dim_lse, 0, main_stream);
+            ggml_cuda_kernel_launch(flash_attn_meta_to_lse, launch_params_lse,
+                dst_tmp_meta.ptr, lse_out, Q->ne[1], Q->ne[2]);
+        }
     } else if (parallel_blocks > 1) {
         const dim3 block_dim_combine(DV, 1, 1);
         const dim3 blocks_num_combine(Q->ne[1], Q->ne[2], Q->ne[3]);
@@ -1393,7 +1443,13 @@ void launch_fattn(
 
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_combine, block_dim_combine, nbytes_shared_combine, main_stream);
         ggml_cuda_kernel_launch(flash_attn_combine_results<DV>, launch_params,
-            dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data, parallel_blocks);
+            dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data, lse_out, parallel_blocks);
+    } else if (export_lse && dst_tmp_meta.ptr != nullptr) {
+        const dim3 blocks_num_lse(Q->ne[1], Q->ne[2], Q->ne[3]);
+        const dim3 block_dim_lse(1, 1, 1);
+        const ggml_cuda_kernel_launch_params launch_params_lse = ggml_cuda_kernel_launch_params(blocks_num_lse, block_dim_lse, 0, main_stream);
+        ggml_cuda_kernel_launch(flash_attn_meta_to_lse, launch_params_lse,
+            dst_tmp_meta.ptr, lse_out, Q->ne[1], Q->ne[2]);
     }
     CUDA_CHECK(cudaGetLastError());
 }

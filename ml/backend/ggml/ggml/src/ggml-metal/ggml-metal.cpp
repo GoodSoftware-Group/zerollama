@@ -233,6 +233,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
                 res += ggml_metal_op_flash_attn_ext_extra_tmp(tensor);
                 res += ggml_metal_op_flash_attn_ext_extra_q8_f16(tensor);
             } break;
+        case GGML_OP_FUSED_ATTN_QJL_TBQ:
+            {
+                res += ggml_metal_op_fused_attn_qjl_extra_q_sketch(tensor);
+            } break;
         case GGML_OP_CUMSUM:
         case GGML_OP_ARGSORT:
             {

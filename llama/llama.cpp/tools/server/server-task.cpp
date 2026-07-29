@@ -12,6 +12,15 @@
 
 using json = nlohmann::ordered_json;
 
+static const char * server_reasoning_loop_guard_mode_name(common_reasoning_loop_guard_mode value) {
+    switch (value) {
+        case COMMON_REASONING_LOOP_GUARD_OFF:         return "off";
+        case COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE: return "force-close";
+        case COMMON_REASONING_LOOP_GUARD_STOP:        return "stop";
+    }
+    return "off";
+}
+
 //
 // task_params
 //
@@ -63,6 +72,8 @@ json task_params::to_json(bool only_metrics) const {
             {"mirostat",                  sampling.mirostat},
             {"mirostat_tau",              sampling.mirostat_tau},
             {"mirostat_eta",              sampling.mirostat_eta},
+            {"adaptive_target",           sampling.adaptive_target},
+            {"adaptive_decay",            sampling.adaptive_decay},
             {"max_tokens",                n_predict},
             {"n_predict",                 n_predict}, // TODO: deduplicate?
             {"n_keep",                    n_keep},
@@ -81,6 +92,13 @@ json task_params::to_json(bool only_metrics) const {
             {"post_sampling_probs",       post_sampling_probs},
             {"backend_sampling",          sampling.backend_sampling},
             {"lora",                      lora},
+            {"reasoning_loop_guard",       server_reasoning_loop_guard_mode_name(reasoning_loop_guard.mode)},
+            {"reasoning_loop_min_tokens",  reasoning_loop_guard.min_reasoning_tokens},
+            {"reasoning_loop_window",      reasoning_loop_guard.window_tokens},
+            {"reasoning_loop_max_period",  reasoning_loop_guard.max_period},
+            {"reasoning_loop_min_coverage", reasoning_loop_guard.min_repeated_coverage},
+            {"reasoning_loop_check_interval", reasoning_loop_guard.check_interval},
+            {"reasoning_loop_interventions", reasoning_loop_guard.interventions_max},
         };
     }
 
@@ -114,6 +132,8 @@ json task_params::to_json(bool only_metrics) const {
         {"mirostat",                  sampling.mirostat},
         {"mirostat_tau",              sampling.mirostat_tau},
         {"mirostat_eta",              sampling.mirostat_eta},
+        {"adaptive_target",           sampling.adaptive_target},
+        {"adaptive_decay",            sampling.adaptive_decay},
         {"stop",                      antiprompt},
         {"max_tokens",                n_predict},
         {"n_predict",                 n_predict}, // TODO: deduplicate?
@@ -138,6 +158,13 @@ json task_params::to_json(bool only_metrics) const {
         {"post_sampling_probs",       post_sampling_probs},
         {"backend_sampling",          sampling.backend_sampling},
         {"lora",                      lora},
+        {"reasoning_loop_guard",       server_reasoning_loop_guard_mode_name(reasoning_loop_guard.mode)},
+        {"reasoning_loop_min_tokens",  reasoning_loop_guard.min_reasoning_tokens},
+        {"reasoning_loop_window",      reasoning_loop_guard.window_tokens},
+        {"reasoning_loop_max_period",  reasoning_loop_guard.max_period},
+        {"reasoning_loop_min_coverage", reasoning_loop_guard.min_repeated_coverage},
+        {"reasoning_loop_check_interval", reasoning_loop_guard.check_interval},
+        {"reasoning_loop_interventions", reasoning_loop_guard.interventions_max},
     };
 }
 
@@ -376,10 +403,18 @@ json server_task_result_cmpl_final::to_json_non_oaicompat() {
         {"has_new_line",        has_new_line},
         {"truncated",           truncated},
         {"stop_type",           stop_type_to_str(stop)},
+        {"stop_detail",         stop_detail},
         {"stopping_word",       stopping_word},
         {"tokens_cached",       n_tokens_cached},
         {"timings",             timings.to_json()},
     };
+    if (loop_guard_triggered) {
+        res["loop_guard"] = json {
+            {"triggered", true},
+            {"action",    loop_guard_action},
+            {"reason",    loop_guard_reason},
+        };
+    }
     if (!stream && !probs_output.empty()) {
         res["completion_probabilities"] = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
     }
@@ -1659,16 +1694,16 @@ size_t server_prompt_cache::n_tokens() const {
     size_t res = 0;
 
     for (const auto & state : states) {
-        res += state.n_tokens();
+        res += state.prompt.n_tokens();
     }
 
     return res;
 }
 
-server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
+server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
-        const int cur_lcp_len = it->tokens.get_common_prefix(prompt.tokens);
+        const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
         if (cur_lcp_len == (int) prompt.tokens.size()) {
             SRV_TRC("%s", " - prompt is already in the cache, skipping\n");
@@ -1693,9 +1728,9 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
 
     // remove any cached prompts that are fully contained in the current prompt
     for (auto it = states.begin(); it != states.end();) {
-        const int len = it->tokens.get_common_prefix(prompt.tokens);
+        const int len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
-        if (len == (int) it->tokens.size()) {
+        if (len == (int) it->prompt.tokens.size()) {
             SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
 
             it = states.erase(it);
@@ -1734,12 +1769,14 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
     }
 
     states.push_back({
-        /*.tokens      =*/ prompt.tokens.clone(),
-        /*.data        =*/ {
+        /*.prompt =*/ {
+            /*.tokens      =*/ prompt.tokens.clone(),
+            /*.checkpoints =*/ prompt.checkpoints,
+        },
+        /*.data   =*/ {
             /*.main =*/ std::move(state_data_tgt),
             /*.drft =*/ std::move(state_data_dft),
         },
-        /*.checkpoints =*/ prompt.checkpoints,
     });
 
     return &states.back();
@@ -1757,9 +1794,9 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
     // find the most similar cached prompt, that would also preserve the most context
     for (auto it = states.begin(); it != states.end(); ++it) {
-        const int lcp_cur = it->tokens.get_common_prefix(tokens_new);
+        const int lcp_cur = it->prompt.tokens.get_common_prefix(tokens_new);
 
-        const float f_keep_cur = float(lcp_cur) / it->tokens.size();
+        const float f_keep_cur = float(lcp_cur) / it->prompt.tokens.size();
         const float sim_cur    = float(lcp_cur) / tokens_new.size();
 
         // don't trash large prompts
@@ -1812,7 +1849,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             }
         }
 
-        prompt = std::move(*it_best);
+        prompt = std::move(it_best->prompt);
 
         states.erase(it_best);
     }
@@ -1849,6 +1886,6 @@ void server_prompt_cache::update() {
 
     for (const auto & state : states) {
         SRV_TRC("   - prompt %p: %7d tokens, checkpoints: %2zu, %9.3f MiB\n",
-                (const void *)&state, state.n_tokens(), state.checkpoints.size(), state.size() / (1024.0 * 1024.0));
+                (const void *)&state, state.prompt.n_tokens(), state.prompt.checkpoints.size(), state.size() / (1024.0 * 1024.0));
     }
 }

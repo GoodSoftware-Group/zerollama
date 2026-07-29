@@ -10,10 +10,10 @@ Subject: [PATCH] ggml-metal: fix null-pipeline crash for F16 src1 mul_mat
  2 files changed, 60 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 4a9c8320..67903ca2 100644
+index b70c373d3..827797aae 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1388,9 +1388,53 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1389,9 +1389,53 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
          case GGML_OP_GATED_DELTA_NET:
              return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
          case GGML_OP_SOLVE_TRI:
@@ -69,10 +69,10 @@ index 4a9c8320..67903ca2 100644
          case GGML_OP_CPY:
          case GGML_OP_DUP:
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 878c2433..4c7f18a4 100644
+index b2aa98ba0..02704761d 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -2146,6 +2146,16 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
+@@ -2186,6 +2186,16 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
      return 1;
  }
  
@@ -89,7 +89,7 @@ index 878c2433..4c7f18a4 100644
  int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
      ggml_tensor * op = ctx->node(idx);
  
-@@ -2266,6 +2276,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2318,6 +2328,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          };
  
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);
@@ -97,7 +97,7 @@ index 878c2433..4c7f18a4 100644
  
          ggml_metal_kargs_mul_mv_ext args = {
              /*.ne00  =*/ ne00,
-@@ -2313,6 +2324,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2365,6 +2376,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          //}
  
          auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
@@ -105,7 +105,7 @@ index 878c2433..4c7f18a4 100644
  
          ggml_metal_kargs_mul_mm args = {
              /*.ne00 =*/ ne00,
-@@ -2348,6 +2360,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2400,6 +2412,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
      } else {
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
@@ -113,7 +113,7 @@ index 878c2433..4c7f18a4 100644
  
          const int nr0 = pipeline.nr0;
          const int nr1 = pipeline.nr1;
-@@ -2508,6 +2521,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -2560,6 +2573,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
  
          {
              auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
@@ -121,7 +121,7 @@ index 878c2433..4c7f18a4 100644
  
              ggml_metal_kargs_mul_mm_id args = {
                  /*.ne00  =*/ ne00,
-@@ -2544,6 +2558,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -2596,6 +2610,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
          }
      } else {
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);

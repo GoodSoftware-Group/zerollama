@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 12 Jul 2026 18:33:49 -0700
+Subject: [PATCH] ggml-metal: auto-disable concurrency on non-Apple GPUs
+ (upstream #19527)
+
+MTLDispatchTypeConcurrent memory barriers are broken on AMD/Intel Metal.
+Skip managed-buffer hunks from the PR (invalid BytesNoCopy+Managed /
+buffer synchronizeResource APIs).
+---
+ ggml/src/ggml-metal/ggml-metal-context.m | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
+index 5ae4dab02..2fb313b80 100644
+--- a/ggml/src/ggml-metal/ggml-metal-context.m
++++ b/ggml/src/ggml-metal/ggml-metal-context.m
+@@ -133,8 +133,17 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
+ 
+     res->d_queue = dispatch_queue_create("ggml-metal", DISPATCH_QUEUE_CONCURRENT);
+ 
+-    res->use_fusion      = getenv("GGML_METAL_FUSION_DISABLE") == nil;
+-    res->use_concurrency = getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil;
++    res->use_fusion = getenv("GGML_METAL_FUSION_DISABLE") == nil;
++
++    // Auto-disable concurrent dispatch on non-Apple GPUs (AMD/Intel).
++    // MTLDispatchTypeConcurrent has broken memory barriers on these GPUs
++    // (upstream #19527; concurrency alone fixed correctness on discrete Metal).
++    const bool is_apple_gpu = props_dev->supports_gpu_family_apple7;
++    res->use_concurrency = is_apple_gpu && (getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil);
++
++    if (!is_apple_gpu && getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil) {
++        GGML_LOG_INFO("%s: disabling concurrent dispatch (non-Apple GPU detected)\n", __func__);
++    }
+ 
+     {
+         const char * val = getenv("GGML_METAL_GRAPH_DEBUG");

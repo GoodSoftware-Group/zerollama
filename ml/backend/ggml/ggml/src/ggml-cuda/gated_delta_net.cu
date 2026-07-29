@@ -306,3 +306,10 @@ void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor *
                                       sv2, sv3, sb1, sb2, sb3, neqk1, rq3, scale, stream);
     }
 }
+
+// Stub: patch 0084 removed the fused-cache kernel; fusion matcher is disabled above.
+void ggml_cuda_op_gated_delta_net_fused_cache(
+        ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_cuda_gated_delta_net_fused_cache cache) {
+    GGML_UNUSED(cache);
+    ggml_cuda_op_gated_delta_net(ctx, dst);
+}

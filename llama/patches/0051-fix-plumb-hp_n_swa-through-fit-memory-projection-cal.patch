@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sun, 12 Jul 2026 11:55:26 -0700
+Subject: [PATCH] fix: plumb hp_n_swa through fit memory projection call sites
+
+Keep equal-split fit and server fit-params on the shared
+common_get_device_memory_data(_impl) signature after SWA projection work.
+---
+ common/fit.cpp                  | 6 +++---
+ common/fit.h                    | 1 +
+ tools/server/server-context.cpp | 7 ++++---
+ 3 files changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/common/fit.cpp b/common/fit.cpp
+index e44b208bc..8bb9e9b7b 100644
+--- a/common/fit.cpp
++++ b/common/fit.cpp
+@@ -663,12 +663,12 @@ static void common_params_fit_impl(
+             mparams_test.tensor_buft_overrides = tensor_buft_overrides;
+         }
+ 
+-        const dmds_t dmds_equal = common_get_device_memory_data(
++        const dmds_t dmds_equal = common_get_device_memory_data_impl(
+             path_model, &mparams_test, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+ 
+         bool equal_fits = true;
+         for (size_t id = 0; id < nd; ++id) {
+-            if (projected_device_used(dmds_equal, id) > targets[id]) {
++            if (dmds_equal[id].mb.total() > targets[id]) {
+                 equal_fits = false;
+                 break;
+             }
+@@ -684,7 +684,7 @@ static void common_params_fit_impl(
+ 
+         LOG_INF("%s: %s\n", __func__, reason);
+         for (size_t id = 0; id < nd; ++id) {
+-            const int64_t used = projected_device_used(dmds_equal, id);
++            const int64_t used = dmds_equal[id].mb.total();
+             LOG_TRC("%s:   - %s: %2" PRIu32 " layers, %6" PRId64 " MiB used, %6" PRId64 " MiB free\n",
+                 __func__, dev_names[id].c_str(), ngl_equal[id].n_layer, used/MiB,
+                 (dmds_equal[id].free - used)/MiB);
+diff --git a/common/fit.h b/common/fit.h
+index 208fc3069..6598a8433 100644
+--- a/common/fit.h
++++ b/common/fit.h
+@@ -53,4 +53,5 @@ common_device_memory_data_vec common_get_device_memory_data(
+                            uint32_t & hp_ngl,
+                            uint32_t & hp_n_ctx_train,
+                            uint32_t & hp_n_expert,
++                           uint32_t & hp_n_swa,
+                      ggml_log_level   log_level);
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 94e521707..5b9109e11 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1142,10 +1142,11 @@ private:
+                 uint32_t hp_ngl = 0;
+                 uint32_t hp_nct = 0;
+                 uint32_t hp_nex = 0;
++                uint32_t hp_nswa = 0;
+                 try {
+                     auto dmd = common_get_device_memory_data(
+                         params_dft.model.path.c_str(), &mparams_dft, &cparams_dft,
+-                        devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
++                        devs, hp_ngl, hp_nct, hp_nex, hp_nswa, GGML_LOG_LEVEL_ERROR);
+ 
+                     GGML_ASSERT(!params_base.fit_params_target.empty());
+                     size_t total = 0;
+@@ -2741,8 +2742,8 @@ private:
+                     // Full-sequence copy (partial p1 triggers assert on KV backends).
+                     common_context_seq_cp(ctx_tgt, id_src, id_dst, 0, -1);
+                     if (ctx_dft) {
+-                        common_context_seq_rm(ctx_dft.get(), id_dst, 0, -1);
+-                        common_context_seq_cp(ctx_dft.get(), id_src, id_dst, 0, -1);
++                        common_context_seq_rm(ctx_dft, id_dst, 0, -1);
++                        common_context_seq_cp(ctx_dft, id_src, id_dst, 0, -1);
+                     }
+ 
+                     slot_dst->prompt_clear(false);

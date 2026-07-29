@@ -8,7 +8,7 @@ Subject: [PATCH] ggml-cuda: add Blackwell fattn MMA config (upstream #24565)
  1 file changed, 31 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-index 7f4cfd55..617968f6 100644
+index 7f4cfd551..617968f6b 100644
 --- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 +++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 @@ -87,6 +87,31 @@ static constexpr __host__ __device__ fattn_mma_config ggml_cuda_fattn_mma_get_co

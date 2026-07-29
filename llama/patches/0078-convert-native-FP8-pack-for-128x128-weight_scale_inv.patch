@@ -12,7 +12,7 @@ so --fp8-native skips full F16 dequant for DeepSeek-style FP8.
  3 files changed, 100 insertions(+), 20 deletions(-)
 
 diff --git a/conversion/base.py b/conversion/base.py
-index ab4513d7..87d891f9 100644
+index 49a2058bd..105d3b40c 100644
 --- a/conversion/base.py
 +++ b/conversion/base.py
 @@ -160,6 +160,7 @@ class ModelBase:
@@ -55,7 +55,7 @@ index ab4513d7..87d891f9 100644
                                  )
                              self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
                              tensors_to_remove.append(name)
-@@ -581,6 +593,7 @@ class ModelBase:
+@@ -605,6 +617,7 @@ class ModelBase:
                              # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
                              self._fp8_native_tensors.add(weight_name)
                              self._fp8_native_scales[weight_name] = s
@@ -63,7 +63,7 @@ index ab4513d7..87d891f9 100644
                              tensors_to_remove.append(name)
                          else:
                              is_fp8_weight = False
-@@ -688,6 +701,18 @@ class ModelBase:
+@@ -712,6 +725,18 @@ class ModelBase:
          scale_t = LazyTorchTensor.to_eager(self._fp8_native_scales[name]())
          scale = scale_t.detach().float().cpu().numpy()
          qs = data_torch.view(torch.uint8).cpu().numpy()
@@ -82,7 +82,7 @@ index ab4513d7..87d891f9 100644
          # Per-row scale: (out_features,) or (out_features, 1); else scalar / broadcast.
          if scale.ndim >= 1 and scale.size == qs.shape[0]:
              scale_arg = scale.reshape(qs.shape[0])
-@@ -696,7 +721,7 @@ class ModelBase:
+@@ -720,7 +745,7 @@ class ModelBase:
          else:
              raise ValueError(
                  f"{name}: unsupported FP8 scale shape {scale.shape} for --fp8-native "
@@ -92,7 +92,7 @@ index ab4513d7..87d891f9 100644
          return gguf.quants.FP8_E4M3.pack_e4m3_with_scale(qs, scale_arg)
  
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
-index f23b1db7..680d9bc3 100755
+index f23b1db78..680d9bc3b 100755
 --- a/convert_hf_to_gguf.py
 +++ b/convert_hf_to_gguf.py
 @@ -155,7 +155,8 @@ def parse_args() -> argparse.Namespace:
@@ -106,7 +106,7 @@ index f23b1db7..680d9bc3 100755
  
      parser.add_argument(
 diff --git a/gguf-py/gguf/quants.py b/gguf-py/gguf/quants.py
-index a5d85ac9..c26b516c 100644
+index a5d85ac95..c26b516cf 100644
 --- a/gguf-py/gguf/quants.py
 +++ b/gguf-py/gguf/quants.py
 @@ -837,12 +837,64 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):

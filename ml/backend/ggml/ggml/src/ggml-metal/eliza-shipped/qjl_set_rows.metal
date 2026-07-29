@@ -4202,7 +4202,33 @@ kernel void kernel_set_rows_qjl1_256_t(
     }
 }
 
-template [[host_name("kernel_set_rows_qjl1_256_i64")]] kernel void kernel_set_rows_qjl1_256_t<long>(
+template [[host_name("kernel_set_rows_f32_i64_qjl1_256")]] kernel void kernel_set_rows_qjl1_256_t<long>(
         constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
-template [[host_name("kernel_set_rows_qjl1_256_i32")]] kernel void kernel_set_rows_qjl1_256_t<int>(
+template [[host_name("kernel_set_rows_f32_i32_qjl1_256")]] kernel void kernel_set_rows_qjl1_256_t<int>(
         constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
+
+// Project Q head_dim→proj_dim for fused QJL attention (matches CUDA qjl_project_q).
+// Layout in/out: [n_q_pos][n_heads][dim] contiguous. Dispatch (ceil(proj/32), n_heads, n_q_pos)
+// with 32 threads along j.
+kernel void kernel_qjl_project_q_f32(
+        device const float * q                          [[buffer(0)]],
+        device       float * out                        [[buffer(1)]],
+        constant int & head_dim                         [[buffer(2)]],
+        constant int & proj_dim                         [[buffer(3)]],
+        constant int & n_heads                          [[buffer(4)]],
+        constant int & n_q_pos                          [[buffer(5)]],
+        uint3          tgpig                            [[threadgroup_position_in_grid]],
+        uint           tid                              [[thread_index_in_threadgroup]]) {
+    const int j  = int(tgpig.x) * 32 + int(tid);
+    const int hq = int(tgpig.y);
+    const int qp = int(tgpig.z);
+    if (j >= proj_dim || hq >= n_heads || qp >= n_q_pos) {
+        return;
+    }
+    device const float * qh = q + (ulong(qp) * ulong(n_heads) + ulong(hq)) * ulong(head_dim);
+    float acc = 0.0f;
+    for (int i = 0; i < head_dim; ++i) {
+        acc = fma(qh[i], qjl_projection_value(uint(i), uint(j)), acc);
+    }
+    out[(ulong(qp) * ulong(n_heads) + ulong(hq)) * ulong(proj_dim) + ulong(j)] = acc;
+}

@@ -79,6 +79,7 @@ struct task_params {
 
     struct common_params_sampling sampling;
     struct common_params_speculative speculative;
+    common_reasoning_loop_guard_params reasoning_loop_guard;
 
     // response formatting
     bool               verbose  = false;
@@ -360,6 +361,7 @@ struct server_task_result_cmpl_final : server_task_result {
     int32_t n_tokens_cached;
     bool has_new_line;
     std::string stopping_word;
+    std::string stop_detail; // optional finer stop reason (e.g. reasoning_loop_guard)
     stop_type stop = STOP_TYPE_NONE;
 
     bool post_sampling_probs;
@@ -367,6 +369,11 @@ struct server_task_result_cmpl_final : server_task_result {
     std::vector<std::string>  response_fields;
 
     task_params generation_params;
+
+    // Reasoning loop guard telemetry (native /completion JSON)
+    bool loop_guard_triggered = false;
+    std::string loop_guard_action;
+    std::string loop_guard_reason;
 
     // response formatting
     bool               verbose  = false;
@@ -610,32 +617,14 @@ struct server_task_result_apply_lora : server_task_result {
     virtual json to_json() override;
 };
 
-struct server_prompt_data {
-    std::vector<uint8_t> main;
-    std::vector<uint8_t> drft;
-
-    size_t size() const {
-        return main.size() + drft.size();
-    }
-};
-
 struct server_prompt {
     server_tokens tokens;
 
-    server_prompt_data data;
-
     std::list<common_prompt_checkpoint> checkpoints;
 
-    size_t size() const {
-        size_t res = 0;
-
-        res += data.size();
-
-        for (const auto & ckpt : checkpoints) {
-            res += ckpt.size();
-        }
-
-        return res;
+    void clear() {
+        tokens.clear();
+        checkpoints.clear();
     }
 
     int n_tokens() const {
@@ -645,9 +634,32 @@ struct server_prompt {
     server_prompt clone() const {
         return server_prompt {
             tokens.clone(),
-            data,
             checkpoints,
         };
+    }
+};
+
+struct server_prompt_data {
+    std::vector<uint8_t> main;
+    std::vector<uint8_t> drft;
+
+    size_t size() const {
+        return main.size() + drft.size();
+    }
+};
+
+struct server_prompt_cache_state {
+    server_prompt prompt;
+    server_prompt_data data;
+
+    size_t size() const {
+        size_t res = data.size();
+
+        for (const auto & ckpt : prompt.checkpoints) {
+            res += ckpt.size();
+        }
+
+        return res;
     }
 };
 
@@ -657,7 +669,7 @@ struct server_prompt_cache {
         this->limit_tokens = limit_tokens;
     }
 
-    std::list<server_prompt> states;
+    std::list<server_prompt_cache_state> states;
 
     // in bytes, 0 = no limit
     size_t limit_size = 0;
@@ -669,7 +681,7 @@ struct server_prompt_cache {
 
     size_t n_tokens() const;
 
-    server_prompt * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
+    server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
 
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_main, llama_context * ctx_drft, int32_t id_slot);
 

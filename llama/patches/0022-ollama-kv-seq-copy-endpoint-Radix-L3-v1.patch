@@ -1,0 +1,220 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 10 Jul 2026 00:58:17 -0700
+Subject: [PATCH] ollama: kv seq-copy endpoint (Radix L3 v1)
+
+---
+ tools/server/server-context.cpp | 90 +++++++++++++++++++++++++++++++++
+ tools/server/server-context.h   |  2 +
+ tools/server/server-task.cpp    | 13 +++++
+ tools/server/server-task.h      | 11 ++++
+ tools/server/server.cpp         |  1 +
+ 5 files changed, 117 insertions(+)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 7b668f2f9..b82aa4e25 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2644,6 +2644,53 @@ private:
+                     res->n_erased = n_erased;
+                     queue_results.send(std::move(res));
+                 } break;
++            case SERVER_TASK_TYPE_SLOT_SEQ_COPY:
++                {
++                    if (!check_no_mtmd(task.id)) {
++                        break;
++                    }
++                    const int id_dst = task.slot_action.id_slot;
++                    const int id_src = task.slot_action.id_slot_src;
++                    const llama_pos pos_end = task.slot_action.pos_end;
++                    server_slot * slot_dst = get_slot_by_id(id_dst);
++                    server_slot * slot_src = get_slot_by_id(id_src);
++                    if (slot_dst == nullptr || slot_src == nullptr) {
++                        send_error(task, "Invalid slot ID", ERROR_TYPE_INVALID_REQUEST);
++                        break;
++                    }
++                    if (slot_dst->is_processing() || slot_src->is_processing()) {
++                        SRV_DBG("requested slot is unavailable, defer seq-copy task, id_task = %d\n", task.id);
++                        queue_tasks.defer(std::move(task));
++                        break;
++                    }
++                    if (id_src == id_dst || pos_end <= 0) {
++                        send_error(task, "Invalid seq-copy range", ERROR_TYPE_INVALID_REQUEST);
++                        break;
++                    }
++
++                    common_context_seq_rm(ctx_tgt, id_dst, 0, -1);
++                    // Full-sequence copy (partial p1 triggers assert on KV backends).
++                    common_context_seq_cp(ctx_tgt, id_src, id_dst, 0, -1);
++                    if (ctx_dft) {
++                        common_context_seq_rm(ctx_dft.get(), id_dst, 0, -1);
++                        common_context_seq_cp(ctx_dft.get(), id_src, id_dst, 0, -1);
++                    }
++
++                    slot_dst->prompt_clear(false);
++                    const llama_tokens & src_tokens = slot_src->prompt.tokens.get_tokens();
++                    const size_t n_copy = std::min<size_t>(src_tokens.size(), (size_t) pos_end);
++                    for (size_t i = 0; i < n_copy; ++i) {
++                        slot_dst->prompt.tokens.push_back(src_tokens[i]);
++                    }
++
++                    auto res = std::make_unique<server_task_result_slot_seq_copy>();
++                    res->id            = task.id;
++                    res->id_slot       = id_dst;
++                    res->id_slot_src   = id_src;
++                    res->pos_end       = pos_end;
++                    res->n_tokens_copied = n_copy;
++                    queue_results.send(std::move(res));
++                } break;
+             case SERVER_TASK_TYPE_GET_LORA:
+                 {
+                     // TODO @ngxson : make lora_adapters a dedicated member of server_context
+@@ -4538,6 +4585,10 @@ void server_routes::init_routes() {
+         return res;
+     };
+ 
++    this->post_kv_seq_copy = [this](const server_http_req & req) {
++        return handle_kv_seq_copy(req);
++    };
++
+     this->get_props = [this](const server_http_req &) {
+         auto res = create_response(true);
+ 
+@@ -5214,6 +5265,45 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
+     return res;
+ }
+ 
++std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const server_http_req & req) {
++    auto res = create_response();
++    json body;
++    try {
++        body = json::parse(req.body);
++    } catch (const std::exception &) {
++        res->error(format_error_response("Invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
++        return res;
++    }
++    if (!body.contains("src_slot") || !body.contains("dst_slot") || !body.contains("pos_end")) {
++        res->error(format_error_response("src_slot, dst_slot, pos_end required", ERROR_TYPE_INVALID_REQUEST));
++        return res;
++    }
++    const int id_src = body.at("src_slot");
++    const int id_dst = body.at("dst_slot");
++    const llama_pos pos_end = body.at("pos_end");
++    auto & rd = res->rd;
++    {
++        server_task task(SERVER_TASK_TYPE_SLOT_SEQ_COPY);
++        task.id = rd.get_new_id();
++        task.slot_action.id_slot = id_dst;
++        task.slot_action.id_slot_src = id_src;
++        task.slot_action.pos_end = pos_end;
++        rd.post_task(std::move(task));
++    }
++    auto result = rd.next(req.should_stop);
++    if (!result) {
++        GGML_ASSERT(req.should_stop());
++        return res;
++    }
++    if (result->is_error()) {
++        res->error(result->to_json());
++        return res;
++    }
++    GGML_ASSERT(dynamic_cast<server_task_result_slot_seq_copy*>(result.get()) != nullptr);
++    res->ok(result->to_json());
++    return res;
++}
++
+ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(const server_http_req & req, task_response_type res_type) {
+     auto res = create_response();
+     if (!params.embedding) {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index f9ab1132b..76763e27b 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -131,6 +131,7 @@ struct server_routes {
+     server_http_context::handler_t get_metrics;
+     server_http_context::handler_t get_slots;
+     server_http_context::handler_t post_slots;
++    server_http_context::handler_t post_kv_seq_copy;
+     server_http_context::handler_t get_props;
+     server_http_context::handler_t post_props;
+     server_http_context::handler_t post_infill;
+@@ -167,6 +168,7 @@ private:
+     std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req & req, int id_slot);
+     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
+     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
++    std::unique_ptr<server_res_generator> handle_kv_seq_copy(const server_http_req & req);
+     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
+     std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);
+ 
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 1fd7cce27..ea5b62992 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1601,6 +1601,19 @@ json server_task_result_slot_erase::to_json() {
+     };
+ }
+ 
++//
++// server_task_result_slot_seq_copy
++//
++json server_task_result_slot_seq_copy::to_json() {
++    return json {
++        { "ok",               true },
++        { "id_slot",          id_slot },
++        { "src_slot",         id_slot_src },
++        { "pos_end",          pos_end },
++        { "n_tokens_copied",  n_tokens_copied },
++    };
++}
++
+ //
+ // server_task_result_get_lora
+ //
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index c3eea2ecb..f56a01984 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -25,6 +25,7 @@ enum server_task_type {
+     SERVER_TASK_TYPE_SLOT_SAVE,
+     SERVER_TASK_TYPE_SLOT_RESTORE,
+     SERVER_TASK_TYPE_SLOT_ERASE,
++    SERVER_TASK_TYPE_SLOT_SEQ_COPY,
+     SERVER_TASK_TYPE_GET_LORA,
+     SERVER_TASK_TYPE_SET_LORA,
+ };
+@@ -164,6 +165,8 @@ struct server_task {
+     // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE
+     struct slot_action {
+         int id_slot;
++        int id_slot_src = -1;
++        llama_pos pos_end = 0;
+         std::string filename;
+         std::string filepath;
+     };
+@@ -569,6 +572,14 @@ struct server_task_result_control : server_task_result {
+     }
+ };
+ 
++struct server_task_result_slot_seq_copy : server_task_result {
++    int id_slot_src;
++    llama_pos pos_end;
++    size_t n_tokens_copied;
++
++    virtual json to_json() override;
++};
++
+ struct server_task_result_get_lora : server_task_result {
+     struct lora {
+         common_adapter_lora_info info;
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index a3b2a8b0f..b68153c1f 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -271,6 +271,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     // Save & load slots
+     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
++    ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
+ 
+     // resumable streaming: a child binds the local session factories, the router binds
+     // proxies that resolve the owning child, see server-stream.h

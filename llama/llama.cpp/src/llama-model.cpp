@@ -16,6 +16,7 @@
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-recurrent.h"
 
+#include "llama.h"
 #include "models/models.h"
 
 #include "ggml.h"
@@ -84,6 +85,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_stablelm(params);
         case LLM_ARCH_MELLUM:
             return new llama_model_mellum(params);
+        case LLM_ARCH_NANBEIGE:
+            return new llama_model_nanbeige(params);
         case LLM_ARCH_QWEN:
             return new llama_model_qwen(params);
         case LLM_ARCH_QWEN2:
@@ -250,6 +253,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_arcee(params);
         case LLM_ARCH_AFMOE:
             return new llama_model_afmoe(params);
+        case LLM_ARCH_LAGUNA:
+            return new llama_model_laguna(params);
         case LLM_ARCH_ERNIE4_5:
             return new llama_model_ernie4_5(params);
         case LLM_ARCH_ERNIE4_5_MOE:
@@ -282,6 +287,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_apertus(params);
         case LLM_ARCH_MINIMAX_M2:
             return new llama_model_minimax_m2(params);
+        case LLM_ARCH_MINIMAX_M3:
+            return new llama_model_minimax_m3(params);
         case LLM_ARCH_COGVLM:
             return new llama_model_cogvlm(params);
         case LLM_ARCH_PANGU_EMBED:
@@ -817,6 +824,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_122B_A10B:     return "122B.A10B";
         case LLM_TYPE_196B_A11B:     return "196B.A11B";
         case LLM_TYPE_230B_A10B:     return "230B.A10B";
+        case LLM_TYPE_428B_A23B:     return "428B.A23B";
         case LLM_TYPE_235B_A22B:     return "235B.A22B";
         case LLM_TYPE_300B_A47B:     return "300B.A47B";
         case LLM_TYPE_310B_A15B:     return "310B.A15B";
@@ -1082,6 +1090,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_CAUSAL,        hparams.causal_attn,     false);
     ml.get_key(LLM_KV_POOLING_TYPE,            hparams.pooling_type,    false);
     ml.get_key(LLM_KV_BLOCK_COUNT,             hparams.n_layer_all);
+    GGML_ASSERT(hparams.n_layer_all > 0 && hparams.n_layer_all <= LLAMA_MAX_LAYERS);
     ml.get_key(LLM_KV_EXPERT_COUNT,            hparams.n_expert,        false);
     ml.get_key(LLM_KV_EXPERT_USED_COUNT,       hparams.n_expert_used,   false);
     ml.get_key(LLM_KV_EXPERT_GROUP_COUNT,      hparams.n_expert_groups, false);
@@ -1127,6 +1136,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     std::fill(hparams.rope_sections.begin(), hparams.rope_sections.end(), 0);
     std::fill(hparams.is_swa_impl.begin(),   hparams.is_swa_impl.end(), 0);
     std::fill(hparams.is_recr_impl.begin(),  hparams.is_recr_impl.end(),  llm_arch_is_recurrent(ml.get_arch()) ? 1 : 0);
+    std::fill(hparams.is_indexer_full_impl.begin(), hparams.is_indexer_full_impl.end(), 0);
 
     std::fill(hparams.xielu_alpha_n.begin(), hparams.xielu_alpha_n.end(), 0.0f);
     std::fill(hparams.xielu_alpha_p.begin(), hparams.xielu_alpha_p.end(), 0.0f);
@@ -1174,6 +1184,31 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
 
     ml.get_key(LLM_KV_ROPE_SCALING_ATTN_FACTOR, hparams.rope_attn_factor, false);
     ml.get_key(LLM_KV_ROPE_SCALING_ALPHA,       hparams.rope_scaling_alpha, false);
+
+    // Dual Chunk Attention (optional; Qwen 1M / long-ctx)
+    ml.get_key(LLM_KV_ATTENTION_DCA_CHUNK_SIZE,   hparams.dca_chunk_size, false);
+    ml.get_key(LLM_KV_ATTENTION_DCA_LOCAL_SIZE,   hparams.dca_local_size, false);
+    ml.get_key(LLM_KV_ATTENTION_DCA_ORIG_CTX_LEN, hparams.dca_orig_ctx,   false);
+    if (hparams.dca_enabled()) {
+        // DualChunk RoPE replaces YaRN frequency scaling (match vLLM/SGLang).
+        hparams.rope_scaling_type_train = LLAMA_ROPE_SCALING_TYPE_NONE;
+        hparams.rope_freq_scale_train   = 1.0f;
+        hparams.yarn_ext_factor         = 0.0f;
+        LLAMA_LOG_INFO(
+            "%s: Dual Chunk Attention enabled (chunk_size=%u local_size=%u chunk_len=%u orig_ctx=%u)\n",
+            __func__,
+            hparams.dca_chunk_size,
+            hparams.dca_local_size,
+            hparams.dca_chunk_len(),
+            hparams.dca_orig_ctx);
+    } else if (hparams.dca_chunk_size != 0 || hparams.dca_local_size != 0) {
+        LLAMA_LOG_WARN(
+            "%s: ignoring invalid DCA metadata (chunk_size=%u local_size=%u)\n",
+            __func__, hparams.dca_chunk_size, hparams.dca_local_size);
+        hparams.dca_chunk_size = 0;
+        hparams.dca_local_size = 0;
+        hparams.dca_orig_ctx   = 0;
+    }
 
     // non-transformer models do not have attention heads
     if (hparams.n_head() > 0) {
@@ -1243,7 +1278,7 @@ void llama_model_base::load_vocab(llama_model_loader & ml) {
 
 bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const auto & split_mode   = params.split_mode;
-    const auto & use_mlock    = params.use_mlock;
+    const bool use_mlock      = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
     const auto & tensor_split = params.tensor_split;
 
     const int n_layer_all = hparams.n_layer_all;
@@ -1253,8 +1288,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     this->ml = &ml; // to be used by create_tensor() and load_arch_tensors()
 
-    LLAMA_LOG_INFO("%s: loading model tensors, this can take a while... (mmap = %s, direct_io = %s)\n",
-        __func__, ml.use_mmap ? "true" : "false", ml.use_direct_io ? "true" : "false");
+    LLAMA_LOG_INFO("%s: loading model tensors, this can take a while... (load_mode = %s)\n",
+        __func__, llama_load_mode_name(params.load_mode));
 
     // build a list of buffer types for the CPU and GPU devices
     pimpl->cpu_buft_list = make_cpu_buft_list(devices, params.use_extra_bufts, params.no_host);
@@ -2063,6 +2098,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 res = nullptr;
             } break;
         case LLM_ARCH_DEEPSEEK32:
+        case LLM_ARCH_GLM_DSA:
             {
                 res = new llama_kv_cache_dsa(
                         *this,
@@ -2318,15 +2354,13 @@ llama_model_params llama_model_default_params() {
         /*.tensor_buft_overrides       =*/ nullptr,
         /*.n_gpu_layers                =*/ -1,
         /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
+        /*.load_mode                   =*/ LLAMA_LOAD_MODE_MMAP,
         /*.main_gpu                    =*/ 0,
         /*.tensor_split                =*/ nullptr,
         /*.progress_callback           =*/ nullptr,
         /*.progress_callback_user_data =*/ nullptr,
         /*.kv_overrides                =*/ nullptr,
         /*.vocab_only                  =*/ false,
-        /*.use_mmap                    =*/ true,
-        /*.use_direct_io               =*/ false,
-        /*.use_mlock                   =*/ false,
         /*.check_tensors               =*/ false,
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
@@ -2486,6 +2520,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_LLAMA_EMBED:
         case LLM_ARCH_MAINCODER:
         case LLM_ARCH_GLM_DSA:
+        case LLM_ARCH_NANBEIGE:
             return LLAMA_ROPE_TYPE_NORM;
 
         // the pairs of head values are offset by n_rot/2
@@ -2548,9 +2583,11 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GROVEMOE:
         case LLM_ARCH_APERTUS:
         case LLM_ARCH_MINIMAX_M2:
+        case LLM_ARCH_MINIMAX_M3:
         case LLM_ARCH_COGVLM:
         case LLM_ARCH_PANGU_EMBED:
         case LLM_ARCH_AFMOE:
+        case LLM_ARCH_LAGUNA:
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
