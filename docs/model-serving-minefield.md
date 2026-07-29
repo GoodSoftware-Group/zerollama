@@ -191,7 +191,7 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go)): **29**, **77**, **78**, **04/20/25**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go)): **29**, **77**, **78**, **23**, **04/20/25**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -224,6 +224,8 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 |------|-------|--------|-------|
 | 01 | Wrong reasoning field name | `covered via doctor` | Lab CLEAN on `qwen3:0.6b` (`reasoning`); `doctorCheckReasoningField` |
 | **02** | Orphaned `</think>` at content start | **fixed** + `covered via doctor` | [`thinking.Parser`](../thinking/parser.go) strips leading closer when open was template-owned; `doctorCheckOrphanedThinkClose` |
+| **23** | Streamed answer must land in `content` | `covered via doctor` | `doctorCheckStreamContent` on `/v1` with think off — reasoning-only deltas warn |
+| **38** | Template owns opening `<think>` | `documented` | Offline/GRPO pipelines must prefill + recombine the open tag (mirror of trap **02**); chat path already does |
 | 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
 | 04 | History reasoning stripping | **fixed** + `covered via doctor` | `preservePriorThinkingForRender` re-embeds prior `.Thinking` into Content when `think` is on (skips tool-call turns); qwen3.5/vl renderers preserve non-tool history thinking |
 | 12 | Empty content at token ceiling | `covered via doctor` (deep) + script | Default doctor skips; `ZEROLLAMA_DOCTOR_DEEP=1` or [`scripts/minefield_ceiling_probe.sh`](../scripts/minefield_ceiling_probe.sh). Lab PROBLEM on `qwen3:0.6b` @ 512 |
@@ -283,4 +285,6 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 | Trap **48** latency reconcile | Native doctor + `minefield_pull_checks.sh latency` (upstream `latency_reconciliation.py`). Prefer `127.0.0.1` bases. |
 | Core **16** / **17** | Documented scoring/sampling rules in §4 (no live mutation — harness methodology). |
 | Trap **02** orphaned `</think>` | **Fixed** in thinking parser + doctor probe (think on/off/absent arms). |
+| Trap **23** stream content | Native doctor `/v1` SSE probe; lab historically CLEAN on qwen lanes. |
+| Trap **38** template-owned open | Documented (offline rollout prefill); related to **02**. |
 | Registry size | Upstream doctor reports **107** numbered traps (was ~103). |

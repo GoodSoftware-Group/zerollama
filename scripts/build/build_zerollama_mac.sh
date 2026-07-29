@@ -412,6 +412,42 @@ if [[ "$(uname -s)" == Darwin && -f "${ROOT}/scripts/vendor/restore_ane_hook_int
   "${ROOT}/scripts/vendor/restore_ane_hook_intree.sh"
 fi
 
+# CGO llama.cpp/common needs nlohmann/miniaudio/stb under llama/llama.cpp/vendor.
+# Repo .gitignore matches any vendor/, so pin syncs leave these missing unless staged.
+_ensure_llama_cgo_vendor_headers() {
+  local dest="${ROOT}/llama/llama.cpp/vendor"
+  if [[ -f "${dest}/nlohmann/json.hpp" && -f "${dest}/miniaudio/miniaudio.h" && -f "${dest}/stb/stb_image.h" ]]; then
+    return 0
+  fi
+  local src="" d
+  local pin
+  pin="$(tr -d '[:space:]' <"${ROOT}/LLAMA_CPP_COMMIT" 2>/dev/null || true)"
+  for d in \
+    "${ROOT}/vendor/llama-cpp-${pin}/vendor" \
+    "${ROOT}/vendor/llama-cpp-${pin:0:8}/vendor" \
+    "${ROOT}"/vendor/llama-cpp-*/vendor \
+    "${ROOT}/../llama.cpp/vendor"
+  do
+    if [[ -f "${d}/nlohmann/json.hpp" ]]; then
+      src="${d}"
+      break
+    fi
+  done
+  if [[ -z "${src}" ]]; then
+    echo ">>> warn: missing nlohmann under ${dest}; CGO build may fail (sync vendor pin)" >&2
+    return 0
+  fi
+  echo ">>> restoring CGO llama vendor headers from ${src}" >&2
+  mkdir -p "${dest}"
+  for name in nlohmann miniaudio stb; do
+    if [[ -d "${src}/${name}" ]]; then
+      rm -rf "${dest:?}/${name}"
+      cp -R "${src}/${name}" "${dest}/${name}"
+    fi
+  done
+}
+_ensure_llama_cgo_vendor_headers
+
 GO_TAGS=()
 if _should_build_uma; then
   echo ">>> building uma broker client (BUILD_UMA=${BUILD_UMA})" >&2
