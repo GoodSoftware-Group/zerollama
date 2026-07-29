@@ -240,3 +240,18 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 ## Updating this doc
 
 When the broker/admission sources of free VRAM change, or a lab doctor re-run flips PROBLEMS ↔ CLEAN, update sections 1–2 and the matching regression tests under `discover/` and `openai/`.
+
+---
+
+## 5. Upstream watchlist (pulled 2026-07-28 evening)
+
+[`minefield_doctor.py`](https://github.com/Blackwellboy/model-serving-minefield/blob/main/doctor/minefield_doctor.py) is **unchanged** vs our morning cache — no doctor pull needed. Useful registry deltas:
+
+| Item | Relevance to zerollama | Action |
+|------|------------------------|--------|
+| **[PR #8](https://github.com/Blackwellboy/model-serving-minefield/pull/8)** (draft) SGLang NVFP4 + doctor `/v1/models` ID | Closest to our OpenAI surface; may improve stack detection | Watch merge; re-diff doctor |
+| Trap **79** oversized `num_ctx` → 200 / empty / `length` | We **clamp** via `capNumCtxToModelMax` / `ggml_num_ctx` and can surface clamp on the response ([`server/routes.go`](../server/routes.go)) — not the silent Ollama 0.32.5 failure mode | Treat as **mitigated**; keep clamp visible to clients |
+| **[U02](https://github.com/Blackwellboy/model-serving-minefield/blob/main/upstream/U02-ollama-go-runner-drops-sampling-penalties.md)** penalties accepted and dropped on Go runner | Upstream-reported, disputed headline; llama-server + llamarunner paths pass penalties through here | **Watchlist** — confirm ollamaengine / MLX paths if loops appear with `presence_penalty` set |
+| Trap **104** stale launch script reverts config | Mirror of **53** (stale process vs stale startup artifact) | Operator rule already in §2.1; apply to `scripts/*serve*` / launchd / docs |
+| Traps **99–104** gfx1151 / NVFP4 MoE profiling | Mostly AMD desktop / Spark; **102** is a redirect (BF16 GEMM vs MoE time) | Skip unless shipping gfx1151 or NVFP4 MoE |
+| `checks/*.py` from PR #7 | Offline probes (cache hit, reasoning budget, tokenized length, …) | Optional lab later; not wired into `zerollama doctor` |
