@@ -3098,6 +3098,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
 	}
 	msgs = filterThinkTags(msgs, m)
+	msgs = preservePriorThinkingForRender(msgs, req.Think)
 
 	paddedLayoutPlan := modality.PaddedLayoutConsumePlanForChat(
 		resolveRendererName(m), m.Config.ModelFamilies, msgs, renderers.RenderImgTags,

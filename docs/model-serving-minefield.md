@@ -52,7 +52,7 @@ model=qwen3:0.6b  build=0.30.11  tool=minefield_doctor.py
 | **CLEAN** | **77**, **78**, **01**, **03** (toggle map separable), **02**, **23**, **07**, **19**, **26**, mm-* |
 | Coverage | `problems 2` · `clean 9` numbered · Core executed **01, 03, 12, 19, 77** |
 
-Native `zerollama doctor` on the same warm model (lab `:11435`, 2026-07-28): **77/78/01/12 ok**; **04** warns (prior `.Thinking` stripped from assembled prompt — stock Go template); **29** warns when gate unset; **55/61** may warn on context ceilings.
+Native `zerollama doctor` on the same warm model (lab `:11435`, 2026-07-28): **77/78/01/12 ok**; **04** was warn (prior `.Thinking` stripped) until preserve-prior-thinking landed — re-check should CLEAN when clients resend `thinking`; **29** warns when gate unset; **55/61** may warn on context ceilings.
 
 **Operator takeaway (12 / 29):** On thinking models, a 512 ceiling can score as capability collapse while the model is still reasoning. Treat server thinking-off as a **default**, not a hard gate, unless your gateway strips thinking kwargs.
 
@@ -147,7 +147,7 @@ Upstream doctor skips these without `/apply-template`. Zerollama exposes the ass
 
 `zerollama doctor` (warm thinking model) runs:
 
-1. **04** — three-turn history with prior `thinking` markers; warns if markers are absent from the render (stock Qwen3 Go templates drop `.Thinking` before the last user index)
+1. **04** — three-turn history with prior `thinking` markers; warns if markers are absent. Zerollama **re-embeds** resent prior `.Thinking` into Content when `think` is on (non-tool turns), so stock Go templates that only emit `.Thinking` after `lastUserIdx` still surface the marker.
 2. **25** — counts empty `<think></think>` shells in that render
 3. **20** — last-assistant arm: `thinking` must appear; bare `reasoning` on `/api/chat` must not (native write field is `thinking`; OpenAI maps `reasoning` → `thinking`)
 
@@ -161,7 +161,7 @@ curl -s http://127.0.0.1:11435/api/chat -d '{
     {"role":"assistant","content":"ok","thinking":"MARKER_UNIQUE"},
     {"role":"user","content":"Step 2"}
   ]
-}' | jq -r '.debug_info.rendered_template' | grep -n MARKER_UNIQUE || echo "stripped (trap 04)"
+}' | jq -r '._debug_info.rendered_template' | grep -n MARKER_UNIQUE || echo "stripped (trap 04)"
 ```
 
 ---
@@ -198,7 +198,7 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 |------|-------|--------|-------|
 | 01 | Wrong reasoning field name | `covered via doctor` | Lab CLEAN on `qwen3:0.6b` (`reasoning`); `doctorCheckReasoningField` |
 | 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
-| 04 | History reasoning stripping | `covered via doctor` + test | `_debug_render_only` probe; stock Qwen3 templates strip prior `.Thinking` ([`server/chat_sanitize.go`](../server/chat_sanitize.go) also strips in-content tags) |
+| 04 | History reasoning stripping | **fixed** + `covered via doctor` | `preservePriorThinkingForRender` re-embeds prior `.Thinking` into Content when `think` is on (skips tool-call turns); qwen3.5/vl renderers preserve non-tool history thinking |
 | 12 | Empty content at token ceiling | `documented` / model-dependent | CLEAN on `qwen2.5:0.5b` @ 512; **PROBLEM** on `qwen3:0.6b` @ 512 (honest truncation into reasoning) |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
 | 20 | Reasoning write field name | `covered via doctor` | Native write field `thinking`; OpenAI `reasoning` mapped in ([`openai/openai.go`](../openai/openai.go)) |

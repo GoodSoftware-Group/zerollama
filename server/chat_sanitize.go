@@ -66,3 +66,47 @@ func filterThinkTags(msgs []api.Message, m *Model) []api.Message {
 	}
 	return msgs
 }
+
+// preservePriorThinkingForRender re-embeds resent message.Thinking into prior
+// assistant Content after filterThinkTags. Stock Go templates (e.g. qwen3) only
+// emit .Thinking after the last user index, so multi-turn studies that correctly
+// resend thinking still assemble a history the model reads as "I never thought"
+// (minefield trap 04). Injection uses <think>…</think> so Content-emitting
+// templates surface the marker without requiring a Modelfile rewrite.
+func preservePriorThinkingForRender(msgs []api.Message, think *api.ThinkValue) []api.Message {
+	if think == nil || !think.Bool() || len(msgs) == 0 {
+		return msgs
+	}
+	lastUser := -1
+	for i, m := range msgs {
+		if m.Role == "user" {
+			lastUser = i
+		}
+	}
+	for i, m := range msgs {
+		if m.Role != "assistant" {
+			continue
+		}
+		th := strings.TrimSpace(m.Thinking)
+		if th == "" {
+			continue
+		}
+		// Tool-call turns keep historical thinking stripped (Qwen tool-loop templates).
+		if len(m.ToolCalls) > 0 {
+			continue
+		}
+		// Current assistant turn (after last user, or trailing assistant prefill):
+		// the template / renderer already owns .Thinking.
+		if lastUser >= 0 && i >= lastUser {
+			continue
+		}
+		if lastUser < 0 {
+			continue
+		}
+		if strings.Contains(m.Content, th) {
+			continue
+		}
+		msgs[i].Content = "<think>" + m.Thinking + "</think>\n" + m.Content
+	}
+	return msgs
+}

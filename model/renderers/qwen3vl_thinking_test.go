@@ -83,6 +83,10 @@ abc`, // NOTE: the second thinking tag is not captured
 			expected: `<|im_start|>user
 Tell me a story in two sentences.<|im_end|>
 <|im_start|>assistant
+<think>
+To make this story interesting, I will speak in poetry.
+</think>
+
 abc<|im_end|>
 <|im_start|>user
 What is the weather like in San Francisco?<|im_end|>

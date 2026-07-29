@@ -140,6 +140,9 @@ func doctorDebugRender(base string, payload map[string]any) (string, error) {
 	}
 	dbg, _ := out["debug_info"].(map[string]any)
 	if dbg == nil {
+		dbg, _ = out["_debug_info"].(map[string]any)
+	}
+	if dbg == nil {
 		return "", fmt.Errorf("missing debug_info in response")
 	}
 	s, _ := dbg["rendered_template"].(string)

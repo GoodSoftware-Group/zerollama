@@ -143,7 +143,7 @@ func (r *Qwen35Renderer) Render(messages []api.Message, tools []api.Tool, think 
 		if message.Role == "user" || (message.Role == "system" && i != 0) {
 			sb.WriteString(imStartTag + message.Role + "\n" + content + imEndTag + "\n")
 		} else if message.Role == "assistant" {
-			renderAssistantThinkBlock := r.alwaysRenderAssistantThinkBlock || (isThinking && i > lastQueryIndex)
+			renderAssistantThinkBlock := r.alwaysRenderAssistantThinkBlock || (isThinking && (i > lastQueryIndex || (strings.TrimSpace(message.Thinking) != "" && len(message.ToolCalls) == 0)))
 			contentReasoning, content := splitQwen35ReasoningContent(content, message.Thinking, renderAssistantThinkBlock)
 
 			if renderAssistantThinkBlock {

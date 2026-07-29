@@ -27,7 +27,7 @@ func TestDoctorCheckHistoryAssembly(t *testing.T) {
 			render = "<|im_start|>user\nStep 3"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"debug_info": map[string]any{"rendered_template": render},
+			"_debug_info": map[string]any{"rendered_template": render},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -47,7 +47,7 @@ func TestDoctorCheckHistoryAssembly(t *testing.T) {
 func TestDoctorCheckHistoryAssembly_Preserved(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"debug_info": map[string]any{
+			"_debug_info": map[string]any{
 				"rendered_template": "prior " + doctorHistoryMarker + " and again " + doctorHistoryMarker,
 			},
 		})
