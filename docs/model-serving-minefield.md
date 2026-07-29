@@ -191,7 +191,7 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go)): **29**, **77**, **78**, **04/20/25**, **66**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go)): **29**, **77**, **78**, **04/20/25**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -231,6 +231,9 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | 25 | Empty think shells in history | `covered via doctor` | Counted in history-render probe |
 | **29** | Server thinking-off is not a gate | **optional gate** + `covered via doctor` | `doctorCheckThinkingGate`; set `ZEROLLAMA_THINKING_GATE=deny\|strip` ([`envconfig/thinking_gate.go`](../envconfig/thinking_gate.go)) |
 | **66** | Template injects `/think`/`/no_think`; model may echo | **fixed** + `covered via doctor` | Trailing toggle strip in [`server/chat_sanitize.go`](../server/chat_sanitize.go); `doctorCheckThinkToggleInjection` |
+| **48** | Client latency ≠ server work (DNS/IPv6/mDNS) | `covered via doctor` + script | `doctorCheckLatencyReconciliation` vs `total_duration`; [`scripts/minefield_pull_checks.sh`](../scripts/minefield_pull_checks.sh) `latency` |
+| **16** | `finish_reason`/`done_reason` is not pass/fail | `documented` | Bucket on extractable content first; use `done_reason` only as a diagnostic (length ≠ fail, stop ≠ success) |
+| **17** | Per-arm recommended sampling confound | `documented` | Pin the same sampler kwargs across A/B arms; card defaults are trap **21** adjacent |
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
 | **77** | Only one request field validated | **fixed** + `covered via doctor` | Live probe rejects `__minefield_unvalidated_field_probe__` on `/api/chat` + `/v1` |
@@ -276,3 +279,5 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 | Mining candidates (persona suppressor, presence_penalty greeting latency, Codex findings on PR #9/#10) | **Watch / document only** — not promoted traps; Mac Metal primary does not run the GB10/NVFP4/vLLM confirmation lanes. Greeting-latency check: reconcile client vs server timing (trap **48** class) before blaming samplers. |
 | Trap **66** lab re-check | **CLEAN** on `qwen3:0.6b` lab `:11435` after strip + doctor (`template injects…; assistant output cleaned`). |
 | Pin `b10159` Mac CGO | Restored post-sync: KV COW `k_idx` assign + `(*v_cells)` MSA path, `mtmd_bitmap_set_grid_hint`, `load_mode` vs `use_mmap`; local `llama/llama.cpp/vendor/{nlohmann,miniaudio,stb}` (gitignored under `vendor/`). |
+| Trap **48** latency reconcile | Native doctor + `minefield_pull_checks.sh latency` (upstream `latency_reconciliation.py`). Prefer `127.0.0.1` bases. |
+| Core **16** / **17** | Documented scoring/sampling rules in §4 (no live mutation — harness methodology). |

@@ -45,7 +45,7 @@ func doctorCheckServingTraps() []doctorCheck {
 				Name:    "serving traps",
 				Status:  "warn",
 				Detail:  "no loaded model — live traps need a warm runner (minefield doctor coverage)",
-				FixHint: "zerollama run <model> then re-run doctor; checks cover traps 77, 78, 66, 55/61, 01/03, 12/64/65, 19",
+				FixHint: "zerollama run <model> then re-run doctor; checks cover traps 77, 78, 66, 48, 55/61, 01/03, 12/64/65, 19",
 			},
 		}
 	}
@@ -57,6 +57,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	out = append(out, doctorCheckToolChoiceNone(base, pick))
 	out = append(out, doctorCheckHistoryAssembly(base, pick))
 	out = append(out, doctorCheckThinkToggleInjection(base, pick))
+	out = append(out, doctorCheckLatencyReconciliation(base, pick))
 	out = append(out, doctorCheckContextCeilings(pick))
 	out = append(out, doctorCheckOversizedNumCtx(base, pick))
 	out = append(out, doctorCheckReasoningField(base, pick))

@@ -8,12 +8,12 @@
 #   ./scripts/minefield_pull_checks.sh qwen2.5:0.5b budget
 #
 # Env: BASE_URL (default http://127.0.0.1:11435/v1), WORK_DIR, CHECKS
-# CHECKS subset: budget tokenize cache (default: all three)
+# CHECKS subset: budget tokenize cache latency (default: all four)
 set -euo pipefail
 
 MODEL="${1:-}"
 SHIFT="${2:-}"
-[[ -n "${MODEL}" ]] || { echo "usage: $0 <model-tag> [budget|tokenize|cache|all]" >&2; exit 2; }
+[[ -n "${MODEL}" ]] || { echo "usage: $0 <model-tag> [budget|tokenize|cache|latency|all]" >&2; exit 2; }
 WHICH="${SHIFT:-all}"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:11435/v1}"
@@ -51,12 +51,13 @@ run_ok() {
 
 echo "pull checks into ${WORK_DIR} base=${BASE_URL} model=${MODEL}"
 
-want_budget=0 want_tok=0 want_cache=0
+want_budget=0 want_tok=0 want_cache=0 want_lat=0
 case "${WHICH}" in
-  all) want_budget=1; want_tok=1; want_cache=1 ;;
+  all) want_budget=1; want_tok=1; want_cache=1; want_lat=1 ;;
   budget) want_budget=1 ;;
   tokenize) want_tok=1 ;;
   cache) want_cache=1 ;;
+  latency) want_lat=1 ;;
   *) echo "unknown check set: ${WHICH}" >&2; exit 2 ;;
 esac
 
@@ -78,6 +79,13 @@ if [[ "$want_cache" == 1 ]]; then
   fetch cache_hit_probe.py
   run_ok cache python3 "${WORK_DIR}/cache_hit_probe.py" \
     --base-url "${BASE_URL}" --model "${MODEL}" || true
+fi
+
+if [[ "$want_lat" == 1 ]]; then
+  fetch latency_reconciliation.py
+  # Prefer IPv4 literal base URLs so this does not false-fire on dual-stack .local.
+  run_ok latency python3 "${WORK_DIR}/latency_reconciliation.py" \
+    --base-url "${BASE_URL}" --model "${MODEL}" -n "${N_LAT:-3}" --max-gap "${MAX_GAP:-1.0}"
 fi
 
 echo "done. Upstream checks are not vendored; re-fetch on each run."
