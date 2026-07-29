@@ -54,6 +54,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	var out []doctorCheck
 	out = append(out, doctorCheckThinkingGate(pick.SupportsThinking))
 	out = append(out, doctorCheckUnknownFields(base, pick))
+	out = append(out, doctorCheckKwargDeadness(base, pick))
 	out = append(out, doctorCheckToolChoiceNone(base, pick))
 	out = append(out, doctorCheckStreamContent(base, pick))
 	out = append(out, doctorCheckHistoryAssembly(base, pick))

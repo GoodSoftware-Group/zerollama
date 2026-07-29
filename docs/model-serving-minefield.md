@@ -191,7 +191,7 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go)): **29**, **77**, **78**, **23**, **04/20/25**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -240,6 +240,7 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
 | 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../server/runtime_v1_legacy_test.go) |
 | **77** | Only one request field validated | **fixed** + `covered via doctor` | Live probe rejects `__minefield_unvalidated_field_probe__` on `/api/chat` + `/v1` |
+| **07** | Accepted-but-unread kwargs | **mitigated** + `covered via doctor` | Unknown `chat_template_kwargs.*` → HTTP 400 ([`api.validateChatTemplateKwargs`](../api/chat_thinking_aliases.go)); doctor paired control |
 | **78** | `tool_choice` fails open | **fixed** + `covered via doctor` | Live `/v1` `tool_choice=none` must not return `tool_calls` |
 
 ### Model config / Core gaps (also in native doctor)
@@ -287,4 +288,5 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 | Trap **02** orphaned `</think>` | **Fixed** in thinking parser + doctor probe (think on/off/absent arms). |
 | Trap **23** stream content | Native doctor `/v1` SSE probe; lab historically CLEAN on qwen lanes. |
 | Trap **38** template-owned open | Documented (offline rollout prefill); related to **02**. |
+| Trap **07** kwarg deadness | Doctor: invented `chat_template_kwargs.bogus_kwarg_zzq` must 400 with control OK (loud rejection vs silent accept). |
 | Registry size | Upstream doctor reports **107** numbered traps (was ~103). |
