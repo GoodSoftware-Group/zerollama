@@ -228,7 +228,8 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | **38** | Template owns opening `<think>` | `documented` | Offline/GRPO pipelines must prefill + recombine the open tag (mirror of trap **02**); chat path already does |
 | 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
 | 04 | History reasoning stripping | **fixed** + `covered via doctor` | `preservePriorThinkingForRender` re-embeds prior `.Thinking` into Content when `think` is on (skips tool-call turns); qwen3.5/vl renderers preserve non-tool history thinking |
-| 12 | Empty content at token ceiling | `covered via doctor` (deep) + script | Default doctor skips; `ZEROLLAMA_DOCTOR_DEEP=1` or [`scripts/minefield_ceiling_probe.sh`](../scripts/minefield_ceiling_probe.sh). Lab PROBLEM on `qwen3:0.6b` @ 512 |
+| 12 | Empty content at token ceiling | `covered via doctor` (deep) + script | Default doctor skips; `ZEROLLAMA_DOCTOR_DEEP=1` or [`scripts/minefield_ceiling_probe.sh`](../scripts/minefield_ceiling_probe.sh) (`N=3` conversion rate). Lab PROBLEM on `qwen3:0.6b` @ 512 |
+| **22** | Family budget advice is not per-size | `documented` + script | Same probe as **12**; ceilings are per model and a distribution — see §7 |
 | 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
 | **26** | Tool call inside unclosed think | **fixed** + `covered via doctor` | [`thinking.ImplicitThinkEndMarkers`](../thinking/parser.go) ends think at `<tool_call>`; `doctorCheckToolMarkup` |
 | 20 | Reasoning write field name | `covered via doctor` | Native write field `thinking`; OpenAI `reasoning` mapped in ([`openai/openai.go`](../openai/openai.go)) |
@@ -292,3 +293,17 @@ When the broker/admission sources of free VRAM change, or a lab doctor re-run fl
 | Trap **07** kwarg deadness | Doctor: invented `chat_template_kwargs.bogus_kwarg_zzq` must 400 with control OK (loud rejection vs silent accept). |
 | Trap **26** tool-in-think | **Fixed:** thinking parser treats `<tool_call>` as implicit `</think>`; doctor forced-tool probe. |
 | Registry size | Upstream doctor reports **107** numbered traps (was ~103). |
+
+---
+
+## 7. Upstream traps 105–108 + 22 (2026-07-29)
+
+Instrumentation / methodology entries from long soaks. Mostly **document**, not new serve bugs.
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **22** | Family-card thinking budget ≠ per-size floor; floor is a **rate** | [`scripts/minefield_ceiling_probe.sh`](../scripts/minefield_ceiling_probe.sh) defaults `N=3`, prints conversion rate; re-measure on every size swap |
+| **105** | Speculative “acceptance” without named estimator/scope | When publishing MTP/draft acceptance, name **token- vs request-weighted**, scope to *your* turns, and show per-family mix ([trap 71](#1-broker--admission--llama-server-substrate-primary) adjacent) |
+| **106** | KV / prefix-cache occupancy climb ≠ leak | Full cache under prefix reuse (or unique `prompt_cache_key` / salt forcing misses) is normal; watch **preemption / waiting / OOM**, not fill % alone. Unique per-request cache keys produce a write-only fill curve |
+| **107** | Short soak “leak” that long soak reverts | Do not declare unbounded growth from a rising limb; hold until plateau or recovery |
+| **108** | Temp-0 burn canary is bistable | Pairwise “differs from previous” fires on attractor flip (traps **91/92**); track distinct output set / return-to-mode, not adjacent pairs |
