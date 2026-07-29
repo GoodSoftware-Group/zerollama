@@ -37,12 +37,13 @@ func doctorCheckServingTraps() []doctorCheck {
 			Name:    "serving traps",
 			Status:  "warn",
 			Detail:  "no loaded model — live traps need a warm runner (minefield doctor coverage)",
-			FixHint: "zerollama run <model> then re-run doctor; checks cover traps 01/03, 12/64/65, 19",
+			FixHint: "zerollama run <model> then re-run doctor; checks cover traps 55/61 ceilings, 01/03, 12/64/65, 19",
 		}}
 	}
 
 	pick := loaded[0]
 	var out []doctorCheck
+	out = append(out, doctorCheckContextCeilings(pick))
 	out = append(out, doctorCheckReasoningField(base, pick))
 	out = append(out, doctorCheckThinkRoundtrip(base, pick))
 	out = append(out, doctorCheckToolCallShape(base, pick))

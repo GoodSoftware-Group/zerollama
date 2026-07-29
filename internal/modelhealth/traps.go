@@ -238,8 +238,8 @@ func trap55ContextMismatch(display string, advertised, served, trained int) Repo
 		return Report{
 			Name:    name,
 			Status:  StatusRepairable,
-			Detail:  detail + " — advertised/trained/served context differ (minefield trap 55/61)",
-			FixHint: "treat advertised, trained (GGUF context_length), and served (params num_ctx / loaded runner) as three numbers; keep manifest num_ctx modest",
+			Detail:  detail + " — advertised/trained/served context differ (minefield trap 55/61 arithmetic; behavioural silent-fail is trap 61 hand-run)",
+			FixHint: "treat advertised, trained (GGUF context_length), and served (params num_ctx / loaded runner) as three numbers; keep manifest num_ctx modest; cold-ladder long prompts before trusting the high number",
 		}
 	}
 	return Report{Name: name, Status: StatusOK, Detail: detail}

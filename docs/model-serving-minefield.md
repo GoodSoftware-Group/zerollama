@@ -83,9 +83,61 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 
 - **04/20/25** — no render/`/apply-template` path on this Ollama-shaped stack
 - **10/17/21** — need `--hf-repo` or a readable chat template for full checks
-- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (hand-run per CORE.md)
+- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** (serve identity) and **55/61 arithmetic** in `zerollama doctor`; **35** and the **61 behavioural ladder** stay operator-run.
 
 Coverage lines from the tool are **not** a bill of health for the full registry (103 entries; doctor implements ~19).
+
+### 2.1 Core hand-runs (35 / 53 / 61) on zerollama
+
+Upstream [CORE.md](https://github.com/Blackwellboy/model-serving-minefield/blob/main/CORE.md) deliberately omits these from `minefield_doctor.py`. Map them onto this stack as follows.
+
+#### Trap 35 — identical weights do not score identically
+
+Not a serving bug. Before publishing small eval deltas on zerollama (ggml or runtime lane):
+
+1. Fix one host + one binary revision as the measurement room.
+2. Run the **same** items twice (same process, then fresh process) at `temperature=0`.
+3. Report **per-item agreement**, not only score delta.
+4. Treat the observed score spread as your minimum detectable effect; do not assemble paired arms across machines without quoting that floor.
+
+Zerollama does not ship an agreement-floor harness; use your benchmark’s per-item JSON. Temp-0 still has a prompt-length / prefix-cache floor (traps **91/92**).
+
+#### Trap 53 — config edit never took effect
+
+`zerollama doctor` prints **serve identity (trap 53)**: answering `base`, `/api/version`, and (on Darwin/Linux) listener `pid` + `ps` start/etime/cmd.
+
+After every config or binary change:
+
+```bash
+# prove the process answering is newer than the edit
+lsof -nP -iTCP:11434 -sTCP:LISTEN          # production — read-only
+ps -o pid,lstart,etime,cmd -p <pid>
+curl -s http://127.0.0.1:11434/api/version
+./zerollama doctor                         # includes serve identity
+```
+
+Kill **by port**, assert free, then start. Never trust a restart command’s exit code alone. Agents must not free production **11434/8081**; operators do that deliberately.
+
+#### Trap 61 — advertised window fails silently
+
+Distinct from trap **55** (quality in the trained regime / three numbers disagreeing). Trap **61** is *no error*: long prompts return HTTP 200 with exact `prompt_tokens`, yet the head may be unread.
+
+Zerollama surfaces the **arithmetic** half:
+
+- Manifest doctor: `trap-55/61 (context)` when advertised / `num_ctx` / GGUF trained diverge ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go))
+- Live doctor: `context ceilings … (trap 55/61)` from `/api/ps` `loaded_metadata`
+
+The **behavioural** half remains a hand-run (cold only — warm prefix cache lies; see upstream trap 60):
+
+1. Plant a fact at position 0, unique filler, decoy at the tail, ask for the fact.
+2. Ladder depths (1k → served `num_ctx`); compare local tokenize vs response `prompt_eval_count` / usage.
+3. Record recovery + `done_reason` / finish reason each rung.
+4. Treat **trained** context from `loaded_metadata.train_context_length` as the supported window; advertised/served above that are capability claims, not guarantees.
+
+```bash
+# warm runner already loaded — arithmetic only
+curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,train_context_length}'
+```
 
 ---
 
@@ -93,8 +145,9 @@ Coverage lines from the tool are **not** a bill of health for the full registry 
 
 `zerollama doctor` includes minefield-style checks in-tree:
 
-1. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61**
-2. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go)): **01/03**, **12/64/65**, **19** — warm `/api/ps` only; warn (not fail) when inconclusive
+1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
+2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
+3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go)): **55/61** ceilings on warm `/api/ps`, **01/03**, **12/64/65**, **19** — warn (not fail) when inconclusive
 
 ```bash
 ./zerollama doctor
@@ -126,11 +179,13 @@ python3 minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
 | **77** | Only one request field validated | **fixed** | Unknown top-level keys on `/v1`, `/api/chat`, and `/api/generate` → 400; known nested kwargs validated |
 | **78** | `tool_choice` fails open | **fixed** | `tool_choice: "none"` omits tools in chat + responses conversion |
 
-### Model config (also in native doctor)
+### Model config / Core gaps (also in native doctor)
 
-| Trap | Status |
-|------|--------|
-| 10, 21, 55/61, 56 | `covered via doctor` |
+| Trap | Status | Where |
+|------|--------|-------|
+| 10, 21, 55/61, 56 | `covered via doctor` | 55/61 = arithmetic; 61 behavioural ladder = §2.1 hand-run |
+| **35** | `documented` | Agreement-floor protocol in §2.1 — no automated doctor check |
+| **53** | `covered via doctor` | `doctorCheckServeIdentity` — pid/start/version of answering process |
 
 ---
 
