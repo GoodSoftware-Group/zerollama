@@ -94,6 +94,21 @@ func eat(s *Parser) (string, string, bool) {
 		} else if strings.HasPrefix(s.OpeningTag, trimmed) {
 			// partial opening seen, so let's keep accumulating
 			return "", "", false
+		} else if strings.HasPrefix(trimmed, s.ClosingTag) {
+			// Orphaned close with no open (minefield trap 02 / template-owned open):
+			// strip the closer so it never becomes answer content.
+			after := strings.Join(strings.Split(trimmed, s.ClosingTag)[1:], s.ClosingTag)
+			after = strings.TrimLeftFunc(after, unicode.IsSpace)
+			s.acc.Reset()
+			if after == "" {
+				s.state = thinkingState_ThinkingDoneEatingWhitespace
+				return "", "", false
+			}
+			s.state = thinkingState_ThinkingDone
+			return "", after, false
+		} else if trimmed != "" && strings.HasPrefix(s.ClosingTag, trimmed) {
+			// partial orphaned close — keep buffering
+			return "", "", false
 		} else if trimmed == "" {
 			// saw whitespace only, so let's keep accumulating
 			return "", "", false

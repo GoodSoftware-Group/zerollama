@@ -56,6 +56,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	out = append(out, doctorCheckUnknownFields(base, pick))
 	out = append(out, doctorCheckToolChoiceNone(base, pick))
 	out = append(out, doctorCheckHistoryAssembly(base, pick))
+	out = append(out, doctorCheckOrphanedThinkClose(base, pick))
 	out = append(out, doctorCheckThinkToggleInjection(base, pick))
 	out = append(out, doctorCheckLatencyReconciliation(base, pick))
 	out = append(out, doctorCheckContextCeilings(pick))

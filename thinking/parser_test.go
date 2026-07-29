@@ -23,6 +23,22 @@ func TestExtractThinking(t *testing.T) {
 			wantThink:   "",
 			wantContent: "no think",
 		},
+		{
+			// minefield trap 02: template pre-opened think; model emits only the closer
+			in:          "</think>\nOK",
+			wantThink:   "",
+			wantContent: "OK",
+		},
+		{
+			in:          "  </think>  hello",
+			wantThink:   "",
+			wantContent: "hello",
+		},
+		{
+			in:          "</think>",
+			wantThink:   "",
+			wantContent: "",
+		},
 	}
 	for i, tt := range tests {
 		parser := Parser{
@@ -260,6 +276,23 @@ func TestThinkingStreaming(t *testing.T) {
 					input:          "  more content",
 					wantThinking:   "",
 					wantContent:    "more content",
+					wantStateAfter: thinkingState_ThinkingDone,
+				},
+			},
+		},
+		{
+			desc: "orphaned close tag (trap 02) streamed",
+			steps: []step{
+				{
+					input:          "</thi",
+					wantThinking:   "",
+					wantContent:    "",
+					wantStateAfter: thinkingState_LookingForOpening,
+				},
+				{
+					input:          "nk>\nOK",
+					wantThinking:   "",
+					wantContent:    "OK",
 					wantStateAfter: thinkingState_ThinkingDone,
 				},
 			},
