@@ -173,7 +173,8 @@ Injects `prompt_cache_key` when omitted (`fulfill:{mode}:{project_id}`). Adverti
 
 **Why:** `build_zerollama_mac.sh` embeds compiled `default.metallib` bytes in `ggml-metal-embed.metal`, but `ggml_metal_library_init` still treated the embed as UTF-8 source for `newLibraryWithSource`. MTLB magic fails UTF-8 → nil NSString → Metal assert abort → ollama-engine `/info` dies → serve logs `library=cpu` / `total_vram="0 B"` / `default_num_ctx=4096`.
 
-- **`ggml-metal-device.m`** — detect `MTLB` magic and load via `newLibraryWithData`; keep source JIT path for text embeds; refuse nil source instead of aborting.
+- **Patch 0104 / `ggml-metal-device.m`** — detect `MTLB` magic and load via `newLibraryWithData`; keep source JIT path for text embeds; refuse nil source instead of aborting.
+- **Mac build guard** — fail the build if vendor sync drops the compiled-metallib loader, instead of shipping a binary that silently discovers CPU only.
 
 **Verify:** `./zerollama runner --ollama-engine --port 65432` then `curl -s localhost:65432/info` → `Apple M4 Max` with non-zero `total_memory`.
 

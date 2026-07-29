@@ -394,6 +394,14 @@ mkdir -p "${METALLIB_TMP}" "${STAMP_DIR}"
     -o "${METALLIB_TMP}/default.metallib"
   cp "${METALLIB_TMP}/default.metallib" "${METAL_DIR}/ggml-metal-embed.metal"
 )
+# Guard against vendor sync dropping patch 0104. A compiled MTLB payload passed
+# to upstream's newLibraryWithSource aborts the discovery runner, silently
+# producing library=cpu, total_vram=0, and default_num_ctx=4096.
+if ! grep -q 'newLibraryWithData' "${METAL_DIR}/ggml-metal-device.m"; then
+  echo "error: compiled Metal embed requires patch 0104 (newLibraryWithData loader missing)" >&2
+  echo "  apply llama/patches/0104-ggml-metal-load-compiled-embedded-metallib.patch to the vendor tree, then sync" >&2
+  exit 1
+fi
 # Force as to re-.incbin: go build may skip ggml-metal-embed.s when only the
 # .metal payload changed (mtime race left stale shaders in the binary).
 touch "${METAL_DIR}/ggml-metal-embed.s"
