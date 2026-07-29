@@ -93,9 +93,20 @@ func estimateGgmlLoadVRAM(modelPath string, f *ggml.GGML, numCtx int, profile gg
 		kvTotal += k
 	}
 
+	// Use the sum of actual tensor byte sizes from GGUF metadata rather than the
+	// file size. File size includes the GGUF header, KV metadata, and padding and
+	// can exceed the actual tensor data by hundreds of MiB to several GiB for large
+	// MoE models. Tensor.Size() returns exact quantized bytes per tensor, which is
+	// what llama-server actually allocates into GPU buffers.
+	// Fall back to file size only when metadata is unavailable.
 	var weights uint64
-	if info, err := os.Stat(modelPath); err == nil {
-		weights = uint64(info.Size())
+	for _, t := range f.Tensors().Items() {
+		weights += t.Size()
+	}
+	if weights == 0 {
+		if info, err := os.Stat(modelPath); err == nil {
+			weights = uint64(info.Size())
+		}
 	}
 
 	graph := partialOffload
@@ -356,9 +367,17 @@ func capGgmlNumCtx(numCtx, suggested int, clampEnabled bool) (int, *api.GgmlNumC
 }
 
 func (s *Server) effectiveGgmlFreeVRAMForSuggest(ctx context.Context, refresh bool) uint64 {
-	// refresh=true on load path: use loaded runners so GPUDevices sees current free bytes.
+	// refresh=true on load path: probe GPU drivers directly for current free bytes.
 	// refresh=false on show: TTL cache avoids probe storm from CLI/UI show loops.
-	// Why no totalVRAM fallback: installed VRAM ≠ free VRAM; over-suggest still hangs load.
+	//
+	// Why we pass nil runners (not LoadedRunnersForDiscovery) on the refresh path:
+	// Runner-derived FreeMemory is computed from log-parsed buffer sizes and a
+	// "systemFreeAtLoad" baseline captured during model loading. For split-GPU models
+	// (layer mode across multiple devices), this accounting is unreliable — the
+	// systemFreeAtLoad baseline is set from "llama_prepare_model_devices" log lines
+	// that fire at different phases (pre-weight and post-weight), and the min() of
+	// accountedFree vs systemFree can severely undercount for dual-GPU layouts.
+	// Passing nil forces a direct NVML/CUDA driver probe which is always accurate.
 	if s == nil {
 		return 0
 	}
@@ -375,11 +394,8 @@ func (s *Server) effectiveGgmlFreeVRAMForSuggest(ctx context.Context, refresh bo
 		}
 	}
 
-	var runners []ml.FilteredRunnerDiscovery
-	if s.sched != nil {
-		runners = s.sched.LoadedRunnersForDiscovery()
-	}
-	gpus := discover.GPUDevices(ctx, runners)
+	// Probe GPU drivers directly (nil runners = bootstrap discovery, not runner-derived).
+	gpus := discover.GPUDevices(ctx, nil)
 	free := effectiveGgmlFreeVRAM(gpus)
 	if free > 0 {
 		s.ggmlFreeVRAMMu.Lock()

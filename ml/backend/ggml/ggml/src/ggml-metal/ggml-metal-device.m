@@ -157,35 +157,7 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         extern const char ggml_metallib_start[];
         extern const char ggml_metallib_end[];
 
-        const size_t embed_size = (size_t) (ggml_metallib_end - ggml_metallib_start);
-        const unsigned char * embed = (const unsigned char *) ggml_metallib_start;
-        const bool is_metallib = embed_size >= 4 &&
-            embed[0] == 'M' && embed[1] == 'T' && embed[2] == 'L' && embed[3] == 'B';
-
-        // Zerollama's Mac build embeds a compiled default.metallib (plus
-        // eliza-shipped kernels). Upstream embeds UTF-8 Metal source. Loading
-        // MTLB bytes as NSString returns nil and newLibraryWithSource aborts,
-        // which makes bootstrap GPU discovery fall back to total_vram=0.
-        if (is_metallib) {
-            GGML_LOG_INFO("%s: loading embedded metallib (%zu bytes)\n", __func__, embed_size);
-            dispatch_data_t data = dispatch_data_create(
-                embed, embed_size, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-            library = [device newLibraryWithData:data error:&error];
-#if !__has_feature(objc_arc)
-            dispatch_release(data);
-#endif
-            if (error || library == nil) {
-                GGML_LOG_ERROR("%s: error loading embedded metallib: %s\n", __func__,
-                    error ? [[error description] UTF8String] : "nil library");
-                return nil;
-            }
-        } else {
-            src = [[NSString alloc] initWithBytes:embed length:embed_size encoding:NSUTF8StringEncoding];
-            if (src == nil) {
-                GGML_LOG_ERROR("%s: embedded Metal payload is neither metallib nor UTF-8 source\n", __func__);
-                return nil;
-            }
-        }
+        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
 #else
 
 #ifdef SWIFT_PACKAGE
@@ -267,10 +239,6 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #endif
 
         if (!library) {
-            if (src == nil) {
-                GGML_LOG_ERROR("%s: no Metal library source available\n", __func__);
-                return nil;
-            }
             @autoreleasepool {
                 // dictionary of preprocessor macros
                 NSMutableDictionary * prep = [NSMutableDictionary dictionary];
@@ -315,9 +283,7 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         }
 
 #if GGML_METAL_EMBED_LIBRARY
-        if (src != nil) {
-            [src release];
-        }
+        [src release];
 #endif // GGML_METAL_EMBED_LIBRARY
 
         GGML_LOG_INFO("%s: loaded in %.3f sec\n", __func__, (ggml_time_us() - t_start) / 1e6);
@@ -1457,9 +1423,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                    (ggml_get_op_params_i32(op, 4) == 0) && (ggml_get_op_params_i32(op, 6) == 0);
         case GGML_OP_PAD_REFLECT_1D:
         case GGML_OP_TIMESTEP_EMBEDDING:
-            return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_LEAKY_RELU:
-            return op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16;
+            return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_ARGSORT:
         case GGML_OP_TOP_K:
         case GGML_OP_ARANGE:

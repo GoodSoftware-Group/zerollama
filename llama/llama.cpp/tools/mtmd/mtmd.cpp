@@ -34,9 +34,6 @@ struct mtmd_bitmap {
     uint32_t ny = 0;
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
-    // Optional SGLang/Qwen [T,H,W] patch grid; dyn_size honors via preprocessor.
-    bool has_grid_hint = false;
-    int32_t grid_thw[3] = {0, 0, 0};
 
     // lazy-loaded bitmap
     mtmd_bitmap_lazy_callback lazy_callback = nullptr;
@@ -1108,16 +1105,8 @@ struct mtmd_tokenizer {
                     bmp->is_placeholder());
                 img_u8.cpy_buf(bmp->get_ro_buf());
 
-                // Forward optional client grid_thw into dyn_size (M-RoPE) preprocess.
-                if (bmp->has_grid_hint) {
-                    ctx->image_preproc->set_grid_hint(bmp->grid_thw);
-                } else {
-                    ctx->image_preproc->clear_grid_hint();
-                }
-
                 // preprocess image
                 mtmd_image_preproc_out tmp_preproc_out = ctx->image_preproc->preprocess(img_u8);
-                ctx->image_preproc->clear_grid_hint();
 
                 // move entries and grid dimensions to the "global" preproc_out
                 for (auto & entry : tmp_preproc_out.entries) {
@@ -1795,21 +1784,6 @@ void mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id) {
     } else {
         bitmap->id.clear();
     }
-}
-
-void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t * grid_thw) {
-    if (!bitmap) {
-        return;
-    }
-    if (!grid_thw || grid_thw[1] <= 0 || grid_thw[2] <= 0) {
-        bitmap->has_grid_hint = false;
-        bitmap->grid_thw[0] = bitmap->grid_thw[1] = bitmap->grid_thw[2] = 0;
-        return;
-    }
-    bitmap->has_grid_hint = true;
-    bitmap->grid_thw[0] = grid_thw[0];
-    bitmap->grid_thw[1] = grid_thw[1];
-    bitmap->grid_thw[2] = grid_thw[2];
 }
 
 mtmd_bitmap * mtmd_bitmap_init_lazy(mtmd_context * ctx,

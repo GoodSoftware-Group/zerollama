@@ -1598,6 +1598,10 @@ type ModelDetails struct {
 	ActiveParameterCount uint64   `json:"active_parameter_count,omitempty"`
 	ExpertCount          uint32   `json:"expert_count,omitempty"`
 	ExpertUsedCount      uint32   `json:"expert_used_count,omitempty"`
+	// WeightSizeBytes is the sum of all tensor byte sizes from GGUF metadata.
+	// For fully GPU-offloaded models this equals the GPU buffer actually allocated
+	// for weights. Use this for VRAM budgeting. Zero for safetensors/MLX models.
+	WeightSizeBytes uint64 `json:"weight_size_bytes,omitempty"`
 }
 
 // UserResponse provides information about a user.

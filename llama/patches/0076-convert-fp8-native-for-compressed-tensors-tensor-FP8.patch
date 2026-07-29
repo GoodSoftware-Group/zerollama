@@ -1,19 +1,22 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 397353504aed64bdf596f3c6bdd52858609bffdd Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Fri, 17 Jul 2026 13:01:41 -0700
+Date: Tue, 28 Jul 2026 20:00:00 -0700
+Subject: [PATCH] convert fp8 native compressed tensors tensor
+
+convert fp8 native compressed tensors tensor
+
+---
+From: zerollama <zerollama@local>
 Subject: [PATCH] convert: --fp8-native for compressed-tensors tensor FP8
 
 Support strategy=tensor (and channel) float-quantized E4M3/E5M2 with
 per-tensor weight_scale, matching ModelOpt native pack. Drops input_scale.
 ---
- conversion/base.py | 32 ++++++++++++++++++++++++++++----
- 1 file changed, 28 insertions(+), 4 deletions(-)
-
 diff --git a/conversion/base.py b/conversion/base.py
-index 486fc88bc..49a2058bd 100644
+index 31deaf4f0..521cba540 100644
 --- a/conversion/base.py
 +++ b/conversion/base.py
-@@ -517,7 +517,9 @@ class ModelBase:
+@@ -527,7 +527,9 @@ class ModelBase:
                  if quant_format == "float-quantized" or quant_format == "int-quantized" or quant_format == "naive-quantized":
                      block_size = weight_config.get("block_structure", None)
                      strategy = weight_config.get("strategy")
@@ -24,7 +27,7 @@ index 486fc88bc..49a2058bd 100644
                      assert weight_config.get("group_size") is None  # didn't find a model using this yet
                      is_fp8 = (
                          quant_format == "float-quantized"
-@@ -529,10 +531,32 @@ class ModelBase:
+@@ -539,10 +541,32 @@ class ModelBase:
                              weight_name = name.removesuffix("_scale")
                              w = self.model_tensors[weight_name]
                              s = self.model_tensors[name]

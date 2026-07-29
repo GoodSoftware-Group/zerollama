@@ -1,19 +1,18 @@
 #include "server-tools.h"
 
-#include "subproc.h"
+#include <sheredom/subprocess.h>
 
 #include <filesystem>
 #include <fstream>
 #include <regex>
 #include <thread>
 #include <chrono>
-#include <ctime>
 #include <atomic>
 #include <cstring>
+#include <climits>
 #include <algorithm>
 #include <unordered_set>
 #include <functional>
-#include <memory>
 
 namespace fs = std::filesystem;
 
@@ -25,7 +24,7 @@ json server_tool::to_json() const {
     return {
         {"display_name", display_name},
         {"tool", name},
-        {"type", type()},
+        {"type", "builtin"},
         {"permissions", json{
             {"write", permission_write}
         }},
@@ -138,14 +137,15 @@ public:
             const std::function<bool(const std::string &)> & on_chunk = nullptr) const override {
         exec_result res;
 
-        common_subproc proc;
+        subprocess_s proc;
+        auto argv = to_cstr_vec(args);
 
         int options = subprocess_option_no_window
                     | subprocess_option_combined_stdout_stderr
                     | subprocess_option_inherit_environment
                     | subprocess_option_search_user_path;
 
-        if (!proc.create(args, options)) {
+        if (subprocess_create(argv.data(), options, &proc) != 0) {
             res.output = "failed to spawn process";
             return res;
         }
@@ -158,14 +158,14 @@ public:
             while (!done.load()) {
                 if (std::chrono::steady_clock::now() >= deadline) {
                     timed_out.store(true);
-                    proc.terminate();
+                    subprocess_terminate(&proc);
                     return;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         });
 
-        FILE * f = proc.stdout_file();
+        FILE * f = subprocess_stdout(&proc);
         std::string output;
         bool truncated = false;
         if (f) {
@@ -176,7 +176,7 @@ public:
                     if (output.size() + len <= max_output) {
                         output.append(buf, len);
                         if (on_chunk && !on_chunk(std::string(buf, len))) {
-                            proc.terminate();
+                            subprocess_terminate(&proc);
                             break;
                         }
                     } else {
@@ -194,7 +194,8 @@ public:
             timeout_thread.join();
         }
 
-        res.exit_code = proc.join();
+        subprocess_join(&proc, &res.exit_code);
+        subprocess_destroy(&proc);
 
         res.output    = output;
         res.timed_out = timed_out.load();
@@ -205,6 +206,16 @@ public:
     }
 
 private:
+    static std::vector<char *> to_cstr_vec(const std::vector<std::string> & v) {
+        std::vector<char *> r;
+        r.reserve(v.size() + 1);
+        for (const auto & s : v) {
+            r.push_back(const_cast<char *>(s.c_str()));
+        }
+        r.push_back(nullptr);
+        return r;
+    }
+
     static const std::unordered_set<std::string> & junk_dir_names() {
         static const std::unordered_set<std::string> names = {
             ".git", ".svn", ".hg", "node_modules", "__pycache__",
@@ -1037,42 +1048,16 @@ struct server_tool_get_datetime : server_tool {
             {"type", "function"},
             {"function", {
                 {"name", name},
-                {"description", "Returns the current date and time in UTC"},
-                {"parameters", {
-                    {"type", "object"},
-                    {"properties", {
-                        {"format", {
-                            {"type", "string"},
-                            {"description",
-                                "strftime()-style format string for the output (default: \"%Y-%m-%dT%H:%M:%SZ\", "
-                                "e.g. ISO 8601). Choose your own format if you need something else, "
-                                "e.g. \"%A, %B %d %Y\" for a human-readable date."},
-                        }},
-                    }},
-                }},
+                {"description", "Returns the current date and time"},
             }},
         };
     }
 
-    json invoke(json params, server_tool::stream *) const override {
-        std::string format = json_value(params, "format", std::string("%Y-%m-%dT%H:%M:%SZ"));
-
-        auto now  = std::chrono::system_clock::now();
+    json invoke(json, server_tool::stream *) const override {
+        auto now = std::chrono::system_clock::now();
         auto time = std::chrono::system_clock::to_time_t(now);
-        std::tm tm_utc;
-#ifdef _WIN32
-        gmtime_s(&tm_utc, &time);
-#else
-        gmtime_r(&time, &tm_utc);
-#endif
 
-        char buf[256];
-        size_t len = std::strftime(buf, sizeof(buf), format.c_str(), &tm_utc);
-        if (len == 0) {
-            return {{"error", "invalid format string"}};
-        }
-
-        return {{"result", std::string(buf, len)}};
+        return {{"result", std::ctime(&time)}};
     }
 };
 
@@ -1117,49 +1102,6 @@ struct server_tools_res : server_http_res {
     }
 };
 
-//
-// server_mcp_tool: exposes one tool from a running MCP server as a server_tool.
-//
-struct server_mcp_tool : server_tool {
-    std::string server_name;
-    std::string tool_name;
-    server_mcp_tool_def def;
-    server_mcp & mcp_mgr;
-
-    server_mcp_tool(server_mcp_tool_def d, server_mcp & mgr)
-        : server_name(d.server_name)
-        , tool_name(d.name)
-        , def(std::move(d))
-        , mcp_mgr(mgr)
-    {
-        name = server_name + "_" + tool_name;
-        display_name = name;
-        permission_write = false;
-        support_stream = false;
-    }
-
-    std::string type() const override { return "mcp"; }
-
-    json get_definition() const override {
-        json schema = def.input_schema;
-        if (schema.is_null() || !schema.is_object()) {
-            schema = json::object();
-        }
-        return {
-            {"type", "function"},
-            {"function", {
-                {"name", name},
-                {"description", def.description},
-                {"parameters", schema},
-            }},
-        };
-    }
-
-    json invoke(json params, server_tool::stream *) const override {
-        return mcp_mgr.call_tool(server_name, tool_name, params);
-    }
-};
-
 static server_tool & find_tool(std::vector<std::unique_ptr<server_tool>> & tools, const std::string & name, bool require_stream) {
     for (auto & t : tools) {
         if (t->name == name) {
@@ -1188,13 +1130,8 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
     return tools;
 }
 
-void server_tools::setup(const std::vector<std::string> & enabled_tools,
-                         server_mcp & mcp_mgr) {
+void server_tools::setup(const std::vector<std::string> & enabled_tools) {
     if (!enabled_tools.empty()) {
-        if (!common_subproc::is_supported()) {
-            throw std::runtime_error("subprocess is not enabled on this build");
-        }
-
         std::unordered_set<std::string> enabled_set(enabled_tools.begin(), enabled_tools.end());
         auto all_tools = build_tools();
 
@@ -1221,29 +1158,6 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
             if (enabled_set.count(t->name) > 0 || enabled_set.count("all") > 0) {
                 tools.push_back(std::move(t));
             }
-        }
-    }
-
-    // append MCP tools, skipping any that collide with a built-in or another MCP tool of the same "<server>_<tool>" name
-    if (!mcp_mgr.empty()) {
-        std::unordered_set<std::string> seen_names;
-        for (auto & t : tools) {
-            seen_names.insert(t->name);
-        }
-        size_t n_added = 0;
-        for (const auto & def : mcp_mgr.list_tools()) {
-            std::string mcp_name = def.server_name + "_" + def.name;
-            if (seen_names.count(mcp_name)) {
-                SRV_WRN("MCP tool \"%s\" from server \"%s\" collides with an existing tool, skipping\n",
-                    mcp_name.c_str(), def.server_name.c_str());
-                continue;
-            }
-            seen_names.insert(mcp_name);
-            tools.push_back(std::make_unique<server_mcp_tool>(def, mcp_mgr));
-            n_added++;
-        }
-        if (n_added > 0) {
-            SRV_INF("Added %zu MCP tools\n", n_added);
         }
     }
 

@@ -56,6 +56,17 @@ func enrichModelDetailsFromGGML(details *api.ModelDetails, kv ggml.KV, tensors g
 		}
 	}
 
+	// Sum exact tensor byte sizes from GGUF metadata. This is the GPU buffer
+	// actually allocated for weights on a fully-offloaded model — more accurate
+	// than file size for VRAM budgeting (file includes header, kv metadata, padding).
+	var weightBytes uint64
+	for _, t := range tensors.Items() {
+		weightBytes += t.Size()
+	}
+	if weightBytes > 0 {
+		details.WeightSizeBytes = weightBytes
+	}
+
 	expertCount := kv.Uint("expert_count")
 	expertUsedCount := kv.Uint("expert_used_count")
 	if expertCount == 0 {
