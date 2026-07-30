@@ -77,6 +77,10 @@ Once `./zerollama serve` is up and a model is pulled:
 
 Copy-paste harness request: [§5 Use the API](#5-use-the-api).
 
+<p align="center">
+  <img src="docs/assets/demo-operator-cli.gif" alt="zerollama ls PARAMS/PERF, ps PROJECT/SESSION, megaprompt tokenize win" width="720"/>
+</p>
+
 ---
 
 ## 2. Why Zerollama?
@@ -231,6 +235,12 @@ qwen3.6:35b-a3b-mlx                                                      bg:dige
 | **PROCESSOR** / **CONTEXT** / **UNTIL** | GPU split, context length, keep-alive expiry |
 
 → [bench-cache.md](docs/bench-cache.md) · [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md)
+
+Regenerate the README demo GIF (uses live `ls`/`ps` when available, else curated samples):
+
+```bash
+python3 scripts/marketing/make_readme_demo_gif.py --from-live
+```
 
 ---
 

@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### README demo GIF (Jul 2026)
+
+**Why:** Marketing backlog wanted a turn-1 vs turn-2 visual; CLI DX fields needed to show up outside a text table.
+
+**What:** `docs/assets/demo-operator-cli.gif` + `scripts/marketing/make_readme_demo_gif.py` — terminal-style `ls` (PARAMS/PERF), `ps` (PROJECT/SESSION), and lab tokenize 390→95 ms bar (L3 called out for turn-2+). Embedded under §1.5. Live GPU TTFT capture deferred while production holds models.
+
 ### README operator CLI DX (Jul 2026)
 
 **Why:** Marketing tour sold harness APIs but not the day-to-day `ls` / `ps` fields operators actually stare at.
