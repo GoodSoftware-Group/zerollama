@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 04:15:00 -0700
+Subject: [PATCH] llama-vocab: pretok cache once per session not per fragment (0120)
+
+tokenizer_st_partition calls session.tokenize() per specials fragment;
+re-assign(4096) each time made mixed/chat ~2.6x slower with cache ON.
+Init once per session (one llama_tokenize). See docs/faster-bpe-tokenize.md.
+
+---
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 000000000..111111111 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -918,10 +918,17 @@
+         symbols_final.clear();
+         auto tok_pre = vocab.get_pre_type();
+         const bool use_id_pairs = vocab.has_bpe_id_pairs();
+-        // WHY per-call init: session is constructed once per llama_tokenize; cache must not
+-        // survive across requests (no lifecycle / memory growth). Opt-out for A/B measurement.
+-        const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
+-        pretok_cache.init(want_cache);
++        // WHY (0120): init pretok cache once per session, not per tokenize() call.
++        // tokenizer_st_partition invokes session.tokenize() once per text fragment between
++        // specials; re-assign(4096) + cold cache each fragment made mixed/chat megaprompts
++        // ~2.6× slower with cache ON than NO_PRETOK_CACHE (see findings). Session is
++        // constructed once per llama_tokenize, so cross-fragment reuse is correct and
++        // still has no cross-request lifecycle.
++        if (!pretok_cache_ready) {
++            const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
++            pretok_cache.init(want_cache);
++            pretok_cache_ready = true;
++        }
+ 
+         auto process_word = [&](const char * wdata, size_t wsize) {
+             // Cache hit: skip merge entirely. Append one symbol per cached id.
+@@ -1302,6 +1309,7 @@
+     std::vector<llm_symbol> symbols_final;
+     llm_bigram_bpe::queue work_queue;
+     llm_bpe_pretok_cache pretok_cache;
++    bool pretok_cache_ready = false;
+ };
+ 
+ //

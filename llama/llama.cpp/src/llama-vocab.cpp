@@ -13,8 +13,12 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdarg>
+#include <climits>
+#include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <forward_list>
+#include <vector>
 #include <limits>
 #include <map>
 #include <queue>
@@ -68,6 +72,47 @@ struct naive_trie {
     llama_token value;
 };
 
+// WHY (0113): specials LTR (0111/0112) walked naive_trie (std::map per byte). Chat markers
+// are short but frequent — replace with flat child[256] indices for O(1) steps.
+struct llm_specials_byte_trie {
+    static constexpr uint32_t npos = 0; // 0 = no child; root lives at index 0
+
+    struct node {
+        uint32_t    child[256];
+        llama_token value;
+        bool        has_value;
+
+        node() : value(LLAMA_TOKEN_NULL), has_value(false) {
+            memset(child, 0, sizeof(child));
+        }
+    };
+
+    std::vector<node> nodes;
+
+    void clear() {
+        nodes.clear();
+        nodes.emplace_back();
+    }
+
+    void insert(const char * key, size_t len, llama_token id) {
+        if (nodes.empty()) {
+            clear();
+        }
+        uint32_t cur = 0;
+        for (size_t i = 0; i < len; ++i) {
+            const unsigned char c = (unsigned char) key[i];
+            uint32_t & slot = nodes[cur].child[c];
+            if (slot == npos) {
+                slot = (uint32_t) nodes.size();
+                nodes.emplace_back();
+            }
+            cur = slot;
+        }
+        nodes[cur].has_value = true;
+        nodes[cur].value = id;
+    }
+};
+
 //
 // tokenizers
 //
@@ -83,6 +128,7 @@ struct llm_symbol {
     index next;
     const char * text;
     size_t n;
+    llama_token id = LLAMA_TOKEN_NULL; // BPE id-path; NULL => byte-fallback at emit
 };
 
 static_assert(std::is_trivially_copyable<llm_symbol>::value, "llm_symbol is not trivially copyable");
@@ -260,6 +306,295 @@ public:
     void pop() =  delete;
 };
 
+
+// Flat open-addressed (id1,id2) -> (rank, merged_id).
+// WHY: stock BPE merge hashed std::string pairs on every candidate bigram — dominates
+// megaprompt tokenize. Gigatoken/BMTL T19 uses id pairs; we pack rank+merged_id because
+// llama.cpp's merge-list rank is not the same integer as the merged vocab token id.
+// key = (uint64_t)id1 << 32 | id2; empty sentinel = UINT64_MAX
+// val = (uint64_t)rank << 32 | merged_id
+// Built once at vocab load (after token_to_id is populated); read-only at encode time.
+struct llm_bpe_id_pair_table {
+    std::vector<uint64_t> keys;
+    std::vector<uint64_t> vals;
+    uint32_t mask = 0;
+    size_t   n    = 0;
+
+    void clear() {
+        keys.clear();
+        vals.clear();
+        mask = 0;
+        n = 0;
+    }
+
+    bool empty() const { return n == 0; }
+
+    static uint32_t next_pow2(uint32_t x) {
+        uint32_t p = 16;
+        while (p < x) {
+            p <<= 1;
+        }
+        return p;
+    }
+
+    void init(size_t n_merges) {
+        // Keep load factor <= 1/2
+        const uint32_t cap = next_pow2((uint32_t) std::max<size_t>(n_merges * 2 + 1, 16));
+        keys.assign(cap, UINT64_MAX);
+        vals.assign(cap, 0);
+        mask = cap - 1;
+        n = 0;
+    }
+
+    static uint64_t make_key(llama_token a, llama_token b) {
+        return ((uint64_t) (uint32_t) a << 32) | (uint32_t) b;
+    }
+
+    static uint32_t hash_key(uint64_t key) {
+        key ^= key >> 30;
+        key *= 0xbf58476d1ce4e5b9ULL;
+        key ^= key >> 27;
+        key *= 0x94d049bb133111ebULL;
+        key ^= key >> 31;
+        return (uint32_t) key;
+    }
+
+    // Keep first insert on duplicate keys (matches unordered_map::emplace).
+    bool insert(llama_token a, llama_token b, int rank, llama_token merged) {
+        if (keys.empty()) {
+            return false;
+        }
+        const uint64_t key = make_key(a, b);
+        uint32_t idx = hash_key(key) & mask;
+        for (;;) {
+            if (keys[idx] == UINT64_MAX) {
+                keys[idx] = key;
+                vals[idx] = ((uint64_t) (uint32_t) rank << 32) | (uint32_t) merged;
+                n++;
+                return true;
+            }
+            if (keys[idx] == key) {
+                return false;
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+
+    bool lookup(llama_token a, llama_token b, int & rank, llama_token & merged) const {
+        if (keys.empty()) {
+            return false;
+        }
+        const uint64_t key = make_key(a, b);
+        uint32_t idx = hash_key(key) & mask;
+        for (;;) {
+            const uint64_t k = keys[idx];
+            if (k == UINT64_MAX) {
+                return false;
+            }
+            if (k == key) {
+                const uint64_t v = vals[idx];
+                rank   = (int) (uint32_t) (v >> 32);
+                merged = (llama_token) (uint32_t) v;
+                return true;
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+};
+
+// Packed UTF-8 piece (len<=4) -> token id.
+// WHY: initial BPE symbols are always one Unicode codepoint (unicode_len_utf8). Looking
+// each up via std::string + token_to_id cancelled the id-pair merge win on Qwen2
+// (byte-encode + many short words). Packed keys need no heap and stay C++17-friendly
+// (no transparent unordered_map::find until C++20).
+struct llm_bpe_piece4_table {
+    std::vector<uint64_t>     keys;
+    std::vector<llama_token>  vals;
+    uint32_t mask = 0;
+    size_t   n    = 0;
+
+    void clear() {
+        keys.clear();
+        vals.clear();
+        mask = 0;
+        n = 0;
+    }
+
+    bool empty() const { return n == 0; }
+
+    static uint64_t pack(const char * p, size_t nbyte) {
+        // low 8 bits = length; next bytes = UTF-8 payload (nbyte <= 4)
+        uint64_t k = (uint8_t) nbyte;
+        for (size_t i = 0; i < nbyte; ++i) {
+            k |= (uint64_t) (uint8_t) p[i] << (8 * (i + 1));
+        }
+        return k;
+    }
+
+    static uint32_t hash_key(uint64_t key) {
+        key ^= key >> 30;
+        key *= 0xbf58476d1ce4e5b9ULL;
+        key ^= key >> 27;
+        key *= 0x94d049bb133111ebULL;
+        key ^= key >> 31;
+        return (uint32_t) key;
+    }
+
+    void init(size_t n_hint) {
+        uint32_t cap = 16;
+        const uint32_t need = (uint32_t) std::max<size_t>(n_hint * 2 + 1, 16);
+        while (cap < need) {
+            cap <<= 1;
+        }
+        keys.assign(cap, UINT64_MAX);
+        vals.assign(cap, LLAMA_TOKEN_NULL);
+        mask = cap - 1;
+        n = 0;
+    }
+
+    bool insert(const char * p, size_t nbyte, llama_token id) {
+        if (keys.empty() || nbyte == 0 || nbyte > 4) {
+            return false;
+        }
+        const uint64_t key = pack(p, nbyte);
+        uint32_t idx = hash_key(key) & mask;
+        for (;;) {
+            if (keys[idx] == UINT64_MAX) {
+                keys[idx] = key;
+                vals[idx] = id;
+                n++;
+                return true;
+            }
+            if (keys[idx] == key) {
+                return false; // keep first
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+
+    llama_token lookup(const char * p, size_t nbyte) const {
+        if (keys.empty() || nbyte == 0 || nbyte > 4) {
+            return LLAMA_TOKEN_NULL;
+        }
+        const uint64_t key = pack(p, nbyte);
+        uint32_t idx = hash_key(key) & mask;
+        for (;;) {
+            const uint64_t k = keys[idx];
+            if (k == UINT64_MAX) {
+                return LLAMA_TOKEN_NULL;
+            }
+            if (k == key) {
+                return vals[idx];
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+};
+
+
+// Per-tokenize() short pretok → token-id sequence cache (gigatoken T25/T26 lessons).
+// WHY: after id-pair merge is cheap, repeated pretokens (system prompts, boilerplate,
+// research megaprompt seeds) still re-run merge from scratch. Memoizing ≤15-byte words
+// → ≤4 result ids captures within-request repetition with zero cross-request lifecycle.
+// Miss falls through to the exact same merge path (identity-safe).
+// Caps: key ≤15B (inline key store); value ≤4 ids (~98% of short pretoks in gigatoken).
+// Disabled when !use_id_pairs or LLAMA_BPE_NO_PRETOK_CACHE is set.
+struct llm_bpe_pretok_cache {
+    static constexpr size_t MIN_KEY = 4;  // WHY: 1–3B pretoks (spaces, "the") are cheaper to re-merge than hash+probe
+    static constexpr size_t MAX_KEY = 15;
+    static constexpr size_t MAX_IDS = 4;
+    static constexpr size_t CAP     = 4096; // power of 2; load stop at 1/2
+
+    struct entry {
+        uint8_t     key_len = 0; // 0 => empty slot
+        uint8_t     n_ids   = 0;
+        uint8_t     key[MAX_KEY];
+        llama_token ids[MAX_IDS];
+    };
+
+    std::vector<entry> slots;
+    uint32_t mask = 0;
+    size_t   n    = 0;
+    bool     enabled = true;
+
+    void init(bool on) {
+        enabled = on;
+        if (!enabled) {
+            slots.clear();
+            mask = 0;
+            n = 0;
+            return;
+        }
+        slots.assign(CAP, entry{});
+        mask = CAP - 1;
+        n = 0;
+    }
+
+    static uint64_t hash_bytes(const char * p, size_t len) {
+        uint64_t h = 0xcbf29ce484222325ULL ^ (uint64_t) len;
+        for (size_t i = 0; i < len; ++i) {
+            h ^= (uint8_t) p[i];
+            h *= 0x100000001b3ULL;
+        }
+        h ^= h >> 33;
+        h *= 0xff51afd7ed558ccdULL;
+        h ^= h >> 33;
+        return h;
+    }
+
+    bool lookup(const char * p, size_t len, llama_token * out_ids, int & out_n) const {
+        if (!enabled || slots.empty() || len < MIN_KEY || len > MAX_KEY) {
+            return false;
+        }
+        uint32_t idx = (uint32_t) hash_bytes(p, len) & mask;
+        for (size_t probes = 0; probes < CAP; ++probes) {
+            const entry & e = slots[idx];
+            if (e.key_len == 0) {
+                return false;
+            }
+            if (e.key_len == (uint8_t) len && std::memcmp(e.key, p, len) == 0) {
+                out_n = (int) e.n_ids;
+                for (int i = 0; i < out_n; ++i) {
+                    out_ids[i] = e.ids[i];
+                }
+                return true;
+            }
+            idx = (idx + 1) & mask;
+        }
+        return false;
+    }
+
+    void insert(const char * p, size_t len, const llama_token * ids, int n_ids) {
+        if (!enabled || slots.empty() || len < MIN_KEY || len > MAX_KEY) {
+            return;
+        }
+        if (n_ids <= 0 || n_ids > (int) MAX_IDS) {
+            return;
+        }
+        if (n * 2 >= CAP) {
+            return; // keep load factor ≤ 1/2
+        }
+        uint32_t idx = (uint32_t) hash_bytes(p, len) & mask;
+        for (size_t probes = 0; probes < CAP; ++probes) {
+            entry & e = slots[idx];
+            if (e.key_len == 0) {
+                e.key_len = (uint8_t) len;
+                e.n_ids = (uint8_t) n_ids;
+                std::memcpy(e.key, p, len);
+                for (int i = 0; i < n_ids; ++i) {
+                    e.ids[i] = ids[i];
+                }
+                n++;
+                return;
+            }
+            if (e.key_len == (uint8_t) len && std::memcmp(e.key, p, len) == 0) {
+                return; // keep first
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+};
+
 struct llm_bigram_bpe {
     struct comparator {
         bool operator()(const llm_bigram_bpe & l, const llm_bigram_bpe & r) const {
@@ -271,9 +606,10 @@ struct llm_bigram_bpe {
     using queue = llama_priority_queue<llm_bigram_bpe, queue_storage, comparator>;
     llm_symbol::index left;
     llm_symbol::index right;
-    std::string text;
     int rank;
-    size_t size;
+    llama_token left_id;
+    llama_token right_id;
+    llama_token merged_id;
 };
 
 struct llm_tokenizer_bpe : llm_tokenizer {
@@ -353,7 +689,6 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_CODESHELL:
             case LLAMA_VOCAB_PRE_TYPE_EXAONE:
             case LLAMA_VOCAB_PRE_TYPE_MINERVA:
-            case LLAMA_VOCAB_PRE_TYPE_MELLUM2:
                 regex_exprs = {
                     "\\p{N}",
                     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
@@ -433,15 +768,6 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))*((?=[\\p{L}])([^A-Z]))+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))+((?=[\\p{L}])([^A-Z]))*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
-            case LLAMA_VOCAB_PRE_TYPE_GRANITE_EMB_MULTI:
-                // Same lookaheads as GPT4O but with \p{M} added so combining marks
-                // (diacritics) attach to their base letters. Avoids excessive
-                // backtracking on scripts that use them heavily (Bengali, Hindi,
-                // Telugu, Thai, ...). See PR #22716 for benchmarks.
-                regex_exprs = {
-                    "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}\\p{M}])([^a-z]))*((?=[\\p{L}\\p{M}])([^A-Z]))+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}\\p{M}])([^a-z]))+((?=[\\p{L}\\p{M}])([^A-Z]))*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
-                };
-                break;
             case LLAMA_VOCAB_PRE_TYPE_TINY_AYA:
                 regex_exprs = {
                     // original regex from tokenizer.json: "\\d{1,3}(?=(?:\\d{3})*\\b)"
@@ -496,12 +822,6 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
-            case LLAMA_VOCAB_PRE_TYPE_LAGUNA:
-                regex_exprs = {
-                    "[^\\n]+|[\\n]+",
-                    "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
-                };
-                break;
             case LLAMA_VOCAB_PRE_TYPE_EXAONE_MOE:
                 regex_exprs = {
                     // original regex from tokenizer.json
@@ -527,21 +847,6 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 byte_encode = false;
                 break;
-            case LLAMA_VOCAB_PRE_TYPE_MINICPM5:
-                regex_exprs = {
-                    // original regex from tokenizer.json (openbmb/MiniCPM5-1B)
-                    "\\p{N}{1,3}",
-                    // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}+| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
-                    "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}+| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
-                };
-                break;
-            case LLAMA_VOCAB_PRE_TYPE_WHITESPACE:
-                // whitespace pre-tokenizer (jinaai/jina-embeddings-v2-base-zh)
-                regex_exprs = {
-                    "\\S+",
-                };
-                byte_encode = false;
-                break;
             default:
                 // default regex for BPE tokenization pre-processing
                 regex_exprs = {
@@ -560,8 +865,6 @@ struct llm_tokenizer_bpe : llm_tokenizer {
 
 struct llm_tokenizer_bpe_session {
     llm_tokenizer_bpe_session(const llama_vocab & vocab, const llm_tokenizer_bpe & tokenizer) : vocab(vocab), tokenizer(tokenizer) {}
-
-    virtual ~llm_tokenizer_bpe_session() = default;
 
     static void append(const llama_token token_id, std::vector<llama_token> & output)  {
         output.push_back(token_id);
@@ -600,14 +903,56 @@ struct llm_tokenizer_bpe_session {
         }
     }
 
-    virtual void tokenize(const std::string & text, std::vector<llama_token> & output) {
+    void tokenize(const std::string & text, std::vector<llama_token> & output) {
         int final_prev_index = -1;
-        const auto word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+
+        // WHY (0119): prefer offset+blob pretok on ASCII custom regex — skip ~370k string/MiB.
+        unicode_pretok_blob pretok_blob;
+        const bool use_blob = unicode_regex_split_try_blob(
+                text, tokenizer.regex_exprs, tokenizer.byte_encode, pretok_blob);
+        std::vector<std::string> word_collection;
+        if (!use_blob) {
+            word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+        }
 
         symbols_final.clear();
         auto tok_pre = vocab.get_pre_type();
+        const bool use_id_pairs = vocab.has_bpe_id_pairs();
+        // WHY (0120): init pretok cache once per session, not per tokenize() call.
+        // tokenizer_st_partition invokes session.tokenize() once per text fragment between
+        // specials; re-assign(4096) + cold cache each fragment made mixed/chat megaprompts
+        // ~2.6× slower with cache ON than NO_PRETOK_CACHE (see findings). Session is
+        // constructed once per llama_tokenize, so cross-fragment reuse is correct and
+        // still has no cross-request lifecycle.
+        if (!pretok_cache_ready) {
+            const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
+            pretok_cache.init(want_cache);
+            pretok_cache_ready = true;
+        }
 
-        for (const auto & word : word_collection) {
+        auto process_word = [&](const char * wdata, size_t wsize) {
+            // Cache hit: skip merge entirely. Append one symbol per cached id.
+            if (use_id_pairs) {
+                llama_token cached_ids[llm_bpe_pretok_cache::MAX_IDS];
+                int cached_n = 0;
+                if (pretok_cache.lookup(wdata, wsize, cached_ids, cached_n)) {
+                    for (int ci = 0; ci < cached_n; ++ci) {
+                        llm_symbol sym;
+                        sym.text = wdata;
+                        sym.n = wsize;
+                        sym.prev = final_prev_index;
+                        sym.next = -1;
+                        sym.id = cached_ids[ci];
+                        if (final_prev_index != -1) {
+                            symbols_final[final_prev_index].next = symbols_final.size();
+                        }
+                        symbols_final.emplace_back(sym);
+                        final_prev_index = (int) symbols_final.size() - 1;
+                    }
+                    return;
+                }
+            }
+
             work_queue = llm_bigram_bpe::queue();
             symbols.clear();
 
@@ -615,66 +960,115 @@ struct llm_tokenizer_bpe_session {
             size_t offset = 0;
 
             //if (vocab.tokenizer_ignore_merges && vocab.token_to_id.find(word) != vocab.token_to_id.end()) {
-            if (vocab.get_ignore_merges() && vocab.text_to_token(word) != LLAMA_TOKEN_NULL) {
-                symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});
-                offset = word.size();
-            } else if (tok_pre == LLAMA_VOCAB_PRE_TYPE_GEMMA4 && word.find_first_not_of('\n') == std::string::npos) {
-                // fix for gemma 4, ref: https://github.com/ggml-org/llama.cpp/pull/21343
-                auto tok = vocab.text_to_token(word);
-                if (tok != LLAMA_TOKEN_NULL) {
-                    symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});
-                    offset = word.size();
+            if (vocab.get_ignore_merges()) {
+                const std::string word_tmp(wdata, wsize);
+                const llama_token wid = vocab.text_to_token(word_tmp);
+                if (wid != LLAMA_TOKEN_NULL) {
+                    symbols.emplace_back(llm_symbol{-1, -1, wdata, wsize, wid});
+                    offset = wsize;
+                }
+            } else if (tok_pre == LLAMA_VOCAB_PRE_TYPE_GEMMA4) {
+                // Match std::string::find_first_not_of('\n') == npos (true for empty too).
+                bool all_nl = true;
+                for (size_t i = 0; i < wsize; ++i) {
+                    if (wdata[i] != '\n') {
+                        all_nl = false;
+                        break;
+                    }
+                }
+                if (all_nl) {
+                    // fix for gemma 4, ref: https://github.com/ggml-org/llama.cpp/pull/21343
+                    const std::string word_tmp(wdata, wsize);
+                    auto tok = vocab.text_to_token(word_tmp);
+                    if (tok != LLAMA_TOKEN_NULL) {
+                        symbols.emplace_back(llm_symbol{-1, -1, wdata, wsize, tok});
+                        offset = wsize;
+                    }
                 }
             }
 
-            while (offset < word.size()) {
+            while (offset < wsize) {
                 llm_symbol sym;
-                size_t char_len = std::min(word.size() - offset, (size_t) unicode_len_utf8(word[offset]));
-                sym.text = word.c_str() + offset;
+                size_t char_len = std::min(wsize - offset, (size_t) unicode_len_utf8(wdata[offset]));
+                sym.text = wdata + offset;
                 sym.n = char_len;
                 offset += sym.n;
                 sym.prev = index - 1;
-                sym.next = offset == word.size() ? -1 : index + 1;
+                sym.next = offset == wsize ? -1 : index + 1;
+                // Map UTF-8 char -> token id once via packed piece table (no std::string).
+                // WHY piece4 not text_to_token: per-char string map dominated Qwen megaprompts
+                // and erased the merge speedup (see docs/faster-bpe-tokenize-findings.md).
+                // Word bytes are already remapped when tokenizer.byte_encode is true.
+                // Miss => NULL, byte-fallback at emit.
+                if (use_id_pairs) {
+                    sym.id = vocab.find_bpe_piece4(sym.text, sym.n);
+                }
                 index++;
                 symbols.emplace_back(sym);
             }
-            for (int i = 1; i < (int) symbols.size(); ++i) {
-                add_new_bigram(i - 1, i);
+
+            if (!use_id_pairs) {
+                tokenize_word_legacy_string();
+            } else if (symbols.size() <= 64) {
+                // Tiered merge: short/small words use linear min-scan (gigatoken T20).
+                // WHY 64: typical pretok words fit; avoids priority_queue overhead on tiny
+                // chains. Tie-break matches llm_bigram_bpe::comparator (leftmost on equal rank).
+                merge_symbols_linear();
+            } else {
+                for (int i = 1; i < (int) symbols.size(); ++i) {
+                    add_new_bigram_id(i - 1, i);
+                }
+                while (!work_queue.empty()) {
+                    auto bigram = work_queue.pop_move();
+
+                    auto & left_symbol = symbols[bigram.left];
+                    auto & right_symbol = symbols[bigram.right];
+
+                    // Stale check via stored ids (replaces left+right string == bigram.text).
+                    // WHY: soft-delete leaves tombstones in the queue; ids avoid reallocating
+                    // concat strings just to reject stale bigrams.
+                    if (left_symbol.n == 0 || right_symbol.n == 0 ||
+                        left_symbol.id != bigram.left_id ||
+                        right_symbol.id != bigram.right_id) {
+                        continue;
+                    }
+
+                    left_symbol.n += right_symbol.n;
+                    left_symbol.id = bigram.merged_id;
+                    right_symbol.n = 0;
+                    right_symbol.id = LLAMA_TOKEN_NULL;
+
+                    left_symbol.next = right_symbol.next;
+                    if (right_symbol.next >= 0) {
+                        symbols[right_symbol.next].prev = bigram.left;
+                    }
+
+                    add_new_bigram_id(left_symbol.prev, bigram.left);
+                    add_new_bigram_id(bigram.left, left_symbol.next);
+                }
             }
 
-            // build token(s)
-            while (!work_queue.empty()) {
-                auto bigram = work_queue.pop_move();
-
-                auto & left_symbol = symbols[bigram.left];
-                auto & right_symbol = symbols[bigram.right];
-
-                if (left_symbol.n == 0 || right_symbol.n == 0) {
-                    continue;
-                }
-                std::string left_token = std::string(left_symbol.text, left_symbol.n);
-                std::string right_token = std::string(right_symbol.text, right_symbol.n);
-                if (left_token + right_token != bigram.text) {
-                    continue;  // Skip this bigram if it's outdated
-                }
-
-                // merge the right sym into the left one
-                left_symbol.n += right_symbol.n;
-                right_symbol.n = 0;
-
-                // remove the right sym from the chain
-                left_symbol.next = right_symbol.next;
-                if (right_symbol.next >= 0) {
-                    symbols[right_symbol.next].prev = bigram.left;
-                }
-
-                add_new_bigram(left_symbol.prev, bigram.left);  // left side of current symbol
-                add_new_bigram(bigram.left, left_symbol.next);  // right side of current symbol
-            }
+            // Collect result ids for pretok cache (only when all symbols resolved).
+            // WHY also require ≥3 initial symbols: 1–2 symbol words are already a single piece4
+            // lookup + trivial merge; caching them adds probe tax without savings.
+            llama_token result_ids[llm_bpe_pretok_cache::MAX_IDS];
+            int result_n = 0;
+            const int nsym_initial = index; // symbols filled above (index == symbols.size())
+            bool cacheable = use_id_pairs
+                && wsize >= llm_bpe_pretok_cache::MIN_KEY
+                && wsize <= llm_bpe_pretok_cache::MAX_KEY
+                && nsym_initial >= 3;
 
             // add the finished tokens to the final list keeping correct order for next and prev
             for (auto & sym : symbols) {
                 if (sym.n > 0) {
+                    if (cacheable) {
+                        if (sym.id == LLAMA_TOKEN_NULL || result_n >= (int) llm_bpe_pretok_cache::MAX_IDS) {
+                            cacheable = false;
+                        } else {
+                            result_ids[result_n++] = sym.id;
+                        }
+                    }
                     sym.prev = final_prev_index;
                     sym.next = -1;
                     if (final_prev_index != -1) {
@@ -684,6 +1078,22 @@ struct llm_tokenizer_bpe_session {
                     final_prev_index = symbols_final.size() - 1;
                 }
             }
+            if (cacheable && result_n > 0) {
+                pretok_cache.insert(wdata, wsize, result_ids, result_n);
+            }
+        };
+
+        if (use_blob) {
+            const char * base = pretok_blob.base(text);
+            size_t off = 0;
+            for (size_t len : pretok_blob.lens) {
+                process_word(base + off, len);
+                off += len;
+            }
+        } else {
+            for (const auto & word : word_collection) {
+                process_word(word.data(), word.size());
+            }
         }
 
         symbols = symbols_final;
@@ -692,6 +1102,11 @@ struct llm_tokenizer_bpe_session {
             for (int i = 0; i != -1; i = symbols[i].next) {
                 auto & symbol = symbols[i];
                 if (symbol.n == 0) {
+                    continue;
+                }
+
+                if (use_id_pairs && symbol.id != LLAMA_TOKEN_NULL) {
+                    output.push_back(symbol.id);
                     continue;
                 }
 
@@ -723,29 +1138,167 @@ struct llm_tokenizer_bpe_session {
     }
 
 private:
-    void add_new_bigram(int left, int right) {
+    // Legacy string-keyed merge when id-pair table is unavailable.
+    // WHY keep: LLAMA_BPE_FORCE_LEGACY identity A/B and any vocab that failed to build
+    // bpe_id_pairs must still produce stock-identical IDs.
+    void tokenize_word_legacy_string() {
+        struct legacy_bigram {
+            struct comparator {
+                bool operator()(const legacy_bigram & l, const legacy_bigram & r) const {
+                    return l.rank > r.rank || (l.rank == r.rank && l.left > r.left);
+                }
+            };
+            using queue_storage = std::vector<legacy_bigram>;
+            using queue = llama_priority_queue<legacy_bigram, queue_storage, comparator>;
+            llm_symbol::index left;
+            llm_symbol::index right;
+            std::string text;
+            int rank;
+            size_t size;
+        };
+
+        typename legacy_bigram::queue lq;
+        auto add = [&](int left, int right) {
+            if (left == -1 || right == -1) return;
+            std::string left_token  = std::string(symbols[left].text,  symbols[left].n);
+            std::string right_token = std::string(symbols[right].text, symbols[right].n);
+            int rank_found = vocab.find_bpe_rank(left_token, right_token);
+            if (rank_found < 0) return;
+            legacy_bigram bigram;
+            bigram.left = left;
+            bigram.right = right;
+            bigram.text = left_token + right_token;
+            bigram.size = left_token.size() + right_token.size();
+            bigram.rank = rank_found;
+            lq.push(bigram);
+        };
+
+        for (int i = 1; i < (int) symbols.size(); ++i) {
+            add(i - 1, i);
+        }
+        while (!lq.empty()) {
+            auto bigram = lq.pop_move();
+            auto & left_symbol = symbols[bigram.left];
+            auto & right_symbol = symbols[bigram.right];
+            if (left_symbol.n == 0 || right_symbol.n == 0) continue;
+            std::string left_token  = std::string(left_symbol.text, left_symbol.n);
+            std::string right_token = std::string(right_symbol.text, right_symbol.n);
+            if (left_token + right_token != bigram.text) continue;
+            left_symbol.n += right_symbol.n;
+            right_symbol.n = 0;
+            left_symbol.next = right_symbol.next;
+            if (right_symbol.next >= 0) {
+                symbols[right_symbol.next].prev = bigram.left;
+            }
+            add(left_symbol.prev, bigram.left);
+            add(bigram.left, left_symbol.next);
+        }
+    }
+
+    // Linear min-rank merge for short symbol chains (gigatoken T20).
+    // WHY stack arrays: this path is only for symbols.size()<=64 — heap per word dominated
+    // Qwen-style many-short-word inputs. Tie-break: leftmost wins via left-to-right scan
+    // with strict `<` on rank (matches llm_bigram_bpe::comparator).
+    void merge_symbols_linear() {
+        const int nsym = (int) symbols.size();
+        if (nsym <= 1) {
+            return;
+        }
+        // Stack arrays — this path is only used for symbols.size() <= 64. Avoids
+        // per-word heap allocs that dominated Qwen-style many-short-word inputs.
+        int ranks[64];
+        llama_token merged_ids[64];
+        for (int i = 0; i < nsym; ++i) {
+            ranks[i] = INT_MAX;
+            merged_ids[i] = LLAMA_TOKEN_NULL;
+        }
+
+        auto refresh = [&](int i) {
+            ranks[i] = INT_MAX;
+            merged_ids[i] = LLAMA_TOKEN_NULL;
+            if (i < 0 || i >= nsym) return;
+            const int j = symbols[i].next;
+            if (j < 0) return;
+            if (symbols[i].n == 0 || symbols[j].n == 0) return;
+            if (symbols[i].id == LLAMA_TOKEN_NULL || symbols[j].id == LLAMA_TOKEN_NULL) return;
+            int rank = -1;
+            llama_token merged = LLAMA_TOKEN_NULL;
+            if (!vocab.find_bpe_id_pair(symbols[i].id, symbols[j].id, rank, merged)) return;
+            ranks[i] = rank;
+            merged_ids[i] = merged;
+        };
+
+        for (int i = 0; i < nsym; ++i) {
+            if (symbols[i].n > 0 && symbols[i].next >= 0) {
+                refresh(i);
+            }
+        }
+
+        while (true) {
+            int best_rank = INT_MAX;
+            int best_i = -1;
+            for (int i = 0; i < nsym; ++i) {
+                if (symbols[i].n == 0) continue;
+                if (ranks[i] < best_rank) {
+                    best_rank = ranks[i];
+                    best_i = i;
+                }
+            }
+            if (best_i < 0 || best_rank == INT_MAX) {
+                break;
+            }
+
+            const int left = best_i;
+            const int right = symbols[left].next;
+            if (right < 0 || symbols[right].n == 0) {
+                ranks[left] = INT_MAX;
+                continue;
+            }
+
+            symbols[left].n += symbols[right].n;
+            symbols[left].id = merged_ids[left];
+            symbols[right].n = 0;
+            symbols[right].id = LLAMA_TOKEN_NULL;
+            ranks[right] = INT_MAX;
+
+            symbols[left].next = symbols[right].next;
+            if (symbols[right].next >= 0) {
+                symbols[symbols[right].next].prev = left;
+            }
+
+            refresh(left);
+            if (symbols[left].prev >= 0) {
+                refresh(symbols[left].prev);
+            }
+        }
+    }
+
+    void add_new_bigram_id(int left, int right) {
         if (left == -1 || right == -1) {
             return;
         }
-        std::string left_token  = std::string(symbols[left].text,  symbols[left].n);
-        std::string right_token = std::string(symbols[right].text, symbols[right].n);
+        const llama_token lid = symbols[left].id;
+        const llama_token rid = symbols[right].id;
+        if (lid == LLAMA_TOKEN_NULL || rid == LLAMA_TOKEN_NULL) {
+            return;
+        }
+        if (symbols[left].n == 0 || symbols[right].n == 0) {
+            return;
+        }
 
         int rank_found = -1;
-
-        rank_found = vocab.find_bpe_rank(left_token, right_token);
-
-        if (rank_found < 0) {
+        llama_token merged = LLAMA_TOKEN_NULL;
+        if (!vocab.find_bpe_id_pair(lid, rid, rank_found, merged)) {
             return;
         }
 
         llm_bigram_bpe bigram;
-
-        bigram.left  = left;
+        bigram.left = left;
         bigram.right = right;
-        bigram.text  = left_token + right_token;
-        bigram.size  = left_token.size() + right_token.size();
-        bigram.rank  = rank_found;
-
+        bigram.rank = rank_found;
+        bigram.left_id = lid;
+        bigram.right_id = rid;
+        bigram.merged_id = merged;
         work_queue.push(bigram);
     }
 
@@ -755,6 +1308,8 @@ private:
     std::vector<llm_symbol> symbols;
     std::vector<llm_symbol> symbols_final;
     llm_bigram_bpe::queue work_queue;
+    llm_bpe_pretok_cache pretok_cache;
+    bool pretok_cache_ready = false;
 };
 
 //
@@ -770,7 +1325,7 @@ struct llm_tokenizer_wpm_session {
 
     void tokenize(const std::string & text, std::vector<llama_token> & output) {
         // normalize and split by whitespace
-        std::vector<std::string> words = preprocess(text, vocab.get_normalizer_opts());
+        std::vector<std::string> words = preprocess(text);
         // bos token prepended already
 
         // find the longest tokens that form the words
@@ -815,14 +1370,11 @@ struct llm_tokenizer_wpm_session {
     }
 
     // TODO: reduce string copies by using cpts_offs array
-    static std::vector<std::string> preprocess(const std::string & text, const llama_vocab::normalizer_options & normalizer_opts)  {
-        std::vector<uint32_t> cpts = unicode_cpts_from_utf8(text);
-        if (normalizer_opts.strip_accents) {
-            cpts = unicode_cpts_normalize_nfd(cpts);
-        }
+    static std::vector<std::string> preprocess(const std::string & text)  {
+        const std::vector<uint32_t> cpts_nfd = unicode_cpts_normalize_nfd(unicode_cpts_from_utf8(text));
         std::vector<std::string> words(1, "");
 
-        for (const uint32_t cpt : cpts) {
+        for (const uint32_t cpt : cpts_nfd) {
             const auto flags = unicode_cpt_flags_from_cpt(cpt);
 
             if (flags.is_whitespace) {
@@ -837,11 +1389,7 @@ struct llm_tokenizer_wpm_session {
                 continue;
             }
 
-            if (normalizer_opts.strip_accents && flags.is_accent_mark) {
-                continue;
-            }
-
-            const std::string s = unicode_cpt_to_utf8(normalizer_opts.lowercase ? unicode_tolower(cpt) : cpt);
+            const std::string s = unicode_cpt_to_utf8(unicode_tolower(cpt));
             if (flags.is_punctuation || ( cpt < 0x7F && flags.is_symbol ) || is_chinese_char(cpt)) {
                 if (words.back().size()) {  // finish previous word if any
                     words.emplace_back();
@@ -893,6 +1441,9 @@ struct llm_tokenizer_ugm : llm_tokenizer {
             // blob containing XOR-compressed compact double array (XCDA) entries
             uint32_t xcda_blob_size = *(const uint32_t *) &precompiled_charsmap[0];
             charsmap_offset += sizeof(xcda_blob_size);
+            if (xcda_blob_size + charsmap_offset >= precompiled_charsmap.size()) {
+                throw std::runtime_error("Index out of array bounds in precompiled charsmap!");
+            }
 
             // Next xcda_blob_size bytes contain entries of XOR-compressed compact
             // double array (XCDA). Each entry is bit-packed into a 32-bit integer.
@@ -1208,15 +1759,7 @@ private:
                 throw std::runtime_error("Index out of array bounds in precompiled charsmap!");
             }
             const char * prefix_replacement = &(tokenizer.prefix_replacements)[longest_prefix_offset];
-            size_t max_len = tokenizer.prefix_replacements_size - longest_prefix_offset;
-            size_t repl_len = 0;
-            while (repl_len < max_len && prefix_replacement[repl_len] != '\0') {
-                repl_len++;
-            }
-            if (repl_len == max_len) {
-                throw std::runtime_error("Unterminated string in precompiled charsmap!");
-            }
-            return { prefix_replacement, repl_len, longest_prefix_length };
+            return { prefix_replacement, strlen(prefix_replacement), longest_prefix_length };
         }
 
         // check if the input prefix contains a valid sequence of UTF-8 code units
@@ -1330,9 +1873,6 @@ struct llm_tokenizer_rwkv_session {
                 if (node->has_value) {
                     token_id = node->value;
                     token_length = position + 1;
-                }
-                if (position + 1 >= text.size()) {
-                    break;
                 }
                 node = node->traverse(text[++position]);
             }
@@ -1627,117 +2167,6 @@ private:
     const llm_tokenizer_plamo2 & tokenizer;
 };
 
-// reserved suffix (U+E000) that keeps DNA k-mers distinct from identical
-// base-vocab BPE tokens (e.g. CCCCCC) in token_to_id; erased from id_to_token
-// text at load
-static const std::string dna_kmer_marker = "\xee\x80\x80";
-
-struct llm_tokenizer_hybriddna_session : llm_tokenizer_bpe_session {
-    llm_tokenizer_hybriddna_session(const llama_vocab & vocab, const llm_tokenizer_bpe & tokenizer) : llm_tokenizer_bpe_session{vocab, tokenizer}, vocab{vocab} {}
-
-    void tokenize(const std::string & text, std::vector<llama_token> & output) override {
-        static const std::string open_tag  = "<dna>";
-        static const std::string close_tag = "</dna>";
-
-        const auto dna_begin_id = vocab.text_to_token(open_tag);
-        const auto dna_end_id   = vocab.text_to_token(close_tag);
-        const auto dna_oov_id   = vocab.text_to_token("<oov>");
-
-        // Fall back to plain BPE if the DNA pieces aren't in the vocab.
-        if (dna_begin_id == LLAMA_TOKEN_NULL || dna_end_id == LLAMA_TOKEN_NULL || dna_oov_id == LLAMA_TOKEN_NULL) {
-            llm_tokenizer_bpe_session::tokenize(text, output);
-            return;
-        }
-
-        const size_t k = 6;
-        size_t pos = 0;
-
-        while (pos < text.size()) {
-            const size_t start = text.find(open_tag, pos);
-            if (start == std::string::npos) {
-                if (pos < text.size()) {
-                    llm_tokenizer_bpe_session::tokenize(text.substr(pos), output);
-                }
-                break;
-            }
-            if (start > pos) {
-                llm_tokenizer_bpe_session::tokenize(text.substr(pos, start - pos), output);
-            }
-            output.push_back(dna_begin_id);
-
-            const size_t content_start = start + open_tag.size();
-            const size_t end           = text.find(close_tag, content_start);
-            const size_t content_end   = (end == std::string::npos) ? text.size() : end;
-
-            emit_dna_kmers(text.substr(content_start, content_end - content_start), k, dna_oov_id, output);
-
-            if (end == std::string::npos) {
-                break;
-            }
-            output.push_back(dna_end_id);
-            pos = end + close_tag.size();
-        }
-    }
-
-private:
-    void emit_dna_kmers(const std::string & raw, size_t k, llama_token oov_id, std::vector<llama_token> & output) {
-        std::string seq = raw;
-        for (char & c : seq) {
-            if (c >= 'a' && c <= 'z') {
-                c = char(c - 32);
-            }
-        }
-
-        // k-mers carry the reserved marker suffix; a non-ACGT k-mer simply
-        // isn't in the vocab and falls back to <oov>
-        auto kmer_token = [&](const std::string & kmer) {
-            const auto tok = vocab.text_to_token(kmer + dna_kmer_marker);
-            return tok != LLAMA_TOKEN_NULL ? tok : oov_id;
-        };
-
-        size_t i = 0;
-        for (; i + k <= seq.size(); i += k) {
-            output.push_back(kmer_token(seq.substr(i, k)));
-        }
-        if (i < seq.size()) {
-            std::string kmer = seq.substr(i);
-            kmer.append(k - kmer.size(), 'A');
-            output.push_back(kmer_token(kmer));
-        }
-    }
-
-    const llama_vocab & vocab;
-};
-
-struct llm_tokenizer_whitespace_session : llm_tokenizer_bpe_session {
-    llm_tokenizer_whitespace_session(const llama_vocab & vocab, const llm_tokenizer_bpe & tokenizer) : llm_tokenizer_bpe_session{vocab, tokenizer}, vocab{vocab} {}
-
-    void tokenize(const std::string & text, std::vector<llama_token> & output) override {
-        const bool lowercase = vocab.get_normalizer_opts().lowercase;
-
-        std::string segment;
-        auto flush = [&]() {
-            if (!segment.empty()) {
-                llm_tokenizer_bpe_session::tokenize(segment, output);
-                segment.clear();
-            }
-        };
-
-        for (uint32_t cpt : unicode_cpts_from_utf8(text)) {
-            // drop whitespace
-            if (unicode_cpt_flags_from_cpt(cpt).is_whitespace) {
-                flush();
-            } else {
-                segment += unicode_cpt_to_utf8(lowercase ? unicode_tolower(cpt) : cpt);
-            }
-        }
-        flush();
-    }
-
-private:
-    const llama_vocab & vocab;
-};
-
 //
 // impl
 //
@@ -1819,13 +2248,18 @@ struct llama_vocab::impl {
     bool escape_whitespaces         = true;
     bool treat_whitespace_as_suffix = false;
 
-    // BertNormalizer options
-    llama_vocab::normalizer_options normalizer_opts;
-
     std::unordered_map<std::string, llama_token> token_to_id;
     std::vector<token_data>                      id_to_token;
 
     std::vector<llama_token> cache_special_tokens;
+    // WHY (0112/0113): LTR partition — byte-indexed specials trie + load-time first-byte gates.
+    llm_specials_byte_trie cache_specials_trie;
+    bool specials_interesting[256]    = {};
+    bool specials_interesting_ud[256] = {}; // excludes CONTROL|UNKNOWN (parse_special=false)
+    int  specials_n_interesting       = 0;
+    int  specials_n_interesting_ud    = 0;
+    unsigned char specials_only_byte    = 0;
+    unsigned char specials_only_byte_ud = 0;
     std::vector<std::string> cache_token_to_piece; // llama_token_to_piece(special = true);
     struct pair_hash {
         size_t operator()(const std::pair<std::string, std::string> & p) const {
@@ -1834,10 +2268,13 @@ struct llama_vocab::impl {
         }
     };
     std::unordered_map<std::pair<std::string, std::string>, int, pair_hash> bpe_ranks;
+    llm_bpe_id_pair_table bpe_id_pairs; // (id,id)->(rank,merged); built after token_to_id
+    llm_bpe_piece4_table  bpe_piece4;   // UTF-8 piece (len<=4) -> id for initial symbols
 
     // set of all tokens that cause "end of generation"
     std::set<llama_token> special_eog_ids;
 
+    // Gemma4 unified / tokenizer.ggml.suppress_tokens — bias logits to -inf.
     std::vector<llama_token> suppress_tokens;
 
     std::unique_ptr<llm_tokenizer> tokenizer;
@@ -1870,6 +2307,7 @@ struct llama_vocab::impl {
     void init_tokenizer(enum llama_vocab_type type);
 
     void tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const;
+    void tokenizer_st_partition_legacy(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const;
 
     std::string token_to_piece_for_cache(
                   llama_token   token,
@@ -1972,7 +2410,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             special_mask_id = 103;
 
             add_sep = true;
-        } else if (tokenizer_model == "gpt2" || tokenizer_model == "hybriddna" || tokenizer_model == "whitespace") {
+        } else if (tokenizer_model == "gpt2") {
             type = LLAMA_VOCAB_TYPE_BPE;
 
             // read bpe merges and populate bpe ranks
@@ -2027,21 +2465,16 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             const int precompiled_charsmap_keyidx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str());
             if (precompiled_charsmap_keyidx != -1) {
                 const gguf_type pc_type = gguf_get_arr_type(ctx, precompiled_charsmap_keyidx);
-                const size_t n_precompiled_charsmap = gguf_get_arr_data_n(ctx, precompiled_charsmap_keyidx);
+                GGML_ASSERT(pc_type == GGUF_TYPE_INT8 || pc_type == GGUF_TYPE_UINT8);
+
+                const size_t n_precompiled_charsmap = gguf_get_arr_n(ctx, precompiled_charsmap_keyidx);
                 const char * pc = (const char *) gguf_get_arr_data(ctx, precompiled_charsmap_keyidx);
                 precompiled_charsmap.assign(pc, pc + n_precompiled_charsmap);
-                if (precompiled_charsmap.size() < sizeof(uint32_t)) {
-                    throw std::runtime_error("precompiled_charsmap too small for xcda_blob_size header!");
-                }
-                uint32_t * xcda_blob_size = (uint32_t *) &precompiled_charsmap[0];
-#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-                *xcda_blob_size = __builtin_bswap32(*xcda_blob_size);
-#endif
-                if (*xcda_blob_size + sizeof(uint32_t) >= precompiled_charsmap.size()) {
-                    throw std::runtime_error("Index out of array bounds in precompiled charsmap!");
-                }
 #if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
                 // correct endianness of data in precompiled_charsmap binary blob
+                uint32_t * xcda_blob_size = (uint32_t *) &precompiled_charsmap[0];
+                *xcda_blob_size = __builtin_bswap32(*xcda_blob_size);
+                assert(*xcda_blob_size + sizeof(uint32_t) < n_precompiled_charsmap);
                 size_t xcda_array_size = *xcda_blob_size / sizeof(uint32_t);
                 uint32_t * xcda_array = (uint32_t *) &precompiled_charsmap[sizeof(uint32_t)];
                 for (size_t i = 0; i < xcda_array_size; ++i) {
@@ -2124,9 +2557,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_DEFAULT;
             } else if (tokenizer_pre == "default") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_DEFAULT;
-            } else if (tokenizer_pre == "minicpm5") {
-                pre_type = LLAMA_VOCAB_PRE_TYPE_MINICPM5;
-                ignore_merges = true;
             } else if (
                     tokenizer_pre == "llama3"   ||
                     tokenizer_pre == "llama-v3" ||
@@ -2182,8 +2612,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     tokenizer_pre == "jais-2") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_JAIS2;
             } else if (
-                    tokenizer_pre == "gemma4" ||
-                    tokenizer_pre == "granite-embed-multi-311m") {
+                    tokenizer_pre == "gemma4") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_GEMMA4;
                 escape_whitespaces = true;
             } else if (
@@ -2197,10 +2626,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     tokenizer_pre == "roberta-bpe") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_GPT2;
                 add_sep = true;
-            } else if (
-                    tokenizer_pre == "whitespace") {
-                pre_type = LLAMA_VOCAB_PRE_TYPE_WHITESPACE;
-                normalizer_opts.lowercase = false;
             } else if (
                     tokenizer_pre == "refact") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_REFACT;
@@ -2294,13 +2719,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_GPT4O;
                 clean_spaces = false;
             } else if (
-                tokenizer_pre == "granite-embed-multi-97m") {
-                pre_type = LLAMA_VOCAB_PRE_TYPE_GRANITE_EMB_MULTI;
-                clean_spaces = false;
-                ignore_merges = true;
-            } else if (
-                tokenizer_pre == "tiny_aya" ||
-                tokenizer_pre == "cohere2moe") {
+                tokenizer_pre == "tiny_aya") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_TINY_AYA;
                 clean_spaces = false;
             } else if (
@@ -2350,10 +2769,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_AFMOE;
                 clean_spaces = false;
             } else if (
-                tokenizer_pre == "laguna") {
-                pre_type = LLAMA_VOCAB_PRE_TYPE_LAGUNA;
-                clean_spaces = false;
-            } else if (
                 tokenizer_pre == "minimax-m2") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_MINIMAX_M2;
                 clean_spaces = false;
@@ -2361,9 +2776,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 tokenizer_pre == "solar-open") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_SOLAR_OPEN;
                 clean_spaces = false;
-            } else if (
-                tokenizer_pre == "mellum2") {
-                pre_type = LLAMA_VOCAB_PRE_TYPE_MELLUM2;
             } else {
                 throw std::runtime_error(format("unknown pre-tokenizer type: '%s'", tokenizer_pre.c_str()));
             }
@@ -2457,21 +2869,42 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
     }
     GGML_ASSERT(id_to_token.size() == token_to_id.size());
 
-    // hybriddna: the marker suffix kept k-mer ids distinct in token_to_id; erase
-    // it from id_to_token so the k-mers detokenize to the bare DNA sequence. The
-    // k-mers are the block right after <oov>, so only scan from there.
-    if (tokenizer_model == "hybriddna") {
-        const auto idx = token_to_id.find("<oov>");
-        if (idx != token_to_id.end()) {
-            auto it = id_to_token.begin() + idx->second + 1;
-            for (; it != id_to_token.end(); ++it) {
-                std::string & text = it->text;
-                if (text.size() > dna_kmer_marker.size()
-                        && text.compare(text.size() - dna_kmer_marker.size(), dna_kmer_marker.size(), dna_kmer_marker) == 0) {
-                    text.erase(text.size() - dna_kmer_marker.size());
-                }
+    // Build id-pair BPE table now that token_to_id is populated. Merges were loaded earlier
+    // as strings; converting here avoids looking up tokens before the vocab list exists.
+    // WHY lenient skip: some GGUFs carry orphan merge strings; failing the whole load is
+    // worse than omitting those pairs (encode still falls back per-pair).
+    if (!bpe_ranks.empty()) {
+        bpe_id_pairs.init(bpe_ranks.size());
+        size_t skipped = 0;
+        for (const auto & kv_pair : bpe_ranks) {
+            const auto it_l = token_to_id.find(kv_pair.first.first);
+            const auto it_r = token_to_id.find(kv_pair.first.second);
+            if (it_l == token_to_id.end() || it_r == token_to_id.end()) {
+                skipped++;
+                continue;
+            }
+            const std::string merged_text = kv_pair.first.first + kv_pair.first.second;
+            const auto it_m = token_to_id.find(merged_text);
+            if (it_m == token_to_id.end()) {
+                skipped++;
+                continue;
+            }
+            bpe_id_pairs.insert(it_l->second, it_r->second, kv_pair.second, it_m->second);
+        }
+        if (skipped > 0) {
+            LLAMA_LOG_WARN("%s: skipped %zu/%zu BPE merges when building id-pair table\n",
+                __func__, skipped, bpe_ranks.size());
+        }
+        // Single-codepoint / short UTF-8 pieces for O(1) char->id without std::string.
+        // WHY build here with id-pairs: same readiness gate (token_to_id complete).
+        bpe_piece4.init(token_to_id.size());
+        for (const auto & kv : token_to_id) {
+            if (kv.first.size() > 0 && kv.first.size() <= 4) {
+                bpe_piece4.insert(kv.first.data(), kv.first.size(), kv.second);
             }
         }
+        LLAMA_LOG_INFO("%s: bpe_id_pairs          = %zu\n", __func__, bpe_id_pairs.n);
+        LLAMA_LOG_INFO("%s: bpe_piece4            = %zu\n", __func__, bpe_piece4.n);
     }
 
     init_tokenizer(type);
@@ -2565,12 +2998,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             }
         }
 
-        // BertNormalizer options
-        ml.get_key(LLM_KV_TOKENIZER_NORMALIZER_LOWERCASE,     normalizer_opts.lowercase,     false);
-        normalizer_opts.strip_accents = normalizer_opts.lowercase;
-        ml.get_key(LLM_KV_TOKENIZER_NORMALIZER_STRIP_ACCENTS, normalizer_opts.strip_accents, false);
-
-        // suppress tokens
+        // suppress tokens (Gemma4 unified)
         {
             const int suppress_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_SUPPRESS_TOKENS).c_str());
             if (suppress_idx != -1) {
@@ -2807,7 +3235,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     || t.first == "<turn|>"          // gemma4
                     || t.first == "<|tool_response>" // gemma4
                     || t.first == "<｜end▁of▁sentence｜>" // deepseek-ocr
-                    || t.first == "[e~[" // minimax-m2/m3
                ) {
                 special_eog_ids.insert(t.second);
                 if ((attr & LLAMA_TOKEN_ATTR_CONTROL) == 0) {
@@ -2867,11 +3294,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
 
             LLAMA_LOG_INFO("%s: printing all EOG tokens:\n", __func__);
             for (auto tid : special_eog_ids) {
-                if (tid < 0 || tid >= (llama_token) id_to_token.size()) {
-                    LLAMA_LOG_WARN("%s: EOG token id %d is out of range (vocab size %zu), skipping\n",
-                            __func__, tid, id_to_token.size());
-                    continue;
-                }
                 auto & text = id_to_token[tid].text;
 
                 LLAMA_LOG_INFO("%s:   - %d ('%s')\n", __func__, tid, text.c_str());
@@ -2906,9 +3328,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             llama_token s_id = LLAMA_TOKEN_NULL;
 
             for (auto tid : special_eog_ids) {
-                if (tid < 0 || tid >= (llama_token) id_to_token.size()) {
-                    continue;
-                }
                 const auto & text = id_to_token[tid].text;
                 if (text == "<|tool_response>") {
                     has_tool_response = true;
@@ -2943,7 +3362,39 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             }
         );
 
+        cache_specials_trie.clear();
+        memset(specials_interesting, 0, sizeof(specials_interesting));
+        memset(specials_interesting_ud, 0, sizeof(specials_interesting_ud));
+        specials_n_interesting = 0;
+        specials_n_interesting_ud = 0;
+        specials_only_byte = 0;
+        specials_only_byte_ud = 0;
+        for (const llama_token special_id : cache_special_tokens) {
+            const auto & text = id_to_token[special_id].text;
+            if (text.empty()) {
+                continue;
+            }
+            cache_specials_trie.insert(text.data(), text.size(), special_id);
+            const unsigned char b0 = (unsigned char) text[0];
+            if (!specials_interesting[b0]) {
+                specials_interesting[b0] = true;
+                specials_only_byte = b0;
+                ++specials_n_interesting;
+            }
+            const auto attr = id_to_token[special_id].attr;
+            if (!(attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
+                if (!specials_interesting_ud[b0]) {
+                    specials_interesting_ud[b0] = true;
+                    specials_only_byte_ud = b0;
+                    ++specials_n_interesting_ud;
+                }
+            }
+        }
+
         LLAMA_LOG_INFO("%s: special tokens cache size = %u\n", __func__, (uint32_t) cache_special_tokens.size());
+        LLAMA_LOG_INFO("%s: specials trie nodes = %zu (%.2f KB)\n", __func__,
+                cache_specials_trie.nodes.size(),
+                cache_specials_trie.nodes.size() * sizeof(llm_specials_byte_trie::node) / 1024.0);
     }
 
     // build token to piece cache
@@ -3146,6 +3597,116 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
 // #define PRETOKENIZERDEBUG
 
 void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const {
+    // WHY (0111–0113): legacy is O(|specials| × |fragments| × find). LTR first-byte gate +
+    // byte-indexed trie longest-match; FORCE_LEGACY_SPECIALS keeps nested find for identity A/B.
+    if (getenv("LLAMA_BPE_FORCE_LEGACY_SPECIALS") != nullptr) {
+        tokenizer_st_partition_legacy(buffer, parse_special);
+        return;
+    }
+
+    const bool * interesting = parse_special ? specials_interesting : specials_interesting_ud;
+    const int n_interesting = parse_special ? specials_n_interesting : specials_n_interesting_ud;
+    const unsigned char only_interesting = parse_special ? specials_only_byte : specials_only_byte_ud;
+    if (n_interesting == 0) {
+        return; // no eligible specials — leave buffer unchanged
+    }
+
+    std::forward_list<fragment_buffer_variant> out;
+    auto out_it = out.before_begin();
+
+    for (const auto & fragment : buffer) {
+        if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_TOKEN) {
+            out_it = out.emplace_after(out_it, fragment.token);
+            continue;
+        }
+
+        const auto & raw_text = fragment.raw_text;
+        const uint64_t frag_off = fragment.offset;
+        const uint64_t frag_end = fragment.offset + fragment.length;
+
+        uint64_t pos = frag_off;
+        uint64_t raw_start = frag_off;
+
+        auto flush_raw = [&](uint64_t upto) {
+            if (upto > raw_start) {
+                out_it = out.emplace_after(out_it, raw_text, (int64_t) raw_start, (int64_t) (upto - raw_start));
+            }
+            raw_start = upto;
+        };
+
+        while (pos < frag_end) {
+            const unsigned char b = (unsigned char) raw_text[pos];
+            if (!interesting[b]) {
+                if (n_interesting == 1) {
+                    const void * p = memchr(raw_text.data() + pos, (int) only_interesting, (size_t) (frag_end - pos));
+                    if (!p) {
+                        pos = frag_end;
+                        break;
+                    }
+                    pos = (uint64_t) ((const char *) p - raw_text.data());
+                    continue;
+                }
+                ++pos;
+                continue;
+            }
+
+            // Walk byte-indexed specials trie; keep longest eligible match at pos.
+            uint32_t cur = 0;
+            llama_token best_id = LLAMA_TOKEN_NULL;
+            size_t best_len = 0;
+            for (uint64_t i = pos; i < frag_end; ++i) {
+                const uint32_t next = cache_specials_trie.nodes[cur].child[(unsigned char) raw_text[i]];
+                if (next == llm_specials_byte_trie::npos) {
+                    break;
+                }
+                cur = next;
+                const auto & node = cache_specials_trie.nodes[cur];
+                if (node.has_value) {
+                    const auto & data = vocab.get_token_data(node.value);
+                    if (!parse_special && (data.attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
+                        continue;
+                    }
+                    best_id = node.value;
+                    best_len = (size_t) (i + 1 - pos);
+                }
+            }
+
+            if (best_id == LLAMA_TOKEN_NULL) {
+                ++pos;
+                continue;
+            }
+
+            const auto & data = vocab.get_token_data(best_id);
+
+            int64_t left_off = (int64_t) raw_start;
+            int64_t left_len = (int64_t) pos - (int64_t) raw_start;
+            if (data.attr & LLAMA_TOKEN_ATTR_LSTRIP) {
+                while (left_len > 0 && isspace((unsigned char) raw_text[left_off + left_len - 1])) {
+                    left_len--;
+                }
+            }
+            if (left_len > 0) {
+                out_it = out.emplace_after(out_it, raw_text, left_off, left_len);
+            }
+
+            out_it = out.emplace_after(out_it, best_id);
+
+            pos += best_len;
+            if (data.attr & LLAMA_TOKEN_ATTR_RSTRIP) {
+                while (pos < frag_end && isspace((unsigned char) raw_text[pos])) {
+                    pos++;
+                }
+            }
+            raw_start = pos;
+        }
+
+        flush_raw(frag_end);
+    }
+
+    buffer.swap(out);
+}
+
+void llama_vocab::impl::tokenizer_st_partition_legacy(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const {
     // for each special token
     for (const llama_token special_id : cache_special_tokens) {
         const auto & data = vocab.get_token_data(special_id);
@@ -3376,21 +3937,11 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
             } break;
         case LLAMA_VOCAB_TYPE_BPE:
             {
+                llm_tokenizer_bpe_session session(vocab, *static_cast<const llm_tokenizer_bpe *>(tokenizer.get()));
                 // it calls some other methods that are not exist in llm_tokenizer,
                 // here just cast it to bpe tokenizer object
-                const llm_tokenizer_bpe * tok_bpe = static_cast<const llm_tokenizer_bpe *>(tokenizer.get());
-
-                std::unique_ptr<llm_tokenizer_bpe_session> session;
-                if (vocab.get_tokenizer_model() == "hybriddna") {
-                    session = std::make_unique<llm_tokenizer_hybriddna_session>(vocab, *tok_bpe);
-                } else if (vocab.get_tokenizer_model() == "whitespace") {
-                    session = std::make_unique<llm_tokenizer_whitespace_session>(vocab, *tok_bpe);
-                } else {
-                    session = std::make_unique<llm_tokenizer_bpe_session>(vocab, *tok_bpe);
-                }
-
                 if (add_special) {
-                    session->append_bos(output);
+                    session.append_bos(output);
                 }
                 for (const auto & fragment : fragment_buffer) {
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
@@ -3403,15 +3954,15 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
 #ifdef PRETOKENIZERDEBUG
                         LLAMA_LOG_WARN("TT: (%ld %ld %ld) '%s'\n", text.length(), fragment.offset, fragment.length, text.c_str());
 #endif
-                        session->tokenize(text, output);
+                        session.tokenize(text, output);
                     } else { // if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_TOKEN)
-                        session->append(fragment.token, output);
+                        session.append(fragment.token, output);
                     }
                 }
 
                 if (add_special) {
-                    session->append_eos(output);
-                    session->check_double_bos_eos(output);
+                    session.append_eos(output);
+                    session.check_double_bos_eos(output);
                 }
             } break;
         case LLAMA_VOCAB_TYPE_WPM:
@@ -4013,10 +4564,6 @@ bool llama_vocab::get_treat_whitespace_as_suffix() const {
     return pimpl->treat_whitespace_as_suffix;
 }
 
-const llama_vocab::normalizer_options & llama_vocab::get_normalizer_opts() const {
-    return pimpl->normalizer_opts;
-}
-
 const std::vector<llama_token> & llama_vocab::get_suppress_tokens() const {
     return pimpl->suppress_tokens;
 }
@@ -4037,12 +4584,26 @@ int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
     return it->second;
 }
 
-std::vector<std::string> llama_vocab::get_bpe_merges() const {
-    int max_rank = -1;
-    for (const auto & pair : pimpl->bpe_ranks) {
-        max_rank = std::max(max_rank, pair.second);
+bool llama_vocab::has_bpe_id_pairs() const {
+    // LLAMA_BPE_FORCE_LEGACY=1 => string-keyed path (identity / A-B harness).
+    // WHY re-read getenv each call: scripts/bench flips the env mid-process; a
+    // process-lifetime cache would make identity checks compare the same path twice.
+    if (getenv("LLAMA_BPE_FORCE_LEGACY") != nullptr) {
+        return false;
     }
-    std::vector<std::string> result(max_rank + 1);
+    return !pimpl->bpe_id_pairs.empty();
+}
+
+bool llama_vocab::find_bpe_id_pair(llama_token left, llama_token right, int & rank, llama_token & merged) const {
+    return pimpl->bpe_id_pairs.lookup(left, right, rank, merged);
+}
+
+llama_token llama_vocab::find_bpe_piece4(const char * text, size_t len) const {
+    return pimpl->bpe_piece4.lookup(text, len);
+}
+
+std::vector<std::string> llama_vocab::get_bpe_merges() const {
+    std::vector<std::string> result(pimpl->bpe_ranks.size());
 
     for (const auto & pair : pimpl->bpe_ranks) {
         result[pair.second] = pair.first.first + " " + pair.first.second;

@@ -16,7 +16,7 @@
 | **llama.cpp** | `../llama.cpp` | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md), [llama-fork-watchlist.md](./llama-fork-watchlist.md) | Pin bumps only |
 | **Ollama upstream** | `../ollama-upstream` | [ollama/ollama](https://github.com/ollama/ollama) | [upstream-ollama-diff.md](./upstream-ollama-diff.md) | As needed (mergeability) |
 | **eliza llama fork** | `../eliza-llama.cpp` | elizaOS/llama.cpp | [llama-fork-watchlist.md](./llama-fork-watchlist.md) | L2 kernel watch |
-| **ANE / MLX / toolkit** | `../ane`, `../mlx`, `../mlx-c`, `../bmtl` | various | [ane-draft-inprocess.md](./ane-draft-inprocess.md), UMA docs | Mac-only |
+| **ANE / MLX / toolkit** | `../ane`, `../mlx`, `../mlx-c`, `../bmtl` | various | [ane-draft-inprocess.md](./ane-draft-inprocess.md); **bmtl gigatoken techniques** → [faster-bpe-tokenize.md](./faster-bpe-tokenize.md) (patches **0106–0126**, do **not** vendor Rust) | Mac-only / technique watch |
 
 Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) are optional labs — not part of the weekly scan unless a ROADMAP item points at them.
 

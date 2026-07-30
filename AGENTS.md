@@ -14,7 +14,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | LocalAI control plane | `../LocalAI` → [docs/localai-borrowings.md](./docs/localai-borrowings.md) |
 | SGLang multimodal | `../sglang` → [docs/sglang-multimodal-borrowings.md](./docs/sglang-multimodal-borrowings.md) |
 | llama.cpp pin / fork watch | `../llama.cpp`, `../eliza-llama.cpp` → [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) |
-| Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (patches **0106–0120** in `llama/patches/`; must reach **`llama/llama.cpp/`** via sync) |
+| Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (patches **0106–0126** in `llama/patches/`; must reach **`llama/llama.cpp/`** via sync) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
 
 ## Do not touch

@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 05:10:00 -0700
+Subject: [PATCH] unicode: SWAR/NEON ASCII pretok letter+digit consume (0126)
+
+Accelerate ASCII letter/digit runs in byte pretok with borrow-safe SWAR and
+aarch64 NEON (SWAR-first; NEON after an 8-letter hit). Opt-out:
+LLAMA_BPE_NO_SIMD_PRETOK=1. See docs/faster-bpe-tokenize.md (M15d / 0126).
+
+---
+diff --git a/src/unicode.cpp b/src/unicode.cpp
+index 000000000..111111111 100644
+--- a/src/unicode.cpp
++++ b/src/unicode.cpp
+@@ -383,6 +383,12 @@
+                 v |= 8;
+             }
+             cls[i] = v;
++            // WHY (0126): SIMD consume uses arithmetic A–Z/a–z and 0–9 — must match LUT.
++            const bool arith_L = ((i | 0x20u) - (uint32_t) 'a') < 26u;
++            const bool arith_N = (i - (uint32_t) '0') < 10u;
++            assert(arith_L == (bool) (v & 2) && arith_N == (bool) (v & 4));
++            (void) arith_L;
++            (void) arith_N;
+         }
+         init = true;
+     }
+@@ -585,35 +591,138 @@
+                "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+" ||
+            regex_expr ==
+                "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
++}
++
++static inline bool unicode_want_simd_pretok() {
++    // WHY (0126): SWAR/NEON ASCII letter+digit consume. Opt-out keeps the 0114 8-wide LUT loop.
++    return getenv("LLAMA_BPE_NO_SIMD_PRETOK") == nullptr;
++}
++
++static inline bool unicode_ascii_is_letter_byte(unsigned char b) {
++    return ((b | 0x20u) - (unsigned char) 'a') < 26u;
++}
++
++static inline bool unicode_ascii_is_digit_byte(unsigned char b) {
++    return (b - (unsigned char) '0') < 10u;
++}
++
++// Borrow-safe SWAR (bithacks hasless/hasgreater): high bit set ⇒ lane is NOT a letter.
++static inline uint64_t unicode_swar64_hasless(uint64_t x, uint8_t n) {
++    return (x - UINT64_C(0x0101010101010101) * n) & ~x & UINT64_C(0x8080808080808080);
++}
++
++static inline uint64_t unicode_swar64_hasgreater(uint64_t x, uint8_t n) {
++    return ((x + UINT64_C(0x0101010101010101) * (uint64_t) (127u - n)) | x) &
++           UINT64_C(0x8080808080808080);
++}
++
++static inline uint64_t unicode_swar64_letter_nonmask(uint64_t w) {
++    const uint64_t lowered = w | UINT64_C(0x2020202020202020);
++    return unicode_swar64_hasless(lowered, (uint8_t) 'a') |
++           unicode_swar64_hasgreater(lowered, (uint8_t) 'z');
+ }
+ 
++static inline uint64_t unicode_swar64_digit_nonmask(uint64_t w) {
++    return unicode_swar64_hasless(w, (uint8_t) '0') | unicode_swar64_hasgreater(w, (uint8_t) '9');
++}
+ 
++#if defined(__aarch64__)
++#include <arm_neon.h>
++
++// Returns true if all 16 bytes are ASCII letters (vmax of inverted mask — not vmin).
++static inline bool unicode_neon16_all_letters(uint8x16_t v) {
++    const uint8x16_t lo = vorrq_u8(v, vdupq_n_u8(0x20));
++    const uint8x16_t is_let =
++            vandq_u8(vcgeq_u8(lo, vdupq_n_u8('a')), vcleq_u8(lo, vdupq_n_u8('z')));
++    return vmaxvq_u8(vmvnq_u8(is_let)) == 0;
++}
++
++static inline bool unicode_neon16_all_digits(uint8x16_t v) {
++    const uint8x16_t is_dig =
++            vandq_u8(vcgeq_u8(v, vdupq_n_u8('0')), vcleq_u8(v, vdupq_n_u8('9')));
++    return vmaxvq_u8(vmvnq_u8(is_dig)) == 0;
++}
++#endif
++
+ static inline void unicode_ascii_consume_letters_bytes(
+         const unsigned char * text, size_t & pos, size_t end, const uint8_t * cls) {
++    if (!unicode_want_simd_pretok()) {
++        while (pos + 8 <= end) {
++            if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
++                  (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
++                  (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
++                break;
++            }
++            pos += 8;
++        }
++        while (pos < end && (cls[text[pos]] & 2)) {
++            ++pos;
++        }
++        return;
++    }
++
++    // WHY (0126): SWAR-first (short English words). NEON only after a full 8-letter hit.
+     while (pos + 8 <= end) {
+-        if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
+-              (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
+-              (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
+-            break;
++        uint64_t w;
++        memcpy(&w, text + pos, 8);
++        const uint64_t non = unicode_swar64_letter_nonmask(w);
++        if (non) {
++            pos += (size_t) (__builtin_ctzll(non) >> 3);
++            return;
+         }
+         pos += 8;
++#if defined(__aarch64__)
++        while (pos + 16 <= end) {
++            const uint8x16_t v = vld1q_u8(text + pos);
++            if (!unicode_neon16_all_letters(v)) {
++                break;
++            }
++            pos += 16;
++        }
++#endif
+     }
+-    while (pos < end && (cls[text[pos]] & 2)) {
++    while (pos < end && unicode_ascii_is_letter_byte(text[pos])) {
+         ++pos;
+     }
+ }
+ 
+ static inline void unicode_ascii_consume_digits_bytes(
+         const unsigned char * text, size_t & pos, size_t end, const uint8_t * cls) {
++    if (!unicode_want_simd_pretok()) {
++        while (pos + 8 <= end) {
++            if (!((cls[text[pos]] & 4) && (cls[text[pos + 1]] & 4) && (cls[text[pos + 2]] & 4) &&
++                  (cls[text[pos + 3]] & 4) && (cls[text[pos + 4]] & 4) && (cls[text[pos + 5]] & 4) &&
++                  (cls[text[pos + 6]] & 4) && (cls[text[pos + 7]] & 4))) {
++                break;
++            }
++            pos += 8;
++        }
++        while (pos < end && (cls[text[pos]] & 4)) {
++            ++pos;
++        }
++        return;
++    }
++
+     while (pos + 8 <= end) {
+-        if (!((cls[text[pos]] & 4) && (cls[text[pos + 1]] & 4) && (cls[text[pos + 2]] & 4) &&
+-              (cls[text[pos + 3]] & 4) && (cls[text[pos + 4]] & 4) && (cls[text[pos + 5]] & 4) &&
+-              (cls[text[pos + 6]] & 4) && (cls[text[pos + 7]] & 4))) {
+-            break;
++        uint64_t w;
++        memcpy(&w, text + pos, 8);
++        const uint64_t non = unicode_swar64_digit_nonmask(w);
++        if (non) {
++            pos += (size_t) (__builtin_ctzll(non) >> 3);
++            return;
+         }
+         pos += 8;
++#if defined(__aarch64__)
++        while (pos + 16 <= end) {
++            const uint8x16_t v = vld1q_u8(text + pos);
++            if (!unicode_neon16_all_digits(v)) {
++                break;
++            }
++            pos += 16;
++        }
++#endif
+     }
+-    while (pos < end && (cls[text[pos]] & 4)) {
++    while (pos < end && unicode_ascii_is_digit_byte(text[pos])) {
+         ++pos;
+     }
+ }

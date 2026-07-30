@@ -109,3 +109,22 @@ uint32_t unicode_tolower(uint32_t cpt);
 bool unicode_cpt_is_han(uint32_t cpt);
 
 std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode = true);
+
+// WHY (0119/0121): pretok as contiguous storage + lens instead of N std::string words.
+// ASCII custom scanners (0119) and general cpt path (0121). BPE walks (ptr,len);
+// pointers must outlive tokenize(). Opt-out: LLAMA_BPE_NO_PRETOK_BLOB=1.
+struct unicode_pretok_blob {
+    std::string storage;
+    std::vector<size_t> lens;
+    bool use_storage = false;
+
+    const char * base(const std::string & text) const {
+        return use_storage ? storage.data() : text.data();
+    }
+};
+
+bool unicode_regex_split_try_blob(
+        const std::string & text,
+        const std::vector<std::string> & regex_exprs,
+        bool byte_encode,
+        unicode_pretok_blob & out);

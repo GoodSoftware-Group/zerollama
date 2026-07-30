@@ -4,6 +4,244 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### SWAR/NEON ASCII pretok consume (patch 0126)
+
+**Why:** Letter/digit runs on ASCII byte pretok still walked an 8-wide LUT loop; BMTL T01/T05 show SWAR/NEON consume wins without rewriting the whole scanner.
+
+**What:**
+
+- **0126** — borrow-safe SWAR + aarch64 NEON letter/digit consume (SWAR-first; NEON after an 8-hit); `LLAMA_BPE_NO_SIMD_PRETOK=1` A/B
+- **Measured (Qwen2 medians):** ASCII ~**1.3×** vs `NO_SIMD`; chat/mixed ~**1.1–1.25×**; identity green (`simd-pretok` gate)
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Space + printable byte-encode fast path (patch 0125)
+
+**Why:** Most English pretok words are ` ?\p{L}+` (leading space). Space remaps under GPT-2 byte-encode, so the 0117 printable skip never fired and every letter paid a LUT append.
+
+**What:**
+
+- **0125** — detect space + printable ASCII; remap space once, `memcpy` the rest (`LLAMA_BPE_NO_BYTE_ENC_FAST` unchanged)
+- **Measured:** Qwen2 ASCII ~**7.5 ms/MiB** (was ~8.5); GPT-2 ASCII ~**6.7 ms**; identity green
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Byte-level mixed pretok islands (patch 0124)
+
+**Why:** After 0122/0123, mixed text still paid a full megaprompt uint32 decode before cpt islands ran.
+
+**What:**
+
+- **0124** — `ascii_bytes_seg` on ASCII gaps; decode only non-ASCII islands; `LLAMA_BPE_NO_BYTE_MIXED=1` A/B
+- **Measured (Qwen2):** dense mixed ~**20.4 ms** vs ~**21.8 ms** `NO_BYTE_MIXED` (~1.07×); identity green (byte-mixed gate)
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### ASCII islands for GPT-2 / Llama3 / Qwen3.5 (patch 0123)
+
+**Why:** 0122 only covered Qwen2; mixed GPT-2/Llama3/Qwen3.5 megaprompts still paid the full Unicode pretok scanner after one non-ASCII byte.
+
+**What:**
+
+- **0123** — cpt `ascii_seg` + mixed islands for GPT-2 / Llama3 / Qwen3.5 (family-specific letter/number/punct rules)
+- **Measured:** identity green on Qwen2/35/Llama3/GPT-2 (incl. ascii-islands gate); dense mixed ~noise–1.05× vs `NO_ASCII_PRETOK`
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### ASCII islands in mixed Qwen2 pretok (patch 0122)
+
+**Why:** One non-ASCII byte (CJK / café / emoji) made the whole megaprompt miss `unicode_seg_is_ascii`, so Qwen2 paid the full Unicode pretok scanner on ASCII-majority text.
+
+**What:**
+
+- **0122** — ASCII gaps → `ascii_seg`; letter/punct non-ASCII islands → `unicode_seg`; punctuation keeps optional leading space (` ·`, ` 🚀`)
+- **Measured (Qwen2):** mixed `mega_1mib` ~**19.5 ms** (~1.1× vs `NO_ASCII_PRETOK`); ascii ~8.5 ms; identity green (incl. ascii-islands + café/`hello ·世界` snippets)
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Pretok blob for mixed path + ASCII bulk cpt decode (patch 0121)
+
+**Why:** After 0119/0120, mixed Unicode megaprompts still built ~N `std::string` pretok words via `unicode_regex_split`, and the general path decoded UTF-8 one codepoint at a time even on ASCII-majority text.
+
+**What:**
+
+- **0121** — `try_blob` fills for the general cpt path; 8-wide ASCII cpt fill before `unicode_cpt_from_utf8`
+- **Measured (Qwen2):** mixed `mega_1mib` ~**19.5 ms** (~1.1× vs `NO_PRETOK_BLOB`); ascii ~8.5 ms; identity green (incl. pretok-blob on mixed)
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Pretok cache once per session (patch 0120)
+
+**Why:** After 0107, `pretok_cache.init()` ran at the start of every `session.tokenize()` call. Chat/mixed megaprompts with specials are split into many fragments — each re-zeroed a 4096-slot table and started cold, making cache ON **~2.6× slower** than `NO_PRETOK_CACHE`.
+
+**What:**
+
+- **0120** — init pretok→ids cache once per BPE session (one `llama_tokenize`); fragments reuse the warmed table
+- **Measured (Qwen2):** mixed `mega_1mib` ~**21 ms** (was ~91); chat ~**15 ms** (was ~94); ascii ~9 ms unchanged; identity green
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Pretok blob — skip vector&lt;string&gt; on ASCII BPE (patch 0119)
+
+**Why:** After 0118, ASCII custom pretok still built ~370k `std::string`/MiB for the BPE session to consume.
+
+**What:**
+
+- **0119** — `unicode_pretok_blob` (storage+lens, or view into text when all words printable); BPE walks `(ptr,len)`; `LLAMA_BPE_NO_PRETOK_BLOB=1` A/B
+- **Measured (Qwen2, `mega_1mib_ascii`):** ~**8.7 ms** blob vs ~**9.5 ms** `NO_PRETOK_BLOB` (~1.09×); identity green across vocab harness
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Specials trie + memchr skip (patch 0112)
+
+**Why:** After 0111, each candidate first byte still memcmp'd every special sharing that byte (Qwen ~200 starting with `<`). Dense chat markers paid that tax repeatedly.
+
+**What:**
+
+- **0112** — load-time `naive_trie` over `cache_special_tokens`; LTR walk keeps longest eligible match; `memchr` when only one interesting first byte
+- **Measured (Qwen2, dense `<|im_start|>` every ~150 B, 1 MiB):** ~**65 ms** trie vs ~**217 ms** `FORCE_LEGACY_SPECIALS` (~3.3×); identity green. English-between-markers identity-bench seed stays ~100 ms (BPE dominates over specials match).
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Fuse ASCII pretok materialize + byte-encode (patch 0118)
+
+**Why:** ASCII byte pretok still built N substrings then ran byte-encode (printable words copied twice).
+
+**What:**
+
+- **0118** — one-pass offsets → remapped words on the ASCII custom path; shared `unicode_byte_enc_table`
+- **Measured (Qwen2 1 MiB ASCII):** ~**8.8 ms** vs ~**12.6 ms** `NO_BYTE_ENC_FAST` (~1.42×); identity green
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### GPT-2 byte-encode flatten + printable skip (patch 0117)
+
+**Why:** After ASCII pretok (0114–0116), Qwen/GPT-2 still remapped every pretok byte through `unordered_map` + `string +=`. Printable `0x21..0x7E` is identity under GPT-2 bytes↔unicode.
+
+**What:**
+
+- **0117** — flat `enc[256]` LUT with `append(len)`; skip remap for printable-only words; `LLAMA_BPE_NO_BYTE_ENC_FAST=1` for A/B
+- **Measured (1 MiB ASCII):** Qwen2/GPT-2 ~**1.33×** vs `NO_BYTE_ENC_FAST` (~9.5 ms vs ~12.8 ms); identity green. Stack ~**9–10 ms/MiB** (~105 MiB/s).
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Qwen3.5 all-ASCII byte pretok (patch 0116)
+
+**Why:** Qwen3.5 pretok adds `\p{M}` combining marks. No ASCII codepoint is `\p{M}`, so English megaprompts still paid full uint32 decode without needing a separate scanner.
+
+**What:**
+
+- **0116** — route Qwen3.5 all-ASCII (and ASCII segments) to the Qwen2 byte/ascii_seg scanners; hot flags LUT on the Unicode fallback
+- **Measured (Qwen3.5 mega_1mib_ascii):** ~**11.8 ms** vs ~**14.6 ms** `NO_ASCII_PRETOK` (~1.24×); identity green
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### GPT-2 + Llama3 all-ASCII byte pretok (patch 0115)
+
+**Why:** 0114 only covered Qwen2. GPT-2 / Llama3 English megaprompts paid the same uint32 decode tax.
+
+**What:**
+
+- **0115** — all-ASCII byte pretok for GPT-2 and Llama3 custom regexes (shared dispatch with 0114); `LLAMA_BPE_NO_ASCII_PRETOK=1` still disables
+- **Measured (1 MiB ASCII):** GPT-2 ~**11.2 ms** (~1.34× vs `NO_ASCII_PRETOK`); Llama3 ~**12.2 ms** (~1.19×); Qwen2 unchanged ~1.26×; identity green
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Qwen2 all-ASCII byte pretok (patch 0114)
+
+**Why:** Even after 0110, pure-ASCII Qwen2 still decoded every byte to `uint32` (+ `cpt_byte_off`) before the LUT scanner — ~4× RAM and a full pass for nothing.
+
+**What:**
+
+- **0114** — if text is all `< 0x80` and the sole regex is Qwen2 custom, pretok on bytes and `substr` words; 8-wide letter consume; still `LLAMA_BPE_NO_ASCII_PRETOK=1` for A/B
+- **Measured (Qwen2 mega_1mib_ascii):** ~**11.4 ms** vs ~**15 ms** with `NO_ASCII_PRETOK` (~1.3×); identity green. Identity-bench ~**87 MiB/s**.
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Byte-indexed specials trie + load-time gates (patch 0113)
+
+**Why:** 0112 still used `naive_trie` (`std::map` per byte) and rebuilt the first-byte interesting mask every `tokenize()`.
+
+**What:**
+
+- **0113** — `llm_specials_byte_trie` with `child[256]` indices; load-time `specials_interesting` / `_ud`; harness identity vs `FORCE_LEGACY_SPECIALS` on mixed/chat seeds
+- **Measured:** dense-chat ≈**noise vs 0112** (~65 ms) — remaining time is BPE between markers. Ships for O(1) walk + per-call gate removal + harness coverage.
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### LTR special-token partition (patch 0111, gigatoken T47)
+
+**Why:** After fixing the bench seed, chat megaprompts with repeated `<|im_start|>` / `<|im_end|>` were still **~500–850 ms/MiB** on Qwen. Cost was `tokenizer_st_partition`: O(|specials| × |fragments| × find) with ~294 specials — each absent special still scanned the whole text, and matches exploded the fragment list.
+
+**What:**
+
+- **0111** — first-byte-gated left-to-right longest match over `cache_special_tokens` (already longest-first); `LLAMA_BPE_FORCE_LEGACY_SPECIALS=1` keeps the old nested find path for identity A/B
+- Bench adds `mega_1mib_chat` (ASCII + chat markers)
+- **Measured (Qwen2, 1 MiB):** chat seed **~850 ms → ~99 ms (~8.5×)**; mixed Unicode seed similarly ~8×; pure ASCII ~14–19 ms (already fine)
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### ASCII pretok LUT + Qwen2 fast path (patch 0110)
+
+**Why:** After 0109, we still thought Qwen “English” was pretok-scanner-bound at ~700 ms/MiB. That was a **measurement trap**: the identity-bench seed embeds CJK/emoji (byte-encode merge cost) and chat specials (`<|im_start|>` every ~150 B — special-token scan). Pure ASCII English is already ~18 ms/MiB.
+
+**What:**
+
+- **0110** — 128-entry ASCII flags/class LUT for `c < 128` in GPT-2/Llama3/Qwen2 scanners; dedicated Qwen2 all-ASCII segment loop; `LLAMA_BPE_NO_ASCII_PRETOK=1` disables the all-ASCII path for A/B
+- Bench adds `mega_1mib_ascii` (no specials) so English pretok is not confused with specials/Unicode
+- **Measured:** pure ASCII Qwen2 ~**18 ms/MiB** (~54 MiB/s); 0110 vs 0109 on that shape ~**1.0–1.07×**. Mixed Unicode / specials-heavy seeds stay hundreds of ms (different levers).
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Faster pretok scanner hygiene (patch 0109)
+
+**Why:** After 0108, Qwen English megaprompts were still ~650–700 ms and spent that time in the custom pretok scanner. Full SIMD remains deferred; three safe cleanups remove wasted work around it.
+
+**What:**
+
+- **0109** — `src/unicode.cpp`: lazy `text_collapsed` (only when `std::regex` fallback needs it — GPT-2/Llama/Qwen custom paths never did); ASCII letter/digit consume (gigatoken T01); materialize valid UTF-8 pretoks via original byte spans (FFFD path unchanged)
+- Bit-identical vs 0108 token dumps + `FORCE_LEGACY` identity gate
+- **Measured (Mac aarch64, mega_1mib interleaved vs 0108):** ≈ **noise / ~1.0–1.05×** — scanner still dominates Qwen English; ship for wasted-pass removal, not headline speedup
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Faster pretok materialize (patch 0108)
+
+**Why:** After 0106+0107, English Qwen megaprompts were still pretok-bound in `unicode_regex_split`. Full pretok SIMD is a separate identity project; safer wins were double UTF-8 decode, a noop roundtrip before GPT-2 byte remap, and per-codepoint temporary `std::string`s when rebuilding words.
+
+**What:**
+
+- **0108** — `src/unicode.cpp`: share one `cpts` vector with custom splitters; `unicode_cpt_append_utf8` (no temp string per cpt); skip identity `cpts_from_utf8`↔`cpt_to_utf8` in `unicode_byte_encoding_process`
+- Bit-identical vs pristine unicode (A/B token dumps) and vs `FORCE_LEGACY` merge path
+- **Measured (Mac aarch64, mega_1mib fast path, 0108 vs pristine unicode):** GPT-2 ~**1.9×**, Llama3 BPE ~**1.4×**, Gemma4 ~**1.2×**; Qwen2 English ≈ wash (regex scanner still dominates)
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Per-tokenize pretok→ids cache (patch 0107, gigatoken T25/T26)
+
+**Why:** After id-pair merge (0106), repeated short identifiers in agent/code megaprompts still re-ran BPE merge from scratch. Gigatoken’s pretok cache (T25/T26) memoizes `word bytes → ≤4 token ids`; miss path is unchanged so identity stays bit-identical vs `LLAMA_BPE_FORCE_LEGACY`.
+
+**What:**
+
+- **0107** — per-`llama_tokenize()` open-addressed cache; keys **4–15** bytes; values ≤4 ids; skip &lt;3 initial symbols (probe tax &gt; savings on spaces/`the`); `LLAMA_BPE_NO_PRETOK_CACHE=1` opt-out for A/B
+- Apply after **0106**; sync vendor → `llama/llama.cpp/` (CGO)
+- **Measured (Mac aarch64, 1 MiB):** English repeating seed ≈ wash vs 0106-only (pretok-bound); **code-like** repeated identifiers Qwen2 **~1.25×** vs 0106-only (~3.1× vs stock legacy). Gemma4 still ~2.8× from 0106 (cache neutral there).
+
+Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md).
+
+### Faster BPE tokenize — gigatoken lessons (M15d, patch 0106)
+
+**Why:** Agent megaprompts re-run `llama_tokenize` every turn; stock BPE merge did `std::string` ×2 + string-pair hash lookups and showed up as hundreds of ms on `/v1/tokenize` before any forward. Rust gigatoken is the wrong product (bulk corpus, non-Darwin); its **id-pair table** and **tiered short merge** ideas still apply inside vendored `llama-vocab`.
+
+**What:**
+
+- **0106** — load-time `(id,id)→(rank,merged_id)` open-addressed table; id-based soft-delete merge; ≤64-symbol linear min-scan (T20); **piece4** packed UTF-8 LUT for char→id (avoids per-char `std::string` map — without it Qwen2 was a wash/regress); `LLAMA_BPE_FORCE_LEGACY=1` for same-binary identity A/B
+- Trees: apply on `vendor/llama-cpp-*`, then `./scripts/vendor/sync_vendor_llama.sh` so **`llama/llama.cpp/` (CGO)** gets the patch — sibling-only apply leaves Mac ggml tokenize unpatched
+- Bench/identity: `./scripts/bench/run_tokenize_bpe_identity_bench.sh` [`--bench`]
+- Docs: [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md), [findings](docs/faster-bpe-tokenize-findings.md); ROADMAP **M15d**
+
+**Measured (Mac aarch64, 1 MiB vocab-only, fair A/B):** Gemma4 ~**2.8×**, Llama3 BPE ~**1.27×**, Qwen2 ~**1.07×** (pretok still dominates Qwen). Do not cite earlier unreproducible 6–22× `/tmp` numbers.
+
 ### Batch chat wire format documented (Hermes, Jul 2026)
 
 **Why:** Hermes deferred `/v1/chat/completions/batch` adoption because OpenAPI only said “OpenAI-shaped list / wrapper,” and the aux client assumed it could POST mixed models in one body. Without a stable response schema, client grouping work could not start.

@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 04:05:00 -0700
+Subject: [PATCH] unicode: Qwen3.5 all-ASCII byte pretok via Qwen2 scanner (0116)
+
+No ASCII codepoint is \p{M}, so Qwen3.5 all-ASCII pretok matches Qwen2.
+Route byte path + ASCII segments to the existing scanner. ~1.24x vs
+NO_ASCII_PRETOK; identity held. See docs/faster-bpe-tokenize.md (M15d / 0116).
+
+---
+diff --git a/src/unicode.cpp b/src/unicode.cpp
+index c5a957707..a0380d28a 100644
+--- a/src/unicode.cpp
++++ b/src/unicode.cpp
+@@ -483,6 +483,13 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
+            "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+ }
+ 
++// WHY (0116): Qwen3.5 adds [\p{L}\p{M}]+ / exclude \p{M} from punct. No ASCII codepoint is
++// \p{M}, so all-ASCII pretok matches the Qwen2 scanner bit-for-bit.
++static inline bool unicode_is_qwen35_regex_expr(const std::string & regex_expr) {
++    return regex_expr ==
++           "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
++}
++
+ static inline bool unicode_is_gpt2_regex_expr(const std::string & regex_expr) {
+     return regex_expr ==
+            "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)";
+@@ -1242,7 +1249,10 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
+ // Compared to Qwen2, letter-runs also consume Unicode combining marks (\p{M}): [\p{L}\p{M}]+ instead of \p{L}+
+ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
+     std::vector<size_t> bpe_offsets; // store the offset of each word
+-    bpe_offsets.reserve(offsets.size()); // Reserve memory for the approximate size
++    // WHY (0116): same reserve heuristic as Qwen2; ASCII segments reuse Qwen2 ascii_seg
++    // because no U+0000..007F codepoint is \p{M}.
++    bpe_offsets.reserve(std::max(offsets.size(), cpts.size() / 3));
++    const bool use_ascii = unicode_want_ascii_pretok();
+ 
+     size_t start = 0;
+     for (auto offset : offsets) {
+@@ -1251,13 +1261,18 @@ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<u
+         assert(offset_end <= cpts.size());
+         start = offset_end;
+ 
++        if (use_ascii && unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
++            unicode_regex_split_qwen2_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++            continue;
++        }
++
+         static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
+         auto _get_cpt = [&] (const size_t pos) -> uint32_t {
+             return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
+         };
+ 
+         auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
+-            return (offset_ini <= pos && pos < offset_end) ? unicode_cpt_flags_from_cpt(cpts[pos]) : unicode_cpt_flags{};
++            return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
+         };
+ 
+         size_t _prev_end = offset_ini;
+@@ -1843,12 +1858,16 @@ bool unicode_cpt_is_han(uint32_t cpt) {
+ }
+ 
+ std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode) {
+-    // WHY (0114/0115): all-ASCII custom pretok — skip uint32 decode + cpt_byte_off.
++    // WHY (0114–0116): all-ASCII custom pretok — skip uint32 decode + cpt_byte_off.
+     if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_bytes_are_ascii(text)) {
+         const std::string & expr = regex_exprs[0];
+         if (unicode_is_qwen2_regex_expr(expr)) {
+             return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
+         }
++        if (unicode_is_qwen35_regex_expr(expr)) {
++            // Identical to Qwen2 on ASCII (no combining marks below U+0080).
++            return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
++        }
+         if (unicode_is_gpt2_regex_expr(expr)) {
+             return unicode_regex_split_gpt2_ascii_bytes(text, byte_encode);
+         }
+-- 
+2.50.1 (Apple Git-155)
+
