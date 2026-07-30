@@ -62,6 +62,10 @@ func MakeLinearLayer(
 	scales := tensors[path+".weight_scale"]
 	if scales != nil {
 		qbiases := tensors[path+".weight_qbias"]
+		if qbiases == nil {
+			// Alternate mlx-lm export name for affine zero-points.
+			qbiases = tensors[path+".biases"]
+		}
 		bias := tensors[path+".bias"]
 
 		groupSize, bits, mode := ResolveLinearQuantParams(

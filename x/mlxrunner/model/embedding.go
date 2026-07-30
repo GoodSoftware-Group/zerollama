@@ -25,6 +25,9 @@ func MakeEmbeddingLayer(
 	scales := tensors[path+".weight_scale"]
 	if scales != nil {
 		qbiases := tensors[path+".weight_qbias"]
+		if qbiases == nil {
+			qbiases = tensors[path+".biases"]
+		}
 		groupSize, bits, mode := ResolveLinearQuantParams(
 			defaultGroupSize,
 			defaultBits,

@@ -164,6 +164,15 @@ func loadTensorsFromManifest(root *model.Root) (map[string]*mlx.Array, error) {
 		if strings.HasSuffix(name, ".scale") {
 			continue // already handled
 		}
+		// mlx-lm sometimes exports affine zero-points as "<linear>.biases"
+		// (sibling of .weight) instead of packed "<linear>.weight.bias".
+		if strings.HasSuffix(name, ".biases") {
+			baseName := strings.TrimSuffix(name, ".biases")
+			if scaleBaseNames[baseName+".weight"] {
+				allTensors[baseName+".weight_qbias"] = arr
+				continue
+			}
+		}
 		if strings.HasSuffix(name, ".bias") && !strings.HasSuffix(name, ".weight_qbias") {
 			baseName := strings.TrimSuffix(name, ".bias")
 			if scaleBaseNames[baseName] {
