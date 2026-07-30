@@ -457,6 +457,8 @@ func (g *mlxAgentGate) end(modelKey, sessionKey string) {
 			if entry.inflight <= 0 {
 				entry.inflight = 0
 				entry.hotUntil = now.Add(mlxSidecarAgentCooldown)
+				// Clear soft-preempt hook when the session is no longer inflight.
+				entry.preemptCancel = nil
 			}
 			entry.lastUsed = now
 		}
@@ -464,6 +466,71 @@ func (g *mlxAgentGate) end(modelKey, sessionKey string) {
 	// Primary fairness state is derived from keyHot — never match-and-decrement
 	// slot.sessionKey (that leaked inflight when a later begin overwrote the key).
 	g.refreshPrimaryFromKeyHotLocked(modelKey, now)
+}
+
+// bindPreemptCancel stores a one-shot cancel for soft mid-stream preempt (M15f).
+func (g *mlxAgentGate) bindPreemptCancel(modelKey, sessionKey string, cancel context.CancelFunc) {
+	if g == nil || modelKey == "" || sessionKey == "" || cancel == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.keyHot == nil {
+		g.keyHot = make(map[string]map[string]*mlxKeyHotEntry)
+	}
+	m := g.keyHot[modelKey]
+	if m == nil {
+		m = make(map[string]*mlxKeyHotEntry)
+		g.keyHot[modelKey] = m
+	}
+	entry := m[sessionKey]
+	if entry == nil {
+		entry = &mlxKeyHotEntry{sessionKey: sessionKey}
+		m[sessionKey] = entry
+	}
+	entry.preemptCancel = cancel
+}
+
+// cancelSessionLocked fires soft preempt on an inflight lower-class session.
+// Caller must hold g.mu.
+func (g *mlxAgentGate) cancelSessionLocked(modelKey, sessionKey, reason string) {
+	if g == nil || modelKey == "" || sessionKey == "" {
+		return
+	}
+	m := g.keyHot[modelKey]
+	if m == nil {
+		return
+	}
+	entry := m[sessionKey]
+	if entry == nil || entry.preemptCancel == nil {
+		return
+	}
+	cancel := entry.preemptCancel
+	entry.preemptCancel = nil // one-shot
+	if reason != "" {
+		entry.preemptReason = reason
+	}
+	cancel()
+}
+
+// takePreemptReason returns and clears the soft-preempt reason for a session key.
+func (g *mlxAgentGate) takePreemptReason(modelKey, sessionKey string) string {
+	if g == nil || modelKey == "" || sessionKey == "" {
+		return ""
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	m := g.keyHot[modelKey]
+	if m == nil {
+		return ""
+	}
+	entry := m[sessionKey]
+	if entry == nil {
+		return ""
+	}
+	reason := entry.preemptReason
+	entry.preemptReason = ""
+	return reason
 }
 
 func (g *mlxAgentGate) hotSlot(modelKey string, now time.Time) (sessionKey string, class mlxSessionClass, inflight int) {

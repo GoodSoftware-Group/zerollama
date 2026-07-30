@@ -329,6 +329,9 @@ type CompletionResponse struct {
 	// it (MLX Done chunk). Prefer over re-tokenizing response text (F0686).
 	Tokens []int `json:"tokens,omitempty"`
 
+	// PreemptedReason explains done_reason=preempted (M15f soft mid-stream preempt).
+	PreemptedReason string `json:"preempted_reason,omitempty"`
+
 	Image      string `json:"image,omitempty"`
 	Step       int    `json:"step,omitempty"`
 	TotalSteps int    `json:"total_steps,omitempty"`
