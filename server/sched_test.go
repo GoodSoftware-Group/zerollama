@@ -39,6 +39,17 @@ func TestMain(m *testing.M) {
 	} {
 		_ = os.Unsetenv(k)
 	}
+	// Why unset OLLAMA_MODELS: production shells may export OLLAMA_MODELS pointing to a
+	// real model store. Tests that call CreateHandler/ChatHandler write synthetic GGUF
+	// blobs into the model store; if it points to production the blobs land there but
+	// may not match what the scheduler finds at load time on the same path. Clearing it
+	// forces createRequest to use t.TempDir() as an isolated, per-test blob store.
+	// createBinFile/createRequest also refuse non-temp paths as a second line of defense.
+	if inherited := os.Getenv("OLLAMA_MODELS"); inherited != "" && !isTestModelsPath(inherited) {
+		slog.Warn("unsetting host OLLAMA_MODELS for tests (would write into a live model store)",
+			"path", inherited)
+	}
+	_ = os.Unsetenv("OLLAMA_MODELS")
 	os.Setenv("OLLAMA_DEBUG", "1")
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)

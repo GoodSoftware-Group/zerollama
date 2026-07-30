@@ -93,7 +93,6 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 	tests := []struct {
 		name            string
 		request         api.GenerateRequest
-		expectDebug     bool
 		expectTemplate  string
 		expectNumImages int
 	}{
@@ -104,17 +103,7 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 				Prompt:          "Hello, world!",
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
 			expectTemplate: "Hello, world!",
-		},
-		{
-			name: "debug render only disabled",
-			request: api.GenerateRequest{
-				Model:           "test-model",
-				Prompt:          "Hello, world!",
-				DebugRenderOnly: false,
-			},
-			expectDebug: false,
 		},
 		{
 			name: "debug render only with system prompt",
@@ -124,7 +113,6 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 				System:          "You are a helpful assistant",
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
 			expectTemplate: "User question",
 		},
 		{
@@ -135,7 +123,6 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 				Template:        "PROMPT: {{ .Prompt }}",
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
 			expectTemplate: "PROMPT: Hello",
 		},
 		{
@@ -146,7 +133,6 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 				Images:          []api.ImageData{[]byte("fake-image-data")},
 				DebugRenderOnly: true,
 			},
-			expectDebug:     true,
 			expectTemplate:  "[img-0]Describe this image",
 			expectNumImages: 1,
 		},
@@ -158,7 +144,6 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 				Raw:             true,
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
 			expectTemplate: "Raw prompt text",
 		},
 	}
@@ -176,32 +161,29 @@ func TestGenerateDebugRenderOnly(t *testing.T) {
 				req.Stream = &stream
 				w := createRequest(t, s.GenerateHandler, req)
 
-				if tt.expectDebug {
-					if w.Code != http.StatusOK {
-						t.Errorf("expected status %d, got %d, body: %s", http.StatusOK, w.Code, w.Body.String())
-					}
+				if w.Code != http.StatusOK {
+					t.Errorf("expected status %d, got %d, body: %s", http.StatusOK, w.Code, w.Body.String())
+				}
 
-					var response api.GenerateResponse
-					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-						t.Fatalf("failed to unmarshal response: %v", err)
-					}
+				var response api.GenerateResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
 
-					if response.Model != tt.request.Model {
-						t.Errorf("expected model %s, got %s", tt.request.Model, response.Model)
-					}
+				if response.Model != tt.request.Model {
+					t.Errorf("expected model %s, got %s", tt.request.Model, response.Model)
+				}
 
-					if tt.expectTemplate != "" && response.DebugInfo.RenderedTemplate != tt.expectTemplate {
-						t.Errorf("expected template %q, got %q", tt.expectTemplate, response.DebugInfo.RenderedTemplate)
-					}
+				if response.DebugInfo == nil {
+					t.Fatalf("expected DebugInfo, got nil")
+				}
 
-					if tt.expectNumImages > 0 && response.DebugInfo.ImageCount != tt.expectNumImages {
-						t.Errorf("expected image count %d, got %d", tt.expectNumImages, response.DebugInfo.ImageCount)
-					}
-				} else {
-					// When debug is disabled, it should attempt normal processing
-					if w.Code != http.StatusOK {
-						t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
-					}
+				if tt.expectTemplate != "" && response.DebugInfo.RenderedTemplate != tt.expectTemplate {
+					t.Errorf("expected template %q, got %q", tt.expectTemplate, response.DebugInfo.RenderedTemplate)
+				}
+
+				if tt.expectNumImages > 0 && response.DebugInfo.ImageCount != tt.expectNumImages {
+					t.Errorf("expected image count %d, got %d", tt.expectNumImages, response.DebugInfo.ImageCount)
 				}
 			})
 		}
@@ -287,7 +269,6 @@ func TestChatDebugRenderOnly(t *testing.T) {
 	tests := []struct {
 		name            string
 		request         api.ChatRequest
-		expectDebug     bool
 		expectTemplate  string
 		expectNumImages int
 	}{
@@ -301,19 +282,8 @@ func TestChatDebugRenderOnly(t *testing.T) {
 				},
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
+
 			expectTemplate: "system: You are a helpful assistant\nuser: Hello\n",
-		},
-		{
-			name: "chat debug render only disabled",
-			request: api.ChatRequest{
-				Model: "test-model",
-				Messages: []api.Message{
-					{Role: "user", Content: "Hello"},
-				},
-				DebugRenderOnly: false,
-			},
-			expectDebug: false,
 		},
 		{
 			name: "chat debug with assistant message",
@@ -326,7 +296,7 @@ func TestChatDebugRenderOnly(t *testing.T) {
 				},
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
+
 			expectTemplate: "user: Hello\nassistant: Hi there!\nuser: How are you?\n",
 		},
 		{
@@ -342,7 +312,7 @@ func TestChatDebugRenderOnly(t *testing.T) {
 				},
 				DebugRenderOnly: true,
 			},
-			expectDebug:     true,
+
 			expectTemplate:  "user: [img-0]What's in this image?\n",
 			expectNumImages: 1,
 		},
@@ -364,7 +334,7 @@ func TestChatDebugRenderOnly(t *testing.T) {
 				},
 				DebugRenderOnly: true,
 			},
-			expectDebug:    true,
+
 			expectTemplate: "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get weather information\",\"parameters\":{\"type\":\"\",\"properties\":null}}}]user: Get the weather\n",
 		},
 	}
@@ -382,33 +352,30 @@ func TestChatDebugRenderOnly(t *testing.T) {
 				req.Stream = &stream
 				w := createRequest(t, s.ChatHandler, req)
 
-				if tt.expectDebug {
-					if w.Code != http.StatusOK {
-						t.Errorf("expected status %d, got %d, body: %s", http.StatusOK, w.Code, w.Body.String())
-					}
+			if w.Code != http.StatusOK {
+				t.Errorf("expected status %d, got %d, body: %s", http.StatusOK, w.Code, w.Body.String())
+			}
 
-					var response api.ChatResponse
-					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-						t.Fatalf("failed to unmarshal response: %v", err)
-					}
+			var response api.ChatResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
 
-					if response.Model != tt.request.Model {
-						t.Errorf("expected model %s, got %s", tt.request.Model, response.Model)
-					}
+			if response.Model != tt.request.Model {
+				t.Errorf("expected model %s, got %s", tt.request.Model, response.Model)
+			}
 
-					if tt.expectTemplate != "" && response.DebugInfo.RenderedTemplate != tt.expectTemplate {
-						t.Errorf("expected template %q, got %q", tt.expectTemplate, response.DebugInfo.RenderedTemplate)
-					}
+			if response.DebugInfo == nil {
+				t.Fatalf("expected DebugInfo, got nil")
+			}
 
-					if tt.expectNumImages > 0 && response.DebugInfo.ImageCount != tt.expectNumImages {
-						t.Errorf("expected image count %d, got %d", tt.expectNumImages, response.DebugInfo.ImageCount)
-					}
-				} else {
-					// When debug is disabled, it should attempt normal processing
-					if w.Code != http.StatusOK {
-						t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
-					}
-				}
+			if tt.expectTemplate != "" && response.DebugInfo.RenderedTemplate != tt.expectTemplate {
+				t.Errorf("expected template %q, got %q", tt.expectTemplate, response.DebugInfo.RenderedTemplate)
+			}
+
+			if tt.expectNumImages > 0 && response.DebugInfo.ImageCount != tt.expectNumImages {
+				t.Errorf("expected image count %d, got %d", tt.expectNumImages, response.DebugInfo.ImageCount)
+			}
 			})
 		}
 	}

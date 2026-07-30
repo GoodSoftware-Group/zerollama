@@ -629,6 +629,73 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	// DebugRenderOnly for the legacy template path: render without loading a runner.
+	// Must come before scheduleRunner so debug generate never blocks on GPU scheduling.
+	// Native chat-template / Context / Suffix paths still need a runner (Detokenize /
+	// ApplyChatTemplate) and fall through.
+	if req.DebugRenderOnly && req.Context == nil && req.Suffix == "" {
+		if req.Raw {
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				DebugInfo: &api.DebugInfo{
+					RenderedTemplate: req.Prompt,
+					ImageCount:       len(req.Images),
+				},
+			})
+			return
+		}
+		if !m.HasChatTemplate || chatModeForModel(m) != chatExecutionModeNative || req.Template != "" {
+			tmpl := m.Template
+			if req.Template != "" {
+				parsed, parseErr := template.Parse(req.Template)
+				if parseErr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": parseErr.Error()})
+					return
+				}
+				tmpl = parsed
+			}
+			debugPrompt := req.Prompt
+			var debugImages []llm.ImageData
+			for idx, i := range req.Images {
+				debugImages = append(debugImages, llm.ImageData{ID: idx, Data: i})
+				imgTag := fmt.Sprintf("[img-%d]", idx)
+				if !strings.Contains(debugPrompt, "[img]") {
+					debugPrompt = imgTag + debugPrompt
+				} else {
+					debugPrompt = strings.Replace(debugPrompt, "[img]", imgTag, 1)
+				}
+			}
+			var vals template.Values
+			if req.System != "" {
+				vals.Messages = append(vals.Messages, api.Message{Role: "system", Content: req.System})
+			} else if m.System != "" {
+				vals.Messages = append(vals.Messages, api.Message{Role: "system", Content: m.System})
+			}
+			vals.Messages = append(vals.Messages, api.Message{Role: "user", Content: debugPrompt})
+			vals.Think = req.Think != nil && req.Think.Bool()
+			if req.Think != nil {
+				vals.ThinkLevel = req.Think.String()
+				vals.IsThinkSet = true
+			}
+			var b bytes.Buffer
+			if err := tmpl.Execute(&b, vals); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				DebugInfo: &api.DebugInfo{
+					RenderedTemplate: b.String(),
+					ImageCount:       len(debugImages),
+				},
+			})
+			return
+		}
+		// Fall through to scheduleRunner for native chat template path.
+	}
+
 	streaming := req.Stream == nil || *req.Stream
 	var streamCh chan any
 	if streaming {
@@ -3100,6 +3167,42 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 	ensureQoSDefaults(req.Options, chatHints)
 	schedCtx := ctxWithMLXScheduleHints(c.Request.Context(), chatHints)
+
+	// DebugRenderOnly: render template without loading a runner. Must come before
+	// scheduleRunner so that debug chat requests never block on GPU scheduling.
+	if req.DebugRenderOnly {
+		debugMsgs := append(m.Messages, req.Messages...)
+		if len(req.Messages) > 0 && req.Messages[0].Role != "system" && m.System != "" {
+			debugMsgs = append([]api.Message{{Role: "system", Content: m.System}}, debugMsgs...)
+		}
+		debugMsgs = filterThinkTags(debugMsgs, m)
+		debugMsgs = preservePriorThinkingForRender(debugMsgs, req.Think)
+		debugTools := req.Tools
+		if parserName := resolveParserName(m); parserName != "" {
+			if p := parsers.ParserForName(parserName); p != nil {
+				var lastMsg *api.Message
+				if len(debugMsgs) > 0 {
+					lastMsg = &debugMsgs[len(debugMsgs)-1]
+				}
+				debugTools = p.Init(req.Tools, lastMsg, req.Think)
+			}
+		}
+		// truncate=false: tokenize/detokenize are never called, opts not needed.
+		prompt, images, _, _, _, err := chatPrompt(c.Request.Context(), m, nil, nil, debugMsgs, debugTools, req.Think, false, 0, nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, api.ChatResponse{
+			Model:     req.Model,
+			CreatedAt: time.Now().UTC(),
+			DebugInfo: &api.DebugInfo{
+				RenderedTemplate: prompt,
+				ImageCount:       len(images),
+			},
+		})
+		return
+	}
 
 	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {

@@ -16,7 +16,9 @@ import (
 func TestAssignHoldRegisterAndStatus(t *testing.T) {
 	t.Setenv("ZEROLLAMA_FLEET_ASSIGN_SECRET", "hold-secret")
 	t.Setenv("ZEROLLAMA_FLEET_ASSIGN_TOKEN", "1")
-	t.Setenv("ZEROLLAMA_FLEET_ASSIGN_TTL", "10s")
+	// TTL must outlast CGo GPU-bootstrap discovery (up to 30s on machines with
+	// CUDA libraries present). 10s was too short; 120s is within the 5m max.
+	t.Setenv("ZEROLLAMA_FLEET_ASSIGN_TTL", "120s")
 
 	now := time.Now().UTC()
 	tok, _, _, err := fleet.MintAssignToken("n1", "llama3", now)

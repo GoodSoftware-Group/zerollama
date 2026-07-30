@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -26,6 +27,18 @@ import (
 )
 
 const ggmlFreeVRAMCacheTTL = 2 * time.Second // Why: /api/show is called often; full GPUDevices refresh is ~500ms+.
+
+// ggmlBootstrapProbe caches the result of the first nil-runner GPU discovery probe
+// across all Server instances in the process. This prevents repeated 2s timeouts in
+// test environments (where each test creates a fresh Server{}) and avoids duplicate
+// discovery subprocesses in production.
+var (
+	ggmlBootstrapProbeMu   sync.Mutex
+	ggmlBootstrapProbeAt   time.Time
+	ggmlBootstrapProbeFree uint64
+)
+
+const ggmlBootstrapProbeCooldown = 10 * time.Minute
 
 type ggmlLoadProfile struct {
 	batchSize   int
@@ -385,18 +398,58 @@ func (s *Server) effectiveGgmlFreeVRAMForSuggest(ctx context.Context, refresh bo
 		ctx = context.Background()
 	}
 
+	s.ggmlFreeVRAMMu.Lock()
+	cached, cachedAt := s.ggmlFreeVRAMCached, s.ggmlFreeVRAMAt
+	s.ggmlFreeVRAMMu.Unlock()
+
 	if !refresh {
-		s.ggmlFreeVRAMMu.Lock()
-		cached, at := s.ggmlFreeVRAMCached, s.ggmlFreeVRAMAt
-		s.ggmlFreeVRAMMu.Unlock()
-		if cached > 0 && time.Since(at) < ggmlFreeVRAMCacheTTL {
+		if cached > 0 && time.Since(cachedAt) < ggmlFreeVRAMCacheTTL {
 			return cached
 		}
 	}
 
-	// Probe GPU drivers directly (nil runners = bootstrap discovery, not runner-derived).
-	gpus := discover.GPUDevices(ctx, nil)
-	free := effectiveGgmlFreeVRAM(gpus)
+	// Determine runners for GPU device discovery.
+	// With no loaded runners (first load), do a direct NVML/CUDA driver probe to
+	// avoid relying on stale log-parsed accounting. Use a short timeout so test
+	// environments without a real GPU library fail fast rather than blocking 30s.
+	// The bootstrap probe result is cached at the process level (ggmlBootstrapProbe*)
+	// so multiple Server instances (e.g. in tests) only pay the probe cost once.
+	var runners []ml.FilteredRunnerDiscovery
+	if s.sched != nil {
+		runners = s.sched.LoadedRunnersForDiscovery()
+	}
+
+	var free uint64
+	if len(runners) == 0 {
+		// Check the process-level bootstrap cache before launching a subprocess.
+		ggmlBootstrapProbeMu.Lock()
+		bootstrapFree, bootstrapAt := ggmlBootstrapProbeFree, ggmlBootstrapProbeAt
+		ggmlBootstrapProbeMu.Unlock()
+
+		if bootstrapFree > 0 && time.Since(bootstrapAt) < ggmlFreeVRAMCacheTTL {
+			// Bootstrap cached a GPU result; use it.
+			free = bootstrapFree
+		} else if bootstrapFree == 0 && time.Since(bootstrapAt) < ggmlBootstrapProbeCooldown {
+			// Bootstrap recently failed; skip the probe to avoid repeated 2s waits.
+			free = 0
+		} else {
+			// First probe or cooldown expired: launch the bootstrap subprocess with a
+			// short timeout so test environments fail fast (2s vs the default 30s).
+			probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			gpus := discover.GPUDevices(probeCtx, nil)
+			cancel()
+			free = effectiveGgmlFreeVRAM(gpus)
+			ggmlBootstrapProbeMu.Lock()
+			ggmlBootstrapProbeAt = time.Now()
+			ggmlBootstrapProbeFree = free
+			ggmlBootstrapProbeMu.Unlock()
+		}
+	} else {
+		// Runners are present: use runner-derived accounting directly (fast, no subprocess).
+		gpus := discover.GPUDevices(ctx, runners)
+		free = effectiveGgmlFreeVRAM(gpus)
+	}
+
 	if free > 0 {
 		s.ggmlFreeVRAMMu.Lock()
 		s.ggmlFreeVRAMCached = free

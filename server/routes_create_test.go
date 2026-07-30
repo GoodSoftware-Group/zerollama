@@ -30,8 +30,51 @@ import (
 
 var stream bool = false
 
+// isTestModelsPath reports whether p lives under the process temp directory.
+// Host/production OLLAMA_MODELS paths (e.g. /mnt/ollama_img/models) must never
+// be used by create helpers — writing there pollutes the live model registry.
+func isTestModelsPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	tmpAbs, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(tmpAbs, abs)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+// ensureIsolatedModelsDir pins OLLAMA_MODELS to a temp dir for this test.
+// If a prior step already set it (shared within the same test), that path is
+// reused — but only when it is under os.TempDir(). A host-inherited production
+// path is a hard fatal so we never write synthetic blobs into a live store.
+func ensureIsolatedModelsDir(t *testing.T) {
+	t.Helper()
+	models := os.Getenv("OLLAMA_MODELS")
+	if models == "" {
+		t.Setenv("OLLAMA_MODELS", t.TempDir())
+		return
+	}
+	if !isTestModelsPath(models) {
+		t.Fatalf("refusing OLLAMA_MODELS=%q: not under temp dir %q. "+
+			"TestMain must unset host OLLAMA_MODELS before tests run (see sched_test.go).",
+			models, os.TempDir())
+	}
+	// Keep the already-pinned isolated path so createBinFile/createRequest share one store.
+}
+
 func createBinFile(t *testing.T, kv map[string]any, ti []*ggml.Tensor) (string, string) {
 	t.Helper()
+	ensureIsolatedModelsDir(t)
+	// Re-pin so t.Setenv tracks cleanup; cmp.Or keeps a prior isolated path.
 	t.Setenv("OLLAMA_MODELS", cmp.Or(os.Getenv("OLLAMA_MODELS"), t.TempDir()))
 
 	modelDir := envconfig.Models()
@@ -82,7 +125,7 @@ func (t *responseRecorder) CloseNotify() <-chan bool {
 
 func createRequest(t *testing.T, fn func(*gin.Context), body any) *httptest.ResponseRecorder {
 	t.Helper()
-	// if OLLAMA_MODELS is not set, set it to the temp directory
+	ensureIsolatedModelsDir(t)
 	t.Setenv("OLLAMA_MODELS", cmp.Or(os.Getenv("OLLAMA_MODELS"), t.TempDir()))
 
 	w := NewRecorder()

@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultAssignTTL     = 8 * time.Second
-	maxAssignTTL         = 30 * time.Second
+	maxAssignTTL         = 5 * time.Minute // raised from 30s: fleet hold windows can span CGo init + model load
 	minAssignTTL         = 2 * time.Second
 	AssignmentTokenHeader = "X-Zerollama-Assignment-Token"
 )
@@ -61,7 +61,7 @@ func AssignTokenEnabled() bool {
 	return s == "1" || strings.EqualFold(s, "on") || strings.EqualFold(s, "true")
 }
 
-// AssignTokenTTL is the hold window (default 8s, clamped 2–30s).
+// AssignTokenTTL is the hold window (default 8s, clamped 2s–5m).
 func AssignTokenTTL() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("ZEROLLAMA_FLEET_ASSIGN_TTL"))
 	if raw == "" {
