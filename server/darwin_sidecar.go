@@ -391,7 +391,7 @@ func ensureDarwinTrainingVenv(ctx context.Context, repoRoot string) error {
 		slog.Info("darwin training: .venv-training already ready", "python", py)
 		return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)
 	}
-	if err := runRepoBash(ctx, repoRoot, "source scripts/training/training_uv_venv.sh && training_uv_venv"); err != nil {
+	if err := runRepoBash(ctx, repoRoot, "source scripts/training_uv_venv.sh && training_uv_venv"); err != nil {
 		return err
 	}
 	return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)

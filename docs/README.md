@@ -58,13 +58,14 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 
 * [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — onboarding tiers (M14); unified memory; L1 profiles; GPU bootstrap; sched_reserve; **`metal_signoff.sh` + qwen35 (`eliza-1-2b:latest`)**; manifest vs `/api/ps` context.
 * [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** compat + Metal embed; Go ollama-engine; **full `metal_signoff.sh` + qwen35** (qwen35 before Phase 15; canonical **`eliza-1-2b:latest`**); manifest `num_ctx` vs request options; thinking-model fields.
-* [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **why** `:11434` daily vs `:8080` CI; CGO; auto-clone `../llama.cpp`.
+* [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **prereqs:** Go **1.24.1+**, full Xcode.app (or Homebrew Python), **cmake**, uv; script map after reorg; **why** `:11434` daily vs `:8080` CI.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
 * [UMA admission overview (Darwin)](./uma-admission.md) — M20–M23 surfaces, multi-unit HOLD, `mac_uma_signoff.sh` ladder, disable knobs.
 * [MLX UMA broker admission (M20)](./mlx-uma-sched.md) — machine-wide `uma_daemon` gate around mlxrunner `Eval` (`BUILD_UMA=auto`, default `ZEROLLAMA_UMA_SCHED=auto`).
 * [GGUF ggml UMA admission (M21)](./ggml-uma-sched.md) — same broker for ollamarunner / llamarunner Metal.
 * [llama-server UMA admission (M22)](./llama-server-uma-sched.md) — vendor `graph_compute` HOLD + sync (`BUILD_UMA` → `libuma_llama.a`).
 * [MLX agent prompts](./mlx-agent-prompts.md) — **why** context cap, tail truncate, `PromptTokens`, tokenize cache, keep-alive floor, SSE keepalive, **M15a live-session + rotating-KV restore** (`fast_path`, `messages_dropped`), and operator logs for agent megaprompts on safetensors models.
+* [Megaprompt tokenize benches (README evidence)](./readme-marketing-benches.md) — **why** cite ~3–7× / hundreds-of-ms legacy; Jul 2026 medians; reproduce command.
 * [Faster BPE tokenize](./faster-bpe-tokenize.md) — **why** megaprompt `llama_tokenize` hurt agents; patches `0106–0126`; `mega_1mib_ascii` / `_chat` benches; identity gates.
 * [Faster BPE findings](./faster-bpe-tokenize-findings.md) — **why** not Rust gigatoken; measurement traps (bogus 6–22×); three-tree wiring; Qwen vs Gemma speedup shape.
 * [Agent QoS and project tracking](./agent-qos-and-project-tracking.md) — **why** session gate TOCTOU fix, multiplex key hot-map / `wait_parent`, session→cache great loop (`cache_reset` / `cache_level`), `project_id` / `zerollama ps`, inference-path branching, and progressive client ladder; keeps Tier 2 options off vanilla Ollama and unkeyed CUDA traffic.
@@ -77,6 +78,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; **prompt truncation / context-overflow API fields** (`prompt_truncated`, runtime detect).
 * [Inference wishlist — host capacity (Phase A/B)](./inference-wishlist-host.md) — **why** Orient/Decide need capacity APIs; pin/propose with honest single-resident runtime; broker must respect pins; B0 requires ggml-empty; 503 before resume on pin conflicts; `stable_multi_model_swap` still false.
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
+* [Open-source shoutouts](./open-source-shoutouts.md) — Gigatoken, vLLM, SGLang, LocalAI, minefield, Hermes, Ollama, llama.cpp — what we borrowed and why.
 * [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA10 (metadata, watchdog, fleet score, repair, HF pull, `/api/score`, bench cache); **upstream watch** for LA11+ candidates; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.

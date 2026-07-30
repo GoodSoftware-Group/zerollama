@@ -2,9 +2,13 @@
 # One-shot macOS dev setup: build zerollama, uv venvs, Metal llama.cpp, doctor, optional sign-off.
 #
 # Prerequisites (once per machine):
+#   - Go 1.24.1+ from https://go.dev/dl/ (matches go.mod)
+#   - Full Xcode.app (or Homebrew python@3.12 + pkg-config) for python3-embed
 #   - Xcode Command Line Tools:  xcode-select --install
-#   - Go 1.22+ from https://go.dev/dl/
+#   - cmake (brew install cmake) — sibling Metal libllama / llama-server
 #   - uv:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#
+# See docs/mac-dev-setup.md for the full script map (post-reorg paths).
 #
 # Usage:
 #   ./scripts/runtime/dev_bootstrap.sh          # recommended for fresh clones (sign-off off)

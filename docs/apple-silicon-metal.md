@@ -23,12 +23,12 @@ Run `zerollama doctor` to validate uv venv, Metal `libllama.dylib`, and sidecar 
 
 | Tier | You have | Command |
 |------|----------|---------|
-| **0** | Xcode CLI, Go, uv only | `./scripts/runtime/dev_bootstrap.sh` |
+| **0** | Go **1.24.1+**, full **Xcode.app** (or Homebrew Python + pkg-config), **cmake**, **uv** | `./scripts/runtime/dev_bootstrap.sh` |
 | **1** | Tier 0 + any pulled tag | `./zerollama pull llama3.2:3b` |
 | **2** | Tier 1 (local text GGUF) | `MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/runtime/mac_setup.sh` |
 | **3** | Tier 1 + qwen tag | `RUN_E2E_QWEN35_MODEL=your:tag ./scripts/runtime/qwen35_mac_smoke.sh` |
 
-**Sibling repos (auto on tier 0):** `../llama.cpp` at pin `LLAMA_CPP_VERSION` — runtime inprocess needs `libllama.dylib`. Optional: `../mlx` for safetensors only.
+**Sibling repos (auto on tier 0):** `../llama.cpp` at pin — runtime inprocess needs `libllama.dylib`. Pin: [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) (`f95de977` / b10159). Public clone: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`. Optional: `../mlx` for safetensors only. **Why not “CLI tools only”:** CGO `python3-embed` is resolved from full Xcode.app (or Homebrew Python). See [mac-dev-setup.md](./mac-dev-setup.md).
 
 ROADMAP: [M14](./ROADMAP.md#apple-silicon--metal-track).
 

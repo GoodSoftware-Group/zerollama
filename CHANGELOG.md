@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Open-source shoutouts (Jul 2026)
+
+**Why:** Marketing pass asked for partner nods beyond a one-line Credits bullet.
+
+**What:** README **Open-source shoutouts** table + [docs/open-source-shoutouts.md](docs/open-source-shoutouts.md). Thank-you issues: [Gigatoken #1](https://github.com/chynggi/gigatoken-llama.cpp/issues/1), [minefield #18](https://github.com/Blackwellboy/model-serving-minefield/issues/18), [Hermes #75009](https://github.com/NousResearch/hermes-agent/issues/75009). Nod to [X](https://x.com) / [@spaceodili](https://x.com/spaceodili) for connecting projects.
+
+### README marketing benches (Jul 2026)
+
+**Why:** README claimed megaprompt tokenize / L3 / decode wins; needed fresh evidence without killing production `:11434`.
+
+**What:** Ran offline `run_tokenize_bpe_identity_bench.sh --bench` (identity green). Qwen2/GPT-2 legacy still **~270–390 ms/MiB**; fast path **~3–7×**. Canonical write-up: [docs/readme-marketing-benches.md](docs/readme-marketing-benches.md). README hero + lab card + §4.1 updated. Skipped L3 + m4 decode A/B while ornith held the GPU / script stops `:11434`.
+
+**Why:** Changelog already shipped tokenizer (0106–0126), minefield doctor, Hermes/QoS, image/video — the top of README still sold “Ollama + training/fleet,” buried agent diffs, and dumped a duplicate community-integrations wall.
+
+**What:** Progressive README (quick start → why → compatibility → tour → API → platforms → docs). Hero = **megaprompts** (Gigatoken-inspired tokenize + SGLang/vLLM-inspired L3 prompt cache ELI5) + visuals; who-for / not-for; lab numbers card; 30-second win; harness-shaped `/api/chat` example; platforms as Apple Silicon / CUDA / Arc. Drop in-repo integrations catalog → link [ollama § Community Integrations](https://github.com/ollama/ollama#community-integrations). Operator prose moved to linked docs.
+
+### Mac setup docs + doctor paths (Jul 2026)
+
+**Why:** Fresh-clone docs said “Xcode CLI + Go 1.22 + uv,” but `go.mod` needs **1.24.1+**, CGO needs full **Xcode.app** (or Homebrew Python) for `python3-embed`, and default bootstrap needs **cmake**. `doctor --fix` still called pre-reorg flat script paths and failed immediately.
+
+**What:**
+
+- [mac-dev-setup.md](docs/mac-dev-setup.md) + [AGENTS.md](AGENTS.md) — current prereqs, post-reorg script map, pin `f95de977` / b10159, public `LLAMA_CPP_REPO=ggml-org` note
+- `cmd/doctor.go` + `server/darwin_sidecar.go` — `scripts/runtime/`, `scripts/build/`, `scripts/vendor/` paths
+- README / apple-silicon / phase17 — drop stale b9781/b9611 Mac build claims where they mislead onboarding
+
 ### SWAR/NEON ASCII pretok consume (patch 0126)
 
 **Why:** Letter/digit runs on ASCII byte pretok still walked an 8-wide LUT loop; BMTL T01/T05 show SWAR/NEON consume wins without rewriting the whole scanner.

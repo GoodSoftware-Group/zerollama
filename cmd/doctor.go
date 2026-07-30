@@ -46,14 +46,7 @@ func NewDoctorCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
-		Long: `Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.
-
-Also runs model-serving-minefield style checks:
-  - model config traps (quant label, generation defaults, chat template, context)
-  - serve identity (trap 53) and thinking gate (trap 29)
-  - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
-
-See docs/model-serving-minefield.md.`,
+		Long:  "Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if auditStorage {
 				report, err := blobaudit.Audit()
@@ -162,31 +155,6 @@ func buildDoctorModelsReport() doctorReport {
 		})
 	}
 
-	// Minefield-style config traps (quant label, generation defaults, template, context).
-	if trapReports, err := modelhealth.CheckConfigTrapsAll(); err != nil {
-		checks = append(checks, doctorCheck{
-			Name:   "model config traps",
-			Status: "warn",
-			Detail: err.Error(),
-		})
-	} else {
-		for _, r := range trapReports {
-			status := "ok"
-			switch r.Status {
-			case modelhealth.StatusRepairable:
-				status = "warn"
-			case modelhealth.StatusOrphaned, modelhealth.StatusBroken:
-				status = "fail"
-			}
-			checks = append(checks, doctorCheck{
-				Name:    r.Name,
-				Status:  status,
-				Detail:  r.Detail,
-				FixHint: r.FixHint,
-			})
-		}
-	}
-
 	report := doctorReport{Checks: checks}
 	for _, c := range checks {
 		switch c.Status {
@@ -246,7 +214,7 @@ func printDoctorHuman(report doctorReport) error {
 
 func runDoctorFix(repo string) error {
 	fmt.Println("== doctor --fix: runtime venv ==")
-	script := filepath.Join(repo, "scripts", "runtime_uv_venv.sh")
+	script := filepath.Join(repo, "scripts", "runtime", "runtime_uv_venv.sh")
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("missing %s", script)
 	}
@@ -260,7 +228,7 @@ func runDoctorFix(repo string) error {
 	if runtime.GOOS == "darwin" {
 		bin := filepath.Join(repo, "zerollama")
 		if _, err := os.Stat(bin); err != nil {
-			build := filepath.Join(repo, "scripts", "build_zerollama_mac.sh")
+			build := filepath.Join(repo, "scripts", "build", "build_zerollama_mac.sh")
 			if _, err := os.Stat(build); err == nil {
 				fmt.Println("== doctor --fix: build zerollama (mac CGO) ==")
 				bcmd := exec.Command("bash", build)
@@ -284,7 +252,11 @@ func runDoctorFix(repo string) error {
 			if err := doctorEnsureLlamaCppSibling(repo); err != nil {
 				return err
 			}
-			build := filepath.Join(repo, "scripts", "build_llama_server.sh")
+			build := filepath.Join(repo, "scripts", "build", "build_llama_server.sh")
+			if _, err := os.Stat(build); err != nil {
+				// Pre-reorg flat path still present in some checkouts.
+				build = filepath.Join(repo, "scripts", "build_llama_server.sh")
+			}
 			if _, err := os.Stat(build); err == nil {
 				fmt.Println("== doctor --fix: build Metal llama.cpp ==")
 				bcmd := exec.Command("bash", build)
@@ -305,7 +277,7 @@ func runDoctorFix(repo string) error {
 // CMake time was opaque on fresh checkouts. mac_setup already runs ensure_llama_cpp_sibling
 // first — doctor --fix should match so tier-0 bootstrap is one self-service command.
 func doctorEnsureLlamaCppSibling(repo string) error {
-	script := filepath.Join(repo, "scripts", "ensure_llama_cpp_sibling.sh")
+	script := filepath.Join(repo, "scripts", "vendor", "ensure_llama_cpp_sibling.sh")
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("missing %s", script)
 	}
@@ -340,7 +312,6 @@ func runDoctorChecks(repo string) []doctorCheck {
 
 	if runtime.GOOS == "darwin" {
 		out = append(out, doctorCheckMLX(repo))
-		out = append(out, doctorCheckUMABroker())
 		out = append(out, doctorCheckDarwinSidecarBootstrap())
 		out = append(out, doctorCheckServeModes())
 		out = append(out, doctorCheckTrainingVenv(repo))
@@ -356,8 +327,6 @@ func runDoctorChecks(repo string) []doctorCheck {
 			Detail: "full sidecar checks run on darwin only",
 		})
 	}
-	out = append(out, doctorCheckServeIdentity())
-	out = append(out, doctorCheckServingTraps()...)
 	return out
 }
 
@@ -822,7 +791,7 @@ func doctorCheckLlamaServer(repo string) doctorCheck {
 	switch {
 	case envconfig.EdgeMode() || envconfig.LlamaServerBackendExplicit():
 		status = "fail"
-		fix = "./scripts/build/build_llama_server.sh (Linux CUDA) or build_ollama_llama_server_darwin.sh; or set LLAMA_SERVER_BIN"
+		fix = "./scripts/build/build_llama_server.sh (Linux CUDA) or ./scripts/build/build_ollama_llama_server_darwin.sh; or set LLAMA_SERVER_BIN"
 	case runtime.GOOS == "linux" && !envconfig.LlamaServerBackendDisabled():
 		status = "warn"
 		fix = "./scripts/build/build_llama_server.sh — plain Linux serve sets ZEROLLAMA_LLAMA_SERVER=auto when discoverable"
@@ -905,7 +874,7 @@ func doctorSidecarLogHint() string {
 func doctorCheckDarwinSidecarBootstrap() doctorCheck {
 	if u := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_URL")); u != "" {
 		base := strings.TrimSuffix(u, "/")
-		if doctorHTTPReachable(base + "/health") {
+		if doctorHTTPReachable(base+"/health") {
 			return doctorCheck{
 				Name:   "darwin sidecar bootstrap",
 				Status: "ok",
@@ -973,7 +942,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "missing (optional for /api/train MPS LoRA)",
-			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training/training_uv_venv.sh --embed-py)\" ./scripts/training/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
+			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
 		}
 	}
 	cmd := exec.Command(py, "-c", "import torch, peft")
@@ -982,7 +951,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "torch/peft import failed",
-			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training/training_uv_venv.sh --embed-py)\" ./scripts/training/training_uv_venv.sh --verify",
+			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify",
 		}
 	}
 	return doctorCheck{

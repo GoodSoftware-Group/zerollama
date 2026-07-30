@@ -1,98 +1,50 @@
 <p align="center">
-  <a href="https://github.com/ollama/ollama">
-    <img src="https://github.com/ollama/ollama/assets/3325447/0d0b44e2-8f4a-4e99-9b52-a5c1c741c8f7" alt="Zerollama" width="200"/>
-  </a>
+  <img src="docs/ollama-logo.svg" alt="Zerollama" width="80"/>
 </p>
 
 # Zerollama
 
-**Ollama-compatible local inference for agents, GPU training, and multi-node fleets.**
+**Built for agent megaprompts — not toy chat windows.**
 
-Zerollama is a fork of [ollama/ollama](https://github.com/ollama/ollama). Same CLI shape, REST API, and client libraries — with extra capabilities for operators running agents on Apple Silicon and CUDA.
+*Ollama-compatible agent fork* — same wire shape, different product (megaprompts, prompt cache, harness control, local image/video).
 
-> **Not upstream Ollama.** Install from this repo (`./zerollama`), not [ollama.com/install.sh](https://ollama.com/install.sh). For vanilla local inference only, use upstream.
+Agents re-send **huge context every turn** (tools, history, system prompts, clips). Zerollama makes that path fast: an **accelerated tokenizer** (work inspired by [Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp)) — lab **~3–7×** vs stock on Qwen/GPT-2 megaprompts (e.g. Qwen2 chat **389→81 ms** / 1 MiB) — plus an **[SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm)-inspired prompt cache (L3)** so the *next* megaprompt on the same thread skips re-prefill. And when an agent needs to **explain with visuals**, local **image + video gen** lives on the same API — not a second product.
 
----
+Same CLI / REST / clients as [ollama/ollama](https://github.com/ollama/ollama). Extra control plane, doctor, training, and fleet on **Apple Silicon**, **CUDA**, and **Arc**.
 
-## How Zerollama differs from upstream Ollama
+> **Not upstream Ollama.** Build from this repo (`./zerollama`), not [ollama.com/install.sh](https://ollama.com/install.sh).
 
-| | **Upstream Ollama** | **Zerollama** |
-|---|---|---|
-| **Pitch** | Run open models locally | Run, **train**, route, and **fleet-manage** models for agents |
-| **Default GGUF engine** | Go → **llama-server** (text) | Go → **ggml Metal** on Mac (~**+7% decode** vs upstream on M4 Max); Linux auto = llama-server for **text**, ggml for **vision** |
-| **Cloud default** | [ollama.com](https://ollama.com) | **[Eliza Cloud](https://www.elizacloud.ai)** — OpenAI/Anthropic APIs, API-key auth, `:cloud` suffix |
-| **GPU training** | None | **`/api/train/*`** — LoRA/QLoRA in-process (PyTorch embed) |
-| **Scheduler** | Single Go scheduler | Go + **Python runtime** sidecar — VRAM admission, tools, autotune profiles |
-| **Mac operator track** | Supported | First-class — Metal sign-off, MPS LoRA, LM Studio import, Qwen 3.5/3.6 fixes |
-| **LM Studio** | — | **Import from cache** — GGUF symlink, MLX repack; no re-download |
-| **Multimodal extras** | Core vision/audio | Video understanding, Wan T2V, Whisper/Piper backends |
-| **Multi-node** | One box | **`zerollama fleet serve`** — warm-model routing, mDNS discovery |
-| **Convergence** | — | [Phase 17](docs/phase17-llama-server.md) + **llama.cpp `b9781`** (v0.30.11); Python runtime stays for training/admission |
+| | |
+|--|--|
+| **For you if** | You run Hermes / coding agents / multi-tenant GPUs; megaprompts every turn; need QoS, prompt cache, or local image/video on the same daemon |
+| **Not for you if** | You only want “pull a model and chat” once — use [upstream Ollama](https://github.com/ollama/ollama); zerollama is the agent fork |
 
-Full architecture comparison: [docs/upstream-ollama-diff.md](docs/upstream-ollama-diff.md)
+### Lab numbers (why it feels faster)
 
-### Benchmark vs stock Ollama (Apple M4 Max, `llama3.2:3b`, `num_ctx=4096`)
+| Win | Stock / cold | Zerollama |
+|-----|--------------|-----------|
+| Megaprompt **tokenize** (1 MiB) | Qwen2 / GPT-2 still **~270–390 ms** before any forward | **~3–7×** faster — Qwen2 chat **389→81 ms**, GPT-2 ascii **353→50 ms**, Qwen3.5 ascii **~20 ms** ([Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp)-inspired) |
+| **Next** megaprompt on same thread | Full prefill again | **Prompt cache (L3)** — turn 2+ reuses the prefix ([SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm)-inspired) |
+| Apple Silicon **decode** (`llama3.2:3b`, ctx 4k) | ~155 tok/s (upstream path) | **~166 tok/s (+7%)** ggml Metal |
 
-| Arm | Generate tok/s |
-|-----|----------------|
-| Stock Ollama (Go → llama-server) | ~155 |
-| **Zerollama ggml Metal (Mac default)** | **~166 (+7%)** |
-| Zerollama `--llama-server-backend` | ~158 |
+Evidence + reproduce: [readme-marketing-benches.md](docs/readme-marketing-benches.md) · `LLAMA_CPP_ROOT=../llama.cpp ./scripts/bench/run_tokenize_bpe_identity_bench.sh --bench`
 
-Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh`
-
----
-
-## Phase 17 — upstream convergence (optional)
-
-**Why not match upstream’s default engine on Mac?** Zerollama’s ggml Metal path is ~**+7% faster** on ship hardware and shares VRAM bookkeeping with the Darwin sidecar. Phase 17 ports upstream’s **Go → llama-server** integration for **mergeability**, not to replace ggml on day one.
-
-| Goal | How |
-|------|-----|
-| Test upstream-shaped GGUF on Mac | `./zerollama serve --llama-server-backend` or `ZEROLLAMA_LLAMA_SERVER=1` |
-| Linux plain text (auto) | Install/build `llama-server`; text GGUF defaults to it when found; vision stays ggml (`ZEROLLAMA_LLAMA_SERVER=1` forces all) |
-| Compare side-by-side | [upstream-ollama-diff.md](docs/upstream-ollama-diff.md) · `./scripts/gpu/clone_upstream_ollama.sh` |
-| Full operator guide | [phase17-llama-server.md](docs/phase17-llama-server.md) |
-
-**What Phase 17 does *not* change:** Python runtime, `/api/train/*`, Eliza cloud, fleet scheduling, Mac ggml default.
+| Read this far if you want… | Jump |
+|----------------------------|------|
+| Running in under a minute | [Quick start](#1-quick-start) |
+| Feel the win in 30 seconds | [30-second win](#15-thirty-second-win) |
+| Why megaprompts + visuals win | [Why Zerollama?](#2-why-zerollama) |
+| “Will my Open WebUI / LangChain / Continue still work?” | [Compatibility](#3-ollama-compatible--hundreds-of-integrations) |
+| Tour (megaprompts → visuals → harness → …) | [Tour](#4-tour--what-makes-us-different) |
+| Harness-shaped API example | [Use the API](#5-use-the-api) |
+| Build on Apple Silicon / CUDA / Arc | [Platforms](#6-build--platforms) |
+| Deep docs, phases, experimental tracks | [Go deeper](#7-go-deeper) |
 
 ---
 
-## Experimental Mac inference (Flash-MoE + ANE probe + ANE dflash lab)
+## 1. Quick start
 
-**Why documented separately from Phase 17:** Phase 17 ports upstream **Go → llama-server** for mergeability. **Flash-MoE** and **ANE** tracks are *research integrations* scouted from the Apple Silicon inference community — they extend what Mac operators can run, but do not replace ggml Metal for in-RAM models.
-
-| Track | Problem | Status | Enable |
-|-------|---------|--------|--------|
-| **[Flash-MoE (anemll)](docs/flash-moe.md)** | MoE models **larger than unified RAM** (e.g. Qwen3.5-397B experts) | Partial — flag passthrough + fork build + **`flash_moe_smoke.sh`** | `ZEROLLAMA_FLASH_MOE=1` + sidecar + `--llama-server-backend` |
-| **[ANE probe (maderix)](docs/ane-probe.md)** | Validate **Apple Neural Engine** via private API bridge | Partial — subprocess smoke only | `./scripts/ane/ane_probe_build.sh`; `zerollama doctor` |
-| **[ANE dflash in-process (B1–B6)](docs/ane-draft-inprocess.md)** | **Metal base + ANE draft-step** handoff on eliza `*-dflash` | Partial — lab hook on llama-server; tokens still Metal | `ZEROLLAMA_ANE_DRAFT=1` on **lab port 11435** only; see doc |
-
-**Why Flash-MoE is llama-server-only:** slot-bank streaming and `-fit` VRAM budgeting live in anemll's forked server, not ggml Metal. **Why ANE probe is subprocess:** private `_ANEClient` APIs break on macOS updates; isolated smoke keeps `zerollama` stable. **Why ANE dflash is in-process (not probe subprocess):** ANE IOSurface surface IDs are not visible across PIDs — llama-server must own the compiled kernel for ggml handoff.
-
-ROADMAP: [M16 Flash-MoE](docs/ROADMAP.md#apple-silicon--metal-track), [M17 ANE probe](docs/ROADMAP.md#apple-silicon--metal-track), [M18 ANE dflash in-process](docs/ROADMAP.md#apple-silicon--metal-track).
-
----
-
-## Phase 16 — thin edge daemon (optional)
-
-**Why a separate mode from Phase 17?** Phase 17 ports upstream’s llama-server integration for **mergeability**; Phase 16 is the **deployment shape** — runtime chat off, GGUF always via llama-server, training/Eliza/fleet still in Go. Use it for upstream-shaped edge nodes without deleting zerollama differentiators.
-
-| Goal | How |
-|------|-----|
-| Upstream-shaped serve (runtime chat off) | `./scripts/serve/serve_edge.sh` or `./zerollama serve --edge` |
-| Edge-marked binary (no in-process ggml CGO) | `./scripts/build/build_zerollama_edge.sh` → `./zerollama-edge serve` |
-| Linux auto (no `--edge` flag needed) | `./scripts/serve/serve_linux_auto.sh` when llama-server on disk |
-| Operator visibility | `curl -s localhost:11434/api/status \| jq .inference.backend` |
-| Full operator guide | [phase16-thin-edge.md](docs/phase16-thin-edge.md) |
-
-**What `--edge` does *not* remove:** `/api/train/*`, Eliza cloud, fleet, launch integrations, or the Python runtime tree (only **chat/generate** routing through runtime is disabled).
-
----
-
-## Quick start
-
-**macOS (recommended first path):**
+**Apple Silicon:**
 
 ```bash
 git clone <this-repo> zerollama && cd zerollama
@@ -102,584 +54,284 @@ git clone <this-repo> zerollama && cd zerollama
 ./zerollama run llama3.2:3b
 ```
 
-**CUDA (5080-class):** [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
-
-**Intel Arc A380 (6 GB, Vulkan):** [a380-runbook.md](docs/a380-runbook.md) — research: `~/bmtl/asm_lab/lanes/arc-a380`
-
-**Compare with upstream on the same machine:**
+**CUDA** → [Build & platforms](#6-build--platforms) · **Arc** (Vulkan) → same section
 
 ```bash
-./scripts/gpu/clone_upstream_ollama.sh
-./scripts/build/build_upstream_ollama_mac.sh
-OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve   # upstream
+# sanity
+./zerollama doctor
+curl -s http://127.0.0.1:11434/api/tags | jq .
+```
+
+Default listen is `:11434` (runtime sidecar often `:8081`). For lab/smoke work, prefer other ports so you don’t collide with a daily serve.
+
+### 1.5 Thirty-second win
+
+Once `./zerollama serve` is up and a model is pulled:
+
+1. **Point the harness** — Hermes, OpenClaw, Continue, Open WebUI, etc. → `http://127.0.0.1:11434` (same as Ollama).
+2. **Confirm it’s us** — `curl -s http://127.0.0.1:11434/api/version | jq .distribution` → `"zerollama"`.
+3. **Send a stable thread key** every turn (`options.prompt_cache_key` or OpenAI top-level `prompt_cache_key`) + `qos_class: "interactive"` when you can.
+4. **Feel turn 2** — same system/tools prefix should skip full prefill; TTFT drops. That’s the [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm)-inspired prompt cache doing its job.
+
+Copy-paste harness request: [§5 Use the API](#5-use-the-api).
+
+---
+
+## 2. Why Zerollama?
+
+Upstream is excellent at “pull a model and chat.” Agents don’t chat small — they ship **megaprompts** (and often need **pictures and clips** to explain the answer).
+
+| Agent reality | Zerollama |
+|---------------|-----------|
+| Megaprompt tokenize burns **hundreds of ms** before any forward | **Accelerated BPE** inspired by [Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp) — **~3–7×** on Qwen/GPT-2/Gemma4 (1 MiB); [benches](docs/readme-marketing-benches.md) |
+| Same megaprompt / system prefix every turn feels like a cold start | **Prompt cache (L3)** — inspired by [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm): give the thread a stable key and **turn 2+ reuses the prefix** so the next megaprompt is way faster (optional `/api/cache/pin` to keep it warm) |
+| Agents need to **show**, not only tell | **Image + video gen** on the same daemon — Wan `/v1/videos`, MLX/Comfy/sd.cpp `/v1/images`; VLM video understanding |
+| Background jobs fight live agent threads | **Harness control plane** — QoS, timeouts, preempt reasons, capacity APIs |
+| “Model bugs” that are really server traps | **`zerollama doctor`** + minefield probes |
+| Train / multi-node | `/api/train/*`, `zerollama fleet serve`, Eliza Cloud |
+
+Full matrix + architecture: [docs/upstream-ollama-diff.md](docs/upstream-ollama-diff.md)
+
+---
+
+## 3. Ollama-compatible — hundreds of integrations
+
+Point anything that speaks Ollama at `http://127.0.0.1:11434` (or your host). Same `/api/*`, same OpenAI-shaped `/v1/*`, same [ollama-python](https://github.com/ollama/ollama-python) / [ollama-js](https://github.com/ollama/ollama-js) clients.
+
+```bash
+zerollama launch claude      # Claude Code, Codex, Copilot, OpenCode, …
+zerollama launch openclaw    # WhatsApp / Telegram / Discord assistant
+zerollama run gemma3
+```
+
+**Community apps, IDEs, RAG stacks, bots, SDKs:** we don’t maintain a second copy of that list. Use upstream’s catalog — **hundreds of integrations** work as-is against zerollama:
+
+→ [ollama/ollama § Community Integrations](https://github.com/ollama/ollama#community-integrations)
+
+Cloud models use **[Eliza Cloud](https://www.elizacloud.ai)** (`model: …:cloud`), not legacy ollama.com signing — [eliza-cloud.md](docs/eliza-cloud.md).
+
+---
+
+## 4. Tour — what makes us different
+
+Skim the headings. Dive only where you care. Deep guides linked at the end of each block.
+
+### 4.1 Megaprompts: fast tokenize + prompt cache
+
+Agents don’t send a sentence — they re-send **tools, history, system prompts, and clips** every turn. Two bottlenecks kill the feel of that stack:
+
+1. **Encode** the megaprompt before any forward  
+2. **Re-prefill** the same long prefix on every turn
+
+**Accelerated tokenizer** — work **inspired by [Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp)** ([chynggi](https://github.com/chynggi) — stellar), reimplemented in C++ inside vendored llama.cpp (bit-identical IDs; not the Rust crate). On Qwen2 / GPT-2, stock-style encode still costs **~270–390 ms** per **1 MiB** megaprompt **before any forward**.
+
+| Layer | Measured win |
+|-------|-------------|
+| Id-pair BPE merge + tiered short merge | Gemma4 ~**3.4×**; Llama3 ~**1.8×** (mixed 1 MiB) |
+| ASCII / SIMD pretok + blob | Qwen3.5 ascii ~**20 ms/MiB** (**5.8×**); GPT-2 ascii **7×** |
+| Specials / chat markers | Qwen2 chat **~4.8×** (**389→81 ms**); GPT-2 chat **~3.3×** |
+| Session pretok→ids cache | Code-like repeats (see [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md)) |
+
+**Prompt cache (L3) — ELI5:**  
+Think sticky notes on the GPU for “we already read this prefix.” You send a stable `prompt_cache_key` per agent thread. Turn 1 still pays prefill; **turn 2+ reuses that prefix** so the *next* megaprompt is way faster — same idea as [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm) prefix caching, wired into our slot bridge (not a second server). Optional `/api/cache/pin` keeps the lease warm; that’s **prefix** residency, not the same as pinning the whole model. Radix can also share a common system prompt across different thread keys.
+
+→ [readme-marketing-benches.md](docs/readme-marketing-benches.md) · [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/gpu-profiles-l3.md) · [radix-prefix-share.md](docs/radix-prefix-share.md)
+
+### 4.2 Explain with visuals (image + video)
+
+Agents need to **show** the answer — diagrams, frames, short clips — on the same daemon that runs chat. Patterns **inspired by** [SGLang](https://github.com/sgl-project/sglang), [LocalAI](https://github.com/mudler/LocalAI), and [vLLM](https://github.com/vllm-project/vllm) — borrowed into our Go + runtime shape (**no required second server**).
+
+| Capability | Surface |
+|------------|---------|
+| Video understanding | `video_url` / `videos[]` → ffmpeg → VLM (+ SGLang-style caches / padded inject) |
+| Wan T2V | Async OpenAI-shaped `POST /v1/videos` |
+| Image gen | `/v1/images/*`, `zerollama run` — **MLX**, **ComfyUI**, **sd.cpp** / OpenVINO |
+| Speech | `/v1/audio/*` — Whisper + Piper |
+| QoS | Image/video gen default **`background`** behind interactive agents |
+
+→ [video-understanding.md](docs/video-understanding.md) · [wan-t2v.md](docs/wan-t2v.md) · [comfyui-image-backend.md](docs/comfyui-image-backend.md) · [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md)
+
+### 4.3 Harness / agentic API
+
+Upstream is a **chat appliance**. Agent frameworks need a **control plane**: schedule against each other, know eviction vs finish, pin prefix cache without pinning the model, dry-run VRAM, and stop guessing whether `think` / schemas applied.
+
+```bash
+curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .zerollama.capabilities}'
+# distribution == "zerollama"  →  send options.zerollama + prompt_cache_key
+```
+
+| You tell the server | You get back |
+|---------------------|--------------|
+| `qos_class` (`interactive` / `auxiliary` / `background`) | Background jobs defer instead of clobbering live KV |
+| `project_id` / `project_name` | `zerollama ps` shows **who owns the GPU** |
+| `prompt_cache_key`, `cache_reset`, `session_parent` | Skip repeat prefill; multiplex-aware waits |
+| `timeout` | **HTTP 504** (≠ client disconnect **499**) |
+| Bound `/v1` `think` + `response_format` / GBNF | No accept-and-drop; schemas reach the runner |
+| — | `done_reason=preempted` + `preempted_reason` — **retry**, don’t treat eviction as `stop` |
+| — | `/api/can-load`, `/api/propose-load`, `/api/pin`, `/api/cache/pin`, `/v1/.../batch` |
+
+Progressive ladder: vanilla Ollama → Tier 1 fields only; zerollama → + `options.zerollama`; capabilities → Orient / Decide / Act.
+
+→ [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md)
+
+### 4.4 Doctor + minefield
+
+Harnesses blame the model; often the **server** is wrong — unread kwargs, think echo, tools inside think, wrong binary identity, context ceilings that return HTTP 200 with a truncated head.
+
+```bash
+./zerollama doctor                 # identity + live probes when a model is warm
+./zerollama doctor --models
+./zerollama doctor --fix          # uv venv + Apple Silicon build + sibling libllama
+ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor
+```
+
+→ [model-serving-minefield.md](docs/model-serving-minefield.md)
+
+### 4.5 Training, fleet, LM Studio, bench
+
+| Feature | One-liner |
+|---------|-----------|
+| **GPU training** | `/api/train/*` — LoRA/QLoRA in-process ([gpu-training.md](docs/gpu-training.md)) |
+| **Fleet** | `zerollama fleet serve` — warm-model routing ([fleet-management.md](docs/fleet-management.md)) |
+| **LM Studio cache** | `zerollama pull …` from `~/.lmstudio/models` — GGUF symlink / MLX repack ([lmstudio-import.md](docs/lmstudio-import.md)) |
+| **`zerollama bench`** | tok/s or image/video seconds → **PERF** column in `ls` ([bench-cache.md](docs/bench-cache.md)) |
+
+---
+
+## 5. Use the API
+
+Vanilla Ollama clients still work. Harnesses that detect `distribution == "zerollama"` should send a **thread key** + QoS so megaprompt cache and scheduling kick in:
+
+```bash
+# probe once
+curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .zerollama.capabilities}'
+
+# agent turn — stable prompt_cache_key + interactive QoS
+curl http://127.0.0.1:11434/api/chat -d '{
+  "model": "llama3.2:3b",
+  "stream": false,
+  "messages": [
+    {"role": "system", "content": "You are a coding agent. (…long tools + prefs…)"},
+    {"role": "user", "content": "Fix the flaky test."}
+  ],
+  "options": {
+    "prompt_cache_key": "hermes-thread-42",
+    "zerollama": {
+      "qos_class": "interactive",
+      "project_id": "hermes-lean",
+      "project_name": "demo"
+    }
+  }
+}'
+```
+
+Turn 2+ with the **same** `prompt_cache_key` is where the prompt cache pays off. On OpenAI `/v1/chat/completions`, you can also send top-level `prompt_cache_key` (and flat QoS via `extra_body`). Still compatible with stock SDKs:
+
+```python
+from ollama import chat
+print(chat(model='gemma3', messages=[{'role': 'user', 'content': 'Why is the sky blue?'}]).message.content)
+```
+
+```javascript
+import ollama from "ollama";
+const r = await ollama.chat({ model: "gemma3", messages: [{ role: "user", content: "Why is the sky blue?" }] });
+console.log(r.message.content);
+```
+
+Upstream API/Modelfile shape still applies: [docs.ollama.com/api](https://docs.ollama.com/api) · [CLI](https://docs.ollama.com/cli) · [Modelfile](https://docs.ollama.com/modelfile) · harness contract: [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md)
+
+**Backends:** llama.cpp (ggml Metal/CUDA or Go→llama-server), MLX safetensors, Python runtime sidecar (`runtime/` on `:8081`). Optional experimental: [Flash-MoE](docs/flash-moe.md).
+
+---
+
+## 6. Build & platforms
+
+First-class tracks: **Apple Silicon**, **CUDA**, and **Arc**.
+
+| Platform | Start here |
+|----------|------------|
+| **Apple Silicon** | [mac-dev-setup.md](docs/mac-dev-setup.md) — Go **1.24.1+**, full Xcode.app (or Homebrew Python), **cmake**, uv → `./scripts/runtime/dev_bootstrap.sh` · Metal notes: [apple-silicon-metal.md](docs/apple-silicon-metal.md) |
+| **CUDA** | [cuda-lanes.md](docs/cuda-lanes.md) — single- and multi-GPU playbooks; operator gates: [5080-runbook.md](docs/5080-runbook.md) · [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md) |
+| **Arc** | [a380-runbook.md](docs/a380-runbook.md) — Vulkan path; local image gen via sd.cpp / OpenVINO on the same API |
+
+```bash
+# Apple Silicon rebuild only
+./scripts/build/build_zerollama_mac.sh
+
+# Faster inference-only serve (skip training embed)
+OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
+```
+
+Vendor pin: **`f95de977` / b10159** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md). After patch edits: `make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh`.
+
+**Side-by-side with upstream (Apple Silicon lab):**
+
+```bash
+./scripts/gpu/clone_upstream_ollama.sh && ./scripts/build/build_upstream_ollama_mac.sh
+OLLAMA_HOST=127.0.0.1:11435 ../ollama-upstream/ollama serve   # upstream lab
 ./zerollama serve                                              # zerollama :11434
 ```
 
 ---
 
-## Ollama compatibility
+## 7. Go deeper
 
-Zerollama keeps the Ollama API surface so existing tools keep working:
+Ordered by how often operators need them. Full index: [docs/README.md](docs/README.md) · roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) · [CHANGELOG.md](CHANGELOG.md)
 
-- **CLI:** `serve`, `pull`, `run`, `list`, `bench`, `launch`, … (binary is `./zerollama`)
-- **REST:** `http://localhost:11434/api/*` and OpenAI-compatible `/v1/*`
-- **Clients:** [ollama-python](https://github.com/ollama/ollama-python), [ollama-js](https://github.com/ollama/ollama-js), LangChain, Continue, Open WebUI, etc.
+### Product & harness
+- [Agent QoS + project tracking](docs/agent-qos-and-project-tracking.md)
+- [Hermes gap map](docs/hermes-zerollama-gap.md) · [gap closure findings](docs/hermes-gap-closure-findings.md)
+- [Inference wishlist (can-load / pin / propose)](docs/inference-wishlist-host.md)
+- [Scheduling & VRAM policy](docs/scheduling-vram-policy.md)
 
-Remote cloud models use **Eliza** OpenAI/Anthropic routes (`model: …:cloud`), not legacy ollama.com signing — see [eliza-cloud.md](docs/eliza-cloud.md).
+### Speed & correctness
+- [Megaprompt tokenize benches (README evidence)](docs/readme-marketing-benches.md)
+- [Faster BPE tokenize](docs/faster-bpe-tokenize.md) · [findings](docs/faster-bpe-tokenize-findings.md)
+- [Model-serving minefield ↔ doctor](docs/model-serving-minefield.md)
+- [L3 prompt cache](docs/gpu-profiles-l3.md) · [Radix prefix share](docs/radix-prefix-share.md)
+
+### Multimodal & media
+- [Video understanding](docs/video-understanding.md) · [Wan T2V](docs/wan-t2v.md)
+- [MLX imagegen](docs/imagegen-zimage-turbo.md) · [ComfyUI](docs/comfyui-image-backend.md)
+- [SGLang borrowings](docs/sglang-multimodal-borrowings.md) · [LocalAI borrowings](docs/localai-borrowings.md) · [vLLM borrowings](docs/vllm-borrowings.md)
+
+### Platforms & engines
+- [Apple Silicon & Metal](docs/apple-silicon-metal.md) · [macOS setup](docs/mac-dev-setup.md) · [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md)
+- [CUDA lanes](docs/cuda-lanes.md) · [5080 runbook](docs/5080-runbook.md) · [GPU operator guide](docs/gpu-5080-operator-guide.md)
+- [Arc (Vulkan) runbook](docs/a380-runbook.md)
+- [MLX agent prompts](docs/mlx-agent-prompts.md) · [MLX routing](docs/mlx-routing-policy.md)
+- [Runtime embed](docs/runtime-embed.md) · [GPU training](docs/gpu-training.md)
+- [Fleet](docs/fleet-management.md) · [Eliza Cloud](docs/eliza-cloud.md)
+- [LM Studio import](docs/lmstudio-import.md) · [Bench cache](docs/bench-cache.md)
+
+### Optional deployment shapes
+| Track | Why it exists | Doc |
+|-------|---------------|-----|
+| **Phase 17** — Go→llama-server | Mergeability with upstream; Apple Silicon still defaults ggml (~+7% in lab) | [phase17-llama-server.md](docs/phase17-llama-server.md) |
+| **Phase 16** — `--edge` | Upstream-shaped edge node; keep train/Eliza/fleet | [phase16-thin-edge.md](docs/phase16-thin-edge.md) |
+| **Flash-MoE / ANE** | Experimental Apple Silicon tracks (MoE > unified RAM, Neural Engine labs) | [flash-moe.md](docs/flash-moe.md) · [ane-probe.md](docs/ane-probe.md) · [ane-draft-inprocess.md](docs/ane-draft-inprocess.md) |
 
 ---
 
-## Get started
+## Open-source shoutouts
 
-```
-zerollama
-```
+Zerollama stands on other people’s work. We reimplement **ideas** in our Go + llama.cpp + runtime shape — we do **not** vendor their servers as required deps.
 
-You'll be prompted to run a model or connect Zerollama to your existing agents or applications such as `Claude Code`, `OpenClaw`, `OpenCode`, `Codex`, `Copilot`, and more.
+| Project | Nod | What we took |
+|---------|-----|----------------|
+| **[Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp)** · [chynggi](https://github.com/chynggi) | Stellar tokenizer engineering | Id-pair BPE, tiered short merge, pretok→ids cache, specials partitioning — C++ ports in patches **0106–0126** ([benches](docs/readme-marketing-benches.md)) |
+| **[vLLM](https://github.com/vllm-project/vllm)** | Prefix-cache / slot policy | L3 prompt-cache → slot bridge, SWA/draft guards, decode-graph invalidation ([vllm-borrowings.md](docs/vllm-borrowings.md)) |
+| **[SGLang](https://github.com/sgl-project/sglang)** | Agent multimodal path | Padded inject, precomputed/processor ingest, video expansion caches, session ViT pin ([sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md)) |
+| **[LocalAI](https://github.com/mudler/LocalAI)** | Daemon / control plane | GGUF metadata guess, repair, watchdog, concurrency groups, bench cache ([localai-borrowings.md](docs/localai-borrowings.md)) |
+| **[model-serving-minefield](https://github.com/Blackwellboy/model-serving-minefield)** | Honesty about “model bugs” | Trap map → `zerollama doctor` probes ([model-serving-minefield.md](docs/model-serving-minefield.md)) |
+| **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** (Nous Research) | Harness that needs a control plane | Gap closure for `think`, timeout, preempt, batch, QoS / `prompt_cache_key` ([hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md)) |
+| **[ollama/ollama](https://github.com/ollama/ollama)** | The wire shape | CLI / REST / `/v1` compatibility + the ecosystem of **hundreds of integrations** |
+| **[llama.cpp](https://github.com/ggml-org/llama.cpp)** | Inference engine | Vendored pin + reviewable patches ([LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md)) |
 
-### Coding
+Also shipping day-to-day against **OpenClaw**, coding agents, and friends on the same Ollama-compatible API. Full note + outbound thanks: [docs/open-source-shoutouts.md](docs/open-source-shoutouts.md).
 
-To launch a specific integration:
+**[X](https://x.com)** is still the best social network for connecting open-source projects — follow [@spaceodili](https://x.com/spaceodili) for zerollama / agent-inference updates.
 
-```
-zerollama launch claude
-```
+Issues and PRs welcome.
 
-Supported integrations include [Claude Code](https://docs.ollama.com/integrations/claude-code), [Codex](https://docs.ollama.com/integrations/codex), [Copilot CLI](https://docs.ollama.com/integrations/copilot-cli), [Droid](https://docs.ollama.com/integrations/droid), and [OpenCode](https://docs.ollama.com/integrations/opencode).
-
-**Model metadata:** launch loads your installed models once from `/api/tags` and passes capabilities (vision, thinking, context length) into each agent’s config — **why:** avoids slow per-model `/api/show` calls and keeps the picker and config writer in sync. See [launch-model-inventory.md](docs/launch-model-inventory.md).
-
-### AI assistant
-
-Use [OpenClaw](https://docs.ollama.com/integrations/openclaw) to turn Zerollama into a personal AI assistant across WhatsApp, Telegram, Slack, Discord, and more:
-
-```
-zerollama launch openclaw
-```
-
-### Chat with a model
-
-Run and chat with [Gemma 3](https://ollama.com/library/gemma3):
-
-```
-zerollama run gemma3
-```
-
-See [ollama.com/library](https://ollama.com/library) for the full list.
-
-See the [quickstart guide](https://docs.ollama.com/quickstart) for more details.
-
-## REST API
-
-Zerollama exposes the same REST API as Ollama for running and managing models.
-
-```
-curl http://localhost:11434/api/chat -d '{
-  "model": "gemma3",
-  "messages": [{
-    "role": "user",
-    "content": "Why is the sky blue?"
-  }],
-  "stream": false
-}'
-```
-
-See the [API documentation](https://docs.ollama.com/api) for all endpoints.
-
-### Python
-
-```
-pip install ollama
-```
-
-```python
-from ollama import chat
-
-response = chat(model='gemma3', messages=[
-  {
-    'role': 'user',
-    'content': 'Why is the sky blue?',
-  },
-])
-print(response.message.content)
-```
-
-### JavaScript
-
-```
-npm i ollama
-```
-
-```javascript
-import ollama from "ollama";
-
-const response = await ollama.chat({
-  model: "gemma3",
-  messages: [{ role: "user", content: "Why is the sky blue?" }],
-});
-console.log(response.message.content);
-```
-
-## Supported backends
-
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) — GGUF via ggml Metal/CUDA (Mac default) or Go→llama-server (Phase 17, Linux auto-default)
-- **Flash-MoE (anemll, experimental)** — forked `llama-server` + sidecar for MoE **larger than RAM**; [flash-moe.md](docs/flash-moe.md)
-- **MLX** — safetensors via mlxrunner
-- **Python runtime** — admission, in-process llama, training embed (`runtime/` sidecar on `:8081`)
-
-## Documentation
-
-**Upstream Ollama docs** (API/Modelfile shape still applies):
-
-- [CLI reference](https://docs.ollama.com/cli)
-- [REST API reference](https://docs.ollama.com/api)
-- [Importing models](https://docs.ollama.com/import)
-- [Modelfile reference](https://docs.ollama.com/modelfile)
-
-**Zerollama-specific:**
-
-- [Development & upstream compare](docs/development.md) · [Upstream diff](docs/upstream-ollama-diff.md) · [Roadmap](docs/ROADMAP.md) · [Changelog](CHANGELOG.md)
-- [Inference wishlist (host Phase A/B)](docs/inference-wishlist-host.md) — capacity APIs, pin/propose, thrash dampen, pin-vs-broker audit, empty-gen vs host_unstable; **why** `stable_multi_model_swap` stays false
-
-### Building zerollama on macOS (ggml vendor @ b9781)
-
-**Fresh clone (any path):** `./scripts/runtime/dev_bootstrap.sh` then `./zerollama serve`.
-
-**Vendor sync (after pin bump or patch edit):** `make -f Makefile.sync clean apply-patches` then `./scripts/vendor/sync_vendor_llama.sh`. **Why not only `make sync`:** sync rsyncs whatever is in vendor — patches must be applied first; the script refuses bare tags.
-
-**Phase 17 (optional upstream path):** `./scripts/build/build_ollama_llama_server_darwin.sh` then `./zerollama serve --llama-server-backend` — [phase17-llama-server.md](docs/phase17-llama-server.md). **Why optional on Mac:** ggml Metal ~+7% decode vs llama-server; Phase 17 is merge parity, not default engine swap.
-
-**Why tiers, not one setup script:** sign-off needs pulled GGUFs; CI smokes bind Go **`:8080`** while daily serve uses **`:11434`**; `../llama.cpp` is cloned automatically on tier 0. **`zerollama doctor --fix`** clones the sibling and builds Metal libllama when missing — same order as `mac_setup`. Details: [mac-dev-setup.md](docs/mac-dev-setup.md) · ROADMAP [M14](docs/ROADMAP.md#apple-silicon--metal-track).
-
-### Building zerollama on CUDA (RTX 5080-class / Proxmox CT)
-
-**Start here:** [5080-runbook.md](docs/5080-runbook.md) + `source scripts/gpu/5080_env.sh` + `./scripts/gpu/5080_resignoff.sh --build`
-
-```bash
-# Inside CT 1564
-cd ~/zerollama && source ./scripts/gpu/5080_env.sh
-./scripts/gpu/5080_resignoff.sh --build          # full tiers 0–4
-./scripts/gpu/5080_resignoff.sh --tier 2 --radix --vendor   # Radix live (optional)
-```
-
-Long reference (VRAM, remote serve, MLX): [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md)
-
-### Building zerollama on Intel Arc A380 (Vulkan / 6 GB)
-
-**Start here:** [a380-runbook.md](docs/a380-runbook.md) + `source scripts/gpu/a380_env.sh` + `./scripts/gpu/a380_signoff.sh`
-
-```bash
-cd ~/zerollama && source ./scripts/gpu/a380_env.sh
-./scripts/gpu/a380_signoff.sh --build
-bash scripts/serve/serve_a380_example.sh   # OLLAMA_VULKAN=1, GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
-```
-
-**Research baseline:** `~/bmtl/asm_lab/lanes/arc-a380` (`runs/research_synthesis.json`). Report **`total_duration_eval_tok_s`**, not `eval_tok_s` alone (~580 ms `load_ms` per API call).
-
-**Local image generation (6 GB):** MLX imagegen needs 16 GB CUDA/Metal — on A380 use **stable-diffusion.cpp (Vulkan)** and/or **OpenVINO GenAI (INT8)** via the same `zerollama run` / `POST /api/generate` path. **Why subprocess hooks:** diffusion stacks differ from ggml chat; manifest `backend_paths` + `image_generation` carry per-model weights and Intel ANV flags without forking the scheduler.
-
-```bash
-./scripts/image/install_stable_diffusion.sh && ./scripts/image/register_sd_models.sh
-./scripts/image/install_openvino_diffusion.sh && ./scripts/image/register_ov_models.sh   # optional second stack
-zerollama run sd15-turbo-vulkan "a red apple on white"
-zerollama run sd15-openvino "a watercolor lighthouse"
-zerollama ls image                    # local sd* + cloud image routes; PERF column after bench
-zerollama bench sd15 --force --epochs 1 --warmup 0
-```
-
-Guides: [sd-vulkan-a380.md](docs/sd-vulkan-a380.md), [sd-openvino-a380.md](docs/sd-openvino-a380.md). Set `OLLAMA_EXTERNAL_IMAGE_BIN` to the sd.cpp wrapper in service env; OpenVINO tags override via manifest `external_image_bin`.
-
-**Production serve:** bind `OLLAMA_HOST=192.168.255.105:11434` on the private network — agents use that URL directly; do not SSH port-forward `:11434`.
-
-**Production serve (remote `:8080`):** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh && ~/bin/serve.sh` — **WHY wrapper:** `serve_gpu_example.sh` in `~/bin` resolves repo as `$HOME`, not `~/zerollama`. See [5080-runbook — Production serve](docs/5080-runbook.md#production-serve-binserve-sh).
-
-**Why a separate section:** CUDA hosts use discrete VRAM (`single_gpu.yaml`, `nvidia-smi`), **sm_120** needs CUDA **12.8+** `nvcc`, and Proxmox operators often land on the **host** while GPU passthrough lives in an **LXC** — run gates **inside** the CT (`pct exec 1564 -- …`), not on the host with stale CUDA 12.3.
-
-```bash
-# Inside CT (e.g. cudallama) — sibling llama.cpp @ b9611 + kv-ext patch 0015
-export LLAMA_MODEL=/root/Llama-OuteTTS-1.0-1B-Q8_0.gguf   # ~1B Q8 smoke
-export LLAMA_CPP_LIB=/root/llama.cpp/build/bin/libllama.so
-export CMAKE_CUDA_ARCHITECTURES=120-real
-CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build/build_llama_server.sh
-
-# Gate sequence (see gpu-5080-operator-guide.md)
-./scripts/phase/phase15_llama_kv_ext_pin_check.sh
-./scripts/phase/phase15_inprocess_signoff.sh          # PASS
-CUDA_LLAMA_MODEL=$LLAMA_MODEL ./scripts/phase/l2_cuda_full_gate.sh
-./scripts/phase/l3_cache_smoke.sh && ./scripts/phase/l3_gate_report.sh /tmp/l3-cache-smoke.json
-L3_SPEC_METHOD=ngram ./scripts/phase/l3_spec_cache_smoke.sh   # optional: prefix-cache × spec policy
-```
-
-**Jun 2026 sign-off (CT 1564):** Phase 15 **PASS**; L2 **FAIL merge** @ 8k (stock faster); L3 **SOFT PASS**. Full playbook: [gpu-5080-operator-guide.md](docs/gpu-5080-operator-guide.md).
-
-**MLX image generation (experimental):** build MLX-C once, set `OLLAMA_LIBRARY_PATH` to include `mlx_cuda_v12`, pull `x/z-image-turbo`, stop other models, then `zerollama run x/z-image-turbo "prompt"`. Default **384×384** on 16 GB CUDA — **why:** activations scale with pixels². Guide: [imagegen-zimage-turbo.md](docs/imagegen-zimage-turbo.md).
-
-**ComfyUI image backend (agent utility):** for edit / img2img / ControlNet / LoRA on Qwen-Image, FLUX.1/2-dev, GLM-Image, Klein 9B — run a local ComfyUI, register `./scripts/register_comfy_models.sh`, then `zerollama run comfy/qwen-image "prompt"` (or `/v1/images/*`). **Why not port every DiT to MLX:** months per family; Comfy already packs the graphs. **Why not only `external-image`:** that hook has no workflow discovery. Guide: [comfyui-image-backend.md](docs/comfyui-image-backend.md). Env: `OLLAMA_COMFYUI_URL`, `OLLAMA_COMFYUI_TIMEOUT`, `OLLAMA_COMFYUI_WORKFLOWS_ROOT`.
-
-**Why a separate build script:** CGO needs Xcode SDK, embedded Python, and Metal ggml from the **patched in-tree** vendor (`llama/patches/` on `b9611`), not only sibling `../llama.cpp`.
-
-```bash
-# Tier 0 — build + serve (recommended first run)
-./scripts/runtime/dev_bootstrap.sh
-./zerollama serve
-
-# Tier 1 — pull a model
-./zerollama pull llama3.2:3b
-
-# Optional: vendor sync when hacking ggml patches (not required for first build)
-# make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh
-
-# Rebuild ggml binary only
-./scripts/build/build_zerollama_mac.sh   # BUILD_MLX=auto when ../mlx present
-
-# Tier 2 — sign-off (after pull; uses :8080/:8081 smoke layout)
-# MAC_SETUP_SIGNOFF=1 MAC_SETUP_GO=0 MAC_SETUP_BUILD=0 ./scripts/runtime/mac_setup.sh
-# Full gate + qwen35 (M4 Max, Jun 2026 PASS):
-# eliza-1-* is the ship qwen35 family — 2B is the default sign-off tag (fast handoff/resume).
-# RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/gpu/metal_signoff.sh
-# Alternate: RUN_E2E_QWEN35_MODEL=qwen3.6:latest (heavier; same gate shape)
-
-# Optional: qwen35 ggml smoke only (needs :8080/:8081 stack or run via metal_signoff)
-# RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/runtime/qwen35_mac_smoke.sh
-```
-
-**Daily serve:** `zerollama serve` — Go `:11434` (or `:8080` in dev) + uv sidecar `:8081` with `apple_silicon.yaml` inprocess backend.
-
-**GPU profile autotune (L1):** the runtime sidecar auto-merges tuned llama-server flags (`-b`, `-ub`, `-np`, `-fa`, …) from `runtime/configs/gpu/` based on **unified RAM** on Mac (`apple-silicon-16g` … `128g`). Check `curl -s :8081/health | jq .gpu_profile`. **Why:** Phase 13 estimates fit; L1 picks throughput knobs — a 128 GiB M4 Max should not share the same batch/parallel defaults as a 16 GiB Air. Disable: `ZEROLLAMA_GPU_PROFILE=0`. Doc: [gpu-profiles-l1.md](docs/gpu-profiles-l1.md).
-
-**MLX safetensors (`gemma4`, Hermes agents):** long agent prompts are capped and tail-truncated server-side; pass `options.num_ctx` ≤ model max. Final responses set **`prompt_truncated`** / **`original_prompt_tokens`** when input was shortened (**why:** silent 200 + `prompt_eval_count ≈ num_ctx` was too easy to miss). Pass a stable **`prompt_cache_key`** per thread so turn 2+ can hit **live-session** (`fast_path=true` in `gemma-agent.jsonl`) or trie restore — without the key, 99% `cached_tokens` can still mean ~60–90s TTFT on OptiQ. If `messages_dropped` rises between turns, expect partial cache (~16k), not full reuse. Check logs for `num_ctx capped`, `prompt tail-truncated`, `prefill complete`, `prompt_chain_miss` `messages_truncated`. Guide: [mlx-agent-prompts.md](docs/mlx-agent-prompts.md). Truncation fields: [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#prompt-truncation-in-responses).
-
-**Agent QoS + fleet visibility (Jul 2026):** clients detect zerollama via `GET /api/version`, then send **`options.zerollama`** (`qos_class`, `project_id`, `project_name`, optional `session_parent` / `cache_reset` / `cache_level`) and a stable **`prompt_cache_key`**. **`zerollama ps`** shows PROJECT / SESSION columns when harness metadata is present. **Why:** background batch jobs must defer behind live agent threads; many agents on one connection need multiplex-aware `wait_parent`; operators need to see which app owns GPU without log archaeology; Tier 2 hints are gated so vanilla Ollama / CUDA proxies are not penalized. Guide: [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) (great loop + findings).
-
-**Hermes gap closure (M15e):** `/v1` binds native **`think`**; per-call **`timeout`** → HTTP **504**; QoS wait-abort may include **`preempted_reason`**; `/api/can-load` topology; **`POST/DELETE /api/cache/pin`**; **`POST /v1/chat/completions/batch`** → `{object:"chat.completion.batch", model, count, completions[]}` with `completions[i]` ↔ `requests[i]` (same model, ≤8, text-only; **group by model client-side**). **Why:** six real wishlist gaps without a Go TP planner. **Why document the wrapper:** “OpenAI-shaped list” was underspecified and blocked Hermes aux-client work. Gap map: [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md) §8. Findings: [hermes-gap-closure-findings.md](docs/hermes-gap-closure-findings.md). OpenAPI: `GET /openapi.json`.
-
-**Mid-stream preempt + grammar (M15f):** terminal **`done_reason=preempted`** on MLX soft-cancel of lower-class inflight; Python runtime forwards **`response_format`/`format`** to llama-server; GBNF via `format.type=gbnf`; **tools+grammar → 400**. **Why:** truncated streams must not look like natural stop; runtime-proxied schemas were silently unconstrained.
-
-**Capacity & admission (wishlist Phase A/B, Jul 2026):** agents probe **`GET /api/version`** → `zerollama.capabilities`, read **`GET /api/status`** → `inference.config` (+ `pins`), dry-run **`POST /api/can-load`**, plan **`POST /api/propose-load`** (honors `serialize_required` for multi-runtime), lease **`POST /api/pin`** (broker-respecting; residual pinned ggml or conflicting GGUF → **`503`** + `Retry-After`), scrape **`GET /api/metrics`**, and honor **`Retry-After`**. **Why B0 needs ggml-empty:** skipping unload while ggml still holds VRAM OOMs llama-server. **Why pins use Forced only for training/bench:** soft residency must survive the runtime broker, but training must reclaim the GPU. **`stable_multi_model_swap` stays false** (Python one GGUF). Guide: [inference-wishlist-host.md](docs/inference-wishlist-host.md).
-
-**Prompt cache → slot bridge (L3):** pass a stable session key in request `options` (`eliza.conversationId`, `prompt_cache_key`, …) and the runtime pins llama-server `id_slot` + sets `cache_prompt: true` so repeat system prompts skip full prefill. Check `curl -s :8081/health | jq .llama_cache`. **Why:** agent threads re-send the same system prompt every turn — dynamic Phase 15 slots throw away KV on `complete()`. L3 maps keys → slots (needs `-np > 1` from L1). Batch rows use `prompt_cache_keys[]` (strict per-index — no silent fallback to a flat key). Disk cache lives under `~/.cache/zerollama/llama-cache/<modelHash>/`; hash canonicalizes GGUF paths and includes L2 cache types so fork/stock blobs never mix. Disable: `ZEROLLAMA_LLAMA_CACHE=0`. Sign-off: `./scripts/phase/l3_cache_smoke.sh` + `./scripts/phase/l3_gate_report.sh` (or `RUN_E2E_L3=1` on `m3_metal_signoff.sh`). **5080 Jun 2026:** SOFT PASS on 1B Q8 (bridge wired). Doc: [gpu-profiles-l3.md](docs/gpu-profiles-l3.md).
-
-**Cross-slot Radix prefix share (L3 v1 + v2):** **Why:** L3 pins one slot per `prompt_cache_key`; two agents with the same system prompt but different keys hash to different slots and repeat prefill without cross-slot seed. **`ZEROLLAMA_L3_PROFILE=agent`** (or `ZEROLLAMA_RADIX_PREFIX_SHARE=1`) copies donor KV into cold targets, **warm catch-up** when the donor holds a longer verified prefix (L3-R2), **ref-count block metadata** for overlapping donors (L3-R3), optional **`redis://` LMCache** for fleet block index (L3-R4), and **SWA-window-gated hybrid** `seq_cp` for Gemma-style models (L3-R5). Requires hash-chained block pool + vendor `POST /kv/seq-copy` (patch 0017), `n_parallel > 1`, patched vendor llama-server — not bare sibling `../llama.cpp`. Live gate: `L3_RADIX_LIVE=1 ./scripts/phase/l3_radix_prefix_smoke.sh`. **Not full RadixAttention:** no llama-level shared KV pages, no cross-node KV blob pull — see [radix-prefix-share.md](docs/radix-prefix-share.md#product-gaps) and [ROADMAP — L3-R](docs/ROADMAP.md#radix-v2-l3-r--product-gaps).
-
-**Decode graph invalidation (CUDA, vLLM-inspired):** when L3 clears a KV slot (SWA block, owner change, `cache_prompt=false`, draft drop-last-block fallback on subprocess), the runtime bumps a per-slot decode-graph epoch and clears ggml's captured CUDA graph cache. **In-process:** `llama_context_cuda_graph_invalidate` via native/ctypes on the live context. **Subprocess (default backend):** `POST /cuda-graph/invalidate` on the llama-server child — **why:** the child owns `ctx_tgt`; Python epoch alone cannot reach ggml in another process. **Why invalidation at all:** ggml keys captured graphs by compute topology, not sequence id — prefix reuse without breaking graphs can replay wrong GPU work. Check `curl -s :8081/health | jq .llama_cache.decode_graph`. Rebuild sibling `../llama.cpp` after pull (`./scripts/build/build_llama_server.sh`; CUDA: `GGML_CUDA_GRAPHS=ON`). Disable ggml clear: `ZEROLLAMA_DECODE_GRAPH_INVALIDATE=0`. On Metal the API is a no-op; epoch + L3 policy still run. Doc: [decode-graph-invalidation.md](docs/decode-graph-invalidation.md).
-
-**Multimodal agent caches (SGLang-inspired, native path):** repeat `video_url` / video blobs on the same thread benefit from three layers — (1) HTTPS body LRU, (2) global ffmpeg expansion LRU, (3) session expansion cache when `prompt_cache_key` matches L3. Pass the key via `/api/chat` `options`, `/v1/chat/completions` `prompt_cache_key` or `options`, or Responses `prompt_cache_key`. OpenAI responses include `usage.prompt_tokens_details` (`image_tokens`, `video_tokens`, `cached_tokens` — heuristic modality counts; `cached_tokens` from L3). Vision preflight runs before ffmpeg; pre-expanded `video_spans` count on the latest user turn only so echoed history does not false-reject follow-ups.
-
-**`padded_input_ids` (SGLang preprocessed clients):** pretokenized layouts on the latest user message are spliced into the rendered template and consumed at the vision runner — not re-tokenized from text. **Why:** SGLang clients already computed vision token positions; re-tokenizing duplicates or misplaces placeholders. On **Mac Metal (ollama-engine default)** all native Go VLM families inject in-process: Qwen3-VL (+ qwen25vl/qwen2vl), Gemma4, mllama, Gemma3, Llama4, LFM2, GLM-OCR, Mistral3, DeepSeek-OCR. Grep `padded_layout_consume=<mode>_runner_inject` or `padded_input_ids runner inject` (`engine=ollama` on ollama-engine). **Why tool-aware:** tool results render as pseudo user blocks — they must not count as splice spans or multi-turn inject breaks. Grep `deferred_multimodal_history` or `padded_input_ids splice failed` if agent VLMs lose images after tool calls.
-
-**`grid_thw` hints (M-RoPE):** optional `[T,H,W]` on client-explicit `video_spans` flows to per-frame `llm.ImageData.GridTHW`. mtmd (`mtmd_bitmap_set_grid_hint`) and ollama-engine Qwen/glmocr honor the grid (resize to `H*patch × W*patch`); grep `grid_thw hint resize` / `vision grid hint match`. Non–M-RoPE families still ignore. **Why:** when ffmpeg resize differs from the client processor, embed count ≠ hint → padded inject misaligns.
-
-**`precomputed_embedding` + `processor_output` (SGLang preprocessed ingest — partial):** clients that already ran the HF processor or ViT can send **`padded_input_ids`** plus either post-projector **feature rows** (`precomputed_embedding`) or raw **`pixel_values` + `image_grid_thw`** (`processor_output`) instead of PNG bytes. **Why:** agent threads on edge nodes should not decode PNG and re-encode ViT when SGLang already materialized tensors — server runs only vision-tower + LLM prefill (ollama-engine) or splices embed rows at padded slots. **ollama-engine** covers all native Go VLMs (family matrix in [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) §7c–§7d); **ggml llamarunner** accepts precomputed embed chunks (Linux auto + Mac vision default); **llama-server** rejects both when forced with `ZEROLLAMA_LLAMA_SERVER=1` (subprocess needs base64 rasters). Grep `precomputed_embedding runner inject` or `processor_output runner inject` (`engine=ollama`).
-
-**`enable_prefix_mm_cache` (SGLang session ViT pin):** set **`prompt_cache_key`** on every agent turn (OpenAI top-level or `/api/chat` `options`). Session ViT overlay defaults **ON** with the key; set **`enable_prefix_mm_cache: false`** to disable session pin and use global LRU only. **Why:** global ViT LRU (4–64 slots) can evict clip frames between turns even when ffmpeg/session expansion caches hit — SGLang keeps encoder outputs hot per conversation; zerollama mirrors that with a per-runner session overlay keyed like L3. Without `prompt_cache_key`, overlay stays off (setting the flag alone logs a hint).
-
-**Why caches + padded inject + hints + preprocessed ingest:** agents re-send the same clip every turn; without caches ffmpeg and CDN dominate latency; without keys session cache does not pin per thread; without scoped preflight multi-turn chats fail incorrectly; without splice tool loops silently drop vision layout; without grid hints layout drift is invisible until quality degrades; without preprocessed paths clients pay duplicate ViT work on every turn.
-
-Smoke: `./scripts/video/video_expand_cache_smoke.sh` (unit), `./scripts/video/video_agent_cache_smoke.sh` (expand + session cache, `RUN_E2E_VIDEO_AGENT=1`), `./scripts/video/video_agent_infer_smoke.sh` (live VLM + turn-2 `cached_prompt_tokens`, `RUN_E2E_VIDEO_AGENT_INFER=1`; optional `VIDEO_AGENT_INFER_PREPROC=1` + `VIDEO_AGENT_GO_LOG` for padded layout restore; optional `VIDEO_AGENT_INFER_PREFIX_MM_WARN=1` for prefix-mm hint grep). Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md), [video-understanding.md](docs/video-understanding.md), [mtmd-grid-thw-handoff.md](docs/mtmd-grid-thw-handoff.md).
-
-**Fork evaluation (L2):** **Done** — kernels on unified pin; **defaults stay L1** (stock wins tok/s). Opt into TBQ VRAM: `ZEROLLAMA_LLAMA_FORK=1` or `ZEROLLAMA_LLAMA_FORK_AUTO_VRAM=1` when configured ctx ≥ 32768. Gates: `./scripts/phase/l2_full_gate.sh` (Mac) / `./scripts/phase/l2_cuda_full_gate.sh` (CUDA). Doc: [gpu-profiles-l2.md](docs/gpu-profiles-l2.md).
-
-**Why rebuild after pull:** Jun 2026 fixed Mac **GPU bootstrap discovery** (`total_vram="0 B"` / CPU-only offload) and **Go ollama-engine sched_reserve** for qwen35moe (`GGML_ASSERT(tensor->buffer == NULL)` abort). Rebuild so `/info` uses `DiscoverBackendDevices()` and graph tensors defer to the scheduler — see [apple-silicon-metal.md](docs/apple-silicon-metal.md#gpu-bootstrap-discovery-jun-2026) and [sched_reserve](docs/apple-silicon-metal.md#go-ollama-engine-sched_reserve-jun-2026).
-
-**Context length on Mac (ggml):** keep manifest `num_ctx` modest (4096); use **`options.num_ctx` per request** for long context — manifest defaults pre-allocate KV at load and very large values can hang. `/api/ps` shows the **loaded** runner, not `/api/show`. After `/api/create` or `zerollama stop`, confirm with empty `/api/ps`. See [qwen35-apple-silicon.md](docs/qwen35-apple-silicon.md#manifest-num_ctx-vs-request-optionsnum_ctx-jun-2026).
-
-**GGUF guess + scheduler hardening (LocalAI borrowings):** new pulls and creates auto-fill arch, capped manifest `num_ctx` (8192), parser, and stops from GGUF headers; pull also rewrites manifest metadata after download. A background watchdog can reclaim VRAM and evict stuck runners. **Why:** train-context manifests and multi-model agents were the top operator footguns. Existing tags: `zerollama repair MODEL --write` or `POST /api/repair`. Agent routing without generation: `POST /api/score` (joint log-prob of candidate continuations). Tight GPUs: `PARAMETER concurrency_groups ["vram-heavy"]` on conflicting models (e.g. imagegen + chat). Doc: [localai-borrowings.md](docs/localai-borrowings.md). Env: `ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD=0.95`, `ZEROLLAMA_DISABLE_GGUF_GUESS=1`.
-
-**Faster inference-only startup** (skip training embed + blob prune):
-
-```bash
-OLLAMA_TRAINING=false OLLAMA_NOPRUNE=1 ./zerollama serve
-```
-
-**GPU training venv (when `OLLAMA_TRAINING=true`):** packages live in `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y must match** the libpython linked into your `zerollama` binary (`ldd $(which zerollama) | grep libpython`). **Why:** embedded CPython loads torch from `PYTHONPATH`, not the venv interpreter — ABI mismatch fails at startup with `training worker not started`. **Linux 5080:** prefer **3.11** embed + venv (same as `runtime/.venv`) via [`scripts/training/training_embed_build_env.sh`](scripts/training/training_embed_build_env.sh) before `go build`. Setup: [`scripts/training/training_uv_venv.sh`](scripts/training/training_uv_venv.sh) (`--embed-py`, `--verify`); **production serve:** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh` (do **not** copy `serve_gpu_example.sh` to `~/bin` — breaks repo root). After migration, remove legacy `venv-training/` (~7 GiB). Details: [gpu-training.md](docs/gpu-training.md#installing-python-deps-embedded-interpreter).
-
-### LM Studio cache (reuse local downloads)
-
-**Why:** LM Studio and zerollama often share a Mac; re-downloading 30–70 GB weights from the registry wastes time and disk when `~/.lmstudio/models` already has them.
-
-```bash
-./zerollama list                                    # includes discoverable LM Studio caches; PERF when bench cache exists
-./zerollama bench                                   # measure tok/s or image/video seconds → ~/.ollama/bench.json
-./zerollama pull lmstudio-community/gemma-4-31b-it:q8_0   # registers from cache when matched
-OLLAMA_LMSTUDIO_LIST_ALL=1 ./zerollama serve      # list MLX models even when disk is tight
-```
-
-- **GGUF:** symlinked into `OLLAMA_MODELS` (near-zero extra space).
-- **MLX safetensors** (`config.json` + weights): repacked into zerollama blobs (~full model size free required).
-- **Pull** fails early with a clear disk error if MLX import cannot fit.
-
-Full rationale, env vars, and troubleshooting: [docs/lmstudio-import.md](docs/lmstudio-import.md).
-
-### Model throughput in `list` (`zerollama bench`)
-
-**Why:** Disk size and parameter labels do not predict decode speed on your GPU — and image models need **seconds per frame**, not tok/s. **`zerollama bench`** runs a short benchmark per local model and caches results to **`~/.ollama/bench.json`** (keyed by digest so re-pulls reset stale numbers). **`zerollama ls`** shows a **PERF** column: **tok/s** for chat, **seconds** for image/video — `--` until you bench.
-
-```bash
-./zerollama bench                    # completion + image + video_gen locals
-./zerollama bench llama3.2           # prefix filter (same idea as ls)
-./zerollama bench sd15 --force       # image tags: wall seconds, max 2 timed epochs
-./zerollama ls                       # NAME … PERF … MODIFIED
-./zerollama ls image                 # filter by image capability (sd15-vulkan, cloud routes, …)
-```
-
-Numbers reflect **this machine** (backend, VRAM, serve flags), not cloud models. For CI-grade A/B use `cmd/bench/bench.go` or Phase 17 / L1 scripts. Doc: [docs/bench-cache.md](docs/bench-cache.md).
-
-**Why runtime header on proxy:** Pulled model names may route to legacy ggml and contend with the sidecar on one Metal device — use `X-Zerollama-Runtime: 1` or runtime-default manifest backend. See [apple-silicon-metal.md](docs/apple-silicon-metal.md#scheduler-errors-http-status).
-
-### In this repository
-
-- [Eliza Cloud / Zerollama remote inference](docs/eliza-cloud.md) — **why** Eliza is the default upstream (OpenAI/Anthropic APIs + API keys), **why** legacy Ed25519 signing is limited to `ollama.com`, path rewrites, catalog merge, and when responses are raw upstream JSON.
-- [Video understanding (VLM)](docs/video-understanding.md) — **why** OpenAI `video_url` merges into one message, **why** ffmpeg samples to frames, security (HTTPS, SSRF), native **fps/stride** sampling, context preflight, expansion caches, and optional SGLang proxy.
-- [SGLang multimodal borrowings](docs/sglang-multimodal-borrowings.md) — **why** native path adopted pooled fetch, expansion LRU, session cache, padded inject, precomputed/processor ingest, OpenAI usage breakdown, `cached_tokens`, multi-turn preflight scoping, and OpenAI `prompt_cache_key` without requiring SGLang.
-- [Wan text-to-video (T2V)](docs/wan-t2v.md) — **why** async `/v1/videos` uses the training `run_script` queue (not GGUF chat), **why** checkpoints install separately, defer ids, and artifact paths.
-- [MLX image generation (Z-Image Turbo)](docs/imagegen-zimage-turbo.md) — **why** diffusion uses an MLX subprocess (not ggml/runtime); 16 GB CUDA staged VRAM; `zerollama run x/z-image-turbo`; build `libmlxc.so` + `patch_mlx_cuda_vram.sh`.
-- [ComfyUI image backend](docs/comfyui-image-backend.md) — **why** agent utility (edit/ControlNet/LoRA) goes through Comfy instead of new MLX DiTs; named workflows; `GET /api/image/workflows`; calibrate example graphs before production.
-- [Multimodal / video backends](docs/multimodal-backends.md) — **why** env vars and manifest `config.json` both exist; Whisper, Piper, ComfyUI, and **OLLAMA_VIDEO_*** for native video.
-- [Video parity matrix](docs/video-parity.md) — **why** reference workloads and a comparison table for Option 2 (native vs optional SGLang).
-- [Changelog](CHANGELOG.md) — what changed and **why** it matters for operators.
-- [Phase 17 llama-server path](docs/phase17-llama-server.md) — **why** upstream Go→llama-server is ported but Mac keeps ggml default
-- [Phase 16 thin edge daemon](docs/phase16-thin-edge.md) — **why** `--edge` / `-tags edge` for upstream-shaped deploys without dropping training/Eliza
-- [Upstream Ollama comparison](docs/upstream-ollama-diff.md) — **why** vanilla Ollama uses Go→llama-server for GGUF; pin gaps; cherry-pick map vs zerollama Python runtime and training.
-- [llama.cpp backend (experimental)](docs/llama-cpp-backend.md) — `--llama-cpp-backend` routes text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml and upstream.
-- [ggml @ b9611 migration](docs/ggml-b9509-migration.md) — **why** in-process ggml uses a pinned vendor tree + 14 reviewable patches (not overlay snapshots); ahead of vanilla Ollama b9509; sync, Ollama deltas, Mac sign-off checklist.
-- [Scheduling, VRAM, and queue policy](docs/scheduling-vram-policy.md) — **why** inference and training are not one FIFO; VRAM broker; T6 `defer-*` queue; runtime VRAM heuristics (NVML, GGUF metadata); **ggml unload / manifest `num_ctx` at load**; **M12 ggml `suggested_max_num_ctx` + opt-in clamp** (parity with Phase 13); prompt truncation fields.
-- [LocalAI control-plane borrowings](docs/localai-borrowings.md) — **why** fast GGUF metadata, manifest guess, scheduler watchdog, concurrency groups, fleet score, and **`zerollama repair`** for existing tags.
-- [Stable Diffusion on Arc A380 (Vulkan)](docs/sd-vulkan-a380.md) — **why** sd.cpp + `external-image` on 6 GB Intel GPU; Q4/Q8/turbo/SDXL manifests; `diffusion_fa` on Mesa ANV.
-- [Stable Diffusion on Arc A380 (OpenVINO)](docs/sd-openvino-a380.md) — **why** Intel INT8 IR + per-manifest wrapper coexists with Vulkan SD.
-- [Model bench cache](docs/bench-cache.md) — **why** `zerollama bench` persists tok/s or generation seconds to `~/.ollama/bench.json` and surfaces **PERF** in `zerollama ls`.
-- [Fleet management (multi-node)](docs/fleet-management.md) — **why** a thin manager above per-node schedulers; `zerollama fleet serve`; warm-model assign API (F3); pairs with [fleet scheduling design](docs/fleet-scheduling.md) and [F6 playbooks](docs/fleet-playbooks.md).
-- [Phase 11 runtime admission](docs/phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first; priority classes; enqueue before queue; tunable min-free and training reserve.
-- [Phase 13 runtime VRAM estimates](docs/phase13-runtime-vram.md) — **why** pre-check and `suggested_max_num_ctx` before load; opt-in context clamp; `runtime_vram_estimate.sh`; autotune on tight GPUs. **Ggml path (M12):** same suggest/clamp idea on Go scheduler — see [scheduling-vram-policy.md](docs/scheduling-vram-policy.md#ggml-vram-suggest-and-opt-in-clamp-m12-jun-2026).
-- [Phase 14 in-process llama](docs/phase14-inprocess-llama.md) — **why** loopback `llama-server` added latency, split VRAM, and blocked token-accurate tools truncation; three backends (`subprocess` default, `inprocess` ctypes GPU, `llama-cpp-python` wheel CPU-default); `POST /internal/tokenize` for Go render-chat; sign-off scripts `phase14_inprocess_smoke.sh`, `phase14_wheel_cpu_smoke.sh`, `phase14_yaml_config_smoke.sh`, `phase14_both_backends.sh`.
-- [Phase 14 handoff](docs/handoff-phase14-inprocess-llama.md) — engineer handoff: architecture, code map, bugs fixed, 5080 sign-off commands.
-- [Phase 15 native KV](docs/phase15-native-kv.md) — **why** PA block pool + scheduler bind precede tensor KV; **v13–v16** C `llama_decode` + GIL release + engine resume via `current_pos`; **v26–v30** continuous batch decode (`run_batch_step`, `generate_batch`, `stream_generate_batch`, per-row C sampling); **v47** external-buffer alias validate (patch 0019 — feasibility probe, no tensor mutation); **GPU sign-off** `phase15_metal_signoff.sh` (Mac) + `phase15_inprocess_signoff.sh` (**PASS RTX 5080 Jun 2026**); loopback `POST /internal/generate-batch`; `/health.kv_decode_loop`, `kv_continuous_batch`, `kv_page_bind.external_alias_*`. Linked build: `scripts/phase/phase15_runtime_kv_env.sh` + patches 0014/0019.
-- [Phase 12 tools + admission handoff](docs/handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), GPU code maps, smokes.
-- [GPU training integration](docs/gpu-training.md) — **why** Go owns HTTP + TCP `:9500`; embedded CPython; inference-first VRAM on OOM; defer queue env vars. Code map: [`x/trainingworker/pyembed/README.md`](x/trainingworker/pyembed/README.md).
-- [Python GGUF runtime (embedded)](docs/runtime-embed.md) — **why** a sidecar/in-process FastAPI runtime fronts `llama-server` while Go keeps registry/API; env `ZEROLLAMA_RUNTIME_EMBED`, `LLAMA_MODEL`, `LLAMA_SERVER_BIN`.
-- [Inference smoke testing](docs/testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU; `gpu_smoke_all.sh`, `gpu_health_report.sh`, 5080 build notes.
-- [5080 runbook — what to run](docs/5080-runbook.md) — **ordered CUDA gate tiers** after pull (base → L1/L3 → Phase 15 → `RUN_E2E_UPSTREAM_GGUF=1`); CT 1564 status; Mac counterpart `metal_signoff.sh`.
-- [A380 runbook (Intel Arc Vulkan)](docs/a380-runbook.md) — **6 GB GDDR6** via Mesa ANV; `a380_env.sh` / `a380_signoff.sh`; asm_lab research lane `~/bmtl/asm_lab/lanes/arc-a380`; cite `total_duration_eval_tok_s` not `eval_tok_s` alone.
-- [GPU 5080 operator guide](docs/gpu-5080-operator-guide.md) — **why** `gpu_5080_session.sh` is the single-GPU gate; Proxmox CT layout; **`OLLAMA_HOST=0.0.0.0:8080`** for remote clients; **CGO `cpp-httplib` vendoring**; **`RUN_E2E_PREFLIGHT=0`** when httplib missing; L1/L3 full gates; Phase 15 + L2 sign-off sequence.
-- [L2 fork KV profiles](docs/gpu-profiles-l2.md) — **why** QJL/Polar/TBQ on unified pin; defaults stay L1 (tok/s); VRAM via `ZEROLLAMA_LLAMA_FORK=1` or `AUTO_VRAM`. Doc: [llama-cpp-unification.md](docs/llama-cpp-unification.md).
-- [CUDA lanes](docs/cuda-lanes.md) — dual-4090 / 5080 shared playbook; NVFP4/MXFP4/FP8 weight roadmap.
-- [Native FP8 GGUF](docs/native-fp8-gguf.md) — **why** E4M3/E5M2 block types + `--fp8-native` (patches 0073–0076); probe `./scripts/fp8_cuda_probe.sh`.
-- [L3 prompt cache → slot bridge](docs/gpu-profiles-l3.md) — **why** stable session keys skip repeat prefill; pinned `id_slot` + disk TTL; batch `prompt_cache_keys`; SWA/draft-spec policy; **5080 Jun 2026:** STRICT PASS @ 8k + production gate PASS @ 27k on eliza-1 9B.
-- [Cross-slot Radix prefix share](docs/radix-prefix-share.md) — **why** same system prompt across different cache keys; donor slot KV seed + warm catch-up (R2) + ref-count metadata (R3) + Redis LMCache (R4) + hybrid SWA gate (R5); vendor `POST /kv/seq-copy`; live smoke `l3_radix_prefix_smoke.sh`; **[product gaps](docs/radix-prefix-share.md#product-gaps)** (v2 vs full RadixAttention).
-- [Decode graph invalidation](docs/decode-graph-invalidation.md) — **why** L3 slot clears must break ggml CUDA graphs; epoch scaffold + in-process invalidate + subprocess `POST /cuda-graph/invalidate`; rebuild sibling llama-server; Metal no-op note.
-- [vLLM borrowings (L3)](docs/vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; `cache_salt`, drop-last-block, SWA retention, subprocess graph HTTP.
-- [Apple Silicon & Metal](docs/apple-silicon-metal.md) — **why** unified memory ≠ CUDA VRAM; ggml Metal default; runtime `metal-unified` probe; **L1 GPU profiles** (RAM tiers); Darwin Metal contention policy; scheduler 400/503 errors; **GPU bootstrap discovery**; **Go engine sched_reserve** (qwen35moe); **Jun 2026 sign-off** (`metal_signoff.sh` + **`eliza-1-2b:latest`** qwen35; `qwen35_mac_smoke.sh`).
-- [L1 GPU profiles (autotune)](docs/gpu-profiles-l1.md) — **why** Phase 13 ≠ throughput tuning; **`l1_cuda_full_gate.sh`** concurrent **PASS** on 5080 (+~16–20%); NVIDIA buckets; Apple RAM tiers.
-- [Qwen 3.5/3.6 on Apple Silicon](docs/qwen35-apple-silicon.md) — **why** qwen35 hits compat metadata + Metal embed layers; **Go ollama-engine default on Mac** (Jun 2026); `PrimaryFamily()` for VL; thinking-model API fields; opt-in `qwen35_mac_smoke.sh`.
-- [MLX routing policy](docs/mlx-routing-policy.md) — when to use ggml Metal vs runtime vs mlxrunner; `IsMLX()` guards; LM Studio MLX disk import policy.
-- [MLX agent prompts](docs/mlx-agent-prompts.md) — **why** agent megaprompts need context cap, tail truncate, single tokenize, tokenize cache, keep-alive floor, SSE keepalive, **M15a live-session / rotating-KV restore**, and `messages_dropped` handling; operator log field guide.
-- [Agent QoS and project tracking](docs/agent-qos-and-project-tracking.md) — **why** session gate TOCTOU fix, multiplex `wait_parent`, `cache_reset`/`cache_level`, `zerollama ps` PROJECT/SESSION, backend branching, and client Tier 2 ladder; safe for MLX + GGUF without hurting vanilla Ollama.
-- [Hermes ↔ zerollama gap](docs/hermes-zerollama-gap.md) — **why** wishlist “blocked” items are often wrong field names or unused native `/api/*`; real gaps closed in M15e; **§8 batch wire format** (`chat.completion.batch`).
-- [Hermes gap closure findings (M15e)](docs/hermes-gap-closure-findings.md) — **why** bind≠allowlist, timeout 504, wait-abort reason, topology report, cache-pin vs model-pin, thin batch + **client group-by-model**.
-- [LM Studio cache import](docs/lmstudio-import.md) — **why** pull-from-cache, **why** MLX copies vs GGUF symlinks, disk policy, `OLLAMA_LMSTUDIO_LIST_ALL`, operator troubleshooting.
-
-## Community integrations
-
-Zerollama is API-compatible with Ollama — the ecosystem below works against `./zerollama serve` on `:11434`.
-
-> Want to add your project? Open a pull request.
-
-### Chat Interfaces
-
-#### Web
-
-- [Open WebUI](https://github.com/open-webui/open-webui) - Extensible, self-hosted AI interface
-- [Onyx](https://github.com/onyx-dot-app/onyx) - Connected AI workspace
-- [LibreChat](https://github.com/danny-avila/LibreChat) - Enhanced ChatGPT clone with multi-provider support
-- [Lobe Chat](https://github.com/lobehub/lobe-chat) - Modern chat framework with plugin ecosystem ([docs](https://lobehub.com/docs/self-hosting/examples/ollama))
-- [NextChat](https://github.com/ChatGPTNextWeb/ChatGPT-Next-Web) - Cross-platform ChatGPT UI ([docs](https://docs.nextchat.dev/models/ollama))
-- [Perplexica](https://github.com/ItzCrazyKns/Perplexica) - AI-powered search engine, open-source Perplexity alternative
-- [big-AGI](https://github.com/enricoros/big-AGI) - AI suite for professionals
-- [Lollms WebUI](https://github.com/ParisNeo/lollms-webui) - Multi-model web interface
-- [ChatOllama](https://github.com/sugarforever/chat-ollama) - Chatbot with knowledge bases
-- [Bionic GPT](https://github.com/bionic-gpt/bionic-gpt) - On-premise AI platform
-- [Chatbot UI](https://github.com/ivanfioravanti/chatbot-ollama) - ChatGPT-style web interface
-- [Hollama](https://github.com/fmaclen/hollama) - Minimal web interface
-- [Chatbox](https://github.com/Bin-Huang/Chatbox) - Desktop and web AI client
-- [chat](https://github.com/swuecho/chat) - Chat web app for teams
-- [Ollama RAG Chatbot](https://github.com/datvodinh/rag-chatbot.git) - Chat with multiple PDFs using RAG
-- [Tkinter-based client](https://github.com/chyok/ollama-gui) - Python desktop client
-
-#### Desktop
-
-- [Dify.AI](https://github.com/langgenius/dify) - LLM app development platform
-- [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) - All-in-one AI app for Mac, Windows, and Linux
-- [Maid](https://github.com/Mobile-Artificial-Intelligence/maid) - Cross-platform mobile and desktop client
-- [Witsy](https://github.com/nbonamy/witsy) - AI desktop app for Mac, Windows, and Linux
-- [Cherry Studio](https://github.com/kangfenmao/cherry-studio) - Multi-provider desktop client
-- [Ollama App](https://github.com/JHubi1/ollama-app) - Multi-platform client for desktop and mobile
-- [PyGPT](https://github.com/szczyglis-dev/py-gpt) - AI desktop assistant for Linux, Windows, and Mac
-- [Alpaca](https://github.com/Jeffser/Alpaca) - GTK4 client for Linux and macOS
-- [SwiftChat](https://github.com/aws-samples/swift-chat) - Cross-platform including iOS, Android, and Apple Vision Pro
-- [Enchanted](https://github.com/AugustDev/enchanted) - Native macOS and iOS client
-- [RWKV-Runner](https://github.com/josStorer/RWKV-Runner) - Multi-model desktop runner
-- [Ollama Grid Search](https://github.com/dezoito/ollama-grid-search) - Evaluate and compare models
-- [macai](https://github.com/Renset/macai) - macOS client for Ollama and ChatGPT
-- [AI Studio](https://github.com/MindWorkAI/AI-Studio) - Multi-provider desktop IDE
-- [Reins](https://github.com/ibrahimcetin/reins) - Parameter tuning and reasoning model support
-- [ConfiChat](https://github.com/1runeberg/confichat) - Privacy-focused with optional encryption
-- [LLocal.in](https://github.com/kartikm7/llocal) - Electron desktop client
-- [MindMac](https://mindmac.app) - AI chat client for Mac
-- [Msty](https://msty.app) - Multi-model desktop client
-- [BoltAI for Mac](https://boltai.com) - AI chat client for Mac
-- [IntelliBar](https://intellibar.app/) - AI-powered assistant for macOS
-- [Kerlig AI](https://www.kerlig.com/) - AI writing assistant for macOS
-- [Hillnote](https://hillnote.com) - Markdown-first AI workspace
-- [Perfect Memory AI](https://www.perfectmemory.ai/) - Productivity AI personalized by screen and meeting history
-
-#### Mobile
-
-- [Ollama Android Chat](https://github.com/sunshine0523/OllamaServer) - One-click Ollama on Android
-
-> SwiftChat, Enchanted, Maid, Ollama App, Reins, and ConfiChat listed above also support mobile platforms.
-
-### Code Editors & Development
-
-- [Cline](https://github.com/cline/cline) - VS Code extension for multi-file/whole-repo coding
-- [Continue](https://github.com/continuedev/continue) - Open-source AI code assistant for any IDE
-- [Void](https://github.com/voideditor/void) - Open source AI code editor, Cursor alternative
-- [Copilot for Obsidian](https://github.com/logancyang/obsidian-copilot) - AI assistant for Obsidian
-- [twinny](https://github.com/rjmacarthy/twinny) - Copilot and Copilot chat alternative
-- [gptel Emacs client](https://github.com/karthink/gptel) - LLM client for Emacs
-- [Ollama Copilot](https://github.com/bernardo-bruning/ollama-copilot) - Use Ollama as GitHub Copilot
-- [Obsidian Local GPT](https://github.com/pfrankov/obsidian-local-gpt) - Local AI for Obsidian
-- [Ellama Emacs client](https://github.com/s-kostyaev/ellama) - LLM tool for Emacs
-- [orbiton](https://github.com/xyproto/orbiton) - Config-free text editor with Ollama tab completion
-- [AI ST Completion](https://github.com/yaroslavyaroslav/OpenAI-sublime-text) - Sublime Text 4 AI assistant
-- [VT Code](https://github.com/vinhnx/vtcode) - Rust-based terminal coding agent with Tree-sitter
-- [QodeAssist](https://github.com/Palm1r/QodeAssist) - AI coding assistant for Qt Creator
-- [AI Toolkit for VS Code](https://aka.ms/ai-tooklit/ollama-docs) - Microsoft-official VS Code extension
-- [Open Interpreter](https://docs.openinterpreter.com/language-model-setup/local-models/ollama) - Natural language interface for computers
-
-### Libraries & SDKs
-
-- [LiteLLM](https://github.com/BerriAI/litellm) - Unified API for 100+ LLM providers
-- [Semantic Kernel](https://github.com/microsoft/semantic-kernel/tree/main/python/semantic_kernel/connectors/ai/ollama) - Microsoft AI orchestration SDK
-- [LangChain4j](https://github.com/langchain4j/langchain4j) - Java LangChain ([example](https://github.com/langchain4j/langchain4j-examples/tree/main/ollama-examples/src/main/java))
-- [LangChainGo](https://github.com/tmc/langchaingo/) - Go LangChain ([example](https://github.com/tmc/langchaingo/tree/main/examples/ollama-completion-example))
-- [Spring AI](https://github.com/spring-projects/spring-ai) - Spring framework AI support ([docs](https://docs.spring.io/spring-ai/reference/api/chat/ollama-chat.html))
-- [LangChain](https://python.langchain.com/docs/integrations/chat/ollama/) and [LangChain.js](https://js.langchain.com/docs/integrations/chat/ollama/) with [example](https://js.langchain.com/docs/tutorials/local_rag/)
-- [Ollama for Ruby](https://github.com/crmne/ruby_llm) - Ruby LLM library
-- [any-llm](https://github.com/mozilla-ai/any-llm) - Unified LLM interface by Mozilla
-- [OllamaSharp for .NET](https://github.com/awaescher/OllamaSharp) - .NET SDK
-- [LangChainRust](https://github.com/Abraxas-365/langchain-rust) - Rust LangChain ([example](https://github.com/Abraxas-365/langchain-rust/blob/main/examples/llm_ollama.rs))
-- [Agents-Flex for Java](https://github.com/agents-flex/agents-flex) - Java agent framework ([example](https://github.com/agents-flex/agents-flex/tree/main/agents-flex-llm/agents-flex-llm-ollama/src/test/java/com/agentsflex/llm/ollama))
-- [Elixir LangChain](https://github.com/brainlid/langchain) - Elixir LangChain
-- [Ollama-rs for Rust](https://github.com/pepperoni21/ollama-rs) - Rust SDK
-- [LangChain for .NET](https://github.com/tryAGI/LangChain) - .NET LangChain ([example](https://github.com/tryAGI/LangChain/blob/main/examples/LangChain.Samples.OpenAI/Program.cs))
-- [chromem-go](https://github.com/philippgille/chromem-go) - Go vector database with Ollama embeddings ([example](https://github.com/philippgille/chromem-go/tree/v0.5.0/examples/rag-wikipedia-ollama))
-- [LangChainDart](https://github.com/davidmigloz/langchain_dart) - Dart LangChain
-- [LlmTornado](https://github.com/lofcz/llmtornado) - Unified C# interface for multiple inference APIs
-- [Ollama4j for Java](https://github.com/ollama4j/ollama4j) - Java SDK
-- [Ollama for Laravel](https://github.com/cloudstudio/ollama-laravel) - Laravel integration
-- [Ollama for Swift](https://github.com/mattt/ollama-swift) - Swift SDK
-- [LlamaIndex](https://docs.llamaindex.ai/en/stable/examples/llm/ollama/) and [LlamaIndexTS](https://ts.llamaindex.ai/modules/llms/available_llms/ollama) - Data framework for LLM apps
-- [Haystack](https://github.com/deepset-ai/haystack-integrations/blob/main/integrations/ollama.md) - AI pipeline framework
-- [Firebase Genkit](https://firebase.google.com/docs/genkit/plugins/ollama) - Google AI framework
-- [Ollama-hpp for C++](https://github.com/jmont-dev/ollama-hpp) - C++ SDK
-- [PromptingTools.jl](https://github.com/svilupp/PromptingTools.jl) - Julia LLM toolkit ([example](https://svilupp.github.io/PromptingTools.jl/dev/examples/working_with_ollama))
-- [Ollama for R - rollama](https://github.com/JBGruber/rollama) - R SDK
-- [Portkey](https://portkey.ai/docs/welcome/integration-guides/ollama) - AI gateway
-- [Testcontainers](https://testcontainers.com/modules/ollama/) - Container-based testing
-- [LLPhant](https://github.com/theodo-group/LLPhant?tab=readme-ov-file#ollama) - PHP AI framework
-
-### Frameworks & Agents
-
-- [AutoGPT](https://github.com/Significant-Gravitas/AutoGPT/blob/master/docs/content/platform/ollama.md) - Autonomous AI agent platform
-- [crewAI](https://github.com/crewAIInc/crewAI) - Multi-agent orchestration framework
-- [Strands Agents](https://github.com/strands-agents/sdk-python) - Model-driven agent building by AWS
-- [Cheshire Cat](https://github.com/cheshire-cat-ai/core) - AI assistant framework
-- [any-agent](https://github.com/mozilla-ai/any-agent) - Unified agent framework interface by Mozilla
-- [Stakpak](https://github.com/stakpak/agent) - Open source DevOps agent
-- [Hexabot](https://github.com/hexastack/hexabot) - Conversational AI builder
-- [Neuro SAN](https://github.com/cognizant-ai-lab/neuro-san-studio) - Multi-agent orchestration ([docs](https://github.com/cognizant-ai-lab/neuro-san-studio/blob/main/docs/user_guide.md#ollama))
-
-### RAG & Knowledge Bases
-
-- [RAGFlow](https://github.com/infiniflow/ragflow) - RAG engine based on deep document understanding
-- [R2R](https://github.com/SciPhi-AI/R2R) - Open-source RAG engine
-- [MaxKB](https://github.com/1Panel-dev/MaxKB/) - Ready-to-use RAG chatbot
-- [Minima](https://github.com/dmayboroda/minima) - On-premises or fully local RAG
-- [Chipper](https://github.com/TilmanGriesel/chipper) - AI interface with Haystack RAG
-- [ARGO](https://github.com/xark-argo/argo) - RAG and deep research on Mac/Windows/Linux
-- [Archyve](https://github.com/nickthecook/archyve) - RAG-enabling document library
-- [Casibase](https://casibase.org) - AI knowledge base with RAG and SSO
-- [BrainSoup](https://www.nurgo-software.com/products/brainsoup) - Native client with RAG and multi-agent automation
-
-### Bots & Messaging
-
-- [LangBot](https://github.com/RockChinQ/LangBot) - Multi-platform messaging bots with agents and RAG
-- [AstrBot](https://github.com/Soulter/AstrBot/) - Multi-platform chatbot with RAG and plugins
-- [Discord-Ollama Chat Bot](https://github.com/kevinthedang/discord-ollama) - TypeScript Discord bot
-- [Ollama Telegram Bot](https://github.com/ruecat/ollama-telegram) - Telegram bot
-- [LLM Telegram Bot](https://github.com/innightwolfsleep/llm_telegram_bot) - Telegram bot for roleplay
-
-### Terminal & CLI
-
-- [aichat](https://github.com/sigoden/aichat) - All-in-one LLM CLI with Shell Assistant, RAG, and AI tools
-- [oterm](https://github.com/ggozad/oterm) - Terminal client for Ollama
-- [gollama](https://github.com/sammcj/gollama) - Go-based model manager for Ollama
-- [tlm](https://github.com/yusufcanb/tlm) - Local shell copilot
-- [tenere](https://github.com/pythops/tenere) - TUI for LLMs
-- [ParLlama](https://github.com/paulrobello/parllama) - TUI for Ollama
-- [llm-ollama](https://github.com/taketwo/llm-ollama) - Plugin for [Datasette's LLM CLI](https://llm.datasette.io/en/stable/)
-- [ShellOracle](https://github.com/djcopley/ShellOracle) - Shell command suggestions
-- [LLM-X](https://github.com/mrdjohnson/llm-x) - Progressive web app for LLMs
-- [cmdh](https://github.com/pgibler/cmdh) - Natural language to shell commands
-- [VT](https://github.com/vinhnx/vt.ai) - Minimal multimodal AI chat app
-
-### Productivity & Apps
-
-- [AppFlowy](https://github.com/AppFlowy-IO/AppFlowy) - AI collaborative workspace, self-hostable Notion alternative
-- [Screenpipe](https://github.com/mediar-ai/screenpipe) - 24/7 screen and mic recording with AI-powered search
-- [Vibe](https://github.com/thewh1teagle/vibe) - Transcribe and analyze meetings
-- [Page Assist](https://github.com/n4ze3m/page-assist) - Chrome extension for AI-powered browsing
-- [NativeMind](https://github.com/NativeMindBrowser/NativeMindExtension) - Private, on-device browser AI assistant
-- [Ollama Fortress](https://github.com/ParisNeo/ollama_proxy_server) - Security proxy for Ollama
-- [1Panel](https://github.com/1Panel-dev/1Panel/) - Web-based Linux server management
-- [Writeopia](https://github.com/Writeopia/Writeopia) - Text editor with Ollama integration
-- [QA-Pilot](https://github.com/reid41/QA-Pilot) - GitHub code repository understanding
-- [Raycast extension](https://github.com/MassimilianoPasquini97/raycast_ollama) - Ollama in Raycast
-- [Painting Droid](https://github.com/mateuszmigas/painting-droid) - Painting app with AI integrations
-- [Serene Pub](https://github.com/doolijb/serene-pub) - AI roleplaying app
-- [Mayan EDMS](https://gitlab.com/mayan-edms/mayan-edms) - Document management with Ollama workflows
-- [TagSpaces](https://www.tagspaces.org) - File management with [AI tagging](https://docs.tagspaces.org/ai/)
-
-### Observability & Monitoring
-
-- [Opik](https://www.comet.com/docs/opik/cookbook/ollama) - Debug, evaluate, and monitor LLM applications
-- [OpenLIT](https://github.com/openlit/openlit) - OpenTelemetry-native monitoring for Ollama and GPUs
-- [Lunary](https://lunary.ai/docs/integrations/ollama) - LLM observability with analytics and PII masking
-- [Langfuse](https://langfuse.com/docs/integrations/ollama) - Open source LLM observability
-- [HoneyHive](https://docs.honeyhive.ai/integrations/ollama) - AI observability and evaluation for agents
-- [MLflow Tracing](https://mlflow.org/docs/latest/llms/tracing/index.html#automatic-tracing) - Open source LLM observability
-
-### Database & Embeddings
-
-- [pgai](https://github.com/timescale/pgai) - PostgreSQL as a vector database ([guide](https://github.com/timescale/pgai/blob/main/docs/vectorizer-quick-start.md))
-- [MindsDB](https://github.com/mindsdb/mindsdb/blob/staging/mindsdb/integrations/handlers/ollama_handler/README.md) - Connect Ollama with 200+ data platforms
-- [chromem-go](https://github.com/philippgille/chromem-go/blob/v0.5.0/embed_ollama.go) - Embeddable vector database for Go ([example](https://github.com/philippgille/chromem-go/tree/v0.5.0/examples/rag-wikipedia-ollama))
-- [Kangaroo](https://github.com/dbkangaroo/kangaroo) - AI-powered SQL client
-
-### Infrastructure & Deployment
-
-#### Cloud
-
-- [Google Cloud](https://cloud.google.com/run/docs/tutorials/gpu-gemma2-with-ollama)
-- [Fly.io](https://fly.io/docs/python/do-more/add-ollama/)
-- [Koyeb](https://www.koyeb.com/deploy/ollama)
-- [Harbor](https://github.com/av/harbor) - Containerized LLM toolkit with Ollama as default backend
-
-#### Package Managers
-
-- [Pacman](https://archlinux.org/packages/extra/x86_64/ollama/)
-- [Homebrew](https://formulae.brew.sh/formula/ollama)
-- [Nix package](https://search.nixos.org/packages?show=ollama&from=0&size=50&sort=relevance&type=packages&query=ollama)
-- [Helm Chart](https://artifacthub.io/packages/helm/ollama-helm/ollama)
-- [Gentoo](https://github.com/gentoo/guru/tree/master/app-misc/ollama)
-- [Flox](https://flox.dev/blog/ollama-part-one)
-- [Guix channel](https://codeberg.org/tusharhero/ollama-guix)
+**License:** [MIT](LICENSE) (Ollama lineage).
