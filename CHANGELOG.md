@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### README operator CLI DX (Jul 2026)
+
+**Why:** Marketing tour sold harness APIs but not the day-to-day `ls` / `ps` fields operators actually stare at.
+
+**What:** README §4.6 — `PARAMS` / `PERF` on `ls`, `PROJECT` / `SESSION` (+ PROCESSOR / CONTEXT / UNTIL) on `ps`, with example tables from a live Mac lab.
+
 ### Open-source shoutouts (Jul 2026)
 
 **Why:** Marketing pass asked for partner nods beyond a one-line Credits bullet.

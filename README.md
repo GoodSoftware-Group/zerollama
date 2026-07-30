@@ -36,6 +36,7 @@ Evidence + reproduce: [readme-marketing-benches.md](docs/readme-marketing-benche
 | Why megaprompts + visuals win | [Why Zerollama?](#2-why-zerollama) |
 | “Will my Open WebUI / LangChain / Continue still work?” | [Compatibility](#3-ollama-compatible--hundreds-of-integrations) |
 | Tour (megaprompts → visuals → harness → …) | [Tour](#4-tour--what-makes-us-different) |
+| `ls` / `ps` fields (PARAMS, PERF, PROJECT…) | [Operator CLI](#46-operator-cli--ls--ps) |
 | Harness-shaped API example | [Use the API](#5-use-the-api) |
 | Build on Apple Silicon / CUDA / Arc | [Platforms](#6-build--platforms) |
 | Deep docs, phases, experimental tracks | [Go deeper](#7-go-deeper) |
@@ -72,6 +73,7 @@ Once `./zerollama serve` is up and a model is pulled:
 2. **Confirm it’s us** — `curl -s http://127.0.0.1:11434/api/version | jq .distribution` → `"zerollama"`.
 3. **Send a stable thread key** every turn (`options.prompt_cache_key` or OpenAI top-level `prompt_cache_key`) + `qos_class: "interactive"` when you can.
 4. **Feel turn 2** — same system/tools prefix should skip full prefill; TTFT drops. That’s the [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm)-inspired prompt cache doing its job.
+5. **See who owns the GPU** — `./zerollama ps` (PROJECT / SESSION) and `./zerollama ls` (PARAMS / PERF). Details: [§4.6](#46-operator-cli--ls--ps).
 
 Copy-paste harness request: [§5 Use the API](#5-use-the-api).
 
@@ -87,6 +89,7 @@ Upstream is excellent at “pull a model and chat.” Agents don’t chat small 
 | Same megaprompt / system prefix every turn feels like a cold start | **Prompt cache (L3)** — inspired by [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm): give the thread a stable key and **turn 2+ reuses the prefix** so the next megaprompt is way faster (optional `/api/cache/pin` to keep it warm) |
 | Agents need to **show**, not only tell | **Image + video gen** on the same daemon — Wan `/v1/videos`, MLX/Comfy/sd.cpp `/v1/images`; VLM video understanding |
 | Background jobs fight live agent threads | **Harness control plane** — QoS, timeouts, preempt reasons, capacity APIs |
+| “Who owns the GPU?” is guesswork | **`zerollama ps`** shows **PROJECT** / **SESSION**; **`ls`** shows **PARAMS** (MoE active) + **PERF** from `bench` |
 | “Model bugs” that are really server traps | **`zerollama doctor`** + minefield probes |
 | Train / multi-node | `/api/train/*`, `zerollama fleet serve`, Eliza Cloud |
 
@@ -163,7 +166,7 @@ curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .z
 | You tell the server | You get back |
 |---------------------|--------------|
 | `qos_class` (`interactive` / `auxiliary` / `background`) | Background jobs defer instead of clobbering live KV |
-| `project_id` / `project_name` | `zerollama ps` shows **who owns the GPU** |
+| `project_id` / `project_name` | `zerollama ps` shows **PROJECT** / **SESSION** — [§4.6](#46-operator-cli--ls--ps) |
 | `prompt_cache_key`, `cache_reset`, `session_parent` | Skip repeat prefill; multiplex-aware waits |
 | `timeout` | **HTTP 504** (≠ client disconnect **499**) |
 | Bound `/v1` `think` + `response_format` / GBNF | No accept-and-drop; schemas reach the runner |
@@ -195,6 +198,39 @@ ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor
 | **Fleet** | `zerollama fleet serve` — warm-model routing ([fleet-management.md](docs/fleet-management.md)) |
 | **LM Studio cache** | `zerollama pull …` from `~/.lmstudio/models` — GGUF symlink / MLX repack ([lmstudio-import.md](docs/lmstudio-import.md)) |
 | **`zerollama bench`** | tok/s or image/video seconds → **PERF** column in `ls` ([bench-cache.md](docs/bench-cache.md)) |
+
+### 4.6 Operator CLI — `ls` / `ps`
+
+Same commands as upstream, richer tables so you don’t guess MoE size, speed, or which harness holds VRAM.
+
+**`zerollama ls`** — library with **PARAMS** (dense / MoE routing / active params) and **PERF** (from `zerollama bench`; `--` until benched):
+
+```text
+NAME                         ID              SIZE      PARAMS                 PERF     MODIFIED
+qwen3-coder-next:6bit        ffc5c8db17e8    64 GB     15.0B MoE 512x10       --       4 minutes ago
+gpt-oss-120b:mxfp4-q8        9378e12d0a90    63 GB     14.9B/979.87M active   --       7 hours ago
+ornith-35b-optiq:latest      f4df829f8a75    22 GB     34.0B MoE 256x8        54.2     12 hours ago
+granite4.1:3b-mlx            2c1c7f47b0d2    1.8 GB    425.54M                112.7    10 hours ago
+```
+
+Filters: `zerollama ls image` / `zerollama ls video_gen` — local + cloud image/video routes without dumping the full remote catalog.
+
+**`zerollama ps`** — when agents send `project_id` / session keys, columns expand so you see **who owns the GPU**:
+
+```text
+NAME                       PROJECT                                       SESSION                                             ID              SIZE     PROCESSOR    CONTEXT    UNTIL
+ornith-35b-optiq:latest    hermes-lean/discord:dm:1516015052568793098    hermes:agent:main:discord:dm:1516015052568793098    f4df829f8a75    27 GB    100% GPU     262144     29 minutes from now
+qwen3.6:35b-a3b-mlx                                                      bg:digest:6270b44764f8…                              6270b44764f8    20 GB    100% GPU     262144     29 minutes from now
+```
+
+| Column | Meaning |
+|--------|---------|
+| **PARAMS** | Parameter summary — MoE as `total MoE ExU` or `total/active active` |
+| **PERF** | Cached tok/s (chat) or seconds (image/video) from `bench` |
+| **PROJECT** / **SESSION** | Harness ownership from QoS / `project_id` / session key (hidden when idle) |
+| **PROCESSOR** / **CONTEXT** / **UNTIL** | GPU split, context length, keep-alive expiry |
+
+→ [bench-cache.md](docs/bench-cache.md) · [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md)
 
 ---
 
