@@ -79,4 +79,45 @@ func TestProxyOptsFromV1Body(t *testing.T) {
 	if merged["num_ctx"] != 131072 {
 		t.Fatalf("merge preserved num_ctx: got %v", merged)
 	}
+
+	flat := map[string]any{
+		"qos_class":    "auxiliary",
+		"project_name": "discord:dm:1",
+		"project_id":   "hermes-lean",
+	}
+	gotFlat := proxyOptsFromV1Body(flat)
+	z, ok := gotFlat["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("flat QoS: options=%v", gotFlat)
+	}
+	if z["qos_class"] != "auxiliary" || z["project_name"] != "discord:dm:1" || z["project_id"] != "hermes-lean" {
+		t.Fatalf("flat QoS zerollama=%v", z)
+	}
+
+	nestedWins := map[string]any{
+		"qos_class": "background",
+		"options": map[string]any{
+			"zerollama": map[string]any{"qos_class": "interactive"},
+		},
+	}
+	gotNest := proxyOptsFromV1Body(nestedWins)
+	zn, ok := gotNest["zerollama"].(map[string]any)
+	if !ok || zn["qos_class"] != "interactive" {
+		t.Fatalf("nested must win over flat: %v", gotNest)
+	}
+
+	topObj := map[string]any{
+		"zerollama": map[string]any{"qos_class": "background", "project_name": "from-top"},
+		"options": map[string]any{
+			"zerollama": map[string]any{"qos_class": "interactive", "project_id": "main"},
+		},
+	}
+	gotTop := proxyOptsFromV1Body(topObj)
+	zt, ok := gotTop["zerollama"].(map[string]any)
+	if !ok || zt["qos_class"] != "interactive" {
+		t.Fatalf("options.zerollama must win over top-level zerollama: %v", gotTop)
+	}
+	if zt["project_name"] != "from-top" || zt["project_id"] != "main" {
+		t.Fatalf("underlay merge: %v", zt)
+	}
 }

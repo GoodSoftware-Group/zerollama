@@ -117,3 +117,20 @@ Connect a messaging platform? (Telegram, Discord, etc.)
 Launch hermes chat now? [Y/n]: Y
 ```
 
+## Zerollama harness tips (M15e)
+
+Hermes talks OpenAI `/v1` by default. On this fork:
+
+| Need | How |
+|------|-----|
+| Reasoning / think | Top-level `"think": true` / `"high"` (bound — not accept-and-drop); or `enable_thinking` / `reasoning_effort` |
+| Prefix cache | Same `prompt_cache_key` every turn; optional `POST /api/cache/pin` for L3/MLX lease |
+| QoS / project labels | `extra_body` flat keys or nested `options.zerollama` (M15c fold) |
+| Per-call deadline | `"timeout": "30s"` (or `extra_body`) → server **504** on deadline |
+| Wait-abort / mid-stream preempt | Error JSON `preempted_reason`; stream terminal `done_reason: "preempted"` (MLX soft cancel) |
+| Structured JSON / GBNF | `response_format.json_schema` (now enforced on runtime path); GBNF via `extra_body.format: {"type":"gbnf","grammar":"..."}` — not with `tools` |
+| Fan-out decode | `POST /v1/chat/completions/batch` — same model, text-only, ≤8; response `{object:"chat.completion.batch", completions[]}` with order preserved. **Group by model client-side** (mixed models → 400). Not OpenAI async `/v1/batches`. |
+| Capacity dry-run | Native `POST /api/can-load` (topology fields for multi-GPU hosts) |
+
+**Why these matter:** see [hermes-zerollama-gap.md](../hermes-zerollama-gap.md) and [hermes-gap-closure-findings.md](../hermes-gap-closure-findings.md). OpenAPI: `GET http://127.0.0.1:11434/openapi.json`.
+

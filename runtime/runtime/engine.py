@@ -1248,6 +1248,23 @@ class InferenceEngine:
             if budget is None:
                 budget = {}
             budget["host_ram"] = host_ram
+        # WHY on estimate response: /api/can-load surfaces host TP/device layout so
+        # Hermes can see multi-GPU without scraping /health separately.
+        topology = {
+            "device_count": max(1, int(getattr(self.config, "device_count", 1) or 1)),
+            "tensor_parallel": max(1, int(getattr(self.config, "tensor_parallel", 1) or 1)),
+            "split_mode": str(getattr(self.config, "split_mode", "") or ""),
+            "main_gpu": int(getattr(self.config, "main_gpu", 0) or 0),
+        }
+        ts = getattr(self.config, "tensor_split", None)
+        if ts:
+            try:
+                topology["tensor_split"] = [float(x) for x in ts]
+            except (TypeError, ValueError):
+                pass
+        if est is not None:
+            est = dict(est)
+            est["topology"] = topology
         return est, budget
 
     def _health_gguf_path(self) -> Path | None:
@@ -2681,6 +2698,7 @@ class InferenceEngine:
                 cache_prompt=cache_ok,
                 current_pos=resume_pos,
                 prefill_cancel=prefill_cancel,
+                format_options=options,
             )
             self._record_subprocess_slot(active, raw)
             content = raw.get("content") or raw.get("response") or ""
@@ -2803,6 +2821,7 @@ class InferenceEngine:
                     sampler=sampler_options_from_dict(options),
                     cache_prompt=cache_rows[0][0],
                     current_pos=cache_rows[0][1],
+                    format_options=options,
                 ):
                     out = dict(chunk)
                     out["request_id"] = active.request_id
@@ -3050,6 +3069,7 @@ class InferenceEngine:
                     cache_prompt=cache_ok,
                     current_pos=resume_pos,
                     prefill_cancel=prefill_cancel,
+                    format_options=options,
                 ):
                     content = chunk.get("content") or chunk.get("response") or ""
                     stop = bool(chunk.get("stop"))

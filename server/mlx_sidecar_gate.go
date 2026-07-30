@@ -54,6 +54,10 @@ type mlxKeyHotEntry struct {
 	inflight     int
 	hotUntil     time.Time
 	lastUsed     time.Time
+	// Soft mid-stream preempt (M15f): cancel inflight lower-class decode when
+	// interactive admits. One-shot; cleared after fire / takePreemptReason.
+	preemptCancel context.CancelFunc
+	preemptReason string
 }
 
 // mlxAgentGate serialises competing prompt_cache_key sessions on each model runner
@@ -520,6 +524,11 @@ func (g *mlxAgentGate) waitForSlot(
 			}
 			lastPolicy = policy
 		}
+		// Soft-preempt lower-class inflight so interactive need not wait out a full decode.
+		// WHY under same lock: cancelSessionLocked reads keyHot; already hold g.mu.
+		if defer_ && policy == "interactive_wait_inflight_lower" && hotKey != "" {
+			g.cancelSessionLocked(modelKey, hotKey, "lower_wait_interactive")
+		}
 		g.mu.Unlock()
 
 		if !defer_ {
@@ -539,7 +548,7 @@ func (g *mlxAgentGate) waitForSlot(
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return wrapQoSDeferAbort(ctx.Err(), lastPolicy)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -615,7 +624,7 @@ func (g *mlxAgentGate) waitBehindAnyInteractive(ctx context.Context, incomingCla
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return wrapQoSDeferAbort(ctx.Err(), lastPolicy)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

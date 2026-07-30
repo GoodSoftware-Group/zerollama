@@ -30,7 +30,9 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	paths := doc["paths"].(map[string]any)
 	for _, p := range []string{
 		"/v1/audio/speech", "/v1/audio/voices", "/openapi.json", "/docs",
-		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin", "/api/metrics", "/api/version",
+		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin",
+		"/api/cache/pin", "/api/metrics", "/api/version",
+		"/v1/chat/completions", "/v1/chat/completions/batch",
 	} {
 		if _, ok := paths[p]; !ok {
 			t.Fatalf("missing path %s", p)
@@ -40,10 +42,37 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	for _, s := range []string{
 		"FleetStatusResponse", "CanLoadRequest", "CanLoadResponse", "InferenceError",
 		"InferenceConfigStatus", "PinRequest", "PinResponse", "PinStatus",
+		"CachePinRequest", "CachePinResponse",
+		"ChatCompletionsBatchRequest", "ChatCompletionsBatchRequestItem",
+		"ChatCompletionsBatchResponse", "ChatCompletionBatchItem",
 		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",
 	} {
 		if _, ok := schemas[s]; !ok {
 			t.Fatalf("missing schema %s", s)
+		}
+	}
+	batchResp := schemas["ChatCompletionsBatchResponse"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"object", "model", "completions", "count"} {
+		if _, ok := batchResp[f]; !ok {
+			t.Fatalf("ChatCompletionsBatchResponse missing %s", f)
+		}
+	}
+	batchPath := paths["/v1/chat/completions/batch"].(map[string]any)["post"].(map[string]any)
+	batch200 := batchPath["responses"].(map[string]any)["200"].(map[string]any)
+	batchContent := batch200["content"].(map[string]any)["application/json"].(map[string]any)
+	if ref, _ := batchContent["schema"].(map[string]any)["$ref"].(string); ref != "#/components/schemas/ChatCompletionsBatchResponse" {
+		t.Fatalf("batch 200 schema ref=%v", ref)
+	}
+	canLoad := schemas["CanLoadResponse"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"device_count", "tensor_parallel", "split_mode", "tensor_split", "main_gpu"} {
+		if _, ok := canLoad[f]; !ok {
+			t.Fatalf("CanLoadResponse missing %s", f)
+		}
+	}
+	infErr := schemas["InferenceError"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"preempted_reason", "timeout_seconds"} {
+		if _, ok := infErr[f]; !ok {
+			t.Fatalf("InferenceError missing %s", f)
 		}
 	}
 	qosProps := schemas["ZerollamaQoS"].(map[string]any)["properties"].(map[string]any)

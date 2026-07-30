@@ -292,6 +292,7 @@ class LlamaServerProcess:
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
         prefill_cancel: Any | None = None,
+        format_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
@@ -308,6 +309,9 @@ class LlamaServerProcess:
         if cache_prompt is not None:
             payload["cache_prompt"] = cache_prompt
         apply_sampler_to_completion_payload(payload, sampler)
+        from runtime.format_constraint import apply_format_to_completion_payload
+
+        apply_format_to_completion_payload(payload, format_options)
         body = json.dumps(payload).encode()
         headers = {"Content-Type": "application/json"}
         try:
@@ -356,6 +360,7 @@ class LlamaServerProcess:
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
         prefill_cancel: Any | None = None,
+        format_options: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
@@ -372,6 +377,9 @@ class LlamaServerProcess:
         if cache_prompt is not None:
             payload["cache_prompt"] = cache_prompt
         apply_sampler_to_completion_payload(payload, sampler)
+        from runtime.format_constraint import apply_format_to_completion_payload
+
+        apply_format_to_completion_payload(payload, format_options)
         body = json.dumps(payload).encode()
         headers = {"Content-Type": "application/json"}
         conn, resp = cancellable_http_post(

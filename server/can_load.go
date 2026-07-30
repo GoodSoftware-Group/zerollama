@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/internal/runtimeclient"
 )
@@ -208,6 +209,11 @@ func evaluateCanLoadGgml(s *Server, req api.CanLoadRequest, m *Model, resp api.C
 	if needsEvict && resp.CanLoad {
 		resp.Notes = strings.TrimSpace(resp.Notes + " needs_eviction=true: load would thrash another resident model")
 	}
+	// Best-effort device count for ggml path (no TP plan — heuristic only).
+	if gpus := discover.GPUDevices(context.Background(), nil); len(gpus) > 0 {
+		resp.DeviceCount = len(gpus)
+		resp.Notes = strings.TrimSpace(resp.Notes + " ggml multi-GPU fit is heuristic (device_count only; not a TP plan)")
+	}
 	return resp
 }
 
@@ -248,6 +254,7 @@ func (s *Server) evaluateCanLoadRuntime(
 	}
 	if est, ok := snap["vram_estimate"].(map[string]any); ok {
 		resp.VramEstimate = est
+		applyCanLoadTopology(&resp, est)
 	}
 	if budget, ok := snap["vram_budget"].(map[string]any); ok {
 		resp.VramBudget = budget
@@ -295,4 +302,72 @@ func (s *Server) evaluateCanLoadRuntime(
 		resp.Notes = strings.TrimSpace(resp.Notes + " needs_eviction=true: load would thrash another resident model")
 	}
 	return resp
+}
+
+// applyCanLoadTopology copies host TP/device fields from vram_estimate.topology
+// (or top-level estimate keys) onto the can-load response.
+func applyCanLoadTopology(resp *api.CanLoadResponse, est map[string]any) {
+	if resp == nil || est == nil {
+		return
+	}
+	src := est
+	if topo, ok := est["topology"].(map[string]any); ok {
+		src = topo
+	}
+	if v, ok := asPositiveInt(src["device_count"]); ok {
+		resp.DeviceCount = v
+	}
+	if v, ok := asPositiveInt(src["tensor_parallel"]); ok {
+		resp.TensorParallel = v
+	}
+	if v, ok := asNonNegInt(src["main_gpu"]); ok {
+		resp.MainGPU = v
+	}
+	if s, ok := src["split_mode"].(string); ok {
+		resp.SplitMode = strings.TrimSpace(s)
+	}
+	if raw, ok := src["tensor_split"].([]any); ok && len(raw) > 0 {
+		out := make([]float64, 0, len(raw))
+		for _, x := range raw {
+			switch n := x.(type) {
+			case float64:
+				out = append(out, n)
+			case int:
+				out = append(out, float64(n))
+			}
+		}
+		if len(out) > 0 {
+			resp.TensorSplit = out
+		}
+	}
+}
+
+func asPositiveInt(v any) (int, bool) {
+	n, ok := asNonNegInt(v)
+	if !ok || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func asNonNegInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return n, true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
 }

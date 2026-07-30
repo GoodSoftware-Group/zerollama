@@ -295,6 +295,51 @@ func TestFromChatRequest_KeepAlive(t *testing.T) {
 	}
 }
 
+func TestFromChatRequest_TopLevelThink(t *testing.T) {
+	// WHY: Hermes sends "think" on /v1; previously passthrough-only → silent drop.
+	body := []byte(`{
+		"model": "qwen3-coder-next",
+		"messages": [{"role":"user","content":"hi"}],
+		"think": true
+	}`)
+	req, err := BindChatCompletionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Think == nil || !req.Think.Bool() {
+		t.Fatalf("Think=%v want true", req.Think)
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Think == nil || !out.Think.Bool() {
+		t.Fatalf("mapped Think=%v want true", out.Think)
+	}
+	if out.ThinkFromAlias {
+		t.Fatal("explicit think must not set ThinkFromAlias")
+	}
+
+	// Explicit think wins over enable_thinking.
+	body2 := []byte(`{
+		"model": "qwen3-coder-next",
+		"messages": [{"role":"user","content":"hi"}],
+		"think": false,
+		"enable_thinking": true
+	}`)
+	req2, err := BindChatCompletionRequest(body2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := FromChatRequest(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2.Think == nil || out2.Think.Bool() {
+		t.Fatalf("think must win over enable_thinking: %v", out2.Think)
+	}
+}
+
 func TestDecodeVideoURL_RejectsLoopback(t *testing.T) {
 	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
 	_, err := decodeVideoURL(context.Background(), "http://127.0.0.1:8080/v.mp4")
@@ -387,9 +432,9 @@ func TestToUsage_multimodalPromptTokensDetails(t *testing.T) {
 func TestToUsage_cachedPromptTokens(t *testing.T) {
 	resp := api.ChatResponse{
 		Metrics: api.Metrics{
-			PromptEvalCount:      200,
-			EvalCount:            10,
-			CachedPromptTokens:   150,
+			PromptEvalCount:    200,
+			EvalCount:          10,
+			CachedPromptTokens: 150,
 		},
 	}
 	usage := ToUsage(resp)

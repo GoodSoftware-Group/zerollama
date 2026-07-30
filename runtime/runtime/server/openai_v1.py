@@ -118,12 +118,24 @@ class V1ChatPrepared:
 
 def prepare_v1_chat(engine: Any, body: dict[str, Any]) -> V1ChatPrepared:
     """Build prompt + Phase 13 ``num_ctx`` (resolve + optional clamp) for v1 chat."""
+    from runtime.format_constraint import merge_format_into_options, parse_format_constraint
+
     model = str(body.get("model", ""))
     messages = list(body.get("messages") or [])
     opts = v1_request_options(body)
+    # M15f: fold response_format / format into options for llama-server constraints.
+    opts = merge_format_into_options(
+        opts,
+        format_value=body.get("format"),
+        response_format=body.get("response_format"),
+    )
+    tools = normalize_tools(body.get("tools"))
+    if tools and parse_format_constraint(
+        body.get("format"), response_format=body.get("response_format")
+    ):
+        raise ValueError("grammar is not supported together with tools")
     gguf = pop_gguf_path(opts)
     num_ctx, _meta = engine.resolve_num_ctx_for_request(gguf, options=opts)
-    tools = normalize_tools(body.get("tools"))
     n_predict = v1_max_tokens(body)
     tool_tag = "{"
     tools_meta: dict[str, Any] = {}
@@ -341,3 +353,113 @@ def run_v1_chat_completion(
     return completion_json(
         prep.model, result.content, vram_num_ctx=result.vram_num_ctx
     )
+
+
+def _batch_item_needs_reject(body: dict[str, Any]) -> str | None:
+    """Batch path rejects tools/vision/think (same floor as single-request runtime)."""
+    if body.get("tools"):
+        return "batch chat does not support tools"
+    if body.get("tool_choice") not in (None, "none"):
+        return "batch chat does not support tool_choice"
+    if v1_needs_legacy(body):
+        return "batch chat does not support vision/logprobs/think (use single /v1/chat/completions)"
+    return None
+
+
+def run_v1_chat_completions_batch(
+    engine: Any,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Non-stream batch of independent chat bodies → ``generate_batch``.
+
+    WHY public (vs /internal/generate-batch): Hermes wants OpenAI-shaped fan-out
+    without N HTTP round-trips; Python already does decode batching. Cap N at
+    ``min(8, llama_parallel_slots)``. Same-model + shared options.gguf required.
+    Streaming deferred (NDJSON with seq_idx) to a later iteration.
+
+    WHY wrapper response (not a bare list)::
+        ``{object: "chat.completion.batch", model, count, completions}`` with
+        ``completions[i]`` corresponding to ``requests[i]``. A bare
+        ``list[chat.completion]`` collides with OpenAI async Batch API mental
+        models and left OpenAPI saying only "OpenAI-shaped list / wrapper" —
+        that underspec blocked Hermes aux-client grouping work.
+
+    WHY reject mixed models here (not group server-side)::
+        ``generate_batch`` is one decode fan-out on one loaded GGUF. Grouping
+        across models is a client concern (one POST per model, chunk ≤ cap).
+    """
+    requests = body.get("requests")
+    if not isinstance(requests, list) or not requests:
+        raise ValueError("requests must be a non-empty list")
+    parallel = int(getattr(engine.config, "llama_parallel_slots", 1) or 1)
+    cap = min(8, max(1, parallel))
+    if len(requests) > cap:
+        raise ValueError(f"batch size {len(requests)} exceeds max {cap}")
+
+    model = ""
+    prompts: list[str] = []
+    n_predict = 128
+    shared_opts: dict[str, Any] = {}
+    for i, item in enumerate(requests):
+        if not isinstance(item, dict):
+            raise ValueError(f"requests[{i}] must be an object")
+        if reason := _batch_item_needs_reject(item):
+            raise ValueError(f"requests[{i}]: {reason}")
+        item_model = str(item.get("model") or body.get("model") or "").strip()
+        if not item_model:
+            raise ValueError(f"requests[{i}]: model is required")
+        if not model:
+            model = item_model
+        elif item_model != model:
+            # WHY 400 not silent split: callers must own ordering/reassembly across
+            # model groups; inventing a multi-runner batch here fights VRAM broker.
+            raise ValueError("batch chat requires the same model for all requests")
+        messages = list(item.get("messages") or [])
+        prompt = messages_to_prompt(messages)
+        if not prompt.strip():
+            raise ValueError(f"requests[{i}]: empty messages")
+        prompts.append(prompt)
+        n_predict = max(n_predict, v1_max_tokens(item))
+        opts = v1_request_options(item)
+        if i == 0:
+            shared_opts = opts
+        else:
+            # Merge conservatively: first request wins for gguf/num_ctx; later
+            # rows may only add prompt_cache_keys list entries below.
+            for k, v in opts.items():
+                if k not in shared_opts:
+                    shared_opts[k] = v
+
+    # Per-row cache keys when present.
+    keys: list[str | None] = []
+    for item in requests:
+        opts = v1_request_options(item) if isinstance(item, dict) else {}
+        from runtime.cache_bridge import extract_prompt_cache_key
+
+        keys.append(extract_prompt_cache_key(opts) or extract_prompt_cache_key(item))
+    if any(k for k in keys):
+        shared_opts["prompt_cache_keys"] = keys
+
+    # Shared top-level options (Go injects gguf once).
+    top_opts = v1_request_options(body)
+    for k, v in top_opts.items():
+        if k not in shared_opts or shared_opts.get(k) in (None, ""):
+            shared_opts[k] = v
+
+    results = engine.generate_batch(
+        prompts,
+        n_predict=n_predict,
+        max_admit=min(cap, len(prompts)),
+        options=shared_opts,
+    )
+    completions = [
+        completion_json(model, r.content, vram_num_ctx=getattr(r, "vram_num_ctx", None))
+        for r in results
+    ]
+    # Stable wire — keep keys explicit so OpenAPI / Hermes clients stay aligned.
+    return {
+        "object": "chat.completion.batch",
+        "model": model,
+        "completions": completions,
+        "count": len(completions),
+    }

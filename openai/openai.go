@@ -67,11 +67,11 @@ type CompleteChunkChoice struct {
 }
 
 type PromptTokensDetails struct {
-	CachedTokens        *int `json:"cached_tokens,omitempty"`
-	CreatedCacheTokens  *int `json:"created_cache_tokens,omitempty"`
-	ImageTokens         *int `json:"image_tokens,omitempty"`
-	AudioTokens         *int `json:"audio_tokens,omitempty"`
-	VideoTokens         *int `json:"video_tokens,omitempty"`
+	CachedTokens       *int `json:"cached_tokens,omitempty"`
+	CreatedCacheTokens *int `json:"created_cache_tokens,omitempty"`
+	ImageTokens        *int `json:"image_tokens,omitempty"`
+	AudioTokens        *int `json:"audio_tokens,omitempty"`
+	VideoTokens        *int `json:"video_tokens,omitempty"`
 }
 
 // CachedTokensDetails breaks down prefix-cache hits by tier (SGLang sglext shape).
@@ -161,6 +161,18 @@ type ChatCompletionRequest struct {
 	Options map[string]any `json:"options,omitempty"`
 	// KeepAlive mirrors /api/chat keep_alive (e.g. "30m") so agent clients pin MLX runners.
 	KeepAlive *api.Duration `json:"keep_alive,omitempty"`
+	// Timeout mirrors /api/chat timeout (duration string or nanoseconds JSON).
+	// WHY: Hermes per-call deadline; folded from extra_body like keep_alive.
+	Timeout *api.Duration `json:"timeout,omitempty"`
+	// Format is the native Ollama structured-output / GBNF field.
+	// WHY on /v1: GBNF is not an OpenAI response_format type — Hermes sends
+	// {"type":"gbnf","grammar":"..."} via extra_body.format (M15f).
+	Format json.RawMessage `json:"format,omitempty"`
+	// Think is the native Ollama think knob (bool or "high"|"medium"|"low").
+	// WHY bind on /v1 (not passthrough-only): Hermes and native clients send "think"
+	// on chat completions; allowlisting alone silently dropped it (Hermes gap).
+	// Precedence in FromChatRequest: Think > reasoning_* > enable_thinking aliases.
+	Think *api.ThinkValue `json:"think,omitempty"`
 	// EnableThinking is a common harness alias (vLLM/SGLang). Mapped to Think in FromChatRequest.
 	// Prefer think / reasoning_effort on this stack; accepted so thinking-off arms are not silent no-ops.
 	EnableThinking *bool `json:"enable_thinking,omitempty"`
@@ -404,6 +416,8 @@ func ToChatCompletion(id string, r api.ChatResponse) ChatCompletion {
 				if len(toolCalls) > 0 {
 					reason = "tool_calls"
 				}
+				// WHY pass "preempted" through: zerollama extension beyond OpenAI's
+				// closed finish_reason set — Hermes reads it as a string for retry.
 				if len(reason) > 0 {
 					return &reason
 				}
@@ -826,30 +840,49 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 			}
 		}
 	}
+	// Native format (incl. GBNF) wins when set — OpenAI response_format has no GBNF type.
+	if len(r.Format) > 0 {
+		format = r.Format
+	}
+	if len(r.Tools) > 0 && formatHasGrammar(format) {
+		return nil, fmt.Errorf("grammar is not supported together with tools")
+	}
 
 	var think *api.ThinkValue
 	var effort string
 	// OpenAI reasoning_* / enable_thinking / chat_template_kwargs are soft on
-	// non-thinking models (ThinkFromAlias). Native /api/chat think remains strict.
+	// non-thinking models (ThinkFromAlias). Explicit top-level think is native-strict
+	// (same as /api/chat) — not ThinkFromAlias.
 	thinkFromAlias := false
 
-	if r.Reasoning != nil {
-		effort = r.Reasoning.Effort
-		thinkFromAlias = true
-	} else if r.ReasoningEffort != nil {
-		effort = *r.ReasoningEffort
-		thinkFromAlias = true
+	// WHY Think first: once bound on /v1 it is the most explicit native shape;
+	// reasoning_* / enable_thinking are softer OpenAI/harness aliases.
+	if r.Think != nil && r.Think.Value != nil {
+		if !r.Think.IsValid() {
+			return nil, fmt.Errorf("invalid think value: must be boolean or \"high\", \"medium\", \"low\"")
+		}
+		think = r.Think
 	}
 
-	if effort != "" {
-		if !slices.Contains([]string{"high", "medium", "low", "none"}, effort) {
-			return nil, fmt.Errorf("invalid reasoning value: '%s' (must be \"high\", \"medium\", \"low\", or \"none\")", effort)
+	if think == nil {
+		if r.Reasoning != nil {
+			effort = r.Reasoning.Effort
+			thinkFromAlias = true
+		} else if r.ReasoningEffort != nil {
+			effort = *r.ReasoningEffort
+			thinkFromAlias = true
 		}
 
-		if effort == "none" {
-			think = &api.ThinkValue{Value: false}
-		} else {
-			think = &api.ThinkValue{Value: effort}
+		if effort != "" {
+			if !slices.Contains([]string{"high", "medium", "low", "none"}, effort) {
+				return nil, fmt.Errorf("invalid reasoning value: '%s' (must be \"high\", \"medium\", \"low\", or \"none\")", effort)
+			}
+
+			if effort == "none" {
+				think = &api.ThinkValue{Value: false}
+			} else {
+				think = &api.ThinkValue{Value: effort}
+			}
 		}
 	}
 
@@ -882,6 +915,7 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		TopLogprobs:     r.TopLogprobs,
 		DebugRenderOnly: r.DebugRenderOnly,
 		KeepAlive:       chatKeepAliveFromRequest(r, options),
+		Timeout:         chatTimeoutFromRequest(r, options),
 	}, nil
 }
 
@@ -920,6 +954,29 @@ func chatKeepAliveFromRequest(r ChatCompletionRequest, options map[string]any) *
 		return nil
 	}
 	delete(options, "keep_alive")
+	return &d
+}
+
+func chatTimeoutFromRequest(r ChatCompletionRequest, options map[string]any) *api.Duration {
+	if r.Timeout != nil {
+		return r.Timeout
+	}
+	if options == nil {
+		return nil
+	}
+	raw, ok := options["timeout"]
+	if !ok || raw == nil {
+		return nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var d api.Duration
+	if err := json.Unmarshal(b, &d); err != nil {
+		return nil
+	}
+	delete(options, "timeout")
 	return &d
 }
 

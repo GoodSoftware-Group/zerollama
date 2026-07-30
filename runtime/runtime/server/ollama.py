@@ -12,6 +12,8 @@ class OllamaGenerateRequest(BaseModel):
     prompt: str
     stream: Optional[bool] = False
     options: dict[str, Any] = Field(default_factory=dict)
+    # M15f: structured output / GBNF (forwarded from Go runtime proxy).
+    format: Optional[Any] = None
 
 
 class OllamaGenerateResponse(BaseModel):
@@ -35,3 +37,4 @@ class OllamaChatRequest(BaseModel):
     tools: list[dict[str, Any]] = Field(default_factory=list)
     logprobs: Optional[bool] = False
     think: Optional[Any] = None
+    format: Optional[Any] = None

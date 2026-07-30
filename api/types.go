@@ -174,6 +174,11 @@ type GenerateRequest struct {
 	// this request.
 	KeepAlive *Duration `json:"keep_alive,omitempty"`
 
+	// Timeout bounds wall-clock time for this call (schedule wait + decode).
+	// WHY: Hermes passes a per-call deadline; without it only client disconnect
+	// cancels and a stuck generation holds the slot indefinitely.
+	Timeout *Duration `json:"timeout,omitempty"`
+
 	// Images is an optional list of raw image bytes accompanying this
 	// request, for multimodal models.
 	Images []ImageData `json:"images,omitempty"`
@@ -251,6 +256,11 @@ type ChatRequest struct {
 	// KeepAlive controls how long the model will stay loaded into memory
 	// following the request.
 	KeepAlive *Duration `json:"keep_alive,omitempty"`
+
+	// Timeout bounds wall-clock time for this call (schedule wait + decode).
+	// WHY: same contract as GenerateRequest.Timeout — Hermes needs server-side
+	// enforcement, not only HTTP client deadlines.
+	Timeout *Duration `json:"timeout,omitempty"`
 
 	// Tools is an optional list of tools the model has access to.
 	Tools `json:"tools,omitempty"`
@@ -769,6 +779,11 @@ type ChatResponse struct {
 
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
+
+	// PreemptedReason explains done_reason=preempted (M15f mid-stream soft preempt).
+	// WHY on the terminal chunk: Hermes must distinguish natural stop from
+	// scheduler eviction so partial tool calls are not acted on as final.
+	PreemptedReason string `json:"preempted_reason,omitempty"`
 
 	// PromptTruncated is true when input was shortened to fit num_ctx
 	// (chatPrompt tail-trim and/or runner token trim / runtime context-shift detect).
@@ -1402,7 +1417,15 @@ type CanLoadResponse struct {
 	SuggestedMaxNumCtx *int                 `json:"suggested_max_num_ctx,omitempty"`
 	MaxLoadedModels    uint                 `json:"max_loaded_models"`
 	LoadedCount        int                  `json:"loaded_count"`
-	Notes              string               `json:"notes,omitempty"`
+	// Host topology (M15e / Hermes gap): report TP/device layout so clients can
+	// decide fit without SSH. WHY not a TP planner: layout is runtime YAML/env;
+	// inventing a second plan on Go would drift from what llama-server loads.
+	DeviceCount    int       `json:"device_count,omitempty"`
+	TensorParallel int       `json:"tensor_parallel,omitempty"`
+	SplitMode      string    `json:"split_mode,omitempty"`
+	TensorSplit    []float64 `json:"tensor_split,omitempty"`
+	MainGPU        int       `json:"main_gpu,omitempty"`
+	Notes          string    `json:"notes,omitempty"`
 }
 
 // PinRequest is the body for POST /api/pin (session eviction lease; does not load).
@@ -1435,6 +1458,24 @@ type PinStatus struct {
 	Notes      string    `json:"notes,omitempty"`
 }
 
+// CachePinRequest is the body for POST /api/cache/pin (prefix-cache lease).
+// WHY separate from /api/pin: model residency ≠ prompt_cache_key L3/MLX trie pin.
+type CachePinRequest struct {
+	PromptCacheKey string `json:"prompt_cache_key"`
+	TTLSeconds     *int   `json:"ttl_seconds,omitempty"`
+	ProjectID      string `json:"project_id,omitempty"`
+}
+
+// CachePinResponse is returned by POST /api/cache/pin.
+type CachePinResponse struct {
+	PinID          string    `json:"pin_id"`
+	PromptCacheKey string    `json:"prompt_cache_key"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	ProjectID      string    `json:"project_id,omitempty"`
+	Notes          string    `json:"notes,omitempty"`
+	CanPin         bool      `json:"can_pin"`
+}
+
 // ProposeLoadRequest is the body for POST /api/propose-load.
 type ProposeLoadRequest struct {
 	Models []CanLoadRequest `json:"models"`
@@ -1449,7 +1490,13 @@ type ProposeLoadPlan struct {
 	LoadOrder           []string `json:"load_order"`
 	EvictCandidates     []string `json:"evict_candidates,omitempty"`
 	Confidence          string   `json:"confidence"` // exact | heuristic | mixed
-	Notes               string   `json:"notes,omitempty"`
+	// Topology summary across the batch (max TP / device_count from members).
+	DeviceCount    int       `json:"device_count,omitempty"`
+	TensorParallel int       `json:"tensor_parallel,omitempty"`
+	SplitMode      string    `json:"split_mode,omitempty"`
+	TensorSplit    []float64 `json:"tensor_split,omitempty"`
+	MainGPU        int       `json:"main_gpu,omitempty"`
+	Notes          string    `json:"notes,omitempty"`
 }
 
 // ProposeLoadResponse is the dry-run multi-model plan (never loads).
@@ -1503,6 +1550,11 @@ type GenerateResponse struct {
 
 	// DoneReason is the reason the model stopped generating text.
 	DoneReason string `json:"done_reason,omitempty"`
+
+	// PreemptedReason explains done_reason=preempted (M15f mid-stream soft preempt).
+	// WHY on the terminal chunk: Hermes must distinguish natural stop from
+	// scheduler eviction so partial tool calls are not acted on as final.
+	PreemptedReason string `json:"preempted_reason,omitempty"`
 
 	// PromptTruncated is true when input was shortened to fit num_ctx
 	// (chatPrompt tail-trim and/or runner token trim / runtime context-shift detect).

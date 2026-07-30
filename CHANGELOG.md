@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Batch chat wire format documented (Hermes, Jul 2026)
+
+**Why:** Hermes deferred `/v1/chat/completions/batch` adoption because OpenAPI only said “OpenAI-shaped list / wrapper,” and the aux client assumed it could POST mixed models in one body. Without a stable response schema, client grouping work could not start.
+
+**What:**
+
+- OpenAPI: `ChatCompletionsBatchRequest` / `RequestItem` / `Response` / `BatchItem` — response is a **wrapper** `{object:"chat.completion.batch", model, count, completions[]}` with `completions[i]` ↔ `requests[i]` (not a bare list, not OpenAI async `/v1/batches`).
+- Docs: [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md) §8 wire format + client notes; [hermes-gap-closure-findings.md](docs/hermes-gap-closure-findings.md) Finding 6 (group-by-model is **client** work).
+- **Why same-model only:** one GGUF / one `generate_batch` runner; server-side mixed-model grouping would invent a second scheduler. Cap remains `min(8, llama_parallel_slots)`.
+- **Why document before multi-model API:** honest same-model contract unblocks Hermes; mixed-model fan-out stays a non-goal until a client needs it after adopting this schema.
+
+**Docs:** OpenAPI `server/openapi/openapi.yaml`; ROADMAP **M15e** (batch contract polish); README Hermes section.
+
+### Mid-stream preempt signal + grammar (M15f, Jul 2026)
+
+**Why:** Hermes still could not tell natural `done_reason=stop` from scheduler eviction mid-decode, and runtime-proxied GGUF silently dropped `response_format`/`format` (unconstrained JSON despite client schemas).
+
+**What:**
+
+1. **`done_reason: "preempted"` + `preempted_reason`** on the terminal NDJSON/SSE chunk (and OpenAI `finish_reason: "preempted"`).
+2. **MLX soft mid-stream preempt** — when interactive admits and a lower-class session is inflight on the same model key, cancel that request context (`interactive_wait_inflight_lower` → victim sees `lower_wait_interactive`). **Not** ggml/Python hard kill (still defers on `refCount>0`).
+3. **Python runtime format forwarding** — `format` / OpenAI `response_format` → llama-server `json_schema` / `grammar` on `/completion`.
+4. **GBNF** via `format: {"type":"gbnf","grammar":"..."}` (native `/api/*`; `/v1` via `extra_body.format`).
+5. **tools + grammar → HTTP 400** (`grammar is not supported together with tools`).
+
+**Docs:** [hermes-gap-closure-findings.md](docs/hermes-gap-closure-findings.md); [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md); ROADMAP **M15f**; OpenAPI.
+
+### Hermes gap closure (M15e, Jul 2026)
+
+**Why:** Hermes wishlist mixed “already shipped under another name,” native-only `/api/*`, and six **real** product gaps (accept-and-drop `think`, no server timeout, no wait-abort reason, no can-load topology, no prefix-cache lease, no public batch). Closing them without inventing a second TP planner or mid-stream hard preemption.
+
+**What:**
+
+1. **`think` on `/v1`** — bind + map in `FromChatRequest` (precedence over aliases). **Why bind not allowlist:** passthrough alone silently dropped Hermes reasoning.
+2. **Per-call `timeout`** — chat/generate/OpenAI + all runtime proxies; **504** on deadline (≠ **499** cancel). **Why:** client disconnect alone left stuck gens holding slots.
+3. **`preempted_reason`** — QoS defer abort / busy bodies. **Why:** wait-abort signal, not mid-stream kill.
+4. **`/api/can-load` topology** — `device_count` / `tensor_parallel` / `split_mode` / `tensor_split` / `main_gpu`. **Why report not plan:** surface runtime config; don’t invent Go TP.
+5. **`POST/DELETE /api/cache/pin`** — prefix-cache lease (MLX trie + L3 TTL; not idle slot retention). **Why separate from `/api/pin`:** model residency ≠ `prompt_cache_key` residency.
+6. **`POST /v1/chat/completions/batch`** — public batch via `generate_batch` (same-model, no tools/vision/think). **Why thin Go proxy:** decode batching already lives in Python. **Wire (documented Jul 2026):** `{object:"chat.completion.batch", model, count, completions[]}` with `completions[i]` ↔ `requests[i]`; clients group mixed models themselves. **Why document the wrapper:** underspecified “OpenAI-shaped list / wrapper” blocked Hermes aux-client work.
+
+**Docs:** [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md); [hermes-gap-closure-findings.md](docs/hermes-gap-closure-findings.md); OpenAPI `server/openapi/openapi.yaml`; ROADMAP **M15e**.
+
 ### Bee B1 + llama-server unify (0100–0103) — Jul 2026
 
 **Why:** One vendor `llama-server` for chat + Kokoro TTS; adaptive DFlash draft-max (Bee profit) behind opt-in.

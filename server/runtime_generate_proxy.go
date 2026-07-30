@@ -50,6 +50,16 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			return
 		}
 		EnsureGeneratePromptCacheKey(&req)
+
+		reqCtx, cancelTimeout := applyRequestTimeout(c.Request.Context(), req.Timeout)
+		if cancelTimeout != nil {
+			defer cancelTimeout()
+		}
+		c.Request = c.Request.WithContext(reqCtx)
+		if req.Timeout != nil {
+			c.Set("request_timeout", req.Timeout)
+		}
+
 		if req.Prompt == "" && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
 			// WHY runtime unload here: bench and CLI use KeepAlive=0 between models.
 			// Falling through to GenerateHandler scheduleRunner would spawn a ggml
@@ -106,6 +116,9 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 				"stream":  true,
 				"options": rtOpts,
 			}
+			if len(req.Format) > 0 {
+				payload["format"] = json.RawMessage(req.Format)
+			}
 			if err := writeRuntimeStreamAccepted(c, req.Model, false); err != nil {
 				writeRuntimeProxyError(c, err)
 				return
@@ -116,7 +129,7 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			return
 		}
 
-		respBody, status, err := forwardRuntimeGenerate(c, req.Model, req.Prompt, rtOpts)
+		respBody, status, err := forwardRuntimeGenerate(c, req.Model, req.Prompt, rtOpts, req.Format)
 		if err != nil {
 			writeRuntimeProxyError(c, err)
 			return

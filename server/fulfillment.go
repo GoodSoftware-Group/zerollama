@@ -129,10 +129,14 @@ func (g *mlxAgentGate) waitForFulfillment(
 		return nil
 	}
 	start := time.Now()
+	var lastReason string
 	for {
 		g.mu.Lock()
 		now := time.Now()
 		ready, reason := g.fulfillmentReadyLocked(modelKey, sessionKey, mode, now)
+		if !ready && reason != "" {
+			lastReason = reason
+		}
 		g.mu.Unlock()
 		if ready {
 			if waited := time.Since(start); waited >= 100*time.Millisecond {
@@ -148,7 +152,11 @@ func (g *mlxAgentGate) waitForFulfillment(
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			policy := lastReason
+			if policy == "" {
+				policy = "fulfillment_exclusive"
+			}
+			return wrapQoSDeferAbort(ctx.Err(), policy)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

@@ -239,7 +239,12 @@ def evict_expired(
     llama-server writes ``slot_<id>_<seq>.bin`` without a class suffix — those use
     ``ZEROLLAMA_LLAMA_CACHE_TTL_MS`` (default 1h). Optional ``*.short.bin`` names
     keep eliza-style per-class horizons.
+
+    Active ``/api/cache/pin`` leases (via ``/internal/cache/pin``) extend TTL for
+    matching slot ids — see ``runtime.cache_pins``.
     """
+    from runtime.cache_pins import pin_ttl_ms_for_file
+
     root = Path(root_dir)
     if not root.is_dir():
         return 0
@@ -251,6 +256,7 @@ def evict_expired(
         horizon = evict_ttl_ms_for_file(
             entry.name, ttls=ttls, slot_bin_ttl_ms=slot_bin_ttl_ms
         )
+        horizon = pin_ttl_ms_for_file(entry.name, horizon)
         try:
             mtime_ms = entry.stat().st_mtime * 1000
         except OSError:

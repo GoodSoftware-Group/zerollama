@@ -12,6 +12,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/openai"
 )
 
 // runtimeProxyActive is true when env or header opts in without per-model config.
@@ -175,6 +176,10 @@ func thinkNeedsLegacyRunner(think *api.ThinkValue) bool {
 }
 
 // proxyOptsFromV1Body extracts Ollama-style options from an OpenAI v1 chat body.
+// WHY fold here: flat SDK-flattened harness keys (qos_class, project_name, …)
+// must become options.zerollama for Go routing (resolveRuntimeProxy /
+// runtimeForceUnload) — same contract as openai.BindChatCompletionRequest.
+// runtimeV1ProxyOptions reuses this so the Python sidecar sees the fold too.
 func proxyOptsFromV1Body(body map[string]any) map[string]any {
 	if body == nil {
 		return nil
@@ -186,21 +191,46 @@ func proxyOptsFromV1Body(body map[string]any) map[string]any {
 			out[k] = v
 		}
 	}
+	// Flat top-level aliases first (weaker than nested options.zerollama).
+	out = openai.FoldFlatZerollamaMap(out, body)
 	mergePromptCacheKeyIntoProxyOpts(&out, body)
 	if eb, ok := body["extra_body"].(map[string]any); ok {
+		out = openai.FoldFlatZerollamaMap(out, eb)
 		if opts, ok := eb["options"].(map[string]any); ok {
 			out = mergeOptionsMaps(out, opts)
 		}
 		if z, ok := eb["zerollama"].(map[string]any); ok {
+			// extra_body.zerollama overlays flat aliases; options.zerollama still wins below.
 			out = mergeZerollamaIntoOptions(out, map[string]any{"zerollama": z})
 		}
 		mergePromptCacheKeyIntoProxyOpts(&out, eb)
 	}
-	out = mergeZerollamaIntoOptions(out, body)
+	// Top-level zerollama (SDK-flattened extra_body.zerollama) underlays nested
+	// options.zerollama — same precedence as openai.BindChatCompletionRequest.
+	out = underlayZerollamaIntoOptions(out, body)
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// underlayZerollamaIntoOptions merges src["zerollama"] beneath any existing
+// options.zerollama keys (nested/explicit wins on conflict; underlay fills gaps).
+// WHY: top-level zerollama after SDK flatten must not clobber body.options.zerollama.
+func underlayZerollamaIntoOptions(opts map[string]any, src map[string]any) map[string]any {
+	if src == nil {
+		return opts
+	}
+	z, ok := src["zerollama"].(map[string]any)
+	if !ok || len(z) == 0 {
+		return opts
+	}
+	if opts == nil {
+		opts = map[string]any{}
+	}
+	existing, _ := opts["zerollama"].(map[string]any)
+	opts["zerollama"] = mergeOptionsMaps(z, existing)
+	return opts
 }
 
 func mergePromptCacheKeyIntoProxyOpts(opts *map[string]any, src map[string]any) {
@@ -226,13 +256,18 @@ func forwardRuntimeGenerate(
 	modelName string,
 	prompt string,
 	options map[string]any,
+	format json.RawMessage,
 ) ([]byte, int, error) {
-	payload, _ := json.Marshal(map[string]any{
+	body := map[string]any{
 		"model":   modelName,
 		"prompt":  prompt,
 		"stream":  false,
 		"options": options,
-	})
+	}
+	if len(format) > 0 {
+		body["format"] = json.RawMessage(format)
+	}
+	payload, _ := json.Marshal(body)
 	target := effectiveRuntimeURL() + "/api/generate"
 	outReq, err := http.NewRequestWithContext(
 		c.Request.Context(),
@@ -298,6 +333,15 @@ func chatNeedsLegacyRunner(messages []api.Message, req api.ChatRequest) bool {
 }
 
 func writeRuntimeProxyError(c *gin.Context, err error) {
+	if isRequestTimeout(err) {
+		var to *api.Duration
+		if v, ok := c.Get("request_timeout"); ok {
+			to, _ = v.(*api.Duration)
+		}
+		writeRequestTimeout(c, to)
+		c.Abort()
+		return
+	}
 	slog.Warn("runtime proxy: request failed", "error", err)
 	msg := err.Error()
 	if isHostUnstableError(strings.ToLower(msg)) {

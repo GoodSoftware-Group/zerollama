@@ -43,6 +43,29 @@ func TestRuntimeV1ProxyOptionsPreservesClientGGUF(t *testing.T) {
 	}
 }
 
+func TestRuntimeV1ProxyOptionsFoldsFlatQoS(t *testing.T) {
+	body := map[string]any{
+		"qos_class":    "auxiliary",
+		"project_name": "discord:dm:1",
+		"project_id":   "hermes-lean",
+		"options": map[string]any{
+			"num_ctx": float64(8192),
+			"gguf":    "/data/custom.gguf",
+		},
+	}
+	opts := runtimeV1ProxyOptions("m", body)
+	z, ok := opts["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("flat QoS not folded into options.zerollama: %v", opts)
+	}
+	if z["qos_class"] != "auxiliary" || z["project_name"] != "discord:dm:1" || z["project_id"] != "hermes-lean" {
+		t.Fatalf("zerollama=%v", z)
+	}
+	if opts["num_ctx"] != float64(8192) {
+		t.Fatalf("num_ctx clobbered: %v", opts["num_ctx"])
+	}
+}
+
 func TestRuntimeV1ChatBodyWithOptionsAddsOptions(t *testing.T) {
 	raw := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"options":{"num_ctx":4096}}`)
 	out, err := runtimeV1ChatBodyWithOptions("m", raw)
@@ -105,6 +128,53 @@ func TestRuntimeV1ChatCompletionsProxyInjectsOptions(t *testing.T) {
 	}
 	if g, ok := opts["gguf"].(string); !ok || g != "/data/proxy-test.gguf" {
 		t.Fatalf("gguf=%v", opts["gguf"])
+	}
+}
+
+func TestRuntimeV1ChatCompletionsProxyFoldsFlatQoS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var gotBody string
+	rt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = w.Write([]byte(`{"object":"chat.completion","choices":[]}`))
+	}))
+	defer rt.Close()
+
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", rt.URL)
+	t.Setenv("ZEROLLAMA_RUNTIME", "1")
+	t.Setenv("OLLAMA_RUNTIME_ALL", "1")
+
+	s := &Server{}
+	r := gin.New()
+	r.POST("/v1/chat/completions", s.runtimeV1ChatCompletionsProxy(), func(c *gin.Context) {
+		c.JSON(http.StatusTeapot, gin.H{"error": "legacy"})
+	})
+
+	body := `{"model":"m","messages":[{"role":"user","content":"hi"}],"qos_class":"auxiliary","project_name":"batch","options":{"gguf":"/data/proxy-test.gguf"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d %s", w.Code, w.Body.String())
+	}
+	var forwarded map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &forwarded); err != nil {
+		t.Fatal(err)
+	}
+	opts, ok := forwarded["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy did not inject options: %s", gotBody)
+	}
+	z, ok := opts["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("flat QoS not in forwarded options.zerollama: %s", gotBody)
+	}
+	if z["qos_class"] != "auxiliary" || z["project_name"] != "batch" {
+		t.Fatalf("zerollama=%v", z)
 	}
 }
 

@@ -68,3 +68,121 @@ func TestBindChatCompletionRequest_extraBodyZerollamaQoS(t *testing.T) {
 		t.Fatalf("zerollama=%v", z)
 	}
 }
+
+func TestBindChatCompletionRequest_TopLevelFlatQoS(t *testing.T) {
+	// OpenAI SDK flattens extra_body.{qos_class,project_*} onto the HTTP root.
+	body := []byte(`{
+		"model": "gemma4:26b-optiq",
+		"messages": [{"role":"user","content":"hi"}],
+		"qos_class": "auxiliary",
+		"project_id": "hermes-lean",
+		"project_name": "discord:dm:123"
+	}`)
+	req, err := BindChatCompletionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, ok := req.Options["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("options=%v", req.Options)
+	}
+	if z["qos_class"] != "auxiliary" || z["project_id"] != "hermes-lean" || z["project_name"] != "discord:dm:123" {
+		t.Fatalf("zerollama=%v", z)
+	}
+}
+
+func TestBindChatCompletionRequest_TopLevelZerollamaObject(t *testing.T) {
+	// SDK flattens extra_body.zerollama → top-level "zerollama".
+	body := []byte(`{
+		"model": "gemma4:26b-optiq",
+		"messages": [{"role":"user","content":"hi"}],
+		"zerollama": {
+			"qos_class": "interactive",
+			"project_id": "hermes-lean"
+		}
+	}`)
+	req, err := BindChatCompletionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, ok := req.Options["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("options=%v", req.Options)
+	}
+	if z["qos_class"] != "interactive" || z["project_id"] != "hermes-lean" {
+		t.Fatalf("zerollama=%v", z)
+	}
+}
+
+func TestBindChatCompletionRequest_FlatExtraBodyQoS(t *testing.T) {
+	// Nested extra_body without SDK flatten — flat keys must still lift.
+	body := []byte(`{
+		"model": "gemma4:26b-optiq",
+		"messages": [{"role":"user","content":"hi"}],
+		"extra_body": {
+			"qos_class": "background",
+			"project_name": "batch"
+		}
+	}`)
+	req, err := BindChatCompletionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, ok := req.Options["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("options=%v", req.Options)
+	}
+	if z["qos_class"] != "background" || z["project_name"] != "batch" {
+		t.Fatalf("zerollama=%v", z)
+	}
+}
+
+func TestBindChatCompletionRequest_NestedZerollamaWinsOverFlat(t *testing.T) {
+	body := []byte(`{
+		"model": "gemma4:26b-optiq",
+		"messages": [{"role":"user","content":"hi"}],
+		"qos_class": "background",
+		"options": {
+			"zerollama": {"qos_class": "interactive", "project_id": "main"}
+		}
+	}`)
+	req, err := BindChatCompletionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, ok := req.Options["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("options=%v", req.Options)
+	}
+	if z["qos_class"] != "interactive" || z["project_id"] != "main" {
+		t.Fatalf("nested must win over flat: zerollama=%v", z)
+	}
+}
+
+func TestBindChatCompletionRequest_NestedZerollamaWinsOverTopLevelObject(t *testing.T) {
+	body := []byte(`{
+		"model": "gemma4:26b-optiq",
+		"messages": [{"role":"user","content":"hi"}],
+		"zerollama": {"qos_class": "background", "project_name": "from-top"},
+		"options": {
+			"zerollama": {"qos_class": "interactive", "project_id": "main"}
+		}
+	}`)
+	req, err := BindChatCompletionRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, ok := req.Options["zerollama"].(map[string]any)
+	if !ok {
+		t.Fatalf("options=%v", req.Options)
+	}
+	if z["qos_class"] != "interactive" {
+		t.Fatalf("options.zerollama must win over top-level zerollama: %v", z)
+	}
+	if z["project_id"] != "main" {
+		t.Fatalf("project_id=%v", z["project_id"])
+	}
+	if z["project_name"] != "from-top" {
+		t.Fatalf("top-level-only keys should underlay: %v", z)
+	}
+}

@@ -9,8 +9,13 @@ import (
 )
 
 // BindChatCompletionRequest unmarshals an OpenAI chat body and merges nested
-// extra_body fields. Some SDKs nest zerollama keys under extra_body instead of
-// promoting them to top-level JSON.
+// extra_body fields.
+//
+// WHY multiple wire shapes: some SDKs nest zerollama under extra_body; the
+// OpenAI Python SDK flattens extra_body onto the HTTP root (flat qos_class /
+// project_name / zerollama). All must fold into options.zerollama rather than 400.
+// Precedence (strongest → weakest): options.zerollama → top-level zerollama
+// object → flat aliases. See docs/openai-harness-qos-wire-shapes.md.
 func BindChatCompletionRequest(body []byte) (ChatCompletionRequest, error) {
 	var req ChatCompletionRequest
 	if len(body) == 0 {
@@ -26,6 +31,16 @@ func BindChatCompletionRequest(body []byte) (ChatCompletionRequest, error) {
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return req, err
+	}
+	// Precedence (strongest → weakest): options.zerollama → top-level zerollama
+	// object → flat aliases. Fold flat first; underlay top-level zerollama so
+	// nested options.zerollama already on req wins on conflict.
+	req.Options = foldFlatZerollamaRaw(req.Options, raw)
+	if zRaw, ok := raw["zerollama"]; ok {
+		var z map[string]any
+		if json.Unmarshal(zRaw, &z) == nil && len(z) > 0 {
+			req.Options = underlayZerollamaOptions(req.Options, z)
+		}
 	}
 	if eb, ok := raw["extra_body"]; ok {
 		mergeChatExtraBody(&req, eb)
@@ -64,6 +79,19 @@ func mergeChatExtraBody(req *ChatCompletionRequest, extra json.RawMessage) {
 			req.KeepAlive = ka
 		}
 	}
+	if req.Timeout == nil {
+		if t := rawKeepAlive(flat["timeout"]); t != nil {
+			req.Timeout = t
+		}
+	}
+	if len(req.Format) == 0 {
+		if f, ok := flat["format"]; ok && len(f) > 0 {
+			req.Format = append(json.RawMessage(nil), f...)
+		}
+	}
+	// Flat harness keys under nested extra_body (SDK did not flatten).
+	// Weaker than extra_body.options / extra_body.zerollama below.
+	req.Options = foldFlatZerollamaRaw(req.Options, flat)
 	if optsRaw, ok := flat["options"]; ok {
 		var opts map[string]any
 		if json.Unmarshal(optsRaw, &opts) == nil {
@@ -78,12 +106,78 @@ func mergeChatExtraBody(req *ChatCompletionRequest, extra json.RawMessage) {
 	}
 }
 
+// foldFlatZerollamaRaw lifts allowlisted flat harness keys into options.zerollama.
+// WHY existing options.zerollama wins: nested/explicit is the Ollama contract;
+// flat keys are SDK-flattened aliases and must not overwrite careful clients.
+func foldFlatZerollamaRaw(opts map[string]any, raw map[string]json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return opts
+	}
+	flat := make(map[string]any, len(chatCompletionZerollamaFlatFields))
+	for _, name := range chatCompletionZerollamaFlatFields {
+		v, ok := raw[name]
+		if !ok || len(v) == 0 {
+			continue
+		}
+		var anyVal any
+		if json.Unmarshal(v, &anyVal) != nil {
+			continue
+		}
+		flat[name] = anyVal
+	}
+	return foldFlatZerollamaMap(opts, flat)
+}
+
+// FoldFlatZerollamaMap lifts flat harness keys from a decoded JSON object into
+// options.zerollama. Exported for the runtime v1 proxy path.
+// WHY exported: proxyOptsFromV1Body / runtimeV1ProxyOptions must apply the same
+// fold the OpenAI bind path uses, or Python never sees qos_class after a 400 fix.
+func FoldFlatZerollamaMap(opts map[string]any, src map[string]any) map[string]any {
+	return foldFlatZerollamaMap(opts, src)
+}
+
+func foldFlatZerollamaMap(opts map[string]any, src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return opts
+	}
+	flat := make(map[string]any, len(chatCompletionZerollamaFlatFields))
+	for _, name := range chatCompletionZerollamaFlatFields {
+		v, ok := src[name]
+		if !ok || v == nil {
+			continue
+		}
+		flat[name] = v
+	}
+	if len(flat) == 0 {
+		return opts
+	}
+	if opts == nil {
+		opts = map[string]any{}
+	}
+	existing, _ := opts["zerollama"].(map[string]any)
+	// existing (nested) overlays flat so options.zerollama wins.
+	opts["zerollama"] = mergeOptionsMaps(flat, existing)
+	return opts
+}
+
 func mergeZerollamaOptions(opts map[string]any, z map[string]any) map[string]any {
 	if opts == nil {
 		opts = map[string]any{}
 	}
 	existing, _ := opts["zerollama"].(map[string]any)
 	opts["zerollama"] = mergeOptionsMaps(existing, z)
+	return opts
+}
+
+// underlayZerollamaOptions merges z beneath existing options.zerollama (nested wins).
+// WHY underlay (not overlay): top-level "zerollama" is usually SDK-flattened
+// extra_body.zerollama; options.zerollama is the explicit nested contract.
+func underlayZerollamaOptions(opts map[string]any, z map[string]any) map[string]any {
+	if opts == nil {
+		opts = map[string]any{}
+	}
+	existing, _ := opts["zerollama"].(map[string]any)
+	opts["zerollama"] = mergeOptionsMaps(z, existing)
 	return opts
 }
 

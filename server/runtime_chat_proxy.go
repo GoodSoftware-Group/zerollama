@@ -13,6 +13,8 @@ import (
 )
 
 // runtimeChatProxy forwards /api/chat to the Python runtime when eligible (streaming or not).
+// WHY applyRequestTimeout here: this middleware aborts before ChatHandler when it proxies;
+// without the wrap, timeout only worked on the legacy ggml fallthrough path (M15e audit).
 func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost || c.Request.URL.Path != "/api/chat" {
@@ -41,6 +43,19 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 		if err := api.ApplyChatThinkingAliases(&req); err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
+		}
+		if len(req.Tools) > 0 && formatHasGrammarConstraint(req.Format) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errGrammarWithTools})
+			return
+		}
+
+		reqCtx, cancelTimeout := applyRequestTimeout(c.Request.Context(), req.Timeout)
+		if cancelTimeout != nil {
+			defer cancelTimeout()
+		}
+		c.Request = c.Request.WithContext(reqCtx)
+		if req.Timeout != nil {
+			c.Set("request_timeout", req.Timeout)
 		}
 		if len(req.Messages) == 0 && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
 			c.Next()

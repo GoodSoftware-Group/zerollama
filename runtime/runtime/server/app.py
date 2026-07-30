@@ -197,7 +197,9 @@ def create_app(
             stream=bool(req.stream),
             queue=runtime_queue_snapshot(eng),
         )
-        opts = dict(req.options)
+        from runtime.format_constraint import merge_format_into_options
+
+        opts = merge_format_into_options(dict(req.options), format_value=req.format)
         gguf = pop_gguf_path(opts)
         n_predict = _n_predict(opts)
         num_ctx = _request_num_ctx(opts, gguf)
@@ -358,7 +360,14 @@ def create_app(
                 status_code=501,
                 detail="request requires legacy runner (vision/logprobs/think)",
             )
-        opts = dict(req.options)
+        from runtime.format_constraint import merge_format_into_options, parse_format_constraint
+
+        if req.tools and parse_format_constraint(req.format):
+            raise HTTPException(
+                status_code=400,
+                detail="grammar is not supported together with tools",
+            )
+        opts = merge_format_into_options(dict(req.options), format_value=req.format)
         gguf = pop_gguf_path(opts)
         n_predict = _n_predict(opts)
         num_ctx = _request_num_ctx(opts, gguf)
@@ -582,6 +591,34 @@ def create_app(
         except LlamaServerError as e:
             raise HTTPException(status_code=_llama_error_status(e), detail=str(e)) from e
 
+    @app.post("/v1/chat/completions/batch")
+    def v1_chat_completions_batch(payload: dict[str, Any] = Body()):
+        """Public batch chat (Hermes gap M15e).
+
+        Body: ``{"model": "...", "requests": [{...chat body...}, ...]}``.
+        Response: ``{"object":"chat.completion.batch","model", "count",
+        "completions"}`` with ``completions[i]`` ↔ ``requests[i]``.
+
+        WHY public (vs /internal/generate-batch): Hermes OpenAI-shaped fan-out
+        without N HTTP round-trips; decode batching already lives in Python.
+        WHY same-model / no tools-vision-think / non-stream: one GGUF runner;
+        interactive features need single /v1/chat/completions. Cap
+        ``min(8, llama_parallel_slots)``. Mixed models → 400 (group client-side).
+        """
+        from runtime.server.openai_v1 import run_v1_chat_completions_batch
+
+        if payload.get("stream"):
+            raise HTTPException(
+                status_code=400,
+                detail="batch chat streaming not supported yet (omit stream or use single /v1/chat/completions)",
+            )
+        try:
+            return run_v1_chat_completions_batch(eng, payload)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except LlamaServerError as e:
+            raise HTTPException(status_code=_llama_error_status(e), detail=str(e)) from e
+
     @app.post("/internal/training-handoff")
     def training_handoff() -> dict[str, str]:
         state = eng.training_handoff()
@@ -637,6 +674,39 @@ def create_app(
         max_admit: int = Field(default=4, ge=1, le=8)
         stream: bool = False
         options: Optional[dict[str, Any]] = None
+
+    class CachePinBody(BaseModel):
+        pin_id: str
+        prompt_cache_key: str
+        expires_at: Optional[str] = None
+
+    class CacheUnpinBody(BaseModel):
+        pin_id: str = ""
+        prompt_cache_key: str = ""
+
+    @app.post("/internal/cache/pin")
+    def internal_cache_pin(body: CachePinBody = Body()) -> dict[str, Any]:
+        """Go /api/cache/pin notifies runtime to extend L3 disk TTL for a key."""
+        from runtime.cache_pins import register_cache_pin
+
+        try:
+            return register_cache_pin(
+                pin_id=body.pin_id,
+                prompt_cache_key=body.prompt_cache_key,
+                expires_at=body.expires_at,
+                parallel=getattr(eng.config, "llama_parallel_slots", None)
+                or getattr(eng.config, "n_parallel", None),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/internal/cache/unpin")
+    def internal_cache_unpin(body: CacheUnpinBody = Body()) -> dict[str, Any]:
+        from runtime.cache_pins import unregister_cache_pin
+
+        return unregister_cache_pin(
+            pin_id=body.pin_id, prompt_cache_key=body.prompt_cache_key
+        )
 
     @app.post("/internal/tokenize")
     def internal_tokenize(body: TokenizeBody = Body()) -> dict[str, Any]:

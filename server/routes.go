@@ -34,8 +34,8 @@ import (
 	"golang.org/x/image/webp"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/agentstats"
+	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
@@ -503,6 +503,15 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	EnsureGeneratePromptCacheKey(&req)
 
+	reqCtx, cancelTimeout := applyRequestTimeout(c.Request.Context(), req.Timeout)
+	if cancelTimeout != nil {
+		defer cancelTimeout()
+	}
+	c.Request = c.Request.WithContext(reqCtx)
+	if req.Timeout != nil {
+		c.Set("request_timeout", req.Timeout)
+	}
+
 	if req.TopLogprobs < 0 || req.TopLogprobs > 20 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "top_logprobs must be between 0 and 20"})
 		return
@@ -854,7 +863,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}()
 		firstToken := true
 		var firstTokenAt time.Time
-		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
+		inferCtx, cancelPreempt := s.bindInferPreemptCancel(c.Request.Context(), m, req.Options)
+		if cancelPreempt != nil {
+			defer cancelPreempt()
+		}
+		if err := r.Completion(inferCtx, llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
 			Images:            images,
@@ -925,6 +938,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 			if cr.Done {
 				res.DoneReason = cr.DoneReason.String()
+				if cr.PreemptedReason != "" {
+					res.PreemptedReason = cr.PreemptedReason
+				}
 				res.TotalDuration = time.Since(checkpointStart)
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 				applyGenerateTruncation(&res, cr, messagesDropped, originalPromptTokens)
@@ -969,6 +985,12 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				sentDone = true
 			}
 		}); err != nil {
+			if isContextCanceled(err) && s.maybeEnqueueGeneratePreempted(
+				ch, m, req.Options, req.Model, sb.String(), &sentDone,
+				checkpointStart, checkpointLoaded, ggmlCtx,
+			) {
+				return
+			}
 			var serr api.StatusError
 			extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
 			if errors.As(err, &serr) {
@@ -2197,6 +2219,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/propose-load", s.ProposeLoadHandler)
 	r.POST("/api/pin", s.PinHandler)
 	r.DELETE("/api/pin/:id", s.UnpinHandler)
+	r.POST("/api/cache/pin", s.CachePinHandler)
+	r.DELETE("/api/cache/pin/:id", s.CacheUnpinHandler)
 	r.GET("/api/metrics", s.MetricsHandler)
 	r.GET("/api/kv/blob/:digest", s.KvBlobHandler)
 	r.POST("/api/fleet/assign-hold", s.AssignHoldHandler)
@@ -2245,6 +2269,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
 	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/chat/completions/batch", s.withInferenceRequestLogging("/v1/chat/completions/batch", s.runtimeV1ChatCompletionsBatchProxy())...)
 	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
@@ -2848,10 +2873,23 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if len(req.Tools) > 0 && formatHasGrammarConstraint(req.Format) {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errGrammarWithTools})
+		return
+	}
 
 	EnsureAgentPromptCacheKey(&req)
 	recordInferenceAccessCacheKey(c, modality.ExtractPromptCacheKey(req.Options))
 	modality.WarnPrefixMMCacheWithoutSessionKey(&req)
+
+	reqCtx, cancelTimeout := applyRequestTimeout(c.Request.Context(), req.Timeout)
+	if cancelTimeout != nil {
+		defer cancelTimeout()
+	}
+	c.Request = c.Request.WithContext(reqCtx)
+	if req.Timeout != nil {
+		c.Set("request_timeout", req.Timeout)
+	}
 
 	if req.TopLogprobs < 0 || req.TopLogprobs > 20 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "top_logprobs must be between 0 and 20"})
@@ -3247,6 +3285,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 			// sets up new context given parent context per request
 			ctx, cancel := context.WithCancel(c.Request.Context())
+			// Soft mid-stream preempt (M15f): interactive may cancel this ctx.
+			if s.sched != nil {
+				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
+			}
 			err := r.Completion(ctx, llm.CompletionRequest{
 				Prompt:              prompt,
 				PromptTokens:        completionPromptTokens,
@@ -3304,6 +3346,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 				if r.Done {
 					res.DoneReason = r.DoneReason.String()
+					if r.PreemptedReason != "" {
+						res.PreemptedReason = r.PreemptedReason
+					}
 					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 					applyPromptTruncation(&res, r, messagesDropped, originalPromptTokens)
@@ -3414,6 +3459,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			if err != nil {
 				if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
 					// only ignores error if it's a context cancellation due to setting structured outputs
+				} else if isContextCanceled(err) && s.maybeEnqueueChatPreempted(
+					ch, m, req.Options, req.Model, "", tb.String(), &sentDone,
+					checkpointStart, checkpointLoaded, ggmlCtx,
+				) {
+					return
 				} else {
 					slog.Error("chat completion failed",
 						"model", req.Model,
@@ -3523,11 +3573,31 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	switch {
 	case errors.Is(err, errCapabilities), errors.Is(err, errRequired):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, context.DeadlineExceeded):
+		// Per-call timeout (req.Timeout) — distinct from client disconnect (499).
+		var to *api.Duration
+		if v, ok := c.Get("request_timeout"); ok {
+			to, _ = v.(*api.Duration)
+		}
+		body := gin.H{"error": "request timeout"}
+		if to != nil && to.Duration > 0 {
+			body["timeout_seconds"] = to.Duration.Seconds()
+		}
+		if reason := preemptedReasonFromErr(err); reason != "" {
+			body["preempted_reason"] = reason
+		}
+		c.JSON(http.StatusGatewayTimeout, body)
 	case errors.Is(err, context.Canceled):
-		c.JSON(499, gin.H{"error": "request canceled"})
+		body := gin.H{"error": "request canceled"}
+		if reason := preemptedReasonFromErr(err); reason != "" {
+			// WHY: client gave up while deferred behind higher QoS — Hermes retries faster
+			// when it knows this was a priority wait, not a generic cancel.
+			body["preempted_reason"] = reason
+		}
+		c.JSON(499, body)
 	case errors.Is(err, ErrMaxQueue):
 		metricsIncQueueReject()
-		writeBusyUnavailable(c, err.Error())
+		writeBusyUnavailable(c, err.Error(), preemptedReasonFromErr(err))
 	case errors.Is(err, os.ErrNotExist):
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model %q not found, try pulling it first", name)})
 	// Why 400: model is configured for the Python runtime sidecar; the legacy ggml
@@ -3537,7 +3607,7 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	// Why 503: runtime sidecar holds Metal; a second ggml runner would contend on the
 	// same device. Caller should unload the runtime model or use runtime routing.
 	case errors.Is(err, ErrDarwinMetalContention):
-		writeBusyUnavailable(c, err.Error())
+		writeBusyUnavailable(c, err.Error(), preemptedReasonFromErr(err))
 	case errors.Is(err, ErrEdgeGgmlRunnerDisabled), errors.Is(err, llm.ErrGgmlRunnerUnlinked):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
@@ -3545,12 +3615,16 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	}
 }
 
-func writeBusyUnavailable(c *gin.Context, errMsg string) {
+func writeBusyUnavailable(c *gin.Context, errMsg string, preemptedReason ...string) {
 	c.Header("Retry-After", strconv.Itoa(defaultBusyRetryAfterSec))
-	c.JSON(http.StatusServiceUnavailable, gin.H{
+	body := gin.H{
 		"error":       errMsg,
 		"retry_after": defaultBusyRetryAfterSec,
-	})
+	}
+	if len(preemptedReason) > 0 && preemptedReason[0] != "" {
+		body["preempted_reason"] = preemptedReason[0]
+	}
+	c.JSON(http.StatusServiceUnavailable, body)
 }
 
 // handleExternalImageGenerate runs modality_backends.image=external-image via OLLAMA_EXTERNAL_IMAGE_BIN.

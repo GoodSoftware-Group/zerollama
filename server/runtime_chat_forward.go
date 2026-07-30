@@ -68,6 +68,11 @@ func runtimeChatPayload(
 	if req.Think != nil {
 		payload["think"] = req.Think
 	}
+	// M15f: forward format so Python llama-server can apply json_schema/grammar.
+	// WHY: previously dropped → unconstrained output on runtime-proxied models.
+	if len(req.Format) > 0 {
+		payload["format"] = json.RawMessage(req.Format)
+	}
 	return payload
 }
 

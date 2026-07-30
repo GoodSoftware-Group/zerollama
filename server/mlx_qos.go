@@ -9,10 +9,10 @@ import (
 type mlxSessionClass int
 
 const (
-	mlxClassUnknown mlxSessionClass = iota
-	mlxClassInteractive // live agent thread — holds runner, fast_path
-	mlxClassAuxiliary   // subagents, compression, keyed side work
-	mlxClassBackground  // batch generate, best-effort
+	mlxClassUnknown     mlxSessionClass = iota
+	mlxClassInteractive                 // live agent thread — holds runner, fast_path
+	mlxClassAuxiliary                   // subagents, compression, keyed side work
+	mlxClassBackground                  // batch generate, best-effort
 )
 
 func (c mlxSessionClass) String() string {
@@ -34,9 +34,9 @@ func (c mlxSessionClass) String() string {
 type fulfillmentMode int
 
 const (
-	fulfillmentNone fulfillmentMode = iota
-	fulfillmentComplete  // finish without preemption / eviction; allow other idle models
-	fulfillmentBenchmark // exclusive GPU speed path; unload peers; block all other traffic
+	fulfillmentNone      fulfillmentMode = iota
+	fulfillmentComplete                  // finish without preemption / eviction; allow other idle models
+	fulfillmentBenchmark                 // exclusive GPU speed path; unload peers; block all other traffic
 )
 
 func (m fulfillmentMode) String() string {
@@ -375,22 +375,22 @@ func zerollamaVersionCapabilities() map[string]any {
 	// Python multi-resident. Hire maps that key on this flag must stay conservative.
 	// WHY pin_reserve/propose_sidecar=true: advertise shipped surfaces; clients still honor serialize_required.
 	return map[string]any{
-		"mlx_qos":                true,
-		"prompt_cache_key":       true,
-		"mlx_live_kv":            true,
-		"session_qos_gate":       true,
-		"session_parent_defer":   true,
-		"cache_reset":            true,
-		"cache_level":            []string{qosCacheLevelAuto, qosCacheLevelGPU, qosCacheLevelDRAM, qosCacheLevelDisk},
-		"radix_prefer_parent":    true,
-		"fulfillment":            true,
-		"runner_paths":           zerollamaVersionRunnerPaths(),
-		"runtime_config":         true,
-		"can_load":               true,
-		"metrics":                true,
-		"admission_retry_after":  true,
-		"error_timings":          true,
-		"empty_gen_classify":       true,
+		"mlx_qos":               true,
+		"prompt_cache_key":      true,
+		"mlx_live_kv":           true,
+		"session_qos_gate":      true,
+		"session_parent_defer":  true,
+		"cache_reset":           true,
+		"cache_level":           []string{qosCacheLevelAuto, qosCacheLevelGPU, qosCacheLevelDRAM, qosCacheLevelDisk},
+		"radix_prefer_parent":   true,
+		"fulfillment":           true,
+		"runner_paths":          zerollamaVersionRunnerPaths(),
+		"runtime_config":        true,
+		"can_load":              true,
+		"metrics":               true,
+		"admission_retry_after": true,
+		"error_timings":         true,
+		"empty_gen_classify":    true,
 		"priority_queues": map[string]any{
 			"session_qos_class": []string{"interactive", "auxiliary", "background"},
 			"runtime_priority":  []string{"high", "normal", "low"},
@@ -409,9 +409,9 @@ func zerollamaVersionCapabilities() map[string]any {
 
 func zerollamaVersionQoS() map[string]any {
 	return map[string]any{
-		"classes":      []string{"interactive", "auxiliary", "background"},
-		"fulfillment":  []string{"complete", "benchmark"},
-		"modalities":   []string{mlxModalityText, mlxModalityVision, mlxModalityVideoUnderstanding, mlxModalityImageGeneration, mlxModalityVideoGeneration},
+		"classes":     []string{"interactive", "auxiliary", "background"},
+		"fulfillment": []string{"complete", "benchmark"},
+		"modalities":  []string{mlxModalityText, mlxModalityVision, mlxModalityVideoUnderstanding, mlxModalityImageGeneration, mlxModalityVideoGeneration},
 		"options": map[string]any{
 			"path": "options.zerollama",
 			"fields": map[string]string{
@@ -429,7 +429,13 @@ func zerollamaVersionQoS() map[string]any {
 			"legacy": []string{"mlx_session_class", "mlx_session_parent", "fulfill_mode", "priority_mode"},
 		},
 		"openai": map[string]any{
-			"extra_body": []string{"zerollama", "options", "prompt_cache_key"},
+			"extra_body": []string{
+				"zerollama", "options", "prompt_cache_key",
+				// WHY list flat aliases: clients probe GET /api/version once and
+				// learn they may send SDK-flattened extra_body keys without 400.
+				"qos_class", "project_id", "project_name", "session_group",
+			},
+			"note": "flat top-level / extra_body harness keys fold into options.zerollama",
 		},
 		"routes": map[string]string{
 			"text":                "/api/generate, /api/chat, /v1/chat/completions",

@@ -66,6 +66,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [llama-server UMA admission (M22)](./llama-server-uma-sched.md) — vendor `graph_compute` HOLD + sync (`BUILD_UMA` → `libuma_llama.a`).
 * [MLX agent prompts](./mlx-agent-prompts.md) — **why** context cap, tail truncate, `PromptTokens`, tokenize cache, keep-alive floor, SSE keepalive, **M15a live-session + rotating-KV restore** (`fast_path`, `messages_dropped`), and operator logs for agent megaprompts on safetensors models.
 * [Agent QoS and project tracking](./agent-qos-and-project-tracking.md) — **why** session gate TOCTOU fix, multiplex key hot-map / `wait_parent`, session→cache great loop (`cache_reset` / `cache_level`), `project_id` / `zerollama ps`, inference-path branching, and progressive client ladder; keeps Tier 2 options off vanilla Ollama and unkeyed CUDA traffic.
+* [Hermes ↔ zerollama gap analysis](./hermes-zerollama-gap.md) — **why** many “blocked/missing” wishlist items are already shipped under different field names or native `/api/*`; real gaps closed in M15e; **§8** documents `POST /v1/chat/completions/batch` wire (`object=chat.completion.batch`, ordered `completions`, client group-by-model).
+* [Hermes gap closure findings (M15e)](./hermes-gap-closure-findings.md) — **why** bind≠allowlist, 504≠499, wait-abort≠hard preempt, topology≠TP planner, cache-pin≠model-pin, thin batch proxy + **document-before-extend** for batch schema; OpenAPI map.
 * [LM Studio cache import](./lmstudio-import.md) — **why** pull-from-cache, MLX copy vs GGUF symlink, disk policy, env vars, troubleshooting.
 
 ### GPU training & scheduling (repo)

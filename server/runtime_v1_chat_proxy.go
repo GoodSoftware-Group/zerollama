@@ -41,6 +41,16 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+
+		reqCtx, cancelTimeout := applyRequestTimeout(c.Request.Context(), oreq.Timeout)
+		if cancelTimeout != nil {
+			defer cancelTimeout()
+		}
+		c.Request = c.Request.WithContext(reqCtx)
+		if oreq.Timeout != nil {
+			c.Set("request_timeout", oreq.Timeout)
+		}
+
 		var bodyMap map[string]any
 		if err := json.Unmarshal(body, &bodyMap); err != nil {
 			c.Next()
