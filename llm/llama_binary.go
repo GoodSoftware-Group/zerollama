@@ -168,6 +168,12 @@ func llamaCppBinaryName(name, goos string) string {
 	return name
 }
 
+// isUsableLlamaServerBin reports whether path exists and is a regular executable file.
+func isUsableLlamaServerBin(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular() && (fi.Mode()&0o111) != 0
+}
+
 func llamaCppBuildOutputRank(path string) int {
 	if strings.Contains(path, "flash-moe-llama-server") {
 		if preferFlashMoELlamaServer() {
