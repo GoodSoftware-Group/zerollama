@@ -58,6 +58,7 @@ import (
 	xcmd "github.com/ollama/ollama/x/cmd"
 	xcreateclient "github.com/ollama/ollama/x/create/client"
 	"github.com/ollama/ollama/x/imagegen"
+	"github.com/ollama/ollama/x/proctitle"
 	"github.com/ollama/ollama/x/videogen"
 )
 
@@ -1993,6 +1994,7 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 }
 
 func RunServer(cmd *cobra.Command, _ []string) error {
+	proctitle.Set(proctitle.Serve)
 	if err := initializeKeypair(); err != nil {
 		return err
 	}
@@ -2512,6 +2514,10 @@ func NewCLI() *cobra.Command {
 		Use:    "runner",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Set first: dupArgs moves os.Args onto the Go heap, then Darwin
+			// setproctitle may wipe C argv. Only then is os.Args[1:] safe to use.
+			// A shallow append(..., os.Args[1:]...) before Set still aliases C memory.
+			proctitle.Set(proctitle.Runner)
 			return runner.Execute(os.Args[1:])
 		},
 		FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},

@@ -40,6 +40,7 @@ import (
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/tokenizer"
+	"github.com/ollama/ollama/x/proctitle"
 )
 
 // llmServer is an instance of a runner hosting a single model
@@ -338,6 +339,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 	}
 
 	cmd = exec.Command(exe, params...)
+	proctitle.SetRunnerArgv0(cmd)
 
 	cmd.Env = os.Environ()
 

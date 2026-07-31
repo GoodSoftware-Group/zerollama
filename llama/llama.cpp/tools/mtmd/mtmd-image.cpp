@@ -935,11 +935,23 @@ mtmd_image_preproc_out mtmd_image_preprocessor_dyn_size::preprocess(const clip_i
     const clip_image_size original_size = img.get_size();
     // the original pixtral model doesn't have n_merge
     const int cur_merge = hparams.n_merge;
-    const clip_image_size target_size = img_tool::calc_size_preserved_ratio(
-        original_size,
-        hparams.patch_size * cur_merge,
-        hparams.image_min_pixels,
-        hparams.image_max_pixels);
+    clip_image_size target_size;
+    if (has_grid_hint && grid_thw[1] > 0 && grid_thw[2] > 0) {
+        // Client [T,H,W] is patch grid → pixel size = H*patch × W*patch (skip smart_resize).
+        target_size = {
+            grid_thw[2] * hparams.patch_size,
+            grid_thw[1] * hparams.patch_size,
+        };
+        LOG_INF("grid_thw hint resize: %d x %d (grid H=%d W=%d patch=%d)\n",
+                target_size.width, target_size.height,
+                (int)grid_thw[1], (int)grid_thw[2], hparams.patch_size);
+    } else {
+        target_size = img_tool::calc_size_preserved_ratio(
+            original_size,
+            hparams.patch_size * cur_merge,
+            hparams.image_min_pixels,
+            hparams.image_max_pixels);
+    }
     img_tool::resize(img, resized_image, target_size,
                         hparams.image_resize_algo,
                         hparams.image_resize_pad,

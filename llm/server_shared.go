@@ -252,8 +252,8 @@ type CompletionRequest struct {
 	// CacheReset forces a miss under the same PromptCacheKey for this request.
 	CacheReset bool `json:"cache_reset,omitempty"`
 	// SessionViTOverlay enables SGLang-style per-thread ViT embed pinning (see modality.SessionViTOverlayEnabled).
-	SessionViTOverlay   bool `json:"session_vit_overlay,omitempty"`
-	Gemma4PaddedMedia   Gemma4PaddedMediaSchedule `json:"gemma4_padded_media,omitempty"`
+	SessionViTOverlay bool                      `json:"session_vit_overlay,omitempty"`
+	Gemma4PaddedMedia Gemma4PaddedMediaSchedule `json:"gemma4_padded_media,omitempty"`
 
 	Grammar         string
 	Shift           bool
@@ -278,6 +278,10 @@ const (
 	DoneReasonStop DoneReason = iota
 	DoneReasonLength
 	DoneReasonConnectionClosed
+	// DoneReasonPreempted: scheduler soft-cancelled an in-flight decode
+	// (M15f MLX interactive-over-background). Distinct from ConnectionClosed
+	// (client disconnect) so Hermes can retry instead of treating output as final.
+	DoneReasonPreempted
 )
 
 func (d DoneReason) String() string {
@@ -286,6 +290,8 @@ func (d DoneReason) String() string {
 		return "length"
 	case DoneReasonStop:
 		return "stop"
+	case DoneReasonPreempted:
+		return "preempted"
 	default:
 		return ""
 	}
@@ -302,22 +308,24 @@ type Logprob struct {
 }
 
 type CompletionResponse struct {
-	Content               string        `json:"content"`
-	DoneReason            DoneReason    `json:"done_reason"`
-	Done                  bool          `json:"done"`
-	PrefillProcessed      int           `json:"prefill_processed,omitempty"`
-	PrefillTotal          int           `json:"prefill_total,omitempty"`
-	PromptEvalCount       int           `json:"prompt_eval_count"`
-	PromptEvalCachedCount int           `json:"prompt_eval_cached_count,omitempty"`
+	Content    string     `json:"content"`
+	DoneReason DoneReason `json:"done_reason"`
+	Done       bool       `json:"done"`
+	// PreemptedReason explains DoneReasonPreempted (e.g. lower_wait_interactive).
+	PreemptedReason       string `json:"preempted_reason,omitempty"`
+	PrefillProcessed      int    `json:"prefill_processed,omitempty"`
+	PrefillTotal          int    `json:"prefill_total,omitempty"`
+	PromptEvalCount       int    `json:"prompt_eval_count"`
+	PromptEvalCachedCount int    `json:"prompt_eval_cached_count,omitempty"`
 	// HiCache-shaped tiers (SGLang sglext); device is PromptEvalCachedCount.
 	PromptEvalCachedHost           int    `json:"prompt_eval_cached_host,omitempty"`
 	PromptEvalCachedStorage        int    `json:"prompt_eval_cached_storage,omitempty"`
 	PromptEvalCachedStorageBackend string `json:"cached_tokens_storage_backend,omitempty"`
 	// PromptEvalCacheCreationCount — tokens newly written to prefix cache this turn.
-	PromptEvalCacheCreationCount int `json:"prompt_eval_cache_creation_count,omitempty"`
-	PromptEvalDuration             time.Duration `json:"prompt_eval_duration"`
-	EvalCount                      int           `json:"eval_count"`
-	EvalDuration                   time.Duration `json:"eval_duration"`
+	PromptEvalCacheCreationCount int           `json:"prompt_eval_cache_creation_count,omitempty"`
+	PromptEvalDuration           time.Duration `json:"prompt_eval_duration"`
+	EvalCount                    int           `json:"eval_count"`
+	EvalDuration                 time.Duration `json:"eval_duration"`
 
 	// Why: clients need an explicit overflow signal; logs alone left silent 200s.
 	PromptTruncated      bool `json:"prompt_truncated,omitempty"`
@@ -328,9 +336,6 @@ type CompletionResponse struct {
 	// Tokens is the sampled prompt+generated id list when the runner provides
 	// it (MLX Done chunk). Prefer over re-tokenizing response text (F0686).
 	Tokens []int `json:"tokens,omitempty"`
-
-	// PreemptedReason explains done_reason=preempted (M15f soft mid-stream preempt).
-	PreemptedReason string `json:"preempted_reason,omitempty"`
 
 	Image      string `json:"image,omitempty"`
 	Step       int    `json:"step,omitempty"`

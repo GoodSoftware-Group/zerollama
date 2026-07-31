@@ -26,6 +26,7 @@ import (
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/x/imagegen/manifest"
+	"github.com/ollama/ollama/x/proctitle"
 )
 
 // Server wraps an MLX runner subprocess to implement llm.LlamaServer.
@@ -114,6 +115,7 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 
 	// Spawn subprocess: ollama runner --imagegen-engine --model <path> --port <port>
 	cmd := exec.Command(exe, "runner", "--imagegen-engine", "--model", s.modelName, "--port", strconv.Itoa(port))
+	proctitle.SetRunnerArgv0(cmd)
 	cmd.Env = os.Environ()
 	configureMLXSubprocessEnv(cmd, ml.LibraryPaths(gpus))
 
