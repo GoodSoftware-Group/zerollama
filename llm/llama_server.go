@@ -1261,6 +1261,18 @@ func appendMTPDraftArgs(params []string, serverBin string, config LlamaServerCon
 	if config.DraftModelPath != "" {
 		params = append(params, "--spec-draft-model", config.DraftModelPath)
 	}
+	// The cross-request LRU prompt cache (server_prompt_cache, default on)
+	// checkpoints and restores the MTP draft context's KV state
+	// (llama_state_seq_get/set_data_ext on ctx_dft) independently from the
+	// target context. On long multi-turn conversations this restore desyncs
+	// the NextN draft layer's position/state from the target model: draft
+	// acceptance collapses to ~0% and generation degenerates into
+	// multilingual token salad (observed at ~27k context, qwen3.6 MTP,
+	// 2026-07-30). Disabling the LRU prompt cache for MTP runners avoids the
+	// buggy save/restore path; per-slot cache_prompt/n_cache_reuse (KV
+	// shifting within a single slot) is untouched and still speeds up
+	// single-conversation continuation.
+	params = append(params, "--cache-ram", "0")
 	return params
 }
 
