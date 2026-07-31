@@ -9,7 +9,7 @@ Subject: [PATCH] ollama: add C API for mtmd_input_text (b9611 port)
  2 files changed, 13 insertions(+)
 
 diff --git a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
-index 6e61cf3e5..202e8be19 100644
+index 93ca8cbcf..f5d54736b 100644
 --- a/tools/mtmd/mtmd.cpp
 +++ b/tools/mtmd/mtmd.cpp
 @@ -228,6 +228,16 @@ const char * mtmd_default_marker() {

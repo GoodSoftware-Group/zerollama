@@ -12,10 +12,10 @@ Subject: [PATCH] ollama: kv seq-copy endpoint (Radix L3 v1)
  5 files changed, 117 insertions(+)
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 7b668f2f9..b82aa4e25 100644
+index 8213a06cc..f9cb55d48 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2644,6 +2644,53 @@ private:
+@@ -2690,6 +2690,53 @@ private:
                      res->n_erased = n_erased;
                      queue_results.send(std::move(res));
                  } break;
@@ -69,7 +69,7 @@ index 7b668f2f9..b82aa4e25 100644
              case SERVER_TASK_TYPE_GET_LORA:
                  {
                      // TODO @ngxson : make lora_adapters a dedicated member of server_context
-@@ -4538,6 +4585,10 @@ void server_routes::init_routes() {
+@@ -4575,6 +4622,10 @@ void server_routes::init_routes() {
          return res;
      };
  
@@ -80,7 +80,7 @@ index 7b668f2f9..b82aa4e25 100644
      this->get_props = [this](const server_http_req &) {
          auto res = create_response(true);
  
-@@ -5214,6 +5265,45 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
+@@ -5251,6 +5302,45 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
      return res;
  }
  
@@ -147,7 +147,7 @@ index f9ab1132b..76763e27b 100644
      std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);
  
 diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
-index 1fd7cce27..ea5b62992 100644
+index 070f1ade2..e472408f9 100644
 --- a/tools/server/server-task.cpp
 +++ b/tools/server/server-task.cpp
 @@ -1601,6 +1601,19 @@ json server_task_result_slot_erase::to_json() {
@@ -171,7 +171,7 @@ index 1fd7cce27..ea5b62992 100644
  // server_task_result_get_lora
  //
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
-index c3eea2ecb..f56a01984 100644
+index 411d91807..68913bd08 100644
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
 @@ -25,6 +25,7 @@ enum server_task_type {

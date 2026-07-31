@@ -50,7 +50,7 @@ index 4d3779f77..a3f31d9f9 100644
 +    return res;
 +}
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 4028f7aee..2b58a25ee 100644
+index 573876b72..b37c098b5 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -168,6 +168,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_opt_step_
@@ -62,10 +62,10 @@ index 4028f7aee..2b58a25ee 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_pad(
          ggml_metal_library_t lib,
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 05e2ce53d..251997949 100644
+index e01a0f1b0..6658db815 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1220,6 +1220,15 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1254,6 +1254,15 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     op->src[1]->type == GGML_TYPE_F32;
          case GGML_OP_SUM:
              return has_simdgroup_reduction && ggml_is_contiguous(op->src[0]);

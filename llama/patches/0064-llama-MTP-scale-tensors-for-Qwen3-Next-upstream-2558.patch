@@ -12,10 +12,10 @@ KV filters to include QWEN3NEXT.
  2 files changed, 281 insertions(+), 54 deletions(-)
 
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index be0a0df55..f709173d5 100644
+index 5e501f983..856db6a65 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -2092,11 +2092,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2142,11 +2142,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
          // checks
          default:
              {
@@ -30,7 +30,7 @@ index be0a0df55..f709173d5 100644
  
                  if (llm_arch_is_recurrent(arch)) {
                      res = new llama_memory_recurrent(
-@@ -2108,7 +2108,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2158,7 +2158,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                              cparams.n_seq_max,
                              cparams.n_rs_seq,
                              nullptr);
@@ -39,7 +39,7 @@ index be0a0df55..f709173d5 100644
                      // The main difference between hybrid architectures is the
                      // layer filters, so pick the right one here
                      llama_memory_hybrid::layer_filter_cb filter_attn = nullptr;
-@@ -2123,7 +2123,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2173,7 +2173,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                          filter_recr = [&](uint32_t il) {
                              return hparams.is_recr(il) && hparams.n_ff(il) == 0;
                          };
@@ -48,7 +48,7 @@ index be0a0df55..f709173d5 100644
                          filter_attn = [&](uint32_t il) {
                              return il < hparams.n_layer() && !hparams.is_recr(il);
                          };
-@@ -2189,7 +2189,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+@@ -2239,7 +2239,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
                          };
                      }
  

@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: nobody <>
-Date: Fri, 17 Jul 2026 09:47:46 -0700
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 17:56:23 -0700
 Subject: [PATCH] ggml: fix QJL OP_COUNT assert and TBQ quants corruption
 
 ---
@@ -10,11 +10,11 @@ Subject: [PATCH] ggml: fix QJL OP_COUNT assert and TBQ quants corruption
  3 files changed, 11 insertions(+), 75 deletions(-)
 
 diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
-index 16ca33947..d4135b33c 100644
+index 276aea00e..640c1300f 100644
 --- a/ggml/include/ggml-rpc.h
 +++ b/ggml/include/ggml-rpc.h
 @@ -11,7 +11,7 @@ extern "C" {
- #define RPC_PROTO_PATCH_VERSION    3
+ #define RPC_PROTO_PATCH_VERSION    0
  
  #ifdef  __cplusplus
 -static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
@@ -124,7 +124,7 @@ index de23e5dfc..d47156b15 100644
  
  void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index a453fcf45..dcd0f0fee 100644
+index 149aeb08f..b56734997 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -1165,7 +1165,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {

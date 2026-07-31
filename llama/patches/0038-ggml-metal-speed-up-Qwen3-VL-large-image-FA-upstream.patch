@@ -45,7 +45,7 @@ index ec02a2553..659b92d39 100644
      snprintf(name, 256, "%s_mask=%d_sinks=%d_bias=%d_scap=%d_kvpad=%d_bcm=%d_ns10=%d_ns20=%d_nsg=%d",
              base,
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index d0956df50..1f9fe31c0 100644
+index 91b841b67..2d4a1c983 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -187,6 +187,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att

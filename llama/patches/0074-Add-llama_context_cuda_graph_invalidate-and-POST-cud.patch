@@ -35,10 +35,10 @@ index 1cd81eeae..34a840a22 100644
  
  #ifdef  __cplusplus
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 12ecb9614..3b0da1d50 100644
+index badb7916b..cca64a889 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -5459,6 +5459,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
+@@ -5475,6 +5475,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
      if (strcmp(name, "ggml_backend_get_features") == 0) {
          return (void *)ggml_backend_cuda_get_features;
      }
@@ -48,7 +48,7 @@ index 12ecb9614..3b0da1d50 100644
      return nullptr;
  }
  
-@@ -5539,6 +5542,28 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+@@ -5555,6 +5558,28 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
      return &reg;
  }
  
@@ -78,7 +78,7 @@ index 12ecb9614..3b0da1d50 100644
      if (device < 0 || device >= ggml_backend_cuda_get_device_count()) {
          GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
 diff --git a/include/llama.h b/include/llama.h
-index 3c6d22be8..5296735cb 100644
+index a3ceecf5e..c675be87f 100644
 --- a/include/llama.h
 +++ b/include/llama.h
 @@ -1006,6 +1006,11 @@ extern "C" {
@@ -94,10 +94,10 @@ index 3c6d22be8..5296735cb 100644
      // This is automatically done when using one of the functions below to obtain the computation results
      // and is not necessary to call it explicitly in most cases
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 80bbb93b4..81052d1c3 100644
+index ab6ab7495..bd4a8c576 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -3700,6 +3700,43 @@ int32_t llama_n_threads_batch(llama_context * ctx) {
+@@ -3712,6 +3712,43 @@ int32_t llama_n_threads_batch(llama_context * ctx) {
      return ctx->n_threads_batch();
  }
  
@@ -142,10 +142,10 @@ index 80bbb93b4..81052d1c3 100644
      ctx->set_abort_callback(abort_callback, abort_callback_data);
  }
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index e58e174a5..15cccd5d2 100644
+index c192dfc4d..1d0566d2c 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2782,6 +2782,18 @@ private:
+@@ -2828,6 +2828,18 @@ private:
                      res->n_tokens_copied = n_copy;
                      queue_results.send(std::move(res));
                  } break;
@@ -164,7 +164,7 @@ index e58e174a5..15cccd5d2 100644
              case SERVER_TASK_TYPE_GET_LORA:
                  {
                      // TODO @ngxson : make lora_adapters a dedicated member of server_context
-@@ -4680,6 +4692,10 @@ void server_routes::init_routes() {
+@@ -4717,6 +4729,10 @@ void server_routes::init_routes() {
          return handle_kv_seq_copy(req);
      };
  
@@ -175,7 +175,7 @@ index e58e174a5..15cccd5d2 100644
      this->get_props = [this](const server_http_req &) {
          auto res = create_response(true);
  
-@@ -5395,6 +5411,29 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
+@@ -5432,6 +5448,29 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
      return res;
  }
  
@@ -226,7 +226,7 @@ index 76763e27b..56c835075 100644
      std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);
  
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
-index f56a01984..6b05c282e 100644
+index 68913bd08..6f8a6bdfe 100644
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
 @@ -26,6 +26,7 @@ enum server_task_type {

@@ -363,12 +363,15 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
                 ggml_backend_tensor_copy(pf.src_v, pf.dst_v);
             }
         }
-        // Preserve MSA indexer tensors (k_idx); COW currently forks K/V only.
-        ggml_tensor * k_idx = old_layer.k_idx;
-        auto k_idx_stream = old_layer.k_idx_stream;
+        // Preserve k_idx / k_idx_stream (MSA indexer); COW currently forks K/V only.
         layers[pf.li] = {
-            pf.il, pf.dst_k, pf.dst_v, k_idx,
-            std::move(pf.k_stream), std::move(pf.v_stream), std::move(k_idx_stream),
+            pf.il,
+            pf.dst_k,
+            pf.dst_v,
+            old_layer.k_idx,
+            std::move(pf.k_stream),
+            std::move(pf.v_stream),
+            old_layer.k_idx_stream,
         };
     }
     for (auto & nb : new_bufs) {

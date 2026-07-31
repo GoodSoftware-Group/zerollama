@@ -86,10 +86,10 @@ index ab7a3b297..6d92e1b53 100644
      if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
          if (can_use_vector_kernel) {
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index f5f3352c0..12ecb9614 100644
+index 2e5374b6a..badb7916b 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -4967,6 +4967,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -4983,6 +4983,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_IQ1_S:
                      case GGML_TYPE_IQ1_M:
                      case GGML_TYPE_IQ4_XS:
@@ -98,7 +98,7 @@ index f5f3352c0..12ecb9614 100644
                          return true;
                      case GGML_TYPE_IQ4_NL:
                      case GGML_TYPE_MXFP4:
-@@ -4987,7 +4989,15 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -5003,7 +5005,15 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                             (
                                 (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16 ||
                                 op->type == GGML_TYPE_Q4_0 || op->type == GGML_TYPE_Q4_1 || op->type == GGML_TYPE_Q5_0 ||

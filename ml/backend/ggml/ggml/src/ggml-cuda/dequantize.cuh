@@ -129,6 +129,8 @@ static __device__ __forceinline__ void dequantize_fp8_e4m3(const void * vx, cons
 
     v.x *= d;
     v.y *= d;
+}
+
 //================================== k-quants
 
 // Each call dequantizes one super-block of QK_K values into y using the

@@ -5626,7 +5626,7 @@ index 000000000..a270ea5ea
 +    1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f,
 +};
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 1b35cb4ef..a453fcf45 100644
+index f7fa6dae3..149aeb08f 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -952,42 +952,56 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
@@ -5686,7 +5686,7 @@ index 1b35cb4ef..a453fcf45 100644
      },
  };
  
-@@ -8183,6 +8197,13 @@ size_t ggml_quantize_chunk(
+@@ -8185,6 +8199,13 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

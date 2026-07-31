@@ -27,10 +27,10 @@ index 6d3cf3eb9..81374f218 100644
          {"-cms", "--checkpoint-min-step"}, "N",
          string_format("minimum spacing between context checkpoints in tokens (default: %d, 0 = no minimum)", params.checkpoint_min_step),
 diff --git a/common/common.h b/common/common.h
-index 279252183..46b879635 100644
+index 919c0ea10..779ed1bfe 100644
 --- a/common/common.h
 +++ b/common/common.h
-@@ -623,6 +623,7 @@ struct common_params {
+@@ -620,6 +620,7 @@ struct common_params {
      bool    cache_idle_slots    = true;  // save and clear idle slots upon starting a new task
      int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
      int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints

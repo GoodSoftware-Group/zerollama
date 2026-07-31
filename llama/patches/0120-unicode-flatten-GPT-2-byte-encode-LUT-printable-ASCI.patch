@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 04:10:00 -0700
+Subject: [PATCH] unicode: flatten GPT-2 byte-encode LUT + printable ASCII skip
+ (0117)
+
+Replace per-byte unordered_map/string += with a flat enc table and
+skip remapping for words that are only 0x21..0x7E. ~1.33x on Qwen/GPT-2
+ASCII megaprompts; identity vs LLAMA_BPE_NO_BYTE_ENC_FAST. See
+docs/faster-bpe-tokenize.md (M15d / 0117).
+---
+ src/unicode.cpp | 62 +++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 57 insertions(+), 5 deletions(-)
+
+diff --git a/src/unicode.cpp b/src/unicode.cpp
+index a0380d28a..21453e570 100644
+--- a/src/unicode.cpp
++++ b/src/unicode.cpp
+@@ -196,16 +196,68 @@ static std::unordered_map<std::string, uint8_t> unicode_utf8_to_byte_map() {
+ }
+ 
+ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<std::string> & bpe_words) {
+-    // WHY: previous code decoded each word to codepoints then re-encoded to the same UTF-8
+-    // (identity roundtrip) before GPT-2 byte remapping — pure waste on the megaprompt path.
+-    // Words here were just built from unicode_cpt_to_utf8, so they are valid UTF-8.
++    // WHY (0117): stock did unordered_map lookup + temporary std::string per byte, then
++    // `+=` into the output. Printable ASCII 0x21..0x7E maps to itself (1-byte UTF-8) —
++    // those words are identity. Flattened LUT + append(len) for the rest.
++    // LLAMA_BPE_NO_BYTE_ENC_FAST=1 keeps the old map+= path for identity A/B.
++    if (getenv("LLAMA_BPE_NO_BYTE_ENC_FAST") != nullptr) {
++        std::vector<std::string> bpe_encoded_words;
++        bpe_encoded_words.reserve(bpe_words.size());
++        for (const auto & word : bpe_words) {
++            std::string encoded_token;
++            encoded_token.reserve(word.size() * 2);
++            for (unsigned char c : word) {
++                encoded_token += unicode_byte_to_utf8(c);
++            }
++            bpe_encoded_words.emplace_back(std::move(encoded_token));
++        }
++        return bpe_encoded_words;
++    }
++
++    struct enc {
++        char    d[4];
++        uint8_t n;
++    };
++    static enc table[256];
++    static bool init = false;
++    if (!init) {
++        const auto map = unicode_byte_to_utf8_map();
++        for (int ch = 0; ch < 256; ++ch) {
++            const std::string & s = map.at((uint8_t) ch);
++            enc & e = table[ch];
++            e.n = (uint8_t) s.size();
++            assert(e.n <= 4);
++            for (uint8_t i = 0; i < e.n; ++i) {
++                e.d[i] = s[i];
++            }
++        }
++        for (int ch = 0x21; ch <= 0x7E; ++ch) {
++            assert(table[ch].n == 1 && table[ch].d[0] == (char) ch);
++        }
++        init = true;
++    }
++
++    auto word_is_printable_ascii = [](const std::string & word) -> bool {
++        for (unsigned char c : word) {
++            if (c < 0x21u || c > 0x7Eu) {
++                return false;
++            }
++        }
++        return true;
++    };
++
+     std::vector<std::string> bpe_encoded_words;
+     bpe_encoded_words.reserve(bpe_words.size());
+     for (const auto & word : bpe_words) {
++        if (word_is_printable_ascii(word)) {
++            bpe_encoded_words.push_back(word);
++            continue;
++        }
+         std::string encoded_token;
+-        encoded_token.reserve(word.size() * 2); // remapped bytes are often 2-byte UTF-8
++        encoded_token.reserve(word.size() * 2);
+         for (unsigned char c : word) {
+-            encoded_token += unicode_byte_to_utf8(c);
++            const enc & e = table[c];
++            encoded_token.append(e.d, e.n);
+         }
+         bpe_encoded_words.emplace_back(std::move(encoded_token));
+     }

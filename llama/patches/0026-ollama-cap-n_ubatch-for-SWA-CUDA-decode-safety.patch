@@ -8,7 +8,7 @@ Subject: [PATCH] ollama: cap n_ubatch for SWA CUDA decode safety
  1 file changed, 12 insertions(+)
 
 diff --git a/common/common.cpp b/common/common.cpp
-index 82dd780fd..1c8ad28ea 100644
+index 1a0aeef4e..e410465a3 100644
 --- a/common/common.cpp
 +++ b/common/common.cpp
 @@ -1309,6 +1309,18 @@ common_init_result::common_init_result(common_params & params, bool model_only)

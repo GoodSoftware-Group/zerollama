@@ -105,7 +105,7 @@ index 8822ab3e7..433f97771 100644
              dv);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 1f9fe31c0..ed30128a5 100644
+index 2d4a1c983..a9c932e6a 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -173,6 +173,9 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att

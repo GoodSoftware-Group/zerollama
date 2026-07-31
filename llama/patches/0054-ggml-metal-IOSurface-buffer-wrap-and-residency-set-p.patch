@@ -78,7 +78,7 @@ index d3f9e61ca..349167d5e 100644
  
  if (GGML_METAL_NDEBUG)
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 2b58a25ee..137b53a84 100644
+index b37c098b5..a6b8f6477 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -298,6 +298,12 @@ void ggml_metal_device_rsets_rm (ggml_metal_device_t dev, ggml_metal_rset_t rset
@@ -103,7 +103,7 @@ index 2b58a25ee..137b53a84 100644
  void   ggml_metal_buffer_free     (ggml_metal_buffer_t buf);
  void * ggml_metal_buffer_get_base (ggml_metal_buffer_t buf);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 251997949..823308fff 100644
+index 6658db815..53a246d5b 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -5,6 +5,8 @@
@@ -128,7 +128,7 @@ index 251997949..823308fff 100644
      dispatch_group_t d_group;
  };
  
-@@ -582,6 +590,7 @@ ggml_metal_rsets_t ggml_metal_rsets_init(void) {
+@@ -607,6 +615,7 @@ ggml_metal_rsets_t ggml_metal_rsets_init(ggml_metal_device_t dev) {
  
      atomic_store_explicit(&res->d_stop, false, memory_order_relaxed);
      atomic_store_explicit(&res->d_loop, res->loops_per_s*res->keep_alive_s, memory_order_relaxed);
@@ -136,7 +136,7 @@ index 251997949..823308fff 100644
  
      res->d_group = dispatch_group_create();
  
-@@ -592,7 +601,8 @@ ggml_metal_rsets_t ggml_metal_rsets_init(void) {
+@@ -617,7 +626,8 @@ ggml_metal_rsets_t ggml_metal_rsets_init(ggml_metal_device_t dev) {
  #if defined(GGML_METAL_HAS_RESIDENCY_SETS)
          if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *)) {
                while (!atomic_load_explicit(&res->d_stop, memory_order_relaxed)) {
@@ -146,7 +146,7 @@ index 251997949..823308fff 100644
                        [res->lock lock];
  
                        for (int i = 0; i < (int) res->data.count; ++i) {
-@@ -1008,6 +1018,32 @@ void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev) {
+@@ -1042,6 +1052,32 @@ void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev) {
      atomic_store_explicit(&dev->rsets->d_loop, dev->rsets->loops_per_s*dev->rsets->keep_alive_s, memory_order_relaxed);
  }
  
@@ -179,7 +179,7 @@ index 251997949..823308fff 100644
  struct ggml_metal_event {
      void * obj; // id<MTLSharedEvent>
  
-@@ -1480,6 +1516,9 @@ struct ggml_metal_buffer {
+@@ -1514,6 +1550,9 @@ struct ggml_metal_buffer {
  
      // pointers to global device
      ggml_metal_device_t dev;
@@ -189,7 +189,7 @@ index 251997949..823308fff 100644
  };
  
  static void ggml_metal_log_allocated_size(id<MTLDevice> device, size_t size_aligned) {
-@@ -1745,6 +1784,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
+@@ -1780,6 +1819,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
      return res;
  }
  
@@ -227,7 +227,7 @@ index 251997949..823308fff 100644
  void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
      ggml_metal_device_rsets_rm(buf->dev, buf->rset);
  
-@@ -1762,6 +1832,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
+@@ -1797,6 +1867,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
  #endif
      }
  

@@ -226,10 +226,10 @@ index 3509eccfe..e44b208bc 100644
  
      for (size_t id = 0; id < devs.size(); id++) {
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 5fd97d73b..385f20432 100644
+index 30ec6cd67..56469f5f8 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -547,6 +547,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
+@@ -550,6 +550,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
      if (cparams.auto_fa) {
          resolve(llm_fused_op_flash_attn_probe, cparams.flash_attn);
          cparams.auto_fa = false;
@@ -328,7 +328,7 @@ index 6ef797ebb..323453851 100644
  
      size_t get_common_prefix(const server_tokens & b) const;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index b82aa4e25..94e521707 100644
+index f9cb55d48..099720a70 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -26,6 +26,50 @@
@@ -382,7 +382,7 @@ index b82aa4e25..94e521707 100644
  // fix problem with std::min and std::max
  #if defined(_WIN32)
  #define WIN32_LEAN_AND_MEAN
-@@ -1201,6 +1245,17 @@ private:
+@@ -1240,6 +1284,17 @@ private:
                  callback_state(SERVER_STATE_LOADING, {{"stage", "mmproj_model"}});
              }
  
@@ -400,7 +400,7 @@ index b82aa4e25..94e521707 100644
              if (!is_resume) {
                  mtmd_helper_log_set(common_log_default_callback, nullptr);
              }
-@@ -1773,6 +1828,20 @@ private:
+@@ -1819,6 +1874,20 @@ private:
              return false;
          }
  

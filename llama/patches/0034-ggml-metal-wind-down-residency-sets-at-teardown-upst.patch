@@ -9,10 +9,10 @@ Subject: [PATCH] ggml-metal: wind down residency sets at teardown (upstream
  1 file changed, 25 insertions(+), 3 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 4edd77c6f..e4e5309cf 100644
+index 7d2a68685..5d556e820 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -618,14 +618,36 @@ void ggml_metal_rsets_free(ggml_metal_rsets_t rsets) {
+@@ -652,14 +652,36 @@ void ggml_metal_rsets_free(ggml_metal_rsets_t rsets) {
          return;
      }
  

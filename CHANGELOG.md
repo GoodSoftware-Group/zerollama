@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Vendor rebase to ggml-org `5f55650a` (b10199+1) — Jul 2026
+
+**Why:** Track ggml-org master tip (~41 commits past b10159) while keeping the zerollama quilt (MTP think path, pretok, DCA, Eliza KV, server Radix).
+
+**What:**
+
+- `LLAMA_CPP_VERSION=5f55650a`, `LLAMA_CPP_COMMIT=5f55650a78f9…`, `Makefile.sync` → `vendor/llama-cpp-5f55650a` (`BUILD_NUMBER=10199`)
+- Rebased **131** Ollama/zerollama patches (`make -f Makefile.sync clean apply-patches` → **fail=0**); **dropped** absorbed CUDA Q2_0 **#25707** (old 0082); fixed corrupt DCA **0097** hunk header; resolved server/speculative/Metal/DCA/unicode path drift; **0127–0131** compile fixups (FP8 brace, Q5_K get_rows, COW/MSA kv-cache, pretok_blob decl, seq-copy/`load_mode` for #26221)
+- `./scripts/vendor/sync_vendor_llama.sh` → in-tree `llama/llama.cpp` + `ml/backend/ggml`
+- Lab binary: `/opt/zerollama/llama-server-5f55650a` (container CUDA `89-real`); MTP smoke on `:18082` (qwen3.6:27b, `--spec-type draft-mtp`, no mmproj) — content `"4"` with thinking off; thinking-on coherent, draft accept ~38–50%
+- Production `:2083` stays on `/opt/zerollama/llama-server-f95de977` until a separate cutover
+- `ZEROLLAMA_KEEP_BUILD=1` (default in container script) keeps failed CUDA build trees for incremental fixups; seq-copy verify glob fixed for `libllama-server-impl*`
+
 ### README demo GIF (Jul 2026)
 
 **Why:** Marketing backlog wanted a turn-1 vs turn-2 visual; CLI DX fields needed to show up outside a text table.

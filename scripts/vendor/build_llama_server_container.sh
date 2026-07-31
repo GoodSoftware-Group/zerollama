@@ -64,6 +64,7 @@ podman run --rm \
   -e ZEROLLAMA_SKIP_VENDOR_APPLY=1 \
   -e ZEROLLAMA_SKIP_PIN_CHECKOUT=1 \
   -e ZEROLLAMA_SKIP_BUILD_PROBES=1 \
+  -e ZEROLLAMA_KEEP_BUILD="${ZEROLLAMA_KEEP_BUILD:-1}" \
   -e ZEROLLAMA_BUILD_DIR=/llama.cpp/build \
   -e LLAMA_BUILD_UI=OFF \
   -e LLAMA_BUILD_WEBUI=OFF \
@@ -145,6 +146,7 @@ if [[ -x "${BIN}" ]]; then
   echo "OK: libggml-cuda fork KV + fused attn verified"
   if ! strings "${BIN}" | grep -q 'kv/seq-copy'; then
     _impl_ok=0
+    # WHY unquoted glob: quoted path+* is a literal filename, not a pattern.
     for _impl in "$(dirname "${BIN}")"/libllama-server-impl*; do
       if [[ -f "${_impl}" ]] && strings "${_impl}" | grep -q 'kv/seq-copy'; then
         _impl_ok=1

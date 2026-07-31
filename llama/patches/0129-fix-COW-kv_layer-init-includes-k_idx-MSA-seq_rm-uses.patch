@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 18:58:35 -0700
+Subject: [PATCH] fix: COW kv_layer init includes k_idx; MSA seq_rm uses
+ (*v_cells)
+
+---
+ src/llama-kv-cache.cpp | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 03198525d..6d6921cbe 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -363,7 +363,16 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
+                 ggml_backend_tensor_copy(pf.src_v, pf.dst_v);
+             }
+         }
+-        layers[pf.li] = { pf.il, pf.dst_k, pf.dst_v, std::move(pf.k_stream), std::move(pf.v_stream) };
++        // Preserve k_idx / k_idx_stream (MSA indexer); COW currently forks K/V only.
++        layers[pf.li] = {
++            pf.il,
++            pf.dst_k,
++            pf.dst_v,
++            old_layer.k_idx,
++            std::move(pf.k_stream),
++            std::move(pf.v_stream),
++            old_layer.k_idx_stream,
++        };
+     }
+     for (auto & nb : new_bufs) {
+         ctxs_bufs.emplace_back(std::move(nb));
+@@ -884,7 +893,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+                 continue;
+             }
+ 
+-            const auto & cells = v_cells[seq_to_stream[sid]];
++            const auto & cells = (*v_cells)[seq_to_stream[sid]];
+ 
+             const llama_pos pmin = cells.seq_pos_min(sid);
+             const llama_pos pmax = cells.seq_pos_max(sid);

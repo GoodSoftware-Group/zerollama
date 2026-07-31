@@ -1001,6 +1001,18 @@ func appendMMProjArgs(params []string, launch llamaServerLaunchConfig) []string 
 		return params
 	}
 
+	// Upstream llama.cpp does not support --mmproj together with --spec-type draft-mtp
+	// (CLIP load fails / generation corrupts). Prefer MTP text speed over vision for
+	// these loads; vision requests should use a non-MTP tag.
+	if llamaServerMTPActive(launch.config, launch.opts) {
+		slog.Info("skipping mmproj with draft-mtp (unsupported together)",
+			"model", launch.modelPath,
+			"projector", launch.projectors[0],
+			"spec_type", launch.config.SpecType,
+		)
+		return params
+	}
+
 	params = append(params, "--mmproj", launch.projectors[0])
 	if disable, reason := launch.mmprojOffloadDisabled(); disable {
 		slog.Info("disabling multimodal projector offload", "reason", reason, "model", launch.modelPath, "projector", launch.projectors[0])
@@ -1008,6 +1020,22 @@ func appendMMProjArgs(params []string, launch llamaServerLaunchConfig) []string 
 	}
 
 	return params
+}
+
+// llamaServerMTPActive reports whether launch args will enable draft-mtp.
+// Requires draft_num_predict > 0 so we do not skip mmproj without actually enabling MTP.
+func llamaServerMTPActive(config LlamaServerConfig, opts api.Options) bool {
+	if opts.DraftNumPredict <= 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(config.SpecType)) {
+	case "draft-mtp", "mtp":
+		return true
+	case "":
+		return config.EnableMTP || config.DraftModelPath != ""
+	default:
+		return false
+	}
 }
 
 func (launch llamaServerLaunchConfig) mmprojOffloadDisabled() (bool, string) {
@@ -1217,10 +1245,13 @@ func appendSpeculativeArgs(params []string, serverBin string, config LlamaServer
 }
 
 func appendMTPDraftArgs(params []string, serverBin string, config LlamaServerConfig, opts api.Options) []string {
-	if !config.EnableMTP && config.DraftModelPath == "" {
+	if opts.DraftNumPredict <= 0 {
 		return params
 	}
-	if opts.DraftNumPredict <= 0 {
+	spec := strings.ToLower(strings.TrimSpace(config.SpecType))
+	explicit := spec == "draft-mtp" || spec == "mtp"
+	// Explicit Modelfile/request SpecType, auto-detected embedded MTP, or external draft GGUF.
+	if !explicit && !config.EnableMTP && config.DraftModelPath == "" {
 		return params
 	}
 

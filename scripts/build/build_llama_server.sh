@@ -446,7 +446,10 @@ fi
 CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
 
 _acquire_llama_server_build_lock
-rm -rf "${BUILD}"
+# WHY KEEP_BUILD: failed CUDA builds wipe hours of objects; rebases iterate on late CXX errors.
+if [[ "${ZEROLLAMA_KEEP_BUILD:-0}" != "1" ]]; then
+  rm -rf "${BUILD}"
+fi
 # WHY stubs: link llama-server in devel containers / CI without libcuda.so.1 on LD path.
 CUDA_STUBS=""
 for _stub in /usr/local/cuda/lib64/stubs /usr/local/cuda/targets/x86_64-linux/lib/stubs; do
@@ -498,8 +501,11 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   "${CMAKE_EXTRA[@]}"
 
 cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
-  echo "error: llama-server build failed; cleaning ${BUILD}" >&2
-  rm -rf "${BUILD}"
+  echo "error: llama-server build failed${ZEROLLAMA_KEEP_BUILD:+; keeping ${BUILD} (ZEROLLAMA_KEEP_BUILD=1)}" >&2
+  if [[ "${ZEROLLAMA_KEEP_BUILD:-0}" != "1" ]]; then
+    echo "error: cleaning ${BUILD}" >&2
+    rm -rf "${BUILD}"
+  fi
   exit 1
 }
 

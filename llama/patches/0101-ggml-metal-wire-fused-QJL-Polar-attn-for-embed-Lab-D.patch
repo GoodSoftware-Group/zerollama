@@ -1,0 +1,431 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <nobody@localhost>
+Date: Sat, 25 Jul 2026 22:45:00 -0700
+Subject: [PATCH] ggml-metal: wire fused QJL+Polar attn for embed (Lab D1b)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claim GGML_OP_FUSED_ATTN_QJL_TBQ on Metal for Q4_POLAR V, project Q
+128→256, dispatch kernel_fused_attn_qjl_polar_f32, and append fused
+shaders into GGML_METAL_EMBED_LIBRARY. Aligns QJL block field names
+with ggml-common (signs/d).
+---
+ ggml/src/ggml-metal/CMakeLists.txt            |   8 +-
+ .../eliza-shipped/fused_attn_qjl_polar.metal  |  10 +-
+ .../eliza-shipped/qjl_set_rows.metal          |  26 ++++
+ ggml/src/ggml-metal/ggml-metal-device.cpp     |  21 +++
+ ggml/src/ggml-metal/ggml-metal-device.h       |   2 +
+ ggml/src/ggml-metal/ggml-metal-device.m       |  27 ++++
+ ggml/src/ggml-metal/ggml-metal-impl.h         |  16 ++
+ ggml/src/ggml-metal/ggml-metal-ops.cpp        | 139 ++++++++++++++++++
+ ggml/src/ggml-metal/ggml-metal-ops.h          |   3 +
+ ggml/src/ggml-metal/ggml-metal.cpp            |   4 +
+ 10 files changed, 250 insertions(+), 6 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
+index 7cc9d1c30..4c8ed3e83 100644
+--- a/ggml/src/ggml-metal/CMakeLists.txt
++++ b/ggml/src/ggml-metal/CMakeLists.txt
+@@ -47,6 +47,7 @@ if (GGML_METAL_EMBED_LIBRARY)
+     # JIT-compiled — so append the QJL encode body (projection + kernels) here.
+     # Skip duplicate includes/structs (block_qjl1_256 + kargs come from common/impl).
+     set(METALLIB_QJL_SET_ROWS "${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal")
++    set(METALLIB_FUSED_POLAR  "${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_polar.metal")
+ 
+     add_custom_command(
+         OUTPUT "${METALLIB_EMBED_ASM}"
+@@ -54,15 +55,18 @@ if (GGML_METAL_EMBED_LIBRARY)
+         COMMAND sed -e "/__embed_ggml-common.h__/r ${METALLIB_COMMON}"       -e "/__embed_ggml-common.h__/d"         < "${METALLIB_SOURCE}"           > "${METALLIB_SOURCE_EMBED_TMP}"
+         COMMAND sed -e "/\#include \"ggml-metal-impl.h\"/r ${METALLIB_IMPL}" -e "/\#include \"ggml-metal-impl.h\"/d" < "${METALLIB_SOURCE_EMBED_TMP}" > "${METALLIB_SOURCE_EMBED}"
+         # Lines 7-8: QJL_HEAD_DIM / QJL_PROJECTION_DIM. Skip PACKED_BYTES + duplicate
+-        # structs (11-30). From 32: comments + projection table + set_rows kernels.
++        # structs (11-30). From 32: comments + projection table + set_rows + qjl_project.
+         COMMAND sh -c "printf '%s\\n' '// ELIZA-QJL-SET-ROWS-EMBED' >> \"${METALLIB_SOURCE_EMBED}\" && sed -n '7,8p;32,\$p' \"${METALLIB_QJL_SET_ROWS}\" >> \"${METALLIB_SOURCE_EMBED}\""
++        # Fused QJL+Polar attn: skip includes/local block structs; keep HEAD_DIM + kernels.
++        # block_qjl1_256 / block_q4_polar / QK_POLAR come from embedded ggml-common.h.
++        COMMAND sh -c "printf '%s\\n' '// ELIZA-FUSED-ATTN-QJL-POLAR-EMBED' '#define HEAD_DIM 128' '#define POLAR_Q4_N_LEVELS 16' >> \"${METALLIB_SOURCE_EMBED}\" && sed -n '57,\$p' \"${METALLIB_FUSED_POLAR}\" >> \"${METALLIB_SOURCE_EMBED}\""
+         COMMAND echo ".section __DATA,__ggml_metallib"          >  "${METALLIB_EMBED_ASM}"
+         COMMAND echo ".globl _ggml_metallib_start"              >> "${METALLIB_EMBED_ASM}"
+         COMMAND echo "_ggml_metallib_start:"                    >> "${METALLIB_EMBED_ASM}"
+         COMMAND echo .incbin "\"${METALLIB_SOURCE_EMBED}\""     >> "${METALLIB_EMBED_ASM}"
+         COMMAND echo ".globl _ggml_metallib_end"                >> "${METALLIB_EMBED_ASM}"
+         COMMAND echo "_ggml_metallib_end:"                      >> "${METALLIB_EMBED_ASM}"
+-        DEPENDS ../ggml-common.h ggml-metal.metal ggml-metal-impl.h ${METALLIB_QJL_SET_ROWS}
++        DEPENDS ../ggml-common.h ggml-metal.metal ggml-metal-impl.h ${METALLIB_QJL_SET_ROWS} ${METALLIB_FUSED_POLAR}
+         COMMENT "Generate assembly for embedded Metal library"
+         VERBATIM
+     )
+diff --git a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
+index e8ce17b45..1ad528242 100644
+--- a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
++++ b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
+@@ -41,9 +41,11 @@ using namespace metal;
+ #define QJL_RESIDUAL_BYTES  (QK_POLAR / 8)
+ #define POLAR_Q4_N_LEVELS   16
+ 
++// Field names match ggml-common.h (signs + d) so embed and metallib share one ABI
++// with Metal SET_ROWS / CUDA fused_attn.
+ struct block_qjl1_256 {
+-    uint8_t  qs[QJL_PACKED_BYTES];
+-    ushort   norm_bf16;
++    uint8_t  signs[QJL_PACKED_BYTES];
++    ushort   d;
+ };
+ 
+ struct block_q4_polar {
+@@ -129,7 +131,7 @@ static inline float qjl_score_one_token(
+         device const block_qjl1_256 * pk_head,
+         float4 q0, float4 q1, uint t, float sm_scale, uint tid) {
+     device const block_qjl1_256 & blk = pk_head[t];
+-    uint bits  = blk.qs[tid];
++    uint bits  = blk.signs[tid];
+     float4 s0 = float4(
+         float(int(((bits >> 0) & 1u) << 1) - 1),
+         float(int(((bits >> 1) & 1u) << 1) - 1),
+@@ -143,7 +145,7 @@ static inline float qjl_score_one_token(
+     float4 acc4 = fma(q0, s0, fma(q1, s1, float4(0.0f)));
+     float acc = acc4.x + acc4.y + acc4.z + acc4.w;
+     float dot_v = simd_sum(acc);
+-    return QJL_SCORE_SCALE * bf16_to_fp32(blk.norm_bf16) * dot_v * sm_scale;
++    return QJL_SCORE_SCALE * bf16_to_fp32(blk.d) * dot_v * sm_scale;
+ }
+ 
+ // Decode one block_q4_polar -> 128 real head-dim V values via v_buf, FMA into
+diff --git a/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal b/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
+index a637839ca..32686ab3d 100644
+--- a/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
++++ b/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
+@@ -4206,3 +4206,29 @@ template [[host_name("kernel_set_rows_f32_i64_qjl1_256")]] kernel void kernel_se
+         constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
+ template [[host_name("kernel_set_rows_f32_i32_qjl1_256")]] kernel void kernel_set_rows_qjl1_256_t<int>(
+         constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
++
++// Project Q head_dim→proj_dim for fused QJL attention (matches CUDA qjl_project_q).
++// Layout in/out: [n_q_pos][n_heads][dim] contiguous. Dispatch (ceil(proj/32), n_heads, n_q_pos)
++// with 32 threads along j.
++kernel void kernel_qjl_project_q_f32(
++        device const float * q                          [[buffer(0)]],
++        device       float * out                        [[buffer(1)]],
++        constant int & head_dim                         [[buffer(2)]],
++        constant int & proj_dim                         [[buffer(3)]],
++        constant int & n_heads                          [[buffer(4)]],
++        constant int & n_q_pos                          [[buffer(5)]],
++        uint3          tgpig                            [[threadgroup_position_in_grid]],
++        uint           tid                              [[thread_index_in_threadgroup]]) {
++    const int j  = int(tgpig.x) * 32 + int(tid);
++    const int hq = int(tgpig.y);
++    const int qp = int(tgpig.z);
++    if (j >= proj_dim || hq >= n_heads || qp >= n_q_pos) {
++        return;
++    }
++    device const float * qh = q + (ulong(qp) * ulong(n_heads) + ulong(hq)) * ulong(head_dim);
++    float acc = 0.0f;
++    for (int i = 0; i < head_dim; ++i) {
++        acc = fma(qh[i], qjl_projection_value(uint(i), uint(j)), acc);
++    }
++    out[(ulong(qp) * ulong(n_heads) + ulong(hq)) * ulong(proj_dim) + ulong(j)] = acc;
++}
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index 2727cf0f9..6cbd71ea0 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -646,6 +646,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla(ggml_metal_l
+     return res;
+ }
+ 
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fused_attn_qjl(ggml_metal_library_t lib, const ggml_tensor * op) {
++    GGML_ASSERT(op->op == GGML_OP_FUSED_ATTN_QJL_TBQ);
++    GGML_ASSERT(op->src[2] && op->src[2]->type == GGML_TYPE_Q4_POLAR);
++
++    const char * name = "kernel_fused_attn_qjl_polar_f32";
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++    }
++    return res;
++}
++
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_qjl_project_q(ggml_metal_library_t lib) {
++    const char * name = "kernel_qjl_project_q_f32";
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++    }
++    return res;
++}
++
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(ggml_metal_library_t lib, const ggml_tensor * op) {
+     char base[256];
+     char name[256];
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 0f9b16c13..89232c90a 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -135,6 +135,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv_
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan          (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv              (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gla               (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fused_attn_qjl    (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_qjl_project_q     (ggml_metal_library_t lib);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net   (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index 5fa8eb341..3b4cf31cd 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1498,6 +1498,33 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+                 const int64_t H = op->src[0]->ne[1];
+                 return op->src[4]->type == GGML_TYPE_F32 && C % H == 0 && (C / H == 64 || C / H == 128);
+             }
++        case GGML_OP_FUSED_ATTN_QJL_TBQ:
++            // Lab D1b — Metal fused QJL-K + Polar-V (TBQ-V stays CPU for now).
++            {
++                if (!has_simdgroup_reduction) {
++                    return false;
++                }
++                if (!op->src[0] || !op->src[1] || !op->src[2]) {
++                    return false;
++                }
++                if (op->src[0]->type != GGML_TYPE_F32 ||
++                    op->src[1]->type != GGML_TYPE_QJL1_256 ||
++                    op->src[2]->type != GGML_TYPE_Q4_POLAR ||
++                    op->type != GGML_TYPE_F32) {
++                    return false;
++                }
++                // head_dim 128 (project) or 256 (pre-sketched); K/V head dim 128
++                if ((op->src[0]->ne[0] != 128 && op->src[0]->ne[0] != 256) ||
++                    op->src[1]->ne[0] != 128 ||
++                    op->src[2]->ne[0] != 128 ||
++                    op->ne[0] != 128) {
++                    return false;
++                }
++                if (op->src[0]->ne[1] % op->src[1]->ne[2] != 0) {
++                    return false;
++                }
++                return true;
++            }
+         case GGML_OP_GATED_DELTA_NET:
+             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
+         case GGML_OP_SOLVE_TRI:
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index f6d41e2c8..b1078f66a 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -1075,6 +1075,22 @@ typedef struct {
+     uint64_t nb3;
+ } ggml_metal_kargs_set_rows;
+ 
++// Lab D1b — fused QJL-K + Polar-V attention (matches fused_attn_args in
++// eliza-shipped/fused_attn_qjl_polar.metal).
++typedef struct {
++    uint32_t head_dim;
++    uint32_t proj_dim;
++    uint32_t n_heads;
++    uint32_t n_kv_heads;
++    uint32_t n_q_pos;
++    uint32_t n_kv;
++    uint32_t kv_tile;
++    uint32_t v_use_qjl;
++    float    scale;
++    uint32_t causal;
++    uint32_t q_pos_base;
++} ggml_metal_kargs_fused_attn_qjl;
++
+ typedef struct {
+     int32_t  ne00;
+     int32_t  ne01;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 2337a6367..bde2d759a 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -461,6 +461,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+             {
+                 n_fuse = ggml_metal_op_flash_attn_ext(ctx, idx);
+             } break;
++        case GGML_OP_FUSED_ATTN_QJL_TBQ:
++            {
++                n_fuse = ggml_metal_op_fused_attn_qjl_tbq(ctx, idx);
++            } break;
+         case GGML_OP_SET:
+             {
+                 n_fuse = ggml_metal_op_set(ctx, idx);
+@@ -2994,6 +2998,141 @@ size_t ggml_metal_op_flash_attn_ext_extra_q8_f16(const ggml_tensor * op) {
+     return k_size + v_size;
+ }
+ 
++size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const ggml_tensor * op) {
++    assert(op->op == GGML_OP_FUSED_ATTN_QJL_TBQ);
++    if (!op->src[0] || op->src[0]->ne[0] != 128) {
++        return 0;
++    }
++    // [n_q_pos][n_heads][256] f32 sketch scratch after dst nbytes
++    const int64_t n_heads = op->src[0]->ne[1];
++    const int64_t n_q_pos = op->src[0]->ne[2];
++    const int64_t ne3     = op->src[0]->ne[3];
++    return (size_t) n_q_pos * (size_t) n_heads * 256u * sizeof(float) * (size_t) ne3;
++}
++
++int ggml_metal_op_fused_attn_qjl_tbq(ggml_metal_op_t ctx, int idx) {
++    ggml_tensor * op = ctx->node(idx);
++
++    GGML_ASSERT(op->op == GGML_OP_FUSED_ATTN_QJL_TBQ);
++    GGML_ASSERT(op->src[0] && op->src[1] && op->src[2]);
++    GGML_ASSERT(op->src[2]->type == GGML_TYPE_Q4_POLAR);
++
++    ggml_metal_library_t lib = ctx->lib;
++    ggml_metal_encoder_t enc = ctx->enc;
++
++    const ggml_tensor * q  = op->src[0];
++    const ggml_tensor * pk = op->src[1];
++    const ggml_tensor * pv = op->src[2];
++
++    const int32_t * params = (const int32_t *) op->op_params;
++    const int n_kv_heads = params[0];
++    union { int32_t i; float f; } scale_bits;
++    scale_bits.i = params[1];
++    const uint32_t v_use_qjl = (uint32_t) params[2];
++    const uint32_t kv_tile   = (uint32_t) params[3];
++    const uint32_t causal    = (uint32_t) params[4];
++    const uint32_t q_pos_base = (uint32_t) params[5];
++
++    const int n_heads = (int) q->ne[1];
++    const int n_q_pos = (int) q->ne[2];
++    const int n_kv    = (int) pk->ne[1];
++    const int64_t ne3 = q->ne[3];
++    const int head_dim = (int) q->ne[0];
++    const bool project_q = head_dim == 128;
++
++    GGML_ASSERT(n_kv_heads > 0);
++    GGML_ASSERT((n_heads % n_kv_heads) == 0);
++    GGML_ASSERT(pk->ne[0] == 128 && pv->ne[0] == 128 && op->ne[0] == 128);
++    GGML_ASSERT(pk->ne[2] == n_kv_heads && pv->ne[2] == n_kv_heads);
++    GGML_ASSERT(pv->ne[1] == n_kv);
++    GGML_ASSERT(op->ne[1] == n_heads && op->ne[2] == n_q_pos);
++    GGML_ASSERT(head_dim == 128 || head_dim == 256);
++
++    ggml_metal_buffer_id bid_q   = ggml_metal_get_buffer_id(q);
++    ggml_metal_buffer_id bid_pk  = ggml_metal_get_buffer_id(pk);
++    ggml_metal_buffer_id bid_pv  = ggml_metal_get_buffer_id(pv);
++    ggml_metal_buffer_id bid_dst = ggml_metal_get_buffer_id(op);
++
++    ggml_metal_buffer_id bid_sketch = bid_dst;
++    bid_sketch.offs += ggml_nbytes(op);
++
++    auto pipe_proj = project_q ? ggml_metal_library_get_pipeline_qjl_project_q(lib)
++                               : ggml_metal_pipeline_with_params{};
++    auto pipe_fused = ggml_metal_library_get_pipeline_fused_attn_qjl(lib, op);
++    if (!pipe_fused.pipeline) {
++        GGML_LOG_ERROR("%s: missing kernel_fused_attn_qjl_polar_f32\n", __func__);
++        return 0;
++    }
++    if (project_q && !pipe_proj.pipeline) {
++        GGML_LOG_ERROR("%s: missing kernel_qjl_project_q_f32\n", __func__);
++        return 0;
++    }
++
++    const int proj_dim = 256;
++    const size_t sketch_elems_i3 = (size_t) n_q_pos * (size_t) n_heads * (size_t) proj_dim;
++    const size_t sketch_bytes_i3 = sketch_elems_i3 * sizeof(float);
++
++    for (int64_t i3 = 0; i3 < ne3; ++i3) {
++        ggml_metal_buffer_id bid_q_i  = bid_q;
++        ggml_metal_buffer_id bid_pk_i = bid_pk;
++        ggml_metal_buffer_id bid_pv_i = bid_pv;
++        ggml_metal_buffer_id bid_o_i  = bid_dst;
++        ggml_metal_buffer_id bid_s_i  = bid_sketch;
++
++        bid_q_i.offs  += (size_t) i3 * q->nb[3];
++        bid_pk_i.offs += (size_t) i3 * pk->nb[3];
++        bid_pv_i.offs += (size_t) i3 * pv->nb[3];
++        bid_o_i.offs  += (size_t) i3 * op->nb[3];
++        bid_s_i.offs  += (size_t) i3 * sketch_bytes_i3;
++
++        ggml_metal_buffer_id bid_q_sketch = project_q ? bid_s_i : bid_q_i;
++
++        if (project_q) {
++            int hd = head_dim;
++            int pd = proj_dim;
++            int nh = n_heads;
++            int nq = n_q_pos;
++
++            ggml_metal_encoder_set_pipeline(enc, pipe_proj);
++            ggml_metal_encoder_set_buffer (enc, bid_q_i, 0);
++            ggml_metal_encoder_set_buffer (enc, bid_s_i, 1);
++            ggml_metal_encoder_set_bytes  (enc, &hd, sizeof(hd), 2);
++            ggml_metal_encoder_set_bytes  (enc, &pd, sizeof(pd), 3);
++            ggml_metal_encoder_set_bytes  (enc, &nh, sizeof(nh), 4);
++            ggml_metal_encoder_set_bytes  (enc, &nq, sizeof(nq), 5);
++            // (ceil(proj/32), n_heads, n_q_pos) groups × 32 threads
++            const int ntg_x = (proj_dim + 31) / 32;
++            ggml_metal_encoder_dispatch_threadgroups(enc, ntg_x, n_heads, n_q_pos, 32, 1, 1);
++            ggml_metal_op_concurrency_reset(ctx);
++        }
++
++        ggml_metal_kargs_fused_attn_qjl args = {
++            /*.head_dim   =*/ 128u,
++            /*.proj_dim   =*/ (uint32_t) proj_dim,
++            /*.n_heads    =*/ (uint32_t) n_heads,
++            /*.n_kv_heads =*/ (uint32_t) n_kv_heads,
++            /*.n_q_pos    =*/ (uint32_t) n_q_pos,
++            /*.n_kv       =*/ (uint32_t) n_kv,
++            /*.kv_tile    =*/ kv_tile,
++            /*.v_use_qjl  =*/ v_use_qjl,
++            /*.scale      =*/ scale_bits.f,
++            /*.causal     =*/ causal,
++            /*.q_pos_base =*/ q_pos_base,
++        };
++
++        ggml_metal_encoder_set_pipeline(enc, pipe_fused);
++        ggml_metal_encoder_set_buffer (enc, bid_q_sketch, 0);
++        ggml_metal_encoder_set_buffer (enc, bid_pk_i,     1);
++        ggml_metal_encoder_set_buffer (enc, bid_pv_i,     2);
++        ggml_metal_encoder_set_buffer (enc, bid_o_i,      3);
++        ggml_metal_encoder_set_bytes  (enc, &args, sizeof(args), 4);
++        ggml_metal_encoder_dispatch_threadgroups(enc, n_heads, n_q_pos, 1, 32, 1, 1);
++        ggml_metal_op_concurrency_reset(ctx);
++    }
++
++    return 1;
++}
++
+ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
+index 7372f2123..b3b2370bc 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -44,6 +44,8 @@ size_t ggml_metal_op_flash_attn_ext_extra_blk(const struct ggml_tensor * op);
+ size_t ggml_metal_op_flash_attn_ext_extra_tmp(const struct ggml_tensor * op);
+ size_t ggml_metal_op_flash_attn_ext_extra_q8_f16(const struct ggml_tensor * op);
+ 
++size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const struct ggml_tensor * op);
++
+ int ggml_metal_op_concat            (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_repeat            (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_acc               (ggml_metal_op_t ctx, int idx);
+@@ -72,6 +74,7 @@ int ggml_metal_op_mul_mat           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_mul_mat_id        (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_add_id            (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_flash_attn_ext    (ggml_metal_op_t ctx, int idx);
++int ggml_metal_op_fused_attn_qjl_tbq(ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_bin               (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_l2_norm           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_group_norm        (ggml_metal_op_t ctx, int idx);
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+index cb6bb8918..63f178051 100644
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -233,6 +233,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
+                 res += ggml_metal_op_flash_attn_ext_extra_tmp(tensor);
+                 res += ggml_metal_op_flash_attn_ext_extra_q8_f16(tensor);
+             } break;
++        case GGML_OP_FUSED_ATTN_QJL_TBQ:
++            {
++                res += ggml_metal_op_fused_attn_qjl_extra_q_sketch(tensor);
++            } break;
+         case GGML_OP_CUMSUM:
+         case GGML_OP_ARGSORT:
+             {

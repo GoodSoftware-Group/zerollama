@@ -1,16 +1,19 @@
-From 88cc99242fa7dc5a9323925924c88b6294f66453 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
 Date: Tue, 28 Jul 2026 20:00:00 -0700
 Subject: [PATCH] gguf dual chunk attention metadata keys
 
 gguf dual chunk attention metadata keys
-
 ---
+ gguf-py/gguf/constants.py   | 5 +++++
+ gguf-py/gguf/gguf_writer.py | 9 +++++++++
+ 2 files changed, 14 insertions(+)
+
 diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
-index c6a9e55e9..ba444a7b9 100644
+index 52ea2abfc..be8d25a16 100644
 --- a/gguf-py/gguf/constants.py
 +++ b/gguf-py/gguf/constants.py
-@@ -195,6 +195,11 @@ class Keys:
+@@ -198,6 +198,11 @@ class Keys:
          SHARED_KV_LAYERS             = "{arch}.attention.shared_kv_layers"
          SLIDING_WINDOW_PATTERN       = "{arch}.attention.sliding_window_pattern"
          TEMPERATURE_SCALE            = "{arch}.attention.temperature_scale"
@@ -23,10 +26,10 @@ index c6a9e55e9..ba444a7b9 100644
          class Indexer:
              HEAD_COUNT = "{arch}.attention.indexer.head_count"
 diff --git a/gguf-py/gguf/gguf_writer.py b/gguf-py/gguf/gguf_writer.py
-index 1e277f068..8f519a989 100644
+index 3aa4f049f..49adb311d 100644
 --- a/gguf-py/gguf/gguf_writer.py
 +++ b/gguf-py/gguf/gguf_writer.py
-@@ -1047,6 +1047,15 @@ class GGUFWriter:
+@@ -1066,6 +1066,15 @@ class GGUFWriter:
      def add_rope_scaling_yarn_beta_slow(self, value: float) -> None:
          self.add_float32(Keys.Rope.SCALING_YARN_BETA_SLOW.format(arch=self.arch), value)
  

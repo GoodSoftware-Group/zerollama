@@ -177,11 +177,6 @@ MTMD_API void                  mtmd_bitmap_free       (mtmd_bitmap * bitmap);
 // these getters/setters are dedicated functions, so you can for example calculate the hash of the image based on mtmd_bitmap_get_data()
 MTMD_API const char * mtmd_bitmap_get_id(const mtmd_bitmap * bitmap);
 MTMD_API void         mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id);
-// Optional per-bitmap [T,H,W] patch grid hint (SGLang / Qwen-VL M-RoPE).
-// When set, dyn_size preprocessors resize to W*patch × H*patch and skip smart_resize.
-// Pass nullptr (or non-positive H/W) to clear. Ignored by fixed-size / UHD preprocessors.
-// WHY keep for llama/llama.go CGO after ggml-org vendor syncs that drop the decl.
-MTMD_API void mtmd_bitmap_set_grid_hint(mtmd_bitmap * bitmap, const int32_t * grid_thw);
 
 // mtmd_bitmap lazy
 //

@@ -45,7 +45,7 @@ index 433f97771..811b96340 100644
      char base[256];
      char name[256];
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index ed30128a5..1863e73b1 100644
+index a9c932e6a..37e48b671 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -114,6 +114,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pool_2d
@@ -57,10 +57,10 @@ index ed30128a5..1863e73b1 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_concat            (ggml_metal_library_t lib, enum ggml_type tsrc);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary             (ggml_metal_library_t lib, const struct ggml_tensor * op);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index b92710cf5..db1126dcb 100644
+index 99a7c769e..5922e1d43 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1417,6 +1417,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1451,6 +1451,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
              }
          case GGML_OP_DIAG:
              return true;

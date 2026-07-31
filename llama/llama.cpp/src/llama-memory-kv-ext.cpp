@@ -745,6 +745,10 @@ int32_t llama_kv_ext_donor_buffer_status(
     return LLAMA_KV_EXT_UNSUPPORTED;
 }
 
+ggml_backend_buffer_t llama_kv_ext_donor_try_consume(size_t) {
+    return nullptr;
+}
+
 ggml_backend_buffer_t llama_kv_ext_donor_try_consume_dev(
         ggml_backend_dev_t, size_t, size_t) {
     return nullptr;

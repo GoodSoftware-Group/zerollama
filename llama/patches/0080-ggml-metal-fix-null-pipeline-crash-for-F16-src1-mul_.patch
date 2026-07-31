@@ -10,10 +10,10 @@ Subject: [PATCH] ggml-metal: fix null-pipeline crash for F16 src1 mul_mat
  2 files changed, 60 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index b70c373d3..827797aae 100644
+index 56d3c1607..252b2c6f4 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1389,9 +1389,53 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1423,9 +1423,53 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
          case GGML_OP_GATED_DELTA_NET:
              return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
          case GGML_OP_SOLVE_TRI:

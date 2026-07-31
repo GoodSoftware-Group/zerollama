@@ -12,10 +12,10 @@ Match copy_state_to (-1,-1 seq_rm/cp), verify pos_min, trim to pos_end, and clea
  1 file changed, 27 insertions(+), 6 deletions(-)
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 5b9109e11..e58e174a5 100644
+index 95d992f9a..c192dfc4d 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2738,15 +2738,36 @@ private:
+@@ -2784,15 +2784,36 @@ private:
                          break;
                      }
  

@@ -157,7 +157,35 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         extern const char ggml_metallib_start[];
         extern const char ggml_metallib_end[];
 
-        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
+        const size_t embed_size = (size_t) (ggml_metallib_end - ggml_metallib_start);
+        const unsigned char * embed = (const unsigned char *) ggml_metallib_start;
+        const bool is_metallib = embed_size >= 4 &&
+            embed[0] == 'M' && embed[1] == 'T' && embed[2] == 'L' && embed[3] == 'B';
+
+        // Zerollama's Mac build embeds a compiled default.metallib (plus
+        // eliza-shipped kernels). Upstream embeds UTF-8 Metal source. Loading
+        // MTLB bytes as NSString returns nil and newLibraryWithSource aborts,
+        // which makes bootstrap GPU discovery fall back to total_vram=0.
+        if (is_metallib) {
+            GGML_LOG_INFO("%s: loading embedded metallib (%zu bytes)\n", __func__, embed_size);
+            dispatch_data_t data = dispatch_data_create(
+                embed, embed_size, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+            library = [device newLibraryWithData:data error:&error];
+#if !__has_feature(objc_arc)
+            dispatch_release(data);
+#endif
+            if (error || library == nil) {
+                GGML_LOG_ERROR("%s: error loading embedded metallib: %s\n", __func__,
+                    error ? [[error description] UTF8String] : "nil library");
+                return nil;
+            }
+        } else {
+            src = [[NSString alloc] initWithBytes:embed length:embed_size encoding:NSUTF8StringEncoding];
+            if (src == nil) {
+                GGML_LOG_ERROR("%s: embedded Metal payload is neither metallib nor UTF-8 source\n", __func__);
+                return nil;
+            }
+        }
 #else
 
 #ifdef SWIFT_PACKAGE
@@ -239,6 +267,10 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #endif
 
         if (!library) {
+            if (src == nil) {
+                GGML_LOG_ERROR("%s: no Metal library source available\n", __func__);
+                return nil;
+            }
             @autoreleasepool {
                 // dictionary of preprocessor macros
                 NSMutableDictionary * prep = [NSMutableDictionary dictionary];
@@ -283,7 +315,9 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
         }
 
 #if GGML_METAL_EMBED_LIBRARY
-        [src release];
+        if (src != nil) {
+            [src release];
+        }
 #endif // GGML_METAL_EMBED_LIBRARY
 
         GGML_LOG_INFO("%s: loaded in %.3f sec\n", __func__, (ggml_time_us() - t_start) / 1e6);
@@ -652,7 +686,32 @@ struct ggml_metal_rsets {
     dispatch_group_t d_group;
 };
 
-ggml_metal_rsets_t ggml_metal_rsets_init(void) {
+#if defined(GGML_METAL_HAS_RESIDENCY_SETS)
+static void ggml_metal_dummy_work(ggml_metal_device_t dev) {
+    if (dev->mtl_queue == nil) {
+        return;
+    }
+
+    @autoreleasepool {
+        // perform a minimal dummy operation on the GPU
+        id<MTLBuffer> buf = [dev->mtl_device newBufferWithLength:1 options:MTLResourceStorageModePrivate];
+        id<MTLCommandBuffer> cmd_buf = [dev->mtl_queue commandBuffer];
+
+        {
+            id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
+
+            [encoder fillBuffer:buf range:NSMakeRange(0, 1) value:0];
+
+            [encoder endEncoding];
+        }
+
+        [cmd_buf commit];
+        [buf release];
+    }
+}
+#endif
+
+ggml_metal_rsets_t ggml_metal_rsets_init(ggml_metal_device_t dev) {
     ggml_metal_rsets_t res = calloc(1, sizeof(struct ggml_metal_rsets));
 
     res->lock = [[NSLock alloc] init];
@@ -706,6 +765,15 @@ ggml_metal_rsets_t ggml_metal_rsets_init(void) {
         }
 #endif
     });
+
+#if defined(GGML_METAL_HAS_RESIDENCY_SETS)
+    if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, *)) {
+        // workaround for residency set memory not being released if no GPU operation occurs
+        // https://developer.apple.com/forums/thread/839089
+        // https://github.com/ggml-org/llama.cpp/issues/25937
+        ggml_metal_dummy_work(dev);
+    }
+#endif
 
     return res;
 }
@@ -982,27 +1050,8 @@ ggml_metal_device_t ggml_metal_device_init(int device) {
                 GGML_LOG_ERROR("%s: error: failed to create library\n", __func__);
             }
 
-            // // ELIZA-METAL-BF16-LIBRARY-GATE (#11612)
-            // has_bfloat reflects GPU-family capability, but a precompiled
-            // (embedded) metallib built with MSL < 3.1 has every bf16 kernel
-            // #if'd out. Selecting a bf16 kernel that is not in the library
-            // fails pipeline creation at graph time. Gate has_bfloat on the
-            // library actually containing the bf16 mul_mm kernel.
-            if (dev->props.has_bfloat && dev->library) {
-                id<MTLFunction> bf16_probe = [dev->library->obj newFunctionWithName:@"kernel_mul_mm_bf16_f32"];
-                if (bf16_probe == nil) {
-                    GGML_LOG_WARN("%s: the Metal library does not contain bf16 kernels (compiled with MSL < 3.1?) - disabling bfloat support\n", __func__);
-                    dev->props.has_bfloat = false;
-                } else {
-#if !__has_feature(objc_arc)
-                    [bf16_probe release];
-#endif
-                    bf16_probe = nil;
-                }
-            }
-
             if (dev->props.use_residency_sets) {
-                dev->rsets = ggml_metal_rsets_init();
+                dev->rsets = ggml_metal_rsets_init(dev);
             } else {
                 dev->rsets = nil;
             }
@@ -1423,8 +1472,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                    (ggml_get_op_params_i32(op, 4) == 0) && (ggml_get_op_params_i32(op, 6) == 0);
         case GGML_OP_PAD_REFLECT_1D:
         case GGML_OP_TIMESTEP_EMBEDDING:
-        case GGML_OP_LEAKY_RELU:
             return op->src[0]->type == GGML_TYPE_F32;
+        case GGML_OP_LEAKY_RELU:
+            return op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16;
         case GGML_OP_ARGSORT:
         case GGML_OP_TOP_K:
         case GGML_OP_ARANGE:
@@ -1779,6 +1829,7 @@ static void ggml_metal_buffer_rset_free(ggml_metal_buffer_t buf) {
         if (buf->rset) {
             [buf->rset endResidency];
             [buf->rset removeAllAllocations];
+            [buf->rset commit];
             [buf->rset release];
         }
     }

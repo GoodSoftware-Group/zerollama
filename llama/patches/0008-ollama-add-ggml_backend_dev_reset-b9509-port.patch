@@ -72,10 +72,10 @@ index 9745fa29f..e48a857e5 100644
  
  // backend reg interface
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 74631c285..13e72d4a2 100644
+index 16cc5116c..e1d387ca0 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
-@@ -495,6 +495,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+@@ -497,6 +497,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
      /* .event_new            = */ NULL,
      /* .event_free           = */ NULL,
      /* .event_synchronize    = */ NULL,
@@ -84,10 +84,10 @@ index 74631c285..13e72d4a2 100644
  
  // CPU backend - backend (reg)
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index a47a1b732..cc9db21f3 100644
+index 86de614ca..0711e043d 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -5236,6 +5236,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+@@ -5252,6 +5252,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
      /* .event_new               = */ ggml_backend_cuda_device_event_new,
      /* .event_free              = */ ggml_backend_cuda_device_event_free,
      /* .event_synchronize       = */ ggml_backend_cuda_device_event_synchronize,
@@ -108,10 +108,10 @@ index a1003b3ac..69a60b726 100644
  
  // backend registry
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 5dcf4503b..a66388f23 100644
+index e32dd7a56..f47aa9797 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -18197,6 +18197,7 @@ static const struct ggml_backend_device_i ggml_backend_vk_device_i = {
+@@ -18268,6 +18268,7 @@ static const struct ggml_backend_device_i ggml_backend_vk_device_i = {
      /* .event_new            = */ ggml_backend_vk_device_event_new,
      /* .event_free           = */ ggml_backend_vk_device_event_free,
      /* .event_synchronize    = */ ggml_backend_vk_device_event_synchronize,

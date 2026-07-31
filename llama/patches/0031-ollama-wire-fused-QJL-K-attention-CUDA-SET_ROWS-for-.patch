@@ -11,7 +11,7 @@ Subject: [PATCH] ollama: wire fused QJL-K attention + CUDA SET_ROWS for
  3 files changed, 85 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 0f72c9f55..f5f3352c0 100644
+index 3ffbf3b54..2e5374b6a 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -25,6 +25,7 @@
@@ -22,7 +22,7 @@ index 0f72c9f55..f5f3352c0 100644
  #include "ggml-cuda/fwht.cuh"
  #include "ggml-cuda/getrows.cuh"
  #include "ggml-cuda/im2col.cuh"
-@@ -2394,6 +2395,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
+@@ -2408,6 +2409,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
          case GGML_OP_LIGHTNING_INDEXER:
              ggml_cuda_lightning_indexer(ctx, dst);
              break;
@@ -37,7 +37,7 @@ index 0f72c9f55..f5f3352c0 100644
          default:
              return false;
      }
-@@ -5254,6 +5263,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -5270,6 +5279,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
              return true;
          case GGML_OP_LIGHTNING_INDEXER:
              return ggml_cuda_lightning_indexer_supported(dev_ctx->device, op);

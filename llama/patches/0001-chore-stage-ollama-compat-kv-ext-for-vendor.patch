@@ -997,10 +997,10 @@ index 000000000..05760aa00
 +/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
 \ No newline at end of file
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index 18a8288ba..42649b1fb 100644
+index 15040e4af..4d4bd53a1 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
-@@ -73,6 +73,8 @@ target_link_libraries     (mtmd PRIVATE Threads::Threads)
+@@ -74,6 +74,8 @@ target_link_libraries     (mtmd PRIVATE Threads::Threads)
  target_include_directories(mtmd PUBLIC  .)
  target_include_directories(mtmd PRIVATE ../..)
  target_include_directories(mtmd PRIVATE ../../vendor)

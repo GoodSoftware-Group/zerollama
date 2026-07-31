@@ -12,7 +12,7 @@ heads' post-softmax weights in a chunk are below 1e-6.
  2 files changed, 31 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 823308fff..dbc779063 100644
+index 53a246d5b..6ce373322 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -227,6 +227,16 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {

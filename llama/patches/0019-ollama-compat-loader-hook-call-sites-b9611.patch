@@ -75,7 +75,7 @@ index 510586e96..5efcf96b6 100644
          if (use_mmap) {
              const auto & mapping = mappings.at(weight->idx);
 diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index 04614b93b..4f80a0230 100644
+index 11f9820ed..a1422aade 100644
 --- a/tools/mtmd/clip.cpp
 +++ b/tools/mtmd/clip.cpp
 @@ -10,6 +10,8 @@
@@ -87,7 +87,7 @@ index 04614b93b..4f80a0230 100644
  #include <algorithm>
  #include <cassert>
  #include <cmath>
-@@ -1089,6 +1091,11 @@ struct clip_model_loader {
+@@ -1093,6 +1095,11 @@ struct clip_model_loader {
  
          ctx_meta.reset(meta);
  
@@ -99,7 +99,7 @@ index 04614b93b..4f80a0230 100644
          const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
  
          // print gguf info
-@@ -2968,6 +2975,7 @@ struct clip_model_loader {
+@@ -3078,6 +3085,7 @@ struct clip_model_loader {
                      auto it_off = tensor_offset.find(t->name);
                      GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                      const size_t offset = it_off->second;
@@ -107,7 +107,7 @@ index 04614b93b..4f80a0230 100644
                      fin.seekg(offset, std::ios::beg);
                      if (!fin) {
                          throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
-@@ -4758,6 +4766,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
+@@ -4954,6 +4962,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
  }
  
  int clip_n_mmproj_embd(const struct clip_ctx * ctx) {

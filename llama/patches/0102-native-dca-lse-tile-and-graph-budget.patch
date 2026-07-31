@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 18:09:29 -0700
+Subject: [PATCH] native dca lse tile and graph budget
+
+---
+ ggml/src/ggml-cuda/fattn.cu     | 10 ++++++++++
+ ggml/src/ggml-cuda/fattn.cu.rej | 35 +++++++++++++++++++++++++++++++++
+ src/llama-context.cpp.rej       | 26 ++++++++++++++++++++++++
+ 3 files changed, 71 insertions(+)
+ create mode 100644 ggml/src/ggml-cuda/fattn.cu.rej
+ create mode 100644 src/llama-context.cpp.rej
+
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index 6d92e1b53..ae061acd6 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -378,6 +378,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+     const ggml_tensor * V     = dst->src[2];
+     const ggml_tensor * mask  = dst->src[3];
+ 
++    // Dual Chunk Attention: LSE export. MMA F16 only writes dst_meta when np==1;
++    // common configs use np>1 and leave meta uninitialized → NaN LSE. Prefer tile/vec.
++    const bool export_lse = KQV->src[5] != nullptr;
++
+     const int gqa_ratio = Q->ne[2] / K->ne[2];
+     GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
+ 
+@@ -503,6 +507,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+                 return BEST_FATTN_KERNEL_VEC;
+             }
+         }
++        if (export_lse) {
++            return BEST_FATTN_KERNEL_TILE; // MMA LSE meta incomplete when np>1
++        }
+         return BEST_FATTN_KERNEL_MMA_F16;
+     }
+ 
+@@ -519,6 +526,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+         if (Q->ne[1] * gqa_ratio_eff <= 16) {
+             return BEST_FATTN_KERNEL_TILE; // On Volta tensor cores are only faster for sufficiently large matrices.
+         }
++        if (export_lse) {
++            return BEST_FATTN_KERNEL_TILE;
++        }
+         return BEST_FATTN_KERNEL_MMA_F16;
+     }
+ 
+diff --git a/ggml/src/ggml-cuda/fattn.cu.rej b/ggml/src/ggml-cuda/fattn.cu.rej
+new file mode 100644
+index 000000000..d90e72d9a
+--- /dev/null
++++ b/ggml/src/ggml-cuda/fattn.cu.rej
+@@ -0,0 +1,35 @@
++diff a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu	(rejected hunks)
++@@ -534,20 +544,24 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
++ 
++     // AMD MFMA needs a certain minimum batch size to outscale the tile kernel for large head sizes.
++     if ((amd_mfma_available(cc) && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72) {
++-        if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
++-            return BEST_FATTN_KERNEL_MMA_F16;
++-        }
++-        if ((Q->ne[0] <= 128 && Q->ne[1] * gqa_ratio_eff > 16)) {
++-            return BEST_FATTN_KERNEL_MMA_F16;
++-        }
++-        if ((Q->ne[0] <= 256 && Q->ne[1] * gqa_ratio_eff > 64)) {
++-            return BEST_FATTN_KERNEL_MMA_F16;
+++        if (!export_lse) {
+++            if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
+++                return BEST_FATTN_KERNEL_MMA_F16;
+++            }
+++            if ((Q->ne[0] <= 128 && Q->ne[1] * gqa_ratio_eff > 16)) {
+++                return BEST_FATTN_KERNEL_MMA_F16;
+++            }
+++            if ((Q->ne[0] <= 256 && Q->ne[1] * gqa_ratio_eff > 64)) {
+++                return BEST_FATTN_KERNEL_MMA_F16;
+++            }
++         }
++     }
++ 
++     // AMD WMMA is always faster than the tile kernel if the full tile width of 16 can be utilized.
++     if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 128) && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[1] * gqa_ratio_eff > 8) {
++-        return BEST_FATTN_KERNEL_MMA_F16;
+++        if (!export_lse) {
+++            return BEST_FATTN_KERNEL_MMA_F16;
+++        }
++     }
++ 
++     // If there are no tensor cores available, use the generic tile kernel:
+diff --git a/src/llama-context.cpp.rej b/src/llama-context.cpp.rej
+new file mode 100644
+index 000000000..814698ad6
+--- /dev/null
++++ b/src/llama-context.cpp.rej
+@@ -0,0 +1,26 @@
++diff a/src/llama-context.cpp b/src/llama-context.cpp	(rejected hunks)
++@@ -187,6 +187,13 @@ llama_context::llama_context(
++         cparams.rope_freq_scale = 1.0f; // never scale if scaling type is none
++     }
++ 
+++    // Dual Chunk Attention: DualChunk RoPE replaces YaRN — force ext_factor off.
+++    if (hparams.dca_enabled()) {
+++        cparams.rope_freq_scale = 1.0f;
+++        cparams.yarn_ext_factor = 0.0f;
+++        rope_scaling_type = LLAMA_ROPE_SCALING_TYPE_NONE;
+++    }
+++
++     if (cparams.yarn_ext_factor < 0.0f) { // negative indicates 'not set'
++         cparams.yarn_ext_factor = rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN ? 1.0f : 0.0f;
++     }
++@@ -2384,7 +2391,9 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
++         model.arch == LLM_ARCH_DEEPSEEK4) {
++         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
++     }
++-    uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
+++    // Dual Chunk Attention: 3× FA + LSE merge / barriers per layer
+++    uint32_t mult = model.hparams.dca_enabled() ? 24u : 8u;
+++    uint32_t res = std::max<uint32_t>(1024u, mult * model.n_tensors());
++     for (const auto & lora : model.loras) {
++         res += lora->get_n_nodes();
++     }

@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 03:55:00 -0700
+Subject: [PATCH] unicode: all-ASCII Qwen2 byte pretok skips cpt decode (0114)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When text is all <0x80 and the sole regex is Qwen2 custom, pretok on
+bytes and substr words — skip uint32 decode + cpt_byte_off. ~1.3x on
+mega_1mib_ascii vs NO_ASCII_PRETOK; identity held. See
+docs/faster-bpe-tokenize.md (M15d / 0114).
+---
+ src/unicode.cpp | 171 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 171 insertions(+)
+
+diff --git a/src/unicode.cpp b/src/unicode.cpp
+index 7e1935f3e..16976c558 100644
+--- a/src/unicode.cpp
++++ b/src/unicode.cpp
+@@ -6,6 +6,7 @@
+ #include <cstddef>
+ #include <cstdlib>
+ #include <cstdint>
++#include <cstring>
+ #include <map>
+ #include <regex>
+ #include <stdexcept>
+@@ -381,6 +382,14 @@ static void unicode_regex_split_qwen2_ascii_seg(
+             const bool next_letter = (pos + 1 < end) && (cls[cpts[pos + 1]] & 2);
+             if ((c & 2) || next_letter) {
+                 ++pos;
++                while (pos + 8 <= end) {
++                    if (!((cls[cpts[pos]] & 2) && (cls[cpts[pos + 1]] & 2) && (cls[cpts[pos + 2]] & 2) &&
++                          (cls[cpts[pos + 3]] & 2) && (cls[cpts[pos + 4]] & 2) && (cls[cpts[pos + 5]] & 2) &&
++                          (cls[cpts[pos + 6]] & 2) && (cls[cpts[pos + 7]] & 2))) {
++                        break;
++                    }
++                    pos += 8;
++                }
+                 while (pos < end && (cls[cpts[pos]] & 2)) {
+                     ++pos;
+                 }
+@@ -445,6 +454,162 @@ static void unicode_regex_split_qwen2_ascii_seg(
+     }
+ }
+ 
++// WHY (0114): all-ASCII Qwen2 megaprompts still paid for uint32 decode + 4×RAM before the
++// 0110 ascii_seg scanner. When text bytes are all < 0x80, pretok offsets == byte lengths —
++// scan the original string and substr words (identity vs cpt path).
++static inline bool unicode_bytes_are_ascii(const std::string & text) {
++    const unsigned char * p = (const unsigned char *) text.data();
++    size_t n = text.size();
++    size_t i = 0;
++    // SWAR: any high bit set ⇒ non-ASCII
++    while (i + 8 <= n) {
++        uint64_t v;
++        memcpy(&v, p + i, 8);
++        if (v & 0x8080808080808080ULL) {
++            return false;
++        }
++        i += 8;
++    }
++    while (i < n) {
++        if (p[i++] & 0x80u) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
++    return regex_expr ==
++           "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
++}
++
++// Same algorithm as unicode_regex_split_qwen2_ascii_seg but on raw ASCII bytes.
++static void unicode_regex_split_qwen2_ascii_bytes_seg(
++        const unsigned char * text, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
++    const uint8_t * cls = unicode_ascii_cls_lut();
++    size_t prev = ini;
++    auto add_token = [&](size_t e) {
++        if (e > prev) {
++            bpe_offsets.push_back(e - prev);
++            prev = e;
++        }
++    };
++
++    size_t pos = ini;
++    while (pos < end) {
++        const unsigned char cpt = text[pos];
++        const uint8_t c = cls[cpt];
++
++        if (cpt == '\'' && pos + 1 < end) {
++            const uint32_t n1 = unicode_ascii_tolower(text[pos + 1]);
++            if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd') {
++                add_token(pos + 2);
++                pos = prev;
++                continue;
++            }
++            if (pos + 2 < end) {
++                const uint32_t n2 = unicode_ascii_tolower(text[pos + 2]);
++                if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l')) {
++                    add_token(pos + 3);
++                    pos = prev;
++                    continue;
++                }
++            }
++        }
++
++        if (!(cpt == '\r' || cpt == '\n' || (c & 4))) {
++            const bool next_letter = (pos + 1 < end) && (cls[text[pos + 1]] & 2);
++            if ((c & 2) || next_letter) {
++                ++pos;
++                // 8-wide letter consume (T02-ish) — bytes are proven ASCII
++                while (pos + 8 <= end) {
++                    if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
++                          (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
++                          (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
++                        break;
++                    }
++                    pos += 8;
++                }
++                while (pos < end && (cls[text[pos]] & 2)) {
++                    ++pos;
++                }
++                add_token(pos);
++                continue;
++            }
++        }
++
++        if (c & 4) {
++            add_token(++pos);
++            continue;
++        }
++
++        {
++            const uint8_t c2 = (cpt == ' ' && pos + 1 < end) ? cls[text[pos + 1]]
++                               : (cpt == ' ' ? 0 : c);
++            if (c2 & 8) {
++                pos += (cpt == ' ');
++                while (pos < end && (cls[text[pos]] & 8)) {
++                    ++pos;
++                }
++                while (pos < end && (text[pos] == '\r' || text[pos] == '\n')) {
++                    ++pos;
++                }
++                add_token(pos);
++                continue;
++            }
++        }
++
++        size_t num_ws = 0;
++        size_t last_rn = 0;
++        while (pos + num_ws < end && (cls[text[pos + num_ws]] & 1)) {
++            const unsigned char w = text[pos + num_ws];
++            if (w == '\r' || w == '\n') {
++                last_rn = pos + num_ws + 1;
++            }
++            ++num_ws;
++        }
++
++        if (last_rn > 0) {
++            pos = last_rn;
++            add_token(pos);
++            continue;
++        }
++
++        if (num_ws > 1 && pos + num_ws < end) {
++            pos += num_ws - 1;
++            add_token(pos);
++            continue;
++        }
++
++        if (num_ws > 0) {
++            pos += num_ws;
++            add_token(pos);
++            continue;
++        }
++
++        add_token(++pos);
++    }
++}
++
++static std::vector<std::string> unicode_regex_split_qwen2_ascii_bytes(const std::string & text, bool byte_encode) {
++    std::vector<size_t> bpe_offsets;
++    bpe_offsets.reserve(std::max<size_t>(1, text.size() / 3));
++    unicode_regex_split_qwen2_ascii_bytes_seg(
++            (const unsigned char *) text.data(), 0, text.size(), bpe_offsets);
++
++    std::vector<std::string> bpe_words;
++    bpe_words.reserve(bpe_offsets.size());
++    size_t start = 0;
++    for (size_t len : bpe_offsets) {
++        bpe_words.emplace_back(text.data() + start, len);
++        start += len;
++    }
++    if (byte_encode) {
++        return unicode_byte_encoding_process(bpe_words);
++    }
++    return bpe_words;
++}
++
+ // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
+     std::vector<size_t> bpe_offsets; // store the offset of each word
+@@ -1445,6 +1610,12 @@ bool unicode_cpt_is_han(uint32_t cpt) {
+ }
+ 
+ std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode) {
++    // WHY (0114): Qwen2 all-ASCII — skip uint32 decode + cpt_byte_off entirely.
++    if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_is_qwen2_regex_expr(regex_exprs[0]) &&
++        unicode_bytes_are_ascii(text)) {
++        return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
++    }
++
+     // unicode categories
+     static const std::map<std::string, int> k_ucat_enum = {
+         { "\\p{N}", unicode_cpt_flags::NUMBER },

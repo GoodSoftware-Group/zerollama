@@ -185,7 +185,7 @@ index 83f9118da..c1578acd4 100644
  typedef struct {
      GGML_EXTENSION union {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 560a07fdb..1b35cb4ef 100644
+index 9df70d0d9..f7fa6dae3 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -947,6 +947,48 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
