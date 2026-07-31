@@ -1261,17 +1261,24 @@ func appendMTPDraftArgs(params []string, serverBin string, config LlamaServerCon
 	if config.DraftModelPath != "" {
 		params = append(params, "--spec-draft-model", config.DraftModelPath)
 	}
-	// The cross-request LRU prompt cache (server_prompt_cache, default on)
-	// checkpoints and restores the MTP draft context's KV state
-	// (llama_state_seq_get/set_data_ext on ctx_dft) independently from the
-	// target context. On long multi-turn conversations this restore desyncs
-	// the NextN draft layer's position/state from the target model: draft
-	// acceptance collapses to ~0% and generation degenerates into
-	// multilingual token salad (observed at ~27k context, qwen3.6 MTP,
-	// 2026-07-30). Disabling the LRU prompt cache for MTP runners avoids the
-	// buggy save/restore path; per-slot cache_prompt/n_cache_reuse (KV
-	// shifting within a single slot) is untouched and still speeds up
-	// single-conversation continuation.
+	// NOTE 2026-07-30: --cache-ram 0 was added here as a hypothesis fix for
+	// qwen3.6 draft-mtp producing ~0% draft acceptance + multilingual token
+	// salad, on the theory that the cross-request LRU prompt cache
+	// (server_prompt_cache) was desyncing the MTP draft context's KV state
+	// across turns. That hypothesis was DISPROVEN by a live stress test: with
+	// --cache-ram 0 in effect (confirmed via `prompt cache is disabled` in
+	// llama-server's own log), draft acceptance was still ~0% from the very
+	// first turn of a fresh conversation, no long context or cache
+	// save/restore involved. The real bug is a regression in the vendored
+	// ggml-org 5f55650a pin's draft-mtp path vs the prior f95de977 pin, where
+	// the same qwen3.6 MTP model measured 42-64% draft acceptance. Root cause
+	// is still open (candidates: the 0127-0131 compile fixups touching
+	// KV-cache/COW/seq-copy, or the NextN patches 0064-0066) and needs a
+	// bisect against f95de977 before draft-mtp is safe to re-enable in prod.
+	// Until then, MTP-eligible model tags (qwen3.6-64k/:35b/:27b) are pinned
+	// to spec_type=none/draft_num_predict=0 in their Modelfiles. Leaving
+	// --cache-ram 0 here is harmless (LRU cache disabled) but does NOT fix
+	// the underlying bug by itself.
 	params = append(params, "--cache-ram", "0")
 	return params
 }
