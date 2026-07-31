@@ -12,10 +12,11 @@ import (
 )
 
 const specDraftBackendSamplingFlag = "--spec-draft-backend-sampling"
+const noSpecDraftBackendSamplingFlag = "--no-spec-draft-backend-sampling"
 
 var llamaServerHelpCache sync.Map // serverBin -> help text
 
-// llamaServerHelp returns cached ``llama-server --help`` output for flag probing.
+// llamaServerHelp returns cached “llama-server --help“ output for flag probing.
 func llamaServerHelp(serverBin string) string {
 	if serverBin == "" {
 		return ""
@@ -71,6 +72,47 @@ func appendSpecDraftBackendSamplingArg(params []string, serverBin string) []stri
 		return params
 	}
 	return append(params, specDraftBackendSamplingFlag)
+}
+
+// appendNoSpecDraftBackendSamplingArg forces draft sampling back onto the CPU path.
+//
+// WHY: the ggml-org 5f55650a pin (b10199+1) refactored the backend (GPU-side) draft
+// sampler kernels (llama_sampler_*_backend_apply in src/llama-sampler.cpp) to flatten
+// logits via ggml_reshape_1d before argmax/top-k/top-p/min-p. That refactor is broken
+// for draft-mtp specifically: with --spec-draft-backend-sampling (the default, and what
+// appendSpecDraftBackendSamplingArg used to force on), draft acceptance collapses to
+// ~0% from the very first turn of a fresh conversation and generation degenerates into
+// multilingual token salad (qwen3.6 MTP, 2026-07-30 incident). Verified fix (isolated,
+// single standalone llama-server, fresh short conversation): launching the identical
+// binary/model with --no-spec-draft-backend-sampling (CPU-side draft sampling) restores
+// 42-64% draft acceptance and coherent output, matching pre-rebase (f95de977 / b10159)
+// behavior. CPU-side sampling for the tiny 1-layer MTP draft head is cheap, so this has
+// no meaningful perf cost. Root cause is upstream, not ours to fix here; revisit once
+// ggml-org's backend sampler refactor is corrected upstream and drop this override.
+//
+// CAUTION - this does NOT fully clear draft-mtp for qwen3.6 in production: a live
+// re-enable + revert on 2026-07-30 showed a SEPARATE failure mode survives this fix.
+// On a real long multi-turn conversation, "forcing full prompt re-processing due to
+// lack of cache data (likely due to SWA or hybrid/recurrent memory ...)" fires (qwen3.6
+// is a hybrid Gated-Delta-Net/SWA arch) and desyncs the MTP draft context's state for
+// the rest of that runner's slot lifetime — subsequent unrelated requests on the same
+// slot then also produced multilingual token salad, even with backend sampling off.
+// This matches ggml-org/llama.cpp#23322 (low/zero MTP acceptance under SWA/hybrid-memory
+// cache invalidation) and is likely the original incident's root cause on top of the
+// backend-sampling regression. Needs its own fix/investigation (checkpoint restore
+// should probably also resync/clear ctx_dft, not just ctx_tgt) before draft-mtp is safe
+// to re-enable for qwen3.6-64k/:35b/:27b in prod. Until then those tags stay pinned to
+// spec_type=none/draft_num_predict=0.
+func appendNoSpecDraftBackendSamplingArg(params []string, serverBin string) []string {
+	if !llamaServerSupportsFlag(serverBin, noSpecDraftBackendSamplingFlag) {
+		slog.Debug(
+			"llama-server lacks the no-backend-sampling override; leaving backend sampling at its default",
+			"binary", serverBin,
+			"flag", noSpecDraftBackendSamplingFlag,
+		)
+		return params
+	}
+	return append(params, noSpecDraftBackendSamplingFlag)
 }
 
 const specDmAdaptiveFlag = "--spec-dm-adaptive"

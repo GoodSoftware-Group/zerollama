@@ -606,8 +606,15 @@ func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gri
 	}
 
 	if len(gridTHW) == 3 && gridTHW[0] > 0 && gridTHW[1] > 0 && gridTHW[2] > 0 {
-		thw := [3]C.int32_t{C.int32_t(gridTHW[0]), C.int32_t(gridTHW[1]), C.int32_t(gridTHW[2])}
-		C.mtmd_bitmap_set_grid_hint(bitmap, &thw[0])
+		// mtmd_bitmap_set_grid_hint has not landed in the vendored mtmd.h yet —
+		// why no-op instead of cgo call: keep MultimodalTokenize buildable while
+		// tracking the upstream API; wire the C call back in once it lands.
+		// (Re-reverted 2026-07-30: 77924bf8 wired the real CGO call assuming the
+		// upstream API had landed in the 5f55650a pin sync, but it never made it
+		// into llama/llama.cpp/tools/mtmd/mtmd.h, breaking `go build` entirely.)
+		slog.Debug("mtmd grid_thw hint not forwarded (upstream API pending)",
+			"grid_thw", gridTHW,
+		)
 	}
 
 	bitmaps := [1]*C.mtmd_bitmap{bitmap}
