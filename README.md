@@ -236,10 +236,15 @@ qwen3.6:35b-a3b-mlx                                                      bg:dige
 
 → [bench-cache.md](docs/bench-cache.md) · [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md)
 
-Regenerate the README demo GIF (uses live `ls`/`ps` when available, else curated samples):
+Regenerate the README demo GIF (live `ls`/`ps`; optional live TTFT when GPU free):
 
 ```bash
 python3 scripts/marketing/make_readme_demo_gif.py --from-live
+# lab port only — do not contend with production :11434
+OLLAMA_HOST=127.0.0.1:11435 python3 scripts/marketing/capture_ttft_for_gif.py \
+  --model llama3.2:1b-mlx --out tmp/readme-benches/gif-ttft.json
+python3 scripts/marketing/make_readme_demo_gif.py --from-live \
+  --ttft-json tmp/readme-benches/gif-ttft.json
 ```
 
 ---

@@ -21,7 +21,7 @@ All notable changes to this project are documented in this file. The format is b
 
 **Why:** Marketing backlog wanted a turn-1 vs turn-2 visual; CLI DX fields needed to show up outside a text table.
 
-**What:** `docs/assets/demo-operator-cli.gif` + `scripts/marketing/make_readme_demo_gif.py` — terminal-style `ls` (PARAMS/PERF), `ps` (PROJECT/SESSION), and lab tokenize 390→95 ms bar (L3 called out for turn-2+). Embedded under §1.5. Live GPU TTFT capture deferred while production holds models.
+**What:** `docs/assets/demo-operator-cli.gif` + `scripts/marketing/make_readme_demo_gif.py` — terminal-style `ls` (PARAMS/PERF), `ps` (PROJECT/SESSION), harness curl, measured tokenize cards (389→81 ms), L3 story card; optional `--ttft-json` from `capture_ttft_for_gif.py` (lab `:11435`) when GPU free. Embedded under §1.5.
 
 ### README operator CLI DX (Jul 2026)
 
