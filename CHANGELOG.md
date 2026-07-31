@@ -14,7 +14,7 @@ All notable changes to this project are documented in this file. The format is b
 - Rebased **131** Ollama/zerollama patches (`make -f Makefile.sync clean apply-patches` → **fail=0**); **dropped** absorbed CUDA Q2_0 **#25707** (old 0082); fixed corrupt DCA **0097** hunk header; resolved server/speculative/Metal/DCA/unicode path drift; **0127–0131** compile fixups (FP8 brace, Q5_K get_rows, COW/MSA kv-cache, pretok_blob decl, seq-copy/`load_mode` for #26221)
 - `./scripts/vendor/sync_vendor_llama.sh` → in-tree `llama/llama.cpp` + `ml/backend/ggml`
 - Lab binary: `/opt/zerollama/llama-server-5f55650a` (container CUDA `89-real`); MTP smoke on `:18082` (qwen3.6:27b, `--spec-type draft-mtp`, no mmproj) — content `"4"` with thinking off; thinking-on coherent, draft accept ~38–50%
-- Production `:2083` stays on `/opt/zerollama/llama-server-f95de977` until a separate cutover
+- Production `:2083` cut over to `/opt/zerollama/llama-server-5f55650a` (`scripts/systemd/dual_4090-ollama.conf`); `f95de977` kept for rollback
 - `ZEROLLAMA_KEEP_BUILD=1` (default in container script) keeps failed CUDA build trees for incremental fixups; seq-copy verify glob fixed for `libllama-server-impl*`
 
 ### README demo GIF (Jul 2026)
