@@ -55,7 +55,7 @@ rather than assuming the request shape is wrong.
 ## Step 1 — Inventory what's already local, with capabilities
 
 ```bash
-curl -s http://127.0.0.1:11434/api/tags | jq '.models[] | {name, size, capabilities, quantization: .details.quantization_level, params: .details.parameter_size}'
+curl -s http://127.0.0.1:11434/api/tags | jq '.models[] | {name, size, capabilities, quantization: .details.quantization_level, params: .details.parameter_size, context: .details.context_length, host_max_context}'
 ```
 
 `capabilities` on each entry is a subset of: `completion`, `tools`,
@@ -65,8 +65,18 @@ the task needs before considering anything else — a model without `tools`
 in this list will not reliably emit tool calls, and one without `embedding`
 cannot serve `/api/embed`.
 
-For a single candidate's full picture (context length, quant, template
-presence — useful before deciding if it's fit for a long-context task):
+`details.context_length` (trained/GGUF ceiling) and `host_max_context`
+(largest `num_ctx` estimated to fit current free VRAM/RAM) ride along on
+`/api/tags` for **GGUF models only** — populated from the GGUF header at
+list time (`server/model_details.go` `enrichModelDetailsFromGGML`), no
+per-model `/api/show` round trip needed. **MLX/safetensors models do not
+get this** — `enrichModelDetailsFromSafetensors` never sets
+`ContextLength`, so those rows show `context_length: null` even though the
+model has a real context window; don't read that as "no context support."
+
+For a single candidate's full picture (quant, template presence — and for
+MLX models, the only place left to look for context is the model's own
+card/docs, since `/api/show` doesn't fill the gap either):
 
 ```bash
 curl -s http://127.0.0.1:11434/api/show -d '{"model": "<name>"}' | jq '{capabilities, parameters, template: (.template != null)}'
@@ -134,6 +144,11 @@ no relevant local inventory yet.
 
 ## Pitfalls
 
+- **`/api/tags` `details.context_length` and `host_max_context` are
+  GGUF-only** — MLX/safetensors models always come back with no context
+  info from `/api/tags` (and `/api/show` doesn't fill the gap either); don't
+  read a missing/null context field as "this model has no context window,"
+  it means check the model's own docs instead.
 - **`capabilities` on `/api/tags` reflects the current manifest, not GGUF
   ground truth** — a model missing `tools` in this list may still technically
   parse tool syntax if forced, but zerollama won't treat it as tool-capable

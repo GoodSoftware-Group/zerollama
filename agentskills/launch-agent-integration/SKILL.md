@@ -99,6 +99,16 @@ launch` now lists tags **once**, resolves the selected names into
 `[]LaunchModel` structs, and passes that same slice to every integration's
 `Edit` / `ConfigureWithModels` / `Run` call.
 
+**This only fully works for GGUF models.** `/api/tags` fills
+`details.context_length` from the GGUF header at list time
+(`server/model_details.go`), so GGUF-backed integrations get a real
+`contextWindow` from that single load. MLX/safetensors models never get
+`ContextLength` populated (`enrichModelDetailsFromSafetensors` doesn't set
+it, and neither does a fallback `/api/show` call) — an integration config
+generated for an MLX model may end up with `contextWindow: 0` or omitted
+entirely. If a launched integration is missing context for an MLX model,
+that's this gap, not a launch bug to debug further.
+
 ## Pitfalls
 
 - **`--model` only makes sense with an integration name** — bare
@@ -117,6 +127,10 @@ launch` now lists tags **once**, resolves the selected names into
   <integration> --config` after pulling/removing models so the written
   config's model list reflects current `/api/tags`, rather than assuming
   an old config auto-updates.
+- **MLX/safetensors models get no `context_length` from `/api/tags`** —
+  only GGUF models have it populated from the GGUF header at list time;
+  an MLX model's launched config may show a missing/zero context window
+  even though the model genuinely supports one (check its own model card).
 - **Not every integration supports every zerollama feature** — QoS
   extras, `keep_alive`, and prompt-cache wiring are integration-specific;
   check that integration's own generated config for what actually got set,
