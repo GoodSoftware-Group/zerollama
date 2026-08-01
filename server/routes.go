@@ -2016,6 +2016,9 @@ func (s *Server) ListHandler(c *gin.Context) {
 		}
 	}
 
+	// Host-aware CTX for zerollama ls (after digests/catalog merge).
+	s.enrichListHostContexts(c.Request.Context(), models)
+
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
 }
 
