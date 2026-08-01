@@ -2008,8 +2008,11 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	listeners := append([]net.Listener{ln}, guards...)
-	err = server.Serve(listeners...)
+	// Retain loopback guards for process lifetime (do not close).
+	// WHY: on Darwin a later bind(127.0.0.1:PORT) can coexist with *:PORT and
+	// steal loopback accepts; holding the specific tuples forces EADDRINUSE.
+	_ = guards
+	err = server.Serve(ln)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -2020,7 +2023,12 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 // claimLoopbackGuards binds and retains loopback sockets when OLLAMA_HOST is a
 // wildcard (0.0.0.0 / ::). Returns nil when the primary bind is already specific.
 // The ConnectableHost address is required; the other loopback family is best-effort.
+// Darwin-only: on Linux, binding 127.0.0.1:PORT then *:PORT fails with EADDRINUSE.
 func claimLoopbackGuards(bindURL, connectURL *url.URL) ([]net.Listener, error) {
+	if runtime.GOOS != "darwin" {
+		return nil, nil
+	}
+
 	bindHost, bindPort, err := net.SplitHostPort(bindURL.Host)
 	if err != nil {
 		return nil, nil
@@ -2561,9 +2569,6 @@ func NewCLI() *cobra.Command {
 	aneDraftParityCmd := NewANEDraftParityCommand()
 	anePrefillBenchCmd := NewANEPrefillBenchCommand()
 	anePrefillHandoffCmd := NewANEPrefillHandoffSmokeCommand()
-	anePrefillFFNSliceCmd := NewANEPrefillFFNSliceSmokeCommand()
-	anePrefillFFNPolicyCmd := NewANEPrefillFFNPolicySmokeCommand()
-	anePrefillSwiGLUCmd := NewANEPrefillSwiGLUSmokeCommand()
 	aneModelResolveCmd := NewANEModelResolveCommand()
 	anePrefillSweepCmd := NewANEPrefillSweepCommand()
 	anePrefillCrossoverCmd := NewANEPrefillCrossoverCommand()
@@ -2660,9 +2665,6 @@ func NewCLI() *cobra.Command {
 		aneDraftParityCmd,
 		anePrefillBenchCmd,
 		anePrefillHandoffCmd,
-		anePrefillFFNSliceCmd,
-		anePrefillFFNPolicyCmd,
-		anePrefillSwiGLUCmd,
 		aneModelResolveCmd,
 		anePrefillSweepCmd,
 		anePrefillCrossoverCmd,

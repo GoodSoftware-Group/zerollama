@@ -46,7 +46,14 @@ func NewDoctorCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
-		Long:  "Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.",
+		Long: `Validate uv venv, Metal libllama, sidecar health, and autoconfig on Darwin.
+
+Also runs model-serving-minefield style checks:
+  - model config traps (quant label, generation defaults, chat template, context)
+  - serve identity (trap 53) and thinking gate (trap 29)
+  - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
+
+See docs/model-serving-minefield.md.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if auditStorage {
 				report, err := blobaudit.Audit()
@@ -153,6 +160,31 @@ func buildDoctorModelsReport() doctorReport {
 			Detail:  modelhealth.FormatSummary(r),
 			FixHint: r.FixHint,
 		})
+	}
+
+	// Minefield-style config traps (quant label, generation defaults, template, context).
+	if trapReports, err := modelhealth.CheckConfigTrapsAll(); err != nil {
+		checks = append(checks, doctorCheck{
+			Name:   "model config traps",
+			Status: "warn",
+			Detail: err.Error(),
+		})
+	} else {
+		for _, r := range trapReports {
+			status := "ok"
+			switch r.Status {
+			case modelhealth.StatusRepairable:
+				status = "warn"
+			case modelhealth.StatusOrphaned, modelhealth.StatusBroken:
+				status = "fail"
+			}
+			checks = append(checks, doctorCheck{
+				Name:    r.Name,
+				Status:  status,
+				Detail:  r.Detail,
+				FixHint: r.FixHint,
+			})
+		}
 	}
 
 	report := doctorReport{Checks: checks}
@@ -327,6 +359,8 @@ func runDoctorChecks(repo string) []doctorCheck {
 			Detail: "full sidecar checks run on darwin only",
 		})
 	}
+	out = append(out, doctorCheckServeIdentity())
+	out = append(out, doctorCheckServingTraps()...)
 	return out
 }
 
