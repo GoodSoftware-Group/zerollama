@@ -20,6 +20,25 @@ server, as an alternative to the older Chat Completions shape
 (`/v1/chat/completions`). Zerollama translates the Responses request into
 its native chat pipeline.
 
+## Compatibility check
+
+This skill targets zerollama **tip/dev**, not a specific pinned
+release — not every server will have every endpoint/flag below yet.
+Verify before relying on this in an unattended flow, especially
+against a host you don't control:
+
+```bash
+zerollama --version                      # binary build
+curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/responses -d '{}'   # 400/422 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/v1/chat/completions   # 200/400 = route exists; 404 = missing on this build
+```
+
+A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
+describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
+landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
+rather than assuming the request shape is wrong.
+
 ## When to Use
 
 - An SDK or agent framework defaults to `client.responses.create(...)`

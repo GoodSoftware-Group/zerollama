@@ -16,6 +16,12 @@ python3 .tools/build.py --package    # also zip each skill into dist/<name>.zip
 
 The validator checks: required frontmatter fields present, `name` matches its directory and is lowercase-hyphen-only (≤64 chars), `description` ≤1024 chars, body ≤500 lines, and every `related_skills` entry resolves to a real skill in this directory (catches stale/renamed cross-links before distribution).
 
+Every skill also carries a generated **Compatibility check** section (these docs target zerollama tip/dev, not a pinned release) — regenerate it after editing a skill's endpoints/CLI usage with:
+
+```bash
+python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per skill
+```
+
 ## mlops
 
 | Skill | Description |

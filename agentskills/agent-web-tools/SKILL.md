@@ -20,6 +20,27 @@ proxy endpoints, without wiring a separate search API key into the agent
 itself. Both endpoints proxy to a cloud backend (Eliza Cloud) — they are
 **not** local web crawling.
 
+## Compatibility check
+
+This skill targets zerollama **tip/dev**, not a specific pinned
+release — not every server will have every endpoint/flag below yet.
+Verify before relying on this in an unattended flow, especially
+against a host you don't control:
+
+```bash
+zerollama --version                      # binary build
+curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/experimental/web_search   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/web_search   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/experimental/web_fetch   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/web_fetch   # 200/400 = route exists; 404 = missing on this build
+```
+
+A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
+describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
+landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
+rather than assuming the request shape is wrong.
+
 ## When to Use
 
 - An agent loop needs a "search the web" or "fetch this URL" tool and you

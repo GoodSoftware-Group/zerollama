@@ -148,6 +148,14 @@ def write_readme(skills: dict, root: Path):
         "`related_skills` entry resolves to a real skill in this directory "
         "(catches stale/renamed cross-links before distribution).",
         "",
+        "Every skill also carries a generated **Compatibility check** section "
+        "(these docs target zerollama tip/dev, not a pinned release) \u2014 "
+        "regenerate it after editing a skill's endpoints/CLI usage with:",
+        "",
+        "```bash",
+        "python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per skill",
+        "```",
+        "",
     ]
     for category in sorted(by_category):
         lines.append(f"## {category}")

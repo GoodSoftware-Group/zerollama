@@ -21,6 +21,24 @@ all of them, and neither should you. This skill is a **procedure** for
 figuring out the *few* knobs that matter for a given goal, using the tools
 zerollama already ships for exactly this problem — not a flag dictionary.
 
+## Compatibility check
+
+This skill targets zerollama **tip/dev**, not a specific pinned
+release — not every server will have every endpoint/flag below yet.
+Verify before relying on this in an unattended flow, especially
+against a host you don't control:
+
+```bash
+zerollama --version                      # binary build
+curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
+zerollama <subcommand> --help            # confirm the flag/subcommand exists before scripting it
+```
+
+An unrecognized flag/subcommand, or `--help` not mentioning an option this skill relies on, means this build predates the feature this skill
+describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
+landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
+rather than assuming the request shape is wrong.
+
 ## When to Use
 
 - The user wants to tune, enable, or disable a zerollama feature and isn't

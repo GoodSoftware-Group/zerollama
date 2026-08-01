@@ -19,6 +19,24 @@ install is correctly set up — build toolchain, Python venvs, native
 libraries, sidecar health, and local model blob integrity — before
 debugging an inference failure as if it were an application bug.
 
+## Compatibility check
+
+This skill targets zerollama **tip/dev**, not a specific pinned
+release — not every server will have every endpoint/flag below yet.
+Verify before relying on this in an unattended flow, especially
+against a host you don't control:
+
+```bash
+zerollama --version                      # binary build
+curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
+zerollama <subcommand> --help            # confirm the flag/subcommand exists before scripting it
+```
+
+An unrecognized flag/subcommand, or `--help` not mentioning an option this skill relies on, means this build predates the feature this skill
+describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
+landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
+rather than assuming the request shape is wrong.
+
 ## When to Use
 
 - Before deep-diving a confusing inference/training error — rule out an
