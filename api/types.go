@@ -1217,6 +1217,10 @@ type ListModelResponse struct {
 	Digest       string             `json:"digest"`
 	Details      ModelDetails       `json:"details,omitempty"`
 	Capabilities []model.Capability `json:"capabilities,omitempty"`
+	// HostMaxContext is the largest num_ctx estimate that fits free VRAM/RAM on
+	// this host right now (loaded models credit their own footprint). Train/model
+	// ceiling remains Details.ContextLength. CLI shows a range when host < train.
+	HostMaxContext int `json:"host_max_context,omitempty"`
 }
 
 // ProcessModelResponse is a single model description in [ProcessResponse].

@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### `zerollama ls` CTX column (host-aware) (Aug 2026)
+
+**Why:** Operators hit OOM with dual MLX loads + 80k ctx; `ls` showed PARAMS/PERF but not what context this host can hold *now*.
+
+**What:** `/api/tags` adds `host_max_context` (GGUF GraphSize binary-search vs free VRAM + loaded credit; MLX size heuristic). CLI **CTX** column: train max when it fits, else `16k–80k`-style range. Train ceiling remains `details.context_length`. Narrow TTYs (&lt;100 cols) render `ls`/`ps` as **2-line rows** (`term.GetSize` / `$COLUMNS`) so tables fit ~80 columns; pipes stay wide.
+
 ### Vendor rebase to ggml-org `5f55650a` (b10199+1) — Jul 2026
 
 **Why:** Track ggml-org master tip (~41 commits past b10159) while keeping the zerollama quilt (MTP think path, pretok, DCA, Eliza KV, server Radix).

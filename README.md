@@ -94,7 +94,7 @@ Upstream is excellent at “pull a model and chat.” Agents don’t chat small 
 | Same megaprompt / system prefix every turn feels like a cold start | **Prompt cache (L3)** — inspired by [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm): give the thread a stable key and **turn 2+ reuses the prefix** so the next megaprompt is way faster (optional `/api/cache/pin` to keep it warm) |
 | Agents need to **show**, not only tell | **Image + video gen** on the same daemon — Wan `/v1/videos`, MLX/Comfy/sd.cpp `/v1/images`; VLM video understanding |
 | Background jobs fight live agent threads | **Harness control plane** — QoS, timeouts, preempt reasons, capacity APIs |
-| “Who owns the GPU?” is guesswork | **`zerollama ps`** shows **PROJECT** / **SESSION**; **`ls`** shows **PARAMS** (MoE active) + **PERF** from `bench` |
+| “Who owns the GPU?” is guesswork | **`zerollama ps`** shows **PROJECT** / **SESSION**; **`ls`** shows **PARAMS** + **CTX** (host-safe) + **PERF** |
 | “Model bugs” that are really server traps | **`zerollama doctor`** + minefield probes |
 | Train / multi-node | `/api/train/*`, `zerollama fleet serve`, Eliza Cloud |
 
@@ -206,16 +206,16 @@ ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor
 
 ### 4.6 Operator CLI — `ls` / `ps`
 
-Same commands as upstream, richer tables so you don’t guess MoE size, speed, or which harness holds VRAM.
+Same commands as upstream, richer tables so you don’t guess MoE size, speed, or which harness holds VRAM. Narrow terminals (&lt;100 cols, via `term.GetSize` / `$COLUMNS`) use a **2-line row** so output stays within ~80 columns.
 
-**`zerollama ls`** — library with **PARAMS** (dense / MoE routing / active params) and **PERF** (from `zerollama bench`; `--` until benched):
+**`zerollama ls`** — library with **PARAMS** (dense / MoE / active), **CTX** (host-safe max *right now*; `16k–80k` when free VRAM/RAM can’t hold train max), and **PERF** (from `zerollama bench`; `--` until benched):
 
 ```text
-NAME                         ID              SIZE      PARAMS                 PERF     MODIFIED
-qwen3-coder-next:6bit        ffc5c8db17e8    64 GB     15.0B MoE 512x10       --       4 minutes ago
-gpt-oss-120b:mxfp4-q8        9378e12d0a90    63 GB     14.9B/979.87M active   --       7 hours ago
-ornith-35b-optiq:latest      f4df829f8a75    22 GB     34.0B MoE 256x8        54.2     12 hours ago
-granite4.1:3b-mlx            2c1c7f47b0d2    1.8 GB    425.54M                112.7    10 hours ago
+NAME                         ID              SIZE      PARAMS                 CTX         PERF     MODIFIED
+qwen3-coder-next:6bit        ffc5c8db17e8    64 GB     15.0B MoE 512x10       80k         --       4 minutes ago
+gpt-oss-120b:mxfp4-q8        9378e12d0a90    63 GB     14.9B/979.87M active   16k–128k    --       7 hours ago
+ornith-35b-optiq:latest      f4df829f8a75    22 GB     34.0B MoE 256x8        80k         54.2     12 hours ago
+granite4.1:3b-mlx            2c1c7f47b0d2    1.8 GB    425.54M                128k        112.7    10 hours ago
 ```
 
 Filters: `zerollama ls image` / `zerollama ls video_gen` — local + cloud image/video routes without dumping the full remote catalog.
@@ -231,6 +231,7 @@ qwen3.6:35b-a3b-mlx                                                      bg:dige
 | Column | Meaning |
 |--------|---------|
 | **PARAMS** | Parameter summary — MoE as `total MoE ExU` or `total/active active` |
+| **CTX** | Host-safe max context *right now* (free VRAM/RAM); `host–train` range when the model ceiling won’t fit |
 | **PERF** | Cached tok/s (chat) or seconds (image/video) from `bench` |
 | **PROJECT** / **SESSION** | Harness ownership from QoS / `project_id` / session key (hidden when idle) |
 | **PROCESSOR** / **CONTEXT** / **UNTIL** | GPU split, context length, keep-alive expiry |

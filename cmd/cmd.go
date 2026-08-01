@@ -897,8 +897,9 @@ func PushHandler(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ListHandler prints the model table with a PERF column from ~/.ollama/bench.json.
+// ListHandler prints the model table with PERF (bench cache) and CTX (host-aware max).
 // PERF shows tok/s (completion) or seconds (image/video_gen); "--" when never benched.
+// CTX is host_max_context from /api/tags — range host–train when free VRAM/RAM is tight.
 func ListHandler(cmd *cobra.Command, args []string) error {
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
@@ -910,7 +911,7 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var data [][]string
+	var rows []listTableRow
 
 	// WHY soft-fail: ls must never break when bench.json is missing or corrupt; show "--" instead.
 	benchEntries, _ := benchcache.Load()
@@ -937,20 +938,18 @@ func ListHandler(cmd *cobra.Command, args []string) error {
 			tokStr = e.PerfString()
 		}
 
-		data = append(data, []string{m.Name, digest, size, listParameterSummary(m.Details), tokStr, format.HumanTime(m.ModifiedAt, "Never")})
+		rows = append(rows, listTableRow{
+			name:     m.Name,
+			id:       digest,
+			size:     size,
+			params:   listParameterSummary(m.Details),
+			ctx:      listContextSummary(m),
+			perf:     tokStr,
+			modified: format.HumanTime(m.ModifiedAt, "Never"),
+		})
 	}
 
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "ID", "SIZE", "PARAMS", "PERF", "MODIFIED"})
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetHeaderLine(false)
-	table.SetBorder(false)
-	table.SetNoWhiteSpace(true)
-	table.SetTablePadding("    ")
-	table.AppendBulk(data)
-	table.Render()
-
+	printListTable(os.Stdout, rows, terminalWidth())
 	return nil
 }
 
@@ -1016,6 +1015,40 @@ func listParameterSummary(details api.ModelDetails) string {
 	return "MoE"
 }
 
+// listContextSummary shows host-safe max ctx, or host–train when free VRAM/RAM
+// cannot hold the model ceiling (Details.ContextLength).
+func listContextSummary(m api.ListModelResponse) string {
+	train := m.Details.ContextLength
+	host := m.HostMaxContext
+	switch {
+	case host <= 0 && train <= 0:
+		return "--"
+	case host <= 0:
+		// Can't fit even a small ctx with current free memory — still show ceiling.
+		return "–" + formatContextTokens(train)
+	case train <= 0:
+		return formatContextTokens(host)
+	case host >= train:
+		return formatContextTokens(train)
+	default:
+		return formatContextTokens(host) + "–" + formatContextTokens(train)
+	}
+}
+
+func formatContextTokens(n int) string {
+	if n <= 0 {
+		return "--"
+	}
+	if n%1024 == 0 {
+		k := n / 1024
+		if k%1024 == 0 {
+			return fmt.Sprintf("%dM", k/1024)
+		}
+		return fmt.Sprintf("%dk", k)
+	}
+	return strconv.Itoa(n)
+}
+
 func ListRunningHandler(cmd *cobra.Command, args []string) error {
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
@@ -1035,66 +1068,27 @@ func ListRunningHandler(cmd *cobra.Command, args []string) error {
 	}
 
 	showProjects := false
-	showQueue := models.Pending > 0
 	for _, row := range rows {
 		if row.project != "" || row.session != "" {
 			showProjects = true
-		}
-		if row.pending > 0 {
-			showQueue = true
+			break
 		}
 	}
 
-	var data [][]string
+	out := make([]psTableRow, 0, len(rows))
 	for _, row := range rows {
-		pending := ""
-		if row.pending > 0 {
-			pending = strconv.Itoa(row.pending)
-		}
-		switch {
-		case showProjects && showQueue:
-			data = append(data, []string{
-				row.name, row.project, row.session, row.digest, row.size, row.processor, row.context, pending, row.until,
-			})
-		case showProjects:
-			data = append(data, []string{
-				row.name, row.project, row.session, row.digest, row.size, row.processor, row.context, row.until,
-			})
-		case showQueue:
-			data = append(data, []string{
-				row.name, row.digest, row.size, row.processor, row.context, pending, row.until,
-			})
-		default:
-			data = append(data, []string{
-				row.name, row.digest, row.size, row.processor, row.context, row.until,
-			})
-		}
+		out = append(out, psTableRow{
+			name:      row.name,
+			project:   row.project,
+			session:   row.session,
+			id:        row.digest,
+			size:      row.size,
+			processor: row.processor,
+			context:   row.context,
+			until:     row.until,
+		})
 	}
-
-	table := tablewriter.NewWriter(os.Stdout)
-	header := []string{"NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"}
-	switch {
-	case showProjects && showQueue:
-		header = []string{"NAME", "PROJECT", "SESSION", "ID", "SIZE", "PROCESSOR", "CONTEXT", "QUEUE", "UNTIL"}
-	case showProjects:
-		header = []string{"NAME", "PROJECT", "SESSION", "ID", "SIZE", "PROCESSOR", "CONTEXT", "UNTIL"}
-	case showQueue:
-		header = []string{"NAME", "ID", "SIZE", "PROCESSOR", "CONTEXT", "QUEUE", "UNTIL"}
-	}
-	table.SetHeader(header)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetHeaderLine(false)
-	table.SetBorder(false)
-	table.SetNoWhiteSpace(true)
-	table.SetTablePadding("    ")
-	table.AppendBulk(data)
-	table.Render()
-
-	if models.Pending > 0 {
-		fmt.Printf("%d prompt(s) queued\n", models.Pending)
-	}
-
+	printPsTable(os.Stdout, out, showProjects, terminalWidth())
 	return nil
 }
 
@@ -1106,7 +1100,6 @@ type runningModelRow struct {
 	size      string
 	processor string
 	context   string
-	pending   int
 	until     string
 }
 
@@ -1123,18 +1116,6 @@ func runningModelRowFromAPI(m api.ProcessModelResponse) runningModelRow {
 		sizeCPU := m.Size - m.SizeVRAM
 		cpuPercent := math.Round(float64(sizeCPU) / float64(m.Size) * 100)
 		procStr = fmt.Sprintf("%d%%/%d%% CPU/GPU", int(cpuPercent), int(100-cpuPercent))
-	}
-	// Trap 97: prefer explicit layer offload over VRAM-ratio guessing when known.
-	if m.LoadedMetadata != nil && m.LoadedMetadata.GPULayersTotal > 0 {
-		off := m.LoadedMetadata.GPULayersOffloaded
-		tot := m.LoadedMetadata.GPULayersTotal
-		if off >= tot {
-			procStr = fmt.Sprintf("100%% GPU (%d/%d layers)", off, tot)
-		} else if off == 0 {
-			procStr = fmt.Sprintf("100%% CPU (0/%d layers)", tot)
-		} else {
-			procStr = fmt.Sprintf("%d/%d GPU layers", off, tot)
-		}
 	}
 
 	var until string
@@ -1159,7 +1140,6 @@ func runningModelRowFromAPI(m api.ProcessModelResponse) runningModelRow {
 		size:      format.HumanBytes(m.Size),
 		processor: procStr,
 		context:   strconv.Itoa(m.ContextLength),
-		pending:   m.Pending,
 		until:     until,
 	}
 }
@@ -2011,16 +1991,25 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 		log.Printf("unified llama.cpp: %s", msg)
 	}
 
-	if err := checkConnectableHostAvailable(envconfig.Host(), envconfig.ConnectableHost()); err != nil {
+	// Claim loopback BEFORE the wildcard listen and keep those sockets.
+	// WHY keep (not probe-and-close): on Darwin a later bind(127.0.0.1:PORT) can
+	// coexist with *:PORT and steal loopback accepts; holding the specific
+	// tuples makes Cursor/odiza get EADDRINUSE instead.
+	guards, err := claimLoopbackGuards(envconfig.Host(), envconfig.ConnectableHost())
+	if err != nil {
 		return err
 	}
 
 	ln, err := net.Listen("tcp", envconfig.Host().Host)
 	if err != nil {
+		for _, g := range guards {
+			_ = g.Close()
+		}
 		return err
 	}
 
-	err = server.Serve(ln)
+	listeners := append([]net.Listener{ln}, guards...)
+	err = server.Serve(listeners...)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -2028,47 +2017,58 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
-func checkConnectableHostAvailable(bindURL, connectURL *url.URL) error {
-	if bindURL == nil {
-		return nil
-	}
-
-	// Probe the actual bind address first — catches a second serve on the same host:port.
-	if err := probeTCPListenFree(bindURL.Host); err != nil {
-		return fmt.Errorf("cannot serve %s: address already occupied (%v); stop the other zerollama/serve process (check screen/orphans) or set OLLAMA_HOST to a free address", bindURL.Host, err)
-	}
-
+// claimLoopbackGuards binds and retains loopback sockets when OLLAMA_HOST is a
+// wildcard (0.0.0.0 / ::). Returns nil when the primary bind is already specific.
+// The ConnectableHost address is required; the other loopback family is best-effort.
+func claimLoopbackGuards(bindURL, connectURL *url.URL) ([]net.Listener, error) {
 	bindHost, bindPort, err := net.SplitHostPort(bindURL.Host)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	ip := net.ParseIP(bindHost)
 	if ip == nil || !ip.IsUnspecified() {
-		return nil
+		return nil, nil
 	}
 
-	if connectURL == nil {
-		return nil
-	}
 	connectHost, connectPort, err := net.SplitHostPort(connectURL.Host)
 	if err != nil || connectPort != bindPort {
-		return nil
+		return nil, nil
 	}
 
-	if err := probeTCPListenFree(net.JoinHostPort(connectHost, connectPort)); err != nil {
-		return fmt.Errorf("cannot serve %s: client address %s is already occupied (%v); close the process using that loopback port or set OLLAMA_HOST to a free address such as 127.0.0.1:11435", bindURL.Host, connectURL.Host, err)
+	required := net.JoinHostPort(connectHost, connectPort)
+	addrs := []string{required}
+	switch connectHost {
+	case "127.0.0.1":
+		addrs = append(addrs, net.JoinHostPort("::1", bindPort))
+	case "::1":
+		addrs = append(addrs, net.JoinHostPort("127.0.0.1", bindPort))
 	}
-	return nil
-}
 
-func probeTCPListenFree(hostport string) error {
-	ln, err := net.Listen("tcp", hostport)
-	if err != nil {
-		return err
+	var out []net.Listener
+	closeAll := func() {
+		for _, ln := range out {
+			_ = ln.Close()
+		}
 	}
-	_ = ln.Close()
-	return nil
+
+	for i, addr := range addrs {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			if i == 0 {
+				closeAll()
+				return nil, fmt.Errorf(
+					"cannot serve %s: client address %s is already occupied; close the process using that loopback port or set OLLAMA_HOST to a free address such as 127.0.0.1:11435",
+					bindURL.Host, required,
+				)
+			}
+			// Optional sibling family (e.g. ::1 when required is 127.0.0.1).
+			fmt.Fprintf(os.Stderr, "warning: loopback guard bind failed for %s: %v\n", addr, err)
+			continue
+		}
+		out = append(out, ln)
+	}
+	return out, nil
 }
 
 func initializeKeypair() error {
@@ -2561,6 +2561,9 @@ func NewCLI() *cobra.Command {
 	aneDraftParityCmd := NewANEDraftParityCommand()
 	anePrefillBenchCmd := NewANEPrefillBenchCommand()
 	anePrefillHandoffCmd := NewANEPrefillHandoffSmokeCommand()
+	anePrefillFFNSliceCmd := NewANEPrefillFFNSliceSmokeCommand()
+	anePrefillFFNPolicyCmd := NewANEPrefillFFNPolicySmokeCommand()
+	anePrefillSwiGLUCmd := NewANEPrefillSwiGLUSmokeCommand()
 	aneModelResolveCmd := NewANEModelResolveCommand()
 	anePrefillSweepCmd := NewANEPrefillSweepCommand()
 	anePrefillCrossoverCmd := NewANEPrefillCrossoverCommand()
@@ -2657,6 +2660,9 @@ func NewCLI() *cobra.Command {
 		aneDraftParityCmd,
 		anePrefillBenchCmd,
 		anePrefillHandoffCmd,
+		anePrefillFFNSliceCmd,
+		anePrefillFFNPolicyCmd,
+		anePrefillSwiGLUCmd,
 		aneModelResolveCmd,
 		anePrefillSweepCmd,
 		anePrefillCrossoverCmd,

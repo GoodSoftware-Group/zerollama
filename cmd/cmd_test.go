@@ -1143,9 +1143,9 @@ func TestListHandler(t *testing.T) {
 				{Name: "model1", Digest: "sha256:abc123", Size: 1024, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 				{Name: "model2", Digest: "sha256:def456", Size: 2048, ModifiedAt: time.Now().Add(-48 * time.Hour)},
 			},
-			expectedOutput: "NAME      ID              SIZE      PARAMS    PERF    MODIFIED     \n" +
-				"model1    sha256:abc12    1.0 KB              --      24 hours ago    \n" +
-				"model2    sha256:def45    2.0 KB              --      2 days ago      \n",
+			expectedOutput: "NAME      ID              SIZE      PARAMS    CTX    PERF    MODIFIED     \n" +
+				"model1    sha256:abc12    1.0 KB              --     --      24 hours ago    \n" +
+				"model2    sha256:def45    2.0 KB              --     --      2 days ago      \n",
 		},
 		{
 			name: "filter models by prefix",
@@ -1154,8 +1154,8 @@ func TestListHandler(t *testing.T) {
 				{Name: "model1", Digest: "sha256:abc123", Size: 1024, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 				{Name: "model2", Digest: "sha256:def456", Size: 2048, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 			},
-			expectedOutput: "NAME      ID              SIZE      PARAMS    PERF    MODIFIED     \n" +
-				"model1    sha256:abc12    1.0 KB              --      24 hours ago    \n",
+			expectedOutput: "NAME      ID              SIZE      PARAMS    CTX    PERF    MODIFIED     \n" +
+				"model1    sha256:abc12    1.0 KB              --     --      24 hours ago    \n",
 		},
 		{
 			name: "include lm studio caches",
@@ -1176,9 +1176,9 @@ func TestListHandler(t *testing.T) {
 					ModifiedAt:  time.Now(),
 				},
 			},
-			expectedOutput: "NAME                                      ID              SIZE      PARAMS    PERF    MODIFIED          \n" +
-				"local:latest                              sha256:abc12    1.0 KB              --      24 hours ago         \n" +
-				"lmstudio-community/gemma-4-31b-it:q8_0                    32 GB               --      About an hour ago    \n",
+			expectedOutput: "NAME                                      ID              SIZE      PARAMS    CTX    PERF    MODIFIED          \n" +
+				"local:latest                              sha256:abc12    1.0 KB              --     --      24 hours ago         \n" +
+				"lmstudio-community/gemma-4-31b-it:q8_0                    32 GB               --     --      About an hour ago    \n",
 		},
 		{
 			name: "include cloud image models",
@@ -1199,9 +1199,9 @@ func TestListHandler(t *testing.T) {
 					ModifiedAt:  time.Now().Add(-24 * time.Hour),
 				},
 			},
-			expectedOutput: "NAME                                   ID              SIZE     PARAMS    PERF    MODIFIED     \n" +
-				"sd15-vulkan:latest                     sha256:abc12    545 B              --      24 hours ago    \n" +
-				"google/gemini-3.1-flash-image:cloud                    0 B                --      24 hours ago    \n",
+			expectedOutput: "NAME                                   ID              SIZE     PARAMS    CTX    PERF    MODIFIED     \n" +
+				"sd15-vulkan:latest                     sha256:abc12    545 B              --     --      24 hours ago    \n" +
+				"google/gemini-3.1-flash-image:cloud                    0 B                --     --      24 hours ago    \n",
 		},
 		{
 			name: "filter image capability",
@@ -1210,8 +1210,24 @@ func TestListHandler(t *testing.T) {
 				{Name: "gemma3:4b", Digest: "sha256:abc123", Size: 1024, Capabilities: []model.Capability{model.CapabilityCompletion}, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 				{Name: "sd15-vulkan:latest", Digest: "sha256:def456", Size: 545, Capabilities: []model.Capability{model.CapabilityImage}, ModifiedAt: time.Now().Add(-24 * time.Hour)},
 			},
-			expectedOutput: "NAME                  ID              SIZE     PARAMS    PERF    MODIFIED     \n" +
-				"sd15-vulkan:latest    sha256:def45    545 B              --      24 hours ago    \n",
+			expectedOutput: "NAME                  ID              SIZE     PARAMS    CTX    PERF    MODIFIED     \n" +
+				"sd15-vulkan:latest    sha256:def45    545 B              --     --      24 hours ago    \n",
+		},
+		{
+			name: "host ctx range when below train",
+			args: []string{},
+			serverResponse: []api.ListModelResponse{
+				{
+					Name:           "big:latest",
+					Digest:         "sha256:abc123",
+					Size:           64e9,
+					ModifiedAt:     time.Now().Add(-24 * time.Hour),
+					Details:        api.ModelDetails{ContextLength: 131072, ParameterSize: "70B"},
+					HostMaxContext: 16384,
+				},
+			},
+			expectedOutput: "NAME          ID              SIZE     PARAMS    CTX         PERF    MODIFIED     \n" +
+				"big:latest    sha256:abc12    64 GB    70B       16k–128k    --      24 hours ago    \n",
 		},
 		{
 			name:          "server error",
