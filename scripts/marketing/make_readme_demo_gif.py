@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Render docs/assets/demo-operator-cli.gif for the README (v2).
+"""Render docs/assets/demo-operator-cli.gif for the README (v3).
 
-Scenes: title → ls (PARAMS/PERF) → ps (PROJECT/SESSION) → harness curl →
+Scenes: title → ls (PARAMS/CTX/PERF) → ps (PROJECT/SESSION) → harness curl →
 tokenize win (measured) → optional live TTFT bars (--ttft-json).
 
-Does not start serve or unload models. --from-live only reads `zerollama ls/ps`.
+Does not start serve or unload models. --from-live only reads `zerollama ls/ps`
+with COLUMNS=160 so wide (single-line) tables are captured.
 
 Usage:
   python3 scripts/marketing/make_readme_demo_gif.py --from-live
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -41,14 +43,15 @@ HL = (55, 90, 75)  # soft column highlight
 # Measured Jul 2026 — docs/readme-marketing-benches.md (Qwen2 chat 1 MiB)
 DEFAULT_TOKENIZE = {"cold_ms": 389, "fast_ms": 81, "label": "Qwen2 chat · 1 MiB tokenize", "speedup": "4.8×"}
 
+# Curated when --from-live fails; CTX shows host-safe / host–train range.
 DEFAULT_LS = [
-    "NAME                      SIZE     PARAMS                 PERF",
-    "qwen3-coder-next:6bit     64 GB    15.0B MoE 512x10       --",
-    "gpt-oss-120b:mxfp4-q8     63 GB    14.9B/979.87M active   --",
-    "ornith-35b-optiq:latest   22 GB    34.0B MoE 256x8        54.2",
-    "granite4.1:3b-mlx         1.8 GB   425.54M                112.7",
-    "llama3.2:3b-mlx           1.8 GB   401.75M                148.9",
-    "qwen3:0.6b-mlx            349 MB   74.56M                 222.5",
+    "NAME                      SIZE     PARAMS                 CTX        PERF",
+    "qwen3-coder-next:6bit     64 GB    15.0B MoE 512x10       80k        --",
+    "gpt-oss-120b:mxfp4-q8     63 GB    14.9B/979.87M active   16k–128k   --",
+    "ornith-35b-optiq:latest   22 GB    34.0B MoE 256x8        80k        54.2",
+    "granite4.1:3b-mlx         1.8 GB   425.54M                128k       112.7",
+    "llama3.2:3b-mlx           1.8 GB   401.75M                128k       148.9",
+    "qwen3:0.6b-mlx            349 MB   74.56M                 128k       222.5",
 ]
 
 DEFAULT_PS = [
@@ -56,6 +59,8 @@ DEFAULT_PS = [
     "qwen3-coder-next        hermes-lean/discord:dm:…        hermes:agent:main:dm:…     100% GPU",
     "qwen3.6:35b-a3b-mlx     (background)                    bg:digest:6270b447…        100% GPU",
 ]
+
+LS_HEADER = "NAME                      SIZE     PARAMS                 CTX        PERF"
 
 HARNESS_LINES = [
     "$ curl /api/chat -d '{",
@@ -90,31 +95,46 @@ def truncate(s: str, n: int) -> str:
 
 
 def compact_ls_from_cli(text: str) -> list[str]:
-    rows: list[str] = ["NAME                      SIZE     PARAMS                 PERF"]
-    for ln in text.splitlines()[1:]:
+    """Parse wide `zerollama ls` (NAME ID SIZE PARAMS CTX PERF MODIFIED).
+
+    Skips empty-PARAMS stubs (image/video catalog noise) so the GIF leads with
+    chat/MoE rows where CTX matters.
+    """
+    rows: list[str] = [LS_HEADER]
+    for ln in text.splitlines():
+        if not ln.strip() or ln[:1].isspace() or ln.upper().startswith("NAME"):
+            continue
         parts = ln.split()
+        # name id N UNIT … ctx perf [modified…]
         if len(parts) < 6:
             continue
         name = parts[0]
         size = f"{parts[2]} {parts[3]}"
-        if parts[-1] == "ago" and len(parts) >= 8:
-            perf = parts[-4]
-            params_tokens = parts[4:-4]
+        if parts[-1] == "ago" and len(parts) >= 9:
+            # "2 days ago" / "15 hours ago"
+            core = parts[4:-3]
         elif parts[-1] == "Never":
-            perf = parts[-2]
-            params_tokens = parts[4:-2]
+            core = parts[4:-1]
         else:
-            perf = "--"
-            params_tokens = parts[4:]
-        params = " ".join(params_tokens)
-        rows.append(f"{truncate(name, 24):<24}  {size:<7}  {truncate(params, 22):<22}  {perf}")
+            core = parts[4:]
+        if len(core) < 2:
+            continue
+        perf = core[-1]
+        ctx = core[-2]
+        params = " ".join(core[:-2])
+        if not params.strip():
+            continue  # image/video stubs
+        rows.append(
+            f"{truncate(name, 24):<24}  {size:<7}  {truncate(params, 22):<22}  "
+            f"{truncate(ctx, 10):<10}  {perf}"
+        )
         if len(rows) >= 8:
             break
     return rows if len(rows) > 1 else DEFAULT_LS
 
 
 def compact_ps_from_cli(text: str) -> list[str]:
-    lines_in = [ln for ln in text.splitlines() if ln.strip()]
+    lines_in = [ln for ln in text.splitlines() if ln.strip() and not ln[:1].isspace()]
     if not lines_in:
         return DEFAULT_PS
     header = lines_in[0]
@@ -139,16 +159,27 @@ def compact_ps_from_cli(text: str) -> list[str]:
     return rows if len(rows) > 1 else DEFAULT_PS
 
 
+def _cli_env() -> dict[str, str]:
+    # Force wide single-line tables (compact kicks in below 100 cols).
+    env = os.environ.copy()
+    env["COLUMNS"] = "160"
+    return env
+
+
 def live_ls_lines() -> list[str]:
     bin_path = ROOT / "zerollama"
     cmd = [str(bin_path) if bin_path.exists() else "zerollama", "ls"]
-    return compact_ls_from_cli(subprocess.check_output(cmd, text=True, timeout=30))
+    return compact_ls_from_cli(
+        subprocess.check_output(cmd, text=True, timeout=30, env=_cli_env())
+    )
 
 
 def live_ps_lines() -> list[str]:
     bin_path = ROOT / "zerollama"
     cmd = [str(bin_path) if bin_path.exists() else "zerollama", "ps"]
-    return compact_ps_from_cli(subprocess.check_output(cmd, text=True, timeout=30))
+    return compact_ps_from_cli(
+        subprocess.check_output(cmd, text=True, timeout=30, env=_cli_env())
+    )
 
 
 def new_frame() -> tuple[Image.Image, ImageDraw.ImageDraw]:
@@ -346,7 +377,7 @@ def title_scene(
     im, d = new_frame()
     draw_chrome(d, "demo", f_sm, f_md)
     d.text((44, 180), "Built for agent megaprompts", fill=FG, font=f_lg)
-    d.text((44, 250), "ls · PARAMS + PERF", fill=ACCENT, font=f_md)
+    d.text((44, 250), "ls · PARAMS + CTX + PERF", fill=ACCENT, font=f_md)
     d.text((44, 290), "ps · PROJECT + SESSION", fill=ACCENT, font=f_md)
     d.text((44, 340), "harness key · tokenize · turn-2 cache", fill=DIM, font=f_md)
     add(frames, im, 1600)
@@ -443,13 +474,13 @@ def main() -> None:
     frames: list[tuple[Image.Image, int]] = []
     title_scene(frames, f_sm, f_md, f_lg)
 
-    # monospace approx: highlight PARAMS+PERF region
+    # monospace approx: highlight PARAMS + CTX + PERF
     typewriter_table(
         frames,
         ls_lines,
         "demo · zerollama ls",
-        "$ zerollama ls     # PARAMS (MoE/active) + PERF (from bench)",
-        highlight_cols=[(320, 620)],
+        "$ zerollama ls     # PARAMS + CTX (host-safe) + PERF",
+        highlight_cols=[(320, 780)],
         f_sm=f_sm,
         f_md=f_md,
         f_body=f_body,

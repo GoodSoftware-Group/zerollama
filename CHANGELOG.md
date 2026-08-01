@@ -8,7 +8,7 @@ All notable changes to this project are documented in this file. The format is b
 
 **Why:** Operators hit OOM with dual MLX loads + 80k ctx; `ls` showed PARAMS/PERF but not what context this host can hold *now*.
 
-**What:** `/api/tags` adds `host_max_context` (GGUF GraphSize binary-search vs free VRAM + loaded credit; MLX size heuristic). CLI **CTX** column: train max when it fits, else `16k–80k`-style range. Train ceiling remains `details.context_length`. Narrow TTYs (&lt;100 cols) render `ls`/`ps` as **2-line rows** (`term.GetSize` / `$COLUMNS`) so tables fit ~80 columns; pipes stay wide.
+**What:** `/api/tags` adds `host_max_context` (GGUF GraphSize binary-search vs free VRAM + loaded credit; MLX size heuristic). CLI **CTX** column: train max when it fits, else `16k–80k`-style range. Train ceiling remains `details.context_length`. Narrow TTYs (&lt;100 cols) render `ls`/`ps` as **2-line rows** (`term.GetSize` / `$COLUMNS`) so tables fit ~80 columns; pipes stay wide. Regenerated `docs/assets/demo-operator-cli.gif` (v3) — `ls` shows **CTX** (incl. host–train ranges from live).
 
 ### Vendor rebase to ggml-org `5f55650a` (b10199+1) — Jul 2026
 
@@ -27,7 +27,7 @@ All notable changes to this project are documented in this file. The format is b
 
 **Why:** Marketing backlog wanted a turn-1 vs turn-2 visual; CLI DX fields needed to show up outside a text table.
 
-**What:** `docs/assets/demo-operator-cli.gif` + `scripts/marketing/make_readme_demo_gif.py` — terminal-style `ls` (PARAMS/PERF), `ps` (PROJECT/SESSION), harness curl, measured tokenize cards (389→81 ms), L3 story card; optional `--ttft-json` from `capture_ttft_for_gif.py` (lab `:11435`) when GPU free. Embedded under §1.5.
+**What:** `docs/assets/demo-operator-cli.gif` + `scripts/marketing/make_readme_demo_gif.py` — terminal-style `ls` (PARAMS/**CTX**/PERF), `ps` (PROJECT/SESSION), harness curl, measured tokenize cards (389→81 ms), L3 story card; optional `--ttft-json` from `capture_ttft_for_gif.py` (lab `:11435`) when GPU free. Embedded under §1.5. (Aug 2026: v3 refresh for CTX column.)
 
 ### README operator CLI DX (Jul 2026)
 

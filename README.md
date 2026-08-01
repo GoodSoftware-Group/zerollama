@@ -79,7 +79,7 @@ Once `./zerollama serve` is up and a model is pulled:
 Copy-paste harness request: [§5 Use the API](#5-use-the-api).
 
 <p align="center">
-  <img src="docs/assets/demo-operator-cli.gif" alt="zerollama ls PARAMS/PERF, ps PROJECT/SESSION, megaprompt tokenize win" width="720"/>
+  <img src="docs/assets/demo-operator-cli.gif" alt="zerollama ls PARAMS/CTX/PERF, ps PROJECT/SESSION, megaprompt tokenize win" width="720"/>
 </p>
 
 ---
