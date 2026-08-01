@@ -1,0 +1,806 @@
+{
+  "schema_version": "1.0",
+  "skill_count": 29,
+  "skills": [
+    {
+      "name": "account-auth",
+      "description": "Check zerollama/Eliza Cloud account identity and manage local signing keys via /api/me, /api/signout, and /api/user/keys.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "auth",
+        "eliza-cloud",
+        "whoami",
+        "signout",
+        "keys"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model",
+        "cloud-model-routing"
+      ],
+      "path": "account-auth/SKILL.md"
+    },
+    {
+      "name": "agent-web-tools",
+      "description": "Use zerollama's experimental server-side web search and web fetch endpoints as agent tools.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "web-search",
+        "web-fetch",
+        "tools",
+        "experimental",
+        "cloud-proxy"
+      ],
+      "related_skills": [
+        "zerollama-integration"
+      ],
+      "path": "agent-web-tools/SKILL.md"
+    },
+    {
+      "name": "anthropic-messages-compat",
+      "description": "Talk to a zerollama server using the Anthropic Messages API wire format (/v1/messages) for tools built against Claude's API.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "anthropic",
+        "claude",
+        "messages-api",
+        "compat",
+        "tool-use"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "hermes-provider"
+      ],
+      "path": "anthropic-messages-compat/SKILL.md"
+    },
+    {
+      "name": "batch-inference",
+      "description": "Fan out multiple text chat completions to the same model in one call via a zerollama server's batch endpoint.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "batch",
+        "chat-completions",
+        "throughput",
+        "runtime"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "generate-embeddings",
+        "distill-and-train"
+      ],
+      "path": "batch-inference/SKILL.md"
+    },
+    {
+      "name": "benchmark-model-speed",
+      "description": "Benchmark local model decode speed (chat) or generation wall time (image/video) on a zerollama server and cache results for zerollama ls.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "bench",
+        "benchmark",
+        "performance",
+        "tok-s"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "fleet-vram-admission",
+        "download-model",
+        "doctor-model"
+      ],
+      "path": "benchmark-model-speed/SKILL.md"
+    },
+    {
+      "name": "cloud-model-routing",
+      "description": "Route chat/embedding/message requests on a zerollama server to remote Eliza Cloud models using the :cloud model suffix, instead of local GGUF inference.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "eliza-cloud",
+        "cloud",
+        "remote-inference",
+        "proxy"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "account-auth",
+        "download-model",
+        "model-suggester"
+      ],
+      "path": "cloud-model-routing/SKILL.md"
+    },
+    {
+      "name": "configure-zerollama-env",
+      "description": "Help a user navigate zerollama's ~1000 environment variables and YAML profiles (OLLAMA_*/ZEROLLAMA_*) \u2014 discover current effective config, prefer profiles over raw flags, and verify changes instead of guessing.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "config",
+        "env-vars",
+        "yaml",
+        "profiles",
+        "tuning"
+      ],
+      "related_skills": [
+        "install-zerollama",
+        "diagnose-server-health",
+        "gpu-capability-discovery",
+        "fleet-vram-admission"
+      ],
+      "path": "configure-zerollama-env/SKILL.md"
+    },
+    {
+      "name": "diagnose-server-health",
+      "description": "Run zerollama doctor to diagnose local runtime readiness (venvs, libllama, MLX, sidecar health, model blob integrity) and apply safe auto-fixes.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "doctor",
+        "diagnostics",
+        "health-check",
+        "troubleshooting"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "install-zerollama",
+        "configure-zerollama-env",
+        "gpu-capability-discovery",
+        "download-model",
+        "doctor-model"
+      ],
+      "path": "diagnose-server-health/SKILL.md"
+    },
+    {
+      "name": "distill-and-train",
+      "description": "Fine-tune (LoRA/QLoRA) a local model on a zerollama server, including distilling a larger model into a smaller one via synthetic SFT data, plus the ternary QAT path for extreme quantization.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "training",
+        "fine-tuning",
+        "lora",
+        "qlora",
+        "distillation",
+        "qat",
+        "gpu"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "batch-inference",
+        "fleet-vram-admission",
+        "download-model"
+      ],
+      "path": "distill-and-train/SKILL.md"
+    },
+    {
+      "name": "doctor-model",
+      "description": "Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken) and config-level footguns (quant label, missing generation config, context mismatch, no chat template) with zerollama doctor --models and the model-serving-minefield trap registry.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "doctor",
+        "model-health",
+        "manifest",
+        "blob-integrity",
+        "minefield",
+        "repair"
+      ],
+      "related_skills": [
+        "diagnose-server-health",
+        "model-authoring",
+        "download-model",
+        "benchmark-model-speed",
+        "model-suggester"
+      ],
+      "path": "doctor-model/SKILL.md"
+    },
+    {
+      "name": "download-model",
+      "description": "Pull, register, list, and remove models on a zerollama server (GGUF chat models, image/video/audio backends).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "ollama",
+        "pull",
+        "model-management",
+        "registry",
+        "comfyui",
+        "wan"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "generate-image",
+        "generate-video",
+        "doctor-model",
+        "model-suggester"
+      ],
+      "path": "download-model/SKILL.md"
+    },
+    {
+      "name": "fleet-management",
+      "description": "Run a zerollama fleet management node that routes agent requests to the best of several zerollama peers by warm-model status, via zerollama fleet serve.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "fleet",
+        "multi-node",
+        "routing",
+        "mdns",
+        "cluster"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "fleet-vram-admission"
+      ],
+      "path": "fleet-management/SKILL.md"
+    },
+    {
+      "name": "fleet-vram-admission",
+      "description": "Inspect and dry-run zerollama's model admission/scheduling: capacity checks, co-residency planning, pins, and live fleet status before loading a model.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "vram",
+        "admission",
+        "scheduling",
+        "fleet",
+        "pin",
+        "capacity"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model",
+        "distill-and-train",
+        "fleet-management",
+        "gpu-capability-discovery",
+        "model-suggester"
+      ],
+      "path": "fleet-vram-admission/SKILL.md"
+    },
+    {
+      "name": "generate-embeddings",
+      "description": "Generate vector embeddings for text via a zerollama server, for RAG, semantic search, or clustering.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "embeddings",
+        "vectors",
+        "rag",
+        "semantic-search"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "rerank-candidates",
+        "download-model"
+      ],
+      "path": "generate-embeddings/SKILL.md"
+    },
+    {
+      "name": "generate-image",
+      "description": "Generate or edit images via a zerollama server (MLX fast path or ComfyUI backend).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "image",
+        "imagegen",
+        "comfyui",
+        "mlx",
+        "text-to-image",
+        "img2img"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model"
+      ],
+      "path": "generate-image/SKILL.md"
+    },
+    {
+      "name": "generate-video",
+      "description": "Generate text-to-video clips via a zerollama server's async OpenAI-compatible Videos API (Wan).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "video",
+        "text-to-video",
+        "wan",
+        "async-job"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model"
+      ],
+      "path": "generate-video/SKILL.md"
+    },
+    {
+      "name": "gpu-capability-discovery",
+      "description": "Determine which GPU backend, autoconfig profile, and inference path a zerollama server picked (Metal/CUDA/MLX/inprocess llama-server) before choosing models or debugging performance.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "gpu",
+        "autoconfig",
+        "metal",
+        "cuda",
+        "mlx",
+        "backend",
+        "health"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "diagnose-server-health",
+        "configure-zerollama-env",
+        "fleet-vram-admission",
+        "model-suggester"
+      ],
+      "path": "gpu-capability-discovery/SKILL.md"
+    },
+    {
+      "name": "hermes-provider",
+      "description": "Wire Hermes to a zerollama server.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "ollama",
+        "local",
+        "inference",
+        "qos",
+        "kv-cache",
+        "prompt-cache",
+        "provider"
+      ],
+      "related_skills": [
+        "zerollama-integration"
+      ],
+      "path": "hermes-provider/SKILL.md"
+    },
+    {
+      "name": "install-zerollama",
+      "description": "Bootstrap and build zerollama from a fresh clone on macOS or Linux \u2014 prerequisites, tiered onboarding scripts, and daily-use verification.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "install",
+        "setup",
+        "bootstrap",
+        "build",
+        "onboarding"
+      ],
+      "related_skills": [
+        "configure-zerollama-env",
+        "diagnose-server-health",
+        "gpu-capability-discovery"
+      ],
+      "path": "install-zerollama/SKILL.md"
+    },
+    {
+      "name": "launch-agent-integration",
+      "description": "Wire up a coding agent CLI (Cline, OpenCode, Droid, Pi, Hermes, etc.) to a local zerollama server via zerollama launch, using one shared model inventory instead of per-integration config hacks.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "launch",
+        "integrations",
+        "cline",
+        "opencode",
+        "droid",
+        "pi",
+        "config"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "hermes-provider",
+        "download-model"
+      ],
+      "path": "launch-agent-integration/SKILL.md"
+    },
+    {
+      "name": "lmstudio-cache-import",
+      "description": "Import models already downloaded by LM Studio into zerollama without re-downloading, via zerollama list/pull cache discovery.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "lmstudio",
+        "import",
+        "cache",
+        "disk-space",
+        "mlx",
+        "gguf"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model",
+        "model-suggester"
+      ],
+      "path": "lmstudio-cache-import/SKILL.md"
+    },
+    {
+      "name": "model-authoring",
+      "description": "Create custom model variants, quantize, copy, and repair manifests on a zerollama server (Modelfile-style /api/create, /api/copy, /api/repair).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "ollama",
+        "create",
+        "modelfile",
+        "quantize",
+        "copy",
+        "repair",
+        "manifest"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model",
+        "doctor-model"
+      ],
+      "path": "model-authoring/SKILL.md"
+    },
+    {
+      "name": "model-suggester",
+      "description": "Pick the right zerollama model for a task: match required capabilities (tools/vision/embedding/thinking), context length, and available VRAM against local inventory, LM Studio cache, and cloud fallback before recommending a pull or a :cloud route.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "model-selection",
+        "recommendation",
+        "capabilities",
+        "vram",
+        "catalog"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "gpu-capability-discovery",
+        "fleet-vram-admission",
+        "download-model",
+        "cloud-model-routing",
+        "doctor-model",
+        "lmstudio-cache-import"
+      ],
+      "path": "model-suggester/SKILL.md"
+    },
+    {
+      "name": "openai-responses-compat",
+      "description": "Talk to a zerollama server using OpenAI's Responses API wire format (/v1/responses) instead of Chat Completions.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "openai",
+        "responses-api",
+        "compat"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "hermes-provider"
+      ],
+      "path": "openai-responses-compat/SKILL.md"
+    },
+    {
+      "name": "rerank-candidates",
+      "description": "Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "score",
+        "rerank",
+        "classification",
+        "logprob",
+        "routing"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "generate-embeddings"
+      ],
+      "path": "rerank-candidates/SKILL.md"
+    },
+    {
+      "name": "speech-to-text",
+      "description": "Transcribe audio to text via a zerollama server's OpenAI-compatible transcription API (Whisper or multimodal chat models).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "stt",
+        "audio",
+        "transcription",
+        "whisper",
+        "multimodal"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "text-to-speech",
+        "download-model"
+      ],
+      "path": "speech-to-text/SKILL.md"
+    },
+    {
+      "name": "text-to-speech",
+      "description": "Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "tts",
+        "audio",
+        "speech",
+        "piper",
+        "chatterbox",
+        "orpheus",
+        "kokoro"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "speech-to-text",
+        "download-model"
+      ],
+      "path": "text-to-speech/SKILL.md"
+    },
+    {
+      "name": "video-understanding-chat",
+      "description": "Send video clips into a zerollama chat request for vision-language understanding (video_url/videos in /v1/chat/completions), distinct from generating video.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "video",
+        "vlm",
+        "vision",
+        "multimodal",
+        "ffmpeg"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "generate-video"
+      ],
+      "path": "video-understanding-chat/SKILL.md"
+    },
+    {
+      "name": "zerollama-integration",
+      "description": "Connect any agent harness to a zerollama server.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "ollama",
+        "local",
+        "inference",
+        "qos",
+        "kv-cache",
+        "batch",
+        "prompt-cache",
+        "cache-warm"
+      ],
+      "related_skills": [
+        "install-zerollama",
+        "configure-zerollama-env",
+        "hermes-provider",
+        "generate-image",
+        "generate-video",
+        "download-model",
+        "text-to-speech",
+        "speech-to-text",
+        "generate-embeddings",
+        "rerank-candidates",
+        "batch-inference",
+        "fleet-vram-admission",
+        "model-authoring",
+        "agent-web-tools",
+        "anthropic-messages-compat",
+        "openai-responses-compat",
+        "account-auth",
+        "distill-and-train",
+        "video-understanding-chat",
+        "cloud-model-routing",
+        "diagnose-server-health",
+        "benchmark-model-speed",
+        "launch-agent-integration",
+        "fleet-management",
+        "gpu-capability-discovery",
+        "lmstudio-cache-import",
+        "doctor-model",
+        "model-suggester"
+      ],
+      "path": "zerollama-integration/SKILL.md"
+    }
+  ]
+}

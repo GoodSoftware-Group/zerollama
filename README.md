@@ -40,6 +40,7 @@ Evidence + reproduce: [readme-marketing-benches.md](docs/readme-marketing-benche
 | Harness-shaped API example | [Use the API](#5-use-the-api) |
 | Build on Apple Silicon / CUDA / Arc | [Platforms](#6-build--platforms) |
 | Deep docs, phases, experimental tracks | [Go deeper](#7-go-deeper) |
+| Give your agent zerollama skills (Cursor/Claude/etc.) | [Agent skills](#8-agent-skills) |
 
 ---
 
@@ -361,6 +362,26 @@ Ordered by how often operators need them. Full index: [docs/README.md](docs/READ
 | **Phase 17** — Go→llama-server | Mergeability with upstream; Apple Silicon still defaults ggml (~+7% in lab) | [phase17-llama-server.md](docs/phase17-llama-server.md) |
 | **Phase 16** — `--edge` | Upstream-shaped edge node; keep train/Eliza/fleet | [phase16-thin-edge.md](docs/phase16-thin-edge.md) |
 | **Flash-MoE / ANE** | Experimental Apple Silicon tracks (MoE > unified RAM, Neural Engine labs) | [flash-moe.md](docs/flash-moe.md) · [ane-probe.md](docs/ane-probe.md) · [ane-draft-inprocess.md](docs/ane-draft-inprocess.md) |
+
+---
+
+## 8. Agent skills
+
+[`skills/`](skills/) (source of truth: [`agentskills/`](agentskills/)) ships **29** [`SKILL.md`](skills/README.md) packages — one per zerollama capability (image/video/audio gen, embeddings, VRAM admission, training, doctor, model selection, cloud routing, `/v1` compat, and more) — generated from this repo's own OpenAPI spec, CLI, and source so an agent can use zerollama correctly without re-deriving the API from scratch.
+
+```bash
+# Universal installer — detects your installed agents (Cursor, Claude Code, Copilot, Cline, ...)
+npx skills add GoodSoftware-Group/zerollama
+
+# Or install everything into one agent explicitly
+npx skills add GoodSoftware-Group/zerollama --agent cursor
+
+# Or manual — clone once, copy the skills you want
+git clone https://github.com/GoodSoftware-Group/zerollama.git
+cp -r zerollama/skills/model-suggester ~/.claude/skills/
+```
+
+Full catalog + descriptions: [skills/README.md](skills/README.md) · machine-readable manifest: [skills/skills.json](skills/skills.json).
 
 ---
 
