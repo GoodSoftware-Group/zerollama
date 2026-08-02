@@ -67,7 +67,8 @@ func (m *Model) Load(modelName string) error {
 		mlx.SetDefaultDeviceGPU()
 		mlx.DisableCompile()
 		mlx.SetCacheLimit(0)
-		mlx.SetMemoryLimit(12 * 1024 * 1024 * 1024)
+		// See runner.go — 12GiB is CUDA 16g only; Metal keeps MLX default / env override.
+		mlx.ApplyImagegenMemoryLimit()
 	}
 
 	m.ModelName = modelName

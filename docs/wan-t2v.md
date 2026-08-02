@@ -44,6 +44,13 @@ GET /v1/videos/:id/content (completed only; video/mp4)
 - **Host RAM ~16 GB** for the Wan subprocess on 16g presets (T5 released after encode; see below). A **24 GB** CT is comfortable; **16 GB** works with `WAN_UNLOAD_T5=1` (default on 16g).
 - Wan repo + checkpoints (install script below).
 
+### Apple Silicon (Darwin)
+
+- Install uses **Python ≥3.10** (prefer 3.11/3.12) and **MPS torch**; system 3.9 + recent wheels often **SIGSEGV** on `import torch`.
+- Default device is **MPS** with **float32 DiT** + CPU VAE (`WAN_VAE_CPU=1`). Force CPU with `WAN_FORCE_CPU=1`.
+- Serve must not leak `.venv-training` into Wan’s `DYLD_LIBRARY_PATH` (handled by `wan_torch_compat` / training `run_script` env).
+- Free disk before `--profile 2.2` (~20 GB weights).
+
 ## Install
 
 ```bash

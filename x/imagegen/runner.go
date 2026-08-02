@@ -63,8 +63,11 @@ func Execute(args []string) error {
 			// CUDA graph capture (mlx.compile) corrupts eval on RTX 5080 class GPUs.
 			mlx.DisableCompile()
 			mlx.SetCacheLimit(0)
-			// Force the CUDA allocator to trim cache during eval on 16GB cards.
-			mlx.SetMemoryLimit(12 * 1024 * 1024 * 1024)
+			// WHY Linux-only 12GiB: survival clamp for ~16GB CUDA cards. On Metal UMA
+			// (often 64–128GB) the same cap aborts text-encoder materialize mid-batch
+			// and surfaces as empty mlx_stream / bogus "GPU OOM". Leave MLX's default
+			// Metal working-set limit; override with ZEROLLAMA_IMAGEGEN_MEMORY_LIMIT.
+			mlx.ApplyImagegenMemoryLimit()
 			// Set CUDA pool release threshold to 0: freed buffers are returned to the
 			// OS immediately instead of being held in the async pool. This trades
 			// allocation latency for reduced peak VRAM, critical on 16 GB GPUs.

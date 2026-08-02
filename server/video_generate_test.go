@@ -55,6 +55,16 @@ func TestBuildWanVideoPayload(t *testing.T) {
 	if err := os.MkdirAll(cfg.BackendPaths["wan_ckpt_dir"], 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(cfg.BackendPaths["wan_ckpt_dir"], "dummy.pth"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantVenv := filepath.Join(filepath.Dir(cfg.BackendPaths["wan_repo"]), "venv")
+	if err := os.MkdirAll(filepath.Join(wantVenv, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wantVenv, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	submittedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	payload, err := buildWanVideoPayload(cfg, *cfg.VideoGeneration, "wan2.1-t2v", "a cat on stage", nil, submittedAt)
@@ -70,7 +80,6 @@ func TestBuildWanVideoPayload(t *testing.T) {
 	if payload.OutputPath != filepath.Join(videoArtifactRoot(), "{job_id}.mp4") {
 		t.Fatalf("output path: %s", payload.OutputPath)
 	}
-	wantVenv := filepath.Join(filepath.Dir(cfg.BackendPaths["wan_repo"]), "venv")
 	if payload.Env["WAN_VENV"] != wantVenv {
 		t.Fatalf("WAN_VENV: got %q want %q", payload.Env["WAN_VENV"], wantVenv)
 	}

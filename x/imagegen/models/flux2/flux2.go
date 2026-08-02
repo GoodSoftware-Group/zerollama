@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"runtime"
 	"time"
 
 	"github.com/ollama/ollama/x/imagegen/manifest"
@@ -53,7 +54,11 @@ func (m *Model) Load(modelName string) error {
 
 	if mlx.GPUIsAvailable() {
 		mlx.SetDefaultDeviceGPU()
-		mlx.EnableCompile()
+		// Compile/graphs: leave disabled on Metal (runner DisableCompile). CUDA 5080
+		// also needs graphs off — EnableCompile here used to undo the runner setting.
+		if runtime.GOOS == "linux" {
+			mlx.DisableCompile()
+		}
 	}
 
 	m.ModelName = modelName
@@ -413,6 +418,10 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		m.VAE.Tiling = DefaultTilingConfig()
 	}
 	decoded := m.VAE.Decode(patches, patchH, patchW)
+	// Host PNG encode needs float32 host bytes; Metal decode may leave f16/bf16.
+	if decoded.Dtype() != mlx.DtypeFloat32 {
+		decoded = mlx.AsType(decoded, mlx.DtypeFloat32)
+	}
 	mlx.Eval(decoded)
 
 	// Free patches now that decode is done

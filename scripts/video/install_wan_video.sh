@@ -39,7 +39,29 @@ if [[ ! -d "$WAN_ROOT/Wan2.1/.git" ]]; then
   git clone --depth 1 --branch main https://github.com/Wan-Video/Wan2.1.git "$WAN_ROOT/Wan2.1"
 fi
 
-python3 -m venv "$VENV_DIR"
+# Prefer Python ≥3.10 on Darwin: system 3.9.6 + recent torch wheels SIGSEGV on import;
+# gradio≥5 (Wan requirements) also needs ≥3.10. Prefer python3.11/3.12 when creating the venv.
+WAN_VENV_PYTHON="python3"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  for cand in "${WAN_PYTHON:-}" python3.12 python3.11 python3.10; do
+    [[ -z "$cand" ]] && continue
+    if command -v "$cand" >/dev/null 2>&1; then
+      ver="$("$cand" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+      case "$ver" in
+        3.1[0-9]|3.[2-9][0-9])
+          WAN_VENV_PYTHON="$(command -v "$cand")"
+          break
+          ;;
+      esac
+    fi
+  done
+  if [[ "$WAN_VENV_PYTHON" == "python3" ]]; then
+    echo "warning: no Python ≥3.10 found — system python3 may crash importing torch; install python3.11+" >&2
+  else
+    echo "Darwin: creating Wan venv with $WAN_VENV_PYTHON"
+  fi
+fi
+"$WAN_VENV_PYTHON" -m venv "$VENV_DIR"
 # shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate"
 pip install -U pip wheel packaging ninja
@@ -49,14 +71,26 @@ pip install "setuptools>=70,<82"
 # flash_attn setup imports torch; pip build isolation hides torch. Install torch first.
 # flash_attn reads MAX_JOBS + NVCC_THREADS (not WAN_*). If MAX_JOBS is unset, setup.py
 # auto-sets it from os.cpu_count()//2 (container cores). Wan uses torch SDPA if skipped.
-TORCH_INDEX="${WAN_TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
 pip install "numpy>=1.23.5,<2"
-pip install "torch==2.11.0+cu128" "torchvision==0.26.0+cu128" --index-url "$TORCH_INDEX"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  # Apple Silicon: default PyTorch wheels include MPS (no CUDA index).
+  echo "Darwin detected — installing PyTorch with MPS (skip CUDA cu128 / flash_attn)."
+  pip install "torch" "torchvision"
+  export WAN_INSTALL_FLASH_ATTN=0
+  export WAN_TORCH_PROBE=0
+else
+  TORCH_INDEX="${WAN_TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
+  pip install "torch==2.11.0+cu128" "torchvision==0.26.0+cu128" --index-url "$TORCH_INDEX"
+fi
 
 install_wan_requirements() {
   local req="$1"
   [[ -f "$req" ]] || return 0
-  grep -v '^[[:space:]]*flash_attn[[:space:]]*$' "$req" | pip install -r /dev/stdin
+  # flash_attn: optional CUDA compile. gradio: Wan demo UI only — generate.py does not need it
+  # and gradio≥5 requires Python ≥3.10 (breaks system 3.9 venvs on macOS).
+  grep -vE '^[[:space:]]*(flash_attn|gradio)([[:space:]]|$)' "$req" | pip install -r /dev/stdin
+  # Wan modules import einops; some requirement pins omit it on Darwin wheels.
+  pip install -q einops || true
 }
 
 install_wan_requirements "$WAN_ROOT/Wan2.1/requirements.txt"
@@ -69,6 +103,11 @@ patch_wan_attention() {
   fi
 }
 patch_wan_attention
+# Apply Apple Silicon / import-time CUDA default patches (idempotent).
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  "$VENV_DIR/bin/python3" "$REPO_ROOT/scripts/video/wan_mps_compat.py" 2>/dev/null || \
+    "$VENV_DIR/bin/python3" -c "from pathlib import Path; import sys; sys.path.insert(0, '$REPO_ROOT/scripts/video'); from wan_mps_compat import patch_wan_sources; patch_wan_sources(Path('$WAN_ROOT/Wan2.1'))"
+fi
 
 run_wan_torch_probe() {
   if [[ "${WAN_TORCH_PROBE:-1}" == "0" ]]; then
@@ -154,6 +193,8 @@ esac
 import sys
 import torch
 print("wan venv ok", sys.executable, "torch", torch.__version__, "cuda", torch.cuda.is_available())
+if hasattr(torch.backends, "mps"):
+    print("mps", torch.backends.mps.is_available())
 try:
     import flash_attn  # noqa: F401
     print("flash_attn: installed")

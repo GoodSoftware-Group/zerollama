@@ -789,7 +789,7 @@ def _script_subprocess_env(python_bin: str, extra_env: Dict[str, Any]) -> Dict[s
     otherwise the child loads torch from venv-training instead of the Wan venv.
     """
     env = os.environ.copy()
-    env.update(extra_env)
+    env.update({k: str(v) for k, v in extra_env.items()})
     if python_bin != sys.executable:
         env.pop("PYTHONPATH", None)
         env.pop("PYTHONHOME", None)
@@ -800,8 +800,18 @@ def _script_subprocess_env(python_bin: str, extra_env: Dict[str, Any]) -> Dict[s
         if wan_repo:
             # generate.py imports `wan` from the repo tree (cwd is also set, but be explicit).
             env["PYTHONPATH"] = str(Path(wan_repo).expanduser())
-    return env
+        # Darwin: embedded training torch is often on DYLD_LIBRARY_PATH; strip foreign
+        # torch/lib dirs so Wan's interpreter loads its own libtorch.
+        try:
+            scripts = Path(__file__).resolve().parent / "scripts" / "video"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from wan_torch_compat import sanitize_ld_library_path_for_pytorch
 
+            sanitize_ld_library_path_for_pytorch(env, python=python_bin)
+        except Exception:
+            pass
+    return env
 
 def _resolve_script_python(request: Dict[str, Any], extra_env: Dict[str, Any]) -> str:
     """Pick the interpreter for run_script jobs (Wan venv when configured).

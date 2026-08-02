@@ -48,18 +48,21 @@ __all__ = [
 def _sdpa_attention(q, k, v, q_lens=None, k_lens=None, dropout_p=0., softmax_scale=None,
                     q_scale=None, causal=False, window_size=(-1, -1), deterministic=False,
                     dtype=torch.bfloat16):
+    """PyTorch SDPA path for Wan (CPU/MPS/CUDA without flash_attn).
+
+    Keep activation dtype (fp16/bf16/fp32). Forcing bf16 breaks Darwin float32 DiT
+    (``mat1 BFloat16 / mat2 Float`` on the output projection).
+    """
     _ = window_size, deterministic, softmax_scale, q_scale, q_lens, k_lens
-    q = q.transpose(1, 2).to(dtype)
-    k = k.transpose(1, 2).to(dtype)
-    v = v.transpose(1, 2).to(dtype)
-    q = q.transpose(1, 2).to(dtype)
-    k = k.transpose(1, 2).to(dtype)
-    v = v.transpose(1, 2).to(dtype)
-    with torch.backends.cuda.sdp_kernel(
-            enable_flash=False, enable_mem_efficient=True, enable_math=True):
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, is_causal=causal, dropout_p=dropout_p)
-    return out.transpose(1, 2).contiguous()
+    out_dtype = q.dtype
+    compute = out_dtype if out_dtype in (torch.float16, torch.bfloat16, torch.float32) else dtype
+    # [B, L, H, D] -> [B, H, L, D] for SDPA
+    q = q.transpose(1, 2).to(compute)
+    k = k.transpose(1, 2).to(compute)
+    v = v.transpose(1, 2).to(compute)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, attn_mask=None, is_causal=causal, dropout_p=dropout_p)
+    return out.transpose(1, 2).contiguous().to(out_dtype)
 
 
 '''

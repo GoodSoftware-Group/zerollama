@@ -18,7 +18,6 @@
 #undef mlx_array_tostring
 #undef mlx_array_new
 #undef mlx_array_free
-#undef mlx_array_detach
 #undef mlx_array_new_bool
 #undef mlx_array_new_int
 #undef mlx_array_new_float32
@@ -640,7 +639,6 @@ extern size_t (*mlx_dtype_size_ptr)(mlx_dtype dtype);
 extern int (*mlx_array_tostring_ptr)(mlx_string* str, const mlx_array arr);
 extern mlx_array (*mlx_array_new_ptr)(void);
 extern int (*mlx_array_free_ptr)(mlx_array arr);
-extern int (*mlx_array_detach_ptr)(mlx_array arr);
 extern mlx_array (*mlx_array_new_bool_ptr)(bool val);
 extern mlx_array (*mlx_array_new_int_ptr)(int val);
 extern mlx_array (*mlx_array_new_float32_ptr)(float val);
@@ -1277,8 +1275,6 @@ int mlx_array_tostring(mlx_string* str, const mlx_array arr);
 mlx_array mlx_array_new(void);
 
 int mlx_array_free(mlx_array arr);
-
-int mlx_array_detach(mlx_array arr);
 
 mlx_array mlx_array_new_bool(bool val);
 

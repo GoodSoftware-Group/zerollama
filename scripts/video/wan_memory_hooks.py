@@ -38,16 +38,34 @@ def release_text_encoder(pipe) -> None:
     print("WAN: released T5 encoder (~11G host RAM)", file=sys.stderr, flush=True)
 
 
-def patch_unload_t5_after_encode() -> None:
-    if not unload_t5_enabled():
+def cast_dit_float32_if_needed(pipe) -> None:
+    """After T5 is gone, materialize DiT in fp32 for Darwin CPU/MPS."""
+    import torch
+
+    if torch.cuda.is_available():
         return
+    if not getattr(pipe, "_zerollama_need_fp32", False):
+        return
+    if not hasattr(pipe, "model") or pipe.model is None:
+        return
+    pipe.model = pipe.model.to(dtype=torch.float32)
+    pipe.param_dtype = torch.float32
+    pipe._zerollama_need_fp32 = False
+    print("WAN: cast DiT to float32 (Apple Silicon bf16 path)", file=sys.stderr, flush=True)
+
+
+def patch_unload_t5_after_encode() -> None:
+    """Unload T5 after encode (16g) and cast DiT to fp32 on Darwin once T5 is gone."""
+    import torch
     from wan.text2video import WanT2V
 
+    do_unload = unload_t5_enabled()
     _orig_gen = WanT2V.generate
 
     def generate(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         te = getattr(self, "text_encoder", None)
         if te is None:
+            cast_dit_float32_if_needed(self)
             return _orig_gen(self, *args, **kwargs)
 
         _orig_call = te.__call__
@@ -55,9 +73,16 @@ def patch_unload_t5_after_encode() -> None:
 
         def wrapped_call(texts, device):
             out = _orig_call(texts, device)
+            if not torch.cuda.is_available():
+                target = torch.float32 if getattr(self, "_zerollama_need_fp32", False) else getattr(
+                    self, "param_dtype", torch.float32
+                )
+                out = [t.to(dtype=target) for t in out]
             encode_passes[0] += 1
             if encode_passes[0] >= 2:
-                release_text_encoder(self)
+                if do_unload:
+                    release_text_encoder(self)
+                cast_dit_float32_if_needed(self)
             return out
 
         te.__call__ = wrapped_call
@@ -66,6 +91,7 @@ def patch_unload_t5_after_encode() -> None:
         finally:
             if getattr(self, "text_encoder", None) is not None:
                 te.__call__ = _orig_call
+            cast_dit_float32_if_needed(self)
 
     WanT2V.generate = generate  # type: ignore[method-assign]
 
@@ -157,39 +183,88 @@ def patch_vae_decode_progress() -> None:
 def patch_vae_cpu_decode() -> None:
     if not vae_cpu_enabled():
         return
+    import traceback
+
     import torch
     from wan.modules.vae import WanVAE
 
     def decode(self, zs):  # type: ignore[no-untyped-def]
-        dev = self.device
-        if isinstance(dev, str):
-            dev = torch.device(dev)
-        if dev.type != "cuda":
+        # Always decode on CPU when WAN_VAE_CPU=1 (MPS VAE is fragile / VRAM-heavy).
+        try:
+            gc.collect()
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                try:
+                    torch.mps.empty_cache()
+                except Exception:
+                    pass
+            self.model.to("cpu")
+            self.mean = self.mean.cpu().float()
+            self.std = self.std.cpu().float()
+            self.scale = [self.mean, 1.0 / self.std]
+            zs_cpu = [z.detach().to("cpu").float().contiguous() for z in zs]
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            print("WAN: VAE decode on CPU", file=sys.stderr, flush=True)
             with torch.no_grad():
                 out = []
-                for u in zs:
+                for i, u in enumerate(zs_cpu):
+                    print(
+                        f"PROGRESS:{91.0 + (i / max(len(zs_cpu), 1)) * 2:.1f}:decoding latent {i + 1}/{len(zs_cpu)}",
+                        flush=True,
+                    )
                     dec = self.model.decode(u.unsqueeze(0), self.scale)
-                    out.append(dec.float().clamp_(-1, 1).squeeze(0))
+                    out.append(dec.float().clamp_(-1, 1).squeeze(0).contiguous())
+                    gc.collect()
+                print("PROGRESS:93.5:vae decode complete", flush=True)
                 return out
-
-        self.model.to("cpu")
-        self.mean = self.mean.cpu()
-        self.std = self.std.cpu()
-        self.scale = [self.mean, 1.0 / self.std]
-        zs_cpu = [z.cpu().float() for z in zs]
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        print("WAN: VAE decode on CPU", file=sys.stderr, flush=True)
-        # Avoid WanVAE.decode's cuda amp.autocast — it can pull CPU decode onto GPU.
-        with torch.no_grad():
-            out = []
-            for u in zs_cpu:
-                dec = self.model.decode(u.unsqueeze(0), self.scale)
-                out.append(dec.float().clamp_(-1, 1).squeeze(0))
-            return out
+        except Exception:
+            traceback.print_exc()
+            raise
 
     WanVAE.decode = decode  # type: ignore[method-assign]
+
+
+def patch_free_dit_before_vae() -> None:
+    """Drop DiT weights before VAE decode on Darwin to cut peak RAM."""
+    import torch
+    from wan.text2video import WanT2V
+
+    if torch.cuda.is_available():
+        return
+    _orig = WanT2V.generate
+
+    def generate(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        vae = getattr(self, "vae", None)
+        if vae is None:
+            return _orig(self, *args, **kwargs)
+        _decode = vae.decode
+
+        def decode_free(zs):  # type: ignore[no-untyped-def]
+            model = getattr(self, "model", None)
+            if model is not None:
+                try:
+                    model.cpu()
+                except Exception:
+                    pass
+                self.model = None
+                del model
+                gc.collect()
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    try:
+                        torch.mps.empty_cache()
+                    except Exception:
+                        pass
+                print("WAN: freed DiT before VAE decode", file=sys.stderr, flush=True)
+            return _decode(zs)
+
+        vae.decode = decode_free  # type: ignore[method-assign]
+        try:
+            return _orig(self, *args, **kwargs)
+        finally:
+            vae.decode = _decode  # type: ignore[method-assign]
+
+    WanT2V.generate = generate  # type: ignore[method-assign]
 
 
 def patch_load_progress() -> None:
@@ -223,9 +298,13 @@ def patch_load_progress() -> None:
 
 
 def apply_memory_hooks() -> None:
+    # Order matters: unload/cast → free-DiT-before-VAE → load progress → VAE decode.
     patch_unload_t5_after_encode()
+    patch_free_dit_before_vae()
     patch_load_progress()
-    patch_vae_decode_progress()
+    # Heartbeat VAE progress nests poorly with CPU decode on Darwin.
+    if sys.platform != "darwin":
+        patch_vae_decode_progress()
     if vae_cpu_enabled():
         patch_vae_cpu_decode()
         print("WAN: VAE CPU decode enabled", file=sys.stderr, flush=True)

@@ -439,12 +439,21 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	if wanRepo == "" || wanCkpt == "" {
 		return wanVideoJobPayload{}, errors.New("backend_paths.wan_repo and backend_paths.wan_ckpt_dir are required")
 	}
+	if st, err := os.Stat(wanCkpt); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan checkpoint dir missing at %s — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", wanCkpt, wanInstallProfile(vcfg.Profile))
+	}
+	if !wanCkptLooksPopulated(wanCkpt) {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan checkpoint dir at %s has no weight files (.pth/.safetensors) — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", wanCkpt, wanInstallProfile(vcfg.Profile))
+	}
 	wanVenv := expandUserPath(modality.PathFor(cfg, "wan_venv"))
 	if wanVenv == "" {
 		// install_wan_video.sh uses $WAN_ROOT/venv with repos under $WAN_ROOT/Wan2.1
 		wanVenv = filepath.Join(filepath.Dir(wanRepo), "venv")
 	}
 	pythonBin := filepath.Join(wanVenv, "bin", "python3")
+	if _, err := os.Stat(pythonBin); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan venv python missing at %s — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", pythonBin, wanInstallProfile(vcfg.Profile))
+	}
 
 	outputPath := videoArtifactPath("{job_id}")
 
@@ -507,6 +516,37 @@ func defaultWanTimeout(profile string) int {
 	default:
 		return 2700
 	}
+}
+
+// wanInstallProfile maps video_generation.profile to install_wan_video.sh --profile.
+func wanInstallProfile(profile string) string {
+	switch profile {
+	case wanProfile22TI2V5B:
+		return "2.2"
+	case wanProfile21T2V13B:
+		return "1.3b"
+	default:
+		return "all"
+	}
+}
+
+// wanCkptLooksPopulated is true when the checkpoint dir has at least one weight file.
+// Empty dirs (clone-only / deleted weights) otherwise pass os.Stat and fail deep in generate.py.
+func wanCkptLooksPopulated(dir string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		n := strings.ToLower(e.Name())
+		if strings.HasSuffix(n, ".pth") || strings.HasSuffix(n, ".safetensors") || strings.HasSuffix(n, ".pt") {
+			return true
+		}
+	}
+	return false
 }
 
 func videoArtifactRoot() string {

@@ -22,13 +22,62 @@ DEFAULT_PROBE_REL = ".zerollama/third_party/wan/.wan_torch_probe.json"
 
 
 def torch_bundled_lib_dir(*, python: str | None = None) -> Path | None:
-    """Locate site-packages/torch/lib without importing torch."""
-    py = Path(python or sys.executable).resolve()
-    venv_root = py.parent.parent if py.name.startswith("python") else py.parent
-    for candidate in sorted(venv_root.glob("lib/python*/site-packages/torch/lib")):
-        if candidate.is_dir():
-            return candidate
+    """Locate site-packages/torch/lib without importing torch.
+
+    Prefer the venv that owns ``python`` (``.../venv/bin/python``) without following
+    symlinks into the base interpreter (uv/Homebrew). ``Path.resolve()`` on a venv
+    python often lands in the toolchain prefix, which has no torch/lib — then
+    DYLD sanitization is a no-op and serve's .venv-training torch wins.
+
+    VIRTUAL_ENV is a fallback when ``python`` is omitted or not under a venv bin/.
+    """
+    roots: list[Path] = []
+    py_arg = python
+    py = Path(python or sys.executable).expanduser()
+    if not py.is_absolute():
+        py = Path.cwd() / py
+    # Unresolved path: keep .../wan/venv even when bin/python3 → uv python.
+    if py.parent.name == "bin":
+        roots.append(py.parent.parent)
+    # Only consult VIRTUAL_ENV when it matches the chosen interpreter, or when
+    # no python= override was passed (avoid picking the caller's venv in tests).
+    venv = (os.environ.get("VIRTUAL_ENV") or "").strip()
+    if venv:
+        venv_path = Path(venv).expanduser()
+        if py_arg is None or _path_is_under(py, venv_path):
+            roots.append(venv_path)
+    try:
+        resolved = py.resolve()
+        if resolved.parent.name == "bin":
+            roots.append(resolved.parent.parent)
+    except OSError:
+        pass
+
+    seen: set[Path] = set()
+    for venv_root in roots:
+        try:
+            key = venv_root.resolve()
+        except OSError:
+            key = venv_root
+        if key in seen:
+            continue
+        seen.add(key)
+        for candidate in sorted(venv_root.glob("lib/python*/site-packages/torch/lib")):
+            if candidate.is_dir():
+                return candidate
     return None
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.expanduser().resolve().relative_to(root.expanduser().resolve())
+        return True
+    except (OSError, ValueError):
+        # Unresolved compare for broken/temp fixtures.
+        try:
+            return root.expanduser() in path.expanduser().parents
+        except OSError:
+            return False
 
 
 def _path_may_shadow_cudnn(entry: str) -> bool:
@@ -48,28 +97,61 @@ def _path_may_shadow_cudnn(entry: str) -> bool:
     return False
 
 
+def _path_is_foreign_torch_lib(entry: str, keep: str) -> bool:
+    """True for another venv's site-packages/torch/lib (common DYLD clash on Darwin)."""
+    p = entry.strip()
+    if not p or p == keep:
+        return False
+    try:
+        path = Path(p)
+    except OSError:
+        return False
+    # .../site-packages/torch/lib
+    if path.name == "lib" and path.parent.name == "torch":
+        return True
+    if "site-packages/torch/lib" in p.replace("\\", "/"):
+        return True
+    return False
+
+
+def _sanitize_dylib_path(
+    target: dict[str, str],
+    key: str,
+    *,
+    torch_lib: str,
+) -> None:
+    raw = target.get(key, "")
+    parts = [p for p in raw.split(":") if p and p != torch_lib]
+    filtered = [
+        p
+        for p in parts
+        if not _path_may_shadow_cudnn(p) and not _path_is_foreign_torch_lib(p, torch_lib)
+    ]
+    target[key] = ":".join([torch_lib, *filtered]) if filtered else torch_lib
+
+
 def sanitize_ld_library_path_for_pytorch(
     env: dict[str, str] | None = None,
     *,
     python: str | None = None,
 ) -> dict[str, str]:
-    """Prepend torch/lib and drop LD entries that shadow bundled cuDNN.
+    """Prepend torch/lib and drop entries that shadow bundled libs.
 
-    Why: zerollama serve sets LD_LIBRARY_PATH for ggml (often /usr/hostlibs with
-    older libcudnn). PyTorch wheels ship a matching cuDNN; shadowing raises
-    RuntimeError before the SM120 conv probe can run.
+    Why: zerollama serve sets LD_LIBRARY_PATH / DYLD_LIBRARY_PATH for ggml and
+    embeds .venv-training torch. Wan's venv child must not load that older
+    ``libtorch`` (macOS symptom: ``ImportError: cannot import name
+    '_is_kineto_stopped'``). Linux also needs hostlibs/cuDNN filtering.
     """
     target = env if env is not None else os.environ
-    torch_lib = torch_bundled_lib_dir(python=python)
-    if torch_lib is None:
+    torch_lib_path = torch_bundled_lib_dir(python=python)
+    if torch_lib_path is None:
         return target
-    prefix = str(torch_lib)
-    raw = target.get("LD_LIBRARY_PATH", "")
-    parts = [p for p in raw.split(":") if p and p != prefix]
-    filtered = [p for p in parts if not _path_may_shadow_cudnn(p)]
-    target["LD_LIBRARY_PATH"] = ":".join([prefix, *filtered]) if filtered else prefix
+    prefix = str(torch_lib_path)
+    _sanitize_dylib_path(target, "LD_LIBRARY_PATH", torch_lib=prefix)
+    # Darwin: serve embeds training torch into DYLD_*; that must not win.
+    _sanitize_dylib_path(target, "DYLD_LIBRARY_PATH", torch_lib=prefix)
+    _sanitize_dylib_path(target, "DYLD_FALLBACK_LIBRARY_PATH", torch_lib=prefix)
     return target
-
 
 def safe_cudnn_version() -> int | None:
     import torch
