@@ -3,11 +3,13 @@ package llm
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/fs/ggml"
 )
 
 var (
@@ -47,6 +49,57 @@ func ModelNeedsLlamaServerSpec(config LlamaServerConfig) bool {
 // when no per-model config is available (legacy callers).
 func useLlamaServerBackend(projectors []string) bool {
 	return useLlamaServerBackendForModel(projectors, LlamaServerConfig{})
+}
+
+// llamaServerBlockedByOllamaRawMXFP4 reports GGUFs that store MXFP4 as tensor
+// type id 4 (deprecated Q4_2 slot). Ollama's engine remaps those to ggml
+// GGML_TYPE_MXFP4 (39) and reshuffles the block bytes on load
+// (ml/backend/ggml/ggml.go). Stock llama.cpp rejects type 4
+// ("DEPRECATED" / blck_size 0) — e.g. registry gpt-oss:20b MXFP4.
+// Re-exports that already use type 39 (e.g. some community gpt-oss builds)
+// are fine on llama-server.
+func llamaServerBlockedByOllamaRawMXFP4(f *ggml.GGML) bool {
+	if f == nil {
+		return false
+	}
+	for _, t := range f.Tensors().Items() {
+		if t.Kind == 4 {
+			return true
+		}
+	}
+	return false
+}
+
+// ggmlUsesNativeMXFP4 reports llama.cpp GGML_TYPE_MXFP4 (type id 39) tensors.
+// Serve defaults GGML_CUDA_FORCE_CUBLAS=1 for IQ* stability on 5080/CUDA 13,
+// but that disables MMQ and sends MoE MUL_MAT_ID through a broken cuBLAS path
+// (upstream ggml-org/llama.cpp#19659) — gpt-oss MXFP4 then loops on token "?".
+func ggmlUsesNativeMXFP4(f *ggml.GGML) bool {
+	if f == nil {
+		return false
+	}
+	for _, t := range f.Tensors().Items() {
+		if ggml.TensorType(t.Kind) == ggml.TensorTypeMXFP4 {
+			return true
+		}
+	}
+	return false
+}
+
+// applyLlamaServerMXFP4CUDAEnv clears FORCE_CUBLAS for native MXFP4 so MMQ/MMVQ
+// run. IQ* models without type-39 keep the serve default (FORCE_CUBLAS=1).
+// Operator escape: ZEROLLAMA_MXFP4_ALLOW_FORCE_CUBLAS=1 keeps inherited value.
+func applyLlamaServerMXFP4CUDAEnv(envs map[string]string, f *ggml.GGML) {
+	if envs == nil || !ggmlUsesNativeMXFP4(f) {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ZEROLLAMA_MXFP4_ALLOW_FORCE_CUBLAS")), "1") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("ZEROLLAMA_MXFP4_ALLOW_FORCE_CUBLAS")), "true") {
+		return
+	}
+	envs["GGML_CUDA_FORCE_CUBLAS"] = "0"
+	slog.Info("MXFP4 GGUF: disabling GGML_CUDA_FORCE_CUBLAS for llama-server (need MMQ)",
+		"architecture", f.KV().Architecture())
 }
 
 // useLlamaServerBackendForModel decides engine routing for one model load.

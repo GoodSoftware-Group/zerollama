@@ -230,7 +230,31 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 ./zerollama doctor --models
 ./zerollama run <model> && ./zerollama doctor   # enable live serving probes
 ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor     # also run trap-12 ceiling @ 512
+
+# Template repair (milkey / moophlo class) — dry-run by default
+./zerollama doctor --repair-models                  # warm /api/ps models
+./zerollama doctor --repair-models milkey/foo:latest
+./zerollama doctor --repair-models --apply milkey/foo:latest
 ```
+
+### 3.1 Model template repair (`--repair-models`)
+
+**Why:** Some community GGUFs score as “broken models” when the failure is really the **assembled prompt / parser / default think routing**. Deleting the tag or re-quantizing wastes disk; a Modelfile overlay often restores harness `response` / chat content.
+
+**Why not `doctor --fix`:** That flag is host bootstrap (uv, Metal llama.cpp). Mutating tags under `--fix` would surprise operators who only meant “install the toolchain.”
+
+Full operator guide + safety rules: [doctor-model-repair.md](./doctor-model-repair.md).
+
+| Recipe | Symptom | Patch | Why |
+|--------|---------|-------|-----|
+| `think_generate_empty` | Default `/api/generate` (omit `think`) → empty `response`, answer in `thinking`; ChatML lacks `/think`/`/no_think` | Inject toggles + closed empty `<think>`; `PARSER qwen3` | Thinking parser Inited with `Think=nil` treated as “think on”; harnesses that only read `response` score 0 |
+| `slash_system_collapse` | User-only chat OK; `system`+user or harness `System:`/`User:`/`Assistant:` → `/` loops or empty `eval≤4` | Drop system; `stripRolePrefixes` + anti-filler steer (serve must define the func); avoid relying on `stop ///` | Some Qwen3-Coder GGUFs collapse into comment-fill; `///` stop can poison the runner slot until unload |
+
+Implementation: [`internal/modelrepair`](../internal/modelrepair) + [`cmd/doctor_repair_models.go`](../cmd/doctor_repair_models.go). Apply recreates the same tag via `/api/create` (`FROM` itself).
+
+**Not auto-fixed:** prompts that embed `System:` / `Assistant:` in the user text (bench roleplay) — template cannot strip that. Non-`qwen3*` architectures that show similar symptoms are reported as **manual-review** only (no Modelfile rewrite). Live doctor trap-12/64 also probes **default generate** now (with unload first — **why:** prefix cache after chat can disagree with repair probes).
+
+**Serve note:** rebuild/restart so `Think` defaults to false **before** parser `Init` ([`server/routes.go`](../server/routes.go)); then `PARSER qwen3-thinking` works correctly again.
 
 Hand-run Core scripts (lab `:11435`):
 

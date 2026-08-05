@@ -131,8 +131,12 @@ func estimateGgmlLoadVRAM(modelPath string, f *ggml.GGML, numCtx int, profile gg
 }
 
 // ggmlForceParallelOne families are not safe with llama-server -np > 1.
+// Why qwen35/qwen35moe are absent: llama.cpp #20232 (Mar 2026) fixed the hybrid
+// "Chunk not found" crash under parallel slots (#20222). Our pin (LLAMA_CPP_VERSION
+// f95de977) includes that fix; keeping them here forced np=1 forever (stale vs
+// ollama#17144). VL / lfm2 / nemotron_h* stay blocked pending their own verification.
 var ggmlForceParallelOne = []string{
-	"mllama", "qwen3vl", "qwen3vlmoe", "qwen35", "qwen35moe",
+	"mllama", "qwen3vl", "qwen3vlmoe",
 	"qwen3next", "lfm2", "lfm2moe", "nemotron_h", "nemotron_h_moe",
 }
 

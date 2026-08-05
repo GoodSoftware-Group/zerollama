@@ -94,7 +94,10 @@ fi
 
 # Stability on new GPU architectures (optional).
 export GGML_CUDA_USE_GRAPHS="${GGML_CUDA_USE_GRAPHS:-0}"
-# Prefer 1 on 5080/CUDA 13: skip MMQ (upstream: #21371 #24399). 0 = MMQ if CUDA 12.8 build.
+# Prefer 1 on 5080/CUDA 13: skip MMQ for IQ* stability (upstream: #21371 #24399).
+# Go llama-server clears this to 0 for native MXFP4 (type 39) MoE — FORCE_CUBLAS
+# breaks gpt-oss MUL_MAT_ID (llama.cpp#19659 → "?" token loops). Override:
+# ZEROLLAMA_MXFP4_ALLOW_FORCE_CUBLAS=1
 export GGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS:-1}"
 # Clamp absurd client num_ctx before load (5080 / single-GPU hosts).
 export ZEROLLAMA_GGML_CLAMP_NUM_CTX="${ZEROLLAMA_GGML_CLAMP_NUM_CTX:-1}"
@@ -108,16 +111,36 @@ export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/root/nvidia-host:/usr/hostlibs:/usr/
 export OLLAMA_LIBRARY_PATH="${OLLAMA_LIBRARY_PATH:-/usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/lib/ollama/mlx_cuda_v12}"
 export LD_LIBRARY_PATH="/root/nvidia-host:/usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/lib/ollama/mlx_cuda_v12:${LD_LIBRARY_PATH}"
 
-# Prefer built vendor llama-server (fork QJL + Radix /kv/seq-copy) when present.
-# WHY: 5080 production uses vendor pin for L1 fork profile + seq-copy; sibling b9781 lacks both.
-_VENDOR_PIN="${Z5080_VENDOR_PIN:-$(grep '^FETCH_HEAD=' "${ZEROLLAMA_REPO}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo f95de977)}"
+# Model store on data volume (CT 1564 rootfs is only ~30G).
+export OLLAMA_MODELS="${OLLAMA_MODELS:-${ZEROLLAMA_REPO}/../.ollama/models}"
+if [[ ! -d "$OLLAMA_MODELS" ]]; then
+  # Fallback when ZEROLLAMA_REPO is ~/zerollama symlink into private/
+  export OLLAMA_MODELS="${OLLAMA_MODELS_FALLBACK:-/var/lib/vz/private/1564/root/.ollama/models}"
+fi
+
+# Prefer current vendor pin llama-server (Makefile.sync FETCH_HEAD).
+# WHY: run/llama-server-b10159 may lag the unified pin; TTS copy lacks Q2/Kokoro unify.
+# Retire TTS unless ZEROLLAMA_KEEP_LLAMA_SERVER_BIN=1 (explicit operator pin).
+_VENDOR_PIN="${Z5080_VENDOR_PIN:-$(grep '^FETCH_HEAD=' "${ZEROLLAMA_REPO}/Makefile.sync" 2>/dev/null | cut -d= -f2 || echo 5f55650a)}"
 _VENDOR_ROOT="${ZEROLLAMA_VENDOR_ROOT:-${ZEROLLAMA_REPO}/vendor/llama-cpp-${_VENDOR_PIN}}"
+_B10159_BIN="${ZEROLLAMA_REPO}/run/llama-server-b10159/llama-server"
+_KEEP_TTS="${ZEROLLAMA_KEEP_LLAMA_SERVER_BIN:-0}"
+if [[ "${_KEEP_TTS}" != "1" ]]; then
+  case "${LLAMA_SERVER_BIN:-}" in
+    */llama-server-tts/*) unset LLAMA_SERVER_BIN ;;
+  esac
+fi
 if [[ -z "${LLAMA_SERVER_BIN:-}" && -x "${_VENDOR_ROOT}/build/bin/llama-server" ]]; then
   export LLAMA_CPP_ROOT="${_VENDOR_ROOT}"
   export LLAMA_CPP_BIN="${_VENDOR_ROOT}/build/bin"
   export LLAMA_SERVER_BIN="${LLAMA_CPP_BIN}/llama-server"
   export LLAMA_CPP_LIB="${LLAMA_CPP_BIN}/libllama.so"
-  export LD_LIBRARY_PATH="${LLAMA_CPP_BIN}:${LD_LIBRARY_PATH}"
+  export LD_LIBRARY_PATH="${LLAMA_CPP_BIN}:${LD_LIBRARY_PATH:-}"
+elif [[ -z "${LLAMA_SERVER_BIN:-}" && -x "${_B10159_BIN}" ]]; then
+  export LLAMA_CPP_BIN="${ZEROLLAMA_REPO}/run/llama-server-b10159"
+  export LLAMA_SERVER_BIN="${_B10159_BIN}"
+  export LLAMA_CPP_LIB="${LLAMA_CPP_BIN}/libllama.so"
+  export LD_LIBRARY_PATH="${LLAMA_CPP_BIN}:${LD_LIBRARY_PATH:-}"
 fi
 
 # MLX imagegen (x/z-image-turbo, etc.) — requires libmlxc.so from a one-time cmake MLX build.
@@ -138,6 +161,10 @@ export ZEROLLAMA_WAN_VAE_CPU="${ZEROLLAMA_WAN_VAE_CPU:-0}"
 export ZEROLLAMA_WAN_UNLOAD_T5="${ZEROLLAMA_WAN_UNLOAD_T5:-1}"
 export ZEROLLAMA_WAN_MIN_HOST_RAM_GIB="${ZEROLLAMA_WAN_MIN_HOST_RAM_GIB:-14}"
 
+# Prefer repo run/ binary when present (CT 1564 install layout).
+if [[ -z "${ZEROLLAMA_BIN:-}" && -x "${ZEROLLAMA_REPO}/run/zerollama" ]]; then
+  ZEROLLAMA_BIN="${ZEROLLAMA_REPO}/run/zerollama"
+fi
 ZEROLLAMA_BIN="${ZEROLLAMA_BIN:-/usr/bin/zerollama}"
 if [[ ! -x "$ZEROLLAMA_BIN" ]]; then
   ZEROLLAMA_BIN="$(command -v zerollama || true)"

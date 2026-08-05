@@ -26,6 +26,11 @@ type rdmaHub struct {
 	dev  *verbs.Device
 	mu   sync.Mutex
 	sess map[string]*rdmaSession
+
+	// Bounce MR pool — mlx4 cannot reg_mr file mmap (EFAULT); recycling
+	// registered C-heap MRs avoids ibv_reg_mr on every window.
+	bounceMu   sync.Mutex
+	bounceFree []*verbs.MR
 }
 
 type rdmaSession struct {
@@ -37,6 +42,44 @@ type rdmaSession struct {
 type rdmaMR struct {
 	mr     *verbs.MR
 	digest string
+	pooled bool // return to hub bounce pool on release
+}
+
+const bounceSlotSize = 128 << 20
+
+func (h *rdmaHub) acquireBounce(length int) (*verbs.MR, bool, error) {
+	if length <= 0 || length > bounceSlotSize {
+		mr, err := h.dev.AllocMR(length, nil, true)
+		return mr, false, err
+	}
+	h.bounceMu.Lock()
+	if n := len(h.bounceFree); n > 0 {
+		mr := h.bounceFree[n-1]
+		h.bounceFree = h.bounceFree[:n-1]
+		h.bounceMu.Unlock()
+		return mr, true, nil
+	}
+	h.bounceMu.Unlock()
+	mr, err := h.dev.AllocMR(bounceSlotSize, nil, true)
+	return mr, true, err
+}
+
+func (h *rdmaHub) releaseBounce(mr *verbs.MR, pooled bool) {
+	if mr == nil {
+		return
+	}
+	if !pooled {
+		mr.Close()
+		return
+	}
+	h.bounceMu.Lock()
+	if len(h.bounceFree) < 4 {
+		h.bounceFree = append(h.bounceFree, mr)
+		h.bounceMu.Unlock()
+		return
+	}
+	h.bounceMu.Unlock()
+	mr.Close()
 }
 
 func (s *Server) initRDMA() {
@@ -100,7 +143,7 @@ func (s *Server) handleRDMASession(w http.ResponseWriter, r *http.Request) {
 	s.hub.sess[id] = &rdmaSession{qp: qp, created: time.Now(), mrs: make(map[string]*rdmaMR)}
 	s.hub.mu.Unlock()
 
-	resp := remotestore.RDMASessionResponse{SessionID: id, Server: qp.Endpoint()}
+	resp := remotestore.RDMASessionResponse{SessionID: id, Server: qp.Endpoint(), MaxRDAtomic: 16}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -179,33 +222,46 @@ func (s *Server) pinMR(req remotestore.RDMAMRRequest) (*remotestore.RDMAMRRespon
 	if req.Offset+length > size {
 		length = size - req.Offset // clamp to EOF
 	}
-	const maxMR = 512 << 20
+	const maxMR = bounceSlotSize
 	if length > maxMR {
 		length = maxMR
 	}
 
-	// Why AllocMR (C heap): Go slices move; mlx4 has no ODP for file mmap MRs.
-	buf := make([]byte, int(length))
-	if _, err := f.ReadAt(buf, req.Offset); err != nil {
-		f.Close()
-		return nil, err
+	// Prefer mlocked mmap MR (no bounce). mlx4 has no ODP; bounce is fallback.
+	mr, err := s.hub.dev.RegFileRange(f, req.Offset, length, true)
+	pooled := false
+	via := "mmap"
+	if err != nil {
+		slog.Debug("storaged rdma mmap mr failed; bounce", "error", err, "length", length)
+		via = "bounce"
+		var perr error
+		mr, pooled, perr = s.hub.acquireBounce(int(length))
+		if perr != nil {
+			f.Close()
+			return nil, perr
+		}
+		if _, err := f.ReadAt(mr.Bytes()[:length], req.Offset); err != nil {
+			f.Close()
+			s.hub.releaseBounce(mr, pooled)
+			return nil, err
+		}
 	}
 	_ = f.Close()
-
-	mr, err := s.hub.dev.AllocMR(int(length), buf, true)
-	if err != nil {
-		return nil, err
-	}
+	_ = via
 
 	s.hub.mu.Lock()
 	sess := s.hub.sess[req.SessionID]
 	if sess == nil {
 		s.hub.mu.Unlock()
-		mr.Close()
+		if pooled {
+			s.hub.releaseBounce(mr, pooled)
+		} else {
+			mr.Close()
+		}
 		return nil, fmt.Errorf("unknown session")
 	}
 	id := randomID()
-	sess.mrs[id] = &rdmaMR{mr: mr, digest: req.Digest}
+	sess.mrs[id] = &rdmaMR{mr: mr, digest: req.Digest, pooled: pooled}
 	s.hub.mu.Unlock()
 
 	return &remotestore.RDMAMRResponse{
@@ -215,17 +271,19 @@ func (s *Server) pinMR(req remotestore.RDMAMRRequest) (*remotestore.RDMAMRRespon
 
 func (s *Server) releaseMR(sessionID, mrID string) {
 	s.hub.mu.Lock()
-	defer s.hub.mu.Unlock()
 	sess := s.hub.sess[sessionID]
 	if sess == nil {
+		s.hub.mu.Unlock()
 		return
 	}
 	m := sess.mrs[mrID]
 	if m == nil {
+		s.hub.mu.Unlock()
 		return
 	}
 	delete(sess.mrs, mrID)
-	m.mr.Close()
+	s.hub.mu.Unlock()
+	s.hub.releaseBounce(m.mr, m.pooled)
 }
 
 func randomID() string {

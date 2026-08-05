@@ -592,6 +592,27 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	// Default think=false for thinking models before parser Init / template render.
+	// Why order matters: Init previously ran with Think=nil. For PARSER
+	// qwen3-thinking, nil → defaultThinking=true → CollectingThinking, so
+	// /api/generate answers landed in Thinking with empty Response (harness
+	// trap 12/64 / milkey-class). Chat already defaulted before Init; generate
+	// must match. See docs/doctor-model-repair.md.
+	modelCaps := m.Capabilities()
+	if slices.Contains(modelCaps, model.CapabilityThinking) {
+		if req.Think == nil {
+			req.Think = &api.ThinkValue{Value: false}
+		}
+	} else if req.Think != nil && req.Think.Bool() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
+		return
+	}
+
+	if err := applyThinkingGate(&req.Think); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var builtinParser parsers.Parser
 	if shouldUseHarmony(m) && m.Config.Parser == "" {
 		m.Config.Parser = "harmony"
@@ -611,22 +632,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		caps = append(caps, model.CapabilityInsert)
 	}
 
-	modelCaps := m.Capabilities()
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		caps = append(caps, model.CapabilityThinking)
-		if req.Think == nil {
-			req.Think = &api.ThinkValue{Value: false}
-		}
-	} else {
-		if req.Think != nil && req.Think.Bool() {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
-			return
-		}
-	}
-
-	if err := applyThinkingGate(&req.Think); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
 	}
 
 	// DebugRenderOnly for the legacy template path: render without loading a runner.
@@ -1942,7 +1949,14 @@ func (s *Server) ListHandler(c *gin.Context) {
 		return
 	}
 
-	models := []api.ListModelResponse{}
+	type listLocal struct {
+		name     model.Name
+		cf       model.ConfigV2
+		size     int64
+		digest   string
+		modified time.Time
+	}
+	locals := make([]listLocal, 0, len(ms))
 	for n, m := range ms {
 		var cf model.ConfigV2
 
@@ -1952,10 +1966,10 @@ func (s *Server) ListHandler(c *gin.Context) {
 				slog.Warn("bad manifest filepath", "name", n, "error", err)
 				continue
 			}
-			defer f.Close()
-
-			if err := json.NewDecoder(f).Decode(&cf); err != nil {
-				slog.Warn("bad manifest config", "name", n, "error", err)
+			decodeErr := json.NewDecoder(f).Decode(&cf)
+			f.Close()
+			if decodeErr != nil {
+				slog.Warn("bad manifest config", "name", n, "error", decodeErr)
 				continue
 			}
 		}
@@ -1964,37 +1978,58 @@ func (s *Server) ListHandler(c *gin.Context) {
 			continue
 		}
 
-		details := api.ModelDetails{
-			Format:            cf.ModelFormat,
-			Family:            cf.ModelFamily,
-			Families:          cf.ModelFamilies,
-			ParameterSize:     cf.ModelType,
-			QuantizationLevel: cf.FileType,
-		}
-		var capabilities []model.Capability
-		if mdl, err := GetModel(n.String()); err == nil {
-			enrichModelDetailsFromPath(&details, mdl.ModelPath)
-			capabilities = mdl.Capabilities()
-		}
-		if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
-			enrichModelDetailsFromSafetensors(&details, n)
-		}
-
-		// Capabilities + enriched Details feed cmd/launch modelInventory (one /api/tags
-		// load per zerollama launch run). WHY list not show: launch configures N models
-		// without loading each into a runner first.
-		models = append(models, api.ListModelResponse{
-			Model:        n.DisplayShortest(),
-			Name:         n.DisplayShortest(),
-			RemoteModel:  cf.RemoteModel,
-			RemoteHost:   cf.RemoteHost,
-			Size:         m.Size(),
-			Digest:       m.Digest(),
-			ModifiedAt:   m.FileInfo().ModTime(),
-			Details:      details,
-			Capabilities: capabilities,
+		locals = append(locals, listLocal{
+			name:     n,
+			cf:       cf,
+			size:     m.Size(),
+			digest:   m.Digest(),
+			modified: m.FileInfo().ModTime(),
 		})
 	}
+
+	// Parallel GGUF metadata / capabilities — sequential was ~80ms×N on this host.
+	models := make([]api.ListModelResponse, len(locals))
+	var g errgroup.Group
+	g.SetLimit(listTagsParallelism())
+	for i := range locals {
+		i := i
+		loc := locals[i]
+		g.Go(func() error {
+			cf := loc.cf
+			details := api.ModelDetails{
+				Format:            cf.ModelFormat,
+				Family:            cf.ModelFamily,
+				Families:          cf.ModelFamilies,
+				ParameterSize:     cf.ModelType,
+				QuantizationLevel: cf.FileType,
+			}
+			var capabilities []model.Capability
+			if mdl, err := GetModel(loc.name.String()); err == nil {
+				enrichModelDetailsFromPath(&details, mdl.ModelPath)
+				capabilities = mdl.Capabilities()
+			}
+			if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
+				enrichModelDetailsFromSafetensors(&details, loc.name)
+			}
+
+			// Capabilities + enriched Details feed cmd/launch modelInventory (one /api/tags
+			// load per zerollama launch run). WHY list not show: launch configures N models
+			// without loading each into a runner first.
+			models[i] = api.ListModelResponse{
+				Model:        loc.name.DisplayShortest(),
+				Name:         loc.name.DisplayShortest(),
+				RemoteModel:  cf.RemoteModel,
+				RemoteHost:   cf.RemoteHost,
+				Size:         loc.size,
+				Digest:       loc.digest,
+				ModifiedAt:   loc.modified,
+				Details:      details,
+				Capabilities: capabilities,
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
 
 	slices.SortStableFunc(models, func(i, j api.ListModelResponse) int {
 		// most recently modified first
@@ -2020,6 +2055,17 @@ func (s *Server) ListHandler(c *gin.Context) {
 	s.enrichListHostContexts(c.Request.Context(), models)
 
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
+}
+
+func listTagsParallelism() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 4 {
+		n = 4
+	}
+	if n > 16 {
+		n = 16
+	}
+	return n
 }
 
 func (s *Server) CopyHandler(c *gin.Context) {

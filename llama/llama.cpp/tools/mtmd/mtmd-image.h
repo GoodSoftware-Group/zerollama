@@ -30,30 +30,10 @@ struct mtmd_image_preproc_out {
 struct mtmd_image_preprocessor {
     const clip_hparams & hparams;
 
-    // Optional client [T,H,W] patch grid (SGLang / Qwen-VL). Honored by dyn_size.
-    bool has_grid_hint = false;
-    int32_t grid_thw[3] = {0, 0, 0};
-
     mtmd_image_preprocessor(const clip_ctx * ctx): hparams(*clip_get_hparams(ctx)) {}
 
     virtual ~mtmd_image_preprocessor() = default;
     virtual mtmd_image_preproc_out preprocess(const clip_image_u8 & img) = 0;
-
-    void set_grid_hint(const int32_t thw[3]) {
-        if (!thw || thw[1] <= 0 || thw[2] <= 0) {
-            clear_grid_hint();
-            return;
-        }
-        has_grid_hint = true;
-        grid_thw[0] = thw[0];
-        grid_thw[1] = thw[1];
-        grid_thw[2] = thw[2];
-    }
-
-    void clear_grid_hint() {
-        has_grid_hint = false;
-        grid_thw[0] = grid_thw[1] = grid_thw[2] = 0;
-    }
 };
 
 /**

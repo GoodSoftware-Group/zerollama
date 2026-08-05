@@ -222,3 +222,46 @@ func TestResolveGgmlNumParallelAutoOff(t *testing.T) {
 		t.Fatalf("auto off want 3, got %d", got)
 	}
 }
+
+func TestGgmlArchitectureForcesParallelOne(t *testing.T) {
+	// Why: qwen35 was unblocked after llama.cpp #20232; VL/hybrid leftovers stay forced.
+	cases := []struct {
+		family string
+		want   bool
+	}{
+		{"qwen35", false},
+		{"qwen35moe", false},
+		{"llama", false},
+		{"mllama", true},
+		{"qwen3vl", true},
+		{"qwen3vlmoe", true},
+		{"qwen3next", true},
+		{"lfm2", true},
+		{"nemotron_h", true},
+	}
+	for _, tc := range cases {
+		m := &Model{Config: model.ConfigV2{ModelFamily: tc.family, ModelFamilies: []string{tc.family}}}
+		if got := ggmlArchitectureForcesParallelOne(m); got != tc.want {
+			t.Fatalf("family %q: ForcesParallelOne=%v, want %v", tc.family, got, tc.want)
+		}
+	}
+}
+
+func TestResolveGgmlNumParallelQwen35Unblocked(t *testing.T) {
+	t.Setenv("ZEROLLAMA_GGML_AUTO_PARALLEL", "0")
+	t.Setenv("OLLAMA_NUM_PARALLEL", "2")
+	m := &Model{
+		ShortName: "eliza-1",
+		ModelPath: "m.gguf",
+		Config: model.ConfigV2{
+			ModelFamily:   "qwen35",
+			ModelFamilies: []string{"qwen35"},
+			ModelFormat:   "gguf",
+			Capabilities:  []string{"completion"},
+		},
+	}
+	got := resolveGgmlNumParallel(m, api.Options{Runner: api.Runner{NumCtx: 4096}}, nil, &ggml.GGML{})
+	if got != 2 {
+		t.Fatalf("qwen35 should honor OLLAMA_NUM_PARALLEL=2 after #20232, got %d", got)
+	}
+}

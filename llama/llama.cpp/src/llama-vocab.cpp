@@ -100,12 +100,16 @@ struct llm_specials_byte_trie {
         uint32_t cur = 0;
         for (size_t i = 0; i < len; ++i) {
             const unsigned char c = (unsigned char) key[i];
-            uint32_t & slot = nodes[cur].child[c];
-            if (slot == npos) {
-                slot = (uint32_t) nodes.size();
+            // WHY: never hold a reference into nodes across emplace_back — growth
+            // reallocates and leaves a dangling child slot (SIGSEGV on large
+            // specials sets, e.g. LFM2 [PAD*] vocab during CUDA-backed loads).
+            uint32_t next = nodes[cur].child[c];
+            if (next == npos) {
+                next = (uint32_t) nodes.size();
                 nodes.emplace_back();
+                nodes[cur].child[c] = next;
             }
-            cur = slot;
+            cur = next;
         }
         nodes[cur].has_value = true;
         nodes[cur].value = id;

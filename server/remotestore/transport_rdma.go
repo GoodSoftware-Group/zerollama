@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -31,9 +32,10 @@ type RDMATransport struct {
 }
 
 type clientSession struct {
-	id  string
-	qp  *verbs.QP
-	dev *verbs.Device
+	id          string
+	qp          *verbs.QP
+	dev         *verbs.Device
+	maxRDAtomic int // peer responder depth; 0/omit → 1
 }
 
 // NewRDMATransport returns an RDMA transport when an HCA can be opened.
@@ -144,7 +146,10 @@ func (t *RDMATransport) ensureSession(ctx context.Context, baseURL string) (*cli
 		qp.Close()
 		return nil, fmt.Errorf("rdma client connect: %w", err)
 	}
-	cs := &clientSession{id: sessResp.SessionID, qp: qp, dev: t.dev}
+	cs := &clientSession{id: sessResp.SessionID, qp: qp, dev: t.dev, maxRDAtomic: sessResp.MaxRDAtomic}
+	if cs.maxRDAtomic <= 0 {
+		cs.maxRDAtomic = 1 // old peers omit the field
+	}
 	t.mu.Lock()
 	t.sessions[baseURL] = cs
 	t.mu.Unlock()
@@ -152,63 +157,131 @@ func (t *RDMATransport) ensureSession(ctx context.Context, baseURL string) (*cli
 }
 
 func (t *RDMATransport) readAll(ctx context.Context, baseURL string, sess *clientSession, digest string, offset, length int64, w io.Writer) (int64, error) {
-	const window = 64 << 20
+	// Larger windows cut HTTP MR-lease RTTs; pipeline READs + pin prefetch fill the IB link.
+	const window = 128 << 20
+	const chunk = 2 << 20
+	depth := sess.maxRDAtomic
+	if depth <= 0 {
+		depth = 1
+	}
+	if depth > 16 {
+		depth = 16
+	}
 	var total int64
 	pos := offset
 	remaining := length // <=0 means unknown / to EOF
 
+	// Reuse one local MR — ibv_reg_mr of multi-hundred-MiB windows was a major tax.
+	localMR, err := sess.dev.AllocMR(window, nil, false)
+	if err != nil {
+		return 0, err
+	}
+	defer localMR.Close()
+
+	type pinned struct {
+		resp   *RDMAMRResponse
+		reqLen int64
+		pinMs  int64
+		err    error
+	}
+	pinNext := func(off, rem int64) *pinned {
+		reqLen := int64(window)
+		if rem > 0 && rem < reqLen {
+			reqLen = rem
+		}
+		t0 := time.Now()
+		resp, err := t.pinMR(ctx, baseURL, sess.id, digest, off, reqLen)
+		return &pinned{resp: resp, reqLen: reqLen, pinMs: time.Since(t0).Milliseconds(), err: err}
+	}
+
+	cur := pinNext(pos, remaining)
 	for {
 		if err := ctx.Err(); err != nil {
+			if cur != nil && cur.resp != nil && cur.resp.MRID != "" {
+				go t.releaseMR(context.Background(), baseURL, sess.id, cur.resp.MRID)
+			}
 			return total, err
 		}
-		reqLen := int64(window)
-		if remaining > 0 && remaining < reqLen {
-			reqLen = remaining
+		if cur.err != nil {
+			return total, cur.err
 		}
-		mrResp, err := t.pinMR(ctx, baseURL, sess.id, digest, pos, reqLen)
-		if err != nil {
-			return total, err
-		}
-		if mrResp.Length <= 0 {
-			t.releaseMR(ctx, baseURL, sess.id, mrResp.MRID)
+		if cur.resp == nil || cur.resp.Length <= 0 {
+			if cur.resp != nil && cur.resp.MRID != "" {
+				t.releaseMR(ctx, baseURL, sess.id, cur.resp.MRID)
+			}
 			break
 		}
+		if int(cur.resp.Length) > localMR.Len() {
+			t.releaseMR(ctx, baseURL, sess.id, cur.resp.MRID)
+			return total, fmt.Errorf("rdma window %d exceeds local mr %d", cur.resp.Length, localMR.Len())
+		}
 
-		localMR, err := sess.dev.AllocMR(int(mrResp.Length), nil, false)
+		nextPos := pos + cur.resp.Length
+		nextRem := remaining
+		if remaining > 0 {
+			nextRem = remaining - cur.resp.Length
+		}
+		var nextCh chan *pinned
+		if remaining <= 0 || nextRem > 0 {
+			nextCh = make(chan *pinned, 1)
+			go func(off, rem int64) { nextCh <- pinNext(off, rem) }(nextPos, nextRem)
+		}
+
+		tRead := time.Now()
+		err = sess.qp.ReadRemotePipeline(localMR, cur.resp.VAddr, cur.resp.RKey, int(cur.resp.Length), chunk, depth)
+		readMs := time.Since(tRead).Milliseconds()
 		if err != nil {
-			t.releaseMR(ctx, baseURL, sess.id, mrResp.MRID)
+			t.releaseMR(ctx, baseURL, sess.id, cur.resp.MRID)
+			if nextCh != nil {
+				n := <-nextCh
+				if n.resp != nil && n.resp.MRID != "" {
+					go t.releaseMR(context.Background(), baseURL, sess.id, n.resp.MRID)
+				}
+			}
 			return total, err
 		}
-		const chunk = 4 << 20
-		var off int
-		for off < localMR.Len() {
-			n := chunk
-			if n > localMR.Len()-off {
-				n = localMR.Len() - off
-			}
-			if err := sess.qp.ReadRemote(localMR, off, mrResp.VAddr+uint64(off), mrResp.RKey, n); err != nil {
-				localMR.Close()
-				t.releaseMR(ctx, baseURL, sess.id, mrResp.MRID)
-				return total, err
-			}
-			off += n
+		nw, err := w.Write(localMR.Bytes()[:cur.resp.Length])
+		go t.releaseMR(context.Background(), baseURL, sess.id, cur.resp.MRID)
+
+		if cur.pinMs+readMs > 50 {
+			slog.Debug("remotestore rdma window", "bytes", cur.resp.Length, "pin_ms", cur.pinMs, "read_ms", readMs)
 		}
-		nw, err := w.Write(localMR.Bytes())
-		localMR.Close()
-		t.releaseMR(ctx, baseURL, sess.id, mrResp.MRID)
 
 		total += int64(nw)
 		if err != nil {
+			if nextCh != nil {
+				n := <-nextCh
+				if n.resp != nil && n.resp.MRID != "" {
+					go t.releaseMR(context.Background(), baseURL, sess.id, n.resp.MRID)
+				}
+			}
 			return total, err
 		}
-		pos += mrResp.Length
+		pos = nextPos
 		if remaining > 0 {
-			remaining -= mrResp.Length
+			remaining = nextRem
 			if remaining <= 0 {
+				if nextCh != nil {
+					n := <-nextCh
+					if n.resp != nil && n.resp.MRID != "" {
+						go t.releaseMR(context.Background(), baseURL, sess.id, n.resp.MRID)
+					}
+				}
 				break
 			}
-		} else if mrResp.Length < reqLen {
-			// Server returned short window → EOF.
+		} else if cur.resp.Length < cur.reqLen {
+			if nextCh != nil {
+				n := <-nextCh
+				if n.resp != nil && n.resp.MRID != "" {
+					go t.releaseMR(context.Background(), baseURL, sess.id, n.resp.MRID)
+				}
+			}
+			break
+		}
+
+		if nextCh != nil {
+			cur = <-nextCh
+		} else {
 			break
 		}
 	}

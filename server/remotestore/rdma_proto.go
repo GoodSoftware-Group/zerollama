@@ -18,6 +18,10 @@ type RDMASessionRequest struct {
 type RDMASessionResponse struct {
 	SessionID string         `json:"session_id"`
 	Server    verbs.Endpoint `json:"server"`
+	// MaxRDAtomic is the responder outstanding RDMA READ depth (max_dest_rd_atomic).
+	// Why advertise: clients must not post deeper than the peer allows (WC status 9).
+	// Older servers omit this → clients use depth 1.
+	MaxRDAtomic int `json:"max_rd_atomic,omitempty"`
 }
 
 // RDMAMRRequest asks the server to mmap+reg_mr a blob range for RDMA READ.

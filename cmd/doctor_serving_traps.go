@@ -180,7 +180,11 @@ func doctorCheckReasoningField(base string, m doctorLoadedModel) doctorCheck {
 }
 
 // doctorCheckThinkRoundtrip covers traps 12/64/65 family: think on/off must not
-// silently return empty content with HTTP 200.
+// silently return empty content with HTTP 200. Also probes default /api/generate
+// (omit think) — milkey-class models park answers in thinking only on generate.
+// Why generate arm: live doctor historically only hit /api/chat; chat already
+// defaults think=false before parser Init, so milkey looked fine while benches
+// using /api/generate scored 0. FixHint points at doctor --repair-models.
 func doctorCheckThinkRoundtrip(base string, m doctorLoadedModel) doctorCheck {
 	const name = "serving trap-12/64/65 (think empty content)"
 	if !m.SupportsThinking {
@@ -223,15 +227,63 @@ func doctorCheckThinkRoundtrip(base string, m doctorLoadedModel) doctorCheck {
 				Name:    name,
 				Status:  "warn",
 				Detail:  "think=false but answer landed in thinking with empty content (minefield trap 64)",
-				FixHint: "check think kwarg / in-text toggle conflict; ensure content channel is populated",
+				FixHint: "zerollama doctor --repair-models --apply; check think kwarg / template toggles",
 			}
 		}
 	}
+
+	// Unload so prefix-cache from chat arms cannot poison the generate probe
+	// (same isolation modelrepair.liveProbes uses).
+	// Why: without unload, doctor trap-12 and --repair-models can disagree on
+	// the same tag after a prior slash or think generation.
+	_ = doctorUnloadModel(base, m.Name)
+
+	gen, err := doctorGenerateOnce(base, map[string]any{
+		"model":  m.Name,
+		"prompt": "Say the word ping and nothing else.",
+		"stream": false,
+		"options": map[string]any{
+			"temperature": 0,
+			"num_predict": 64,
+			"num_ctx":     2048,
+		},
+		"keep_alive": "30s",
+	})
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: "warn",
+			Detail: "default /api/generate probe failed: " + err.Error(),
+		}
+	}
+	genResp, _ := gen["response"].(string)
+	genThink, _ := gen["thinking"].(string)
+	if strings.TrimSpace(genResp) == "" && strings.TrimSpace(genThink) != "" {
+		return doctorCheck{
+			Name:    name,
+			Status:  "warn",
+			Detail:  fmt.Sprintf("default /api/generate empty response with thinking_len=%d on %s (milkey-class trap 12/64)", len(genThink), m.Name),
+			FixHint: "zerollama doctor --repair-models --apply " + m.Name + "; rebuild/restart serve so Think defaults before parser Init",
+		}
+	}
+
 	return doctorCheck{
 		Name:   name,
 		Status: "ok",
-		Detail: fmt.Sprintf("think on/off returned non-empty channels on %s", m.Name),
+		Detail: fmt.Sprintf("think on/off + default generate returned non-empty channels on %s", m.Name),
 	}
+}
+
+// doctorUnloadModel expires a runner (keep_alive:0) so later probes start cold.
+// Why: llama-server prefix KV after a bad generation can make a clean follow-up
+// still collapse; repair and trap-12 generate arms both need a cold start.
+func doctorUnloadModel(base, name string) error {
+	_, err := doctorGenerateOnce(base, map[string]any{
+		"model":      name,
+		"prompt":     "",
+		"keep_alive": 0,
+	})
+	return err
 }
 
 // doctorCheckToolCallShape covers trap 19: tool-defined request should return
@@ -304,12 +356,20 @@ func doctorCheckToolCallShape(base string, m doctorLoadedModel) doctorCheck {
 }
 
 func doctorChatOnce(base string, payload map[string]any) (map[string]any, error) {
+	return doctorAPIOnce(base, "/api/chat", payload)
+}
+
+func doctorGenerateOnce(base string, payload map[string]any) (map[string]any, error) {
+	return doctorAPIOnce(base, "/api/generate", payload)
+}
+
+func doctorAPIOnce(base, path string, payload map[string]any) (map[string]any, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 	client := &http.Client{Timeout: 45 * time.Second}
-	resp, err := client.Post(base+"/api/chat", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(base+path, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

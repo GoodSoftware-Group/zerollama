@@ -1,6 +1,6 @@
 ---
 name: doctor-model
-description: "Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken) and config-level footguns (quant label, missing generation config, context mismatch, no chat template) with zerollama doctor --models and the model-serving-minefield trap registry."
+description: "Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken), config-level footguns, live minefield traps, and Modelfile repair for empty-response / slash-collapse (zerollama doctor --models / --repair-models)."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -113,14 +113,43 @@ see `docs/model-serving-minefield.md` §2.1 for the cold/warm ladder script
 against whatever model is currently loaded — reasoning field names, thinking
 toggle drift, orphaned `</think>`, tool-call shape, streamed content
 placement, kwarg deadness, latency reconciliation, serve identity (are you
-even talking to the process you think you are), and empty-content-at-ceiling
-(deep mode only):
+even talking to the process you think you are), empty-content-at-ceiling
+(deep mode only), and **default `/api/generate` empty-response** (milkey-class
+trap 12/64):
 
 ```bash
 zerollama run <model>              # warm the model first
 zerollama doctor                   # now includes live serving probes
 ZEROLLAMA_DOCTOR_DEEP=1 zerollama doctor   # + trap-12 ceiling check @ 512 tokens
 ```
+
+### 4. Template repair (`zerollama doctor --repair-models`)
+
+When a thinking ChatML model parks answers in `thinking` on default generate,
+or a coder GGUF collapses into `/` loops once a system role is present,
+doctor can propose (and optionally apply) a Modelfile overlay:
+
+```bash
+# Dry-run against warm /api/ps models (or pass explicit tags)
+zerollama doctor --repair-models
+zerollama doctor --repair-models milkey/Kalomaze-Qwen3-16B-A3B:latest
+
+# Recreate the same tag FROM itself with the patched TEMPLATE/PARSER/stop
+zerollama doctor --repair-models --apply milkey/Kalomaze-Qwen3-16B-A3B:latest
+```
+
+Recipes live in [`internal/modelrepair`](../../internal/modelrepair):
+
+| Recipe | Detect | Patch |
+|---|---|---|
+| `think_generate_empty` | thinking + ChatML without `/no_think`, or generate default → empty `response` + thinking | `/no_think` template + `PARSER qwen3` |
+| `slash_system_collapse` | user-only OK; system+user → slash/empty | drop system role; `stop ///` |
+
+This is **not** the same as `zerollama repair` (GGUF manifest metadata) or
+`doctor --fix --models` (orphan manifest delete). Roleplay prompts that
+embed `System:` / `Assistant:` in user text remain unfixable via template.
+Non-`qwen3*` models with similar symptoms are **manual-review only** (no
+auto Modelfile rewrite).
 
 Full trap-to-check mapping (which numbered minefield trap each doctor probe
 covers, plus which traps are hand-run scripts vs fully automated) lives in
@@ -137,7 +166,11 @@ zerollama doctor --models --json | jq '.checks[] | select(.name == "model '"'"'<
 zerollama run <tag>
 zerollama doctor --json | jq '.checks[] | select(.status != "ok")'
 
-# 3. If publishing a benchmark, also rule out config traps by hand
+# 3. If trap-12/64 or slash-collapse, dry-run then apply template repair
+zerollama doctor --repair-models <tag>
+zerollama doctor --repair-models --apply <tag>
+
+# 4. If publishing a benchmark, also rule out config traps by hand
 zerollama show <tag> --parameters
 zerollama show <tag> --modelfile
 ```

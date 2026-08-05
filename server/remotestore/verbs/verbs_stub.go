@@ -4,6 +4,7 @@ package verbs
 
 import (
 	"errors"
+	"os"
 	"unsafe"
 )
 
@@ -32,6 +33,9 @@ func (d *Device) ProbeCap() (string, string, int, int, uint16) { return "", "", 
 func (d *Device) AllocMR(size int, src []byte, remoteRead bool) (*MR, error) {
 	return nil, errors.New("verbs: built without -tags rdma")
 }
+func (d *Device) RegFileRange(f *os.File, offset, length int64, remoteRead bool) (*MR, error) {
+	return nil, errors.New("verbs: built without -tags rdma")
+}
 func (m *MR) Bytes() []byte { return nil }
 func (d *Device) RegMRAddr(addr unsafe.Pointer, length int, remoteRead bool) (*MR, error) {
 	return nil, errors.New("verbs: built without -tags rdma")
@@ -42,6 +46,9 @@ func (q *QP) Connect(Endpoint) error {
 	return errors.New("verbs: built without -tags rdma")
 }
 func (q *QP) ReadRemote(*MR, int, uint64, uint32, int) error {
+	return errors.New("verbs: built without -tags rdma")
+}
+func (q *QP) ReadRemotePipeline(*MR, uint64, uint32, int, int, int) error {
 	return errors.New("verbs: built without -tags rdma")
 }
 func (m *MR) Close()           {}

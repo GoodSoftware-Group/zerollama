@@ -429,7 +429,7 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
 	}
 
-	scriptPath := filepath.Join(repo, "scripts", "wan_video_generate.py")
+	scriptPath := filepath.Join(repo, "scripts", "video", "wan_video_generate.py")
 	if _, err := os.Stat(scriptPath); err != nil {
 		return wanVideoJobPayload{}, fmt.Errorf("wan wrapper script not found at %s", scriptPath)
 	}

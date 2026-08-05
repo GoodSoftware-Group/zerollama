@@ -151,10 +151,14 @@ func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string
 	defer cancel()
 
 	var metrics *api.Metrics
+	var sawDone bool
+	var responseBytes int
 	err := client.Generate(ctx, req, func(resp api.GenerateResponse) error {
+		responseBytes += len(resp.Response)
 		// WHY Done-only: streaming chunks can carry full EvalCount with near-zero EvalDuration,
 		// producing nonsense tok/s (e.g. 333k) if we accept intermediate updates.
 		if resp.Done {
+			sawDone = true
 			m := resp.Metrics
 			metrics = &m
 		}
@@ -164,9 +168,24 @@ func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string
 		return nil, err
 	}
 	if metrics == nil || metrics.EvalCount <= 0 {
-		return nil, fmt.Errorf("no metrics received")
+		return nil, benchNoMetricsError(sawDone, responseBytes, numCtx)
 	}
 	return metrics, nil
+}
+
+func benchNoMetricsError(sawDone bool, responseBytes, numCtx int) error {
+	switch {
+	case !sawDone && responseBytes > 0:
+		hint := "stream aborted after partial output"
+		if numCtx >= 8192 {
+			hint += "; try --num-ctx 2048 on tight VRAM hosts"
+		}
+		return fmt.Errorf("no metrics received (%s)", hint)
+	case sawDone:
+		return fmt.Errorf("no metrics received (done with eval_count=0)")
+	default:
+		return fmt.Errorf("no metrics received (empty stream)")
+	}
 }
 
 func benchUnloadModel(client *api.Client, modelName string, timeout time.Duration) {

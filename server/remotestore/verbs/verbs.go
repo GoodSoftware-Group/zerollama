@@ -11,6 +11,7 @@ package verbs
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include <infiniband/verbs.h>
 
 static void gid_to_bytes(union ibv_gid *g, unsigned char *out) {
@@ -25,21 +26,29 @@ static int zl_query_port(struct ibv_context *ctx, uint8_t port, struct ibv_port_
 	return ibv_query_port(ctx, port, attr);
 }
 
-static int zl_post_rdma_read(struct ibv_qp *qp, uint64_t laddr, uint32_t length, uint32_t lkey,
-                             uint64_t raddr, uint32_t rkey) {
+static int zl_post_rdma_read_id(struct ibv_qp *qp, uint64_t laddr, uint32_t length, uint32_t lkey,
+                             uint64_t raddr, uint32_t rkey, uint64_t wr_id, int signaled) {
 	struct ibv_sge sge = {
 		.addr   = laddr,
 		.length = length,
 		.lkey   = lkey,
 	};
 	struct ibv_send_wr wr = {0}, *bad = NULL;
+	wr.wr_id = wr_id;
 	wr.opcode = IBV_WR_RDMA_READ;
-	wr.send_flags = IBV_SEND_SIGNALED;
+	if (signaled) {
+		wr.send_flags = IBV_SEND_SIGNALED;
+	}
 	wr.sg_list = &sge;
 	wr.num_sge = 1;
 	wr.wr.rdma.remote_addr = raddr;
 	wr.wr.rdma.rkey = rkey;
 	return ibv_post_send(qp, &wr, &bad);
+}
+
+static int zl_post_rdma_read(struct ibv_qp *qp, uint64_t laddr, uint32_t length, uint32_t lkey,
+                             uint64_t raddr, uint32_t rkey) {
+	return zl_post_rdma_read_id(qp, laddr, length, lkey, raddr, rkey, 0, 1);
 }
 
 static int zl_modify_qp_init(struct ibv_qp *qp, uint8_t port) {
@@ -60,7 +69,8 @@ static int zl_modify_qp_rtr(struct ibv_qp *qp, uint8_t port, enum ibv_mtu mtu,
 	a.path_mtu = mtu;
 	a.dest_qp_num = dest_qpn;
 	a.rq_psn = rq_psn;
-	a.max_dest_rd_atomic = 1;
+	// Why 16: one outstanding RDMA READ starves 40Gb/s; pipeline READs.
+	a.max_dest_rd_atomic = 16;
 	a.min_rnr_timer = 12;
 	a.ah_attr.port_num = port;
 	if (use_lid) {
@@ -87,7 +97,7 @@ static int zl_modify_qp_rts(struct ibv_qp *qp, uint32_t sq_psn) {
 	a.retry_cnt = 7;
 	a.rnr_retry = 7;
 	a.sq_psn = sq_psn;
-	a.max_rd_atomic = 1;
+	a.max_rd_atomic = 16;
 	return ibv_modify_qp(qp, &a,
 		IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
 		IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
@@ -97,6 +107,8 @@ static int zl_errno(void) { return errno; }
 
 static void *zl_malloc(size_t n) { return malloc(n); }
 static void zl_free(void *p) { free(p); }
+static int zl_mlock(void *p, size_t n) { return mlock(p, n); }
+static int zl_munlock(void *p, size_t n) { return munlock(p, n); }
 */
 import "C"
 
@@ -109,6 +121,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -322,7 +335,7 @@ type QP struct {
 
 // CreateQP allocates a RC QP (RESET). Call Connect after peer exchange.
 func (d *Device) CreateQP() (*QP, error) {
-	cq := C.ibv_create_cq(d.ctx, 128, nil, nil, 0)
+	cq := C.ibv_create_cq(d.ctx, 512, nil, nil, 0)
 	if cq == nil {
 		return nil, errors.New("ibv_create_cq failed")
 	}
@@ -330,7 +343,7 @@ func (d *Device) CreateQP() (*QP, error) {
 	init.send_cq = cq
 	init.recv_cq = cq
 	init.qp_type = C.IBV_QPT_RC
-	init.cap.max_send_wr = 64
+	init.cap.max_send_wr = 256
 	init.cap.max_recv_wr = 4
 	init.cap.max_send_sge = 1
 	init.cap.max_recv_sge = 1
@@ -404,12 +417,14 @@ func (q *QP) Connect(remote Endpoint) error {
 
 // MR is a registered memory region.
 type MR struct {
-	mr     *C.struct_ibv_mr
-	addr   uintptr
-	len    int
-	lkey   uint32
-	rkey   uint32
-	owned  unsafe.Pointer // C malloc to free on Close; nil if external
+	mr      *C.struct_ibv_mr
+	addr    uintptr
+	len     int
+	lkey    uint32
+	rkey    uint32
+	owned   unsafe.Pointer // C malloc to free on Close; nil if external
+	mmap    []byte         // file mmap to munmap on Close; nil if not mmap
+	mlocked bool
 }
 
 // AllocMR allocates C memory, optionally copies src, and registers it.
@@ -422,14 +437,14 @@ func (d *Device) AllocMR(size int, src []byte, remoteRead bool) (*MR, error) {
 	if ptr == nil {
 		return nil, errors.New("malloc failed")
 	}
+	// Leave uninitialized when src is nil — caller fills via ReadAt / RDMA READ.
+	// Avoid memset of multi-hundred-MiB windows (was a major bench tax).
 	if len(src) > 0 {
 		n := len(src)
 		if n > size {
 			n = size
 		}
 		C.memcpy(ptr, unsafe.Pointer(&src[0]), C.size_t(n))
-	} else {
-		C.memset(ptr, 0, C.size_t(size))
 	}
 	flags := C.IBV_ACCESS_LOCAL_WRITE
 	if remoteRead {
@@ -441,6 +456,47 @@ func (d *Device) AllocMR(size int, src []byte, remoteRead bool) (*MR, error) {
 		return nil, fmt.Errorf("ibv_reg_mr failed errno=%d", int(C.zl_errno()))
 	}
 	return &MR{mr: mr, addr: uintptr(ptr), len: size, lkey: uint32(mr.lkey), rkey: uint32(mr.rkey), owned: ptr}, nil
+}
+
+// RegFileRange mmaps [offset,offset+length) of f, mlocks it, and registers for remote READ.
+// Why: mlx4 has no ODP; bounce ReadAt→malloc was the ~GB/s tax. mlocked mmap lets
+// RDMA READ hit page cache without an extra copy. Falls back to AllocMR+ReadAt on failure.
+func (d *Device) RegFileRange(f *os.File, offset, length int64, remoteRead bool) (*MR, error) {
+	if f == nil || length <= 0 || offset < 0 {
+		return nil, errors.New("bad file range")
+	}
+	page := int64(os.Getpagesize())
+	aligned := offset &^ (page - 1)
+	delta := offset - aligned
+	mapLen := length + delta
+	data, err := syscall.Mmap(int(f.Fd()), aligned, int(mapLen), syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		return nil, fmt.Errorf("mmap: %w", err)
+	}
+	locked := false
+	if C.zl_mlock(unsafe.Pointer(&data[0]), C.size_t(len(data))) == 0 {
+		locked = true
+	}
+	flags := C.IBV_ACCESS_REMOTE_READ
+	if !remoteRead {
+		flags = C.IBV_ACCESS_LOCAL_WRITE
+	} else {
+		// Some HCAs want LOCAL_WRITE even for remote-read sources.
+		flags |= C.IBV_ACCESS_LOCAL_WRITE
+	}
+	mr := C.ibv_reg_mr(d.pd, unsafe.Pointer(&data[0]), C.size_t(len(data)), C.int(flags))
+	if mr == nil {
+		if locked {
+			C.zl_munlock(unsafe.Pointer(&data[0]), C.size_t(len(data)))
+		}
+		_ = syscall.Munmap(data)
+		return nil, fmt.Errorf("ibv_reg_mr mmap failed errno=%d", int(C.zl_errno()))
+	}
+	return &MR{
+		mr: mr, addr: uintptr(unsafe.Pointer(&data[delta])), len: int(length),
+		lkey: uint32(mr.lkey), rkey: uint32(mr.rkey),
+		mmap: data, mlocked: locked,
+	}, nil
 }
 
 // RegMR registers buf for local write (+ remote read when remoteRead).
@@ -476,6 +532,13 @@ func (m *MR) Close() {
 		C.ibv_dereg_mr(m.mr)
 		m.mr = nil
 	}
+	if m.mmap != nil {
+		if m.mlocked {
+			C.zl_munlock(unsafe.Pointer(&m.mmap[0]), C.size_t(len(m.mmap)))
+		}
+		_ = syscall.Munmap(m.mmap)
+		m.mmap = nil
+	}
 	if m.owned != nil {
 		C.zl_free(m.owned)
 		m.owned = nil
@@ -510,25 +573,76 @@ func (q *QP) ReadRemote(local *MR, localOff int, raddr uint64, rkey uint32, n in
 		C.uint64_t(raddr), C.uint32_t(rkey)) != 0 {
 		return errors.New("ibv_post_send RDMA_READ failed")
 	}
-	return q.pollCQ(30 * time.Second)
+	_, err := q.pollCQ(30 * time.Second)
+	return err
 }
 
-func (q *QP) pollCQ(timeout time.Duration) error {
+// ReadRemotePipeline fills local[0:total] from remote with multiple outstanding READs.
+// Why: with max_rd_atomic=1 we left most of a 40Gb/s link idle; depth 8–16 keeps the wire full.
+func (q *QP) ReadRemotePipeline(local *MR, raddr uint64, rkey uint32, total int, chunk, depth int) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.qp == nil {
+		return errors.New("qp closed")
+	}
+	if total <= 0 || total > local.len {
+		return errors.New("bad read length")
+	}
+	if chunk <= 0 {
+		chunk = 2 << 20
+	}
+	if depth <= 0 {
+		depth = 8
+	}
+	if depth > 16 {
+		depth = 16
+	}
+
+	var posted, completed, inflight int
+	for completed < total {
+		for posted < total && inflight < depth {
+			n := chunk
+			if n > total-posted {
+				n = total - posted
+			}
+			if C.zl_post_rdma_read_id(q.qp,
+				C.uint64_t(uint64(local.addr)+uint64(posted)), C.uint32_t(n), C.uint32_t(local.lkey),
+				C.uint64_t(raddr+uint64(posted)), C.uint32_t(rkey), C.uint64_t(n), 1) != 0 {
+				return fmt.Errorf("ibv_post_send RDMA_READ failed at off=%d", posted)
+			}
+			posted += n
+			inflight++
+		}
+		got, err := q.pollCQ(30 * time.Second)
+		if err != nil {
+			return err
+		}
+		completed += got
+		inflight--
+		if inflight < 0 {
+			return errors.New("cq accounting underflow")
+		}
+	}
+	return nil
+}
+
+// pollCQ waits for one completion; returns wr_id (we stash chunk length there).
+func (q *QP) pollCQ(timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	var wc C.struct_ibv_wc
 	for {
 		n := C.ibv_poll_cq(q.cq, 1, &wc)
 		if n < 0 {
-			return errors.New("ibv_poll_cq error")
+			return 0, errors.New("ibv_poll_cq error")
 		}
 		if n > 0 {
 			if wc.status != C.IBV_WC_SUCCESS {
-				return fmt.Errorf("wc status=%d", int(wc.status))
+				return 0, fmt.Errorf("wc status=%d", int(wc.status))
 			}
-			return nil
+			return int(wc.wr_id), nil
 		}
 		if time.Now().After(deadline) {
-			return errors.New("cq poll timeout")
+			return 0, errors.New("cq poll timeout")
 		}
 		runtime.Gosched()
 	}

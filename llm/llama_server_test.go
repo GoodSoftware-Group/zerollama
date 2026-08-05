@@ -1113,6 +1113,35 @@ func TestLlamaServerWaitUntilRunningFailsOnHealthOOM(t *testing.T) {
 	}
 }
 
+func TestShouldRetryMMProjCPUOffloadOnSignalKilled(t *testing.T) {
+	s := &llamaServerRunner{
+		launch: llamaServerLaunchConfig{
+			projectors:   []string{"model.gguf"},
+			mmprojMemory: 933 << 20,
+			gpus:         []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 24 << 30, TotalMemory: 24 << 30}},
+			modelLayers:  42,
+			opts:         api.Options{Runner: api.Runner{NumGPU: -1}},
+		},
+	}
+	err := errors.New("llama-server process has terminated: signal: killed")
+	if !s.shouldRetryMMProjCPUOffload(err) {
+		t.Fatal("expected SIGKILL during mmproj load to trigger CPU offload retry")
+	}
+	s.mmprojOffloadOOMRetried = true
+	if s.shouldRetryMMProjCPUOffload(err) {
+		t.Fatal("must only retry once")
+	}
+}
+
+func TestIsLlamaServerLikelyVRAMKill(t *testing.T) {
+	if !isLlamaServerLikelyVRAMKill(errors.New("llama-server process has terminated: signal: killed")) {
+		t.Fatal("expected signal: killed match")
+	}
+	if isLlamaServerLikelyVRAMKill(errors.New("connection refused")) {
+		t.Fatal("non-kill errors must not match")
+	}
+}
+
 func TestLlamaServerWaitUntilRunningWaitsOnRecoverableStartupOOM(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2148,6 +2177,27 @@ func TestAppendMainGPUArgs(t *testing.T) {
 	}
 }
 
+func TestLlamaServerNGLArg(t *testing.T) {
+	tests := []struct {
+		numGPU int
+		want   string
+		ok     bool
+	}{
+		{numGPU: -1, ok: false},
+		{numGPU: 0, want: "0", ok: true},
+		{numGPU: 20, want: "20", ok: true},
+		{numGPU: 998, want: "998", ok: true},
+		{numGPU: 999, ok: false}, // Modelfile / eliza "all layers" → fit auto
+		{numGPU: 1000, ok: false},
+	}
+	for _, tt := range tests {
+		got, ok := llamaServerNGLArg(tt.numGPU)
+		if ok != tt.ok || got != tt.want {
+			t.Fatalf("llamaServerNGLArg(%d) = (%q, %v), want (%q, %v)", tt.numGPU, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestAppendMMProjArgs(t *testing.T) {
 	defaultOpts := api.DefaultOptions()
 	partialOpts := api.DefaultOptions()
@@ -2159,6 +2209,7 @@ func TestAppendMMProjArgs(t *testing.T) {
 
 	tests := []struct {
 		name         string
+		modelPath    string
 		projectors   []string
 		opts         api.Options
 		gpus         []ml.DeviceInfo
@@ -2195,6 +2246,15 @@ func TestAppendMMProjArgs(t *testing.T) {
 			projectors:   []string{"model.gguf"},
 			opts:         defaultOpts,
 			gpus:         []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 1500 << 20, TotalMemory: 8 << 30}},
+			mmprojMemory: 933 << 20,
+			modelLayers:  81,
+			want:         []string{"base", "--mmproj", "model.gguf", "--no-mmproj-offload"},
+		},
+		{
+			name:         "unknown free vram disables projector offload",
+			projectors:   []string{"model.gguf"},
+			opts:         defaultOpts,
+			gpus:         []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 0, TotalMemory: 16 << 30}},
 			mmprojMemory: 933 << 20,
 			modelLayers:  81,
 			want:         []string{"base", "--mmproj", "model.gguf", "--no-mmproj-offload"},
@@ -2263,12 +2323,27 @@ func TestAppendMMProjArgs(t *testing.T) {
 			retry:        true,
 			want:         []string{"base", "--mmproj", "model.gguf", "--no-mmproj-offload"},
 		},
+		{
+			name:         "inline mmproj disables projector offload on 16GB",
+			modelPath:    "model.gguf",
+			projectors:   []string{"model.gguf"},
+			opts:         defaultOpts,
+			gpus:         []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 11 << 30, TotalMemory: 16 << 30}},
+			mmprojMemory: 933 << 20,
+			modelLayers:  42,
+			want:         []string{"base", "--mmproj", "model.gguf", "--no-mmproj-offload"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			modelPath := tt.modelPath
+			if modelPath == "" {
+				// Separate path from projector so most cases are not inline-mmproj.
+				modelPath = "weights.gguf"
+			}
 			got := appendMMProjArgs([]string{"base"}, llamaServerLaunchConfig{
-				modelPath:            "model.gguf",
+				modelPath:            modelPath,
 				projectors:           tt.projectors,
 				mmprojMemory:         tt.mmprojMemory,
 				opts:                 tt.opts,

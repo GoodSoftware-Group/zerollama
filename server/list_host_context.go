@@ -7,6 +7,8 @@ package server
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strings"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/llm"
@@ -14,6 +16,11 @@ import (
 
 // enrichListHostContexts fills HostMaxContext using current free VRAM (plus a credit
 // when the model is already loaded). Train max stays in Details.ContextLength.
+//
+// Fast path: uses WeightSizeBytes / Size already filled by list enrichment and a
+// size heuristic — no second GetModel + GraphSize binary-search per tag (that made
+// /api/tags ~10s with hundreds of local GGUFs). Set ZEROLLAMA_TAGS_GRAPHSIZE=1 for
+// the slower GraphSize estimate.
 func (s *Server) enrichListHostContexts(ctx context.Context, models []api.ListModelResponse) {
 	if len(models) == 0 {
 		return
@@ -21,6 +28,12 @@ func (s *Server) enrichListHostContexts(ctx context.Context, models []api.ListMo
 
 	free := s.effectiveGgmlFreeVRAMForSuggest(ctx, false)
 	credits := s.loadedVRAMByShortName()
+	// Ghost FreeMemory=0 with nothing loaded: skip entirely (was GetModel×N for zeros).
+	if free == 0 && len(credits) == 0 {
+		return
+	}
+
+	accurate := tagsGraphSizeEnabled()
 
 	for i := range models {
 		m := &models[i]
@@ -38,31 +51,56 @@ func (s *Server) enrichListHostContexts(ctx context.Context, models []api.ListMo
 		if credit := credits[name]; credit > 0 {
 			budget += credit
 		}
+		if budget == 0 {
+			continue
+		}
 
-		host := 0
-		mdl, err := GetModel(name)
 		sizeBytes := uint64(0)
 		if m.Details.WeightSizeBytes > 0 {
 			sizeBytes = m.Details.WeightSizeBytes
 		} else if m.Size > 0 {
 			sizeBytes = uint64(m.Size)
 		}
-		if err == nil && mdl != nil {
-			if train <= 0 {
-				if t := modelMaxNumCtx(mdl); t > 0 {
-					train = t
-					m.Details.ContextLength = t
+
+		host := 0
+		if accurate {
+			mdl, err := GetModel(name)
+			if err == nil && mdl != nil {
+				if train <= 0 {
+					if t := modelMaxNumCtx(mdl); t > 0 {
+						train = t
+						m.Details.ContextLength = t
+					}
 				}
+				host = s.hostMaxContextForModel(mdl, budget, train, sizeBytes)
+			} else if train > 0 && sizeBytes > 0 {
+				host = suggestHostCtxFromSize(sizeBytes, budget, train)
 			}
-			host = s.hostMaxContextForModel(mdl, budget, train, sizeBytes)
 		} else if train > 0 && sizeBytes > 0 {
 			host = suggestHostCtxFromSize(sizeBytes, budget, train)
+		} else {
+			// Missing train/size on the list row — one GetModel to fill holes.
+			mdl, err := GetModel(name)
+			if err == nil && mdl != nil {
+				if train <= 0 {
+					if t := modelMaxNumCtx(mdl); t > 0 {
+						train = t
+						m.Details.ContextLength = t
+					}
+				}
+				host = s.hostMaxContextForModel(mdl, budget, train, sizeBytes)
+			}
 		}
 
 		if host > 0 {
 			m.HostMaxContext = host
 		}
 	}
+}
+
+func tagsGraphSizeEnabled() bool {
+	s := strings.TrimSpace(os.Getenv("ZEROLLAMA_TAGS_GRAPHSIZE"))
+	return s == "1" || strings.EqualFold(s, "true") || strings.EqualFold(s, "on")
 }
 
 func (s *Server) hostMaxContextForModel(mdl *Model, budget uint64, train int, sizeBytes uint64) int {

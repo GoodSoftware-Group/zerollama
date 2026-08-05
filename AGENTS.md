@@ -61,5 +61,6 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 
 - [docs/ROADMAP.md](./docs/ROADMAP.md)
 - [docs/README.md](./docs/README.md) — index of in-repo guides
+- Doctor Modelfile repair (empty `response` / slash-collapse): `zerollama doctor --repair-models` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)

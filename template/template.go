@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -117,6 +118,13 @@ var response = parse.ActionNode{
 	},
 }
 
+// rolePrefixLineRe matches harness "fake chat" lines like `System: …` / `User: …`
+// / `Assistant:` at line start. Why: some Qwen3-Coder GGUFs (e.g. moophlo) collapse
+// into `///` slash loops when those roleplay labels appear inside the user turn;
+// stripping the labels (and pairing with a short anti-filler steer in the Modelfile)
+// restores normal answers without needing the client to rewrite prompts.
+var rolePrefixLineRe = regexp.MustCompile(`(?m)^(System|User|Assistant)\s*:\s*`)
+
 var funcs = template.FuncMap{
 	"json": func(v any) string {
 		b, _ := json.Marshal(v)
@@ -139,6 +147,12 @@ var funcs = template.FuncMap{
 			return param.ToTypeScriptType()
 		}
 		return "any"
+	},
+	// stripRolePrefixes removes line-leading System:/User:/Assistant: labels.
+	// Pipeline form: {{ .Prompt | stripRolePrefixes }}
+	"stripRolePrefixes": func(v any) string {
+		s, _ := v.(string)
+		return strings.TrimSpace(rolePrefixLineRe.ReplaceAllString(s, ""))
 	},
 }
 
@@ -334,7 +348,10 @@ func (t *Template) Execute(w io.Writer, v Values) error {
 	})
 
 	tree := parse.Tree{Root: nodes.(*parse.ListNode)}
-	if err := template.Must(template.New("").AddParseTree("", &tree)).Execute(&b, map[string]any{
+	// Why Funcs(funcs): AddParseTree on a bare template.New drops the FuncMap from
+	// Parse(); legacy Prompt/Response execution would then fail on helpers like
+	// stripRolePrefixes (used by moophlo-style repair Modelfiles).
+	if err := template.Must(template.New("").Funcs(funcs).AddParseTree("", &tree)).Execute(&b, map[string]any{
 		"System":     system,
 		"Prompt":     prompt,
 		"Response":   response,

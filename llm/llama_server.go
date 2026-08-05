@@ -764,15 +764,15 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 
 	params = appendBatchArgs(params, launch.opts, launch.embedding, launch.numParallel)
 
-	// GPU layer offloading — only pass if user explicitly set it (non-default).
-	// Default behavior: let llama-server auto-detect via -ngl auto.
-	if launch.opts.NumGPU > 0 {
-		params = append(params, "-ngl", strconv.Itoa(launch.opts.NumGPU))
-	} else if launch.opts.NumGPU == 0 {
-		// Explicit 0 means CPU only
-		params = append(params, "-ngl", "0")
+	// GPU layer offloading — only pass an exact count when the caller asked for
+	// a real partial/full pin. Default (-1) and Modelfile/eliza sentinel 999
+	// ("all layers") omit -ngl so llama-server --fit can reduce layers to free
+	// VRAM. Passing -ngl 999 pins full offload and aborts fit
+	// ("n_gpu_layers already set by user"), which OOMs ~14 GiB IQ2 models on
+	// 16 GiB cards (e.g. Nemotron-Super-49B virtuoso).
+	if ngl, ok := llamaServerNGLArg(launch.opts.NumGPU); ok {
+		params = append(params, "-ngl", ngl)
 	}
-	// NumGPU == -1 (default): don't pass -ngl, let llama-server auto-detect
 
 	// Thread count — only pass if user explicitly set it.
 	// Default behavior: let llama-server auto-detect.
@@ -996,6 +996,21 @@ func appendMainGPUArgs(params []string, opts api.Options) []string {
 	return append(params, "--split-mode", "none", "--main-gpu", strconv.Itoa(opts.MainGPU))
 }
 
+// llamaServerNGLArg maps Ollama NumGPU to a llama-server -ngl value.
+// ok=false means omit -ngl (auto / --fit). Matches runtime gpu_profiles:
+// n_gpu_layers >= 999 → -1 (all / auto).
+func llamaServerNGLArg(numGPU int) (ngl string, ok bool) {
+	switch {
+	case numGPU == 0:
+		return "0", true
+	case numGPU > 0 && numGPU < 999:
+		return strconv.Itoa(numGPU), true
+	default:
+		// -1 default, or >=999 "all layers" Modelfile sentinel
+		return "", false
+	}
+}
+
 func appendMMProjArgs(params []string, launch llamaServerLaunchConfig) []string {
 	if len(launch.projectors) == 0 {
 		return params
@@ -1042,14 +1057,43 @@ func (launch llamaServerLaunchConfig) mmprojOffloadDisabled() (bool, string) {
 	if launch.forceNoMMProjOffload {
 		return true, "startup-oom-retry"
 	}
+	// Inline multimodal GGUFs (gemma4 e2b/e4b, etc.) pass --mmproj as the same
+	// model path. Offloading text + mtmd onto one 16GB card under ghost VRAM
+	// SIGKILLs llama-server during bench warmups. Keep projector on CPU unless
+	// free VRAM is clearly large or the operator opts in.
+	if len(launch.projectors) > 0 && launch.projectors[0] == launch.modelPath {
+		if !inlineMMProjGPUOffloadAllowed(launch.gpus) {
+			return true, "inline-mmproj"
+		}
+	}
 	return shouldDisableMMProjOffload(launch.opts, launch.gpus, launch.modelLayers, launch.mmprojMemory)
+}
+
+// inlineMMProjGPUOffloadAllowed reports whether an inline (same-file) mmproj may
+// use GPU. Default off below 24 GiB free; override with ZEROLLAMA_INLINE_MMPROJ_OFFLOAD=1.
+func inlineMMProjGPUOffloadAllowed(gpus []ml.DeviceInfo) bool {
+	v := strings.TrimSpace(os.Getenv("ZEROLLAMA_INLINE_MMPROJ_OFFLOAD"))
+	if strings.EqualFold(v, "1") || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") {
+		return true
+	}
+	if strings.EqualFold(v, "0") || strings.EqualFold(v, "false") || strings.EqualFold(v, "off") {
+		return false
+	}
+	const minFree = uint64(24) << 30
+	for _, gpu := range gpus {
+		if gpu.FreeMemory >= minFree {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLayers, mmprojMemory uint64) (bool, string) {
 	if opts.NumGPU == 0 {
 		return true, "cpu-only"
 	}
-	if opts.NumGPU > 0 && modelLayers > 0 && uint64(opts.NumGPU) < modelLayers {
+	// Treat >=999 like -1 (all/auto); only real partial pins force projector CPU.
+	if opts.NumGPU > 0 && opts.NumGPU < 999 && modelLayers > 0 && uint64(opts.NumGPU) < modelLayers {
 		return true, "partial-text-offload"
 	}
 
@@ -1057,7 +1101,13 @@ func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLay
 
 	for _, gpu := range gpus {
 		memory := gpu.FreeMemory
-		if memory == 0 || (gpu.TotalMemory > 0 && gpu.TotalMemory < memory) {
+		// FreeMemory==0 is common with ghost/driver accounting on 5080 hosts.
+		// Falling back to TotalMemory wrongly enables mmproj GPU offload and
+		// OOM-kills llama-server (signal: killed) once text weights fill VRAM.
+		if memory == 0 {
+			return true, "unknown-free-vram"
+		}
+		if gpu.TotalMemory > 0 && gpu.TotalMemory < memory {
 			memory = gpu.TotalMemory
 		}
 		if memory > 0 && memory < requiredMemory {
@@ -1350,11 +1400,12 @@ func NewLlamaServerRunner(
 
 	mediaMarker := newLlamaServerMediaMarker()
 	extraEnvs := ml.GetDevicesEnv(gpus)
-	serverEnvs := make(map[string]string, len(extraEnvs)+1)
+	serverEnvs := make(map[string]string, len(extraEnvs)+2)
 	for k, v := range extraEnvs {
 		serverEnvs[k] = v
 	}
 	serverEnvs["LLAMA_MEDIA_MARKER"] = mediaMarker
+	applyLlamaServerMXFP4CUDAEnv(serverEnvs, f)
 
 	launch := llamaServerLaunchConfig{
 		modelPath:    modelPath,
@@ -1540,7 +1591,12 @@ func (s *llamaServerRunner) retryWithMMProjCPUOffload(loadErr error) (bool, erro
 }
 
 func (s *llamaServerRunner) shouldRetryMMProjCPUOffload(err error) bool {
-	if err == nil || s.mmprojOffloadOOMRetried || !IsOutOfMemory(err) || len(s.launch.projectors) == 0 {
+	if err == nil || s.mmprojOffloadOOMRetried || len(s.launch.projectors) == 0 {
+		return false
+	}
+	// Kernel SIGKILL during load usually means CUDA OOM without a cudaMalloc
+	// log line — treat like OOM so we retry with --no-mmproj-offload.
+	if !IsOutOfMemory(err) && !isLlamaServerLikelyVRAMKill(err) {
 		return false
 	}
 	// llama-server --fit can select a text-layer placement that fits before
@@ -1548,6 +1604,18 @@ func (s *llamaServerRunner) shouldRetryMMProjCPUOffload(err error) bool {
 	// projector on CPU so the scheduler can keep the text model placement.
 	disabled, _ := s.launch.mmprojOffloadDisabled()
 	return !disabled
+}
+
+// isLlamaServerLikelyVRAMKill reports startup deaths that look like OOM kills
+// (no cudaMalloc message). Used for mmproj CPU-offload retry only.
+func isLlamaServerLikelyVRAMKill(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "signal: killed") ||
+		strings.Contains(msg, "sys=9") ||
+		strings.Contains(msg, "killed: 9")
 }
 
 func (s *llamaServerRunner) resetLoadAccounting() {

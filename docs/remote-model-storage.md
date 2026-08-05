@@ -96,7 +96,9 @@ Control plane (capability, manifests, auth, RDMA session/MR lease) is always TCP
 
 **Build:** `CGO_ENABLED=1 go build -tags rdma -o zerollama .` (needs `libibverbs-dev`). Capability includes `"verbs": true` only when storaged opened an HCA. Clients require `verbs:true` before selecting RDMA — otherwise TCP (no fake `via=rdma`).
 
-**Server MR note:** mlx4 has no ODP, so storaged copies each leased window into C-heap memory before `ibv_reg_mr` (bounce buffer). The wire path is still RDMA READ.
+**Server MR note:** mlx4 has no ODP, so file-mmap `ibv_reg_mr` fails (EFAULT). Storaged uses a **bounce buffer** (ReadAt into a recycled C-heap MR). The wire path is still RDMA READ.
+
+**Throughput expectations (mlx4 QDR 40 Gb/s):** the bounce + per-window pin dominates, not the IB link. Pipeline outstanding READs (`max_rd_atomic` up to 16, negotiated in the session) and pin-prefetch help, but first-fetch rates are typically hundreds of MiB/s unless the peer is ODP-capable (mlx5) or the blob is already resident in a long-lived MR. Redeploy **both** client and `storage serve` with the same `-tags rdma` binary so responder depth matches.
 
 Roadmap transports: raw Ethernet L2 (`AF_PACKET`), UDP/ARQ; ODP/file-backed MRs.
 

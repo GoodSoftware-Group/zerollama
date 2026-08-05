@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Remote storage RDMA throughput (mlx4 bounce path) (Aug 2026)
+
+**Why:** First remote RDMA READ was only ~30% above 10 GbE TCP (~182 vs ~137 MiB/s) despite 40 Gb/s QDR — serial READ depth 1, per-window `ibv_reg_mr`, and bounce copies left the link idle.
+
+**What:**
+- Pipeline outstanding RDMA READs (`max_rd_atomic`/`max_dest_rd_atomic` 16); session advertises `max_rd_atomic` so older peers stay at depth 1 (avoids WC status 9)
+- Pin-prefetch next window while reading current; reuse local + server bounce MRs; skip multi-hundred-MiB `memset`
+- mmap+mlock MR attempted then bounce fallback (mlx4 `ibv_reg_mr` on file mmap → EFAULT)
+- Docs: honest mlx4 bounce throughput expectations
+
+### Doctor model repair (`--repair-models`) + generate think Init order (Aug 2026)
+
+**Why:** Community GGUFs (e.g. milkey Kalomaze Qwen3 MoE, moophlo Qwen3-Coder) scored 0 on harness traps while weights were fine — default `/api/generate` parked answers in `thinking`, or ChatML system role triggered `/` loops. Operators blamed the model; the fix is Modelfile + serve Init order. `doctor --fix` is host bootstrap and must not silently rewrite tags.
+
+**What:**
+
+- `zerollama doctor --repair-models [MODEL...]` — dry-run diagnose (warm `/api/ps` if no args); `--apply` recreates the same tag `FROM` itself with patched `TEMPLATE`/`PARSER`/`stop`
+- Recipes (Qwen3 family only): `think_generate_empty`, `slash_system_collapse`; non-qwen3 symptoms → `manual_review` (no auto-patch)
+- Live trap-12/64 probes **default `/api/generate`** and points FixHint at `--repair-models`; unload before that arm to avoid prefix-cache poison
+- GenerateHandler: default `think=false` **before** thinking-parser `Init` (was `nil` → `defaultThinking` → empty `response`)
+- Package [`internal/modelrepair`](internal/modelrepair); guide [docs/doctor-model-repair.md](docs/doctor-model-repair.md)
+
 ### Remote model storage daemon (v1) (Aug 2026)
 
 **Why:** Inference disks fill with hundreds of GB of models long before VRAM is the bottleneck. Operators need one canonical `$OLLAMA_MODELS` tree on a bigger box and on-demand fetch into a capped local cache — without NFS-only semantics, without a separate sync tool for every `run`/`chat`, and with room for InfiniBand and later tensor-addressed streaming.
