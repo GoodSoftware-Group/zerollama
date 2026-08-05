@@ -67,6 +67,8 @@ struct wan_ctx {
   int gen_wp;
   /* Continuous flow timestep for DiT time MLP (Wan t≈sigma*1000). */
   float gen_t;
+  /* Host f32 weight borrow cache (wan_borrow_tensor_f32). */
+  void *weight_cache;
 };
 
 int wan_env_local(void);
@@ -148,6 +150,10 @@ int wan_rope3_tokens_grid(float *tokens, int T, int H, int HD, int grid_t,
 int wan_rope_axis_dim(int HD);
 
 float *wan_load_tensor_f32(wan_ctx *ctx, const char *name, size_t *nelems_out);
+/* Cached borrow — do not free; cleared in wan_ctx_close. */
+const float *wan_borrow_tensor_f32(wan_ctx *ctx, const char *name,
+                                   size_t *nelems_out);
+void wan_weight_cache_clear(wan_ctx *ctx);
 /* True if tensor exists in safetensors / zip index / GGUF. */
 int wan_gguf_has(wan_ctx *ctx, const char *name);
 void wan_fill_eye_nt(float *w, int N, int K);

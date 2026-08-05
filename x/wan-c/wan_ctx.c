@@ -128,6 +128,7 @@ wan_ctx *wan_ctx_open(const char *ckpt_dir, const char *uma_sock) {
 void wan_ctx_close(wan_ctx *ctx) {
   if (!ctx)
     return;
+  wan_weight_cache_clear(ctx);
   zw_close(ctx->vae_zip);
   zw_close(ctx->t5_zip);
   st_close(ctx->st);

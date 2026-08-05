@@ -6,8 +6,9 @@
 #include <string.h>
 
 /*
- * T5 encode: token_embedding gather from SPM ids; real UMT5 blocks 0–1
- * (attn + SwiGLU) when indexed; else GEMM+LN scaffold.
+ * T5 encode: token_embedding gather from SPM ids; real UMT5 blocks
+ * (attn + gated GELU FFN, matching Wan T5FeedForward) when indexed;
+ * else GEMM+LN scaffold.
  */
 
 static void text_to_act(const char *text, float *x, int K) {
@@ -36,9 +37,13 @@ static void rms_norm_rows(float *y, const float *x, const float *w, int rows,
   }
 }
 
-static void silu_inplace(float *x, size_t n) {
-  for (size_t i = 0; i < n; i++)
-    x[i] = x[i] / (1.f + expf(-x[i]));
+/* Wan GELU (tanh approx) — T5FeedForward.gate, not SiLU/SwiGLU. */
+static void gelu_tanh_inplace(float *x, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    float v = x[i];
+    float c = 0.7978845608028654f * (v + 0.044715f * v * v * v);
+    x[i] = 0.5f * v * (1.f + tanhf(c));
+  }
 }
 
 /* T5 relative-position bucket (bidirectional, matches Wan T5RelativeEmbedding). */
@@ -255,9 +260,17 @@ static int t5_block_real(wan_ctx *ctx, float *x, int T, int D, int block,
   free(Wu);
   Wu = NULL;
 
-  silu_inplace(gate, nff);
+  /* Wan: fc1(x) * GELU(gate_linear(x)) */
+  gelu_tanh_inplace(gate, nff);
   for (size_t i = 0; i < nff; i++)
     gate[i] *= up[i];
+  {
+    static int logged_ffn;
+    if (!logged_ffn) {
+      fprintf(stderr, "wan-c: T5 FFN gated GELU(tanh) (Wan T5FeedForward)\n");
+      logged_ffn = 1;
+    }
+  }
 
   float *Wd = wan_load_tensor_f32(ctx, nd, &nw);
   if (!Wd || nw != (size_t)D * (size_t)Ffn)

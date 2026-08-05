@@ -504,21 +504,30 @@ static int put_ones(wan_ctx *ctx, const char *name, int n) {
 }
 #endif
 
-/* One F0791 DiT block into buffer `bs` (in/out). e0_6d may be NULL → sinusoid AdaLN. */
+/* One F0791 DiT block into buffer `bs` (in/out). e0_6d may be NULL → sinusoid AdaLN.
+ * token_mirror / text_mirror: host copies; re-PUT after BANK weight loads. */
 static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
                             int KV, int HD, int Ffn, int step, int block,
-                            const char *text_ctx, int Tk, const float *e0_6d) {
+                            const char *text_ctx, int Tk, const float *e0_6d,
+                            const float *token_mirror,
+                            const float *text_mirror) {
   char nodes[4096];
-  /* Reuse fixed AdaLN buffer names across blocks (PUT overwrites). */
+  /* Broker AdaLN scale names — only used when real_mod=0 (sinusoid fallback). */
   const char *scn = "x_dit_sc";
   const char *shn = "x_dit_sh";
   const char *sc2 = "x_dit_sc2";
   const char *sh2 = "x_dit_sh2";
 
+#define DIT_FAIL(stage)                                                        \
+  do {                                                                         \
+    fprintf(stderr, "wan-c: DiT block %d fail at %s\n", block, (stage));       \
+    return -1;                                                                 \
+  } while (0)
+
   float sc_buf[1536], sh_buf[1536], scb_buf[1536], shb_buf[1536];
   float gate_sa_buf[1536], gate_ff_buf[1536];
   if (D > 1536)
-    return -1;
+    DIT_FAIL("dim>1536");
   float *sc = sc_buf;
   float *sh = sh_buf;
   float *scb = scb_buf;
@@ -549,15 +558,25 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
   size_t nff = (size_t)T * (size_t)Ffn * 4;
   size_t tbytes = Tk > 0 ? (size_t)Tk * (size_t)D * 4 : 0;
 
-  if (uma_buf_pool_alloc(ctx->bufs, scn, dbytes) != 0 ||
-      uma_buf_pool_alloc(ctx->bufs, shn, dbytes) != 0 ||
-      uma_buf_pool_alloc(ctx->bufs, sc2, dbytes) != 0 ||
-      uma_buf_pool_alloc(ctx->bufs, sh2, dbytes) != 0 ||
-      uma_buf_pool_put(ctx->bufs, scn, sc, dbytes) != 0 ||
-      uma_buf_pool_put(ctx->bufs, shn, sh, dbytes) != 0 ||
-      uma_buf_pool_put(ctx->bufs, sc2, scb, dbytes) != 0 ||
-      uma_buf_pool_put(ctx->bufs, sh2, shb, dbytes) != 0) {
-    return -1;
+  /* Host AdaLN when real_mod — skip broker scale slots (long-CFG pressure). */
+  if (!real_mod) {
+    if (uma_buf_pool_alloc(ctx->bufs, scn, dbytes) != 0 ||
+        uma_buf_pool_alloc(ctx->bufs, shn, dbytes) != 0 ||
+        uma_buf_pool_alloc(ctx->bufs, sc2, dbytes) != 0 ||
+        uma_buf_pool_alloc(ctx->bufs, sh2, dbytes) != 0 ||
+        uma_buf_pool_put(ctx->bufs, scn, sc, dbytes) != 0 ||
+        uma_buf_pool_put(ctx->bufs, shn, sh, dbytes) != 0 ||
+        uma_buf_pool_put(ctx->bufs, sc2, scb, dbytes) != 0 ||
+        uma_buf_pool_put(ctx->bufs, sh2, shb, dbytes) != 0) {
+      DIT_FAIL("adaln_put");
+    }
+  } else {
+    static int logged_hadaln;
+    if (!logged_hadaln) {
+      fprintf(stderr,
+              "wan-c: DiT AdaLN on host (LN no-affine + modulate; no x_dit_sc*)\n");
+      logged_hadaln = 1;
+    }
   }
 
   const char *bt = "x_dit_t";
@@ -581,40 +600,44 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
   const char *bvc = "x_dit_vc";
 
   char gname[128];
-  snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.q.weight", block);
-  if (wan_put_weight_or_eye(ctx, bwq, "dit.Wq", gname, D, D) != 0)
-    return -1;
-  snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.k.weight", block);
-  if (wan_put_weight_or_eye(ctx, bwk, "dit.Wk", gname, D, D) != 0)
-    return -1;
-  snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.v.weight", block);
-  if (wan_put_weight_or_eye(ctx, bwv, "dit.Wv", gname, D, D) != 0)
-    return -1;
-  snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.o.weight", block);
-  if (wan_put_weight_or_eye(ctx, bwo, "dit.Wo", gname, D, D) != 0)
-    return -1;
-  snprintf(gname, sizeof(gname), "dit.blocks.%d.ffn.0.weight", block);
-  if (wan_put_weight_or_eye(ctx, bwu, "dit.Wu", gname, Ffn, D) != 0)
-    return -1;
-  snprintf(gname, sizeof(gname), "dit.blocks.%d.ffn.2.weight", block);
-  if (wan_put_weight_or_eye(ctx, bwd, "dit.Wd", gname, D, Ffn) != 0)
-    return -1;
-
   int have_cross = text_ctx && Tk > 0 && ctx->caps.attn_full &&
                    wan_gguf_has(ctx, "dit.blocks.0.cross_attn.q.weight");
+
+  /* When real_mod, dense GEMMs run on host — only bind cross weights on broker. */
+  if (!real_mod) {
+    snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.q.weight", block);
+    if (wan_put_weight_or_eye(ctx, bwq, "dit.Wq", gname, D, D) != 0)
+      DIT_FAIL("Wq");
+    snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.k.weight", block);
+    if (wan_put_weight_or_eye(ctx, bwk, "dit.Wk", gname, D, D) != 0)
+      DIT_FAIL("Wk");
+    snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.v.weight", block);
+    if (wan_put_weight_or_eye(ctx, bwv, "dit.Wv", gname, D, D) != 0)
+      DIT_FAIL("Wv");
+    snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.o.weight", block);
+    if (wan_put_weight_or_eye(ctx, bwo, "dit.Wo", gname, D, D) != 0)
+      DIT_FAIL("Wo");
+    snprintf(gname, sizeof(gname), "dit.blocks.%d.ffn.0.weight", block);
+    if (wan_put_weight_or_eye(ctx, bwu, "dit.Wu", gname, Ffn, D) != 0)
+      DIT_FAIL("Wu");
+    snprintf(gname, sizeof(gname), "dit.blocks.%d.ffn.2.weight", block);
+    if (wan_put_weight_or_eye(ctx, bwd, "dit.Wd", gname, D, Ffn) != 0)
+      DIT_FAIL("Wd");
+  }
+
   if (have_cross) {
     snprintf(gname, sizeof(gname), "dit.blocks.%d.cross_attn.q.weight", block);
     if (wan_put_weight_or_eye(ctx, bwqc, "dit.Wqc", gname, D, D) != 0)
-      return -1;
+      DIT_FAIL("Wqc");
     snprintf(gname, sizeof(gname), "dit.blocks.%d.cross_attn.k.weight", block);
     if (wan_put_weight_or_eye(ctx, bwkc, "dit.Wkc", gname, D, D) != 0)
-      return -1;
+      DIT_FAIL("Wkc");
     snprintf(gname, sizeof(gname), "dit.blocks.%d.cross_attn.v.weight", block);
     if (wan_put_weight_or_eye(ctx, bwvc, "dit.Wvc", gname, D, D) != 0)
-      return -1;
+      DIT_FAIL("Wvc");
     snprintf(gname, sizeof(gname), "dit.blocks.%d.cross_attn.o.weight", block);
     if (wan_put_weight_or_eye(ctx, bwoc, "dit.Woc", gname, D, D) != 0)
-      return -1;
+      DIT_FAIL("Woc");
     static int logged_x;
     if (!logged_x) {
       fprintf(stderr, "wan-c: DiT cross_attn weights enabled\n");
@@ -629,28 +652,127 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
       uma_buf_pool_alloc(ctx->bufs, bv, nbytes) != 0 ||
       uma_buf_pool_alloc(ctx->bufs, bo, nbytes) != 0 ||
       uma_buf_pool_alloc(ctx->bufs, bff, nff) != 0)
-    return -1;
+    DIT_FAIL("act_alloc");
   if (have_cross &&
       (uma_buf_pool_alloc(ctx->bufs, bkc, tbytes) != 0 ||
        uma_buf_pool_alloc(ctx->bufs, bvc, tbytes) != 0))
-    return -1;
+    DIT_FAIL("cross_kv_alloc");
+
+  /* Weight BANK/BUF puts can drop tokens / text — restore before graphs. */
+#define DIT_RESTORE_HOT()                                                      \
+  do {                                                                         \
+    if (!real_mod) {                                                           \
+      if (uma_buf_pool_ensure_put(ctx->bufs, scn, sc, dbytes) != 0 ||          \
+          uma_buf_pool_ensure_put(ctx->bufs, shn, sh, dbytes) != 0 ||          \
+          uma_buf_pool_ensure_put(ctx->bufs, sc2, scb, dbytes) != 0 ||         \
+          uma_buf_pool_ensure_put(ctx->bufs, sh2, shb, dbytes) != 0)           \
+        DIT_FAIL("restore_adaln");                                             \
+    }                                                                          \
+    if (token_mirror &&                                                        \
+        uma_buf_pool_ensure_put(ctx->bufs, bs, token_mirror, nbytes) != 0)     \
+      DIT_FAIL("restore_x_dit_s");                                             \
+    if (have_cross && text_mirror && tbytes > 0 &&                              \
+        uma_buf_pool_ensure_put(ctx->bufs, text_ctx, text_mirror, tbytes) !=   \
+            0)                                                                 \
+      DIT_FAIL("restore_x_dit_tctx");                                          \
+  } while (0)
+  DIT_RESTORE_HOT();
 
   int flat = T * D;
-  (void)real_mod;
 
   /* Self-attn (+ RoPE on Q/K every block when caps allow). */
   {
-    char qkv[1536];
-    snprintf(qkv, sizeof(qkv),
-             "LAYERNORM_MUL@CPU! x=%s y=%s N=%d D=%d ; "
-             "AFFINE_MUL_ADD@CPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
-             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
-             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
-             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?",
-             bs, bt, T, D, bt, ba, scn, shn, T, D, ba, bq, bwq, T, D, D, ba, bk,
-             bwk, T, D, D, ba, bv, bwv, T, D, D);
-    if (wan_submit_graph(ctx->uma, qkv) != 0)
-      return -1;
+    float *hq = NULL, *hk = NULL, *hv = NULL;
+    if (real_mod) {
+      /* Host LN+AdaLN+QKV GEMM — avoids BANK weight ↔ hot buf eviction. */
+      float *ha = calloc((size_t)T * (size_t)D, sizeof(float));
+      hq = calloc((size_t)T * (size_t)D, sizeof(float));
+      hk = calloc((size_t)T * (size_t)D, sizeof(float));
+      hv = calloc((size_t)T * (size_t)D, sizeof(float));
+      if (!ha || !hq || !hk || !hv) {
+        free(ha);
+        free(hq);
+        free(hk);
+        free(hv);
+        DIT_FAIL("host_qkv_alloc");
+      }
+      if (token_mirror)
+        memcpy(ha, token_mirror, nbytes);
+      else {
+        char resp[256];
+        size_t got = 0;
+        if (uma_client_buf_get(ctx->uma, bs, ha, nbytes, &got, resp,
+                               sizeof(resp)) != 0 ||
+            got != nbytes) {
+          free(ha);
+          free(hq);
+          free(hk);
+          free(hv);
+          DIT_FAIL("host_qkv_get");
+        }
+      }
+      {
+        float *tmp = calloc((size_t)T * (size_t)D, sizeof(float));
+        if (!tmp) {
+          free(ha);
+          free(hq);
+          free(hk);
+          free(hv);
+          DIT_FAIL("host_qkv_tmp");
+        }
+        uma_wan_layernorm_f32(tmp, ha, NULL, NULL, T, D, 1e-6f);
+        for (int t = 0; t < T; t++)
+          for (int d = 0; d < D; d++) {
+            size_t i = (size_t)t * (size_t)D + (size_t)d;
+            ha[i] = tmp[i] * (1.f + sc[d]) + sh[d];
+          }
+        free(tmp);
+      }
+      size_t nw = 0;
+      snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.q.weight", block);
+      const float *Wq = wan_borrow_tensor_f32(ctx, gname, &nw);
+      snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.k.weight", block);
+      const float *Wk = wan_borrow_tensor_f32(ctx, gname, &nw);
+      snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.v.weight", block);
+      const float *Wv = wan_borrow_tensor_f32(ctx, gname, &nw);
+      if (!Wq || !Wk || !Wv) {
+        free(ha);
+        free(hq);
+        free(hk);
+        free(hv);
+        DIT_FAIL("host_qkv_W");
+      }
+      uma_wan_gemm_f32(hq, ha, Wq, T, D, D);
+      uma_wan_gemm_f32(hk, ha, Wk, T, D, D);
+      uma_wan_gemm_f32(hv, ha, Wv, T, D, D);
+      free(ha);
+      if (uma_buf_pool_ensure_put(ctx->bufs, bq, hq, nbytes) != 0 ||
+          uma_buf_pool_ensure_put(ctx->bufs, bk, hk, nbytes) != 0 ||
+          uma_buf_pool_ensure_put(ctx->bufs, bv, hv, nbytes) != 0) {
+        free(hq);
+        free(hk);
+        free(hv);
+        DIT_FAIL("host_qkv_put");
+      }
+      static int logged_hqkv;
+      if (!logged_hqkv) {
+        fprintf(stderr, "wan-c: DiT self-attn QKV GEMM on host (AdaLN+LN)\n");
+        logged_hqkv = 1;
+      }
+    } else {
+      hq = hk = hv = NULL;
+      char qkv[1536];
+      snprintf(qkv, sizeof(qkv),
+               "LAYERNORM_MUL@CPU! x=%s y=%s N=%d D=%d ; "
+               "AFFINE_MUL_ADD@CPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
+               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
+               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
+               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?",
+               bs, bt, T, D, bt, ba, scn, shn, T, D, ba, bq, bwq, T, D, D, ba,
+               bk, bwk, T, D, D, ba, bv, bwv, T, D, D);
+      if (wan_submit_graph(ctx->uma, qkv) != 0)
+        DIT_FAIL("qkv");
+    }
 
     {
       char pref[96];
@@ -699,22 +821,83 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
     }
 
     if (real_mod) {
+      /* Refresh host Q/K/V after bias/norm/RoPE may have mutated broker slots. */
+      if (hq && hk && hv) {
+        char resp[256];
+        size_t got = 0;
+        (void)uma_client_buf_get(ctx->uma, q_attn, hq, nbytes, &got, resp,
+                                 sizeof(resp));
+        (void)uma_client_buf_get(ctx->uma, k_attn, hk, nbytes, &got, resp,
+                                 sizeof(resp));
+        (void)uma_client_buf_get(ctx->uma, bv, hv, nbytes, &got, resp,
+                                 sizeof(resp));
+        (void)uma_buf_pool_ensure_put(ctx->bufs, q_attn, hq, nbytes);
+        (void)uma_buf_pool_ensure_put(ctx->bufs, k_attn, hk, nbytes);
+        (void)uma_buf_pool_ensure_put(ctx->bufs, bv, hv, nbytes);
+      }
+      if (uma_buf_pool_alloc(ctx->bufs, bo, nbytes) != 0) {
+        free(hq);
+        free(hk);
+        free(hv);
+        DIT_FAIL("attn_ao_alloc");
+      }
       int n = snprintf(
           nodes, sizeof(nodes),
           "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-          "HD=%d kind=full ; "
-          "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?",
-          q_attn, k_attn, bv, bo, T, T, H, KV, HD, bo, bt, bwo, T, D, D);
+          "HD=%d kind=full ; MARK@CPU?",
+          q_attn, k_attn, bv, bo, T, T, H, KV, HD);
       if (n < 0 || (size_t)n >= sizeof(nodes) ||
-          wan_submit_graph(ctx->uma, nodes) != 0)
-        return -1;
+          wan_submit_graph(ctx->uma, nodes) != 0) {
+        free(hq);
+        free(hk);
+        free(hv);
+        DIT_FAIL("attn_sa");
+      }
+      free(hq);
+      free(hk);
+      free(hv);
+      hq = hk = hv = NULL;
       {
-        char ob[96];
-        snprintf(ob, sizeof(ob), "dit.blocks.%d.self_attn.o.bias", block);
-        (void)dit_add_bias_host(ctx, bt, T, D, ob);
+        float *ao = calloc((size_t)T * (size_t)D, sizeof(float));
+        float *out = calloc((size_t)T * (size_t)D, sizeof(float));
+        if (!ao || !out) {
+          free(ao);
+          free(out);
+          DIT_FAIL("host_o_alloc");
+        }
+        char resp[256];
+        size_t got = 0;
+        if (uma_client_buf_get(ctx->uma, bo, ao, nbytes, &got, resp,
+                               sizeof(resp)) != 0 ||
+            got != nbytes) {
+          free(ao);
+          free(out);
+          DIT_FAIL("host_o_get");
+        }
+        size_t nw = 0;
+        snprintf(gname, sizeof(gname), "dit.blocks.%d.self_attn.o.weight",
+                 block);
+        const float *Wo = wan_borrow_tensor_f32(ctx, gname, &nw);
+        if (!Wo || nw != (size_t)D * (size_t)D) {
+          free(ao);
+          free(out);
+          DIT_FAIL("host_o_W");
+        }
+        uma_wan_gemm_f32(out, ao, Wo, T, D, D);
+        free(ao);
+        if (uma_buf_pool_ensure_put(ctx->bufs, bt, out, nbytes) != 0) {
+          free(out);
+          DIT_FAIL("host_o_put");
+        }
+        free(out);
+        {
+          char ob[96];
+          snprintf(ob, sizeof(ob), "dit.blocks.%d.self_attn.o.bias", block);
+          (void)dit_add_bias_host(ctx, bt, T, D, ob);
+        }
       }
       if (dit_gated_residual_host(ctx, bs, bt, T, D, gate_sa) != 0)
-        return -1;
+        DIT_FAIL("gate_sa");
     } else {
       int n = snprintf(
           nodes, sizeof(nodes),
@@ -747,7 +930,7 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
                "LAYERNORM_MUL@CPU! x=%s y=%s N=%d D=%d ; MARK@CPU?", bs, bt, T,
                D);
       if (wan_submit_graph(ctx->uma, ln) != 0)
-        return -1;
+        DIT_FAIL("cross_ln");
     }
     int n = snprintf(
         nodes, sizeof(nodes),
@@ -808,71 +991,141 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
 
   /* Dense FFN: GEMM↑ → host GELU(tanh) → GEMM↓ + residual. */
   {
-    int n = snprintf(
-        nodes, sizeof(nodes),
-        "LAYERNORM_MUL@CPU! x=%s y=%s N=%d D=%d ; "
-        "AFFINE_MUL_ADD@CPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
-        "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?",
-        bs, bt, T, D, bt, ba, sc2, sh2, T, D, ba, bff, bwu, T, Ffn, D);
-    if (n < 0 || (size_t)n >= sizeof(nodes) ||
-        wan_submit_graph(ctx->uma, nodes) != 0)
-      return -1;
-
-    float *ff = calloc((size_t)T * (size_t)Ffn, sizeof(float));
-    if (!ff)
-      return -1;
-    char resp[256];
-    size_t got = 0;
-    if (uma_client_buf_get(ctx->uma, bff, ff, nff, &got, resp, sizeof(resp)) !=
-            0 ||
-        got != nff) {
-      free(ff);
-      return -1;
-    }
-    {
-      char ub[96];
-      snprintf(ub, sizeof(ub), "dit.blocks.%d.ffn.0.bias", block);
-      size_t nbb = 0;
-      float *ubias = wan_load_tensor_f32(ctx, ub, &nbb);
-      if (ubias && nbb == (size_t)Ffn) {
-        for (int t = 0; t < T; t++)
-          for (int d = 0; d < Ffn; d++)
-            ff[(size_t)t * (size_t)Ffn + (size_t)d] += ubias[d];
-        static int logged_fb;
-        if (!logged_fb) {
-          fprintf(stderr, "wan-c: DiT FFN Linear biases\n");
-          logged_fb = 1;
+    if (real_mod) {
+      float *hx = calloc((size_t)T * (size_t)D, sizeof(float));
+      float *ha = calloc((size_t)T * (size_t)D, sizeof(float));
+      float *ff = calloc((size_t)T * (size_t)Ffn, sizeof(float));
+      float *hout = calloc((size_t)T * (size_t)D, sizeof(float));
+      if (!hx || !ha || !ff || !hout) {
+        free(hx);
+        free(ha);
+        free(ff);
+        free(hout);
+        DIT_FAIL("host_ff_alloc");
+      }
+      char resp[256];
+      size_t got = 0;
+      if (uma_client_buf_get(ctx->uma, bs, hx, nbytes, &got, resp,
+                             sizeof(resp)) != 0 ||
+          got != nbytes) {
+        free(hx);
+        free(ha);
+        free(ff);
+        free(hout);
+        DIT_FAIL("host_ff_get");
+      }
+      uma_wan_layernorm_f32(ha, hx, NULL, NULL, T, D, 1e-6f);
+      for (int t = 0; t < T; t++)
+        for (int d = 0; d < D; d++) {
+          size_t i = (size_t)t * (size_t)D + (size_t)d;
+          ha[i] = ha[i] * (1.f + scb[d]) + shb[d];
+        }
+      size_t nw = 0;
+      snprintf(gname, sizeof(gname), "dit.blocks.%d.ffn.0.weight", block);
+      const float *Wu = wan_borrow_tensor_f32(ctx, gname, &nw);
+      snprintf(gname, sizeof(gname), "dit.blocks.%d.ffn.2.weight", block);
+      const float *Wd = wan_borrow_tensor_f32(ctx, gname, &nw);
+      if (!Wu || !Wd) {
+        free(hx);
+        free(ha);
+        free(ff);
+        free(hout);
+        DIT_FAIL("host_ff_W");
+      }
+      uma_wan_gemm_f32(ff, ha, Wu, T, Ffn, D);
+      {
+        char ub[96];
+        snprintf(ub, sizeof(ub), "dit.blocks.%d.ffn.0.bias", block);
+        size_t nbb = 0;
+        const float *ubias = wan_borrow_tensor_f32(ctx, ub, &nbb);
+        if (ubias && nbb == (size_t)Ffn) {
+          for (int t = 0; t < T; t++)
+            for (int d = 0; d < Ffn; d++)
+              ff[(size_t)t * (size_t)Ffn + (size_t)d] += ubias[d];
         }
       }
-      free(ubias);
-    }
-    gelu_tanh_inplace(ff, (size_t)T * (size_t)Ffn);
-    static int logged_gelu;
-    if (!logged_gelu) {
-      fprintf(stderr, "wan-c: DiT FFN GELU(tanh) host\n");
-      logged_gelu = 1;
-    }
-    if (uma_buf_pool_put(ctx->bufs, bff, ff, nff) != 0) {
+      gelu_tanh_inplace(ff, (size_t)T * (size_t)Ffn);
+      uma_wan_gemm_f32(hout, ff, Wd, T, D, Ffn);
       free(ff);
-      return -1;
-    }
-    free(ff);
-
-    if (real_mod) {
-      n = snprintf(nodes, sizeof(nodes),
-                   "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?",
-                   bff, bt, bwd, T, D, Ffn);
-      if (n < 0 || (size_t)n >= sizeof(nodes) ||
-          wan_submit_graph(ctx->uma, nodes) != 0)
-        return -1;
+      free(ha);
       {
         char db[96];
         snprintf(db, sizeof(db), "dit.blocks.%d.ffn.2.bias", block);
-        (void)dit_add_bias_host(ctx, bt, T, D, db);
+        size_t nbb = 0;
+        const float *dbias = wan_borrow_tensor_f32(ctx, db, &nbb);
+        if (dbias && nbb == (size_t)D) {
+          for (int t = 0; t < T; t++)
+            for (int d = 0; d < D; d++)
+              hout[(size_t)t * (size_t)D + (size_t)d] += dbias[d];
+        }
       }
-      if (dit_gated_residual_host(ctx, bs, bt, T, D, gate_ff) != 0)
-        return -1;
+      for (int t = 0; t < T; t++)
+        for (int d = 0; d < D; d++) {
+          size_t i = (size_t)t * (size_t)D + (size_t)d;
+          hx[i] += hout[i] * gate_ff[d];
+        }
+      free(hout);
+      if (uma_buf_pool_ensure_put(ctx->bufs, bs, hx, nbytes) != 0) {
+        free(hx);
+        DIT_FAIL("host_ff_put");
+      }
+      free(hx);
+      static int logged_hff;
+      if (!logged_hff) {
+        fprintf(stderr, "wan-c: DiT FFN AdaLN+GEMM+GELU on host\n");
+        logged_hff = 1;
+      }
     } else {
+      int n = snprintf(
+          nodes, sizeof(nodes),
+          "LAYERNORM_MUL@CPU! x=%s y=%s N=%d D=%d ; "
+          "AFFINE_MUL_ADD@CPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
+          "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?",
+          bs, bt, T, D, bt, ba, sc2, sh2, T, D, ba, bff, bwu, T, Ffn, D);
+      if (n < 0 || (size_t)n >= sizeof(nodes) ||
+          wan_submit_graph(ctx->uma, nodes) != 0)
+        DIT_FAIL("ffn_up");
+
+      float *ff = calloc((size_t)T * (size_t)Ffn, sizeof(float));
+      if (!ff)
+        return -1;
+      char resp[256];
+      size_t got = 0;
+      if (uma_client_buf_get(ctx->uma, bff, ff, nff, &got, resp, sizeof(resp)) !=
+              0 ||
+          got != nff) {
+        free(ff);
+        return -1;
+      }
+      {
+        char ub[96];
+        snprintf(ub, sizeof(ub), "dit.blocks.%d.ffn.0.bias", block);
+        size_t nbb = 0;
+        float *ubias = wan_load_tensor_f32(ctx, ub, &nbb);
+        if (ubias && nbb == (size_t)Ffn) {
+          for (int t = 0; t < T; t++)
+            for (int d = 0; d < Ffn; d++)
+              ff[(size_t)t * (size_t)Ffn + (size_t)d] += ubias[d];
+          static int logged_fb;
+          if (!logged_fb) {
+            fprintf(stderr, "wan-c: DiT FFN Linear biases\n");
+            logged_fb = 1;
+          }
+        }
+        free(ubias);
+      }
+      gelu_tanh_inplace(ff, (size_t)T * (size_t)Ffn);
+      static int logged_gelu;
+      if (!logged_gelu) {
+        fprintf(stderr, "wan-c: DiT FFN GELU(tanh) host\n");
+        logged_gelu = 1;
+      }
+      if (uma_buf_pool_put(ctx->bufs, bff, ff, nff) != 0) {
+        free(ff);
+        return -1;
+      }
+      free(ff);
+
       n = snprintf(nodes, sizeof(nodes),
                    "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
                    "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@CPU?",
@@ -884,6 +1137,8 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
   }
 
   return 0;
+#undef DIT_RESTORE_HOT
+#undef DIT_FAIL
 }
 
 static int dit_patch_host(wan_ctx *ctx, const float *latent, size_t latent_n,
@@ -1049,12 +1304,15 @@ static int dit_unpatch_host(wan_ctx *ctx, const float *tok, int T, int D,
   return 0;
 }
 
+/* Pack text into x_dit_tctx; *text_mirror_out owns host copy for re-PUT. */
 static int dit_pack_text(wan_ctx *ctx, const float *text_emb, size_t text_n,
                          int D, const char **tk_out, const char **tv_out,
-                         int *Tk_out) {
+                         int *Tk_out, float **text_mirror_out) {
   *tk_out = NULL;
   *tv_out = NULL;
   *Tk_out = 0;
+  if (text_mirror_out)
+    *text_mirror_out = NULL;
   if (!text_emb || text_n < 1 || D < 1)
     return 0;
 
@@ -1182,7 +1440,11 @@ static int dit_pack_text(wan_ctx *ctx, const float *text_emb, size_t text_n,
     free(pack);
     return -1;
   }
-  free(pack);
+  /* Keep host mirror — BANK weight churn can drop x_dit_tctx mid-CFG. */
+  if (text_mirror_out)
+    *text_mirror_out = pack;
+  else
+    free(pack);
   *tk_out = tk;
   *tv_out = tk; /* single context buffer; K/V projected per-block */
   *Tk_out = Tk;
@@ -1265,7 +1527,9 @@ static int dit_broker(wan_ctx *ctx, float *latent, size_t n, int step,
   const char *tk = NULL;
   const char *tv = NULL;
   int Tk = 0;
-  if (dit_pack_text(ctx, text_emb, text_n, D, &tk, &tv, &Tk) != 0) {
+  float *text_mirror = NULL;
+  if (dit_pack_text(ctx, text_emb, text_n, D, &tk, &tv, &Tk, &text_mirror) !=
+      0) {
     free(tok);
     return -1;
   }
@@ -1318,51 +1582,91 @@ static int dit_broker(wan_ctx *ctx, float *latent, size_t n, int step,
     }
   }
 
+  float *mirror = NULL;
+  char resp[512];
+  if (use_real_geom) {
+    mirror = tok; /* patch tokens; refreshed via BUF_GET after each block */
+  } else {
+    mirror = calloc(nbytes / sizeof(float), sizeof(float));
+    if (!mirror)
+      return -1;
+    memcpy(mirror, latent, nbytes);
+  }
+
   for (int b = 0; b < nblocks; b++) {
+    /* Re-PUT tokens / text each block — broker may drop under CFG multi-step. */
+    if (uma_buf_pool_ensure_put(ctx->bufs, bs, mirror, nbytes) != 0) {
+      fprintf(stderr, "wan-c: DiT ensure x_dit_s failed before block %d\n", b);
+      free(e0);
+      free(e_time);
+      free(text_mirror);
+      if (!use_real_geom)
+        free(mirror);
+      free(tok);
+      return -1;
+    }
+    if (text_mirror && tk && Tk > 0) {
+      size_t tb = (size_t)Tk * (size_t)D * sizeof(float);
+      if (uma_buf_pool_ensure_put(ctx->bufs, tk, text_mirror, tb) != 0) {
+        fprintf(stderr, "wan-c: DiT ensure x_dit_tctx failed before block %d\n",
+                b);
+        free(e0);
+        free(e_time);
+        free(text_mirror);
+        if (!use_real_geom)
+          free(mirror);
+        free(tok);
+        return -1;
+      }
+    }
     if (dit_block_broker(ctx, bs, rows, D, H, KV, HD, Ffn, step, b, tk, Tk,
-                         have_time ? e0 : NULL) != 0) {
+                         have_time ? e0 : NULL, mirror, text_mirror) != 0) {
       fprintf(stderr, "wan-c: DiT block %d failed\n", b);
       free(e0);
       free(e_time);
+      free(text_mirror);
+      if (!use_real_geom)
+        free(mirror);
+      free(tok);
+      return -1;
+    }
+    size_t got_m = 0;
+    if (uma_client_buf_get(ctx->uma, bs, mirror, nbytes, &got_m, resp,
+                           sizeof(resp)) != 0 ||
+        got_m != nbytes) {
+      fprintf(stderr, "wan-c: DiT mirror GET failed block %d: %.120s\n", b,
+              resp);
+      free(e0);
+      free(e_time);
+      free(text_mirror);
+      if (!use_real_geom)
+        free(mirror);
       free(tok);
       return -1;
     }
   }
   free(e0);
 
-  char resp[512];
   size_t got = 0;
   if (use_real_geom) {
-    float *tok_out = calloc((size_t)rows * (size_t)D, sizeof(float));
-    if (!tok_out) {
-      free(e_time);
-      free(tok);
-      return -1;
-    }
-    if (uma_client_buf_get(ctx->uma, bs, tok_out, nbytes, &got, resp,
-                           sizeof(resp)) != 0 ||
-        got != nbytes) {
-      fprintf(stderr, "wan-c: DiT BUF_GET failed: %.160s\n", resp);
-      free(tok_out);
-      free(e_time);
-      free(tok);
-      return -1;
-    }
-    if (dit_unpatch_host(ctx, tok_out, rows, D, lt, lh, lw, tp, hp, wp, latent,
+    if (dit_unpatch_host(ctx, mirror, rows, D, lt, lh, lw, tp, hp, wp, latent,
                          n, e_time) != 0) {
       fprintf(stderr, "wan-c: DiT unpatch/head failed\n");
-      free(tok_out);
       free(e_time);
+      free(text_mirror);
       free(tok);
       return -1;
     }
-    free(tok_out);
     free(e_time);
+    free(text_mirror);
     free(tok);
     return 0;
   }
 
+  free(mirror);
+
   free(e_time);
+  free(text_mirror);
   free(tok);
   if (uma_client_buf_get(ctx->uma, bs, latent, n * 4, &got, resp,
                          sizeof(resp)) != 0 ||

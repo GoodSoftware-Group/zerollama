@@ -43,6 +43,9 @@ With `uma_daemon` running, omit `UMA_WAN_LOCAL`. Stages submit **`qos=batch`** r
 
 T5 matches Wan: encode real tokens (optional `WAN_T5_PAD=1` + mask), DiT sees
 trimmed context. Fast lab: `WAN_DIT_BLOCKS=1 WAN_T5_BLOCKS=2`. `--cfg 1` skips uncond.
+**T5 A/B (lab):** wan-c vs Wan Python UMT5 — SPM ids match HF; FFN gate is
+**GELU(tanh)** (was SiLU); `compare_parity.py` → **cosine=1.0** / mse≈0
+(`dumps/parity_c` vs `dumps/parity_py`, prompt “a red apple on a wooden table”).
 
 ## Real weights (as-is on disk)
 
@@ -89,14 +92,21 @@ Default DiT depth is **30** with safetensors (`WAN_DIT_BLOCKS` to cap).
 | 320×192 | 5 | 1 | `2×12×20` | `ok_nontrivial` + PPMs (~23 min) |
 | 64×64 | 5 | **4** | `2×4×4` | `ok_nontrivial` + RoPE OK (~2.5 min; R≈118) |
 | 64×64 | 5 | **8** | `2×4×4` | `ok_nontrivial` + RoPE OK (~3.5 min; R≈120) |
+| 64×64 | 5 | **8** | `2×4×4` | **Gaussian N(0,1)** init — `ok_nontrivial` (R≈125; Δ vs uniform PSNR≈9.6) |
+| 160×96 | 5 | **8** | `2×6×10` | **Gaussian** + token mirror — `ok_nontrivial` (~8 min; all 8 UniPC steps) |
+| 64×64 | 5 | **16** | `2×4×4` | post-weight `x_dit_s` restore — `ok_nontrivial` (~4 min; all 16 steps; R≈120) |
+| 160×96 | 5 | **16** | `2×6×10` | same — `ok_nontrivial` (~9 min; all 16 UniPC steps) |
+| 64×64 | 5 | **8** | `2×4×4` | **T5 GELU** + text/AdaLN restore — `ok_nontrivial` (~3.4 min; all 8 steps) |
+| **64×64** | **5** | **25** | `2×4×4` | **host AdaLN+QKV+FFN GEMM** (broker ATTN/RoPE only) — `ok_nontrivial` (~21 min; all 25 UniPC steps; mean≈120) |
+| 64×64 | 5 | **8** | `2×4×4` | **Accelerate GEMM + host weight borrow-cache** — `ok_nontrivial` (**~108 s**; miss=240 hit=3600 ~4.2 GiB; mean≈125) |
+| 160×96 | 5 | **8** | `2×6×10` | same cache — `ok_nontrivial` (**~5.8 min**; was ~8 min pre-cache; mean≈121) |
 
-Artifacts: `dumps/signoff_{cfg5,160,160_cfg5,160_cfg5_s4,mid320,320_cfg5,64_cfg5_s4,64_cfg5_s8,832,t5pad512}.*`
+Artifacts: `dumps/signoff_{…,64_cfg5_s8_cache,160_cfg5_s8_cache,64_cfg5_s25,…}.*`
 
-Delta this continue: CFG multi-step @160/64 (incl. steps=8); CFG=5 @320; RoPE
-skip detector + freq-buf reuse (no free between Q/K); weight put-fail logs.
-Soft: recognizable scenes (still blob-like at ≤8 steps); CFG=5 @832; pixel A/B
-vs Wan Python. Multi-step can flake under broker slot pressure — retry after
-lab `uma_daemon` is healthy.
+Delta this continue: host **`wan_borrow_tensor_f32`** cache (cleared on `wan_ctx_close`)
+for DiT QKV/O/FFN weights; Accelerate `cblas_sgemm` in sibling `uma_wan_ops`.
+s8@64 wall **~108 s** vs ~3–8 min before (reload/decode dominated). Soft:
+recognizable scenes; CFG=5 @832; full DiT step A/B vs Wan Python.
 
 ## Modules
 
@@ -120,8 +130,13 @@ python3 x/wan-c/tools/export_umt5_spm.py spiece.model -o umt5.vocab
 # Convert checkpoints to GGUF (optional)
 python3 x/wan-c/tools/convert_wan_to_gguf.py --ckpt-dir ... -o wan_t2v_1.3b.gguf
 
-# Parity dumps vs Python Wan (stub)
-python3 x/wan-c/tools/parity_dump.py --prompt "a cat" --out dumps/
+# Parity dumps vs Python Wan (real T5 when WAN_REPO+ckpt present)
+WAN_REPO=~/.zerollama/third_party/wan/Wan2.1 \
+  python3 x/wan-c/tools/parity_dump.py --prompt "a red apple on a wooden table" \
+  --out x/wan-c/dumps/parity_py
+
+# Compare wan-c WAN_DUMP_DIR dump to parity_py (expect T5 cosine≈1)
+python3 x/wan-c/tools/compare_parity.py x/wan-c/dumps/parity_c x/wan-c/dumps/parity_py
 ```
 
 ## Tokenizer note

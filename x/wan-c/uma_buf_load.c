@@ -77,12 +77,32 @@ static void pool_untrack(uma_buf_pool *pool, const char *name) {
 int uma_buf_pool_alloc(uma_buf_pool *pool, const char *name, size_t nbytes) {
   if (!pool || !pool->client || !name)
     return -1;
-  if (pool_find(pool, name))
-    return 0;
+  if (pool_find(pool, name)) {
+    /* Re-assert on broker — tracked names can vanish under slot pressure
+     * (multi-step CFG), leaving the client pool stale. */
+    if (uma_client_buf_alloc(pool->client, name, nbytes, g_resp,
+                             sizeof(g_resp)) == 0)
+      return 0;
+    (void)uma_client_bank_unbind(pool->client, name, g_resp, sizeof(g_resp));
+    (void)uma_client_buf_free(pool->client, name, g_resp, sizeof(g_resp));
+    pool_untrack(pool, name);
+  }
   if (uma_client_buf_alloc(pool->client, name, nbytes, g_resp, sizeof(g_resp)) !=
       0)
     return -1;
   return pool_track(pool, name);
+}
+
+int uma_buf_pool_ensure_put(uma_buf_pool *pool, const char *name,
+                            const void *data, size_t nbytes) {
+  if (uma_buf_pool_alloc(pool, name, nbytes) != 0)
+    return -1;
+  if (uma_buf_pool_put(pool, name, data, nbytes) == 0)
+    return 0;
+  (void)uma_buf_pool_free(pool, name);
+  if (uma_buf_pool_alloc(pool, name, nbytes) != 0)
+    return -1;
+  return uma_buf_pool_put(pool, name, data, nbytes);
 }
 
 int uma_buf_pool_put(uma_buf_pool *pool, const char *name, const void *data,

@@ -17,12 +17,24 @@ static size_t latent_elems(const wan_model_config *c, int w, int h, int frames) 
 }
 
 static void fill_noise(float *x, size_t n, int seed) {
+  /* Match Wan / torch.randn: i.i.d. N(0,1). Prior LCG uniform[-1,1] was a
+   * quality gap (blob-like frames even at multi-step). */
   unsigned s = (unsigned)seed;
   if (s == 0)
     s = (unsigned)time(NULL);
-  for (size_t i = 0; i < n; i++) {
+  for (size_t i = 0; i < n; i += 2) {
+    float u1, u2;
+    do {
+      s = s * 1103515245u + 12345u;
+      u1 = (float)(s & 0xffffff) / 16777216.0f;
+    } while (u1 <= 1e-7f);
     s = s * 1103515245u + 12345u;
-    x[i] = ((float)(s & 0xffff) / 32768.0f) - 1.0f;
+    u2 = (float)(s & 0xffffff) / 16777216.0f;
+    float r = sqrtf(-2.0f * logf(u1));
+    float th = 6.28318530718f * u2;
+    x[i] = r * cosf(th);
+    if (i + 1 < n)
+      x[i + 1] = r * sinf(th);
   }
 }
 
@@ -155,6 +167,60 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
 
   fill_noise(latent, latent_n, p->seed);
 
+  {
+    const char *dump = getenv("WAN_DUMP_DIR");
+    if (dump && dump[0]) {
+      char path[768];
+      FILE *f;
+      /* Active T5 rows = leading non-zero (trim-by-default matches Wan u[:seq]). */
+      int D = mc->text_dim;
+      int rows = (D > 0) ? (int)(text_n / (size_t)D) : 0;
+      int active = 0;
+      for (int r = 0; r < rows; r++) {
+        const float *row = text_emb + (size_t)r * (size_t)D;
+        int nz = 0;
+        for (int i = 0; i < D; i++) {
+          if (row[i] != 0.f) {
+            nz = 1;
+            break;
+          }
+        }
+        if (!nz)
+          break;
+        active = r + 1;
+      }
+      if (active < 1)
+        active = (n_ids > 0 && (int)n_ids <= rows) ? (int)n_ids : rows;
+      snprintf(path, sizeof(path), "%s/t5_emb.f32", dump);
+      f = fopen(path, "wb");
+      if (f) {
+        fwrite(text_emb, sizeof(float), (size_t)active * (size_t)D, f);
+        fclose(f);
+      }
+      snprintf(path, sizeof(path), "%s/noise.f32", dump);
+      f = fopen(path, "wb");
+      if (f) {
+        fwrite(latent, sizeof(float), latent_n, f);
+        fclose(f);
+      }
+      snprintf(path, sizeof(path), "%s/meta.json", dump);
+      f = fopen(path, "w");
+      if (f) {
+        fprintf(f,
+                "{\n  \"mode\": \"wan-c\",\n  \"prompt\": \"%s\",\n"
+                "  \"t5_shape\": [%d, %d],\n  \"latent_elems\": %zu,\n"
+                "  \"latent_shape\": [%d, %d, %d, %d],\n  \"seed\": %d,\n"
+                "  \"width\": %d, \"height\": %d, \"frames\": %d\n}\n",
+                p->prompt ? p->prompt : "", active, D, latent_n, mc->z_channels,
+                ctx->gen_lt, ctx->gen_lh, ctx->gen_lw, p->seed, p->width,
+                p->height, p->frames);
+        fclose(f);
+      }
+      fprintf(stderr, "wan-c: WAN_DUMP_DIR=%s t5=[%d,%d] noise_n=%zu\n", dump,
+              active, D, latent_n);
+    }
+  }
+
   sched_unipc *sched = sched_unipc_create(p->steps, p->shift > 0 ? p->shift : 5.0f);
   if (!sched) {
     free(latent);
@@ -172,6 +238,10 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
       ctx->gen_t = sigmas[step] * 1000.f;
     else
       ctx->gen_t = 1000.f * fmaxf(0.f, 1.f - (float)step / (float)p->steps);
+
+    fprintf(stderr, "wan-c: UniPC step %d/%d sigma_t=%.4f cfg=%.2f\n", step + 1,
+            p->steps, ctx->gen_t / 1000.f, p->cfg_scale);
+    fflush(stderr);
 
     memcpy(cond, latent, latent_n * sizeof(float));
     if (wan_dit_denoise(ctx, cond, latent_n, step, text_emb, text_n) != 0) {

@@ -92,6 +92,88 @@ float *wan_load_tensor_f32(wan_ctx *ctx, const char *name, size_t *nelems_out) {
   return NULL;
 }
 
+typedef struct wan_wcache_ent {
+  char name[160];
+  float *data;
+  size_t n;
+  struct wan_wcache_ent *next;
+} wan_wcache_ent;
+
+typedef struct wan_wcache_hdr {
+  wan_wcache_ent *head;
+  size_t bytes;
+  size_t hits;
+  size_t misses;
+  int nent;
+} wan_wcache_hdr;
+
+const float *wan_borrow_tensor_f32(wan_ctx *ctx, const char *name,
+                                   size_t *nelems_out) {
+  if (nelems_out)
+    *nelems_out = 0;
+  if (!ctx || !name)
+    return NULL;
+  wan_wcache_hdr *h = (wan_wcache_hdr *)ctx->weight_cache;
+  if (!h) {
+    h = calloc(1, sizeof(*h));
+    if (!h)
+      return NULL;
+    ctx->weight_cache = h;
+    fprintf(stderr, "wan-c: host weight borrow-cache enabled\n");
+  }
+  for (wan_wcache_ent *e = h->head; e; e = e->next) {
+    if (strcmp(e->name, name) == 0) {
+      h->hits++;
+      if (nelems_out)
+        *nelems_out = e->n;
+      return e->data;
+    }
+  }
+  size_t n = 0;
+  float *buf = wan_load_tensor_f32(ctx, name, &n);
+  if (!buf)
+    return NULL;
+  wan_wcache_ent *ent = calloc(1, sizeof(*ent));
+  if (!ent) {
+    free(buf);
+    return NULL;
+  }
+  snprintf(ent->name, sizeof(ent->name), "%s", name);
+  ent->data = buf;
+  ent->n = n;
+  ent->next = h->head;
+  h->head = ent;
+  h->bytes += n * sizeof(float);
+  h->misses++;
+  h->nent++;
+  if (h->misses == 1 || (h->misses % 60) == 0)
+    fprintf(stderr,
+            "wan-c: weight-cache miss=%zu hit=%zu ents=%d ~%.1f MiB\n",
+            h->misses, h->hits, h->nent, (double)h->bytes / (1024.0 * 1024.0));
+  if (nelems_out)
+    *nelems_out = n;
+  return buf;
+}
+
+void wan_weight_cache_clear(wan_ctx *ctx) {
+  if (!ctx || !ctx->weight_cache)
+    return;
+  wan_wcache_hdr *h = (wan_wcache_hdr *)ctx->weight_cache;
+  wan_wcache_ent *e = h->head;
+  while (e) {
+    wan_wcache_ent *n = e->next;
+    free(e->data);
+    free(e);
+    e = n;
+  }
+  if (h->misses || h->hits)
+    fprintf(stderr,
+            "wan-c: weight-cache final miss=%zu hit=%zu ents=%d ~%.1f MiB\n",
+            h->misses, h->hits, h->nent, (double)h->bytes / (1024.0 * 1024.0));
+  free(h);
+  ctx->weight_cache = NULL;
+}
+
 int wan_gguf_has(wan_ctx *ctx, const char *name) {
   if (!ctx || !name)
     return 0;
