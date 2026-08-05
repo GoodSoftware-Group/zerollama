@@ -105,6 +105,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -137,7 +138,9 @@ type Device struct {
 	linkIB bool
 }
 
-// OpenFirst opens the first usable IB/RoCE device with an active port.
+// OpenFirst opens a usable IB/RoCE device with an active port.
+// Preference: ZEROLLAMA_RDMA_DEVICE (exact name) → InfiniBand → any RoCE/Ethernet.
+// Why: mlx4_0 (RoCE on bond) often sorts first but peers on pure IB (mlx4_1) need matching link layer.
 func OpenFirst() (*Device, error) {
 	var n C.int
 	list := C.ibv_get_device_list(&n)
@@ -147,13 +150,43 @@ func OpenFirst() (*Device, error) {
 	defer C.ibv_free_device_list(list)
 
 	devs := unsafe.Slice(list, int(n))
+	want := os.Getenv("ZEROLLAMA_RDMA_DEVICE")
+
 	var last error
+	var firstRoCE *Device
 	for i := 0; i < int(n); i++ {
 		d, err := openDevice(devs[i], 1)
-		if err == nil {
+		if err != nil {
+			last = err
+			continue
+		}
+		if want != "" {
+			if d.name == want {
+				return d, nil
+			}
+			d.Close()
+			continue
+		}
+		if d.linkIB {
+			if firstRoCE != nil {
+				firstRoCE.Close()
+			}
 			return d, nil
 		}
-		last = err
+		if firstRoCE == nil {
+			firstRoCE = d
+		} else {
+			d.Close()
+		}
+	}
+	if want != "" {
+		if last == nil {
+			last = fmt.Errorf("verbs: device %q not found/usable", want)
+		}
+		return nil, last
+	}
+	if firstRoCE != nil {
+		return firstRoCE, nil
 	}
 	if last == nil {
 		last = errors.New("verbs: no active RDMA port")
