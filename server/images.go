@@ -27,6 +27,7 @@ import (
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/parser"
+	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
 	"github.com/ollama/ollama/types/model"
@@ -87,6 +88,11 @@ type Model struct {
 	Messages       []api.Message
 
 	Template *template.Template
+
+	// BlobDigests are content-addressed layer digests (sha256-…) collected during
+	// GetModel. Why: scheduler Pin/Unpin needs digests without re-parsing the
+	// manifest after runner.model is nil'd on unload.
+	BlobDigests []string `json:"-"`
 }
 
 func (m *Model) IsMLX() bool {
@@ -350,7 +356,24 @@ func GetModel(name string) (*Model, error) {
 	n := model.ParseName(name)
 	mf, err := manifest.ParseNamedManifest(n)
 	if err != nil {
-		return nil, err
+		if r := remotestore.Default(); r != nil && r.Enabled() {
+			host, ns, modelName, tag := n.Host, n.Namespace, n.Model, n.Tag
+			if host == "" {
+				host = "registry.ollama.ai"
+			}
+			if ns == "" {
+				ns = "library"
+			}
+			if tag == "" {
+				tag = "latest"
+			}
+			if _, ferr := r.FetchManifest(context.Background(), host, ns, modelName, tag); ferr == nil {
+				mf, err = manifest.ParseNamedManifest(n)
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	m := &Model{
@@ -361,10 +384,11 @@ func GetModel(name string) (*Model, error) {
 	}
 
 	if mf.Config.Digest != "" {
-		filename, err := manifest.BlobsPath(mf.Config.Digest)
+		filename, err := ensureBlob(mf.Config.Digest)
 		if err != nil {
 			return nil, err
 		}
+		m.BlobDigests = append(m.BlobDigests, mf.Config.Digest)
 
 		configFile, err := os.Open(filename)
 		if err != nil {
@@ -380,19 +404,17 @@ func GetModel(name string) (*Model, error) {
 	enrichMLXModelConfig(m)
 
 	for _, layer := range mf.Layers {
-		filename, err := manifest.BlobsPath(layer.Digest)
+		filename, err := ensureBlob(layer.Digest)
 		if err != nil {
 			return nil, err
 		}
+		m.BlobDigests = append(m.BlobDigests, layer.Digest)
 
 		switch layer.MediaType {
 		case "application/vnd.ollama.image.model":
 			m.ModelPath = filename
 			m.ParentModel = layer.From
-			if f, err := gguf.Open(filename); err == nil {
-				m.HasChatTemplate = f.KeyValue("tokenizer.chat_template").String() != ""
-				f.Close()
-			}
+			// HasChatTemplate is set from loadGGUFMetadataAt below (one GGUF header read).
 		case manifest.MediaTypeImageDraft:
 			m.DraftPath = filename
 		case "application/vnd.ollama.image.embed":
@@ -459,6 +481,23 @@ func GetModel(name string) (*Model, error) {
 	}
 
 	return m, nil
+}
+
+// ensureBlob returns a local blob path, fetching from remote storage on miss when configured.
+// Why: GetModel already walks every layer digest; transparent miss-fetch means
+// run/chat keep working after storage push without a separate sync step.
+func ensureBlob(digest string) (string, error) {
+	filename, err := manifest.BlobsPath(digest)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filename); err == nil {
+		return filename, nil
+	}
+	if r := remotestore.Default(); r != nil && r.Enabled() {
+		return r.Fetch(context.Background(), digest)
+	}
+	return filename, nil
 }
 
 func CopyModel(src, dst model.Name) error {

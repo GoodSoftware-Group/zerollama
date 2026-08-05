@@ -355,11 +355,13 @@ Ordered by how often operators need them. Full index: [docs/README.md](docs/READ
 - [MLX agent prompts](docs/mlx-agent-prompts.md) · [MLX routing](docs/mlx-routing-policy.md)
 - [Runtime embed](docs/runtime-embed.md) · [GPU training](docs/gpu-training.md)
 - [Fleet](docs/fleet-management.md) · [Eliza Cloud](docs/eliza-cloud.md)
+- [Remote model storage](docs/remote-model-storage.md) — central blobs + HMAC + fetch-on-miss
 - [LM Studio import](docs/lmstudio-import.md) · [Bench cache](docs/bench-cache.md)
 
 ### Optional deployment shapes
 | Track | Why it exists | Doc |
 |-------|---------------|-----|
+| **Remote model storage** | Disk fills with hundreds of GB of models before VRAM does; central content-addressed store + on-demand cache | [remote-model-storage.md](docs/remote-model-storage.md) |
 | **Phase 17** — Go→llama-server | Mergeability with upstream; Apple Silicon still defaults ggml (~+7% in lab) | [phase17-llama-server.md](docs/phase17-llama-server.md) |
 | **Phase 16** — `--edge` | Upstream-shaped edge node; keep train/Eliza/fleet | [phase16-thin-edge.md](docs/phase16-thin-edge.md) |
 | **Flash-MoE / ANE** | Experimental Apple Silicon tracks (MoE > unified RAM, Neural Engine labs) | [flash-moe.md](docs/flash-moe.md) · [ane-probe.md](docs/ane-probe.md) · [ane-draft-inprocess.md](docs/ane-draft-inprocess.md) |

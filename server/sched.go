@@ -22,6 +22,7 @@ import (
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
+	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/x/imagegen"
@@ -311,10 +312,12 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 		runner.refMu.Unlock()
 		s.loadedMu.Unlock()
 		slog.Debug("orphaned runner shutting down", "orphan", runner, "loaded", runnerToUnload)
+		digests := append([]string(nil), runner.blobDigests...)
 		runner.refMu.Lock()
 		llama := runner.detachServer()
 		runner.refMu.Unlock()
 		closeLlamaServer(llama)
+		releaseRemoteBlobs(digests)
 		return
 	}
 	if runner.refCount > 0 {
@@ -334,6 +337,7 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 		runnersSnapshot = append(runnersSnapshot, r)
 	}
 	delete(s.loaded, modelKey)
+	digests := append([]string(nil), runner.blobDigests...)
 	runner.refMu.Unlock()
 	s.loadedMu.Unlock()
 
@@ -343,6 +347,7 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 	llama := runner.detachServer()
 	runner.refMu.Unlock()
 	closeLlamaServer(llama)
+	releaseRemoteBlobs(digests)
 	go func() {
 		<-finished
 		schedLogDebug("runner unloaded, signaling scheduler", nil, schedRunnerAttrs(runner)...)
@@ -906,6 +911,7 @@ iGPUScan:
 		model:           req.model,
 		modelPath:       req.model.ModelPath,
 		modelKey:        schedulerModelKey(req.model),
+		blobDigests:     append([]string(nil), req.model.BlobDigests...),
 		llama:           llama,
 		Options:         &req.opts,
 		sessionDuration: sessionDuration,
@@ -921,6 +927,7 @@ iGPUScan:
 		contextShift:    runnerContextShift(req),
 	}
 	runner.numParallel = numParallel
+	pinRemoteBlobs(runner.blobDigests)
 
 	s.loadedMu.Lock()
 	var oldRunner *runnerRef
@@ -935,10 +942,12 @@ iGPUScan:
 	slog.Info("loaded runners", "count", len(s.loaded))
 	s.loadedMu.Unlock()
 	if oldRunner != nil {
+		oldDigests := oldRunner.blobDigests
 		oldRunner.refMu.Lock()
 		leaked := oldRunner.detachServer()
 		oldRunner.refMu.Unlock()
 		closeLlamaServer(leaked)
+		releaseRemoteBlobs(oldDigests)
 	}
 	schedLogDebug("runner registered, waiting for subprocess ready", req,
 		"pid", runner.pid, "vram_size", runner.vramSize, "llama_load_elapsed", time.Since(llamaLoadStart))
@@ -1091,6 +1100,7 @@ type runnerRef struct {
 	model        *Model
 	modelPath    string
 	modelKey     string
+	blobDigests  []string // remotestore pin set; kept after model is nil'd on unload
 	numParallel  int
 	contextShift bool
 	loadedMeta   api.LoadedModelMetadata
@@ -1960,6 +1970,28 @@ func (s *Scheduler) findLoadedRunner(model *Model) *runnerRef {
 		}
 	}
 	return nil
+}
+
+// pinRemoteBlobs / releaseRemoteBlobs keep remotestore LRU from deleting blobs
+// that a loaded runner still needs (and clean ephemeral scratch on unload).
+// Why here (scheduler), not GetModel: pins must track runner lifetime, not
+// metadata reads; GetModel is also used for show/tags without loading weights.
+func pinRemoteBlobs(digests []string) {
+	if len(digests) == 0 {
+		return
+	}
+	if r := remotestore.Default(); r != nil && r.Enabled() {
+		r.Pin(digests...)
+	}
+}
+
+func releaseRemoteBlobs(digests []string) {
+	if len(digests) == 0 {
+		return
+	}
+	if r := remotestore.Default(); r != nil && r.Enabled() {
+		r.ReleaseModelBlobs(digests...)
+	}
 }
 
 // expireRunner unloads a loaded model immediately (stop CLI, keep_alive:0, post-create

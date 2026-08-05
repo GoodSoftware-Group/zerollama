@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Remote model storage daemon (v1) (Aug 2026)
+
+**Why:** Inference disks fill with hundreds of GB of models long before VRAM is the bottleneck. Operators need one canonical `$OLLAMA_MODELS` tree on a bigger box and on-demand fetch into a capped local cache — without NFS-only semantics, without a separate sync tool for every `run`/`chat`, and with room for InfiniBand and later tensor-addressed streaming.
+
+**What:**
+- CLI: `zerollama storage serve` (lab `:18090`) and `zerollama storage push [--reclaim]`
+- HMAC-SHA256 shared-secret auth; TCP HTTP Range-GET; RDMA preference when `-tags rdma` and a real GID is advertised (data plane may still be HTTP until verbs QP lands)
+- `GetModel` / `ensureBlob` fetch-on-miss; persist LRU + ephemeral scratch
+- Scheduler **refcount** pin on load / `ReleaseModelBlobs` on unload (shared layers + auto ephemeral delete)
+- Safe reclaim (delete only after all referencing manifests pushed); verify-before-rename; singleflight downloads; hex-only digest paths
+- GGUF catalog + `GET /v1/tensor/…`; `tensorproto` spec for future stream/runtime paging
+
+See [docs/remote-model-storage.md](docs/remote-model-storage.md).
+
+
 ### `zerollama ls` CTX column (host-aware) (Aug 2026)
 
 **Why:** Operators hit OOM with dual MLX loads + 80k ctx; `ls` showed PARAMS/PERF but not what context this host can hold *now*.

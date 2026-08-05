@@ -500,6 +500,10 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_SPEC_DM_ADAPTIVE":               {"ZEROLLAMA_SPEC_DM_ADAPTIVE", SpecDmAdaptive(), "Bee B1 adaptive DFlash draft-max: profit/1/on (default off)"},
 		"ZEROLLAMA_FLEET_PEERS":                    {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":                   {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
+		"ZEROLLAMA_STORAGE_SERVERS":                {"ZEROLLAMA_STORAGE_SERVERS", StorageServers(), "Comma-separated remote model storage base URLs"},
+		"ZEROLLAMA_STORAGE_SECRET":                 {"ZEROLLAMA_STORAGE_SECRET", "(set/unset)", "HMAC shared secret for remote model storage"},
+		"ZEROLLAMA_STORAGE_LISTEN":                 {"ZEROLLAMA_STORAGE_LISTEN", StorageListen(), "zerollama storage serve listen address (default 0.0.0.0:18090)"},
+		"ZEROLLAMA_REMOTE_CACHE_MAX_BYTES":         {"ZEROLLAMA_REMOTE_CACHE_MAX_BYTES", RemoteCacheMaxBytes(), "Max bytes for local remote-blob cache (0=unlimited)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":            {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
 		"ZEROLLAMA_FLEET_ASSIGN_SECRET":            {"ZEROLLAMA_FLEET_ASSIGN_SECRET", "(set/unset)", "F5 HMAC secret for assignment tokens (empty disables)"},
 		"ZEROLLAMA_FLEET_ASSIGN_TTL":               {"ZEROLLAMA_FLEET_ASSIGN_TTL", Var("ZEROLLAMA_FLEET_ASSIGN_TTL"), "F5 assign token TTL (default 8s, clamp 2–30s)"},
@@ -1084,6 +1088,50 @@ func FleetListen() string {
 		return v
 	}
 	return "0.0.0.0:11450"
+}
+
+// StorageServers is a comma-separated list of remote storage base URLs.
+// Why multiple: fallback if one storage peer is down; same secret for all.
+func StorageServers() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_STORAGE_SERVERS"))
+}
+
+// StorageSecret is the shared HMAC secret for remote storage auth.
+// Why env or _FILE: secrets in env are convenient; file keeps them out of process listings.
+func StorageSecret() string {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_SECRET")); s != "" {
+		return s
+	}
+	if p := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_SECRET_FILE")); p != "" {
+		b, err := os.ReadFile(p)
+		if err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+// StorageListen is the storage serve listen address.
+// Why default :18090: lab port — never production inference :11434/:8081.
+func StorageListen() string {
+	if v := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_LISTEN")); v != "" {
+		return v
+	}
+	return "0.0.0.0:18090"
+}
+
+// RemoteCacheMaxBytes is the local remote-blob cache cap (0 = unlimited).
+// Why a cap: protect the inference boot disk when many models are pulled on miss.
+func RemoteCacheMaxBytes() int64 {
+	v := strings.TrimSpace(Var("ZEROLLAMA_REMOTE_CACHE_MAX_BYTES"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // FleetPollInterval is how often the fleet manager polls peer /api/status.

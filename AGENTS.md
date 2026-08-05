@@ -20,6 +20,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 ## Do not touch
 
 - Production listeners on **11434** / **8081** — lab ports only (`11435`, `18081`, …).
+- Remote model storage serve defaults to **`:18090`** (lab). Never point `storage serve` at inference ports. Operator guide + WHYs: [docs/remote-model-storage.md](./docs/remote-model-storage.md).
 
 ## Mac setup (fresh clone)
 
