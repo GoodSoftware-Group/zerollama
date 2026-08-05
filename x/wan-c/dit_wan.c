@@ -23,14 +23,42 @@ static void gelu_tanh_inplace(float *x, size_t n) {
   }
 }
 
-/* Wan sinusoidal_embedding_1d: [cos|sin] halves (not interleaved). */
+/* Block-0 stage dumps for DiT A/B (WAN_DUMP_DIR). */
+static void dit_dump_named_buf(wan_ctx *ctx, const char *buf, size_t nbytes,
+                               const char *fname) {
+  const char *dump = getenv("WAN_DUMP_DIR");
+  if (!dump || !dump[0] || !ctx || !ctx->uma || !buf || !fname)
+    return;
+  float *tmp = malloc(nbytes);
+  if (!tmp)
+    return;
+  char resp[256];
+  size_t got = 0;
+  if (uma_client_buf_get(ctx->uma, buf, tmp, nbytes, &got, resp, sizeof(resp)) ==
+          0 &&
+      got == nbytes) {
+    char path[768];
+    snprintf(path, sizeof(path), "%s/%s", dump, fname);
+    FILE *f = fopen(path, "wb");
+    if (f) {
+      fwrite(tmp, 1, nbytes, f);
+      fclose(f);
+      fprintf(stderr, "wan-c: dumped %s (%zu bytes)\n", fname, nbytes);
+    }
+  }
+  free(tmp);
+}
+
+/* Wan sinusoidal_embedding_1d: [cos|sin] halves (not interleaved).
+ * Compute freqs in double like Wan (float64 outer) for head AdaLN parity. */
 static void wan_sinusoid_1d(float *out, float t, int dim) {
   int half = dim / 2;
+  double td = (double)t;
   for (int i = 0; i < half; i++) {
-    float freq = powf(10000.f, -(float)i / (float)half);
-    float ang = t * freq;
-    out[i] = cosf(ang);
-    out[half + i] = sinf(ang);
+    double freq = pow(10000.0, -(double)i / (double)half);
+    double ang = td * freq;
+    out[i] = (float)cos(ang);
+    out[half + i] = (float)sin(ang);
   }
 }
 
@@ -808,6 +836,10 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
                       : "");
           logged_rope = 1;
         }
+        if (block == 0) {
+          dit_dump_named_buf(ctx, q_attn, nbytes, "b0_q_rope.f32");
+          dit_dump_named_buf(ctx, k_attn, nbytes, "b0_k_rope.f32");
+        }
       } else {
         static int logged_rope_fail;
         if (!logged_rope_fail) {
@@ -898,6 +930,8 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
       }
       if (dit_gated_residual_host(ctx, bs, bt, T, D, gate_sa) != 0)
         DIT_FAIL("gate_sa");
+      if (block == 0)
+        dit_dump_named_buf(ctx, bs, nbytes, "b0_post_sa.f32");
     } else {
       int n = snprintf(
           nodes, sizeof(nodes),
@@ -972,6 +1006,8 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
     if (n < 0 || (size_t)n >= sizeof(nodes) ||
         wan_submit_graph(ctx->uma, nodes) != 0)
       return -1;
+    if (block == 0)
+      dit_dump_named_buf(ctx, bs, nbytes, "b0_post_cross.f32");
   } else if (text_ctx && Tk > 0 && ctx->caps.attn_full) {
     /* Scaffold: reuse self Wq/Wo, treat text as K/V. */
     int n = snprintf(
@@ -1070,6 +1106,8 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
         DIT_FAIL("host_ff_put");
       }
       free(hx);
+      if (block == 0)
+        dit_dump_named_buf(ctx, bs, nbytes, "b0_post_ffn.f32");
       static int logged_hff;
       if (!logged_hff) {
         fprintf(stderr, "wan-c: DiT FFN AdaLN+GEMM+GELU on host\n");
@@ -1276,7 +1314,8 @@ static int dit_unpatch_host(wan_ctx *ctx, const float *tok, int T, int D,
   }
   free(bias);
 
-  /* Wan head layout: [T, C*pt*ph*pw] with C slowest inside last dim. */
+  /* Wan unpatchify: view [F,H,W,pt,ph,pw,C] then einsum fhwpqrc→cfphqwr.
+   * Head vector packing is patch-major with channel innermost (not C-major). */
   memset(vol, 0, latent_n * sizeof(float));
   for (int tt = 0; tt < tp; tt++)
     for (int th = 0; th < hp; th++)
@@ -1284,17 +1323,23 @@ static int dit_unpatch_host(wan_ctx *ctx, const float *tok, int T, int D,
         size_t ti =
             (((size_t)tt * (size_t)hp + (size_t)th) * (size_t)wp + (size_t)tw);
         const float *vec = head + ti * (size_t)out_per;
-        for (int c = 0; c < C; c++)
-          for (int pti = 0; pti < pt; pti++)
-            for (int phi = 0; phi < ph; phi++)
-              for (int pwi = 0; pwi < pw; pwi++) {
+        for (int pti = 0; pti < pt; pti++)
+          for (int phi = 0; phi < ph; phi++)
+            for (int pwi = 0; pwi < pw; pwi++)
+              for (int c = 0; c < C; c++) {
                 size_t vi =
-                    (((((size_t)c * pt + pti) * ph + phi) * pw) + pwi);
+                    (((((size_t)pti * (size_t)ph + (size_t)phi) * (size_t)pw +
+                       (size_t)pwi) *
+                      (size_t)C) +
+                     (size_t)c);
                 int t = tt * pt + pti;
                 int h = th * ph + phi;
                 int ww = tw * pw + pwi;
                 size_t oi =
-                    (((((size_t)c * lt + t) * lh + h) * lw) + ww);
+                    (((((size_t)c * (size_t)lt + (size_t)t) * (size_t)lh +
+                       (size_t)h) *
+                      (size_t)lw) +
+                     (size_t)ww);
                 vol[oi] = vec[vi];
               }
       }
@@ -1322,17 +1367,20 @@ static int dit_pack_text(wan_ctx *ctx, const float *text_emb, size_t text_n,
   const float *src = text_emb;
   size_t src_n = text_n;
 
-  /* Project text_dim → dim when text_embedding present. */
+  /* Project text_dim → dim when text_embedding present.
+   * Wan pads T5 u[:seq] to text_len with zeros *before* the MLP — bias on
+   * padded rows is intentional; do not trim pads pre-MLP. */
   if (Td > 0 && text_n >= (size_t)Td &&
       wan_gguf_has(ctx, "dit.text_embedding.0.weight")) {
-    int rows = (int)(text_n / (size_t)Td);
-    if (rows < 1)
-      rows = 1;
-    if (rows > ctx->cfg.text_len)
-      rows = ctx->cfg.text_len;
-    /* Drop padded T5 tails before MLP (bias would make zeros non-zero). */
-    while (rows > 1) {
-      const float *row = text_emb + (size_t)(rows - 1) * (size_t)Td;
+    int active = (int)(text_n / (size_t)Td);
+    if (active < 1)
+      active = 1;
+    if (active > ctx->cfg.text_len)
+      active = ctx->cfg.text_len;
+    /* Drop only trailing all-zero rows beyond real T5 seq (already trimmed
+     * by T5 encode); then pad up to text_len for the MLP. */
+    while (active > 1) {
+      const float *row = text_emb + (size_t)(active - 1) * (size_t)Td;
       int nonzero = 0;
       for (int d = 0; d < Td; d++) {
         if (row[d] != 0.f) {
@@ -1342,40 +1390,50 @@ static int dit_pack_text(wan_ctx *ctx, const float *text_emb, size_t text_n,
       }
       if (nonzero)
         break;
-      rows--;
+      active--;
     }
+    int pad_rows = ctx->cfg.text_len > 0 ? ctx->cfg.text_len : active;
+    if (pad_rows < active)
+      pad_rows = active;
+    float *padded = calloc((size_t)pad_rows * (size_t)Td, sizeof(float));
+    if (!padded)
+      return -1;
+    memcpy(padded, text_emb, (size_t)active * (size_t)Td * sizeof(float));
+
     size_t wne = 0, wne2 = 0, nb0 = 0, nb2 = 0;
     float *W = wan_load_tensor_f32(ctx, "dit.text_embedding.0.weight", &wne);
     float *W2 = wan_load_tensor_f32(ctx, "dit.text_embedding.2.weight", &wne2);
     float *b0 = wan_load_tensor_f32(ctx, "dit.text_embedding.0.bias", &nb0);
     float *b2 = wan_load_tensor_f32(ctx, "dit.text_embedding.2.bias", &nb2);
     if (W && wne == (size_t)D * (size_t)Td) {
-      proj = calloc((size_t)rows * (size_t)D, sizeof(float));
-      float *mid = calloc((size_t)rows * (size_t)D, sizeof(float));
+      proj = calloc((size_t)pad_rows * (size_t)D, sizeof(float));
+      float *mid = calloc((size_t)pad_rows * (size_t)D, sizeof(float));
       if (proj && mid) {
-        uma_wan_gemm_f32(mid, text_emb, W, rows, D, Td);
+        uma_wan_gemm_f32(mid, padded, W, pad_rows, D, Td);
         if (b0 && nb0 == (size_t)D)
-          for (int r = 0; r < rows; r++)
+          for (int r = 0; r < pad_rows; r++)
             for (int d = 0; d < D; d++)
               mid[(size_t)r * (size_t)D + (size_t)d] += b0[d];
-        gelu_tanh_inplace(mid, (size_t)rows * (size_t)D);
+        gelu_tanh_inplace(mid, (size_t)pad_rows * (size_t)D);
         if (W2 && wne2 == (size_t)D * (size_t)D) {
-          uma_wan_gemm_f32(proj, mid, W2, rows, D, D);
+          uma_wan_gemm_f32(proj, mid, W2, pad_rows, D, D);
           if (b2 && nb2 == (size_t)D)
-            for (int r = 0; r < rows; r++)
+            for (int r = 0; r < pad_rows; r++)
               for (int d = 0; d < D; d++)
                 proj[(size_t)r * (size_t)D + (size_t)d] += b2[d];
           static int logged_te;
           if (!logged_te) {
             fprintf(stderr,
-                    "wan-c: dit.text_embedding MLP (Linear→GELU→Linear)+bias\n");
+                    "wan-c: dit.text_embedding MLP pad=%d active=%d "
+                    "(Linear→GELU→Linear)+bias\n",
+                    pad_rows, active);
             logged_te = 1;
           }
         } else {
-          memcpy(proj, mid, (size_t)rows * (size_t)D * sizeof(float));
+          memcpy(proj, mid, (size_t)pad_rows * (size_t)D * sizeof(float));
         }
         src = proj;
-        src_n = (size_t)rows * (size_t)D;
+        src_n = (size_t)pad_rows * (size_t)D;
         proj_n = src_n;
       } else {
         free(proj);
@@ -1383,6 +1441,7 @@ static int dit_pack_text(wan_ctx *ctx, const float *text_emb, size_t text_n,
       }
       free(mid);
     }
+    free(padded);
     free(W);
     free(W2);
     free(b0);
@@ -1392,31 +1451,16 @@ static int dit_pack_text(wan_ctx *ctx, const float *text_emb, size_t text_n,
   int Tk = (int)(src_n / (size_t)D);
   if (Tk < 1 && src_n >= (size_t)D)
     Tk = 1;
-  int tk_cap = 256;
+  int tk_cap = ctx->cfg.text_len > 0 ? ctx->cfg.text_len : 512;
   const char *etk = getenv("WAN_DIT_TEXT_TOK");
   if (etk && etk[0]) {
     int c = atoi(etk);
     if (c >= 1 && c <= 512)
       tk_cap = c;
   }
-  if (ctx->cfg.text_len > 0 && tk_cap > ctx->cfg.text_len)
-    tk_cap = ctx->cfg.text_len;
   if (Tk > tk_cap)
     Tk = tk_cap;
-  /* Trim trailing zero rows (Wan returns u[:seq_lens] to DiT). */
-  while (Tk > 1) {
-    const float *row = src + (size_t)(Tk - 1) * (size_t)D;
-    int nonzero = 0;
-    for (int d = 0; d < D; d++) {
-      if (row[d] != 0.f) {
-        nonzero = 1;
-        break;
-      }
-    }
-    if (nonzero)
-      break;
-    Tk--;
-  }
+  /* After Wan-style pad+MLP, do not trim — pad rows are non-zero via bias. */
   if (Tk < 1) {
     free(proj);
     return 0;
@@ -1498,6 +1542,20 @@ static int dit_broker(wan_ctx *ctx, float *latent, size_t n, int step,
       free(tok);
       return -1;
     }
+    /* Stage dump for DiT A/B (patch tokens). */
+    if (step == 0) {
+      const char *dump = getenv("WAN_DUMP_DIR");
+      if (dump && dump[0]) {
+        char path[768];
+        snprintf(path, sizeof(path), "%s/patch_tok.f32", dump);
+        FILE *f = fopen(path, "wb");
+        if (f) {
+          fwrite(tok, sizeof(float), (size_t)rows * (size_t)D, f);
+          fclose(f);
+          fprintf(stderr, "wan-c: dumped patch_tok [%d,%d]\n", rows, D);
+        }
+      }
+    }
   } else {
     /* Scaffold path: optional TOK3 rematch on CTHW-as-tokens. */
     const char *bvol = "x_dit_vol";
@@ -1544,6 +1602,27 @@ static int dit_broker(wan_ctx *ctx, float *latent, size_t n, int step,
     if (!logged_tp) {
       fprintf(stderr, "wan-c: DiT time_embedding→time_projection ok\n");
       logged_tp = 1;
+    }
+    if (step == 0) {
+      const char *dump = getenv("WAN_DUMP_DIR");
+      if (dump && dump[0]) {
+        char path[768];
+        FILE *f;
+        snprintf(path, sizeof(path), "%s/time_e.f32", dump);
+        f = fopen(path, "wb");
+        if (f) {
+          fwrite(e_time, sizeof(float), (size_t)D, f);
+          fclose(f);
+        }
+        snprintf(path, sizeof(path), "%s/time_e0.f32", dump);
+        f = fopen(path, "wb");
+        if (f) {
+          fwrite(e0, sizeof(float), (size_t)6 * (size_t)D, f);
+          fclose(f);
+        }
+        fprintf(stderr, "wan-c: dumped time_e[%d] time_e0[6,%d] t=%.2f\n", D, D,
+                ctx->gen_t);
+      }
     }
   } else {
     free(e_time);

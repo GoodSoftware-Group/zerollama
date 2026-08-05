@@ -217,9 +217,12 @@ sched_unipc *sched_unipc_create(int steps, float shift) {
     free(s);
     return NULL;
   }
-  const float sigma_min = 1.0f / 1000.0f;
+  const float sigma_min = 0.0f;
+  /* Match Wan FlowUniPCMultistepScheduler: linspace(sigma_max, sigma_min,
+   * steps+1)[:-1] with train sigma_max = 1 - 1/1000. */
+  const float sigma_max = 1.0f - 1.0f / 1000.0f;
   for (int i = 0; i < steps; i++) {
-    float t = 1.0f - (1.0f - sigma_min) * (float)i / (float)steps;
+    float t = sigma_max - (sigma_max - sigma_min) * (float)i / (float)steps;
     s->sigmas[i] = sched_unipc_warp_sigma(t, shift);
   }
   s->sigmas[steps] = 0.0f;

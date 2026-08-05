@@ -103,10 +103,11 @@ Default DiT depth is **30** with safetensors (`WAN_DIT_BLOCKS` to cap).
 
 Artifacts: `dumps/signoff_{…,64_cfg5_s8_cache,160_cfg5_s8_cache,64_cfg5_s25,…}.*`
 
-Delta this continue: host **`wan_borrow_tensor_f32`** cache (cleared on `wan_ctx_close`)
-for DiT QKV/O/FFN weights; Accelerate `cblas_sgemm` in sibling `uma_wan_ops`.
-s8@64 wall **~108 s** vs ~3–8 min before (reload/decode dominated). Soft:
-recognizable scenes; CFG=5 @832; full DiT step A/B vs Wan Python.
+Delta this continue: **fixed DiT head unpatch layout** (Wan
+`view(…,pt,ph,pw,C)` / channel-innermost — was C-major). Step-0 A/B with
+matched noise+T5: **dit_pred cosine≈0.999** (was ≈0.05); block-0 stages
+already matched. Also: pad T5→512 pre-MLP; UniPC σ₀=warp(0.999); double
+sinusoid. Soft: multi-step / CFG=5 A/B; recognizable scenes; CFG=5 @832.
 
 ## Modules
 
@@ -137,6 +138,15 @@ WAN_REPO=~/.zerollama/third_party/wan/Wan2.1 \
 
 # Compare wan-c WAN_DUMP_DIR dump to parity_py (expect T5 cosine≈1)
 python3 x/wan-c/tools/compare_parity.py x/wan-c/dumps/parity_c x/wan-c/dumps/parity_py
+
+# DiT step-0 A/B (inject C noise+T5; use wan venv + WAN_FORCE_SDPA=1 on Mac)
+WAN_FORCE_SDPA=1 ~/.zerollama/third_party/wan/venv/bin/python \
+  x/wan-c/tools/parity_dump.py --prompt "a red apple on a wooden table" \
+  --out x/wan-c/dumps/parity_py --dit --cfg 1 --steps 1 --noise-from x/wan-c/dumps/parity_c --t5-from-c
+WAN_FORCE_SDPA=1 ~/.zerollama/third_party/wan/venv/bin/python \
+  x/wan-c/tools/compare_dit_stages.py x/wan-c/dumps/parity_c
+WAN_FORCE_SDPA=1 ~/.zerollama/third_party/wan/venv/bin/python \
+  x/wan-c/tools/compare_block0.py x/wan-c/dumps/parity_c
 ```
 
 ## Tokenizer note

@@ -283,6 +283,21 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
     }
     /* else model_out already holds cond (== CFG scale 1) */
 
+    /* Snapshot DiT pred before UniPC mutates sample (pred buffer is const). */
+    if (step == 0) {
+      const char *dump = getenv("WAN_DUMP_DIR");
+      if (dump && dump[0]) {
+        char path[768];
+        FILE *f;
+        snprintf(path, sizeof(path), "%s/dit_pred.f32", dump);
+        f = fopen(path, "wb");
+        if (f) {
+          fwrite(model_out, sizeof(float), latent_n, f);
+          fclose(f);
+        }
+      }
+    }
+
     if (sched_unipc_step(sched, step, model_out, latent, latent_n) != 0) {
       sched_unipc_destroy(sched);
       free(latent);
@@ -291,6 +306,61 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
       free(neg_emb);
       free(rgb);
       return -1;
+    }
+
+    /* First-step DiT A/B dumps (latent after UniPC + meta). */
+    if (step == 0) {
+      const char *dump = getenv("WAN_DUMP_DIR");
+      if (dump && dump[0]) {
+        char path[768];
+        FILE *f;
+        snprintf(path, sizeof(path), "%s/latent_s1.f32", dump);
+        f = fopen(path, "wb");
+        if (f) {
+          fwrite(latent, sizeof(float), latent_n, f);
+          fclose(f);
+        }
+        snprintf(path, sizeof(path), "%s/meta.json", dump);
+        f = fopen(path, "w");
+        if (f) {
+          int D = mc->text_dim;
+          int rows = (D > 0) ? (int)(text_n / (size_t)D) : 0;
+          int active = 0;
+          for (int r = 0; r < rows; r++) {
+            const float *row = text_emb + (size_t)r * (size_t)D;
+            int nz = 0;
+            for (int i = 0; i < D; i++) {
+              if (row[i] != 0.f) {
+                nz = 1;
+                break;
+              }
+            }
+            if (!nz)
+              break;
+            active = r + 1;
+          }
+          if (active < 1)
+            active = (n_ids > 0 && (int)n_ids <= rows) ? (int)n_ids : rows;
+          fprintf(f,
+                  "{\n  \"mode\": \"wan-c\",\n  \"prompt\": \"%s\",\n"
+                  "  \"t5_shape\": [%d, %d],\n  \"latent_elems\": %zu,\n"
+                  "  \"latent_shape\": [%d, %d, %d, %d],\n  \"seed\": %d,\n"
+                  "  \"width\": %d, \"height\": %d, \"frames\": %d,\n"
+                  "  \"steps\": %d, \"cfg_scale\": %.4f, \"shift\": %.4f,\n"
+                  "  \"sigma0\": %.8f, \"gen_t\": %.4f,\n"
+                  "  \"dumped\": [\"t5_emb.f32\", \"noise.f32\", "
+                  "\"dit_pred.f32\", \"latent_s1.f32\"]\n}\n",
+                  p->prompt ? p->prompt : "", active, D, latent_n,
+                  mc->z_channels, ctx->gen_lt, ctx->gen_lh, ctx->gen_lw, p->seed,
+                  p->width, p->height, p->frames, p->steps, p->cfg_scale,
+                  p->shift > 0 ? p->shift : 5.0f,
+                  sigmas ? sigmas[0] : ctx->gen_t / 1000.f, ctx->gen_t);
+          fclose(f);
+        }
+        fprintf(stderr,
+                "wan-c: WAN_DUMP_DIR DiT step0 pred+latent_s1 n=%zu t=%.2f\n",
+                latent_n, ctx->gen_t);
+      }
     }
   }
   sched_unipc_destroy(sched);

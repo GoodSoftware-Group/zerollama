@@ -33,6 +33,18 @@ def load_py(dir: Path) -> tuple[np.ndarray, np.ndarray, dict]:
     return t5, noise, meta
 
 
+def maybe_load(path: Path, shape: tuple | None = None) -> np.ndarray | None:
+    if not path.is_file():
+        return None
+    if path.suffix == ".npy":
+        arr = np.load(path)
+    else:
+        arr = np.fromfile(path, dtype=np.float32)
+        if shape is not None:
+            arr = arr.reshape(shape)
+    return arr
+
+
 def stats(a: np.ndarray, b: np.ndarray, name: str) -> dict:
     if a.shape != b.shape:
         # trim to min seq for T5
@@ -68,16 +80,27 @@ def main() -> int:
 
     c_t5, c_noise, c_meta = load_c(args.wan_c_dir)
     p_t5, p_noise, p_meta = load_py(args.wan_py_dir)
+    shape = tuple(c_meta.get("latent_shape", [])) or None
     out = {
         "t5": stats(c_t5, p_t5, "t5"),
         "noise": stats(c_noise, p_noise, "noise"),
-        "note": "noise RNGs differ (Box-Muller LCG vs torch); T5 should match closely",
+        "note": "noise RNGs differ unless --noise-from; T5 should match closely",
     }
+    c_pred = maybe_load(args.wan_c_dir / "dit_pred.f32", shape)
+    p_pred = maybe_load(args.wan_py_dir / "dit_pred.npy")
+    if c_pred is not None and p_pred is not None:
+        out["dit_pred"] = stats(c_pred, p_pred, "dit_pred")
+    c_s1 = maybe_load(args.wan_c_dir / "latent_s1.f32", shape)
+    p_s1 = maybe_load(args.wan_py_dir / "latent_s1.npy")
+    if c_s1 is not None and p_s1 is not None:
+        out["latent_s1"] = stats(c_s1, p_s1, "latent_s1")
     if args.json:
         json.dump(out, sys.stdout, indent=2)
         sys.stdout.write("\n")
     else:
-        for k in ("t5", "noise"):
+        for k in ("t5", "noise", "dit_pred", "latent_s1"):
+            if k not in out:
+                continue
             s = out[k]
             if "error" in s:
                 print(f"{k}: {s['error']}")

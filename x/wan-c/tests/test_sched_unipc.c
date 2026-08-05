@@ -39,8 +39,8 @@ int main(void) {
     fprintf(stderr, "final sigma want 0 got %f\n", sig[4]);
     return 1;
   }
-  /* First sigma is warped linspace start (=warp(1)). */
-  float w1 = sched_unipc_warp_sigma(1.0f, 2.0f);
+  /* First sigma is warped linspace start (=warp(1-1/1000)). */
+  float w1 = sched_unipc_warp_sigma(1.0f - 1.0f / 1000.0f, 2.0f);
   if (!approx(sig[0], w1)) {
     fprintf(stderr, "sigma0 want %f got %f\n", w1, sig[0]);
     return 1;
