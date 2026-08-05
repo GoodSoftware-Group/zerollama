@@ -1,0 +1,10 @@
+# wan-c build artifacts
+wan-cli
+*.o
+tests/test_sched_unipc
+tests/test_validate
+tests/test_gguf_roundtrip
+tests/test_ops_wire
+tests/test_tokenizer_spm
+tests/tmp_mini_spm.model
+dumps/
