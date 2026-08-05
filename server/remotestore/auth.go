@@ -61,6 +61,10 @@ type RDMACap struct {
 	GID      string `json:"gid,omitempty"`
 	GIDIndex int    `json:"gid_index,omitempty"`
 	Port     int    `json:"port,omitempty"`
+	LID      uint16 `json:"lid,omitempty"`
+	// Verbs is true when storaged was built with -tags rdma and opened an HCA
+	// for real RDMA READ (not preference-only).
+	Verbs bool `json:"verbs,omitempty"`
 }
 
 // Auth signs and verifies HMAC-SHA256 request credentials.

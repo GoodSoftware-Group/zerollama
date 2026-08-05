@@ -89,14 +89,16 @@ HMAC stops unauthenticated reads/writes and casual replay outside the window. It
 
 | Priority | Transport | Status | Why this order |
 |----------|-----------|--------|----------------|
-| 1 | RDMA (InfiniBand verbs) | Preferred when peer advertises a **real** GID; build `-tags rdma` | Lowest latency / highest BW on IB fabrics |
-| 2 | TCP/HTTP Range-GET | Always available | Universal fallback; works over Ethernet and IPoIB |
+| 1 | RDMA READ (InfiniBand/RoCE verbs) | **First-class** when both binaries are built with `-tags rdma` and an HCA is active. Control: HMAC `POST /v1/rdma/session` + `POST /v1/rdma/mr`. Data: one-sided `IBV_WR_RDMA_READ`. | Lowest latency / highest BW on IB fabrics |
+| 2 | TCP/HTTP Range-GET | Always available | Universal fallback; Ethernet and IPoIB |
 
-Control plane (capability, manifests, auth) is always TCP/HTTP. **Why:** capability negotiation and small JSON are not worth a verbs stack; bulk bytes are.
+Control plane (capability, manifests, auth, RDMA session/MR lease) is always TCP/HTTP. **Why:** QP setup and MR leases are small JSON; only bulk bytes belong on verbs.
 
-**Honest RDMA status:** with `-tags rdma`, the client prefers peers that advertise RDMA, but the v1 data plane may still use HTTP Range-GET until a full QP path lands. Capability ads only include a GID read from sysfs (skip all-zero / missing ports) so logs do not claim `via=rdma` on machines that merely have IB drivers installed.
+**Build:** `CGO_ENABLED=1 go build -tags rdma -o zerollama .` (needs `libibverbs-dev`). Capability includes `"verbs": true` only when storaged opened an HCA. Clients require `verbs:true` before selecting RDMA — otherwise TCP (no fake `via=rdma`).
 
-Roadmap (not v1): raw Ethernet L2 (`AF_PACKET`), UDP/ARQ.
+**Server MR note:** mlx4 has no ODP, so storaged copies each leased window into C-heap memory before `ibv_reg_mr` (bounce buffer). The wire path is still RDMA READ.
+
+Roadmap transports: raw Ethernet L2 (`AF_PACKET`), UDP/ARQ; ODP/file-backed MRs.
 
 ---
 
@@ -117,8 +119,10 @@ Roadmap (not v1): raw Ethernet L2 (`AF_PACKET`), UDP/ARQ.
 
 | Endpoint | Why |
 |----------|-----|
-| `GET /v1/capability` | Negotiate RDMA vs TCP without guessing |
-| `HEAD\|GET /v1/blob/{sha256-…}` | Content-addressed bulk; Range-GET for future multi-part |
+| `GET /v1/capability` | Negotiate RDMA vs TCP (`verbs:true` when QP path is live) |
+| `POST /v1/rdma/session` | Exchange RC QP endpoints (HMAC JSON) |
+| `POST\|DELETE /v1/rdma/mr` | Lease / release a blob-range MR for RDMA READ |
+| `HEAD\|GET /v1/blob/{sha256-…}` | Content-addressed bulk; Range-GET fallback |
 | `PUT /v1/blob/{sha256-…}` | Migration / replication; stream + hash |
 | `GET\|PUT /v1/manifest/{host}/{ns}/{model}/{tag}` | Same layout as local manifests |
 | `GET /v1/tensor/{host}/{ns}/{model}/{tag}/{tensor_ref}` | Tensor-addressed convenience over byte ranges |
@@ -157,9 +161,9 @@ Auth + `BulkTransport` are **payload-agnostic**. **Why:** the next consumers (re
 
 ---
 
-## Roadmap (explicitly not v1)
+## Roadmap (explicitly deferred)
 
-- Real RDMA verbs QP data plane (beyond preference + TCP bytes)
+- ODP / file-backed MRs (skip bounce copy on capable NICs)
 - Raw L2 / UDP transports
 - llama.cpp `stream` (`llama_model_init_from_user`) and runtime tensor cache
 - Cross-model MoE composition tooling

@@ -32,6 +32,7 @@ type Server struct {
 	ModelsDir string
 	Auth      *remotestore.Auth
 	Mux       *http.ServeMux
+	rdmaServer // build-tagged: real verbs hub or empty stub
 }
 
 // New constructs a Server and registers routes.
@@ -45,6 +46,7 @@ func New(modelsDir string, auth *remotestore.Auth) *Server {
 	s.Mux.HandleFunc("/v1/blob/", s.handleBlob)
 	s.Mux.HandleFunc("/v1/manifest/", s.handleManifest)
 	s.Mux.HandleFunc("/v1/tensor/", s.handleTensor)
+	s.initRDMA()
 	return s
 }
 
@@ -64,38 +66,12 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	cap := remotestore.Capability{
 		Transports: []string{"tcp"},
 	}
-	if gid := probeLocalRDMA(); gid != "" {
+	if rc := s.rdmaCapability(); rc != nil && rc.GID != "" {
 		cap.Transports = append([]string{"rdma"}, cap.Transports...)
-		cap.RDMA = &remotestore.RDMACap{GID: gid, Device: "mlx4_0", Port: 1}
+		cap.RDMA = rc
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(cap)
-}
-
-// probeLocalRDMA returns the first real GID found in sysfs, or "" if no
-// InfiniBand device with a valid GID is present.  We only advertise RDMA when
-// we have a real GID so that RDMATransport.Available() correctly returns false
-// on hosts that merely have IB drivers installed without an active HCA.
-func probeLocalRDMA() string {
-	ents, err := os.ReadDir("/sys/class/infiniband")
-	if err != nil || len(ents) == 0 {
-		return ""
-	}
-	for _, dev := range ents {
-		// Try port 1, gid index 0 — the most common case.
-		gidPath := fmt.Sprintf("/sys/class/infiniband/%s/ports/1/gids/0", dev.Name())
-		b, err := os.ReadFile(gidPath)
-		if err != nil {
-			continue
-		}
-		gid := strings.TrimSpace(string(b))
-		// Ignore the all-zero GID (unconnected port).
-		if gid == "" || gid == "0000:0000:0000:0000:0000:0000:0000:0000" || gid == "::0" {
-			continue
-		}
-		return gid
-	}
-	return ""
 }
 
 func (s *Server) blobPath(digest string) (string, error) {

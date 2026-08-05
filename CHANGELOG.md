@@ -10,7 +10,7 @@ All notable changes to this project are documented in this file. The format is b
 
 **What:**
 - CLI: `zerollama storage serve` (lab `:18090`) and `zerollama storage push [--reclaim]`
-- HMAC-SHA256 shared-secret auth; TCP HTTP Range-GET; RDMA preference when `-tags rdma` and a real GID is advertised (data plane may still be HTTP until verbs QP lands)
+- HMAC-SHA256 shared-secret auth; **RDMA READ** data plane (`-tags rdma`, `POST /v1/rdma/session` + MR lease + `IBV_WR_RDMA_READ`) with TCP HTTP Range-GET fallback
 - `GetModel` / `ensureBlob` fetch-on-miss; persist LRU + ephemeral scratch
 - Scheduler **refcount** pin on load / `ReleaseModelBlobs` on unload (shared layers + auto ephemeral delete)
 - Safe reclaim (delete only after all referencing manifests pushed); verify-before-rename; singleflight downloads; hex-only digest paths
