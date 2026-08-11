@@ -1749,7 +1749,47 @@ components:
         options:
           type: object
           additionalProperties: true
-          description: Backend options (e.g. frames, steps for Wan)
+          description: >
+            Backend options. Wan: frames, steps, media_session, keyframes (label list
+            after PUT /v1/media/{session}/{label}). WHY labels not inline bytes: keep
+            create JSON small; CAS + media_missing recovery — docs/media-uploads.md.
+    MediaPutResponse:
+      type: object
+      properties:
+        session:
+          type: string
+        label:
+          type: string
+        digest:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          enum: [image, video, other]
+    MediaSessionList:
+      type: object
+      properties:
+        session:
+          type: string
+        labels:
+          type: array
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              digest:
+                type: string
+              bytes:
+                type: integer
+                format: int64
+              content_type:
+                type: string
+              kind:
+                type: string
+                enum: [image, video, other]
     ChatCompletionRequest:
       type: object
       required: [model, messages]
@@ -3218,6 +3258,133 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        "400":
+          description: Invalid request or media_missing / media_type_mismatch
+  /v1/media/{session}:
+    get:
+      tags: [Video]
+      summary: List media labels in a session
+      operationId: listMediaSession
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session label inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaSessionList"
+  /v1/media/{session}/{label}:
+    put:
+      tags: [Video]
+      summary: Upload media for a session label (CAS-deduped)
+      description: |
+        Stream raw bytes. Server SHA-256 CAS under $OLLAMA_MODELS/media/.
+        WHY not base64 in POST /v1/videos: keep create JSON small; soft TTL state ≠ model blobs.
+        See docs/media-uploads.md.
+      operationId: putMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+          image/png:
+            schema:
+              type: string
+              format: binary
+          image/jpeg:
+            schema:
+              type: string
+              format: binary
+          video/mp4:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaPutResponse"
+    head:
+      tags: [Video]
+      summary: Check whether a media label exists
+      operationId: headMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Exists
+        "404":
+          description: Missing
+    get:
+      tags: [Video]
+      summary: Download media bytes for a label
+      operationId: getMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Media bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+    delete:
+      tags: [Video]
+      summary: Delete a media label pointer
+      operationId: deleteMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
   /v1/videos/{id}:
     get:
       tags: [Video]

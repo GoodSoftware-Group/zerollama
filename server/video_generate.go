@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/media"
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/x/trainingworker"
@@ -95,7 +97,13 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	}
 
 	backend := modality.BackendFor(m.Config, model.ModalityVideoGeneration)
-	if backend != model.BackendWan {
+	switch backend {
+	case model.BackendWan:
+		// ok
+	case model.BackendRIFE:
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "video_generation backend \"rife\" is reserved but not implemented yet"))
+		return
+	default:
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("video_generation backend must be %q (got %q)", model.BackendWan, backend)))
 		return
 	}
@@ -104,6 +112,56 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
+	}
+
+	mediaSession, keyframeLabels, err := media.ParseKeyframeRefs(req.Options)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+		return
+	}
+	if err := validateWanKeyframes(cfg.Profile, keyframeLabels); err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+		return
+	}
+
+	var keyframeDir string
+	if len(keyframeLabels) > 0 {
+		store := getMediaStore()
+		paths, metas, missing, err := store.ResolveMany(mediaSession, keyframeLabels)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if len(missing) > 0 {
+			// WHY structured media_missing: agents re-PUT listed labels without scraping messages.
+			c.JSON(http.StatusBadRequest, openai.NewMediaMissingError(mediaSession, missing))
+			return
+		}
+		_ = paths
+		var bad []string
+		for i, meta := range metas {
+			if meta.Kind != media.KindImage {
+				bad = append(bad, keyframeLabels[i])
+			}
+		}
+		if len(bad) > 0 {
+			// WHY reject video here: Wan TI2V keyframes are stills; kind=video is reserved for morph.
+			c.JSON(http.StatusBadRequest, openai.NewMediaTypeMismatchError(mediaSession, bad, "wan keyframes must be images; upload video clips only for future video-morph backends"))
+			return
+		}
+		stagingID := fmt.Sprintf("kf-%d", time.Now().UnixNano())
+		keyframeDir = filepath.Join(videoArtifactRoot(), "keyframes", stagingID)
+		// WHY materialize: freeze CAS into staging so LRU eviction cannot race a long Wan job.
+		missing, err = store.Materialize(mediaSession, keyframeLabels, keyframeDir)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
+			return
+		}
+		if len(missing) > 0 {
+			_ = os.RemoveAll(keyframeDir)
+			c.JSON(http.StatusBadRequest, openai.NewMediaMissingError(mediaSession, missing))
+			return
+		}
 	}
 
 	opts := req.Options
@@ -116,6 +174,10 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		Stream:   false,
 	}
 	if err := s.waitRequestQoS(c.Request.Context(), nil, opts, videoHints); err != nil {
+		if keyframeDir != "" {
+			// WHY cleanup on QoS fail: materialize already wrote staging; do not orphan kf-* dirs.
+			_ = os.RemoveAll(keyframeDir)
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			c.JSON(http.StatusRequestTimeout, openai.NewError(http.StatusRequestTimeout, err.Error()))
 			return
@@ -133,14 +195,20 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	}
 
 	createdAt := time.Now().UTC()
-	payload, err := buildWanVideoPayload(m.Config, cfg, req.Model, req.Prompt, seed, createdAt)
+	payload, err := buildVideoJobPayload(backend, m.Config, cfg, req.Model, req.Prompt, seed, createdAt, keyframeDir)
 	if err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
+		}
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
 	}
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
+		}
 		c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
 		return
 	}
@@ -150,6 +218,9 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		QueueOnBusy: &queueOnBusy,
 	})
 	if err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
+		}
 		if TrainingSubmitMisconfigured(err) {
 			c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
 			return
@@ -164,6 +235,30 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 
 	video := openai.VideoFromSubmit(res.JobID, req.Model, cfg.Size, res.Queued, createdAt.Unix())
 	c.JSON(http.StatusAccepted, video)
+}
+
+func validateWanKeyframes(profile string, labels []string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	p := strings.ToLower(strings.TrimSpace(profile))
+	if strings.Contains(p, "ti2v") || strings.HasPrefix(p, "wan2.2") {
+		return nil
+	}
+	// WHY: wan2.1-t2v has no start-image path; keyframes would be silently ignored otherwise.
+	return fmt.Errorf("keyframes require a TI2V profile (e.g. wan2.2-ti2v-5b); %q is text-to-video only", profile)
+}
+
+// buildVideoJobPayload dispatches by video_generation backend. Wan is the only shipped runner.
+func buildVideoJobPayload(backend string, cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
+	switch backend {
+	case model.BackendWan:
+		return buildWanVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt, keyframeDir)
+	case model.BackendRIFE:
+		return wanVideoJobPayload{}, errors.New("rife backend is not implemented yet")
+	default:
+		return wanVideoJobPayload{}, fmt.Errorf("unsupported video_generation backend %q", backend)
+	}
 }
 
 // VideoGetHandler returns GET /v1/videos/:id job status.
@@ -419,7 +514,7 @@ func wanVideoJobMeta(payload json.RawMessage) (modelName, size string) {
 // buildWanVideoPayload turns a manifest + request into run_script data.
 // {job_id} in output paths is expanded in Python when the job starts—Go does not know the id yet.
 // PythonBin/WAN_* point at the Wan venv because the embedded training interpreter lacks Wan deps.
-func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
+func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return wanVideoJobPayload{}, errors.New("prompt is required")
 	}
@@ -482,15 +577,40 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		"WAN_VENV":               wanVenv,
 		"WAN_PYTHON":             pythonBin,
 		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
+		// Generic VIDEO_* aliases so future runners (RIFE) share the same contract.
+		"VIDEO_OUTPUT_PATH": outputPath,
+		"VIDEO_FRAMES":      strconv.Itoa(vcfg.Frames),
+		"VIDEO_SIZE":        vcfg.Size,
 	}
 	if seed != nil {
 		env["WAN_SEED"] = strconv.FormatInt(*seed, 10)
+		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
 	}
 	if gguf := expandUserPath(modality.PathFor(cfg, "wan_gguf_path")); gguf != "" {
 		env["WAN_GGUF_PATH"] = gguf
 	}
 	if strings.HasPrefix(strings.ToLower(vcfg.Profile), "wan2.2") {
 		env["WAN_CONVERT_MODEL_DTYPE"] = "true"
+	}
+	if keyframeDir != "" {
+		env["VIDEO_KEYFRAME_DIR"] = keyframeDir
+		env["WAN_KEYFRAME_DIR"] = keyframeDir
+		// Wrapper removes the staging dir after success or failure.
+		env["VIDEO_CLEANUP_KEYFRAME_DIR"] = "1"
+		if entries, err := os.ReadDir(keyframeDir); err == nil {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				if !e.IsDir() {
+					names = append(names, e.Name())
+				}
+			}
+			sort.Strings(names)
+			if len(names) > 0 {
+				first := filepath.Join(keyframeDir, names[0])
+				env["WAN_IMAGE"] = first
+				env["VIDEO_IMAGE"] = first
+			}
+		}
 	}
 
 	payload := wanVideoJobPayload{

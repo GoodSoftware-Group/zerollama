@@ -26,6 +26,11 @@ const (
 	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
 	BackendWan              = "wan"               // Wan2.x via scripts/video/wan_video_generate.py (see docs/wan-t2v.md)
+	// BackendRIFE is reserved for classical optical-flow inbetweens (not shipped yet).
+	// WHY reserve the name now: same /v1/videos + /v1/media contracts as Wan so agents
+	// and OpenAPI do not learn a second upload protocol when classical inbetweens ship.
+	// See docs/media-uploads.md + docs/wan-t2v.md.
+	BackendRIFE = "rife"
 	// BackendComfyUI orchestrates a running ComfyUI server for agent-max image utility
 	// (edit/img2img/ControlNet/LoRA on Qwen/FLUX/GLM graphs). WHY not mlx-imagegen:
 	// porting each HF DiT into x/imagegen costs months; Comfy already packs those

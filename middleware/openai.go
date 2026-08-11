@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/media"
 )
 
 // maxDecompressedBodySize limits the size of a decompressed request body
@@ -903,10 +905,19 @@ func SpeechMiddleware() gin.HandlerFunc {
 }
 
 // VideoCreateMiddleware validates OpenAI POST /v1/videos JSON and stores the request on context.
+// Body is capped so agents use /v1/media/{session}/{label} for large keyframes instead of inline JSON.
+// WHY 8 MiB (media.MaxVideoCreateBody): create should carry label refs only; frames stream via PUT
+// (docs/media-uploads.md). A larger cap would invite base64-in-JSON and defeat the media API.
 func VideoCreateMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, media.MaxVideoCreateBody)
 		var req openai.VideoCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
+			msg := err.Error()
+			if strings.Contains(msg, "request body too large") || errors.As(err, new(*http.MaxBytesError)) {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, openai.NewError(http.StatusRequestEntityTooLarge, "request body too large; upload keyframes via PUT /v1/media/{session}/{label}"))
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
 		}

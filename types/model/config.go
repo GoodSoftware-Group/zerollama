@@ -24,7 +24,7 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`    // wan-cli; later diffusers | comfy-headless
+	Runner       string `json:"runner,omitempty"`    // wan-cli; later rife | diffusers | comfy-headless
 	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b
 	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
 	Size         string `json:"size,omitempty"`      // 832x480

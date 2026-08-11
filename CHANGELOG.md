@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Media uploads + Wan TI2V keyframe inbetweens (Aug 2026)
+
+**Why:** Agents need N keyframes → short clips without stuffing megabytes of base64 into `POST /v1/videos`. Soft animation state must not share lifecycle with permanent model `blobs/`, and missing frames after TTL/LRU must be recoverable by re-upload (no client digests, no refcount pin/unpin across the training queue).
+
+**What:**
+- `PUT/HEAD/GET/DELETE /v1/media/{session}/{label}` + `GET /v1/media/{session}` — server SHA-256 CAS under `$OLLAMA_MODELS/media/`, session pointers, kind sniff (`image`/`video`/`other`), TTL + CAS byte-cap LRU (no refcounts)
+- `POST /v1/videos` accepts `options.media_session` + `options.keyframes` (or `session/label` refs); materializes staging under `generated/keyframes/`; **400** `media_missing` / `media_type_mismatch`
+- Wan wrapper: N−1 start-conditioned TI2V segments + **final keyframe still**; ffmpeg concat `-c copy` then libx264 fallback; staging cleanup
+- Limits: image PUT 25 MiB, video PUT 256 MiB, video-create JSON 8 MiB; `rife` backend reserved
+- Docs: [media-uploads.md](docs/media-uploads.md), [wan-t2v.md](docs/wan-t2v.md); skill `generate-video`; OpenAPI media routes
+
 ### Remote storage RDMA throughput (mlx4 bounce path) (Aug 2026)
 
 **Why:** First remote RDMA READ was only ~30% above 10 GbE TCP (~182 vs ~137 MiB/s) despite 40 Gb/s QDR — serial READ depth 1, per-window `ibv_reg_mr`, and bounce copies left the link idle.

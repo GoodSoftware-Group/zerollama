@@ -67,7 +67,7 @@ func TestBuildWanVideoPayload(t *testing.T) {
 	}
 
 	submittedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-	payload, err := buildWanVideoPayload(cfg, *cfg.VideoGeneration, "wan2.1-t2v", "a cat on stage", nil, submittedAt)
+	payload, err := buildWanVideoPayload(cfg, *cfg.VideoGeneration, "wan2.1-t2v", "a cat on stage", nil, submittedAt, "")
 	if err != nil {
 		t.Fatal(err)
 	}

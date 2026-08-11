@@ -20,7 +20,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
   - `speech`: `piper` for Piper TTS (CPU ONNX), or `remote-tts` for an OpenAI-compatible HTTP TTS server (Chatterbox, Orpheus, Kokoro, …).
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
-  - `video_generation` (T2V): `wan` runs [Wan](../scripts/video/wan_video_generate.py) via the training job queue; capability `video_gen`. See [wan-t2v.md](./wan-t2v.md).
+  - `video_generation` (T2V / TI2V): `wan` runs [Wan](../scripts/video/wan_video_generate.py) via the training job queue; capability `video_gen`. `rife` is reserved (not shipped). Keyframe uploads: [media-uploads.md](./media-uploads.md); Wan semantics: [wan-t2v.md](./wan-t2v.md).
 - **`video_sampling`** (optional, native path only): per-model overrides for ffmpeg—`mode` (`fps` or `stride`), `fps`, `stride`, `max_frames`. Omitted fields use server env defaults (see below).
 - **`tokens_per_image`** (optional): vision-token budget **per raster frame** for **context preflight** only (default `768` until projector metadata is wired through).
 - **`vision_patch_size`** / **`vision_spatial_merge_size`** (optional): tune native **`grid_thw`** estimates on ffmpeg-expanded clips (Qwen3-VL defaults: 14 / 2).
@@ -200,7 +200,7 @@ When `modality_backends.video_understanding` is `sglang` and `OLLAMA_SGLANG_URL`
 
 `POST /api/chat` accepts the same `videos` field on messages (raw bytes); expansion uses the native ffmpeg path.
 
-**Text-to-video:** `POST /v1/videos` (async jobs) for models with `video_gen` and `video_generation: wan`. **Roadmap:** [ROADMAP.md](./ROADMAP.md), [wan-t2v.md](./wan-t2v.md).
+**Text-to-video / keyframe video:** `POST /v1/videos` (async jobs) for models with `video_gen` and `video_generation: wan`. Upload stills via `PUT /v1/media/{session}/{label}` then pass `options.media_session` + `options.keyframes`. **Why not inline base64:** see [media-uploads.md](./media-uploads.md). **Roadmap:** [ROADMAP.md](./ROADMAP.md), [wan-t2v.md](./wan-t2v.md).
 
 ### External image hook
 

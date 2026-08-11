@@ -26,10 +26,44 @@ type Error struct {
 	Type    string  `json:"type"`
 	Param   any     `json:"param"`
 	Code    *string `json:"code"`
+	// MediaSession / MissingLabels support agent re-upload loops for /v1/media.
+	MediaSession  string   `json:"media_session,omitempty"`
+	MissingLabels []string `json:"missing_labels,omitempty"`
 }
 
 type ErrorResponse struct {
 	Error Error `json:"error"`
+}
+
+// NewMediaMissingError is returned when POST /v1/videos references expired or evicted media labels.
+// WHY a dedicated code + missing_labels: agents can re-PUT without scraping English text
+// or inventing digests (server hashes on PUT). See docs/media-uploads.md.
+func NewMediaMissingError(session string, missing []string) ErrorResponse {
+	code := "media_missing"
+	msg := "media missing — re-upload PUT /v1/media/{session}/{label}"
+	return ErrorResponse{Error: Error{
+		Type:          "invalid_request_error",
+		Message:       msg,
+		Code:          &code,
+		MediaSession:  session,
+		MissingLabels: missing,
+	}}
+}
+
+// NewMediaTypeMismatchError is returned when media kinds do not match the video backend.
+// WHY: same /v1/media store holds future video clips; Wan keyframes must be images today.
+func NewMediaTypeMismatchError(session string, labels []string, message string) ErrorResponse {
+	code := "media_type_mismatch"
+	if message == "" {
+		message = "media type mismatch for video generation"
+	}
+	return ErrorResponse{Error: Error{
+		Type:          "invalid_request_error",
+		Message:       message,
+		Code:          &code,
+		MediaSession:  session,
+		MissingLabels: labels,
+	}}
 }
 
 type Message struct {

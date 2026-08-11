@@ -133,18 +133,285 @@ def prepare_wan_subprocess_env(python_bin: str) -> dict[str, str]:
     return sanitize_ld_library_path_for_pytorch(env, python=python_bin)
 
 
+def list_keyframe_images(keyframe_dir: Path) -> list[Path]:
+    if not keyframe_dir.is_dir():
+        return []
+    files = [
+        p
+        for p in sorted(keyframe_dir.iterdir())
+        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    ]
+    return files
+
+
+def build_generate_cmd(
+    *,
+    python_bin: str,
+    entry_py: Path,
+    task: str,
+    size: str,
+    ckpt_path: Path,
+    prompt: str,
+    frames: str,
+    steps: str,
+    out: Path,
+    seed: str,
+    offload: bool,
+    t5_cpu: bool,
+    convert_dtype: bool,
+    profile: str,
+    image: Path | None,
+) -> list[str]:
+    cmd = [
+        python_bin,
+        str(entry_py),
+        "--task",
+        task,
+        "--size",
+        wan_size(size),
+        "--ckpt_dir",
+        str(ckpt_path),
+        "--prompt",
+        prompt,
+        "--frame_num",
+        str(frames),
+        "--sample_steps",
+        str(steps),
+        "--save_file",
+        str(out),
+    ]
+    if seed:
+        cmd.extend(["--base_seed", seed])
+    cmd.extend(["--offload_model", "True" if offload else "False"])
+    if t5_cpu:
+        cmd.append("--t5_cpu")
+    if convert_dtype and profile.strip().lower().startswith("wan2.2"):
+        cmd.append("--convert_model_dtype")
+    if image is not None:
+        cmd.extend(["--image", str(image)])
+    return cmd
+
+
+def run_generate(
+    cmd: list[str],
+    *,
+    repo_path: Path,
+    sub_env: dict[str, str],
+    progress_lo: float,
+    progress_hi: float,
+) -> int:
+    """Run one generate.py invocation; map tqdm into [progress_lo, progress_hi]."""
+    eprint("running: " + " ".join(cmd))
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(repo_path),
+        env=sub_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    progress_re = re.compile(r"^\s*(\d+)%\s*\|", re.I)
+    progress_line_re = re.compile(r"^PROGRESS:(\d+(?:\.\d+)?):?(.*)$")
+    span = max(0.1, progress_hi - progress_lo)
+    last_pct = progress_lo
+
+    def remap(wrapper_pct: float) -> float:
+        # Map legacy 5–100 wrapper band into this segment's band.
+        frac = max(0.0, min(1.0, (wrapper_pct - 5.0) / 95.0))
+        return progress_lo + frac * span
+
+    for line in proc.stdout:
+        line = line.rstrip()
+        pm = progress_line_re.match(line)
+        if pm:
+            pct = remap(float(pm.group(1)))
+            msg = (pm.group(2) or "").strip() or "generating"
+            if pct > last_pct:
+                last_pct = pct
+                progress(pct, msg)
+            continue
+        if line:
+            print(line, flush=True)
+        if bumped := progress_from_log_line(line, last_pct):
+            # progress_from_log_line already emitted absolute pct; remap roughly
+            last_pct = max(last_pct, remap(bumped))
+            continue
+        m = progress_re.match(line)
+        if m:
+            tqdm_pct = float(m.group(1))
+            pct = progress_lo + (tqdm_pct / 100.0) * span * 0.9
+            if pct > last_pct:
+                last_pct = pct
+                progress(pct, "generating")
+
+    timeout_raw = os.environ.get("WAN_SUBPROCESS_TIMEOUT", "").strip()
+    wait_timeout: float | None = None
+    if timeout_raw:
+        try:
+            wait_timeout = max(1.0, float(timeout_raw))
+        except ValueError:
+            pass
+
+    try:
+        code = proc.wait(timeout=wait_timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        eprint("generate.py timed out")
+        return 1
+    return code
+
+
+def parse_wxh(size: str) -> tuple[int, int]:
+    s = size.lower().replace("*", "x")
+    parts = s.split("x")
+    if len(parts) != 2:
+        return 832, 480
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return 832, 480
+
+
+def ffmpeg_concat(segment_paths: list[Path], out: Path) -> int:
+    """Concatenate segment MP4s; try stream copy then re-encode fallback.
+
+    WHY -c copy first: cheap when Wan segments share codec/timebase.
+    WHY libx264 fallback: per-segment Wan outputs often disagree on SPS/PPS;
+    failing concat after expensive generation is worse than a re-encode.
+    """
+    list_file = out.parent / f"{out.stem}_concat.txt"
+    lines = []
+    for p in segment_paths:
+        esc = str(p.resolve()).replace("'", "'\\''")
+        lines.append(f"file '{esc}'")
+    list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def run_concat(extra: list[str]) -> subprocess.CompletedProcess[str]:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            *extra,
+            str(out),
+        ]
+        eprint("running: " + " ".join(cmd))
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    proc = run_concat(["-c", "copy"])
+    if proc.returncode != 0:
+        eprint(proc.stdout or "")
+        eprint(proc.stderr or "")
+        eprint("ffmpeg stream-copy concat failed; retrying with re-encode")
+        proc = run_concat(
+            [
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-crf",
+                "18",
+                "-preset",
+                "veryfast",
+                "-an",
+            ]
+        )
+        if proc.returncode != 0:
+            eprint(proc.stdout or "")
+            eprint(proc.stderr or "")
+            eprint(f"ffmpeg concat failed with code {proc.returncode}")
+            return proc.returncode
+    try:
+        list_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return 0
+
+
+def ffmpeg_still_clip(image: Path, out: Path, size: str, duration_sec: float = 0.5) -> int:
+    """Encode a short still clip from an image so the timeline can end on the final keyframe."""
+    w, h = parse_wxh(size)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-loop",
+        "1",
+        "-i",
+        str(image),
+        "-t",
+        str(duration_sec),
+        "-vf",
+        f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "16",
+        "-an",
+        str(out),
+    ]
+    eprint("running: " + " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        eprint(proc.stdout or "")
+        eprint(proc.stderr or "")
+        eprint(f"ffmpeg still clip failed with code {proc.returncode}")
+    return proc.returncode
+
+
+def cleanup_keyframe_dir() -> None:
+    # WHY opt-in VIDEO_CLEANUP_KEYFRAME_DIR: Go sets this when it staged the dir;
+    # refuse to rmtree paths outside .../keyframes/ so a mis-set env cannot wipe arbitrary trees.
+    if os.environ.get("VIDEO_CLEANUP_KEYFRAME_DIR", "").lower() not in ("1", "true", "yes"):
+        return
+    raw = os.environ.get("WAN_KEYFRAME_DIR") or os.environ.get("VIDEO_KEYFRAME_DIR") or ""
+    if not raw:
+        return
+    path = Path(raw).expanduser()
+    # Only remove dirs we staged under .../generated/keyframes/
+    if "keyframes" not in path.parts:
+        eprint(f"refusing to cleanup keyframe dir outside keyframes/: {path}")
+        return
+    try:
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
+        eprint(f"cleaned keyframe staging dir {path}")
+    except OSError as err:
+        eprint(f"keyframe cleanup failed: {err}")
+
+
 def main() -> int:
+    try:
+        return _main_impl()
+    finally:
+        cleanup_keyframe_dir()
+
+
+def _main_impl() -> int:
     profile = os.environ.get("WAN_PROFILE", "")
     repo = os.environ.get("WAN_REPO", "")
     ckpt = os.environ.get("WAN_CKPT_DIR", "")
     prompt = os.environ.get("WAN_PROMPT", "")
-    size = os.environ.get("WAN_SIZE", "832x480")
-    frames = os.environ.get("WAN_FRAMES", "49")
+    size = os.environ.get("WAN_SIZE") or os.environ.get("VIDEO_SIZE") or "832x480"
+    frames = os.environ.get("WAN_FRAMES") or os.environ.get("VIDEO_FRAMES") or "49"
     steps = os.environ.get("WAN_STEPS", "25")
-    out_path = os.environ.get("WAN_OUTPUT_PATH", "")
+    out_path = os.environ.get("WAN_OUTPUT_PATH") or os.environ.get("VIDEO_OUTPUT_PATH") or ""
     offload = os.environ.get("WAN_OFFLOAD_MODEL", "false").lower() in ("1", "true", "yes")
     t5_cpu = os.environ.get("WAN_T5_CPU", "false").lower() in ("1", "true", "yes")
-    seed = os.environ.get("WAN_SEED", "")
+    seed = os.environ.get("WAN_SEED") or os.environ.get("VIDEO_SEED") or ""
+    image_env = os.environ.get("WAN_IMAGE") or os.environ.get("VIDEO_IMAGE") or ""
+    keyframe_dir_env = (
+        os.environ.get("WAN_KEYFRAME_DIR") or os.environ.get("VIDEO_KEYFRAME_DIR") or ""
+    )
     python_bin = wan_python()
 
     if not repo or not ckpt or not prompt or not out_path:
@@ -174,106 +441,120 @@ def main() -> int:
         eprint(str(err))
         return 1
 
-    progress(0, "starting Wan generation")
+    keyframes = list_keyframe_images(Path(keyframe_dir_env).expanduser()) if keyframe_dir_env else []
+    single_image: Path | None = None
+    if image_env:
+        single_image = Path(image_env).expanduser()
+        if not single_image.is_file():
+            eprint(f"WAN_IMAGE not found: {single_image}")
+            return 1
 
+    # Multi-keyframe: N images → N−1 start-conditioned segments, then append final still
+    # so the timeline ends on the last keyframe (true FLF end-conditioning is a later runner).
+    #
+    # WHY not skip the final label: earlier drafts only conditioned on starts 0..N-2, leaving
+    # the agent's last keyframe unused. The still is visual end-frame enforcement until FLF.
+    if len(keyframes) >= 2:
+        if "ti2v" not in task:
+            eprint("multi-keyframe generation requires a TI2V task profile")
+            return 1
+        progress(0, f"starting Wan multi-keyframe ({len(keyframes)} images)")
+        eprint(f"using python: {python_bin}")
+        sub_env = prepare_wan_subprocess_env(python_bin)
+        convert_dtype = os.environ.get("WAN_CONVERT_MODEL_DTYPE", "false").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        segments: list[Path] = []
+        n_seg = len(keyframes) - 1
+        for i in range(n_seg):
+            seg_out = out.parent / f"{out.stem}_seg{i:03d}.mp4"
+            lo = 5.0 + (85.0 * i / n_seg)
+            hi = 5.0 + (85.0 * (i + 1) / n_seg)
+            progress(lo, f"segment {i + 1}/{n_seg} (start={keyframes[i].name})")
+            cmd = build_generate_cmd(
+                python_bin=python_bin,
+                entry_py=entry_py,
+                task=task,
+                size=size,
+                ckpt_path=ckpt_path,
+                prompt=prompt,
+                frames=frames,
+                steps=steps,
+                out=seg_out,
+                seed=seed,
+                offload=offload,
+                t5_cpu=t5_cpu,
+                convert_dtype=convert_dtype,
+                profile=profile,
+                image=keyframes[i],
+            )
+            code = run_generate(
+                cmd, repo_path=repo_path, sub_env=sub_env, progress_lo=lo, progress_hi=hi
+            )
+            if code != 0:
+                eprint(f"generate.py exited with code {code} on segment {i}")
+                return code
+            if not seg_out.is_file():
+                eprint(f"expected segment output not found at {seg_out}")
+                return 1
+            segments.append(seg_out)
+
+        progress(90, "encoding final keyframe still")
+        still_out = out.parent / f"{out.stem}_final_still.mp4"
+        code = ffmpeg_still_clip(keyframes[-1], still_out, size)
+        if code != 0:
+            return code
+        segments.append(still_out)
+
+        progress(94, "concatenating segments")
+        code = ffmpeg_concat(segments, out)
+        if code != 0:
+            return code
+        for seg in segments:
+            try:
+                seg.unlink(missing_ok=True)
+            except OSError:
+                pass
+        progress(100, "done")
+        print("TRAINING_COMPLETE", flush=True)
+        return 0
+
+    progress(0, "starting Wan generation")
     eprint(f"using python: {python_bin}")
     sub_env = prepare_wan_subprocess_env(python_bin)
-    eprint(f"WAN_FORCE_SDPA={sub_env.get('WAN_FORCE_SDPA', '')}")
-    eprint(f"WAN_VAE_CPU={sub_env.get('WAN_VAE_CPU', '')}")
-    cmd = [
-        python_bin,
-        str(entry_py),
-        "--task",
-        task,
-        "--size",
-        wan_size(size),
-        "--ckpt_dir",
-        str(ckpt_path),
-        "--prompt",
-        prompt,
-        "--frame_num",
-        str(frames),
-        "--sample_steps",
-        str(steps),
-        # Tell Wan exactly where to write the output so we don't need to scrape
-        "--save_file",
-        str(out),
-    ]
-    if seed:
-        cmd.extend(["--base_seed", seed])
-    # Always pass offload explicitly; Wan defaults offload=True when omitted, which is
-    # confusing when the manifest says false. On 16g, manifest/Go force both flags on.
-    cmd.extend(["--offload_model", "True" if offload else "False"])
-    if t5_cpu:
-        cmd.append("--t5_cpu")
-
-    # Wan2.2 TI2V README recommends --convert_model_dtype for VRAM on consumer GPUs.
     convert_dtype = os.environ.get("WAN_CONVERT_MODEL_DTYPE", "false").lower() in (
         "1",
         "true",
         "yes",
     )
-    if convert_dtype and profile.strip().lower().startswith("wan2.2"):
-        cmd.append("--convert_model_dtype")
-
-    eprint("running: " + " ".join(cmd))
-    progress(5, "launching generate.py")
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(repo_path),
-        env=sub_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-    progress_re = re.compile(r"^\s*(\d+)%\s*\|", re.I)
-    progress_line_re = re.compile(r"^PROGRESS:(\d+(?:\.\d+)?):?(.*)$")
-    last_pct = 5.0
-    for line in proc.stdout:
-        line = line.rstrip()
-        pm = progress_line_re.match(line)
-        if pm:
-            pct = float(pm.group(1))
-            msg = (pm.group(2) or "").strip() or "generating"
-            if pct > last_pct:
-                last_pct = pct
-                progress(pct, msg)
-            continue
-        if line:
-            print(line, flush=True)
-        if bumped := progress_from_log_line(line, last_pct):
-            last_pct = bumped
-            continue
-        m = progress_re.match(line)
-        if m:
-            tqdm_pct = float(m.group(1))
-            pct = map_diffusion_progress(tqdm_pct)
-            if pct > last_pct:
-                last_pct = pct
-                progress(pct, "generating")
-            if tqdm_pct >= 100 and last_pct < 91:
-                last_pct = 91.0
-                progress(91, "decoding video")
-
-    timeout_raw = os.environ.get("WAN_SUBPROCESS_TIMEOUT", "").strip()
-    wait_timeout: float | None = None
-    if timeout_raw:
-        try:
-            wait_timeout = max(1.0, float(timeout_raw))
-        except ValueError:
-            pass
-
-    try:
-        code = proc.wait(timeout=wait_timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        eprint("generate.py timed out")
+    image = single_image
+    if image is None and len(keyframes) == 1:
+        image = keyframes[0]
+    if image is not None and "ti2v" not in task and "i2v" not in task:
+        eprint("WAN_IMAGE / keyframes require a TI2V (or I2V) task profile")
         return 1
 
+    progress(5, "launching generate.py")
+    cmd = build_generate_cmd(
+        python_bin=python_bin,
+        entry_py=entry_py,
+        task=task,
+        size=size,
+        ckpt_path=ckpt_path,
+        prompt=prompt,
+        frames=frames,
+        steps=steps,
+        out=out,
+        seed=seed,
+        offload=offload,
+        t5_cpu=t5_cpu,
+        convert_dtype=convert_dtype,
+        profile=profile,
+        image=image,
+    )
+    code = run_generate(cmd, repo_path=repo_path, sub_env=sub_env, progress_lo=5.0, progress_hi=96.0)
     if code != 0:
         eprint(f"generate.py exited with code {code}")
         return code

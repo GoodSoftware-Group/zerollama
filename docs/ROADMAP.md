@@ -514,7 +514,7 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 |-----------|------|-----|
 | **v1** | Wan T2V via training queue | **Done** — reuse embed + broker instead of new subprocess daemon. |
 | **v1.1** | Cancel + TTL + kill running Wan | Operators need to abort long jobs and reclaim disk. |
-| **v1.2** | TI2V `input_reference`, 24g/32g tiers | Product parity with Wan2.2 TI2V; headroom for longer clips. |
+| **v1.2** | TI2V keyframes via `/v1/media` + `options.keyframes` (shipped); 24g/32g tiers | Product parity with Wan2.2 TI2V; headroom for longer clips. **Why `/v1/media`:** keep create JSON small; CAS soft state ≠ model blobs — [media-uploads.md](./media-uploads.md). |
 | **v1.3** | Optional **Wan CPU worker** sidecar | Remote T5 encode / VAE on high-RAM host; 16 GB GPU CT. Plan: [wan-cpu-worker.md](./wan-cpu-worker.md). |
 | **Later** | Diffusers / other `runner` values | Other stacks without forking Wan wrapper for each upstream. |
 

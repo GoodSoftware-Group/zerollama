@@ -2403,6 +2403,13 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.GET("/v1/videos/:id", s.VideoGetHandler)
 	r.GET("/v1/videos/:id/content", s.VideoContentHandler)
 
+	// Agent media index: session/label uploads with internal CAS dedupe (keyframes / future clips).
+	r.PUT("/v1/media/:session/:label", s.MediaPutHandler)
+	r.HEAD("/v1/media/:session/:label", s.MediaHeadHandler)
+	r.GET("/v1/media/:session/:label", s.MediaGetLabelHandler)
+	r.DELETE("/v1/media/:session/:label", s.MediaDeleteHandler)
+	r.GET("/v1/media/:session", s.MediaListHandler)
+
 	// Inference (Anthropic compatibility)
 	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
 
