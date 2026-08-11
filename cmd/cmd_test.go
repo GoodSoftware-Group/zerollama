@@ -1214,6 +1214,16 @@ func TestListHandler(t *testing.T) {
 				"sd15-vulkan:latest    sha256:def45    545 B              --     --      24 hours ago    \n",
 		},
 		{
+			name: "filter image_gen alias",
+			args: []string{"image_gen"},
+			serverResponse: []api.ListModelResponse{
+				{Name: "gemma3:4b", Digest: "sha256:abc123", Size: 1024, Capabilities: []model.Capability{model.CapabilityCompletion}, ModifiedAt: time.Now().Add(-24 * time.Hour)},
+				{Name: "sd15-vulkan:latest", Digest: "sha256:def456", Size: 545, Capabilities: []model.Capability{model.CapabilityImage}, ModifiedAt: time.Now().Add(-24 * time.Hour)},
+			},
+			expectedOutput: "NAME                  ID              SIZE     PARAMS    CTX    PERF    MODIFIED     \n" +
+				"sd15-vulkan:latest    sha256:def45    545 B              --     --      24 hours ago    \n",
+		},
+		{
 			name: "host ctx range when below train",
 			args: []string{},
 			serverResponse: []api.ListModelResponse{

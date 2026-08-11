@@ -26,6 +26,13 @@ int uma_buf_pool_ensure_put(uma_buf_pool *pool, const char *name,
 int uma_buf_pool_put_weight(uma_buf_pool *pool, const char *name,
                             const char *bank_key, const void *data,
                             size_t nbytes);
+/* F0994: BANK_PUT without bind (persist once, bind per block). */
+int uma_buf_pool_bank_put(uma_buf_pool *pool, const char *bank_key,
+                          const void *data, size_t nbytes);
+int uma_buf_pool_bank_bind(uma_buf_pool *pool, const char *bank_key,
+                           const char *as_name);
+/* F0703: one IPC for many key:as pairs (comma-separated, no spaces). */
+int uma_buf_pool_bank_binds(uma_buf_pool *pool, const char *pairs);
 int uma_buf_pool_free(uma_buf_pool *pool, const char *name);
 void uma_buf_pool_free_all(uma_buf_pool *pool);
 

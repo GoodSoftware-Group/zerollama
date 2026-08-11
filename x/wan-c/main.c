@@ -29,7 +29,21 @@ static void usage(const char *argv0) {
           "\n"
           "Env: UMA_WAN_LOCAL=1  host uma_wan_ops (no broker)\n"
           "     UMA_WAN_EXT=1    prefer EXT_CALL for LN/AdaLN/GN (needs opworker)\n"
-          "     UMA_EXT_SOCK     EXT worker socket (default /tmp/uma_ext_wan.sock)\n",
+          "     UMA_EXT_SOCK     EXT worker socket (default /tmp/uma_ext_wan.sock)\n"
+          "     WAN_DIT_NO_PERSIST=1  skip F0994 block BANK (host FFN)\n"
+          "     WAN_DIT_HOST_FFN=1    force host FFN (implies no FFN_GELU)\n"
+          "     WAN_DIT_MIRROR=1      per-block token GET/PUT (debug)\n"
+          "     WAN_DIT_QCHUNK=N      ATTN t= window rows (default 5460 if T>)\n"
+          "     WAN_DIT_FFN_CHUNK=N   FFN_GELU t= window rows (default 4096)\n"
+          "     WAN_VAE_NO_HEADT=1    skip broker HEADT (F1001–F1004)\n"
+          "     WAN_VAE_WARM_HEADT=1  warm feat_cache on broker (F1012 mid/out;\n"
+          "                          opt-in — default-on miss @832). SHUTTLE=1=old\n"
+          "     WAN_VAE_NO_WARM_HEADT=1  force host warm after cold\n"
+          "     WAN_VAE_NO_RESID_FUSE=1  legacy dual HEADT + host ADD\n"
+          "     WAN_DIT_NO_GATED_RESID=1  legacy AFFINE+RESIDUAL (no Metal gate)\n"
+          "     WAN_PROFILE=1         stage wall timers (stderr summary)\n"
+          "     WAN_VAE_STAGE_PROF=1  with WAN_PROFILE: VAE tip stage map\n"
+          "     WAN_BUF_STICKY=0      re-assert BUF_ALLOC every call\n",
           argv0);
 }
 

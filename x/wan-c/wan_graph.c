@@ -1,4 +1,5 @@
 #include "wan_internal.h"
+#include "wan_profile.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -51,6 +52,7 @@ int wan_submit_graph(UmaClient *c, const char *nodes) {
   char mech_body[7800];
   if (!c || !nodes || !nodes[0])
     return -1;
+  double t_prof0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
   /* Daemon header ends at first ';'. Smokes use "GRAPH … ; OP@…". */
   if (nodes[0] == ';')
     snprintf(body, sizeof(body), "%s", nodes);
@@ -115,6 +117,8 @@ int wan_submit_graph(UmaClient *c, const char *nodes) {
     fprintf(stderr, "wan-c: GRAPH failed: %.200s\n", resp);
     return -1;
   }
+  if (wan_profile_on())
+    wan_profile_add_ms("graph", wan_profile_now_ms() - t_prof0);
   return 0;
 }
 
@@ -143,6 +147,10 @@ int wan_probe_caps(wan_ctx *ctx) {
       ctx->caps.ncdhw3 = 1;
       ctx->caps.sinusoid = 1;
       ctx->caps.ct3d = 1;
+      ctx->caps.channel_rms = 1;
+      ctx->caps.silu = 1;
+      ctx->caps.causal_pad3d = 1;
+      ctx->caps.nearest = 1;
       return 0;
     }
   }
@@ -175,6 +183,17 @@ int wan_probe_caps(wan_ctx *ctx) {
                        strstr(info, "TIMESTEP_EMB") != NULL;
   ctx->caps.ct3d = strstr(info, "CONV_TRANSPOSE3D") != NULL ||
                    strstr(info, "CT3D") != NULL;
+  ctx->caps.gelu = strstr(info, "GELU") != NULL;
+  ctx->caps.row_copy = strstr(info, "ROW_COPY") != NULL ||
+                       strstr(info, "RCOPY") != NULL;
+  ctx->caps.ffn_gelu = strstr(info, "FFN_GELU") != NULL;
+  ctx->caps.head_rmsnorm = strstr(info, "HEAD_RMSNORM") != NULL;
+  ctx->caps.channel_rms = strstr(info, "CHANNEL_RMS") != NULL ||
+                          strstr(info, "RMS_CHANNEL") != NULL;
+  ctx->caps.silu = strstr(info, "SILU") != NULL || strstr(info, "SWISH") != NULL;
+  ctx->caps.causal_pad3d = strstr(info, "CAUSAL_PAD3D") != NULL ||
+                           strstr(info, "CPAD3D") != NULL;
+  ctx->caps.nearest = strstr(info, "NEAREST") != NULL;
   /* F0900: long SUBMIT/WAIT tip-plane — raise job TTL when available. */
   {
     char ttl_resp[256];
@@ -191,16 +210,20 @@ int wan_probe_caps(wan_ctx *ctx) {
   }
   fprintf(stderr,
           "wan-c: caps gemm=%d ln=%d affine=%d gn=%d rope3=%d c2d=%d ct2d=%d "
-          "c3d=%d ct3d=%d up3=%d attn_full=%d silu=%d residual=%d tok3=%d "
-          "ncdhw3=%d sinusoid=%d form_repeat=%d mech=%d prefer_ext=%d "
-          "gemm_role=%s\n",
+          "c3d=%d ct3d=%d up3=%d attn_full=%d silu_mul=%d residual=%d tok3=%d "
+          "ncdhw3=%d sinusoid=%d form_repeat=%d mech=%d gelu=%d row_copy=%d "
+          "ffn_gelu=%d head_rms=%d ch_rms=%d silu=%d cpad3d=%d nearest=%d "
+          "prefer_ext=%d gemm_role=%s\n",
           ctx->caps.gemm_f16, ctx->caps.layernorm, ctx->caps.affine,
           ctx->caps.group_norm, ctx->caps.rope3, ctx->caps.conv2d,
           ctx->caps.ct2d, ctx->caps.conv3d, ctx->caps.ct3d,
           ctx->caps.unpatchify, ctx->caps.attn_full, ctx->caps.silu_mul,
           ctx->caps.residual_add, ctx->caps.tok3, ctx->caps.ncdhw3,
           ctx->caps.sinusoid, ctx->caps.form_repeat, ctx->caps.mech,
-          ctx->caps.prefer_ext, wan_gemm_role(ctx));
+          ctx->caps.gelu, ctx->caps.row_copy, ctx->caps.ffn_gelu,
+          ctx->caps.head_rmsnorm, ctx->caps.channel_rms, ctx->caps.silu,
+          ctx->caps.causal_pad3d, ctx->caps.nearest, ctx->caps.prefer_ext,
+          wan_gemm_role(ctx));
   return 0;
 }
 
@@ -272,9 +295,11 @@ int wan_graph_gemm_f32(wan_ctx *ctx, const char *bx, const char *by,
   if (!ctx || !ctx->uma || M < 1 || N < 1 || K < 1)
     return -1;
   const char *role = wan_gemm_role(ctx);
+  /* Prefer MARK@GPU? so sticky CB does not bounce after a GPU GEMM. */
+  const char *mark = (strcmp(role, "CPU") == 0) ? "CPU" : "GPU";
   snprintf(nodes, sizeof(nodes),
-           "GEMM_F16@%s! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@CPU?", role, bx,
-           by, bw, M, N, K);
+           "GEMM_F16@%s! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@%s?", role, bx,
+           by, bw, M, N, K, mark);
   if (wan_submit_graph(ctx->uma, nodes) == 0)
     return 0;
   /* Fall back to host GEMM if Metal path rejects. */
@@ -481,9 +506,24 @@ static int rope3_put_freqs(wan_ctx *ctx, int T, int HD, int gt, int gh, int gw,
    * Prefer PUT-overwrite on existing freq bufs. Free/realloc between Q and K
    * RoPE calls was failing the second ROPE3 under CFG (silent quality gap) and
    * churning broker slots across multi-step runs.
+   * Geometry-sticky: skip host fill + BUF_PUT when T/HD/grid unchanged.
    */
   static size_t live_fbytes;
+  static int live_gt, live_gh, live_gw, live_T, live_HD;
   int rc = -1;
+  if (live_fbytes == fbytes && live_gt == gt && live_gh == gh &&
+      live_gw == gw && live_T == T && live_HD == HD) {
+    /* Bufs already hold matching freqs — still ensure alloc sticky. */
+    if (uma_buf_pool_alloc(ctx->bufs, bft, fbytes) == 0 &&
+        uma_buf_pool_alloc(ctx->bufs, bfh, fbytes) == 0 &&
+        uma_buf_pool_alloc(ctx->bufs, bfw, fbytes) == 0) {
+      free(ft);
+      free(fh);
+      free(fw);
+      wan_profile_add_count("rope_freq_skip", 1);
+      return 0;
+    }
+  }
   if (live_fbytes != fbytes) {
     (void)uma_buf_pool_free(ctx->bufs, bft);
     (void)uma_buf_pool_free(ctx->bufs, bfh);
@@ -497,6 +537,11 @@ static int rope3_put_freqs(wan_ctx *ctx, int T, int HD, int gt, int gh, int gw,
       uma_buf_pool_put(ctx->bufs, bfh, fh, fbytes) == 0 &&
       uma_buf_pool_put(ctx->bufs, bfw, fw, fbytes) == 0) {
     live_fbytes = fbytes;
+    live_gt = gt;
+    live_gh = gh;
+    live_gw = gw;
+    live_T = T;
+    live_HD = HD;
     rc = 0;
   }
   free(ft);
@@ -530,7 +575,7 @@ int wan_graph_rope3(wan_ctx *ctx, const char *bx, const char *by, int T, int H,
       return -1;
     char nodes[768];
     snprintf(nodes, sizeof(nodes),
-             "ROPE3@CPU! x=%s y=%s w=%s gate=%s up=%s T=%d H=%d HD=%d "
+             "ROPE3@GPU! x=%s y=%s w=%s gate=%s up=%s T=%d H=%d HD=%d "
              "Gt=%d Gh=%d Gw=%d ; MARK@GPU?",
              bx, by, bft, bfh, bfw, T, H, HD, gt, gh, gw);
     int rc = wan_submit_graph(ctx->uma, nodes);
@@ -595,19 +640,98 @@ int wan_graph_rope3(wan_ctx *ctx, const char *bx, const char *by, int T, int H,
   return 0;
 }
 
+/* Speed-gap: one GRAPH for Q and K RoPE (shared freqs PUT). */
+int wan_rope3_ensure_freqs(wan_ctx *ctx, int T, int HD, int *gt, int *gh,
+                           int *gw) {
+  if (!ctx || !ctx->bufs || T < 1 || HD < 2 || (HD % 2) != 0)
+    return -1;
+  const char *bft = "x_rope_ft";
+  const char *bfh = "x_rope_fh";
+  const char *bfw = "x_rope_fw";
+  int have_grid =
+      (ctx->gen_tp > 0 && ctx->gen_hp > 0 && ctx->gen_wp > 0 &&
+       (size_t)ctx->gen_tp * (size_t)ctx->gen_hp * (size_t)ctx->gen_wp ==
+           (size_t)T);
+  int g_t = have_grid ? ctx->gen_tp : T;
+  int g_h = have_grid ? ctx->gen_hp : 1;
+  int g_w = have_grid ? ctx->gen_wp : 1;
+  if (rope3_put_freqs(ctx, T, HD, g_t, g_h, g_w, bft, bfh, bfw) != 0)
+    return -1;
+  if (gt)
+    *gt = g_t;
+  if (gh)
+    *gh = g_h;
+  if (gw)
+    *gw = g_w;
+  return 0;
+}
+
+int wan_graph_rope3_qk(wan_ctx *ctx, const char *bq, const char *bqr,
+                       const char *bk, const char *bkr, int T, int H, int HD) {
+  if (!ctx || !bq || !bqr || !bk || !bkr || T < 1 || H < 1 || HD < 2 ||
+      (HD % 2) != 0)
+    return -1;
+  if (!ctx->uma || !ctx->bufs || !ctx->caps.rope3 ||
+      (ctx->caps.prefer_ext && ctx->caps.ext_ready))
+    return -1;
+  const char *bft = "x_rope_ft";
+  const char *bfh = "x_rope_fh";
+  const char *bfw = "x_rope_fw";
+  int gt, gh, gw;
+  if (wan_rope3_ensure_freqs(ctx, T, HD, &gt, &gh, &gw) != 0)
+    return -1;
+  char nodes[1024];
+  int n = snprintf(
+      nodes, sizeof(nodes),
+      "ROPE3@GPU! x=%s y=%s w=%s gate=%s up=%s T=%d H=%d HD=%d "
+      "Gt=%d Gh=%d Gw=%d ; "
+      "ROPE3@GPU! x=%s y=%s w=%s gate=%s up=%s T=%d H=%d HD=%d "
+      "Gt=%d Gh=%d Gw=%d ; MARK@GPU?",
+      bq, bqr, bft, bfh, bfw, T, H, HD, gt, gh, gw, bk, bkr, bft, bfh, bfw, T, H,
+      HD, gt, gh, gw);
+  if (n < 0 || (size_t)n >= sizeof(nodes))
+    return -1;
+  int rc = wan_submit_graph(ctx->uma, nodes);
+  if (rc == 0 && gt > 0 &&
+      (ctx->gen_tp > 0 && ctx->gen_hp > 0 && ctx->gen_wp > 0 &&
+       (size_t)ctx->gen_tp * (size_t)ctx->gen_hp * (size_t)ctx->gen_wp ==
+           (size_t)T)) {
+    static int logged_grid;
+    if (!logged_grid) {
+      fprintf(stderr,
+              "wan-c: DiT RoPE3D grid t×h×w=%d×%d×%d (broker freqs, Q+K)\n", gt,
+              gh, gw);
+      logged_grid = 1;
+    }
+  }
+  return rc;
+}
+
 int wan_graph_attn_full(wan_ctx *ctx, const char *bq, const char *bk,
                         const char *bv, const char *bout, int T, int Tk, int H,
                         int KV, int HD) {
-  char nodes[512];
+  return wan_graph_attn_full_row(ctx, bq, bk, bv, bout, T, Tk, H, KV, HD, -1);
+}
+
+int wan_graph_attn_full_row(wan_ctx *ctx, const char *bq, const char *bk,
+                            const char *bv, const char *bout, int T, int Tk,
+                            int H, int KV, int HD, int t_row) {
+  char nodes[576];
   if (!ctx || !ctx->uma || !bq || !bk || !bv || !bout || T < 1 || Tk < 1 ||
       H < 1 || KV < 1 || HD < 1)
     return -1;
   if (!ctx->caps.attn_full)
     return -1;
-  snprintf(nodes, sizeof(nodes),
-           "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-           "HD=%d kind=full ; MARK@GPU?",
-           bq, bk, bv, bout, T, Tk, H, KV, HD);
+  if (t_row >= 0)
+    snprintf(nodes, sizeof(nodes),
+             "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
+             "HD=%d kind=full t=%d ; MARK@GPU?",
+             bq, bk, bv, bout, T, Tk, H, KV, HD, t_row);
+  else
+    snprintf(nodes, sizeof(nodes),
+             "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
+             "HD=%d kind=full ; MARK@GPU?",
+             bq, bk, bv, bout, T, Tk, H, KV, HD);
   return wan_submit_graph(ctx->uma, nodes);
 }
 
@@ -619,6 +743,64 @@ int wan_graph_silu_mul(wan_ctx *ctx, const char *bgate, const char *bup,
   snprintf(nodes, sizeof(nodes),
            "SILU_MUL@GPU! gate=%s up=%s y=%s D=%d ; MARK@GPU?", bgate, bup, by,
            D);
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+/* Wan DiT FFN: GELU(tanh) — never FFN_SILU. */
+int wan_graph_gelu(wan_ctx *ctx, const char *bx, const char *by, int D) {
+  char nodes[320];
+  if (!ctx || !ctx->uma || !bx || !by || D < 1)
+    return -1;
+  snprintf(nodes, sizeof(nodes), "GELU_TANH@CPU! x=%s y=%s D=%d ; MARK@CPU?", bx,
+           by, D);
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+/* F0993: dense FFN_GELU with optional row window t=. */
+int wan_graph_ffn_gelu(wan_ctx *ctx, const char *bx, const char *by,
+                       const char *bwu, const char *bwd, const char *bmid,
+                       int M, int D, int ffn, int t_row) {
+  char nodes[512];
+  if (!ctx || !ctx->uma || !bx || !by || !bwu || !bwd || !bmid || M < 1 ||
+      D < 1 || ffn < 1)
+    return -1;
+  if (!ctx->caps.ffn_gelu)
+    return -1;
+  if (t_row >= 0)
+    snprintf(nodes, sizeof(nodes),
+             "FFN_GELU@GPU! x=%s y=%s wu=%s wd=%s mid=%s M=%d D=%d ffn=%d t=%d "
+             "; MARK@GPU?",
+             bx, by, bwu, bwd, bmid, M, D, ffn, t_row);
+  else
+    snprintf(nodes, sizeof(nodes),
+             "FFN_GELU@GPU! x=%s y=%s wu=%s wd=%s mid=%s M=%d D=%d ffn=%d ; "
+             "MARK@GPU?",
+             bx, by, bwu, bwd, bmid, M, D, ffn);
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+int wan_graph_head_rmsnorm(wan_ctx *ctx, const char *bx, const char *bw, int H,
+                           int HD) {
+  char nodes[320];
+  if (!ctx || !ctx->uma || !bx || !bw || H < 1 || HD < 1)
+    return -1;
+  if (!ctx->caps.head_rmsnorm)
+    return -1;
+  snprintf(nodes, sizeof(nodes),
+           "HEAD_RMSNORM@GPU! x=%s w=%s H=%d HD=%d ; MARK@GPU?", bx, bw, H, HD);
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+/* ROW_COPY: dst[dst_row:dst_row+N,:] ← src[src_row:src_row+N,:] */
+int wan_graph_row_copy(wan_ctx *ctx, const char *bx, const char *by, int N,
+                       int D, int src_row, int dst_row) {
+  char nodes[384];
+  if (!ctx || !ctx->uma || !bx || !by || N < 1 || D < 1 || src_row < 0 ||
+      dst_row < 0)
+    return -1;
+  snprintf(nodes, sizeof(nodes),
+           "ROW_COPY@CPU! x=%s y=%s N=%d D=%d t=%d Tk=%d ; MARK@CPU?", bx, by, N,
+           D, src_row, dst_row);
   return wan_submit_graph(ctx->uma, nodes);
 }
 
@@ -869,6 +1051,184 @@ int wan_graph_conv3d(wan_ctx *ctx, const char *bx, const char *by,
     return -1;
   snprintf(nodes, sizeof(nodes),
            "CONV3D@CPU! x=%s y=%s w=%s kind=%s ; MARK@CPU?", bx, by, bw, kind);
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+/* F1001: CHANNEL_RMS→SILU→CAUSAL_PAD3D(pd=ph=pw=1)→CONV3D k=3 pad0 (+bias). */
+int wan_graph_vae_headt(wan_ctx *ctx, const char *bx, const char *by,
+                        const char *bw, const char *bgamma, const char *bbias,
+                        const char *brms, const char *bsil, const char *bpad,
+                        int Cin, int Cout, int T, int H, int W) {
+  return wan_graph_vae_headt_cache(ctx, bx, by, bw, bgamma, bbias, brms, bsil,
+                                   bpad, NULL, 0, Cin, Cout, T, H, W);
+}
+
+/* F1012: same HEADT with optional sticky feat_cache on CAUSAL_PAD3D. */
+int wan_graph_vae_headt_cache(wan_ctx *ctx, const char *bx, const char *by,
+                              const char *bw, const char *bgamma,
+                              const char *bbias, const char *brms,
+                              const char *bsil, const char *bpad,
+                              const char *bcache, int cache_t, int Cin,
+                              int Cout, int T, int H, int W) {
+  char nodes[1280];
+  if (!ctx || !ctx->uma || !bx || !by || !bw || !bgamma || !brms || !bsil ||
+      !bpad || Cin < 1 || Cout < 1 || T < 1 || H < 1 || W < 1)
+    return -1;
+  if (!ctx->caps.channel_rms || !ctx->caps.silu || !ctx->caps.causal_pad3d ||
+      !ctx->caps.conv3d)
+    return -1;
+  if (cache_t < 0)
+    cache_t = 0;
+  if (cache_t > 2)
+    cache_t = 2;
+  int Dp = T + 2, Hp = H + 2, Wp = W + 2;
+  size_t nd = (size_t)Cin * (size_t)T * (size_t)H * (size_t)W;
+  int n;
+  char pad_extra[96];
+  pad_extra[0] = 0;
+  if (bcache && bcache[0])
+    snprintf(pad_extra, sizeof(pad_extra), " mid=%s out=%s t=%d", bcache,
+             bcache, cache_t);
+  if (bbias && bbias[0]) {
+    n = snprintf(
+        nodes, sizeof(nodes),
+        "CHANNEL_RMS@CPU! x=%s y=%s w=%s kind=1_%d_%d_%d_%d ; "
+        "SILU@CPU! x=%s y=%s D=%d ; "
+        "CAUSAL_PAD3D@CPU! x=%s y=%s%s kind=1_%d_%d_%d_%d_1_1_1 ; "
+        "CONV3D@CPU! x=%s y=%s w=%s gate=%s "
+        "kind=1_%d_%d_%d_%d_%d_3_3_3_1_1_1_0_0_0 ; MARK@CPU?",
+        bx, brms, bgamma, Cin, T, H, W, brms, bsil, (int)nd, bsil, bpad,
+        pad_extra, Cin, T, H, W, bpad, by, bw, bbias, Cin, Dp, Hp, Wp, Cout);
+  } else {
+    n = snprintf(
+        nodes, sizeof(nodes),
+        "CHANNEL_RMS@CPU! x=%s y=%s w=%s kind=1_%d_%d_%d_%d ; "
+        "SILU@CPU! x=%s y=%s D=%d ; "
+        "CAUSAL_PAD3D@CPU! x=%s y=%s%s kind=1_%d_%d_%d_%d_1_1_1 ; "
+        "CONV3D@CPU! x=%s y=%s w=%s "
+        "kind=1_%d_%d_%d_%d_%d_3_3_3_1_1_1_0_0_0 ; MARK@CPU?",
+        bx, brms, bgamma, Cin, T, H, W, brms, bsil, (int)nd, bsil, bpad,
+        pad_extra, Cin, T, H, W, bpad, by, bw, Cin, Dp, Hp, Wp, Cout);
+  }
+  if (n < 0 || (size_t)n >= sizeof(nodes))
+    return -1;
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+/* Append one CHANNEL_RMS→SILU→CAUSAL_PAD3D→CONV3D segment (no MARK). */
+static int vae_headt_seg(char *dst, size_t n, int *off, const char *bx,
+                         const char *by, const char *bw, const char *bgamma,
+                         const char *bbias, const char *brms, const char *bsil,
+                         const char *bpad, const char *bcache, int cache_t,
+                         int Cin, int Cout, int T, int H, int W) {
+  if (!dst || !off || *off < 0 || Cin < 1 || Cout < 1 || T < 1 || H < 1 || W < 1)
+    return -1;
+  if (cache_t < 0)
+    cache_t = 0;
+  if (cache_t > 2)
+    cache_t = 2;
+  int Dp = T + 2, Hp = H + 2, Wp = W + 2;
+  size_t nd = (size_t)Cin * (size_t)T * (size_t)H * (size_t)W;
+  char pad_extra[96];
+  pad_extra[0] = 0;
+  if (bcache && bcache[0])
+    snprintf(pad_extra, sizeof(pad_extra), " mid=%s out=%s t=%d", bcache,
+             bcache, cache_t);
+  int k;
+  if (bbias && bbias[0])
+    k = snprintf(
+        dst + *off, n - (size_t)*off,
+        "CHANNEL_RMS@CPU! x=%s y=%s w=%s kind=1_%d_%d_%d_%d ; "
+        "SILU@CPU! x=%s y=%s D=%d ; "
+        "CAUSAL_PAD3D@CPU! x=%s y=%s%s kind=1_%d_%d_%d_%d_1_1_1 ; "
+        "CONV3D@CPU! x=%s y=%s w=%s gate=%s "
+        "kind=1_%d_%d_%d_%d_%d_3_3_3_1_1_1_0_0_0 ; ",
+        bx, brms, bgamma, Cin, T, H, W, brms, bsil, (int)nd, bsil, bpad,
+        pad_extra, Cin, T, H, W, bpad, by, bw, bbias, Cin, Dp, Hp, Wp, Cout);
+  else
+    k = snprintf(
+        dst + *off, n - (size_t)*off,
+        "CHANNEL_RMS@CPU! x=%s y=%s w=%s kind=1_%d_%d_%d_%d ; "
+        "SILU@CPU! x=%s y=%s D=%d ; "
+        "CAUSAL_PAD3D@CPU! x=%s y=%s%s kind=1_%d_%d_%d_%d_1_1_1 ; "
+        "CONV3D@CPU! x=%s y=%s w=%s "
+        "kind=1_%d_%d_%d_%d_%d_3_3_3_1_1_1_0_0_0 ; ",
+        bx, brms, bgamma, Cin, T, H, W, brms, bsil, (int)nd, bsil, bpad,
+        pad_extra, Cin, T, H, W, bpad, by, bw, Cin, Dp, Hp, Wp, Cout);
+  if (k < 0 || (size_t)k >= n - (size_t)*off)
+    return -1;
+  *off += k;
+  return 0;
+}
+
+/* Brick 7: dual HEADT (+ optional resid) one GRAPH — same Cin==Cout. */
+int wan_graph_vae_resblock_dual_headt(
+    wan_ctx *ctx, const char *bx, const char *bmid, const char *by,
+    const char *bw1, const char *bg1, const char *bb1, const char *brms1,
+    const char *bsil1, const char *bpad1, const char *bcache1, int cache_t1,
+    const char *bw2, const char *bg2, const char *bb2, const char *brms2,
+    const char *bsil2, const char *bpad2, const char *bcache2, int cache_t2,
+    int C, int T, int H, int W, int add_resid) {
+  char nodes[2560];
+  if (!ctx || !ctx->uma || !bx || !bmid || !by || !bw1 || !bg1 || !brms1 ||
+      !bsil1 || !bpad1 || !bw2 || !bg2 || !brms2 || !bsil2 || !bpad2 || C < 1 ||
+      T < 1 || H < 1 || W < 1)
+    return -1;
+  if (!ctx->caps.channel_rms || !ctx->caps.silu || !ctx->caps.causal_pad3d ||
+      !ctx->caps.conv3d)
+    return -1;
+  if (add_resid && !ctx->caps.residual_add)
+    return -1;
+  int off = 0;
+  if (vae_headt_seg(nodes, sizeof(nodes), &off, bx, bmid, bw1, bg1, bb1, brms1,
+                    bsil1, bpad1, bcache1, cache_t1, C, C, T, H, W) != 0)
+    return -1;
+  if (vae_headt_seg(nodes, sizeof(nodes), &off, bmid, by, bw2, bg2, bb2, brms2,
+                    bsil2, bpad2, bcache2, cache_t2, C, C, T, H, W) != 0)
+    return -1;
+  int k;
+  if (add_resid) {
+    size_t flat = (size_t)C * (size_t)T * (size_t)H * (size_t)W;
+    k = snprintf(nodes + off, sizeof(nodes) - (size_t)off,
+                 "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@CPU?", by, bx,
+                 (int)flat);
+  } else {
+    k = snprintf(nodes + off, sizeof(nodes) - (size_t)off, "MARK@CPU?");
+  }
+  if (k < 0 || (size_t)k >= sizeof(nodes) - (size_t)off)
+    return -1;
+  return wan_submit_graph(ctx->uma, nodes);
+}
+
+/* F1001 resample tip: NEAREST×2 then CONV2D k=3 pad=1. */
+int wan_graph_vae_nearest_conv2d(wan_ctx *ctx, const char *blo, const char *bhi,
+                                 const char *by, const char *bw,
+                                 const char *bbias, int Cin, int Cout, int H,
+                                 int W) {
+  char nodes[768];
+  if (!ctx || !ctx->uma || !blo || !bhi || !by || !bw || Cin < 1 || Cout < 1 ||
+      H < 1 || W < 1)
+    return -1;
+  if (!ctx->caps.nearest || !ctx->caps.conv2d)
+    return -1;
+  int H2 = H * 2, W2 = W * 2;
+  int n;
+  if (bbias && bbias[0]) {
+    n = snprintf(nodes, sizeof(nodes),
+                 "NEAREST@CPU! x=%s y=%s kind=1_%d_%d_%d_2_2 ; "
+                 "CONV2D@CPU! x=%s y=%s w=%s gate=%s "
+                 "N=1 D=%d H=%d T=%d V=%d K=%d ffn=%d HD=1 KV=1 ; MARK@CPU?",
+                 blo, bhi, Cin, H, W, bhi, by, bw, bbias, Cin, H2, W2, Cout, 3,
+                 3);
+  } else {
+    n = snprintf(nodes, sizeof(nodes),
+                 "NEAREST@CPU! x=%s y=%s kind=1_%d_%d_%d_2_2 ; "
+                 "CONV2D@CPU! x=%s y=%s w=%s "
+                 "N=1 D=%d H=%d T=%d V=%d K=%d ffn=%d HD=1 KV=1 ; MARK@CPU?",
+                 blo, bhi, Cin, H, W, bhi, by, bw, Cin, H2, W2, Cout, 3, 3);
+  }
+  if (n < 0 || (size_t)n >= sizeof(nodes))
+    return -1;
   return wan_submit_graph(ctx->uma, nodes);
 }
 

@@ -1,7 +1,11 @@
 package gptoss
 
 import (
+	"context"
 	"testing"
+
+	"github.com/ollama/ollama/x/internal/mlxthread"
+	"github.com/ollama/ollama/x/mlxrunner/mlx"
 )
 
 func TestParseConfigGPTOSS120B(t *testing.T) {
@@ -47,5 +51,62 @@ func TestParseConfigGPTOSS120B(t *testing.T) {
 	}
 	if !cfg.layerIsSliding(0) || cfg.layerIsSliding(1) {
 		t.Errorf("unexpected sliding pattern at layers 0/1")
+	}
+}
+
+// Regression: Metal argpartition on rank-3 router logits returns ndim=0, which
+// made SparseMoE.route panic on shape[0]. Prefer the flattened [BL, E] path.
+func TestArgpartitionTopK2D(t *testing.T) {
+	if err := mlx.CheckInit(); err != nil {
+		t.Skipf("MLX not available: %v", err)
+	}
+
+	thread, err := mlxthread.Start("gptoss-argpartition", func() error {
+		if err := mlx.CheckInit(); err != nil {
+			return err
+		}
+		if mlx.GPUIsAvailable() {
+			mlx.SetDefaultDeviceGPU()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Skipf("MLX thread: %v", err)
+	}
+	defer func() {
+		_ = thread.Stop(context.Background(), func() {
+			mlx.Sweep()
+			mlx.ClearCache()
+		})
+	}()
+
+	const (
+		bl  = 32
+		e   = 128
+		top = 4
+	)
+	if err := thread.Do(context.Background(), func() error {
+		data := make([]float32, bl*e)
+		for i := range data {
+			data[i] = float32(i%17) - 8
+		}
+		logits := mlx.FromValues(data, bl, e)
+		inds := mlx.Argpartition(mlx.Neg(logits), top-1, -1)
+		shape := inds.Dims()
+		if len(shape) != 2 || shape[0] != bl || shape[1] != e {
+			t.Fatalf("2D argpartition shape = %v, want [%d %d]", shape, bl, e)
+		}
+		inds = mlx.SliceStartStop(inds, []int32{0, 0}, []int32{bl, top})
+		got := inds.Dims()
+		if len(got) != 2 || got[0] != bl || got[1] != top {
+			t.Fatalf("sliced shape = %v, want [%d %d]", got, bl, top)
+		}
+
+		logits3 := mlx.Reshape(logits, 1, bl, e)
+		inds3 := mlx.Argpartition(mlx.Neg(logits3), top-1, -1)
+		t.Logf("rank-3 argpartition dims=%v", inds3.Dims())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	_ "github.com/ollama/ollama/x/models/gemma4"
 	_ "github.com/ollama/ollama/x/models/gptoss"
 	_ "github.com/ollama/ollama/x/models/glm4_moe_lite"
+	_ "github.com/ollama/ollama/x/models/granite"
+	_ "github.com/ollama/ollama/x/models/lfm2"
 	_ "github.com/ollama/ollama/x/models/llama"
 	_ "github.com/ollama/ollama/x/models/qwen2"
 	_ "github.com/ollama/ollama/x/models/qwen3"

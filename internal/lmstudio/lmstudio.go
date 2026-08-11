@@ -115,11 +115,16 @@ func Roots() []string {
 }
 
 // List returns LM Studio model directories under [Roots].
+//
+// Why symlink candidates: LM Studio often installs HF hub trees as symlinks
+// under publisher/model (e.g. mlx-community/LFM2-350M-4bit → ~/.cache/huggingface/...).
+// WalkDir does not follow those links and DirEntry.IsDir() is false for the
+// symlink itself, so we must treat symlink-to-dir as a model dir candidate.
 func List() []Entry {
 	var out []Entry
 	for _, root := range Roots() {
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || !d.IsDir() {
+			if err != nil || !isModelDirCandidate(d, path) {
 				return nil
 			}
 			rel, err := filepath.Rel(root, path)
@@ -136,13 +141,40 @@ func List() []Entry {
 	return out
 }
 
+// isModelDirCandidate reports whether path should be scanned as a model directory.
+// Plain directories and symlinks whose target is a directory both qualify.
+func isModelDirCandidate(d fs.DirEntry, path string) bool {
+	if d.IsDir() {
+		return true
+	}
+	info, err := d.Info()
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	st, err := os.Stat(path) // follows symlink
+	return err == nil && st.IsDir()
+}
+
+// resolveModelDir returns a concrete directory for weight scanning. Naming still
+// uses the LM Studio path (symlink location); broken links fall back to path.
+func resolveModelDir(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved == "" {
+		return path
+	}
+	return resolved
+}
+
 func listEntriesForDir(root, path string) []Entry {
-	format, weights, ok := dirWeightFiles(path)
+	// Scan weights via resolved target; keep Entry.Dir as the LM Studio path so
+	// SuggestedName stays publisher/folder (not the HF hub snapshot path).
+	scanDir := resolveModelDir(path)
+	format, weights, ok := dirWeightFiles(scanDir)
 	if !ok {
 		return nil
 	}
 
-	size, modified := dirStats(path)
+	size, modified := dirStats(scanDir)
 	if format == "gguf" && len(weights) > 1 && !allGGUFShards(weights) {
 		var out []Entry
 		for _, w := range weights {
@@ -227,6 +259,15 @@ func suggestedNameForWeight(root, dir, weightBase string) string {
 	} else if q := detectQuantTag(dir); q != "" {
 		tag = q
 	}
+	// Folder names like LFM2-350M-4bit often encode the quant with no weight filename cue.
+	if tag == "latest" {
+		if q := quantTag.FindString(base); q != "" {
+			tag = strings.ToLower(q)
+			if strings.HasSuffix(base, "-"+tag) {
+				base = strings.TrimSuffix(base, "-"+tag)
+			}
+		}
+	}
 
 	return publisher + "/" + base + ":" + tag
 }
@@ -293,7 +334,7 @@ func matchFuzzyDir(n model.Name) (string, bool) {
 
 	for _, root := range Roots() {
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || !d.IsDir() {
+			if err != nil || !isModelDirCandidate(d, path) {
 				return nil
 			}
 			rel, err := filepath.Rel(root, path)
@@ -303,7 +344,7 @@ func matchFuzzyDir(n model.Name) (string, bool) {
 			if len(strings.Split(rel, string(filepath.Separator))) < 2 {
 				return nil
 			}
-			if _, ok := dirModelFormat(path); !ok {
+			if _, ok := dirModelFormat(resolveModelDir(path)); !ok {
 				return nil
 			}
 			score := scorePath(path, n)
@@ -406,20 +447,37 @@ func allGGUFShards(weights []string) bool {
 }
 
 func safetensorsWeightFiles(dir string) ([]string, bool) {
-	st, err := filepath.Glob(filepath.Join(dir, "model*.safetensors"))
-	if err != nil || len(st) == 0 {
-		if st, err = filepath.Glob(filepath.Join(dir, "consolidated*.safetensors")); err != nil || len(st) == 0 {
-			return nil, false
-		}
+	// Prefer conventional HF/MLX names first, then any *.safetensors (some dumps
+	// use non-model* filenames). Always skip index JSON sidecars.
+	patterns := []string{
+		filepath.Join(dir, "model*.safetensors"),
+		filepath.Join(dir, "consolidated*.safetensors"),
+		filepath.Join(dir, "*.safetensors"),
 	}
-
+	seen := make(map[string]struct{})
 	var weights []string
-	for _, p := range st {
-		base := strings.ToLower(filepath.Base(p))
-		if base == "model.safetensors.index.json" {
+	for _, pattern := range patterns {
+		st, err := filepath.Glob(pattern)
+		if err != nil {
 			continue
 		}
-		weights = append(weights, p)
+		for _, p := range st {
+			base := strings.ToLower(filepath.Base(p))
+			if strings.HasSuffix(base, ".safetensors.index.json") || strings.HasSuffix(base, ".index.json") {
+				continue
+			}
+			if !strings.HasSuffix(base, ".safetensors") {
+				continue
+			}
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			weights = append(weights, p)
+		}
+		if len(weights) > 0 {
+			break
+		}
 	}
 	if len(weights) == 0 {
 		return nil, false

@@ -532,6 +532,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
 
 struct ggml_metal_encoder {
     id<MTLComputeCommandEncoder> obj;
+    id<MTLCommandBuffer>         cmd_buf; // weak to context ownership except after sync
+    bool concurrent;
 
     // latched when a required compute pipeline is nil. once set, every encode
     // call on this encoder becomes a no-op (never dispatch with unset/stale
@@ -544,6 +546,9 @@ ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, b
     ggml_metal_encoder_t res = calloc(1, sizeof(struct ggml_metal_encoder));
 
     id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>) cmd_buf_raw;
+
+    res->cmd_buf = cmd_buf;
+    res->concurrent = concurrent;
 
     if (concurrent) {
         res->obj = [cmd_buf computeCommandEncoderWithDispatchType: MTLDispatchTypeConcurrent];
@@ -633,11 +638,64 @@ void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
 }
 
 void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder) {
-    if (encoder->encode_failed) {
+    if (!encoder || !encoder->obj || encoder->encode_failed) {
         return;
     }
 
     [encoder->obj endEncoding];
+}
+
+ggml_metal_cmd_buf_t ggml_metal_encoder_cmd_buf(ggml_metal_encoder_t encoder) {
+    return encoder ? (ggml_metal_cmd_buf_t) encoder->cmd_buf : NULL;
+}
+
+ggml_metal_cmd_buf_t ggml_metal_encoder_sync_and_resume(
+    ggml_metal_encoder_t encoder,
+    ggml_metal_device_t  dev) {
+    if (!encoder || !encoder->obj || !encoder->cmd_buf || !dev) {
+        return NULL;
+    }
+    if (encoder->encode_failed) {
+        return NULL;
+    }
+
+    @autoreleasepool {
+        [encoder->obj endEncoding];
+        [encoder->obj release];
+        encoder->obj = nil;
+
+        id<MTLCommandBuffer> old = encoder->cmd_buf;
+        [old commit];
+        [old waitUntilCompleted];
+
+        id<MTLCommandQueue> queue = (id<MTLCommandQueue>) ggml_metal_device_get_queue(dev);
+        if (!queue) {
+            encoder->encode_failed = true;
+            return NULL;
+        }
+
+        id<MTLCommandBuffer> neu = [queue commandBufferWithUnretainedReferences];
+        if (!neu) {
+            encoder->encode_failed = true;
+            return NULL;
+        }
+        [neu retain]; // transferred to context via return value
+        [neu enqueue];
+        encoder->cmd_buf = neu;
+
+        if (encoder->concurrent) {
+            encoder->obj = [neu computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        } else {
+            encoder->obj = [neu computeCommandEncoder];
+        }
+        if (!encoder->obj) {
+            encoder->encode_failed = true;
+            return NULL;
+        }
+        [encoder->obj retain];
+
+        return (ggml_metal_cmd_buf_t) neu;
+    }
 }
 
 struct ggml_metal_device {

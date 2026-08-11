@@ -221,17 +221,39 @@ func (moe *SparseMoE) route(x *mlx.Array, cfg *Config) (inds, scores *mlx.Array)
 		panic(fmt.Sprintf("gptoss moe: expected rank-3 hidden states, got %v", dims))
 	}
 	B, L, H := int32(dims[0]), int32(dims[1]), int32(dims[2])
+	BL := B * L
+	topK := cfg.NumExpertsPerTok
+	if topK <= 0 {
+		panic(fmt.Sprintf("gptoss moe: invalid num_experts_per_tok=%d", topK))
+	}
+	if cfg.NumLocalExperts < topK {
+		panic(fmt.Sprintf("gptoss moe: num_local_experts=%d < topK=%d", cfg.NumLocalExperts, topK))
+	}
 
-	x2d := mlx.Reshape(x, B*L, H)
+	// Flatten like Gemma4 MoE. Keep routing on [B*L, E] so a bad router
+	// quant (empty logits) fails with a clear shape error instead of
+	// panicking on shape[0] after argpartition.
+	x2d := mlx.Reshape(x, BL, H)
 	logits := moe.Router.Forward(x2d)
-	logits = mlx.Reshape(logits, B, L, cfg.NumLocalExperts)
+	logitDims := logits.Dims()
+	if len(logitDims) != 2 || int32(logitDims[0]) != BL {
+		panic(fmt.Sprintf("gptoss moe: router logits shape %v, want [%d, %d]", logitDims, BL, cfg.NumLocalExperts))
+	}
 
-	inds = mlx.Argpartition(mlx.Neg(logits), int(cfg.NumExpertsPerTok)-1, -1)
+	kth := int(topK) - 1
+	inds = mlx.Argpartition(mlx.Neg(logits), kth, -1)
 	shape := inds.Dims()
-	inds = mlx.SliceStartStop(inds, []int32{0, 0, 0}, []int32{int32(shape[0]), int32(shape[1]), cfg.NumExpertsPerTok})
+	if len(shape) < 2 {
+		panic(fmt.Sprintf("gptoss moe: argpartition returned invalid shape %v (logits=%v kth=%d experts=%d)",
+			shape, logitDims, kth, cfg.NumLocalExperts))
+	}
+	inds = mlx.SliceStartStop(inds, []int32{0, 0}, []int32{BL, topK})
 
 	selected := mlx.TakeAlongAxis(logits, inds, -1)
 	scores = mlx.SoftmaxAxis(selected, -1, true)
+
+	inds = mlx.Reshape(inds, B, L, topK)
+	scores = mlx.Reshape(scores, B, L, topK)
 	return inds, scores
 }
 

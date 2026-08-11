@@ -156,9 +156,15 @@ func TestRoutes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to read response body: %v", err)
 				}
-				expectedBody := fmt.Sprintf(`{"version":"%s"}`, version.Version)
-				if string(body) != expectedBody {
-					t.Errorf("expected body %s, got %s", expectedBody, string(body))
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("version body: %v raw=%s", err, body)
+				}
+				if payload["version"] != version.Version {
+					t.Errorf("expected version %q, got %v body=%s", version.Version, payload["version"], body)
+				}
+				if payload["distribution"] != "zerollama" {
+					t.Errorf("expected distribution zerollama, got %v", payload["distribution"])
 				}
 			},
 		},

@@ -103,6 +103,21 @@ Env: `ZEROLLAMA_WARM_HYSTERESIS` (default 3m), `ZEROLLAMA_PIN_MAX`, `ZEROLLAMA_P
 
 **What pin is not:** it does not load models, does not create multi-GGUF Python residency, and does not stop an in-flight HTTP stream (`refCount>0` still defers unload — stream safety predates Phase B).
 
+### Prefix-cache pin (M15e) — distinct from model pin
+
+```bash
+curl -s localhost:11434/api/cache/pin -d '{"prompt_cache_key":"hermes:thread:42","ttl_seconds":3600}'
+curl -s -X DELETE localhost:11434/api/cache/pin/<pin_id>
+```
+
+| | `/api/pin` | `/api/cache/pin` |
+|--|------------|------------------|
+| Key | model name(s) | `prompt_cache_key` |
+| Effect | Block model eviction / soft UnloadAllRunners | Skip MLX trie eviction + bump L3 disk TTL |
+| Idle llama-server slots | N/A | **Not** retained while no request in flight |
+
+**Why separate:** Hermes wants prefix KV to survive idle gaps without claiming exclusive model residency (and without fail-closed multi-GGUF pin rules). See [hermes-gap-closure-findings.md](./hermes-gap-closure-findings.md).
+
 ---
 
 ## can-load contract (read carefully)
@@ -118,6 +133,7 @@ curl -s localhost:8080/api/can-load -d '{"model":"llama3.2:latest","options":{"n
 | `already_loaded` | **This** model/GGUF is warm | Not “some” model is loaded (Python is single-resident) |
 | `needs_eviction` | Load would unload/swap another resident | Thrash-sensitive graphs must require `!needs_eviction` |
 | `busy` | Queue full or loads paused | Still HTTP 200 — dry-run is structured, not 503 |
+| `device_count` / `tensor_parallel` / `split_mode` / `tensor_split` / `main_gpu` | Host topology from runtime estimate (or ggml `device_count` heuristic) | Hermes multi-GPU awareness without `/health` scrape; **not** a TP planner |
 
 **Fail closed:** missing GGUF or unavailable VRAM estimate → `can_load: false` + notes.  
 **Why fail closed:** fail-open soft-admit lied to Decide and caused thrash; capacity probes prefer “unknown/no” over false yes.
@@ -192,7 +208,7 @@ Matchers for `host_unstable` are **tight** (`runner exited`, `signal: killed`, �
 | Broker dampen + pin conflicts | `server/vram/broker.go`, `server/runtime_broker.go` | B0 skip; 503 before resume |
 | Hysteresis / pin-aware unload | `server/sched.go` | B1 victim pick; `UnloadAllRunners` vs `Forced` |
 | Training reclaim | `server/training_policy.go`, `vram.PrepareForTraining` | Forced unload ignores pins |
-| Single-serve | `cmd/cmd.go` `checkConnectableHostAvailable` | Refuse occupied bind |
+| Single-serve | `cmd/cmd.go` `claimLoopbackGuards` | Hold 127.0.0.1/::1 when bind is wildcard so post-start steals get EADDRINUSE |
 | Metrics | `server/metrics.go` | Prometheus text |
 | Empty / error classify | `server/empty_gen.go` | Separate empty-gen from host_unstable |
 | Version caps | `server/mlx_qos.go` | Progressive probe |

@@ -2337,6 +2337,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.DELETE("/api/pin/:id", s.UnpinHandler)
 	r.POST("/api/cache/pin", s.CachePinHandler)
 	r.DELETE("/api/cache/pin/:id", s.CacheUnpinHandler)
+	r.POST("/api/cache/warm", s.CacheWarmHandler)
 	r.GET("/api/metrics", s.MetricsHandler)
 	r.GET("/api/kv/blob/:digest", s.KvBlobHandler)
 	r.POST("/api/fleet/assign-hold", s.AssignHoldHandler)
@@ -2430,7 +2431,16 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	return r, nil
 }
 
-func Serve(ln net.Listener) error {
+// Serve starts the HTTP API on one or more listeners. listeners[0] is primary
+// (usually the OLLAMA_HOST bind). Extra listeners are typically loopback guards
+// (127.0.0.1 / ::1) held so a later more-specific bind cannot steal accepts.
+func Serve(listeners ...net.Listener) error {
+	if len(listeners) == 0 || listeners[0] == nil {
+		return fmt.Errorf("serve: no listener")
+	}
+	ln := listeners[0]
+	extras := listeners[1:]
+
 	slog.SetDefault(logutil.NewLogger(os.Stderr, envconfig.LogLevel()))
 	discover.LogStartupBanner()
 	slog.Info("server config", "env", envconfig.Values())
@@ -2724,16 +2734,40 @@ func Serve(ln net.Listener) error {
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
 
+	guardAddrs := make([]string, 0, len(extras))
+	for _, extra := range extras {
+		if extra == nil {
+			continue
+		}
+		guardAddrs = append(guardAddrs, extra.Addr().String())
+	}
+
 	slog.Info("server listening",
 		"bind", net.JoinHostPort(bindHost, bindPort),
 		"listener", ln.Addr().String(),
+		"loopback_guards", guardAddrs,
 		"url", envconfig.ConnectableHost().String(),
 		"version", version.Version,
 		"started_at", time.Now().Format(time.RFC3339),
 	)
 
+	// Belt-and-suspenders: still probe connectable host in case a steal
+	// happens on an address we did not claim (should be rare once guards hold).
+	go watchLoopbackServeIdentity(ctx)
+
 	// Register mDNS after startup work so the HTTP listener is about to accept connections.
 	startNodeMDNS(ctx, ln)
+
+	for _, extra := range extras {
+		if extra == nil {
+			continue
+		}
+		go func(l net.Listener) {
+			if err := srvr.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("loopback guard listener failed", "addr", l.Addr().String(), "error", err)
+			}
+		}(extra)
+	}
 
 	err = srvr.Serve(ln)
 	// If server is closed from the signal handler, wait for the ctx to be done

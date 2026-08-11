@@ -31,7 +31,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	for _, p := range []string{
 		"/v1/audio/speech", "/v1/audio/voices", "/openapi.json", "/docs",
 		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin",
-		"/api/cache/pin", "/api/metrics", "/api/version",
+		"/api/cache/pin", "/api/cache/warm", "/api/metrics", "/api/version",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
 	} {
 		if _, ok := paths[p]; !ok {
@@ -43,6 +43,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"FleetStatusResponse", "CanLoadRequest", "CanLoadResponse", "InferenceError",
 		"InferenceConfigStatus", "PinRequest", "PinResponse", "PinStatus",
 		"CachePinRequest", "CachePinResponse",
+		"CacheWarmRequest", "CacheWarmResponse",
 		"ChatCompletionsBatchRequest", "ChatCompletionsBatchRequestItem",
 		"ChatCompletionsBatchResponse", "ChatCompletionBatchItem",
 		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",

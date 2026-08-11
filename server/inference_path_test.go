@@ -32,6 +32,17 @@ func TestGateSessionKeyPreservesGGUFClientKey(t *testing.T) {
 	}
 }
 
+func TestGateSessionKeyUnkeyedGGUFStaysEmpty(t *testing.T) {
+	gguf := &Model{
+		ModelPath: "/models/x.gguf",
+		Config:    model.ConfigV2{ModelFormat: "gguf"},
+	}
+	got := gateSessionKey(gguf, "digest:abc", "", mlxClassAuxiliary, mlxQoS{})
+	if got != "" {
+		t.Fatalf("unkeyed gguf must not invent aux/bg branch, got %q", got)
+	}
+}
+
 func TestGateSessionKeyRewritesMLXBackground(t *testing.T) {
 	mlx := &Model{Config: model.ConfigV2{ModelFormat: "safetensors"}}
 	got := gateSessionKey(mlx, "digest:mlx", "", mlxClassBackground, mlxQoS{})

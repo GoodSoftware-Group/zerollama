@@ -967,15 +967,16 @@ func listShowsRemoteCatalogEntry(m api.ListModelResponse) bool {
 		slices.Contains(m.Capabilities, model.CapabilityVideoGen)
 }
 
-// listMatchesFilter supports name prefix or capability keywords (image, video_gen).
+// listMatchesFilter supports name prefix or capability keywords (image / image_gen, video_gen).
 // WHY capability filter: zerollama ls image lists local Vulkan/OpenVINO tags plus cloud image routes.
+// image_gen / image-gen are aliases for capability "image" (symmetric with video_gen naming).
 func listMatchesFilter(m api.ListModelResponse, args []string) bool {
 	if len(args) == 0 {
 		return true
 	}
 	arg := strings.ToLower(args[0])
 	switch arg {
-	case string(model.CapabilityImage):
+	case string(model.CapabilityImage), "image_gen", "image-gen":
 		return slices.Contains(m.Capabilities, model.CapabilityImage)
 	case "video_gen", "video-gen":
 		return slices.Contains(m.Capabilities, model.CapabilityVideoGen)

@@ -1480,6 +1480,32 @@ type CachePinResponse struct {
 	CanPin         bool      `json:"can_pin"`
 }
 
+// CacheWarmRequest is the body for POST /api/cache/warm.
+// WHY not just POST /api/generate with a throwaway num_predict: warm is a narrow
+// contract (run the prefill, pin it, report the slot) instead of every caller
+// discovering the num_predict=1 convention and paying for sampling/logging as a
+// real completion. MLX safetensors models warm via the native runner trie;
+// GGUF models warm via the Python runtime L3 slot path.
+type CacheWarmRequest struct {
+	Model          string         `json:"model"`
+	Prompt         string         `json:"prompt"`
+	PromptCacheKey string         `json:"prompt_cache_key"`
+	NumCtx         *int           `json:"num_ctx,omitempty"`
+	Pin            bool           `json:"pin,omitempty"`
+	TTLSeconds     *int           `json:"ttl_seconds,omitempty"`
+	Options        map[string]any `json:"options,omitempty"`
+}
+
+// CacheWarmResponse is returned by POST /api/cache/warm.
+type CacheWarmResponse struct {
+	Warmed         bool           `json:"warmed"`
+	PromptCacheKey string         `json:"prompt_cache_key"`
+	KVDecodeSteps  *int           `json:"kv_decode_steps,omitempty"`
+	PinID          string         `json:"pin_id,omitempty"`
+	ExpiresAt      *time.Time     `json:"expires_at,omitempty"`
+	Notes          string         `json:"notes,omitempty"`
+}
+
 // ProposeLoadRequest is the body for POST /api/propose-load.
 type ProposeLoadRequest struct {
 	Models []CanLoadRequest `json:"models"`
@@ -1777,9 +1803,12 @@ func (opts *Options) FromMap(m map[string]any) error {
 		if !ok {
 			// Suppress noise for known pass-through keys handled elsewhere
 			// (e.g. eliza metadata used by EnsureAgentPromptCacheKey,
-			// prompt_cache_key / cache_seed used by L3 slot bridge).
+			// prompt_cache_key / cache_seed used by L3 slot bridge,
+			// zerollama QoS / keep_alive / enable_prefix_mm_cache consumed
+			// from the raw Options map by the scheduler and ViT overlay).
 			switch key {
-			case "eliza", "prompt_cache_key", "cache_seed":
+			case "eliza", "prompt_cache_key", "cache_seed",
+				"zerollama", "keep_alive", "enable_prefix_mm_cache":
 			default:
 				slog.Warn("invalid option provided", "option", key)
 			}

@@ -1257,7 +1257,10 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	if !reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) {
 		return reloadReason("projector_paths_changed")
 	}
-	if !runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew) {
+	// Image DiT runners do not size KV from Runner opts the way ggml/llama-server
+	// do — DeepEqual on DefaultOptions vs request often false-fires and wedges
+	// eviction when modelKey was never set on the fixture.
+	if !runner.model.IsMLX() && !runner.isImagegen && !reflect.DeepEqual(optsExisting, optsNew) {
 		return reloadReason("runner_options_changed",
 			"loaded_num_ctx", optsExisting.NumCtx,
 			"want_num_ctx", optsNew.NumCtx,

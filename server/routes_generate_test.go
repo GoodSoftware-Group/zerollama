@@ -2414,6 +2414,7 @@ func TestImageGenerateStreamFalse(t *testing.T) {
 	}
 
 	opts := api.DefaultOptions()
+	modelKey := schedulerModelKey(loadedModel)
 	s := Server{
 		sched: &Scheduler{
 			pending:       newPendingQueue(1),
@@ -2421,10 +2422,11 @@ func TestImageGenerateStreamFalse(t *testing.T) {
 			expiredCh:     make(chan *runnerRef, 1),
 			unloadedCh:    make(chan any, 1),
 			loaded: map[string]*runnerRef{
-				schedulerModelKey(loadedModel): {
+				modelKey: {
 					llama:       &mock,
 					Options:     &opts,
 					model:       loadedModel,
+					modelKey:    modelKey,
 					isImagegen:  true,
 					numParallel: 1,
 				},
@@ -2432,6 +2434,17 @@ func TestImageGenerateStreamFalse(t *testing.T) {
 			newServerFn:     newMockServer(&mock),
 			getGpuFn:        getGpuFn,
 			getSystemInfoFn: getSystemInfoFn,
+			loadFn: func(req *LlmRequest, _ ml.SystemInfo, _ []ml.DeviceInfo, _ bool) bool {
+				req.successCh <- &runnerRef{
+					llama:       &mock,
+					Options:     &opts,
+					model:       loadedModel,
+					modelKey:    modelKey,
+					isImagegen:  true,
+					numParallel: 1,
+				}
+				return false
+			},
 		},
 	}
 

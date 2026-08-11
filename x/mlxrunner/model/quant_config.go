@@ -26,11 +26,40 @@ func quantTypeForEntry(entry quantEntry, fallbackBits, fallbackGroup int, fallba
 	}
 	mode := entry.Mode
 	if mode == "" {
-		mode = fallbackMode
+		// mlx-lm mixed quants (gpt-oss mxfp4-q8): per-tensor overrides often omit
+		// "mode" and mean affine packing even when the model default is mxfp4.
+		// Only inherit a non-affine global mode when bits match that format.
+		switch strings.ToLower(fallbackMode) {
+		case "mxfp4":
+			if bits == 4 {
+				mode = "mxfp4"
+			} else {
+				mode = "affine"
+			}
+		case "mxfp8":
+			if bits == 8 {
+				mode = "mxfp8"
+			} else {
+				mode = "affine"
+			}
+		case "nvfp4":
+			if bits == 4 {
+				mode = "nvfp4"
+			} else {
+				mode = "affine"
+			}
+		default:
+			mode = fallbackMode
+			if mode == "" {
+				mode = "affine"
+			}
+		}
 	}
 	switch strings.ToLower(mode) {
 	case "affine", "":
 		switch bits {
+		case 2:
+			return "int2"
 		case 3:
 			return "int3"
 		case 4:

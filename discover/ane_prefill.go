@@ -13,10 +13,14 @@ import (
 type ANEPrefillBenchResult struct {
 	OK           bool    `json:"ok"`
 	Mode         string  `json:"mode"`
+	Variant      string  `json:"variant,omitempty"`
 	IC           int     `json:"ic"`
 	OC           int     `json:"oc"`
 	Seq          int     `json:"seq"`
 	EvalMS       float64 `json:"eval_ms"`
+	WriteMS      float64 `json:"write_ms,omitempty"`
+	ReadMS       float64 `json:"read_ms,omitempty"`
+	CompileMS    float64 `json:"compile_ms,omitempty"`
 	GFLOP        float64 `json:"gflop"`
 	TFLOPS       float64 `json:"tflops"`
 	CompileCount int     `json:"compile_count"`
@@ -66,6 +70,14 @@ func FindANEPrefillBenchBin() string {
 }
 
 func anePrefillBenchArgs(ic, oc, seq int, quick bool) []string {
+	return anePrefillBenchArgsVariant(ic, oc, seq, quick, "")
+}
+
+func anePrefillBenchArgsVariant(ic, oc, seq int, quick bool, variant string) []string {
+	return anePrefillToolArgs(ic, oc, seq, quick, variant, false)
+}
+
+func anePrefillToolArgs(ic, oc, seq int, quick bool, variant string, steady bool) []string {
 	args := []string{}
 	if ic > 0 {
 		args = append(args, "--ic", strconv.Itoa(ic))
@@ -79,13 +91,24 @@ func anePrefillBenchArgs(ic, oc, seq int, quick bool) []string {
 	if quick {
 		args = append(args, "--quick") // fewer iterations only
 	}
+	if variant != "" {
+		args = append(args, "--variant", variant)
+	}
+	if steady {
+		args = append(args, "--steady")
+	}
 	return args
 }
 
 // RunANEPrefillBench runs prefill-shaped dynamic matmul on ANE.
 func RunANEPrefillBench(ctx context.Context, w io.Writer, ic, oc, seq int, quick bool) error {
+	return RunANEPrefillBenchVariant(ctx, w, ic, oc, seq, quick, "")
+}
+
+// RunANEPrefillBenchVariant runs ANE prefill matmul with an explicit MIL variant.
+func RunANEPrefillBenchVariant(ctx context.Context, w io.Writer, ic, oc, seq int, quick bool, variant string) error {
 	bin := FindANEPrefillBenchBin()
-	out, err := runANETool(ctx, bin, anePrefillBenchArgs(ic, oc, seq, quick))
+	out, err := runANETool(ctx, bin, anePrefillBenchArgsVariant(ic, oc, seq, quick, variant))
 	if len(out) > 0 {
 		_, _ = w.Write(out)
 	}
@@ -93,21 +116,29 @@ func RunANEPrefillBench(ctx context.Context, w io.Writer, ic, oc, seq int, quick
 }
 
 // RunANEPrefillBenchForModel uses GGUF embedding width and optional token count.
-func RunANEPrefillBenchForModel(ctx context.Context, w io.Writer, preferred string, numTokens int, quick, fullEmbed bool) error {
+func RunANEPrefillBenchForModel(ctx context.Context, w io.Writer, preferred string, numTokens int, quick, fullEmbed bool, variant string, expertUp bool) error {
 	ic, oc, seq, err := prefillDimsForModel(preferred, numTokens, quick, fullEmbed)
 	if err != nil {
 		return err
 	}
-	return RunANEPrefillBench(ctx, w, ic, oc, seq, quick)
+	if expertUp {
+		oc = PrefillExpertOC(ic)
+	}
+	return RunANEPrefillBenchVariant(ctx, w, ic, oc, seq, quick, variant)
 }
 
-// ProbeANEPrefillBench parses prefill bench JSON.
+// ProbeANEPrefillBench parses prefill bench JSON (baseline MIL).
 func ProbeANEPrefillBench(ctx context.Context, ic, oc, seq int, quick bool) (ANEPrefillBenchResult, error) {
+	return ProbeANEPrefillBenchVariant(ctx, ic, oc, seq, quick, "")
+}
+
+// ProbeANEPrefillBenchVariant parses prefill bench JSON for an explicit MIL variant.
+func ProbeANEPrefillBenchVariant(ctx context.Context, ic, oc, seq int, quick bool, variant string) (ANEPrefillBenchResult, error) {
 	bin := FindANEPrefillBenchBin()
 	if bin == "" {
 		return ANEPrefillBenchResult{}, fmt.Errorf("ane-prefill-bench not found — run ./scripts/ane_probe_build.sh")
 	}
-	out, err := runANETool(ctx, bin, anePrefillBenchArgs(ic, oc, seq, quick))
+	out, err := runANETool(ctx, bin, anePrefillBenchArgsVariant(ic, oc, seq, quick, variant))
 	if err != nil && len(out) == 0 {
 		return ANEPrefillBenchResult{}, err
 	}
@@ -163,6 +194,7 @@ type ANEPrefillCompareResult struct {
 	IC                       int                      `json:"ic"`
 	OC                       int                      `json:"oc"`
 	Seq                      int                      `json:"seq"`
+	Variant                  string                   `json:"variant,omitempty"`
 	GFLOP                    float64                  `json:"gflop"`
 	ANE                      ANEPrefillBenchResult    `json:"ane"`
 	Metal                    MetalPrefillBenchResult  `json:"metal"`
@@ -257,27 +289,41 @@ func pickPrefillWinner(candidates ...prefillBackendTiming) (name string, fasterB
 	return best.name, slowest / best.ms
 }
 
+// PrefillExpertOC returns a rectangular expert-up OC for hidden width ic (≈ ic/4, min 64).
+func PrefillExpertOC(ic int) int {
+	oc := ic / 4
+	if oc < 64 {
+		oc = 64
+	}
+	return oc
+}
+
 // ProbeANEPrefillCompare runs ANE and Metal prefill proxies at the same dims.
 func ProbeANEPrefillCompare(ctx context.Context, ic, oc, seq int, quick bool) (ANEPrefillCompareResult, error) {
-	return ProbeANEPrefillCompareFull(ctx, ic, oc, seq, quick, false)
+	return ProbeANEPrefillCompareFull(ctx, ic, oc, seq, quick, false, "")
 }
 
 // ProbeANEPrefillCompareFull optionally includes MPS Metal baseline.
-func ProbeANEPrefillCompareFull(ctx context.Context, ic, oc, seq int, quick, withMPS bool) (ANEPrefillCompareResult, error) {
-	aneRes, err := ProbeANEPrefillBench(ctx, ic, oc, seq, quick)
+// variant selects the ANE MIL path (empty/"baseline" = legacy packed fp32).
+func ProbeANEPrefillCompareFull(ctx context.Context, ic, oc, seq int, quick, withMPS bool, variant string) (ANEPrefillCompareResult, error) {
+	aneRes, err := ProbeANEPrefillBenchVariant(ctx, ic, oc, seq, quick, variant)
 	if err != nil {
-		return ANEPrefillCompareResult{OK: false, IC: ic, OC: oc, Seq: seq, ANE: aneRes, Error: err.Error()}, err
+		return ANEPrefillCompareResult{OK: false, IC: ic, OC: oc, Seq: seq, Variant: variant, ANE: aneRes, Error: err.Error()}, err
 	}
 	metalRes, merr := ProbeMetalPrefillBench(ctx, ic, oc, seq, quick)
 	out := ANEPrefillCompareResult{
-		OK:    merr == nil,
-		IC:    ic,
-		OC:    oc,
-		Seq:   seq,
-		GFLOP: PrefillMatmulGFLOP(ic, oc, seq),
-		ANE:   aneRes,
-		Metal: metalRes,
-		Note:  "single-layer matmul proxy; metal=naive shader; metal_mps=MPS GEMM when present",
+		OK:      merr == nil,
+		IC:      ic,
+		OC:      oc,
+		Seq:     seq,
+		Variant: variant,
+		GFLOP:   PrefillMatmulGFLOP(ic, oc, seq),
+		ANE:     aneRes,
+		Metal:   metalRes,
+		Note:    "single-layer matmul proxy; metal=naive shader; metal_mps=MPS GEMM when present",
+	}
+	if variant != "" {
+		out.Note = fmt.Sprintf("ane variant=%s; single-layer matmul proxy; metal=naive; metal_mps=MPS when present", variant)
 	}
 	if merr != nil {
 		out.Error = merr.Error()
@@ -304,8 +350,8 @@ func ProbeANEPrefillCompareFull(ctx context.Context, ic, oc, seq int, quick, wit
 }
 
 // RunANEPrefillCompare writes compare JSON to w.
-func RunANEPrefillCompare(ctx context.Context, w io.Writer, ic, oc, seq int, quick, withMPS bool) error {
-	res, err := ProbeANEPrefillCompareFull(ctx, ic, oc, seq, quick, withMPS)
+func RunANEPrefillCompare(ctx context.Context, w io.Writer, ic, oc, seq int, quick, withMPS bool, variant string) error {
+	res, err := ProbeANEPrefillCompareFull(ctx, ic, oc, seq, quick, withMPS, variant)
 	enc := json.NewEncoder(w)
 	if err != nil {
 		_ = enc.Encode(res)
@@ -315,12 +361,15 @@ func RunANEPrefillCompare(ctx context.Context, w io.Writer, ic, oc, seq int, qui
 }
 
 // RunANEPrefillCompareForModel derives dims from a local model tag.
-func RunANEPrefillCompareForModel(ctx context.Context, w io.Writer, preferred string, numTokens int, quick, withMPS, fullEmbed bool) error {
+func RunANEPrefillCompareForModel(ctx context.Context, w io.Writer, preferred string, numTokens int, quick, withMPS, fullEmbed bool, variant string, expertUp bool) error {
 	ic, oc, seq, err := prefillDimsForModel(preferred, numTokens, quick, fullEmbed)
 	if err != nil {
 		return err
 	}
-	return RunANEPrefillCompare(ctx, w, ic, oc, seq, quick, withMPS)
+	if expertUp {
+		oc = PrefillExpertOC(ic)
+	}
+	return RunANEPrefillCompare(ctx, w, ic, oc, seq, quick, withMPS, variant)
 }
 
 // DefaultPrefillSweepSeqs is the lab SEQ grid for prefill proxy sweeps.
@@ -397,7 +446,7 @@ func summarizePrefillSweep(ic, oc int, points []ANEPrefillCompareResult) ANEPref
 }
 
 // ProbeANEPrefillSweep runs compare at each SEQ with fixed IC×OC.
-func ProbeANEPrefillSweep(ctx context.Context, ic, oc int, seqs []int, quick, aneOnly bool) (ANEPrefillSweepResult, error) {
+func ProbeANEPrefillSweep(ctx context.Context, ic, oc int, seqs []int, quick, aneOnly bool, variant string) (ANEPrefillSweepResult, error) {
 	if ic <= 0 || oc <= 0 {
 		return ANEPrefillSweepResult{}, fmt.Errorf("ic and oc must be positive")
 	}
@@ -411,20 +460,21 @@ func ProbeANEPrefillSweep(ctx context.Context, ic, oc int, seqs []int, quick, an
 		var pt ANEPrefillCompareResult
 		var err error
 		if aneOnly {
-			aneRes, aerr := ProbeANEPrefillBench(ctx, ic, oc, seq, quick)
+			aneRes, aerr := ProbeANEPrefillBenchVariant(ctx, ic, oc, seq, quick, variant)
 			pt = ANEPrefillCompareResult{
-				OK:    aerr == nil,
-				IC:    ic,
-				OC:    oc,
-				Seq:   seq,
-				GFLOP: PrefillMatmulGFLOP(ic, oc, seq),
-				ANE:   aneRes,
-				Faster: "ane",
-				Note:  "ane_only — no Metal/MPS legs (GPU busy safe)",
+				OK:      aerr == nil,
+				IC:      ic,
+				OC:      oc,
+				Seq:     seq,
+				Variant: variant,
+				GFLOP:   PrefillMatmulGFLOP(ic, oc, seq),
+				ANE:     aneRes,
+				Faster:  "ane",
+				Note:    "ane_only — no Metal/MPS legs (GPU busy safe)",
 			}
 			err = aerr
 		} else {
-			pt, err = ProbeANEPrefillCompareFull(ctx, ic, oc, seq, quick, withMPS)
+			pt, err = ProbeANEPrefillCompareFull(ctx, ic, oc, seq, quick, withMPS, variant)
 		}
 		points = append(points, pt)
 		if err != nil && firstErr == nil {
@@ -435,6 +485,13 @@ func ProbeANEPrefillSweep(ctx context.Context, ic, oc int, seqs []int, quick, an
 	if aneOnly {
 		out.Note = "ane_only sweep — safe while GPU is busy; no crossover vs MPS"
 	}
+	if variant != "" {
+		if out.Note != "" {
+			out.Note = out.Note + "; ane variant=" + variant
+		} else {
+			out.Note = "ane variant=" + variant
+		}
+	}
 	if firstErr != nil {
 		out.OK = false
 		out.Error = firstErr.Error()
@@ -444,8 +501,8 @@ func ProbeANEPrefillSweep(ctx context.Context, ic, oc int, seqs []int, quick, an
 }
 
 // RunANEPrefillSweep writes sweep JSON to w.
-func RunANEPrefillSweep(ctx context.Context, w io.Writer, ic, oc int, seqs []int, quick, aneOnly bool) error {
-	res, err := ProbeANEPrefillSweep(ctx, ic, oc, seqs, quick, aneOnly)
+func RunANEPrefillSweep(ctx context.Context, w io.Writer, ic, oc int, seqs []int, quick, aneOnly bool, variant string) error {
+	res, err := ProbeANEPrefillSweep(ctx, ic, oc, seqs, quick, aneOnly, variant)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err != nil {
@@ -456,23 +513,30 @@ func RunANEPrefillSweep(ctx context.Context, w io.Writer, ic, oc int, seqs []int
 }
 
 // RunANEPrefillSweepForModel sweeps SEQ at GGUF embedding width.
-func RunANEPrefillSweepForModel(ctx context.Context, w io.Writer, preferred string, seqs []int, quick, fullEmbed, aneOnly bool) error {
+func RunANEPrefillSweepForModel(ctx context.Context, w io.Writer, preferred string, seqs []int, quick, fullEmbed, aneOnly bool, variant string, expertUp bool) error {
 	ic, oc, _, err := prefillDimsForModel(preferred, 512, quick, fullEmbed)
 	if err != nil {
 		return err
 	}
-	return RunANEPrefillSweep(ctx, w, ic, oc, seqs, quick, aneOnly)
+	if expertUp {
+		oc = PrefillExpertOC(ic)
+	}
+	return RunANEPrefillSweep(ctx, w, ic, oc, seqs, quick, aneOnly, variant)
 }
 
 // ANEPrefillHandoffResult is JSON from ane-prefill-handoff-smoke.
 type ANEPrefillHandoffResult struct {
 	OK           bool    `json:"ok"`
 	Mode         string  `json:"mode"`
+	Variant      string  `json:"variant,omitempty"`
+	Steady       bool    `json:"steady,omitempty"`
 	IC           int     `json:"ic"`
 	OC           int     `json:"oc"`
 	Seq          int     `json:"seq"`
 	SurfaceID    uint32  `json:"surface_id"`
 	SurfaceBytes int     `json:"surface_bytes"`
+	SetupFillMS  float64 `json:"setup_fill_ms,omitempty"`
+	MapMS        float64 `json:"map_ms,omitempty"`
 	MetalFillMS  float64 `json:"metal_fill_ms"`
 	EvalMS       float64 `json:"eval_ms"`
 	TotalMS      float64 `json:"total_ms"`
@@ -488,9 +552,9 @@ func FindANEPrefillHandoffSmokeBin() string {
 }
 
 // RunANEPrefillHandoffSmoke executes Metal→IOSurface→ANE prefill handoff timing.
-func RunANEPrefillHandoffSmoke(ctx context.Context, w io.Writer, ic, oc, seq int, quick bool) error {
+func RunANEPrefillHandoffSmoke(ctx context.Context, w io.Writer, ic, oc, seq int, quick bool, variant string, steady bool) error {
 	bin := FindANEPrefillHandoffSmokeBin()
-	out, err := runANETool(ctx, bin, anePrefillBenchArgs(ic, oc, seq, quick))
+	out, err := runANETool(ctx, bin, anePrefillToolArgs(ic, oc, seq, quick, variant, steady))
 	if len(out) > 0 {
 		_, _ = w.Write(out)
 	}
@@ -498,12 +562,12 @@ func RunANEPrefillHandoffSmoke(ctx context.Context, w io.Writer, ic, oc, seq int
 }
 
 // ProbeANEPrefillHandoffSmoke parses prefill handoff JSON.
-func ProbeANEPrefillHandoffSmoke(ctx context.Context, ic, oc, seq int, quick bool) (ANEPrefillHandoffResult, error) {
+func ProbeANEPrefillHandoffSmoke(ctx context.Context, ic, oc, seq int, quick bool, variant string, steady bool) (ANEPrefillHandoffResult, error) {
 	bin := FindANEPrefillHandoffSmokeBin()
 	if bin == "" {
 		return ANEPrefillHandoffResult{}, fmt.Errorf("ane-prefill-handoff-smoke not found — run ./scripts/ane_probe_build.sh")
 	}
-	out, err := runANETool(ctx, bin, anePrefillBenchArgs(ic, oc, seq, quick))
+	out, err := runANETool(ctx, bin, anePrefillToolArgs(ic, oc, seq, quick, variant, steady))
 	if err != nil && len(out) == 0 {
 		return ANEPrefillHandoffResult{}, err
 	}
@@ -522,10 +586,13 @@ func ProbeANEPrefillHandoffSmoke(ctx context.Context, ic, oc, seq int, quick boo
 }
 
 // RunANEPrefillHandoffForModel runs handoff at GGUF embedding width.
-func RunANEPrefillHandoffForModel(ctx context.Context, w io.Writer, preferred string, numTokens int, quick, fullEmbed bool) error {
+func RunANEPrefillHandoffForModel(ctx context.Context, w io.Writer, preferred string, numTokens int, quick, fullEmbed bool, variant string, expertUp, steady bool) error {
 	ic, oc, seq, err := prefillDimsForModel(preferred, numTokens, quick, fullEmbed)
 	if err != nil {
 		return err
 	}
-	return RunANEPrefillHandoffSmoke(ctx, w, ic, oc, seq, quick)
+	if expertUp {
+		oc = PrefillExpertOC(ic)
+	}
+	return RunANEPrefillHandoffSmoke(ctx, w, ic, oc, seq, quick, variant, steady)
 }

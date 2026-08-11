@@ -684,6 +684,80 @@ def create_app(
         pin_id: str = ""
         prompt_cache_key: str = ""
 
+    class CacheWarmBody(BaseModel):
+        prompt_cache_key: str
+        prompt: str
+        gguf: Optional[str] = None
+        num_ctx: Optional[int] = None
+        pin_id: Optional[str] = None
+        expires_at: Optional[str] = None
+        options: dict[str, Any] = Field(default_factory=dict)
+
+    @app.post("/internal/cache/warm")
+    def internal_cache_warm(body: CacheWarmBody = Body()) -> dict[str, Any]:
+        """Prefill an L3 slot for ``prompt_cache_key`` without returning generated text.
+
+        WHY not just call /api/generate with a throwaway num_predict: that leaves
+        every caller to independently discover the "num_predict=1" convention, still
+        pays for token sampling/logging as if it were a real completion, and gives no
+        explicit ack that the prefix actually landed in a pinned slot. Boot-time
+        warmers (agent templates, fleet preload) want a narrow contract: run the
+        prefill, pin it, tell me the slot — nothing else.
+        """
+        opts = dict(body.options or {})
+        opts["prompt_cache_key"] = body.prompt_cache_key
+        if body.gguf:
+            opts["gguf"] = body.gguf
+        gguf = pop_gguf_path(opts)
+        if gguf is None:
+            # WHY 400 not 502: missing weights is a client/config mistake, not a
+            # transient llama-server failure. Go routes MLX models before this
+            # path; GGUF callers must send body.gguf / options.gguf.
+            raise HTTPException(
+                status_code=400,
+                detail="gguf path required for /internal/cache/warm (MLX models must warm via Go /api/cache/warm)",
+            )
+        num_ctx = _request_num_ctx(opts, gguf, explicit=body.num_ctx)
+
+        try:
+            result = eng.generate(
+                body.prompt,
+                n_predict=1,
+                gguf=gguf,
+                num_ctx=num_ctx,
+                options=opts,
+            )
+        except LlamaServerError as e:
+            raise HTTPException(
+                status_code=_llama_error_status(e), detail=str(e)
+            ) from e
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"cache warm failed: {e}") from e
+
+        pin_result: dict[str, Any] | None = None
+        if body.pin_id:
+            from runtime.cache_pins import register_cache_pin
+
+            try:
+                pin_result = register_cache_pin(
+                    pin_id=body.pin_id,
+                    prompt_cache_key=body.prompt_cache_key,
+                    expires_at=body.expires_at,
+                    parallel=getattr(eng.config, "llama_parallel_slots", None)
+                    or getattr(eng.config, "n_parallel", None),
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
+        return {
+            "warmed": True,
+            "prompt_cache_key": body.prompt_cache_key,
+            "request_id": result.request_id,
+            "kv_decode_steps": result.kv_decode_steps,
+            "vram_num_ctx": result.vram_num_ctx,
+            "pin": pin_result,
+        }
+
     @app.post("/internal/cache/pin")
     def internal_cache_pin(body: CachePinBody = Body()) -> dict[str, Any]:
         """Go /api/cache/pin notifies runtime to extend L3 disk TTL for a key."""

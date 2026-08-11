@@ -990,6 +990,7 @@ func (s *cacheSession) close() {
 		if key := strings.TrimSpace(s.promptCacheKey); key != "" {
 			leaf := c.activePath[len(c.activePath)-1]
 			leaf.user = true
+			leaf.promptCacheKey = key
 			c.lastPromptCacheKey = key
 			c.lastSessionInputs = slices.Clone(s.inputs)
 		}
@@ -1011,6 +1012,11 @@ func (c *kvCache) enforceEvictionPolicy() {
 		var best *trieNode
 		walkNodes(c.root, func(n *trieNode) bool {
 			if n == c.root || activeSet[n] || len(n.children) > 1 || n.user {
+				return true
+			}
+			// WHY: /api/cache/pin leases protect keyed branches beyond the user flag
+			// (e.g. interior nodes that lost user during merge pressure).
+			if cacheKeyPinned(n.promptCacheKey) {
 				return true
 			}
 			// Evict: oldest, then deepest, then largest.

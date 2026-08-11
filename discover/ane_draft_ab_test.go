@@ -163,6 +163,17 @@ B7 shadow step=2 seq=0 handoff_tok=99 ane_tok=1 metal_tok=2 match=0 hidden_cos=0
 	}
 }
 
+func TestAneDraftParityMaxTokens(t *testing.T) {
+	t.Setenv("ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "17")
+	if got := aneDraftParityMaxTokens(true); got != 12 {
+		t.Fatalf("chain17 quick max_tokens=%d want 12", got)
+	}
+	t.Setenv("ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "16")
+	if got := aneDraftParityMaxTokens(true); got != 16 {
+		t.Fatalf("chain16 quick max_tokens=%d want 16", got)
+	}
+}
+
 func TestParseB8MetalGoldenFromLog(t *testing.T) {
 	log := `log_ane_metal_golden_handoff_input: B8m step=1 leg=handoff_input cos=0.9988 n=25600 note=export
 log_ane_metal_golden_host_fc: B8m step=1 leg=host_fc cos=1.0000 n=5120 note=export_replay

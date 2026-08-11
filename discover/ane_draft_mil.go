@@ -117,7 +117,7 @@ func ProbeANEDraftMILStatus(_ context.Context, preferred string) (ANEDraftMILSta
 	if !entry.DraftSidecarPresent {
 		short := strings.SplitN(entry.Tag, ":", 2)[0]
 		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
-		out.NextStep = "download drafter (scripts/runtime/setup_mtp_models.sh) or place at " + strings.Join(ANEDraftSidecarCandidates(short), " | ")
+		out.NextStep = "download drafter (scripts/setup_mtp_models.sh) or place at " + strings.Join(ANEDraftSidecarCandidates(short), " | ")
 	} else if entry.DraftGGUF != "" {
 		if arch, err := ProbeSidecarArchitecture(entry.DraftGGUF); err == nil {
 			out.SidecarArchitecture = arch
@@ -138,7 +138,7 @@ func ProbeANEDraftMILStatus(_ context.Context, preferred string) (ANEDraftMILSta
 		out.OK = true
 		out.NextStep = "zerollama ane-draft-mil-extract --model " + strings.SplitN(entry.Tag, ":", 2)[0]
 	} else if out.NextStep == "" {
-		out.NextStep = "./scripts/ane/ane_probe_build.sh; place sidecar; ZEROLLAMA_ANE_DRAFT=1 ane-draft-router-smoke"
+		out.NextStep = "./scripts/ane_probe_build.sh; place sidecar; ZEROLLAMA_ANE_DRAFT=1 ane-draft-router-smoke"
 	}
 	return out, nil
 }

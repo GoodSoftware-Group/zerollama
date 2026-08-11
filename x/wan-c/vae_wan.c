@@ -1,4 +1,5 @@
 #include "wan_internal.h"
+#include "wan_profile.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -9,6 +10,15 @@
 #include <Accelerate/Accelerate.h>
 #define WAN_VAE_ACCEL 1
 #endif
+
+/* Brick 11: exclusive-ish stage timers under WAN_VAE_STAGE_PROF=1. */
+#define VAE_STAGE_T0()                                                         \
+  (wan_profile_vae_stage_on() ? wan_profile_now_ms() : 0.0)
+#define VAE_STAGE_ADD(name, t0)                                                \
+  do {                                                                         \
+    if (wan_profile_vae_stage_on())                                            \
+      wan_profile_add_ms((name), wan_profile_now_ms() - (t0));                 \
+  } while (0)
 
 /*
  * VAE decode (F0781–F0784):
@@ -57,6 +67,7 @@ typedef struct {
   float *data; /* [C, T<=2, H, W] */
   int C, T, H, W;
   int rep; /* Wan upsample3d first-hit sentinel ('Rep') */
+  int on_broker; /* F1012: sticky mid/out already seeded on daemon */
 } vae_cache_ent;
 
 typedef struct {
@@ -88,6 +99,589 @@ static vae_cache_ent *vae_ccache_find(vae_ccache *c, const char *key) {
   return e;
 }
 
+static int vae_ccache_has_data(vae_ccache *c, const char *key) {
+  if (!c || !key)
+    return 0;
+  for (int i = 0; i < c->n; i++)
+    if (strcmp(c->e[i].key, key) == 0)
+      return c->e[i].data && c->e[i].T > 0;
+  return 0;
+}
+
+static void vae_ccache_clear_key(vae_ccache *c, const char *key) {
+  if (!c || !key)
+    return;
+  for (int i = 0; i < c->n; i++) {
+    if (strcmp(c->e[i].key, key) == 0) {
+      free(c->e[i].data);
+      c->e[i].data = NULL;
+      c->e[i].T = 0;
+      return;
+    }
+  }
+}
+
+/* Mirror host causal_conv cache bookkeeping after broker HEADT (no feat_cache). */
+static void vae_ccache_poke_from_in(vae_ccache *c, const char *key,
+                                    const float *in, int Cin, int lt, int lh,
+                                    int lw) {
+  if (!c || !key || !in || lt < 1)
+    return;
+  vae_cache_ent *ent = vae_ccache_find(c, key);
+  if (!ent)
+    return;
+  int store_t = lt < VAE_CACHE_T ? lt : VAE_CACHE_T;
+  int have_prev = ent->data && ent->C == Cin && ent->H == lh && ent->W == lw &&
+                  ent->T > 0;
+  int next_t = store_t;
+  if (store_t < VAE_CACHE_T && have_prev) {
+    next_t = store_t + 1;
+    if (next_t > VAE_CACHE_T)
+      next_t = VAE_CACHE_T;
+  }
+  float *next =
+      calloc((size_t)Cin * (size_t)next_t * (size_t)lh * (size_t)lw,
+             sizeof(float));
+  if (!next)
+    return;
+  int dst0 = 0;
+  if (store_t < VAE_CACHE_T && have_prev) {
+    for (int ch = 0; ch < Cin; ch++)
+      for (int h = 0; h < lh; h++)
+        for (int w = 0; w < lw; w++)
+          next[((((size_t)ch * next_t + 0) * lh + h) * lw + w)] =
+              ent->data[((((size_t)ch * ent->T + (ent->T - 1)) * lh + h) * lw +
+                         w)];
+    dst0 = 1;
+  }
+  int src0 = lt - store_t;
+  for (int ti = 0; ti < store_t; ti++)
+    for (int ch = 0; ch < Cin; ch++)
+      for (int h = 0; h < lh; h++)
+        for (int w = 0; w < lw; w++)
+          next[((((size_t)ch * next_t + (dst0 + ti)) * lh + h) * lw + w)] =
+              in[((((size_t)ch * lt + (src0 + ti)) * lh + h) * lw + w)];
+  free(ent->data);
+  ent->data = next;
+  ent->C = Cin;
+  ent->T = next_t;
+  ent->H = lh;
+  ent->W = lw;
+}
+
+static int vae_env_truthy(const char *name) {
+  const char *e = getenv(name);
+  return e && (e[0] == '1' || e[0] == 'y' || e[0] == 'Y' || e[0] == 't' ||
+               e[0] == 'T');
+}
+
+/* F1012 broker warm remains opt-in (Brick 8 default-on miss: rematch+wall).
+ * Enable: WAN_VAE_WARM_HEADT=1. Force off: WAN_VAE_NO_WARM_HEADT=1. */
+static int vae_warm_broker_enabled(void) {
+  if (vae_env_truthy("WAN_VAE_NO_WARM_HEADT"))
+    return 0;
+  return vae_env_truthy("WAN_VAE_WARM_HEADT");
+}
+
+static int vae_headt_enabled(const wan_ctx *ctx) {
+  if (!ctx || !ctx->uma || !ctx->bufs || ctx->local_mode)
+    return 0;
+  if (vae_env_truthy("WAN_VAE_NO_HEADT") || vae_env_truthy("WAN_VAE_HOST"))
+    return 0;
+  return ctx->caps.channel_rms && ctx->caps.silu && ctx->caps.causal_pad3d &&
+         ctx->caps.conv3d;
+}
+
+static int vae_bank_put_named(wan_ctx *ctx, const char *bank_key,
+                              const char *tensor_name, size_t expect) {
+  size_t nw = 0;
+  const float *w = wan_borrow_tensor_f32(ctx, tensor_name, &nw);
+  if (!w || (expect > 0 && nw != expect))
+    return -1;
+  return uma_buf_pool_bank_put(ctx->bufs, bank_key, w, nw * sizeof(float));
+}
+
+/* F1002: bank tip weights once (head + resample.11 + u14 residual). */
+static int vae_headt_bank_all(wan_ctx *ctx) {
+  if (!ctx || ctx->vae_headt_ready)
+    return 0;
+  if (!vae_headt_enabled(ctx))
+    return -1;
+  struct {
+    const char *bank;
+    const char *tensor;
+    size_t ne;
+  } items[] = {
+      {"decoder.head.2.weight", "vae.decoder.head.2.weight",
+       (size_t)3 * 96 * 3 * 3 * 3},
+      {"decoder.conv1.weight", "vae.decoder.conv1.weight",
+       (size_t)384 * 16 * 3 * 3 * 3},
+      {"decoder.upsamples.11.resample.1.weight",
+       "vae.decoder.upsamples.11.resample.1.weight", (size_t)96 * 192 * 3 * 3},
+      {"decoder.upsamples.3.resample.1.weight",
+       "vae.decoder.upsamples.3.resample.1.weight", (size_t)192 * 384 * 3 * 3},
+      {"decoder.upsamples.7.resample.1.weight",
+       "vae.decoder.upsamples.7.resample.1.weight", (size_t)192 * 384 * 3 * 3},
+      /* ups.4 expand 192→384 + 1×1 shortcut */
+      {"decoder.upsamples.4.residual.2.weight",
+       "vae.decoder.upsamples.4.residual.2.weight",
+       (size_t)384 * 192 * 3 * 3 * 3},
+      {"decoder.upsamples.4.residual.6.weight",
+       "vae.decoder.upsamples.4.residual.6.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.4.shortcut.weight",
+       "vae.decoder.upsamples.4.shortcut.weight", (size_t)384 * 192},
+      /* middle.1 AttentionBlock */
+      {"decoder.middle.1.to_qkv.weight", "vae.decoder.middle.1.to_qkv.weight",
+       (size_t)(3 * 384) * 384},
+      {"decoder.middle.1.proj.weight", "vae.decoder.middle.1.proj.weight",
+       (size_t)384 * 384},
+      /* 384-ch: middle + early ups */
+      {"decoder.middle.0.residual.2.weight",
+       "vae.decoder.middle.0.residual.2.weight", (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.middle.0.residual.6.weight",
+       "vae.decoder.middle.0.residual.6.weight", (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.middle.2.residual.2.weight",
+       "vae.decoder.middle.2.residual.2.weight", (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.middle.2.residual.6.weight",
+       "vae.decoder.middle.2.residual.6.weight", (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.0.residual.2.weight",
+       "vae.decoder.upsamples.0.residual.2.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.0.residual.6.weight",
+       "vae.decoder.upsamples.0.residual.6.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.1.residual.2.weight",
+       "vae.decoder.upsamples.1.residual.2.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.1.residual.6.weight",
+       "vae.decoder.upsamples.1.residual.6.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.2.residual.2.weight",
+       "vae.decoder.upsamples.2.residual.2.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.2.residual.6.weight",
+       "vae.decoder.upsamples.2.residual.6.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.5.residual.2.weight",
+       "vae.decoder.upsamples.5.residual.2.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.5.residual.6.weight",
+       "vae.decoder.upsamples.5.residual.6.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.6.residual.2.weight",
+       "vae.decoder.upsamples.6.residual.2.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      {"decoder.upsamples.6.residual.6.weight",
+       "vae.decoder.upsamples.6.residual.6.weight",
+       (size_t)384 * 384 * 3 * 3 * 3},
+      /* 192-ch: up8–10 (F1006/F1007) */
+      {"decoder.upsamples.8.residual.2.weight",
+       "vae.decoder.upsamples.8.residual.2.weight",
+       (size_t)192 * 192 * 3 * 3 * 3},
+      {"decoder.upsamples.8.residual.6.weight",
+       "vae.decoder.upsamples.8.residual.6.weight",
+       (size_t)192 * 192 * 3 * 3 * 3},
+      {"decoder.upsamples.9.residual.2.weight",
+       "vae.decoder.upsamples.9.residual.2.weight",
+       (size_t)192 * 192 * 3 * 3 * 3},
+      {"decoder.upsamples.9.residual.6.weight",
+       "vae.decoder.upsamples.9.residual.6.weight",
+       (size_t)192 * 192 * 3 * 3 * 3},
+      {"decoder.upsamples.10.residual.2.weight",
+       "vae.decoder.upsamples.10.residual.2.weight",
+       (size_t)192 * 192 * 3 * 3 * 3},
+      {"decoder.upsamples.10.residual.6.weight",
+       "vae.decoder.upsamples.10.residual.6.weight",
+       (size_t)192 * 192 * 3 * 3 * 3},
+      /* 96-ch: u12–14 (F1005) */
+      {"decoder.upsamples.12.residual.2.weight",
+       "vae.decoder.upsamples.12.residual.2.weight",
+       (size_t)96 * 96 * 3 * 3 * 3},
+      {"decoder.upsamples.12.residual.6.weight",
+       "vae.decoder.upsamples.12.residual.6.weight",
+       (size_t)96 * 96 * 3 * 3 * 3},
+      {"decoder.upsamples.13.residual.2.weight",
+       "vae.decoder.upsamples.13.residual.2.weight",
+       (size_t)96 * 96 * 3 * 3 * 3},
+      {"decoder.upsamples.13.residual.6.weight",
+       "vae.decoder.upsamples.13.residual.6.weight",
+       (size_t)96 * 96 * 3 * 3 * 3},
+      {"decoder.upsamples.14.residual.2.weight",
+       "vae.decoder.upsamples.14.residual.2.weight",
+       (size_t)96 * 96 * 3 * 3 * 3},
+      {"decoder.upsamples.14.residual.6.weight",
+       "vae.decoder.upsamples.14.residual.6.weight",
+       (size_t)96 * 96 * 3 * 3 * 3},
+  };
+  int nkeys = 0;
+  for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+    if (!wan_gguf_has(ctx, items[i].tensor))
+      continue;
+    if (vae_bank_put_named(ctx, items[i].bank, items[i].tensor, items[i].ne) !=
+        0) {
+      fprintf(stderr, "wan-c: VAE BANK_PUT fail %s\n", items[i].bank);
+      return -1;
+    }
+    nkeys++;
+  }
+  if (nkeys < 1)
+    return -1;
+  ctx->vae_headt_ready = 1;
+  fprintf(stderr, "wan-c: VAE tip BANK_PUT OK keys=%d (middle→HEADT)\n", nkeys);
+  return 0;
+}
+
+/* Map tip residual prefix → sticky BANK keys. Longer tags first (.10 before .1). */
+static int vae_tip_residual_bank(const char *prefix, const char **bank2,
+                                 const char **bank6) {
+  *bank2 = *bank6 = NULL;
+  if (!prefix)
+    return 0;
+  static const struct {
+    const char *tag;
+    const char *b2;
+    const char *b6;
+    int id;
+  } tab[] = {
+      {"middle.0", "decoder.middle.0.residual.2.weight",
+       "decoder.middle.0.residual.6.weight", 100},
+      {"middle.2", "decoder.middle.2.residual.2.weight",
+       "decoder.middle.2.residual.6.weight", 102},
+      {"upsamples.14", "decoder.upsamples.14.residual.2.weight",
+       "decoder.upsamples.14.residual.6.weight", 14},
+      {"upsamples.13", "decoder.upsamples.13.residual.2.weight",
+       "decoder.upsamples.13.residual.6.weight", 13},
+      {"upsamples.12", "decoder.upsamples.12.residual.2.weight",
+       "decoder.upsamples.12.residual.6.weight", 12},
+      {"upsamples.10", "decoder.upsamples.10.residual.2.weight",
+       "decoder.upsamples.10.residual.6.weight", 10},
+      {"upsamples.9", "decoder.upsamples.9.residual.2.weight",
+       "decoder.upsamples.9.residual.6.weight", 9},
+      {"upsamples.8", "decoder.upsamples.8.residual.2.weight",
+       "decoder.upsamples.8.residual.6.weight", 8},
+      {"upsamples.6", "decoder.upsamples.6.residual.2.weight",
+       "decoder.upsamples.6.residual.6.weight", 6},
+      {"upsamples.5", "decoder.upsamples.5.residual.2.weight",
+       "decoder.upsamples.5.residual.6.weight", 5},
+      {"upsamples.2", "decoder.upsamples.2.residual.2.weight",
+       "decoder.upsamples.2.residual.6.weight", 2},
+      {"upsamples.1", "decoder.upsamples.1.residual.2.weight",
+       "decoder.upsamples.1.residual.6.weight", 1},
+      {"upsamples.0", "decoder.upsamples.0.residual.2.weight",
+       "decoder.upsamples.0.residual.6.weight", 0},
+  };
+  for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++) {
+    if (strstr(prefix, tab[i].tag)) {
+      *bank2 = tab[i].b2;
+      *bank6 = tab[i].b6;
+      return tab[i].id;
+    }
+  }
+  return 0;
+}
+
+/* Build causal time cat (feat_cache) + left zero-pad; spatial pad via CONV3D. */
+static float *vae_build_causal_work(const float *sil, int Cin, int lt, int lh,
+                                    int lw, vae_ccache *cache,
+                                    const char *cache_key, int *Twork_out) {
+  if (!sil || !Twork_out || lt < 1 || lh < 1 || lw < 1)
+    return NULL;
+  vae_cache_ent *ent = NULL;
+  if (cache && cache_key) {
+    for (int i = 0; i < cache->n; i++) {
+      if (strcmp(cache->e[i].key, cache_key) == 0) {
+        ent = &cache->e[i];
+        break;
+      }
+    }
+  }
+  int have_prev = ent && ent->data && ent->C == Cin && ent->H == lh &&
+                  ent->W == lw && ent->T > 0;
+  int prev_t = have_prev ? ent->T : 0;
+  if (prev_t > VAE_CACHE_T)
+    prev_t = VAE_CACHE_T;
+  int cat_t = prev_t;
+  int pad_left = 2 - cat_t;
+  if (pad_left < 0)
+    pad_left = 0;
+  int Twork = pad_left + cat_t + lt;
+  float *work =
+      calloc((size_t)Cin * (size_t)Twork * (size_t)lh * (size_t)lw, sizeof(float));
+  if (!work)
+    return NULL;
+  for (int ti = 0; ti < cat_t; ti++)
+    for (int c = 0; c < Cin; c++)
+      for (int h = 0; h < lh; h++)
+        for (int w = 0; w < lw; w++)
+          work[((((size_t)c * Twork + (pad_left + ti)) * lh + h) * lw + w)] =
+              ent->data[((((size_t)c * ent->T + ti) * lh + h) * lw + w)];
+  for (int ti = 0; ti < lt; ti++)
+    for (int c = 0; c < Cin; c++)
+      for (int h = 0; h < lh; h++)
+        for (int w = 0; w < lw; w++)
+          work[((((size_t)c * Twork + (pad_left + cat_t + ti)) * lh + h) * lw +
+                w)] = sil[((((size_t)c * lt + ti) * lh + h) * lw + w)];
+  *Twork_out = Twork;
+  return work;
+}
+
+/* Sticky broker feat_cache name from Wan residual cache_key (short + unique). */
+static void vae_broker_cache_name(char *dst, size_t n, const char *cache_key) {
+  if (!dst || n < 12)
+    return;
+  unsigned h = 2166136261u;
+  if (cache_key) {
+    for (const unsigned char *p = (const unsigned char *)cache_key; *p; p++) {
+      h ^= (unsigned)*p;
+      h *= 16777619u;
+    }
+  }
+  snprintf(dst, n, "vae_fc_%08x", h);
+}
+
+/*
+ * Broker RMS→SILU→causal CONV3D.
+ * Cold+warm: F1012 CAUSAL_PAD3D mid/out sticky feat_cache (no sil GET/PUT).
+ * Legacy sil-shuttle warm kept behind WAN_VAE_WARM_HEADT_SHUTTLE=1.
+ */
+static int vae_broker_headt(wan_ctx *ctx, float *out, const float *in,
+                            const float *gamma, const float *bias, int Cin,
+                            int Cout, int lt, int lh, int lw,
+                            const char *w_bank_key, const char *w_tensor,
+                            vae_ccache *cache, const char *cache_key,
+                            int update_cache) {
+  if (!vae_headt_enabled(ctx) || !out || !in || !gamma || !w_tensor)
+    return -1;
+  int have_cache =
+      cache && cache_key && vae_ccache_has_data(cache, cache_key);
+  int warm = have_cache && vae_warm_broker_enabled();
+  /* Broker-side cache path: default (F1012). Shuttle = old GET/PUT warm. */
+  int use_broker_cache = !vae_env_truthy("WAN_VAE_WARM_HEADT_SHUTTLE");
+  size_t n0 = (size_t)Cin * (size_t)lt * (size_t)lh * (size_t)lw;
+  size_t n1 = (size_t)Cout * (size_t)lt * (size_t)lh * (size_t)lw;
+  size_t np =
+      (size_t)Cin * (size_t)(lt + 2) * (size_t)(lh + 2) * (size_t)(lw + 2);
+  size_t nc =
+      (size_t)Cin * (size_t)VAE_CACHE_T * (size_t)lh * (size_t)lw * 4;
+  const char *bx = "vae_hx";
+  const char *bg = "vae_hg";
+  const char *bb = "vae_hb";
+  const char *brms = "vae_hrms";
+  const char *bsil = "vae_hsil";
+  const char *bpad = "vae_hpad";
+  const char *by = "vae_hy";
+  const char *bw = "vae_hW";
+  char bcache[96];
+  bcache[0] = 0;
+  if (use_broker_cache && cache_key)
+    vae_broker_cache_name(bcache, sizeof(bcache), cache_key);
+  int used_bank = 0;
+  if (w_bank_key && w_bank_key[0] && ctx->vae_headt_ready) {
+    if (uma_buf_pool_bank_bind(ctx->bufs, w_bank_key, bw) == 0)
+      used_bank = 1;
+  }
+  if (!used_bank) {
+    size_t nw = 0;
+    const float *W = wan_borrow_tensor_f32(ctx, w_tensor, &nw);
+    size_t expect = (size_t)Cout * (size_t)Cin * 3 * 3 * 3;
+    if (!W || nw != expect)
+      return -1;
+    if (uma_buf_pool_ensure_put(ctx->bufs, bw, W, nw * sizeof(float)) != 0)
+      return -1;
+  }
+  if (uma_buf_pool_alloc(ctx->bufs, bx, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, brms, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bsil, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, by, n1 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bpad, np * 4) != 0 ||
+      uma_buf_pool_ensure_put(ctx->bufs, bx, in, n0 * 4) != 0 ||
+      uma_buf_pool_ensure_put(ctx->bufs, bg, gamma, (size_t)Cin * 4) != 0)
+    return -1;
+  if (bias) {
+    if (uma_buf_pool_ensure_put(ctx->bufs, bb, bias, (size_t)Cout * 4) != 0)
+      return -1;
+  }
+
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+  char resp[256];
+  size_t got = 0;
+
+  /* F1012: single GRAPH with sticky mid/out (cold t=0 or warm t=ent->T). */
+  if (use_broker_cache && bcache[0]) {
+    int cache_t = 0;
+    vae_cache_ent *ent = cache && cache_key ? vae_ccache_find(cache, cache_key)
+                                           : NULL;
+    if (ent && ent->data && ent->T > 0 && ent->C == Cin && ent->H == lh &&
+        ent->W == lw)
+      cache_t = ent->T > VAE_CACHE_T ? VAE_CACHE_T : ent->T;
+    if (vae_env_truthy("WAN_VAE_NO_WARM_HEADT") && cache_t > 0)
+      return -1;
+    /* Seed sticky once; later calls trust broker mid/out (no sil/pad shuttle). */
+    if (uma_buf_pool_alloc(ctx->bufs, bcache, nc) != 0)
+      return -1;
+    if (!ent || !ent->on_broker) {
+      float *seed = calloc(nc / 4, sizeof(float));
+      if (!seed)
+        return -1;
+      if (cache_t > 0 && ent && ent->data)
+        memcpy(seed, ent->data,
+               (size_t)Cin * (size_t)cache_t * (size_t)lh * (size_t)lw *
+                   sizeof(float));
+      else
+        cache_t = 0;
+      if (uma_buf_pool_ensure_put(ctx->bufs, bcache, seed, nc) != 0) {
+        free(seed);
+        return -1;
+      }
+      free(seed);
+    }
+    if (wan_graph_vae_headt_cache(ctx, bx, by, bw, bg, bias ? bb : NULL, brms,
+                                  bsil, bpad, bcache, cache_t, Cin, Cout, lt,
+                                  lh, lw) != 0)
+      return -1;
+    if (uma_client_buf_get(ctx->uma, by, out, n1 * 4, &got, resp,
+                           sizeof(resp)) != 0 ||
+        got != n1 * 4)
+      return -1;
+    if (update_cache && cache && cache_key) {
+      /* Bookkeep local T/on_broker only — sticky mid/out holds frames. */
+      vae_cache_ent *e = vae_ccache_find(cache, cache_key);
+      if (e) {
+        int next_t = lt < VAE_CACHE_T ? lt : VAE_CACHE_T;
+        if (next_t < VAE_CACHE_T && cache_t > 0) {
+          next_t = next_t + 1;
+          if (next_t > VAE_CACHE_T)
+            next_t = VAE_CACHE_T;
+        }
+        if (!e->data)
+          e->data = calloc((size_t)Cin * (size_t)VAE_CACHE_T * (size_t)lh *
+                               (size_t)lw,
+                           sizeof(float));
+        e->C = Cin;
+        e->T = next_t;
+        e->H = lh;
+        e->W = lw;
+        e->on_broker = 1;
+      }
+    }
+    if (wan_profile_on())
+      wan_profile_add_ms(cache_t > 0 ? "vae_headt_warm" : "vae_headt_cold",
+                         wan_profile_now_ms() - t0);
+    static int logged_fc;
+    if (!logged_fc) {
+      fprintf(stderr,
+              "wan-c: VAE HEADT broker feat_cache (F1012 mid/out; opt-in "
+              "WAN_VAE_WARM_HEADT=1)\n");
+      logged_fc = 1;
+    }
+    return 0;
+  }
+
+  if (!warm) {
+    if (wan_graph_vae_headt(ctx, bx, by, bw, bg, bias ? bb : NULL, brms, bsil,
+                            bpad, Cin, Cout, lt, lh, lw) != 0)
+      return -1;
+    if (uma_client_buf_get(ctx->uma, by, out, n1 * 4, &got, resp, sizeof(resp)) !=
+            0 ||
+        got != n1 * 4)
+      return -1;
+    if (update_cache && cache && cache_key) {
+      float *sil = calloc(n0, sizeof(float));
+      size_t gs = 0;
+      if (sil &&
+          uma_client_buf_get(ctx->uma, bsil, sil, n0 * 4, &gs, resp,
+                             sizeof(resp)) == 0 &&
+          gs == n0 * 4)
+        vae_ccache_poke_from_in(cache, cache_key, sil, Cin, lt, lh, lw);
+      free(sil);
+    }
+    if (wan_profile_on())
+      wan_profile_add_ms("vae_headt_cold", wan_profile_now_ms() - t0);
+    static int logged;
+    if (!logged) {
+      fprintf(stderr,
+              "wan-c: VAE HEADT on broker (RMS→SILU→PAD→CONV3D; F1001)\n");
+      logged = 1;
+    }
+    return 0;
+  }
+
+  /* Legacy warm: RMS+SILU on broker, feat_cache pad on client, CONV3D. */
+  {
+    char nodes[512];
+    int n = snprintf(nodes, sizeof(nodes),
+                     "CHANNEL_RMS@CPU! x=%s y=%s w=%s kind=1_%d_%d_%d_%d ; "
+                     "SILU@CPU! x=%s y=%s D=%d ; MARK@CPU?",
+                     bx, brms, bg, Cin, lt, lh, lw, brms, bsil, (int)n0);
+    if (n < 0 || (size_t)n >= sizeof(nodes) ||
+        wan_submit_graph(ctx->uma, nodes) != 0)
+      return -1;
+  }
+  float *sil = calloc(n0, sizeof(float));
+  if (!sil ||
+      uma_client_buf_get(ctx->uma, bsil, sil, n0 * 4, &got, resp, sizeof(resp)) !=
+          0 ||
+      got != n0 * 4) {
+    free(sil);
+    return -1;
+  }
+  int Twork = 0;
+  float *work =
+      vae_build_causal_work(sil, Cin, lt, lh, lw, cache, cache_key, &Twork);
+  if (!work || Twork < 3) {
+    free(sil);
+    free(work);
+    return -1;
+  }
+  size_t nwork = (size_t)Cin * (size_t)Twork * (size_t)lh * (size_t)lw;
+  if (uma_buf_pool_alloc(ctx->bufs, bpad, nwork * 4) != 0 ||
+      uma_buf_pool_ensure_put(ctx->bufs, bpad, work, nwork * 4) != 0) {
+    free(sil);
+    free(work);
+    return -1;
+  }
+  free(work);
+  {
+    char nodes[640];
+    int n;
+    if (bias)
+      n = snprintf(nodes, sizeof(nodes),
+                   "CONV3D@CPU! x=%s y=%s w=%s gate=%s "
+                   "kind=1_%d_%d_%d_%d_%d_3_3_3_1_1_1_0_1_1 ; MARK@CPU?",
+                   bpad, by, bw, bb, Cin, Twork, lh, lw, Cout);
+    else
+      n = snprintf(nodes, sizeof(nodes),
+                   "CONV3D@CPU! x=%s y=%s w=%s "
+                   "kind=1_%d_%d_%d_%d_%d_3_3_3_1_1_1_0_1_1 ; MARK@CPU?",
+                   bpad, by, bw, Cin, Twork, lh, lw, Cout);
+    if (n < 0 || (size_t)n >= sizeof(nodes) ||
+        wan_submit_graph(ctx->uma, nodes) != 0) {
+      free(sil);
+      return -1;
+    }
+  }
+  got = 0;
+  if (uma_client_buf_get(ctx->uma, by, out, n1 * 4, &got, resp, sizeof(resp)) !=
+          0 ||
+      got != n1 * 4) {
+    free(sil);
+    return -1;
+  }
+  if (update_cache && cache && cache_key)
+    vae_ccache_poke_from_in(cache, cache_key, sil, Cin, lt, lh, lw);
+  free(sil);
+  if (wan_profile_on())
+    wan_profile_add_ms("vae_headt_warm", wan_profile_now_ms() - t0);
+  static int logged_w;
+  if (!logged_w) {
+    fprintf(stderr,
+            "wan-c: VAE HEADT warm on broker (feat_cache pad + CONV3D)\n");
+    logged_w = 1;
+  }
+  return 0;
+}
+
 /* Causal Conv3d k=3: left-pad 2 (or cat feat_cache), spatial pad 1. */
 static int vae_causal_conv3d_k3(float *out, const float *in, const float *W,
                                 const float *bias, int Cin, int Cout, int lt,
@@ -95,6 +689,7 @@ static int vae_causal_conv3d_k3(float *out, const float *in, const float *W,
                                 const char *key) {
   if (!out || !in || !W || lt < 1 || lh < 1 || lw < 1)
     return -1;
+  double st0 = VAE_STAGE_T0();
   vae_cache_ent *ent = vae_ccache_find(cache, key);
   int have_prev = ent && ent->data && ent->C == Cin && ent->H == lh &&
                   ent->W == lw && ent->T > 0;
@@ -201,6 +796,179 @@ static int vae_causal_conv3d_k3(float *out, const float *in, const float *W,
   free(work);
   free(mid);
   free(tmp);
+  VAE_STAGE_ADD("vae_conv_host", st0);
+  return 0;
+}
+
+/* Brick 7: same-C residual — dual HEADT + resid ADD on broker (one GRAPH).
+ * Cold path: no per-key F1012 sticky caches (avoids BUF table_full); poke host
+ * feat_cache from SILU outs after the GRAPH. Warm F1012 stays opt-in. */
+static int vae_broker_resblock_fuse(wan_ctx *ctx, float *x, int C, int lt,
+                                    int lh, int lw, const float *g0,
+                                    const float *b2, const float *g3,
+                                    const float *b6, const char *bank2,
+                                    const char *n2w, const char *bank6,
+                                    const char *n6w, vae_ccache *cache,
+                                    const char *k2, const char *k6) {
+  if (!vae_headt_enabled(ctx) || !x || !g0 || !g3 || !n2w || !n6w || C < 1 ||
+      lt < 1 || lh < 1 || lw < 1)
+    return -1;
+  if (vae_env_truthy("WAN_VAE_NO_RESID_FUSE"))
+    return -1;
+  int have2 = cache && k2 && vae_ccache_has_data(cache, k2);
+  int have6 = cache && k6 && vae_ccache_has_data(cache, k6);
+  /* Dual-fuse is cold-only; warm/reuse → single F1012 HEADT. */
+  if (have2 || have6)
+    return -1;
+
+  size_t n0 = (size_t)C * (size_t)lt * (size_t)lh * (size_t)lw;
+  size_t np =
+      (size_t)C * (size_t)(lt + 2) * (size_t)(lh + 2) * (size_t)(lw + 2);
+  size_t nc =
+      (size_t)C * (size_t)VAE_CACHE_T * (size_t)lh * (size_t)lw * 4;
+  size_t expect_w = (size_t)C * (size_t)C * 3 * 3 * 3;
+  const char *bx = "vae_rx";
+  const char *bmid = "vae_rmid";
+  const char *by = "vae_ry";
+  const char *bg1 = "vae_rg1";
+  const char *bg2 = "vae_rg2";
+  const char *bb1 = "vae_rb1";
+  const char *bb2 = "vae_rb2";
+  const char *bw1 = "vae_rW1";
+  const char *bw2 = "vae_rW2";
+  const char *brms1 = "vae_rrms1";
+  const char *brms2 = "vae_rrms2";
+  const char *bsil1 = "vae_rsil1";
+  const char *bsil2 = "vae_rsil2";
+  const char *bpad1 = "vae_rpad1";
+  const char *bpad2 = "vae_rpad2";
+  /* Fixed F1012 slots (reuse) — avoid per-key table_full. Cold t=0. */
+  int use_fc = !vae_env_truthy("WAN_VAE_WARM_HEADT_SHUTTLE");
+  const char *bc1 = use_fc ? "vae_rfc1" : NULL;
+  const char *bc2 = use_fc ? "vae_rfc2" : NULL;
+
+  int used1 = 0, used2 = 0;
+  if (bank2 && bank2[0] && ctx->vae_headt_ready &&
+      uma_buf_pool_bank_bind(ctx->bufs, bank2, bw1) == 0)
+    used1 = 1;
+  if (!used1) {
+    size_t nw = 0;
+    const float *W = wan_borrow_tensor_f32(ctx, n2w, &nw);
+    if (!W || nw != expect_w ||
+        uma_buf_pool_ensure_put(ctx->bufs, bw1, W, nw * sizeof(float)) != 0)
+      return -1;
+  }
+  if (bank6 && bank6[0] && ctx->vae_headt_ready &&
+      uma_buf_pool_bank_bind(ctx->bufs, bank6, bw2) == 0)
+    used2 = 1;
+  if (!used2) {
+    size_t nw = 0;
+    const float *W = wan_borrow_tensor_f32(ctx, n6w, &nw);
+    if (!W || nw != expect_w ||
+        uma_buf_pool_ensure_put(ctx->bufs, bw2, W, nw * sizeof(float)) != 0)
+      return -1;
+  }
+
+  if (uma_buf_pool_alloc(ctx->bufs, bx, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bmid, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, by, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, brms1, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, brms2, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bsil1, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bsil2, n0 * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bpad1, np * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bpad2, np * 4) != 0 ||
+      uma_buf_pool_ensure_put(ctx->bufs, bx, x, n0 * 4) != 0 ||
+      uma_buf_pool_ensure_put(ctx->bufs, bg1, g0, (size_t)C * 4) != 0 ||
+      uma_buf_pool_ensure_put(ctx->bufs, bg2, g3, (size_t)C * 4) != 0)
+    return -1;
+  if (b2 &&
+      uma_buf_pool_ensure_put(ctx->bufs, bb1, b2, (size_t)C * 4) != 0)
+    return -1;
+  if (b6 &&
+      uma_buf_pool_ensure_put(ctx->bufs, bb2, b6, (size_t)C * 4) != 0)
+    return -1;
+  if (use_fc) {
+    float *z1 = calloc(nc / 4, sizeof(float));
+    float *z2 = calloc(nc / 4, sizeof(float));
+    if (!z1 || !z2 || uma_buf_pool_alloc(ctx->bufs, bc1, nc) != 0 ||
+        uma_buf_pool_alloc(ctx->bufs, bc2, nc) != 0 ||
+        uma_buf_pool_ensure_put(ctx->bufs, bc1, z1, nc) != 0 ||
+        uma_buf_pool_ensure_put(ctx->bufs, bc2, z2, nc) != 0) {
+      free(z1);
+      free(z2);
+      return -1;
+    }
+    free(z1);
+    free(z2);
+  }
+
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+  double st0 = VAE_STAGE_T0();
+  /* Cold t=0 F1012 (fixed slots) or plain pad; host resid ADD after GET. */
+  if (wan_graph_vae_resblock_dual_headt(
+          ctx, bx, bmid, by, bw1, bg1, b2 ? bb1 : NULL, brms1, bsil1, bpad1,
+          bc1, 0, bw2, bg2, b6 ? bb2 : NULL, brms2, bsil2, bpad2, bc2, 0, C, lt,
+          lh, lw, 0) != 0)
+    return -1;
+
+  char resp[256];
+  size_t got = 0;
+  float *y = calloc(n0, sizeof(float));
+  if (!y ||
+      uma_client_buf_get(ctx->uma, by, y, n0 * 4, &got, resp, sizeof(resp)) !=
+          0 ||
+      got != n0 * 4) {
+    free(y);
+    return -1;
+  }
+  for (size_t i = 0; i < n0; i++)
+    x[i] += y[i];
+  free(y);
+
+  /* Match single cold F1012 bookkeeping (on_broker + T; sticky holds frames).
+   * Do not sil-poke — that diverges from F1012 host-warm later slices. */
+  if (cache && k2) {
+    vae_cache_ent *e = vae_ccache_find(cache, k2);
+    if (e) {
+      int next_t = lt < VAE_CACHE_T ? lt : VAE_CACHE_T;
+      if (!e->data)
+        e->data = calloc((size_t)C * (size_t)VAE_CACHE_T * (size_t)lh *
+                             (size_t)lw,
+                         sizeof(float));
+      e->C = C;
+      e->T = next_t;
+      e->H = lh;
+      e->W = lw;
+      e->on_broker = use_fc ? 1 : 0;
+    }
+  }
+  if (cache && k6) {
+    vae_cache_ent *e = vae_ccache_find(cache, k6);
+    if (e) {
+      int next_t = lt < VAE_CACHE_T ? lt : VAE_CACHE_T;
+      if (!e->data)
+        e->data = calloc((size_t)C * (size_t)VAE_CACHE_T * (size_t)lh *
+                             (size_t)lw,
+                         sizeof(float));
+      e->C = C;
+      e->T = next_t;
+      e->H = lh;
+      e->W = lw;
+      e->on_broker = use_fc ? 1 : 0;
+    }
+  }
+
+  if (wan_profile_on())
+    wan_profile_add_ms("vae_headt_cold", wan_profile_now_ms() - t0);
+  VAE_STAGE_ADD("vae_resid_fuse", st0);
+  static int logged;
+  if (!logged) {
+    fprintf(stderr,
+            "wan-c: VAE residual dual-HEADT fused (cold; "
+            "WAN_VAE_NO_RESID_FUSE=1 rollback)\n");
+    logged = 1;
+  }
   return 0;
 }
 
@@ -233,21 +1001,68 @@ static int vae_resblock_same(wan_ctx *ctx, float *x, int C, int lt, int lh,
   int ok = 0;
   size_t expect_w = (size_t)C * (size_t)C * 3 * 3 * 3;
   if (W2 && W6 && h && y && nw2 == expect_w && nw6 == expect_w) {
-    memcpy(h, x, n * sizeof(float));
-    rms_norm_ncdhw(h, g0, C, lt, lh, lw, 1e-6f);
-    silu_inplace(h, n);
-    if (vae_causal_conv3d_k3(y, h, W2, (b2 && nb2 == (size_t)C) ? b2 : NULL, C,
-                             C, lt, lh, lw, cache, k2) != 0)
-      goto done;
-    memcpy(h, y, n * sizeof(float));
-    rms_norm_ncdhw(h, g3, C, lt, lh, lw, 1e-6f);
-    silu_inplace(h, n);
-    if (vae_causal_conv3d_k3(y, h, W6, (b6 && nb6 == (size_t)C) ? b6 : NULL, C,
-                             C, lt, lh, lw, cache, k6) != 0)
-      goto done;
-    for (size_t i = 0; i < n; i++)
-      x[i] += y[i];
-    ok = 1;
+    /* Broker residual: cold always; warm needs WAN_VAE_WARM_HEADT=1
+     * (F1012 mid/out). Brick 8 default-on miss — keep opt-in. */
+    int try_broker = vae_headt_enabled(ctx) && g0 && g3 && ng0 == (size_t)C &&
+                     ng3 == (size_t)C &&
+                     (vae_warm_broker_enabled() ||
+                      (!vae_ccache_has_data(cache, k2) &&
+                       !vae_ccache_has_data(cache, k6)));
+    if (try_broker) {
+      const char *bank2 = NULL;
+      const char *bank6 = NULL;
+      if (ctx->vae_headt_ready)
+        (void)vae_tip_residual_bank(prefix, &bank2, &bank6);
+      /* Brick 7: dual HEADT + resid ADD — one GRAPH / one GET. */
+      if (vae_broker_resblock_fuse(
+              ctx, x, C, lt, lh, lw, g0, (b2 && nb2 == (size_t)C) ? b2 : NULL,
+              g3, (b6 && nb6 == (size_t)C) ? b6 : NULL, bank2, n2w, bank6, n6w,
+              cache, k2, k6) == 0) {
+        ok = 1;
+      } else {
+      memcpy(h, x, n * sizeof(float));
+      int rc2 =
+          vae_broker_headt(ctx, y, h, g0, (b2 && nb2 == (size_t)C) ? b2 : NULL,
+                           C, C, lt, lh, lw, bank2, n2w, cache, k2, 1);
+      if (rc2 == 0) {
+        memcpy(h, y, n * sizeof(float));
+        int rc6 = vae_broker_headt(
+            ctx, y, h, g3, (b6 && nb6 == (size_t)C) ? b6 : NULL, C, C, lt, lh,
+            lw, bank6, n6w, cache, k6, 1);
+        if (rc6 == 0) {
+          for (size_t i = 0; i < n; i++)
+            x[i] += y[i];
+          ok = 1;
+          static int logged_chain;
+          if (!logged_chain && bank2) {
+            fprintf(stderr,
+                    "wan-c: VAE tip residuals on broker "
+                    "(middle→up→HEADT BANK)\n");
+            logged_chain = 1;
+          }
+        } else {
+          vae_ccache_clear_key(cache, k2);
+        }
+      }
+      }
+    }
+    if (!ok) {
+      memcpy(h, x, n * sizeof(float));
+      rms_norm_ncdhw(h, g0, C, lt, lh, lw, 1e-6f);
+      silu_inplace(h, n);
+      if (vae_causal_conv3d_k3(y, h, W2, (b2 && nb2 == (size_t)C) ? b2 : NULL, C,
+                               C, lt, lh, lw, cache, k2) != 0)
+        goto done;
+      memcpy(h, y, n * sizeof(float));
+      rms_norm_ncdhw(h, g3, C, lt, lh, lw, 1e-6f);
+      silu_inplace(h, n);
+      if (vae_causal_conv3d_k3(y, h, W6, (b6 && nb6 == (size_t)C) ? b6 : NULL, C,
+                               C, lt, lh, lw, cache, k6) != 0)
+        goto done;
+      for (size_t i = 0; i < n; i++)
+        x[i] += y[i];
+      ok = 1;
+    }
   }
 done:
   free(g0);
@@ -341,6 +1156,158 @@ static int vae_resample2d(wan_ctx *ctx, float **feat, int *C, int lt, int lh,
   return 0;
 }
 
+/* F1001: nearest×2 + CONV2D on broker (per time plane). */
+static int vae_nearest_resample_broker(wan_ctx *ctx, float **feat, int *C,
+                                       int lt, int *lh, int *lw,
+                                       const char *wname, const char *bname,
+                                       const char *w_bank_key, int Cout) {
+  if (!vae_headt_enabled(ctx) || !ctx->caps.nearest || !ctx->caps.conv2d)
+    return -1;
+  int Cin = *C;
+  int H = *lh, W = *lw;
+  int H2 = H * 2, W2 = W * 2;
+  size_t nw = 0, nb = 0;
+  const float *Wb = wan_borrow_tensor_f32(ctx, wname, &nw);
+  float *b = wan_load_tensor_f32(ctx, bname, &nb);
+  size_t expect = (size_t)Cout * (size_t)Cin * 3 * 3;
+  if (!Wb || nw != expect) {
+    free(b);
+    return -1;
+  }
+  const char *bw = "vae_rsW";
+  const char *bb = "vae_rsb";
+  const char *blo = "vae_rslo";
+  const char *bhi = "vae_rshi";
+  const char *by = "vae_rsy";
+  int used_bank = 0;
+  if (w_bank_key && w_bank_key[0] && ctx->vae_headt_ready &&
+      uma_buf_pool_bank_bind(ctx->bufs, w_bank_key, bw) == 0)
+    used_bank = 1;
+  if (!used_bank &&
+      uma_buf_pool_ensure_put(ctx->bufs, bw, Wb, nw * sizeof(float)) != 0) {
+    free(b);
+    return -1;
+  }
+  if (b && nb == (size_t)Cout &&
+      uma_buf_pool_ensure_put(ctx->bufs, bb, b, (size_t)Cout * 4) != 0) {
+    free(b);
+    return -1;
+  }
+  size_t n_lo = (size_t)Cin * (size_t)H * (size_t)W;
+  size_t n_hi = (size_t)Cin * (size_t)H2 * (size_t)W2;
+  size_t n_out = (size_t)Cout * (size_t)H2 * (size_t)W2;
+  size_t n_vol = (size_t)Cout * (size_t)lt * (size_t)H2 * (size_t)W2;
+  float *out = calloc(n_vol, sizeof(float));
+  float *plane = calloc(n_lo, sizeof(float));
+  float *gotp = calloc(n_out, sizeof(float));
+  if (!out || !plane || !gotp) {
+    free(b);
+    free(out);
+    free(plane);
+    free(gotp);
+    return -1;
+  }
+  if (uma_buf_pool_alloc(ctx->bufs, blo, n_lo * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bhi, n_hi * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, by, n_out * 4) != 0) {
+    free(b);
+    free(out);
+    free(plane);
+    free(gotp);
+    return -1;
+  }
+  char resp[256];
+  for (int t = 0; t < lt; t++) {
+    for (int c = 0; c < Cin; c++)
+      for (int h = 0; h < H; h++)
+        for (int w = 0; w < W; w++)
+          plane[(((size_t)c * H + h) * W + w)] =
+              (*feat)[((((size_t)c * lt + t) * H + h) * W + w)];
+    if (uma_buf_pool_ensure_put(ctx->bufs, blo, plane, n_lo * 4) != 0) {
+      free(b);
+      free(out);
+      free(plane);
+      free(gotp);
+      return -1;
+    }
+    if (wan_graph_vae_nearest_conv2d(ctx, blo, bhi, by, bw,
+                                     (b && nb == (size_t)Cout) ? bb : NULL, Cin,
+                                     Cout, H, W) != 0) {
+      free(b);
+      free(out);
+      free(plane);
+      free(gotp);
+      return -1;
+    }
+    size_t got = 0;
+    if (uma_client_buf_get(ctx->uma, by, gotp, n_out * 4, &got, resp,
+                           sizeof(resp)) != 0 ||
+        got != n_out * 4) {
+      free(b);
+      free(out);
+      free(plane);
+      free(gotp);
+      return -1;
+    }
+    for (int c = 0; c < Cout; c++)
+      for (int h = 0; h < H2; h++)
+        for (int w = 0; w < W2; w++)
+          out[((((size_t)c * lt + t) * H2 + h) * W2 + w)] =
+              gotp[(((size_t)c * H2 + h) * W2 + w)];
+  }
+  free(*feat);
+  *feat = out;
+  *C = Cout;
+  *lh = H2;
+  *lw = W2;
+  free(b);
+  free(plane);
+  free(gotp);
+  static int logged;
+  if (!logged) {
+    fprintf(stderr, "wan-c: VAE NEAREST→CONV2D on broker (F1001 resample)\n");
+    logged = 1;
+  }
+  return 0;
+}
+
+static int vae_upsample_resample(wan_ctx *ctx, float **feat, int *C, int lt,
+                                 int *lh, int *lw, const char *wname,
+                                 const char *bname, const char *w_bank_key,
+                                 int Cout) {
+  double st0 = VAE_STAGE_T0();
+  int rc;
+  /* F1018: host nearest+BNNS CONV2D default ON (no daemon bump).
+   * Rollback WAN_VAE_HOST_RESAMPLE=0 → broker NEAREST→CONV2D. */
+  int force_host = 1;
+  {
+    const char *e = getenv("WAN_VAE_HOST_RESAMPLE");
+    if (e && e[0] == '0')
+      force_host = 0;
+    else if (e && e[0] == '1')
+      force_host = 1;
+  }
+  if (!force_host &&
+      vae_nearest_resample_broker(ctx, feat, C, lt, lh, lw, wname, bname,
+                                  w_bank_key, Cout) == 0)
+    rc = 0;
+  else if (nearest_x2_spatial(feat, *C, lt, lh, lw) != 0)
+    rc = -1;
+  else {
+    static int logged_hr;
+    if (!logged_hr) {
+      fprintf(stderr,
+              "wan-c: VAE resample on host (F1018 BNNS CONV2D; "
+              "WAN_VAE_HOST_RESAMPLE=0 → broker)\n");
+      logged_hr = 1;
+    }
+    rc = vae_resample2d(ctx, feat, C, lt, *lh, *lw, wname, bname, Cout);
+  }
+  if (rc == 0)
+    VAE_STAGE_ADD("vae_resample", st0);
+  return rc;
+}
+
 /* ResidualBlock Cin→Cout + 1×1 shortcut (upsamples.4). */
 static int vae_resblock_expand(wan_ctx *ctx, float **feat, int *C, int lt,
                                int lh, int lw, int Cout, const char *prefix,
@@ -383,27 +1350,124 @@ static int vae_resblock_expand(wan_ctx *ctx, float **feat, int *C, int lt,
   size_t exps = (size_t)Cout * (size_t)Cin;
   if (W2 && W6 && Ws && h && y && out && h2 && nw2 == exp2 && nw6 == exp6 &&
       nws == exps) {
-    memcpy(h, *feat, nin * sizeof(float));
-    rms_norm_ncdhw(h, g0, Cin, lt, lh, lw, 1e-6f);
-    silu_inplace(h, nin);
-    if (vae_causal_conv3d_k3(y, h, W2, (b2 && nb2 == (size_t)Cout) ? b2 : NULL,
-                             Cin, Cout, lt, lh, lw, cache, k2) != 0)
-      goto done_exp;
-    memcpy(h2, y, nout * sizeof(float));
-    rms_norm_ncdhw(h2, g3, Cout, lt, lh, lw, 1e-6f);
-    silu_inplace(h2, nout);
-    if (vae_causal_conv3d_k3(y, h2, W6, (b6 && nb6 == (size_t)Cout) ? b6 : NULL,
-                             Cout, Cout, lt, lh, lw, cache, k6) != 0)
-      goto done_exp;
-    uma_wan_conv3d_f32(out, *feat, Ws, (bs && nbs == (size_t)Cout) ? bs : NULL,
-                       1, Cin, lt, lh, lw, Cout, 1, 1, 1, 1, 1, 1, 0, 0, 0);
-    for (size_t i = 0; i < nout; i++)
-      out[i] += y[i];
-    free(*feat);
-    *feat = out;
-    out = NULL;
-    *C = Cout;
-    ok = 1;
+    int try_broker =
+        vae_headt_enabled(ctx) && g0 && g3 && ng0 == (size_t)Cin &&
+        ng3 == (size_t)Cout && ctx->caps.conv3d && ctx->caps.residual_add &&
+        (vae_warm_broker_enabled() ||
+         (!vae_ccache_has_data(cache, k2) && !vae_ccache_has_data(cache, k6)));
+    if (try_broker) {
+      const char *bank2 = "decoder.upsamples.4.residual.2.weight";
+      const char *bank6 = "decoder.upsamples.4.residual.6.weight";
+      const char *banks = "decoder.upsamples.4.shortcut.weight";
+      const char *bx = "vae_ex";
+      const char *bw = "vae_eW";
+      const char *bb = "vae_eb";
+      const char *by = "vae_ey";
+      const char *bout = "vae_eout";
+      memcpy(h, *feat, nin * sizeof(float));
+      int rc2 = vae_broker_headt(
+          ctx, y, h, g0, (b2 && nb2 == (size_t)Cout) ? b2 : NULL, Cin, Cout, lt,
+          lh, lw, ctx->vae_headt_ready ? bank2 : NULL, n2w, cache, k2, 1);
+      if (rc2 == 0) {
+        memcpy(h2, y, nout * sizeof(float));
+        int rc6 = vae_broker_headt(
+            ctx, y, h2, g3, (b6 && nb6 == (size_t)Cout) ? b6 : NULL, Cout, Cout,
+            lt, lh, lw, ctx->vae_headt_ready ? bank6 : NULL, n6w, cache, k6, 1);
+        if (rc6 == 0) {
+          int used_bank = 0;
+          if (ctx->vae_headt_ready &&
+              uma_buf_pool_bank_bind(ctx->bufs, banks, bw) == 0)
+            used_bank = 1;
+          if (!used_bank &&
+              uma_buf_pool_ensure_put(ctx->bufs, bw, Ws, nws * sizeof(float)) !=
+                  0)
+            rc6 = -1;
+          if (rc6 == 0 &&
+              (uma_buf_pool_alloc(ctx->bufs, bx, nin * 4) != 0 ||
+               uma_buf_pool_alloc(ctx->bufs, by, nout * 4) != 0 ||
+               uma_buf_pool_alloc(ctx->bufs, bout, nout * 4) != 0 ||
+               uma_buf_pool_ensure_put(ctx->bufs, bx, *feat, nin * 4) != 0 ||
+               uma_buf_pool_ensure_put(ctx->bufs, by, y, nout * 4) != 0))
+            rc6 = -1;
+          if (rc6 == 0 && bs && nbs == (size_t)Cout &&
+              uma_buf_pool_ensure_put(ctx->bufs, bb, bs, (size_t)Cout * 4) != 0)
+            rc6 = -1;
+          if (rc6 == 0) {
+            char nodes[640];
+            int n;
+            if (bs && nbs == (size_t)Cout)
+              n = snprintf(
+                  nodes, sizeof(nodes),
+                  "CONV3D@CPU! x=%s y=%s w=%s gate=%s "
+                  "kind=1_%d_%d_%d_%d_%d_1_1_1_1_1_1_0_0_0 ; "
+                  "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@CPU?",
+                  bx, bout, bw, bb, Cin, lt, lh, lw, Cout, by, bout,
+                  (int)nout);
+            else
+              n = snprintf(
+                  nodes, sizeof(nodes),
+                  "CONV3D@CPU! x=%s y=%s w=%s "
+                  "kind=1_%d_%d_%d_%d_%d_1_1_1_1_1_1_0_0_0 ; "
+                  "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@CPU?",
+                  bx, bout, bw, Cin, lt, lh, lw, Cout, by, bout, (int)nout);
+            if (n < 0 || (size_t)n >= sizeof(nodes) ||
+                wan_submit_graph(ctx->uma, nodes) != 0)
+              rc6 = -1;
+          }
+          if (rc6 == 0) {
+            char resp[256];
+            size_t got = 0;
+            if (uma_client_buf_get(ctx->uma, bout, out, nout * 4, &got, resp,
+                                   sizeof(resp)) == 0 &&
+                got == nout * 4) {
+              free(*feat);
+              *feat = out;
+              out = NULL;
+              *C = Cout;
+              ok = 1;
+              static int logged;
+              if (!logged) {
+                fprintf(stderr,
+                        "wan-c: VAE ups.4 expand on broker "
+                        "(192→384 + shortcut)\n");
+                logged = 1;
+              }
+            } else {
+              vae_ccache_clear_key(cache, k2);
+              vae_ccache_clear_key(cache, k6);
+            }
+          } else {
+            vae_ccache_clear_key(cache, k2);
+            vae_ccache_clear_key(cache, k6);
+          }
+        } else {
+          vae_ccache_clear_key(cache, k2);
+        }
+      }
+    }
+    if (!ok) {
+      memcpy(h, *feat, nin * sizeof(float));
+      rms_norm_ncdhw(h, g0, Cin, lt, lh, lw, 1e-6f);
+      silu_inplace(h, nin);
+      if (vae_causal_conv3d_k3(y, h, W2, (b2 && nb2 == (size_t)Cout) ? b2 : NULL,
+                               Cin, Cout, lt, lh, lw, cache, k2) != 0)
+        goto done_exp;
+      memcpy(h2, y, nout * sizeof(float));
+      rms_norm_ncdhw(h2, g3, Cout, lt, lh, lw, 1e-6f);
+      silu_inplace(h2, nout);
+      if (vae_causal_conv3d_k3(y, h2, W6, (b6 && nb6 == (size_t)Cout) ? b6 : NULL,
+                               Cout, Cout, lt, lh, lw, cache, k6) != 0)
+        goto done_exp;
+      uma_wan_conv3d_f32(out, *feat, Ws, (bs && nbs == (size_t)Cout) ? bs : NULL,
+                         1, Cin, lt, lh, lw, Cout, 1, 1, 1, 1, 1, 1, 0, 0, 0);
+      for (size_t i = 0; i < nout; i++)
+        out[i] += y[i];
+      free(*feat);
+      *feat = out;
+      out = NULL;
+      *C = Cout;
+      ok = 1;
+    }
   }
 done_exp:
   free(g0);
@@ -422,9 +1486,206 @@ done_exp:
 }
 
 /* AttentionBlock mid: single-head spatial attn per time slice. */
+static int vae_attn_mid_broker(wan_ctx *ctx, float *x, int C, int lt, int lh,
+                               int lw, const float *gamma, const float *Wqkv,
+                               const float *bias_qkv, const float *Wp,
+                               const float *bias_p, size_t nbq, size_t nbp) {
+  if (!vae_headt_enabled(ctx) || !ctx->caps.channel_rms || !ctx->caps.conv2d ||
+      !ctx->caps.attn_full)
+    return -1;
+  size_t spat = (size_t)lh * (size_t)lw;
+  size_t n_plane = (size_t)C * spat;
+  size_t n_qkv = (size_t)(3 * C) * spat;
+  size_t n_tok = spat * (size_t)C;
+  const char *bx = "vae_ax";
+  const char *brms = "vae_arms";
+  const char *bg = "vae_ag";
+  const char *bwq = "vae_aWq";
+  const char *bwp = "vae_aWp";
+  const char *bbq = "vae_abq";
+  const char *bbp = "vae_abp";
+  const char *bqkvb = "vae_aqkv";
+  const char *bq = "vae_aq";
+  const char *bk = "vae_ak";
+  const char *bv = "vae_av";
+  const char *bao = "vae_ao";
+  const char *bpr = "vae_apr";
+  const char *bin = "vae_ain";
+  int used_q = 0, used_p = 0;
+  if (ctx->vae_headt_ready &&
+      uma_buf_pool_bank_bind(ctx->bufs, "decoder.middle.1.to_qkv.weight",
+                             bwq) == 0)
+    used_q = 1;
+  if (ctx->vae_headt_ready &&
+      uma_buf_pool_bank_bind(ctx->bufs, "decoder.middle.1.proj.weight", bwp) ==
+          0)
+    used_p = 1;
+  if (!used_q &&
+      uma_buf_pool_ensure_put(ctx->bufs, bwq, Wqkv,
+                              (size_t)(3 * C) * (size_t)C * 4) != 0)
+    return -1;
+  if (!used_p &&
+      uma_buf_pool_ensure_put(ctx->bufs, bwp, Wp, (size_t)C * (size_t)C * 4) !=
+          0)
+    return -1;
+  {
+    float *gbuf = NULL;
+    const float *gput = gamma;
+    if (!gput) {
+      gbuf = calloc((size_t)C, sizeof(float));
+      if (!gbuf)
+        return -1;
+      for (int c = 0; c < C; c++)
+        gbuf[c] = 1.f;
+      gput = gbuf;
+    }
+    int rc = uma_buf_pool_ensure_put(ctx->bufs, bg, gput, (size_t)C * 4);
+    free(gbuf);
+    if (rc != 0)
+      return -1;
+  }
+  if (bias_qkv && nbq == (size_t)(3 * C) &&
+      uma_buf_pool_ensure_put(ctx->bufs, bbq, bias_qkv, (size_t)(3 * C) * 4) !=
+          0)
+    return -1;
+  if (bias_p && nbp == (size_t)C &&
+      uma_buf_pool_ensure_put(ctx->bufs, bbp, bias_p, (size_t)C * 4) != 0)
+    return -1;
+  if (uma_buf_pool_alloc(ctx->bufs, bx, n_plane * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, brms, n_plane * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bqkvb, n_qkv * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bq, n_tok * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bk, n_tok * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bv, n_tok * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bao, n_tok * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bin, n_plane * 4) != 0 ||
+      uma_buf_pool_alloc(ctx->bufs, bpr, n_plane * 4) != 0)
+    return -1;
+
+  float *plane = calloc(n_plane, sizeof(float));
+  float *qkv = calloc(n_qkv, sizeof(float));
+  float *tok = calloc(n_tok, sizeof(float));
+  float *ktmp = calloc(n_tok, sizeof(float));
+  float *proj = calloc(n_plane, sizeof(float));
+  if (!plane || !qkv || !tok || !ktmp || !proj) {
+    free(plane);
+    free(qkv);
+    free(tok);
+    free(ktmp);
+    free(proj);
+    return -1;
+  }
+  char resp[256];
+  char nodes[384];
+  for (int t = 0; t < lt; t++) {
+    for (int c = 0; c < C; c++)
+      for (size_t s = 0; s < spat; s++) {
+        int h = (int)(s / (size_t)lw);
+        int w = (int)(s % (size_t)lw);
+        plane[(size_t)c * spat + s] =
+            x[((((size_t)c * lt + t) * lh + h) * lw + w)];
+      }
+    double ipc0 = VAE_STAGE_T0();
+    if (uma_buf_pool_ensure_put(ctx->bufs, bx, plane, n_plane * 4) != 0)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    int n = snprintf(nodes, sizeof(nodes),
+                     "CHANNEL_RMS@CPU! x=%s y=%s w=%s kind=1_%d_1_%d_%d ; "
+                     "MARK@CPU?",
+                     bx, brms, bg, C, lh, lw);
+    if (n < 0 || (size_t)n >= sizeof(nodes) ||
+        wan_submit_graph(ctx->uma, nodes) != 0)
+      goto fail;
+    if (wan_graph_conv2d(ctx, brms, bqkvb, bwq,
+                         (bias_qkv && nbq == (size_t)(3 * C)) ? bbq : NULL, 1, C,
+                         lh, lw, 3 * C, 1, 1, 1, 0) != 0)
+      goto fail;
+    size_t got = 0;
+    ipc0 = VAE_STAGE_T0();
+    if (uma_client_buf_get(ctx->uma, bqkvb, qkv, n_qkv * 4, &got, resp,
+                           sizeof(resp)) != 0 ||
+        got != n_qkv * 4)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    for (size_t s = 0; s < spat; s++)
+      for (int c = 0; c < C; c++) {
+        tok[s * (size_t)C + (size_t)c] = qkv[(size_t)c * spat + s];
+        ktmp[s * (size_t)C + (size_t)c] =
+            qkv[((size_t)C + (size_t)c) * spat + s];
+      }
+    ipc0 = VAE_STAGE_T0();
+    if (uma_buf_pool_ensure_put(ctx->bufs, bq, tok, n_tok * 4) != 0 ||
+        uma_buf_pool_ensure_put(ctx->bufs, bk, ktmp, n_tok * 4) != 0)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    for (size_t s = 0; s < spat; s++)
+      for (int c = 0; c < C; c++)
+        tok[s * (size_t)C + (size_t)c] =
+            qkv[((size_t)(2 * C) + (size_t)c) * spat + s];
+    ipc0 = VAE_STAGE_T0();
+    if (uma_buf_pool_ensure_put(ctx->bufs, bv, tok, n_tok * 4) != 0)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    if (wan_graph_attn_full(ctx, bq, bk, bv, bao, (int)spat, (int)spat, 1, 1,
+                            C) != 0)
+      goto fail;
+    ipc0 = VAE_STAGE_T0();
+    if (uma_client_buf_get(ctx->uma, bao, tok, n_tok * 4, &got, resp,
+                           sizeof(resp)) != 0 ||
+        got != n_tok * 4)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    for (size_t s = 0; s < spat; s++)
+      for (int c = 0; c < C; c++)
+        plane[(size_t)c * spat + s] = tok[s * (size_t)C + (size_t)c];
+    ipc0 = VAE_STAGE_T0();
+    if (uma_buf_pool_ensure_put(ctx->bufs, bin, plane, n_plane * 4) != 0)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    if (wan_graph_conv2d(ctx, bin, bpr, bwp,
+                         (bias_p && nbp == (size_t)C) ? bbp : NULL, 1, C, lh, lw,
+                         C, 1, 1, 1, 0) != 0)
+      goto fail;
+    ipc0 = VAE_STAGE_T0();
+    if (uma_client_buf_get(ctx->uma, bpr, proj, n_plane * 4, &got, resp,
+                           sizeof(resp)) != 0 ||
+        got != n_plane * 4)
+      goto fail;
+    VAE_STAGE_ADD("vae_ipc", ipc0);
+    for (int c = 0; c < C; c++)
+      for (size_t s = 0; s < spat; s++) {
+        int h = (int)(s / (size_t)lw);
+        int w = (int)(s % (size_t)lw);
+        x[((((size_t)c * lt + t) * lh + h) * lw + w)] +=
+            proj[(size_t)c * spat + s];
+      }
+  }
+  free(plane);
+  free(qkv);
+  free(tok);
+  free(ktmp);
+  free(proj);
+  static int logged;
+  if (!logged) {
+    fprintf(stderr,
+            "wan-c: VAE middle.1 attn on broker "
+            "(RMS→CONV2D→ATTN→proj; F0964)\n");
+    logged = 1;
+  }
+  return 0;
+fail:
+  free(plane);
+  free(qkv);
+  free(tok);
+  free(ktmp);
+  free(proj);
+  return -1;
+}
+
 static int vae_attn_mid(wan_ctx *ctx, float *x, int C, int lt, int lh, int lw) {
   if (!wan_gguf_has(ctx, "vae.decoder.middle.1.to_qkv.weight"))
     return -1;
+  double st0 = VAE_STAGE_T0();
   size_t ng = 0, nqkv = 0, nbq = 0, nproj = 0, nbp = 0;
   float *gamma =
       wan_load_tensor_f32(ctx, "vae.decoder.middle.1.norm.gamma", &ng);
@@ -445,6 +1706,16 @@ static int vae_attn_mid(wan_ctx *ctx, float *x, int C, int lt, int lh, int lw) {
     free(Wp);
     free(bp);
     return -1;
+  }
+  if (vae_attn_mid_broker(ctx, x, C, lt, lh, lw, gamma, Wqkv, bqkv, Wp, bp, nbq,
+                          nbp) == 0) {
+    free(gamma);
+    free(Wqkv);
+    free(bqkv);
+    free(Wp);
+    free(bp);
+    VAE_STAGE_ADD("vae_attn", st0);
+    return 0;
   }
   float *plane = calloc((size_t)C * spat, sizeof(float));
   float *qkv = calloc((size_t)(3 * C) * spat, sizeof(float));
@@ -565,6 +1836,7 @@ static int vae_attn_mid(wan_ctx *ctx, float *x, int C, int lt, int lh, int lw) {
   free(qkv);
   free(proj);
   free(attn);
+  VAE_STAGE_ADD("vae_attn", st0);
   return 0;
 }
 
@@ -589,6 +1861,7 @@ static int vae_time_conv_double(wan_ctx *ctx, float **feat, int *lt, int C,
     return 0;
   }
 
+  double st0 = VAE_STAGE_T0();
   size_t nw = 0, nb = 0;
   float *W = wan_load_tensor_f32(ctx, wname, &nw);
   float *b = wan_load_tensor_f32(ctx, bname, &nb);
@@ -715,6 +1988,7 @@ static int vae_time_conv_double(wan_ctx *ctx, float **feat, int *lt, int C,
   free(b);
   free(work);
   free(mid);
+  VAE_STAGE_ADD("vae_tconv", st0);
   return 1;
 }
 
@@ -792,7 +2066,11 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
     if (tc > 0)
       (*ntc)++;
   }
-  if (nearest_x2_spatial(&feat, ch, lt, &flh, &flw) != 0) {
+  if (vae_upsample_resample(
+          ctx, &feat, &ch, lt, &flh, &flw,
+          "vae.decoder.upsamples.3.resample.1.weight",
+          "vae.decoder.upsamples.3.resample.1.bias",
+          "decoder.upsamples.3.resample.1.weight", 192) != 0) {
     free(Wc);
     free(bc);
     free(Wh);
@@ -800,10 +2078,7 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
     free(feat);
     return -1;
   }
-  if (vae_resample2d(ctx, &feat, &ch, lt, flh, flw,
-                     "vae.decoder.upsamples.3.resample.1.weight",
-                     "vae.decoder.upsamples.3.resample.1.bias", 192) == 0)
-    (*nre)++;
+  (*nre)++;
 
   if (ch == 192 &&
       vae_resblock_expand(ctx, &feat, &ch, lt, flh, flw, 384,
@@ -833,7 +2108,11 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
       if (tc > 0)
         (*ntc)++;
     }
-    if (nearest_x2_spatial(&feat, ch, lt, &flh, &flw) != 0) {
+    if (vae_upsample_resample(
+            ctx, &feat, &ch, lt, &flh, &flw,
+            "vae.decoder.upsamples.7.resample.1.weight",
+            "vae.decoder.upsamples.7.resample.1.bias",
+            "decoder.upsamples.7.resample.1.weight", 192) != 0) {
       free(Wc);
       free(bc);
       free(Wh);
@@ -841,10 +2120,7 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
       free(feat);
       return -1;
     }
-    if (vae_resample2d(ctx, &feat, &ch, lt, flh, flw,
-                       "vae.decoder.upsamples.7.resample.1.weight",
-                       "vae.decoder.upsamples.7.resample.1.bias", 192) == 0)
-      (*nre)++;
+    (*nre)++;
   }
 
   if (ch == 192) {
@@ -857,7 +2133,11 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
     if (vae_resblock_same(ctx, feat, 192, lt, flh, flw,
                           "vae.decoder.upsamples.10", cache) == 0)
       (*nres)++;
-    if (nearest_x2_spatial(&feat, ch, lt, &flh, &flw) != 0) {
+    if (vae_upsample_resample(
+            ctx, &feat, &ch, lt, &flh, &flw,
+            "vae.decoder.upsamples.11.resample.1.weight",
+            "vae.decoder.upsamples.11.resample.1.bias",
+            "decoder.upsamples.11.resample.1.weight", 96) != 0) {
       free(Wc);
       free(bc);
       free(Wh);
@@ -865,10 +2145,7 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
       free(feat);
       return -1;
     }
-    if (vae_resample2d(ctx, &feat, &ch, lt, flh, flw,
-                       "vae.decoder.upsamples.11.resample.1.weight",
-                       "vae.decoder.upsamples.11.resample.1.bias", 96) == 0)
-      (*nre)++;
+    (*nre)++;
   }
 
   if (ch == 96) {
@@ -906,21 +2183,39 @@ static int vae_tip_one_slice(wan_ctx *ctx, const float *slice16, int lh,
   if (tmp96 && tmp3) {
     size_t ng = 0;
     float *hg = wan_load_tensor_f32(ctx, "vae.decoder.head.0.gamma", &ng);
-    rms_norm_ncdhw(tmp96, hg, 96, lt, flh, flw, 1e-6f);
-    silu_inplace(tmp96, (size_t)96 * spat);
-    free(hg);
-    if (vae_causal_conv3d_k3(tmp3, tmp96, Wh, (bh && nbh == 3) ? bh : NULL, 96,
-                              3, lt, flh, flw, cache, "vae.decoder.head.2") !=
-        0) {
-      free(owned96);
-      free(tmp3);
-      free(Wc);
-      free(bc);
-      free(Wh);
-      free(bh);
-      free(feat);
-      return -1;
+    int head_ok = 0;
+    if (hg && ng == 96) {
+      /* Keep a pre-activation copy for broker (RMS+SILU inside HEADT). */
+      float *raw96 = malloc((size_t)96 * spat * sizeof(float));
+      if (raw96) {
+        memcpy(raw96, tmp96, (size_t)96 * spat * sizeof(float));
+        if (vae_broker_headt(ctx, tmp3, raw96, hg,
+                             (bh && nbh == 3) ? bh : NULL, 96, 3, lt, flh, flw,
+                             "decoder.head.2.weight",
+                             "vae.decoder.head.2.weight", cache,
+                             "vae.decoder.head.2", 1) == 0)
+          head_ok = 1;
+        free(raw96);
+      }
     }
+    if (!head_ok) {
+      rms_norm_ncdhw(tmp96, hg, 96, lt, flh, flw, 1e-6f);
+      silu_inplace(tmp96, (size_t)96 * spat);
+      if (vae_causal_conv3d_k3(tmp3, tmp96, Wh, (bh && nbh == 3) ? bh : NULL, 96,
+                                3, lt, flh, flw, cache, "vae.decoder.head.2") !=
+          0) {
+        free(hg);
+        free(owned96);
+        free(tmp3);
+        free(Wc);
+        free(bc);
+        free(Wh);
+        free(bh);
+        free(feat);
+        return -1;
+      }
+    }
+    free(hg);
     for (size_t s = 0; s < spat; s++)
       for (int c = 0; c < 3; c++)
         feat3[s * 3 + (size_t)c] = tmp3[(size_t)c * spat + s];
@@ -951,6 +2246,8 @@ static int vae_real_head_tip(wan_ctx *ctx, const float *feat_nchw, int C,
   if (!wan_gguf_has(ctx, "vae.decoder.conv1.weight") ||
       !wan_gguf_has(ctx, "vae.decoder.head.2.weight"))
     return -1;
+
+  (void)vae_headt_bank_all(ctx);
 
   size_t nw2 = 0, nb2 = 0;
   float *W2 = wan_load_tensor_f32(ctx, "vae.conv2.weight", &nw2);

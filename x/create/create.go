@@ -2,6 +2,7 @@ package create
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -712,12 +713,24 @@ func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer La
 
 	// Track open extractors so we can close them after flushing groups
 	var openExtractors []*safetensors.TensorExtractor
+	// Paths kept open for packed expert readers; removed after packing finishes.
+	var deferredRemove []string
 
 	closeExtractors := func() {
 		for _, ext := range openExtractors {
 			ext.Close()
 		}
 		openExtractors = nil
+	}
+
+	// Drop source shards after their tensors are in blobs so large MLX imports
+	// peak near 1× disk instead of download+blob copy.
+	reclaimSource := func(path, name string) {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fn(fmt.Sprintf("warning: could not reclaim %s: %v", name, err))
+			return
+		}
+		fn(fmt.Sprintf("reclaimed %s", name))
 	}
 
 	entries, err := os.ReadDir(modelDir)
@@ -893,8 +906,10 @@ func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer La
 		if hasExpertTensors {
 			// Keep extractor open - readers still reference its file handle
 			openExtractors = append(openExtractors, extractor)
+			deferredRemove = append(deferredRemove, stPath)
 		} else {
 			extractor.Close()
+			reclaimSource(stPath, entry.Name())
 		}
 	}
 
@@ -913,6 +928,9 @@ func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer La
 		}
 	}
 	closeExtractors()
+	for _, p := range deferredRemove {
+		reclaimSource(p, filepath.Base(p))
+	}
 
 	// Process all JSON config files
 	for _, entry := range entries {

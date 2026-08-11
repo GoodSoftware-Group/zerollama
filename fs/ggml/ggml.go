@@ -433,10 +433,6 @@ func (t TensorType) BlockSize() uint64 {
 		tensorTypeIQ4_NL,
 		4, TensorTypeMXFP4:
 		return 32
-	case TensorTypeQ2_0, TensorTypeNVFP4:
-		return 64
-	case TensorTypeQ1_0:
-		return 128
 	default:
 		return 256
 	}
@@ -510,15 +506,6 @@ func (t TensorType) TypeSize() uint64 {
 		return 2
 	case 4, TensorTypeMXFP4:
 		return 1 + blockSize/2
-	case TensorTypeNVFP4:
-		// block_nvfp4: 4×UE4M3 scales + 32 packed nibbles (QK=64)
-		return 4 + blockSize/2
-	case TensorTypeQ1_0:
-		// block_q1_0: fp16 scale + 16 packed bits (QK=128)
-		return 2 + blockSize/8
-	case TensorTypeQ2_0:
-		// block_q2_0: fp16 scale + 16×2-bit codes (QK=64)
-		return 2 + blockSize/4
 	default:
 		return 0
 	}

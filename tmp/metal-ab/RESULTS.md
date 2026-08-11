@@ -35,6 +35,10 @@ Logs: `tmp/metal-ab/v2/*.log` · JSON: `tmp/metal-ab/l2-rotorquant-metal-ab.json
 
 Logs: `tmp/metal-ab/d1b/*.v3.log`
 
+## Related: Lab Q (Qwen2.5 TQ + MLX)
+
+See [`tmp/qwen25-tq/RESULTS.md`](../qwen25-tq/RESULTS.md) — andrei-ace adaptive `-ctk tqk` on Qwen2.5-1.5B (VRAM/quality win, 0.40× f16 tg); MLX A/B does not beat Metal here.
+
 ## Verdict (Metal)
 
 **No-merge planar/iso** — confirmed on quiet GPU.

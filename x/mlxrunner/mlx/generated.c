@@ -10,7 +10,6 @@ size_t (*mlx_dtype_size_)(mlx_dtype dtype) = NULL;
 int (*mlx_array_tostring_)(mlx_string* str, const mlx_array arr) = NULL;
 mlx_array (*mlx_array_new_)(void) = NULL;
 int (*mlx_array_free_)(mlx_array arr) = NULL;
-int (*mlx_array_detach_)(mlx_array arr) = NULL;
 mlx_array (*mlx_array_new_bool_)(bool val) = NULL;
 mlx_array (*mlx_array_new_int_)(int val) = NULL;
 mlx_array (*mlx_array_new_float32_)(float val) = NULL;
@@ -2393,7 +2392,6 @@ int mlx_dynamic_load_symbols(mlx_dynamic_handle handle) {
     CHECK_LOAD(handle, mlx_array_tostring);
     CHECK_LOAD(handle, mlx_array_new);
     CHECK_LOAD(handle, mlx_array_free);
-    OPTIONAL_LOAD(handle, mlx_array_detach);
     CHECK_LOAD(handle, mlx_array_new_bool);
     CHECK_LOAD(handle, mlx_array_new_int);
     CHECK_LOAD(handle, mlx_array_new_float32);

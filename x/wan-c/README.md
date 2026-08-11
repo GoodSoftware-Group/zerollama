@@ -38,8 +38,8 @@ With `uma_daemon` running, omit `UMA_WAN_LOCAL`. Stages submit **`qos=batch`** r
 | Stage | Broker ops used now | Still open |
 |-------|---------------------|------------|
 | T5 | UMT5 **24** + SPM; trim-to-ids (Wan) / `WAN_T5_PAD=1`+mask@512 | — |
-| DiT | Full DiT (**30**) + CFG + UniPC≤3; RoPE3D `Gt/Gh/Gw` | — |
-| VAE | Real tip + causal + Wan RMS + upsample3d Rep/cache + Accelerate mid-attn | — |
+| DiT | Full DiT (**30**) + CFG + UniPC≤3; RoPE3D `Gt/Gh/Gw`; persist BANK | — |
+| VAE | Real tip + **HEADT BANK** middle(+attn)→ups.4→rs11→u12–14→head (**35 keys**) | — |
 
 T5 matches Wan: encode real tokens (optional `WAN_T5_PAD=1` + mask), DiT sees
 trimmed context. Fast lab: `WAN_DIT_BLOCKS=1 WAN_T5_BLOCKS=2`. `--cfg 1` skips uncond.
@@ -100,14 +100,54 @@ Default DiT depth is **30** with safetensors (`WAN_DIT_BLOCKS` to cap).
 | **64×64** | **5** | **25** | `2×4×4` | **host AdaLN+QKV+FFN GEMM** (broker ATTN/RoPE only) — `ok_nontrivial` (~21 min; all 25 UniPC steps; mean≈120) |
 | 64×64 | 5 | **8** | `2×4×4` | **Accelerate GEMM + host weight borrow-cache** — `ok_nontrivial` (**~108 s**; miss=240 hit=3600 ~4.2 GiB; mean≈125) |
 | 160×96 | 5 | **8** | `2×6×10` | same cache — `ok_nontrivial` (**~5.8 min**; was ~8 min pre-cache; mean≈121) |
+| 64×64 | 5 | **8** | `2×4×4` | **persist + broker AdaLN/QK/`FFN_GELU`/gates** — `ok` (**~34–37 s**; was ~108 s host) |
+| 160×96 | 5 | **8** | `2×6×10` | same — `ok` (**~46 s**; was ~5.8 min host-cache) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ no per-block token mirror + broker norm3** — `ok` (**~28 s**) |
+| **160×96** | **5** | **8** | `2×6×10` | same — `ok` (**~36 s**) |
+| **320×192** | **5** | **8** | `2×12×20` | same — `ok` (**~64 s**; was ~23 min @ steps=1 pre-persist/SGEMM) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ VAE HEADT BANK** (F1001–F1004) — `ok` (**~29 s**) |
+| **320×192** | **5** | **8** | `2×12×20` | same HEADT — `ok` (**~63 s**) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ F1005 u12→u14 BANK** (10 keys) — `ok` (**~31 s**) |
+| **832×480** | **5** | **1** | `2×30×52` | F1005 HEADT — `ok` (**~146 s**; was ~2.4 h @ cfg1) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ up8–10 BANK** (16 keys; F1006+) — `ok` (**~29 s**) |
+| **832×480** | **5** | **8** | `2×30×52` | same — `ok` (**~7.3 min**) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ middle→HEADT BANK** (30 keys) — `ok` (**~29 s**) |
+| **320×192** | **5** | **8** | `2×12×20` | same — `ok` (**~63 s**) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ ups.4 expand broker** (33 keys) — `ok` (**~29 s**) |
+| **64×64** | **5** | **8** | `2×4×4` | **+ middle.1 attn broker** (35 keys; F0964) — `ok` (**~30 s**) |
+| **160×96** | **1** | **8** | `2×6×10` | **CFG A/B** (persist+HEADT) — `ok` (**~24 s**; mean≈75 R↑B↑; mad≈25) |
+| **160×96** | **5** | **8** | `2×6×10` | same prompt — `ok` (**~37 s**; mean≈139 R≫B; mad≈21) |
+| **160×96** | **5** | **8** | `2×6×10` | **speed Phase1** (BANK_BINDS+sticky BUF+FFN≤4k) — `ok` (**~32 s**) |
+| **832×480** | **5** | **8** | `2×30×52` | same Phase1 + `WAN_PROFILE=1` — `ok` (**~408 s**; was ~440 s; DiT~76% VAE~24%) |
+
+**CFG A/B (160×96, s8, “a red apple on a wooden table”):** pairwise
+MAD≈**115** / PSNR≈**5.3 dB** — CFG=5 is not a near-duplicate of CFG=1
+(warmer/brighter chroma; R mean 170 vs 87). PPMs:
+`dumps/cfg1_160_s8/`, `dumps/cfg5_160_s8/`.
+
+**Scene (same res/s8/cfg5, richer apple prompt):** `ok` (**~52 s**; mean≈67
+std≈38 mad≈8; R>G≫B). PPMs `dumps/scene_apple_160_s8/`. Frames are still
+**color soup** (no recognizable apple/table at 160×96) — CFG + pipeline are
+alive; visual parity / structure is the soft gap.
+
+**Speed vs Python MPS (832×480 s8 cfg5):** wan-c **~408 s** vs Python **~210 s**
+(~1.9×). Phase1 cut BIND/PUT tax; same-device RoPE Q+K fuse kept; mixed
+`@CPU!`/`@GPU!` ASCII mega-recipes **regress** (~426 s). Client warm HEADT
+(feat_cache pad + CONV3D) rematches but **regresses VAE** (~115 s vs ~97 s) —
+opt-in `WAN_VAE_WARM_HEADT=1` only. Remaining wall needs toolkit `DIT_BLOCK` /
+flash ATTN / on-broker feat_cache. Details:
+[docs/wan-c-speed-gap.md](../docs/wan-c-speed-gap.md).
 
 Artifacts: `dumps/signoff_{…,64_cfg5_s8_cache,160_cfg5_s8_cache,64_cfg5_s25,…}.*`
++ `dumps/cfg{1,5}_160_s8/`, `dumps/scene_apple_160_s8/`.
 
-Delta this continue: **fixed DiT head unpatch layout** (Wan
-`view(…,pt,ph,pw,C)` / channel-innermost — was C-major). Step-0 A/B with
-matched noise+T5: **dit_pred cosine≈0.999** (was ≈0.05); block-0 stages
-already matched. Also: pad T5→512 pre-MLP; UniPC σ₀=warp(0.999); double
-sinusoid. Soft: multi-step / CFG=5 A/B; recognizable scenes; CFG=5 @832.
+Delta: Phase1 + sticky tctx + gated resid + GPU LN/AdaLN/ROPE3 + self/cross
+sticky GRAPHs + VAE dual-HEADT (`WAN_VAE_NO_RESID_FUSE=1` /
+`WAN_DIT_NO_SELF_FUSE=1` / `WAN_DIT_NO_CROSS_FUSE=1` /
+`WAN_DIT_NO_GATED_RESID=1` rollback). Soft: true Metal half-block CB. Scorecard:
+[docs/wan-c-blowaway-ideas.md](../docs/wan-c-blowaway-ideas.md).
+
+Note: 832 s2 brick7 `graph` n=639, wall ~152 s (flat); rematch bit-exact @160.
 
 ## Modules
 

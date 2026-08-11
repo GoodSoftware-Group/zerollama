@@ -817,6 +817,18 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
             idx += res - 1;
         }
 
+        // ANE force sync-and-resume may have replaced the command buffer.
+        {
+            id<MTLCommandBuffer> live = (id<MTLCommandBuffer>) ggml_metal_op_cmd_buf(ctx_op);
+            if (live && live != ctx->cmd_bufs[cb_idx].obj) {
+                [ctx->cmd_bufs[cb_idx].obj release];
+                ctx->cmd_bufs[cb_idx].obj = live;
+                [live retain];
+                ctx->cmd_buf_last = live;
+            }
+            cmd_buf = ctx->cmd_bufs[cb_idx].obj;
+        }
+
         ggml_metal_op_free(ctx_op);
 
         if (cb_idx < 2 || ctx->abort_callback == NULL) {

@@ -25,6 +25,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [mtmd `grid_thw` handoff](./mtmd-grid-thw-handoff.md) — **why** client patch grids are hints-only until llama.cpp mtmd accepts them; Go seam + operator signals.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts; TI2V keyframes.
 * [Media uploads (`/v1/media`)](./media-uploads.md) — **why** session/label PUT + CAS (no client digests, no refcounts); **why** not model `blobs/`; keyframe workflow + `media_missing` recovery.
+* [wan-c vs Python MPS speed gap](./wan-c-speed-gap.md) — profile + Phase1 cuts + toolkit `DIT_BLOCK` / flash ATTN / feat_cache asks.
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.
 * [ComfyUI image backend](./comfyui-image-backend.md) — **why** orchestrate Comfy for agent edit/ControlNet/LoRA instead of porting every HF DiT to MLX; bindings, discovery, VRAM handoff, example workflow calibration.
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers; image drivers (`mlx-imagegen`, `external-image`, `comfyui`).

@@ -23,6 +23,9 @@ func QuantizationParams(quantization string) (groupSize, bits int, mode string) 
 		return 64, 6, "affine"
 	case "FP3", "Q3", "INT3":
 		return 64, 3, "affine"
+	case "FP2", "Q2", "INT2":
+		// mlx-lm 2-bit exports commonly use group_size 128 (e.g. bonsai).
+		return 128, 2, "affine"
 	case "":
 		return 0, 0, ""
 	default:
@@ -60,6 +63,19 @@ func ResolveLinearQuantParams(
 	tensorName string,
 	weight, scales *mlx.Array,
 ) (groupSize, bits int, mode string) {
+	// config.json quantization that matches packed shapes disambiguates
+	// 2-bit/gs128 vs 4-bit/gs64 (identical packed column counts). Prefer
+	// these model defaults over ambiguous/wrong blob TensorQuant guesses.
+	if defaultBits > 0 && defaultGroupSize > 0 {
+		dm := defaultMode
+		if dm == "" {
+			dm = "affine"
+		}
+		if dm == "affine" && affinePackedShapeMatches(weight, scales, defaultGroupSize, defaultBits) {
+			return defaultGroupSize, defaultBits, dm
+		}
+	}
+
 	groupSize, bits, mode, fromTensor := TensorQuantParams(
 		defaultGroupSize,
 		defaultBits,
@@ -67,6 +83,20 @@ func ResolveLinearQuantParams(
 		tensorQuant,
 		tensorName,
 	)
+
+	// Per-tensor metadata (OptIQ mixed 4/6/8) when defaults do not pack.
+	if fromTensor && mode == "affine" && bits > 0 && groupSize > 0 &&
+		affinePackedShapeMatches(weight, scales, groupSize, bits) {
+		return groupSize, bits, mode
+	}
+
+	// mlx-lm / ollama create often ships packed weight+scale without blob
+	// quant metadata. Treat companion scales as affine and infer (gs, bits)
+	// from shapes — otherwise QuantizedMatmul runs with bits=0 and returns
+	// an invalid array (BOOL/empty), which then panics inside compiled SwiGLU.
+	if mode == "" && weight != nil && scales != nil {
+		mode = "affine"
+	}
 
 	if mode == "affine" {
 		if inferredGroupSize, inferredBits, ok := InferAffineQuantParamsFromShapes(weight, scales, bits); ok {
@@ -120,6 +150,33 @@ func InferAffineQuantParamsFromShapes(weight, scales *mlx.Array, hintBits int) (
 		return 0, 0, false
 	}
 
+	type pair struct{ gs, bits int }
+	var matches []pair
+	for _, gs := range []int{128, 64, 32, 16} {
+		inFeatures := scalesCols * gs
+		if inFeatures <= 0 {
+			continue
+		}
+		for _, b := range []int{2, 3, 4, 6, 8} {
+			if hintBits > 0 && b != hintBits {
+				continue
+			}
+			if weightCols == inFeatures*b/32 {
+				matches = append(matches, pair{gs, b})
+			}
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].gs, matches[0].bits, true
+	}
+	if hintBits > 0 {
+		for _, m := range matches {
+			if m.bits == hintBits {
+				return m.gs, m.bits, true
+			}
+		}
+	}
+
 	groupSize4 := weightCols * 8 / scalesCols
 	groupSize8 := weightCols * 4 / scalesCols
 
@@ -128,25 +185,6 @@ func InferAffineQuantParamsFromShapes(weight, scales *mlx.Array, hintBits int) (
 		return 32, 4, true
 	case groupSize8 == 64:
 		return 64, 8, true
-	case groupSize4 == 64 && groupSize8 == 32:
-		if hintBits == 8 {
-			return 32, 8, true
-		}
-		if hintBits == 4 {
-			return 64, 4, true
-		}
-	}
-
-	for _, gs := range []int{64, 32, 128, 16} {
-		inFeatures := scalesCols * gs
-		if inFeatures <= 0 {
-			continue
-		}
-		for _, bits := range []int{3, 4, 6, 8} {
-			if weightCols == inFeatures*bits/32 {
-				return gs, bits, true
-			}
-		}
 	}
 
 	if isCommonGroupSize(groupSize4) && !isCommonGroupSize(groupSize8) {
@@ -156,6 +194,7 @@ func InferAffineQuantParamsFromShapes(weight, scales *mlx.Array, hintBits int) (
 		return groupSize8, 8, true
 	}
 
+	// Ambiguous (e.g. 2/128 vs 4/64) — caller must supply config defaults.
 	return 0, 0, false
 }
 

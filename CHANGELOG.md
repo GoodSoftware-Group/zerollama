@@ -15,6 +15,18 @@ All notable changes to this project are documented in this file. The format is b
 - Limits: image PUT 25 MiB, video PUT 256 MiB, video-create JSON 8 MiB; `rife` backend reserved
 - Docs: [media-uploads.md](docs/media-uploads.md), [wan-t2v.md](docs/wan-t2v.md); skill `generate-video`; OpenAPI media routes
 
+### GPT-OSS mxfp4-q8 MoE router quant (Aug 2026)
+
+**Why:** `zerollama bench gpt-oss-120b:mxfp4-q8` panicked in `SparseMoE.route` (`index out of range [0] with length 0`) — empty router logits.
+
+**What:** Per-tensor quantization overrides that omit `mode` no longer inherit global `mxfp4` when bits are not 4 (mlx-lm mixed exports: routers `bits: 8` → affine/int8). Clearer MoE route shape errors; `ls image_gen` alias for `CapabilityImage`.
+
+### `zerollama ls image_gen` alias (Aug 2026)
+
+**Why:** Capability wire value stays `image` (vision took the short name for understanding), but operators expect a `_gen` pair with `video_gen`.
+
+**What:** `zerollama ls image_gen` / `image-gen` filter the same as `ls image` (`CapabilityImage`). Wire capability unchanged.
+
 ### Remote storage RDMA throughput (mlx4 bounce path) (Aug 2026)
 
 **Why:** First remote RDMA READ was only ~30% above 10 GbE TCP (~182 vs ~137 MiB/s) despite 40 Gb/s QDR — serial READ depth 1, per-window `ibv_reg_mr`, and bounce copies left the link idle.
@@ -50,7 +62,6 @@ All notable changes to this project are documented in this file. The format is b
 - GGUF catalog + `GET /v1/tensor/…`; `tensorproto` spec for future stream/runtime paging
 
 See [docs/remote-model-storage.md](docs/remote-model-storage.md).
-
 
 ### `zerollama ls` CTX column (host-aware) (Aug 2026)
 

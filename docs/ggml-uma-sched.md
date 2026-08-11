@@ -1,6 +1,6 @@
 # GGUF ggml Metal gated through UMA broker (M21)
 
-**Status:** PoC (Jul 2026). **Admission only** — same machine-wide `uma_daemon` as [mlx-uma-sched.md](./mlx-uma-sched.md). Does **not** run ggml ops inside `uma_sched`.
+**Status:** Shipped (Jul 2026). Operator ladder: [`mac_uma_signoff.sh`](../scripts/phase/mac_uma_signoff.sh). **Admission only** — same machine-wide `uma_daemon` as [mlx-uma-sched.md](./mlx-uma-sched.md). Does **not** run ggml ops inside `uma_sched`.
 
 ```text
 ollamarunner / llamarunner (Darwin Metal)

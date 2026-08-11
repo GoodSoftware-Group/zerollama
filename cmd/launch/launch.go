@@ -702,8 +702,9 @@ func (c *launcherClient) managedSingleConfigureModels(ctx context.Context, manag
 		return models, nil
 	}
 
-	// WHY inventory.Load not loadSelectableModels: the picker merges not-downloaded
-	// recommendations (gemma4, qwen3.5, …) into selectable items. OMP models.yml
+	// WHY inventory.Load not loadSelectableModels: the picker uses live /api/tags
+	// (local + LM Studio merge). Recommended ranking only applies to names already
+	// in inventory — phantoms are not injected. OMP models.yml
 	// should only list tags the daemon actually knows about — not aspirational pulls.
 	inventory, err := c.modelInventory().Load(ctx)
 	if err != nil {

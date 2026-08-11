@@ -1125,7 +1125,7 @@ func newMTPTestSession(caches []cache.Cache) (*cacheSession, chan CompletionResp
 func testSpeculationSession(r *Runner, caches []cache.Cache) *speculationSession {
 	if r.spec != nil {
 		r.spec.bind(caches)
-		return &speculationSession{spec: r.spec, drafter: r.spec.drafter.open()}
+		return &speculationSession{spec: r.spec, drafter: r.spec.drafter.open(0)}
 	}
 	s := &speculation{r: r, caches: caches, targets: caches}
 	return &speculationSession{spec: s, drafter: nopDrafter{}}
@@ -1152,7 +1152,7 @@ func scriptedCandidates(r *Runner, tokens []int32) *draftCandidates {
 		prev = tok
 	}
 	s := &speculation{r: r, draft: &fakeMTPDraft{predict: chain}}
-	d := (&mtpDrafter{spec: s}).open()
+	d := (&mtpDrafter{spec: s}).open(0)
 	d.committed(mlx.FromValues([]int32{0}, 1, 1), mlx.Zeros(mlx.DTypeFloat32, 1, 1, mtpTestVocab), 0)
 	return d.propose(mlx.FromValues([]int32{0}, 1), len(tokens))
 }

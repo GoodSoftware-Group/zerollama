@@ -1466,6 +1466,55 @@ components:
           description: Documents MLX/L3 scope and the idle-slot limitation
         can_pin:
           type: boolean
+    CacheWarmRequest:
+      type: object
+      required: [model, prompt, prompt_cache_key]
+      description: >
+        Boot-time / preload prefill for prompt_cache_key. Runs the prefix
+        decode with no useful sampling; does not return generated text.
+        Safetensors (MLX) models warm via the native runner trie; GGUF models
+        warm via the Python runtime L3 slot path.
+      properties:
+        model:
+          type: string
+          description: Required. Resolves MLX safetensors or GGUF on-disk path
+        prompt:
+          type: string
+          description: System prompt / agent template text to prefill into the KV cache
+        prompt_cache_key:
+          type: string
+          description: Stable thread/session key (same as request prompt_cache_key)
+        num_ctx:
+          type: integer
+          description: Optional context size override for admission/sizing
+        pin:
+          type: boolean
+          description: Also create an /api/cache/pin lease for this key in the same call
+        ttl_seconds:
+          type: integer
+          description: Lease TTL when pin=true; defaults to PinDefaultTTL when omitted
+        options:
+          type: object
+          description: Extra runtime options merged in verbatim (e.g. cache_salt)
+          additionalProperties: true
+    CacheWarmResponse:
+      type: object
+      properties:
+        warmed:
+          type: boolean
+        prompt_cache_key:
+          type: string
+        kv_decode_steps:
+          type: integer
+          description: In-process decode step count for the prefill (null when not tracked)
+        pin_id:
+          type: string
+          description: Present only when pin=true was requested
+        expires_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
     ChatCompletionsBatchRequestItem:
       type: object
       description: >
@@ -2856,6 +2905,57 @@ paths:
           description: Released
         "404":
           description: Cache pin not found or expired
+  /api/cache/warm:
+    post:
+      summary: Prefill and (optionally) pin an L3 slot without generating text
+      description: >
+        Runs a real prefix decode for prompt_cache_key and returns as soon as
+        the prefill completes — it does not return generated tokens. Safetensors
+        (MLX) models warm via scheduleRunner + Completion(num_predict=1) into the
+        MLX trie; GGUF models warm via the Python runtime L3 slot path. Why not
+        just POST /api/generate with a throwaway num_predict: warm is a narrow
+        boot-time contract (agent template preload, fleet warm-up) so callers
+        don't need to discover a num_predict=1 convention, pay for
+        sampling/logging as if it were a real completion, or guess whether the
+        prefix actually landed in a pinned slot/trie. Set pin=true to also
+        create an /api/cache/pin lease in the same call.
+      operationId: cacheWarm
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/cache/warm -d '{
+              "model": "llama3.2:3b",
+              "prompt": "<system prompt / agent template>",
+              "prompt_cache_key": "hermes:thread:42",
+              "pin": true,
+              "ttl_seconds": 3600
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CacheWarmRequest"
+      responses:
+        "200":
+          description: Prefix decoded (and pinned, if requested)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheWarmResponse"
+        "400":
+          description: Missing prompt / prompt_cache_key or invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "502":
+          description: Runtime sidecar unreachable or rejected the warm request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /api/metrics:
     get:
       summary: Prometheus metrics

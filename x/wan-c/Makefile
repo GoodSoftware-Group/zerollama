@@ -26,6 +26,7 @@ WAN_SRCS = \
 	encode_mp4.c \
 	wan_graph.c \
 	wan_weights.c \
+	wan_profile.c \
 	pipeline_t2v.c \
 	t5_umt5.c \
 	dit_wan.c \
@@ -89,8 +90,8 @@ tests/test_validate: tests/test_validate.o wan_config.o
 tests/test_gguf_roundtrip: tests/test_gguf_roundtrip.o gguf_min.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_gguf_roundtrip.o gguf_min.o
 
-tests/test_ops_wire: tests/test_ops_wire.o wan_graph.o wan_weights.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o $(UMA_WAN_OPS_O)
-	$(CLANG) $(CFLAGS) -o $@ tests/test_ops_wire.o wan_graph.o wan_weights.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o $(UMA_WAN_OPS_O) $(LDFLAGS)
+tests/test_ops_wire: tests/test_ops_wire.o wan_graph.o wan_weights.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o wan_profile.o $(UMA_WAN_OPS_O)
+	$(CLANG) $(CFLAGS) -o $@ tests/test_ops_wire.o wan_graph.o wan_weights.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o wan_profile.o $(UMA_WAN_OPS_O) $(LDFLAGS)
 
 tests/test_tokenizer_spm: tests/test_tokenizer_spm.o tokenizer_spm.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_tokenizer_spm.o tokenizer_spm.o

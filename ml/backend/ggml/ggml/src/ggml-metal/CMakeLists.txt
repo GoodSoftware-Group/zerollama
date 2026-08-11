@@ -13,6 +13,12 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-context.m
                          ggml-metal-ops.cpp
                          ggml-metal-tuning.cpp
+                         ane_ffn_policy.c
+                         ane_ffn_force_pack.c
+                         ane_ffn_force_tensors.c
+                         ane_ffn_force_swiglu_tensors.c
+                         ane_ffn_swiglu_names.c
+                         ane_ffn_swiglu_fuse.c
                         )
 
 target_link_libraries(ggml-metal PRIVATE

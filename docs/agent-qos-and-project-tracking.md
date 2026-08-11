@@ -2,7 +2,7 @@
 
 **Audience:** operators running multiple agent harnesses on one zerollama node; contributors wiring clients on MLX, GGUF/CUDA, llama-server, or vanilla Ollama.
 
-**Related:** [mlx-agent-prompts.md](./mlx-agent-prompts.md), [scheduling-vram-policy.md](./scheduling-vram-policy.md), [mlx-routing-policy.md](./mlx-routing-policy.md), [fleet-scheduling.md](./fleet-scheduling.md).
+**Related:** [mlx-agent-prompts.md](./mlx-agent-prompts.md), [openai-harness-qos-wire-shapes.md](./openai-harness-qos-wire-shapes.md) (M15c findings), [hermes-zerollama-gap.md](./hermes-zerollama-gap.md), [scheduling-vram-policy.md](./scheduling-vram-policy.md), [mlx-routing-policy.md](./mlx-routing-policy.md), [fleet-scheduling.md](./fleet-scheduling.md).
 
 ---
 
@@ -60,6 +60,10 @@ curl -s http://127.0.0.1:11434/api/version | jq '{
 
 **Why not MLX-only field names:** CUDA and llama-server paths share the same session gate and `/api/ps` metadata. Names like `mlx_session_class` remain as legacy aliases but new clients should use `options.zerollama`.
 
+**OpenAI `/v1/chat/completions`:** Prefer nesting under `options.zerollama` or `extra_body.zerollama` / `extra_body.options.zerollama`. Flat top-level (or flat `extra_body`) `qos_class` / `project_id` / `project_name` / … are also accepted — the OpenAI Python SDK promotes `extra_body` onto the HTTP root, and the server folds those keys into `options.zerollama` (including the Python runtime proxy path). Precedence: nested `options.zerollama` wins over top-level `zerollama`, which wins over flat aliases. Invented top-level keys still 400 (trap 77).
+
+**Why flat aliases exist (M15c):** Hermes aux tasks used OpenAI `extra_body` and hit trap 77 while nested `/api/chat` worked for the same QoS contract. Full wire-shape findings: [openai-harness-qos-wire-shapes.md](./openai-harness-qos-wire-shapes.md).
+
 | Field | Purpose | Why |
 |-------|---------|-----|
 | `qos_class` | `interactive` \| `auxiliary` \| `background` | Prevents background batch jobs from clobbering live agent KV |
@@ -71,6 +75,24 @@ curl -s http://127.0.0.1:11434/api/version | jq '{
 | `cache_scope` | `thread` \| `shared` \| `auto` | MLX trie vs shared branch policy |
 | `cache_level` | `auto` \| `gpu` \| `dram` \| `disk` | KV tier (`auto` = heuristics; `gpu`/`dram` = no disk; `disk` = allow blobs when policy permits) |
 | `cache_reset` | `true` | Force miss under the **same** `prompt_cache_key` this request |
+
+### `preempted_reason` (M15e)
+
+**Why:** Hermes needs to know whether a failed/canceled call waited behind higher-priority QoS versus a generic cancel or queue-full busy — so it can retry faster or escalate.
+
+When a request is **aborted while deferred** (client cancel or per-call timeout during `waitForSlot` / global defer / fulfillment wait), error bodies may include:
+
+```json
+{"error":"request canceled","preempted_reason":"lower_wait_interactive"}
+```
+
+Typical `preempted_reason` values: `lower_wait_interactive`, `wait_parent`, `fulfillment_exclusive`, `interactive_preempt_cooldown`, and other `mlxDeferPolicy` / fulfillment reason strings.
+
+**Not mid-stream hard preemption for ggml/Python:** an in-flight background generation on those paths is not hard-killed when interactive admits; wait-abort fields only explain *wait abort* / busy paths.
+
+**M15f (MLX soft mid-stream):** when interactive admits and a lower-class session is **inflight** on the same model key, the gate cancels that request. The victim’s terminal stream chunk is `done_reason: "preempted"` + `preempted_reason` (OpenAI `finish_reason: "preempted"`). Hermes must treat that as retryable incomplete output — not a finished tool call.
+
+**Also:** per-call `timeout` → HTTP **504** `{"error":"request timeout","timeout_seconds":N}` (may also carry `preempted_reason` if the deadline fired while deferred). See [hermes-gap-closure-findings.md](./hermes-gap-closure-findings.md).
 
 ### Fulfillment modes (`options.zerollama.fulfillment`)
 
@@ -293,7 +315,9 @@ Doc: [mlx-agent-prompts.md](./mlx-agent-prompts.md), [gpu-profiles-l3.md](./gpu-
 | Inference path detection | `server/inference_path.go` | Backend-aware gate / eliza branching |
 | QoS reserve + TOCTOU claim | `server/schedule_qos.go` | Claim before GetRunner |
 | Session gate + key hot-map | `server/mlx_sidecar_gate.go` | Multiplex `wait_parent`; primary from keyHot |
-| QoS parse + version caps | `server/mlx_qos.go` | `cache_reset` / `cache_level` + progressive probe |
+| QoS parse + version caps | `server/mlx_qos.go` | `cache_reset` / `cache_level` + progressive probe; advertises flat OpenAI aliases |
+| OpenAI bind + fold (M15c) | `openai/chat_extras.go`, `openai/chat_unknown_fields.go` | SDK-flattened `extra_body` → `options.zerollama`; trap 77 allowlist |
+| Runtime v1 options forward | `server/runtime_manifest.go` `runtimeV1ProxyOptions` | Sidecar must see folded zerollama (not only Go routing) |
 | Agent cache / eliza gating | `server/agent_prompt_cache.go` | Tier-2 metadata only when harness hints |
 | MLX trie reset | `x/mlxrunner/cache.go` | `cacheReset` skips live extend + trie hit |
 | GGUF admission + hard reset | `runtime/runtime/engine.py` | Deny resume; skip Radix; epoch + seq clear |

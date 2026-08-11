@@ -36,6 +36,7 @@ package mlx
 import "C"
 
 import (
+	"fmt"
 	"runtime"
 
 	"github.com/ollama/ollama/x/uma"
@@ -55,11 +56,9 @@ func Version() string {
 	return C.GoString(C.mlx_string_data(str))
 }
 
-// mlxCheck locks the goroutine to its OS thread, clears the captured error
-// state, calls fn, and panics with the captured message if fn returns non-zero.
-// The thread lock ensures the thread-local error state is read from the same
-// thread that executed the call.
-func mlxCheck(fallback string, fn func() C.int) {
+// mlxCall locks the goroutine to its OS thread so the thread-local error state
+// is read from the same thread that executed fn.
+func mlxCall(fallback string, fn func() C.int) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -69,7 +68,16 @@ func mlxCheck(fallback string, fn func() C.int) {
 		if msg == "" {
 			msg = fallback
 		}
-		panic("mlx: " + msg)
+		return fmt.Errorf("mlx: %s", msg)
+	}
+	return nil
+}
+
+// mlxCheck panics with the captured MLX error. Most array operations cannot
+// recover from a failed graph construction or evaluation.
+func mlxCheck(fallback string, fn func() C.int) {
+	if err := mlxCall(fallback, fn); err != nil {
+		panic(err.Error())
 	}
 }
 

@@ -87,7 +87,7 @@ func summarizeWidthCrossover(seq int, widths []int, points []ANEPrefillCompareRe
 }
 
 // ProbeANEPrefillWidthCrossover scans IC=OC widths at fixed SEQ.
-func ProbeANEPrefillWidthCrossover(ctx context.Context, seq int, widths []int, quick, aneOnly bool) (ANEPrefillCrossoverResult, error) {
+func ProbeANEPrefillWidthCrossover(ctx context.Context, seq int, widths []int, quick, aneOnly bool, variant string) (ANEPrefillCrossoverResult, error) {
 	if seq <= 0 {
 		seq = 512
 	}
@@ -104,20 +104,21 @@ func ProbeANEPrefillWidthCrossover(ctx context.Context, seq int, widths []int, q
 		var pt ANEPrefillCompareResult
 		var err error
 		if aneOnly {
-			aneRes, aerr := ProbeANEPrefillBench(ctx, ic, ic, seq, quick)
+			aneRes, aerr := ProbeANEPrefillBenchVariant(ctx, ic, ic, seq, quick, variant)
 			pt = ANEPrefillCompareResult{
-				OK:     aerr == nil,
-				IC:     ic,
-				OC:     ic,
-				Seq:    seq,
-				GFLOP:  PrefillMatmulGFLOP(ic, ic, seq),
-				ANE:    aneRes,
-				Faster: "ane",
-				Note:   "ane_only — no Metal/MPS legs (GPU busy safe)",
+				OK:      aerr == nil,
+				IC:      ic,
+				OC:      ic,
+				Seq:     seq,
+				Variant: variant,
+				GFLOP:   PrefillMatmulGFLOP(ic, ic, seq),
+				ANE:     aneRes,
+				Faster:  "ane",
+				Note:    "ane_only — no Metal/MPS legs (GPU busy safe)",
 			}
 			err = aerr
 		} else {
-			pt, err = ProbeANEPrefillCompareFull(ctx, ic, ic, seq, quick, true)
+			pt, err = ProbeANEPrefillCompareFull(ctx, ic, ic, seq, quick, true, variant)
 		}
 		points = append(points, pt)
 		if err != nil && firstErr == nil {
@@ -131,6 +132,9 @@ func ProbeANEPrefillWidthCrossover(ctx context.Context, seq int, widths []int, q
 		out.MetalWins = 0
 		out.ANEWins = len(points)
 	}
+	if variant != "" {
+		out.Note = strings.TrimSpace(out.Note + "; ane variant=" + variant)
+	}
 	if firstErr != nil {
 		out.OK = false
 		out.Error = firstErr.Error()
@@ -140,7 +144,7 @@ func ProbeANEPrefillWidthCrossover(ctx context.Context, seq int, widths []int, q
 }
 
 // ProbeANEPrefillWidthCrossoverForModel scans around a model embedding width.
-func ProbeANEPrefillWidthCrossoverForModel(ctx context.Context, preferred string, seq int, widths []int, quick, fullEmbed, aneOnly bool) (ANEPrefillCrossoverResult, error) {
+func ProbeANEPrefillWidthCrossoverForModel(ctx context.Context, preferred string, seq int, widths []int, quick, fullEmbed, aneOnly bool, variant string) (ANEPrefillCrossoverResult, error) {
 	entries, err := ListANEModelInventory()
 	if err != nil {
 		return ANEPrefillCrossoverResult{}, err
@@ -158,7 +162,7 @@ func ProbeANEPrefillWidthCrossoverForModel(ctx context.Context, preferred string
 	if len(widths) == 0 {
 		widths = crossoverWidthsAround(embed, quick)
 	}
-	out, err := ProbeANEPrefillWidthCrossover(ctx, seq, widths, quick, aneOnly)
+	out, err := ProbeANEPrefillWidthCrossover(ctx, seq, widths, quick, aneOnly, variant)
 	if err != nil {
 		return out, err
 	}
@@ -185,15 +189,15 @@ func crossoverWidthsAround(embed int, quick bool) []int {
 }
 
 // RunANEPrefillCrossoverJSON writes width crossover JSON to w.
-func RunANEPrefillCrossoverJSON(ctx context.Context, w io.Writer, preferred string, seq int, widths []int, quick, fullEmbed, aneOnly bool) error {
+func RunANEPrefillCrossoverJSON(ctx context.Context, w io.Writer, preferred string, seq int, widths []int, quick, fullEmbed, aneOnly bool, variant string) error {
 	var (
 		res ANEPrefillCrossoverResult
 		err error
 	)
 	if preferred != "" {
-		res, err = ProbeANEPrefillWidthCrossoverForModel(ctx, preferred, seq, widths, quick, fullEmbed, aneOnly)
+		res, err = ProbeANEPrefillWidthCrossoverForModel(ctx, preferred, seq, widths, quick, fullEmbed, aneOnly, variant)
 	} else {
-		res, err = ProbeANEPrefillWidthCrossover(ctx, seq, widths, quick, aneOnly)
+		res, err = ProbeANEPrefillWidthCrossover(ctx, seq, widths, quick, aneOnly, variant)
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

@@ -1,7 +1,6 @@
 package mlxrunner
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -122,6 +121,10 @@ type CompletionResponse struct {
 	EvalCount             int
 	EvalDuration          time.Duration
 
+	// Tokens is prompt+generated ids on the final Done chunk (F0686). Prefer
+	// this over re-tokenizing prompt+response text for context freezes.
+	Tokens []int32 `json:"tokens,omitempty"`
+
 	Logprobs []llm.Logprob
 
 	Error *api.StatusError `json:"error,omitempty"`
@@ -188,12 +191,14 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 		return api.StatusError{StatusCode: resp.StatusCode, ErrorMessage: strings.TrimSpace(string(respBody))}
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
+	decoder := json.NewDecoder(resp.Body)
+	for {
 		var raw CompletionResponse
-		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
-			slog.Debug("mlx response parse error", "error", err, "line", string(scanner.Bytes()))
-			continue
+		if err := decoder.Decode(&raw); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return wrapRunnerErr(ctx, err, c.status)
 		}
 
 		if raw.Error != nil {
@@ -211,6 +216,12 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 			EvalDuration:          raw.EvalDuration,
 			Logprobs:              raw.Logprobs,
 		}
+		if len(raw.Tokens) > 0 {
+			cresp.Tokens = make([]int, len(raw.Tokens))
+			for i, t := range raw.Tokens {
+				cresp.Tokens[i] = int(t)
+			}
+		}
 		if raw.PrefillProcessed > 0 || raw.PrefillTotal > 0 {
 			cresp.PrefillProcessed = raw.PrefillProcessed
 			cresp.PrefillTotal = raw.PrefillTotal
@@ -221,11 +232,6 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 			return nil
 		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		return wrapRunnerErr(ctx, err, c.status)
-	}
-	return nil
 }
 
 func wrapRunnerErr(ctx context.Context, err error, status *llm.StatusWriter) error {

@@ -22,6 +22,9 @@ ggml_metal_op_t ggml_metal_op_init(
 
 void ggml_metal_op_free(ggml_metal_op_t ctx);
 
+// Current MTLCommandBuffer (may change after ANE force sync-and-resume).
+ggml_metal_cmd_buf_t ggml_metal_op_cmd_buf(ggml_metal_op_t ctx);
+
 int ggml_metal_op_n_nodes(ggml_metal_op_t ctx);
 
 int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx);

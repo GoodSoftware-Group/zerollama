@@ -586,7 +586,7 @@ func checkTrieInvariants(t *testing.T, root *trieNode) {
 			}
 		}
 		// No two siblings should start with the same token.
-		seen := make(map[int32]bool)
+		seen := make(map[trieKey]bool)
 		for _, c := range n.children {
 			if len(c.tokens) > 0 {
 				first := c.tokens[0]

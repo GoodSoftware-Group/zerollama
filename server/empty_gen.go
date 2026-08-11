@@ -88,12 +88,13 @@ func isHostUnstableError(errMsg string) bool {
 // inferenceErrorExtra is optional timing/cause fields merged into error JSON.
 // Why: success responses already expose Metrics; bare {"error"} left agents blind on fail paths.
 type inferenceErrorExtra struct {
-	Cause              string
-	TotalDuration      time.Duration
-	LoadDuration       time.Duration
-	TimeToFirstToken   time.Duration
-	HasTTFT            bool
-	RetryAfter         int
+	Cause            string
+	PreemptedReason  string
+	TotalDuration    time.Duration
+	LoadDuration     time.Duration
+	TimeToFirstToken time.Duration
+	HasTTFT          bool
+	RetryAfter       int
 }
 
 func inferenceErrorMap(errMsg string, status int, extra inferenceErrorExtra) map[string]any {
@@ -103,6 +104,9 @@ func inferenceErrorMap(errMsg string, status int, extra inferenceErrorExtra) map
 	}
 	if extra.Cause != "" {
 		out["cause"] = extra.Cause
+	}
+	if extra.PreemptedReason != "" {
+		out["preempted_reason"] = extra.PreemptedReason
 	}
 	if extra.RetryAfter > 0 {
 		out["retry_after"] = extra.RetryAfter

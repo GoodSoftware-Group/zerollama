@@ -168,10 +168,18 @@ func llamaCppBinaryName(name, goos string) string {
 	return name
 }
 
-// isUsableLlamaServerBin reports whether path exists and is a regular executable file.
+// minUsableLlamaServerBytes rejects tiny shell/Mach-O stubs that pass the
+// executable bit but cannot actually run (broken installs + test placeholders).
+const minUsableLlamaServerBytes = 1 << 20 // 1 MiB
+
+// isUsableLlamaServerBin reports whether path is a regular executable large
+// enough to be a real llama-server binary (not a few-byte stub).
 func isUsableLlamaServerBin(path string) bool {
 	fi, err := os.Stat(path)
-	return err == nil && fi.Mode().IsRegular() && (fi.Mode()&0o111) != 0
+	if err != nil || !fi.Mode().IsRegular() || (fi.Mode()&0o111) == 0 {
+		return false
+	}
+	return fi.Size() >= minUsableLlamaServerBytes
 }
 
 func llamaCppBuildOutputRank(path string) int {

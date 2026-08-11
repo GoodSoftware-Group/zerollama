@@ -95,9 +95,11 @@ func modelUsesMLXScheduleOptimizations(m *Model) bool {
 // gateSessionKey maps client session metadata to the internal defer gate key.
 // MLX may rewrite auxiliary/background keys onto shared trie branches; GGUF and
 // llama-server keep explicit client keys so ps/L3 labels stay aligned.
+// Unkeyed GGUF must stay empty — inventing aux:/bg: branches stalls vanilla
+// chat behind MLX cooldowns (90s) and desyncs llama-server L3 labels.
 func gateSessionKey(m *Model, modelKey, rawKey string, class mlxSessionClass, qos mlxQoS) string {
 	key := strings.TrimSpace(rawKey)
-	if m != nil && !m.IsMLX() && key != "" {
+	if m != nil && !m.IsMLX() {
 		return key
 	}
 	return injectMLXSessionKey(modelKey, rawKey, class, qos)

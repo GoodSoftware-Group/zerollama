@@ -254,7 +254,9 @@ func confirmConfigEdit(runner Runner, paths []string) (bool, error) {
 	return ConfirmPrompt("Proceed?")
 }
 
-// buildModelList merges existing models with recommendations for selection UIs.
+// buildModelList merges existing models with recommendation ranking for selection UIs.
+// Why not inject missing recommendations: operators expect the picker to reflect
+// live /api/tags + LM Studio inventory, not hard-coded gemma4/qwen3.5 phantoms.
 func buildModelList(existing []LaunchModel, preChecked []string, current string) (items []ModelItem, orderedChecked []string, existingModels, cloudModels map[string]bool) {
 	existingModels = make(map[string]bool)
 	cloudModels = make(map[string]bool)
@@ -275,16 +277,6 @@ func buildModelList(existing []LaunchModel, preChecked []string, current string)
 		existingModels[displayName] = true
 		item := ModelItem{Name: displayName, Recommended: recommended[displayName], Description: recDesc[displayName]}
 		items = append(items, modelItemFromInventory(displayName, m, item))
-	}
-
-	for _, rec := range recommendedModels {
-		if existingModels[rec.Name] || existingModels[rec.Name+":latest"] {
-			continue
-		}
-		items = append(items, rec)
-		if isCloudModelName(rec.Name) {
-			cloudModels[rec.Name] = true
-		}
 	}
 
 	checked := make(map[string]bool, len(preChecked))

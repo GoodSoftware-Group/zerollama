@@ -1,4 +1,5 @@
 #include "uma_buf_load.h"
+#include "wan_profile.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +11,7 @@
 
 typedef struct uma_buf_entry {
   char name[128];
+  size_t nbytes;
   struct uma_buf_entry *next;
 } uma_buf_entry;
 
@@ -49,16 +51,24 @@ static uma_buf_entry *pool_find(uma_buf_pool *pool, const char *name) {
   return NULL;
 }
 
-static int pool_track(uma_buf_pool *pool, const char *name) {
-  if (pool_find(pool, name))
+static int pool_track_sz(uma_buf_pool *pool, const char *name, size_t nbytes) {
+  uma_buf_entry *e = pool_find(pool, name);
+  if (e) {
+    e->nbytes = nbytes;
     return 0;
-  uma_buf_entry *e = calloc(1, sizeof(*e));
+  }
+  e = calloc(1, sizeof(*e));
   if (!e)
     return -1;
   snprintf(e->name, sizeof(e->name), "%s", name);
+  e->nbytes = nbytes;
   e->next = pool->head;
   pool->head = e;
   return 0;
+}
+
+static int pool_track(uma_buf_pool *pool, const char *name) {
+  return pool_track_sz(pool, name, 0);
 }
 
 static void pool_untrack(uma_buf_pool *pool, const char *name) {
@@ -77,20 +87,48 @@ static void pool_untrack(uma_buf_pool *pool, const char *name) {
 int uma_buf_pool_alloc(uma_buf_pool *pool, const char *name, size_t nbytes) {
   if (!pool || !pool->client || !name)
     return -1;
-  if (pool_find(pool, name)) {
-    /* Re-assert on broker — tracked names can vanish under slot pressure
-     * (multi-step CFG), leaving the client pool stale. */
-    if (uma_client_buf_alloc(pool->client, name, nbytes, g_resp,
-                             sizeof(g_resp)) == 0)
-      return 0;
+  static int sticky = -1;
+  if (sticky < 0) {
+    const char *e = getenv("WAN_BUF_STICKY");
+    /* Default on: skip re-assert when size matches. WAN_BUF_STICKY=0 restores
+     * always-reassert (safer under extreme CAP pressure). */
+    if (e && e[0] && (e[0] == '0' || e[0] == 'n' || e[0] == 'N' ||
+                       e[0] == 'f' || e[0] == 'F'))
+      sticky = 0;
+    else
+      sticky = 1;
+  }
+  uma_buf_entry *e = pool_find(pool, name);
+  if (e && sticky && e->nbytes == nbytes && nbytes > 0) {
+    wan_profile_add_count("buf_skip", 1);
+    return 0;
+  }
+  if (e) {
+    if (!sticky && e->nbytes == nbytes && nbytes > 0) {
+      /* Sticky off: re-assert in place without free (legacy CAP recovery). */
+      double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+      if (uma_client_buf_alloc(pool->client, name, nbytes, g_resp,
+                               sizeof(g_resp)) == 0) {
+        if (wan_profile_on())
+          wan_profile_add_ms("buf_alloc", wan_profile_now_ms() - t0);
+        e->nbytes = nbytes;
+        return 0;
+      }
+    }
     (void)uma_client_bank_unbind(pool->client, name, g_resp, sizeof(g_resp));
     (void)uma_client_buf_free(pool->client, name, g_resp, sizeof(g_resp));
     pool_untrack(pool, name);
   }
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
   if (uma_client_buf_alloc(pool->client, name, nbytes, g_resp, sizeof(g_resp)) !=
-      0)
+      0) {
+    fprintf(stderr, "wan-c: BUF_ALLOC fail name=%s nbytes=%zu resp=%.120s\n",
+            name, nbytes, g_resp);
     return -1;
-  return pool_track(pool, name);
+  }
+  if (wan_profile_on())
+    wan_profile_add_ms("buf_alloc", wan_profile_now_ms() - t0);
+  return pool_track_sz(pool, name, nbytes);
 }
 
 int uma_buf_pool_ensure_put(uma_buf_pool *pool, const char *name,
@@ -99,20 +137,28 @@ int uma_buf_pool_ensure_put(uma_buf_pool *pool, const char *name,
     return -1;
   if (uma_buf_pool_put(pool, name, data, nbytes) == 0)
     return 0;
+  /* Broker may have dropped the slot — force free + fresh alloc. */
   (void)uma_buf_pool_free(pool, name);
   if (uma_buf_pool_alloc(pool, name, nbytes) != 0)
     return -1;
-  return uma_buf_pool_put(pool, name, data, nbytes);
+  if (uma_buf_pool_put(pool, name, data, nbytes) == 0)
+    return 0;
+  fprintf(stderr, "wan-c: BUF_PUT fail name=%s nbytes=%zu resp=%.120s\n", name,
+          nbytes, g_resp);
+  return -1;
 }
 
 int uma_buf_pool_put(uma_buf_pool *pool, const char *name, const void *data,
                      size_t nbytes) {
   if (!pool || !pool->client || !name)
     return -1;
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
   if (uma_client_buf_put(pool->client, name, data, nbytes, g_resp,
                          sizeof(g_resp)) != 0)
     return -1;
-  return pool_track(pool, name);
+  if (wan_profile_on())
+    wan_profile_add_ms("buf_put", wan_profile_now_ms() - t0);
+  return pool_track_sz(pool, name, nbytes);
 }
 
 int uma_buf_pool_put_weight(uma_buf_pool *pool, const char *name,
@@ -151,7 +197,76 @@ int uma_buf_pool_put_weight(uma_buf_pool *pool, const char *name,
   if (uma_client_bank_bind(pool->client, pool->bank, key, name, g_resp,
                            sizeof(g_resp)) != 0)
     return -1;
-  return pool_track(pool, name);
+  return pool_track_sz(pool, name, nbytes);
+}
+
+/* F0994: persist weight bytes under bank_key; no bind yet. */
+int uma_buf_pool_bank_put(uma_buf_pool *pool, const char *bank_key,
+                          const void *data, size_t nbytes) {
+  if (!pool || !pool->client || !bank_key || !bank_key[0] || !data || nbytes < 1)
+    return -1;
+  if (!pool->bank_open) {
+    if (uma_client_bank_open(pool->client, pool->bank, g_resp, sizeof(g_resp)) !=
+        0)
+      return -1;
+    pool->bank_open = 1;
+  }
+  if (uma_client_bank_alloc(pool->client, pool->bank, bank_key, nbytes, g_resp,
+                            sizeof(g_resp)) != 0)
+    return -1;
+  if (uma_client_bank_put(pool->client, pool->bank, bank_key, data, nbytes,
+                          g_resp, sizeof(g_resp)) != 0)
+    return -1;
+  return 0;
+}
+
+int uma_buf_pool_bank_bind(uma_buf_pool *pool, const char *bank_key,
+                           const char *as_name) {
+  if (!pool || !pool->client || !bank_key || !bank_key[0] || !as_name ||
+      !as_name[0])
+    return -1;
+  if (!pool->bank_open)
+    return -1;
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+  (void)uma_client_bank_unbind(pool->client, as_name, g_resp, sizeof(g_resp));
+  if (uma_client_bank_bind(pool->client, pool->bank, bank_key, as_name, g_resp,
+                           sizeof(g_resp)) != 0)
+    return -1;
+  if (wan_profile_on())
+    wan_profile_add_ms("bank_bind", wan_profile_now_ms() - t0);
+  return pool_track(pool, as_name);
+}
+
+int uma_buf_pool_bank_binds(uma_buf_pool *pool, const char *pairs) {
+  if (!pool || !pool->client || !pairs || !pairs[0] || !pool->bank_open)
+    return -1;
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+  if (uma_client_bank_binds(pool->client, pool->bank, pairs, g_resp,
+                            sizeof(g_resp)) != 0)
+    return -1;
+  if (wan_profile_on())
+    wan_profile_add_ms("bank_bind", wan_profile_now_ms() - t0);
+  /* Track each as= alias (pairs = key:as,key:as,…). */
+  const char *p = pairs;
+  while (*p) {
+    const char *colon = strchr(p, ':');
+    if (!colon)
+      break;
+    const char *as = colon + 1;
+    const char *comma = strchr(as, ',');
+    char name[128];
+    size_t n = comma ? (size_t)(comma - as) : strlen(as);
+    if (n >= sizeof(name))
+      n = sizeof(name) - 1;
+    memcpy(name, as, n);
+    name[n] = '\0';
+    if (name[0])
+      (void)pool_track(pool, name);
+    if (!comma)
+      break;
+    p = comma + 1;
+  }
+  return 0;
 }
 
 int uma_buf_pool_free(uma_buf_pool *pool, const char *name) {

@@ -136,7 +136,7 @@ func TestSplitNodeWithSnapshots(t *testing.T) {
 	root := newTestTrie([]trieKey{1, 2, 3, 4, 5})
 	child := root.children[0]
 
-	rc := &fakeRewindableCache{tracker: &snapshotTracker{}, tokens: []trieKey{1, 2, 3, 4, 5}}
+	rc := &fakeRewindableCache{tracker: &snapshotTracker{}, tokens: []int32{1, 2, 3, 4, 5}}
 	child.snapshots = []cache.Snapshot{rc.Snapshot(0)}
 	child.user = true
 
@@ -243,14 +243,14 @@ func TestMergeWithChild(t *testing.T) {
 			endOffset: 3,
 			parent:    root,
 			lastUsed:  now,
-			snapshots: []cache.Snapshot{&fakeSnapshot{tokens: []trieKey{1, 2, 3}, from: 0, to: 3}},
+			snapshots: []cache.Snapshot{&fakeSnapshot{tokens: []int32{1, 2, 3}, from: 0, to: 3}},
 		}
 		b := &trieNode{
 			tokens:    []trieKey{4, 5},
 			endOffset: 5,
 			parent:    a,
 			lastUsed:  now,
-			snapshots: []cache.Snapshot{&fakeSnapshot{tokens: []trieKey{4, 5}, from: 3, to: 5}},
+			snapshots: []cache.Snapshot{&fakeSnapshot{tokens: []int32{4, 5}, from: 3, to: 5}},
 		}
 		c := &trieNode{tokens: []trieKey{6}, endOffset: 6, parent: b, lastUsed: now}
 		d := &trieNode{tokens: []trieKey{7}, endOffset: 6, parent: b, lastUsed: now}
@@ -258,7 +258,7 @@ func TestMergeWithChild(t *testing.T) {
 		a.children = []*trieNode{b}
 		b.children = []*trieNode{c, d}
 
-		mc := &fakeRewindableCache{tracker: &snapshotTracker{}, tokens: []trieKey{1, 2, 3, 4, 5}}
+		mc := &fakeRewindableCache{tracker: &snapshotTracker{}, tokens: []int32{1, 2, 3, 4, 5}}
 		mergeWithChild(a, []cache.Cache{mc}, nil)
 
 		// Tokens concatenated.
@@ -358,11 +358,11 @@ func TestSplitMergeRoundTrip(t *testing.T) {
 		endOffset: 5,
 		parent:    root,
 		lastUsed:  time.Now(),
-		snapshots: []cache.Snapshot{&fakeSnapshot{tokens: []trieKey{1, 2, 3, 4, 5}, from: 0, to: 5}},
+		snapshots: []cache.Snapshot{&fakeSnapshot{tokens: []int32{1, 2, 3, 4, 5}, from: 0, to: 5}},
 	}
 	root.children = []*trieNode{leaf}
 
-	mc := &fakeRewindableCache{tracker: &snapshotTracker{}, tokens: []trieKey{1, 2, 3, 4, 5}}
+	mc := &fakeRewindableCache{tracker: &snapshotTracker{}, tokens: []int32{1, 2, 3, 4, 5}}
 	caches := []cache.Cache{mc}
 
 	// Split at 3: [1,2,3] -> [4,5]

@@ -69,8 +69,9 @@ func TestWaitScheduleQoSGgufDefersBehindInteractive(t *testing.T) {
 	release := g.begin(mlxKey, "hermes:agent:1", mlxClassInteractive, mlxQoS{})
 	defer release()
 
-	// Cancel the context after 200ms so waitScheduleQoS returns via ctx.Err()
-	// rather than waiting out the 90s cooldown.
+	// Unkeyed GGUF must NOT invent aux:/bg: branches or wait on MLX cooldown
+	// (see gateSessionKey / schedule_qos docs). Keyed background GGUF still
+	// waits behind any hot interactive via waitBehindAnyInteractive.
 	ctx, cancel := context.WithTimeout(
 		ctxWithMLXScheduleHints(context.Background(), mlxScheduleHints{Route: "generate", Stream: false}),
 		300*time.Millisecond,
@@ -78,17 +79,25 @@ func TestWaitScheduleQoSGgufDefersBehindInteractive(t *testing.T) {
 	defer cancel()
 
 	gguf := &Model{Digest: "gguf1", ModelPath: "/models/gguf1.gguf", Config: model.ConfigV2{ModelFormat: "gguf"}}
-	opts := map[string]any{"zerollama": map[string]any{"qos_class": "background"}}
+	opts := map[string]any{
+		"prompt_cache_key": "bg:batch:1",
+		"zerollama":        map[string]any{"qos_class": "background"},
+	}
 
 	start := time.Now()
 	err := s.waitScheduleQoS(ctx, gguf, opts)
 	waited := time.Since(start)
-	// We expect context cancellation (deferral was active), not a clean pass.
 	if err == nil {
 		t.Fatal("expected context cancellation while deferred behind interactive MLX, got nil")
 	}
 	if waited < 150*time.Millisecond {
 		t.Fatalf("expected deferral of at least 150ms, waited %v", waited)
+	}
+
+	// Sanity: unkeyed GGUF passes immediately.
+	fastCtx := ctxWithMLXScheduleHints(context.Background(), mlxScheduleHints{Route: "generate", Stream: false})
+	if err := s.waitScheduleQoS(fastCtx, gguf, map[string]any{"zerollama": map[string]any{"qos_class": "background"}}); err != nil {
+		t.Fatalf("unkeyed gguf must not wait on mlx interactive: %v", err)
 	}
 }
 

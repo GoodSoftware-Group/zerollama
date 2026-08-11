@@ -2,6 +2,7 @@
 #include "sched_unipc.h"
 #include "tokenizer_spm.h"
 #include "wan_internal.h"
+#include "wan_profile.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -48,6 +49,8 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
     fprintf(stderr, "wan-c: %s\n", err);
     return -1;
   }
+
+  wan_profile_reset();
 
   const wan_model_config *mc = &ctx->cfg;
   size_t latent_n = latent_elems(mc, p->width, p->height, p->frames);
@@ -111,6 +114,7 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
   }
 
   if (n_ids > 0) {
+    double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
     if (wan_t5_encode_ids(ctx, ids, n_ids, text_emb, text_n) != 0) {
       fprintf(stderr, "wan-c: T5 encode(ids) failed\n");
       free(latent);
@@ -120,14 +124,21 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
       free(rgb);
       return -1;
     }
-  } else if (wan_t5_encode(ctx, p->prompt, text_emb, text_n) != 0) {
-    fprintf(stderr, "wan-c: T5 encode failed\n");
-    free(latent);
-    free(model_out);
-    free(text_emb);
-    free(neg_emb);
-    free(rgb);
-    return -1;
+    if (wan_profile_on())
+      wan_profile_add_ms("t5", wan_profile_now_ms() - t0);
+  } else {
+    double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+    if (wan_t5_encode(ctx, p->prompt, text_emb, text_n) != 0) {
+      fprintf(stderr, "wan-c: T5 encode failed\n");
+      free(latent);
+      free(model_out);
+      free(text_emb);
+      free(neg_emb);
+      free(rgb);
+      return -1;
+    }
+    if (wan_profile_on())
+      wan_profile_add_ms("t5", wan_profile_now_ms() - t0);
   }
   if (p->negative_prompt && p->negative_prompt[0]) {
     if (n_neg > 0)
@@ -244,15 +255,20 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
     fflush(stderr);
 
     memcpy(cond, latent, latent_n * sizeof(float));
-    if (wan_dit_denoise(ctx, cond, latent_n, step, text_emb, text_n) != 0) {
-      fprintf(stderr, "wan-c: DiT cond failed at step %d\n", step);
-      sched_unipc_destroy(sched);
-      free(latent);
-      free(model_out);
-      free(text_emb);
-      free(neg_emb);
-      free(rgb);
-      return -1;
+    {
+      double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+      if (wan_dit_denoise(ctx, cond, latent_n, step, text_emb, text_n) != 0) {
+        fprintf(stderr, "wan-c: DiT cond failed at step %d\n", step);
+        sched_unipc_destroy(sched);
+        free(latent);
+        free(model_out);
+        free(text_emb);
+        free(neg_emb);
+        free(rgb);
+        return -1;
+      }
+      if (wan_profile_on())
+        wan_profile_add_ms("dit_cond", wan_profile_now_ms() - t0);
     }
 
     if (p->cfg_scale > 1.0001f) {
@@ -267,16 +283,22 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
         return -1;
       }
       memcpy(uncond, latent, latent_n * sizeof(float));
-      if (wan_dit_denoise(ctx, uncond, latent_n, step, neg_emb, text_n) != 0) {
-        fprintf(stderr, "wan-c: DiT uncond failed at step %d\n", step);
-        free(uncond);
-        sched_unipc_destroy(sched);
-        free(latent);
-        free(model_out);
-        free(text_emb);
-        free(neg_emb);
-        free(rgb);
-        return -1;
+      {
+        double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+        if (wan_dit_denoise(ctx, uncond, latent_n, step, neg_emb, text_n) !=
+            0) {
+          fprintf(stderr, "wan-c: DiT uncond failed at step %d\n", step);
+          free(uncond);
+          sched_unipc_destroy(sched);
+          free(latent);
+          free(model_out);
+          free(text_emb);
+          free(neg_emb);
+          free(rgb);
+          return -1;
+        }
+        if (wan_profile_on())
+          wan_profile_add_ms("dit_uncond", wan_profile_now_ms() - t0);
       }
       sched_unipc_cfg_combine(uncond, cond, model_out, latent_n, p->cfg_scale);
       free(uncond);
@@ -365,21 +387,28 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
   }
   sched_unipc_destroy(sched);
 
-  if (wan_vae_decode(ctx, latent, latent_n, rgb, rgb_n, p->width, p->height,
-                     p->frames) != 0) {
-    fprintf(stderr, "wan-c: VAE decode failed\n");
-    free(latent);
-    free(model_out);
-    free(text_emb);
-    free(neg_emb);
-    free(rgb);
-    return -1;
+  {
+    double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+    if (wan_vae_decode(ctx, latent, latent_n, rgb, rgb_n, p->width, p->height,
+                       p->frames) != 0) {
+      fprintf(stderr, "wan-c: VAE decode failed\n");
+      free(latent);
+      free(model_out);
+      free(text_emb);
+      free(neg_emb);
+      free(rgb);
+      return -1;
+    }
+    if (wan_profile_on())
+      wan_profile_add_ms("vae", wan_profile_now_ms() - t0);
   }
 
   if (rgb_out && rgb_cap >= rgb_n)
     memcpy(rgb_out, rgb, rgb_n * sizeof(float));
   if (rgb_len)
     *rgb_len = rgb_n;
+
+  wan_profile_report("pipeline");
 
   free(latent);
   free(model_out);

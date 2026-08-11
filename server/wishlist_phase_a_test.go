@@ -121,7 +121,16 @@ func TestCanLoadRuntimeExactWithEstimate(t *testing.T) {
 			})
 		case "/internal/vram-estimate":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"vram_estimate": map[string]any{"gguf": "/tmp/x.gguf"},
+				"vram_estimate": map[string]any{
+					"gguf": "/tmp/x.gguf",
+					"topology": map[string]any{
+						"device_count":    2,
+						"tensor_parallel": 2,
+						"split_mode":      "tensor",
+						"tensor_split":    []any{1.0, 1.0},
+						"main_gpu":        0,
+					},
+				},
 				"vram_budget": map[string]any{
 					"fits": true, "fits_with_margin": true, "suggested_max_num_ctx": 8192,
 				},
@@ -156,6 +165,12 @@ func TestCanLoadRuntimeExactWithEstimate(t *testing.T) {
 	}
 	if resp.SuggestedMaxNumCtx == nil || *resp.SuggestedMaxNumCtx != 8192 {
 		t.Fatalf("suggested=%v", resp.SuggestedMaxNumCtx)
+	}
+	if resp.DeviceCount != 2 || resp.TensorParallel != 2 || resp.SplitMode != "tensor" {
+		t.Fatalf("topology device=%d tp=%d split=%q", resp.DeviceCount, resp.TensorParallel, resp.SplitMode)
+	}
+	if len(resp.TensorSplit) != 2 {
+		t.Fatalf("tensor_split=%v", resp.TensorSplit)
 	}
 }
 

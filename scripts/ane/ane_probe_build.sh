@@ -47,8 +47,23 @@ install -m 755 "${PREFILL_DIR}/ane-prefill-bench" "${OUT_DIR}/ane-prefill-bench"
 install -m 755 "${PREFILL_DIR}/metal-prefill-bench" "${OUT_DIR}/metal-prefill-bench"
 install -m 755 "${PREFILL_DIR}/metal-prefill-mps-bench" "${OUT_DIR}/metal-prefill-mps-bench"
 install -m 755 "${PREFILL_DIR}/ane-prefill-handoff-smoke" "${OUT_DIR}/ane-prefill-handoff-smoke"
+install -m 755 "${PREFILL_DIR}/ane-prefill-ffn-slice-smoke" "${OUT_DIR}/ane-prefill-ffn-slice-smoke"
+install -m 755 "${PREFILL_DIR}/ane-prefill-ffn-policy-smoke" "${OUT_DIR}/ane-prefill-ffn-policy-smoke"
+install -m 755 "${PREFILL_DIR}/ane-prefill-ffn-force-smoke" "${OUT_DIR}/ane-prefill-ffn-force-smoke"
+if [[ -x "${PREFILL_DIR}/ane-prefill-ffn-swiglu-force-smoke" ]]; then
+  install -m 755 "${PREFILL_DIR}/ane-prefill-ffn-swiglu-force-smoke" "${OUT_DIR}/ane-prefill-ffn-swiglu-force-smoke"
+fi
+if [[ -x "${PREFILL_DIR}/ane-prefill-ffn-fuse-unit-smoke" ]]; then
+  install -m 755 "${PREFILL_DIR}/ane-prefill-ffn-fuse-unit-smoke" "${OUT_DIR}/ane-prefill-ffn-fuse-unit-smoke"
+fi
+if [[ -f "${PREFILL_DIR}/libane_ffn_force.dylib" ]]; then
+  install -m 755 "${PREFILL_DIR}/libane_ffn_force.dylib" "${OUT_DIR}/libane_ffn_force.dylib"
+fi
+if [[ -x "${PREFILL_DIR}/ane-prefill-swiglu-smoke" ]]; then
+  install -m 755 "${PREFILL_DIR}/ane-prefill-swiglu-smoke" "${OUT_DIR}/ane-prefill-swiglu-smoke"
+fi
 install -m 755 "${ANE_REPO}/bridge/libane_bridge.dylib" "${OUT_DIR}/libane_bridge.dylib"
-echo "== installed ${OUT_DIR}/{...,ane-prefill-handoff-smoke} + libane_bridge.dylib =="
+echo "== installed ${OUT_DIR}/{...,ane-prefill-ffn-*-smoke,libane_ffn_force.dylib?} + libane_bridge.dylib =="
 
 if [[ "${RUN_SMOKE:-0}" == "1" ]]; then
   echo "== smoke: ane-probe =="

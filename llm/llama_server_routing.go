@@ -37,7 +37,7 @@ func ModelNeedsLlamaServerSpec(config LlamaServerConfig) bool {
 	}
 	switch strings.ToLower(strings.TrimSpace(config.SpecType)) {
 	case "ngram", "ngram-simple",
-		"draft-eagle3", "eagle3", "dflash", "draft-dflash",
+		"draft-eagle3", "eagle3", "dflash",
 		"draft-mtp", "mtp":
 		return true
 	default:
@@ -104,12 +104,10 @@ func applyLlamaServerMXFP4CUDAEnv(envs map[string]string, f *ggml.GGML) {
 
 // useLlamaServerBackendForModel decides engine routing for one model load.
 //
-// Explicit: ZEROLLAMA_LLAMA_SERVER=1 or --llama-server-backend — all GGUF (incl. vision).
-// Linux auto: plain-text GGUF when llama-server is discoverable.
-// Vision (mmproj): ggml llamarunner / ollama-engine unless explicit opt-in —
-// why: llama-server multimodal_data is base64 rasters only; SGLang
-// precomputed_embedding (skip-ViT) and processor_output need llamarunner/ollama-engine.
+// Explicit: ZEROLLAMA_LLAMA_SERVER=1 or --llama-server-backend — all GGUF.
+// Linux auto: all GGUF when llama-server is discoverable.
 // Darwin spec auto: speculative tags only (plain GGUF keeps ggml Metal default).
+// Vision split mmproj on Darwin still requires explicit opt-in (Linux auto includes vision).
 func useLlamaServerBackendForModel(projectors []string, config LlamaServerConfig) bool {
 	return useLlamaServerBackendForModelGOOS(runtime.GOOS, projectors, LlamaServerDiscoverable(), config)
 }
@@ -121,10 +119,7 @@ func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discove
 	if envconfig.LlamaServerBackendExplicit() {
 		return true
 	}
-	// Split mmproj / vision GGUF: stay on ggml unless operator explicitly opted into
-	// llama-server (Phase 17 vision smoke / upstream parity). Linux auto used to send
-	// vision through llama-server too — that blocked skip-ViT for SGLang clients.
-	if len(projectors) > 0 {
+	if len(projectors) > 0 && goos != "linux" {
 		return false
 	}
 	if ModelNeedsLlamaServerSpec(config) && discoverable {
@@ -145,7 +140,8 @@ func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discove
 	if !discoverable {
 		return false
 	}
-	slog.Debug("Phase 17: routing plain-text GGUF through llama-server (Linux auto-default)")
+	_ = projectors
+	slog.Debug("Phase 17: routing GGUF through llama-server (Linux auto-default)")
 	return true
 }
 
@@ -162,7 +158,7 @@ func SpecModelRequiresLlamaServerError(config LlamaServerConfig) error {
 		return fmt.Errorf("model requires llama-server for %s but ZEROLLAMA_LLAMA_SERVER=0", spec)
 	}
 	if !LlamaServerDiscoverable() {
-		return fmt.Errorf("model requires llama-server for %s; build llama-server (./scripts/build/build_ollama_llama_server_darwin.sh) or set LLAMA_SERVER_BIN", spec)
+		return fmt.Errorf("model requires llama-server for %s; build llama-server (./scripts/build_ollama_llama_server_darwin.sh) or set LLAMA_SERVER_BIN", spec)
 	}
 	return nil
 }

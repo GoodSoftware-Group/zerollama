@@ -311,15 +311,8 @@ func names(items []ModelItem) []string {
 func TestBuildModelList_NoExistingModels(t *testing.T) {
 	items, _, _, _ := buildModelList(nil, nil, "")
 
-	want := []string{"gemma4", "qwen3.5"}
-	if diff := cmp.Diff(want, names(items)); diff != "" {
-		t.Errorf("with no existing models, items should be recommended in order (-want +got):\n%s", diff)
-	}
-
-	for _, item := range items {
-		if !strings.HasSuffix(item.Description, "(not downloaded)") {
-			t.Errorf("item %q should have description ending with '(not downloaded)', got %q", item.Name, item.Description)
-		}
+	if len(items) != 0 {
+		t.Errorf("with no existing models, items should be empty (no phantom recommendations), got %v", names(items))
 	}
 }
 
@@ -327,6 +320,8 @@ func TestBuildModelList_OnlyLocalModels_RecsFirst(t *testing.T) {
 	existing := []modelInfo{
 		{Name: "llama3.2:latest", Remote: false},
 		{Name: "qwen2.5:latest", Remote: false},
+		{Name: "gemma4", Remote: false},
+		{Name: "qwen3.5", Remote: false},
 	}
 
 	items, _, _, _ := buildModelList(existing, nil, "")
@@ -334,7 +329,7 @@ func TestBuildModelList_OnlyLocalModels_RecsFirst(t *testing.T) {
 
 	want := []string{"gemma4", "qwen3.5", "llama3.2", "qwen2.5"}
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("recommended locals first, then installed (-want +got):\n%s", diff)
+		t.Errorf("recommended locals first among installed, then others (-want +got):\n%s", diff)
 	}
 }
 
@@ -347,7 +342,7 @@ func TestBuildModelList_RemoteInventoryIncluded(t *testing.T) {
 	items, _, _, _ := buildModelList(existing, nil, "")
 	got := names(items)
 
-	want := []string{"gemma4", "qwen3.5", "glm-5.1:cloud", "llama3.2"}
+	want := []string{"glm-5.1:cloud", "llama3.2"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("remote inventory included in list (-want +got):\n%s", diff)
 	}
@@ -407,17 +402,22 @@ func TestBuildModelList_ExistingRecommendedMarked(t *testing.T) {
 
 	items, _, _, _ := buildModelList(existing, nil, "")
 
+	foundQwen := false
 	for _, item := range items {
 		switch item.Name {
 		case "gemma4":
 			if strings.HasSuffix(item.Description, "(not downloaded)") {
 				t.Errorf("installed recommended %q should not have '(not downloaded)' suffix, got %q", item.Name, item.Description)
 			}
-		case "qwen3.5":
-			if !strings.HasSuffix(item.Description, "(not downloaded)") {
-				t.Errorf("non-installed recommended %q should have '(not downloaded)' suffix, got %q", item.Name, item.Description)
+			if !item.Recommended {
+				t.Errorf("installed %q should be marked Recommended", item.Name)
 			}
+		case "qwen3.5":
+			foundQwen = true
 		}
+	}
+	if foundQwen {
+		t.Error("qwen3.5 must not appear when absent from inventory")
 	}
 }
 
@@ -430,10 +430,9 @@ func TestBuildModelList_ExistingCloudModelsNotPushedToBottom(t *testing.T) {
 	items, _, _, _ := buildModelList(existing, nil, "")
 	got := names(items)
 
-	// Installed local and remote models appear before not-downloaded recommendations.
-	want := []string{"gemma4", "qwen3.5", "glm-5.1:cloud"}
+	want := []string{"gemma4", "glm-5.1:cloud"}
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("expected only local recs in order (-want +got):\n%s", diff)
+		t.Errorf("inventory only, no phantom recommendations (-want +got):\n%s", diff)
 	}
 }
 
@@ -446,7 +445,7 @@ func TestBuildModelList_RemoteRecommendedSkippedWithLocal(t *testing.T) {
 	items, _, _, _ := buildModelList(existing, nil, "")
 	got := names(items)
 
-	want := []string{"gemma4", "qwen3.5", "kimi-k2.5:cloud", "llama3.2"}
+	want := []string{"kimi-k2.5:cloud", "llama3.2"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("remote inventory included (-want +got):\n%s", diff)
 	}
@@ -458,9 +457,7 @@ func TestBuildModelList_RemoteRecommendedSkippedWithLocal(t *testing.T) {
 				t.Errorf("installed model %q should not have '(not downloaded)' suffix, got %q", item.Name, item.Description)
 			}
 		case "gemma4", "qwen3.5":
-			if !strings.HasSuffix(item.Description, "(not downloaded)") {
-				t.Errorf("non-installed %q should have '(not downloaded)' suffix, got %q", item.Name, item.Description)
-			}
+			t.Errorf("phantom recommendation %q must not appear", item.Name)
 		case "kimi-k2.5:cloud":
 			if strings.HasSuffix(item.Description, "(not downloaded)") {
 				t.Errorf("remote inventory %q should not have '(not downloaded)' suffix, got %q", item.Name, item.Description)
@@ -534,10 +531,12 @@ func TestBuildModelList_RecommendedFieldSet(t *testing.T) {
 
 	for _, item := range items {
 		switch item.Name {
-		case "gemma4", "qwen3.5":
+		case "gemma4":
 			if !item.Recommended {
 				t.Errorf("%q should have Recommended=true", item.Name)
 			}
+		case "qwen3.5":
+			t.Errorf("absent recommendation %q must not appear", item.Name)
 		case "llama3.2":
 			if item.Recommended {
 				t.Errorf("%q should have Recommended=false", item.Name)
@@ -550,6 +549,8 @@ func TestBuildModelList_MixedCase_LocalRecOrder(t *testing.T) {
 	existing := []modelInfo{
 		{Name: "llama3.2:latest", Remote: false},
 		{Name: "glm-5.1:cloud", Remote: true},
+		{Name: "gemma4", Remote: false},
+		{Name: "qwen3.5", Remote: false},
 	}
 
 	items, _, _, _ := buildModelList(existing, nil, "")
@@ -557,6 +558,9 @@ func TestBuildModelList_MixedCase_LocalRecOrder(t *testing.T) {
 
 	gemmaIdx := slices.Index(got, "gemma4")
 	qwenIdx := slices.Index(got, "qwen3.5")
+	if gemmaIdx == -1 || qwenIdx == -1 {
+		t.Fatalf("expected installed recommendations in list, got %v", got)
+	}
 	if gemmaIdx > qwenIdx {
 		t.Errorf("gemma4 should sort before qwen3.5 among recommendations, got %v", got)
 	}
@@ -565,6 +569,8 @@ func TestBuildModelList_MixedCase_LocalRecOrder(t *testing.T) {
 func TestBuildModelList_OnlyLocal_RecOrder(t *testing.T) {
 	existing := []modelInfo{
 		{Name: "llama3.2:latest", Remote: false},
+		{Name: "gemma4", Remote: false},
+		{Name: "qwen3.5", Remote: false},
 	}
 
 	items, _, _, _ := buildModelList(existing, nil, "")
@@ -572,6 +578,9 @@ func TestBuildModelList_OnlyLocal_RecOrder(t *testing.T) {
 
 	gemmaIdx := slices.Index(got, "gemma4")
 	qwenIdx := slices.Index(got, "qwen3.5")
+	if gemmaIdx == -1 || qwenIdx == -1 {
+		t.Fatalf("expected installed recommendations in list, got %v", got)
+	}
 	if gemmaIdx > qwenIdx {
 		t.Errorf("gemma4 should sort before qwen3.5 among recommendations, got %v", got)
 	}
@@ -581,6 +590,8 @@ func TestBuildModelList_RecsAboveNonRecs(t *testing.T) {
 	existing := []modelInfo{
 		{Name: "llama3.2:latest", Remote: false},
 		{Name: "custom-model", Remote: false},
+		{Name: "gemma4", Remote: false},
+		{Name: "qwen3.5", Remote: false},
 	}
 
 	items, _, _, _ := buildModelList(existing, nil, "")
@@ -597,6 +608,9 @@ func TestBuildModelList_RecsAboveNonRecs(t *testing.T) {
 		if !isRec && i < firstNonRecIdx {
 			firstNonRecIdx = i
 		}
+	}
+	if lastRecIdx < 0 {
+		t.Fatalf("expected installed recommendations in list, got %v", got)
 	}
 	if lastRecIdx > firstNonRecIdx {
 		t.Errorf("all recs should be above non-recs, got %v", got)
@@ -1560,18 +1574,13 @@ func TestBuildModelList_Descriptions(t *testing.T) {
 		t.Error("qwen3.5 not found in items")
 	})
 
-	t.Run("not-installed local rec has VRAM in description", func(t *testing.T) {
+	t.Run("absent recommendation is not injected", func(t *testing.T) {
 		items, _, _, _ := buildModelList(nil, nil, "")
-
 		for _, item := range items {
-			if item.Name == "qwen3.5" {
-				if !strings.Contains(item.Description, "~11GB") {
-					t.Errorf("not-installed qwen3.5 should show VRAM hint, got %q", item.Description)
-				}
-				return
+			if item.Name == "qwen3.5" || item.Name == "gemma4" {
+				t.Fatalf("phantom recommendation %q must not appear, got %v", item.Name, names(items))
 			}
 		}
-		t.Error("qwen3.5 not found in items")
 	})
 
 	t.Run("installed local rec omits VRAM", func(t *testing.T) {

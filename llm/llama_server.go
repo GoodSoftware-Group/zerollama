@@ -389,13 +389,13 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 		if img.HasPrecomputedEmbedding() {
 			return nil, false, 0, api.StatusError{
 				StatusCode:   http.StatusBadRequest,
-				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine (Linux auto already routes vision there — unset ZEROLLAMA_LLAMA_SERVER=1 / --llama-server-backend)",
+				ErrorMessage: "precomputed_embedding is not supported on llama-server (multimodal_data is base64 rasters only); use ggml llamarunner or ollama-engine for Qwen3-VL",
 			}
 		}
 		if img.HasProcessorOutput() {
 			return nil, false, 0, api.StatusError{
 				StatusCode:   http.StatusBadRequest,
-				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine (Mac) or unset explicit llama-server for vision GGUF",
+				ErrorMessage: "processor_output is not supported on llama-server (multimodal_data is base64 rasters only); use ollama-engine for Qwen3-VL",
 			}
 		}
 	}
@@ -2087,7 +2087,8 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		lsReq.NProbs = max(req.TopLogprobs, 1)
 	}
 
-	// Handle format: pass JSON schema directly to llama-server, or use grammar
+	// Handle format: pass JSON schema directly to llama-server, or use grammar.
+	// M15f: also accept {"type":"gbnf","grammar":"..."}.
 	if len(req.Format) > 0 {
 		switch string(req.Format) {
 		case `null`, `""`:
@@ -2096,9 +2097,21 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 			lsReq.Grammar = grammarJSON
 		default:
 			if req.Format[0] == '{' {
-				lsReq.JsonSchema = req.Format
+				var probe struct {
+					Type    string `json:"type"`
+					Grammar string `json:"grammar"`
+				}
+				if err := json.Unmarshal(req.Format, &probe); err == nil &&
+					strings.EqualFold(strings.TrimSpace(probe.Type), "gbnf") {
+					if strings.TrimSpace(probe.Grammar) == "" {
+						return fmt.Errorf("gbnf format requires non-empty grammar")
+					}
+					lsReq.Grammar = probe.Grammar
+				} else {
+					lsReq.JsonSchema = req.Format
+				}
 			} else {
-				return fmt.Errorf("invalid format: %q; expected \"json\" or a valid JSON Schema object", req.Format)
+				return fmt.Errorf("invalid format: %q; expected \"json\", a JSON Schema object, or {\"type\":\"gbnf\",\"grammar\":\"...\"}", req.Format)
 			}
 		}
 	} else if req.Grammar != "" {
@@ -3093,13 +3106,7 @@ func (s *llamaServerRunner) stopProcess() error {
 		}
 		if s.done != nil {
 			slog.Debug("waiting for llama-server to exit", "pid", s.Pid())
-			// Bound wait: a child stuck in uninterruptible GPU teardown must not
-			// block the scheduler forever (Close used to hang under loadedMu).
-			select {
-			case <-s.done:
-			case <-time.After(30 * time.Second):
-				slog.Error("llama-server did not exit after kill; continuing", "pid", s.Pid())
-			}
+			<-s.done
 		}
 		slog.Debug("llama-server stopped", "pid", s.Pid())
 	}
@@ -3181,14 +3188,6 @@ func (s *llamaServerRunner) MemorySize() (total, vram uint64) {
 		vram = total
 	}
 	return total, vram
-}
-
-// GPULayerOffload returns layers on GPU vs total offloadable layers from load logs.
-// Used by /api/ps loaded_metadata (minefield trap 97 — partial offload must be visible).
-func (s *llamaServerRunner) GPULayerOffload() (offloaded, total uint64) {
-	s.memoryMu.RLock()
-	defer s.memoryMu.RUnlock()
-	return s.gpuLayers, s.totalLayers
 }
 
 // PredictServerVRAM estimates VRAM usage for a model without spawning llama-server.

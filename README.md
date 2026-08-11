@@ -223,7 +223,7 @@ ornith-35b-optiq:latest      f4df829f8a75    22 GB     34.0B MoE 256x8        80
 granite4.1:3b-mlx            2c1c7f47b0d2    1.8 GB    425.54M                128k        112.7    10 hours ago
 ```
 
-Filters: `zerollama ls image` / `zerollama ls video_gen` — local + cloud image/video routes without dumping the full remote catalog.
+Filters: `zerollama ls image` (alias `image_gen`) / `zerollama ls video_gen` — local + cloud image/video routes without dumping the full remote catalog.
 
 **`zerollama ps`** — when agents send `project_id` / session keys, columns expand so you see **who owns the GPU**:
 

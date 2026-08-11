@@ -286,6 +286,11 @@ func inferQuantTypeFromShapes(header map[string]json.RawMessage, tensorName stri
 		if strings.Contains(h, "4") {
 			return "INT4", 64
 		}
+		if strings.Contains(h, "2") {
+			return "INT2", 128
+		}
+		// 2-bit/gs128 and 4-bit/gs64 share packed shapes — do not guess.
+		return "", 0
 	}
 
 	if isCommonGroupSize(groupSize4) && !isCommonGroupSize(groupSize8) {

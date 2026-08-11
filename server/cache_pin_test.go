@@ -59,3 +59,44 @@ func TestCachePinHandler(t *testing.T) {
 		t.Fatal("pin should be gone")
 	}
 }
+
+func TestCacheWarmHandlerValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := &Server{}
+	r := gin.New()
+	r.POST("/api/cache/warm", s.CacheWarmHandler)
+
+	cases := []struct {
+		name string
+		body any
+		code int
+	}{
+		{
+			name: "missing key",
+			body: api.CacheWarmRequest{Model: "x", Prompt: "hi"},
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "missing prompt",
+			body: api.CacheWarmRequest{Model: "x", PromptCacheKey: "k"},
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "missing model",
+			body: api.CacheWarmRequest{Prompt: "hi", PromptCacheKey: "k"},
+			code: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := json.Marshal(tc.body)
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/cache/warm", bytes.NewReader(b))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+			if w.Code != tc.code {
+				t.Fatalf("status=%d body=%s want %d", w.Code, w.Body.String(), tc.code)
+			}
+		})
+	}
+}

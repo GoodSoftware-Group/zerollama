@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -525,7 +526,20 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	}
 
 	scriptPath := filepath.Join(repo, "scripts", "video", "wan_video_generate.py")
-	if _, err := os.Stat(scriptPath); err != nil {
+	wanCLI := strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_CLI"))
+	if wanCLI == "" {
+		wanCLI = expandUserPath(modality.PathFor(cfg, "wan_cli"))
+	}
+	useWanC := wanCLI != ""
+	if useWanC {
+		if st, err := os.Stat(wanCLI); err != nil || st.IsDir() {
+			return wanVideoJobPayload{}, fmt.Errorf("ZEROLLAMA_WAN_CLI / backend_paths.wan_cli not found: %s", wanCLI)
+		}
+		scriptPath = filepath.Join(repo, "scripts", "video", "wan_c_generate.py")
+		if _, err := os.Stat(scriptPath); err != nil {
+			return wanVideoJobPayload{}, fmt.Errorf("wan-c wrapper script not found at %s", scriptPath)
+		}
+	} else if _, err := os.Stat(scriptPath); err != nil {
 		return wanVideoJobPayload{}, fmt.Errorf("wan wrapper script not found at %s", scriptPath)
 	}
 
@@ -546,8 +560,17 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		wanVenv = filepath.Join(filepath.Dir(wanRepo), "venv")
 	}
 	pythonBin := filepath.Join(wanVenv, "bin", "python3")
-	if _, err := os.Stat(pythonBin); err != nil {
-		return wanVideoJobPayload{}, fmt.Errorf("Wan venv python missing at %s — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", pythonBin, wanInstallProfile(vcfg.Profile))
+	if !useWanC {
+		if _, err := os.Stat(pythonBin); err != nil {
+			return wanVideoJobPayload{}, fmt.Errorf("Wan venv python missing at %s — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", pythonBin, wanInstallProfile(vcfg.Profile))
+		}
+	} else {
+		// wan_c_generate.sh is bash; training run_script still needs a python_bin field — use system python3.
+		if p, err := exec.LookPath("python3"); err == nil {
+			pythonBin = p
+		} else {
+			pythonBin = "/usr/bin/python3"
+		}
 	}
 
 	outputPath := videoArtifactPath("{job_id}")
@@ -581,6 +604,15 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		"VIDEO_OUTPUT_PATH": outputPath,
 		"VIDEO_FRAMES":      strconv.Itoa(vcfg.Frames),
 		"VIDEO_SIZE":        vcfg.Size,
+	}
+	if useWanC {
+		env["WAN_CLI"] = wanCLI
+		if v := expandUserPath(modality.PathFor(cfg, "wan_c_vocab")); v != "" {
+			env["WAN_C_VOCAB"] = v
+		}
+		if v := strings.TrimSpace(envconfig.Var("UMA_SOCK")); v != "" {
+			env["UMA_SOCK"] = v
+		}
 	}
 	if seed != nil {
 		env["WAN_SEED"] = strconv.FormatInt(*seed, 10)

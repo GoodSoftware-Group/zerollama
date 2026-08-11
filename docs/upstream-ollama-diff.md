@@ -73,7 +73,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9888`** (ggml-org) | **`86d86ed4`** (ggml-org master) via `vendor/llama-cpp-86d86ed4` + **79** patch commits | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**79** on 86d86ed4) + compat/kv-ext/seq-copy |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
-| MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate | Pin `MLX_VERSION=de7b4ed`; M15a live-session retained |
+| MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate | Pin `MLX_VERSION=33c03c48`; M15a live-session retained |
 
 ---
 
@@ -81,11 +81,11 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| Ollama release | **v0.32.1** (`714b6fc2`) | v0.30.11 base + selective cherry-picks through **v0.32.1** | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
-| llama.cpp tag | `b9888` (upstream v0.32.1) | **`8f114a9b`** (ggml-org master tip; past b10064) | Vendor sync via `./scripts/vendor/sync_vendor_llama.sh`; patch doctor: `./scripts/vendor/llama_patch_doctor.sh` |
+| Ollama release | **v0.32.4** (`64ee2f98`) | v0.30.11 base + selective cherry-picks through **v0.32.4** | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
+| llama.cpp tag | `b10091` (upstream v0.32.4) | **`86d86ed4`** (ggml-org master tip; past b10064) | Vendor sync via `./scripts/vendor/sync_vendor_llama.sh`; patch doctor: `./scripts/vendor/llama_patch_doctor.sh` |
 | Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build/build_llama_server.sh` on sibling tree | Align presets when porting |
-| MLX | `de7b4ed` / `fba4470b` | **Matched** (`MLX_VERSION=de7b4ed`) / mlx-c still `fba4470b` | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |
+| MLX | `33c03c48` / `fba4470b` | **Matched** (`MLX_VERSION=33c03c48`) / mlx-c still `fba4470b` | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |
 
 **Phase 15 blocker context:** native tensor page bind depends on llama.cpp APIs; staying on an old pin widens the gap. Bumping toward upstream’s pin is prerequisite work, not optional polish.
 
@@ -224,13 +224,17 @@ Absent: Python runtime, training API, native KV experiments, Eliza.
 
 ---
 
-## Cherry-pick status (Jul 2026, upstream `714b6fc2` / v0.32.1)
+## Cherry-pick status (Jul 2026, upstream `64ee2f98` / v0.32.4)
 
 Additive ports that **do not** change zerollama architecture (Mac ggml default, Python sidecar, fleet/training, FIFO scheduler policy):
 
 | Area | Status | Notes |
 |------|--------|-------|
-| **MLX pin `de7b4ed`** | **Done (Jul 2026)** | Matched upstream; sibling `../mlx` checked out; rebuild dylibs with `BUILD_MLX=1` when ready |
+| **MLX pin `33c03c48`** | **Done (Jul 2026)** | Matched upstream v0.32.4; rebuild dylibs with `BUILD_MLX=1` |
+| **MLX wired keep-resident (`#17367`)** | **Done** | `SetWiredLimit` / `MaxRecommendedWorkingSetSize` + `configureWiredMemory` after load |
+| **Qwen3.5 MoE packed gate_up + per-expert quant** | **Done** | `loadSwitchMLP` / `GateUpMode` / `splitLastAxisHalves` |
+| **Download stall before first byte (`#17259`)** | **Done** | `downloadStallTimeout` from attempt start |
+| **MLX pin `de7b4ed`** | Superseded | Replaced by **`33c03c48`** (v0.32.4) |
 | **MLX load timeout** | **Done** | `WaitUntilRunning` uses `envconfig.LoadTimeout()`; keep tokenize cache |
 | **MTP flush cap 256** | **Done** | `mtpPendingFlushTokens` 32→256 |
 | **MTP drafter/session split** | **Done** | Persistent `mtpDrafter` + per-request `mtpDraftSession`; sets `draftLookahead=1` |
