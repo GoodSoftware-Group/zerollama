@@ -90,15 +90,17 @@ if [[ ! -x "${WHISPER_DIR}/whisper-cli" && ! -x "${WHISPER_DIR}/whisper" && ! -x
     find "$srcdir" -maxdepth 1 -name '*.so*' -exec cp -a {} "${WHISPER_DIR}/" \; || true
   fi
 fi
-cat > "${WHISPER_DIR}/whisper-run" <<'WRAP'
+# Absolute ROOT — deriving from BASH_SOURCE breaks when /usr/local/bin/whisper
+# is a symlink into this dir (dirname becomes /usr/local/bin → missing libs / loops).
+cat > "${WHISPER_DIR}/whisper-run" <<WRAP
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export LD_LIBRARY_PATH="${ROOT}"
-if [[ -x "${ROOT}/whisper-cli" ]]; then
-  exec "${ROOT}/whisper-cli" "$@"
+ROOT="${WHISPER_DIR}"
+export LD_LIBRARY_PATH="\${ROOT}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+if [[ -x "\${ROOT}/whisper-cli" ]]; then
+  exec "\${ROOT}/whisper-cli" "\$@"
 fi
-exec "${ROOT}/main" "$@"
+exec "\${ROOT}/main" "\$@"
 WRAP
 chmod +x "${WHISPER_DIR}/whisper-run"
 ln -sfn whisper-run "${WHISPER_DIR}/whisper"
@@ -115,7 +117,12 @@ sudo mkdir -p /usr/local/lib/zerollama-speech
 sudo ln -sfn "${PIPER_DIR}" /usr/local/lib/zerollama-speech/piper
 sudo ln -sfn "${WHISPER_DIR}" /usr/local/lib/zerollama-speech/whisper
 sudo ln -sfn "${PIPER_DIR}/piper" /usr/local/bin/piper
-sudo ln -sfn "${WHISPER_DIR}/whisper" /usr/local/bin/whisper
+# Real file (not symlink into WHISPER_DIR) so PATH lookup cannot recurse into whisper-run.
+sudo tee /usr/local/bin/whisper >/dev/null <<WRAP
+#!/usr/bin/env bash
+exec ${WHISPER_DIR}/whisper-run "\$@"
+WRAP
+sudo chmod +x /usr/local/bin/whisper
 
 echo ">>> smoke piper"
 VOICE_BASE="en_US-lessac-medium"

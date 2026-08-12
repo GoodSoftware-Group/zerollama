@@ -173,7 +173,8 @@ zerollama run wan2.1-t2v:1.3b "A cat on a stage"
 ## VRAM, queues, and inference
 
 - Submit path participates in **VRAM broker** / training handoff (unloads ggml runners when configured).
-- **`ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING`** may block chat/runtime proxy while a video job holds the training slot—**why:** one GPU cannot fairly run chat + Wan without policy.
+- **Job-scoped exclusive GPU** (default): after submit, `/v1/videos` holds `fulfillment=exclusive` + `ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING` until the job is `completed`/`failed`/`cancelled`. **Why:** chat `fulfillment` is request-scoped and ends when POST returns; Wan needs the card for tens of minutes. Opt out: `"options":{"zerollama":{"fulfillment":"none"}}`.
+- **`ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING`** also blocks chat/runtime proxy while a video job holds the training slot—**why:** one GPU cannot fairly run chat + Wan without policy.
 - **One running training-queue job** at a time; extra submits wait or get **`defer-*`** ids when `queue_on_busy` applies.
 - **Poll the id returned from POST** (`defer-…` or Python job id). For defer jobs, status merges into the promoted Python job while keeping the defer id in responses when you poll `defer-*`.
 
@@ -192,7 +193,7 @@ Manifests: `modelfiles/wan2.1-t2v/config.json`, `modelfiles/wan2.2-ti2v-5b/confi
 | Profile | Notes |
 |---------|--------|
 | **wan2.1-t2v-1.3b** | ~49 frames default on 16g; manifest sets `offload_model` + `t5_cpu` (T5-XXL does not fit on GPU with DiT on 16GB). |
-| **wan2.2-ti2v-5b** | Up to **81** frames on 16g (cap); manifest enables `offload_model`, `t5_cpu`; Go sets `WAN_CONVERT_MODEL_DTYPE` because upstream README recommends it for consumer GPUs. |
+| **wan2.2-ti2v-5b** | Up to **81** frames on 16g (cap); manifest enables `offload_model`, `t5_cpu`; Go sets `WAN_CONVERT_MODEL_DTYPE` because upstream README recommends it for consumer GPUs. Go also defaults **`WAN_MMGP=1`** + profile **5** so DiT is budget-paged (stock `offload_model` alone still full-loads ~10 GiB). |
 
 `backend_paths`: `wan_repo`, `wan_ckpt_dir`, `wan_venv` (default `~/.zerollama/third_party/wan/venv`).
 
@@ -211,8 +212,14 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 | `WAN_PYTHON` / `WAN_VENV` | Override interpreter for Wan (see install script). |
 | `WAN_DISABLE_CUDNN` | `1` force off, `0` force on, unset = probe cache (`~/.zerollama/third_party/wan/.wan_torch_probe.json`). |
 | `WAN_UNLOAD_T5` | `1` (default on 16g) drop T5-XXL from host RAM after prompt encode (~11G freed). |
-| `WAN_VAE_CPU` | `1` (default on 16g) CPU VAE decode — GPU VAE needs ~15G contiguous VRAM on 5080; `0` if you have headroom. |
-| `ZEROLLAMA_WAN_UNLOAD_T5` / `ZEROLLAMA_WAN_VAE_CPU` | Wrapper defaults when `WAN_*` unset. |
+| `WAN_VAE_CPU` | Under **mmgp** (16g TI2V default): **`0`** — GPU VAE folded into mmgp pipe. CPU VAE + mmgp thrash ≤24 GiB hosts and can OOM-kill serve. Without mmgp on 16g: `1`. Override: `ZEROLLAMA_WAN_VAE_CPU`. |
+| `ZEROLLAMA_WAN_UNLOAD_T5` / `ZEROLLAMA_WAN_VAE_CPU` | Wrapper/Go defaults when `WAN_*` unset. |
+| `ZEROLLAMA_WAN_MIN_HOST_RAM_GIB` | **Raise-only** admission floor (default profile floors: mmgp+GPU VAE ≥12 GiB, mmgp+CPU VAE ≥24 GiB, CPU VAE ≥14 GiB). Undercutting requires `ZEROLLAMA_WAN_MIN_HOST_RAM_FORCE=1`. Wired in `server/video_admit.go` — reject with **503** before queue. |
+| `ZEROLLAMA_WAN_OMP_NUM_THREADS` | Cap Wan child OpenMP/torch threads (default **2**) so serve keeps CPU. |
+| `ZEROLLAMA_WAN_HOST_RESERVE_GIB` / `WAN_RLIMIT_AS_GIB` | Reserve is documentation/admission context. **`RLIMIT_AS` default off** — CUDA maps GPU VRAM into process VA; a tight AS cap breaks `cudaGetDeviceCount`. Set `ZEROLLAMA_WAN_RLIMIT_AS_GIB` only with a large value (e.g. 96+) if you need a hard virtual cap. |
+| `WAN_MMGP` / `ZEROLLAMA_WAN_MMGP` | `1` (default on 16g **TI2V**) enables [mmgp](https://github.com/deepbeepmeep/mmgp) layer/budget offload so stock Wan cannot full-load DiT via `model.to(cuda)`. Opt out: `0`. See [wangp-borrowings.md](./wangp-borrowings.md). |
+| `WAN_MMGP_PROFILE` / `ZEROLLAMA_WAN_MMGP_PROFILE` | mmgp profile **5** default (VerylowRAM_LowVRAM). With GPU VAE under mmgp, host floor is ~12 GiB; CPU VAE still wants ~24 GiB. |
+| `WAN_MMGP_QUANTIZE` / `ZEROLLAMA_WAN_MMGP_QUANTIZE` | `1` → on-the-fly int8 transformer quant if profile 5 still OOMs (default `0` for bf16 quality). |
 
 ## Code map
 
@@ -224,7 +231,8 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 | Defer queue metadata | `server/training_submit.go` |
 | Wrapper script | `scripts/video/wan_video_generate.py` |
 | SM120 torch probe | `scripts/video/wan_torch_compat.py` |
-| Host RAM hooks (T5 unload) | `scripts/video/wan_memory_hooks.py` |
+| Host RAM hooks (T5 unload / mmgp) | `scripts/video/wan_memory_hooks.py` — [wangp-borrowings.md](./wangp-borrowings.md) |
+| Host admission / containment | `server/video_admit.go` (MemAvailable gate, OMP caps, `RLIMIT_AS`) |
 | Generate entry (cuDNN probe) | `scripts/video/wan_generate_entry.py` |
 | Job execution | `training.py` (`run_local_script`, `{job_id}` substitution) |
 | Wire format | `x/trainingworker/pyembed/bootstrap.py` (`_job_to_dict`) |
@@ -235,7 +243,7 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 
 | Symptom | Likely cause |
 |---------|----------------|
-| **503** on POST | `OLLAMA_TRAINING=false` or embed failed to start. |
+| **503** on POST | `OLLAMA_TRAINING=false`, embed failed, **or host-RAM admission** (`server/video_admit.go`) — box total/free below plan floor. |
 | **400** cloud model | Local Wan only. |
 | **502** on GET/content | Training worker error; check daemon logs (`SCRIPT:` / `SCRIPT ERROR:`). |
 | **404** defer id | Expired tombstone or wrong id; use id from POST response. |
@@ -245,7 +253,8 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 | **202** on content | Job still running—poll until `status=completed`. |
 | Missing mp4 after “success” | `generate.py` did not write `--save_file` path—check Wan logs in job stdout. |
 | **`CUDA out of memory`** (T5 / `text_encoder.model.to`) | On 16g use `t5_cpu` + `offload_model` (set in `wan2.1-t2v` manifest; re-run `./scripts/video/register_wan_models.sh`). Unload other GPU models before video. |
-| **Host RAM ~24G** / CT OOM | T5-XXL (~11G) stays loaded upstream until encode finishes. Default **`WAN_UNLOAD_T5=1`** on 16g frees it before diffusion. Avoid **`WAN_VAE_CPU=1`** unless GPU decode OOMs (CPU VAE adds host RAM). Brief startup spike may need **swap** on a 16G CT while T5+DiT load. |
+| **`CUDA out of memory`** mid TI2V diffusion (~10 GiB DiT) | Ensure **exclusive** GPU + **`WAN_MMGP=1`** (default on 16g TI2V). Logs: `WAN: mmgp profile=5` and `skipped full DiT .to(cuda)`. Default under mmgp is **GPU VAE** (not CPU). If still OOM: `WAN_MMGP_QUANTIZE=1`. |
+| **Host RAM thrash / serve dies / 8 CPUs pegged** | CPU VAE + mmgp on ≤16–24 GiB CT — refused by admission when CPU VAE forced without ≥24 GiB. Prefer mmgp+GPU VAE; OMP capped; child `RLIMIT_AS` leaves reserve for serve. Do **not** Ctrl-C serve mid-job. |
 | **`cuDNN version incompatibility`** (PyTorch 9.19 vs runtime 9.10) at GPU check | **`LD_LIBRARY_PATH`** from `zerollama serve` (ggml `/usr/hostlibs`, CUDA toolkit) shadows PyTorch's bundled cuDNN. Fixed in-tree: wrapper prepends `venv/.../torch/lib` and drops cudnn/hostlibs entries (`wan_torch_compat.sanitize_ld_library_path_for_pytorch`). Retry the job; or unset hostlibs from serve env if you manage LD manually. |
 | **`free(): invalid pointer`** / exit **250** at `0/25` sampling | **cuDNN conv bug on SM120 (5080)** with torch 2.11+cu128: cuDNN-backed `Conv2d`/`Conv3d` SIGABRT. Not flash_attn. Run `./scripts/video/install_wan_video.sh` (runs `wan_torch_compat.py` probe); entry auto-disables cuDNN and uses native CUDA conv on GPU. Override: `WAN_DISABLE_CUDNN=0` only after verifying a fixed torch/cuDNN drop. Nightly 2.12+cuDNN 9.20 still fails as of 2026-04. |
 | **`free(): invalid pointer`** (legacy flash_attn) | Source-built `flash_attn` on SM120 can also SIGABRT. Keep `pip uninstall flash-attn`; **`WAN_FORCE_SDPA=1`** uses PyTorch SDPA. |

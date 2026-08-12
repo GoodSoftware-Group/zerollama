@@ -2578,6 +2578,7 @@ func NewCLI() *cobra.Command {
 
 	doctorCmd := NewDoctorCommand()
 	benchCmd := NewBenchCommand()
+	templateCmd := NewTemplateCommand()
 
 	envVars := envconfig.AsMap()
 
@@ -2672,6 +2673,7 @@ func NewCLI() *cobra.Command {
 		aneLabStatusCmd,
 		flashMoEResolveCmd,
 		doctorCmd,
+		templateCmd,
 		benchCmd,
 		NewRepairCommand(),
 		NewBlobsCommand(),

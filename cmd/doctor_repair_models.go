@@ -19,7 +19,7 @@ import (
 //   - Dry-run by default; --apply is required to POST /api/create.
 //
 // See docs/doctor-model-repair.md.
-func runDoctorRepairModels(args []string, apply, jsonOut bool) error {
+func runDoctorRepairModels(args []string, apply, jsonOut, allLocal bool) error {
 	base, _ := doctorProbeGoAPI()
 	if base == "" {
 		return fmt.Errorf("no Go API reachable — start zerollama serve, then re-run doctor --repair-models")
@@ -28,17 +28,19 @@ func runDoctorRepairModels(args []string, apply, jsonOut bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	names, err := modelrepair.ListTargets(ctx, api, args)
+	names, err := modelrepair.ListTargets(ctx, api, args, allLocal)
 	if err != nil {
 		return err
 	}
 	if len(names) == 0 {
-		return fmt.Errorf("no models to scan — pass MODEL args or load a runner (zerollama run …)")
+		if allLocal {
+			return fmt.Errorf("no local models in /api/tags")
+		}
+		return fmt.Errorf("no models to scan — pass MODEL args, --all-local, or load a runner (zerollama run …)")
 	}
 
 	opts := modelrepair.Options{Apply: apply}
 	if !jsonOut {
-		// Why stderr: proposed Modelfile + JSON reports stay on stdout for piping.
 		opts.Progress = func(s string) { fmt.Fprintln(os.Stderr, s) }
 	}
 
@@ -77,7 +79,7 @@ func runDoctorRepairModels(args []string, apply, jsonOut bool) error {
 		return fmt.Errorf("doctor --repair-models: %d model(s) need repair (re-run with --apply to write)", findings)
 	}
 	if findings == 0 && manual > 0 {
-		return fmt.Errorf("doctor --repair-models: %d manual-review note(s) (non-qwen3; no auto-patch)", manual)
+		return fmt.Errorf("doctor --repair-models: %d manual-review note(s) (invasive recipes skipped for non-qwen3)", manual)
 	}
 	return nil
 }

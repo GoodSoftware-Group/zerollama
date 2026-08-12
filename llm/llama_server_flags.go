@@ -170,6 +170,10 @@ func launchFlashAttentionMode(launch llamaServerLaunchConfig) ml.FlashAttentionT
 		}
 		return ml.FlashAttentionDisabled
 	}
+	// L1 profile flash_attn=true → force on (matches Python -fa on).
+	if launch.forceFlashAttn {
+		return ml.FlashAttentionEnabled
+	}
 	return LlamaServerFlashAttention(launch.gpus)
 }
 

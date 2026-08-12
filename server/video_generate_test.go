@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,102 @@ func TestClampWanFrames16g(t *testing.T) {
 	cfg.Profile = wanProfile22TI2V5B
 	if got := clampWanFrames(cfg, 100, 90); got != 90 {
 		t.Fatalf("expected manifest ceiling 90, got %d", got)
+	}
+}
+
+func TestWanMMGPDefaults(t *testing.T) {
+	t.Setenv("ZEROLLAMA_WAN_MMGP", "")
+	t.Setenv("ZEROLLAMA_WAN_MMGP_PROFILE", "")
+	t.Setenv("ZEROLLAMA_WAN_MMGP_QUANTIZE", "")
+
+	ti2v := model.VideoGenerationConfig{VRAMTier: "16g", Profile: wanProfile22TI2V5B}
+	if got := wanMMGP(ti2v); got != "1" {
+		t.Fatalf("16g ti2v WAN_MMGP: got %q want 1", got)
+	}
+	if got := wanMMGPProfile(ti2v); got != "5" {
+		t.Fatalf("16g ti2v profile: got %q want 5", got)
+	}
+	if got := wanMMGPQuantize(ti2v); got != "0" {
+		t.Fatalf("quantize default: got %q want 0", got)
+	}
+
+	t2v := model.VideoGenerationConfig{VRAMTier: "16g", Profile: wanProfile21T2V13B}
+	if got := wanMMGP(t2v); got != "0" {
+		t.Fatalf("16g t2v should not default mmgp: got %q", got)
+	}
+
+	t.Setenv("ZEROLLAMA_WAN_MMGP", "0")
+	if got := wanMMGP(ti2v); got != "0" {
+		t.Fatalf("opt-out: got %q", got)
+	}
+}
+
+func TestBuildWanVideoPayloadTI2VMMGP(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_WAN_MMGP", "")
+	t.Setenv("ZEROLLAMA_WAN_MMGP_PROFILE", "")
+	t.Setenv("ZEROLLAMA_WAN_VAE_CPU", "")
+	t.Setenv("ZEROLLAMA_WAN_MIN_HOST_RAM_GIB", "")
+	t.Setenv("ZEROLLAMA_WAN_OMP_NUM_THREADS", "2")
+	t.Setenv("ZEROLLAMA_WAN_RLIMIT_AS_GIB", "0")
+
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendWan},
+		BackendPaths: map[string]string{
+			"wan_repo":     filepath.Join(t.TempDir(), "Wan2.2"),
+			"wan_ckpt_dir": filepath.Join(t.TempDir(), "ckpt"),
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    wanProfile22TI2V5B,
+			VRAMTier:   "16g",
+			Size:       "1280x704",
+			Frames:     17,
+			Steps:      8,
+			TimeoutSec: 600,
+		},
+	}
+	if err := os.MkdirAll(cfg.BackendPaths["wan_repo"], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.BackendPaths["wan_ckpt_dir"], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.BackendPaths["wan_ckpt_dir"], "dummy.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantVenv := filepath.Join(filepath.Dir(cfg.BackendPaths["wan_repo"]), "venv")
+	if err := os.MkdirAll(filepath.Join(wantVenv, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wantVenv, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := buildWanVideoPayload(cfg, *cfg.VideoGeneration, "wan2.2-ti2v-5b", "a cat", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Env["WAN_MMGP"] != "1" {
+		t.Fatalf("WAN_MMGP: got %q want 1", payload.Env["WAN_MMGP"])
+	}
+	if payload.Env["WAN_MMGP_PROFILE"] != "5" {
+		t.Fatalf("WAN_MMGP_PROFILE: got %q want 5", payload.Env["WAN_MMGP_PROFILE"])
+	}
+	if payload.Env["WAN_MMGP_QUANTIZE"] != "0" {
+		t.Fatalf("WAN_MMGP_QUANTIZE: got %q want 0", payload.Env["WAN_MMGP_QUANTIZE"])
+	}
+	if payload.Env["WAN_VAE_CPU"] != "0" {
+		t.Fatalf("under mmgp WAN_VAE_CPU should be GPU (0): got %q", payload.Env["WAN_VAE_CPU"])
+	}
+	if payload.Env["WAN_ALLOW_GPU_VAE"] != "1" {
+		t.Fatalf("WAN_ALLOW_GPU_VAE: got %q want 1", payload.Env["WAN_ALLOW_GPU_VAE"])
+	}
+	if payload.Env["OMP_NUM_THREADS"] == "" {
+		t.Fatal("expected OMP_NUM_THREADS containment")
+	}
+	if payload.Env["WAN_CONVERT_MODEL_DTYPE"] != "true" {
+		t.Fatalf("WAN_CONVERT_MODEL_DTYPE: got %q", payload.Env["WAN_CONVERT_MODEL_DTYPE"])
 	}
 }
 
@@ -216,5 +313,98 @@ func findRepoRoot(t *testing.T) string {
 			t.Fatal("training.py not found")
 		}
 		dir = parent
+	}
+}
+
+func TestClampLtxFrames(t *testing.T) {
+	cfg := model.VideoGenerationConfig{VRAMTier: "16g", Profile: ltxProfile13BDistill}
+	if got := clampLtxFrames(cfg, 20, 17); got != 17 {
+		t.Fatalf("snap: got %d want 17", got)
+	}
+	if got := clampLtxFrames(cfg, 25, 17); got != 25 {
+		t.Fatalf("legal: got %d want 25", got)
+	}
+	if got := clampLtxFrames(cfg, 200, 17); got != 41 {
+		t.Fatalf("16g cap: got %d want 41", got)
+	}
+}
+
+func TestBuildVideoJobPayloadLTX(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_LTX_DRY_RUN", "")
+	t.Setenv("ZEROLLAMA_LTX_MMGP_PROFILE", "")
+
+	repo := t.TempDir()
+	ckpt := filepath.Join(repo, "ckpts")
+	venv := filepath.Join(t.TempDir(), "venv")
+	if err := os.MkdirAll(ckpt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(venv, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venv, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"ltxv_0.9.8_13B_distilled_quanto_bf16_int8.safetensors",
+		"ltxv_0.9.7_VAE.safetensors",
+	} {
+		if err := os.WriteFile(filepath.Join(ckpt, name), make([]byte, 2048), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendLTX},
+		BackendPaths: map[string]string{
+			"wan2gp_repo":     repo,
+			"wan2gp_ckpt_dir": ckpt,
+			"wan2gp_venv":     venv,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    ltxProfile13BDistill,
+			VRAMTier:   "16g",
+			Size:       "768x512",
+			Frames:     17,
+			Steps:      6,
+			TimeoutSec: 600,
+		},
+	}
+
+	payload, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltxv-13b-distilled:16g", "long prompt", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(payload.ScriptPath, "ltx_video_generate.py") {
+		t.Fatalf("script: %s", payload.ScriptPath)
+	}
+	if payload.Env["WAN2GP_REPO"] != repo {
+		t.Fatalf("repo env: %s", payload.Env["WAN2GP_REPO"])
+	}
+	if payload.Env["LTX_MODEL_TYPE"] != "ltxv_distilled" {
+		t.Fatalf("model_type: %s", payload.Env["LTX_MODEL_TYPE"])
+	}
+	if payload.Env["LTX_MMGP_PROFILE"] != "5" {
+		t.Fatalf("profile: %s", payload.Env["LTX_MMGP_PROFILE"])
+	}
+}
+
+func TestBuildVideoJobPayloadLTXMissingPaths(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendLTX},
+		BackendPaths:     map[string]string{},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile: ltxProfile13BDistill,
+			Frames:  17,
+			Steps:   6,
+		},
+	}
+	_, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltxv", "p", nil, time.Now().UTC(), "")
+	if err == nil || !strings.Contains(err.Error(), "wan2gp_repo") {
+		t.Fatalf("want wan2gp_repo error, got %v", err)
 	}
 }

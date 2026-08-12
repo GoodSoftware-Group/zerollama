@@ -33,6 +33,7 @@ Zerollama harness:     Client → Go → Python runtime → llama-server  (--lla
 | `LeadingBOSForRenderer` | **Done** | llama-server with `--no-jinja` must not double-emit BOS tokens Go already rendered |
 | `discover/llama_server.go` | **Done** | CUDA arch + ROCm gfx filtering matches upstream scheduler inputs |
 | Linux auto-default | **Done** | Plain text + vision GGUF when `ZEROLLAMA_LLAMA_SERVER=auto` (Linux serve default) |
+| L1 GPU profiles on Go path | **Done** | `llm/gpu_profile.go` loads `runtime/configs/gpu/*.json` (e.g. rtx-5080 q8_0 / `-b 1024` / `-ub 256` / FA / np cap) so Phase 17 matches Python L1 |
 | Mac default | **Unchanged (ggml)** | M7 bench: ggml ~166 vs llama-server ~155 tok/s @ 4k ctx |
 | `LLAMA_CPP_VERSION=b9781` | **Done** | Vendor + in-tree sync @ b9781 (Jun 2026) |
 | Native `gpu-discover` | **Done** | Enriches llama-server probe with PCI/CC/gfx from crash-isolated subprocess |

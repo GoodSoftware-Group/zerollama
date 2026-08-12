@@ -45,6 +45,7 @@ func NewDoctorCommand() *cobra.Command {
 	var auditStorage bool
 	var repairModels bool
 	var applyRepair bool
+	var allLocalRepair bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
@@ -55,20 +56,25 @@ Also runs model-serving-minefield style checks:
   - serve identity (trap 53) and thinking gate (trap 29)
   - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
 
-Model template repair (milkey/moophlo-class):
-  Why: empty response / slash loops are often Modelfile+parser faults, not bad weights.
-  zerollama doctor --repair-models [MODEL...]          # dry-run proposed Modelfile
-  zerollama doctor --repair-models --apply [MODEL...]  # recreate tag FROM itself
-  (Qwen3 family only for auto-patch; see docs/doctor-model-repair.md)
+Model template repair (milkey/moophlo-class + ChatML hygiene):
+  Why: empty response / slash loops / missing stops are often Modelfile+parser faults, not bad weights.
+  zerollama doctor --repair-models [MODEL...]                 # dry-run (warm /api/ps if no MODEL)
+  zerollama doctor --repair-models --all-local                # scan every /api/tags model
+  zerollama doctor --repair-models --apply [MODEL...]         # recreate tag FROM itself
+  (Invasive TEMPLATE rewrites: Qwen3 family only; ChatML stop hygiene: any family.
+   See docs/doctor-model-repair.md)
 
 See docs/model-serving-minefield.md.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if repairModels {
-				return runDoctorRepairModels(args, applyRepair, jsonOut)
+				return runDoctorRepairModels(args, applyRepair, jsonOut, allLocalRepair)
 			}
 			if applyRepair {
 				return fmt.Errorf("--apply requires --repair-models")
+			}
+			if allLocalRepair {
+				return fmt.Errorf("--all-local requires --repair-models")
 			}
 			if auditStorage {
 				report, err := blobaudit.Audit()
@@ -121,8 +127,9 @@ See docs/model-serving-minefield.md.`,
 	cmd.Flags().BoolVar(&fix, "fix", false, "Run safe auto-fixes (uv venv; on Darwin build Metal llama.cpp when missing)")
 	cmd.Flags().BoolVar(&modelsOnly, "models", false, "Check local model blob integrity (missing/orphaned registrations)")
 	cmd.Flags().BoolVar(&auditStorage, "audit", false, "Blob storage rollup (use with --models or alone; see also zerollama blobs audit)")
-	cmd.Flags().BoolVar(&repairModels, "repair-models", false, "Diagnose thinking-empty / slash-collapse templates (dry-run; Qwen3 family; pass MODEL or use warm /api/ps)")
+	cmd.Flags().BoolVar(&repairModels, "repair-models", false, "Diagnose template hygiene + thinking-empty / slash-collapse (dry-run; pass MODEL, --all-local, or warm /api/ps)")
 	cmd.Flags().BoolVar(&applyRepair, "apply", false, "With --repair-models, recreate matching tags in place via /api/create (never alone)")
+	cmd.Flags().BoolVar(&allLocalRepair, "all-local", false, "With --repair-models, scan every model from /api/tags (may cold-load; prefer named tags)")
 	return cmd
 }
 

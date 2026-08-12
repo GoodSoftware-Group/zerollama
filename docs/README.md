@@ -23,7 +23,9 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Video understanding (VLM)](./video-understanding.md) — **why** `video_url` / `videos` → ffmpeg → vision pipeline; **why** preflight and `video_spans` exist.
 * [SGLang multimodal borrowings](./sglang-multimodal-borrowings.md) — **why** native path adopted agent caches, padded inject, precomputed/processor ingest, usage breakdown, and audit fixes without requiring SGLang.
 * [mtmd `grid_thw` handoff](./mtmd-grid-thw-handoff.md) — **why** client patch grids are hints-only until llama.cpp mtmd accepts them; Go seam + operator signals.
+* [Wan Pure-C (`wan-c`)](./wan-c.md) — UMA Mac path + CUDA twin lab; [dit-pager](./dit-pager.md); [cuda-uma-toolkit](./cuda-uma-toolkit.md).
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts; TI2V keyframes.
+* [LTX text-to-video (v1.4)](./ltx-t2v.md) — **why** LTXV distilled+quanto first (not LTX-2/Gemma); Wan2GP runner behind same `/v1/videos`.
 * [Media uploads (`/v1/media`)](./media-uploads.md) — **why** session/label PUT + CAS (no client digests, no refcounts); **why** not model `blobs/`; keyframe workflow + `media_missing` recovery.
 * [wan-c vs Python MPS speed gap](./wan-c-speed-gap.md) — profile + Phase1 cuts + toolkit `DIT_BLOCK` / flash ATTN / feat_cache asks.
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.
@@ -42,6 +44,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [vLLM borrowings (L3)](./vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; env + `cache_salt` / drop-last-block / SWA retention / subprocess graph clear.
 * [Upstream sibling checkouts](./upstream-siblings.md) — **why** weekly pull map (`../vllm`, `../LocalAI`, …); agent entry [AGENTS.md](../AGENTS.md).
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
+* [H3 CUDA port research](./h3-cuda-port.md) — **why** antirez/h3.c Metal MiniMax-H3 → CUDA via `h3_gpu.h`; Wan2GP/SGLang vs native stub; CT 1564 RAM wall.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — **why** upstream GGUF path is cherry-picked for mergeability; Mac keeps ggml default (M7 bench).
@@ -94,10 +97,11 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Phase 15 handoff](./handoff-phase15-native-kv.md) — code map, `/health` fields, gaps; **v0–v31 shipped** (C decode loop, engine resume, L3 gate, batch decode + Metal sign-off PASS Jun 2026).
 * [GPU training integration](./gpu-training.md) — **why** Go fronts HTTP + TCP `:9500` while Python holds PyTorch; embedded CPython; inference-first VRAM policy; OOM ordering; env vars and troubleshooting.
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
+* [Roadmap — training track T7–T11](./ROADMAP.md#gpu-training-fine-tuning) — Unsloth borrowings: train→GGUF (**T7 Done**), efficient SFT (**T8 Done**), stock Trainer polish (**T9**, no second backend), GRPO, lite recipes (not Studio).
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.
 * [Model serving minefield](./model-serving-minefield.md) — trap registry mapped onto `zerollama doctor` (config + live serving checks) and known gaps.
-* [Doctor model repair](./doctor-model-repair.md) — **why** Modelfile overlays for empty-`response` / slash-collapse (not `doctor --fix`); `--repair-models` / `--apply`; Qwen3 gate.
+* [Doctor model repair](./doctor-model-repair.md) — **why** Modelfile overlays for empty-`response` / slash-collapse / ChatML stop hygiene (not `doctor --fix`); `--repair-models` / `--apply` / `--all-local`; Qwen3 gate for invasive TEMPLATE rewrites.
 * [5080 runbook — start here](./5080-runbook.md) — **`source scripts/gpu/5080_env.sh`** + **`./scripts/gpu/5080_resignoff.sh`**; ordered tiers; CT 1564 status; Radix vendor build.
 * [GPU 5080 operator guide](./gpu-5080-operator-guide.md) — extended reference (VRAM, MLX, production serve) — use runbook for daily gates.
 * [Embedded Python runtime](./runtime-embed.md) — **why** embed vs sidecar; **remote clients use Go `:8080` only**; port conflicts; log redirect pattern.

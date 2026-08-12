@@ -56,9 +56,19 @@ def map_diffusion_progress(tqdm_pct: float) -> float:
     return 30.0 + max(0.0, min(100.0, tqdm_pct)) * 0.60
 
 
-def wan_size(size: str) -> str:
-    """Wan CLI uses WxH with asterisk, e.g. 832*480."""
-    return size.replace("x", "*").replace("X", "*")
+def wan_size(size: str, task: str | None = None) -> str:
+    """Wan CLI uses WxH with asterisk, e.g. 832*480.
+
+    WHY remap for ti2v-5B: upstream only allows 1280*704 / 704*1280 (720P TI2V).
+    Our older 16g default 832x480 is valid for Wan2.1 T2V but rejected by TI2V.
+    """
+    out = size.replace("x", "*").replace("X", "*")
+    if task and "ti2v" in task.lower():
+        allowed = {"1280*704", "704*1280"}
+        if out not in allowed:
+            eprint(f"TI2V size {out} unsupported; remapping to 1280*704")
+            return "1280*704"
+    return out
 
 
 def profile_task(profile: str) -> str:
@@ -110,14 +120,60 @@ def wan_subprocess_env() -> dict[str, str]:
         env["WAN_DISABLE_CUDNN"] = v
     elif os.environ.get("ZEROLLAMA_WAN_DISABLE_CUDNN", "").strip():
         env["WAN_DISABLE_CUDNN"] = os.environ["ZEROLLAMA_WAN_DISABLE_CUDNN"].strip()
-    if os.environ.get("ZEROLLAMA_WAN_VAE_CPU", "1").lower() in ("0", "false", "no"):
+    if os.environ.get("ZEROLLAMA_WAN_VAE_CPU", "").lower() in ("0", "false", "no"):
         if v := os.environ.get("WAN_VAE_CPU", "").strip():
             env["WAN_VAE_CPU"] = v
         else:
             env["WAN_VAE_CPU"] = "0"
+    elif v := os.environ.get("WAN_VAE_CPU", "").strip():
+        env["WAN_VAE_CPU"] = v
     else:
-        # Default on: GPU VAE needs ~15G contiguous VRAM on 16g cards (overrides stale job env).
+        # Default on without Go/mmgp policy: GPU VAE needs ~15G contiguous with full DiT.
         env["WAN_VAE_CPU"] = "1"
+    # mmgp flags first — VAE force depends on whether DiT is budget-paged.
+    for key in ("WAN_MMGP", "WAN_MMGP_PROFILE", "WAN_MMGP_QUANTIZE"):
+        if v := os.environ.get(key, "").strip():
+            env[key] = v
+    if "WAN_MMGP" not in env:
+        if v := os.environ.get("ZEROLLAMA_WAN_MMGP", "").strip():
+            env["WAN_MMGP"] = v
+    if "WAN_MMGP_PROFILE" not in env:
+        if v := os.environ.get("ZEROLLAMA_WAN_MMGP_PROFILE", "").strip():
+            env["WAN_MMGP_PROFILE"] = v
+    if "WAN_MMGP_QUANTIZE" not in env:
+        if v := os.environ.get("ZEROLLAMA_WAN_MMGP_QUANTIZE", "").strip():
+            env["WAN_MMGP_QUANTIZE"] = v
+    # WHY: stock TI2V DiT+VAE OOMs on 16GB when DiT is fully resident. Under mmgp the DiT
+    # is budget-paged — CPU VAE then fights mmgp for host RAM and can OOM-kill serve.
+    # Honor Go's WAN_ALLOW_GPU_VAE / WAN_VAE_CPU=0 when mmgp is on; only force CPU VAE
+    # for TI2V when mmgp is off and GPU VAE was not explicitly allowed.
+    profile = os.environ.get("WAN_PROFILE", "").strip().lower()
+    mmgp_on = env.get("WAN_MMGP", "").lower() in ("1", "true", "yes")
+    allow_gpu = (
+        os.environ.get("WAN_ALLOW_GPU_VAE", "").lower() in ("1", "true", "yes")
+        or env.get("WAN_ALLOW_GPU_VAE", "").lower() in ("1", "true", "yes")
+    )
+    if allow_gpu:
+        env["WAN_ALLOW_GPU_VAE"] = "1"
+    if (
+        ("ti2v" in profile or profile.startswith("wan2.2"))
+        and not mmgp_on
+        and not allow_gpu
+    ):
+        env["WAN_VAE_CPU"] = "1"
+    # Thread caps — leave cores for zerollama serve (Go sets WAN_OMP_NUM_THREADS).
+    omp = (os.environ.get("WAN_OMP_NUM_THREADS") or os.environ.get("OMP_NUM_THREADS") or "2").strip() or "2"
+    for k in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "TORCH_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "WAN_OMP_NUM_THREADS",
+    ):
+        env.setdefault(k, omp)
+    if v := os.environ.get("WAN_RLIMIT_AS_GIB", "").strip():
+        env["WAN_RLIMIT_AS_GIB"] = v
     if v := os.environ.get("WAN_UNLOAD_T5", "").strip():
         env["WAN_UNLOAD_T5"] = v
     elif os.environ.get("ZEROLLAMA_WAN_UNLOAD_T5", "1").lower() not in ("0", "false", "no"):
@@ -168,7 +224,7 @@ def build_generate_cmd(
         "--task",
         task,
         "--size",
-        wan_size(size),
+        wan_size(size, task=task),
         "--ckpt_dir",
         str(ckpt_path),
         "--prompt",

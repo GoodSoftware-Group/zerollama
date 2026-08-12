@@ -116,6 +116,12 @@ func TestBuildWanVideoPayloadKeyframes(t *testing.T) {
 	}
 	_ = os.MkdirAll(cfg.BackendPaths["wan_repo"], 0o755)
 	_ = os.MkdirAll(cfg.BackendPaths["wan_ckpt_dir"], 0o755)
+	// buildWanVideoPayload requires at least one weight file so empty installs fail early.
+	_ = os.WriteFile(filepath.Join(cfg.BackendPaths["wan_ckpt_dir"], "dummy.safetensors"), []byte("x"), 0o644)
+	venvBin := filepath.Join(t.TempDir(), "venv", "bin")
+	_ = os.MkdirAll(venvBin, 0o755)
+	_ = os.WriteFile(filepath.Join(venvBin, "python3"), []byte("#!/bin/true\n"), 0o755)
+	cfg.BackendPaths["wan_venv"] = filepath.Dir(venvBin)
 
 	submittedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	payload, err := buildWanVideoPayload(cfg, *cfg.VideoGeneration, "wan2.2-ti2v-5b", "motion", nil, submittedAt, kfDir)

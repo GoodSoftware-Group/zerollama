@@ -1,0 +1,14 @@
+{
+  "description": "Fixed SFT corpus for T8 loss-curve fixture (training packing / padding_free). Keep stable — golden pack stats and seeded losses depend on this text. Short rows so packing merges into fewer max_length blocks.",
+  "max_length": 32,
+  "samples": [
+    {"text": "Q: hi\nA: hello"},
+    {"text": "Q: 1+1\nA: 2"},
+    {"text": "Q: sky\nA: blue"},
+    {"text": "Q: cat\nA: C-A-T"},
+    {"text": "Q: FR\nA: Paris"},
+    {"text": "Q: hot?\nA: cold"},
+    {"text": "Q: 2*3\nA: 6"},
+    {"text": "Q: month1\nA: Jan"}
+  ]
+}

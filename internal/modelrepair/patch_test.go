@@ -141,17 +141,22 @@ func TestDiagnoseStaticThinkWithFakeAPI(t *testing.T) {
 	api := &fakeAPI{
 		show: &ShowInfo{
 			Name:         "milkey:latest",
-			Template:     "<|im_start|>user\n{{ .Content }}<|im_end|>\n<|im_start|>assistant\n",
+			Template:     "<|im_start|>user\n{{ .Content }}<|im_end|>\n<|im_start|>assistant\n{{ .Response }}",
 			Parser:       "qwen3-thinking",
 			Capabilities: []string{"completion", "thinking"},
-			Parameters:   "temperature                    0.6\n",
+			Parameters:   "temperature                    0.6\nstop                           \"<|im_end|>\"\nstop                           \"<|im_start|>\"\n",
 		},
 	}
 	rep, err := Diagnose(t.Context(), api, "milkey:latest", Options{SkipLive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Findings) != 1 || rep.Findings[0].Recipe != RecipeThinkGenerateEmpty {
+	got := map[RecipeID]bool{}
+	for _, f := range rep.Findings {
+		got[f.Recipe] = true
+	}
+	// PARSER thinking without toggles → ThinkParserMismatch (not duplicate ThinkGenerateEmpty).
+	if !got[RecipeThinkParserMismatch] && !got[RecipeThinkGenerateEmpty] {
 		t.Fatalf("findings=%+v", rep.Findings)
 	}
 	if rep.Patch == nil || rep.Patch.Parser != "qwen3" {
@@ -159,29 +164,153 @@ func TestDiagnoseStaticThinkWithFakeAPI(t *testing.T) {
 	}
 }
 
-func TestDiagnoseRefusesNonQwen(t *testing.T) {
+func TestDiagnoseRefusesInvasiveNonQwen(t *testing.T) {
 	api := &fakeAPI{
 		show: &ShowInfo{
 			Name:         "other:latest",
-			Template:     "<|im_start|>user\n{{ .Content }}<|im_end|>\n<|im_start|>assistant\n<think>\n",
+			Template:     "<|im_start|>user\n{{ .Content }}<|im_end|>\n<|im_start|>assistant\n{{ .Response }}",
 			Parser:       "llama",
 			Architecture: "llama",
 			Capabilities: []string{"thinking"},
+			Parameters:   "stop                           \"<|im_end|>\"\nstop                           \"<|im_start|>\"\n",
 		},
 	}
 	rep, err := Diagnose(t.Context(), api, "other:latest", Options{SkipLive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Findings) != 0 {
-		t.Fatalf("expected no auto findings, got %+v", rep.Findings)
+	for _, f := range rep.Findings {
+		if f.Recipe == RecipeThinkGenerateEmpty || f.Recipe == RecipeThinkParserMismatch ||
+			f.Recipe == RecipeEmptyTemplate || f.Recipe == RecipeSlashSystemCollapse {
+			t.Fatalf("invasive recipe must not auto-apply on non-qwen3: %+v", f)
+		}
 	}
 	if len(rep.ManualReview) == 0 {
-		t.Fatal("expected manual-review note")
+		t.Fatal("expected manual-review note for think symptoms")
 	}
-	if rep.Patch != nil {
-		t.Fatal("must not propose patch for non-qwen3")
+}
+
+func TestBuildPatchStopsOnly(t *testing.T) {
+	show := ShowInfo{
+		Template:   "<|im_start|>user\n{{ .Content }}<|im_end|>\n{{ .Response }}",
+		Parameters: "temperature                    0.6\n",
+		Parser:     "llama",
 	}
+	p, err := BuildPatch("m:latest", show, []Finding{{Recipe: RecipeChatMLMissingStops}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Template != "" || p.Parser != "" {
+		t.Fatalf("stops-only must inherit TEMPLATE/PARSER, got tmpl=%q parser=%q", p.Template, p.Parser)
+	}
+	stops, _ := p.Parameters["stop"].([]any)
+	got := map[string]bool{}
+	for _, s := range stops {
+		got[fmt.Sprint(s)] = true
+	}
+	if !got["<|im_end|>"] || !got["<|im_start|>"] {
+		t.Fatalf("stops=%v", stops)
+	}
+}
+
+func TestBuildPatchEmptyTemplate(t *testing.T) {
+	p, err := BuildPatch("m:latest", ShowInfo{Parser: "qwen3"}, []Finding{{Recipe: RecipeEmptyTemplate}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Template, "<|im_start|>") || !strings.Contains(p.Template, ".Response") {
+		t.Fatalf("expected stock ChatML, got %q", p.Template[:min(80, len(p.Template))])
+	}
+}
+
+func TestBuildPatchMissingResponseAppend(t *testing.T) {
+	show := ShowInfo{
+		Template: "<|im_start|>user\n{{ .Content }}<|im_end|>\n<|im_start|>assistant\n",
+		Parser:   "qwen3",
+	}
+	p, err := BuildPatch("m:latest", show, []Finding{{Recipe: RecipeMissingResponsePlaceholder}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Template, ".Response") {
+		t.Fatal("expected Response append")
+	}
+	if !strings.Contains(p.Template, "{{ .Content }}") {
+		t.Fatal("should keep original Messages layout")
+	}
+}
+
+func TestDiagnoseHygieneStopsAndEmpty(t *testing.T) {
+	api := &fakeAPI{
+		show: &ShowInfo{
+			Name:       "chatml:latest",
+			Template:   "<|im_start|>user\n{{ .Content }}<|im_end|>\n<|im_start|>assistant\n{{ .Response }}",
+			Parser:     "llama",
+			Parameters: "temperature                    0.7\n",
+		},
+	}
+	rep, err := Diagnose(t.Context(), api, "chatml:latest", Options{SkipLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[RecipeID]bool{}
+	for _, f := range rep.Findings {
+		got[f.Recipe] = true
+	}
+	if !got[RecipeChatMLMissingStops] {
+		t.Fatalf("expected chatml_missing_stops, findings=%+v", rep.Findings)
+	}
+	if rep.Patch == nil {
+		t.Fatal("expected patch")
+	}
+}
+
+func TestDiagnoseEmptyTemplateQwen(t *testing.T) {
+	api := &fakeAPI{
+		show: &ShowInfo{
+			Name:         "empty:latest",
+			Template:     "",
+			Parser:       "qwen3",
+			Architecture: "qwen3",
+			Capabilities: []string{"completion"},
+		},
+	}
+	rep, err := Diagnose(t.Context(), api, "empty:latest", Options{SkipLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 1 || rep.Findings[0].Recipe != RecipeEmptyTemplate {
+		t.Fatalf("findings=%+v", rep.Findings)
+	}
+}
+
+func TestDiagnoseThinkParserMismatch(t *testing.T) {
+	api := &fakeAPI{
+		show: &ShowInfo{
+			Name:       "mismatch:latest",
+			Template:   "<|im_start|>user\n{{ .Content }}<|im_end|>\n{{ .Response }}",
+			Parser:     "qwen3-thinking",
+			Parameters: "stop \"<|im_end|>\"\nstop \"<|im_start|>\"\n",
+		},
+	}
+	rep, err := Diagnose(t.Context(), api, "mismatch:latest", Options{SkipLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[RecipeID]bool{}
+	for _, f := range rep.Findings {
+		got[f.Recipe] = true
+	}
+	if !got[RecipeThinkParserMismatch] {
+		t.Fatalf("expected think_parser_mismatch, got %+v", rep.Findings)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func TestDiagnoseLiveThinkAndSlash(t *testing.T) {
@@ -254,6 +383,10 @@ func (f *fakeAPI) Create(ctx context.Context, name, from, template, parser strin
 
 func (f *fakeAPI) ListRunning(ctx context.Context) ([]string, error) {
 	return []string{"broken:latest"}, nil
+}
+
+func (f *fakeAPI) ListLocal(ctx context.Context) ([]string, error) {
+	return []string{"broken:latest", "other:latest"}, nil
 }
 
 func (f *fakeAPI) Unload(ctx context.Context, name string) error { return nil }

@@ -52,6 +52,9 @@ func ensureQoSDefaults(opts map[string]any, hints mlxScheduleHints) {
 		if _, ok := z["cache_scope"]; !ok {
 			z["cache_scope"] = qosCacheScopeShared
 		}
+		// Video defaults to exclusive GPU for the async job (see acquireVideoExclusiveGPU).
+		// Do not inject fulfillment here — that elevates class to interactive and skips
+		// wait-behind-agents on POST. Opt out: options.zerollama.fulfillment=none.
 	}
 	if len(z) > 0 {
 		opts["zerollama"] = z

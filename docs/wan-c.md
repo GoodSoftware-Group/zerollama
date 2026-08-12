@@ -2,12 +2,35 @@
 
 Local text-to-video via a **strict C11** `wan-cli` that:
 
-1. Reads **GGUF** weights (converted offline from Wan safetensors/`.pth`)
-2. Uploads tensors into named **UmaBuffers** (`BUF_ALLOC` / `BUF_PUT`) — client-side only
-3. Dispatches compute as **GRAPH** recipes to the machine **`uma_daemon`** compute broker
+1. Reads **GGUF** / safetensors weights (converted offline from Wan checkpoints)
+2. Holds tensors in a **compute backend** (named buffers + GEMM/ops)
+3. Runs DiT / VAE / T5 through that backend
 4. Encodes frames with system **`ffmpeg`**
 
-## Prerequisites
+## Backends (wins + unlocks)
+
+| Backend | Host | Role |
+|---------|------|------|
+| **UMA** (default on Darwin) | Mac `uma_daemon` | Production Apple path — GRAPH recipes + UmaBuffers |
+| **CUDA in-process** | Linux lab (`backend_cuda.c`) | Twin for 5080 CTs — see [cuda-uma-toolkit.md](./cuda-uma-toolkit.md) |
+| **Host local** | `UMA_WAN_LOCAL=1` | No broker; CPU kernels |
+
+Residency: [`dit_pager`](./dit-pager.md) (`WAN_DIT_RESIDENT`) — N-block LRU above the backend.
+
+Lab CUDA smokes (this CT):
+
+```bash
+export LD_LIBRARY_PATH=/root/nvidia-host:/usr/lib/ollama/cuda_v13:/usr/local/cuda/lib64
+make -C x/dit_pager test
+make -C x/wan-c cuda-lab                 # GEMM + fragments + FFN + block0-real
+make -C x/wan-c cuda-block0-rematch      # needs dumps/block0_cuda_fixture
+make -C x/wan-c cuda-multiblock-rematch  # 30 blocks + token UniPC
+make -C x/wan-c cuda-latent-unipc-rematch # head/unpatch + latent UniPC step0
+```
+
+Never bind lab tools to production `:11434` / `:8081`.
+
+## Prerequisites (UMA / Mac)
 
 - **`uma_daemon` running** (one per Mac). Do not start a second broker.
   - `cd …/uma_toolkit && make uma-daemon` or open `UMAStatus.app`

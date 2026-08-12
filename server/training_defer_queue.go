@@ -325,6 +325,11 @@ func (q *trainingDeferQueue) drainOnce(ctx context.Context) {
 		q.markPromotedLocked(id, jobID)
 		q.mu.Unlock()
 		slog.Info("deferred training job promoted", "defer_id", id, "job_id", jobID)
+		// Wan (run_script) needs exclusive GPU for the promoted worker job; acquire here
+		// because /v1/videos skipped the lease while the job sat on defer-*.
+		if kind == "run_script" {
+			q.srv.acquireVideoExclusiveGPU(ctx, jobID)
+		}
 	}
 }
 

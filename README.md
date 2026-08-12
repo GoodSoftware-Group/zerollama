@@ -188,13 +188,13 @@ Progressive ladder: vanilla Ollama → Tier 1 fields only; zerollama → + `opti
 
 Harnesses blame the model; often the **server** (or Modelfile) is wrong — unread kwargs, think echo, tools inside think, wrong binary identity, context ceilings that return HTTP 200 with a truncated head, or a ChatML template that never injects `/no_think`.
 
-**Why `--repair-models`:** Some pulled GGUFs score 0/N on benches with empty `response` or `/` loops while inference still works under `think:false` / user-only chat. Doctor can propose (and with `--apply`, write) a Modelfile overlay instead of deleting the tag. Dry-run by default; Qwen3-family only for auto-patch.
+**Why `--repair-models`:** Some pulled GGUFs score 0/N on benches with empty `response` or `/` loops while inference still works under `think:false` / user-only chat—or ChatML is missing stop tokens / `{{ .Response }}`. Doctor can propose (and with `--apply`, write) a Modelfile overlay instead of deleting the tag. Dry-run by default; invasive TEMPLATE rewrites are Qwen3-family only; ChatML stop/`Response` hygiene applies to any family.
 
 ```bash
 ./zerollama doctor                 # identity + live probes when a model is warm
 ./zerollama doctor --models
 ./zerollama doctor --fix          # uv venv + Apple Silicon build + sibling libllama
-./zerollama doctor --repair-models [--apply] [MODEL...]  # thinking-empty / slash-collapse templates
+./zerollama doctor --repair-models [--apply] [--all-local] [MODEL...]  # template hygiene + thinking-empty / slash-collapse
 ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor
 ```
 

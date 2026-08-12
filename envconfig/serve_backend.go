@@ -63,6 +63,9 @@ func ApplyServeBackendEnv(opts ServeBackendOpts) {
 	ApplyLlamaCppBackendDefaults()
 	ApplyLlamaServerBackendDefaults()
 	ApplyHardwareLaneDefaults()
+	// After hardware YAML: inference profile fills remaining L1/L3/graphs soft defaults.
+	// defaultAuto=true so production GPU serve gets throughput lane without flag soup.
+	ApplyInferenceProfileDefaults(true)
 }
 
 // applyEdgeBuildServeDefault enables Phase 16 edge env when built with -tags edge /

@@ -5,9 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-  echo "zerollama server is not running on :11434 — start it first:" >&2
-  echo "  ./zerollama serve   # spec tags auto-route to llama-server when binary present" >&2
+if ! curl -sf "${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags" >/dev/null 2>&1; then
+  echo "zerollama server is not running — start it first (OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}):" >&2
+  echo "  ./zerollama serve   # or ~/bin/serve.sh on CT 1564 (:8080)" >&2
   exit 1
 fi
 
@@ -29,8 +29,12 @@ done
 echo ""
 
 ELIZA_CACHE="${ELIZA_DFLASH_CACHE:-$HOME/.cache/zerollama/eliza-1}"
-DFLASH_2B="$ELIZA_CACHE/bundles/2b/dflash/drafter-2b.gguf"
-DFLASH_27B="$ELIZA_CACHE/bundles/27b-256k/dflash/drafter-27b-256k.gguf"
+# HF layout (Aug 2026): bundles/e2b|e4b/… (legacy bundles/2b|27b-256k paths removed upstream).
+DFLASH_2B="$ELIZA_CACHE/bundles/e2b/dflash/drafter-e2b.gguf"
+DFLASH_27B="$ELIZA_CACHE/bundles/e4b/dflash/drafter-e4b.gguf"
+# Fallback if operator still has legacy filenames.
+[[ -f "$DFLASH_2B" ]] || DFLASH_2B="$ELIZA_CACHE/bundles/2b/dflash/drafter-2b.gguf"
+[[ -f "$DFLASH_27B" ]] || DFLASH_27B="$ELIZA_CACHE/bundles/27b-256k/dflash/drafter-27b-256k.gguf"
 
 if [[ -f "$DFLASH_2B" && -f "$DFLASH_27B" ]]; then
   echo "==> Creating eliza DFlash variants (draft-eagle3 from elizaos/eliza-1)"
@@ -41,7 +45,7 @@ if [[ -f "$DFLASH_2B" && -f "$DFLASH_27B" ]]; then
 else
   echo "Eliza DFlash drafters not cached. Download once:"
   echo "  pip3 install huggingface_hub"
-  echo "  python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('elizaos/eliza-1', allow_patterns=['bundles/*/dflash/drafter-*.gguf'], local_dir='$ELIZA_CACHE')\""
+  echo "  python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('elizaos/eliza-1', allow_patterns=['bundles/e2b/dflash/drafter-*.gguf','bundles/e4b/dflash/drafter-*.gguf'], local_dir='$ELIZA_CACHE')\""
   echo "Then re-run: $0"
 fi
 

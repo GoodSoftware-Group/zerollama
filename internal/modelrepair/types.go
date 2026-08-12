@@ -10,9 +10,8 @@
 //   - Harnesses often score these GGUFs as “broken weights” when the assembled
 //     prompt / parser / default think routing is the real fault.
 //
-// Auto-apply is gated to Qwen3 family only — patches replace the chat template with
-// Qwen3 ChatML + /think|/no_think (or drop-system ChatML). Applying that to an
-// unrelated architecture that merely looks ChatML-ish would make serving worse.
+// Auto-apply for invasive TEMPLATE rewrites is gated to Qwen3 family only.
+// Hygiene recipes that only add PARAMETER stop tokens apply to any ChatML tag.
 package modelrepair
 
 import "fmt"
@@ -28,10 +27,27 @@ const (
 	RecipeThinkGenerateEmpty RecipeID = "think_generate_empty"
 	// RecipeSlashSystemCollapse: ChatML system (or folded system) triggers "/" loops.
 	// Why: some Qwen3-Coder GGUFs collapse on <|im_start|>system and on harness
-	// System:/User:/Assistant: text inside the user turn. Drop system + 
+	// System:/User:/Assistant: text inside the user turn. Drop system +
 	// stripRolePrefixes + a one-line anti-filler steer. Do not rely on stop /// —
 	// that empties the reply and can poison the runner slot until unload.
 	RecipeSlashSystemCollapse RecipeID = "slash_system_collapse"
+	// RecipeChatMLMissingStops: ChatML template without <|im_end|>/<|im_start|> stops.
+	// Why: without stop tokens the model keeps emitting role markers into the
+	// next turn; Unsloth/Ollama-style hygiene always pairs ChatML with these stops.
+	// Safe across families — parameters only, no TEMPLATE rewrite.
+	RecipeChatMLMissingStops RecipeID = "chatml_missing_stops"
+	// RecipeEmptyTemplate: TEMPLATE layer is empty while the tag is a chat model.
+	// Why: empty TEMPLATE falls through to raw prompt assembly; chat/tools/think
+	// all degrade. Qwen3 auto-patch installs stock ChatML; others → manual_review.
+	RecipeEmptyTemplate RecipeID = "empty_template"
+	// RecipeMissingResponsePlaceholder: Go TEMPLATE lacks {{ .Response }}.
+	// Why: /api/generate continuation and some create/train paths need the
+	// assistant-so-far placeholder; Messages-only templates break generate.
+	RecipeMissingResponsePlaceholder RecipeID = "missing_response_placeholder"
+	// RecipeThinkParserMismatch: thinking PARSER without think markup (or inverse).
+	// Why: PARSER qwen3-thinking + plain ChatML (no toggles/<think>) is the same
+	// class of trap as think_generate_empty; report explicitly for operators.
+	RecipeThinkParserMismatch RecipeID = "think_parser_mismatch"
 )
 
 // Finding is one diagnosed issue for a model.

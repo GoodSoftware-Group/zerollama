@@ -38,8 +38,8 @@ export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-8}"
 export ZEROLLAMA_GGML_AUTO_PARALLEL="${ZEROLLAMA_GGML_AUTO_PARALLEL:-auto}"
 export OLLAMA_N_CTX="${OLLAMA_N_CTX:-12288}"
 
-# Runtime YAML + VRAM policy (single-GPU 16GB — tune after measurement).
-export ZEROLLAMA_RUNTIME_CONFIG="${ZEROLLAMA_RUNTIME_CONFIG:-$ZEROLLAMA_REPO/runtime/configs/single_gpu.yaml}"
+# Runtime VRAM policy (single-GPU 16GB — tune after measurement).
+# YAML path is chosen below after ZEROLLAMA_INFERENCE_PROFILE (agent → multi-slot).
 export ZEROLLAMA_RUNTIME_VRAM_MIN_FREE="${ZEROLLAMA_RUNTIME_VRAM_MIN_FREE:-1GiB}"
 export ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE="${ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE:-2GiB}"
 # Optional: lower num_ctx to /health suggestion when GPU checks on (default off).
@@ -51,13 +51,62 @@ export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE="${ZEROLLAMA_RUNTIME_VRAM
 # WHY explicit: empty env already defaults ON in gpu_profiles_enabled(), but production
 # must not silently inherit ZEROLLAMA_LLAMA_FORK=1 (QJL/polar) from a prior lab shell.
 # Jul 2026 llama-bench: Llama-3.1-8B q8_0 beats f16 tg on this card — keep stock path.
+# Phase 17 Go→llama-server also reads this JSON (llm/gpu_profile.go) — same knobs as Python.
+#
+# Prefer ONE lane over flag soup (see docs/gpu-profiles-l1.md):
+#   ZEROLLAMA_INFERENCE_PROFILE=auto|throughput|agent|vram|off
+# auto → throughput: L1 on, FORK off, L3 cache on, CUDA graphs off.
+# agent → + Radix / L3_PROFILE=agent + l3_agent_subprocess.yaml (multi-slot).
+# vram → + FORK_AUTO_VRAM for long ctx only.
+export ZEROLLAMA_INFERENCE_PROFILE="${ZEROLLAMA_INFERENCE_PROFILE:-auto}"
 export ZEROLLAMA_GPU_PROFILE="${ZEROLLAMA_GPU_PROFILE:-1}"
 export ZEROLLAMA_LLAMA_FORK="${ZEROLLAMA_LLAMA_FORK:-0}"
 # Optional force: export ZEROLLAMA_GPU_PROFILE_ID=rtx-5080
 
+# Runtime YAML: single_gpu (1 slot) is the throughput default. Agent lane needs
+# l3_agent_subprocess.yaml (parallel slots + radix_share) — otherwise
+# ZEROLLAMA_RADIX_PREFIX_SHARE=1 alone still leaves llama_parallel_slots=1 and
+# cross-slot Radix never fires. Explicit ZEROLLAMA_RUNTIME_CONFIG always wins.
+_DEFAULT_RT_CFG="${ZEROLLAMA_REPO}/runtime/configs/single_gpu.yaml"
+if [[ "${ZEROLLAMA_INFERENCE_PROFILE}" == "agent" ]]; then
+  _DEFAULT_RT_CFG="${ZEROLLAMA_REPO}/runtime/configs/l3_agent_subprocess.yaml"
+fi
+export ZEROLLAMA_RUNTIME_CONFIG="${ZEROLLAMA_RUNTIME_CONFIG:-${_DEFAULT_RT_CFG}}"
+# Keep L3 profile env aligned with agent YAML so autoconfig /health agree.
+if [[ "${ZEROLLAMA_INFERENCE_PROFILE}" == "agent" ]]; then
+  export ZEROLLAMA_L3_PROFILE="${ZEROLLAMA_L3_PROFILE:-agent}"
+fi
+
+# L3 prefix cache (Python runtime path). Default on in runtime; export so lab shells
+# cannot leak ZEROLLAMA_LLAMA_CACHE=0 from Metal smokes into CUDA prod.
+export ZEROLLAMA_LLAMA_CACHE="${ZEROLLAMA_LLAMA_CACHE:-1}"
+# Cross-slot Radix: prefer ZEROLLAMA_INFERENCE_PROFILE=agent over raw RADIX_* exports.
+# Speculative decode: set per chatty model (needs draft GGUF), e.g.
+#   ZEROLLAMA_SPEC_METHOD=draft-mtp  + YAML speculative / Modelfile draft
+# Inprocess GPU lab (drops loopback; wheel GPU broken on 5080):
+#   ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
+
 # Training: Go listens on :9500 and /api/train/* (embedded CPython, not a python sidecar).
 export OLLAMA_TRAINING="${OLLAMA_TRAINING:-true}"
 export OLLAMA_TRAINING_TCP="${OLLAMA_TRAINING_TCP:-:9500}"
+
+# Prefer repo run/ binary when present (CT 1564 install layout).
+# WHY before PYTHONPATH: embedded_training_python_ver() ldds ZEROLLAMA_BIN / PATH
+# zerollama. PATH /usr/bin/zerollama may still be an older libpython3.10 link while
+# run/zerollama is 3.11 — wrong order puts 3.10 site-packages on a 3.11 embed →
+# ModuleNotFoundError: pydantic_core._pydantic_core.
+if [[ -z "${ZEROLLAMA_BIN:-}" && -x "${ZEROLLAMA_REPO}/run/zerollama" ]]; then
+  ZEROLLAMA_BIN="${ZEROLLAMA_REPO}/run/zerollama"
+fi
+ZEROLLAMA_BIN="${ZEROLLAMA_BIN:-/usr/bin/zerollama}"
+if [[ ! -x "$ZEROLLAMA_BIN" ]]; then
+  ZEROLLAMA_BIN="$(command -v zerollama || true)"
+fi
+if [[ -z "$ZEROLLAMA_BIN" ]]; then
+  echo "zerollama binary not found; set ZEROLLAMA_BIN" >&2
+  exit 1
+fi
+export ZEROLLAMA_BIN
 
 # WHY embed PYTHONPATH: training + runtime share one CPython; uvicorn in runtime/.venv,
 # torch in .venv-training (same order as scripts/gpu/5080_env.sh). See docs/gpu-training.md.
@@ -157,22 +206,15 @@ export CUDA_PATH="${CUDA_PATH:-$CUDA_HOME}"
 # Wan T2V on 16g / SM120 (5080 class); unset to use manifest-only defaults.
 # VAE_CPU default 0 — CPU VAE spikes host RAM and OOMs ~24G CTs (see docs/wan-t2v.md).
 export ZEROLLAMA_WAN_FORCE_SDPA="${ZEROLLAMA_WAN_FORCE_SDPA:-1}"
+# Prefer GPU VAE under mmgp (Go planWanHost); CPU VAE + mmgp thrash ≤24 GiB host.
 export ZEROLLAMA_WAN_VAE_CPU="${ZEROLLAMA_WAN_VAE_CPU:-0}"
 export ZEROLLAMA_WAN_UNLOAD_T5="${ZEROLLAMA_WAN_UNLOAD_T5:-1}"
+# Raise-only floor (Go ignores values below profile need unless FORCE=1).
 export ZEROLLAMA_WAN_MIN_HOST_RAM_GIB="${ZEROLLAMA_WAN_MIN_HOST_RAM_GIB:-14}"
-
-# Prefer repo run/ binary when present (CT 1564 install layout).
-if [[ -z "${ZEROLLAMA_BIN:-}" && -x "${ZEROLLAMA_REPO}/run/zerollama" ]]; then
-  ZEROLLAMA_BIN="${ZEROLLAMA_REPO}/run/zerollama"
-fi
-ZEROLLAMA_BIN="${ZEROLLAMA_BIN:-/usr/bin/zerollama}"
-if [[ ! -x "$ZEROLLAMA_BIN" ]]; then
-  ZEROLLAMA_BIN="$(command -v zerollama || true)"
-fi
-if [[ -z "$ZEROLLAMA_BIN" ]]; then
-  echo "zerollama binary not found; set ZEROLLAMA_BIN" >&2
-  exit 1
-fi
+# Leave cores for serve. Do NOT default RLIMIT_AS — CUDA maps VRAM into process VA;
+# a tight AS cap breaks cudaGetDeviceCount (see server/video_admit.go).
+export ZEROLLAMA_WAN_OMP_NUM_THREADS="${ZEROLLAMA_WAN_OMP_NUM_THREADS:-2}"
+export ZEROLLAMA_WAN_HOST_RESERVE_GIB="${ZEROLLAMA_WAN_HOST_RESERVE_GIB:-2}"
 
 # Embedded runtime binds 127.0.0.1:8081 (or ZEROLLAMA_RUNTIME_EMBED_PORT). Stop stale listeners.
 EMBED_PORT="${ZEROLLAMA_RUNTIME_EMBED_PORT:-8081}"

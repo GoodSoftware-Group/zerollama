@@ -218,6 +218,12 @@ type Values struct {
 	// implicitly false). Templates can't see whether `Think` is nil
 	IsThinkSet bool
 
+	// ForTrain renders a completed chat for SFT: assistant turns are included and
+	// trailing empty generation priming (inference-only headers) is stripped.
+	// Why: stock Modelfile TEMPLATEs end with an open assistant turn for serve;
+	// training needs the filled assistant content without a second open header.
+	ForTrain bool
+
 	// forceLegacy is a flag used to test compatibility with legacy templates
 	forceLegacy bool
 }
@@ -284,7 +290,8 @@ func (t *Template) Execute(w io.Writer, v Values) error {
 			"IsThinkSet": v.IsThinkSet,
 		})
 	} else if !v.forceLegacy && slices.Contains(vars, "messages") {
-		return t.Template.Execute(w, map[string]any{
+		var buf bytes.Buffer
+		if err := t.Template.Execute(&buf, map[string]any{
 			"System":     system,
 			"Messages":   convertMessagesForTemplate(messages),
 			"Tools":      convertToolsForTemplate(v.Tools),
@@ -292,7 +299,15 @@ func (t *Template) Execute(w io.Writer, v Values) error {
 			"Think":      v.Think,
 			"ThinkLevel": v.ThinkLevel,
 			"IsThinkSet": v.IsThinkSet,
-		})
+		}); err != nil {
+			return err
+		}
+		out := buf.String()
+		if v.ForTrain {
+			out = stripTrainGenerationPrompt(out)
+		}
+		_, err = io.WriteString(w, out)
+		return err
 	}
 
 	system = ""
@@ -364,6 +379,43 @@ func (t *Template) Execute(w io.Writer, v Values) error {
 
 	_, err = io.Copy(w, &b)
 	return err
+}
+
+// stripTrainGenerationPrompt removes trailing empty assistant priming that
+// inference Modelfile TEMPLATEs append after {{ range .Messages }}.
+func stripTrainGenerationPrompt(s string) string {
+	suffixes := []string{
+		"<|im_start|>assistant\n",
+		"<|im_start|>assistant",
+		"<|start_header_id|>assistant<|end_header_id|>\n\n",
+		"<|start_header_id|>assistant<|end_header_id|>\n",
+		"<|start_header_id|>assistant<|end_header_id|>",
+		"### Response:\n",
+		"### Response:",
+		"<start_of_turn>model\n",
+		"<start_of_turn>model",
+	}
+	out := s
+	for _, suf := range suffixes {
+		if strings.HasSuffix(out, suf) {
+			out = strings.TrimSuffix(out, suf)
+			break
+		}
+	}
+	return out
+}
+
+// RenderTrain parses a Modelfile TEMPLATE and renders a completed SFT string.
+func RenderTrain(templateStr string, messages []api.Message) (string, error) {
+	tmpl, err := Parse(templateStr)
+	if err != nil {
+		return "", err
+	}
+	var b bytes.Buffer
+	if err := tmpl.Execute(&b, Values{Messages: messages, ForTrain: true}); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 // collate messages based on role. consecutive messages of the same role are merged

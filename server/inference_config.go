@@ -9,15 +9,16 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/llm"
 )
 
 // gpuCountCacheTTL: fleet pollers hit /api/status often; full GPU discovery is expensive.
 const gpuCountCacheTTL = 30 * time.Second
 
 var (
-	gpuCountCacheMu   sync.Mutex
-	gpuCountCached    int
-	gpuCountCachedAt  time.Time
+	gpuCountCacheMu    sync.Mutex
+	gpuCountCached     int
+	gpuCountCachedAt   time.Time
 	gpuCountCacheValid bool
 )
 
@@ -86,6 +87,14 @@ func (s *Server) inferenceConfigStatus(ctx context.Context, runtime api.RuntimeS
 		mq := runtimeMaxQueueFromEnv()
 		cfg.RuntimeMaxQueue = &mq
 	}
+	req, resolved, applied := envconfig.InferenceProfileStatus()
+	cfg.InferenceProfile = req
+	if cfg.InferenceProfile == "" {
+		cfg.InferenceProfile = "(default)"
+	}
+	cfg.InferenceProfileResolved = resolved
+	cfg.InferenceProfileApplied = applied
+	cfg.GpuProfileID = llm.LastGpuProfileID()
 	return cfg
 }
 

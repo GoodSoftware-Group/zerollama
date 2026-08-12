@@ -95,12 +95,21 @@ install_wan_requirements() {
 
 install_wan_requirements "$WAN_ROOT/Wan2.1/requirements.txt"
 pip install huggingface_hub
+# mmgp: WanGP's layer/budget VRAM offload for 16g TI2V (see docs/wangp-borrowings.md).
+# Pin matches Wan2GP requirements.txt — not Gradio / multi-model zoo.
+pip install "mmgp==3.7.12"
 
 patch_wan_attention() {
-  local attn="$WAN_ROOT/Wan2.1/wan/modules/attention.py"
-  if [[ -f "$attn" ]]; then
-    python3 "$REPO_ROOT/scripts/video/patch_wan_attention_sdpa.py" "$attn"
-  fi
+  # WHY both trees: Wan2.2 TI2V uses its own modules/attention.py; patching only Wan2.1
+  # left 5080 jobs asserting FLASH_ATTN_2_AVAILABLE mid-sample under WAN_FORCE_SDPA=1.
+  local attn
+  for attn in \
+    "$WAN_ROOT/Wan2.1/wan/modules/attention.py" \
+    "$WAN_ROOT/Wan2.2/wan/modules/attention.py"; do
+    if [[ -f "$attn" ]]; then
+      python3 "$REPO_ROOT/scripts/video/patch_wan_attention_sdpa.py" "$attn"
+    fi
+  done
 }
 patch_wan_attention
 # Apply Apple Silicon / import-time CUDA default patches (idempotent).
@@ -179,6 +188,8 @@ install_22() {
     git clone --depth 1 --branch main https://github.com/Wan-Video/Wan2.2.git "$WAN_ROOT/Wan2.2"
   fi
   install_wan_requirements "$WAN_ROOT/Wan2.2/requirements.txt"
+  # Wan2.2 package __init__ imports S2V/animate which need extras not listed in requirements.txt.
+  pip install -q decord librosa soundfile peft || true
   wan_hf_download Wan-AI/Wan2.2-TI2V-5B "$WAN_ROOT/Wan2.2-TI2V-5B"
 }
 

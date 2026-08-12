@@ -128,6 +128,13 @@ type Server struct {
 	trainingVRAMMu      sync.Mutex
 	trainingVRAMBlocked bool
 
+	// videoExclusive* — job-scoped exclusive GPU lease for Wan /v1/videos (fulfillment +
+	// training VRAM block). WHY not request-scoped chat fulfillment: video is async
+	// run_script and must outlive the HTTP POST.
+	videoExclusiveMu      sync.Mutex
+	videoExclusiveJobs    map[string]struct{}
+	videoExclusiveRelease func()
+
 	runtimeFifoMu     sync.RWMutex
 	runtimeFifoOldest uint64
 

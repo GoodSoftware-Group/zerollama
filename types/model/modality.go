@@ -26,6 +26,9 @@ const (
 	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
 	BackendWan              = "wan"               // Wan2.x via scripts/video/wan_video_generate.py (see docs/wan-t2v.md)
+	// BackendLTX is Wan2GP LTXV (first: distilled 13B quanto) via scripts/video/ltx_video_generate.py.
+	// See docs/ltx-t2v.md — not LTX-2/Gemma on ≤24 GiB hosts.
+	BackendLTX = "ltx"
 	// BackendRIFE is reserved for classical optical-flow inbetweens (not shipped yet).
 	// WHY reserve the name now: same /v1/videos + /v1/media contracts as Wan so agents
 	// and OpenAPI do not learn a second upload protocol when classical inbetweens ship.

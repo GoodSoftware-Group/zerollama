@@ -126,13 +126,15 @@ ZEROLLAMA_DOCTOR_DEEP=1 zerollama doctor   # + trap-12 ceiling check @ 512 token
 ### 4. Template repair (`zerollama doctor --repair-models`)
 
 When a thinking ChatML model parks answers in `thinking` on default generate,
-or a coder GGUF collapses into `/` loops once a system role is present,
-doctor can propose (and optionally apply) a Modelfile overlay:
+a coder GGUF collapses into `/` loops once a system role is present, or ChatML
+is missing stop tokens / `{{ .Response }}`, doctor can propose (and optionally
+apply) a Modelfile overlay:
 
 ```bash
 # Dry-run against warm /api/ps models (or pass explicit tags)
 zerollama doctor --repair-models
 zerollama doctor --repair-models milkey/Kalomaze-Qwen3-16B-A3B:latest
+zerollama doctor --repair-models --all-local
 
 # Recreate the same tag FROM itself with the patched TEMPLATE/PARSER/stop
 zerollama doctor --repair-models --apply milkey/Kalomaze-Qwen3-16B-A3B:latest
@@ -142,14 +144,17 @@ Recipes live in [`internal/modelrepair`](../../internal/modelrepair):
 
 | Recipe | Detect | Patch |
 |---|---|---|
-| `think_generate_empty` | thinking + ChatML without `/no_think`, or generate default → empty `response` + thinking | `/no_think` template + `PARSER qwen3` |
-| `slash_system_collapse` | user-only OK; system+user → slash/empty | drop system role; `stop ///` |
+| `chatml_missing_stops` | ChatML without `<\|im_end\|>` / `<\|im_start\|>` stops | add stops (any family) |
+| `missing_response_placeholder` | Go TEMPLATE lacks `{{ .Response }}` | append Response suffix |
+| `empty_template` | empty TEMPLATE (Qwen3) | stock ChatML |
+| `think_generate_empty` / `think_parser_mismatch` | thinking + ChatML without `/no_think`, or generate default → empty `response` | `/no_think` template + `PARSER qwen3` |
+| `slash_system_collapse` | user-only OK; system+user → slash/empty | drop system role; `stripRolePrefixes` (not `stop ///`) |
 
 This is **not** the same as `zerollama repair` (GGUF manifest metadata) or
 `doctor --fix --models` (orphan manifest delete). Roleplay prompts that
 embed `System:` / `Assistant:` in user text remain unfixable via template.
-Non-`qwen3*` models with similar symptoms are **manual-review only** (no
-auto Modelfile rewrite).
+Non-`qwen3*` models needing invasive TEMPLATE rewrites are **manual-review only**;
+stop/`Response` hygiene still auto-patches.
 
 Full trap-to-check mapping (which numbered minefield trap each doctor probe
 covers, plus which traps are hand-run scripts vs fully automated) lives in

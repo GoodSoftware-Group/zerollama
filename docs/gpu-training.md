@@ -16,6 +16,39 @@ This document describes how **Ollama’s Go daemon** and **embedded CPython** ru
 
 5. **VRAM: inference-first (v1)** — On a single consumer GPU, inference and training contend for the same memory. **Why:** default policy favors **interactive inference**: when training hits CUDA OOM, Go **pauses new loads**, **evicts loaded inference runners**, then calls back into Python to **ack** so `load_model` may retry. Training mid-loop does not magically continue; **load_model** can wait once after relief; failed jobs still fail—**why:** safe default without pretending we can checkpoint-resume every arbitrary training graph.
 
+**Roadmap (directional):** train→GGUF + efficient SFT (**T7/T8 Done**); stock Trainer polish (**T9**, no second backend); GRPO; lite recipes — [ROADMAP § GPU training](./ROADMAP.md#gpu-training-fine-tuning) (**T7–T11**). This doc remains the operator/API reference for what is shipped.
+
+**T8 SFT formatting (Done):** train payloads accept `format` (`auto` \| `chatml` \| `llama3` \| `hf` \| `alpaca` \| `modelfile`) and `max_length` (default 2048). `auto` uses the HF tokenizer `chat_template` when present, else ChatML. **`padding_free` defaults on** (Transformers `DataCollatorWithFlattening`). Opt-in `packing: true` concatenates short rows into `max_length` blocks. **`format=modelfile`** renders the serve Go TEMPLATE via `zerollama template render --train` (pass `template` / `template_file` / `template_name`). Opt-in **`padding_free_flash_attn`** requires `flash-attn` + FA2 load and emits `cu_seq_lens_*`. Loss-curve fixture: `tests/test_training_loss_fixture.py`. Smoke: `./scripts/training/t8_flash_attn_5080_smoke.sh`.
+
+**T7 export / register (Done):** after `lora_adapter/` is saved:
+
+| Field | Effect |
+|-------|--------|
+| `register_model: true` \| `"my-tag:latest"` | Write `output_dir/Modelfile` (`FROM` + `ADAPTER`) and create the tag |
+| `register_via` | `auto` (CLI then HTTP), `cli`, or `http` (blob upload + `POST /api/create`) |
+| `export_from` | Base for `FROM` (default: `model_name`) |
+| `export_gguf: true` | Merge LoRA → HF dir → `convert_hf_to_gguf.py` → optional `llama-quantize` |
+| `export_unload` | Default **on** with GGUF — unload training weights + `empty_cache` after merge, before convert |
+| `export_quant` | `f16` / `q8_0` / `q4_k_m` (default) |
+| `export_gguf_dir` | Default `$output_dir/gguf` |
+
+Set `LLAMA_CPP_DIR` (or sibling `../llama.cpp`) so convert/quantize are found. Job result includes `export` with paths / register status. Smoke: `./scripts/training/t7_train_export_smoke.sh`. See [`training_export.py`](../training_export.py).
+
+**T9 stock Trainer polish (Partial — unified backend only):** no `ZEROLLAMA_TRAIN_BACKEND=unsloth`. Defaults into existing PEFT/`Trainer`:
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `completion_only_loss` | `true` | Mask prompt tokens (`-100`); skipped when `packing=true` |
+| `gradient_checkpointing` | on (CUDA) | VRAM savings |
+| `use_rslora` | `true` | Rank-stabilized LoRA |
+| `optim` | fused / 8-bit | `adamw_torch_fused` (CUDA) or `adamw_bnb_8bit` (QLoRA) |
+| `gradient_accumulation_steps` | `4` | Exposed (was hardcoded) |
+| `lora_target_modules` | q/k/v/o/gate/up/down | Override list or comma string |
+| `torch_compile` | `false` | Opt-in |
+| `padding_free_flash_attn` | auto if flash-attn installed | FA2 + `cu_seq_lens_*` |
+
+See [`training_optim.py`](../training_optim.py), [`training_labels.py`](../training_labels.py).
+
 ---
 
 ## Architecture

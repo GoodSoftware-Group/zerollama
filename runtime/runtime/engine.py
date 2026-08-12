@@ -63,6 +63,22 @@ def _vram_calibration_for_health() -> dict[str, Any] | None:
     return vram_calibration_health()
 
 
+def _c_environ_get(name: str) -> str:
+    """Read a process env var from libc getenv (bypasses Python os.environ cache)."""
+    try:
+        import ctypes
+
+        getenv = ctypes.CDLL(None).getenv
+        getenv.argtypes = [ctypes.c_char_p]
+        getenv.restype = ctypes.c_char_p
+        raw = getenv(name.encode("utf-8"))
+        if not raw:
+            return ""
+        return raw.decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
 def _vram_autotune_for_health() -> dict[str, Any]:
     from runtime.gpu_vram import vram_estimate_autotune_status
 
@@ -1375,7 +1391,14 @@ class InferenceEngine:
         from runtime.autoconfig import autoconfig_health
 
         llama_cpp_health = self._health_llama_cpp()
+        # WHY ctypes getenv: training may Py_Initialize first, freezing Python's
+        # os.environ. Go then setenv(ZEROLLAMA_RUNTIME_EMBED_BOOT) for stale-listener
+        # detection; os.environ.get misses it and Go never publishes BaseURL.
         embed_boot = os.environ.get("ZEROLLAMA_RUNTIME_EMBED_BOOT", "").strip()
+        if not embed_boot:
+            embed_boot = _c_environ_get("ZEROLLAMA_RUNTIME_EMBED_BOOT")
+            if embed_boot:
+                os.environ["ZEROLLAMA_RUNTIME_EMBED_BOOT"] = embed_boot
         body: dict[str, Any] = {
             "status": "ok",
             "autoconfig": autoconfig_health(main_gpu=self.config.main_gpu),

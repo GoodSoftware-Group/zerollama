@@ -24,6 +24,9 @@ llama/patches.pre-*/
 venv-training/
 integration/testdata/models/
 
+# T8 loss-curve fixture dump (regenerate via scripts/training/loss_curve_fixture.sh)
+tests/fixtures/.sft_loss_curves.json
+
 # Python bytecode
 __pycache__/
 *.py[cod]
@@ -32,3 +35,21 @@ __pycache__/
 .build/
 runtime/runtime/kv/_kv_native*.so
 runtime/build/
+
+# h3-cuda research weights / generated fixtures (regenerate via scripts)
+research/h3-cuda/misc/fixtures/*.safetensors
+research/h3-cuda/bin/
+
+# Local tool caches / build trees (never commit)
+.gomodcache/
+.gotmp/
+.tmp-build/
+build-cuda13/
+/llama-server
+
+# Ad-hoc lab outputs at repo root
+/*.mp4
+/*.png
+.gpu_test_report.txt
+.panic_*.txt
+/run/

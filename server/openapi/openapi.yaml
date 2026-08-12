@@ -1211,6 +1211,20 @@ components:
         num_parallel_means_slots:
           type: boolean
           description: Always true — NUM_PARALLEL is slots inside one runner
+        inference_profile:
+          type: string
+          description: Raw ZEROLLAMA_INFERENCE_PROFILE (or "(default)")
+        inference_profile_resolved:
+          type: string
+          description: Resolved lane — throughput | agent | vram | off
+        inference_profile_applied:
+          type: array
+          items:
+            type: string
+          description: Soft-default env keys applied by the lane (key=value)
+        gpu_profile_id:
+          type: string
+          description: Last L1 GPU JSON id applied on Go→llama-server launch (e.g. rtx-5080)
     FleetStatusResponse:
       type: object
       description: >

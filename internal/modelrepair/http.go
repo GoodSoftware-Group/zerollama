@@ -206,6 +206,44 @@ func (h *HTTPAPI) ListRunning(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+func (h *HTTPAPI) ListLocal(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.Base+"/api/tags", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tags HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Models []struct {
+			Name  string `json:"name"`
+			Model string `json:"model"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(body.Models))
+	seen := map[string]bool{}
+	for _, m := range body.Models {
+		n := m.Name
+		if n == "" {
+			n = m.Model
+		}
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 func (h *HTTPAPI) Unload(ctx context.Context, name string) error {
 	// Why unload between probes: after a slash generation, llama-server prefix
 	// KV can poison later turns so a clean prompt still collapses. keep_alive:0

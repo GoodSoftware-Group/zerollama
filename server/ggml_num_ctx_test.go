@@ -96,6 +96,27 @@ func TestEffectiveGgmlFreeVRAM(t *testing.T) {
 	}
 }
 
+func TestEffectiveGgmlFreeVRAM_EmptyUsesNvidiaSMI(t *testing.T) {
+	t.Setenv("OLLAMA_GPU_OVERHEAD", "0")
+	got := effectiveGgmlFreeVRAM(nil)
+	if got == 0 {
+		t.Skip("nvidia-smi free VRAM unavailable on this host")
+	}
+	// Sanity: should be at least a few hundred MiB on a working 5080/lab box.
+	if got < 100*format.MebiByte {
+		t.Fatalf("nvidia-smi fallback free=%d looks too small", got)
+	}
+}
+
+func TestEffectiveGgmlFreeVRAM_NonEmptyZeroDoesNotSMIOverride(t *testing.T) {
+	t.Setenv("OLLAMA_GPU_OVERHEAD", "0")
+	gpus := []ml.DeviceInfo{{FreeMemory: 0, TotalMemory: 16 << 30}}
+	got := effectiveGgmlFreeVRAM(gpus)
+	if got != 0 {
+		t.Fatalf("non-empty zero FreeMemory must not be replaced by nvidia-smi, got %d", got)
+	}
+}
+
 func TestApplyGgmlNumCtxResponseOnlyWhenClamped(t *testing.T) {
 	res := &api.GenerateResponse{}
 	applyGgmlNumCtxResponse(res, &api.GgmlNumCtx{SuggestedMaxNumCtx: 8192})

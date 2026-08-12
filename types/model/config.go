@@ -24,14 +24,14 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`    // wan-cli; later rife | diffusers | comfy-headless
-	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b
+	Runner       string `json:"runner,omitempty"`    // wan-cli | ltx-wan2gp; later rife | diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled
 	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
 	Size         string `json:"size,omitempty"`      // 832x480
 	Frames       int    `json:"frames,omitempty"`
 	Steps        int    `json:"steps,omitempty"`
 	Precision    string `json:"precision,omitempty"` // bf16 | fp16 | fp8
-	Quant        string `json:"quant,omitempty"`     // none | gguf | fp8
+	Quant        string `json:"quant,omitempty"`     // none | gguf | fp8 | quanto
 	BatchSize    int    `json:"batch_size,omitempty"`
 	OffloadModel bool   `json:"offload_model,omitempty"`
 	T5CPU        bool   `json:"t5_cpu,omitempty"`
@@ -95,13 +95,14 @@ type ConfigV2 struct {
 	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
 	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
 	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
+	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX via Wan2GP — docs/ltx-t2v.md),
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
 	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
 	// "comfy_workflow_dir" (Comfy template directory; relative paths need OLLAMA_COMFYUI_WORKFLOWS_ROOT
 	// or an absolute/~/ path — see docs/comfyui-image-backend.md), "comfy_default_workflow" (name, not a path).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
 
-	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md).
+	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md, docs/ltx-t2v.md).
 	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
 
 	// ImageGeneration presets for models with capability image and modality_backends.image=external-image

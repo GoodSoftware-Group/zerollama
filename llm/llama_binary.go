@@ -172,14 +172,28 @@ func llamaCppBinaryName(name, goos string) string {
 // executable bit but cannot actually run (broken installs + test placeholders).
 const minUsableLlamaServerBytes = 1 << 20 // 1 MiB
 
-// isUsableLlamaServerBin reports whether path is a regular executable large
-// enough to be a real llama-server binary (not a few-byte stub).
+// minSplitLlamaServerBytes is the floor for cmake split builds: a small
+// llama-server PIE plus libllama-server-impl.so in the same directory (~18 KiB
+// on Linux). Below this we still treat the file as a placeholder stub.
+const minSplitLlamaServerBytes = 8 << 10 // 8 KiB
+
+// isUsableLlamaServerBin reports whether path is a runnable llama-server.
+// Accepts either a monolithic binary (≥1 MiB) or a split build with
+// libllama-server-impl.so beside the thin launcher (vendor/sibling CUDA pins).
 func isUsableLlamaServerBin(path string) bool {
 	fi, err := os.Stat(path)
 	if err != nil || !fi.Mode().IsRegular() || (fi.Mode()&0o111) == 0 {
 		return false
 	}
-	return fi.Size() >= minUsableLlamaServerBytes
+	if fi.Size() >= minUsableLlamaServerBytes {
+		return true
+	}
+	if fi.Size() < minSplitLlamaServerBytes {
+		return false
+	}
+	impl := filepath.Join(filepath.Dir(path), "libllama-server-impl.so")
+	ifi, err := os.Stat(impl)
+	return err == nil && ifi.Mode().IsRegular() && ifi.Size() > 0
 }
 
 func llamaCppBuildOutputRank(path string) int {

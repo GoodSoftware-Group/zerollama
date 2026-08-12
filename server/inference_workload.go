@@ -24,7 +24,11 @@ var (
 	ErrRuntimeHealthProbeFailed = errors.New("runtime health probe failed")
 )
 
-var inferenceHealthClient = &http.Client{Timeout: 2 * time.Second}
+// WHY 15s: cold embed /health on CUDA can take ~1–9s (nvidia probe + scheduler
+// snapshot). A 2s client timeout flapped /api/status runtime.available=false
+// even when curl /health returned 200 — see LINUX_RT_CURL_TIMEOUT in
+// scripts/runtime/linux_runtime_serve_lib.sh.
+var inferenceHealthClient = &http.Client{Timeout: 15 * time.Second}
 
 const runtimeHealthCacheTTL = 500 * time.Millisecond // Why: training submit idle-wait and ggml load paths probe /health multiple times per second; cache avoids loopback RTT on every check.
 

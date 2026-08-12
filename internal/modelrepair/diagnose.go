@@ -13,6 +13,7 @@ type API interface {
 	Chat(ctx context.Context, name string, messages []map[string]string, opts map[string]any) (*ChatResult, error)
 	Create(ctx context.Context, name, from, template, parser string, params map[string]any) error
 	ListRunning(ctx context.Context) ([]string, error)
+	ListLocal(ctx context.Context) ([]string, error)
 	Unload(ctx context.Context, name string) error
 }
 
@@ -56,21 +57,83 @@ func Diagnose(ctx context.Context, api API, name string, opts Options) (Report, 
 	var findings []Finding
 	var manual []string
 
-	// Static: thinking-capable ChatML without think toggles.
+	tmplEmpty := strings.TrimSpace(show.Template) == ""
 	thinking := hasCapability(show.Capabilities, "thinking") ||
-		strings.Contains(strings.ToLower(show.Parser), "thinking") ||
+		looksThinkingParser(show.Parser) ||
 		(strings.Contains(show.Template, "<think>") && strings.Contains(show.Template, "</think>"))
-	if thinking && looksChatML(show.Template) && !templateHasThinkToggle(show.Template) {
+
+	// --- Static template hygiene (Unsloth-inspired: stops, empty TEMPLATE, Response) ---
+
+	if tmplEmpty {
 		if qwenOK {
 			findings = append(findings, Finding{
-				Recipe:  RecipeThinkGenerateEmpty,
-				Detail:  "thinking model ChatML template lacks /think|/no_think injection",
+				Recipe:  RecipeEmptyTemplate,
+				Detail:  "TEMPLATE is empty — chat/tools/think will not assemble correctly",
+				FixHint: "install stock Qwen3 ChatML TEMPLATE via --apply",
+			})
+		} else {
+			manual = append(manual, fmt.Sprintf(
+				"empty_template but not qwen3 family (parser=%q arch=%q) — set TEMPLATE manually or recreate from a known-good Modelfile",
+				show.Parser, show.Architecture))
+		}
+	}
+
+	if !tmplEmpty && looksChatML(show.Template) && chatMLMissingStops(*show) {
+		findings = append(findings, Finding{
+			Recipe:  RecipeChatMLMissingStops,
+			Detail:  "ChatML TEMPLATE without PARAMETER stop <|im_end|> and/or <|im_start|>",
+			FixHint: "add ChatML stop tokens (safe for any family)",
+		})
+	}
+
+	if !tmplEmpty && templateMissingResponse(show.Template) {
+		if looksChatML(show.Template) {
+			findings = append(findings, Finding{
+				Recipe:  RecipeMissingResponsePlaceholder,
+				Detail:  "Go TEMPLATE lacks {{ .Response }} — /api/generate continuation may break",
+				FixHint: "append Response placeholder (keeps existing Messages layout)",
+			})
+		} else {
+			manual = append(manual, "TEMPLATE lacks {{ .Response }} and is not ChatML — review generate path manually")
+		}
+	}
+
+	// Thinking PARSER without think markup / toggles.
+	if !tmplEmpty && looksThinkingParser(show.Parser) && looksChatML(show.Template) && !templateHasThinkToggle(show.Template) {
+		if qwenOK {
+			findings = append(findings, Finding{
+				Recipe:  RecipeThinkParserMismatch,
+				Detail:  fmt.Sprintf("PARSER %q implies thinking but TEMPLATE has no /think|/no_think", show.Parser),
 				FixHint: "patch TEMPLATE with /no_think + closed <think>; PARSER qwen3",
 			})
 		} else {
 			manual = append(manual, fmt.Sprintf(
-				"think_generate_empty symptoms (ChatML thinking, no /no_think) but not qwen3 family (parser=%q arch=%q) — refusing auto-patch",
-				show.Parser, show.Architecture))
+				"think_parser_mismatch (parser=%q) but not qwen3 family — refusing auto-patch", show.Parser))
+		}
+	}
+
+	// Static: thinking-capable ChatML without think toggles (capability/arch path).
+	if !tmplEmpty && thinking && looksChatML(show.Template) && !templateHasThinkToggle(show.Template) {
+		// Avoid duplicate when ThinkParserMismatch already recorded.
+		hasMismatch := false
+		for _, f := range findings {
+			if f.Recipe == RecipeThinkParserMismatch || f.Recipe == RecipeThinkGenerateEmpty {
+				hasMismatch = true
+				break
+			}
+		}
+		if !hasMismatch {
+			if qwenOK {
+				findings = append(findings, Finding{
+					Recipe:  RecipeThinkGenerateEmpty,
+					Detail:  "thinking model ChatML template lacks /think|/no_think injection",
+					FixHint: "patch TEMPLATE with /no_think + closed <think>; PARSER qwen3",
+				})
+			} else {
+				manual = append(manual, fmt.Sprintf(
+					"think_generate_empty symptoms (ChatML thinking, no /no_think) but not qwen3 family (parser=%q arch=%q) — refusing auto-patch",
+					show.Parser, show.Architecture))
+			}
 		}
 	}
 
@@ -233,12 +296,16 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// ListTargets returns model names to scan: explicit args, or loaded runners.
-// Why warm-only when args empty: same safety rule as live doctor — never
-// surprise-cold-load the whole library on an operator's production stack.
-func ListTargets(ctx context.Context, api API, args []string) ([]string, error) {
+// ListTargets returns model names to scan: explicit args, all local tags, or loaded runners.
+// Why warm-only when args empty (and allLocal false): same safety rule as live doctor —
+// never surprise-cold-load the whole library on an operator's production stack.
+// Why allLocal is explicit: --all-local opts into /api/tags; each diagnose may load GGUF.
+func ListTargets(ctx context.Context, api API, args []string, allLocal bool) ([]string, error) {
 	if len(args) > 0 {
 		return args, nil
+	}
+	if allLocal {
+		return api.ListLocal(ctx)
 	}
 	return api.ListRunning(ctx)
 }

@@ -1679,7 +1679,9 @@ func (s *Scheduler) ResumeLoads() {
 		return
 	}
 	slog.Info("scheduler: resumed new loads")
-	s.pending.notify()
+	if s.pending != nil {
+		s.pending.notify()
+	}
 }
 
 // UnloadAllRunners evicts loaded models but keeps pin/fulfillment-protected keys.

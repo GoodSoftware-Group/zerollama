@@ -5,7 +5,7 @@
     "runner": "wan-cli",
     "profile": "wan2.2-ti2v-5b",
     "vram_tier": "16g",
-    "size": "832x480",
+    "size": "1280x704",
     "frames": 49,
     "steps": 25,
     "precision": "bf16",

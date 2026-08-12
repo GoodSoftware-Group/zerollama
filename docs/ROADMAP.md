@@ -470,21 +470,48 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 **Why this track exists:** Fine-tuning stacks (Transformers, PEFT, bitsandbytes) are Python-native; Ollama’s control plane is Go. Embedding Python keeps **public wire** in Go while avoiding a second process and gRPC for every deployment.
 
+### Upstream borrowings — Unsloth (directional, Aug 2026)
+
+[Unsloth](https://github.com/unslothai/unsloth) is **training/RL-first** (custom Triton kernels, packing, GRPO, Studio UI, GGUF export). Zerollama remains **inference/agent-first** (Ollama wire, L3 cache, VRAM broker). Borrow **techniques into the unified `/api/train` path**, not a second product or second backend:
+
+| Borrow | Why | Zerollama home |
+|--------|-----|----------------|
+| Train → GGUF → pull/serve | Closes the loop operators already expect from Unsloth/Ollama | **T7** (Done) |
+| Padding-free + packing; chat-template SFT | Biggest tok/s / VRAM win without inventing kernels | **T8** (Done) |
+| Live loss / tokens/s / VRAM on progress | Poll-only job status is weak vs Studio graphs | **T3** (metrics) |
+| Stock Trainer efficiency (checkpointing, Adam, loss mask, PEFT knobs) | Close most of Unsloth’s operator-visible SFT gap **without** a dual backend | **T9** |
+| GRPO / TRL RL job kind | Agent/tool reward loops; Unsloth’s main post-SFT differentiator | **T10** |
+| Lite data recipes (PDF/CSV/DOCX → chat JSON) | Enough for agent fine-tunes without Studio’s node editor | **T11** |
+
+**Operator split (optional, external):** daytime `zerollama serve` for agents (inference-first / T6); heavy experiments in external Unsloth/Studio → GGUF → `zerollama pull`/`run` remains valid. **In-tree training stays one backend:** `training.py` + PEFT + Transformers `Trainer`.
+
 ### Phases (training track)
 
 | Phase | Goal | Exit criteria |
 |-------|------|----------------|
 | **T1** | **Proactive VRAM (with inference Phase 8)** | **Done** — broker before `load_model` and on inference/runtime paths; OOM path remains safety net. |
 | **T2** | **Auth on `/api/train` and `:9500`** | Same threat model as main HTTP API. |
-| **T3** | **Progress over HTTP** | SSE or WebSocket; reduce poll-only UX. |
+| **T3** | **Progress over HTTP** | SSE or WebSocket; reduce poll-only UX. **Also (Unsloth-inspired):** stream `loss`, `tokens/s`, and training VRAM snapshots on the progress channel—not only percent + message. |
 | **T4** | **CPU CI smoke** | **Done (Jul 2026)** — `server/training_ci_smoke_test.go` still covers the no-embed route-wiring path (502 is OK in CI). A new `training-embed-health` job in [`zerollama-regression.yaml`](../.github/workflows/zerollama-regression.yaml) provisions a real CPU-only `.venv-training` (`TRAINING_UV_CPU_ONLY=1` in [`training_uv_venv.sh`](../scripts/training/training_uv_venv.sh)) and runs `x/trainingworker/embed_health_e2e_test.go` (`RUN_E2E_TRAINING_EMBED=1`), which calls `Start()` for real and requires `status=ok` from `TrainingHealthJSON`. **Operator hygiene (Jun 2026):** `.venv-training` ABI must match `ldd zerollama` libpython; 5080 ships **3.11 embed + venv** via [`training_embed_build_env.sh`](../scripts/training/training_embed_build_env.sh) — see [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). |
-| **T5** | **Native training (optional)** | Rust/libtorch only if Python embed becomes a bottleneck—default stay on PyTorch. |
+| **T5** | **Native training (optional)** | Rust/libtorch only if Python embed becomes a bottleneck—default stay on PyTorch. Prefer **T9** stock Trainer polish before inventing a second native stack. |
 | **T6** | **Unified queue policy (directional)** | **Partial** — idle-wait; `priority`; defer queue; **allowed window**; **cross-queue FIFO** (global tickets, Go↔Python mirror). Operator guide: [t6-unified-queue.md](./t6-unified-queue.md); smoke: `./scripts/e2e/e2e_t6_queue_smoke.sh`. **Next:** richer SLO classes, stricter training/inference class separation. |
+| **T7** | **Train → serve GGUF loop** | **Done (Aug 2026)** — after `lora_adapter/` save: optional `register_model` writes `output_dir/Modelfile` (`FROM` + `ADAPTER`) and runs create; optional `export_gguf` merges LoRA → `convert_hf_to_gguf.py` → `llama-quantize` then registers FROM the GGUF. **HTTP create fallback** when CLI missing (`register_via=auto\|cli\|http` → blob upload + `POST /api/create`). **Memory-cap:** merge then unload/empty-cache before convert (`export_unload`, default on for GGUF). Smoke: [`scripts/training/t7_train_export_smoke.sh`](../scripts/training/t7_train_export_smoke.sh) (`RUN_E2E_T7=1` lab host, not `:11434`). Code: [`training_export.py`](../training_export.py). |
+| **T8** | **Efficient SFT data path** | **Done (Aug 2026)** — chat-template–aware SFT ([`training_format.py`](../training_format.py)); `max_length` default **2048**; **`padding_free` default on** ([`training_collate.py`](../training_collate.py)); opt-in **`packing: true`** ([`training_pack.py`](../training_pack.py)); **loss-curve fixture** ([`training_loss_fixture.py`](../training_loss_fixture.py)); **Modelfile Go-TEMPLATE render** (`format=modelfile` → [`zerollama template render --train`](../cmd/template_render.go) / [`training_modelfile.py`](../training_modelfile.py)); **`padding_free_flash_attn`** loads FA2 + collator `cu_seq_lens_*` (opt-in; requires `flash-attn` in `.venv-training` — cu_seqlens emission validated on 5080 via [`scripts/training/t8_flash_attn_5080_smoke.sh`](../scripts/training/t8_flash_attn_5080_smoke.sh)). |
+| **T9** | **Stock Trainer efficiency (unified backend)** | **Partial (Aug 2026)** — **no second backend / no Unsloth Core dependency.** Improve existing `training.py` + PEFT + Transformers `Trainer`: gradient checkpointing (CUDA default on); fused / 8-bit Adam; `dataloader_pin_memory`; **completion-only loss** (default on; skipped when `packing=true`); PEFT **`use_rslora`** default on + configurable `lora_target_modules` / optional LoftQ; auto FA2 when `flash-attn` installed; richer knobs (`gradient_accumulation_steps`, `seed`, `max_steps`, `torch_compile` opt-in). Code: [`training_optim.py`](../training_optim.py), [`training_labels.py`](../training_labels.py). **Still open:** pack-aware completion masks; 5080 smoke for checkpointing+QLoRA; richer progress metrics (**T3**). |
+| **T10** | **GRPO / RL job kind** | **Directional** — `kind: "grpo"` (or `rl`) via TRL on the **same** stock path when a reward signal exists (agent/tool loops). Reuse T6 defer + broker; do not block interactive inference without idle-wait / window. External Unsloth RL → GGUF remains optional offline. |
+| **T11** | **Lite data recipes** | **Directional** — PDF/CSV/DOCX → chat JSON / `{prompt,response}` ingest for `/api/train` (CLI or small HTTP helper). **Not** Studio’s visual node editor. |
+
+**Suggested order:** ~~**T7**~~ / ~~**T8**~~ **Done** → **T9** (stock Trainer polish) → **T10** (GRPO) → **T11** (recipes). **T3** metrics can land anytime.
 
 ### Non-goals (for this track)
 
 - **Guaranteeing** mid-training automatic resume after OOM without checkpoints—unsafe for arbitrary `Trainer` loops; v1 notifies Go and may retry **model load** only.
 - **Replacing** `training.py` with an empty stub—the library is the reference implementation until a deliberate migration plan exists.
+- **Replacing** `zerollama serve` with Unsloth Studio, or **vendoring** Studio UI (**AGPL-3.0**).
+- **Adding** a second in-tree training backend (`ZEROLLAMA_TRAIN_BACKEND=unsloth` / `FastLanguageModel`)—borrow techniques into stock PEFT/`Trainer` only (**T9**).
+- **Reimplementing** Unsloth Triton kernels in-tree—out of scope; operators who need Core kernels use external Unsloth → GGUF → T7.
+- **Promising** Core/Triton marketing speed/VRAM parity; measure the stock path after T8+T9.
+- **Running** Unsloth Studio and zerollama serve on the same GPU without explicit handoff—operators must serialize or split devices; T6/broker do not coordinate a second product.
 
 **Why a separate subsection from video / Eliza:** Training touches **subprocess lifecycle**, **GPU memory shared with llama runners**, and **optional TCP**—different failure modes and operators than multimodal decode or remote HTTP.
 
@@ -515,12 +542,15 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 | **v1** | Wan T2V via training queue | **Done** — reuse embed + broker instead of new subprocess daemon. |
 | **v1.1** | Cancel + TTL + kill running Wan | Operators need to abort long jobs and reclaim disk. |
 | **v1.2** | TI2V keyframes via `/v1/media` + `options.keyframes` (shipped); 24g/32g tiers | Product parity with Wan2.2 TI2V; headroom for longer clips. **Why `/v1/media`:** keep create JSON small; CAS soft state ≠ model blobs — [media-uploads.md](./media-uploads.md). |
+| **v1.2b** | **mmgp** layer offload for 16g TI2V | Stock Wan `model.to(cuda)` OOMs on ~16 GB; borrow WanGP’s `mmgp` budgets — [wangp-borrowings.md](./wangp-borrowings.md). |
 | **v1.3** | Optional **Wan CPU worker** sidecar | Remote T5 encode / VAE on high-RAM host; 16 GB GPU CT. Plan: [wan-cpu-worker.md](./wan-cpu-worker.md). |
-| **Later** | Diffusers / other `runner` values | Other stacks without forking Wan wrapper for each upstream. |
+| **v1.4** | Pluggable `runner` / multi-family registry | WanGP-class **zoo** behind `/v1/videos` — not Gradio. **Named targets:** **LTX** (LTX-2 / LTXV) then **MiniMax H3** (FL2VA/Ref2VA). **First slice:** LTXV 13B distilled+quanto via Wan2GP — [ltx-t2v.md](./ltx-t2v.md). Sibling: [Wan2GP](https://github.com/deepbeepmeep/Wan2GP); H3 notes [h3-cuda-port.md](./h3-cuda-port.md). |
+| **Later** | Diffusers / other `runner` values; Hunyuan, CogVideoX, Flux / talking-head | Other stacks without forking Wan wrapper for each upstream; still-image may share diffusion job shape. |
+| **Later** | **Pure-C** diffusion + VRAM paging (wan-c multi-backend + CUDA twin) | Python/`mmgp` is the bridge. **Wins/unlocks:** [dit-pager.md](./dit-pager.md), [cuda-uma-toolkit.md](./cuda-uma-toolkit.md). **Phase-2e–2h:** block0 + 30-block + latent UniPC + **C patch_embedding** rematch green (cosine ≈ 1.0, pager N=2) — next is product `ZEROLLAMA_WAN_CLI` Linux. |
 
 **Not in v1:** list videos, `DELETE /v1/videos/:id`, Eliza `:cloud` passthrough, in-process Diffusers runner.
 
-**Future tracks:** GGUF Wan2.2 if 16 GB OOMs; upstream proxy for non-Wan stacks; CogVideoX / LTX via `runner: diffusers`.
+**Future tracks:** GGUF Wan2.2 if 16 GB still OOMs after mmgp; upstream proxy for non-Wan stacks; **LTX + H3** first via v1.4 `runner` (Wan2GP/mmgp or thin wrappers), then optional Diffusers.
 
 ## Image generation — MLX fast path + ComfyUI utility (partial)
 
@@ -654,6 +684,8 @@ Mixing “port Qwen-Image to MLX” with “agent needs ControlNet” hid the re
 | **Long-ctx KV quant kernels** | Borrowings **L2** (Done) | TurboQuant / QJL / Polar — opt-in VRAM via `FORK=1` / `AUTO_VRAM`; default tok/s stays L1; **next:** RotorQuant A/B on 5080 |
 | **Prefix cache → llama slots** | Borrowings **L3**; Phase **15** v1b | **Why:** dynamic slots discard KV each turn; stable keys → pinned `id_slot` + `cache_prompt` skip repeat prefill on agent threads. **Jun 2026:** vLLM-inspired SWA/draft-spec policy; subprocess `seq_pos` tracking; decode graph invalidate via in-process native API + subprocess `POST /cuda-graph/invalidate`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md), [decode-graph-invalidation.md](./decode-graph-invalidation.md). |
 | Inference vs training **priority / idle policy** | Training **T6**, inference **Phase 11** | One GPU, many clients—documented target is queued work + policy, not “implicitly fair” |
+| **Train → GGUF → serve** + efficient SFT | Training **T7–T8** | Close Unsloth-style deploy loop; packing/templates before kernel chase — **T7/T8 Done** |
+| Optional Unsloth-inspired stock Trainer / GRPO | Training **T9–T10** | Polish unified PEFT/`Trainer` path; GRPO on same backend — no Studio AGPL, no second backend |
 | **Fleet management + warm routing** | Fleet **F2–F6** | Many nodes, many agents—thin orchestrator, status, mDNS, playbooks; avoid scatter-gather on constrained GPUs |
 | **Local voice latency + duplex** | Borrowings **L5**, **L7** (Tier B) | Phrase cache + streaming pipeline after inference baseline |
 | **LocalAI control-plane borrowings** | **LA1–LA10** | Fast GGUF read, guess hooks, watchdog, concurrency groups, fleet score, repair, HF pull, logprob score API, **bench cache** — [localai-borrowings.md](./localai-borrowings.md) |

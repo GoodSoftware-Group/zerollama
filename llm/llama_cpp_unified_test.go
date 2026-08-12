@@ -44,6 +44,27 @@ func TestIsUsableLlamaServerBinRejectsStub(t *testing.T) {
 	}
 }
 
+func TestIsUsableLlamaServerBinAcceptsSplitBuild(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "llama-server")
+	// ~18 KiB thin PIE + companion impl (vendor/sibling cmake layout).
+	buf := make([]byte, 18<<10)
+	copy(buf, []byte{0x7f, 'E', 'L', 'F'})
+	if err := os.WriteFile(bin, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isUsableLlamaServerBin(bin) {
+		t.Fatal("thin binary without impl .so should be rejected")
+	}
+	impl := filepath.Join(dir, "libllama-server-impl.so")
+	if err := os.WriteFile(impl, []byte("fake-impl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !isUsableLlamaServerBin(bin) {
+		t.Fatal("split build with libllama-server-impl.so should be accepted")
+	}
+}
+
 func TestUnifiedLlamaCppRootEnv(t *testing.T) {
 	t.Setenv("LLAMA_CPP_ROOT", "/tmp/unified-llama-cpp-test")
 	got := UnifiedLlamaCppRoot()

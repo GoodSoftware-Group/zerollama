@@ -158,6 +158,10 @@ type llamaServerLaunchConfig struct {
 	opts                 api.Options
 	numParallel          int
 	kvCacheType          string
+	ubatchSize           int     // 0 → same as opts.NumBatch (L1 may set ub≠b)
+	forceFlashAttn       bool    // L1 profile flash_attn when OLLAMA_FLASH_ATTENTION unset
+	draftPMin            float64 // L1 draft_p_min → --spec-draft-p-min when speculative on
+	gpuProfileID         string
 	embedding            bool
 	config               LlamaServerConfig
 	gpus                 []ml.DeviceInfo
@@ -742,6 +746,15 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 
 	params = appendMMProjArgs(params, launch)
 	params = appendSpeculativeArgs(params, exe, launch.config, launch.opts)
+	if launch.draftPMin > 0 {
+		// Only emit when speculative decode is active (profile draft_p_min).
+		for i := 0; i+1 < len(params); i++ {
+			if params[i] == "--spec-type" && params[i+1] != "" && params[i+1] != "none" {
+				params = append(params, "--spec-draft-p-min", strconv.FormatFloat(launch.draftPMin, 'f', -1, 64))
+				break
+			}
+		}
+	}
 
 	params = append(params, qwenVLServerArgs(launch.modelArch)...)
 
@@ -762,7 +775,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 
 	params = appendFlashAttentionArgsForLaunch(params, launch)
 
-	params = appendBatchArgs(params, launch.opts, launch.embedding, launch.numParallel)
+	params = appendBatchArgsWithUBatch(params, launch.opts, launch.embedding, launch.numParallel, launch.ubatchSize)
 
 	// GPU layer offloading — only pass an exact count when the caller asked for
 	// a real partial/full pin. Default (-1) and Modelfile/eliza sentinel 999
@@ -946,6 +959,11 @@ func appendLlamaServerLogArgs(params []string) []string {
 }
 
 func appendBatchArgs(params []string, opts api.Options, embedding bool, numParallel int) []string {
+	return appendBatchArgsWithUBatch(params, opts, embedding, numParallel, 0)
+}
+
+// appendBatchArgsWithUBatch sets -b/-ub. ubatch>0 allows L1 ubatch≠batch (e.g. 1024/256).
+func appendBatchArgsWithUBatch(params []string, opts api.Options, embedding bool, numParallel, ubatch int) []string {
 	if embedding {
 		params = append(params, "--embedding")
 		if batchSize := embeddingBatchSize(opts, numParallel); batchSize > 0 {
@@ -955,7 +973,11 @@ func appendBatchArgs(params []string, opts api.Options, embedding bool, numParal
 	}
 
 	if opts.NumBatch > 0 {
-		params = append(params, "-b", strconv.Itoa(opts.NumBatch), "-ub", strconv.Itoa(opts.NumBatch))
+		ub := opts.NumBatch
+		if ubatch > 0 {
+			ub = ubatch
+		}
+		params = append(params, "-b", strconv.Itoa(opts.NumBatch), "-ub", strconv.Itoa(ub))
 	}
 	return params
 }
@@ -1423,6 +1445,14 @@ func NewLlamaServerRunner(
 		gpuLibs:      slices.Clone(gpuLibs),
 		extraEnvs:    cloneStringMap(serverEnvs),
 		ggufKV:       f.KV(),
+	}
+	// L1: apply runtime/configs/gpu/*.json (e.g. rtx-5080) so Phase 17 Go→llama-server
+	// shares calibrated -b/-ub/KV/FA/np with the Python runtime path.
+	if profile := SelectGpuProfile(gpus); profile != nil {
+		ApplyGpuProfileToLaunch(&launch, profile)
+		numParallel = launch.numParallel
+		opts = launch.opts
+		kvCacheType = launch.kvCacheType
 	}
 
 	s := &llamaServerRunner{

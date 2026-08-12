@@ -51,7 +51,6 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling,
 )
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
@@ -434,11 +433,16 @@ class WorkerState:
         lora_rank: int = 16,
         lora_alpha: float = 32.0,
         _oom_retry: bool = False,
+        attn_implementation: Optional[str] = None,
+        lora_request: Optional[Dict[str, Any]] = None,
     ):
         """Load model and tokenizer (only if different from current)"""
         if self.current_model_name == model_name and self.model is not None:
-            print(f"WORKER: Model {model_name} already loaded, reusing", flush=True)
-            return True
+            # Reuse only when attention impl matches (FA path needs a reload).
+            cur = getattr(self, "_attn_implementation", None)
+            if cur == attn_implementation:
+                print(f"WORKER: Model {model_name} already loaded, reusing", flush=True)
+                return True
 
         if use_qlora and self.device != "cuda":
             print(
@@ -485,6 +489,9 @@ class WorkerState:
             else:
                 load_kwargs["torch_dtype"] = torch.float32
 
+            if attn_implementation:
+                load_kwargs["attn_implementation"] = attn_implementation
+
             self.model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
             if self.device == "mps":
                 self.model = self.model.to(self.device)
@@ -494,19 +501,24 @@ class WorkerState:
                 if use_qlora:
                     self.model = prepare_model_for_kbit_training(self.model)
 
-                lora_config = LoraConfig(
-                    task_type=TaskType.CAUSAL_LM,
-                    r=lora_rank,
+                from training_optim import build_lora_kwargs
+
+                lora_kw = build_lora_kwargs(
+                    lora_request or {},
+                    lora_rank=lora_rank,
                     lora_alpha=lora_alpha,
-                    lora_dropout=0.05,
-                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-                    bias="none",
                 )
+                lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, **lora_kw)
                 self.model = get_peft_model(self.model, lora_config)
                 self.model.print_trainable_parameters()
 
             self.current_model_name = model_name
-            print(f"WORKER: Model {model_name} loaded successfully on {self.device}", flush=True)
+            self._attn_implementation = attn_implementation
+            print(
+                f"WORKER: Model {model_name} loaded successfully on {self.device}"
+                + (f" (attn={attn_implementation})" if attn_implementation else ""),
+                flush=True,
+            )
             return True
 
         except Exception as e:
@@ -518,7 +530,14 @@ class WorkerState:
                 self._wait_vram_relief_after_oom()
                 _empty_device_cache()
                 return self.load_model(
-                    model_name, use_lora, use_qlora, lora_rank, lora_alpha, _oom_retry=True
+                    model_name,
+                    use_lora,
+                    use_qlora,
+                    lora_rank,
+                    lora_alpha,
+                    _oom_retry=True,
+                    attn_implementation=attn_implementation,
+                    lora_request=lora_request,
                 )
             return False
             
@@ -583,7 +602,15 @@ def job_processor():
                         if wan_out := env.get("WAN_OUTPUT_PATH"):
                             env["WAN_OUTPUT_PATH"] = str(wan_out).replace("{job_id}", job.id)
                         data["env"] = env
-                    result = run_local_script(data)
+                    # WHY training_active during run_script: Go OccupiesGPU / BLOCK_INFERENCE
+                    # keys off training_active + queue.running. Wan is a long child process;
+                    # without this flag, health TTL gaps can resume chat mid-DiT.
+                    STATE.training_active = True
+                    try:
+                        result = run_local_script(data)
+                    finally:
+                        STATE.training_active = False
+                        _empty_device_cache()
                 else:
                     result = {"status": "error", "error": f"Unknown job command: {job.cmd}"}
                 
@@ -658,48 +685,214 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
 
             # Load model (reuses if same model)
             STATE.send_progress(5.0, "Loading model...")
-            if not STATE.load_model(model_name, use_lora, use_qlora, lora_rank, lora_alpha):
+            # T9: auto-enable FA2 cu_seqlens when flash-attn is installed unless explicitly off.
+            if "padding_free_flash_attn" in request:
+                flash_kw = bool(request.get("padding_free_flash_attn"))
+            else:
+                flash_kw = False
+                try:
+                    from transformers.utils import is_flash_attn_2_available
+
+                    flash_kw = bool(is_flash_attn_2_available())
+                except Exception:
+                    flash_kw = False
+            attn_impl = None
+            if flash_kw:
+                # Document-isolated flattening needs FA2 + cu_seqlens from the collator.
+                try:
+                    from transformers.utils import is_flash_attn_2_available
+
+                    if not is_flash_attn_2_available():
+                        return {
+                            "status": "error",
+                            "error": (
+                                "padding_free_flash_attn=true requires flash-attn "
+                                "(pip install flash-attn in .venv-training); "
+                                "or omit the flag / set false to use SDPA + position_ids flattening"
+                            ),
+                        }
+                except Exception:
+                    return {
+                        "status": "error",
+                        "error": (
+                            "padding_free_flash_attn=true requires transformers "
+                            "flash-attn helpers + flash-attn package"
+                        ),
+                    }
+                attn_impl = "flash_attention_2"
+            if not STATE.load_model(
+                model_name,
+                use_lora,
+                use_qlora,
+                lora_rank,
+                lora_alpha,
+                attn_implementation=attn_impl,
+                lora_request=request,
+            ):
                 return {"status": "error", "error": "Failed to load model"}
 
             STATE.send_progress(20.0, "Preparing dataset...")
 
-            # Prepare dataset
-            def format_sample(sample):
-                return f"### Instruction:\n{sample['prompt']}\n\n### Response:\n{sample['response']}"
+            # T8: chat-template–aware SFT (not hardcoded Alpaca). See training_format.py.
+            # Why: train on ### Instruction then serve ChatML/Llama templates → poor transfer.
+            from training_format import format_sft_corpus, resolve_format_mode
+            from training_optim import (
+                resolve_completion_only_loss,
+                resolve_dataloader_pin_memory,
+                resolve_gradient_accumulation_steps,
+                resolve_gradient_checkpointing,
+                resolve_optim,
+                resolve_seed,
+                resolve_torch_compile,
+            )
+            from training_labels import tokenize_completion_only_corpus
 
-            texts = [format_sample(s) for s in training_data]
+            fmt_mode = resolve_format_mode(request, STATE.tokenizer)
+            completion_only = resolve_completion_only_loss(request)
+            # max_length default 2048 (was 512); pad in collator only when padding_free=false.
+            max_length = int(request.get("max_length", 2048) or 2048)
+            if max_length < 64:
+                max_length = 64
+            from training_collate import (
+                build_sft_collator,
+                resolve_packing,
+                resolve_padding_free,
+            )
+            from training_pack import packing_stats, tokenize_and_pack
 
-            # Tokenize
-            def tokenize_fn(examples):
-                return STATE.tokenizer(
-                    examples["text"],
-                    truncation=True,
-                    max_length=512,
-                    padding="max_length",
+            packing = resolve_packing(request)
+            padding_free = resolve_padding_free(request)
+            if flash_kw and not padding_free:
+                return {
+                    "status": "error",
+                    "error": "padding_free_flash_attn requires padding_free=true",
+                }
+
+            if packing:
+                from datasets import Dataset as HFDataset
+
+                # Packing concatenates full rows; completion-only mask is skipped
+                # (document in job result). Prefer packing=false for response-only loss.
+                texts = format_sft_corpus(
+                    training_data, tokenizer=STATE.tokenizer, request=request
+                )
+                packed = tokenize_and_pack(texts, STATE.tokenizer, max_length)
+                stats = packing_stats(len(texts), packed)
+                tokenized = HFDataset.from_dict(packed)
+                if completion_only:
+                    STATE.send_progress(
+                        24.0,
+                        "Note: packing=on skips completion_only_loss masking",
+                    )
+                STATE.send_progress(
+                    25.0,
+                    f"Dataset ready (format={fmt_mode}, packing=on, "
+                    f"padding_free={str(padding_free).lower()}, "
+                    f"max_length={max_length}, samples={stats['samples_in']}→"
+                    f"{stats['blocks_out']} blocks, ~{stats['pack_ratio']:.1f}x)",
+                )
+            elif completion_only and fmt_mode != "modelfile":
+                from datasets import Dataset as HFDataset
+
+                labeled = tokenize_completion_only_corpus(
+                    training_data,
+                    STATE.tokenizer,
+                    max_length=max_length,
+                    mode=fmt_mode,
+                    request=request,
+                )
+                tokenized = HFDataset.from_dict(labeled)
+                STATE.send_progress(
+                    25.0,
+                    f"Dataset ready (format={fmt_mode}, packing=off, "
+                    f"completion_only=true, padding_free={str(padding_free).lower()}, "
+                    f"max_length={max_length}, n={len(training_data)})",
+                )
+            else:
+                texts = format_sft_corpus(
+                    training_data, tokenizer=STATE.tokenizer, request=request
                 )
 
-            dataset = Dataset.from_dict({"text": texts})
-            tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+                def tokenize_fn(examples):
+                    return STATE.tokenizer(
+                        examples["text"],
+                        truncation=True,
+                        max_length=max_length,
+                        padding=False,
+                    )
+
+                map_kw: Dict[str, Any] = {"batched": True, "remove_columns": ["text"]}
+                num_proc = int(request.get("dataset_num_proc", 0) or 0)
+                if num_proc > 1:
+                    map_kw["num_proc"] = num_proc
+                dataset = Dataset.from_dict({"text": texts})
+                tokenized = dataset.map(tokenize_fn, **map_kw)
+                STATE.send_progress(
+                    25.0,
+                    f"Dataset ready (format={fmt_mode}, packing=off, "
+                    f"padding_free={str(padding_free).lower()}, "
+                    f"max_length={max_length}, n={len(texts)})",
+                )
 
             STATE.send_progress(30.0, "Starting training...")
 
-            # Training arguments
-            training_args = TrainingArguments(
-                output_dir=output_dir,
-                num_train_epochs=num_epochs,
-                per_device_train_batch_size=batch_size,
-                gradient_accumulation_steps=4,
-                learning_rate=learning_rate,
-                weight_decay=0.01,
-                warmup_ratio=0.1,
-                logging_steps=10,
-                save_strategy="epoch",
-                bf16=STATE.device == "cuda",
-                report_to="none",
-                optim="adamw_torch",
-                lr_scheduler_type="cosine",
-                max_grad_norm=0.3,
+            grad_ckpt = resolve_gradient_checkpointing(request, device=STATE.device)
+            if grad_ckpt and STATE.model is not None:
+                try:
+                    STATE.model.gradient_checkpointing_enable(
+                        gradient_checkpointing_kwargs={"use_reentrant": False}
+                    )
+                except TypeError:
+                    STATE.model.gradient_checkpointing_enable()
+                except Exception as e:
+                    print(f"WORKER: gradient_checkpointing skipped: {e}", flush=True)
+                    grad_ckpt = False
+
+            if resolve_torch_compile(request) and STATE.model is not None:
+                try:
+                    STATE.model = torch.compile(STATE.model)  # type: ignore[assignment]
+                    print("WORKER: torch.compile enabled", flush=True)
+                except Exception as e:
+                    print(f"WORKER: torch.compile skipped: {e}", flush=True)
+
+            seed = resolve_seed(request)
+            optim_name = resolve_optim(
+                request, use_qlora=use_qlora, device=STATE.device
             )
+            gas = resolve_gradient_accumulation_steps(request)
+            pin_mem = resolve_dataloader_pin_memory(request, device=STATE.device)
+
+            # Training arguments (T9 stock / Unsloth-inspired defaults)
+            ta_kwargs: Dict[str, Any] = {
+                "output_dir": output_dir,
+                "num_train_epochs": num_epochs,
+                "per_device_train_batch_size": batch_size,
+                "gradient_accumulation_steps": gas,
+                "learning_rate": learning_rate,
+                "weight_decay": 0.01,
+                "warmup_ratio": float(request.get("warmup_ratio", 0.1) or 0.1),
+                "logging_steps": int(request.get("logging_steps", 10) or 10),
+                "save_strategy": str(request.get("save_strategy", "epoch") or "epoch"),
+                "bf16": STATE.device == "cuda",
+                "report_to": "none",
+                "optim": optim_name,
+                "lr_scheduler_type": str(
+                    request.get("lr_scheduler_type", "cosine") or "cosine"
+                ),
+                "max_grad_norm": float(request.get("max_grad_norm", 0.3) or 0.3),
+                # Keep position_ids / flattening fields for padding-free collator.
+                "remove_unused_columns": False,
+                "dataloader_pin_memory": pin_mem,
+                "gradient_checkpointing": grad_ckpt,
+            }
+            if seed is not None:
+                ta_kwargs["seed"] = seed
+            if request.get("max_steps") is not None:
+                try:
+                    ta_kwargs["max_steps"] = int(request.get("max_steps"))
+                except (TypeError, ValueError):
+                    pass
+            training_args = TrainingArguments(**ta_kwargs)
 
             # Custom callback for progress
             class ProgressCallback:
@@ -714,10 +907,14 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
             # Calculate total steps
             total_steps = (len(tokenized) // batch_size) * num_epochs
 
-            # Data collator
-            data_collator = DataCollatorForLanguageModeling(
-                tokenizer=STATE.tokenizer,
-                mlm=False,
+            data_collator, collate_mode = build_sft_collator(
+                STATE.tokenizer,
+                padding_free=padding_free,
+                flash_attn_kwargs=flash_kw,
+            )
+            STATE.send_progress(
+                28.0,
+                f"Collator={collate_mode} (padding_free={str(padding_free).lower()})",
             )
 
             # Trainer
@@ -756,15 +953,53 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
             STATE.model.save_pretrained(adapter_path)
             STATE.tokenizer.save_pretrained(adapter_path)
 
-            STATE.send_progress(95.0, "Training complete")
-
-            return {
+            result = {
                 "status": "ok",
                 "output_dir": output_dir,
                 "adapter_path": adapter_path,
                 "train_loss": train_result.training_loss,
                 "train_samples": len(training_data),
+                "format": fmt_mode,
+                "max_length": max_length,
+                "packing": packing,
+                "padding_free": padding_free,
+                "padding_free_flash_attn": flash_kw,
+                "attn_implementation": attn_impl or "default",
+                "collate": collate_mode,
+                "completion_only_loss": bool(completion_only and not packing),
+                "gradient_checkpointing": grad_ckpt,
+                "optim": optim_name,
+                "gradient_accumulation_steps": gas,
             }
+
+            # T7: optional register (ADAPTER Modelfile / create) + GGUF export
+            if request.get("register_model") or request.get("export_gguf"):
+                try:
+                    from training_export import run_export
+
+                    def _unload_for_export() -> None:
+                        # Drop PEFT/base from GPU after merge so convert_hf_to_gguf
+                        # does not compete with resident training weights.
+                        STATE.unload_model(reason="export_unload")
+
+                    export_info = run_export(
+                        request=request,
+                        model=STATE.model,
+                        tokenizer=STATE.tokenizer,
+                        model_name=model_name,
+                        output_dir=output_dir,
+                        adapter_path=adapter_path,
+                        progress=STATE.send_progress,
+                        unload_fn=_unload_for_export,
+                    )
+                    if export_info:
+                        result["export"] = export_info
+                except Exception as exp_err:
+                    traceback.print_exc()
+                    result["export"] = {"status": "error", "error": str(exp_err)}
+
+            STATE.send_progress(100.0, "Training complete")
+            return result
 
         except Exception as e:
             traceback.print_exc()
@@ -811,7 +1046,46 @@ def _script_subprocess_env(python_bin: str, extra_env: Dict[str, Any]) -> Dict[s
             sanitize_ld_library_path_for_pytorch(env, python=python_bin)
         except Exception:
             pass
+    # Containment: leave CPU for zerollama serve; Go passes WAN_OMP_NUM_THREADS.
+    omp = str(env.get("WAN_OMP_NUM_THREADS") or env.get("OMP_NUM_THREADS") or "2").strip() or "2"
+    for k in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "TORCH_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        env.setdefault(k, omp)
     return env
+
+
+def _run_script_preexec(extra_env: Dict[str, Any]):
+    """Return Popen preexec_fn that applies WAN_RLIMIT_AS_GIB (address-space cap).
+
+    WHY: without a cap the Wan child can grow until the kernel OOM-kills serve.
+    Prefer failing the job (SIGSEGV/ENOMEM in child) over taking down the coordinator.
+    """
+    raw = str(extra_env.get("WAN_RLIMIT_AS_GIB", "")).strip()
+    if not raw or raw in ("0", "off", "Off", "OFF"):
+        return None
+    try:
+        gib = int(raw)
+    except ValueError:
+        return None
+    if gib <= 0:
+        return None
+    limit = gib * (1024**3)
+
+    def _preexec():
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+            print(f"WORKER: applied RLIMIT_AS={gib}GiB to run_script child", flush=True)
+        except Exception as e:
+            print(f"WORKER: WARN RLIMIT_AS not applied: {e}", flush=True)
+
+    return _preexec
 
 def _resolve_script_python(request: Dict[str, Any], extra_env: Dict[str, Any]) -> str:
     """Pick the interpreter for run_script jobs (Wan venv when configured).
@@ -878,6 +1152,7 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
         
         # Merge stderr into stdout so wrapper diagnostics (eprint) and child output
         # are captured in one stream (matches wan_video_generate.py for generate.py).
+        preexec = _run_script_preexec(extra_env)
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -886,6 +1161,7 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
             env=env,
             text=True,
             bufsize=1,  # Line buffered
+            preexec_fn=preexec,
         )
 
         stdout_lines = []

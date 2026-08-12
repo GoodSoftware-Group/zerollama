@@ -143,6 +143,52 @@ func ensureStop(params map[string]any, token string) {
 	params["stop"] = list
 }
 
+func hasStopToken(params map[string]any, token string) bool {
+	existing, _ := params["stop"]
+	switch v := existing.(type) {
+	case []any:
+		for _, s := range v {
+			if fmt.Sprint(s) == token {
+				return true
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s == token {
+				return true
+			}
+		}
+	case string:
+		return v == token
+	}
+	return false
+}
+
+func chatMLMissingStops(show ShowInfo) bool {
+	if !looksChatML(show.Template) {
+		return false
+	}
+	params := ParseParameters(show.Parameters)
+	return !hasStopToken(params, "<|im_end|>") || !hasStopToken(params, "<|im_start|>")
+}
+
+func templateMissingResponse(tmpl string) bool {
+	t := strings.TrimSpace(tmpl)
+	if t == "" {
+		return false // empty is RecipeEmptyTemplate
+	}
+	// Only flag Go-style templates (ollama TEMPLATE), not raw Jinja leftovers.
+	if !strings.Contains(t, "{{") {
+		return false
+	}
+	return !strings.Contains(t, ".Response")
+}
+
+func looksThinkingParser(parser string) bool {
+	p := strings.ToLower(parser)
+	return strings.Contains(p, "thinking")
+}
+
 // BuildPatch combines findings into one overlay Patch.
 // Returns (nil, nil) when findings is empty. Returns an error for unknown
 // recipe IDs so a future recipe cannot silently produce an empty overlay.
@@ -155,12 +201,21 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 	}
 	think := false
 	slash := false
+	stopsOnly := false
+	emptyTmpl := false
+	needResponse := false
 	for _, f := range findings {
 		switch f.Recipe {
-		case RecipeThinkGenerateEmpty:
+		case RecipeThinkGenerateEmpty, RecipeThinkParserMismatch:
 			think = true
 		case RecipeSlashSystemCollapse:
 			slash = true
+		case RecipeChatMLMissingStops:
+			stopsOnly = true
+		case RecipeEmptyTemplate:
+			emptyTmpl = true
+		case RecipeMissingResponsePlaceholder:
+			needResponse = true
 		default:
 			return nil, fmt.Errorf("unhandled repair recipe %q", f.Recipe)
 		}
@@ -173,15 +228,20 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 		p.Parameters = make(map[string]any)
 	}
 
+	thinkingCaps := hasCapability(show.Capabilities, "thinking") ||
+		looksThinkingParser(show.Parser) ||
+		(strings.Contains(show.Template, "<think>") && strings.Contains(show.Template, "</think>"))
+
+	rewroteTemplate := false
 	switch {
 	case think && slash:
 		p.Template = templateQwen3ThinkNoThinkNoSystem
 		p.Parser = "qwen3"
-		ensureStop(p.Parameters, "<|im_start|>")
-		ensureStop(p.Parameters, "<|im_end|>")
-	case think:
+		rewroteTemplate = true
+	case think || (emptyTmpl && thinkingCaps):
 		p.Template = templateQwen3ThinkNoThink
 		p.Parser = "qwen3"
+		rewroteTemplate = true
 	case slash:
 		p.Template = templateChatMLNoSystem
 		if show.Parser != "" && strings.Contains(strings.ToLower(show.Parser), "qwen3") {
@@ -189,13 +249,31 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 		} else {
 			p.Parser = "qwen3"
 		}
-		ensureStop(p.Parameters, "<|im_start|>")
-		ensureStop(p.Parameters, "<|im_end|>")
-		// Why not PARAMETER stop ///: on moophlo-class GGUFs a slash collapse
-		// followed by stop /// leaves the runner slot emitting ////empty until
-		// unload. Prevention (stripRolePrefixes + steer) is the real fix.
+		rewroteTemplate = true
+	case emptyTmpl:
+		p.Template = templateChatMLStock
+		if show.Parser != "" {
+			p.Parser = show.Parser
+		} else {
+			p.Parser = "qwen3"
+		}
+		rewroteTemplate = true
+	case needResponse && looksChatML(show.Template):
+		// Keep operator template; only restore generate continuation.
+		p.Template = strings.TrimRight(show.Template, "\n") + "\n" + templateResponseSuffix + "\n"
+		p.Parser = show.Parser
+		rewroteTemplate = true
+	case stopsOnly:
+		// Parameters-only hygiene: inherit TEMPLATE/PARSER from FROM on create.
+		p.Template = ""
+		p.Parser = ""
 	default:
 		return nil, fmt.Errorf("no patchable recipe combination in %d finding(s)", len(findings))
+	}
+
+	if rewroteTemplate || stopsOnly || looksChatML(p.Template) || looksChatML(show.Template) {
+		ensureStop(p.Parameters, "<|im_start|>")
+		ensureStop(p.Parameters, "<|im_end|>")
 	}
 
 	p.Modelfile = formatModelfilePreview(name, p)

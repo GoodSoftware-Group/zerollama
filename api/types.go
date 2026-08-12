@@ -1371,6 +1371,12 @@ type InferenceConfigStatus struct {
 	SameModelMultiCopy    bool   `json:"same_model_multi_copy"`
 	ResidencyOwner        string `json:"residency_owner"`
 	NumParallelMeansSlots bool   `json:"num_parallel_means_slots"`
+	// Inference profile lane (ZEROLLAMA_INFERENCE_PROFILE) — collapses L1/L3/FORK flags.
+	InferenceProfile         string   `json:"inference_profile,omitempty"`
+	InferenceProfileResolved string   `json:"inference_profile_resolved,omitempty"`
+	InferenceProfileApplied  []string `json:"inference_profile_applied,omitempty"`
+	// Last L1 GPU JSON applied on Go→llama-server launch (e.g. rtx-5080).
+	GpuProfileID string `json:"gpu_profile_id,omitempty"`
 }
 
 // InferenceStatus summarizes local inference load for fleet management polling.

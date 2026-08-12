@@ -48,6 +48,10 @@ type ggmlLoadProfile struct {
 }
 
 func ggmlLoadProfileFor(model *Model, opts api.Options) ggmlLoadProfile {
+	return ggmlLoadProfileForGPUs(model, opts, nil)
+}
+
+func ggmlLoadProfileForGPUs(model *Model, opts api.Options, gpus []ml.DeviceInfo) ggmlLoadProfile {
 	batch := opts.NumBatch
 	if batch <= 0 {
 		batch = api.DefaultOptions().NumBatch
@@ -62,6 +66,22 @@ func ggmlLoadProfileFor(model *Model, opts api.Options) ggmlLoadProfile {
 	}
 
 	kv := opts.KvCacheTypeEffective()
+
+	// Align VRAM estimates with L1 launch knobs (q8_0 KV, calibrated batch/np).
+	if kvProf, batchProf, npProf, ok := llm.GpuProfileKVAndBatch(gpus, opts); ok {
+		if kvProf != "" {
+			kv = kvProf
+		}
+		if batchProf > 0 {
+			batch = batchProf
+			if opts.NumCtx > 0 {
+				batch = min(batch, opts.NumCtx)
+			}
+		}
+		if npProf > 0 && numParallel > npProf && !ggmlArchitectureForcesParallelOne(model) {
+			numParallel = npProf
+		}
+	}
 
 	return ggmlLoadProfile{
 		batchSize:   batch,
@@ -83,6 +103,18 @@ func effectiveGgmlFreeVRAM(gpus []ml.DeviceInfo) uint64 {
 			free = 0
 		}
 		total += free
+	}
+	if len(gpus) == 0 {
+		// Discover returned no devices while CUDA is live (bootstrap / edge).
+		// Do NOT fall back when gpus is non-empty but FreeMemory is 0 — that can
+		// mean loaded-runner accounting already drained the budget.
+		if smi := llm.NvidiaSMIFreeVRAMBytes(); smi > 0 {
+			overhead := envconfig.GpuOverhead()
+			if smi > overhead {
+				return smi - overhead
+			}
+			return smi
+		}
 	}
 	return total
 }
@@ -215,7 +247,7 @@ func resolveGgmlNumParallel(m *Model, opts api.Options, gpus []ml.DeviceInfo, f 
 		numCtx = api.DefaultOptions().NumCtx
 	}
 	free := effectiveGgmlFreeVRAM(gpus)
-	profile := ggmlLoadProfileFor(m, opts)
+	profile := ggmlLoadProfileForGPUs(m, opts, gpus)
 	fitted := suggestMaxGgmlNumParallel(f, m.ModelPath, numCtx, free, profile, maxCap)
 	if fitted < 1 {
 		fitted = 1

@@ -103,5 +103,154 @@ test: $(TEST_BINS)
 	./tests/test_ops_wire
 	./tests/test_tokenizer_spm
 
+# --- Linux CUDA twin lab (no xcrun / uma_daemon) ---
+# Needs NVIDIA driver libs on CT 1564, e.g.:
+#   export LD_LIBRARY_PATH=/root/nvidia-host:/usr/lib/ollama/cuda_v13:/usr/local/cuda/lib64
+CUDA_HOME ?= /usr/local/cuda
+NVCC ?= $(CUDA_HOME)/bin/nvcc
+DIT_PAGER ?= $(abspath $(CURDIR)/../dit_pager)
+LINUX_CFLAGS = -O2 -std=c11 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -I$(CURDIR)/include -I$(DIT_PAGER)
+CUDA_LDFLAGS = -L$(CUDA_HOME)/lib64 -L/usr/lib/ollama/cuda_v13 -lcublas -lcudart -lpthread -lm
+# Prefer host NVIDIA libs when present (Proxmox CT).
+export LD_LIBRARY_PATH := /root/nvidia-host:/usr/lib/ollama/cuda_v13:$(CUDA_HOME)/lib64:$(LD_LIBRARY_PATH)
+
+.PHONY: cuda-smoke cuda-fragment host-fragment cuda-ffn-block cuda-block0 \
+	cuda-block0-real cuda-block0-rematch block0-fixture \
+	multiblock-fixture cuda-multiblock-rematch \
+	latent-fixture cuda-latent-unipc-rematch cuda-lab
+
+backend_cuda.o: backend_cuda.c include/wan_backend.h include/backend_ops.h
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -c -o $@ backend_cuda.c
+
+backend_host.o: backend_host.c include/wan_backend.h include/backend_ops.h
+	$(CC) $(LINUX_CFLAGS) -c -o $@ backend_host.c
+
+backend_ops.o: backend_ops.c include/backend_ops.h
+	$(CC) $(LINUX_CFLAGS) -c -o $@ backend_ops.c
+
+# RTX 5080 = sm_120; override with CUDA_ARCH=sm_89 etc.
+CUDA_ARCH ?= sm_120
+backend_cuda_elem.o: backend_cuda_elem.cu include/backend_ops.h
+	$(NVCC) -O2 -std=c++17 -arch=$(CUDA_ARCH) -I$(CURDIR)/include -c -o $@ backend_cuda_elem.cu
+
+dit_resident.o: dit_resident.c include/dit_resident.h
+	$(CC) $(LINUX_CFLAGS) -c -o $@ dit_resident.c
+
+tests/cuda_smoke: tests/cuda_smoke.c backend_cuda.o backend_cuda_elem.o backend_ops.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_smoke.c backend_cuda.o \
+	  backend_cuda_elem.o backend_ops.o $(CUDA_LDFLAGS) -lstdc++ -lm
+
+tests/cuda_fragment: tests/cuda_fragment.c backend_cuda.o backend_cuda_elem.o backend_ops.o dit_resident.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_fragment.c backend_cuda.o \
+	  backend_cuda_elem.o backend_ops.o dit_resident.o $(DIT_PAGER)/dit_pager.o $(CUDA_LDFLAGS) -lstdc++ -lm
+
+tests/host_fragment: tests/host_fragment.c backend_host.o backend_ops.o dit_resident.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -o $@ tests/host_fragment.c backend_host.o backend_ops.o dit_resident.o \
+	  $(DIT_PAGER)/dit_pager.o -lm
+
+tests/cuda_ffn_block: tests/cuda_ffn_block.c backend_cuda.o backend_cuda_elem.o backend_host.o \
+	backend_ops.o dit_resident.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_ffn_block.c \
+	  backend_cuda.o backend_cuda_elem.o backend_host.o backend_ops.o dit_resident.o \
+	  $(DIT_PAGER)/dit_pager.o $(CUDA_LDFLAGS) -lstdc++ -lm
+
+tests/cuda_block0: tests/cuda_block0.c backend_cuda.o backend_cuda_elem.o backend_host.o \
+	backend_ops.o dit_resident.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_block0.c \
+	  backend_cuda.o backend_cuda_elem.o backend_host.o backend_ops.o dit_resident.o \
+	  $(DIT_PAGER)/dit_pager.o $(CUDA_LDFLAGS) -lstdc++ -lm
+
+safetensors_min.o: safetensors_min.c include/safetensors_min.h
+	$(CC) $(LINUX_CFLAGS) -c -o $@ safetensors_min.c
+
+tests/cuda_block0_real: tests/cuda_block0_real.c backend_cuda.o backend_cuda_elem.o backend_host.o \
+	backend_ops.o dit_resident.o safetensors_min.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_block0_real.c \
+	  backend_cuda.o backend_cuda_elem.o backend_host.o backend_ops.o dit_resident.o \
+	  safetensors_min.o $(DIT_PAGER)/dit_pager.o $(CUDA_LDFLAGS) -lstdc++ -lm
+
+tests/cuda_block0_rematch: tests/cuda_block0_rematch.c backend_cuda.o backend_cuda_elem.o \
+	backend_ops.o safetensors_min.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_block0_rematch.c \
+	  backend_cuda.o backend_cuda_elem.o backend_ops.o safetensors_min.o \
+	  $(CUDA_LDFLAGS) -lstdc++ -lm
+
+sched_unipc_linux.o: sched_unipc.c include/sched_unipc.h
+	$(CC) $(LINUX_CFLAGS) -c -o $@ sched_unipc.c
+
+tests/cuda_multiblock_rematch: tests/cuda_multiblock_rematch.c backend_cuda.o \
+	backend_cuda_elem.o backend_ops.o safetensors_min.o dit_resident.o \
+	sched_unipc_linux.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_multiblock_rematch.c \
+	  backend_cuda.o backend_cuda_elem.o backend_ops.o safetensors_min.o \
+	  dit_resident.o sched_unipc_linux.o $(DIT_PAGER)/dit_pager.o \
+	  $(CUDA_LDFLAGS) -lstdc++ -lm
+
+tests/cuda_latent_unipc_rematch: tests/cuda_latent_unipc_rematch.c backend_cuda.o \
+	backend_cuda_elem.o backend_ops.o safetensors_min.o dit_resident.o \
+	sched_unipc_linux.o $(DIT_PAGER)/dit_pager.o
+	$(MAKE) -C $(DIT_PAGER) dit_pager.o
+	$(CC) $(LINUX_CFLAGS) -I$(CUDA_HOME)/include -o $@ tests/cuda_latent_unipc_rematch.c \
+	  backend_cuda.o backend_cuda_elem.o backend_ops.o safetensors_min.o \
+	  dit_resident.o sched_unipc_linux.o $(DIT_PAGER)/dit_pager.o \
+	  $(CUDA_LDFLAGS) -lstdc++ -lm
+
+cuda-smoke: tests/cuda_smoke
+	./tests/cuda_smoke
+
+cuda-fragment: tests/cuda_fragment
+	WAN_DIT_RESIDENT=2 ./tests/cuda_fragment
+
+host-fragment: tests/host_fragment
+	WAN_DIT_RESIDENT=2 ./tests/host_fragment
+
+cuda-ffn-block: tests/cuda_ffn_block
+	WAN_DIT_RESIDENT=2 ./tests/cuda_ffn_block
+
+cuda-block0: tests/cuda_block0
+	WAN_DIT_RESIDENT=2 ./tests/cuda_block0
+
+cuda-block0-real: tests/cuda_block0_real
+	WAN_DIT_RESIDENT=2 ./tests/cuda_block0_real
+
+block0-fixture:
+	WAN_FORCE_SDPA=1 $(or $(WAN_PYTHON),/root/.zerollama/third_party/wan/venv/bin/python) \
+	  tools/gen_block0_cuda_fixture.py
+
+multiblock-fixture:
+	WAN_FORCE_SDPA=1 $(or $(WAN_PYTHON),/root/.zerollama/third_party/wan/venv/bin/python) \
+	  tools/gen_multiblock_cuda_fixture.py
+
+latent-fixture:
+	WAN_FORCE_SDPA=1 $(or $(WAN_PYTHON),/root/.zerollama/third_party/wan/venv/bin/python) \
+	  tools/gen_latent_unipc_fixture.py
+
+cuda-block0-rematch: tests/cuda_block0_rematch
+	WAN_BLOCK0_FIXDIR=$(CURDIR)/dumps/block0_cuda_fixture ./tests/cuda_block0_rematch
+
+cuda-multiblock-rematch: tests/cuda_multiblock_rematch
+	WAN_DIT_RESIDENT=2 WAN_UNIPC_ORDER=3 \
+	  WAN_MULTIBLOCK_FIXDIR=$(CURDIR)/dumps/multiblock_cuda_fixture \
+	  ./tests/cuda_multiblock_rematch
+
+cuda-latent-unipc-rematch: tests/cuda_latent_unipc_rematch
+	WAN_DIT_RESIDENT=2 WAN_UNIPC_ORDER=3 \
+	  WAN_LATENT_FIXDIR=$(CURDIR)/dumps/latent_unipc_fixture \
+	  ./tests/cuda_latent_unipc_rematch
+
+cuda-lab: cuda-smoke cuda-fragment host-fragment cuda-ffn-block cuda-block0 cuda-block0-real
+
 clean:
-	rm -f wan-cli $(WAN_OBJS) $(UMA_WAN_OPS_O) tests/*.o $(TEST_BINS)
+	rm -f wan-cli $(WAN_OBJS) $(UMA_WAN_OPS_O) tests/*.o $(TEST_BINS) \
+	  backend_cuda.o backend_host.o backend_ops.o backend_cuda_elem.o dit_resident.o \
+	  safetensors_min.o sched_unipc_linux.o \
+	  tests/cuda_smoke tests/cuda_fragment tests/host_fragment tests/cuda_ffn_block \
+	  tests/cuda_block0 tests/cuda_block0_real tests/cuda_block0_rematch \
+	  tests/cuda_multiblock_rematch tests/cuda_latent_unipc_rematch
+

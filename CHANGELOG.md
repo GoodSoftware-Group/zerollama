@@ -4,6 +4,59 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Training T9 (Partial) — stock Trainer efficiency (unified backend)
+
+- **No** second backend / Unsloth Core fork — polish existing `training.py` + PEFT + Transformers `Trainer`
+- [`training_optim.py`](./training_optim.py): gradient checkpointing (CUDA default on); `adamw_torch_fused` / `adamw_bnb_8bit` (QLoRA); pin_memory; `use_rslora` default on; optional LoftQ; richer knobs (`gradient_accumulation_steps`, `seed`, `max_steps`, `torch_compile`)
+- [`training_labels.py`](./training_labels.py): **completion-only loss** (default on; skipped when `packing=true`)
+- Auto `padding_free_flash_attn` when flash-attn is installed
+- Tests: `python3 -m unittest tests.test_training_optim`
+
+### Training T7 (Done) — train → serve export
+
+- [`training_export.py`](./training_export.py): `register_model` writes `FROM`+`ADAPTER` Modelfile; create via CLI or **HTTP** blob upload + `POST /api/create` (`register_via=auto|cli|http`)
+- `export_gguf`: merge LoRA → `convert_hf_to_gguf` → `llama-quantize` (`export_quant`); **memory-cap** unload/empty-cache after merge before convert (`export_unload`)
+- Wired from `training.py` after `lora_adapter/` save; result includes `export`
+- Smoke: `./scripts/training/t7_train_export_smoke.sh` (`RUN_E2E_T7=1` on lab `:11435`)
+- Tests: `python3 -m unittest tests.test_training_export`
+
+### Training T8 (Done) — padding-free + packing + chat templates + Modelfile render
+
+- [`training_collate.py`](./training_collate.py): **`padding_free` default on** → `DataCollatorWithFlattening`; `padding_free=false` → longest-pad; opt-in `padding_free_flash_attn` → FA2 + `cu_seq_lens_*` (`collate=flattening_flash`)
+- [`training_format.py`](./training_format.py): `format=auto|chatml|llama3|hf|alpaca|modelfile`; `messages[]`; `max_length` default 2048
+- [`training_modelfile.py`](./training_modelfile.py) + [`zerollama template render --train`](./cmd/template_render.go): serve-parity Go TEMPLATE for SFT (strips trailing generation priming)
+- [`training_pack.py`](./training_pack.py): opt-in `packing: true`
+- Loss-curve fixture: [`training_loss_fixture.py`](./training_loss_fixture.py); FA/cu_seqlens smoke: [`scripts/training/t8_flash_attn_5080_smoke.sh`](./scripts/training/t8_flash_attn_5080_smoke.sh) (5080; `flash-attn` optional package)
+- Job result includes `format`, `max_length`, `packing`, `padding_free`, `padding_free_flash_attn`, `attn_implementation`, `collate`
+- Tests: `python3 -m unittest tests.test_training_format tests.test_training_pack tests.test_training_collate tests.test_training_loss_fixture tests.test_training_modelfile`
+
+
+### Doctor template hygiene (`--repair-models`)
+
+- New recipes: `chatml_missing_stops` (any ChatML family — stop tokens only), `missing_response_placeholder` (append `{{ .Response }}`), `empty_template`, `think_parser_mismatch` (Qwen3 invasive TEMPLATE rewrites remain family-gated)
+- `--all-local` scans `/api/tags` (explicit cold-load opt-in; default still warm `/api/ps` only)
+- Docs: [doctor-model-repair.md](./docs/doctor-model-repair.md), minefield §3.1
+
+
+### Embed start no longer blocks :8080 for 120s (Aug 2026)
+
+**Why:** Restarts looked down for ~2 minutes while `runtimeworker.Start` waited for uvicorn `/health` (or hit the full 120s timeout) before Gin accepted traffic. Phase 17 Go→llama-server does not need embed for text GGUF.
+
+**What:** sync-wait `ZEROLLAMA_RUNTIME_EMBED_SYNC_WAIT` (default **3s**), then finish health poll in the background (total `ZEROLLAMA_RUNTIME_EMBED_READY_WAIT`, default 120s) and publish `BaseURL` when ready.
+
+**Follow-up (CT 1564):** training `Py_Initialize` before Go `setenv(ZEROLLAMA_RUNTIME_EMBED_BOOT)` left Python `os.environ` stale — `/health` omitted `embed_boot` and Go never published `BaseURL`. Fixed via libc `getenv` in `runtime/engine.py` + embed bootstrap. Go `/health` client timeout **2s → 15s** (cold CUDA). **Split llama-server** (~18 KiB + `libllama-server-impl.so`) is discoverable again (1 MiB size gate had forced ggml / `llama_server=off`).
+
+### Inference profile auto + L1 on Phase 17 Go path (Aug 2026)
+
+**Why:** Linux prod defaults to Go → llama-server, which ignored calibrated `runtime/configs/gpu/*.json` (live 5080 loads used f16 KV / `-b 512`). Operators also stacked L1/L3/FORK/graphs env vars instead of one workload lane.
+
+**What:**
+- `llm/gpu_profile.go` — Phase 17 launches apply L1 JSON (`rtx-5080`: q8_0, `-b 1024`/`-ub 256`, FA on, np cap); VRAM fit uses the same KV/batch; **nvidia-smi fallback** when DeviceInfo is empty; avoid slog key `source` (reserved)
+- `effectiveGgmlFreeVRAM` — nvidia-smi free-VRAM fallback when discover returns **no** devices (fixes `free_vram=0 B` → forced `-np 1`); does not override non-empty zero FreeMemory from loaded-runner accounting
+- `ZEROLLAMA_INFERENCE_PROFILE=auto|throughput|agent|vram|off` — soft-defaults when unset; `serve_gpu_example.sh` defaults `auto`
+- `/api/status` → `inference.config.inference_profile*` + `gpu_profile_id`; OpenAPI + `runtime_env_doctor.sh` updated
+- MTP/spec draft_max from L1 only when MTP/spec is actually enabled
+- **Verified on CT 1564:** tinyllama load → `--cache-type-k q8_0 -b 1024 -ub 256 --flash-attn on`, `gpu_profile_id=rtx-5080`
 ### Media uploads + Wan TI2V keyframe inbetweens (Aug 2026)
 
 **Why:** Agents need N keyframes → short clips without stuffing megabytes of base64 into `POST /v1/videos`. Soft animation state must not share lifecycle with permanent model `blobs/`, and missing frames after TTL/LRU must be recoverable by re-upload (no client digests, no refcount pin/unpin across the training queue).
