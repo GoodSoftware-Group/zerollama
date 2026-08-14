@@ -955,12 +955,32 @@ iGPUScan:
 	go func() {
 		defer close(runner.loadDone)
 		waitStart := time.Now()
+		// Capture identity before WaitUntilRunning: eviction can detachServer()
+		// (nil runner.model) while we wait — see gemma4 load vs eliza thrash panic.
+		readyName := ""
+		if req.model != nil {
+			readyName = req.model.ShortName
+		}
+		readyPath := runner.modelPath
 		if err = llama.WaitUntilRunning(req.ctx); err != nil {
 			schedLogWarn("WaitUntilRunning failed", req, "error", err, "wait_elapsed", time.Since(waitStart), "total_elapsed", time.Since(loadStart))
 			runner.refMu.Lock()
 			runner.loading = false
 			runner.refMu.Unlock()
 			req.errCh <- err
+			s.scheduleExpiredRunner(runner)
+			return
+		}
+		runner.refMu.Lock()
+		// Evicted during wait: llama/model cleared by detachServer — do not succeed.
+		if runner.llama == nil || runner.model == nil {
+			runner.loading = false
+			runner.refMu.Unlock()
+			schedLogWarn("runner unloaded during WaitUntilRunning", req,
+				"wait_elapsed", time.Since(waitStart),
+				"total_elapsed", time.Since(loadStart),
+			)
+			req.errCh <- fmt.Errorf("runner unloaded during load")
 			s.scheduleExpiredRunner(runner)
 			return
 		}
@@ -971,11 +991,10 @@ iGPUScan:
 		)
 		slog.Info(
 			"model ready",
-			"name", runner.model.ShortName,
-			"path", runner.modelPath,
+			"name", readyName,
+			"path", readyPath,
 			"pid", runner.pid,
 		)
-		runner.refMu.Lock()
 		if runner.pid < 0 {
 			runner.pid = llama.Pid()
 		}
@@ -1151,8 +1170,12 @@ func syncRunnerLoadOptions(runner *runnerRef) {
 		return
 	}
 	if runner.Options.NumCtx != effective {
+		modelName := runner.modelPath
+		if runner.model != nil && runner.model.ShortName != "" {
+			modelName = runner.model.ShortName
+		}
 		slog.Debug("sync runner num_ctx to effective load size",
-			"model", runner.model.ShortName,
+			"model", modelName,
 			"requested", runner.Options.NumCtx,
 			"effective", effective,
 		)

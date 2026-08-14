@@ -159,6 +159,72 @@ func TestSchedLoad(t *testing.T) {
 	require.Len(t, s.expiredCh, 1)
 }
 
+// Eviction can detachServer() (nil model) while WaitUntilRunning is in flight.
+// Ready-path must not panic on runner.model.ShortName and must fail the request.
+func TestSchedLoadEvictedDuringWait(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 2*time.Second)
+	defer done()
+	s := InitScheduler(ctx)
+	s.waitForRecovery = 10 * time.Millisecond
+
+	modelPath, _ := createBinFile(t, ggml.KV{
+		"general.architecture":          "llama",
+		"llama.context_length":          uint32(32),
+		"llama.embedding_length":        uint32(4096),
+		"llama.block_count":             uint32(1),
+		"llama.attention.head_count":    uint32(32),
+		"llama.attention.head_count_kv": uint32(32),
+		"tokenizer.ggml.tokens":         []string{" "},
+		"tokenizer.ggml.scores":         []float32{0},
+		"tokenizer.ggml.token_type":     []int32{0},
+	}, []*ggml.Tensor{
+		{Name: "blk.0.attn.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
+		{Name: "output.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
+	})
+
+	gate := make(chan struct{})
+	server := &mockLlm{vramSize: 10, vramByGPU: map[ml.DeviceID]uint64{}, waitGate: gate}
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
+		server.modelPath = model
+		return server, nil
+	}
+
+	req := &LlmRequest{
+		ctx:             ctx,
+		model:           &Model{ModelPath: modelPath, ShortName: "race-model"},
+		opts:            api.DefaultOptions(),
+		successCh:       make(chan *runnerRef, 1),
+		errCh:           make(chan error, 1),
+		sessionDuration: &api.Duration{Duration: 2 * time.Second},
+	}
+	s.load(req, ml.SystemInfo{}, nil, false)
+
+	// Wait until runner is registered and blocked in WaitUntilRunning.
+	var runner *runnerRef
+	require.Eventually(t, func() bool {
+		s.loadedMu.Lock()
+		defer s.loadedMu.Unlock()
+		runner = s.loaded[schedulerModelKey(req.model)]
+		return runner != nil && runner.loading
+	}, time.Second, 5*time.Millisecond)
+
+	runner.refMu.Lock()
+	leaked := runner.detachServer()
+	runner.refMu.Unlock()
+	closeLlamaServer(leaked)
+
+	close(gate)
+
+	select {
+	case err := <-req.errCh:
+		require.ErrorContains(t, err, "unloaded during load")
+	case resp := <-req.successCh:
+		t.Fatalf("unexpected success after eviction: %v", resp)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for load failure")
+	}
+}
+
 type reqBundle struct {
 	ctx     context.Context //nolint:containedctx
 	ctxDone func()
@@ -1127,6 +1193,7 @@ type mockLlm struct {
 	closeResp         error
 	closeCalled       bool
 	closeBlock        chan struct{} // if set, Close waits until closed (hang regression tests)
+	waitGate          chan struct{} // if set, WaitUntilRunning blocks until closed
 	vramSize          uint64
 	totalSize         uint64
 	vramByGPU         map[ml.DeviceID]uint64
@@ -1158,7 +1225,16 @@ func (s *mockLlm) Load(ctx context.Context, sytemInfo ml.SystemInfo, gpus []ml.D
 	return gpuIDs, nil
 }
 func (s *mockLlm) Ping(ctx context.Context) error             { return s.pingResp }
-func (s *mockLlm) WaitUntilRunning(ctx context.Context) error { return s.waitResp }
+func (s *mockLlm) WaitUntilRunning(ctx context.Context) error {
+	if s.waitGate != nil {
+		select {
+		case <-s.waitGate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.waitResp
+}
 func (s *mockLlm) Completion(ctx context.Context, req llm.CompletionRequest, fn func(llm.CompletionResponse)) error {
 	return s.completionResp
 }
