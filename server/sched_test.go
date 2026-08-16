@@ -990,6 +990,65 @@ func (g *growMockLlm) GrowNumCtx(ctx context.Context, n int) error {
 	return nil
 }
 
+type shrinkMockLlm struct {
+	mockLlm
+	shrinkTo int
+	calls    int
+}
+
+func (g *shrinkMockLlm) ShrinkNumCtx(ctx context.Context, n int) error {
+	g.calls++
+	g.shrinkTo = n
+	g.contextLength = n
+	return nil
+}
+
+func TestTryShrinkIdleKVSkipsBusyAndExcept(t *testing.T) {
+	s := InitScheduler(t.Context())
+	idle := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	busy := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	keep := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	ggml := &mockLlm{contextLength: 32768}
+
+	s.loaded["idle"] = &runnerRef{
+		modelKey:  "idle",
+		modelPath: "idle.gguf",
+		refCount:  0,
+		llama:     idle,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	s.loaded["busy"] = &runnerRef{
+		modelKey:  "busy",
+		modelPath: "busy.gguf",
+		refCount:  1,
+		llama:     busy,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	s.loaded["keep"] = &runnerRef{
+		modelKey:  "keep",
+		modelPath: "keep.gguf",
+		refCount:  0,
+		llama:     keep,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	s.loaded["ggml"] = &runnerRef{
+		modelKey:  "ggml",
+		modelPath: "ggml.gguf",
+		refCount:  0,
+		llama:     ggml,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+
+	n := s.tryShrinkIdleKV(t.Context(), "keep")
+	require.Equal(t, 1, n)
+	require.Equal(t, 1, idle.calls)
+	require.Equal(t, kvReclaimFloor, idle.contextLength)
+	require.Equal(t, kvReclaimFloor, s.loaded["idle"].Options.NumCtx)
+	require.Zero(t, busy.calls)
+	require.Zero(t, keep.calls)
+	require.Equal(t, 32768, ggml.contextLength)
+}
+
 func TestSchedGrowNumCtxAvoidsReload(t *testing.T) {
 	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer done()

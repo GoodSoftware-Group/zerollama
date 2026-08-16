@@ -55,6 +55,29 @@ func (s *Scheduler) watchdogReclaimMemory(ctx context.Context) {
 		if used < threshold {
 			continue
 		}
+		if n := s.tryShrinkIdleKV(ctx, ""); n > 0 {
+			gpusAfter := s.getGpuFn(ctx, s.LoadedRunnersForDiscovery())
+			stillHot := false
+			for _, g := range gpusAfter {
+				if g.TotalMemory == 0 {
+					continue
+				}
+				u := 1.0 - float64(g.FreeMemory)/float64(g.TotalMemory)
+				if u >= threshold {
+					stillHot = true
+					break
+				}
+			}
+			if !stillHot {
+				slog.Info("watchdog reclaimed vram via idle kv shrink",
+					"shrunk", n,
+					"gpu", gpu.ID,
+					"vram_used_ratio_before", used,
+					"threshold", threshold,
+				)
+				return
+			}
+		}
 		victim := s.findLRUIdleRunner()
 		if victim == nil {
 			return

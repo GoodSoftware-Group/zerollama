@@ -89,6 +89,49 @@ func TestWatchdogReclaimMemoryEvictsLRU(t *testing.T) {
 	}
 }
 
+func TestWatchdogReclaimShrinksBeforeEvict(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", "0.5")
+	ctx := t.Context()
+	s := InitScheduler(ctx)
+	calls := 0
+	s.getGpuFn = func(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo {
+		calls++
+		g := ml.DeviceInfo{DeviceID: ml.DeviceID{Library: "CUDA"}}
+		g.TotalMemory = 10 * format.GigaByte
+		if calls == 1 {
+			g.FreeMemory = 2 * format.GigaByte // 80% used
+		} else {
+			g.FreeMemory = 6 * format.GigaByte // shrink freed KV
+		}
+		return []ml.DeviceInfo{g}
+	}
+
+	llm := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	runner := &runnerRef{
+		model:      &Model{ModelPath: "qwen.gguf"},
+		modelKey:   "qwen.gguf",
+		modelPath:  "qwen.gguf",
+		refCount:   0,
+		lastUsedAt: time.Now().Add(-time.Hour),
+		llama:      llm,
+		loadDone:   make(chan struct{}),
+		Options:    &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	close(runner.loadDone)
+	s.loaded[runner.modelKey] = runner
+
+	s.watchdogReclaimMemory(ctx)
+
+	select {
+	case <-s.expiredCh:
+		t.Fatal("should not evict after idle kv shrink dropped usage under threshold")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if llm.calls != 1 {
+		t.Fatalf("shrink calls=%d want 1", llm.calls)
+	}
+}
+
 func TestWaitUntilReadyWaitsForLoad(t *testing.T) {
 	runner := &runnerRef{
 		loading:  true,

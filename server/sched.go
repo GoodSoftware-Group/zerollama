@@ -103,6 +103,10 @@ type Scheduler struct {
 // on a large GPU can cause stalling
 var defaultModelsPerGPU = 3
 
+// Floor for idle in-place KV shrink under VRAM pressure. Below this, leftover KV
+// is small versus weights; live cells that do not fit fail the shrink call.
+const kvReclaimFloor = 2048
+
 var ErrMaxQueue = errors.New("server busy, please try again.  maximum pending requests exceeded")
 
 func InitScheduler(ctx context.Context) *Scheduler {
@@ -525,6 +529,14 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			// new one fits
 			schedLogDebug("probing load alongside existing models", pending, "loaded_count", loadedCount)
 			needEvict := s.loadFn(pending, systemInfo, gpus, true)
+			if needEvict {
+				// Idle dense KV at 16k–32k is gigabytes; shrink that before unloading weights.
+				if n := s.tryShrinkIdleKV(ctx, pendingKey); n > 0 {
+					s.updateFreeSpace(gpus)
+					needEvict = s.loadFn(pending, systemInfo, gpus, true)
+					schedLogInfo("retried load after idle kv shrink", pending, "shrunk", n, "still_need_evict", needEvict)
+				}
+			}
 			if !needEvict {
 				schedLogInfo("new model fits without eviction", pending)
 				break
@@ -1586,6 +1598,74 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 		slog.Debug("findRunnerToUnload: only fulfillment-protected runners loaded", "protected", len(protected))
 	}
 	return nil
+}
+
+type kvShrinker interface {
+	ShrinkNumCtx(context.Context, int) error
+}
+
+func runnerEffectiveNumCtx(runner *runnerRef) int {
+	if runner.llama != nil {
+		if n := runner.llama.ContextLength(); n > 0 {
+			return n
+		}
+	}
+	if runner.Options != nil && runner.Options.NumCtx > 0 {
+		return runner.Options.NumCtx
+	}
+	return 0
+}
+
+// tryShrinkIdleKV packs idle llama-server KV down to kvReclaimFloor. exceptKey is
+// skipped (the model we are trying to load). Returns how many runners shrunk.
+func (s *Scheduler) tryShrinkIdleKV(ctx context.Context, exceptKey string) int {
+	s.loadedMu.Lock()
+	runners := make([]*runnerRef, 0, len(s.loaded))
+	for _, r := range s.loaded {
+		runners = append(runners, r)
+	}
+	s.loadedMu.Unlock()
+
+	n := 0
+	for _, runner := range runners {
+		if exceptKey != "" && runner.modelKey == exceptKey {
+			continue
+		}
+		runner.refMu.Lock()
+		idle := runner.refCount == 0 && !runner.loading && runner.llama != nil
+		runner.refMu.Unlock()
+		if !idle {
+			continue
+		}
+		sh, ok := runner.llama.(kvShrinker)
+		if !ok {
+			continue
+		}
+		have := runnerEffectiveNumCtx(runner)
+		if have <= kvReclaimFloor {
+			continue
+		}
+		if err := sh.ShrinkNumCtx(ctx, kvReclaimFloor); err != nil {
+			slog.Debug("idle kv shrink failed", "model", runner.modelPath, "from_ctx", have, "error", err)
+			continue
+		}
+		now := kvReclaimFloor
+		if runner.llama != nil {
+			if cl := runner.llama.ContextLength(); cl > 0 {
+				now = cl
+			}
+		}
+		if runner.Options != nil {
+			runner.Options.NumCtx = now
+		}
+		n++
+		slog.Info("idle kv shrink for vram reclaim",
+			"model", runner.modelPath,
+			"from_ctx", have,
+			"to_ctx", now,
+		)
+	}
+	return n
 }
 
 func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
