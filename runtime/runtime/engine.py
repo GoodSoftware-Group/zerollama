@@ -1097,6 +1097,7 @@ class InferenceEngine:
         )
         if ctx_grew:
             from runtime.infer_trace import infer_trace
+            from runtime.kv.kv_grow import try_grow_worker
 
             infer_trace(
                 "engine.reload",
@@ -1117,6 +1118,14 @@ class InferenceEngine:
                 priority=priority_from_options(options),
                 **vram_kw,
             )
+            if try_grow_worker(self._server, int(needed_ctx)):
+                self._loaded_vram_num_ctx = int(needed_ctx)
+                infer_trace(
+                    "engine.kv_grow",
+                    needed_ctx=needed_ctx,
+                    loaded_ctx=loaded_ctx,
+                )
+                return self._server
             self._stop_server()
             self.config.llama_model = resolved
             self._server = self._create_llama_worker(resolved)

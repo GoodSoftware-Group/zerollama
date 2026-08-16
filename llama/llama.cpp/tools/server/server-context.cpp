@@ -2989,6 +2989,88 @@ private:
                     res->backends_cleared = cleared;
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_KV_GROW:
+                {
+                    const uint32_t want = task.slot_action.n_ctx_grow;
+                    const uint32_t from_seq = ctx_tgt ? llama_n_ctx_seq(ctx_tgt) : 0;
+                    bool busy = false;
+                    for (const server_slot & slot : slots) {
+                        if (slot.is_processing()) {
+                            busy = true;
+                            break;
+                        }
+                    }
+                    if (busy) {
+                        send_error(task, "kv grow requires idle slots", ERROR_TYPE_UNAVAILABLE);
+                        break;
+                    }
+                    if (spec) {
+                        send_error(task, "kv grow not supported with speculative decode", ERROR_TYPE_NOT_SUPPORTED);
+                        break;
+                    }
+                    if (ctx_tgt == nullptr || want == 0) {
+                        send_error(task, "kv grow: no context", ERROR_TYPE_SERVER);
+                        break;
+                    }
+                    const bool ok = llama_n_ctx_grow(ctx_tgt, want);
+                    if (!ok) {
+                        send_error(task, "kv grow failed (unsupported memory type or alloc)", ERROR_TYPE_SERVER);
+                        break;
+                    }
+                    const uint32_t now_seq = llama_n_ctx_seq(ctx_tgt);
+                    n_ctx = llama_n_ctx(ctx_tgt);
+                    for (server_slot & slot : slots) {
+                        slot.n_ctx = (int32_t) now_seq;
+                    }
+                    auto res = std::make_unique<server_task_result_kv_grow>();
+                    res->id         = task.id;
+                    res->grown      = now_seq > from_seq;
+                    res->n_ctx      = n_ctx;
+                    res->n_ctx_seq  = now_seq;
+                    res->n_ctx_from = from_seq;
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_KV_SHRINK:
+                {
+                    const uint32_t want = task.slot_action.n_ctx_grow;
+                    const uint32_t from_seq = ctx_tgt ? llama_n_ctx_seq(ctx_tgt) : 0;
+                    bool busy = false;
+                    for (const server_slot & slot : slots) {
+                        if (slot.is_processing()) {
+                            busy = true;
+                            break;
+                        }
+                    }
+                    if (busy) {
+                        send_error(task, "kv shrink requires idle slots", ERROR_TYPE_UNAVAILABLE);
+                        break;
+                    }
+                    if (spec) {
+                        send_error(task, "kv shrink not supported with speculative decode", ERROR_TYPE_NOT_SUPPORTED);
+                        break;
+                    }
+                    if (ctx_tgt == nullptr || want == 0) {
+                        send_error(task, "kv shrink: no context", ERROR_TYPE_SERVER);
+                        break;
+                    }
+                    const bool ok = llama_n_ctx_shrink(ctx_tgt, want);
+                    if (!ok) {
+                        send_error(task, "kv shrink failed (live tokens do not fit, unsupported, or alloc)", ERROR_TYPE_SERVER);
+                        break;
+                    }
+                    const uint32_t now_seq = llama_n_ctx_seq(ctx_tgt);
+                    n_ctx = llama_n_ctx(ctx_tgt);
+                    for (server_slot & slot : slots) {
+                        slot.n_ctx = (int32_t) now_seq;
+                    }
+                    auto res = std::make_unique<server_task_result_kv_shrink>();
+                    res->id         = task.id;
+                    res->shrunk     = now_seq < from_seq;
+                    res->n_ctx      = n_ctx;
+                    res->n_ctx_seq  = now_seq;
+                    res->n_ctx_from = from_seq;
+                    queue_results.send(std::move(res));
+                } break;
             case SERVER_TASK_TYPE_GET_LORA:
                 {
                     // TODO @ngxson : make lora_adapters a dedicated member of server_context
@@ -4913,6 +4995,14 @@ void server_routes::init_routes() {
         return handle_kv_seq_copy(req);
     };
 
+    this->post_kv_grow = [this](const server_http_req & req) {
+        return handle_kv_grow(req);
+    };
+
+    this->post_kv_shrink = [this](const server_http_req & req) {
+        return handle_kv_shrink(req);
+    };
+
     this->post_cuda_graph_invalidate = [this](const server_http_req & req) {
         return handle_cuda_graph_invalidate(req);
     };
@@ -5631,6 +5721,84 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
         return res;
     }
     GGML_ASSERT(dynamic_cast<server_task_result_slot_seq_copy*>(result.get()) != nullptr);
+    res->ok(result->to_json());
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_kv_grow(const server_http_req & req) {
+    auto res = create_response();
+    json body;
+    try {
+        body = json::parse(req.body);
+    } catch (const std::exception &) {
+        res->error(format_error_response("Invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+    if (!body.contains("n_ctx")) {
+        res->error(format_error_response("n_ctx required", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+    const uint32_t n_ctx = body.at("n_ctx");
+    if (n_ctx == 0) {
+        res->error(format_error_response("n_ctx must be > 0", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+    auto & rd = res->rd;
+    {
+        server_task task(SERVER_TASK_TYPE_KV_GROW);
+        task.id = rd.get_new_id();
+        task.slot_action.n_ctx_grow = n_ctx;
+        rd.post_task(std::move(task));
+    }
+    auto result = rd.next(req.should_stop);
+    if (!result) {
+        GGML_ASSERT(req.should_stop());
+        return res;
+    }
+    if (result->is_error()) {
+        res->error(result->to_json());
+        return res;
+    }
+    GGML_ASSERT(dynamic_cast<server_task_result_kv_grow*>(result.get()) != nullptr);
+    res->ok(result->to_json());
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_kv_shrink(const server_http_req & req) {
+    auto res = create_response();
+    json body;
+    try {
+        body = json::parse(req.body);
+    } catch (const std::exception &) {
+        res->error(format_error_response("Invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+    if (!body.contains("n_ctx")) {
+        res->error(format_error_response("n_ctx required", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+    const uint32_t n_ctx = body.at("n_ctx");
+    if (n_ctx == 0) {
+        res->error(format_error_response("n_ctx must be > 0", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+    auto & rd = res->rd;
+    {
+        server_task task(SERVER_TASK_TYPE_KV_SHRINK);
+        task.id = rd.get_new_id();
+        task.slot_action.n_ctx_grow = n_ctx;
+        rd.post_task(std::move(task));
+    }
+    auto result = rd.next(req.should_stop);
+    if (!result) {
+        GGML_ASSERT(req.should_stop());
+        return res;
+    }
+    if (result->is_error()) {
+        res->error(result->to_json());
+        return res;
+    }
+    GGML_ASSERT(dynamic_cast<server_task_result_kv_shrink*>(result.get()) != nullptr);
     res->ok(result->to_json());
     return res;
 }

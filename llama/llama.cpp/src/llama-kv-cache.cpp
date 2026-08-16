@@ -145,6 +145,90 @@ static void cow_copy_bytes(const ggml_tensor * src, ggml_tensor * dst, size_t of
     ggml_backend_tensor_set(dst, tmp.data(), offset, size);
 }
 
+static void copy_bytes_2off(
+        const ggml_tensor * src, ggml_tensor * dst,
+        size_t src_off, size_t dst_off, size_t size) {
+    if (size == 0) {
+        return;
+    }
+    if (src_off == dst_off) {
+        cow_copy_bytes(src, dst, src_off, size);
+        return;
+    }
+    if (src->buffer && dst->buffer &&
+            ggml_backend_buffer_is_host(src->buffer) &&
+            ggml_backend_buffer_is_host(dst->buffer) &&
+            src->data && dst->data) {
+        memcpy((char *) dst->data + dst_off, (const char *) src->data + src_off, size);
+        return;
+    }
+    std::vector<uint8_t> tmp(size);
+    ggml_backend_tensor_get(src, tmp.data(), src_off, size);
+    ggml_backend_tensor_set(dst, tmp.data(), dst_off, size);
+}
+
+// Copy n_copy cells from src[0..) into dst[0..). src_n/dst_n are dim1 sizes.
+static void copy_kv_prefix(
+        const ggml_tensor * src, ggml_tensor * dst,
+        uint32_t n_copy, uint32_t src_n, uint32_t dst_n, uint32_t n_stream, bool v_trans) {
+    if (!src || !dst || n_copy == 0) {
+        return;
+    }
+    GGML_ASSERT((uint32_t) src->ne[1] == src_n);
+    GGML_ASSERT((uint32_t) dst->ne[1] == dst_n);
+    GGML_ASSERT(n_copy <= src_n && n_copy <= dst_n);
+    GGML_ASSERT(src->ne[0] == dst->ne[0]);
+    if (!v_trans) {
+        const size_t row = src->nb[1];
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            copy_bytes_2off(src, dst, (size_t) s * src->nb[2], (size_t) s * dst->nb[2], (size_t) n_copy * row);
+        }
+        return;
+    }
+    const uint32_t n_embd = (uint32_t) src->ne[0];
+    const size_t el = ggml_type_size(src->type);
+    for (uint32_t s = 0; s < n_stream; ++s) {
+        const size_t src_base = (size_t) s * src->nb[2];
+        const size_t dst_base = (size_t) s * dst->nb[2];
+        for (uint32_t j = 0; j < n_embd; ++j) {
+            copy_bytes_2off(
+                    src, dst,
+                    src_base + ((size_t) j * src_n) * el,
+                    dst_base + ((size_t) j * dst_n) * el,
+                    (size_t) n_copy * el);
+        }
+    }
+}
+
+static void copy_kv_cell(
+        const ggml_tensor * src, ggml_tensor * dst,
+        uint32_t src_idx, uint32_t dst_idx,
+        uint32_t src_n, uint32_t dst_n, uint32_t stream, bool v_trans) {
+    if (!src || !dst) {
+        return;
+    }
+    if (!v_trans) {
+        const size_t row = src->nb[1];
+        copy_bytes_2off(
+                src, dst,
+                (size_t) stream * src->nb[2] + (size_t) src_idx * row,
+                (size_t) stream * dst->nb[2] + (size_t) dst_idx * row,
+                row);
+        return;
+    }
+    const uint32_t n_embd = (uint32_t) src->ne[0];
+    const size_t el = ggml_type_size(src->type);
+    const size_t src_base = (size_t) stream * src->nb[2];
+    const size_t dst_base = (size_t) stream * dst->nb[2];
+    for (uint32_t j = 0; j < n_embd; ++j) {
+        copy_bytes_2off(
+                src, dst,
+                src_base + ((size_t) src_idx + (size_t) j * src_n) * el,
+                dst_base + ((size_t) dst_idx + (size_t) j * dst_n) * el,
+                el);
+    }
+}
+
 size_t llama_kv_cache::copy_tensor_cell_ranges(
         const ggml_tensor * src,
               ggml_tensor * dst,
@@ -1800,6 +1884,254 @@ uint32_t llama_kv_cache::get_size() const {
     const auto & cells = (*v_cells)[seq_to_stream[0]];
 
     return cells.size();
+}
+
+bool llama_kv_cache::grow(uint32_t n_cells) {
+    return realloc_kv(n_cells, false);
+}
+
+bool llama_kv_cache::shrink(uint32_t n_cells) {
+    return realloc_kv(n_cells, true);
+}
+
+bool llama_kv_cache::realloc_kv(uint32_t n_cells, bool compact) {
+    if (n_pad > 1 && n_cells % n_pad != 0) {
+        n_cells = ((n_cells + n_pad - 1) / n_pad) * n_pad;
+    }
+
+    const uint32_t old_n = get_size();
+    if (!compact && n_cells <= old_n) {
+        return true;
+    }
+    if (compact && n_cells >= old_n) {
+        return true;
+    }
+    if (compact && n_cells == 0) {
+        return false;
+    }
+    if (other || layers_aliased || hparams.no_alloc) {
+        LLAMA_LOG_WARN("%s: refuse %s %u → %u (shared/aliased/no_alloc)\n",
+                __func__, compact ? "shrink" : "grow", old_n, n_cells);
+        return false;
+    }
+    if (v_cells_impl && v_cells_impl.use_count() > 1 && !ensure_unique_cells(compact ? "shrink" : "grow")) {
+        LLAMA_LOG_WARN("%s: refuse %s — shared cells and COW failed\n", __func__, compact ? "shrink" : "grow");
+        return false;
+    }
+    if (layers.empty()) {
+        return false;
+    }
+
+    std::vector<std::vector<uint32_t>> pack_idxs;
+    bool need_scatter = false;
+    if (compact) {
+        if (get_has_shift()) {
+            LLAMA_LOG_WARN("%s: refuse shrink — pending RoPE shift\n", __func__);
+            return false;
+        }
+        pack_idxs.resize(n_stream);
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            const auto & cells = (*v_cells)[s];
+            if (cells.get_used() > n_cells) {
+                LLAMA_LOG_WARN("%s: refuse shrink %u → %u — stream %u holds %u live cells\n",
+                        __func__, old_n, n_cells, s, cells.get_used());
+                return false;
+            }
+            pack_idxs[s] = cells.used_idxs();
+            if (cells.used_max_p1() > n_cells) {
+                need_scatter = true;
+            }
+        }
+    }
+
+    const bool is_mla = hparams.is_mla();
+
+    struct ggml_backend_buft_comparator {
+        bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
+            return strcmp(ggml_backend_buft_name(lhs), ggml_backend_buft_name(rhs)) < 0;
+        }
+    };
+    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
+
+    auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
+        auto it = ctx_map.find(buft);
+        if (it == ctx_map.end()) {
+            ggml_init_params params = {
+                /*.mem_size   =*/ size_t(3u * (1 + n_stream) * layers.size() * ggml_tensor_overhead()),
+                /*.mem_buffer =*/ NULL,
+                /*.no_alloc   =*/ true,
+            };
+            ggml_context * ctx = ggml_init(params);
+            if (!ctx) {
+                return nullptr;
+            }
+            ctx_map.emplace(buft, ctx);
+            return ctx;
+        }
+        return it->second.get();
+    };
+
+    struct pending_grow {
+        size_t        li = 0;
+        ggml_tensor * src_k = nullptr;
+        ggml_tensor * src_v = nullptr;
+        ggml_tensor * src_k_idx = nullptr;
+        ggml_tensor * dst_k = nullptr;
+        ggml_tensor * dst_v = nullptr;
+        ggml_tensor * dst_k_idx = nullptr;
+        std::vector<ggml_tensor *> k_stream;
+        std::vector<ggml_tensor *> v_stream;
+        std::vector<ggml_tensor *> k_idx_stream;
+    };
+    std::vector<pending_grow> pending;
+    pending.reserve(layers.size());
+
+    for (size_t li = 0; li < layers.size(); ++li) {
+        kv_layer & layer = layers[li];
+        if (!layer.k) {
+            continue;
+        }
+        if (!layer_tensor_owned(layer.k)) {
+            LLAMA_LOG_WARN("%s: refuse %s — layer %u tensor not owned\n",
+                    __func__, compact ? "shrink" : "grow", layer.il);
+            return false;
+        }
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(layer.k->buffer);
+        ggml_context * ctx = ctx_for_buft(buft);
+        if (!ctx) {
+            return false;
+        }
+        const uint32_t il = layer.il;
+        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
+        const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
+        const bool has_v = !is_mla && layer.v != nullptr;
+
+        ggml_tensor * k = ggml_new_tensor_3d(ctx, layer.k->type, n_embd_k_gqa, n_cells, n_stream);
+        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, layer.v->type, n_embd_v_gqa, n_cells, n_stream) : nullptr;
+        ggml_format_name(k, "cache_k_l%d", il);
+        if (v) {
+            ggml_format_name(v, "cache_v_l%d", il);
+        }
+
+        pending_grow pg;
+        pg.li = li;
+        pg.src_k = layer.k;
+        pg.src_v = layer.v;
+        pg.src_k_idx = layer.k_idx;
+        pg.dst_k = k;
+        pg.dst_v = v;
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            pg.k_stream.push_back(ggml_view_2d(ctx, k, n_embd_k_gqa, n_cells, k->nb[1], s * k->nb[2]));
+            pg.v_stream.push_back(v ? ggml_view_2d(ctx, v, n_embd_v_gqa, n_cells, v->nb[1], s * v->nb[2]) : nullptr);
+        }
+        if (layer.k_idx) {
+            const uint32_t n_embd_k_idx = (uint32_t) layer.k_idx->ne[0];
+            pg.dst_k_idx = ggml_new_tensor_3d(ctx, layer.k_idx->type, n_embd_k_idx, n_cells, n_stream);
+            ggml_format_name(pg.dst_k_idx, "cache_k_idx_l%d", il);
+            for (uint32_t s = 0; s < n_stream; ++s) {
+                pg.k_idx_stream.push_back(ggml_view_2d(
+                        ctx, pg.dst_k_idx, n_embd_k_idx, n_cells, pg.dst_k_idx->nb[1], s * pg.dst_k_idx->nb[2]));
+            }
+        }
+        pending.push_back(std::move(pg));
+    }
+
+    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> new_bufs;
+    for (auto & [buft, ctx] : ctx_map) {
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
+        if (!buf) {
+            LLAMA_LOG_ERROR("%s: failed to allocate %s KV buffer\n", __func__, compact ? "shrunk" : "grown");
+            return false;
+        }
+        ggml_backend_buffer_clear(buf, 0);
+        LLAMA_LOG_INFO("%s: %10s %s KV buffer size = %8.2f MiB\n", __func__,
+                ggml_backend_buffer_name(buf), compact ? "shrunk" : "grown",
+                ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0);
+        new_bufs.emplace_back(std::move(ctx), buf);
+    }
+
+    for (const pending_grow & pg : pending) {
+        if (compact && need_scatter) {
+            for (uint32_t s = 0; s < n_stream; ++s) {
+                const auto & idxs = pack_idxs[s];
+                for (uint32_t d = 0; d < idxs.size(); ++d) {
+                    copy_kv_cell(pg.src_k, pg.dst_k, idxs[d], d, old_n, n_cells, s, false);
+                    if (pg.src_v && pg.dst_v) {
+                        copy_kv_cell(pg.src_v, pg.dst_v, idxs[d], d, old_n, n_cells, s, v_trans);
+                    }
+                    if (pg.src_k_idx && pg.dst_k_idx) {
+                        copy_kv_cell(pg.src_k_idx, pg.dst_k_idx, idxs[d], d, old_n, n_cells, s, false);
+                    }
+                }
+            }
+        } else {
+            const uint32_t n_copy = compact ? n_cells : old_n;
+            copy_kv_prefix(pg.src_k, pg.dst_k, n_copy, old_n, n_cells, n_stream, false);
+            if (pg.src_v && pg.dst_v) {
+                copy_kv_prefix(pg.src_v, pg.dst_v, n_copy, old_n, n_cells, n_stream, v_trans);
+            }
+            if (pg.src_k_idx && pg.dst_k_idx) {
+                copy_kv_prefix(pg.src_k_idx, pg.dst_k_idx, n_copy, old_n, n_cells, n_stream, false);
+            }
+        }
+    }
+
+    for (pending_grow & pg : pending) {
+        kv_layer & layer = layers[pg.li];
+        layer.k = pg.dst_k;
+        layer.v = pg.dst_v;
+        layer.k_idx = pg.dst_k_idx;
+        layer.k_stream = std::move(pg.k_stream);
+        layer.v_stream = std::move(pg.v_stream);
+        layer.k_idx_stream = std::move(pg.k_idx_stream);
+    }
+
+    ctxs_bufs = std::move(new_bufs);
+
+    if (compact) {
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            if (need_scatter) {
+                llama_kv_cells packed;
+                packed.resize(n_cells);
+                const auto & idxs = pack_idxs[s];
+                if (!idxs.empty()) {
+                    packed.set(0, (*v_cells)[s].cp(idxs));
+                }
+                (*v_cells)[s] = std::move(packed);
+            } else {
+                (*v_cells)[s].truncate(n_cells);
+            }
+            v_heads[s] = (*v_cells)[s].get_used();
+        }
+    } else {
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            (*v_cells)[s].grow(n_cells);
+        }
+    }
+
+    kv_size_cur = n_cells;
+    was_resized = true;
+    LLAMA_LOG_INFO("%s: KV cells %u → %u (%s, prefix preserved)\n",
+            __func__, old_n, n_cells, compact ? "shrink" : "grow");
+    return true;
+}
+
+bool llama_kv_cache::try_resize() {
+    if (kv_size_max_val <= get_size()) {
+        return false;
+    }
+    return grow(kv_size_max_val);
+}
+
+void llama_kv_cache::copy_from(const llama_kv_cache & other) {
+    GGML_UNUSED(other);
+    LLAMA_LOG_WARN("%s: not implemented\n", __func__);
+}
+
+bool llama_kv_cache::check_and_clear_resized() {
+    const bool r = was_resized;
+    was_resized = false;
+    return r;
 }
 
 uint32_t llama_kv_cache::get_n_stream() const {

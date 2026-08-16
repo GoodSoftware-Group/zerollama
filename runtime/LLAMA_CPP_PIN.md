@@ -20,7 +20,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`5f55650a`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-5f55650a/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as runtime table above (**131** format-patches on this pin; through pretok **0126**, compile fixups **0127–0131**, DCA, Metal Lab D, Kokoro, Bee — apply by filename). Absorbed upstream **CUDA Q2_0 #25707** dropped (was 0082 on b10159). |
+| **Ollama patches** | Same series as runtime table above (**133** format-patches on this pin; through pretok **0126**, compile fixups **0127–0132**, KV grow/shrink **0133**, DCA, Metal Lab D, Kokoro, Bee — apply by filename). Absorbed upstream **CUDA Q2_0 #25707** dropped (was 0082 on b10159). |
 | **In-tree Metal dig** | E8_2 / TQ2 Metal kernels and concurrency guard in the mid series; Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0076–0079). Metal FA-vec per-device (Q,NE) tables **0086** (ported onto monolithic `ggml-metal.metal`; keeps GQA2). Recoverable nil pipeline + bf16 library gate **0096**. Polar/QJL SET_ROWS + fused QJL+Polar attn **0097–0098**. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 

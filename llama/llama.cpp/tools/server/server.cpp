@@ -311,6 +311,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
     ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
+    ctx_http.post("/kv/grow",                  ex_wrapper(routes.post_kv_grow));
+    ctx_http.post("/kv/shrink",                ex_wrapper(routes.post_kv_shrink));
     ctx_http.post("/cuda-graph/invalidate",    ex_wrapper(routes.post_cuda_graph_invalidate));
 
     // resumable streaming: a child binds the local session factories, the router binds

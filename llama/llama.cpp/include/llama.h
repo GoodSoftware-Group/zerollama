@@ -792,6 +792,14 @@ extern "C" {
     // Check if the memory supports shifting
     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
 
+    // Grow per-sequence context (n_ctx_seq) in place. Does not reload weights.
+    // n_ctx <= current succeeds as a no-op. Returns false if unsupported or alloc fails.
+    LLAMA_API bool llama_n_ctx_grow(struct llama_context * ctx, uint32_t n_ctx);
+
+    // Shrink per-sequence context in place. Packs live KV to the front first.
+    // Fails if live tokens do not fit. n_ctx >= current succeeds as a no-op.
+    LLAMA_API bool llama_n_ctx_shrink(struct llama_context * ctx, uint32_t n_ctx);
+
     //
     // State / sessions
     //

@@ -127,6 +127,9 @@ public:
 
     llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
 
+    bool grow(uint32_t n_cells) override;
+    bool shrink(uint32_t n_cells) override;
+
     bool get_can_shift() const override;
 
     void clear(bool data) override;
@@ -335,6 +338,8 @@ private:
     uint32_t kv_size_cur     = 0;
     uint32_t kv_size_max_val = 0;
     bool     was_resized     = false;
+
+    bool realloc_kv(uint32_t n_cells, bool compact);
 
     // saved construction parameters (for resize)
     ggml_type        saved_type_k    = GGML_TYPE_F16;

@@ -850,6 +850,111 @@ bool llama_context::memory_update(bool optimize) {
     return true;
 }
 
+bool llama_context::n_ctx_grow(uint32_t n_ctx_req) {
+    if (!memory || n_ctx_req == 0) {
+        return false;
+    }
+
+    synchronize();
+
+    uint32_t n_ctx_seq_new = GGML_PAD(n_ctx_req, 256);
+
+    const uint32_t train = llama_model_n_ctx_train(&model);
+    if (train > 0 && n_ctx_seq_new > train) {
+        LLAMA_LOG_WARN("%s: capping grow %u → train %u\n", __func__, n_ctx_seq_new, train);
+        n_ctx_seq_new = train;
+    }
+
+    if (n_ctx_seq_new <= cparams.n_ctx_seq) {
+        return true;
+    }
+
+    if (!memory->grow(n_ctx_seq_new)) {
+        LLAMA_LOG_WARN("%s: memory grow to %u failed\n", __func__, n_ctx_seq_new);
+        return false;
+    }
+
+    cparams.n_ctx_seq = n_ctx_seq_new;
+    if (cparams.kv_unified) {
+        cparams.n_ctx = n_ctx_seq_new;
+    } else {
+        cparams.n_ctx = n_ctx_seq_new * cparams.n_seq_max;
+    }
+
+    llama_context_cuda_graph_invalidate(this);
+    sched_need_reserve = true;
+    if (gf_res_prev) {
+        gf_res_prev->reset();
+    }
+
+    {
+        const auto mctx = memory->init_full();
+        if (mctx) {
+            const uint32_t n_seqs = cparams.n_seq_max;
+            const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+            const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+            auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get());
+            if (!gf) {
+                LLAMA_LOG_ERROR("%s: graph_reserve after KV grow failed (KV already grown)\n", __func__);
+            }
+        }
+    }
+
+    LLAMA_LOG_INFO("%s: n_ctx_seq=%u n_ctx=%u\n", __func__, cparams.n_ctx_seq, cparams.n_ctx);
+    return true;
+}
+
+bool llama_context::n_ctx_shrink(uint32_t n_ctx_req) {
+    if (!memory || n_ctx_req == 0) {
+        return false;
+    }
+
+    synchronize();
+
+    uint32_t n_ctx_seq_new = GGML_PAD(n_ctx_req, 256);
+    if (n_ctx_seq_new == 0) {
+        return false;
+    }
+
+    if (n_ctx_seq_new >= cparams.n_ctx_seq) {
+        return true;
+    }
+
+    if (!memory->shrink(n_ctx_seq_new)) {
+        LLAMA_LOG_WARN("%s: memory shrink to %u failed\n", __func__, n_ctx_seq_new);
+        return false;
+    }
+
+    cparams.n_ctx_seq = n_ctx_seq_new;
+    if (cparams.kv_unified) {
+        cparams.n_ctx = n_ctx_seq_new;
+    } else {
+        cparams.n_ctx = n_ctx_seq_new * cparams.n_seq_max;
+    }
+
+    llama_context_cuda_graph_invalidate(this);
+    sched_need_reserve = true;
+    if (gf_res_prev) {
+        gf_res_prev->reset();
+    }
+
+    {
+        const auto mctx = memory->init_full();
+        if (mctx) {
+            const uint32_t n_seqs = cparams.n_seq_max;
+            const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+            const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+            auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get());
+            if (!gf) {
+                LLAMA_LOG_ERROR("%s: graph_reserve after KV shrink failed (KV already shrunk)\n", __func__);
+            }
+        }
+    }
+
+    LLAMA_LOG_INFO("%s: n_ctx_seq=%u n_ctx=%u\n", __func__, cparams.n_ctx_seq, cparams.n_ctx);
+    return true;
+}
+
 enum llama_pooling_type llama_context::pooling_type() const {
     return cparams.pooling_type;
 }
@@ -3698,6 +3803,20 @@ uint32_t llama_n_ctx(const llama_context * ctx) {
 
 uint32_t llama_n_ctx_seq(const llama_context * ctx) {
     return ctx->n_ctx_seq();
+}
+
+bool llama_n_ctx_grow(llama_context * ctx, uint32_t n_ctx) {
+    if (!ctx) {
+        return false;
+    }
+    return ctx->n_ctx_grow(n_ctx);
+}
+
+bool llama_n_ctx_shrink(llama_context * ctx, uint32_t n_ctx) {
+    if (!ctx) {
+        return false;
+    }
+    return ctx->n_ctx_shrink(n_ctx);
 }
 
 uint32_t llama_n_batch(const llama_context * ctx) {

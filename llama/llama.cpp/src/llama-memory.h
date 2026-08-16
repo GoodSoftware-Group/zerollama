@@ -97,6 +97,19 @@ struct llama_memory_i {
     // status == LLAMA_MEMORY_STATUS_NO_UPDATE if there is nothing to update
     virtual llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) = 0;
 
+    // Grow KV cell count in place (no llama_free / llama_init_from_model).
+    // n_cells is per-sequence size (n_ctx_seq). Default: unsupported.
+    virtual bool grow(uint32_t n_cells) {
+        (void) n_cells;
+        return false;
+    }
+
+    // Shrink KV in place. Fails if live cells do not fit. Default: unsupported.
+    virtual bool shrink(uint32_t n_cells) {
+        (void) n_cells;
+        return false;
+    }
+
     // getters
     virtual bool get_can_shift() const = 0;
 

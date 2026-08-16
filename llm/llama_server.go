@@ -680,6 +680,104 @@ func (s *llamaServerRunner) ContextLength() int {
 	return s.options.NumCtx
 }
 
+// GrowNumCtx asks llama-server to enlarge KV in place (POST /kv/grow).
+// Fail → caller reloads.
+func (s *llamaServerRunner) GrowNumCtx(ctx context.Context, n int) error {
+	if n <= 0 {
+		return fmt.Errorf("GrowNumCtx: n_ctx must be > 0")
+	}
+	if n <= s.options.NumCtx {
+		return nil
+	}
+	body, err := json.Marshal(map[string]int{"n_ctx": n})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d/kv/grow", s.port), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("kv grow: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("kv grow read: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("kv grow HTTP %d: %s", resp.StatusCode, s.statusErrorMessage(raw))
+	}
+	var out struct {
+		OK       bool `json:"ok"`
+		NCtx     int  `json:"n_ctx"`
+		NCtxSeq  int  `json:"n_ctx_seq"`
+		NCtxFrom int  `json:"n_ctx_from"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return fmt.Errorf("kv grow unmarshal: %w", err)
+	}
+	if out.NCtxSeq > 0 {
+		s.options.NumCtx = out.NCtxSeq
+	} else {
+		s.options.NumCtx = n
+	}
+	slog.Info("in-place kv grow", "from", out.NCtxFrom, "n_ctx_seq", s.options.NumCtx, "n_ctx", out.NCtx)
+	return nil
+}
+
+// ShrinkNumCtx packs live KV then cuts the buffer (POST /kv/shrink).
+// Fails if live tokens do not fit. Not used automatically on smaller num_ctx.
+func (s *llamaServerRunner) ShrinkNumCtx(ctx context.Context, n int) error {
+	if n <= 0 {
+		return fmt.Errorf("ShrinkNumCtx: n_ctx must be > 0")
+	}
+	if n >= s.options.NumCtx {
+		return nil
+	}
+	body, err := json.Marshal(map[string]int{"n_ctx": n})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d/kv/shrink", s.port), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("kv shrink: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("kv shrink read: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("kv shrink HTTP %d: %s", resp.StatusCode, s.statusErrorMessage(raw))
+	}
+	var out struct {
+		OK       bool `json:"ok"`
+		NCtx     int  `json:"n_ctx"`
+		NCtxSeq  int  `json:"n_ctx_seq"`
+		NCtxFrom int  `json:"n_ctx_from"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return fmt.Errorf("kv shrink unmarshal: %w", err)
+	}
+	if out.NCtxSeq > 0 {
+		s.options.NumCtx = out.NCtxSeq
+	} else {
+		s.options.NumCtx = n
+	}
+	slog.Info("in-place kv shrink", "from", out.NCtxFrom, "n_ctx_seq", s.options.NumCtx, "n_ctx", out.NCtx)
+	return nil
+}
+
 // FindLlamaServer locates the llama-server binary in lib/ollama/.
 // There is a single binary that dynamically loads GPU backends at runtime.
 //

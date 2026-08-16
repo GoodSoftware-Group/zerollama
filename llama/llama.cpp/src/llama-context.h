@@ -76,6 +76,11 @@ struct llama_context {
     // return true if the memory was updated
     bool memory_update(bool optimize);
 
+    // Grow per-sequence n_ctx without llama_free. Copies used KV cells into a
+    // larger buffer and re-reserves graphs. Shrink is a no-op success.
+    bool n_ctx_grow(uint32_t n_ctx);
+    bool n_ctx_shrink(uint32_t n_ctx);
+
     enum llama_pooling_type pooling_type() const;
 
     float * get_logits();

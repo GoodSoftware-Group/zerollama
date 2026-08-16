@@ -313,6 +313,15 @@ def _bind(lib: ctypes.CDLL) -> None:
 
     lib.llama_n_ctx.argtypes = [ctypes.c_void_p]
     lib.llama_n_ctx.restype = ctypes.c_uint32
+    if hasattr(lib, "llama_n_ctx_seq"):
+        lib.llama_n_ctx_seq.argtypes = [ctypes.c_void_p]
+        lib.llama_n_ctx_seq.restype = ctypes.c_uint32
+    if hasattr(lib, "llama_n_ctx_grow"):
+        lib.llama_n_ctx_grow.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        lib.llama_n_ctx_grow.restype = ctypes.c_bool
+    if hasattr(lib, "llama_n_ctx_shrink"):
+        lib.llama_n_ctx_shrink.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        lib.llama_n_ctx_shrink.restype = ctypes.c_bool
 
     if hasattr(lib, "llama_state_seq_save_file"):
         lib.llama_state_seq_save_file.argtypes = [
@@ -837,6 +846,26 @@ class LlamaLoadedSession:
         if not self._model:
             raise LlamaServerError("model session is closed")
         return tokenize(self._vocab, text, add_special=add_special)
+
+    def grow_n_ctx(self, n_ctx: int) -> bool:
+        """Enlarge KV in place. No-op if ``n_ctx`` fits the current context."""
+        if self._ctx is None or not hasattr(self._lib, "llama_n_ctx_grow"):
+            return False
+        ok = bool(self._lib.llama_n_ctx_grow(self._ctx, ctypes.c_uint32(int(n_ctx))))
+        if ok:
+            seq = getattr(self._lib, "llama_n_ctx_seq", None)
+            self.num_ctx = int(seq(self._ctx) if seq else self._lib.llama_n_ctx(self._ctx))
+        return ok
+
+    def shrink_n_ctx(self, n_ctx: int) -> bool:
+        """Cut KV in place after packing live cells. Fails if they do not fit."""
+        if self._ctx is None or not hasattr(self._lib, "llama_n_ctx_shrink"):
+            return False
+        ok = bool(self._lib.llama_n_ctx_shrink(self._ctx, ctypes.c_uint32(int(n_ctx))))
+        if ok:
+            seq = getattr(self._lib, "llama_n_ctx_seq", None)
+            self.num_ctx = int(seq(self._ctx) if seq else self._lib.llama_n_ctx(self._ctx))
+        return ok
 
     def resume_owner_snapshot(self) -> dict[int, str]:
         """Per-slot resume owner keys for operator /health (Phase 15 v18).

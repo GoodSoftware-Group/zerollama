@@ -157,6 +157,14 @@ class LlamaInprocessWorker:
             raise LlamaServerError("in-process llama is not loaded")
         return self._session
 
+    def grow_n_ctx(self, n_ctx: int) -> bool:
+        with self._lock:
+            return self._require_session().grow_n_ctx(int(n_ctx))
+
+    def shrink_n_ctx(self, n_ctx: int) -> bool:
+        with self._lock:
+            return self._require_session().shrink_n_ctx(int(n_ctx))
+
     def completion(
         self,
         prompt: str,

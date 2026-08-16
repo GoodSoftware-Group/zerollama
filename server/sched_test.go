@@ -981,6 +981,40 @@ func TestSchedNeedsReloadEffectiveNumCtx(t *testing.T) {
 	require.False(t, runner.needsReload(ctx, req), "must not reload when request ctx < effective ctx")
 }
 
+type growMockLlm struct {
+	mockLlm
+}
+
+func (g *growMockLlm) GrowNumCtx(ctx context.Context, n int) error {
+	g.contextLength = n
+	return nil
+}
+
+func TestSchedGrowNumCtxAvoidsReload(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+
+	llm := &growMockLlm{mockLlm: mockLlm{
+		vramByGPU:     map[ml.DeviceID]uint64{},
+		contextLength: 4096,
+	}}
+	do := api.DefaultOptions()
+	do.NumCtx = 4096
+	runner := &runnerRef{
+		model:   &Model{},
+		Options: &do,
+		llama:   llm,
+	}
+	req := &LlmRequest{
+		model: &Model{},
+		opts:  api.DefaultOptions(),
+	}
+	req.opts.NumCtx = 8192
+	require.False(t, runner.needsReload(ctx, req), "GrowNumCtx should avoid reload")
+	require.Equal(t, 8192, llm.contextLength)
+	require.Equal(t, 8192, runner.Options.NumCtx)
+}
+
 func TestSyncRunnerLoadOptions(t *testing.T) {
 	do := api.DefaultOptions()
 	do.NumCtx = 131072

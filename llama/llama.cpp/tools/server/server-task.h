@@ -27,6 +27,8 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_ERASE,
     SERVER_TASK_TYPE_SLOT_SEQ_COPY,
     SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE,
+    SERVER_TASK_TYPE_KV_GROW,
+    SERVER_TASK_TYPE_KV_SHRINK,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
 };
@@ -174,6 +176,7 @@ struct server_task {
         bool allow_media = true;
         std::string filename;
         std::string filepath;
+        uint32_t n_ctx_grow = 0;
     };
     slot_action slot_action;
 
@@ -598,6 +601,40 @@ struct server_task_result_cuda_graph_invalidate : server_task_result {
         return json {
             { "ok", true },
             { "backends_cleared", backends_cleared },
+        };
+    }
+};
+
+struct server_task_result_kv_grow : server_task_result {
+    bool     grown     = false;
+    uint32_t n_ctx     = 0;
+    uint32_t n_ctx_seq = 0;
+    uint32_t n_ctx_from = 0;
+
+    virtual json to_json() override {
+        return json {
+            { "ok",        true },
+            { "grown",     grown },
+            { "n_ctx",     n_ctx },
+            { "n_ctx_seq", n_ctx_seq },
+            { "n_ctx_from", n_ctx_from },
+        };
+    }
+};
+
+struct server_task_result_kv_shrink : server_task_result {
+    bool     shrunk    = false;
+    uint32_t n_ctx     = 0;
+    uint32_t n_ctx_seq = 0;
+    uint32_t n_ctx_from = 0;
+
+    virtual json to_json() override {
+        return json {
+            { "ok",        true },
+            { "shrunk",    shrunk },
+            { "n_ctx",     n_ctx },
+            { "n_ctx_seq", n_ctx_seq },
+            { "n_ctx_from", n_ctx_from },
         };
     }
 };

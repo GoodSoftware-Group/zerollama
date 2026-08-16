@@ -1261,10 +1261,34 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	if runner.llama != nil {
 		if effective := runner.llama.ContextLength(); effective > 0 {
 			if optsNew.NumCtx > effective {
-				return reloadReason("num_ctx_exceeds_loaded_kv",
-					"loaded_ctx", effective,
-					"want_ctx", optsNew.NumCtx,
-				)
+				if g, ok := runner.llama.(interface {
+					GrowNumCtx(context.Context, int) error
+				}); ok {
+					if err := g.GrowNumCtx(ctx, optsNew.NumCtx); err == nil {
+						if cl := runner.llama.ContextLength(); cl > 0 {
+							runner.Options.NumCtx = cl
+							optsExisting.NumCtx = cl
+							optsNew.NumCtx = cl
+						}
+						slog.Info("runner kv grew in place",
+							"model", schedulerModelKey(req.model),
+							"loaded_ctx", effective,
+							"want_ctx", req.opts.NumCtx,
+							"now_ctx", runner.Options.NumCtx,
+						)
+					} else {
+						return reloadReason("num_ctx_exceeds_loaded_kv",
+							"loaded_ctx", effective,
+							"want_ctx", optsNew.NumCtx,
+							"grow_err", err,
+						)
+					}
+				} else {
+					return reloadReason("num_ctx_exceeds_loaded_kv",
+						"loaded_ctx", effective,
+						"want_ctx", optsNew.NumCtx,
+					)
+				}
 			}
 			if optsNew.NumCtx < effective {
 				optsNew.NumCtx = optsExisting.NumCtx // treat "fits in loaded ctx" as same

@@ -69,6 +69,31 @@ public:
         reset();
     }
 
+    // Extend without wiping used-cell metadata. New tail cells are empty.
+    void grow(uint32_t n) {
+        const uint32_t old = size();
+        if (n <= old) {
+            return;
+        }
+        pos.resize(n, -1);
+        ext.resize(n);
+        shift.resize(n, 0);
+        seq.resize(n);
+    }
+
+    // Drop empty tail. All used cells must already sit in [0, n).
+    void truncate(uint32_t n) {
+        assert(used.empty() || used_max_p1() <= n);
+        pos.resize(n);
+        ext.resize(n);
+        shift.resize(n);
+        seq.resize(n);
+    }
+
+    std::vector<uint32_t> used_idxs() const {
+        return { used.begin(), used.end() };
+    }
+
     bool is_empty(uint32_t i) const {
         assert(i < pos.size());
         assert((pos[i] < 0 && pos[i] == -1) || pos[i] >= 0);
