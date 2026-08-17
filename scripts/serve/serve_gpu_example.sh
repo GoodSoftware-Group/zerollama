@@ -9,6 +9,12 @@
 # Doc: docs/5080-runbook.md#production-serve-binserve-sh
 set -euo pipefail
 
+# shellcheck source=scripts/serve/refuse_pve_host.sh
+if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/refuse_pve_host.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/refuse_pve_host.sh"
+fi
+
 # Resolve repo root: this file normally lives in scripts/; ~/bin/serve.sh wraps it.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${_SCRIPT_DIR}/../runtime/runtime/server/app.py" ]]; then

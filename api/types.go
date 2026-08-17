@@ -1387,6 +1387,19 @@ type InferenceStatus struct {
 	Config   InferenceConfigStatus `json:"config"`
 	Pins     []PinStatus           `json:"pins,omitempty"`
 	Training *TrainingStatus       `json:"training,omitempty"`
+	HostMemory *HostMemoryStatus   `json:"host_memory,omitempty"`
+}
+
+// HostMemoryStatus is cgroup RAM/swap pressure for GET /api/status (not host MemAvailable).
+type HostMemoryStatus struct {
+	Pressure         bool   `json:"pressure"`
+	Guard            bool   `json:"guard"`
+	LimitBytes       uint64 `json:"limit_bytes,omitempty"`
+	CurrentBytes     uint64 `json:"current_bytes,omitempty"`
+	AnonBytes        uint64 `json:"anon_bytes,omitempty"`
+	SwapCurrentBytes uint64 `json:"swap_current_bytes,omitempty"`
+	SwapMaxBytes     uint64 `json:"swap_max_bytes,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 // CanLoadRequest is the body for POST /api/can-load (capacity dry-run).

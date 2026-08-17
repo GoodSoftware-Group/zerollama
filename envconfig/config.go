@@ -311,6 +311,45 @@ func MemoryReclaimThreshold() float64 {
 	return f
 }
 
+// HostMemGuardEnabled is on unless ZEROLLAMA_HOST_MEM_GUARD=0.
+// Why: a 24GiB LXC will OOM-kill the whole CT if we keep accepting work into swap.
+func HostMemGuardEnabled() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_HOST_MEM_GUARD")))
+	if s == "0" || s == "false" || s == "off" {
+		return false
+	}
+	return true
+}
+
+// HostMemPressureRatio is the cgroup anon/limit ratio that, with swap in use, 503s inference.
+func HostMemPressureRatio() float64 {
+	s := Var("ZEROLLAMA_HOST_MEM_PRESSURE")
+	if s == "" {
+		return 0.88
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 || f > 1 {
+		return 0.88
+	}
+	return f
+}
+
+func HostSwapPressureRatio() float64 {
+	s := Var("ZEROLLAMA_HOST_SWAP_PRESSURE")
+	if s == "" {
+		return 0.35
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 || f > 1 {
+		return 0.35
+	}
+	return f
+}
+
+func HostSwapPressureFloor() uint64 {
+	return 1 << 30 // 1 GiB
+}
+
 // RunnerBusyTimeout returns how long a runner may stay busy before the watchdog
 // forces an unload. Zero disables (default).
 func RunnerBusyTimeout() time.Duration {
@@ -494,6 +533,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_EDGE":                           {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
 		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":         {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
 		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":       {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
+		"ZEROLLAMA_HOST_MEM_GUARD":                 {"ZEROLLAMA_HOST_MEM_GUARD", HostMemGuardEnabled(), "503 inference when cgroup RAM/swap is exhausted (0=off)"},
 		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":            {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
 		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":        {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
 		"ZEROLLAMA_ELIZA_NGRAM":                    {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},

@@ -32,6 +32,7 @@ func (s *Scheduler) processSchedWatchdog(ctx context.Context) {
 
 func (s *Scheduler) watchdogTick(ctx context.Context) {
 	s.watchdogReclaimMemory(ctx)
+	s.watchdogReclaimHostMemory(ctx)
 	s.watchdogBusyRunners()
 }
 
@@ -154,4 +155,30 @@ func (s *Scheduler) findLRUIdleRunner() *runnerRef {
 		}
 	}
 	return victim
+}
+
+func (s *Scheduler) watchdogReclaimHostMemory(ctx context.Context) {
+	if !envconfig.HostMemGuardEnabled() {
+		return
+	}
+	p := currentHostMemPressure()
+	if !p.Pressure {
+		return
+	}
+	if n := s.tryShrinkIdleKV(ctx, ""); n > 0 {
+		slog.Info("watchdog shrunk idle KV under host RAM/swap pressure", "shrunk", n)
+		if q := currentHostMemPressure(); !q.Pressure {
+			return
+		}
+	}
+	victim := s.findLRUIdleRunner()
+	if victim == nil {
+		slog.Warn("watchdog host RAM/swap pressure but no idle runner to unload", "reason", p.Reason)
+		return
+	}
+	slog.Warn("watchdog evicting idle runner for host RAM/swap",
+		"model", victim.modelPath,
+		"reason", p.Reason,
+	)
+	s.scheduleExpiredRunner(victim)
 }

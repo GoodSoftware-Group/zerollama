@@ -228,6 +228,8 @@ source ./scripts/gpu/5080_env.sh
 
 ## Production serve (`~/bin/serve.sh`)
 
+**Never start serve on the Proxmox hypervisor** (ryzen7950x0). Host `/root/zerollama` is a symlink into this CT; `~/bin/serve.sh` on PVE binds host IPs, not `192.168.255.164`. Always `pct exec 1564 -- ~/bin/serve.sh`. The wrapper exits if `systemd-detect-virt` is not `lxc`.
+
 **Why a separate path from `5080_start_serve`:** sign-off uses loopback `:8080` and may set `ZEROLLAMA_GPU_PROFILE=0` for 1B smoke. Production binds **`0.0.0.0:8080`** for remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, Open WebUI, etc.) and keeps the **L1 `rtx-5080` profile** on (`n_parallel=2`, vendor fork KV). Embedded runtime stays **`127.0.0.1:8081`** — remote clients must not point at `:8081`.
 
 **WHY not copy `serve_gpu_example.sh` to `~/bin`:** that script lives in `scripts/` and resolves repo root as `dirname/..`. In `~/bin/serve.sh`, `..` is **`$HOME`**, not `~/zerollama` — helper scripts and `PYTHONPATH` never load; serve exits or embed fails silently when stdout is redirected.

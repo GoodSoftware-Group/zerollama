@@ -1,0 +1,27 @@
+---
+description: Never run zerollama/ollama/llama-server on the Proxmox hypervisor
+alwaysApply: true
+---
+
+# PVE hypervisor — no inference serve
+
+On **ryzen7950x0** (`/etc/pve` present, `systemd-detect-virt` is not `lxc`), do **not** start `zerollama serve`, `ollama serve`, or `llama-server`.
+
+Production is **CT 1564** (`cudallama`, **`192.168.255.164:8080`**). Host `/root/zerollama` is a symlink into that CT’s private dir — running `~/bin/serve.sh` on the hypervisor still binds the **host** network, not the CT IP.
+
+## Do this
+
+```bash
+pct exec 1564 -- ~/bin/serve.sh
+# or
+pct exec 1564 -- bash -lc 'screen -dmS ollama ~/bin/serve.sh'
+curl -sS http://192.168.255.164:8080/api/version
+```
+
+## Do not
+
+- `SCREEN -dmS ollama … /root/bin/serve.sh` on the hypervisor
+- `kill` a PID just because `ps` shows `/root/zerollama/run/zerollama` — privileged LXC PIDs appear on the host; check cgroup `/lxc/1564` first
+- Bind `:8080` / `:8081` / `:11434` on the PVE host
+
+`serve_gpu_example.sh` / `serve_production_wrapper.sh` refuse to start when they detect the hypervisor (`ZEROLLAMA_ALLOW_PVE_HOST=1` override only for an explicit lab).

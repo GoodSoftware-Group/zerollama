@@ -52,6 +52,7 @@ func (s *Server) inferenceStatus(ctx context.Context) api.InferenceStatus {
 	if s != nil && s.sched != nil {
 		st.Pins = s.sched.mlxGate.listPins()
 	}
+	st.HostMemory = hostMemoryStatusAPI()
 	return st
 }
 
