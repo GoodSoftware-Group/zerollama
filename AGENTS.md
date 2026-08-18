@@ -13,6 +13,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | vLLM patterns | `../vllm` → [docs/vllm-borrowings.md](./docs/vllm-borrowings.md) |
 | LocalAI control plane | `../LocalAI` → [docs/localai-borrowings.md](./docs/localai-borrowings.md) |
 | SGLang multimodal | `../sglang` → [docs/sglang-multimodal-borrowings.md](./docs/sglang-multimodal-borrowings.md) |
+| MiniMax Music 3 rematch (optional clone) | `../sglang-omni` — **not** in sibling `sglang`; Mac hear path is mlx-audio ([docs/music-c.md](./docs/music-c.md), [findings](./docs/music-c-findings.md)). Do **not** vendor ComfyUI. |
 | llama.cpp pin / fork watch | `../llama.cpp`, `../eliza-llama.cpp` → [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) |
 | Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (patches **0106–0126** in `llama/patches/`; must reach **`llama/llama.cpp/`** via sync) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
@@ -66,3 +67,4 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 - Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
+- MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS

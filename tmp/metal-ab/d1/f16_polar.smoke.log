@@ -1,0 +1,23 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.016 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M4 Max)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB
+uma_mlx: auto — broker not running, MLX ungated (socket /tmp/uma_daemon.sock)
+| model                          |       size |     params | backend    | threads | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | -----: | --: | --------------: | -------------------: |
+| llama 3B Q4_K - Medium         |   1.87 GiB |     3.21 B | MTL,BLAS   |      12 | q4_polar |   1 |           pp512 |       1827.23 ± 0.00 |
+| llama 3B Q4_K - Medium         |   1.87 GiB |     3.21 B | MTL,BLAS   |      12 | q4_polar |   1 |           tg128 |         32.71 ± 0.00 |
+
+build: 14940a7f (97)

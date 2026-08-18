@@ -1,0 +1,35 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.013 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M4 Max)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB
+uma_mlx: auto — broker not running, MLX ungated (socket /tmp/uma_daemon.sock)
+| model                          |       size |     params | backend    | threads | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | -----: | -----: | --: | --------------: | -------------------: |
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-86d86ed4/ggml/src/ggml-backend.cpp:935: pre-allocated tensor (cache_v_l0 (view)) in a buffer (MTL0) that cannot run the operation (SET_ROWS)
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+WARNING: GGML_BACKTRACE_LLDB may cause native MacOS Terminal.app to crash.
+See: https://github.com/ggml-org/llama.cpp/pull/17869
+0   libggml-base.0.17.0.dylib           0x0000000102d1d420 ggml_print_backtrace + 276
+1   libggml-base.0.17.0.dylib           0x0000000102d1d60c ggml_abort + 156
+2   libggml-base.0.17.0.dylib           0x0000000102d3d694 _ZL38ggml_backend_sched_backend_id_from_curP18ggml_backend_schedP11ggml_tensor + 896
+3   libggml-base.0.17.0.dylib           0x0000000102d3b230 ggml_backend_sched_split_graph + 452
+4   libllama.0.0.97.dylib               0x0000000102a706cc _ZN13llama_context13graph_reserveEjjjPK22llama_memory_context_ibPm + 500
+5   libllama.0.0.97.dylib               0x0000000102a700b4 _ZZN13llama_context17resolve_fused_opsEPK22llama_memory_context_ijENK3$_0clERK18llm_fused_op_probeRb + 96
+6   libllama.0.0.97.dylib               0x0000000102a6ff8c _ZN13llama_context17resolve_fused_opsEPK22llama_memory_context_ij + 288
+7   libllama.0.0.97.dylib               0x0000000102a6f448 _ZN13llama_context13sched_reserveEv + 496
+8   libllama.0.0.97.dylib               0x0000000102a6e088 _ZN13llama_contextC2ERK11llama_model20llama_context_params + 4592
+9   libllama.0.0.97.dylib               0x0000000102a7880c llama_init_from_model + 588
+10  libllama-bench-impl.dylib           0x00000001025f508c _Z11llama_benchiPPc + 7564
+11  dyld                                0x000000018702fe00 start + 6992

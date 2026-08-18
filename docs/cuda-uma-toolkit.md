@@ -1,6 +1,8 @@
 # CUDA UMA-toolkit twin (design)
 
-**Why:** [`x/wan-c`](../x/wan-c/) is Mac/`uma_daemon` today. Linux+CUDA CTs need the **same Pure-C Wan hotpath** without Darwin. This doc locks the twin so we ship **wins or unlocks**, not a second Gradio stack.
+**Why:** [`x/video-c`](../x/video-c/) (was `x/wan-c`) is Mac/`uma_daemon` today. Linux+CUDA CTs need the **same Pure-C Wan hotpath** without Darwin. This doc locks the twin so we ship **wins or unlocks**, not a second Gradio stack.
+
+**Ownership:** CUDA lab targets (`make -C x/video-c cuda-lab`, rematch) are the parallel CUDA track. Darwin UMA + H3 `--info` — [video-c.md](./video-c.md).
 
 **Status:** phase-1–2h green; **2e–2g** rematch + **2h** C `patch_embedding` (noise→tokens) wired into `cuda_latent_unipc_rematch` (all cosines ≈ 1.0). Not a product `/v1/videos` default.
 
@@ -19,7 +21,7 @@
 | **30-block trunk + UniPC step0** | **win + unlock** | `cuda_multiblock_rematch`; pager N=2 (~354 MiB); token-space UniPC cosine ≈ 1.0 |
 | **Latent UniPC step0** | **win** | `cuda_latent_unipc_rematch` + `gen_latent_unipc_fixture.py`; head+unpatch → model_out → `sched_unipc`; cosine ≈ 1.0 |
 | **C patch_embedding** | **win + unlock** | `wan_op_patch_embed_f32` (host Conv3d); noise→tokens in latent rematch cosine ≈ 1.0 |
-| Product `ZEROLLAMA_WAN_CLI` Linux | next | Wire CUDA backend into `wan-cli` / serve flag; lab ports only |
+| Product `ZEROLLAMA_VIDEO_CLI` Linux | next | Wire CUDA backend into `video-cli` / serve flag; lab ports only (`ZEROLLAMA_WAN_CLI` still accepted) |
 | Full GRAPH string interpreter on CUDA | later | Prefer direct kernels for hot DiT first |
 | Literal `mmgp` port | skip | Pager + kernels replace the idea |
 
@@ -32,7 +34,7 @@
 | Protocol | Named buffers (`buf_alloc` / `put` / `get` / `free`) + **direct** `gemm_f16` (cuBLAS). Optional GRAPH IR later. |
 | Memory | `cudaMalloc` / host pinned H2D; BANK = persistent device blobs + bind aliases for resident DiT slots |
 | Ports | Lab only — never `:11434` / `:8081` |
-| CT 1564 `LD_LIBRARY_PATH` | `/root/nvidia-host:/usr/lib/ollama/cuda_v13:/usr/local/cuda/lib64` (`x/wan-c` Makefile exports for `cuda-lab`) |
+| CT 1564 `LD_LIBRARY_PATH` | `/root/nvidia-host:/usr/lib/ollama/cuda_v13:/usr/local/cuda/lib64` (`x/video-c` Makefile exports for `cuda-lab`) |
 
 ```text
 wan-cli / lab smoke
@@ -62,7 +64,7 @@ Layer banks: key `W_L{id}`; on LRU eviction call `bank_evict` before the next `b
 
 ## DiT fragment definition (concrete)
 
-Lab smoke (`make -C x/wan-c cuda-lab`):
+Lab smoke (`make -C x/video-c cuda-lab`):
 
 - Synthetic **L=8** DiT layers; pager **N=2** (`WAN_DIT_RESIDENT=2`)
 - Per layer weight: `W_L{i}` shape **[K=256, M=256]** f32; `bank_bind` → working `"W"`
@@ -77,4 +79,4 @@ Sibling research ([h3-cuda-port.md](./h3-cuda-port.md)). Borrow stream/kernel le
 
 ## Next win after patch embed
 
-Product path: optional `ZEROLLAMA_WAN_CLI` / Linux `wan-cli` CUDA backend (lab ports only). Lab rematch now owns **noise → patch → 30 blocks → head/unpatch → UniPC step0** end-to-end (`cuda_latent_unipc_rematch`).
+Product path: optional `ZEROLLAMA_VIDEO_CLI` / Linux `video-cli` CUDA backend (lab ports only). Lab rematch now owns **noise → patch → 30 blocks → head/unpatch → UniPC step0** end-to-end (`cuda_latent_unipc_rematch`).

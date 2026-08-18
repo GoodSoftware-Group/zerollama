@@ -20,7 +20,8 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
-// SpeechHandler serves POST /v1/audio/speech for Piper and remote-tts speech models.
+// SpeechHandler serves POST /v1/audio/speech for Piper, remote-tts, and Music 3.
+// Music 3 returns 202 JSON (async job), not WAV bytes.
 func (s *Server) SpeechHandler(c *gin.Context) {
 	v, ok := c.Get(middleware.CtxKeySpeechRequest)
 	if !ok {
@@ -80,12 +81,15 @@ func (s *Server) SpeechHandler(c *gin.Context) {
 	var data []byte
 	var contentType string
 	switch backend {
+	case model.BackendMusic3:
+		s.queueMusic3(c, req)
+		return
 	case model.BackendPiper:
 		data, contentType, err = modality.SpeechPiper(c.Request.Context(), m.Config, req.Input, req.Voice, req.Speed)
 	case model.BackendRemoteTTS:
 		data, contentType, err = modality.SpeechRemote(c.Request.Context(), m.Config, req.Model, req.Input, req.Voice, req.ResponseFormat, req.Emotion, req.Speed)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unsupported speech backend %q (want piper or remote-tts)", backend)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unsupported speech backend %q (want piper, remote-tts, or music3)", backend)})
 		return
 	}
 	if err != nil {

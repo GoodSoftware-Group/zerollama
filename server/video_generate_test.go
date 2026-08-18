@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -406,5 +407,178 @@ func TestBuildVideoJobPayloadLTXMissingPaths(t *testing.T) {
 	_, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltxv", "p", nil, time.Now().UTC(), "")
 	if err == nil || !strings.Contains(err.Error(), "wan2gp_repo") {
 		t.Fatalf("want wan2gp_repo error, got %v", err)
+	}
+}
+
+func TestBuildVideoJobPayloadH3Tiny(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_VIDEO_CLI", "")
+	t.Setenv("ZEROLLAMA_WAN_CLI", "")
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "video-cli")
+	if err := os.WriteFile(cli, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ckpt := filepath.Join(dir, "MiniMax-H3")
+	if err := os.MkdirAll(filepath.Join(ckpt, "FL2VA", "video_vae", "source"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendH3},
+		BackendPaths: map[string]string{
+			"video_cli":   cli,
+			"h3_ckpt_dir": ckpt,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    h3ProfileTinyT2VA,
+			Frames:     5,
+			Steps:      2,
+			TimeoutSec: 60,
+		},
+	}
+	payload, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "minimax-h3-tiny:lab", "a fox", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(payload.ScriptPath, "wan_c_generate.py") {
+		t.Fatalf("script: %s", payload.ScriptPath)
+	}
+	if payload.Env["VIDEO_FAMILY"] != "h3" {
+		t.Fatalf("family: %s", payload.Env["VIDEO_FAMILY"])
+	}
+	if payload.Env["WAN_CKPT_DIR"] != ckpt {
+		t.Fatalf("ckpt: %s", payload.Env["WAN_CKPT_DIR"])
+	}
+	if payload.Env["WAN_FRAMES"] != "5" || payload.Env["WAN_STEPS"] != "2" {
+		t.Fatalf("tiny geometry frames=%s steps=%s", payload.Env["WAN_FRAMES"], payload.Env["WAN_STEPS"])
+	}
+	if payload.Env["WAN_SIZE"] != "32x32" || payload.VideoSize != "32x32" {
+		t.Fatalf("tiny size=%s video_size=%s", payload.Env["WAN_SIZE"], payload.VideoSize)
+	}
+}
+
+func TestBuildVideoJobPayloadH3RelativeCLI(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_VIDEO_CLI", "")
+	t.Setenv("ZEROLLAMA_WAN_CLI", "")
+	cli := filepath.Join(root, "x", "video-c", "video-cli")
+	if _, err := os.Stat(cli); err != nil {
+		t.Skip("video-cli not built")
+	}
+	ckpt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ckpt, "FL2VA", "video_vae", "source"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendH3},
+		BackendPaths: map[string]string{
+			"video_cli":   "x/video-c/video-cli",
+			"h3_ckpt_dir": ckpt,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{Profile: h3ProfileTinyT2VA, Steps: 2},
+	}
+	payload, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "minimax-h3-tiny:lab", "a fox", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Env["VIDEO_CLI"] != cli {
+		t.Fatalf("cli: %s want %s", payload.Env["VIDEO_CLI"], cli)
+	}
+}
+
+func TestResolveVideoGenerationConfigH3(t *testing.T) {
+	m := &Model{
+		Config: model.ConfigV2{
+			VideoGeneration: &model.VideoGenerationConfig{Profile: h3ProfileTinyT2VA},
+		},
+	}
+	cfg, err := resolveVideoGenerationConfig(m, openai.VideoCreateRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Frames != h3TinyFrames || cfg.Steps != h3TinyDefaultSteps || cfg.Size != h3TinySize {
+		t.Fatalf("got frames=%d steps=%d size=%s", cfg.Frames, cfg.Steps, cfg.Size)
+	}
+	if cfg.DitLayers != h3DefaultDitLayers {
+		t.Fatalf("dit_layers=%d want %d", cfg.DitLayers, h3DefaultDitLayers)
+	}
+}
+
+func TestResolveVideoGenerationConfigH3768(t *testing.T) {
+	m := &Model{
+		Config: model.ConfigV2{
+			VideoGeneration: &model.VideoGenerationConfig{Profile: h3Profile768T2VA},
+		},
+	}
+	cfg, err := resolveVideoGenerationConfig(m, openai.VideoCreateRequest{Size: "64x64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Frames != h3TinyFrames || cfg.Steps != h3TinyDefaultSteps || cfg.Size != h3768Size {
+		t.Fatalf("got frames=%d steps=%d size=%s", cfg.Frames, cfg.Steps, cfg.Size)
+	}
+	if cfg.DitLayers != h3DefaultDitLayers {
+		t.Fatalf("dit_layers=%d want %d", cfg.DitLayers, h3DefaultDitLayers)
+	}
+}
+
+func TestBuildVideoJobPayloadH3768(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_VIDEO_CLI", "")
+	t.Setenv("ZEROLLAMA_WAN_CLI", "")
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "video-cli")
+	if err := os.WriteFile(cli, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ckpt := filepath.Join(dir, "MiniMax-H3")
+	if err := os.MkdirAll(filepath.Join(ckpt, "FL2VA", "video_vae", "source"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendH3},
+		BackendPaths: map[string]string{
+			"video_cli":   cli,
+			"h3_ckpt_dir": ckpt,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    h3Profile768T2VA,
+			Size:       h3768Size,
+			Frames:     5,
+			Steps:      2,
+			TimeoutSec: 0,
+		},
+	}
+	payload, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "minimax-h3-768:lab", "a fox", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Env["WAN_SIZE"] != h3768Size || payload.VideoSize != h3768Size {
+		t.Fatalf("size=%s video_size=%s", payload.Env["WAN_SIZE"], payload.VideoSize)
+	}
+	if payload.Env["WAN_FRAMES"] != "5" || payload.Timeout != h3768TimeoutSec {
+		t.Fatalf("frames=%s timeout=%d", payload.Env["WAN_FRAMES"], payload.Timeout)
+	}
+	if payload.Env["VIDEO_H3_LAYERS"] != strconv.Itoa(h3DefaultDitLayers) {
+		t.Fatalf("layers=%s", payload.Env["VIDEO_H3_LAYERS"])
+	}
+}
+
+func TestBuildVideoJobPayloadH3MissingCLI(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_VIDEO_CLI", "")
+	t.Setenv("ZEROLLAMA_WAN_CLI", "")
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendH3},
+		BackendPaths:     map[string]string{},
+		VideoGeneration:  &model.VideoGenerationConfig{Profile: h3ProfileTinyT2VA},
+	}
+	_, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "h3", "p", nil, time.Now().UTC(), "")
+	if err == nil || !strings.Contains(err.Error(), "video_cli") {
+		t.Fatalf("want video_cli error, got %v", err)
 	}
 }

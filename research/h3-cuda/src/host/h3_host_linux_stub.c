@@ -31,6 +31,14 @@ int h3_res_step(float *output, const float *sample, const float *denoised,
   return 1;
 }
 
+void h3_const_denoised_from_host_velocity(float *denoised, const float *sample,
+                                          const float *velocity, size_t count,
+                                          float sigma) {
+  if (!denoised || !sample || !velocity) return;
+  for (size_t i = 0; i < count; i++)
+    denoised[i] = sample[i] + sigma * velocity[i];
+}
+
 int h3_euler_velocity_step(float *sample, const float *velocity, size_t count,
                            float sigma, float sigma_next) {
   if (!sample || !velocity) return 0;

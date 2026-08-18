@@ -92,7 +92,7 @@ Upstream is excellent at “pull a model and chat.” Agents don’t chat small 
 |---------------|-----------|
 | Megaprompt tokenize burns **hundreds of ms** before any forward | **Accelerated BPE** inspired by [Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp) — **~3–7×** on Qwen/GPT-2/Gemma4 (1 MiB); [benches](docs/readme-marketing-benches.md) |
 | Same megaprompt / system prefix every turn feels like a cold start | **Prompt cache (L3)** — inspired by [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm): give the thread a stable key and **turn 2+ reuses the prefix** so the next megaprompt is way faster (optional `/api/cache/pin` to keep it warm) |
-| Agents need to **show**, not only tell | **Image + video gen** on the same daemon — Wan `/v1/videos` (+ `/v1/media` keyframes), MLX/Comfy/sd.cpp `/v1/images`; VLM video understanding |
+| Agents need to **show**, not only tell | **Image + video + music** on the same daemon — Wan `/v1/videos`, MLX/Comfy `/v1/images`, Music 3 `/v1/audio/generations` (mlx first, not Comfy) |
 | Background jobs fight live agent threads | **Harness control plane** — QoS, timeouts, preempt reasons, capacity APIs |
 | “Who owns the GPU?” is guesswork | **`zerollama ps`** shows **PROJECT** / **SESSION**; **`ls`** shows **PARAMS** + **CTX** (host-safe) + **PERF** |
 | “Model bugs” that are really server traps | **`zerollama doctor`** + minefield probes |
@@ -154,12 +154,15 @@ Agents need to **show** the answer — diagrams, frames, short clips — on the 
 | Video understanding | `video_url` / `videos[]` → ffmpeg → VLM (+ SGLang-style caches / padded inject) |
 | Wan T2V / TI2V | Async OpenAI-shaped `POST /v1/videos`; keyframes via `PUT /v1/media/{session}/{label}` then `options.keyframes` |
 | Image gen | `/v1/images/*`, `zerollama run` — **MLX**, **ComfyUI**, **sd.cpp** / OpenVINO |
-| Speech | `/v1/audio/*` — Whisper + Piper |
+| Speech (TTS) | `/v1/audio/speech` — Whisper STT + Piper / remote-tts (**sync bytes**) |
+| Music 3 (TTM) | mlx-audio lab first; async `POST /v1/audio/generations` (not Comfy; not cloud MiniMax) |
 | QoS | Image/video gen default **`background`** behind interactive agents |
 
 **Why `/v1/media` instead of giant JSON:** stream stills into a session CAS, keep create bodies small, re-PUT on `media_missing` — [media-uploads.md](docs/media-uploads.md).
 
-→ [video-understanding.md](docs/video-understanding.md) · [wan-t2v.md](docs/wan-t2v.md) · [media-uploads.md](docs/media-uploads.md) · [comfyui-image-backend.md](docs/comfyui-image-backend.md) · [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md)
+**Why music is not Piper:** songs are minutes of DiT on Metal; Comfy’s port is GPL; Omni CUDA cannot be the Mac first listen — [music-c.md](docs/music-c.md).
+
+→ [video-understanding.md](docs/video-understanding.md) · [wan-t2v.md](docs/wan-t2v.md) · [media-uploads.md](docs/media-uploads.md) · [comfyui-image-backend.md](docs/comfyui-image-backend.md) · [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) · [music-c.md](docs/music-c.md)
 
 ### 4.3 Harness / agentic API
 

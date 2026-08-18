@@ -24,8 +24,8 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`    // wan-cli | ltx-wan2gp; later rife | diffusers | comfy-headless
-	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled
+	Runner       string `json:"runner,omitempty"`    // video-cli | wan-cli | ltx-wan2gp; later rife | diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled | h3-tiny-t2va | h3-768-t2va
 	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
 	Size         string `json:"size,omitempty"`      // 832x480
 	Frames       int    `json:"frames,omitempty"`
@@ -37,6 +37,17 @@ type VideoGenerationConfig struct {
 	T5CPU        bool   `json:"t5_cpu,omitempty"`
 	VAETiling    bool   `json:"vae_tiling,omitempty"`
 	TimeoutSec   int    `json:"timeout_sec,omitempty"`
+	// DitLayers is H3 DiT depth (1–50). Host f32 collapses after ~24; default 24.
+	DitLayers int `json:"dit_layers,omitempty"`
+}
+
+// MusicGenerationConfig holds MiniMax Music 3 lab defaults (mlx-audio / later music-cli).
+// Why on the manifest: duration/steps/timeout vary per tag (10s lab vs later 30s) without
+// forcing every host to set env; songs must not inherit Piper's sync TTS assumptions.
+type MusicGenerationConfig struct {
+	DurationSec float64 `json:"duration_sec,omitempty"`
+	Steps       int     `json:"steps,omitempty"`
+	TimeoutSec  int     `json:"timeout_sec,omitempty"`
 }
 
 // ImageGenerationConfig holds per-model defaults for subprocess image backends
@@ -95,6 +106,8 @@ type ConfigV2 struct {
 	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
 	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
 	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
+	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/video-c.md),
+	// "h3_ckpt_dir" (MiniMax-H3 tree for backend h3),
 	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX via Wan2GP — docs/ltx-t2v.md),
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
 	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
@@ -104,6 +117,9 @@ type ConfigV2 struct {
 
 	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md, docs/ltx-t2v.md).
 	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
+
+	// MusicGeneration presets for modality_backends.speech=music3 (see docs/music-c.md).
+	MusicGeneration *MusicGenerationConfig `json:"music_generation,omitempty"`
 
 	// ImageGeneration presets for models with capability image and modality_backends.image=external-image
 	// or openvino-image (see docs/sd-vulkan-a380.md, docs/sd-openvino-a380.md).

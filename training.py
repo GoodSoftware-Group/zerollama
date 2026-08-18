@@ -593,15 +593,8 @@ def job_processor():
                     result = process_training_request(job.data)
                 elif job.cmd == "run_script":
                     # Expand {job_id} here (not at submit): Python uuid is assigned at queue time.
-                    data = dict(job.data)
-                    if op := data.get("output_path"):
-                        data["output_path"] = str(op).replace("{job_id}", job.id)
-                    env = data.get("env")
-                    if isinstance(env, dict):
-                        env = dict(env)
-                        if wan_out := env.get("WAN_OUTPUT_PATH"):
-                            env["WAN_OUTPUT_PATH"] = str(wan_out).replace("{job_id}", job.id)
-                        data["env"] = env
+                    # All env string values (WAN_OUTPUT_PATH, MUSIC3_OUTPUT_PATH, LTX_*, …).
+                    data = _expand_run_script_job_id(job.data, job.id)
                     # WHY training_active during run_script: Go OccupiesGPU / BLOCK_INFERENCE
                     # keys off training_active + queue.running. Wan is a long child process;
                     # without this flag, health TTL gaps can resume chat mid-DiT.
@@ -1015,6 +1008,29 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
     finally:
         STATE.training_active = False
         STATE.schedule_idle_unload()
+
+
+def _expand_run_script_job_id(data: Dict[str, Any], job_id: str) -> Dict[str, Any]:
+    """Replace {job_id} in output_path and every string env value; set TRAINING_JOB_ID.
+
+    Why all env keys, not only WAN_OUTPUT_PATH: Go submits before Python assigns the
+    uuid. Music 3 (MUSIC3_OUTPUT_PATH), LTX, and future wrappers used the same token
+    and silently wrote a literal '{job_id}.wav' while GET .../content looked for the
+    expanded path.
+    """
+    out = dict(data)
+    if op := out.get("output_path"):
+        out["output_path"] = str(op).replace("{job_id}", job_id)
+    env = out.get("env")
+    if isinstance(env, dict):
+        env = dict(env)
+        for key, val in list(env.items()):
+            if isinstance(val, str) and "{job_id}" in val:
+                env[key] = val.replace("{job_id}", job_id)
+        env.setdefault("TRAINING_JOB_ID", job_id)
+        env.setdefault("JOB_ID", job_id)
+        out["env"] = env
+    return out
 
 
 def _script_subprocess_env(python_bin: str, extra_env: Dict[str, Any]) -> Dict[str, str]:

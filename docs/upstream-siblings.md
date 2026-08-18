@@ -18,6 +18,10 @@
 | **eliza llama fork** | `../eliza-llama.cpp` | elizaOS/llama.cpp | [llama-fork-watchlist.md](./llama-fork-watchlist.md) | L2 kernel watch |
 | **ANE / MLX / toolkit** | `../ane`, `../mlx`, `../mlx-c`, `../bmtl` | various | [ane-draft-inprocess.md](./ane-draft-inprocess.md); **bmtl gigatoken techniques** → [faster-bpe-tokenize.md](./faster-bpe-tokenize.md) (patches **0106–0126**, do **not** vendor Rust) | Mac-only / technique watch |
 | **Wan2GP** | `../Wan2GP` (CT: `/root/Wan2GP`) | [deepbeepmeep/Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | [wangp-borrowings.md](./wangp-borrowings.md) (`mmgp` VRAM) | As needed (video VRAM / zoo watch) |
+| **h3.c** | `../h3.c` | [antirez/h3.c](https://github.com/antirez/h3.c) | Metal MiniMax-H3 **C rematch** for [video-c.md](./video-c.md) (`--family h3`); not the product runner | As needed (H3 parity) |
+| **minimax-h3-mlx** | `../minimax-h3-mlx` | [mrbizarro/minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) | MLX MiniMax-H3 **Python rematch oracle** (packing, AdaLN cache, TE layer-50, VAEs) for video-c Darwin | As needed (H3 parity / dumps) |
+| **ClipProj-MiniMax-H3** | `~/.zerollama/third_party/h3/clipproj/` | [NicoLab28/ClipProj-MiniMax-H3](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3) | TE projection matrices (4B/8B → `[seq,5120]`); [h3-clipproj.md](./h3-clipproj.md) | Optional (Darwin TE shrink) |
+| **MiniMax-H3 (partial)** | `~/.zerollama/models/MiniMax-H3/` | [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) | Mac lab: `FL2VA/audio_vae` + `video_vae` only (~10 GiB); DiT/TE (~62 GiB each) need more free disk | Operator-supplied |
 
 Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) are optional labs — not part of the weekly scan unless a ROADMAP item points at them.
 

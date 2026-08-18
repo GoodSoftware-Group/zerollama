@@ -16,11 +16,11 @@ dit_pager_stats dit_pager_get_stats(const dit_pager *p);
 
 Default **N=2** (matches antirez `stream_slots[2]` / mmgp-class budgets).
 
-Env (wan-c / CUDA lab):
+Env (video-c / CUDA lab):
 
 | Variable | Role |
 |----------|------|
-| `WAN_DIT_RESIDENT` | Max resident DiT blocks (`0` / unset = pager off for product paths). Lab smokes default to **2** when unset. Parsed by `wan_dit_resident_slots()` in `x/wan-c/dit_resident.c`. |
+| `WAN_DIT_RESIDENT` | Max resident DiT blocks (`0` / unset = pager off for product paths). Lab smokes default to **2** when unset. Parsed by `wan_dit_resident_slots()` in `x/video-c/dit_resident.c`. |
 
 ## Residency contract (pager ↔ backend)
 
@@ -39,4 +39,4 @@ Env (wan-c / CUDA lab):
 
 - [cuda-uma-toolkit.md](./cuda-uma-toolkit.md) — backends under the pager
 - [wangp-borrowings.md](./wangp-borrowings.md) — Python mmgp is the bridge; this is the C home
-- [wan-c.md](./wan-c.md) — Pure-C client
+- [video-c.md](./video-c.md) — Pure-C multi-family client (was wan-c)

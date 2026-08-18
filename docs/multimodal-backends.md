@@ -18,7 +18,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
 - **`modality_backends`**: map of modality key → driver name.
   - `image`: `mlx-imagegen` (default, implicit), `external-image` (stable-diffusion.cpp; [sd-vulkan-a380.md](./sd-vulkan-a380.md)), `openvino-image` (OpenVINO GenAI; [sd-openvino-a380.md](./sd-openvino-a380.md)), or `comfyui` (proxy to a running ComfyUI server for edit/img2img/ControlNet/LoRA — see [comfyui-image-backend.md](./comfyui-image-backend.md)).
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
-  - `speech`: `piper` for Piper TTS (CPU ONNX), or `remote-tts` for an OpenAI-compatible HTTP TTS server (Chatterbox, Orpheus, Kokoro, …).
+  - `speech`: `piper` (CPU ONNX TTS), `remote-tts` (Chatterbox/Orpheus/Kokoro HTTP), or `music3` (MiniMax Music 3 via mlx-audio / later music-cli). **Why a third driver:** songs are minutes of DiT, not Piper phonemes; Comfy’s port is GPL so it is not a backend. `music3` returns **202 JSON** on `/v1/audio/speech` (same job as `POST /v1/audio/generations`) — [music-c.md](./music-c.md).
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
   - `video_generation` (T2V / TI2V): `wan` runs [Wan](../scripts/video/wan_video_generate.py) via the training job queue; capability `video_gen`. `rife` is reserved (not shipped). Keyframe uploads: [media-uploads.md](./media-uploads.md); Wan semantics: [wan-t2v.md](./wan-t2v.md).
 - **`video_sampling`** (optional, native path only): per-model overrides for ffmpeg—`mode` (`fps` or `stride`), `fps`, `stride`, `max_frames`. Omitted fields use server env defaults (see below).
@@ -34,6 +34,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `tts_default_voice`: used when the client omits `voice`.
   - `tts_voices_file`: JSON catalog (`[{id,name,…}]` or `{"voices":[…]}`) listed by `GET /v1/audio/voices`.
   - `tts_ref_audio`: path to a clone reference clip; sent as `X-TTS-Ref-Audio` to the remote server.
+  - `music3_mlx_model`: mlx-community (or local) MiniMax Music 3 pack for `speech=music3`.
   - `wan_repo`, `wan_ckpt_dir`: Wan upstream tree and checkpoint directory (weights installed outside Ollama blobs).
   - `wan_gguf_path` (optional): GGUF weights when safetensors+offload OOM on 16 GB.
   - `sd_cli`, `sd_model`: [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Vulkan; [sd-vulkan-a380.md](./sd-vulkan-a380.md))

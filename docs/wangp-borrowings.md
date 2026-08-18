@@ -8,7 +8,7 @@
 
 **Last checked:** 2026-08-11 — tip `7e45fe7e2110` on `main` (`mmgp==3.7.12`).
 
-**Long-term:** Python + mmgp is a **VRAM bridge**. Pure-C home: [`dit_pager`](./dit-pager.md) + [`cuda-uma-toolkit.md`](./cuda-uma-toolkit.md) (wan-c multi-backend) — ship C for **wins or unlocks**, not a literal mmgp port.
+**Long-term:** Python + mmgp is a **VRAM bridge**. Pure-C home: [`dit_pager`](./dit-pager.md) + [`cuda-uma-toolkit.md`](./cuda-uma-toolkit.md) ([video-c](./video-c.md) multi-backend) — ship C for **wins or unlocks**, not a literal mmgp port.
 
 ---
 
@@ -32,7 +32,7 @@
 |---------|-------------|
 | `wgp.py` Gradio UI | Control plane is `/v1/videos` + media uploads |
 | WanGP `WanAny2V` / `fast_load_transformers_model` | Stock `generate.py` + post-init `offload.profile` first; borrow loader only if attach fails |
-| Multi-model zoo (LTX, MiniMax H3, …) | ROADMAP **v1.4+** (**LTX then H3**). **LTXV distilled first slice** shipped as `backend=ltx` — [ltx-t2v.md](./ltx-t2v.md); H3 later — [h3-cuda-port.md](./h3-cuda-port.md) |
+| Multi-model zoo (LTX, MiniMax H3, …) | ROADMAP **v1.4+**. **LTXV distilled** shipped as `backend=ltx` — [ltx-t2v.md](./ltx-t2v.md). H3 Darwin layout probe in [video-c.md](./video-c.md); CUDA research — [h3-cuda-port.md](./h3-cuda-port.md) |
 | SageAttention / TeaCache | Speed only; we already force SDPA for SM120 |
 | Pure-C diffusion + paging | **In progress (wins/unlocks):** [dit-pager.md](./dit-pager.md), [cuda-uma-toolkit.md](./cuda-uma-toolkit.md); Python mmgp remains the product bridge |
 

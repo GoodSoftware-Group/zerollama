@@ -1714,8 +1714,7 @@ components:
           description: Speech model tag (e.g. piper-lessac, chatterbox, orpheus, kokoro)
         input:
           type: string
-          description: Text to synthesize (max 4096 Unicode characters)
-          maxLength: 4096
+          description: Text to synthesize (4096 runes; 20000 when Music 3 instructions/duration/max_new_tokens are set)
         voice:
           type: string
           description: Voice id from GET /v1/audio/voices (piper_voice_* or remote catalog)
@@ -1734,6 +1733,37 @@ components:
         emotion:
           type: string
           description: zerollama extension — forwarded by remote-tts (Chatterbox/Orpheus); ignored by Piper
+        instructions:
+          type: string
+          description: Music 3 caption (SGLang-Omni). Ignored by Piper. Raises lyrics cap to 20000 runes.
+        seed:
+          type: integer
+          format: int64
+          description: Music 3 seed
+        max_new_tokens:
+          type: integer
+          description: Music 3 AR frame cap (~25 fps)
+        duration:
+          type: number
+          description: Music 3 clip length in seconds (lab default 10)
+        steps:
+          type: integer
+          description: Music 3 DiT Euler steps (default 30)
+    AudioGeneration:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created_at:
+          type: integer
+        status:
+          type: string
+        model:
+          type: string
+        progress:
+          type: number
     SpeechVoice:
       type: object
       properties:
@@ -1814,7 +1844,8 @@ components:
           additionalProperties: true
           description: >
             Backend options. Wan: frames, steps, media_session, keyframes (label list
-            after PUT /v1/media/{session}/{label}). WHY labels not inline bytes: keep
+            after PUT /v1/media/{session}/{label}). H3 T2VA: layers (DiT depth, default 24,
+            cap 50; host 50 is rank-1 gray). WHY labels not inline bytes: keep
             create JSON small; CAS + media_missing recovery — docs/media-uploads.md.
     MediaPutResponse:
       type: object
@@ -3271,8 +3302,14 @@ paths:
       tags: [Audio]
       summary: Text to speech
       description: |
-        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro). Returns audio bytes
+        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro): returns audio bytes
         (typically audio/wav). Optional `emotion` is a zerollama extension.
+
+        MiniMax Music 3 (`modality_backends.speech=music3`) does **not** return WAV
+        on this POST. It queues the same async job as POST /v1/audio/generations
+        (HTTP 202 JSON). Poll GET /v1/audio/generations/{id} then fetch WAV from
+        GET /v1/audio/generations/{id}/content. Prefer the generations routes for
+        new clients. `duration` wins over `max_new_tokens` when both are set.
       operationId: createSpeech
       x-codeSamples:
         - lang: bash
@@ -3296,8 +3333,14 @@ paths:
             schema:
               $ref: "#/components/schemas/SpeechCreateRequest"
       responses:
+        "202":
+          description: Music 3 job queued (JSON); not audio bytes. Use /v1/audio/generations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioGeneration"
         "200":
-          description: Synthesized audio
+          description: Synthesized audio (Piper / remote-tts only)
           content:
             audio/wav:
               schema:
@@ -3329,6 +3372,65 @@ paths:
             text/plain:
               schema:
                 type: string
+  /v1/audio/generations:
+    post:
+      tags: [Audio]
+      summary: Queue MiniMax Music 3 (async)
+      description: |
+        Lab Music 3 via mlx-audio (`modality_backends.speech=music3`). Returns 202;
+        poll GET /v1/audio/generations/{id} then fetch WAV from .../content.
+        Same JSON body as /v1/audio/speech (`input` lyrics, `instructions` caption).
+      operationId: createAudioGeneration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechCreateRequest"
+      responses:
+        "202":
+          description: Queued job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioGeneration"
+  /v1/audio/generations/{id}:
+    get:
+      tags: [Audio]
+      summary: Music 3 job status
+      operationId: getAudioGeneration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioGeneration"
+  /v1/audio/generations/{id}/content:
+    get:
+      tags: [Audio]
+      summary: Music 3 WAV bytes
+      operationId: getAudioGenerationContent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: audio/wav
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
   /v1/audio/voices:
     get:
       tags: [Audio]

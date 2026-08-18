@@ -1207,6 +1207,18 @@ type SpeechCreateRequest struct {
 	// Emotion is a zerollama extension for expressive engines (Chatterbox / Orpheus).
 	// Upstream OpenAI ignores unknown fields; remote-tts forwards it when set.
 	Emotion string `json:"emotion,omitempty"`
+	// Instructions is the Music 3 caption (SGLang-Omni speech field). Ignored by Piper.
+	// Why a TTS field: Omni's /v1/audio/speech uses input=lyrics, instructions=caption;
+	// we match that JSON so clients do not learn MiniMax cloud /v1/music_generation.
+	Instructions string `json:"instructions,omitempty"`
+	// Seed is a Music 3 / Omni extension.
+	Seed *int64 `json:"seed,omitempty"`
+	// MaxNewTokens caps AR frames (~25 fps). Music jobs may also set duration.
+	MaxNewTokens *int `json:"max_new_tokens,omitempty"`
+	// Duration seconds for Music 3 (lab). Ignored by Piper.
+	Duration *float64 `json:"duration,omitempty"`
+	// Steps is DiT Euler steps for Music 3 (default 30).
+	Steps *int `json:"steps,omitempty"`
 }
 
 // TranscriptionResponse is the response format for /v1/audio/transcriptions.
@@ -1391,6 +1403,47 @@ func VideoFromSubmit(jobID, modelName, size string, queued bool, createdAt int64
 		Progress:  0,
 		Size:      size,
 	}
+}
+
+// AudioGeneration is an async Music 3 job (POST /v1/audio/generations).
+type AudioGeneration struct {
+	ID        string      `json:"id"`
+	Object    string      `json:"object"`
+	CreatedAt int64       `json:"created_at"`
+	Status    string      `json:"status"`
+	Model     string      `json:"model,omitempty"`
+	Progress  float64     `json:"progress,omitempty"`
+	Error     *VideoError `json:"error,omitempty"`
+}
+
+// AudioGenerationFromSubmit builds the 202 body for a newly queued music job.
+func AudioGenerationFromSubmit(jobID, modelName string, queued bool, createdAt int64) AudioGeneration {
+	v := VideoFromSubmit(jobID, modelName, "", queued, createdAt)
+	return AudioGeneration{
+		ID:        v.ID,
+		Object:    "audio.generation",
+		CreatedAt: v.CreatedAt,
+		Status:    v.Status,
+		Model:     v.Model,
+		Progress:  v.Progress,
+	}
+}
+
+// AudioGenerationFromTrainingJob maps a training job JSON object to AudioGeneration.
+func AudioGenerationFromTrainingJob(jobJSON json.RawMessage) (AudioGeneration, error) {
+	v, err := VideoFromTrainingJob(jobJSON)
+	if err != nil {
+		return AudioGeneration{}, err
+	}
+	return AudioGeneration{
+		ID:        v.ID,
+		Object:    "audio.generation",
+		CreatedAt: v.CreatedAt,
+		Status:    v.Status,
+		Model:     v.Model,
+		Progress:  v.Progress,
+		Error:     v.Error,
+	}, nil
 }
 
 // VideoFromTrainingJob maps embedded training job JSON to an OpenAI Video.

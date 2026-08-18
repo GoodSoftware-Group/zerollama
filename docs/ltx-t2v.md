@@ -4,7 +4,9 @@ Local **LTXV** generation reuses the OpenAI async Videos API (`POST /v1/videos`)
 
 **Shipped first:** **LTX Video 0.9.8 Distilled 13B + quanto bf16_int8** (`ltxv_distilled`). **Not** LTX-2 / Gemma TE on ~24 GiB host RAM boxes.
 
-Related: [wan-t2v.md](./wan-t2v.md), [wangp-borrowings.md](./wangp-borrowings.md), [ROADMAP — Video generation](./ROADMAP.md#video-generation--wan-t2v-v1-shipped), [h3-cuda-port.md](./h3-cuda-port.md) (H3 later).
+**Mac GRAPH / toolkit (parallel):** bmtl [WISHLIST_LTX_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_LTX_MEDIA.md) under [WISHLIST_DIT_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_DIT_MEDIA.md).
+
+Related: [wan-t2v.md](./wan-t2v.md), [wangp-borrowings.md](./wangp-borrowings.md), [ROADMAP — Video generation](./ROADMAP.md#video-generation--dit-media-toolkit-wan--ltx--h3), [h3-cuda-port.md](./h3-cuda-port.md) (H3 parallel).
 
 ## Why LTXV distilled first
 

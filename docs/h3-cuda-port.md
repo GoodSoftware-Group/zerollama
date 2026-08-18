@@ -4,6 +4,8 @@ Research notes for a **CUDA** MiniMax-H3 engine, using [antirez/h3.c](https://gi
 
 **Status:** research only (2026-08-12). Lab CUDA backend **API-complete** (`make all` / `int8` / `fixture` / `audio-vae` green, `has_int8_mlp=1`). Toy DiT block **CUDA↔CPU golden** parity + **real AudioVAE decode** (fp32 pack, shape+finite) shipped. Still no ~21 GB DiT packs on this host.
 
+**Mac GRAPH / toolkit (parallel):** bmtl [WISHLIST_H3_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_H3_MEDIA.md) under [WISHLIST_DIT_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_DIT_MEDIA.md) (Wan + H3 + LTX).
+
 **Related:** [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) (text/VLM, not DiT video), sibling checkouts `/root/sglang`, `/root/Wan2GP`, `/root/vllm`.
 
 ---
@@ -244,7 +246,7 @@ h3-cuda/
 
 ## 7. Zerollama product fit (later)
 
-**Product intent:** support **MiniMax H3** and **LTX** families eventually behind the existing OpenAI async Videos API (`POST /v1/videos`), not Gradio. Roadmap: **v1.4** pluggable `runner` / multi-family registry — [ROADMAP — Video generation](./ROADMAP.md#video-generation--wan-t2v-v1-shipped). Suggested order: **LTX first** (lighter host/VRAM profiles in Wan2GP), then **H3** (needs quantized TE + DiT offload; host RAM is the CT 1564 wall). **LTXV distilled slice:** [ltx-t2v.md](./ltx-t2v.md).
+**Product intent:** support **MiniMax H3** and **LTX** behind `POST /v1/videos` (clients pick model tags; runners are operator-optional). **LTXV distilled:** [ltx-t2v.md](./ltx-t2v.md). **Darwin H3:** tiny + 768-canvas T2VA generate + `/v1/videos` tags `minimax-h3-tiny:lab` / `minimax-h3-768:lab` in [video-c.md](./video-c.md) (50-layer still parked). **This file** remains the **CUDA** research track (`research/h3-cuda/`).
 
 H3/LTX are **not** GGUF/llama.cpp modalities. Product shape:
 

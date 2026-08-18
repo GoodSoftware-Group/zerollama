@@ -22,6 +22,7 @@ llama/patches.pre-*/
 /lib/
 .venv-training/
 venv-training/
+.venv-music/
 integration/testdata/models/
 
 # T8 loss-curve fixture dump (regenerate via scripts/training/loss_curve_fixture.sh)

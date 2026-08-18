@@ -1,0 +1,73 @@
+{
+  "special_token_ids": {
+    "<|im_start|>": 151644,
+    "<|im_end|>": 151645,
+    "<|audio_cfg|>": 151654,
+    "<|audio_start|>": 151669,
+    "<|audio_end|>": 151670,
+    "<|caption_start|>": 151671,
+    "<|caption_end|>": 151672,
+    "<|lyrics_start|>": 151673,
+    "<|lyrics_end|>": 151674
+  },
+  "audio_code_offset": 151675,
+  "ar_hidden_size": 32768,
+  "ar_chunk_frames": 200,
+  "ar_chunk_hop_frames": 100,
+  "dav_sample_rate": 44100,
+  "output_sample_rate": 32000,
+  "dav_upsample": 512,
+  "max_prompt_tokens": 5000,
+  "max_audio_frames": 9000,
+  "aligned_mel_length_250": 861,
+  "chunk_windows_250": [
+    {
+      "index": 0,
+      "start": 0,
+      "end": 200,
+      "is_first": true,
+      "is_last": false
+    },
+    {
+      "index": 1,
+      "start": 100,
+      "end": 250,
+      "is_first": false,
+      "is_last": true
+    }
+  ],
+  "chunk_windows_450": [
+    {
+      "index": 0,
+      "start": 0,
+      "end": 200,
+      "is_first": true,
+      "is_last": false
+    },
+    {
+      "index": 1,
+      "start": 100,
+      "end": 300,
+      "is_first": false,
+      "is_last": false
+    },
+    {
+      "index": 2,
+      "start": 200,
+      "end": 400,
+      "is_first": false,
+      "is_last": false
+    },
+    {
+      "index": 3,
+      "start": 300,
+      "end": 450,
+      "is_first": false,
+      "is_last": true
+    }
+  ],
+  "prompt_own_line": "<|im_start|><|caption_start|>Warm acoustic pop<|caption_end|><|lyrics_start|>[start]\n[verse]\nWalking down the street<|lyrics_end|><|im_end|><|audio_start|>",
+  "prompt_same_line": "<|im_start|><|caption_start|>Warm acoustic pop<|caption_end|><|lyrics_start|>[start]\n[verse]<|lyrics_end|><|im_end|><|audio_start|>",
+  "normalized_same_line": "[start]\n[verse]",
+  "normalized_own_line": "[start]\n[verse]\nWalking down the street"
+}

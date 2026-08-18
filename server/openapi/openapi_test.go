@@ -29,7 +29,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	}
 	paths := doc["paths"].(map[string]any)
 	for _, p := range []string{
-		"/v1/audio/speech", "/v1/audio/voices", "/openapi.json", "/docs",
+		"/v1/audio/speech", "/v1/audio/voices", "/v1/audio/generations", "/openapi.json", "/docs",
 		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin",
 		"/api/cache/pin", "/api/cache/warm", "/api/metrics", "/api/version",
 		"/v1/chat/completions", "/v1/chat/completions/batch",

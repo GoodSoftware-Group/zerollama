@@ -1,0 +1,147 @@
+>>> am: 0001-maintain-ordering-for-rules-for-grammar
+Applying: maintain ordering for rules for grammar
+OK am: 0001-maintain-ordering-for-rules-for-grammar
+>>> am: 0002-fix-string-arr-kv-loading
+Applying: fix string arr kv loading
+OK am: 0002-fix-string-arr-kv-loading
+>>> am: 0003-graph-memory-reporting-on-failure
+Applying: graph memory reporting on failure
+OK am: 0003-graph-memory-reporting-on-failure
+>>> am: 0004-fix-mtmd-audio.cpp-build-on-windows
+Applying: fix mtmd-audio.cpp build on windows
+OK am: 0004-fix-mtmd-audio.cpp-build-on-windows
+>>> am: 0005-harden-uncaught-exception-registration
+Applying: harden uncaught exception registration
+OK am: 0005-harden-uncaught-exception-registration
+>>> am: 0006-ggml-cuda-skip-large-batches
+Applying: ggml-cuda: skip large batches
+OK am: 0006-ggml-cuda-skip-large-batches
+>>> am: 0007-win-exit-instead-of-abort
+Applying: win: exit instead of abort
+OK am: 0007-win-exit-instead-of-abort
+>>> am: 0008-CUDA-get_rows-q6_k-support
+Applying: CUDA get_rows q6_k support
+OK am: 0008-CUDA-get_rows-q6_k-support
+>>> am: 0009-ollama-add-ggml_backend_dev_reset-b9509-port
+Applying: ollama: add ggml_backend_dev_reset (b9509 port)
+OK am: 0009-ollama-add-ggml_backend_dev_reset-b9509-port
+>>> am: 0010-ollama-GPU-discovery-enhancements-b9509-port
+Applying: ollama: GPU discovery enhancements (b9509 port)
+OK am: 0010-ollama-GPU-discovery-enhancements-b9509-port
+>>> am: 0011-ollama-ggml-no-alloc-scheduler-mode-b9509-port
+Applying: ollama: ggml no-alloc scheduler mode (b9509 port)
+OK am: 0011-ollama-ggml-no-alloc-scheduler-mode-b9509-port
+>>> am: 0012-ollama-add-C-API-for-mtmd_input_text-b9611-port
+Applying: ollama: add C API for mtmd_input_text (b9611 port)
+OK am: 0012-ollama-add-C-API-for-mtmd_input_text-b9611-port
+>>> am: 0013-ollama-add-ollama_vocab-for-grammar-support-b9611-po
+Applying: ollama: add ollama_vocab for grammar support (b9611 port)
+OK am: 0013-ollama-add-ollama_vocab-for-grammar-support-b9611-po
+>>> am: 0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611
+Applying: ollama: llama-kv-ext Phase 15 tensor page bind (b9611)
+OK am: 0014-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611
+>>> am: 0015-ollama-compat-loader-hook-call-sites-b9611
+Applying: ollama: compat loader hook call sites (b9611)
+OK am: 0015-ollama-compat-loader-hook-call-sites-b9611
+>>> am: 0016-ollama-zerollama-ggml-scheduler-and-Metal-gate-b9611
+Applying: ollama: zerollama ggml scheduler and Metal gate (b9611)
+OK am: 0016-ollama-zerollama-ggml-scheduler-and-Metal-gate-b9611
+>>> am: 0017-fix-cell_index_for-stage-Ollama-compat-in-CMake
+Applying: fix: cell_index_for + stage Ollama compat in CMake
+OK am: 0017-fix-cell_index_for-stage-Ollama-compat-in-CMake
+>>> am: 0017-ollama-kv-seq-copy-endpoint
+Applying: ollama: kv seq-copy endpoint (Radix L3 v1)
+OK am: 0017-ollama-kv-seq-copy-endpoint
+>>> am: 0018-ollama-ane-draft-hook
+Applying: ollama: ANE in-process dflash draft hook (B1–B7 lab)
+error: sha1 information is lacking or useless (common/ane_draft_hook.cpp).
+error: could not build fake ancestor
+hint: Use 'git am --show-current-patch=diff' to see the failed patch
+hint: When you have resolved this problem, run "git am --continue".
+hint: If you prefer to skip this patch, run "git am --skip" instead.
+hint: To restore the original branch and stop patching, run "git am --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Patch failed at 0001 ollama: ANE in-process dflash draft hook (B1–B7 lab)
+>>> strip: 0018-ollama-ane-draft-hook
+Checking patch common/ane_draft_hook.cpp...
+error: common/ane_draft_hook.cpp: No such file or directory
+Checking patch common/ane_draft_hook.h...
+error: common/ane_draft_hook.h: No such file or directory
+Checking patch common/ane_draft_session.h...
+error: common/ane_draft_session.h: No such file or directory
+Checking patch common/ane_draft_session.mm...
+error: common/ane_draft_session.mm: No such file or directory
+Checking patch common/ane_draft_session_stub.cpp...
+error: common/ane_draft_session_stub.cpp: No such file or directory
+Checking patch common/speculative.cpp...
+error: while searching for:
+
+        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
+        if (common_ane_draft_enabled()) {
+            llama_set_embeddings_pre_norm(ctx_dft, true);
+        }
+    }
+
+
+error: patch failed: common/speculative.cpp:238
+error: while searching for:
+                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
+                    llama_token ane_id = 0;
+                    float ane_p = 0.f;
+                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p)) {
+                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
+                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d\n",
+                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0);
+                        } else {
+                            id = ane_id;
+                            pick_p = ane_p;
+
+error: patch failed: common/speculative.cpp:331
+Checking patch ggml/src/ggml-metal/ggml-metal.cpp...
+error: while searching for:
+        return nullptr;
+    }
+
+    if (strcmp(device->iface.get_name(device), GGML_METAL_NAME) != 0) {
+        GGML_LOG_ERROR("%s: device is not Metal\n", __func__);
+        return nullptr;
+    }
+
+error: patch failed: ggml/src/ggml-metal/ggml-metal.cpp:980
+Checking patch src/llama-context.cpp...
+Hunk #2 succeeded at 1131 (offset 13 lines).
+Hunk #3 succeeded at 3655 (offset 21 lines).
+Checking patch src/llama-context.h...
+Checking patch src/llama-ext.h...
+Applying patch common/speculative.cpp with 2 rejects...
+Rejected hunk #1.
+Rejected hunk #2.
+Applying patch ggml/src/ggml-metal/ggml-metal.cpp with 1 reject...
+Rejected hunk #1.
+Applied patch src/llama-context.cpp cleanly.
+Applied patch src/llama-context.h cleanly.
+Applied patch src/llama-ext.h cleanly.
+FAIL: 0018-ollama-ane-draft-hook (rc=1 rejects=2)
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-ad56033f/common/speculative.cpp.rej
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-ad56033f/ggml/src/ggml-metal/ggml-metal.cpp.rej
+==== STATUS ====
+commits: 18
+failed: 0018-ollama-ane-draft-hook.patch
+23b9ea1 ollama: kv seq-copy endpoint (Radix L3 v1)
+bfead4d fix: cell_index_for + stage Ollama compat in CMake
+b79b9ec ollama: zerollama ggml scheduler and Metal gate (b9611)
+e7c0909 ollama: compat loader hook call sites (b9611)
+f7085a3 ollama: llama-kv-ext Phase 15 tensor page bind (b9611)
+0238b89 ollama: add ollama_vocab for grammar support (b9611 port)
+f6ab83d ollama: add C API for mtmd_input_text (b9611 port)
+b6ea31a ollama: ggml no-alloc scheduler mode (b9509 port)
+514293d ollama: GPU discovery enhancements (b9509 port)
+e05f2a9 ollama: add ggml_backend_dev_reset (b9509 port)
+09a9223 CUDA get_rows q6_k support
+2a1e828 win: exit instead of abort
+b626868 ggml-cuda: skip large batches
+2d38a18 harden uncaught exception registration
+ac4f49f fix mtmd-audio.cpp build on windows
+b19c441 graph memory reporting on failure
+72018c2 fix string arr kv loading
+55bdd69 maintain ordering for rules for grammar

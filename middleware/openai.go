@@ -891,8 +891,12 @@ func SpeechMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "input is required"))
 			return
 		}
-		if utf8RuneCount(req.Input) > 4096 {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "input exceeds 4096 characters"))
+		maxRunes := 4096
+		if strings.TrimSpace(req.Instructions) != "" || req.MaxNewTokens != nil || req.Duration != nil {
+			maxRunes = 20000
+		}
+		if utf8RuneCount(req.Input) > maxRunes {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("input exceeds %d characters", maxRunes)))
 			return
 		}
 		if req.Speed != nil && (*req.Speed < 0.25 || *req.Speed > 4.0) {

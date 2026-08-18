@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### MiniMax H3 video-c — 24→50 DiT layer audio fix (Aug 2026)
+
+**Why:** H3 T2VA output was a ~93%-clipped audio waveform (`a_rms=45.34`,
+11895/12800 samples clipped). The `--generate` path silently ran only the first
+**24 of the 50** DiT blocks (`H3_DIT_DEFAULT_GENERATE_LAYERS = 24`), truncating
+the residual stack so the final AdaLN/RMSNorm saw a wrong hidden state — the
+audio velocity was ~20–70× too large and Euler integrated it off the VAE's
+~1.3 latent manifold. The "50L rank-1 cliff" reasoning that justified the cap
+was a misdiagnosis of correct-model behavior at small canvases; ComfyUI's own
+`_forward` on this exact pruned int8 export produces the photoreal fox at
+1344×768×**50L**.
+
+**What:**
+- Default `H3_DIT_DEFAULT_GENERATE_LAYERS` **24 → 50** (full model) in `x/video-c/include/h3_dit_host.h`, with a WHY comment; `main.c --layers` help updated (generate default 50, `--dit-denoise` stays 1-layer smoke test)
+- Verified stage-by-stage against ComfyUI `_forward` (MPS bf16, dequantized int8 export): host raw hidden `h_audio_rms`~6–8e3, final RMSNorm ~0.37, curve-table `scale_rms=0.852`/`shift_rms=0.010` (bit-identical to Comfy), audio velocity rms ~0.35–0.7 vs host 50L `vel_audio≈1.0`; 24L was ~68
+- New regression gate: `latent_rms=1.18298 a_rms=0.504888`, `clipped=0/12800` (seed=1, "A red fox walking through snow"), replaces `latent_rms=17.2124 a_rms=45.3436`
+- Env-gated `H3_DUMP_STAGES=1` stage diagnostic in `family_h3/h3_dit_forward.c` (raw h / norm / scale / shift / ha / velocity per step; zero overhead when unset)
+- Docs corrected: [video-c.md](./docs/video-c.md) (removed the wrong "50L rank-1/gray / 24-layer" theory and old "science — closed" conclusion; 24L artifacts recontextualized as truncation), [ROADMAP.md](./docs/ROADMAP.md) v1.4b, `x/video-c/README.md`, `x/video-c/AGENTS.md`
+
+### MiniMax Music 3 — hear on Mac, then C (Aug 2026)
+
+**Why:** Local song generation is not Piper TTS and not MiniMax cloud `/v1/music_generation`. ComfyUI’s Music 3 port is GPL (never a runtime). Omni CUDA `sgl-omni serve` cannot be the first listen on Apple Silicon. H3 AudioVAE is the wrong VAE.
+
+**What:**
+- Lab hear: `scripts/audio/music3_mlx_generate.py` (mlx-audio pin `784b29e`) + `mlx-community/MiniMax-Music3-8bit`; venv `.venv-music`
+- C11 `x/music-c` — Omni prompt/chunk/DAV geometry; `--tokenize` is prompt pack; `--decode-audio` synthetic until `dav.pth`
+- HTTP: `POST /v1/audio/generations` (202) + poll/content; `speech=music3` aliases the same **async** job (not OpenAI WAV bytes)
+- `training.py` expands `{job_id}` in **all** run_script env strings (not only `WAN_OUTPUT_PATH`); default python `.venv-music`
+- Explicit `duration` wins over `max_new_tokens`; exclusive GPU hold like Wan
+- Docs: [music-c.md](./docs/music-c.md), [music-c-findings.md](./docs/music-c-findings.md)
+
 ### Training T9 (Partial) — stock Trainer efficiency (unified backend)
 
 - **No** second backend / Unsloth Core fork — polish existing `training.py` + PEFT + Transformers `Trainer`

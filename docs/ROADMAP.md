@@ -524,9 +524,11 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 **Why** this split: local users should not need another server; advanced users can delegate decoding and model-specific video handling to SGLang when they already run it.
 
-## Video generation — Wan T2V v1 (shipped)
+## Video generation — DiT media toolkit (Wan + LTX + H3)
 
 **Why a separate track from VLM:** Video **understanding** (ffmpeg → vision encoder) and video **generation** (diffusion on GPU for minutes) share almost no code. Mixing them in one roadmap bullet hid ownership, testing, and API limits.
+
+**Toolkit framing:** one **DiT video/image** stack — shared native/GRAPH primitives, **family runners in parallel**. Mac lab wishlists (bmtl uma_toolkit): [WISHLIST_DIT_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_DIT_MEDIA.md) · Wan · H3 · LTX. Product stays behind `/v1/videos` multi-family `runner` (v1.4).
 
 **Shipped (v1):**
 
@@ -544,13 +546,34 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 | **v1.2** | TI2V keyframes via `/v1/media` + `options.keyframes` (shipped); 24g/32g tiers | Product parity with Wan2.2 TI2V; headroom for longer clips. **Why `/v1/media`:** keep create JSON small; CAS soft state ≠ model blobs — [media-uploads.md](./media-uploads.md). |
 | **v1.2b** | **mmgp** layer offload for 16g TI2V | Stock Wan `model.to(cuda)` OOMs on ~16 GB; borrow WanGP’s `mmgp` budgets — [wangp-borrowings.md](./wangp-borrowings.md). |
 | **v1.3** | Optional **Wan CPU worker** sidecar | Remote T5 encode / VAE on high-RAM host; 16 GB GPU CT. Plan: [wan-cpu-worker.md](./wan-cpu-worker.md). |
-| **v1.4** | Pluggable `runner` / multi-family registry | WanGP-class **zoo** behind `/v1/videos` — not Gradio. **Named targets:** **LTX** (LTX-2 / LTXV) then **MiniMax H3** (FL2VA/Ref2VA). **First slice:** LTXV 13B distilled+quanto via Wan2GP — [ltx-t2v.md](./ltx-t2v.md). Sibling: [Wan2GP](https://github.com/deepbeepmeep/Wan2GP); H3 notes [h3-cuda-port.md](./h3-cuda-port.md). |
+| **v1.4** | Pluggable `runner` / multi-family registry | WanGP-class **zoo** behind `/v1/videos` — not Gradio. **Parallel families:** **Wan** (shipped), **LTX** (LTXV distilled — [ltx-t2v.md](./ltx-t2v.md)), **MiniMax H3** (CUDA research [h3-cuda-port.md](./h3-cuda-port.md); Darwin layout probe in [video-c.md](./video-c.md)). Clients pick **model tags** only — runner is operator-optional. Sibling: [Wan2GP](https://github.com/deepbeepmeep/Wan2GP). |
+| **v1.4b** | Mac **video-c** multi-family (`--family wan\|h3`) | Renamed from wan-c; Darwin UMA this track, CUDA twin other owner — [video-c.md](./video-c.md). Tiny H3 T2VA + `/v1/videos` `minimax-h3-tiny:lab`; 768-canvas `minimax-h3-768:lab` (**50 DiT layers**, full model). The old 24-layer default was an **audio bug** (truncated stack → ~20× velocity → 93%-clipped waveform); fixed by running all 50 blocks, verified against ComfyUI `_forward` (audio `clipped=0/12800`, gate `latent_rms=1.18298 a_rms=0.504888`). Comfy int8 oracle at 768×50L×8 is a **fox** — host f32 50L matches. Host QKV is concat; RoPE is Comfy split-half; pack `rope.inv_freq` matches theta. Delta wishlists: [WISHLIST_DIT_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_DIT_MEDIA.md). |
 | **Later** | Diffusers / other `runner` values; Hunyuan, CogVideoX, Flux / talking-head | Other stacks without forking Wan wrapper for each upstream; still-image may share diffusion job shape. |
-| **Later** | **Pure-C** diffusion + VRAM paging (wan-c multi-backend + CUDA twin) | Python/`mmgp` is the bridge. **Wins/unlocks:** [dit-pager.md](./dit-pager.md), [cuda-uma-toolkit.md](./cuda-uma-toolkit.md). **Phase-2e–2h:** block0 + 30-block + latent UniPC + **C patch_embedding** rematch green (cosine ≈ 1.0, pager N=2) — next is product `ZEROLLAMA_WAN_CLI` Linux. |
+| **Later** | **Pure-C** diffusion + VRAM paging (video-c + CUDA twin) | Python/`mmgp` is the bridge. **Wins/unlocks:** [dit-pager.md](./dit-pager.md), [cuda-uma-toolkit.md](./cuda-uma-toolkit.md). Phase-2e–2h rematch green — next is product `ZEROLLAMA_VIDEO_CLI` Linux. |
 
 **Not in v1:** list videos, `DELETE /v1/videos/:id`, Eliza `:cloud` passthrough, in-process Diffusers runner.
 
-**Future tracks:** GGUF Wan2.2 if 16 GB still OOMs after mmgp; upstream proxy for non-Wan stacks; **LTX + H3** first via v1.4 `runner` (Wan2GP/mmgp or thin wrappers), then optional Diffusers.
+**Future tracks:** GGUF Wan2.2 if 16 GB still OOMs after mmgp; LTX-2 / Gemma TE when RAM allows; H3 native/GRAPH after Wan2GP or CUDA twin tips.
+
+## Music generation — MiniMax Music 3
+
+**Why a separate track from Piper TTS and from H3 AudioVAE:** `/v1/audio/speech` is short-form TTS. H3 DAV in video-c is hop-800 BigVGAN for **video+audio**, not songs. MiniMax cloud music/cover APIs are a third product. Mixing those in “voice” hid license (Comfy GPL), device (Omni CUDA), and duration (minutes of DiT) constraints.
+
+**Why mlx-audio before C:** Apple Silicon can **hear** a 10 s clip without CUDA Omni or a 57 GB fp32 pack. Pure-C `x/music-c` is rematch + later host DAV/DiT — not the first listen. Gold remains SGLang-Omni (Apache-2.0), never Comfy as runtime.
+
+**Operator guide:** [music-c.md](./music-c.md). **Learnings:** [music-c-findings.md](./music-c-findings.md).
+
+| Milestone | Goal | Why |
+|-----------|------|-----|
+| **m0** | 10 s WAV on Mac via mlx-audio (no Comfy, no 11434) | **Done (Aug 2026)** — pin `784b29e`, 8-bit pack, `music3_mlx_generate.py`. |
+| **m0.1** | Omni dump + C `--info` / prompt pack / synthetic DAV | **Done** — weightless geometry; `--tokenize` ≠ BPE yet. |
+| **m0.2** | Async HTTP like Wan (`/v1/audio/generations`) | **Done (lab)** — tag `minimax-music3:lab`; 202 not sync speech; `{job_id}` + `.venv-music` after audit. |
+| **m1** | Host DAV from `dav.pth` → 44.1 kHz → resample 32 kHz | Smallest real-weight brick; copy Snake/conv only (not H3 module). |
+| **m2** | Music-vocab GGUF on Metal llama.cpp + C depth/fusion | Do not rewrite Qwen3-8B in `music-c`. |
+| **m3** | DiT one-chunk then short `--generate` (`max_new_tokens≈250`) | Wan/H3-class GRAPH; cap 10 s before 30–120 s. |
+| **Later** | Dedicated `music_generation` capability if TTS catalog stays confusing | `speech=music3` is a stopgap. Cloud cover/lyrics-gen still out. |
+
+**Not in m0:** Comfy runtime, `sgl-omni serve`, MiniMax cloud JSON, C `--generate`, blocking TTS for full songs.
 
 ## Image generation — MLX fast path + ComfyUI utility (partial)
 

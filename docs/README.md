@@ -23,9 +23,13 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Video understanding (VLM)](./video-understanding.md) — **why** `video_url` / `videos` → ffmpeg → vision pipeline; **why** preflight and `video_spans` exist.
 * [SGLang multimodal borrowings](./sglang-multimodal-borrowings.md) — **why** native path adopted agent caches, padded inject, precomputed/processor ingest, usage breakdown, and audit fixes without requiring SGLang.
 * [mtmd `grid_thw` handoff](./mtmd-grid-thw-handoff.md) — **why** client patch grids are hints-only until llama.cpp mtmd accepts them; Go seam + operator signals.
-* [Wan Pure-C (`wan-c`)](./wan-c.md) — UMA Mac path + CUDA twin lab; [dit-pager](./dit-pager.md); [cuda-uma-toolkit](./cuda-uma-toolkit.md).
+* [video-c (Pure-C Wan + H3 stub)](./video-c.md) — Darwin UMA + CUDA twin lab; client-optional runner; [dit-pager](./dit-pager.md); [cuda-uma-toolkit](./cuda-uma-toolkit.md). ([wan-c.md](./wan-c.md) redirect.)
+* [music-c (MiniMax Music 3)](./music-c.md) — **why** mlx-audio first (no Comfy GPL runtime, no CUDA Omni to hear); C parked until a WAV; Omni rematch gold. [findings](./music-c-findings.md).
+* [H3 MLX borrowings](./h3-mlx-borrowings.md) — [minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) as rematch oracle (AdaLN drop, TE truncation, packing); not the product runner.
+* [H3 ClipProj](./h3-clipproj.md) — NicoLab28 small-Qwen3-VL → `[seq,5120]` TE map; video-c host load/apply.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts; TI2V keyframes.
 * [LTX text-to-video (v1.4)](./ltx-t2v.md) — **why** LTXV distilled+quanto first (not LTX-2/Gemma); Wan2GP runner behind same `/v1/videos`.
+* DiT media toolkit (Wan / H3 / LTX, parallel) — Mac lab umbrella in bmtl `uma_toolkit/docs/WISHLIST_DIT_MEDIA.md`; product ROADMAP video section.
 * [Media uploads (`/v1/media`)](./media-uploads.md) — **why** session/label PUT + CAS (no client digests, no refcounts); **why** not model `blobs/`; keyframe workflow + `media_missing` recovery.
 * [wan-c vs Python MPS speed gap](./wan-c-speed-gap.md) — profile + Phase1 cuts + toolkit `DIT_BLOCK` / flash ATTN / feat_cache asks.
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.

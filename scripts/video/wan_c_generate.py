@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""run_script entry for Pure-C wan-cli (ZEROLLAMA_WAN_CLI / WAN_CLI).
+"""run_script entry for Pure-C video-cli (ZEROLLAMA_VIDEO_CLI / ZEROLLAMA_WAN_CLI).
 
-Mirrors wan_video_generate.py: read WAN_* env, emit PROGRESS, exec wan-cli.
+Mirrors wan_video_generate.py: read WAN_* env, emit PROGRESS, exec video-cli.
+Clients never set the runner — operator env / manifest backend_paths only.
 """
 from __future__ import annotations
 
@@ -11,35 +12,49 @@ import sys
 from pathlib import Path
 
 
-def main() -> int:
-    cli = os.environ.get("WAN_CLI") or os.environ.get("ZEROLLAMA_WAN_CLI")
-    if not cli or not Path(cli).is_file():
-        print(f"ERROR: WAN_CLI missing or not a file: {cli!r}", file=sys.stderr)
-        return 1
-
-    out = os.environ.get("WAN_OUTPUT_PATH")
-    ckpt = os.environ.get("WAN_CKPT_DIR")
-    prompt = os.environ.get("WAN_PROMPT")
-    if not out or not ckpt or not prompt:
-        print("ERROR: WAN_OUTPUT_PATH, WAN_CKPT_DIR, WAN_PROMPT required", file=sys.stderr)
-        return 1
-
-    size = os.environ.get("WAN_SIZE", "480*832")
-    if "*" in size:
-        w_s, h_s = size.split("*", 1)
+def parse_size(size: str) -> tuple[str, str]:
+    raw = (size or "").strip().lower().replace("×", "x")
+    if "*" in raw:
+        w_s, h_s = raw.split("*", 1)
+    elif "x" in raw:
+        w_s, h_s = raw.split("x", 1)
     else:
-        w_s, h_s = "480", "832"
-    frames = os.environ.get("WAN_FRAMES", "81")
-    steps = os.environ.get("WAN_STEPS", "50")
-    cfg = os.environ.get("WAN_CFG", "5.0")
-    shift = os.environ.get("WAN_SHIFT", "5.0")
-    seed = os.environ.get("WAN_SEED")
-    vocab = os.environ.get("WAN_C_VOCAB")
-    sock = os.environ.get("UMA_SOCK", "/tmp/uma_daemon.sock")
-    neg = os.environ.get("WAN_NEG_PROMPT")
+        return "480", "832"
+    w_s, h_s = w_s.strip(), h_s.strip()
+    if not w_s or not h_s:
+        return "480", "832"
+    return w_s, h_s
 
+
+def build_cmd(env: dict[str, str]) -> list[str] | None:
+    cli = (
+        env.get("VIDEO_CLI")
+        or env.get("ZEROLLAMA_VIDEO_CLI")
+        or env.get("WAN_CLI")
+        or env.get("ZEROLLAMA_WAN_CLI")
+        or ""
+    )
+    if not cli:
+        return None
+    out = env.get("WAN_OUTPUT_PATH") or env.get("VIDEO_OUTPUT_PATH")
+    ckpt = env.get("WAN_CKPT_DIR")
+    prompt = env.get("WAN_PROMPT")
+    if not out or not ckpt or not prompt:
+        return None
+    w_s, h_s = parse_size(env.get("WAN_SIZE") or env.get("VIDEO_SIZE") or "")
+    frames = env.get("WAN_FRAMES") or env.get("VIDEO_FRAMES") or "81"
+    steps = env.get("WAN_STEPS", "50")
+    cfg = env.get("WAN_CFG", "5.0")
+    shift = env.get("WAN_SHIFT", "5.0")
+    seed = env.get("WAN_SEED") or env.get("VIDEO_SEED")
+    vocab = env.get("WAN_C_VOCAB")
+    sock = env.get("UMA_SOCK", "/tmp/uma_daemon.sock")
+    neg = env.get("WAN_NEG_PROMPT")
+    family = env.get("VIDEO_FAMILY", "wan")
     cmd = [
         cli,
+        "--family",
+        family,
         "--ckpt-dir",
         ckpt,
         "--prompt",
@@ -67,8 +82,31 @@ def main() -> int:
         cmd.extend(["--vocab", vocab])
     if neg:
         cmd.extend(["--negative-prompt", neg])
+    if family == "h3":
+        cmd.append("--generate")
+        layers = env.get("VIDEO_H3_LAYERS") or env.get("H3_DIT_LAYERS") or "24"
+        cmd.extend(["--layers", layers])
+        reuse = env.get("VIDEO_H3_REUSE") or env.get("H3_REUSE")
+        if reuse:
+            cmd.extend(["--reuse", reuse])
+    return cmd
 
-    print("PROGRESS: 5 starting wan-cli", flush=True)
+
+def main() -> int:
+    cli = (
+        os.environ.get("VIDEO_CLI")
+        or os.environ.get("ZEROLLAMA_VIDEO_CLI")
+        or os.environ.get("WAN_CLI")
+        or os.environ.get("ZEROLLAMA_WAN_CLI")
+    )
+    if not cli or not Path(cli).is_file():
+        print(f"ERROR: VIDEO_CLI/WAN_CLI missing or not a file: {cli!r}", file=sys.stderr)
+        return 1
+    cmd = build_cmd(dict(os.environ))
+    if not cmd:
+        print("ERROR: WAN_OUTPUT_PATH, WAN_CKPT_DIR, WAN_PROMPT required", file=sys.stderr)
+        return 1
+    print("PROGRESS: 5 starting video-cli", flush=True)
     print(" ".join(cmd), flush=True)
     rc = subprocess.call(cmd)
     if rc == 0:
