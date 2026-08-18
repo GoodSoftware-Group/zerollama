@@ -32,6 +32,36 @@ def rms(t: torch.Tensor) -> float:
     return float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
 
 
+def spatial_stats(v: torch.Tensor) -> str:
+    """Host h3_dit_log_latent_spatial: t=0 mean_C map, lag-1 ac1, mean per-ch std."""
+    x = v.detach().float().cpu().numpy()
+    if x.ndim == 5:
+        x = x[0]
+    _c, _t, h, w = x.shape
+    plane = x[:, 0].mean(axis=0)
+    m = float(plane.mean())
+    d = plane - m
+    var = float(np.mean(d * d))
+    n1 = 0
+    ac = 0.0
+    for y in range(h):
+        for xi in range(w - 1):
+            ac += float(d[y, xi] * d[y, xi + 1])
+            n1 += 1
+    ac1 = (ac / n1) / var if n1 and var > 1e-20 else 0.0
+    ch = 0.0
+    for ci in range(x.shape[0]):
+        p = x[ci, 0].reshape(-1)
+        cm = float(p.mean())
+        ch += float(np.sqrt(np.mean((p - cm) ** 2)))
+    pch = ch / x.shape[0] if x.shape[0] else 0.0
+    std = float(np.sqrt(var))
+    return (
+        f"latent spatial {w}x{h} (t=0 mean_C) std={std:.4g} ac1={ac1:.3f} "
+        f"per-ch_std={pch:.4g}"
+    )
+
+
 def load_h3te(path: Path) -> np.ndarray:
     blob = path.read_bytes()
     magic, nt, dim = struct.unpack_from("<4sII", blob, 0)
@@ -183,6 +213,7 @@ def main() -> int:
                 f"vshape={tuple(vneg.shape)}",
                 flush=True,
             )
+            print(f"native {spatial_stats(vneg)}", flush=True)
             return 0
 
         if compute is None:

@@ -1,0 +1,4 @@
+# music-c build artifacts
+*.o
+music-cli
+tests/test_music3_host

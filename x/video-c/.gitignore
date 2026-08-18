@@ -15,6 +15,17 @@ tests/test_tokenizer_spm
 tests/test_h3_info
 tests/test_h3_host
 tests/test_h3_st_store
+tests/test_h3_adaln_host
+tests/test_h3_audio_vae_host
+tests/test_h3_clipproj_host
+tests/test_h3_convrot
+tests/test_h3_dit_block
+tests/test_h3_dit_forward
+tests/test_h3_dit_host
+tests/test_h3_dit_pack
+tests/test_h3_packing_mlx
+tests/test_h3_text_cond
+tests/test_h3_video_vae_host
 tests/test_encode_avi
 tests/test_encode_mp4
 tests/tmp_mini_spm.model

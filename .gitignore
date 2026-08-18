@@ -54,3 +54,17 @@ build-cuda13/
 .gpu_test_report.txt
 .panic_*.txt
 /run/
+
+# ANE lab compiled smoke/bench/daemon binaries (build via make -C tools/ane-*)
+tools/ane-draft/ane-draft-bench
+tools/ane-draft/libane_bridge.dylib
+tools/ane-ggml-map/*-smoke
+tools/ane-inprocess/*-smoke
+tools/ane-iosurface/*-smoke
+tools/ane-metal/*-smoke
+tools/ane-metal/ane-draft-daemon
+tools/ane-prefill/*-smoke
+tools/ane-prefill/*-bench
+tools/ane-prefill/libane_*.dylib
+tools/ane-probe/ane-probe
+tools/ane-probe/ane-matmul-bench
