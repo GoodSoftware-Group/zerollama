@@ -6,8 +6,8 @@
     "profile": "h3-768-t2va",
     "size": "768x768",
     "frames": 5,
-    "steps": 2,
-    "dit_layers": 24,
+    "steps": 8,
+    "dit_layers": 50,
     "timeout_sec": 14400
   },
   "backend_paths": {

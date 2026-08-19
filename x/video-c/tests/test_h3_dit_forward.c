@@ -143,7 +143,8 @@ static int test_pack_denoise(void) {
                  H3_ADALN_TAG_VIDEO};
   float pos[12] = {0};
   if (h3_dit_denoise(st, video, 1, audio, 2, text, 1, vidx, aidx, tidx, tags,
-                     pos, 4, 2, n_layers, 1, -1, err, sizeof(err)) != 0) {
+                     pos, 4, 2, n_layers, 1, -1, 0, 0, 0, 0, err,
+                     sizeof(err)) != 0) {
     fprintf(stderr, "FAIL denoise: %s\n", err);
     return 1;
   }

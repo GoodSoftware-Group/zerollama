@@ -26,17 +26,19 @@ int h3_dit_forward(const h3_st_store *store, const float *video, int nv,
                    float *audio_out, char *error, size_t error_size);
 
 /*
- * Rectified-flow denoise. Default Euler (`x += (σ−σ′)·v`). Lab
- * `H3_SAMPLER=res_multistep` is Comfy sample_res_multistep (η=0, CONST
- * denoised = x+σv). `reuse_interval` ≤1 evaluates every step.
+ * Rectified-flow denoise. Default Euler (`x += (σ−σ′)·v`) when `nv≤8`.
+ * Unset `H3_SAMPLER` and `nv>8` uses Comfy sample_res_multistep (η=0).
+ * `H3_SAMPLER=res_multistep` / `euler` force. Lab CONST denoised = x+σv.
  * video shift 12 / audio 3. adaln_t_sigma: 0 = t=1-σ, 1 = t=σ, <0 = env.
+ * lat_* >0 unpatches each step's vpred and logs `vel spatial` (Comfy video_out).
  */
 int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
                    int na, const float *text, int nt, const int *video_index,
                    const int *audio_index, const int *text_index,
                    const int *tags, const float *position_ids, int seq,
                    int steps, int n_layers, int reuse_interval,
-                   int adaln_t_sigma, char *error, size_t error_size);
+                   int adaln_t_sigma, int lat_c, int lat_t, int lat_h,
+                   int lat_w, char *error, size_t error_size);
 
 #ifdef __cplusplus
 }

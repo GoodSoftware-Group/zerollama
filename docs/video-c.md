@@ -252,7 +252,48 @@ pack/RoPE match Comfy (packed diff ~3.6e-7, `pos.bin` exact). Host **24L**
 `x_out_rms=62.03`. Canvas confirms: 24L is the broken count, 50L is correct.
 Oracle mp4 prompt JSON is this int8 pack, `weight_dtype=default`,
 Qwen3-VL-32B NVFP4, 1344×768×5, `res_multistep` + `simple`/8, `BasicGuider`.
-Comfy-native **`forward` + `audio_scale=4`** at 128² 50L (MPS fallback, INT8 GEMM on CPU): σ=1 **`video_out_neg_rms=1.84982`** (same as `_forward` scale 1); σ=**0.6316** (oracle last jump, gaussian x) **`1.417`**. Late σ is smaller, not fox-class O(15). Audio wrap 1.07→1.83 at σ=1. Host audio ODE on `σ_a = time_shift(σ_v,12→3)` is verified clean at 50L (`a_rms=0.505`, `clipped=0/12800`).
+Comfy-native **`forward` + `audio_scale=4`** at 128² 50L (MPS fallback): σ=1
+**`video_out_neg_rms=1.84982`**. Layer vid-div matches host: L23 **0.5910/986** vs
+host **0.5914/979**; L47 **0.780/3979** vs **0.790/4019**; L48 **0.769/4960** vs
+**0.777/4972**; L49 **0.916/6643** vs **0.914/6578**. Comfy L49 `mean_cos=0.916` —
+late token-token cosine is **not** a host bug. Comfy `video_out` patch-row
+`mean_cos=0.677` vs host **0.659**. Comfy spatial stats are on **model `video_out`**
+(`ac1=0.043` `per-ch_std=1.297` `std=0.242`); host `--generate` `latent spatial`
+`ac1=0.889` is the **post-Euler latent** (`x += σ v` at 1-step), not `v`. Compare
+`vel spatial` on unpatched `vpred` to Comfy `ac1`. Host 128² 50L 1-step:
+`vel spatial std=0.226 ac1=-0.139 per-ch_std=1.291` vs Comfy `0.242 / 0.043 / 1.297`
+(independent RNGs). Same host noise injected into Comfy `forward`: **cosine=-0.9986**
+(`cosine_neg=0.9986`) — host `v` is Comfy `video_out` with opposite sign. That matches
+CONST `denoised = x − σ·model_out` vs host `x + σ·v`. Do not flip the Euler step.
+Post-step `latent spatial ac1=0.889` is Euler `x += σ v`, not a dead field.
+Host **8-step `H3_SAMPLER=res_multistep`** 128² 50L oracle TE: `latent_rms=1.047`
+`a_rms=0.861`; last-step `vel spatial ac1=0.008` `per-ch_std=1.108` (field stays
+alive). VAE decode writes a 128² frame (8×8 latent — not a fox, not gray). **256²**
+same recipe (`nv=128` `seq=183`, ~4 min): `latent_rms=0.879` `a_rms=0.744`; every
+step `vel spatial ac1≈0.00–0.05`. Decode is `/tmp/h3_256_res8.ppm`. Same recipe **`-o .mp4`**: `/tmp/h3_256_res8.mp4`
+(5 frames + PCM, `clipped=3/12800`). **512²** same recipe (~9 min, `nv=512`):
+`latent_rms=0.916` `a_rms=0.439`; last `vel spatial ac1=0.127`. Wrote
+`/tmp/h3_512_res8.mp4`. Audio decode is near-silent (`clipped=0` `rms=0.002`)
+because the **512 DiT audio latent is off-manifold** (same dump→`--decode-audio`:
+wav `rms=0.002`), not mux. 256² 8-step dump decodes `rms=0.40`. **`H3_AUDIO_CARRY`**
+matches Comfy `process_latent_in` (audio ×4), uncarry for the network, Euler/res
+on carried x, then ÷4. Unset: on when `nv>8` (32² gate stays native
+`latent_rms=1.18298 a_rms=0.504888`). Host wrap-on-native-x (no ×4) is obsolete:
+256² oracle 8-step wav **`rms=0.761`** (`a_rms=2.79`, `clipped=3848/12800`; video
+`0.878` unchanged vs 0.879); 512² wav **`rms=0.661`** (`a_rms=2.26`,
+`clipped=2076/12800`; video `0.917` vs 0.916) vs old carry `0.100` / no-carry
+`0.002`. `H3_AUDIO_CARRY=0` forces the native audio ODE.
+**768²** product TE (Qwen3-VL-**4B**+ClipProj, `nt=6`, same 8-step carry): `/tmp/h3_768_4b.mp4`
+is still a sharp fox (`latent_rms=0.917` `a_rms=2.67` wav `rms=0.676`). Oracle 32B dump is
+not required for a readable 768 clip. **768²** 8-step 32B dump (`nv=1152`): `latent_rms=0.899` `a_rms=2.70`;
+last `vel spatial ac1=0.115`. Wrote `/tmp/h3_768_carry_in.mp4` (sharp fox; mux wav
+`rms=0.681` `clipped=533/12800`). Prior wrap-on-native clip was `/tmp/h3_768_res8.mp4`
+(`latent_rms=0.905` `a_rms=1.44` wav `rms=0.130` `clipped=10`). Video field unchanged.
+**1344×768** 8-step oracle canvas (`nv=2016`, carry ×4-in): `latent_rms=0.903`
+`a_rms=2.34`; L0 `x_out_rms=62.48` (Comfy 62.02); last `vel spatial ac1=0.143`.
+Wrote `/tmp/h3_1344x768_carry_in.mp4` (sharp fox; mux wav **`rms=0.703`**
+`clipped=1064/12800`). Old wrap `/tmp/h3_1344x768_res8.mp4` was `a_rms=1.14` wav
+`rms=0.031`. Gate still `latent_rms=1.18298 a_rms=0.504888`.
 
 
 
@@ -313,25 +354,12 @@ UMA_WAN_LOCAL=1 ./x/video-c/video-cli --family wan --ckpt-dir … --prompt "…"
 
 Optional: set `ZEROLLAMA_VIDEO_CLI` to `video-cli` (or `backend_paths.video_cli`). Serve then runs `scripts/video/wan_c_generate.py` instead of the Python Wan venv. Unset → Python fallback. Same `/v1/videos` contract either way.
 
-H3 tags: `minimax-h3-tiny:lab` (5×32²) and `minimax-h3-768:lab` (5×768²). Both default to **24 DiT layers** (`dit_layers` / `H3_DIT_LAYERS`; host 50L is rank-1 gray). Profiles `h3-tiny-t2va` / `h3-768-t2va`. Register with `./scripts/video/register_h3_models.sh`. Jobs run `wan_c_generate.py` → `video-cli --family h3 --generate`. Manifest `backend_paths.video_cli` is repo-relative (`x/video-c/video-cli`); `h3_ckpt_dir` defaults to `~/.zerollama/models/MiniMax-H3`. Override the binary with `ZEROLLAMA_VIDEO_CLI`. The 768 tag defaults to a 4h job timeout (tiled VAE decode). Request `options.layers` to override (cap 50).
+H3 tags: `minimax-h3-tiny:lab` (5×32², **50 DiT layers**, 2-step Euler gate) and `minimax-h3-768:lab` (5×768², **50L**, 8-step `res_multistep`). Profiles `h3-tiny-t2va` / `h3-768-t2va`. Register with `./scripts/video/register_h3_models.sh`. Jobs run `wan_c_generate.py` → `video-cli --family h3 --generate`. Manifest `backend_paths.video_cli` is repo-relative (`x/video-c/video-cli`); `h3_ckpt_dir` defaults to `~/.zerollama/models/MiniMax-H3`. Override the binary with `ZEROLLAMA_VIDEO_CLI`. The 768 tag defaults to a 4h job timeout (tiled VAE decode) and sets `H3_SAMPLER=res_multistep` when steps ≥ 8. Truncating layers (old 24L default) explodes velocity; do not ship it. Request `options.layers` to override (cap 50).
 
 ## Parked
 
-- H3 FL2VA generate at **50 DiT layers** (host f32: rank-1 video stream → gray;
-  `vel_rms≈1` is collapse, not a fox). Closed on 4-token, 32², 128², and 768
-  (dummy and 4B fox TE); kitchen `int8_linear` matches the 4-token blow-up.
-  Sibling Metal `../h3.c` loads **BF16 directory shards** only — this lab has
-  **no** `FL2VA/transformer` safetensors (config.json only). The 21 GiB pruned
-  int8 ConvRot pack is video-c host. Comfy `pruned_bf16` is **[1025,8] AdaLN** —
-  video-c refuses it (`H3_DIT_ST`). Comfy fox oracle on this int8 pack is
-  **768×50L×8 + NVFP4 32B TE** (`ComfyUI/output/video/h3_oracle_t2v_00001_.mp4`).
-  Host inject of that TE (`--text-cond` / `H3_TEXT_COND`, dump `nt=6`) does **not**
-  un-cliff 50L, including Comfy’s **1344×768** canvas (`nv=2016` `seq~2044`:
-  24L `vel_rms=17.2`; 50L `vel_rms=2.10` `ac1=0.99`).
-- 768-canvas T2VA: packing OK; 16–24L 1-step is energetic speckle (dummy and 4B fox); 50L 1-step is rank-1 gray even with 4B fox (`vel_rms=2.15` `ac1=0.99`)
-- Tiny T2VA generate shipped (`--generate` + `/v1/videos` `minimax-h3-tiny:lab`)
-- Tiny Euler denoise (`--dit-denoise`, `h3_dit_denoise`)
-- Shell-out to antirez `./h3` (blocked: no BF16 DiT on disk; do not pull 32B TE)
+- Sibling Metal `../h3.c` BF16 directory shards (this lab uses the 21 GiB pruned int8 ConvRot pack). Comfy `pruned_bf16` is **[1025,8] AdaLN** — video-c refuses it (`H3_DIT_ST`).
+- Shell-out to antirez `./h3` (blocked: no BF16 DiT on disk; do not pull 32B TE for that path)
 
 ## Parity / tools
 

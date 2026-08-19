@@ -76,6 +76,8 @@ int h3_dit_tiny_t2va(const h3_st_store *store, const float *text, int nt,
 
 /* Channel-major [C,T,H,W]: stderr spatial std / lag-1 autocorrelation (T=0 map). */
 void h3_dit_log_latent_spatial(const float *z, int C, int T, int H, int W);
+void h3_dit_log_latent_spatial_named(const float *z, int C, int T, int H, int W,
+                                     const char *tag);
 /* 8-bit PGM of |mean_C| at t=0, HxW. */
 int h3_dit_write_latent_pgm(const float *z, int C, int T, int H, int W,
                             const char *path);

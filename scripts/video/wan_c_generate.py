@@ -84,7 +84,7 @@ def build_cmd(env: dict[str, str]) -> list[str] | None:
         cmd.extend(["--negative-prompt", neg])
     if family == "h3":
         cmd.append("--generate")
-        layers = env.get("VIDEO_H3_LAYERS") or env.get("H3_DIT_LAYERS") or "24"
+        layers = env.get("VIDEO_H3_LAYERS") or env.get("H3_DIT_LAYERS") or "50"
         cmd.extend(["--layers", layers])
         reuse = env.get("VIDEO_H3_REUSE") or env.get("H3_REUSE")
         if reuse:
@@ -108,7 +108,15 @@ def main() -> int:
         return 1
     print("PROGRESS: 5 starting video-cli", flush=True)
     print(" ".join(cmd), flush=True)
-    rc = subprocess.call(cmd)
+    run_env = os.environ.copy()
+    if run_env.get("VIDEO_FAMILY", "wan") == "h3":
+        try:
+            nsteps = int(run_env.get("WAN_STEPS") or run_env.get("VIDEO_STEPS") or "0")
+        except ValueError:
+            nsteps = 0
+        if nsteps >= 8:
+            run_env.setdefault("H3_SAMPLER", "res_multistep")
+    rc = subprocess.call(cmd, env=run_env)
     if rc == 0:
         print("PROGRESS: 100 done", flush=True)
     return rc

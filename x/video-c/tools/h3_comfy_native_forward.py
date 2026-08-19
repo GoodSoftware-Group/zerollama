@@ -32,6 +32,28 @@ def rms(t: torch.Tensor) -> float:
     return float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
 
 
+def patch_row_div(v: torch.Tensor, patch_size) -> str:
+    """Pairwise cos of first 8 video patch rows (host log_vid_div video_out)."""
+    from comfy.ldm.minimax.model import patchify_video
+
+    rows = patchify_video(v.float().cpu(), patch_size).float().numpy()
+    n = min(8, rows.shape[0])
+    acc = 0.0
+    npair = 0
+    for i in range(n):
+        a = rows[i]
+        na = float(np.sqrt(np.dot(a, a)))
+        for j in range(i + 1, n):
+            b = rows[j]
+            nb = float(np.sqrt(np.dot(b, b)))
+            if na > 1e-12 and nb > 1e-12:
+                acc += float(np.dot(a, b) / (na * nb))
+                npair += 1
+    dlt = rows[0] - rows[1]
+    r01 = float(np.sqrt(np.mean(dlt * dlt)))
+    return f"vid-div video_out n={n} mean_cos={acc / npair if npair else 0:.4f} row0_vs_1_rms={r01:.4g}"
+
+
 def spatial_stats(v: torch.Tensor) -> str:
     """Host h3_dit_log_latent_spatial: t=0 mean_C map, lag-1 ac1, mean per-ch std."""
     x = v.detach().float().cpu().numpy()
@@ -79,6 +101,9 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--layers", type=int, default=50, help="0 = embed only")
     ap.add_argument("--dump-dir", default="")
+    ap.add_argument("--video-latent", default="", help="f32 CTHW (host H3_VIDEO_LATENT)")
+    ap.add_argument("--audio-latent", default="", help="f32 (2,C,T) (host H3_AUDIO_LATENT)")
+    ap.add_argument("--host-vel", default="", help="f32 CTHW host vpred to cosine vs video_out")
     ap.add_argument(
         "--dtype",
         default="fp32",
@@ -150,6 +175,21 @@ def main() -> int:
     g = torch.Generator(device="cpu").manual_seed(args.seed)
     video = torch.randn(1, 24, latent_t, lh, lw, generator=g, dtype=torch.float32)
     audio = torch.randn(1, 32, 2, audio_t, generator=g, dtype=torch.float32)
+    if args.video_latent:
+        raw = np.fromfile(args.video_latent, dtype=np.float32)
+        want = 24 * latent_t * lh * lw
+        if raw.size != want:
+            raise SystemExit(f"video-latent {raw.size} want {want}")
+        video = torch.from_numpy(raw.reshape(1, 24, latent_t, lh, lw).copy())
+        print(f"loaded video-latent {args.video_latent} rms={rms(video):.6g}", flush=True)
+    if args.audio_latent:
+        raw = np.fromfile(args.audio_latent, dtype=np.float32)
+        want = 2 * 32 * audio_t
+        if raw.size != want:
+            raise SystemExit(f"audio-latent {raw.size} want {want}")
+        a2ct = raw.reshape(2, 32, audio_t)
+        audio = torch.from_numpy(np.ascontiguousarray(a2ct.transpose(1, 0, 2)[None].copy()))
+        print(f"loaded audio-latent {args.audio_latent} rms={rms(audio):.6g}", flush=True)
 
     te = Path(args.text_cond)
     if te.is_file():
@@ -195,9 +235,49 @@ def main() -> int:
             payload = {"audio_scale": float(args.audio_scale)}
             use_inner = args.audio_scale == 1.0
             fn = dm._forward if use_inner else dm.forward
+            layout = PackedLayout(context.shape[1], latent_t, lh, lw, audio_t)
+            va, vb = next((a, b) for a, b, k in layout.segments if k == "video")
+            want_l = {23, 47, 48, 49}
+
+            def _vid_cos(h, tag):
+                rows = h[va:vb].float()
+                n = min(8, rows.shape[0])
+                acc = 0.0
+                npair = 0
+                for i in range(n):
+                    a = rows[i]
+                    na = float(torch.linalg.vector_norm(a))
+                    for j in range(i + 1, n):
+                        b = rows[j]
+                        nb = float(torch.linalg.vector_norm(b))
+                        if na > 1e-12 and nb > 1e-12:
+                            acc += float(torch.dot(a, b) / (na * nb))
+                            npair += 1
+                print(
+                    f"comfy vid-div {tag} n={n} mean_cos={acc / npair if npair else 0:.4f} "
+                    f"x_rms={rms(h):.6g}",
+                    flush=True,
+                )
+
+            orig_fwd = []
+            for li, blk in enumerate(dm.blocks):
+                orig_fwd.append(blk.forward)
+
+                def make(i, old):
+                    def wrapped(*a, **k):
+                        y = old(*a, **k)
+                        if i in want_l:
+                            _vid_cos(y, f"after_L{i}")
+                        return y
+
+                    return wrapped
+
+                blk.forward = make(li, blk.forward)
+
             print(
                 f"native {fn.__name__} {args.width}x{args.height} ctx_dtype={ctx.dtype} "
-                f"sigma={sigma_v} layers={len(dm.blocks)} audio_scale={payload['audio_scale']}",
+                f"sigma={sigma_v} layers={len(dm.blocks)} audio_scale={payload['audio_scale']} "
+                f"video_rows={va}:{vb}",
                 flush=True,
             )
             out = fn(
@@ -214,6 +294,37 @@ def main() -> int:
                 flush=True,
             )
             print(f"native {spatial_stats(vneg)}", flush=True)
+            print(f"native {patch_row_div(vneg, dm.patch_size)}", flush=True)
+            if args.dump_dir:
+                dump = Path(args.dump_dir)
+                dump.mkdir(parents=True, exist_ok=True)
+                video[0].contiguous().cpu().numpy().astype(np.float32).tofile(
+                    dump / "video_cthw.bin")
+                audio[0].permute(1, 0, 2).contiguous().cpu().numpy().astype(
+                    np.float32).tofile(dump / "audio_2ct.bin")
+                vneg[0].float().cpu().numpy().astype(np.float32).tofile(
+                    dump / "video_out.bin")
+                print(f"wrote {dump}", flush=True)
+            if args.host_vel:
+                hv = np.fromfile(args.host_vel, dtype=np.float32)
+                cv = vneg[0].float().cpu().numpy().reshape(-1)
+                if hv.size != cv.size:
+                    print(f"host-vel size {hv.size} vs comfy {cv.size}", flush=True)
+                else:
+                    a = hv.astype(np.float64)
+                    b = cv.astype(np.float64)
+                    na = float(np.sqrt(np.dot(a, a)))
+                    nb = float(np.sqrt(np.dot(b, b)))
+                    cos = float(np.dot(a, b) / (na * nb)) if na > 0 and nb > 0 else 0.0
+                    d = a - b
+                    dn = a + b
+                    print(
+                        f"host vs comfy video_out cosine={cos:.6f} "
+                        f"rel_rms={float(np.sqrt(np.mean(d * d))) / (nb / np.sqrt(b.size) + 1e-12):.4g} "
+                        f"cosine_neg={float(np.dot(a, -b) / (na * nb)) if na > 0 and nb > 0 else 0:.6f} "
+                        f"max_abs={float(np.max(np.abs(d))):.4g}",
+                        flush=True,
+                    )
             return 0
 
         if compute is None:

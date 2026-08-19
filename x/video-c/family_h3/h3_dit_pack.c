@@ -162,6 +162,17 @@ static int load_f32_file(const char *path, float *dst, size_t n) {
   return r == n;
 }
 
+static int write_f32_file(const char *path, const float *src, size_t n) {
+  if (!path || !path[0] || !src || n < 1)
+    return 0;
+  FILE *f = fopen(path, "wb");
+  if (!f)
+    return 0;
+  size_t w = fwrite(src, sizeof(float), n, f);
+  fclose(f);
+  return w == n;
+}
+
 int h3_dit_t2va(const h3_st_store *store, const float *text, int nt,
                 const int *text_tags, int steps, int n_layers,
                 int reuse_interval, int adaln_t_sigma, uint64_t seed,
@@ -227,6 +238,17 @@ int h3_dit_t2va(const h3_st_store *store, const float *text, int nt,
       h3_rng_fill_normal(&rng, vlat, geom->video_n);
       h3_rng_fill_normal(&rng, alat, geom->audio_n);
     }
+    {
+      const char *nd = getenv("H3_DUMP_NOISE_DIR");
+      if (nd && nd[0] && rc == 0) {
+        char vp[1024], ap[1024];
+        snprintf(vp, sizeof(vp), "%s/video_cthw.bin", nd);
+        snprintf(ap, sizeof(ap), "%s/audio_2ct.bin", nd);
+        if (write_f32_file(vp, vlat, geom->video_n) &&
+            write_f32_file(ap, alat, geom->audio_n))
+          fprintf(stderr, "video-c: dumped noise %s\n", nd);
+      }
+    }
     if (rc == 0)
       rc = h3_dit_patchify_video(vlat, 1, C, F, H, W, H3_DIT_PATCH_T,
                                  H3_DIT_PATCH_H, H3_DIT_PATCH_W, vrows);
@@ -237,7 +259,8 @@ int h3_dit_t2va(const h3_st_store *store, const float *text, int nt,
     rc = h3_dit_denoise(store, vrows, plan.nv, arows, plan.na, text, nt,
                         plan.video_index, plan.audio_index, plan.text_index,
                         plan.tags, plan.position_ids, plan.seq, steps, n_layers,
-                        reuse_interval, adaln_t_sigma, error, error_size);
+                        reuse_interval, adaln_t_sigma, C, F, H, W, error,
+                        error_size);
   if (rc == 0)
     rc = h3_dit_unpatchify_video(vrows, 1, C, F, H, W, H3_DIT_PATCH_T,
                                  H3_DIT_PATCH_H, H3_DIT_PATCH_W, vlat);
@@ -276,6 +299,11 @@ static int latent_hw_map(const float *z, int C, int T, int H, int W, float *map)
 }
 
 void h3_dit_log_latent_spatial(const float *z, int C, int T, int H, int W) {
+  h3_dit_log_latent_spatial_named(z, C, T, H, W, "latent");
+}
+
+void h3_dit_log_latent_spatial_named(const float *z, int C, int T, int H, int W,
+                                     const char *tag) {
   if (!z || C < 1 || T < 1 || H < 1 || W < 1)
     return;
   size_t hw = (size_t)H * (size_t)W;
@@ -319,9 +347,10 @@ void h3_dit_log_latent_spatial(const float *z, int C, int T, int H, int W) {
     ch_std_sum += sqrt(cv / (double)hw);
   }
   fprintf(stderr,
-          "video-c: latent spatial %dx%d (t=0 mean_C) std=%.4g ac1=%.3f "
+          "video-c: %s spatial %dx%d (t=0 mean_C) std=%.4g ac1=%.3f "
           "per-ch_std=%.4g\n",
-          W, H, sqrt(var), acn, ch_std_sum / (double)C);
+          tag && tag[0] ? tag : "latent", W, H, sqrt(var), acn,
+          ch_std_sum / (double)C);
   fflush(stderr);
   if (H * W <= 16) {
     fprintf(stderr, "video-c: latent mean_C map");

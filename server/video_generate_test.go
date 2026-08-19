@@ -516,7 +516,7 @@ func TestResolveVideoGenerationConfigH3768(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Frames != h3TinyFrames || cfg.Steps != h3TinyDefaultSteps || cfg.Size != h3768Size {
+	if cfg.Frames != h3TinyFrames || cfg.Steps != h3768DefaultSteps || cfg.Size != h3768Size {
 		t.Fatalf("got frames=%d steps=%d size=%s", cfg.Frames, cfg.Steps, cfg.Size)
 	}
 	if cfg.DitLayers != h3DefaultDitLayers {
@@ -548,7 +548,7 @@ func TestBuildVideoJobPayloadH3768(t *testing.T) {
 			Profile:    h3Profile768T2VA,
 			Size:       h3768Size,
 			Frames:     5,
-			Steps:      2,
+			Steps:      8,
 			TimeoutSec: 0,
 		},
 	}
@@ -561,6 +561,9 @@ func TestBuildVideoJobPayloadH3768(t *testing.T) {
 	}
 	if payload.Env["WAN_FRAMES"] != "5" || payload.Timeout != h3768TimeoutSec {
 		t.Fatalf("frames=%s timeout=%d", payload.Env["WAN_FRAMES"], payload.Timeout)
+	}
+	if payload.Env["WAN_STEPS"] != "8" || payload.Env["H3_SAMPLER"] != "res_multistep" {
+		t.Fatalf("steps=%s sampler=%s", payload.Env["WAN_STEPS"], payload.Env["H3_SAMPLER"])
 	}
 	if payload.Env["VIDEO_H3_LAYERS"] != strconv.Itoa(h3DefaultDitLayers) {
 		t.Fatalf("layers=%s", payload.Env["VIDEO_H3_LAYERS"])

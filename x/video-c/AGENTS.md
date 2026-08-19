@@ -101,9 +101,11 @@ out_mp4 \t prompt \t frames \t width \t height \t seed \t steps \t layers \t reu
 | `H3_PARALLEL_VAE=0` | disable overlapping video+audio VAE decode |
 | `H3_STORE_DBG` / `H3_AVAE_DBG` / `H3_BLK_MS` / `H3_MLOCK_DBG` | debug prints (store, audio stages, per-layer DiT, per-store mlock) |
 | `H3_DUMP_EMBED` / `H3_EMBED_ONLY` | dump packed `h` after patch+refiner; skip DiT blocks |
-| `H3_VIDEO_LATENT` / `H3_AUDIO_LATENT` | load f32 CTHW / (2,C,T) instead of RNG |
+| `H3_VIDEO_LATENT` / `H3_AUDIO_LATENT` | load f32 CTHW / (2,C,T); `--decode-audio` can load `H3_AUDIO_LATENT` |
+| `H3_DUMP_NOISE_DIR` / `H3_DUMP_VEL` / `H3_DUMP_AUDIO_LATENT` | noise bins / unpatched `vpred` / post-DiT audio `(2,C,T)` |
 | `H3_DIT_LAYERS` / `VIDEO_H3_LAYERS` / `H3_ADALN_T_SIGMA` | layers override / AdaLN time index (0 = t=1-σ) |
-| `H3_SAMPLER=res_multistep` | Comfy `sample_res_multistep` (η=0). Default Euler. Gate stays Euler. |
+| `H3_SAMPLER=res_multistep` | Comfy `sample_res_multistep` (η=0). Default Euler when `nv≤8` (tiny gate). Unset env + `nv>8` uses res_multistep. `H3_SAMPLER=euler` forces Euler. |
+| `H3_AUDIO_CARRY` | `1`/`0` force Comfy AV wrap. Unset: on when `nv>8`. When on: `process_latent_in` ×(12/3), forward on uncarried x, Euler/res on carried x, `process_latent_out` ÷4. |
 | `H3_FFN_CLIP` / `H3_FFN_CLIP_TEXT` / `H3_DIT_BF16_ACT` / `H3_DIT_ACT_INT8` / `H3_VEL_RMS` / `H3_LATENT_PREVIEW` | clip / bf16 residual+embed / ConvRot act fake-quant / scale velocity RMS / .pgm |
 | `WAN_PROFILE=1` | cumulative stage profiler report |
 

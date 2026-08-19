@@ -42,7 +42,8 @@ const (
 	ltx16gDefaultFrames  = 17
 	h3TinyFrames         = 5
 	h3TinyDefaultSteps   = 2
-	h3DefaultDitLayers   = 24
+	h3768DefaultSteps    = 8
+	h3DefaultDitLayers   = 50
 	h3MaxDitLayers       = 50
 	h3TinySize           = "32x32"
 	h3768Size            = "768x768"
@@ -468,7 +469,11 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		if isLtxProfile(cfg.Profile) {
 			cfg.Steps = 6
 		} else if isH3Profile(cfg.Profile) {
-			cfg.Steps = h3TinyDefaultSteps
+			if isH3Canvas768(cfg.Profile) {
+				cfg.Steps = h3768DefaultSteps
+			} else {
+				cfg.Steps = h3TinyDefaultSteps
+			}
 		} else {
 			cfg.Steps = 25
 		}
@@ -1038,6 +1043,9 @@ func buildH3VideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, m
 		"VIDEO_SIZE":             size,
 		"VIDEO_H3_LAYERS":        layers,
 		"H3_DIT_LAYERS":          layers,
+	}
+	if steps >= h3768DefaultSteps {
+		env["H3_SAMPLER"] = "res_multistep"
 	}
 	if seed != nil {
 		env["WAN_SEED"] = strconv.FormatInt(*seed, 10)

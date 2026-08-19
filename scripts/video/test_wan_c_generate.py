@@ -63,7 +63,7 @@ class TestWanCGenerate(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--layers") + 1], "1")
         self.assertIn("--generate", cmd)
 
-    def test_h3_default_layers_24(self):
+    def test_h3_default_layers_50(self):
         cmd = mod.build_cmd(
             {
                 "VIDEO_CLI": "/tmp/video-cli",
@@ -74,7 +74,7 @@ class TestWanCGenerate(unittest.TestCase):
                 "VIDEO_FAMILY": "h3",
             }
         )
-        self.assertEqual(cmd[cmd.index("--layers") + 1], "24")
+        self.assertEqual(cmd[cmd.index("--layers") + 1], "50")
 
     def test_wan_cmd_no_generate(self):
         cmd = mod.build_cmd(

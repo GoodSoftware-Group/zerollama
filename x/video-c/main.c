@@ -63,7 +63,7 @@ static void usage(const char *argv0) {
           "  --height N          Output height (default 480)\n"
           "  --frames N          Frame count (default 49)\n"
           "  --steps N           Diffusion steps (default 25)\n"
-          "  --cfg F             CFG scale (default 5.0)\n"
+          "  --cfg F             Wan CFG (H3 is Comfy BasicGuider: cond only)\n"
           "  --shift F           Flow sigma shift (default 5.0)\n"
           "  --seed N            RNG seed (0=auto)\n"
           "  --solver unipc|dpmpp  Solver (default unipc)\n"
@@ -368,6 +368,18 @@ H3_PROF_TICK("h3_dit_t2va");
                         : used_4b   ? "Qwen3-VL-4B+ClipProj"
                                     : "hash TE+ClipProj")
                      : "dummy text");
+  {
+    const char *da = getenv("H3_DUMP_AUDIO_LATENT");
+    if (da && da[0]) {
+      FILE *af = fopen(da, "wb");
+      if (af) {
+        fwrite(audio, sizeof(float), geom.audio_n, af);
+        fclose(af);
+        fprintf(stderr, "video-c: dumped audio latent %s n=%zu\n", da,
+                geom.audio_n);
+      }
+    }
+  }
   h3_dit_log_latent_spatial(video, H3_VIDEO_VAE_LATENT_CHANNELS, geom.latent_t,
                             geom.latent_h, geom.latent_w);
   {
@@ -898,8 +910,8 @@ int main(int argc, char **argv) {
       if (h3_dit_denoise(st, video, plan.nv, audio, plan.na, text, plan.nt,
                          plan.video_index, plan.audio_index, plan.text_index,
                          plan.tags, plan.position_ids, plan.seq, steps, layers,
-                         h3_reuse > 0 ? h3_reuse : 1, h3_adaln_sigma, error,
-                         sizeof(error)) != 0) {
+                         h3_reuse > 0 ? h3_reuse : 1, h3_adaln_sigma, 0, 0, 0, 0,
+                         error, sizeof(error)) != 0) {
         fprintf(stderr, "video-c: dit-denoise failed: %s\n", error);
         h3_st_store_free(st);
         h3_dit_seq_plan_free(&plan);
@@ -933,6 +945,8 @@ int main(int argc, char **argv) {
       int width = width_set ? p.width : 0;
       int height = height_set ? p.height : 0;
       int steps = steps_set ? p.steps : 2;
+      if (!steps_set && (width >= 256 || height >= 256))
+        steps = 8;
       int fps = fps_set ? p.fps : H3_FPS;
       return h3_run_generate(p.prompt, req_frames, width, height,
                              p.seed ? (uint64_t)p.seed : 1, steps, h3_layers,
@@ -1179,7 +1193,36 @@ int main(int argc, char **argv) {
       float *latent = (float *)calloc(n, sizeof(float));
       if (!latent)
         return 1;
-      h3_audio_vae_fill_unit_latent(latent, n);
+      {
+        const char *al = getenv("H3_AUDIO_LATENT");
+        if (al && al[0]) {
+          FILE *af = fopen(al, "rb");
+          if (!af) {
+            fprintf(stderr, "video-c: H3_AUDIO_LATENT open failed: %s\n", al);
+            free(latent);
+            return 1;
+          }
+          float *raw = (float *)malloc(n * sizeof(float));
+          size_t nr = raw ? fread(raw, sizeof(float), n, af) : 0;
+          fclose(af);
+          if (!raw || nr != n) {
+            fprintf(stderr, "video-c: H3_AUDIO_LATENT size %zu want %zu\n", nr,
+                    n);
+            free(raw);
+            free(latent);
+            return 1;
+          }
+          int Ac = H3_AUDIO_VAE_LATENT_CHANNELS, AT = latent_t;
+          for (int ch = 0; ch < 2; ch++)
+            for (int c = 0; c < Ac; c++)
+              for (int t = 0; t < AT; t++)
+                latent[(c * 2 + ch) * AT + t] = raw[(ch * Ac + c) * AT + t];
+          free(raw);
+          fprintf(stderr, "video-c: loaded audio latent %s\n", al);
+        } else {
+          h3_audio_vae_fill_unit_latent(latent, n);
+        }
+      }
       char error[1024];
       h3_audio_waveform_host wav;
       memset(&wav, 0, sizeof(wav));

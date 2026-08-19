@@ -7,7 +7,7 @@
     "size": "32x32",
     "frames": 5,
     "steps": 2,
-    "dit_layers": 24,
+    "dit_layers": 50,
     "timeout_sec": 900
   },
   "backend_paths": {

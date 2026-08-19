@@ -3,6 +3,7 @@
 #include "h3_adaln_host.h"
 #include "h3_dit_block.h"
 #include "h3_dit_host.h"
+#include "h3_dit_pack.h"
 #include "h3_host.h"
 #include "h3_prof.h"
 #include "h3_reuse.h"
@@ -525,12 +526,26 @@ static void fill_row_t(float *row_t, const int *tags, int seq, float tv,
     row_t[s] = (tags[s] == H3_ADALN_TAG_AUDIO) ? ta : tv;
 }
 
+/* Host velocity wrap so Euler/res on video σ matches Comfy ModelSamplingAV.
+ * x_net is the network audio (carried_x * σ_a/σ_v). Comfy:
+ *   out = (1-s)·x_net + (1+(s-1)σ_a)·out_net with out_net = −v_host. */
+static void h3_audio_carry_wrap(float *v_host, const float *x_net, size_t n,
+                                float sigma_a, float scale) {
+  if (!v_host || !x_net)
+    return;
+  float a = scale - 1.f;
+  float b = 1.f + a * sigma_a;
+  for (size_t i = 0; i < n; i++)
+    v_host[i] = a * x_net[i] + b * v_host[i];
+}
+
 int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
                    int na, const float *text, int nt, const int *video_index,
                    const int *audio_index, const int *text_index,
                    const int *tags, const float *position_ids, int seq,
                    int steps, int n_layers, int reuse_interval,
-                   int adaln_t_sigma, char *error, size_t error_size) {
+                   int adaln_t_sigma, int lat_c, int lat_t, int lat_h,
+                   int lat_w, char *error, size_t error_size) {
   if (!store || !video || !audio || steps < 1)
     return -1;
   if (reuse_interval < 1)
@@ -556,11 +571,27 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
   float *vpred_prev = NULL;
   float *apred_prev = NULL;
   float *row_t = (float *)malloc((size_t)seq * sizeof(float));
+  float *acarry = (float *)malloc(an * sizeof(float));
   int use_res = 0;
   {
     const char *sm = getenv("H3_SAMPLER");
-    use_res = sm && strcmp(sm, "res_multistep") == 0;
+    if (sm && sm[0])
+      use_res = strcmp(sm, "res_multistep") == 0;
+    else
+      /* Gate (nv=2) stays Euler; Comfy large-canvas is res_multistep. */
+      use_res = nv > 8;
   }
+  int audio_carry = 0;
+  {
+    const char *ac = getenv("H3_AUDIO_CARRY");
+    if (ac && ac[0])
+      audio_carry = ac[0] != '0';
+    else
+      /* Tiny gate is nv=2; Comfy AV carry is required once video tokens dwarf audio. */
+      audio_carry = nv > 8;
+  }
+  const float audio_scale =
+      (float)(H3_VIDEO_SIGMA_SHIFT / H3_AUDIO_SIGMA_SHIFT);
   float *vden = NULL, *vden_old = NULL, *vscratch = NULL;
   float *aden = NULL, *aden_old = NULL, *ascratch = NULL;
   if (reuse_interval > 1) {
@@ -575,7 +606,7 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
     aden_old = (float *)malloc(an * sizeof(float));
     ascratch = (float *)malloc(an * sizeof(float));
   }
-  if (!vpred || !apred || !row_t ||
+  if (!vpred || !apred || !row_t || !acarry ||
       (reuse_interval > 1 && (!vpred_prev || !apred_prev)) ||
       (use_res && (!vden || !vden_old || !vscratch || !aden || !aden_old ||
                    !ascratch))) {
@@ -584,6 +615,7 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
     free(vpred_prev);
     free(apred_prev);
     free(row_t);
+    free(acarry);
     free(vden);
     free(vden_old);
     free(vscratch);
@@ -602,6 +634,14 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
           steps >= 2 ? "linspace" : "antirez-1000", n_eval, steps,
           reuse_interval, use_res ? "res_multistep" : "euler", sched.video[0],
           sched.video[steps]);
+  if (audio_carry) {
+    for (size_t j = 0; j < an; j++)
+      audio[j] *= audio_scale;
+    fprintf(stderr,
+            "video-c: audio-carry scale=%.4g process_latent_in (Comfy "
+            "ModelSamplingAV)\n",
+            audio_scale);
+  }
   fflush(stderr);
   int use_sigma = adaln_t_sigma > 0;
   if (adaln_t_sigma < 0) {
@@ -626,9 +666,17 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
         previous_evaluated = last_evaluated;
       }
       double t_eval = h3_prof_now_ms ? h3_prof_now_ms() : 0;
-      rc = h3_dit_forward(store, video, nv, audio, na, text, nt, video_index,
-                          audio_index, text_index, tags, position_ids, seq, tv,
-                          row_t, n_layers, vpred, apred, error, error_size);
+      float *audio_fwd = audio;
+      if (audio_carry && sv > 1e-8f && sa > 1e-8f) {
+        float carry = sa / sv;
+        for (size_t j = 0; j < an; j++)
+          acarry[j] = audio[j] * carry;
+        audio_fwd = acarry;
+      }
+      rc = h3_dit_forward(store, video, nv, audio_fwd, na, text, nt,
+                          video_index, audio_index, text_index, tags,
+                          position_ids, seq, tv, row_t, n_layers, vpred, apred,
+                          error, error_size);
       if (t_eval > 0 && h3_prof_add_ms)
         h3_prof_add_ms(last_evaluated < 0 ? "h3_dit_eval1" : "h3_dit_eval2",
                        h3_prof_now_ms() - t_eval);
@@ -660,6 +708,28 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
       fprintf(stderr,
               "video-c: dit step %d/%d vel_rms=%.4g latent_rms=%.4g sigma=%.4g\n",
               i + 1, steps, vel, sqrt(xs / (double)vn), sv);
+      if (lat_c > 0 && lat_t > 0 && lat_h > 0 && lat_w > 0) {
+        size_t nlat =
+            (size_t)lat_c * (size_t)lat_t * (size_t)lat_h * (size_t)lat_w;
+        float *z = (float *)malloc(nlat * sizeof(float));
+        if (z && h3_dit_unpatchify_video(vpred, 1, lat_c, lat_t, lat_h, lat_w,
+                                         H3_DIT_PATCH_T, H3_DIT_PATCH_H,
+                                         H3_DIT_PATCH_W, z) == 0) {
+          h3_dit_log_latent_spatial_named(z, lat_c, lat_t, lat_h, lat_w, "vel");
+          {
+            const char *dv = getenv("H3_DUMP_VEL");
+            if (dv && dv[0]) {
+              FILE *f = fopen(dv, "wb");
+              if (f) {
+                fwrite(z, sizeof(float), nlat, f);
+                fclose(f);
+                fprintf(stderr, "video-c: dumped vel %s\n", dv);
+              }
+            }
+          }
+        }
+        free(z);
+      }
       {
         /* Lab. Target velocity RMS (VAE-encoded orange ≈ 1.3). Default off. */
         const char *vr = getenv("H3_VEL_RMS");
@@ -684,23 +754,49 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
       }
       if (use_res) {
         h3_const_denoised_from_host_velocity(vden, video, vpred, vn, sv);
-        h3_const_denoised_from_host_velocity(aden, audio, apred, an, sa);
         if (!h3_res_step(vscratch, video, vden, i > 0 ? vden_old : NULL, vn,
-                         sched.video, i, steps) ||
-            !h3_res_step(ascratch, audio, aden, i > 0 ? aden_old : NULL, an,
-                         sched.audio, i, steps))
+                         sched.video, i, steps))
           rc = -1;
         else {
           memcpy(video, vscratch, vn * sizeof(float));
-          memcpy(audio, ascratch, an * sizeof(float));
           memcpy(vden_old, vden, vn * sizeof(float));
-          memcpy(aden_old, aden, an * sizeof(float));
         }
       } else {
         if (!h3_euler_velocity_step(video, vpred, vn, sv, sched.video[i + 1]))
           rc = -1;
-        if (!h3_euler_velocity_step(audio, apred, an, sa, sched.audio[i + 1]))
+      }
+      if (rc == 0 && audio_carry && sv > 1e-8f && sa > 1e-8f) {
+        float carry = sa / sv;
+        for (size_t j = 0; j < an; j++)
+          acarry[j] = audio[j] * carry;
+        h3_audio_carry_wrap(apred, acarry, an, sa, audio_scale);
+        if (use_res) {
+          h3_const_denoised_from_host_velocity(aden, audio, apred, an, sv);
+          if (!h3_res_step(ascratch, audio, aden, i > 0 ? aden_old : NULL, an,
+                           sched.video, i, steps))
+            rc = -1;
+          else {
+            memcpy(audio, ascratch, an * sizeof(float));
+            memcpy(aden_old, aden, an * sizeof(float));
+          }
+        } else if (!h3_euler_velocity_step(audio, apred, an, sv,
+                                           sched.video[i + 1])) {
           rc = -1;
+        }
+      } else if (rc == 0) {
+        if (use_res) {
+          h3_const_denoised_from_host_velocity(aden, audio, apred, an, sa);
+          if (!h3_res_step(ascratch, audio, aden, i > 0 ? aden_old : NULL, an,
+                           sched.audio, i, steps))
+            rc = -1;
+          else {
+            memcpy(audio, ascratch, an * sizeof(float));
+            memcpy(aden_old, aden, an * sizeof(float));
+          }
+        } else if (!h3_euler_velocity_step(audio, apred, an, sa,
+                                           sched.audio[i + 1])) {
+          rc = -1;
+        }
       }
     }
     double sec = (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
@@ -708,11 +804,16 @@ int h3_dit_denoise(const h3_st_store *store, float *video, int nv, float *audio,
             steps, sec);
     fflush(stderr);
   }
+  if (rc == 0 && audio_carry && audio_scale > 1e-8f) {
+    for (size_t j = 0; j < an; j++)
+      audio[j] /= audio_scale;
+  }
   free(vpred);
   free(apred);
   free(vpred_prev);
   free(apred_prev);
   free(row_t);
+  free(acarry);
   free(vden);
   free(vden_old);
   free(vscratch);
