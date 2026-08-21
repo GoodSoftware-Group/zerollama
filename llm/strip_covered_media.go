@@ -9,13 +9,14 @@ type MediaSpan struct {
 // StripCoveredImageData nils ImageData.Data for items fully inside the computed
 // prefix (vLLM strip_covered_mm_data semantics).
 func StripCoveredImageData(images []ImageData, spans []MediaSpan, numComputed int) []ImageData {
-	if len(images) == 0 || numComputed <= 0 || len(spans) == 0 || len(spans) != len(images) {
+	n := min(len(images), len(spans))
+	if n == 0 || numComputed <= 0 {
 		return images
 	}
 	out := make([]ImageData, len(images))
 	copy(out, images)
-	for i, span := range spans {
-		if span.End <= numComputed {
+	for i := 0; i < n; i++ {
+		if spans[i].End <= numComputed {
 			out[i].Data = nil
 		}
 	}
@@ -24,13 +25,14 @@ func StripCoveredImageData(images []ImageData, spans []MediaSpan, numComputed in
 
 // StripCoveredMediaData nils MediaData.Data for covered spans.
 func StripCoveredMediaData(media []MediaData, spans []MediaSpan, numComputed int) []MediaData {
-	if len(media) == 0 || numComputed <= 0 || len(spans) == 0 || len(spans) != len(media) {
+	n := min(len(media), len(spans))
+	if n == 0 || numComputed <= 0 {
 		return media
 	}
 	out := make([]MediaData, len(media))
 	copy(out, media)
-	for i, span := range spans {
-		if span.End <= numComputed {
+	for i := 0; i < n; i++ {
+		if spans[i].End <= numComputed {
 			out[i].Data = nil
 		}
 	}

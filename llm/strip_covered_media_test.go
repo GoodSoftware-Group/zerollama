@@ -43,14 +43,73 @@ func TestStripCoveredCompletionMedia(t *testing.T) {
 			NewMediaData(1, []byte("img1")),
 		},
 	}
-	// Only one qwen vision block in tokens — strip first image when fully covered.
-	req.Images = req.Images[:1]
-	req.Media = req.Media[:1]
-	stripCoveredCompletionMedia(req, 5)
+	stripCoveredCompletionMedia(req, 5, visionSpanHints{})
 	if req.Images[0].Data != nil {
-		t.Fatal("expected covered image stripped")
+		t.Fatal("expected first image stripped")
+	}
+	if req.Images[1].Data == nil {
+		t.Fatal("second image has no span — keep payload")
 	}
 	if req.Media[0].Data != nil {
-		t.Fatal("expected covered media stripped")
+		t.Fatal("expected first media stripped")
+	}
+}
+
+func TestGemma4VisionMediaSpans_videoFrames(t *testing.T) {
+	slots := Gemma4SoftTokens{Image: 42, Video: 43, Audio: 44}
+	tokens := []int{1, 42, 2, 43, 3}
+	spans := gemma4VisionMediaSpans(tokens, slots, Gemma4PaddedMediaSchedule{VideoFrameCounts: []int{3}})
+	if len(spans) != 4 {
+		t.Fatalf("spans=%v want 1 image + 3 video frames", spans)
+	}
+	if spans[0].Start != 1 || spans[1].Start != 3 {
+		t.Fatalf("span starts=%v", spans)
+	}
+}
+
+func TestLlama4VisionMediaSpans(t *testing.T) {
+	tokens := []int{1, llama4ImageBoundary, llama4PatchToken, llama4ImageBoundary, 9}
+	spans := llama4VisionMediaSpans(tokens)
+	if len(spans) != 1 || spans[0].Start != 1 || spans[0].End != 4 {
+		t.Fatalf("spans=%v", spans)
+	}
+}
+
+func TestImageRunSpans_deepseek(t *testing.T) {
+	const tok = 128815
+	tokens := []int{1, tok, tok, tok, 2}
+	spans := imageRunSpans(tokens, tok)
+	if len(spans) != 1 || spans[0].Start != 1 || spans[0].End != 4 {
+		t.Fatalf("spans=%v", spans)
+	}
+}
+
+func TestStripCoveredCompletionMedia_llama4Partial(t *testing.T) {
+	req := &CompletionRequest{
+		PaddedLayoutConsume: PaddedLayoutConsumeLlama4ImgRunner,
+		PromptTokens: []int{
+			1, llama4ImageBoundary, llama4PatchToken, llama4ImageBoundary, 9,
+			llama4ImageBoundary, llama4PatchToken, llama4ImageBoundary,
+		},
+		Images: []ImageData{
+			{ID: 0, Data: []byte("a")},
+			{ID: 1, Data: []byte("b")},
+		},
+	}
+	stripCoveredCompletionMedia(req, 5, visionSpanHints{})
+	if req.Images[0].Data != nil {
+		t.Fatal("first llama4 block should be stripped")
+	}
+	if req.Images[1].Data == nil {
+		t.Fatal("second llama4 block should keep payload")
+	}
+}
+
+func TestLfm2VisionMediaSpans_imageRun(t *testing.T) {
+	slots := Lfm2VisionTokens{Image: 396}
+	tokens := []int{10, 396, 396, 11}
+	spans := lfm2VisionMediaSpans(tokens, slots)
+	if len(spans) != 1 || spans[0].End != 3 {
+		t.Fatalf("spans=%v", spans)
 	}
 }

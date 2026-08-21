@@ -36,7 +36,7 @@
 | **Partial secondary-tier load** | `_apply_prefix_block_pool` + `PrefixBlockMatch.partial_tier_load` | vLLM #50321: resume from longest LMCache hit when tail blocks absent remotely |
 | **Zero-output prefix-cache metrics** | `_stream_done_metrics` + non-stream `OllamaGenerateResponse` metrics | vLLM #48668: keep cache read/creation on done chunks when `eval_count=0` |
 | **Retention default → block-aligned** | `prefix_cache_retention_interval()` unset → `0` | vLLM #52216: SWA checkpoints at block boundaries only unless YAML/env sets `N>0` |
-| **Skip covered MM payload** | `defer_vision_encode` (ollama-engine + ggml llamarunner) + session prefix strip on llama-server IPC | vLLM #52041: stub GridTHW vision spans, match input-cache by hash, hydrate ViT/mtmd only on the uncached tail; llama-server strips covered `multimodal_data` |
+| **Skip covered MM payload** | `defer_vision_encode` (ollama-engine + ggml llamarunner) + session prefix strip on llama-server IPC | vLLM #52041: stub GridTHW vision spans, match input-cache by hash, hydrate ViT/mtmd only on the uncached tail; llama-server strips covered `multimodal_data` for Qwen3-VL and other padded-inject families |
 
 ---
 

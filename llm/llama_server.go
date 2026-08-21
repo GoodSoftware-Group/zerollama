@@ -2164,7 +2164,7 @@ type llamaServerTokenProb struct {
 func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error {
 	req.Media = completionMediaFromRequest(req)
 	numComputed := llamaSessionPrefixTracker.estimate(s.modelPath, req.PromptCacheKey, req.PromptTokens, req.CacheReset)
-	stripCoveredCompletionMedia(&req, numComputed)
+	stripCoveredCompletionMedia(&req, numComputed, s.visionSpanHints(ctx, req))
 	if numComputed > 0 && len(req.PromptTokens) > 0 {
 		slog.Debug("llama-server strip covered mm payload",
 			"num_computed", numComputed,
