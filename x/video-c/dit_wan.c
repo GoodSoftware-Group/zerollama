@@ -849,7 +849,7 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
   const char *bgff = "x_dit_gff"; /* full gate_ff (gated RESIDUAL_ADD) */
   const char *bz = "x_dit_z";     /* zeros */
   const char *bln = "x_dit_ln";   /* ones (LN weight) */
-  /* F1122: BF16 TensorOps flash when the daemon advertises ATTN_NAMED_tc. */
+  /* F1156: BF16 TensorOps flash when the daemon advertises ATTN_NAMED_tc. */
   const char *tc = ctx->caps.attn_tc ? " tc=1" : "";
 
   /* AdaLN scale/shift on broker when persist (F0994 smoke recipe). */

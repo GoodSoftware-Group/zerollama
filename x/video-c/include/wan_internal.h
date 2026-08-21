@@ -31,7 +31,7 @@ typedef struct wan_caps {
   int unpatchify;   /* F0784 k_ops UNPATCHIFY3D */
   int attn_full;    /* F0783 ATTN_NAMED kind=full (HELP graph_wan) */
   int attn_bias;    /* F0945 ATTN_NAMED kind=bias|unscaled (umt5) */
-  int attn_tc;      /* F1122 ATTN_NAMED tc=1 (BF16 TensorOps flash) */
+  int attn_tc;      /* F1156 ATTN_NAMED tc=1 (BF16 TensorOps flash) */
   int gelu_tanh_mul; /* GELU_TANH_MUL (T5 gated FFN gate) */
   int silu_mul;     /* SILU_MUL (F0782 recipe) */
   int residual_add; /* RESIDUAL_ADD */

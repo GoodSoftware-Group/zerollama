@@ -768,7 +768,7 @@ int wan_graph_attn_full_row(wan_ctx *ctx, const char *bq, const char *bk,
     return -1;
   if (!ctx->caps.attn_full)
     return -1;
-  /* F1122: BF16 TensorOps flash when the daemon advertises it. Daemon falls
+  /* F1156: BF16 TensorOps flash when the daemon advertises it. Daemon falls
    * through to the standard path when ineligible (bias / HD>128). */
   const char *tc = ctx->caps.attn_tc ? " tc=1" : "";
   if (t_row >= 0)
