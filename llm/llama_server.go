@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"log/slog"
 	"math/rand"
@@ -39,6 +40,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/image/webp"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/ollama/ollama/api"
@@ -2161,6 +2163,15 @@ type llamaServerTokenProb struct {
 
 func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error {
 	req.Media = completionMediaFromRequest(req)
+	numComputed := llamaSessionPrefixTracker.estimate(s.modelPath, req.PromptCacheKey, req.PromptTokens, req.CacheReset)
+	stripCoveredCompletionMedia(&req, numComputed)
+	if numComputed > 0 && len(req.PromptTokens) > 0 {
+		slog.Debug("llama-server strip covered mm payload",
+			"num_computed", numComputed,
+			"prompt_cache_key", req.PromptCacheKey,
+			"media", len(req.Media),
+		)
+	}
 	slog.Debug("llama-server completion request", "media", len(req.Media), "prompt_len", len(req.Prompt), "prompt_tokens", len(req.PromptTokens), "padded_layout_consume", req.PaddedLayoutConsume)
 
 	if req.Options == nil {
@@ -2270,7 +2281,11 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 			for _, media := range req.Media {
 				marker := fmt.Sprintf("[img-%d]", media.ID)
 				promptStr = strings.Replace(promptStr, marker, s.llamaServerMediaMarker(), 1)
-				mediaData = append(mediaData, base64.StdEncoding.EncodeToString(media.Data))
+				data, err := llamaServerMediaBytes(media.Data)
+				if err != nil {
+					return err
+				}
+				mediaData = append(mediaData, base64.StdEncoding.EncodeToString(data))
 			}
 			lsReq.Prompt = llamaServerMultimodalPrompt{
 				PromptString:   promptStr,
@@ -2399,6 +2414,7 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 	}
 
 	if hasFinalResp {
+		llamaSessionPrefixTracker.record(s.modelPath, req.PromptCacheKey, req.PromptTokens, req.CacheReset)
 		return deliverFinalLlamaServerStream(ctx, scanner, res.Body, func() { fn(finalResp) }, "response")
 	}
 
@@ -2908,34 +2924,58 @@ func llamaServerChatMessage(msg Message) (map[string]any, error) {
 		})
 	}
 	for _, media := range msg.Media {
-		parts = append(parts, llamaServerChatMediaPart(media))
+		part, err := llamaServerChatMediaPart(media)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
 	}
 	converted["content"] = parts
 	return converted, nil
 }
 
-func llamaServerChatMediaPart(media MediaData) map[string]any {
-	encoded := base64.StdEncoding.EncodeToString(media.Data)
+func llamaServerChatMediaPart(media MediaData) (map[string]any, error) {
 	if format, ok := AudioFormat(media.Data); ok {
 		return map[string]any{
 			"type": "input_audio",
 			"input_audio": map[string]any{
-				"data":   encoded,
+				"data":   base64.StdEncoding.EncodeToString(media.Data),
 				"format": format,
 			},
-		}
+		}, nil
 	}
 
-	mime := http.DetectContentType(media.Data)
+	data, err := llamaServerMediaBytes(media.Data)
+	if err != nil {
+		return nil, err
+	}
+	mime := http.DetectContentType(data)
 	if !strings.HasPrefix(mime, "image/") {
 		mime = "image/jpeg"
 	}
 	return map[string]any{
 		"type": "image_url",
 		"image_url": map[string]any{
-			"url": "data:" + mime + ";base64," + encoded,
+			"url": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data),
 		},
+	}, nil
+}
+
+func llamaServerMediaBytes(data []byte) ([]byte, error) {
+	if http.DetectContentType(data) != "image/webp" {
+		return data, nil
 	}
+
+	img, err := webp.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode WebP image: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, fmt.Errorf("encode WebP image as PNG: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func llamaServerChatToolCalls(tcs []api.ToolCall) ([]llamaServerChatToolCall, error) {
