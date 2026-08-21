@@ -36,6 +36,7 @@
 | **Partial secondary-tier load** | `_apply_prefix_block_pool` + `PrefixBlockMatch.partial_tier_load` | vLLM #50321: resume from longest LMCache hit when tail blocks absent remotely |
 | **Zero-output prefix-cache metrics** | `_stream_done_metrics` + non-stream `OllamaGenerateResponse` metrics | vLLM #48668: keep cache read/creation on done chunks when `eval_count=0` |
 | **Retention default → block-aligned** | `prefix_cache_retention_interval()` unset → `0` | vLLM #52216: SWA checkpoints at block boundaries only unless YAML/env sets `N>0` |
+| **Skip covered MM payload** | `defer_vision_encode` + `StripCoveredImageData` | vLLM #52041: ollama-engine defers ViT until input-cache lookup; strip image bytes when span fully prefix-covered |
 
 ---
 
@@ -44,7 +45,6 @@
 | vLLM PR | Topic | Zerollama stance |
 |---------|-------|------------------|
 | **#50507** | Partial-tail prefix reuse with `hash_block_size` < physical block | **Defer** — needs physical KV pages + COW / OffloadingConnector scheduler; block pool stays 512-token aligned |
-| **#52041** | Skip MM tensor broadcast for prefix-cache-covered spans | **Watch (SGLang/mm track)** — vLLM distributed worker IPC; zerollama analog is ViT/session overlay skip on L3 hit ([sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) §28) |
 | **#50493** | Kimi-K3 DCP partial prefix hit | **Skip** — model-specific distributed checkpoint path |
 
 ---

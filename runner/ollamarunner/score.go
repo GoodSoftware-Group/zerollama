@@ -51,7 +51,7 @@ func (s *Server) score(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize, includeTokens bool) (llm.CandidateScore, error) {
-	promptInputs, _, _, err := s.inputs(prompt, nil, "", false)
+	promptInputs, _, _, _, err := s.inputs(prompt, nil, "", false, false)
 	if err != nil {
 		return llm.CandidateScore{}, err
 	}

@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### vLLM skip covered MM payload (#52041) — Aug 2026
+
+**Why:** vLLM drops multimodal tensor bytes for items whose placeholder span is fully inside a prefix-cache-covered region — workers never consume them.
+
+**Shipped:** ollama-engine `deferVisionEncode` builds GridTHW stubs for input-cache lookup, then hydrates ViT only on the uncached tail; `modality.StripCoveredImageData` for runner/proxy paths when token spans + `num_computed` are known.
+
 ### vLLM retention default (#52216) — Aug 2026
 
 **Why:** vLLM promoted `prefix_cache_retention_interval` and changed unset default from dense to `0` (block-aligned SWA checkpoints only).
