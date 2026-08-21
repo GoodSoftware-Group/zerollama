@@ -1,0 +1,269 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 14 Jul 2026 17:36:05 -0700
+Subject: [PATCH] Add llama_context_cuda_graph_invalidate and POST
+ /cuda-graph/invalidate.
+
+Clear ggml CUDA graph cache after L3/prefix-cache KV clears so stale
+topology-keyed graphs cannot replay. Export via CUDA backend proc_address
+for dynamic backends; server task queue mirrors slot erase serialization.
+---
+ ggml/include/ggml-cuda.h        |  5 +++++
+ ggml/src/ggml-cuda/ggml-cuda.cu | 25 +++++++++++++++++++++
+ include/llama.h                 |  5 +++++
+ src/llama-context.cpp           | 37 +++++++++++++++++++++++++++++++
+ tools/server/server-context.cpp | 39 +++++++++++++++++++++++++++++++++
+ tools/server/server-context.h   |  2 ++
+ tools/server/server-task.h      | 12 ++++++++++
+ tools/server/server.cpp         |  1 +
+ 8 files changed, 126 insertions(+)
+
+diff --git a/ggml/include/ggml-cuda.h b/ggml/include/ggml-cuda.h
+index 1cd81eeae..34a840a22 100644
+--- a/ggml/include/ggml-cuda.h
++++ b/ggml/include/ggml-cuda.h
+@@ -40,6 +40,11 @@ GGML_BACKEND_API void ggml_backend_cuda_get_device_memory(int device, size_t * f
+ GGML_BACKEND_API bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size);
+ GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
+ 
++// Clear captured CUDA graphs on this backend (stream sync + map clear).
++// WHY: L3/prefix-cache KV clears leave ggml graph keys intact; stale replay is a correctness risk.
++// Returns number of graph entries cleared (0 if none / graphs disabled / not CUDA).
++GGML_BACKEND_API int ggml_backend_cuda_invalidate_graphs(ggml_backend_t backend);
++
+ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
+ 
+ #ifdef  __cplusplus
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 90be9e941..adc6fde89 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -5603,6 +5603,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
+     if (strcmp(name, "ggml_backend_get_features") == 0) {
+         return (void *)ggml_backend_cuda_get_features;
+     }
++    if (strcmp(name, "ggml_backend_cuda_invalidate_graphs") == 0) {
++        return (void *)ggml_backend_cuda_invalidate_graphs;
++    }
+     return nullptr;
+ }
+ 
+@@ -5683,6 +5686,28 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+     return &reg;
+ }
+ 
++int ggml_backend_cuda_invalidate_graphs(ggml_backend_t backend) {
++    if (!ggml_backend_is_cuda(backend) || backend->context == nullptr) {
++        return 0;
++    }
++
++    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
++
++#ifdef USE_CUDA_GRAPH
++    const int n = (int) cuda_ctx->cuda_graphs.size();
++    if (n <= 0) {
++        return 0;
++    }
++    // WHY sync before clear: in-flight graph launches must finish before destroying executables.
++    CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
++    cuda_ctx->cuda_graphs.clear();
++    return n;
++#else
++    GGML_UNUSED(cuda_ctx);
++    return 0;
++#endif
++}
++
+ ggml_backend_t ggml_backend_cuda_init(int device) {
+     if (device < 0 || device >= ggml_backend_cuda_get_device_count()) {
+         GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
+diff --git a/include/llama.h b/include/llama.h
+index 177fc10a9..c35e20d74 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1012,6 +1012,11 @@ extern "C" {
+     // Set abort callback
+     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
+ 
++    // Clear ggml CUDA graph cache for all CUDA backends on this context.
++    // WHY: L3 prefix-cache / slot clear changes KV while ggml keys graphs by topology only.
++    // Returns backends that had ≥1 graph cleared (0 on Metal / graphs disabled / no CUDA).
++    LLAMA_API int llama_context_cuda_graph_invalidate(struct llama_context * ctx);
++
+     // Wait until all computations are finished
+     // This is automatically done when using one of the functions below to obtain the computation results
+     // and is not necessary to call it explicitly in most cases
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 8d0f590f7..7731b5eac 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3759,6 +3759,43 @@ int32_t llama_n_threads_batch(llama_context * ctx) {
+     return ctx->n_threads_batch();
+ }
+ 
++int llama_context_cuda_graph_invalidate(struct llama_context * ctx) {
++    if (ctx == nullptr) {
++        return 0;
++    }
++
++    ggml_backend_sched_t sched = ctx->get_sched();
++    if (sched == nullptr) {
++        return 0;
++    }
++
++    typedef int (*ggml_backend_cuda_invalidate_graphs_t)(ggml_backend_t);
++
++    int backends_cleared = 0;
++    const int n_backends = ggml_backend_sched_get_n_backends(sched);
++    for (int i = 0; i < n_backends; ++i) {
++        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
++        if (backend == nullptr) {
++            continue;
++        }
++        ggml_backend_dev_t dev = ggml_backend_get_device(backend);
++        ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
++        if (reg == nullptr) {
++            continue;
++        }
++        // WHY proc_address: CUDA may be a dynamically loaded backend — do not hard-link ggml-cuda.
++        auto invalidate_fn = (ggml_backend_cuda_invalidate_graphs_t)
++            ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_invalidate_graphs");
++        if (invalidate_fn == nullptr) {
++            continue;
++        }
++        if (invalidate_fn(backend) > 0) {
++            backends_cleared++;
++        }
++    }
++    return backends_cleared;
++}
++
+ void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void * data), void * abort_callback_data) {
+     ctx->set_abort_callback(abort_callback, abort_callback_data);
+ }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index aa552c75d..134af908e 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2747,6 +2747,18 @@ private:
+                     res->n_tokens_copied = n_copy;
+                     queue_results.send(std::move(res));
+                 } break;
++            case SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE:
++                {
++                    // WHY task-queue: same thread as decode/slot erase — no race with active graph launch.
++                    int cleared = 0;
++                    if (ctx_tgt != nullptr) {
++                        cleared = llama_context_cuda_graph_invalidate(ctx_tgt);
++                    }
++                    auto res = std::make_unique<server_task_result_cuda_graph_invalidate>();
++                    res->id = task.id;
++                    res->backends_cleared = cleared;
++                    queue_results.send(std::move(res));
++                } break;
+             case SERVER_TASK_TYPE_GET_LORA:
+                 {
+                     // TODO @ngxson : make lora_adapters a dedicated member of server_context
+@@ -4726,6 +4738,10 @@ void server_routes::init_routes() {
+         return handle_kv_seq_copy(req);
+     };
+ 
++    this->post_cuda_graph_invalidate = [this](const server_http_req & req) {
++        return handle_cuda_graph_invalidate(req);
++    };
++
+     this->get_props = [this](const server_http_req &) {
+         auto res = create_response(true);
+ 
+@@ -5441,6 +5457,29 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
+     return res;
+ }
+ 
++std::unique_ptr<server_res_generator> server_routes::handle_cuda_graph_invalidate(const server_http_req & req) {
++    auto res = create_response();
++    // Body is optional; reason is for logs only (Python sends {"reason": "..."}).
++    auto & rd = res->rd;
++    {
++        server_task task(SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE);
++        task.id = rd.get_new_id();
++        rd.post_task(std::move(task));
++    }
++    auto result = rd.next(req.should_stop);
++    if (!result) {
++        GGML_ASSERT(req.should_stop());
++        return res;
++    }
++    if (result->is_error()) {
++        res->error(result->to_json());
++        return res;
++    }
++    GGML_ASSERT(dynamic_cast<server_task_result_cuda_graph_invalidate*>(result.get()) != nullptr);
++    res->ok(result->to_json());
++    return res;
++}
++
+ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(const server_http_req & req, task_response_type res_type) {
+     auto res = create_response();
+     if (!params.embedding) {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 76763e27b..56c835075 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -132,6 +132,7 @@ struct server_routes {
+     server_http_context::handler_t get_slots;
+     server_http_context::handler_t post_slots;
+     server_http_context::handler_t post_kv_seq_copy;
++    server_http_context::handler_t post_cuda_graph_invalidate;
+     server_http_context::handler_t get_props;
+     server_http_context::handler_t post_props;
+     server_http_context::handler_t post_infill;
+@@ -169,6 +170,7 @@ private:
+     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
+     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
+     std::unique_ptr<server_res_generator> handle_kv_seq_copy(const server_http_req & req);
++    std::unique_ptr<server_res_generator> handle_cuda_graph_invalidate(const server_http_req & req);
+     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
+     std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index c342e0b75..5be8dbd34 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -26,6 +26,7 @@ enum server_task_type {
+     SERVER_TASK_TYPE_SLOT_RESTORE,
+     SERVER_TASK_TYPE_SLOT_ERASE,
+     SERVER_TASK_TYPE_SLOT_SEQ_COPY,
++    SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE,
+     SERVER_TASK_TYPE_GET_LORA,
+     SERVER_TASK_TYPE_SET_LORA,
+ };
+@@ -554,6 +555,17 @@ struct server_task_result_slot_seq_copy : server_task_result {
+     virtual json to_json() override;
+ };
+ 
++struct server_task_result_cuda_graph_invalidate : server_task_result {
++    int backends_cleared = 0;
++
++    virtual json to_json() override {
++        return json {
++            { "ok", true },
++            { "backends_cleared", backends_cleared },
++        };
++    }
++};
++
+ struct server_task_result_get_lora : server_task_result {
+     struct lora {
+         common_adapter_lora_info info;
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index be17f6b87..1f0320a27 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -272,6 +272,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
+     ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
++    ctx_http.post("/cuda-graph/invalidate",    ex_wrapper(routes.post_cuda_graph_invalidate));
+ 
+     // resumable streaming: a child binds the local session factories, the router binds
+     // proxies that resolve the owning child, see server-stream.h

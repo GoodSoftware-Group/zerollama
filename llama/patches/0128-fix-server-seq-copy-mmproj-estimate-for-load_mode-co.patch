@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 19:26:47 -0700
+Subject: [PATCH] fix: server seq-copy + mmproj estimate for load_mode /
+ common_memory (#26221)
+
+---
+ tools/server/server-context.cpp | 19 +++++++------------
+ 1 file changed, 7 insertions(+), 12 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 472d89492..462261839 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -33,8 +33,7 @@ namespace {
+ static uint64_t estimate_mmproj_file_bytes(const char * path) {
+     llama_model_params mp = llama_model_default_params();
+     mp.no_alloc  = true;
+-    mp.use_mmap  = false;
+-    mp.use_mlock = false;
++    mp.load_mode = LLAMA_LOAD_MODE_NONE;
+ 
+     llama_model * model = llama_model_load_from_file(path, mp);
+     if (model == nullptr) {
+@@ -2857,12 +2856,11 @@ private:
+                     // WHY match copy_state_to: p0/p1 = -1,-1. Using 0,-1 left dst KV empty
+                     // on some backends after slot release → prompt.tokens lie + pos_min==-1 abort
+                     // in pre_decode (ggml-org/llama.cpp#13833).
+-                    common_context_seq_rm(ctx_tgt, id_dst, -1, -1);
+-                    common_context_seq_cp(ctx_tgt, id_src, id_dst, -1, -1);
+-                    if (ctx_dft) {
+-                        common_context_seq_rm(ctx_dft, id_dst, -1, -1);
+-                        common_context_seq_cp(ctx_dft, id_src, id_dst, -1, -1);
+-                    }
++                    // WHY common_memory: #26221 made common_context_seq_* file-static.
++                    common_memory sc_mem;
++                    sc_mem.init(ctx_tgt, ctx_dft);
++                    sc_mem.seq_rm(id_dst, -1, -1);
++                    sc_mem.seq_cp(id_src, id_dst, -1, -1);
+ 
+                     {
+                         auto * mem = llama_get_memory(ctx_tgt);
+@@ -2875,10 +2873,7 @@ private:
+                         const llama_pos pos_max = llama_memory_seq_pos_max(mem, id_dst);
+                         const llama_pos eff_end = (llama_pos) n_copy;
+                         if (pos_max >= eff_end) {
+-                            common_context_seq_rm(ctx_tgt, id_dst, eff_end, -1);
+-                            if (ctx_dft) {
+-                                common_context_seq_rm(ctx_dft, id_dst, eff_end, -1);
+-                            }
++                            sc_mem.seq_rm(id_dst, eff_end, -1);
+                         }
+                     }
+ 

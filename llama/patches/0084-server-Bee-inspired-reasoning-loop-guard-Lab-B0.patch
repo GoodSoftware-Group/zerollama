@@ -1,0 +1,920 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 17 Jul 2026 10:50:00 -0700
+Subject: [PATCH] server: Bee-inspired reasoning loop guard (Lab B0)
+
+Add opt-in --reasoning-loop-guard (default off) with force-close/stop modes.
+Detector from BeeLlama; wired via process_token + reasoning_budget_tracking
+(our pin lacks Bee accept-callbacks). Also fix stale check_no_mtmd in
+SLOT_SEQ_COPY to use check_slot_no_media.
+---
+ common/arg.cpp                     |  88 ++++++++++
+ common/common.h                    |  20 +++
+ common/sampling.cpp                |  12 +-
+ common/sampling.h                  |   4 +
+ tools/server/CMakeLists.txt        |   2 +
+ tools/server/server-context.cpp    |  85 +++++++++-
+ tools/server/server-loop-guard.cpp | 253 +++++++++++++++++++++++++++++
+ tools/server/server-loop-guard.h   |  47 ++++++
+ tools/server/server-schema.cpp     |  81 +++++++++
+ tools/server/server-task.cpp       |  31 ++++
+ tools/server/server-task.h         |   7 +
+ 11 files changed, 624 insertions(+), 6 deletions(-)
+ create mode 100644 tools/server/server-loop-guard.cpp
+ create mode 100644 tools/server/server-loop-guard.h
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index a5de3d316..4eb0b53b9 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1316,6 +1316,37 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
+             exit(0);
+         }
+         params.lr.init();
++
++        {
++            const auto & g = params.reasoning_loop_guard;
++            if (g.min_reasoning_tokens < 0) {
++                throw std::invalid_argument("reasoning-loop-min-tokens must be >= 0");
++            }
++            if (g.window_tokens <= 0) {
++                throw std::invalid_argument("reasoning-loop-window must be > 0");
++            }
++            if (g.max_period <= 0) {
++                throw std::invalid_argument("reasoning-loop-max-period must be > 0");
++            }
++            if (g.min_repeated_coverage <= 0) {
++                throw std::invalid_argument("reasoning-loop-min-coverage must be > 0");
++            }
++            if (g.check_interval <= 0) {
++                throw std::invalid_argument("reasoning-loop-check-interval must be > 0");
++            }
++            if (g.interventions_max < 0) {
++                throw std::invalid_argument("reasoning-loop-interventions must be >= 0");
++            }
++            if (g.window_tokens < g.min_repeated_coverage) {
++                throw std::invalid_argument("reasoning-loop-window must be >= reasoning-loop-min-coverage");
++            }
++            if (g.max_period > g.window_tokens / 3) {
++                throw std::invalid_argument("reasoning-loop-max-period must be <= reasoning-loop-window / 3");
++            }
++            if (g.min_reasoning_tokens < g.min_repeated_coverage) {
++                throw std::invalid_argument("reasoning-loop-min-tokens must be >= reasoning-loop-min-coverage");
++            }
++        }
+     } catch (const std::invalid_argument & ex) {
+         fprintf(stderr, "%s\n", ex.what());
+         ctx_arg.params = params_org;
+@@ -3700,6 +3731,63 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.sampling.reasoning_budget_message = value;
+         }
+     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_THINK_BUDGET_MESSAGE"));
++    add_opt(common_arg(
++        {"--reasoning-loop-guard"}, "MODE",
++        "reasoning loop guard mode: off, force-close, or stop (default: off)",
++        [](common_params & params, const std::string & value) {
++            if (value == "off") {
++                params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_OFF;
++            } else if (value == "force-close") {
++                params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE;
++            } else if (value == "stop") {
++                params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_STOP;
++            } else {
++                throw std::invalid_argument("invalid reasoning-loop-guard, expected one of: off, force-close, stop");
++            }
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_GUARD"));
++    add_opt(common_arg(
++        {"--reasoning-loop-min-tokens"}, "N",
++        string_format("minimum hidden reasoning tokens before loop checks (default: %d)", params.reasoning_loop_guard.min_reasoning_tokens),
++        [](common_params & params, int value) {
++            params.reasoning_loop_guard.min_reasoning_tokens = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_MIN_TOKENS"));
++    add_opt(common_arg(
++        {"--reasoning-loop-window"}, "N",
++        string_format("token tail window for reasoning loop checks (default: %d)", params.reasoning_loop_guard.window_tokens),
++        [](common_params & params, int value) {
++            params.reasoning_loop_guard.window_tokens = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_WINDOW"));
++    add_opt(common_arg(
++        {"--reasoning-loop-max-period"}, "N",
++        string_format("maximum periodic loop length to check (default: %d)", params.reasoning_loop_guard.max_period),
++        [](common_params & params, int value) {
++            params.reasoning_loop_guard.max_period = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_MAX_PERIOD"));
++    add_opt(common_arg(
++        {"--reasoning-loop-min-coverage"}, "N",
++        string_format("minimum repeated token coverage before loop trigger (default: %d)", params.reasoning_loop_guard.min_repeated_coverage),
++        [](common_params & params, int value) {
++            params.reasoning_loop_guard.min_repeated_coverage = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_MIN_COVERAGE"));
++    add_opt(common_arg(
++        {"--reasoning-loop-check-interval"}, "N",
++        string_format("accepted-token interval between loop checks (default: %d)", params.reasoning_loop_guard.check_interval),
++        [](common_params & params, int value) {
++            params.reasoning_loop_guard.check_interval = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_CHECK_INTERVAL"));
++    add_opt(common_arg(
++        {"--reasoning-loop-interventions"}, "N",
++        string_format("maximum force-close interventions before stop (default: %d)", params.reasoning_loop_guard.interventions_max),
++        [](common_params & params, int value) {
++            params.reasoning_loop_guard.interventions_max = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING_LOOP_INTERVENTIONS"));
+     add_opt(common_arg(
+         {"--reasoning-preserve"},
+         {"--no-reasoning-preserve"},
+diff --git a/common/common.h b/common/common.h
+index 63309b4ea..4edc7873d 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -291,6 +291,7 @@ struct common_params_sampling {
+     std::vector<llama_token>  reasoning_budget_forced;         // forced sequence (message + first end tag)
+     std::string               reasoning_budget_message;        // message injected before end tag when budget exhausted
+     bool                      reasoning_control = false;       // create the budget sampler on demand so reasoning can be ended at runtime
++    bool                      reasoning_budget_tracking = false; // create budget sampler even with unlimited budget (loop-guard region tracking)
+ 
+     bool backend_sampling = false;
+ 
+@@ -406,6 +407,24 @@ struct common_params_diffusion {
+     bool    add_gumbel_noise = false; // add gumbel noise to the logits if temp > 0.0
+ };
+ 
++// reasoning loop guard (BeeLlama-inspired; docs/llama-fork-watchlist.md Lab B0)
++enum common_reasoning_loop_guard_mode {
++    COMMON_REASONING_LOOP_GUARD_OFF,
++    COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE,
++    COMMON_REASONING_LOOP_GUARD_STOP,
++};
++
++struct common_reasoning_loop_guard_params {
++    // default off — operators opt in via --reasoning-loop-guard
++    common_reasoning_loop_guard_mode mode = COMMON_REASONING_LOOP_GUARD_OFF;
++    int32_t min_reasoning_tokens = 1024;
++    int32_t window_tokens = 2048;
++    int32_t max_period = 512;
++    int32_t min_repeated_coverage = 768;
++    int32_t check_interval = 32;
++    int32_t interventions_max = 1;
++};
++
+ // reasoning API response format (not to be confused as chat template's reasoning format)
+ // only used by server
+ enum common_reasoning_format {
+@@ -632,6 +651,7 @@ struct common_params {
+     bool force_pure_content_parser = false;
+     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+     int enable_reasoning = -1; // -1 = auto, 0 = disable, 1 = enable
++    common_reasoning_loop_guard_params reasoning_loop_guard;
+     bool prefill_assistant = true; // if true, any trailing assistant message will be prefilled into the response
+     int sleep_idle_seconds = -1;   // if >0, server will sleep after this many seconds of idle time
+ 
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index 06dea1e1c..e45d5c339 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -307,8 +307,8 @@ struct common_sampler * common_sampler_init(
+         }
+     }
+ 
+-    // reasoning budget sampler (skip when budget is unlimited unless a lazy grammar is active, which needs rbudget for thinking-block suppression)
+-    if (!params.reasoning_budget_start.empty() && !params.reasoning_budget_end.empty() && (params.grammar_lazy || params.reasoning_budget_tokens >= 0 || params.reasoning_control)) {
++    // reasoning budget sampler (skip when budget is unlimited unless a lazy grammar / control / tracking needs region state)
++    if (!params.reasoning_budget_start.empty() && !params.reasoning_budget_end.empty() && (params.grammar_lazy || params.reasoning_budget_tokens >= 0 || params.reasoning_control || params.reasoning_budget_tracking)) {
+         rbudget = common_reasoning_budget_init(
+             vocab,
+             {params.reasoning_budget_start},
+@@ -726,6 +726,14 @@ bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl) {
+     return common_reasoning_budget_force(gsmpl->rbudget);
+ }
+ 
++common_reasoning_budget_state common_sampler_reasoning_budget_get_state(const struct common_sampler * gsmpl) {
++    if (!gsmpl || !gsmpl->rbudget) {
++        return REASONING_BUDGET_IDLE;
++    }
++
++    return common_reasoning_budget_get_state(gsmpl->rbudget);
++}
++
+ // helpers
+ 
+ llama_token_data_array * common_sampler_get_candidates(struct common_sampler * gsmpl, bool do_sort) {
+diff --git a/common/sampling.h b/common/sampling.h
+index ced3c8364..e776d24e6 100644
+--- a/common/sampling.h
++++ b/common/sampling.h
+@@ -3,6 +3,7 @@
+ #include "llama.h"
+ 
+ #include "common.h"
++#include "reasoning-budget.h"
+ 
+ #include <string>
+ #include <vector>
+@@ -93,6 +94,9 @@ uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
+ // force the reasoning budget sampler (if any) to begin forcing its end sequence now.
+ bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl);
+ 
++// query reasoning-budget state (IDLE if no budget sampler)
++enum common_reasoning_budget_state common_sampler_reasoning_budget_get_state(const struct common_sampler * gsmpl);
++
+ // helpers
+ 
+ // access the internal list of current candidate tokens
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index 280bd9e19..e439e4038 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -23,6 +23,8 @@ add_library(${TARGET} STATIC
+     server-mcp.h
+     server-schema.cpp
+     server-schema.h
++    server-loop-guard.cpp
++    server-loop-guard.h
+ )
+ 
+ if (BUILD_SHARED_LIBS)
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 134af908e..f0cf734af 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -6,6 +6,7 @@
+ #include "server-queue.h"
+ #include "server-schema.h"
+ #include "server-stream.h"
++#include "server-loop-guard.h"
+ 
+ #include "build-info.h"
+ #include "common.h"
+@@ -288,8 +289,8 @@ struct server_slot {
+     bool truncated      = false;
+ 
+     stop_type stop;
+-
+     std::string stopping_word;
++    std::string stop_detail;
+ 
+     // state
+     slot_state state = SLOT_STATE_IDLE;
+@@ -359,6 +360,13 @@ struct server_slot {
+     // not in server_slot_stats to avoid copying to every task result
+     std::vector<uint64_t> n_accepted_per_pos;
+ 
++    // Reasoning loop guard (opt-in via --reasoning-loop-guard / request JSON)
++    server_loop_guard loop_guard;
++    int32_t loop_guard_interventions = 0;
++    bool loop_guard_triggered = false;
++    std::string loop_guard_action;
++    std::string loop_guard_reason;
++
+     std::function<void(int /* id_slot */)>   callback_on_release;
+     std::function<void(const server_slot &)> callback_on_reset; // called before reset()
+ 
+@@ -377,6 +385,7 @@ struct server_slot {
+         truncated      = false;
+         stop           = STOP_TYPE_NONE;
+         stopping_word  = "";
++        stop_detail    = "";
+         n_sent_text    = 0;
+ 
+         if (can_speculate()) {
+@@ -395,6 +404,12 @@ struct server_slot {
+         stats = {};
+         n_accepted_per_pos.clear();
+ 
++        loop_guard.reset();
++        loop_guard_interventions = 0;
++        loop_guard_triggered = false;
++        loop_guard_action.clear();
++        loop_guard_reason.clear();
++
+         n_predict_max = -1;
+ 
+         llama_set_sampler(ctx_tgt, id, nullptr);
+@@ -1837,6 +1852,12 @@ private:
+             slot.smpl.reset();
+         }
+ 
++        slot.loop_guard.configure(task.params.reasoning_loop_guard);
++        slot.loop_guard_interventions = 0;
++        slot.loop_guard_triggered = false;
++        slot.loop_guard_action.clear();
++        slot.loop_guard_reason.clear();
++
+         // the per-request limit takes priority over the global one
+         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
+ 
+@@ -1864,6 +1885,56 @@ private:
+         }
+         slot.has_next_token = true;
+ 
++        // Opt-in reasoning loop guard (Bee-inspired). Runs after accept via process_token
++        // (our pin lacks Bee's sampler accept callbacks). Needs reasoning_budget_* tags so the
++        // budget sampler reports COUNTING while inside hidden reasoning.
++        if (slot.task->params.reasoning_loop_guard.mode != COMMON_REASONING_LOOP_GUARD_OFF &&
++                slot.smpl &&
++                slot.task->params.sampling.reasoning_budget_tracking) {
++            const auto rstate = common_sampler_reasoning_budget_get_state(slot.smpl.get());
++            const bool forcing_reasoning_end =
++                rstate == REASONING_BUDGET_FORCING || rstate == REASONING_BUDGET_WAITING_UTF8;
++            const bool is_reasoning = rstate == REASONING_BUDGET_COUNTING;
++            if (is_reasoning && !forcing_reasoning_end) {
++                slot.loop_guard.accept(result.tok, SERVER_LOOP_REGION_REASONING);
++                const bool token_is_eog = llama_vocab_is_eog(vocab, result.tok);
++                if (slot.loop_guard.should_check(SERVER_LOOP_REGION_REASONING, token_is_eog, forcing_reasoning_end)) {
++                    const auto check = slot.loop_guard.check(SERVER_LOOP_REGION_REASONING);
++                    if (check.triggered) {
++                        slot.loop_guard_triggered = true;
++                        slot.loop_guard_reason = check.kind;
++                        if (check.period > 0) {
++                            slot.loop_guard_reason += string_format(" period=%d", check.period);
++                        }
++                        if (check.coverage > 0) {
++                            slot.loop_guard_reason += string_format(" coverage=%d", check.coverage);
++                        }
++                        if (check.score > 0.0f) {
++                            slot.loop_guard_reason += string_format(" score=%.3f", (double) check.score);
++                        }
++
++                        const auto & lg = slot.task->params.reasoning_loop_guard;
++                        if (lg.mode == COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE &&
++                                slot.loop_guard_interventions < lg.interventions_max &&
++                                common_sampler_reasoning_budget_force(slot.smpl.get())) {
++                            slot.loop_guard_interventions++;
++                            slot.loop_guard_action = "force-close";
++                            SLT_WRN(slot, "reasoning loop guard force-closing hidden reasoning: %s\n",
++                                    slot.loop_guard_reason.c_str());
++                        } else {
++                            slot.loop_guard_action = "stop";
++                            slot.stopping_word = "reasoning_loop_guard";
++                            slot.stop_detail = "reasoning_loop_guard";
++                            slot.stop = STOP_TYPE_LIMIT;
++                            slot.has_next_token = false;
++                            SLT_WRN(slot, "reasoning loop guard stopping generation: %s\n",
++                                    slot.loop_guard_reason.c_str());
++                        }
++                    }
++                }
++            }
++        }
++
+         // check if there is incomplete UTF-8 character at the end
+         bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
+ 
+@@ -2141,8 +2212,12 @@ private:
+         res->n_tokens_cached       = slot.prompt.n_tokens();
+         res->has_new_line          = slot.has_new_line;
+         res->stopping_word         = slot.stopping_word;
++        res->stop_detail           = slot.stop_detail;
+         res->stop                  = slot.stop;
+         res->post_sampling_probs   = slot.task->params.post_sampling_probs;
++        res->loop_guard_triggered  = slot.loop_guard_triggered;
++        res->loop_guard_action     = slot.loop_guard_action;
++        res->loop_guard_reason     = slot.loop_guard_reason;
+ 
+         res->verbose           = slot.task->params.verbose;
+         res->stream            = slot.task->params.stream;
+@@ -2681,9 +2756,6 @@ private:
+                 } break;
+             case SERVER_TASK_TYPE_SLOT_SEQ_COPY:
+                 {
+-                    if (!check_no_mtmd(task.id)) {
+-                        break;
+-                    }
+                     const int id_dst = task.slot_action.id_slot;
+                     const int id_src = task.slot_action.id_slot_src;
+                     const llama_pos pos_end = task.slot_action.pos_end;
+@@ -2693,6 +2765,11 @@ private:
+                         send_error(task, "Invalid slot ID", ERROR_TYPE_INVALID_REQUEST);
+                         break;
+                     }
++                    // Gate on slot content (media), consistent with save/restore/erase.
++                    // (Old check_no_mtmd helper was removed when gating moved to per-slot content.)
++                    if (!check_slot_no_media(*slot_src, task.id) || !check_slot_no_media(*slot_dst, task.id)) {
++                        break;
++                    }
+                     if (slot_dst->is_processing() || slot_src->is_processing()) {
+                         SRV_DBG("requested slot is unavailable, defer seq-copy task, id_task = %d\n", task.id);
+                         queue_tasks.defer(std::move(task));
+diff --git a/tools/server/server-loop-guard.cpp b/tools/server/server-loop-guard.cpp
+new file mode 100644
+index 000000000..0fcf10fd7
+--- /dev/null
++++ b/tools/server/server-loop-guard.cpp
+@@ -0,0 +1,253 @@
++#include "server-loop-guard.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <functional>
++#include <unordered_map>
++#include <utility>
++
++server_loop_guard::server_loop_guard(common_reasoning_loop_guard_params params)
++    : params(params) {
++}
++
++void server_loop_guard::configure(common_reasoning_loop_guard_params params) {
++    this->params = params;
++    reset();
++}
++
++void server_loop_guard::reset() {
++    reasoning_tail.clear();
++    visible_tail.clear();
++    reasoning_seen = 0;
++    visible_seen = 0;
++}
++
++std::vector<llama_token> & server_loop_guard::tail(server_loop_guard_region region) {
++    return region == SERVER_LOOP_REGION_REASONING ? reasoning_tail : visible_tail;
++}
++
++const std::vector<llama_token> & server_loop_guard::tail(server_loop_guard_region region) const {
++    return region == SERVER_LOOP_REGION_REASONING ? reasoning_tail : visible_tail;
++}
++
++void server_loop_guard::accept(llama_token token, server_loop_guard_region region) {
++    auto & tokens = tail(region);
++    tokens.push_back(token);
++    if ((int32_t) tokens.size() > params.window_tokens) {
++        tokens.erase(tokens.begin(), tokens.begin() + ((int32_t) tokens.size() - params.window_tokens));
++    }
++
++    if (region == SERVER_LOOP_REGION_REASONING) {
++        reasoning_seen++;
++    } else {
++        visible_seen++;
++    }
++}
++
++int32_t server_loop_guard::seen(server_loop_guard_region region) const {
++    return region == SERVER_LOOP_REGION_REASONING ? reasoning_seen : visible_seen;
++}
++
++bool server_loop_guard::should_check(server_loop_guard_region region, bool token_is_eog, bool forcing_reasoning_end) const {
++    if (params.mode == COMMON_REASONING_LOOP_GUARD_OFF || token_is_eog || forcing_reasoning_end) {
++        return false;
++    }
++    const int32_t n_seen = seen(region);
++    if (region == SERVER_LOOP_REGION_REASONING && n_seen < params.min_reasoning_tokens) {
++        return false;
++    }
++    return n_seen > 0 && n_seen % params.check_interval == 0;
++}
++
++server_loop_guard_result server_loop_guard::check(server_loop_guard_region region) const {
++    if (params.mode == COMMON_REASONING_LOOP_GUARD_OFF) {
++        return {};
++    }
++    if (region == SERVER_LOOP_REGION_REASONING && reasoning_seen < params.min_reasoning_tokens) {
++        return {};
++    }
++
++    const auto & tokens = tail(region);
++    auto periodic = check_periodic_tail(tokens);
++    if (periodic.triggered) {
++        return periodic;
++    }
++
++    if (region == SERVER_LOOP_REGION_REASONING) {
++        auto ngram = check_ngram_dominance(tokens);
++        if (ngram.triggered) {
++            return ngram;
++        }
++    }
++
++    return check_low_entropy(tokens);
++}
++
++server_loop_guard_result server_loop_guard::check_periodic_tail(const std::vector<llama_token> & tokens) const {
++    server_loop_guard_result best;
++    const int32_t n = (int32_t) tokens.size();
++    const int32_t max_period = std::min(params.max_period, n / 3);
++
++    for (int32_t p = 1; p <= max_period; ++p) {
++        const int32_t coverage = n - p;
++        if (coverage < params.min_repeated_coverage) {
++            continue;
++        }
++
++        const float threshold = p <= 8 ? 0.995f : (p <= 64 ? 0.990f : 0.980f);
++        const int32_t max_mismatches = (int32_t) std::floor((1.0f - threshold) * coverage);
++        int32_t mismatches = 0;
++        int32_t matches = 0;
++
++        for (int32_t i = p; i < n; ++i) {
++            if (tokens[i] == tokens[i - p]) {
++                matches++;
++            } else if (++mismatches > max_mismatches) {
++                break;
++            }
++        }
++
++        if (mismatches <= max_mismatches) {
++            const float score = (float) matches / (float) coverage;
++            return server_loop_guard_result {
++                true,
++                "periodic_tail",
++                p,
++                coverage,
++                score,
++            };
++        }
++
++        const float score = (float) matches / (float) coverage;
++        if (score > best.score) {
++            best = server_loop_guard_result {
++                false,
++                "periodic_tail",
++                p,
++                coverage,
++                score,
++            };
++        }
++    }
++
++    return {};
++}
++
++static uint64_t server_loop_guard_hash_ngram(const std::vector<llama_token> & tokens, int start, int ngram) {
++    uint64_t hash = 1469598103934665603ULL;
++    for (int i = 0; i < ngram; ++i) {
++        hash ^= (uint64_t) (uint32_t) tokens[start + i] + 0x9e3779b97f4a7c15ULL;
++        hash *= 1099511628211ULL;
++    }
++    return hash;
++}
++
++static bool server_loop_guard_equal_ngram(const std::vector<llama_token> & tokens, int a, int b, int ngram) {
++    for (int i = 0; i < ngram; ++i) {
++        if (tokens[a + i] != tokens[b + i]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++server_loop_guard_result server_loop_guard::check_ngram_dominance(const std::vector<llama_token> & tokens) const {
++    const int32_t n = (int32_t) tokens.size();
++    if (n < params.min_repeated_coverage) {
++        return {};
++    }
++
++    const int ngrams[] = {8, 16, 32};
++    for (int ngram : ngrams) {
++        if (n < ngram * 2) {
++            continue;
++        }
++
++        std::unordered_map<uint64_t, std::vector<int>> starts_by_hash;
++        std::vector<std::pair<int, int>> intervals;
++
++        for (int start = 0; start + ngram <= n; ++start) {
++            const uint64_t hash = server_loop_guard_hash_ngram(tokens, start, ngram);
++            auto & starts = starts_by_hash[hash];
++            for (int previous : starts) {
++                if (server_loop_guard_equal_ngram(tokens, previous, start, ngram)) {
++                    intervals.emplace_back(previous, previous + ngram);
++                    intervals.emplace_back(start, start + ngram);
++                    break;
++                }
++            }
++            starts.push_back(start);
++        }
++
++        if (intervals.empty()) {
++            continue;
++        }
++
++        std::sort(intervals.begin(), intervals.end());
++        int coverage = 0;
++        int cur_begin = intervals[0].first;
++        int cur_end = intervals[0].second;
++        for (size_t i = 1; i < intervals.size(); ++i) {
++            if (intervals[i].first <= cur_end) {
++                cur_end = std::max(cur_end, intervals[i].second);
++            } else {
++                coverage += cur_end - cur_begin;
++                cur_begin = intervals[i].first;
++                cur_end = intervals[i].second;
++            }
++        }
++        coverage += cur_end - cur_begin;
++
++        if (coverage >= params.min_repeated_coverage && coverage * 2 >= n) {
++            return server_loop_guard_result {
++                true,
++                "ngram_dominance",
++                ngram,
++                coverage,
++                (float) coverage / (float) n,
++            };
++        }
++    }
++
++    return {};
++}
++
++server_loop_guard_result server_loop_guard::check_low_entropy(const std::vector<llama_token> & tokens) const {
++    const int32_t n_tail = std::min<int32_t>({(int32_t) tokens.size(), params.window_tokens, 1024});
++    if (n_tail < 1024 || n_tail < params.min_repeated_coverage) {
++        return {};
++    }
++
++    std::unordered_map<llama_token, int> counts;
++    counts.reserve((size_t) n_tail);
++    const int32_t start = (int32_t) tokens.size() - n_tail;
++    for (int32_t i = start; i < (int32_t) tokens.size(); ++i) {
++        counts[tokens[i]]++;
++    }
++
++    std::vector<int> sorted_counts;
++    sorted_counts.reserve(counts.size());
++    for (const auto & kv : counts) {
++        sorted_counts.push_back(kv.second);
++    }
++    std::sort(sorted_counts.begin(), sorted_counts.end(), std::greater<int>());
++
++    int top8 = 0;
++    for (int i = 0; i < std::min<int>(8, sorted_counts.size()); ++i) {
++        top8 += sorted_counts[i];
++    }
++
++    const float coverage = (float) top8 / (float) n_tail;
++    if (counts.size() <= 32 && coverage >= 0.95f) {
++        return server_loop_guard_result {
++            true,
++            "low_entropy",
++            0,
++            top8,
++            coverage,
++        };
++    }
++
++    return {};
++}
+diff --git a/tools/server/server-loop-guard.h b/tools/server/server-loop-guard.h
+new file mode 100644
+index 000000000..8ba7d883e
+--- /dev/null
++++ b/tools/server/server-loop-guard.h
+@@ -0,0 +1,47 @@
++#pragma once
++
++#include "common.h"
++#include "llama.h"
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++enum server_loop_guard_region {
++    SERVER_LOOP_REGION_REASONING,
++    SERVER_LOOP_REGION_VISIBLE,
++};
++
++struct server_loop_guard_result {
++    bool triggered = false;
++    std::string kind;
++    int32_t period = 0;
++    int32_t coverage = 0;
++    float score = 0.0f;
++};
++
++class server_loop_guard {
++public:
++    explicit server_loop_guard(common_reasoning_loop_guard_params params = {});
++
++    void configure(common_reasoning_loop_guard_params params);
++    void reset();
++    void accept(llama_token token, server_loop_guard_region region);
++    bool should_check(server_loop_guard_region region, bool token_is_eog, bool forcing_reasoning_end) const;
++    server_loop_guard_result check(server_loop_guard_region region) const;
++    int32_t seen(server_loop_guard_region region) const;
++
++private:
++    common_reasoning_loop_guard_params params;
++    std::vector<llama_token> reasoning_tail;
++    std::vector<llama_token> visible_tail;
++    int32_t reasoning_seen = 0;
++    int32_t visible_seen = 0;
++
++    std::vector<llama_token> & tail(server_loop_guard_region region);
++    const std::vector<llama_token> & tail(server_loop_guard_region region) const;
++
++    server_loop_guard_result check_periodic_tail(const std::vector<llama_token> & tokens) const;
++    server_loop_guard_result check_ngram_dominance(const std::vector<llama_token> & tokens) const;
++    server_loop_guard_result check_low_entropy(const std::vector<llama_token> & tokens) const;
++};
+diff --git a/tools/server/server-schema.cpp b/tools/server/server-schema.cpp
+index 5d7fa6ae6..9eda29676 100644
+--- a/tools/server/server-schema.cpp
++++ b/tools/server/server-schema.cpp
+@@ -509,6 +509,45 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
+             }
+         }));
+ 
++    add((new field_str("reasoning_loop_guard"))
++        ->set_desc("Reasoning loop guard mode: off, force-close, or stop")
++        ->set_handler([&](field_eval_context & ctx, const json & data) {
++            const auto mode = data.at("reasoning_loop_guard").get<std::string>();
++            if (mode == "off") {
++                ctx.params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_OFF;
++            } else if (mode == "force-close") {
++                ctx.params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE;
++            } else if (mode == "stop") {
++                ctx.params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_STOP;
++            } else {
++                throw std::runtime_error("reasoning_loop_guard must be one of: off, force-close, stop");
++            }
++        }));
++
++    add((new field_num("reasoning_loop_min_tokens", params.reasoning_loop_guard.min_reasoning_tokens))
++        ->set_hard_limits(0, INT32_MAX)
++        ->set_desc("Minimum hidden reasoning tokens before loop checks"));
++
++    add((new field_num("reasoning_loop_window", params.reasoning_loop_guard.window_tokens))
++        ->set_hard_limits(1, INT32_MAX)
++        ->set_desc("Token tail window for reasoning loop checks"));
++
++    add((new field_num("reasoning_loop_max_period", params.reasoning_loop_guard.max_period))
++        ->set_hard_limits(1, INT32_MAX)
++        ->set_desc("Maximum periodic loop length to check"));
++
++    add((new field_num("reasoning_loop_min_coverage", params.reasoning_loop_guard.min_repeated_coverage))
++        ->set_hard_limits(1, INT32_MAX)
++        ->set_desc("Minimum repeated token coverage before loop trigger"));
++
++    add((new field_num("reasoning_loop_check_interval", params.reasoning_loop_guard.check_interval))
++        ->set_hard_limits(1, INT32_MAX)
++        ->set_desc("Accepted-token interval between loop checks"));
++
++    add((new field_num("reasoning_loop_interventions", params.reasoning_loop_guard.interventions_max))
++        ->set_hard_limits(0, INT32_MAX)
++        ->set_desc("Maximum force-close interventions before stop"));
++
+     return fields;
+ }
+ 
+@@ -528,6 +567,7 @@ task_params eval_llama_cmpl_schema(
+     params.cache_prompt  = params_base.cache_prompt;
+     params.antiprompt    = params_base.antiprompt;
+     params.sse_ping_interval = params_base.sse_ping_interval;
++    params.reasoning_loop_guard = params_base.reasoning_loop_guard;
+ 
+     // enabling this will output extra debug information in the HTTP responses from the server
+     params.verbose       = params_base.verbosity > 9;
+@@ -551,6 +591,47 @@ task_params eval_llama_cmpl_schema(
+         // if "reasoning_format" is not provided, its handler will not be called, we will need to handle it here
+         auto reasoning_format = params.chat_parser_params.reasoning_format;
+         params.chat_parser_params.reasoning_in_content = params.stream && (reasoning_format == COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY);
++
++        {
++            const bool loop_guard_active =
++                params.reasoning_loop_guard.mode != COMMON_REASONING_LOOP_GUARD_OFF &&
++                params.chat_parser_params.reasoning_format != COMMON_REASONING_FORMAT_NONE;
++            const bool has_reasoning_tags =
++                !params.sampling.reasoning_budget_start.empty() &&
++                !params.sampling.reasoning_budget_end.empty();
++            if (loop_guard_active && has_reasoning_tags) {
++                params.sampling.reasoning_budget_tracking = true;
++            }
++            if (loop_guard_active) {
++                if (params.reasoning_loop_guard.min_reasoning_tokens < 0) {
++                    throw std::runtime_error("Error: reasoning_loop_min_tokens must be >= 0");
++                }
++                if (params.reasoning_loop_guard.window_tokens <= 0) {
++                    throw std::runtime_error("Error: reasoning_loop_window must be > 0");
++                }
++                if (params.reasoning_loop_guard.max_period <= 0) {
++                    throw std::runtime_error("Error: reasoning_loop_max_period must be > 0");
++                }
++                if (params.reasoning_loop_guard.min_repeated_coverage <= 0) {
++                    throw std::runtime_error("Error: reasoning_loop_min_coverage must be > 0");
++                }
++                if (params.reasoning_loop_guard.check_interval <= 0) {
++                    throw std::runtime_error("Error: reasoning_loop_check_interval must be > 0");
++                }
++                if (params.reasoning_loop_guard.interventions_max < 0) {
++                    throw std::runtime_error("Error: reasoning_loop_interventions must be >= 0");
++                }
++                if (params.reasoning_loop_guard.window_tokens < params.reasoning_loop_guard.min_repeated_coverage) {
++                    throw std::runtime_error("Error: reasoning_loop_window must be >= reasoning_loop_min_coverage");
++                }
++                if (params.reasoning_loop_guard.max_period > params.reasoning_loop_guard.window_tokens / 3) {
++                    throw std::runtime_error("Error: reasoning_loop_max_period must be <= reasoning_loop_window / 3");
++                }
++                if (params.reasoning_loop_guard.min_reasoning_tokens < params.reasoning_loop_guard.min_repeated_coverage) {
++                    throw std::runtime_error("Error: reasoning_loop_min_tokens must be >= reasoning_loop_min_coverage");
++                }
++            }
++        }
+     }
+ 
+     // debugging
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 72514492a..5a779fc3c 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -14,6 +14,15 @@
+ 
+ using json = nlohmann::ordered_json;
+ 
++static const char * server_reasoning_loop_guard_mode_name(common_reasoning_loop_guard_mode value) {
++    switch (value) {
++        case COMMON_REASONING_LOOP_GUARD_OFF:         return "off";
++        case COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE: return "force-close";
++        case COMMON_REASONING_LOOP_GUARD_STOP:        return "stop";
++    }
++    return "off";
++}
++
+ //
+ // task_params
+ //
+@@ -85,6 +94,13 @@ json task_params::to_json(bool only_metrics) const {
+             {"post_sampling_probs",       post_sampling_probs},
+             {"backend_sampling",          sampling.backend_sampling},
+             {"lora",                      lora},
++            {"reasoning_loop_guard",       server_reasoning_loop_guard_mode_name(reasoning_loop_guard.mode)},
++            {"reasoning_loop_min_tokens",  reasoning_loop_guard.min_reasoning_tokens},
++            {"reasoning_loop_window",      reasoning_loop_guard.window_tokens},
++            {"reasoning_loop_max_period",  reasoning_loop_guard.max_period},
++            {"reasoning_loop_min_coverage", reasoning_loop_guard.min_repeated_coverage},
++            {"reasoning_loop_check_interval", reasoning_loop_guard.check_interval},
++            {"reasoning_loop_interventions", reasoning_loop_guard.interventions_max},
+         };
+     }
+ 
+@@ -144,6 +160,13 @@ json task_params::to_json(bool only_metrics) const {
+         {"post_sampling_probs",       post_sampling_probs},
+         {"backend_sampling",          sampling.backend_sampling},
+         {"lora",                      lora},
++        {"reasoning_loop_guard",       server_reasoning_loop_guard_mode_name(reasoning_loop_guard.mode)},
++        {"reasoning_loop_min_tokens",  reasoning_loop_guard.min_reasoning_tokens},
++        {"reasoning_loop_window",      reasoning_loop_guard.window_tokens},
++        {"reasoning_loop_max_period",  reasoning_loop_guard.max_period},
++        {"reasoning_loop_min_coverage", reasoning_loop_guard.min_repeated_coverage},
++        {"reasoning_loop_check_interval", reasoning_loop_guard.check_interval},
++        {"reasoning_loop_interventions", reasoning_loop_guard.interventions_max},
+     };
+ }
+ 
+@@ -354,10 +377,18 @@ json server_task_result_cmpl_final::to_json_non_oaicompat() {
+         {"has_new_line",        has_new_line},
+         {"truncated",           truncated},
+         {"stop_type",           stop_type_to_str(stop)},
++        {"stop_detail",         stop_detail},
+         {"stopping_word",       stopping_word},
+         {"tokens_cached",       n_tokens_cached},
+         {"timings",             stats.to_json()},
+     };
++    if (loop_guard_triggered) {
++        res["loop_guard"] = json {
++            {"triggered", true},
++            {"action",    loop_guard_action},
++            {"reason",    loop_guard_reason},
++        };
++    }
+     if (!stream && !probs_output.empty()) {
+         res["completion_probabilities"] = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+     }
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 5be8dbd34..3a1b5139a 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -79,6 +79,7 @@ struct task_params {
+ 
+     struct common_params_sampling sampling;
+     struct common_params_speculative speculative;
++    common_reasoning_loop_guard_params reasoning_loop_guard;
+ 
+     // response formatting
+     bool               verbose  = false;
+@@ -337,6 +338,7 @@ struct server_task_result_cmpl_final : server_task_result {
+     int32_t n_tokens_cached;
+     bool has_new_line;
+     std::string stopping_word;
++    std::string stop_detail; // optional finer stop reason (e.g. reasoning_loop_guard)
+     stop_type stop = STOP_TYPE_NONE;
+ 
+     bool post_sampling_probs;
+@@ -345,6 +347,11 @@ struct server_task_result_cmpl_final : server_task_result {
+ 
+     task_params generation_params;
+ 
++    // Reasoning loop guard telemetry (native /completion JSON)
++    bool loop_guard_triggered = false;
++    std::string loop_guard_action;
++    std::string loop_guard_reason;
++
+     // response formatting
+     bool               verbose  = false;
+     task_response_type res_type = TASK_RESPONSE_TYPE_NONE;

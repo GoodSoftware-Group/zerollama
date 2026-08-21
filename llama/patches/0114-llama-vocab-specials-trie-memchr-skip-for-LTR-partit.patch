@@ -1,0 +1,186 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 03:45:00 -0700
+Subject: [PATCH] llama-vocab: specials trie + memchr skip for LTR partition
+ (0112)
+
+0111 still memcmp'd every special sharing the first byte at each
+candidate. Load-time naive_trie walks match length; single-byte
+memchr skips to the next interesting first byte. Identity vs
+LLAMA_BPE_FORCE_LEGACY_SPECIALS unchanged. See docs/faster-bpe-tokenize.md
+(M15d / 0112).
+---
+ src/llama-vocab.cpp | 111 ++++++++++++++++++++++++++++----------------
+ 1 file changed, 70 insertions(+), 41 deletions(-)
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 6a2b8f943..364966699 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -2333,6 +2333,9 @@ struct llama_vocab::impl {
+     std::vector<token_data>                      id_to_token;
+ 
+     std::vector<llama_token> cache_special_tokens;
++    // WHY (0112): LTR partition (0111) still memcmp'd every special sharing first byte
++    // (Qwen ~200 starting with '<') at each candidate. Load-time trie → O(match len).
++    struct naive_trie cache_specials_trie;
+     std::vector<std::string> cache_token_to_piece; // llama_token_to_piece(special = true);
+     struct pair_hash {
+         size_t operator()(const std::pair<std::string, std::string> & p) const {
+@@ -3508,6 +3511,14 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+             }
+         );
+ 
++        cache_specials_trie = naive_trie();
++        for (const llama_token special_id : cache_special_tokens) {
++            const auto & text = id_to_token[special_id].text;
++            if (!text.empty()) {
++                cache_specials_trie.insert(text.data(), text.size(), special_id);
++            }
++        }
++
+         LLAMA_LOG_INFO("%s: special tokens cache size = %u\n", __func__, (uint32_t) cache_special_tokens.size());
+     }
+ 
+@@ -3711,31 +3722,34 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
+ // #define PRETOKENIZERDEBUG
+ 
+ void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const {
+-    // WHY (0111): legacy is O(|specials| × |fragments| × find). Chat megaprompts with
++    // WHY (0111/0112): legacy is O(|specials| × |fragments| × find). Chat megaprompts with
+     // hundreds of specials (Qwen ~294) and repeated `<|im_start|>` explode into thousands
+     // of fragments, then re-walk them for every remaining special. LTR first-byte gate +
+-    // longest-match at each candidate matches typical HF leftmost-longest; keep legacy
+-    // behind LLAMA_BPE_FORCE_LEGACY_SPECIALS=1 for identity A/B.
++    // trie longest-match (0112) at each candidate matches typical HF leftmost-longest;
++    // keep legacy behind LLAMA_BPE_FORCE_LEGACY_SPECIALS=1 for identity A/B.
+     if (getenv("LLAMA_BPE_FORCE_LEGACY_SPECIALS") != nullptr) {
+         tokenizer_st_partition_legacy(buffer, parse_special);
+         return;
+     }
+ 
+-    // Build first-byte → specials (cache_special_tokens is already longest-first).
+-    std::vector<llama_token> by_first[256];
++    // First-byte gate from eligible specials (same filter as match walk).
+     bool interesting[256] = {};
++    int n_interesting = 0;
++    unsigned char only_interesting = 0;
+     for (const llama_token special_id : cache_special_tokens) {
+         const auto & data = vocab.get_token_data(special_id);
+         if (!parse_special && (data.attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
+             continue;
+         }
+-        const auto & text = data.text;
+-        if (text.empty()) {
++        if (data.text.empty()) {
+             continue;
+         }
+-        const unsigned b = (unsigned char) text[0];
+-        by_first[b].push_back(special_id);
+-        interesting[b] = true;
++        const unsigned char b0 = (unsigned char) data.text[0];
++        if (!interesting[b0]) {
++            interesting[b0] = true;
++            only_interesting = b0;
++            ++n_interesting;
++        }
+     }
+ 
+     std::forward_list<fragment_buffer_variant> out;
+@@ -3764,50 +3778,65 @@ void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer
+         while (pos < frag_end) {
+             const unsigned char b = (unsigned char) raw_text[pos];
+             if (!interesting[b]) {
+-                // Skip to next interesting first byte (memchr per rare byte is overkill; linear is fine).
++                if (n_interesting == 1) {
++                    const void * p = memchr(raw_text.data() + pos, (int) only_interesting, (size_t) (frag_end - pos));
++                    if (!p) {
++                        pos = frag_end;
++                        break;
++                    }
++                    pos = (uint64_t) ((const char *) p - raw_text.data());
++                    continue;
++                }
+                 ++pos;
+                 continue;
+             }
+ 
+-            bool matched = false;
+-            for (const llama_token special_id : by_first[b]) {
+-                const auto & data = vocab.get_token_data(special_id);
+-                const auto & text = data.text;
+-                if (pos + text.size() > frag_end) {
+-                    continue;
+-                }
+-                if (memcmp(raw_text.data() + pos, text.data(), text.size()) != 0) {
+-                    continue;
++            // Walk specials trie; keep longest eligible match (leftmost-longest at pos).
++            const naive_trie * node = &cache_specials_trie;
++            llama_token best_id = LLAMA_TOKEN_NULL;
++            size_t best_len = 0;
++            for (uint64_t i = pos; i < frag_end; ++i) {
++                node = node->traverse(raw_text[i]);
++                if (!node) {
++                    break;
+                 }
+-
+-                // Left raw text (with optional LSTRIP)
+-                int64_t left_off = (int64_t) raw_start;
+-                int64_t left_len = (int64_t) pos - (int64_t) raw_start;
+-                if (data.attr & LLAMA_TOKEN_ATTR_LSTRIP) {
+-                    while (left_len > 0 && isspace((unsigned char) raw_text[left_off + left_len - 1])) {
+-                        left_len--;
++                if (node->has_value) {
++                    const auto & data = vocab.get_token_data(node->value);
++                    if (!parse_special && (data.attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
++                        continue;
+                     }
++                    best_id = node->value;
++                    best_len = (size_t) (i + 1 - pos);
+                 }
+-                if (left_len > 0) {
+-                    out_it = out.emplace_after(out_it, raw_text, left_off, left_len);
+-                }
++            }
++
++            if (best_id == LLAMA_TOKEN_NULL) {
++                ++pos;
++                continue;
++            }
+ 
+-                out_it = out.emplace_after(out_it, special_id);
++            const auto & data = vocab.get_token_data(best_id);
+ 
+-                pos += text.size();
+-                if (data.attr & LLAMA_TOKEN_ATTR_RSTRIP) {
+-                    while (pos < frag_end && isspace((unsigned char) raw_text[pos])) {
+-                        pos++;
+-                    }
++            int64_t left_off = (int64_t) raw_start;
++            int64_t left_len = (int64_t) pos - (int64_t) raw_start;
++            if (data.attr & LLAMA_TOKEN_ATTR_LSTRIP) {
++                while (left_len > 0 && isspace((unsigned char) raw_text[left_off + left_len - 1])) {
++                    left_len--;
+                 }
+-                raw_start = pos;
+-                matched = true;
+-                break;
++            }
++            if (left_len > 0) {
++                out_it = out.emplace_after(out_it, raw_text, left_off, left_len);
+             }
+ 
+-            if (!matched) {
+-                ++pos;
++            out_it = out.emplace_after(out_it, best_id);
++
++            pos += best_len;
++            if (data.attr & LLAMA_TOKEN_ATTR_RSTRIP) {
++                while (pos < frag_end && isspace((unsigned char) raw_text[pos])) {
++                    pos++;
++                }
+             }
++            raw_start = pos;
+         }
+ 
+         flush_raw(frag_end);

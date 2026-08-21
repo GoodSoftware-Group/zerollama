@@ -1,0 +1,588 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Tue, 14 Jul 2026 02:31:57 -0700
+Subject: [PATCH] Metal SET_ROWS for TBQ KV + CPU type_traits; TBQ4 flash-attn
+ dequant.
+
+Unblocks Apple L2 fork profiles (tbq4_0/tbq3_0) on unified ggml-org pin
+after SET_ROWS abort on Metal-preallocated cache tensors. Stage ane bridge
+@rpath for lab probes without DYLD_LIBRARY_PATH.
+---
+ common/CMakeLists.txt                         |   9 +
+ ggml/src/ggml-cpu/ggml-cpu.c                  |  12 ++
+ ggml/src/ggml-cpu/quants.c                    |  78 +++++++
+ ggml/src/ggml-cpu/quants.h                    |  10 +
+ ggml/src/ggml-metal/CMakeLists.txt            |   3 +
+ .../eliza-shipped/tbq_set_rows.metal          | 204 ++++++++++++++++++
+ ggml/src/ggml-metal/ggml-metal-device.m       |   3 +
+ ggml/src/ggml-metal/ggml-metal.metal          | 105 +++++++++
+ src/llama-graph.cpp                           |   9 +-
+ 9 files changed, 430 insertions(+), 3 deletions(-)
+ create mode 100644 ggml/src/ggml-metal/eliza-shipped/tbq_set_rows.metal
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index cec50b97f..9e8c650e4 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -200,6 +200,15 @@ if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
+         "-framework Foundation"
+         "-framework IOSurface"
+         "-framework Metal")
++    # Bare `libane_bridge.dylib` install name breaks dyld unless cwd/DYLD is set.
++    # Copy beside llama-server and rewrite to @rpath so L2 probes and serve work.
++    add_custom_command(TARGET ${TARGET} POST_BUILD
++        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
++        COMMAND ${CMAKE_COMMAND} -E copy_if_different
++            "${_ZEROLLAMA_ANE_BRIDGE}" "${CMAKE_BINARY_DIR}/bin/libane_bridge.dylib"
++        COMMAND install_name_tool -change libane_bridge.dylib @rpath/libane_bridge.dylib
++            "$<TARGET_FILE:${TARGET}>"
++        COMMENT "ANE: stage libane_bridge + @rpath install name")
+     message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
+ else()
+     target_sources(${TARGET} PRIVATE
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 320f7d26f..d7a30e769 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -416,6 +416,18 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
+         .vec_dot_type             = GGML_TYPE_Q8_K,
+         .nrows                    = 1,
+     },
++    [GGML_TYPE_TBQ3_0] = {
++        .from_float               = quantize_row_tbq3_0,
++        .vec_dot                  = ggml_vec_dot_tbq3_0_f32,
++        .vec_dot_type             = GGML_TYPE_F32,
++        .nrows                    = 1,
++    },
++    [GGML_TYPE_TBQ4_0] = {
++        .from_float               = quantize_row_tbq4_0,
++        .vec_dot                  = ggml_vec_dot_tbq4_0_f32,
++        .vec_dot_type             = GGML_TYPE_F32,
++        .nrows                    = 1,
++    },
+     [GGML_TYPE_I32] = {
+         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
+     },
+diff --git a/ggml/src/ggml-cpu/quants.c b/ggml/src/ggml-cpu/quants.c
+index 019135ecd..700937796 100644
+--- a/ggml/src/ggml-cpu/quants.c
++++ b/ggml/src/ggml-cpu/quants.c
+@@ -121,6 +121,36 @@ void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy,
+     quantize_row_tq2_0_ref(x, y, k);
+ }
+ 
++void quantize_row_tbq3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
++    assert(k % QK_TBQ == 0);
++    block_tbq3_0 * GGML_RESTRICT y = vy;
++    quantize_row_tbq3_0_ref(x, y, k);
++}
++
++void quantize_row_tbq4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
++    assert(k % QK_TBQ == 0);
++    block_tbq4_0 * GGML_RESTRICT y = vy;
++    quantize_row_tbq4_0_ref(x, y, k);
++}
++
++void quantize_row_tbq3_k(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
++    assert(k % QK_K == 0);
++    block_tbq3_k * GGML_RESTRICT y = vy;
++    quantize_row_tbq3_k_ref(x, y, k);
++}
++
++void quantize_row_tbq4_k(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
++    assert(k % QK_K == 0);
++    block_tbq4_k * GGML_RESTRICT y = vy;
++    quantize_row_tbq4_k_ref(x, y, k);
++}
++
++void quantize_row_tbq3_tcq(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
++    assert(k % QK_TBQ3_TCQ == 0);
++    block_tbq3_tcq * GGML_RESTRICT y = vy;
++    quantize_row_tbq3_tcq_ref(x, y, k);
++}
++
+ //===================================== Q8_K ==============================================
+ 
+ void quantize_row_q8_K_generic(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+@@ -612,6 +642,54 @@ void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+     *s = sumf;
+ }
+ 
++void ggml_vec_dot_tbq3_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
++    assert(n % QK_TBQ == 0);
++    assert(nrc == 1);
++    UNUSED(nrc);
++    UNUSED(bs);
++    UNUSED(bx);
++    UNUSED(by);
++
++    const block_tbq3_0 * GGML_RESTRICT x = (const block_tbq3_0 *) vx;
++    const float        * GGML_RESTRICT y = (const float *) vy;
++
++    float tmp[QK_TBQ];
++    float sumf = 0.0f;
++
++    for (int i = 0; i < n / QK_TBQ; ++i) {
++        dequantize_row_tbq3_0(&x[i], tmp, QK_TBQ);
++        for (int j = 0; j < QK_TBQ; ++j) {
++            sumf += tmp[j] * y[i*QK_TBQ + j];
++        }
++    }
++
++    *s = sumf;
++}
++
++void ggml_vec_dot_tbq4_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
++    assert(n % QK_TBQ == 0);
++    assert(nrc == 1);
++    UNUSED(nrc);
++    UNUSED(bs);
++    UNUSED(bx);
++    UNUSED(by);
++
++    const block_tbq4_0 * GGML_RESTRICT x = (const block_tbq4_0 *) vx;
++    const float        * GGML_RESTRICT y = (const float *) vy;
++
++    float tmp[QK_TBQ];
++    float sumf = 0.0f;
++
++    for (int i = 0; i < n / QK_TBQ; ++i) {
++        dequantize_row_tbq4_0(&x[i], tmp, QK_TBQ);
++        for (int j = 0; j < QK_TBQ; ++j) {
++            sumf += tmp[j] * y[i*QK_TBQ + j];
++        }
++    }
++
++    *s = sumf;
++}
++
+ void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+     assert(nrc == 1);
+     UNUSED(nrc);
+diff --git a/ggml/src/ggml-cpu/quants.h b/ggml/src/ggml-cpu/quants.h
+index 4c4137309..c1bb184d6 100644
+--- a/ggml/src/ggml-cpu/quants.h
++++ b/ggml/src/ggml-cpu/quants.h
+@@ -34,6 +34,13 @@ void quantize_row_q8_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
+ 
+ void quantize_row_tq1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+ void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_tbq3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_tbq4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_tbq3_k(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_tbq4_k(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_tbq3_tcq(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_qjl1_256(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_q4_polar(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+ 
+ void quantize_row_iq4_nl (const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+ void quantize_row_iq4_xs (const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+@@ -59,6 +66,9 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+ 
+ void ggml_vec_dot_tq1_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_tq2_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
++void ggml_vec_dot_tbq3_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
++void ggml_vec_dot_tbq4_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
++void ggml_vec_dot_q4_polar_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ 
+ void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_iq2_xs_q8_K (int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
+index 349167d5e..8b8ea09ac 100644
+--- a/ggml/src/ggml-metal/CMakeLists.txt
++++ b/ggml/src/ggml-metal/CMakeLists.txt
+@@ -100,6 +100,7 @@ else()
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal -o ${CMAKE_CURRENT_BINARY_DIR}/turbo3_tcq.air
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal -o ${CMAKE_CURRENT_BINARY_DIR}/qjl.air
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal -o ${CMAKE_CURRENT_BINARY_DIR}/qjl_set_rows.air
++        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/tbq_set_rows.metal -o ${CMAKE_CURRENT_BINARY_DIR}/tbq_set_rows.air
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal -o ${CMAKE_CURRENT_BINARY_DIR}/polar.air
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal -o ${CMAKE_CURRENT_BINARY_DIR}/polar_preht.air
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal -o ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_tbq.air
+@@ -111,6 +112,7 @@ else()
+             ${CMAKE_CURRENT_BINARY_DIR}/turbo3_tcq.air
+             ${CMAKE_CURRENT_BINARY_DIR}/qjl.air
+             ${CMAKE_CURRENT_BINARY_DIR}/qjl_set_rows.air
++            ${CMAKE_CURRENT_BINARY_DIR}/tbq_set_rows.air
+             ${CMAKE_CURRENT_BINARY_DIR}/polar.air
+             ${CMAKE_CURRENT_BINARY_DIR}/polar_preht.air
+             ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_tbq.air
+@@ -124,6 +126,7 @@ else()
+                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal
+                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal
+                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal
++                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/tbq_set_rows.metal
+                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal
+                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal
+                 ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal
+diff --git a/ggml/src/ggml-metal/eliza-shipped/tbq_set_rows.metal b/ggml/src/ggml-metal/eliza-shipped/tbq_set_rows.metal
+new file mode 100644
+index 000000000..1a3bf1210
+--- /dev/null
++++ b/ggml/src/ggml-metal/eliza-shipped/tbq_set_rows.metal
+@@ -0,0 +1,204 @@
++// ELIZA-TBQ-SET-ROWS-V1 — Metal SET_ROWS for TBQ3_0 / TBQ4_0 KV cache writes.
++// Bit-faithful to ggml-quants.c quantize_row_tbq{3,4}_0_ref / CUDA turboquant.cuh.
++#include <metal_stdlib>
++using namespace metal;
++
++#define QK_TBQ 32
++
++struct block_tbq3_0 {
++    half    d;
++    uint8_t qs[QK_TBQ * 3 / 8];
++};
++
++struct block_tbq4_0 {
++    half    d;
++    uint8_t qs[QK_TBQ / 2];
++};
++
++struct ggml_metal_kargs_set_rows {
++    int   nk0;
++    int   ne01;
++    ulong nb01;
++    ulong nb02;
++    ulong nb03;
++    int   ne11;
++    int   ne12;
++    ulong nb10;
++    ulong nb11;
++    ulong nb12;
++    ulong nb1;
++    ulong nb2;
++    ulong nb3;
++};
++
++constant float k_tbq3_codebook[8] = {
++    -2.1519457f, -1.3439093f, -0.7560053f, -0.2450942f,
++     0.2450942f,  0.7560053f,  1.3439093f,  2.1519457f,
++};
++
++constant float k_tbq4_codebook[16] = {
++    -2.7321365f, -2.0685055f, -1.6175243f, -1.2557391f,
++    -0.9419147f, -0.6564307f, -0.3878412f, -0.1283243f,
++     0.1283243f,  0.3878412f,  0.6564307f,  0.9419147f,
++     1.2557391f,  1.6175243f,  2.0685055f,  2.7321365f,
++};
++
++constant int8_t k_tbq_signs[QK_TBQ] = {
++     1, -1,  1,  1, -1,  1, -1, -1,
++     1,  1, -1,  1, -1, -1,  1, -1,
++    -1,  1,  1, -1,  1, -1, -1,  1,
++     1, -1,  1, -1, -1,  1, -1,  1,
++};
++
++static inline void tbq3_set_code(thread uint8_t * qs, int idx, uint8_t code) {
++    const int bit = idx * 3;
++    const int byte = bit >> 3;
++    const int shift = bit & 7;
++    qs[byte] = uint8_t(qs[byte] | ((code & 0x7u) << shift));
++    if (shift > 5 && byte + 1 < (QK_TBQ * 3 / 8)) {
++        qs[byte + 1] = uint8_t(qs[byte + 1] | ((code & 0x7u) >> (8 - shift)));
++    }
++}
++
++static inline void tbq4_set_code(thread uint8_t * qs, int idx, uint8_t code) {
++    const int j = idx % (QK_TBQ / 2);
++    if (idx < QK_TBQ / 2) {
++        qs[j] = uint8_t((qs[j] & 0xF0) | (code & 0x0F));
++    } else {
++        qs[j] = uint8_t((qs[j] & 0x0F) | ((code & 0x0F) << 4));
++    }
++}
++
++static inline void tbq_hadamard32(thread float * x) {
++    for (int len = 1; len < QK_TBQ; len <<= 1) {
++        for (int i = 0; i < QK_TBQ; i += 2 * len) {
++            for (int j = 0; j < len; ++j) {
++                const float a = x[i + j];
++                const float b = x[i + j + len];
++                x[i + j]       = a + b;
++                x[i + j + len] = a - b;
++            }
++        }
++    }
++    const float norm = 0.1767766952966369f;
++    for (int i = 0; i < QK_TBQ; ++i) {
++        x[i] *= norm;
++    }
++}
++
++static inline void tbq_precondition_block(device const float * x, thread float * y) {
++    for (int i = 0; i < QK_TBQ; ++i) {
++        y[i] = x[i] * float(k_tbq_signs[i]);
++    }
++    tbq_hadamard32(y);
++}
++
++static inline uint8_t tbq_best_index(int n, constant float * codebook, float x) {
++    if (x <= codebook[0]) {
++        return 0;
++    }
++    if (x >= codebook[n - 1]) {
++        return uint8_t(n - 1);
++    }
++    int lo = 0;
++    int hi = n - 1;
++    while (hi - lo > 1) {
++        const int mid = (lo + hi) / 2;
++        if (x < codebook[mid]) {
++            hi = mid;
++        } else {
++            lo = mid;
++        }
++    }
++    return uint8_t((x - codebook[lo] <= codebook[hi] - x) ? lo : hi);
++}
++
++static inline void quantize_tbq3_0(device const float * src, device block_tbq3_0 & dst) {
++    float rotated[QK_TBQ];
++    tbq_precondition_block(src, rotated);
++
++    float sumsq = 0.0f;
++    for (int i = 0; i < QK_TBQ; ++i) {
++        sumsq += rotated[i] * rotated[i];
++    }
++    const float d = sqrt(sumsq / float(QK_TBQ));
++    dst.d = half(d);
++
++    uint8_t qs[QK_TBQ * 3 / 8];
++    for (int i = 0; i < QK_TBQ * 3 / 8; ++i) {
++        qs[i] = 0;
++    }
++    if (d != 0.0f) {
++        const float id = 1.0f / d;
++        for (int i = 0; i < QK_TBQ; ++i) {
++            tbq3_set_code(qs, i, tbq_best_index(8, k_tbq3_codebook, rotated[i] * id));
++        }
++    }
++    for (int i = 0; i < QK_TBQ * 3 / 8; ++i) {
++        dst.qs[i] = qs[i];
++    }
++}
++
++static inline void quantize_tbq4_0(device const float * src, device block_tbq4_0 & dst) {
++    float rotated[QK_TBQ];
++    tbq_precondition_block(src, rotated);
++
++    float sumsq = 0.0f;
++    for (int i = 0; i < QK_TBQ; ++i) {
++        sumsq += rotated[i] * rotated[i];
++    }
++    const float d = sqrt(sumsq / float(QK_TBQ));
++    dst.d = half(d);
++
++    uint8_t qs[QK_TBQ / 2];
++    for (int i = 0; i < QK_TBQ / 2; ++i) {
++        qs[i] = 0;
++    }
++    if (d != 0.0f) {
++        const float id = 1.0f / d;
++        for (int i = 0; i < QK_TBQ; ++i) {
++            tbq4_set_code(qs, i, tbq_best_index(16, k_tbq4_codebook, rotated[i] * id));
++        }
++    }
++    for (int i = 0; i < QK_TBQ / 2; ++i) {
++        dst.qs[i] = qs[i];
++    }
++}
++
++template<typename TI, typename block_q, void (*quantize_func)(device const float *, device block_q &)>
++kernel void kernel_set_rows_tbq(
++        constant ggml_metal_kargs_set_rows & args,
++        device const  void * src0,
++        device const  void * src1,
++        device       float * dst,
++        uint3                tgpig[[threadgroup_position_in_grid]],
++        uint                 tiitg[[thread_index_in_threadgroup]],
++        uint3                tptg [[threads_per_threadgroup]]) {
++    const int32_t i03 = tgpig.z;
++    const int32_t i02 = tgpig.y;
++
++    const int32_t i12 = i03 % args.ne12;
++    const int32_t i11 = i02 % args.ne11;
++
++    const int32_t i01 = tgpig.x * tptg.y + tiitg / tptg.x;
++    if (i01 >= args.ne01) {
++        return;
++    }
++
++    const TI i1 = ((const device TI *)((const device char *)src1 + i01 * args.nb10 + i11 * args.nb11 + i12 * args.nb12))[0];
++
++    device block_q * dst_row = (device block_q *)((device char *)dst + i1 * args.nb1 + i02 * args.nb2 + i03 * args.nb3);
++    const device float * src_row = (const device float *)((const device char *)src0 + i01 * args.nb01 + i02 * args.nb02 + i03 * args.nb03);
++
++    for (int ind = tiitg % tptg.x; ind < args.nk0; ind += tptg.x) {
++        quantize_func(src_row + QK_TBQ * ind, dst_row[ind]);
++    }
++}
++
++typedef decltype(kernel_set_rows_tbq<long, block_tbq3_0, quantize_tbq3_0>) set_rows_tbq3_t;
++typedef decltype(kernel_set_rows_tbq<long, block_tbq4_0, quantize_tbq4_0>) set_rows_tbq4_t;
++
++template [[host_name("kernel_set_rows_f32_i64_tbq3_0")]] kernel set_rows_tbq3_t kernel_set_rows_tbq<long, block_tbq3_0, quantize_tbq3_0>;
++template [[host_name("kernel_set_rows_f32_i32_tbq3_0")]] kernel set_rows_tbq3_t kernel_set_rows_tbq<int,  block_tbq3_0, quantize_tbq3_0>;
++template [[host_name("kernel_set_rows_f32_i64_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_tbq<long, block_tbq4_0, quantize_tbq4_0>;
++template [[host_name("kernel_set_rows_f32_i32_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_tbq<int,  block_tbq4_0, quantize_tbq4_0>;
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index d8b29bef1..dc362a4e3 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1591,6 +1591,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+                     case GGML_TYPE_Q5_1:
+                     case GGML_TYPE_IQ4_NL:
+                     case GGML_TYPE_E8_2:
++                    case GGML_TYPE_TBQ3_0:
++                    case GGML_TYPE_TBQ4_0:
++                    case GGML_TYPE_QJL1_256:
+                     case GGML_TYPE_TQ2_0:
+                         return true;
+                     default:
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index e25dadedb..95fded06c 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -355,6 +355,105 @@ void quantize_e8_2(device const float * src, device block_e8_2 & dst) {
+     }
+ }
+ 
++// ELIZA-TBQ-SET-ROWS-V1 — Metal encode for TBQ KV cache writes (bit-faithful to ggml-quants.c)
++constant float k_tbq3_codebook_metal[8] = {
++    -2.1519457f, -1.3439093f, -0.7560053f, -0.2450942f,
++     0.2450942f,  0.7560053f,  1.3439093f,  2.1519457f,
++};
++constant float k_tbq4_codebook_metal[16] = {
++    -2.7321365f, -2.0685055f, -1.6175243f, -1.2557391f,
++    -0.9419147f, -0.6564307f, -0.3878412f, -0.1283243f,
++     0.1283243f,  0.3878412f,  0.6564307f,  0.9419147f,
++     1.2557391f,  1.6175243f,  2.0685055f,  2.7321365f,
++};
++constant int8_t k_tbq_signs_metal[QK_TBQ] = {
++     1, -1,  1,  1, -1,  1, -1, -1,
++     1,  1, -1,  1, -1, -1,  1, -1,
++    -1,  1,  1, -1,  1, -1, -1,  1,
++     1, -1,  1, -1, -1,  1, -1,  1,
++};
++
++static inline void tbq_hadamard32_metal(thread float * x) {
++    for (int len = 1; len < QK_TBQ; len <<= 1) {
++        for (int i = 0; i < QK_TBQ; i += 2 * len) {
++            for (int j = 0; j < len; ++j) {
++                const float a = x[i + j];
++                const float b = x[i + j + len];
++                x[i + j]       = a + b;
++                x[i + j + len] = a - b;
++            }
++        }
++    }
++    const float norm = 0.1767766952966369f;
++    for (int i = 0; i < QK_TBQ; ++i) {
++        x[i] *= norm;
++    }
++}
++
++static inline uint8_t tbq_best_index_metal(int n, constant float * codebook, float x) {
++    if (x <= codebook[0]) return 0;
++    if (x >= codebook[n - 1]) return (uint8_t)(n - 1);
++    int lo = 0, hi = n - 1;
++    while (hi - lo > 1) {
++        const int mid = (lo + hi) / 2;
++        if (x < codebook[mid]) hi = mid; else lo = mid;
++    }
++    return (uint8_t)((x - codebook[lo] <= codebook[hi] - x) ? lo : hi);
++}
++
++void quantize_tbq3_0(device const float * src, device block_tbq3_0 & dst) {
++    float rotated[QK_TBQ];
++    for (int i = 0; i < QK_TBQ; ++i) {
++        rotated[i] = src[i] * (float) k_tbq_signs_metal[i];
++    }
++    tbq_hadamard32_metal(rotated);
++
++    float sumsq = 0.0f;
++    for (int i = 0; i < QK_TBQ; ++i) sumsq += rotated[i] * rotated[i];
++    const float d = sqrt(sumsq / (float) QK_TBQ);
++    dst.d = (half) d;
++    for (int i = 0; i < QK_TBQ * 3 / 8; ++i) dst.qs[i] = 0;
++    if (d == 0.0f) return;
++
++    const float id = 1.0f / d;
++    for (int idx = 0; idx < QK_TBQ; ++idx) {
++        const uint8_t code = tbq_best_index_metal(8, k_tbq3_codebook_metal, rotated[idx] * id);
++        const int bit = idx * 3;
++        const int byte = bit >> 3;
++        const int shift = bit & 7;
++        dst.qs[byte] |= (uint8_t)((code & 0x7u) << shift);
++        if (shift > 5 && byte + 1 < (QK_TBQ * 3 / 8)) {
++            dst.qs[byte + 1] |= (uint8_t)((code & 0x7u) >> (8 - shift));
++        }
++    }
++}
++
++void quantize_tbq4_0(device const float * src, device block_tbq4_0 & dst) {
++    float rotated[QK_TBQ];
++    for (int i = 0; i < QK_TBQ; ++i) {
++        rotated[i] = src[i] * (float) k_tbq_signs_metal[i];
++    }
++    tbq_hadamard32_metal(rotated);
++
++    float sumsq = 0.0f;
++    for (int i = 0; i < QK_TBQ; ++i) sumsq += rotated[i] * rotated[i];
++    const float d = sqrt(sumsq / (float) QK_TBQ);
++    dst.d = (half) d;
++    for (int i = 0; i < QK_TBQ / 2; ++i) dst.qs[i] = 0;
++    if (d == 0.0f) return;
++
++    const float id = 1.0f / d;
++    for (int idx = 0; idx < QK_TBQ; ++idx) {
++        const uint8_t code = tbq_best_index_metal(16, k_tbq4_codebook_metal, rotated[idx] * id);
++        const int j = idx % (QK_TBQ / 2);
++        if (idx < QK_TBQ / 2) {
++            dst.qs[j] = (uint8_t)((dst.qs[j] & 0xF0) | (code & 0x0F));
++        } else {
++            dst.qs[j] = (uint8_t)((dst.qs[j] & 0x0F) | ((code & 0x0F) << 4));
++        }
++    }
++}
++
+ void quantize_q1_0(device const float * src, device block_q1_0 & dst) {
+     float sum_abs = 0.0f;
+     for (int j = 0; j < QK1_0; j++) {
+@@ -11252,6 +11351,12 @@ template [[host_name("kernel_set_rows_f32_i64_q5_1")]]   kernel set_rows_q32_t k
+ template [[host_name("kernel_set_rows_f32_i32_q5_1")]]   kernel set_rows_q32_t kernel_set_rows_q32<float, int32_t, block_q5_1,   quantize_q5_1>;
+ template [[host_name("kernel_set_rows_f32_i64_iq4_nl")]] kernel set_rows_q32_t kernel_set_rows_q32<float, int64_t, block_iq4_nl, quantize_iq4_nl>;
+ template [[host_name("kernel_set_rows_f32_i32_iq4_nl")]] kernel set_rows_q32_t kernel_set_rows_q32<float, int32_t, block_iq4_nl, quantize_iq4_nl>;
++typedef decltype(kernel_set_rows_q<float, int64_t, QK_TBQ, block_tbq3_0, quantize_tbq3_0>) set_rows_tbq3_t;
++template [[host_name("kernel_set_rows_f32_i64_tbq3_0")]] kernel set_rows_tbq3_t kernel_set_rows_q<float, int64_t, QK_TBQ, block_tbq3_0, quantize_tbq3_0>;
++template [[host_name("kernel_set_rows_f32_i32_tbq3_0")]] kernel set_rows_tbq3_t kernel_set_rows_q<float, int32_t, QK_TBQ, block_tbq3_0, quantize_tbq3_0>;
++typedef decltype(kernel_set_rows_q<float, int64_t, QK_TBQ, block_tbq4_0, quantize_tbq4_0>) set_rows_tbq4_t;
++template [[host_name("kernel_set_rows_f32_i64_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_q<float, int64_t, QK_TBQ, block_tbq4_0, quantize_tbq4_0>;
++template [[host_name("kernel_set_rows_f32_i32_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_q<float, int32_t, QK_TBQ, block_tbq4_0, quantize_tbq4_0>;
+ 
+ typedef decltype(kernel_set_rows_q<float, int64_t, QK_K, block_tq2_0, quantize_tq2_0>) set_rows_qK_t;
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index ef6bf9f0f..f131edbbe 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2582,13 +2582,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+             cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+         } else {
+         // Fallback: dequantize exotic K-cache types for flash-attn
++        // WHY include TBQ4_0: Apple L2 fork profile uses tbq4_0 K / tbq3_0 V;
++        // Metal FA has no native TBQ kernels (CUDA fattn-vec does).
+         if (k->type == GGML_TYPE_QJL1_256 || k->type == GGML_TYPE_TBQ3_TCQ ||
+-            k->type == GGML_TYPE_TBQ3_0 || k->type == GGML_TYPE_Q4_POLAR) {
++            k->type == GGML_TYPE_TBQ3_0 || k->type == GGML_TYPE_TBQ4_0 ||
++            k->type == GGML_TYPE_Q4_POLAR) {
+             ggml_tensor * k_f32 = ggml_cast(ctx0, k, GGML_TYPE_F32);
+             k = ggml_cast(ctx0, k_f32, GGML_TYPE_F16);
+         }
+-        if (v->type == GGML_TYPE_TBQ3_0 || v->type == GGML_TYPE_Q4_POLAR ||
+-            v->type == GGML_TYPE_TBQ3_TCQ) {
++        if (v->type == GGML_TYPE_TBQ3_0 || v->type == GGML_TYPE_TBQ4_0 ||
++            v->type == GGML_TYPE_Q4_POLAR || v->type == GGML_TYPE_TBQ3_TCQ) {
+             ggml_tensor * v_f32 = ggml_cast(ctx0, v, GGML_TYPE_F32);
+             v = ggml_cast(ctx0, v_f32, GGML_TYPE_F16);
+         }

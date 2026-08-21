@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 17 Jul 2026 13:26:02 -0700
+Subject: [PATCH] ggml-cuda: drop duplicate GDN fused-cache stub
+
+---
+ ggml/src/ggml-cuda/gated_delta_net.cu | 8 --------
+ 1 file changed, 8 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu
+index 89951710f..319f1c873 100644
+--- a/ggml/src/ggml-cuda/gated_delta_net.cu
++++ b/ggml/src/ggml-cuda/gated_delta_net.cu
+@@ -233,14 +233,6 @@ static void launch_gated_delta_net(const float * q_d,
+     }
+ }
+ 
+-void ggml_cuda_op_gated_delta_net_fused_cache(
+-        ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_cuda_gated_delta_net_fused_cache cache) {
+-    // Stub for link compatibility with ggml-cuda.cu fusion detector. Fusion is disabled
+-    // (try_gdn_cache_fusion returns 0) because the row-per-warp kernel dropped cache writes.
+-    GGML_UNUSED(cache);
+-    ggml_cuda_op_gated_delta_net(ctx, dst);
+-}
+-
+ void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     ggml_tensor * src_q     = dst->src[0];
+     ggml_tensor * src_k     = dst->src[1];

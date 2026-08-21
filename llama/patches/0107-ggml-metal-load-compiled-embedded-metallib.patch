@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Wed, 29 Jul 2026 01:15:00 -0700
+Subject: [PATCH] ggml-metal: load compiled embedded metallib
+
+Zerollama's Mac build embeds a compiled default.metallib containing the
+main ggml kernels plus eliza-shipped kernels. Upstream's embed is UTF-8
+Metal source. Detect the MTLB magic and use newLibraryWithData so the
+bootstrap /info runner does not abort and report total_vram=0.
+---
+ ggml/src/ggml-metal/ggml-metal-device.m | 38 +++++++++++++++++++++++--
+ 1 file changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index d31fca744..c822c13f7 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -158,7 +158,35 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+         extern const char ggml_metallib_start[];
+         extern const char ggml_metallib_end[];
+ 
+-        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
++        const size_t embed_size = (size_t) (ggml_metallib_end - ggml_metallib_start);
++        const unsigned char * embed = (const unsigned char *) ggml_metallib_start;
++        const bool is_metallib = embed_size >= 4 &&
++            embed[0] == 'M' && embed[1] == 'T' && embed[2] == 'L' && embed[3] == 'B';
++
++        // Zerollama's Mac build embeds a compiled default.metallib (plus
++        // eliza-shipped kernels). Upstream embeds UTF-8 Metal source. Loading
++        // MTLB bytes as NSString returns nil and newLibraryWithSource aborts,
++        // which makes bootstrap GPU discovery fall back to total_vram=0.
++        if (is_metallib) {
++            GGML_LOG_INFO("%s: loading embedded metallib (%zu bytes)\n", __func__, embed_size);
++            dispatch_data_t data = dispatch_data_create(
++                embed, embed_size, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
++            library = [device newLibraryWithData:data error:&error];
++#if !__has_feature(objc_arc)
++            dispatch_release(data);
++#endif
++            if (error || library == nil) {
++                GGML_LOG_ERROR("%s: error loading embedded metallib: %s\n", __func__,
++                    error ? [[error description] UTF8String] : "nil library");
++                return nil;
++            }
++        } else {
++            src = [[NSString alloc] initWithBytes:embed length:embed_size encoding:NSUTF8StringEncoding];
++            if (src == nil) {
++                GGML_LOG_ERROR("%s: embedded Metal payload is neither metallib nor UTF-8 source\n", __func__);
++                return nil;
++            }
++        }
+ #else
+ 
+ #ifdef SWIFT_PACKAGE
+@@ -240,6 +268,10 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+ #endif
+ 
+         if (!library) {
++            if (src == nil) {
++                GGML_LOG_ERROR("%s: no Metal library source available\n", __func__);
++                return nil;
++            }
+             @autoreleasepool {
+                 // dictionary of preprocessor macros
+                 NSMutableDictionary * prep = [NSMutableDictionary dictionary];
+@@ -284,7 +316,9 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+         }
+ 
+ #if GGML_METAL_EMBED_LIBRARY
+-        [src release];
++        if (src != nil) {
++            [src release];
++        }
+ #endif // GGML_METAL_EMBED_LIBRARY
+ 
+         GGML_LOG_INFO("%s: loaded in %.3f sec\n", __func__, (ggml_time_us() - t_start) / 1e6);
