@@ -8,12 +8,12 @@ import (
 
 type mockRenderer struct{}
 
-func (m *mockRenderer) LeadingBOS() string {
-	return ""
-}
-
 func (m *mockRenderer) Render(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	return "mock-output", nil
+}
+
+func (m *mockRenderer) LeadingBOS() string {
+	return ""
 }
 
 func TestRegisterCustomRenderer(t *testing.T) {
@@ -38,6 +38,9 @@ func TestBuiltInRendererStillWorks(t *testing.T) {
 	}{
 		{name: "qwen3-coder"},
 		{name: "qwen3.5"},
+		{name: "qwen3.8"},
+		{name: "nemotron-3-nano"},
+		{name: "nemotron-3.5-nano"},
 	}
 
 	messages := []api.Message{
@@ -68,6 +71,8 @@ func TestLeadingBOSForRenderer(t *testing.T) {
 		{name: "functiongemma", want: "<bos>"},
 		{name: "lfm2", want: "<|startoftext|>"},
 		{name: "lfm2-thinking", want: "<|startoftext|>"},
+		{name: "laguna", want: "〈|EOS|〉"},
+		{name: "poolside-v1", want: "〈|EOS|〉"},
 		{name: "deepseek3.1", want: "<｜begin▁of▁sentence｜>"},
 		{name: "cogito", want: "<｜begin▁of▁sentence｜>"},
 		{name: "qwen3-coder", want: ""},

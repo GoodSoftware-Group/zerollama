@@ -8,17 +8,12 @@
 #include "ggml-metal-common.h"
 #include "ggml-metal-device.h"
 #include "ggml-metal-tuning.h"
-#include "ane_ffn_policy.h"
-#include "ane_ffn_swiglu_fuse.h"
 
 #include <cassert>
 #include <algorithm>
 #include <limits>
 #include <cmath>
 #include <cstring>
-#include <cstdlib>
-#include <cstdio>
-#include <atomic>
 
 static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
     if (!t) {
@@ -46,7 +41,6 @@ struct ggml_metal_op {
         int  debug_fusion) {
         this->dev             = dev;
         this->lib             = ggml_metal_device_get_library(dev);
-        this->cmd_buf         = cmd_buf;
         this->enc             = ggml_metal_encoder_init(cmd_buf, use_concurrency);
         this->mem_ranges      = ggml_mem_ranges_init(debug_graph);
         this->idx_start       = idx_start;
@@ -98,7 +92,6 @@ struct ggml_metal_op {
 
     ggml_metal_device_t  dev;
     ggml_metal_library_t lib;
-    ggml_metal_cmd_buf_t cmd_buf;
     ggml_metal_encoder_t enc;
     ggml_mem_ranges_t    mem_ranges;
 
@@ -108,15 +101,6 @@ struct ggml_metal_op {
 
     int debug_graph;
     int debug_fusion;
-
-    bool sync_for_ane_host() {
-        ggml_metal_cmd_buf_t neu = ggml_metal_encoder_sync_and_resume(this->enc, this->dev);
-        if (!neu) {
-            return false;
-        }
-        this->cmd_buf = neu;
-        return true;
-    }
 
 private:
     ggml_cgraph * gf;
@@ -156,10 +140,6 @@ ggml_metal_op_t ggml_metal_op_init(
 
 void ggml_metal_op_free(ggml_metal_op_t ctx) {
     delete ctx;
-}
-
-ggml_metal_cmd_buf_t ggml_metal_op_cmd_buf(ggml_metal_op_t ctx) {
-    return ctx ? ctx->cmd_buf : NULL;
 }
 
 int ggml_metal_op_n_nodes(ggml_metal_op_t ctx) {
@@ -321,6 +301,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_unary(ctx, idx);
             } break;
+        case GGML_OP_SILU_BACK:
+            {
+                n_fuse = ggml_metal_op_silu_back(ctx, idx);
+            } break;
         case GGML_OP_GLU:
             {
                 n_fuse = ggml_metal_op_glu(ctx, idx);
@@ -337,6 +321,16 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         case GGML_OP_CUMSUM:
             {
                 n_fuse = ggml_metal_op_cumsum(ctx, idx);
+            } break;
+        case GGML_OP_LIGHTNING_INDEXER:
+            {
+                n_fuse = ggml_metal_op_lightning_indexer(ctx, idx);
+            } break;
+        case GGML_OP_DSV4_HC_COMB:
+        case GGML_OP_DSV4_HC_PRE:
+        case GGML_OP_DSV4_HC_POST:
+            {
+                n_fuse = ggml_metal_op_dsv4_hc(ctx, idx);
             } break;
         case GGML_OP_SOFT_MAX:
             {
@@ -1355,6 +1349,203 @@ int ggml_metal_op_diag(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+int ggml_metal_op_lightning_indexer(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    GGML_ASSERT(op->op == GGML_OP_LIGHTNING_INDEXER);
+
+    const ggml_tensor * q = op->src[0];
+    const ggml_tensor * k = op->src[1];
+    const ggml_tensor * w = op->src[2];
+    const ggml_tensor * m = op->src[3];
+
+    GGML_ASSERT(q->type == GGML_TYPE_F32);
+    GGML_ASSERT(k->type == GGML_TYPE_F32  ||
+                k->type == GGML_TYPE_F16  ||
+                k->type == GGML_TYPE_BF16 ||
+                k->type == GGML_TYPE_Q4_0 ||
+                k->type == GGML_TYPE_Q4_1 ||
+                k->type == GGML_TYPE_Q5_0 ||
+                k->type == GGML_TYPE_Q5_1 ||
+                k->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(w->type == GGML_TYPE_F32);
+    GGML_ASSERT(m->type == GGML_TYPE_F16);
+    GGML_ASSERT(op->type == GGML_TYPE_F32);
+
+    GGML_ASSERT(q->ne[0] == OP_LIGHTNING_INDEXER_DK);
+    GGML_ASSERT(q->ne[1] == OP_LIGHTNING_INDEXER_NH);
+
+    ggml_metal_kargs_lightning_indexer args = {
+        /*.n_kv      =*/ (int32_t) k->ne[2],
+        /*.n_batch   =*/ (int32_t) q->ne[2],
+        /*.mask_ne3  =*/ (int32_t) m->ne[3],
+        /*.nb1       =*/ op->nb[1],
+        /*.nb3       =*/ op->nb[3],
+        /*.nbq1      =*/ q->nb[1],
+        /*.nbq2      =*/ q->nb[2],
+        /*.nbq3      =*/ q->nb[3],
+        /*.nbk2      =*/ k->nb[2],
+        /*.nbk3      =*/ k->nb[3],
+        /*.nbw1      =*/ w->nb[1],
+        /*.nbw3      =*/ w->nb[3],
+        /*.nbm1      =*/ m->nb[1],
+        /*.nbm3      =*/ m->nb[3],
+    };
+
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(q),  1);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(k),  2);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(w),  3);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(m),  4);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op), 5);
+
+    const int nsg   = OP_LIGHTNING_INDEXER_NSG;
+    const int nkptg = OP_LIGHTNING_INDEXER_NKPSG*nsg;
+    const int nbptg = OP_LIGHTNING_INDEXER_NBPTG;
+
+    auto pipeline = ggml_metal_library_get_pipeline_lightning_indexer(ctx->lib, op);
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_dispatch_threadgroups(enc,
+            (k->ne[2] + nkptg - 1)/nkptg,
+            (q->ne[2] + nbptg - 1)/nbptg,
+            q->ne[3], 32, nsg, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_dsv4_hc(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_encoder_t enc = ctx->enc;
+    auto pipeline = ggml_metal_library_get_pipeline_dsv4_hc(ctx->lib, op->op);
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+
+    switch (op->op) {
+        case GGML_OP_DSV4_HC_COMB:
+            {
+                const ggml_tensor * mixes = op->src[0];
+                const ggml_tensor * scale = op->src[1];
+                const ggml_tensor * base  = op->src[2];
+
+                GGML_ASSERT(mixes->type == GGML_TYPE_F32);
+                GGML_ASSERT(scale->type == GGML_TYPE_F32);
+                GGML_ASSERT(base->type  == GGML_TYPE_F32);
+                GGML_ASSERT(op->type    == GGML_TYPE_F32);
+                GGML_ASSERT(mixes->ne[0] == 24);
+                GGML_ASSERT(op->ne[0] == 4 && op->ne[1] == 4);
+
+                ggml_metal_kargs_dsv4_hc_comb args = {
+                    /*.n_tokens =*/ (int32_t) mixes->ne[1],
+                    /*.n_iter   =*/ ggml_get_op_params_i32(op, 1),
+                    /*.nb_m0    =*/ mixes->nb[0],
+                    /*.nb_m1    =*/ mixes->nb[1],
+                    /*.nb_s0    =*/ scale->nb[0],
+                    /*.nb_b0    =*/ base->nb[0],
+                    /*.nb_d0    =*/ op->nb[0],
+                    /*.nb_d1    =*/ op->nb[1],
+                    /*.nb_d2    =*/ op->nb[2],
+                    /*.eps      =*/ ggml_get_op_params_f32(op, 0),
+                };
+
+                ggml_metal_encoder_set_bytes (enc, &args, sizeof(args), 0);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(mixes), 1);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(scale), 2);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(base),  3);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op),    4);
+
+                // One SIMDgroup owns one 4x4 Sinkhorn matrix. Packing up to four
+                // independent tokens per threadgroup keeps both decode and prompt
+                // dispatches compact without any threadgroup-memory synchronization.
+                const int nsg = std::min(4, args.n_tokens);
+                ggml_metal_encoder_dispatch_threadgroups(
+                        enc, (args.n_tokens + nsg - 1)/nsg, 1, 1, 32, nsg, 1);
+            } break;
+        case GGML_OP_DSV4_HC_PRE:
+            {
+                const ggml_tensor * x       = op->src[0];
+                const ggml_tensor * weights = op->src[1];
+
+                GGML_ASSERT(x->type       == GGML_TYPE_F32);
+                GGML_ASSERT(weights->type == GGML_TYPE_F32);
+                GGML_ASSERT(op->type      == GGML_TYPE_F32);
+                GGML_ASSERT(x->ne[1] == 4);
+
+                ggml_metal_kargs_dsv4_hc_pre args = {
+                    /*.n_embd   =*/ (int32_t) x->ne[0],
+                    /*.n_tokens =*/ (int32_t) x->ne[2],
+                    /*.nb_x0    =*/ x->nb[0],
+                    /*.nb_x1    =*/ x->nb[1],
+                    /*.nb_x2    =*/ x->nb[2],
+                    /*.nb_w0    =*/ weights->nb[0],
+                    /*.nb_w1    =*/ weights->nb[1],
+                    /*.nb_d0    =*/ op->nb[0],
+                    /*.nb_d1    =*/ op->nb[1],
+                };
+
+                ggml_metal_encoder_set_bytes (enc, &args, sizeof(args), 0);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(x),       1);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(weights), 2);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op),      3);
+
+                const int n_tiles = (args.n_embd + 31)/32;
+                const int nsg = std::min(4, n_tiles);
+                ggml_metal_encoder_dispatch_threadgroups(
+                        enc, (n_tiles + nsg - 1)/nsg, args.n_tokens, 1, 32, nsg, 1);
+            } break;
+        case GGML_OP_DSV4_HC_POST:
+            {
+                const ggml_tensor * x        = op->src[0];
+                const ggml_tensor * residual = op->src[1];
+                const ggml_tensor * post     = op->src[2];
+                const ggml_tensor * comb     = op->src[3];
+
+                GGML_ASSERT(x->type        == GGML_TYPE_F32);
+                GGML_ASSERT(residual->type == GGML_TYPE_F32);
+                GGML_ASSERT(post->type     == GGML_TYPE_F32);
+                GGML_ASSERT(comb->type     == GGML_TYPE_F32);
+                GGML_ASSERT(op->type       == GGML_TYPE_F32);
+                GGML_ASSERT(residual->ne[1] == 4);
+
+                ggml_metal_kargs_dsv4_hc_post args = {
+                    /*.n_embd   =*/ (int32_t) x->ne[0],
+                    /*.n_tokens =*/ (int32_t) x->ne[1],
+                    /*.nb_x0    =*/ x->nb[0],
+                    /*.nb_x1    =*/ x->nb[1],
+                    /*.nb_r0    =*/ residual->nb[0],
+                    /*.nb_r1    =*/ residual->nb[1],
+                    /*.nb_r2    =*/ residual->nb[2],
+                    /*.nb_p0    =*/ post->nb[0],
+                    /*.nb_p1    =*/ post->nb[1],
+                    /*.nb_c0    =*/ comb->nb[0],
+                    /*.nb_c1    =*/ comb->nb[1],
+                    /*.nb_c2    =*/ comb->nb[2],
+                    /*.nb_d0    =*/ op->nb[0],
+                    /*.nb_d1    =*/ op->nb[1],
+                    /*.nb_d2    =*/ op->nb[2],
+                };
+
+                ggml_metal_encoder_set_bytes (enc, &args, sizeof(args), 0);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(x),        1);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(residual), 2);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(post),     3);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(comb),     4);
+                ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op),       5);
+
+                const int n_tiles = (args.n_embd + 31)/32;
+                const int nsg = std::min(4, n_tiles);
+                ggml_metal_encoder_dispatch_threadgroups(
+                        enc, (n_tiles + nsg - 1)/nsg, args.n_tokens, 1, 32, nsg, 1);
+            } break;
+        default:
+            GGML_ABORT("fatal error");
+    }
+
+    return 1;
+}
+
 int ggml_metal_op_diag_mask_inf(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -1602,6 +1793,10 @@ int ggml_metal_op_ssm_scan(ggml_metal_op_t ctx, int idx) {
     const int64_t n_group      = ne41;
     const int64_t n_seq_tokens = ne12;
     const int64_t n_seqs       = ne13;
+    const int64_t K            = ggml_get_op_params_i32(op, 0);
+
+    GGML_ASSERT(K >= 1);
+    GGML_ASSERT(ggml_nelements(op->src[1]) + K*d_state*d_inner*n_head*n_seqs == ggml_nelements(op));
 
     ggml_metal_kargs_ssm_scan args = {
         /*.d_state      =*/ d_state,
@@ -1610,6 +1805,7 @@ int ggml_metal_op_ssm_scan(ggml_metal_op_t ctx, int idx) {
         /*.n_group      =*/ n_group,
         /*.n_seq_tokens =*/ n_seq_tokens,
         /*.n_seqs       =*/ n_seqs,
+        /*.K            =*/ K,
         /*.s_off        =*/ ggml_nelements(op->src[1]) * sizeof(float),
         /*.nb00         =*/ nb00,
         /*.nb01         =*/ nb01,
@@ -2329,14 +2525,6 @@ static void ggml_metal_op_mul_mat_check_pipeline(const ggml_metal_pipeline_with_
     }
 }
 
-// Holey MoE shexp: stash fuse at gate/up, replace when down is encoded.
-// Early staging+memcpy without a post-MoE sync is not coherent (F0747).
-struct ane_ffn_holey_slot {
-    ane_ffn_swiglu_fuse_t fuse;
-    bool live;
-};
-static ane_ffn_holey_slot g_ane_ffn_holey[64];
-
 int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -2365,167 +2553,6 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
     GGML_ASSERT(ne00 == ne10);
-
-    // Lab ANE FFN (ZEROLLAMA_ANE_FFN_*): fused SwiGLU first, then single matmul force/shadow.
-    // build_ffn(PAR) builds up→gate→glu→down; Metal may topo-sort to gate→up→glu→down.
-    // MoE shexp is holey: defer ANE write until down is encoded (early write races MoE scratch).
-    {
-        const int ic  = (int)ne00;
-        const int oc  = (int)ne01;
-        const int seq = (int)ne11;
-        const char *wname = op->src[0] ? op->src[0]->name : NULL;
-        const bool swiglu_on = getenv("ZEROLLAMA_ANE_FFN_SWIGLU") &&
-            getenv("ZEROLLAMA_ANE_FFN_SWIGLU")[0] == '1';
-        const bool is_swiglu_w = ane_ffn_name_is_ffn_swiglu_weight(wname);
-        const bool fuse_anchor =
-            ane_ffn_name_is_ffn_up(wname) || ane_ffn_name_is_ffn_gate(wname);
-
-        // Deferred holey: if this MUL_MAT is a stashed shexp down, replace now.
-        if (swiglu_on && ane_ffn_name_is_ffn_down(wname)) {
-            for (int pi = 0; pi < 64; ++pi) {
-                if (!g_ane_ffn_holey[pi].live) {
-                    continue;
-                }
-                ane_ffn_swiglu_fuse_t & fuse = g_ane_ffn_holey[pi].fuse;
-                if (fuse.down != op && fuse.dst != op) {
-                    continue;
-                }
-                if (!ane_ffn_force_want_try(fuse.ic, fuse.hidden, fuse.seq, wname)) {
-                    g_ane_ffn_holey[pi].live = false;
-                    break;
-                }
-                ane_ffn_force_autoload_host_replace();
-                const bool skip_sync = getenv("ZEROLLAMA_ANE_FFN_FORCE_HOST") &&
-                    getenv("ZEROLLAMA_ANE_FFN_FORCE_HOST")[0] == '1';
-                bool host_ready = skip_sync || ctx->sync_for_ane_host();
-                if (!host_ready) {
-                    ane_ffn_force_note_bail(
-                        "sync_deferred", fuse.ic, fuse.hidden, fuse.seq, wname);
-                    g_ane_ffn_holey[pi].live = false;
-                    break;
-                }
-                if (ane_ffn_force_try_swiglu_tensors(&fuse)) {
-                    g_ane_ffn_holey[pi].live = false;
-                    if (fuse.down_scale && fuse.dst == fuse.down_scale) {
-                        const_cast<ggml_tensor *>(fuse.down_scale)->flags &=
-                            ~GGML_TENSOR_FLAG_COMPUTE;
-                    }
-                    return 1;
-                }
-                ane_ffn_force_note_bail(
-                    "deferred_replace", fuse.ic, fuse.hidden, fuse.seq, wname);
-                g_ane_ffn_holey[pi].live = false;
-                break;
-            }
-        }
-
-        if (swiglu_on && fuse_anchor && idx + 3 < ctx->n_nodes()) {
-            // Dense needs ≤7; MoE shexp interleaves router/MUL_MAT_ID — look farther.
-            const int n_avail = ctx->n_nodes() - idx;
-            const int n_look = n_avail > 48 ? 48 : n_avail;
-            const ggml_tensor * nodes[48];
-            for (int k = 0; k < n_look; ++k) {
-                nodes[k] = ctx->node(idx + k);
-            }
-            ane_ffn_swiglu_fuse_t fuse;
-            if (ane_ffn_swiglu_fuse_match(nodes, n_look, &fuse)) {
-                if (ane_ffn_force_want_try(ic, oc, seq, wname)) {
-                    ane_ffn_force_autoload_host_replace();
-                    const bool holey_off = fuse.holey && getenv("ZEROLLAMA_ANE_FFN_HOLEY") &&
-                        getenv("ZEROLLAMA_ANE_FFN_HOLEY")[0] == '0';
-                    if (holey_off) {
-                        ane_ffn_force_note_bail(
-                            "holey_disabled", fuse.ic, fuse.hidden, fuse.seq, wname);
-                    } else if (fuse.holey) {
-                        // Defer replace to down encode; skip gate+up+glu only.
-                        int slot = -1;
-                        for (int pi = 0; pi < 64; ++pi) {
-                            if (!g_ane_ffn_holey[pi].live) {
-                                slot = pi;
-                                break;
-                            }
-                        }
-                        if (slot < 0) {
-                            ane_ffn_force_note_bail(
-                                "holey_full", fuse.ic, fuse.hidden, fuse.seq, wname);
-                        } else {
-                            g_ane_ffn_holey[slot].fuse = fuse;
-                            g_ane_ffn_holey[slot].live = true;
-                            if (fuse.glu) {
-                                const_cast<ggml_tensor *>(fuse.glu)->flags &=
-                                    ~GGML_TENSOR_FLAG_COMPUTE;
-                            }
-                            // down keeps COMPUTE until deferred replace
-                            return fuse.n_encode_skip > 0 ? fuse.n_encode_skip : 2;
-                        }
-                    } else {
-                        const bool skip_sync = getenv("ZEROLLAMA_ANE_FFN_FORCE_HOST") &&
-                            getenv("ZEROLLAMA_ANE_FFN_FORCE_HOST")[0] == '1';
-                        bool host_ready = skip_sync || ctx->sync_for_ane_host();
-                        if (!host_ready) {
-                            ane_ffn_force_note_bail(
-                                "sync", fuse.ic, fuse.hidden, fuse.seq, wname);
-                        } else if (ane_ffn_force_try_swiglu_tensors(&fuse)) {
-                            return fuse.n_encode_skip > 0 ? fuse.n_encode_skip : fuse.n_fuse;
-                        }
-                    }
-                } else {
-                    ane_ffn_force_note_bail(
-                        "policy", fuse.ic, fuse.hidden, fuse.seq, wname);
-                }
-                ane_ffn_shadow_note_swiglu_fuse(fuse.ic, fuse.hidden, fuse.seq, wname);
-            } else if (getenv("ZEROLLAMA_ANE_FFN_TELEMETRY") &&
-                       getenv("ZEROLLAMA_ANE_FFN_TELEMETRY")[0] == '1') {
-                // Rate-limited: MoE shexp often fails fuse when topo interleaves MoE ops.
-                static std::atomic<uint64_t> g_fuse_miss{0};
-                uint64_t n = g_fuse_miss.fetch_add(1) + 1;
-                if (n <= 8 || (n % 1024ull) == 0) {
-                    char ops[384];
-                    size_t o = 0;
-                    ops[0] = '\0';
-                    const int n_show = n_look > 16 ? 16 : n_look;
-                    for (int k = 0; k < n_show && o + 24 < sizeof(ops); ++k) {
-                        const char * on = nodes[k] ? ggml_op_name(nodes[k]->op) : "?";
-                        const char * wn = (nodes[k] && nodes[k]->op == GGML_OP_MUL_MAT &&
-                                          nodes[k]->src[0] && nodes[k]->src[0]->name[0])
-                            ? nodes[k]->src[0]->name : "";
-                        int w = snprintf(ops + (int)o, sizeof(ops) - o, "%s%s%s%s",
-                                         k ? "," : "", on,
-                                         wn[0] ? ":" : "", wn[0] ? wn : "");
-                        if (w > 0) {
-                            o += (size_t)w;
-                        }
-                    }
-                    fprintf(stderr,
-                            "ane_ffn_force: fuse_miss#%llu ic=%d oc=%d seq=%d name=%s look=%d [%s]\n",
-                            (unsigned long long)n, ic, oc, seq, wname ? wname : "",
-                            n_look, ops);
-                }
-            }
-        }
-
-        // With SWIGLU=1, never partial-replace up/gate/down as lone matmuls — that
-        // would desync the FFN. Only the fused path above may skip Metal.
-        if (!(swiglu_on && is_swiglu_w) && ane_ffn_force_want_try(ic, oc, seq, wname)) {
-            ane_ffn_force_autoload_host_replace();
-            const bool have_replace = ane_ffn_force_get_host_replace() != NULL;
-            const bool skip_sync = getenv("ZEROLLAMA_ANE_FFN_FORCE_HOST") &&
-                getenv("ZEROLLAMA_ANE_FFN_FORCE_HOST")[0] == '1';
-            bool host_ready = skip_sync;
-            if (have_replace && !skip_sync) {
-                host_ready = ctx->sync_for_ane_host();
-            }
-            if (have_replace && host_ready &&
-                ane_ffn_force_try_mul_mat_tensors(op->src[0], op->src[1], op)) {
-                return 1;
-            }
-            (void) ane_ffn_force_try_mul_mat(ic, oc, seq, wname);
-        } else if (!(swiglu_on && is_swiglu_w) &&
-                   ane_ffn_force_try_mul_mat(ic, oc, seq, wname)) {
-            return 1;
-        }
-        ane_ffn_shadow_note_mul_mat(ic, oc, seq, wname);
-    }
 
     GGML_ASSERT(ne12 % ne02 == 0);
     GGML_ASSERT(ne13 % ne03 == 0);
@@ -3920,9 +3947,6 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
-    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
-    GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
-
     GGML_ASSERT(ggml_is_contiguous_rows(op->src[0]));
     GGML_ASSERT(ggml_is_contiguous_rows(op->src[1]));
 
@@ -4060,6 +4084,36 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
     }
 
     return n_fuse;
+}
+
+int ggml_metal_op_silu_back(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    auto pipeline = ggml_metal_library_get_pipeline_silu_back(lib, op);
+
+    const int64_t ne = ggml_nelements(op);
+
+    ggml_metal_kargs_silu_back args = {
+        /*.ne =*/ ne,
+    };
+
+    int arg_idx{0};
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), arg_idx++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), arg_idx++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), arg_idx++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op), arg_idx++);
+
+    const int nth = std::min<int64_t>(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), ne);
+    const int64_t n = (ne + nth - 1) / nth;
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, n, 1, 1, nth, 1, 1);
+
+    return 1;
 }
 
 int ggml_metal_op_l2_norm(ggml_metal_op_t ctx, int idx) {
@@ -4331,7 +4385,7 @@ int ggml_metal_op_norm(ggml_metal_op_t ctx, int idx) {
     }
 
     nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
-    nth = std::min(nth, args.ne00_t);
+    nth = std::min(nth, (args.ne00_t + 31)/32*32);
 
     const size_t smem = pipeline.smem;
 

@@ -16,10 +16,10 @@ and PAD pieces from that PR were already on the pin.
  7 files changed, 181 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index a3f31d9f9..263cd7365 100644
+index cb5e5ed4f..0f8377213 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -1892,6 +1892,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_im2col(ggml_meta
+@@ -1937,6 +1937,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_im2col(ggml_meta
      return res;
  }
  
@@ -48,10 +48,10 @@ index a3f31d9f9..263cd7365 100644
      assert(op->op == GGML_OP_CONV_TRANSPOSE_1D);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index a6b8f6477..6bd10b5e8 100644
+index 2775405ad..ceb0d366f 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
-@@ -151,6 +151,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_group_nor
+@@ -154,6 +154,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_group_nor
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_norm              (ggml_metal_library_t lib, const struct ggml_tensor * op, int32_t n_fuse);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rope              (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_im2col            (ggml_metal_library_t lib, const struct ggml_tensor * op);
@@ -60,10 +60,10 @@ index a6b8f6477..6bd10b5e8 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_transpose_2d (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_col2im_1d         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 6ce373322..3b30a7214 100644
+index 88009d7b3..5383db983 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1333,6 +1333,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1343,6 +1343,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
              return true;
          case GGML_OP_IM2COL:
              return ggml_is_contiguous(op->src[1]) && op->src[1]->type == GGML_TYPE_F32 && (op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32);
@@ -73,10 +73,10 @@ index 6ce373322..3b30a7214 100644
              return ggml_is_contiguous(op->src[0]) &&
                     op->src[1]->type == GGML_TYPE_F32 &&
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 3cf35ff3a..da75b01f2 100644
+index 3df96f2c4..4494d51cc 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -731,6 +731,36 @@ typedef struct {
+@@ -741,6 +741,36 @@ typedef struct {
      int32_t  KHW; // KH * KW, pre-computed on CPU to save GPU resources
  } ggml_metal_kargs_im2col;
  
@@ -114,10 +114,10 @@ index 3cf35ff3a..da75b01f2 100644
      int32_t  IW;
      int32_t  IH;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 995dd203f..066b8de03 100644
+index fc9f82eef..b14c84437 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -392,6 +392,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -406,6 +406,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
              {
                  n_fuse = ggml_metal_op_im2col(ctx, idx);
              } break;
@@ -128,7 +128,7 @@ index 995dd203f..066b8de03 100644
          case GGML_OP_CONV_2D:
              {
                  n_fuse = ggml_metal_op_conv_2d(ctx, idx);
-@@ -4060,6 +4064,65 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
+@@ -4303,6 +4307,65 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
      return 1;
  }
  
@@ -195,10 +195,10 @@ index 995dd203f..066b8de03 100644
      ggml_tensor * op = ctx->node(idx);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index 03c55811c..7372f2123 100644
+index 026ce824f..6d761c136 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
-@@ -78,6 +78,7 @@ int ggml_metal_op_group_norm        (ggml_metal_op_t ctx, int idx);
+@@ -81,6 +81,7 @@ int ggml_metal_op_group_norm        (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_norm              (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_rope              (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_im2col            (ggml_metal_op_t ctx, int idx);
@@ -207,10 +207,10 @@ index 03c55811c..7372f2123 100644
  int ggml_metal_op_conv_2d_dw        (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_conv_3d           (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 30fbed169..d3418bfcb 100644
+index 1bee9d5e9..625a8b25c 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -5268,6 +5268,69 @@ kernel void kernel_im2col_ext(
+@@ -5339,6 +5339,69 @@ kernel void kernel_im2col_ext(
  template [[host_name("kernel_im2col_ext_f32")]] kernel im2col_ext_t kernel_im2col_ext<float>;
  template [[host_name("kernel_im2col_ext_f16")]] kernel im2col_ext_t kernel_im2col_ext<half>;
  

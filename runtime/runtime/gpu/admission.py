@@ -10,6 +10,9 @@ VRAM headroom (when checks on; size strings like 1GiB, 512MiB):
 
 Optional safety cap: ZEROLLAMA_RUNTIME_MAX_QUEUE (default 512, code constant).
 
+VRAM ceiling (LA19; also applied in Go GPU discovery):
+  - ZEROLLAMA_VRAM_BUDGET=80% or 12GiB — min(detected, budget); unset = full device
+
 Backpressure thresholds: defaults in inference_policy.py; optional ZEROLLAMA_RUNTIME_* overrides (see phase11-runtime-admission.md).
 """
 

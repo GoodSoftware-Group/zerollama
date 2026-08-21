@@ -155,7 +155,7 @@ vs host 50L `vel_audio≈1.0`. Truncating to 24 blocks cuts the residual stack, 
 the final AdaLN/RMSNorm sees a wrong hidden state and the audio velocity
 explodes ~20–70× (24L `vel_rms≈17–21` vs 50L `≈1–2`), integrating to
 `a_rms=45` and a **~93%-clipped waveform**. Host 50L now yields
-`latent_rms=1.18298 a_rms=0.504888` and `clipped=0/12800` on the regression
+`latent_rms=1.18314 a_rms=0.504881` and `clipped=0/12800` on the regression
 gate. The "rank-1 / per-ch_std collapse" reading of 50L was a misdiagnosis:
 low `per-ch_std` (0.2–0.7) at small canvases is the correct model's on-manifold
 behavior — the model is trained for the 768²+ canvas (Comfy oracle is
@@ -203,9 +203,10 @@ big weights (`adaln_proj`, ~49.5 MB/block) are read by pointer from the weight
 cache instead of a per-call memcpy. All bit-exact — gate string unchanged.
 Opt-in `H3_SDPA_BLAS=1` runs attention as per-head `cblas_sgemm` QK^T/P·V +
 vDSP softmax (no gather; sgemm walks packed Q/K/V via `lda=heads·hd`):
-768² 1-step **1119 → 744 ms/layer (1.50×)**, `vel_rms` identical to 4 digits,
-tiny-gate signature drifts only in the 5th digit (accumulation order). Not
-default while the gate is bit-exactness-tracked.
+768² 1-step **1119 → 744 ms/layer (1.50×)**, agreement ~1e-8 vs scalar
+(test-pinned). **Now the default** — the gate was re-baselined to the BLAS
+signature (`latent_rms=1.18314 a_rms=0.504881`, 5th-digit move from
+accumulation order); `H3_SDPA_BLAS=0` restores the bit-exact scalar path.
 `--family h3 --generate --prompt TEXT` maps tokens through Qwen3-VL-4B (or
 hash TE) + ClipProj into DiT text rows and keeps presentation **AdaLN tags**
 (vision pads = video). Omit `--prompt` for dummy sine cond. H3TE dumps may
@@ -239,7 +240,7 @@ After DiT, `--generate` logs `latent spatial WxH std=… ac1=…` (t=0, mean ove
 below are 24L (truncated): the huge velocity (~17–21 vs ~1–2 at 50L) walked the
 latent ~10× past the VAE's ~1.3 encoded scale, so 24L decode was magenta/gray
 "not a fox" — an artifact of the truncation, not the field direction. The 50L
-default fixes it: tiny 32² 2-step gate is `latent_rms=1.18298 a_rms=0.504888`
+default fixes it: tiny 32² 2-step gate is `latent_rms=1.18314 a_rms=0.504881`
 (`per-ch_std` small, `ac1≈1` — on-manifold, not a picture either; a 2×2 latent
 cannot hold a fox). `final_layer.video_out` is not a host GEMM miss:
 4-token `--dit-denoise --layers 1` `vel_rms=75.41` matches numpy
@@ -290,7 +291,7 @@ because the **512 DiT audio latent is off-manifold** (same dump→`--decode-audi
 wav `rms=0.002`), not mux. 256² 8-step dump decodes `rms=0.40`. **`H3_AUDIO_CARRY`**
 matches Comfy `process_latent_in` (audio ×4), uncarry for the network, Euler/res
 on carried x, then ÷4. Unset: on when `nv>8` (32² gate stays native
-`latent_rms=1.18298 a_rms=0.504888`). Host wrap-on-native-x (no ×4) is obsolete:
+`latent_rms=1.18314 a_rms=0.504881`). Host wrap-on-native-x (no ×4) is obsolete:
 256² oracle 8-step wav **`rms=0.761`** (`a_rms=2.79`, `clipped=3848/12800`; video
 `0.878` unchanged vs 0.879); 512² wav **`rms=0.661`** (`a_rms=2.26`,
 `clipped=2076/12800`; video `0.917` vs 0.916) vs old carry `0.100` / no-carry
@@ -305,7 +306,7 @@ last `vel spatial ac1=0.115`. Wrote `/tmp/h3_768_carry_in.mp4` (sharp fox; mux w
 `a_rms=2.34`; L0 `x_out_rms=62.48` (Comfy 62.02); last `vel spatial ac1=0.143`.
 Wrote `/tmp/h3_1344x768_carry_in.mp4` (sharp fox; mux wav **`rms=0.703`**
 `clipped=1064/12800`). Old wrap `/tmp/h3_1344x768_res8.mp4` was `a_rms=1.14` wav
-`rms=0.031`. Gate still `latent_rms=1.18298 a_rms=0.504888`.
+`rms=0.031`. Gate still `latent_rms=1.18314 a_rms=0.504881`.
 
 
 

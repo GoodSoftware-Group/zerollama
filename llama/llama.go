@@ -13,6 +13,8 @@ package llama
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/vendor
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/tools/mtmd
 #cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/src
+#cgo CPPFLAGS: -I${SRCDIR}/llama.cpp/vendor/hash
+#cgo CFLAGS: -I${SRCDIR}/llama.cpp/vendor/hash/sha256
 #cgo CPPFLAGS: -I${SRCDIR}/compat
 #cgo CPPFLAGS: -I${SRCDIR}/../ml/backend/ggml/ggml/include
 

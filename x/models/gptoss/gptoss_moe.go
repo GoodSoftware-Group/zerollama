@@ -98,7 +98,7 @@ func loadStackedProjection(tensors map[string]*mlx.Array, cfg *Config, useQuanti
 		return out
 	}
 
-	out.Weight = mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode)
+	out.Weight = mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode, nil)
 	out.Bits = bits
 	out.GroupSize = groupSize
 	out.Mode = mode

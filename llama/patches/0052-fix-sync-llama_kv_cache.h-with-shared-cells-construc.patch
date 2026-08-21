@@ -10,7 +10,7 @@ implementation used by Phase 15 / hybrid memory.
  1 file changed, 11 insertions(+), 2 deletions(-)
 
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 48d160481..da6a2afdb 100644
+index 17ab9e30f..085b38463 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -5,6 +5,7 @@
@@ -51,7 +51,7 @@ index 48d160481..da6a2afdb 100644
      // zerollama Phase 15 v20: external PA page bind helpers (llama-kv-ext.h)
      int32_t  cell_index_for(llama_seq_id seq_id, llama_pos pos, uint32_t * out_stream = nullptr) const;
      uint32_t n_kv_layers() const;
-@@ -281,7 +287,10 @@ private:
+@@ -276,7 +282,10 @@ private:
      // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
      std::vector<uint32_t> v_heads;
  

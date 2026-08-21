@@ -665,6 +665,10 @@ var tensorImportTransformRegistry = map[string]tensorImportTransformFactory{
 	"Gemma4ForCausalLM":                    newGemma4ImportTransform,
 	"Gemma4ForConditionalGeneration":       newGemma4ImportTransform,
 	"Cohere2MoeForCausalLM":                newCohere2MoeImportTransform,
+	"MuseGlimmerForConditionalGeneration":  newGlimmerImportTransform,
+	"NemotronH_Nano_VL_V2":                 newNemotronHImportTransform,
+	"NemotronH_Nano_Omni_Reasoning_V3":     newNemotronHImportTransform,
+	"NemotronHForCausalLM":                 newNemotronHImportTransform,
 }
 
 func newTensorImportTransform(modelDir string, cfg sourceModelConfig) (tensorImportTransform, error) {

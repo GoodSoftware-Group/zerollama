@@ -1962,8 +1962,10 @@ struct llm_tokenizer_plamo2 : llm_tokenizer {
             if (vocab.is_byte(token_id)) {
                 if (entry.text.length() == 6 && entry.text.substr(0, 3) == "<0x" && entry.text.back() == '>') {
                     std::string hex_str = entry.text.substr(3, 2);
-                    int byte_val = std::stoi(hex_str, nullptr, 16);
-                    bytes_[byte_val] = static_cast<llama_token>(token_id);
+                    if (std::isxdigit(static_cast<unsigned char>(hex_str[0])) && std::isxdigit(static_cast<unsigned char>(hex_str[1]))) {
+                        int byte_val = std::stoi(hex_str, nullptr, 16);
+                        bytes_[byte_val] = static_cast<llama_token>(token_id);
+                    }
                 }
                 continue;
             }
@@ -2587,6 +2589,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 // Kimi-K2 doesn't need merges, skip
                 LLAMA_LOG_INFO("%s: Kimi-K2 tokenizer detected, skipping BPE merges\n", __func__);
             } else {
+                if (gguf_get_kv_type(ctx, merges_keyidx) != GGUF_TYPE_ARRAY ||
+                    gguf_get_arr_type(ctx, merges_keyidx) != GGUF_TYPE_STRING) {
+                    throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_MERGES).c_str()));
+                }
                 const int n_merges = gguf_get_arr_n(ctx, merges_keyidx);
                 for (int i = 0; i < n_merges; i++) {
                     const std::string word = gguf_get_arr_str(ctx, merges_keyidx, i);
@@ -2626,7 +2632,11 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
 
             const int precompiled_charsmap_keyidx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str());
             if (precompiled_charsmap_keyidx != -1) {
+                if (gguf_get_kv_type(ctx, precompiled_charsmap_keyidx) != GGUF_TYPE_ARRAY) {
+                    throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str()));
+                }
                 const gguf_type pc_type = gguf_get_arr_type(ctx, precompiled_charsmap_keyidx);
+                (void)pc_type;
                 const size_t n_precompiled_charsmap = gguf_get_arr_data_n(ctx, precompiled_charsmap_keyidx);
                 const char * pc = (const char *) gguf_get_arr_data(ctx, precompiled_charsmap_keyidx);
                 precompiled_charsmap.assign(pc, pc + n_precompiled_charsmap);
@@ -2677,6 +2687,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 throw std::runtime_error("cannot find tokenizer merges in model file\n");
             }
             {
+                if (gguf_get_kv_type(ctx, merges_keyidx) != GGUF_TYPE_ARRAY ||
+                    gguf_get_arr_type(ctx, merges_keyidx) != GGUF_TYPE_STRING) {
+                    throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_MERGES).c_str()));
+                }
                 const int n_merges = gguf_get_arr_n(ctx, merges_keyidx);
                 for (int i = 0; i < n_merges; i++) {
                     const std::string word = gguf_get_arr_str(ctx, merges_keyidx, i);
@@ -3003,21 +3017,41 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
         throw std::runtime_error("cannot find tokenizer vocab in model file\n");
     }
 
+    if (gguf_get_kv_type(ctx, token_idx) != GGUF_TYPE_ARRAY ||
+        gguf_get_arr_type(ctx, token_idx) != GGUF_TYPE_STRING) {
+        throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_LIST).c_str()));
+    }
+
     const uint32_t n_tokens = gguf_get_arr_n(ctx, token_idx);
 
     const float * scores = nullptr;
+    const int * iscores = nullptr;
     const int score_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_SCORES).c_str());
     if (score_idx != -1) {
+        const gguf_type kv_type = gguf_get_kv_type(ctx, score_idx);
+        const gguf_type arr_type = kv_type == GGUF_TYPE_ARRAY ? gguf_get_arr_type(ctx, score_idx) : GGUF_TYPE_COUNT;
+        if (arr_type != GGUF_TYPE_INT32 &&
+            arr_type != GGUF_TYPE_FLOAT32) {
+            throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_SCORES).c_str()));
+        }
         const uint32_t n_scores = gguf_get_arr_n(ctx, score_idx);
         if (n_scores < n_tokens) {
             throw std::runtime_error("Index out of array bounds for scores (" + std::to_string(n_scores) + " < " + std::to_string(n_tokens) + ")\n");
         }
-        scores = (const float * ) gguf_get_arr_data(ctx, score_idx);
+        if (arr_type == GGUF_TYPE_INT32) {
+            iscores = (const int *) gguf_get_arr_data(ctx, score_idx);
+        } else {
+            scores = (const float * ) gguf_get_arr_data(ctx, score_idx);
+        }
     }
 
     const int * toktypes = nullptr;
     const int toktype_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_TOKEN_TYPE).c_str());
     if (toktype_idx != -1) {
+        if (gguf_get_kv_type(ctx, toktype_idx) != GGUF_TYPE_ARRAY ||
+            gguf_get_arr_type(ctx, toktype_idx) != GGUF_TYPE_INT32) {
+            throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_TOKEN_TYPE).c_str()));
+        }
         const uint32_t n_toktypes = gguf_get_arr_n(ctx, toktype_idx);
         if (n_toktypes < n_tokens) {
             throw std::runtime_error("Index out of array bounds for toktypes (" + std::to_string(n_toktypes) + " < " + std::to_string(n_tokens) + ")\n");
@@ -3039,7 +3073,13 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
 
         auto & token_data = id_to_token[i];
         token_data.text  = std::move(word);
-        token_data.score = scores ? scores[i] : 0.0f;
+        if (scores) {
+            token_data.score = scores[i];
+        } else if (iscores) {
+            token_data.score = static_cast<float>(iscores[i]);
+        } else {
+            token_data.score = 0.0f;
+        }
         token_data.attr  = LLAMA_TOKEN_ATTR_NORMAL;
 
         if (toktypes) {  //TODO: remove, required until per token attributes are available from GGUF file
@@ -3060,44 +3100,6 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
     // hybriddna: the marker suffix kept k-mer ids distinct in token_to_id; erase
     // it from id_to_token so the k-mers detokenize to the bare DNA sequence. The
     // k-mers are the block right after <oov>, so only scan from there.
-    // Build id-pair BPE table now that token_to_id is populated. Merges were loaded earlier
-    // as strings; converting here avoids looking up tokens before the vocab list exists.
-    // WHY lenient skip: some GGUFs carry orphan merge strings; failing the whole load is
-    // worse than omitting those pairs (encode still falls back per-pair).
-    if (!bpe_ranks.empty()) {
-        bpe_id_pairs.init(bpe_ranks.size());
-        size_t skipped = 0;
-        for (const auto & kv_pair : bpe_ranks) {
-            const auto it_l = token_to_id.find(kv_pair.first.first);
-            const auto it_r = token_to_id.find(kv_pair.first.second);
-            if (it_l == token_to_id.end() || it_r == token_to_id.end()) {
-                skipped++;
-                continue;
-            }
-            const std::string merged_text = kv_pair.first.first + kv_pair.first.second;
-            const auto it_m = token_to_id.find(merged_text);
-            if (it_m == token_to_id.end()) {
-                skipped++;
-                continue;
-            }
-            bpe_id_pairs.insert(it_l->second, it_r->second, kv_pair.second, it_m->second);
-        }
-        if (skipped > 0) {
-            LLAMA_LOG_WARN("%s: skipped %zu/%zu BPE merges when building id-pair table\n",
-                __func__, skipped, bpe_ranks.size());
-        }
-        // Single-codepoint / short UTF-8 pieces for O(1) char->id without std::string.
-        // WHY build here with id-pairs: same readiness gate (token_to_id complete).
-        bpe_piece4.init(token_to_id.size());
-        for (const auto & kv : token_to_id) {
-            if (kv.first.size() > 0 && kv.first.size() <= 4) {
-                bpe_piece4.insert(kv.first.data(), kv.first.size(), kv.second);
-            }
-        }
-        LLAMA_LOG_INFO("%s: bpe_id_pairs          = %zu\n", __func__, bpe_id_pairs.n);
-        LLAMA_LOG_INFO("%s: bpe_piece4            = %zu\n", __func__, bpe_piece4.n);
-    }
-
     if (tokenizer_model == "hybriddna") {
         const auto idx = token_to_id.find("<oov>");
         if (idx != token_to_id.end()) {
@@ -3168,6 +3170,12 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             const std::string & key = kv(std::get<0>(it));
             int32_t & id = std::get<1>(it);
 
+            if (id >= 0 && static_cast<size_t>(id) >= id_to_token.size()) {
+                LLAMA_LOG_WARN("%s: default special token '%s' = %d out of vocab range, disabling\n",
+                    __func__, key.c_str(), id);
+                id = LLAMA_TOKEN_NULL;
+            }
+
             uint32_t new_id;
             if (!ml.get_key(std::get<0>(it), new_id, false)) {
                 continue;
@@ -3212,6 +3220,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
         {
             const int suppress_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_SUPPRESS_TOKENS).c_str());
             if (suppress_idx != -1) {
+                if (gguf_get_kv_type(ctx, suppress_idx) != GGUF_TYPE_ARRAY ||
+                    gguf_get_arr_type(ctx, suppress_idx) != GGUF_TYPE_INT32) {
+                    throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_SUPPRESS_TOKENS).c_str()));
+                }
                 const int n = gguf_get_arr_n(ctx, suppress_idx);
                 const int32_t * data = (const int32_t *) gguf_get_arr_data(ctx, suppress_idx);
                 // drop out-of-range ids
@@ -4397,12 +4409,15 @@ int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
                 if (vocab.is_byte(token)) {
                     // Handle byte tokens like <0xXX>
                     if (token_text.length() == 6 && token_text.substr(0, 3) == "<0x" && token_text.back() == '>') {
-                        int hex_val = std::stoi(token_text.substr(3, 2), nullptr, 16);
-                        if (length < 1) {
-                            return -1;
+                        std::string hex_str = token_text.substr(3, 2);
+                        if (std::isxdigit(static_cast<unsigned char>(hex_str[0])) && std::isxdigit(static_cast<unsigned char>(hex_str[1]))) {
+                            int hex_val = std::stoi(hex_str, nullptr, 16);
+                            if (length < 1) {
+                                return -1;
+                            }
+                            buf[0] = static_cast<char>(hex_val);
+                            return 1;
                         }
-                        buf[0] = static_cast<char>(hex_val);
-                        return 1;
                     }
                 }
 

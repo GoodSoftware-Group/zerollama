@@ -1,6 +1,7 @@
 package parsers
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,16 +20,16 @@ func (m *mockParser) Add(s string, done bool) (content string, thinking string, 
 	return "mock:" + s, "", nil, nil
 }
 
+func (m *mockParser) PreservedTokens() []string {
+	return nil
+}
+
 func (m *mockParser) HasToolSupport() bool {
 	return false
 }
 
 func (m *mockParser) HasThinkingSupport() bool {
 	return false
-}
-
-func (m *mockParser) PreservedTokens() []string {
-	return nil
 }
 
 func TestRegisterCustomParser(t *testing.T) {
@@ -66,6 +67,8 @@ func TestBuiltInParsersStillWork(t *testing.T) {
 		{"qwen3.5"},
 		{"ornith"},
 		{"harmony"},
+		{"nemotron-3-nano"},
+		{"nemotron-3.5-nano"},
 	}
 
 	for _, tt := range tests {
@@ -73,6 +76,49 @@ func TestBuiltInParsersStillWork(t *testing.T) {
 			parser := ParserForName(tt.name)
 			if parser == nil {
 				t.Fatalf("expected built-in parser %q to exist", tt.name)
+			}
+		})
+	}
+}
+
+func TestParserPreservedTokensCoverKnownLlamaServerRegressions(t *testing.T) {
+	tests := []struct {
+		name        string
+		want        []string
+		wantMissing []string
+	}{
+		{
+			name:        "harmony",
+			want:        []string{"<|start|>", "<|message|>", "<|channel|>", "<|constrain|>"},
+			wantMissing: []string{"<|call|>"},
+		},
+		{
+			name: "qwen3-coder",
+			want: []string{"<tool_call>", "</tool_call>"},
+		},
+		{
+			name: "gemma4",
+			want: []string{"<|tool_call>", "<tool_call|>"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := ParserForName(tt.name)
+			if parser == nil {
+				t.Fatalf("expected built-in parser %q to exist", tt.name)
+			}
+
+			got := parser.PreservedTokens()
+			for _, token := range tt.want {
+				if !slices.Contains(got, token) {
+					t.Fatalf("expected preserved tokens to contain %q, got %#v", token, got)
+				}
+			}
+			for _, token := range tt.wantMissing {
+				if slices.Contains(got, token) {
+					t.Fatalf("expected preserved tokens not to contain %q, got %#v", token, got)
+				}
 			}
 		})
 	}

@@ -81,7 +81,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| Ollama release | **v0.32.4** (`64ee2f98`) | v0.30.11 base + selective cherry-picks through **v0.32.4** | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
+| Ollama release | **v0.32.15** (`8f912415`) | v0.30.11 base + selective cherry-picks through **v0.32.15** | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
 | llama.cpp tag | `b10091` (upstream v0.32.4) | **`86d86ed4`** (ggml-org master tip; past b10064) | Vendor sync via `./scripts/vendor/sync_vendor_llama.sh`; patch doctor: `./scripts/vendor/llama_patch_doctor.sh` |
 | Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build/build_llama_server.sh` on sibling tree | Align presets when porting |

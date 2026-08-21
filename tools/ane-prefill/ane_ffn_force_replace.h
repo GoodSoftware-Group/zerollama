@@ -90,6 +90,20 @@ bool ane_ffn_force_swiglu_reeval_f32(float *Y_ic_seq, int seq);
 // Eval only (no read) — for ANE wall vs slice smoke.
 bool ane_ffn_force_swiglu_eval_only(void);
 
+// Warm all banked / active procedures (omlx #2898).
+bool ane_ffn_force_swiglu_warm_bank(void);
+bool ane_ffn_force_swiglu_warm_active(void);
+
+// Async eval (serial queue). Pair with eval_async_wait before unpack.
+bool ane_ffn_force_swiglu_eval_async(void);
+bool ane_ffn_force_swiglu_eval_async_wait(void);
+bool ane_ffn_force_swiglu_eval_async_enabled(void);
+
+// omlx-style: pack (layout queue) + ANE eval on background queue; returns immediately.
+bool ane_ffn_force_swiglu_pack_eval_async(
+    const void *src_ggml_acts, int ic, int seq, int acts_is_f16);
+bool ane_ffn_force_swiglu_pack_eval_async_wait(void);
+
 #ifdef __cplusplus
 }
 #endif

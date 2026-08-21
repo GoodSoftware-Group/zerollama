@@ -63,6 +63,14 @@ GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(
         size_t size,
         size_t max_tensor_size);
 
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // P70 (lab): pause/resume the background residency-set keep-alive heartbeat for this
 // Metal device. Callers holding a long host-side compute window (no GPU submissions on
 // this device) can pause the heartbeat to avoid racing its requestResidency calls

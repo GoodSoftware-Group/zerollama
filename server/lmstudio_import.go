@@ -121,9 +121,6 @@ func createFromLMStudioFiles(name typesmodel.Name, dir string, files map[string]
 	config := &typesmodel.ConfigV2{
 		OS:           "linux",
 		Architecture: "amd64",
-		RootFS: typesmodel.RootFS{
-			Type: "layers",
-		},
 	}
 
 	r := api.CreateRequest{}

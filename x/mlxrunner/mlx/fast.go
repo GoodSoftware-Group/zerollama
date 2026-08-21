@@ -30,7 +30,7 @@ func FastScaledDotProductAttentionWithSinks(q, k, v, sinks *Array, scale float32
 	}
 
 	out := New("FAST_SDPA")
-	C.mlx_fast_scaled_dot_product_attention(&out.ctx, q.ctx, k.ctx, v.ctx, C.float(scale), cMode, maskCtx, sinksCtx, DefaultStream().ctx)
+	C.mlx_fast_scaled_dot_product_attention(&out.ctx, q.ctx, k.ctx, v.ctx, C.float(scale), cMode, maskCtx, sinksCtx, C.bool(false), DefaultStream().ctx)
 	return out
 }
 

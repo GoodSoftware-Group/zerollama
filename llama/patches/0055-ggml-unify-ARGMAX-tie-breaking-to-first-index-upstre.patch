@@ -30,10 +30,10 @@ index 5de9cb5b7..adb96d78e 100644
      *s = idx;
  }
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 25e4fd6ca..d762c36c1 100644
+index 4f52cc01f..eeab19689 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -3241,7 +3241,9 @@ kernel void kernel_argmax_f32(
+@@ -3312,7 +3312,9 @@ kernel void kernel_argmax_f32(
  
      // find the argmax value in the block
      float max_val = simd_max(lmax);
@@ -44,7 +44,7 @@ index 25e4fd6ca..d762c36c1 100644
  
      device int32_t * dst_i32 = (device int32_t *) dst;
  
-@@ -3267,7 +3269,7 @@ kernel void kernel_argmax_f32(
+@@ -3338,7 +3340,7 @@ kernel void kernel_argmax_f32(
          arg_val = shared_argmax[tiisg];
  
          float max_val_reduced   = simd_max(max_val);

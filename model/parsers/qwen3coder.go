@@ -43,6 +43,13 @@ func (p *Qwen3CoderParser) HasThinkingSupport() bool {
 	return false
 }
 
+func (p *Qwen3CoderParser) PreservedTokens() []string {
+	return []string{
+		toolOpenTag,
+		toolCloseTag,
+	}
+}
+
 func (p *Qwen3CoderParser) Init(tools []api.Tool, lastMessage *api.Message, thinkValue *api.ThinkValue) []api.Tool {
 	p.tools = tools
 	p.callIndex = 0
@@ -287,7 +294,10 @@ func parseValue(raw string, paramType api.PropertyType) any {
 	// they exist). This follows the reference implementation
 	raw = strings.TrimPrefix(raw, "\n")
 	raw = strings.TrimSuffix(raw, "\n")
+	return parseTypedToolValue(raw, paramType)
+}
 
+func parseTypedToolValue(raw string, paramType api.PropertyType) any {
 	// Check for null first (case-insensitive) - this takes precedence over any type
 	if strings.ToLower(raw) == "null" {
 		return nil

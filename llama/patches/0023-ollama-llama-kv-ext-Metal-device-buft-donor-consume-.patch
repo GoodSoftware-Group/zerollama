@@ -46,10 +46,10 @@ index c95415fcb..b4c879861 100644
  #endif
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 518ed4848..a5dc8accc 100644
+index 1474e77a0..e7b47c9b7 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -320,36 +320,63 @@ llama_kv_cache::llama_kv_cache(
+@@ -304,36 +304,63 @@ llama_kv_cache::llama_kv_cache(
              if (ggml_backend_buft_is_host(buft)) {
                  const size_t required_size = ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), buft);
                  buf = llama_kv_ext_donor_try_consume(required_size);

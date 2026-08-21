@@ -87,7 +87,7 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 - **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
 - Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **54** / **61** (+ **60** cold/warm) via lab scripts; **55/61** arithmetic in doctor; **63** via history round-trip doctor; **09** documented (VL).
 
-Coverage lines from the tool are **not** a bill of health for the full registry (103 entries; doctor implements ~19).
+Coverage lines from the tool are **not** a bill of health for the full registry (124 numbered traps as of 2026-08-21; upstream doctor still implements ~19).
 
 ### 2.1 Core hand-runs (35 / 53 / 61) on zerollama
 
@@ -157,6 +157,22 @@ curl -s http://127.0.0.1:11434/api/version
 
 Kill **by port**, assert free, then start. Never trust a restart command’s exit code alone. Agents must not free production **11434/8081**; operators do that deliberately.
 
+#### Trap 112 — process up is not model ready
+
+A listener PID (trap **53**) can be crash-looping or serving an empty runner. `zerollama doctor` checks `/api/version` and `/api/tags` HTTP 200, then counts `/api/ps` loaded models. Tags 200 with zero loaded runners is **API ready, not a warm model**.
+
+#### Trap 98 — speculative depth × slots on UMA
+
+Do not copy vLLM `--max-num-seqs` (256 default / 32 card) onto Mac llama-server `-np`. Speculative **K** and **slots** both spend unified memory; a slots value that survived at one K can OOM at another. Doctor prints the product (env `ZEROLLAMA_LLAMA_PARALLEL_SLOTS` / `ZEROLLAMA_DRAFT_MAX`, else `apple_silicon_128g` 8×16).
+
+#### Trap 110 — benches on a shared endpoint
+
+```bash
+./scripts/minefield_bench_screen.sh   # lab :11435; refuses 11434/8081
+```
+
+If `/api/ps` already shows a runner, single-stream tok/s is measuring neighbours and prefix cache, not your change.
+
 #### Trap 61 — advertised window fails silently
 
 Distinct from trap **55** (quality in the trained regime / three numbers disagreeing). Trap **61** is *no error*: long prompts return HTTP 200 with exact `prompt_tokens`, yet the head may be unread.
@@ -222,8 +238,10 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 `zerollama doctor` includes minefield-style checks in-tree:
 
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
-2. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-3. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_roundtrip.go`](../cmd/doctor_roundtrip.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+2. **Readiness vs liveness** ([`cmd/doctor_readiness.go`](../cmd/doctor_readiness.go)): **112** — TCP/PID is not `/api/version`+`/api/tags`; tags≠warm `/api/ps`
+3. **Spec × slots on UMA** ([`cmd/doctor_spec_uma.go`](../cmd/doctor_spec_uma.go)): **98** — `draft_max × n_parallel` product; warn in the contributor-crash region when speculative env is on
+4. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
+5. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_roundtrip.go`](../cmd/doctor_roundtrip.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -267,6 +285,7 @@ Hand-run Core scripts (lab `:11435`):
 ./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
 ./scripts/minefield_warm_cache_check.sh qwen2.5:0.5b
 ./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
+./scripts/minefield_bench_screen.sh            # trap 110 — refuse shared/production endpoints
 ./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
 ./scripts/minefield_pull_checks.sh qwen3:0.6b   # upstream budget/tokenize/cache checks
 ```
@@ -317,8 +336,11 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | **63** | `covered via doctor` | `doctorCheckReasoningRoundTrip` — thinking-only preserve; foreign gate 400 |
 | **09** | `documented` | VL image-pipeline confound (§2.1); no Mac live doctor yet |
 | **53** | `covered via doctor` | `doctorCheckServeIdentity` — pid/start/version of answering process |
-| **79** | Oversized `num_ctx` silent empty | **mitigated** + `covered via doctor` | Clamp + `doctorCheckOversizedNumCtx` |
-| **U02** | Go runner drops sampling penalties | **fixed** | [`sample/penalties.go`](../sample/penalties.go) + ollamarunner `WithPenalties` |
+| **112** | `covered via doctor` | `doctorCheckModelReadiness` — version+tags vs TCP; tags≠`/api/ps` |
+| **98** | `covered via doctor` | `doctorCheckSpeculativeUMA` — draft_max × n_parallel on Darwin |
+| **110** | `documented` + script | [`scripts/minefield_bench_screen.sh`](../scripts/minefield_bench_screen.sh) — refuse `:11434`/`:8081`; warn if a runner is already warm |
+| **79** | **mitigated** + `covered via doctor` | Clamp + `doctorCheckOversizedNumCtx` (oversized `num_ctx` silent empty) |
+| **U02** | **fixed** | [`sample/penalties.go`](../sample/penalties.go) + ollamarunner `WithPenalties` |
 
 ---
 
@@ -374,3 +396,20 @@ Instrumentation / methodology entries from long soaks. Mostly **document**, not 
 | **106** | KV / prefix-cache occupancy climb ≠ leak | Full cache under prefix reuse (or unique `prompt_cache_key` / salt forcing misses) is normal; watch **preemption / waiting / OOM**, not fill % alone. Unique per-request cache keys produce a write-only fill curve |
 | **107** | Short soak “leak” that long soak reverts | Do not declare unbounded growth from a rising limb; hold until plateau or recovery |
 | **108** | Temp-0 burn canary is bistable | Pairwise “differs from previous” fires on attractor flip (traps **91/92**); track distinct output set / return-to-mode, not adjacent pairs |
+
+---
+
+## 8. Upstream traps 98 / 109–124 (2026-08-21)
+
+Registry grew from **108 → 124**. Native `minefield_doctor.py` `TRAP_PATHS` is unchanged. Mac-actionable subset:
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **98** | Speculative depth × sequence capacity OOM on unified memory | Doctor reports `draft_max × n_parallel` (env or `apple_silicon_128g.json` = 16×8=128). Warn if speculative env is on **and** product ≥ 224 (contributor crash region; not a proven threshold). A seqs value validated at one K is not safe at another. |
+| **110** | Single-stream bench on a shared endpoint measures neighbours | [`scripts/minefield_bench_screen.sh`](../scripts/minefield_bench_screen.sh) refuses production **11434/8081**; exits if `/api/ps` already has a runner. Do not quote tok/s from daily serve. |
+| **111** | Greedy spec-decode medians are a content lottery | Document only: pin draft off (or name acceptance estimator — trap **105**) before publishing decode medians |
+| **112** | Process liveness ≠ model readiness | `doctorCheckModelReadiness`: `/api/version`+`/api/tags` 200; TCP-without-API warns; zero `/api/ps` models is “API ready, not loaded” |
+| **119** | Free memory drifts down after churn (wrong node blamed) | Same class as **106/107**: trend vs peak on **this** process; Mac UMA “free” is not a leak proof |
+| **109, 113–118, 120–124** | vLLM/CUDA/RDMA/Ray/MTP/EngineCore/GB10 | **Skip** for Mac Metal primary. Watch [PR #56](https://github.com/Blackwellboy/model-serving-minefield/pull/56) (U17–U26 harvest). |
+
+Apple Silicon L1 `draft_max=16` is **not** vLLM `--max-num-seqs`. Do not copy GB10 seqs=256/32 onto llama-server `-np`.

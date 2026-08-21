@@ -11,3 +11,5 @@ register() {
 }
 register wan2.1-t2v:1.3b modelfiles/wan2.1-t2v/config.json
 register wan2.2-ti2v-5b modelfiles/wan2.2-ti2v-5b/config.json
+# Darwin Pure-C path (video-cli --family wan). Python tags stay the default on Linux.
+register wan2.1-t2v-c:lab modelfiles/wan2.1-t2v-c/config.json

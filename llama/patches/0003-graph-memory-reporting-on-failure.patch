@@ -23,10 +23,10 @@ index a7926a21a..7df7add64 100644
  // Utils
  // Create a buffer and allocate all the tensors in a ggml_context
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index 2924fdbe9..8f34d13c4 100644
+index cc3f8cd36..222877792 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -330,6 +330,7 @@ extern "C" {
+@@ -332,6 +332,7 @@ extern "C" {
  
      GGML_API ggml_backend_buffer_type_t ggml_backend_sched_get_buffer_type(ggml_backend_sched_t sched, ggml_backend_t backend);
      GGML_API size_t                     ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backend_t backend);
@@ -121,10 +121,10 @@ index 3bda9abbe..c26ffb094 100644
  
  static void free_buffers(ggml_backend_buffer_t ** buffers, const size_t * n_buffers) {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 7f4e252dc..54f0f2fbe 100644
+index f6fb91798..bf1f03374 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -1966,6 +1966,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
+@@ -2017,6 +2017,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
      return ggml_gallocr_get_buffer_size(sched->galloc, backend_index);
  }
  

@@ -28,7 +28,7 @@ func writeRepairTestManifest(t *testing.T, name model.Name, kv ggml.KV, params m
 	if cfg != nil {
 		config = *cfg
 	}
-	configLayer, err := createConfigLayer(layers, config)
+	configLayer, err := createConfigLayer(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestRepairSkipsNoGGUF(t *testing.T) {
 	name := model.ParseName("mlx-only")
 	cfg := model.ConfigV2{ModelFormat: "safetensors"}
 	layers := []manifest.Layer{}
-	configLayer, err := createConfigLayer(layers, cfg)
+	configLayer, err := createConfigLayer(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

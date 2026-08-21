@@ -271,8 +271,11 @@ int main(void) {
   }
 
   {
-    /* h3_dit_sdpa_f32 parallel-over-heads path (seq >= 64) must be bit-identical
-     * to the serial reference. */
+    /* h3_dit_sdpa_f32 scalar paths (serial + parallel-over-heads, seq >= 64)
+     * must be bit-identical to the serial reference. H3_SDPA_BLAS=0 pins the
+     * legacy path; the BLAS default is checked against it with a tolerance
+     * below (different accumulation order, same math). */
+    setenv("H3_SDPA_BLAS", "0", 1);
     const int seq = 128, heads = 8, hd = 32;
     float scale = 1.0f / sqrtf((float)hd);
     size_t total = (size_t)seq * (size_t)heads * (size_t)hd;
@@ -330,6 +333,21 @@ int main(void) {
         return 1;
       }
     }
+    /* BLAS default path: same math, different accumulation order — tolerance. */
+    setenv("H3_SDPA_BLAS", "1", 1);
+    CHECK(h3_dit_sdpa_f32(out, q, k, v, seq, heads, hd, scale) == 0);
+    unsetenv("H3_SDPA_BLAS");
+    double blas_maxdiff = 0.0;
+    for (size_t i = 0; i < total; i++) {
+      double d = fabs((double)out[i] - (double)ref[i]);
+      if (d > blas_maxdiff)
+        blas_maxdiff = d;
+    }
+    if (blas_maxdiff > 1e-4) {
+      fprintf(stderr, "FAIL sdpa blas path diff %.6g > 1e-4\n", blas_maxdiff);
+      return 1;
+    }
+    printf("test_h3_dit_host sdpa blas maxdiff=%.3g\n", blas_maxdiff);
     free(q);
     free(k);
     free(v);

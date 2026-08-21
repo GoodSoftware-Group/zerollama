@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -787,14 +788,7 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	}
 	applyWanHostPlanEnv(env, hostPlan)
 	if useWanC {
-		env["WAN_CLI"] = wanCLI
-		env["VIDEO_CLI"] = wanCLI
-		if v := expandUserPath(modality.PathFor(cfg, "wan_c_vocab")); v != "" {
-			env["WAN_C_VOCAB"] = v
-		}
-		if v := strings.TrimSpace(envconfig.Var("UMA_SOCK")); v != "" {
-			env["UMA_SOCK"] = v
-		}
+		applyWanCJobEnv(env, cfg, wanCLI)
 	}
 	if seed != nil {
 		env["WAN_SEED"] = strconv.FormatInt(*seed, 10)
@@ -845,6 +839,29 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		VideoSize:   vcfg.Size,
 	}
 	return payload, nil
+}
+
+// applyWanCJobEnv points the training run_script at video-cli --family wan.
+// Darwin defaults to host UMA kernels so /v1/videos works without uma_daemon.
+func applyWanCJobEnv(env map[string]string, cfg model.ConfigV2, wanCLI string) {
+	env["WAN_CLI"] = wanCLI
+	env["VIDEO_CLI"] = wanCLI
+	env["VIDEO_FAMILY"] = "wan"
+	if v := expandUserPath(modality.PathFor(cfg, "wan_c_vocab")); v != "" {
+		env["WAN_C_VOCAB"] = v
+	} else if v := strings.TrimSpace(envconfig.Var("WAN_C_VOCAB")); v != "" {
+		env["WAN_C_VOCAB"] = expandUserPath(v)
+	}
+	if v := strings.TrimSpace(envconfig.Var("UMA_SOCK")); v != "" {
+		env["UMA_SOCK"] = v
+	}
+	if v := strings.TrimSpace(envconfig.Var("UMA_WAN_LOCAL")); v != "" {
+		env["UMA_WAN_LOCAL"] = v
+		return
+	}
+	if runtime.GOOS == "darwin" && strings.TrimSpace(env["UMA_SOCK"]) == "" {
+		env["UMA_WAN_LOCAL"] = "1"
+	}
 }
 
 // buildLtxVideoPayload turns a manifest + request into run_script data for Wan2GP LTXV.

@@ -474,7 +474,12 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
     } else if (ftype == LLAMA_FTYPE_MOSTLY_MXFP4_MOE) {
         // MoE   tensors -> MXFP4
         // other tensors -> Q8_0
-        if (tensor->ne[2] > 1) {
+        // MLA projection tensors are also 3D, so match expert tensor roles explicitly.
+        const bool is_bailingmoe3_expert = arch == LLM_ARCH_BAILINGMOE3 &&
+            (category == tensor_category::FFN_UP ||
+             category == tensor_category::FFN_GATE ||
+             category == tensor_category::FFN_DOWN);
+        if (tensor->ne[2] > 1 && (arch != LLM_ARCH_BAILINGMOE3 || is_bailingmoe3_expert)) {
             new_type = GGML_TYPE_MXFP4;
         } else {
             new_type = GGML_TYPE_Q8_0;
@@ -893,7 +898,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     const llama_model_kv_override * kv_overrides = params->kv_overrides;
     std::vector<std::string> splits = {};
     llama_model_loader ml(/*metadata*/ nullptr, /*set_tensor_data*/ nullptr, /*set_tensor_data_ud*/ nullptr,
-        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*check_tensors*/ true, /*no_alloc*/ false, kv_overrides, nullptr);
+        fname_inp, splits, /*file*/ nullptr, /*load_mode*/ load_mode, /*check_tensors*/ true, /*no_alloc*/ false, /*load_mtp*/ true, kv_overrides, nullptr);
     ml.init_mappings(false); // no prefetching
 
     auto mparams = llama_model_default_params();

@@ -32,7 +32,7 @@ index e59594670..555c474a9 100644
  #ifdef GGML_USE_SYCL
          register_backend(ggml_backend_sycl_reg());
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 085881da2..8cccce3f8 100644
+index 80c4cb522..e1a42b219 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -785,7 +785,7 @@ static bool ggml_is_view_op(enum ggml_op op) {
@@ -44,7 +44,7 @@ index 085881da2..8cccce3f8 100644
  #endif
  
  #ifndef GGML_SCHED_MAX_COPIES
-@@ -1922,8 +1922,10 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
+@@ -1973,8 +1973,10 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
          return false;
      }
  

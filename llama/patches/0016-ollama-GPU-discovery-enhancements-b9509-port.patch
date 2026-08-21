@@ -16,10 +16,10 @@ Subject: [PATCH] ollama: GPU discovery enhancements (b9509 port)
  create mode 100644 ggml/src/mem_nvml.cpp
 
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index 00f467cfe..37a871121 100644
+index fe4524a60..26258b8f6 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -174,6 +174,13 @@ extern "C" {
+@@ -176,6 +176,13 @@ extern "C" {
          const char * device_id;
          // device capabilities
          struct ggml_backend_dev_caps caps;
@@ -47,7 +47,7 @@ index 82e9480c2..0e61ee4fe 100644
  
  set_target_properties(ggml-base PROPERTIES
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 0711e043d..3ffbf3b54 100644
+index c07ec03b2..eaa30fc44 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -214,6 +214,50 @@ static int ggml_cuda_parse_id(char devName[]) {
@@ -101,7 +101,7 @@ index 0711e043d..3ffbf3b54 100644
  static ggml_cuda_device_info ggml_cuda_init() {
      ggml_cuda_device_info info = {};
  
-@@ -4548,7 +4592,16 @@ struct ggml_backend_cuda_device_context {
+@@ -4668,7 +4712,16 @@ struct ggml_backend_cuda_device_context {
      std::string name;
      std::string description;
      std::string pci_bus_id;
@@ -118,7 +118,7 @@ index 0711e043d..3ffbf3b54 100644
  };
  
  static const char * ggml_backend_cuda_device_get_name(ggml_backend_dev_t dev) {
-@@ -4639,14 +4692,43 @@ static bool ggml_backend_cuda_get_available_uma_memory(long * available_memory_k
+@@ -4759,14 +4812,43 @@ static bool ggml_backend_cuda_get_available_uma_memory(long * available_memory_k
  
  static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
      ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
@@ -169,15 +169,15 @@ index 0711e043d..3ffbf3b54 100644
      }
  
  // ref: https://github.com/ggml-org/llama.cpp/pull/17368
-@@ -4672,6 +4754,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
+@@ -4792,6 +4874,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
      }
- #endif // defined(__linux__)
+ #endif // defined(__linux__) && !defined(GGML_USE_HIP)
  
 +share_split:
      // virtual devices sharing one physical GPU share its memory pool; split it between them
      const int share_count = ggml_cuda_physical_device_share_count(ctx->device);
      *free  /= share_count;
-@@ -4696,6 +4779,20 @@ static void ggml_backend_cuda_device_get_props(ggml_backend_dev_t dev, ggml_back
+@@ -4816,6 +4899,20 @@ static void ggml_backend_cuda_device_get_props(ggml_backend_dev_t dev, ggml_back
      props->description = ggml_backend_cuda_device_get_description(dev);
      props->type        = ggml_backend_cuda_device_get_type(dev);
      props->device_id   = ctx->pci_bus_id.empty() ? nullptr : ctx->pci_bus_id.c_str();
@@ -198,7 +198,7 @@ index 0711e043d..3ffbf3b54 100644
      ggml_backend_cuda_device_get_memory(dev, &props->memory_free, &props->memory_total);
  
      bool host_buffer = getenv("GGML_CUDA_NO_PINNED") == nullptr;
-@@ -5375,6 +5472,7 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+@@ -5503,6 +5600,7 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
          if (!initialized) {
              ggml_backend_cuda_reg_context * ctx = new ggml_backend_cuda_reg_context;
              const int min_batch_size = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
@@ -206,7 +206,7 @@ index 0711e043d..3ffbf3b54 100644
  
              const ggml_cuda_device_info & info = ggml_cuda_info();
              const bool virtual_devices = info.device_count > info.physical_device_count;
-@@ -5385,7 +5483,11 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+@@ -5513,7 +5611,11 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
                  ggml_backend_cuda_device_context * dev_ctx = new ggml_backend_cuda_device_context;
                  dev_ctx->device = i;
                  dev_ctx->name = GGML_CUDA_NAME + std::to_string(i);
@@ -219,7 +219,7 @@ index 0711e043d..3ffbf3b54 100644
  
                  char pci_bus_id[32] = {};
                  CUDA_CHECK(cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), physical_id));
-@@ -5397,6 +5499,15 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+@@ -5525,6 +5627,15 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
                  for (char & c : dev_ctx->pci_bus_id) {
                      c = std::tolower(c);
                  }
@@ -255,7 +255,7 @@ index 62b76abbc..44dcd484b 100644
  }
  #endif
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 69a60b726..a9d2d8923 100644
+index 53760f332..ce7954173 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
 @@ -669,6 +669,7 @@ static enum ggml_backend_dev_type ggml_backend_metal_device_get_type(ggml_backen
@@ -276,7 +276,7 @@ index 69a60b726..a9d2d8923 100644
          /* .host_buffer          = */ false,
 diff --git a/ggml/src/mem_hip.cpp b/ggml/src/mem_hip.cpp
 new file mode 100644
-index 000000000..23c765806
+index 000000000..fa9997fb9
 --- /dev/null
 +++ b/ggml/src/mem_hip.cpp
 @@ -0,0 +1,558 @@
@@ -570,7 +570,7 @@ index 000000000..23c765806
 +        const char *version = NULL;
 +        ADLX_RESULT status = adlx.ADLXQueryVersion(&version);
 +        if (ADLX_SUCCEEDED(status)) {
-+            GGML_LOG_DEBUG("%s located ADLX version %s\n", __func__, version);  
++            GGML_LOG_DEBUG("%s located ADLX version %s\n", __func__, version);
 +        }
 +    }
 +
@@ -688,7 +688,7 @@ index 000000000..23c765806
 +            adlx_gdm_cleanup;
 +            return status;
 +        }
-+        
++
 +        adlx_uint totalVRAM = 0;
 +        status = gpu->pVtbl->TotalVRAM(gpu, &totalVRAM);
 +        if (ADLX_FAILED(status)) {

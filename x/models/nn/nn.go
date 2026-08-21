@@ -206,7 +206,7 @@ func (qe *QuantizedEmbedding) Forward(indices *mlx.Array) *mlx.Array {
 	if qe.QBiases != nil && qe.QBiases.Valid() {
 		qbiases = qe.QBiases.TakeAxis(indices, 0)
 	}
-	out := mlx.Dequantize(weight, scales, qbiases, qe.GroupSize, qe.Bits, qe.Mode)
+	out := mlx.Dequantize(weight, scales, qbiases, qe.GroupSize, qe.Bits, qe.Mode, nil)
 	if qe.GlobalScale != nil {
 		outDType := out.DType()
 		out = mlx.Mul(out, qe.GlobalScale).AsType(outDType)

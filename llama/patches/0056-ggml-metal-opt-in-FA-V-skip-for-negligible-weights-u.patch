@@ -12,10 +12,10 @@ heads' post-softmax weights in a chunk are below 1e-6.
  2 files changed, 31 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 53a246d5b..6ce373322 100644
+index a5948f2fa..88009d7b3 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -227,6 +227,16 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+@@ -228,6 +228,16 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
                  [prep setObject:@"1" forKey:@"GGML_METAL_EMBED_LIBRARY"];
  #endif
  
@@ -33,10 +33,10 @@ index 53a246d5b..6ce373322 100644
                  options.preprocessorMacros = prep;
  
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index d762c36c1..30fbed169 100644
+index eeab19689..1bee9d5e9 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -8090,6 +8090,16 @@ kernel void kernel_flash_attn_ext_vec(
+@@ -8161,6 +8161,16 @@ kernel void kernel_flash_attn_ext_vec(
                      pv4 += ty*NS20/4 + tx;
  
                      FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
@@ -53,7 +53,7 @@ index d762c36c1..30fbed169 100644
                          FOR_UNROLL (short ii = 0; ii < DV4/NL; ++ii) {
                              const v4_t mv = pv4[cc*NE*NS20/4 + ii*NL];
  
-@@ -8101,6 +8111,17 @@ kernel void kernel_flash_attn_ext_vec(
+@@ -8172,6 +8182,17 @@ kernel void kernel_flash_attn_ext_vec(
                      }
                  } else {
                      FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {

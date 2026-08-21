@@ -849,6 +849,8 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
   const char *bgff = "x_dit_gff"; /* full gate_ff (gated RESIDUAL_ADD) */
   const char *bz = "x_dit_z";     /* zeros */
   const char *bln = "x_dit_ln";   /* ones (LN weight) */
+  /* F1122: BF16 TensorOps flash when the daemon advertises ATTN_NAMED_tc. */
+  const char *tc = ctx->caps.attn_tc ? " tc=1" : "";
 
   /* AdaLN scale/shift on broker when persist (F0994 smoke recipe). */
   if (persist && real_mod) {
@@ -1208,41 +1210,41 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
           n = snprintf(
               gr, sizeof(gr),
               "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-              "HD=%d kind=full ; "
+              "HD=%d kind=full%s ; "
               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
               "AFFINE_MUL_ADD@GPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
               "RESIDUAL_ADD@GPU! y=%s x=%s D=%d N=%d gate=%s ; MARK@GPU?",
-              q_attn, k_attn, bv, bo, T, T, H, KV, HD, bo, bt, bwo, T, D, D, bt,
+              q_attn, k_attn, bv, bo, T, T, H, KV, HD, tc, bo, bt, bwo, T, D, D, bt,
               bt, bz, bob, T, D, bs, bt, D, T, bgs);
         else if (use_gated)
           n = snprintf(
               gr, sizeof(gr),
               "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-              "HD=%d kind=full ; "
+              "HD=%d kind=full%s ; "
               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
               "RESIDUAL_ADD@GPU! y=%s x=%s D=%d N=%d gate=%s ; MARK@GPU?",
-              q_attn, k_attn, bv, bo, T, T, H, KV, HD, bo, bt, bwo, T, D, D, bs,
+              q_attn, k_attn, bv, bo, T, T, H, KV, HD, tc, bo, bt, bwo, T, D, D, bs,
               bt, D, T, bgs);
         else if (have_ob)
           n = snprintf(
               gr, sizeof(gr),
               "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-              "HD=%d kind=full ; "
+              "HD=%d kind=full%s ; "
               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
               "AFFINE_MUL_ADD@GPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
               "AFFINE_MUL_ADD@GPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
               "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@GPU?",
-              q_attn, k_attn, bv, bo, T, T, H, KV, HD, bo, bt, bwo, T, D, D, bt,
+              q_attn, k_attn, bv, bo, T, T, H, KV, HD, tc, bo, bt, bwo, T, D, D, bt,
               bt, bz, bob, T, D, bt, bg, bgm, bz, T, D, bg, bs, flat);
         else
           n = snprintf(
               gr, sizeof(gr),
               "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-              "HD=%d kind=full ; "
+              "HD=%d kind=full%s ; "
               "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
               "AFFINE_MUL_ADD@GPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
               "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@GPU?",
-              q_attn, k_attn, bv, bo, T, T, H, KV, HD, bo, bt, bwo, T, D, D, bt,
+              q_attn, k_attn, bv, bo, T, T, H, KV, HD, tc, bo, bt, bwo, T, D, D, bt,
               bg, bgm, bz, T, D, bg, bs, flat);
         if (n < 0 || (size_t)n >= sizeof(gr) ||
             wan_submit_graph(ctx->uma, gr) != 0)
@@ -1590,10 +1592,10 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
       int n = snprintf(
           nodes, sizeof(nodes),
           "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-          "HD=%d kind=full ; "
+          "HD=%d kind=full%s ; "
           "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
           "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@CPU?",
-          q_attn, k_attn, bv, bo, T, T, H, KV, HD, bo, bt, bwo, T, D, D, bt, bs,
+          q_attn, k_attn, bv, bo, T, T, H, KV, HD, tc, bo, bt, bwo, T, D, D, bt, bs,
           flat);
       if (n < 0 || (size_t)n >= sizeof(nodes) ||
           wan_submit_graph(ctx->uma, nodes) != 0)
@@ -1713,20 +1715,20 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
         n = snprintf(
             nodes, sizeof(nodes),
             "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-            "HD=%d kind=full ; "
+            "HD=%d kind=full%s ; "
             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
             "AFFINE_MUL_ADD@GPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
             "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@GPU?",
-            bq, bkc, bvc, bo, T, Tk, H, KV, HD, bo, bt, bwoc, T, D, D, bt, bt,
+            bq, bkc, bvc, bo, T, Tk, H, KV, HD, tc, bo, bt, bwoc, T, D, D, bt, bt,
             bz, bob, T, D, bt, bs, flat);
       else
         n = snprintf(
             nodes, sizeof(nodes),
             "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-            "HD=%d kind=full ; "
+            "HD=%d kind=full%s ; "
             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
             "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@GPU?",
-            bq, bkc, bvc, bo, T, Tk, H, KV, HD, bo, bt, bwoc, T, D, D, bt, bs,
+            bq, bkc, bvc, bo, T, Tk, H, KV, HD, tc, bo, bt, bwoc, T, D, D, bt, bs,
             flat);
       if (n < 0 || (size_t)n >= sizeof(nodes) ||
           wan_submit_graph(ctx->uma, nodes) != 0)
@@ -1830,11 +1832,11 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
         n = snprintf(
             nodes, sizeof(nodes),
             "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-            "HD=%d kind=full ; "
+            "HD=%d kind=full%s ; "
             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
             "AFFINE_MUL_ADD@GPU! x=%s y=%s gate=%s up=%s N=%d D=%d ; "
             "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@GPU?",
-            bq, bkc, bvc, bo, T, Tk, H, KV, HD, bo, bt, bwoc, T, D, D, bt, bt,
+            bq, bkc, bvc, bo, T, Tk, H, KV, HD, tc, bo, bt, bwoc, T, D, D, bt, bt,
             bz, bob, T, D, bt, bs, flat);
         if (n < 0 || (size_t)n >= sizeof(nodes) ||
             wan_submit_graph(ctx->uma, nodes) != 0)
@@ -1843,9 +1845,9 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
         n = snprintf(
             nodes, sizeof(nodes),
             "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-            "HD=%d kind=full ; "
+            "HD=%d kind=full%s ; "
             "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; MARK@GPU?",
-            bq, bkc, bvc, bo, T, Tk, H, KV, HD, bo, bt, bwoc, T, D, D);
+            bq, bkc, bvc, bo, T, Tk, H, KV, HD, tc, bo, bt, bwoc, T, D, D);
         if (n < 0 || (size_t)n >= sizeof(nodes) ||
             wan_submit_graph(ctx->uma, nodes) != 0)
           return -1;
@@ -1880,11 +1882,11 @@ static int dit_block_broker(wan_ctx *ctx, const char *bs, int T, int D, int H,
         "LAYERNORM_MUL@GPU! x=%s y=%s N=%d D=%d ; "
         "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
         "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-        "HD=%d kind=full ; "
+        "HD=%d kind=full%s ; "
         "GEMM_F16@GPU! x=%s y=%s w=%s M=%d N=%d K=%d ; "
         "RESIDUAL_ADD@GPU! x=%s y=%s D=%d ; MARK@GPU?",
         bs, bt, T, D, bt, bq, bwq, T, D, D, bq, text_ctx, text_ctx, bo, T, Tk, H,
-        KV, HD, bo, bt, bwo, T, D, D, bt, bs, flat);
+        KV, HD, tc, bo, bt, bwo, T, D, D, bt, bs, flat);
     if (n < 0 || (size_t)n >= sizeof(nodes) ||
         wan_submit_graph(ctx->uma, nodes) != 0)
       return -1;

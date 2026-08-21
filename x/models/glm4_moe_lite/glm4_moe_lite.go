@@ -403,7 +403,7 @@ func loadExpertWeight(tensors map[string]*mlx.Array, path string, useQuantized b
 			return &ExpertWeight{Weight: w, Scales: scales, Biases: qbiases, Bits: bits, GroupSize: groupSize}
 		}
 
-		return &ExpertWeight{Weight: mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode)}
+		return &ExpertWeight{Weight: mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode, nil)}
 	}
 
 	return &ExpertWeight{Weight: w}
@@ -490,7 +490,7 @@ func sanitizeMLAWeights(tensors map[string]*mlx.Array, prefix string, cfg *Confi
 			w,
 			scales,
 		)
-		w = mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode)
+		w = mlx.Dequantize(w, scales, qbiases, groupSize, bits, mode, nil)
 	}
 
 	headDim := cfg.QKNopeHeadDim + cfg.VHeadDim

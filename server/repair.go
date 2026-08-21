@@ -128,7 +128,7 @@ func RepairModel(name string, opts RepairOptions) (*RepairResult, error) {
 	}
 	layers = append(layers, extraLayers...)
 
-	configLayer, err := createConfigLayer(layers, newCfg)
+	configLayer, err := createConfigLayer(newCfg)
 	if err != nil {
 		return nil, err
 	}

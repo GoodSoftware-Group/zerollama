@@ -133,6 +133,31 @@ func newMockServer(mock *mockRunner) func(ml.SystemInfo, []ml.DeviceInfo, string
 	}
 }
 
+func newServerWithMockRunner(t *testing.T, mock *mockRunner) *Server {
+	t.Helper()
+
+	s := &Server{
+		sched: &Scheduler{
+			pending:         newPendingQueue(1),
+			finishedReqCh:   make(chan *LlmRequest, 1),
+			expiredCh:       make(chan *runnerRef, 1),
+			unloadedCh:      make(chan any, 1),
+			loaded:          make(map[string]*runnerRef),
+			newServerFn:     newMockServer(mock),
+			getGpuFn:        getGpuFn,
+			getSystemInfoFn: getSystemInfoFn,
+			waitForRecovery: 250 * time.Millisecond,
+			loadFn: func(req *LlmRequest, _ ml.SystemInfo, _ []ml.DeviceInfo, _ bool) bool {
+				req.successCh <- &runnerRef{llama: mock}
+				return false
+			},
+		},
+	}
+	go s.sched.Run(t.Context())
+
+	return s
+}
+
 func TestGenerateChatRemote(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2224,6 +2249,7 @@ func TestGenerateUnload(t *testing.T) {
 
 func TestGenerateWithImages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	mock := mockRunner{
 		CompletionResponse: llm.CompletionResponse{

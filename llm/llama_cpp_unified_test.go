@@ -65,6 +65,26 @@ func TestIsUsableLlamaServerBinAcceptsSplitBuild(t *testing.T) {
 	}
 }
 
+func TestIsUsableLlamaServerBinAcceptsDarwinSplitBuild(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "llama-server")
+	buf := make([]byte, 18<<10)
+	copy(buf, []byte{0xCF, 0xFA, 0xED, 0xFE})
+	if err := os.WriteFile(bin, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isUsableLlamaServerBin(bin) {
+		t.Fatal("thin Darwin binary without impl dylib should be rejected")
+	}
+	impl := filepath.Join(dir, "libllama-server-impl.dylib")
+	if err := os.WriteFile(impl, []byte("fake-impl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !isUsableLlamaServerBin(bin) {
+		t.Fatal("split build with libllama-server-impl.dylib should be accepted")
+	}
+}
+
 func TestUnifiedLlamaCppRootEnv(t *testing.T) {
 	t.Setenv("LLAMA_CPP_ROOT", "/tmp/unified-llama-cpp-test")
 	got := UnifiedLlamaCppRoot()

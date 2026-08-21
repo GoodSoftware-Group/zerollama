@@ -130,9 +130,6 @@ func TestRoutes(t *testing.T) {
 		config := &model.ConfigV2{
 			OS:           "linux",
 			Architecture: "amd64",
-			RootFS: model.RootFS{
-				Type: "layers",
-			},
 		}
 
 		if err := createModel(r, modelName, baseLayers, config, fn); err != nil {

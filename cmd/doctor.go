@@ -53,7 +53,7 @@ func NewDoctorCommand() *cobra.Command {
 
 Also runs model-serving-minefield style checks:
   - model config traps (quant label, generation defaults, chat template, context)
-  - serve identity (trap 53) and thinking gate (trap 29)
+  - serve identity (trap 53), readiness vs liveness (trap 112), spec×slots on UMA (trap 98), thinking gate (trap 29)
   - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
 
 Model template repair (milkey/moophlo-class + ChatML hygiene):
@@ -384,6 +384,8 @@ func runDoctorChecks(repo string) []doctorCheck {
 		})
 	}
 	out = append(out, doctorCheckServeIdentity())
+	out = append(out, doctorCheckModelReadiness())
+	out = append(out, doctorCheckSpeculativeUMA())
 	out = append(out, doctorCheckServingTraps()...)
 	return out
 }
@@ -460,7 +462,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 }
 
 func doctorCheckMacCGO(repo string) doctorCheck {
-	script := filepath.Join(repo, "scripts", "mac_cgo_env.sh")
+	script := filepath.Join(repo, "scripts", "runtime", "mac_cgo_env.sh")
 	if _, err := os.Stat(script); err != nil {
 		return doctorCheck{
 			Name:    "mac cgo build",
@@ -552,6 +554,13 @@ func doctorLibLlamaCandidates(repo string) []string {
 	candidates := []string{}
 	if p := strings.TrimSpace(os.Getenv("LLAMA_CPP_LIB")); p != "" {
 		candidates = append(candidates, p)
+	}
+	if unified := llm.UnifiedLlamaCppRoot(); unified != "" {
+		if runtime.GOOS == "darwin" {
+			candidates = append(candidates, filepath.Join(unified, "build", "bin", "libllama.dylib"))
+		} else {
+			candidates = append(candidates, filepath.Join(unified, "build", "bin", "libllama.so"))
+		}
 	}
 	root := strings.TrimSpace(os.Getenv("LLAMA_CPP_ROOT"))
 	if root == "" {

@@ -182,9 +182,9 @@ tests/test_h3_dit_host: tests/test_h3_dit_host.o family_h3/h3_dit_host.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_h3_dit_host.o family_h3/h3_dit_host.o \
 	  -framework Accelerate -lm
 
-tests/test_h3_video_vae_host: tests/test_h3_video_vae_host.o family_h3/h3_video_vae_host.o family_h3/h3_host.o family_h3/h3_reuse.o
+tests/test_h3_video_vae_host: tests/test_h3_video_vae_host.o family_h3/h3_video_vae_host.o family_h3/h3_dit_host.o family_h3/h3_host.o family_h3/h3_reuse.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_h3_video_vae_host.o family_h3/h3_video_vae_host.o \
-	  family_h3/h3_host.o family_h3/h3_reuse.o -framework Accelerate -lm
+	  family_h3/h3_dit_host.o family_h3/h3_host.o family_h3/h3_reuse.o -framework Accelerate -lm
 
 tests/test_encode_avi: tests/test_encode_avi.o encode_mp4.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_encode_avi.o encode_mp4.o

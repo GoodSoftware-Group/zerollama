@@ -11,7 +11,7 @@ The H3 generation output is deterministic. The regression gate is a tiny T2VA ru
   steps/layers = 0) must print:
 
   ```
-  latent_rms=1.18298 a_rms=0.504888
+  latent_rms=1.18314 a_rms=0.504881
   ```
 
 If that string moves, the change is a regression, not an optimization. Run it via
@@ -39,13 +39,13 @@ a wrong hidden state and the audio velocity explodes ~70× → ~93%-clipped wave
 - **Diagnostics are gated by `H3_DIT_DEBUG`.** `attn_probe_video`, the
   per-layer stats line, and `log_vid_div` used to run unconditionally (~14G
   double ops + 400 stderr lines per generate). Do not ungated them.
-- **`H3_SDPA_BLAS=1` (opt-in)** switches attention to per-head
-  `cblas_sgemm` QK^T / P·V + vDSP softmax (`h3_sdpa_blas`). Q/K/V stay packed —
-  sgemm walks them via `lda=heads·hd`, no gather pass. Measured at 768²
-  1-step: **1119 → 744 ms/layer (1.50×)**, `vel_rms` identical to 4 digits;
-  tiny-gate signature drifts only in the 5th digit (accumulation order). Not
-  default because the gate string is bit-exactness-tracked; flip the default
-  only with a re-baselined gate.
+- **SDPA is BLAS by default** (`h3_sdpa_blas`): per-head `cblas_sgemm` QK^T /
+  P·V + vDSP softmax. Q/K/V stay packed — sgemm walks them via
+  `lda=heads·hd`, no gather pass. Measured at 768² 1-step: **1119 → 744
+  ms/layer (1.50×)**; vs scalar it agrees to ~1e-8 (test) / gate moved only in
+  the 5th digit (accumulation order), which is why the gate string above is
+  the BLAS one. `H3_SDPA_BLAS=0` restores the bit-exact scalar path (tests pin
+  it for the bit-identity check).
 - **Big weights are read by pointer** (`h3_st_store_get_f32`) — e.g. the
   49.5 MB `adaln_proj.linear.weight` used to be memcpy'd out of the weight
   cache every block-step (~19.8 GB/generate). Keep small loads on `load_n`;

@@ -175,6 +175,7 @@ int wan_probe_caps(wan_ctx *ctx) {
   ctx->caps.unpatchify = strstr(info, "UNPATCHIFY3D") != NULL;
   ctx->caps.attn_full = strstr(info, "ATTN_NAMED_kind=full") != NULL ||
                         strstr(info, "graph_wan=") != NULL;
+  ctx->caps.attn_tc = strstr(info, "ATTN_NAMED_tc") != NULL;
   ctx->caps.attn_bias = strstr(info, "kind=bias") != NULL ||
                         strstr(info, "kind=unscaled") != NULL ||
                         strstr(info, "|bias") != NULL ||
@@ -767,16 +768,19 @@ int wan_graph_attn_full_row(wan_ctx *ctx, const char *bq, const char *bk,
     return -1;
   if (!ctx->caps.attn_full)
     return -1;
+  /* F1122: BF16 TensorOps flash when the daemon advertises it. Daemon falls
+   * through to the standard path when ineligible (bias / HD>128). */
+  const char *tc = ctx->caps.attn_tc ? " tc=1" : "";
   if (t_row >= 0)
     snprintf(nodes, sizeof(nodes),
              "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-             "HD=%d kind=full t=%d ; MARK@GPU?",
-             bq, bk, bv, bout, T, Tk, H, KV, HD, t_row);
+             "HD=%d kind=full%s t=%d ; MARK@GPU?",
+             bq, bk, bv, bout, T, Tk, H, KV, HD, tc, t_row);
   else
     snprintf(nodes, sizeof(nodes),
              "ATTN_NAMED@GPU! q=%s k=%s v=%s out=%s B=1 T=%d Tk=%d H=%d KV=%d "
-             "HD=%d kind=full ; MARK@GPU?",
-             bq, bk, bv, bout, T, Tk, H, KV, HD);
+             "HD=%d kind=full%s ; MARK@GPU?",
+             bq, bk, bv, bout, T, Tk, H, KV, HD, tc);
   return wan_submit_graph(ctx->uma, nodes);
 }
 

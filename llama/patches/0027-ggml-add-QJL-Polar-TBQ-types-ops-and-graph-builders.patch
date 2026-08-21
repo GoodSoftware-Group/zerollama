@@ -37,7 +37,7 @@ GGML_FTYPE_MOSTLY_Q4_POLAR = 102 added for GGUF model loading.
  3 files changed, 331 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
-index 35f0c44ec..7a28d0a4d 100644
+index c2ccd9725..a1c0846d6 100644
 --- a/ggml/include/ggml.h
 +++ b/ggml/include/ggml.h
 @@ -430,7 +430,15 @@ extern "C" {
@@ -185,7 +185,7 @@ index 83f9118da..c1578acd4 100644
  typedef struct {
      GGML_EXTENSION union {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 9df70d0d9..f7fa6dae3 100644
+index 054329899..d898b055a 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -947,6 +947,48 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {

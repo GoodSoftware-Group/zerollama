@@ -94,12 +94,11 @@ type ConfigV2 struct {
 	// required by spec
 	Architecture string `json:"architecture"`
 	OS           string `json:"os"`
-	RootFS       RootFS `json:"rootfs"`
 
 	// ModalityBackends selects which subprocess or built-in driver handles each modality.
 	// Keys (see model.Modality* constants): "image", "speech" (TTS), "transcribe" (STT),
 	// "video_understanding" (VLM: "native" default, or "sglang" with OLLAMA_SGLANG_URL),
-	// "video_generation" (T2V: "wan" with scripts/video/wan_video_generate.py).
+	// "video_generation" (T2V: "wan" Python or video-cli; "h3" Darwin video-c; "ltx" Wan2GP).
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
 	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
@@ -141,10 +140,4 @@ type Draft struct {
 	Architecture string `json:"architecture,omitempty"`
 	TensorPrefix string `json:"tensor_prefix,omitempty"`
 	Config       string `json:"config,omitempty"`
-}
-
-// RootFS represents the root filesystem configuration for a model.
-type RootFS struct {
-	Type    string   `json:"type"`
-	DiffIDs []string `json:"diff_ids"`
 }

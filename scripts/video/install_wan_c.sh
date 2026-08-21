@@ -70,5 +70,6 @@ EOF
 
 echo "Installed video-cli → $OUT_ROOT"
 echo "Source: source $OUT_ROOT/env.sh"
-echo "Then set ZEROLLAMA_VIDEO_CLI=\$VIDEO_CLI (or ZEROLLAMA_WAN_CLI) for optional Pure-C Wan path"
+echo "Then register: ./scripts/video/register_wan_models.sh  (tag wan2.1-t2v-c:lab)"
+echo "Or set ZEROLLAMA_VIDEO_CLI=\$VIDEO_CLI to force C on Python Wan tags."
 echo "Clients still POST /v1/videos with a model tag only — no runner field."

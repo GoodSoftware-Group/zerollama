@@ -519,11 +519,11 @@ int h3_dit_apply_rotary_heads_inplace(float *x, int seq, int heads,
   return 0;
 }
 
-/* Opt-in H3_SDPA_BLAS=1 attention: per-head QK^T and P·V through
- * cblas_sgemm (AMX) and the softmax through vDSP. Q/K/V stay in their packed
- * layout — sgemm walks them via lda=heads*head_dim, so no gather/copy pass.
- * NOT bit-identical to the scalar path (different accumulation order); the
- * default path is unchanged. */
+/* Attention: per-head QK^T and P·V through cblas_sgemm (AMX) and the softmax
+ * through vDSP. Q/K/V stay in their packed layout — sgemm walks them via
+ * lda=heads*head_dim, so no gather/copy pass. Default since the 1.50x 768^2
+ * measurement; H3_SDPA_BLAS=0 restores the scalar path (bit-exact legacy,
+ * used by tests). Not bit-identical to scalar: different accumulation order. */
 static int h3_sdpa_blas(float *out, const float *q, const float *k,
                         const float *v, int seq, int heads, int head_dim,
                         float scale) {
@@ -569,7 +569,8 @@ int h3_dit_sdpa_f32(float *out, const float *q, const float *k, const float *v,
     return -1;
   {
     const char *e = getenv("H3_SDPA_BLAS");
-    if (e && e[0] && e[0] != '0' && seq >= 16 &&
+    int want_blas = !(e && e[0] && e[0] == '0');
+    if (want_blas && seq >= 16 &&
         h3_sdpa_blas(out, q, k, v, seq, heads, head_dim, scale) == 0)
       return 0;
   }

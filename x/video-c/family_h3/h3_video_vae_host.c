@@ -1,6 +1,8 @@
 #define _DARWIN_C_SOURCE 1
 #include "h3_video_vae_host.h"
 
+#include "h3_dit_host.h"
+
 #include <dispatch/dispatch.h>
 #include <math.h>
 #include <stddef.h>
@@ -277,90 +279,13 @@ int h3_video_vae_qkv_rope_f32(float *query, float *key, float *value,
   return 0;
 }
 
+/* Same math and packed layout as the DiT SDPA — delegate so the VAE ViT gets
+ * the BLAS default (scalar-double attention cost ~0.65 s/layer at seq=1377).
+ * H3_SDPA_BLAS=0 falls back to the scalar path inside h3_dit_sdpa_f32. */
 int h3_video_vae_sdpa_f32(float *out, const float *q, const float *k,
                           const float *v, int seq, int heads, int head_dim,
                           float scale) {
-  if (!out || !q || !k || !v || seq < 1 || heads < 1 || head_dim < 1)
-    return -1;
-  long ncore = sysconf(_SC_NPROCESSORS_ONLN);
-  if (ncore < 2 || seq < 64 || heads < 4) {
-    float *scores = (float *)malloc((size_t)seq * sizeof(float));
-    if (!scores)
-      return -1;
-    for (int h = 0; h < heads; h++) {
-      for (int row = 0; row < seq; row++) {
-        const float *qr = q + ((size_t)row * heads + h) * (size_t)head_dim;
-        float m = -1e30f;
-        for (int col = 0; col < seq; col++) {
-          const float *kr = k + ((size_t)col * heads + h) * (size_t)head_dim;
-          double dot = 0.0;
-          for (int d = 0; d < head_dim; d++)
-            dot += (double)qr[d] * kr[d];
-          float s = (float)dot * scale;
-          scores[col] = s;
-          if (s > m)
-            m = s;
-        }
-        double l = 0.0;
-        for (int col = 0; col < seq; col++) {
-          scores[col] = expf(scores[col] - m);
-          l += scores[col];
-        }
-        float inv = (float)(1.0 / l);
-        float *orow = out + ((size_t)row * heads + h) * (size_t)head_dim;
-        for (int d = 0; d < head_dim; d++)
-          orow[d] = 0.f;
-        for (int col = 0; col < seq; col++) {
-          const float *vr = v + ((size_t)col * heads + h) * (size_t)head_dim;
-          float w = scores[col] * inv;
-          for (int d = 0; d < head_dim; d++)
-            orow[d] += w * vr[d];
-        }
-      }
-    }
-    free(scores);
-    return 0;
-  }
-  /* Large seq: parallelize over heads; same loop order per (head,row) → bit-exact. */
-  float *scores = (float *)malloc((size_t)heads * (size_t)seq * sizeof(float));
-  if (!scores)
-    return -1;
-  dispatch_apply((size_t)heads,
-                 dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0),
-                 ^(size_t h) {
-                   float *sh = scores + h * (size_t)seq;
-                   for (int row = 0; row < seq; row++) {
-                     const float *qr = q + ((size_t)row * heads + h) * (size_t)head_dim;
-                     float m = -1e30f;
-                     for (int col = 0; col < seq; col++) {
-                       const float *kr = k + ((size_t)col * heads + h) * (size_t)head_dim;
-                       double dot = 0.0;
-                       for (int d = 0; d < head_dim; d++)
-                         dot += (double)qr[d] * kr[d];
-                       float s = (float)dot * scale;
-                       sh[col] = s;
-                       if (s > m)
-                         m = s;
-                     }
-                     double l = 0.0;
-                     for (int col = 0; col < seq; col++) {
-                       sh[col] = expf(sh[col] - m);
-                       l += sh[col];
-                     }
-                     float inv = (float)(1.0 / l);
-                     float *orow = out + ((size_t)row * heads + h) * (size_t)head_dim;
-                     for (int d = 0; d < head_dim; d++)
-                       orow[d] = 0.f;
-                     for (int col = 0; col < seq; col++) {
-                       const float *vr = v + ((size_t)col * heads + h) * (size_t)head_dim;
-                       float w = sh[col] * inv;
-                       for (int d = 0; d < head_dim; d++)
-                         orow[d] += w * vr[d];
-                     }
-                   }
-                 });
-  free(scores);
-  return 0;
+  return h3_dit_sdpa_f32(out, q, k, v, seq, heads, head_dim, scale);
 }
 
 int h3_video_vae_swiglu_f32(float *dst, const float *fused, int rows,

@@ -22,9 +22,6 @@ ggml_metal_op_t ggml_metal_op_init(
 
 void ggml_metal_op_free(ggml_metal_op_t ctx);
 
-// Current MTLCommandBuffer (may change after ANE force sync-and-resume).
-ggml_metal_cmd_buf_t ggml_metal_op_cmd_buf(ggml_metal_op_t ctx);
-
 int ggml_metal_op_n_nodes(ggml_metal_op_t ctx);
 
 int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx);
@@ -61,6 +58,8 @@ int ggml_metal_op_get_rows          (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_set_rows          (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_diag              (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_diag_mask_inf     (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_lightning_indexer (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_dsv4_hc           (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_soft_max          (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_ssm_conv          (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_ssm_scan          (ggml_metal_op_t ctx, int idx);
@@ -79,6 +78,7 @@ int ggml_metal_op_add_id            (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_flash_attn_ext    (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_fused_attn_qjl_tbq(ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_bin               (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_silu_back         (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_l2_norm           (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_group_norm        (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_norm              (ggml_metal_op_t ctx, int idx);

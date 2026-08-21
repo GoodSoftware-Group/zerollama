@@ -716,7 +716,7 @@ index 3cf6f5038..2215d5c23 100644
          memcpy(g_session.lastDflashQ, q, (size_t) qn * sizeof(float));
      }
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 5653a90b8..59f9fd0cd 100644
+index ae55e357d..046944652 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -1,5 +1,7 @@
@@ -726,8 +726,8 @@ index 5653a90b8..59f9fd0cd 100644
 +
  #include "common.h"
  #include "ggml.h"
- #include "llama.h"
-@@ -248,6 +250,22 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+ #include "ggml-cpp.h"
+@@ -247,6 +249,22 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
  
              throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
          }
@@ -750,7 +750,7 @@ index 5653a90b8..59f9fd0cd 100644
      }
  
      ~common_speculative_impl_draft_simple() override {
-@@ -261,6 +279,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -260,6 +278,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
      bool process(const llama_batch & batch) override {
          auto * ctx_dft = params.ctx_dft;
  
@@ -760,7 +760,7 @@ index 5653a90b8..59f9fd0cd 100644
          llama_batch batch_dft = batch;
          batch_dft.logits = nullptr;
  
-@@ -278,6 +299,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -277,6 +298,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
      void draft(common_speculative_draft_params_vec & dparams) override {
          auto & ctx_dft = params.ctx_dft;
  
@@ -769,7 +769,7 @@ index 5653a90b8..59f9fd0cd 100644
          common_batch_clear(batch);
  
          // keep track of which sequences are still drafting
-@@ -304,6 +327,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -303,6 +326,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
              return;
          }
  
@@ -779,7 +779,7 @@ index 5653a90b8..59f9fd0cd 100644
          int i = 0;
  
          while (n_drafting > 0) {
-@@ -329,11 +355,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -328,11 +354,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                              common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
                  }
  
@@ -812,7 +812,7 @@ index 5653a90b8..59f9fd0cd 100644
                      drafting[seq_id] = false;
                      n_drafting--;
  
-@@ -368,6 +412,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -367,6 +411,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                  break;
              }
  
@@ -823,10 +823,10 @@ index 5653a90b8..59f9fd0cd 100644
          }
  
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 56469f5f8..ab6ab7495 100644
+index 0ece1a9f6..8d0f590f7 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -3782,6 +3782,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
+@@ -3829,6 +3829,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
      ctx->set_nextn_layer_offset(offset);
  }
  
@@ -854,14 +854,13 @@ index 56469f5f8..ab6ab7495 100644
      if (!ctx) {
          return nullptr;
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 562571b6e..7c16d8ecf 100644
+index e82c59104..59144229a 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -145,3 +145,86 @@ LLAMA_API void llama_context_cross_upsert_row(
- LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_model * model);
+@@ -146,6 +146,89 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
  // returns the number of extracted layers from target model
  LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
-+
+ 
 +// Number of staged cross rows (0 when cross.v_embd empty).
 +LLAMA_API int32_t llama_context_cross_n_enc(const struct llama_context * ctx);
 +
@@ -944,3 +943,7 @@ index 562571b6e..7c16d8ecf 100644
 +
 +// Returns 1 if layer `il` uses sliding-window attention, 0 otherwise (or on invalid input).
 +LLAMA_API int32_t llama_model_layer_has_swa(const struct llama_model * model, int32_t il);
++
+ // retrieves the whole token embedding matrix in F32 format (n_embd * n_vocab)
+ // returns total number of elements or 0 on error
+ // if out is nullptr, returns the number of tokens without writing to out

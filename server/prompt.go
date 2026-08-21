@@ -297,8 +297,7 @@ func findChatPromptStartIdx(
 }
 
 func renderPrompt(m *Model, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
-	if m.Config.Renderer != "" {
-		rendererName := resolveRendererName(m)
+	if rendererName := resolveRendererName(m); rendererName != "" {
 		rendered, err := renderers.RenderWithRenderer(rendererName, msgs, tools, think)
 		if err != nil {
 			return "", err

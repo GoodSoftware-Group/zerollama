@@ -26,9 +26,10 @@ Go :8080  VideoCreateHandler
    │  submitTrainingJob (queue_on_busy) → Python queue OR defer-* queue
    ▼
 training.py  run_local_script
-   │  venv python  scripts/video/wan_video_generate.py
+   │  venv python  scripts/video/wan_video_generate.py   (Python tags)
+   │  or python3    scripts/video/wan_c_generate.py      (video_cli / wan2.1-t2v-c:lab)
    ▼
-wan_video_generate.py  →  Wan repo generate.py  (--save_file → artifact mp4)
+generate.py  OR  video-cli --family wan  →  artifact mp4
    │
    ▼
 GET /v1/videos/:id        (status, progress, model, created_at)
@@ -188,12 +189,13 @@ zerollama run wan2.1-t2v:1.3b "A cat on a stage"
 
 ## Presets (16g)
 
-Manifests: `modelfiles/wan2.1-t2v/config.json`, `modelfiles/wan2.2-ti2v-5b/config.json`.
+Manifests: `modelfiles/wan2.1-t2v/config.json`, `modelfiles/wan2.2-ti2v-5b/config.json`, Darwin C `modelfiles/wan2.1-t2v-c/config.json`.
 
 | Profile | Notes |
 |---------|--------|
 | **wan2.1-t2v-1.3b** | ~49 frames default on 16g; manifest sets `offload_model` + `t5_cpu` (T5-XXL does not fit on GPU with DiT on 16GB). |
 | **wan2.2-ti2v-5b** | Up to **81** frames on 16g (cap); manifest enables `offload_model`, `t5_cpu`; Go sets `WAN_CONVERT_MODEL_DTYPE` because upstream README recommends it for consumer GPUs. Go also defaults **`WAN_MMGP=1`** + profile **5** so DiT is budget-paged (stock `offload_model` alone still full-loads ~10 GiB). |
+| **wan2.1-t2v-c:lab** | Same 1.3B weights, **video-cli `--family wan`**. Register with `./scripts/video/register_wan_models.sh`. Darwin serve sets `UMA_WAN_LOCAL=1` unless `UMA_SOCK` is set. See [video-c.md](./video-c.md). |
 
 `backend_paths`: `wan_repo`, `wan_ckpt_dir`, `wan_venv` (default `~/.zerollama/third_party/wan/venv`).
 

@@ -34,6 +34,7 @@ type Qwen35Parser struct {
 	// Some checkpoints may emit an explicit leading <think> even when the
 	// prompt already opened thinking. Strip at most one such tag.
 	allowLeadingThinkOpenTag bool
+	trimLeadingThinkingSpace bool
 }
 
 func (p *Qwen35Parser) HasToolSupport() bool {
@@ -42,6 +43,15 @@ func (p *Qwen35Parser) HasToolSupport() bool {
 
 func (p *Qwen35Parser) HasThinkingSupport() bool {
 	return true
+}
+
+func (p *Qwen35Parser) PreservedTokens() []string {
+	return []string{
+		qwen35ThinkingOpenTag,
+		qwen35ThinkingCloseTag,
+		toolOpenTag,
+		toolCloseTag,
+	}
 }
 
 func (p *Qwen35Parser) Init(tools []api.Tool, lastMessage *api.Message, thinkValue *api.ThinkValue) []api.Tool {
@@ -58,9 +68,11 @@ func (p *Qwen35Parser) Init(tools []api.Tool, lastMessage *api.Message, thinkVal
 	if thinkingEnabled && !assistantPrefill {
 		p.state = qwen35ParserStateCollectingThinking
 		p.allowLeadingThinkOpenTag = true
+		p.trimLeadingThinkingSpace = false
 	} else {
 		p.state = qwen35ParserStateCollectingContent
 		p.allowLeadingThinkOpenTag = false
+		p.trimLeadingThinkingSpace = false
 	}
 
 	return tools
@@ -85,9 +97,6 @@ func (qwen35EventThinkingContent) isQwen35Event() {}
 func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 	events := p.parseEvents()
-	if done {
-		events = p.flushDoneEvents(events)
-	}
 
 	var contentSb strings.Builder
 	var thinkingSb strings.Builder
@@ -107,29 +116,6 @@ func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string
 	}
 
 	return contentSb.String(), thinkingSb.String(), calls, nil
-}
-
-// flushDoneEvents emits trailing thinking/content when the stream ends mid-state.
-// Why: models sometimes stop without </think> or leave whitespace after
-// the close tag; without this flush, reasoning text is dropped on the final chunk.
-func (p *Qwen35Parser) flushDoneEvents(events []qwen35Event) []qwen35Event {
-	if p.state == qwen35ParserStateThinkingDoneEatingWhitespace {
-		extra, _ := p.eatLeadingWhitespaceAndTransitionTo(qwen35ParserStateCollectingContent)
-		events = append(events, extra...)
-	}
-	switch p.state {
-	case qwen35ParserStateCollectingThinking:
-		if p.buffer.Len() > 0 {
-			events = append(events, qwen35EventThinkingContent{content: p.buffer.String()})
-			p.buffer.Reset()
-		}
-	case qwen35ParserStateCollectingContent:
-		if p.buffer.Len() > 0 {
-			events = append(events, qwen35EventContent{content: p.buffer.String()})
-			p.buffer.Reset()
-		}
-	}
-	return events
 }
 
 func (p *Qwen35Parser) parseEvents() []qwen35Event {
@@ -179,10 +165,11 @@ func (p *Qwen35Parser) maybeConsumeLeadingThinkOpenTag(acc string) (bool, bool) 
 		after = strings.TrimLeftFunc(after, unicode.IsSpace)
 		p.buffer.Reset()
 		p.buffer.WriteString(after)
+		p.allowLeadingThinkOpenTag = false
+		p.trimLeadingThinkingSpace = after == ""
 		if after == "" {
 			return true, false
 		}
-		p.allowLeadingThinkOpenTag = false
 		return true, true
 	}
 
@@ -203,6 +190,15 @@ func (p *Qwen35Parser) eat() ([]qwen35Event, bool) {
 
 		if handled, continueNow := p.maybeConsumeLeadingThinkOpenTag(acc); handled {
 			return events, continueNow
+		}
+		if p.trimLeadingThinkingSpace {
+			acc = strings.TrimLeftFunc(acc, unicode.IsSpace)
+			p.buffer.Reset()
+			p.buffer.WriteString(acc)
+			if acc == "" {
+				return events, false
+			}
+			p.trimLeadingThinkingSpace = false
 		}
 
 		if strings.Contains(acc, qwen35ThinkingCloseTag) {

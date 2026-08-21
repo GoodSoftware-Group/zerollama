@@ -191,9 +191,14 @@ func isUsableLlamaServerBin(path string) bool {
 	if fi.Size() < minSplitLlamaServerBytes {
 		return false
 	}
-	impl := filepath.Join(filepath.Dir(path), "libllama-server-impl.so")
-	ifi, err := os.Stat(impl)
-	return err == nil && ifi.Mode().IsRegular() && ifi.Size() > 0
+	dir := filepath.Dir(path)
+	for _, name := range []string{"libllama-server-impl.dylib", "libllama-server-impl.so"} {
+		ifi, err := os.Stat(filepath.Join(dir, name))
+		if err == nil && ifi.Mode().IsRegular() && ifi.Size() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func llamaCppBuildOutputRank(path string) int {

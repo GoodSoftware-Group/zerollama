@@ -64,14 +64,6 @@ func (p *MinistralParser) PreservedTokens() []string {
 	}
 }
 
-func (p *Nemotron3NanoParser) PreservedTokens() []string {
-	return []string{
-		nemotronThinkClose,
-		nemotronToolCallOpen,
-		toolCloseTag,
-	}
-}
-
 func (p *Olmo3Parser) PreservedTokens() []string {
 	return []string{
 		olmo3FuncCallsOpenTag,
@@ -91,22 +83,6 @@ func (p *Qwen3Parser) PreservedTokens() []string {
 		qwen3ThinkingCloseTag,
 		qwen3ToolOpenTag,
 		qwen3ToolCloseTag,
-	}
-}
-
-func (p *Qwen35Parser) PreservedTokens() []string {
-	return []string{
-		qwen35ThinkingOpenTag,
-		qwen35ThinkingCloseTag,
-		qwen35ToolCallOpenTag,
-		toolCloseTag,
-	}
-}
-
-func (p *Qwen3CoderParser) PreservedTokens() []string {
-	return []string{
-		toolOpenTag,
-		toolCloseTag,
 	}
 }
 

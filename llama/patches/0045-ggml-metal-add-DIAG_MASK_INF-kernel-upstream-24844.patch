@@ -16,7 +16,7 @@ ops stay on GPU instead of falling back to CPU.
  7 files changed, 113 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index 433f97771..811b96340 100644
+index 80d0c1718..a95998adb 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
 @@ -199,6 +199,24 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_diag(ggml_metal_
@@ -45,7 +45,7 @@ index 433f97771..811b96340 100644
      char base[256];
      char name[256];
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index a9c932e6a..37e48b671 100644
+index 9f65e66ac..80b535ad2 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -114,6 +114,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pool_2d
@@ -57,10 +57,10 @@ index a9c932e6a..37e48b671 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_concat            (ggml_metal_library_t lib, enum ggml_type tsrc);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary             (ggml_metal_library_t lib, const struct ggml_tensor * op);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 99a7c769e..5922e1d43 100644
+index a20d1416c..68b352dee 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1451,6 +1451,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1532,6 +1532,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
              }
          case GGML_OP_DIAG:
              return true;
@@ -70,10 +70,10 @@ index 99a7c769e..5922e1d43 100644
          case GGML_OP_OPT_STEP_SGD:
              return has_simdgroup_reduction;
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 84a96591b..5138efd82 100644
+index d2d10ffe7..2fa00e0f2 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -104,7 +104,6 @@
+@@ -107,7 +107,6 @@
  #define FC_SUM_ROWS                    1400
  #define FC_UPSCALE                     1500
  #define FC_GATED_DELTA_NET             1600
@@ -81,7 +81,7 @@ index 84a96591b..5138efd82 100644
  // op-specific constants
  #define OP_FLASH_ATTN_EXT_NQPSG 8
  #define OP_FLASH_ATTN_EXT_NQPSG_16 16
-@@ -1029,6 +1028,26 @@ typedef struct {
+@@ -1040,6 +1039,26 @@ typedef struct {
      uint64_t nb3;
  } ggml_metal_kargs_diag;
  
@@ -109,10 +109,10 @@ index 84a96591b..5138efd82 100644
      int64_t  ne00;
      int64_t  ne01;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index d82367925..1397ec06b 100644
+index 19b7915df..e1a5763f3 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -361,6 +361,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -375,6 +375,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
              {
                  n_fuse = ggml_metal_op_diag(ctx, idx);
              } break;
@@ -123,7 +123,7 @@ index d82367925..1397ec06b 100644
          case GGML_OP_L2_NORM:
              {
                  n_fuse = ggml_metal_op_l2_norm(ctx, idx);
-@@ -1297,6 +1301,51 @@ int ggml_metal_op_diag(ggml_metal_op_t ctx, int idx) {
+@@ -1508,6 +1512,51 @@ int ggml_metal_op_dsv4_hc(ggml_metal_op_t ctx, int idx) {
      return 1;
  }
  
@@ -176,7 +176,7 @@ index d82367925..1397ec06b 100644
      ggml_tensor * op = ctx->node(idx);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index f32dd764c..b7444e35b 100644
+index 402169a50..5b39ea85d 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
 @@ -55,6 +55,7 @@ int ggml_metal_op_cumsum            (ggml_metal_op_t ctx, int idx);
@@ -184,14 +184,14 @@ index f32dd764c..b7444e35b 100644
  int ggml_metal_op_set_rows          (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_diag              (ggml_metal_op_t ctx, int idx);
 +int ggml_metal_op_diag_mask_inf     (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_lightning_indexer (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_dsv4_hc           (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_soft_max          (ggml_metal_op_t ctx, int idx);
- int ggml_metal_op_ssm_conv          (ggml_metal_op_t ctx, int idx);
- int ggml_metal_op_ssm_scan          (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index fac137ef4..73ab6ca2e 100644
+index efcbdf95d..559f18a24 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -10200,6 +10200,28 @@ kernel void kernel_diag_f32(
+@@ -10428,6 +10428,28 @@ kernel void kernel_diag_f32(
      }
  }
  

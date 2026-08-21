@@ -39,9 +39,6 @@ func main() {
 	if cfg.Architecture == "" {
 		cfg.Architecture = "amd64"
 	}
-	if cfg.RootFS.Type == "" {
-		cfg.RootFS.Type = "layers"
-	}
 	var b bytes.Buffer
 	if err := json.NewEncoder(&b).Encode(&cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "encode config: %v\n", err)

@@ -202,6 +202,7 @@ static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const 
     GGML_UNUSED(reg);
 }""",
         "metal.cpp proc address",
+        required=False,
     )
     if "ggml_backend_dev_buffer_from_iosurface" in metal_cpp.read_text():
         has_public = "GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(" in metal_cpp.read_text()

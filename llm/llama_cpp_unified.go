@@ -208,7 +208,7 @@ func LlamaCppUnificationReport() LlamaCppUnificationStatus {
 	if report.EffectiveServer != "" {
 		parts = append(parts, "llama-server "+report.EffectiveServer)
 	}
-	if report.VendorPin != "" && !pinRefsMatch(report.VendorPin, pin) {
+	if report.VendorPin != "" && !pinRefsMatch(report.VendorPin, pin) && vendorLlamaCppRoot() == "" {
 		parts = append(parts, "in-process vendor "+shortRef(report.VendorPin)+" (rebase pending)")
 		report.Warn = true
 	}

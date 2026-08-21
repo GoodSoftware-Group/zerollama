@@ -119,7 +119,7 @@ index 32d97cd5d..5ae4dab02 100644
      @autoreleasepool {
          struct ggml_metal_buffer_id bid_src = ggml_metal_get_buffer_id(src);
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 41de145f5..39bd03211 100644
+index dadcc9f44..71d1b64ce 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
 @@ -516,6 +516,20 @@ static void ggml_backend_metal_get_tensor_async(ggml_backend_t backend, const gg

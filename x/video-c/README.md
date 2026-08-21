@@ -92,8 +92,8 @@ Reply is `ok\n` or `err: <msg>\n`. `--reuse` 1=evaluate every step (best quality
 2/3 extrapolate velocity. `adaln_t_sigma` 0=`t=1-σ` (default), 1=`t=σ`, -1=env.
 
 **Measured (quiet machine):** warm served request ~13 s vs ~224 s cold
-single-process — **~17×**, signature bit-identical (`latent_rms=1.18298
-a_rms=0.504888` for seed=1, "A red fox walking through snow"). The per-request
+single-process — **~17×**, signature bit-identical (`latent_rms=1.18314
+a_rms=0.504881` for seed=1, "A red fox walking through snow"). The per-request
 compute is: DiT denoise ~3.1 s (BLAS f32), audio VAE ~1.8 s, text_cond ~1.4 s,
 video VAE ~0.9 s, media encode ~0.14 s — video+audio VAE decode overlap via
 `H3_PARALLEL_VAE=1` (default).

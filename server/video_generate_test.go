@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -131,6 +132,8 @@ func TestBuildWanVideoPayloadTI2VMMGP(t *testing.T) {
 func TestBuildWanVideoPayload(t *testing.T) {
 	root := findRepoRoot(t)
 	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_VIDEO_CLI", "")
+	t.Setenv("ZEROLLAMA_WAN_CLI", "")
 
 	cfg := model.ConfigV2{
 		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendWan},
@@ -202,6 +205,69 @@ func TestBuildWanVideoPayload(t *testing.T) {
 	}
 	if _, ok := payload.Env["WAN_PRECISION"]; ok {
 		t.Fatalf("WAN_PRECISION should not be passed (unused by wrapper)")
+	}
+}
+
+func TestBuildWanVideoPayloadC(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_VIDEO_CLI", "")
+	t.Setenv("ZEROLLAMA_WAN_CLI", "")
+	t.Setenv("UMA_SOCK", "")
+	t.Setenv("UMA_WAN_LOCAL", "")
+
+	cli := filepath.Join(t.TempDir(), "video-cli")
+	if err := os.WriteFile(cli, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vocab := filepath.Join(t.TempDir(), "umt5.vocab")
+	if err := os.WriteFile(vocab, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendWan},
+		BackendPaths: map[string]string{
+			"video_cli":    cli,
+			"wan_repo":     filepath.Join(t.TempDir(), "Wan2.1"),
+			"wan_ckpt_dir": filepath.Join(t.TempDir(), "ckpt"),
+			"wan_c_vocab":  vocab,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    wanProfile21T2V13B,
+			Size:       "832x480",
+			Frames:     49,
+			Steps:      25,
+			TimeoutSec: 100,
+		},
+	}
+	if err := os.MkdirAll(cfg.BackendPaths["wan_repo"], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.BackendPaths["wan_ckpt_dir"], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.BackendPaths["wan_ckpt_dir"], "dummy.pth"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := buildWanVideoPayload(cfg, *cfg.VideoGeneration, "wan2.1-t2v-c:lab", "a cat on stage", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(payload.ScriptPath, "wan_c_generate.py") {
+		t.Fatalf("script: %s", payload.ScriptPath)
+	}
+	if payload.Env["VIDEO_FAMILY"] != "wan" {
+		t.Fatalf("family: %s", payload.Env["VIDEO_FAMILY"])
+	}
+	if payload.Env["VIDEO_CLI"] != cli {
+		t.Fatalf("cli: %s", payload.Env["VIDEO_CLI"])
+	}
+	if payload.Env["WAN_C_VOCAB"] != vocab {
+		t.Fatalf("vocab: %s", payload.Env["WAN_C_VOCAB"])
+	}
+	if runtime.GOOS == "darwin" && payload.Env["UMA_WAN_LOCAL"] != "1" {
+		t.Fatalf("darwin UMA_WAN_LOCAL=%q want 1", payload.Env["UMA_WAN_LOCAL"])
 	}
 }
 

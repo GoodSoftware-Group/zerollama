@@ -9,15 +9,18 @@
 // prefill session when sess.seq >= padded decode seq (avoids 2× slots).
 // Keys: optional stable ggml weight data ids (set_weight_ids) + float staging ptrs.
 #import <Foundation/Foundation.h>
+#import <dispatch/dispatch.h>
 
 #include "ane_ffn_force_replace.h"
 #include "ane_prefill_session.h"
+#include "ane_ffn_layout_metal.h"
 
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 typedef struct {
     int ic;
@@ -38,6 +41,7 @@ typedef struct {
     const void *id_wd;
     ANEPrefillSession *sess;
     uint64_t tick;
+    bool warmed; // omlx #2898: first eval at create, not first user token
 } ForceCacheEntry;
 
 #define SCACHE_SLOTS_MAX 128
@@ -124,6 +128,70 @@ static bool cache_ensure_xin(size_t bytes) {
     g_xin = (_Float16 *)malloc(bytes);
     g_xin_bytes = g_xin ? bytes : 0;
     return g_xin != NULL;
+}
+
+static bool warm_env_enabled(void) {
+    const char * off = getenv("ZEROLLAMA_ANE_FFN_NO_WARM");
+    if (off && off[0] == '1') {
+        return false;
+    }
+    const char * on = getenv("ZEROLLAMA_ANE_FFN_WARM");
+    if (on && on[0]) {
+        return on[0] != '0' && strcasecmp(on, "false") != 0;
+    }
+    on = getenv("ZEROLLAMA_ANE_FFN_SIDECAR");
+    if (on && on[0] && on[0] != '0') {
+        return true;
+    }
+    on = getenv("ZEROLLAMA_ANE_FFN_OVERLAP");
+    if (on && on[0] && on[0] != '0') {
+        return true;
+    }
+    return false;
+}
+
+// One throwaway eval per procedure (omlx load warm) — pays first-eval inside load.
+static bool warm_session_entry(ForceCacheEntry *e) {
+    if (!e || !e->sess || e->warmed) {
+        return e && e->sess;
+    }
+    ANEPrefillSession *sess = e->sess;
+    const int ic = e->ic;
+    const int seq = e->seq;
+    size_t inBytes = ane_prefill_session_input_bytes(sess);
+    if (inBytes == 0) {
+        return false;
+    }
+    if (ane_prefill_session_is_int8_input(sess)) {
+        if (!cache_ensure_qin(inBytes)) {
+            return false;
+        }
+        memset(g_qin, 0, inBytes);
+        if (!ane_prefill_session_write_acts_int8(sess, g_qin, inBytes)) {
+            return false;
+        }
+    } else {
+        if (!cache_ensure_xin(inBytes)) {
+            return false;
+        }
+        memset(g_xin, 0, inBytes);
+        if (!ane_prefill_session_write_acts_fp16(sess, g_xin, inBytes)) {
+            return false;
+        }
+    }
+    if (!ane_prefill_session_eval(sess)) {
+        return false;
+    }
+    e->warmed = true;
+    scache_telem("ane_ffn_force: warm ok ic=%d hidden=%d seq=%d evals=%d\n",
+                 ic, e->hidden, seq, ane_prefill_session_eval_count(sess));
+    return true;
+}
+
+static void maybe_warm_entry(ForceCacheEntry *e) {
+    if (warm_env_enabled()) {
+        (void)warm_session_entry(e);
+    }
 }
 
 static ForceCacheEntry *scache_victim(void) {
@@ -512,6 +580,7 @@ static ForceCacheEntry *scache_ensure_swiglu(
     ForceCacheEntry *e = scache_find_swiglu(ic, hidden, min_seq, tag, i8, Wg, Wu, Wd);
     if (e) {
         scache_touch(e, 1);
+        maybe_warm_entry(e);
         return e;
     }
 
@@ -553,6 +622,7 @@ static ForceCacheEntry *scache_ensure_swiglu(
     e->id_wd = g_id_wd;
     e->sess = sess;
     scache_touch(e, 0);
+    maybe_warm_entry(e);
     return e;
 }
 
@@ -930,7 +1000,32 @@ bool ane_ffn_force_swiglu_activate(
         return false;
     }
     scache_touch(e, 1);
+    maybe_warm_entry(e);
     return true;
+}
+
+bool ane_ffn_force_swiglu_warm_bank(void) {
+    if (!warm_env_enabled()) {
+        return true;
+    }
+    const int n = scache_slots();
+    bool ok = true;
+    for (int i = 0; i < n; i++) {
+        if (!g_slots[i].sess) {
+            continue;
+        }
+        if (!warm_session_entry(&g_slots[i])) {
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool ane_ffn_force_swiglu_warm_active(void) {
+    if (!g_active || !g_active->sess) {
+        return false;
+    }
+    return warm_session_entry(g_active);
 }
 
 uint32_t ane_ffn_force_swiglu_input_surface_id(void) {
@@ -1009,6 +1104,103 @@ bool ane_ffn_force_swiglu_reeval_f32(float *Y_ic_seq, int seq) {
 bool ane_ffn_force_swiglu_eval_only(void) {
     if (!g_active || !g_active->sess) return false;
     return ane_prefill_session_eval(g_active->sess);
+}
+
+static dispatch_group_t g_ffn_eval_group = NULL;
+static dispatch_queue_t g_ffn_eval_queue = NULL;
+static bool g_ffn_eval_last_ok = false;
+
+static void ane_ffn_eval_async_init(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_ffn_eval_group = dispatch_group_create();
+        g_ffn_eval_queue = dispatch_queue_create("zerollama.ane.ffn.eval", DISPATCH_QUEUE_SERIAL);
+    });
+}
+
+bool ane_ffn_force_swiglu_eval_async_enabled(void) {
+    const char * side = getenv("ZEROLLAMA_ANE_FFN_SIDECAR");
+    if (side && side[0] && side[0] != '0') {
+        return true;
+    }
+    const char * e = getenv("ZEROLLAMA_ANE_FFN_OVERLAP");
+    if (e && e[0]) {
+        return strcmp(e, "0") != 0 && strcasecmp(e, "false") != 0;
+    }
+    return false;
+}
+
+bool ane_ffn_force_swiglu_eval_async(void) {
+    if (!g_active || !g_active->sess) {
+        return false;
+    }
+    ane_ffn_eval_async_init();
+    dispatch_group_enter(g_ffn_eval_group);
+    dispatch_async(g_ffn_eval_queue, ^{
+        g_ffn_eval_last_ok = ane_prefill_session_eval(g_active->sess);
+        dispatch_group_leave(g_ffn_eval_group);
+    });
+    return true;
+}
+
+bool ane_ffn_force_swiglu_eval_async_wait(void) {
+    if (!g_ffn_eval_group) {
+        return false;
+    }
+    dispatch_group_wait(g_ffn_eval_group, DISPATCH_TIME_FOREVER);
+    return g_ffn_eval_last_ok;
+}
+
+bool ane_ffn_force_swiglu_pack_eval_async(
+    const void *src_ggml_acts, int ic, int seq, int acts_is_f16) {
+    if (!g_active || !g_active->sess || !src_ggml_acts || ic <= 0 || seq <= 0) {
+        return false;
+    }
+    if (!(g_active->x_scale > 0)) {
+        return false;
+    }
+    const int sess_seq = g_active->seq;
+    if (seq > sess_seq) {
+        return false;
+    }
+    const uint32_t in_sid = ane_prefill_session_input_surface_id(g_active->sess);
+    if (in_sid == 0 || !ane_ffn_layout_metal_ready()) {
+        return false;
+    }
+
+    const size_t n = (size_t)ic * (size_t)seq;
+    const size_t bytes = acts_is_f16 ? n * sizeof(uint16_t) : n * sizeof(float);
+    void *src_copy = malloc(bytes);
+    if (!src_copy) {
+        return false;
+    }
+    memcpy(src_copy, src_ggml_acts, bytes);
+
+    ane_ffn_eval_async_init();
+    dispatch_group_enter(g_ffn_eval_group);
+    const float xscale = g_active->x_scale;
+    ANEPrefillSession *sess = g_active->sess;
+    const int ic_c = ic;
+    const int seq_c = seq;
+    const int a_f16 = acts_is_f16;
+    dispatch_async(g_ffn_eval_queue, ^{
+        bool packed = false;
+        if (a_f16) {
+            packed = ane_ffn_layout_metal_pack_in_i8_f16(
+                in_sid, src_copy, ic_c, seq_c, xscale);
+        } else {
+            packed = ane_ffn_layout_metal_pack_in_i8_f32(
+                in_sid, (const float *)src_copy, ic_c, seq_c, xscale);
+        }
+        g_ffn_eval_last_ok = packed && sess && ane_prefill_session_eval(sess);
+        free(src_copy);
+        dispatch_group_leave(g_ffn_eval_group);
+    });
+    return true;
+}
+
+bool ane_ffn_force_swiglu_pack_eval_async_wait(void) {
+    return ane_ffn_force_swiglu_eval_async_wait();
 }
 
 void ane_ffn_force_register_host_replace(void) {
