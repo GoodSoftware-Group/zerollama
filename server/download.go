@@ -24,6 +24,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/format"
+	"github.com/ollama/ollama/internal/ssrf"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
 )
@@ -272,6 +273,9 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 	}()
 	if err != nil {
 		return err
+	}
+	if err := ssrf.ValidateURL(directURL); err != nil {
+		return fmt.Errorf("blob redirect: %w", err)
 	}
 
 	g, inner := errgroup.WithContext(ctx)

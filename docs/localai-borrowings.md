@@ -6,7 +6,7 @@
 
 **Cross-links:** [scheduling-vram-policy.md](./scheduling-vram-policy.md) (per-node VRAM/queues) · [fleet-scheduling.md](./fleet-scheduling.md) (multi-node routing) · [ROADMAP.md](./ROADMAP.md#localai-control-plane-borrowings-jun-2026) · [upstream-ollama-diff.md](./upstream-ollama-diff.md) (engine convergence via Phase 17)
 
-**Local reference tree:** `~/Sites/inference/LocalAI` — upstream [mudler/LocalAI](https://github.com/mudler/LocalAI), checked out at **`v4.5.6`** for diffing control-plane patterns (router, score, watchdog, distributed). Update with `git fetch origin && git checkout v4.5.6` (or `master` for tip).
+**Local reference tree:** `~/Sites/inference/LocalAI` — upstream [mudler/LocalAI](https://github.com/mudler/LocalAI), checked out at **`v4.9.0`** for diffing control-plane patterns (router, score, watchdog, distributed). Update with `git fetch origin && git checkout v4.9.0` (or `master` for tip).
 
 ---
 
@@ -26,7 +26,7 @@ Eliza Cloud default              Post-load probe → /api/status (LA5)
 
 LocalAI’s lesson: **cheap metadata + honest lifecycle** at the daemon boundary—not replacing your hot path.
 
-**Shipped track:** **LA1–LA10** (see [ROADMAP](./ROADMAP.md#localai-control-plane-borrowings-jun-2026)). **Upstream watch:** [below](#upstream-watch-localai-v44-jul-2026) — what LocalAI shipped recently and what might become **LA11+**.
+**Shipped track:** **LA1–LA11** (incl. **LA11b**), **LA15**, **LA17–LA20**. **Upstream watch:** remaining **LA12+**.
 
 ---
 
@@ -158,6 +158,82 @@ Downloads via Hub API + resolve URL, stages GGUF blob, runs `createModel` (guess
 
 Doc: [bench-cache.md](./bench-cache.md). **Not** a LocalAI API port—operator UX in the same spirit as LocalAI’s focus on lifecycle at the CLI boundary.
 
+### Intelligent router (LA11)
+
+**Why:** Agents want one client-facing name (`agent`) that picks a specialist model from the prompt, without a full generation round-trip. Score classifier (LA11) or labelled **KNN corpus** (LA11b).
+
+Config file (`ZEROLLAMA_ROUTER_CONFIG`, default `~/.ollama/router.yaml`):
+
+```yaml
+routers:
+  agent:
+    classifier: llama3.2:1b   # must support POST /api/score
+    fallback: llama3.2:3b
+    activation_threshold: 0.15
+    policies:
+      - label: code
+        description: programming, debugging, code review
+      - label: general
+        description: everyday questions
+    candidates:
+      - model: qwen2.5-coder:7b
+        labels: [code]
+      - model: llama3.2:3b
+        labels: [code, general]
+```
+
+| Piece | Role |
+|-------|------|
+| `POST /api/router/decide` | `{router, prompt}` → labels, softmax, chosen model, fallback flag |
+| Score classifier | LA9 joint log-prob of policy **labels** as continuations; softmax; labels ≥ threshold are active |
+| Candidate match | First candidate whose `labels` **cover** the active set (order small→large) |
+| In-band rewrite | `/api/chat` and `/api/generate` treat a router name as the client model; headers `X-Zerollama-Router*` |
+
+`ZEROLLAMA_ROUTER_REWRITE=0` keeps decide-only. Missing YAML = no routers. Nested routers (candidate is also a router name) are rejected.
+
+**LA11b KNN** — `classifier: knn` plus an embedding model and labelled exemplars. No score LM. Neighbours below `similarity_threshold` (default 0.80) do not vote; labels need a similarity-weighted majority (`vote_threshold` default 0.5). Out of corpus range → empty labels → fallback.
+
+```yaml
+routers:
+  agent:
+    classifier: knn
+    embedder: nomic-embed-text
+    fallback: llama3.2:3b
+    knn:
+      k: 3
+      similarity_threshold: 0.80
+      vote_threshold: 0.5
+      corpus:
+        - text: "fix this rust compile error"
+          labels: [code]
+        - text: "what is the weather"
+          labels: [general]
+    candidates:
+      - model: qwen2.5-coder:7b
+        labels: [code]
+      - model: llama3.2:3b
+        labels: [code, general]
+```
+
+| Piece | Role |
+|-------|------|
+| `GET /api/router/corpus?router=` | Counts only (no exemplar text) |
+| `POST /api/router/corpus` | Session overlay entries (lost on process restart; YAML is durable) |
+
+### Model aliases (LA17)
+
+**Why:** OpenAI-shaped clients send `gpt-4` / `gpt-4o-mini`. `zerollama cp` copies a full manifest; a live alias is a one-hop name redirect with no extra blobs.
+
+`~/.ollama/aliases.yaml` (`ZEROLLAMA_ALIASES_CONFIG`):
+
+```yaml
+aliases:
+  gpt-4: llama3.2:3b
+  gpt-4o-mini: llama3.2:1b
+```
+
+One hop only (no alias→alias). Applied before LA11 router rewrite on generate/chat/embed/score/show. Headers: `X-Zerollama-Alias`, `X-Zerollama-Alias-Target`. `GET /api/aliases` lists; `POST /api/aliases` `{name,target}` is a session overlay (YAML is durable).
+
 ---
 
 ## Manifest hygiene (existing tags)
@@ -207,6 +283,18 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 
 **Workaround (still valid):** `zerollama pull <model>` for registry tags, or `create` FROM existing tag.
 
+### Outbound URL SSRF (LA15)
+
+**Why:** User-supplied `video_url`, experimental `web_fetch` URLs, Hugging Face redirects, and registry blob `Location` hops must not reach loopback, RFC1918, link-local, or cloud metadata.
+
+- Shared `internal/ssrf` (`ValidateExternalURL`, redirect re-check) — LocalAI `ValidateExternalURL` / `IsPublicIP`
+- Video fetches already had host checks; they now use the shared helper (also blocks `0.0.0.0` / unspecified)
+- HF tree + GGUF download: validate URL, follow redirects only to public IPs; `http://huggingface.co` upgrades to HTTPS
+- Registry part downloads: validate the blob redirect URL before GET
+- `POST /api/experimental/web_fetch`: reject private `url` before cloud proxy
+
+DNS rebinding after the lookup is not fully pinned on the subsequent dial (same limitation as LocalAI).
+
 ### Operator checklist
 
 1. **`/api/show <model>`** — check `num_ctx` in parameters; prefer ≤8192 in manifest, raise per-request via `options.num_ctx`
@@ -225,7 +313,11 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 | `LOCALAI_DISABLE_GUESSING` | Same (LocalAI-compatible name) |
 | `ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD` | Watchdog VRAM ratio eviction (0–1) |
 | `ZEROLLAMA_RUNNER_BUSY_TIMEOUT` | Max busy duration before forced unload |
-| `ZEROLLAMA_SCHED_WATCHDOG_INTERVAL` | Watchdog tick |
+| `ZEROLLAMA_ROUTER_CONFIG` | Router YAML path (default `~/.ollama/router.yaml`; `0`=off) |
+| `ZEROLLAMA_ROUTER_REWRITE` | Rewrite chat/generate when `model` is a router name (default on) |
+| `ZEROLLAMA_ALIASES_CONFIG` | Aliases YAML (default `~/.ollama/aliases.yaml`; `0`=off) |
+| `ZEROLLAMA_LOAD_COOLDOWN_MAX` | Cooldown cap (default `5m`) |
+| `ZEROLLAMA_BACKEND_PARENT_WATCH` | Linux: SIGKILL runner children if parent dies (`0`=off) |
 | `ZEROLLAMA_FLEET_PREFIX_CACHE` | Fleet session affinity (`1` default on manager) |
 | `ZEROLLAMA_FLEET_PREFIX_CACHE_TTL` | Affinity entry TTL |
 | `ZEROLLAMA_FLEET_PROBE_CACHE_TTL` | Peer health probe cache (default `1s`, `0`=off) |
@@ -236,35 +328,41 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 
 ---
 
-## Upstream watch (LocalAI v4.5.6, checked Jul 2026)
+## Upstream watch (LocalAI v4.9.0, checked Aug 2026)
 
-Periodic scan of [mudler/LocalAI](https://github.com/mudler/LocalAI) via GitHub releases and the local tree at **`~/Sites/inference/LocalAI`** (`v4.5.6`). Last checked **2026-07-03**. Use this to decide **LA11+** candidates. Sibling map: [upstream-siblings.md](./upstream-siblings.md).
+Periodic scan of [mudler/LocalAI](https://github.com/mudler/LocalAI) via GitHub releases and the local tree at **`~/Sites/inference/LocalAI`** (`v4.9.0`). Last checked **2026-08-21**. Sibling map: [upstream-siblings.md](./upstream-siblings.md).
 
-### LocalAI v4.5 highlights (since v4.4)
+### LocalAI v4.6–v4.9 highlights (since last watch at v4.5.6)
+
+| Area | What LocalAI shipped | Zerollama today | Borrow? |
+|------|----------------------|-----------------|---------|
+| **Model-load cooldown** (v4.7) | Failed load → cooldown (10s→5m geometric); clients get `503 + Retry-After` instead of respawning crash loops | **LA18 Done** — `ZEROLLAMA_LOAD_COOLDOWN` | **Shipped** |
+| **VRAM budget** (v4.8) | `LOCALAI_VRAM_BUDGET=80%` or `12GB`; hard per-process + distributed placement ceiling | **LA19 Done** — `ZEROLLAMA_VRAM_BUDGET` on GPUDevices + runtime free probes | **Shipped** |
+| **Parent-death backend watch** (v4.6) | Backend self-terminates if parent PID reparented (`LOCALAI_BACKEND_PARENT_WATCH`) | **LA20 Done** — Linux `Pdeathsig` SIGKILL | **Shipped** |
+| **Eager warm + load API** (v4.6) | `POST /backend/load`; realtime pipeline block-warm at session start | Implicit via generate/keep_alive | **Maybe — LA21** (explicit prewarm) |
+| **KNN router classifier** (v4.9) | `classifier: knn` over labelled corpus; no classifier LM; undecidable → fallback | **LA11b Done** — cosine KNN + `/api/router/corpus` | **Shipped** |
+| **Global HTTP admission** (v4.9) | Process-wide in-flight bounds beyond per-backend | Phase 11 + Go pending queue | **Watch** (overlap Phase 11) |
+| **Context compression** (v4.9) | Opt-in per-model: compress older turns via local model before infer | Agent/client responsibility today | **Maybe — LA22** |
+| **Gallery SSRF / auth default-deny** (v4.6/v4.9) | `ValidateExternalURL`; deny-by-default HTTP auth | **LA15 Done** — `internal/ssrf` on video, HF, blob redirect, web_fetch | **Shipped** |
+| **Parallel HF downloads** (v4.9) | Concurrent whole-file snapshot transfers | LA8 sequential | **Maybe — LA8 polish** |
+| **Durable cold-load jobs** (v4.9) | Advisory lock ≠ multi-GB transfer lifetime | Go load coalescing + singleflight | **Watch** (we already coalesce) |
+| **`context_size: -1`** (v4.7) | Resolve to GGUF `n_ctx_train` with VRAM warn | Guess **caps** at 8192 (intentional) | **No** — opposite of LA2 footgun fix |
+| **Interleaved thinking + tools** (v4.7) | `reasoning` survives tool loop; Anthropic `thinking` blocks | Parser/tool path exists; verify parity | **Watch** (Hermes/parser track) |
+| **vllm.cpp / audio.cpp / 3D / gallery variants** | New engines + gallery | Phase 15/17 stay in-tree | **Not goals** |
+| **Voice library / LongCat / MiniMax-H3** | Modalities | Voice L5–L8 / video track | **Different tracks** |
+
+Refs: [v4.9.0](https://github.com/mudler/LocalAI/releases/tag/v4.9.0) · [v4.8.0](https://github.com/mudler/LocalAI/releases/tag/v4.8.0) · [v4.7.0](https://github.com/mudler/LocalAI/releases/tag/v4.7.0) · [v4.6.0](https://github.com/mudler/LocalAI/releases/tag/v4.6.0)
+
+### Older highlights (v4.4–v4.5, still relevant)
 
 | Area | What LocalAI shipped | Zerollama today |
 |------|----------------------|-----------------|
-| **PII (NER tier)** | `privacy-filter.cpp` backend + regex secret detector; UI editor ([v4.5.0](https://github.com/mudler/LocalAI/releases/tag/v4.5.0)) | Eliza cloud passthrough; no request-side PII — **LA12 candidate** |
-| **Multi-user defaults** | Prefix caching **on by default**; VRAM-scaled `n_parallel`; Blackwell batch 2048 | **L1** profiles + **L3** slot cache; not automatic VRAM→`n_parallel` |
-| **Model aliases** | Live redirect/rename of model names without client reconfig | `zerollama cp` / manifest tags only — **new candidate LA17** |
-| **Realtime voice** | Speaker-aware sessions, summarize-then-drop compaction, semantic VAD EOU | Piper/Whisper subprocess; duplex **L7** deferred |
-| **New modality backends** | `depth-anything`, `ced` (527 sound classes), `supertonic` TTS | Different tracks (video/multimodal/voice) — not gallery ports |
-| **`swa_full` default** | Sliding-window models default `swa_full:true` ([v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6)) | **L3** `prefix_cache_policy` + hybrid Radix gate — overlap, verify parity |
-| **Distributed hardening** | `LOCALAI_DISTRIBUTED_SHARED_MODELS` (skip staging on shared volumes); `SyncedMap` cross-replica state; detached cold-load staging | Fleet HTTP peers; no NATS/shared-volume staging flag |
-| **Import fixes** | `file://` strip, GGUF-derived names for repo-root URIs | **LA8** HF pull — align edge cases if operators report mismatches |
-
-### LocalAI v4.4 highlights (still relevant)
-
-| Area | What LocalAI shipped | Zerollama today |
-|------|----------------------|-----------------|
-| **Intelligent middleware** | Capability router: rewrite `input.Model` to smallest capable downstream model; **score** or **colbert** classifiers; `/api/router/*` decision log | **LA9** `POST /api/score` primitive only—no fan-out router policies yet |
-| **Distributed v4** | **Prefix-cache-aware routing** (radix tree + xxhash chain, NATS sync); JWT/TLS on NATS; resumable GGUF `Content-Range` transfers | **LA6** fleet warm/affinity + **L3** per-node prefix/Radix; cross-node KV donor still [deferred](./radix-prefix-share.md#product-gaps) |
-| **Security** | `pkg/httpclient` blocks cross-host credential-leaking redirects (GHSA) | Standard Go client; no dedicated audit pass |
-| **Multimodal backends** | parakeet.cpp, CrispASR, rfdetr-cpp, llama.cpp video input, LTX-2 video gen | Phase 17 llama-server video; Piper/Whisper subprocess; Wan queue—different integration shape |
-| **Operator UX** | `local-ai chat` interactive CLI; RAG source citations in agent UI | `zerollama run` / Ollama CLI; **LA10** bench cache in `ls` |
-| **Backends** | 60+ OCI gallery backends, gRPC `backend.proto` | **Not goals** — Phase 15/17 engines stay in-tree |
-
-Refs: [v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6) · [v4.5.0](https://github.com/mudler/LocalAI/releases/tag/v4.5.0) · [v4.4.0](https://github.com/mudler/LocalAI/releases/tag/v4.4.0) · [middleware docs](https://localai.io/features/middleware/index.html)
+| **Intelligent middleware** | Capability router + score/colbert; `/api/router/*` | **LA9** score primitive only — **LA11** |
+| **PII filtering** | NER + regex; reversible pseudonyms (v4.9) | Cloud passthrough — **LA12** |
+| **Distributed prefix routing** | Radix + xxhash across replicas | **LA13 Done** via L3-R8/R9 |
+| **Model aliases** | Live name redirect | **LA17 Done** |
+| **Resumable GGUF transfer** | `Content-Range` | **LA14** |
+| **Multi-user defaults** | Prefix cache on; VRAM-scaled `n_parallel` | L1/L3 manual profiles |
 
 ### Parity matrix (control plane)
 
@@ -280,41 +378,39 @@ Refs: [v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6) · [v4.5.0
 | `huggingface://` pull | `hf_import` | **LA8** ✓ |
 | `Score` RPC / `POST /api/score` | `llm.Scorer`, 3 ggml backends | **LA9** ✓ |
 | Operator throughput cache | `zerollama bench`, `TOK/S` in `ls` | **LA10** ✓ |
-| Intelligent router (score/colbert policies) | — | **Candidate LA11** |
-| PII middleware (NER + secrets regex) | — | **Candidate LA12** (enterprise) |
-| Fleet radix prefix routing | **L3-R8 + L3-R9 / LA13** status mirror, residency soft score, content-hash longest-prefix | — |
-| Cross-node KV blob pull | **L3-R10 + L3-R11** HTTP digest fetch; auto peers from `FLEET_PEERS`/coordination; Go `prefixblock` | NIXL/Mooncake RDMA still open |
+| Failed-load cooldown + Retry-After | `load_cooldown`, `ZEROLLAMA_LOAD_COOLDOWN` | **LA18** ✓ |
+| Parent-death orphan backend kill | Linux `Pdeathsig` on runners | **LA20** ✓ |
+| Intelligent router (score/colbert/knn) | YAML + `/api/router/decide` (score + knn) | **LA11** ✓ / **LA11b** ✓ |
+| PII middleware (NER + secrets + reverse) | — | **Candidate LA12** (enterprise) |
+| Fleet radix prefix routing | **L3-R8 + L3-R9** | **LA13** ✓ |
+| Cross-node KV blob pull | **L3-R10 + L3-R11** | ✓ (NIXL still open) |
 | Resumable peer GGUF transfer | — | **Candidate LA14** |
-| Outbound HTTP redirect credential guard | — | **Candidate LA15** |
-| `POST /v1/rerank` (colbert routing tier) | llama.cpp has `/reranking`; not wired in zerollama API | **Candidate LA16** |
-| Model aliases (live name redirect) | manifest tags / `cp` only | **Candidate LA17** |
-| VRAM-scaled `n_parallel` default | L1 profiles manual | **Watch** (overlap L1) |
-| Backend gallery + gRPC zoo | — | **Not goals** |
+| Outbound HTTP / SSRF / auth harden | `internal/ssrf` | **LA15** ✓ |
+| `POST /v1/rerank` (colbert routing tier) | llama.cpp `/reranking` unwired | **Candidate LA16** |
+| Model aliases (live name redirect) | `aliases.yaml`, `/api/aliases` | **LA17** ✓ |
+| Absolute / % VRAM budget | `ZEROLLAMA_VRAM_BUDGET` | **LA19** ✓ |
+| Explicit prewarm / load API | keep_alive only | **Candidate LA21** |
+| Server-side context compression | — | **Candidate LA22** |
+| Backend gallery + gRPC zoo / vllm.cpp | — | **Not goals** |
 | NATS cluster / ds4 layer-split | — | **Not goals** |
 
 ### Candidates (LA11+) — suggested priority
 
-**High fit (control plane, reuses LA9 or fleet):**
+**High fit (control plane, small surface):**
 
-1. **LA11 Intelligent router** — Single client-facing model name → policy table of downstream candidates; classify with `POST /api/score` (or optional rerank/colbert later); log decisions (`correlation_id`, chosen model, scores). LocalAI reference: [middleware routing](https://localai.io/features/middleware/index.html). Zerollama already has score + fleet assign—this is **per-node request middleware**, not NATS.
+1. **LA21 Explicit prewarm** — `POST /api/load` (or `/backend/load`) without a generate round-trip.
 
-2. **LA13 Fleet prefix-cache routing** — **Done (L3-R8 + L3-R9):** `/api/status.inference.runtime.radix` (+ `block_hashes`); fleet soft residency score; assign/score accept `prefix_block_hashes` for longest leading-hash match (`ZEROLLAMA_FLEET_RADIX_HASH_SCORE`).
+2. **LA14 Resumable GGUF transfer** — Fleet peer staging `Content-Range`.
 
-**Medium fit:**
+3. **LA16 Rerank API** — Wire llama-server `/v1/rerank` for docs + colbert router tier.
 
-3. **LA14 Resumable GGUF transfer** — `Content-Range` resume for fleet peer model staging (flaky WAN). LocalAI #10109.
-
-4. **LA15 Outbound HTTP hardening** — Refuse cross-host redirect credential leaks on cloud proxy and HF pull clients (LocalAI GHSA-3mj3-57v2-4636 class).
-
-5. **LA16 Rerank API** — Expose llama-server `/v1/rerank` for document ranking and as a **colbert** classifier tier for LA11 when score distributions are flat.
-
-6. **LA17 Model aliases** — Server-side name → target model redirect (LocalAI v4.5.0); lighter than full gallery; useful for agent configs that pin one router name.
+4. **LA22 Context compression** — Opt-in compress older chat turns via a small local model (v4.9); agent-facing.
 
 **Lower priority / different tracks:**
 
-- **LA12 PII middleware** — Valuable for cloud-proxy operators; overlaps Eliza Cloud path; large surface (NER models, admin UI, streaming filter).
-- **Gallery / extra backends** — Stay on Phase 17 + runtime modality map.
-- **ASR/TTS backend explosion** — See [eliza-v3 L5–L8](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3), not LocalAI gallery ports.
+- **LA12 PII** (NER + reversible pseudonyms) — enterprise/cloud-proxy.
+- Gallery / vllm.cpp / audio.cpp / 3D / voice library — stay on Phase 15/17 + modality tracks.
+- `context_size: -1` → train ctx — **do not adopt**; conflicts with LA2 cap.
 
 ---
 
@@ -322,9 +418,9 @@ Refs: [v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6) · [v4.5.0
 
 | Item | Why deferred |
 |------|----------------|
-| **Radix prefix cache (fleet)** | Session-key affinity + L3 slots cover most agent threads; cross-node donor needs L3-R4 — see [radix-prefix-share.md — Product gaps](./radix-prefix-share.md#product-gaps). LocalAI v4.4 shipped fleet radix routing; same gap analysis applies. |
-| **Full gallery + gRPC backends** | Architecture mismatch with Phase 15/17 |
-| **NATS distributed cluster** | Fleet F-track uses HTTP peers + optional mDNS; not adopting LocalAI NATS control plane |
+| **Full gallery + gRPC backends / vllm.cpp** | Architecture mismatch with Phase 15/17 |
+| **NATS distributed cluster** | Fleet F-track uses HTTP peers + optional mDNS |
+| **Train-context as default (`context_size: -1`)** | LA2 deliberately caps manifest `num_ctx`; raise per-request |
 
 ---
 
@@ -332,6 +428,7 @@ Refs: [v4.5.6](https://github.com/mudler/LocalAI/releases/tag/v4.5.6) · [v4.5.0
 
 - Ollama API/CLI parity and Phase 17 upstream merge path
 - L1/L2/L3 GPU profiles and slot-pinned prompt cache
+- Cross-slot Radix + fleet content-hash routing (L3-R8…R11 / LA13)
 - Dual scheduler + VRAM broker + embedded training
 - ggml Metal default on Mac (~+7% vs upstream llama-server on M4 Max)
 - LM Studio cache import

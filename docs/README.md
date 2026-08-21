@@ -88,7 +88,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Inference wishlist — host capacity (Phase A/B)](./inference-wishlist-host.md) — **why** Orient/Decide need capacity APIs; pin/propose with honest single-resident runtime; broker must respect pins; B0 requires ggml-empty; 503 before resume on pin conflicts; `stable_multi_model_swap` still false.
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
 * [Open-source shoutouts](./open-source-shoutouts.md) — Gigatoken, vLLM, SGLang, LocalAI, minefield, Hermes, Ollama, llama.cpp — what we borrowed and why.
-* [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA10 (metadata, watchdog, fleet score, repair, HF pull, `/api/score`, bench cache); **upstream watch** for LA11+ candidates; env reference.
+* [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA11 (incl. KNN **LA11b**), **LA15**, **LA17–LA20**; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Remote model storage](./remote-model-storage.md) — **why** central content-addressed blobs + HMAC LAN auth + fetch-on-miss; RDMA-prefer/TCP fallback; pin/refcount LRU; ephemeral cleanup; tensor catalog language for later streaming (spec-only in v1).

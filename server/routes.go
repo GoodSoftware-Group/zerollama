@@ -42,6 +42,7 @@ import (
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
+	"github.com/ollama/ollama/internal/ssrf"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/manifest"
@@ -524,6 +525,21 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
+	}
+
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, req.Prompt); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	} else if dec != nil {
+		req.Model = routed
+		stampRouterHeaders(c, dec)
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusNotFound, fmt.Sprintf("model '%s' not found", req.Model))
@@ -663,6 +679,36 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				DebugInfo: &api.DebugInfo{
 					RenderedTemplate: req.Prompt,
 					ImageCount:       len(req.Images),
+				},
+			})
+			return
+		}
+		if resolveRendererName(m) != "" && req.Template == "" {
+			var msgs []api.Message
+			if req.System != "" {
+				msgs = append(msgs, api.Message{Role: "system", Content: req.System})
+			} else if m.System != "" {
+				msgs = append(msgs, api.Message{Role: "system", Content: m.System})
+			}
+			if req.Context == nil {
+				msgs = append(msgs, m.Messages...)
+			}
+			userMsg := api.Message{Role: "user", Content: req.Prompt}
+			for _, i := range req.Images {
+				userMsg.Images = append(userMsg.Images, i)
+			}
+			msgs = append(msgs, userMsg)
+			prompt, images, _, _, _, err := chatPrompt(c.Request.Context(), m, nil, nil, msgs, []api.Tool{}, req.Think, false, 0, nil)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				DebugInfo: &api.DebugInfo{
+					RenderedTemplate: prompt,
+					ImageCount:       len(images),
 				},
 			})
 			return
@@ -952,7 +998,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}()
 		firstToken := true
 		var firstTokenAt time.Time
+		var parserErr error
 		inferCtx, cancelPreempt := s.bindInferPreemptCancel(c.Request.Context(), m, req.Options)
+		inferCtx, cancelParse := context.WithCancel(inferCtx)
+		defer cancelParse()
 		if cancelPreempt != nil {
 			defer cancelPreempt()
 		}
@@ -1005,8 +1054,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			if builtinParser != nil {
 				content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
 				if err != nil {
-					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
-						errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+					parserErr = err
+					cancelParse()
 					return
 				}
 				res.Response = sanitizeAssistantContent(content)
@@ -1074,19 +1123,25 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				sentDone = true
 			}
 		}); err != nil {
-			if isContextCanceled(err) && s.maybeEnqueueGeneratePreempted(
-				ch, m, req.Options, req.Model, sb.String(), &sentDone,
-				checkpointStart, checkpointLoaded, ggmlCtx,
-			) {
-				return
+			if parserErr == nil {
+				if isContextCanceled(err) && s.maybeEnqueueGeneratePreempted(
+					ch, m, req.Options, req.Model, sb.String(), &sentDone,
+					checkpointStart, checkpointLoaded, ggmlCtx,
+				) {
+					return
+				}
+				var serr api.StatusError
+				extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
+				if errors.As(err, &serr) {
+					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
+				} else {
+					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
+				}
 			}
-			var serr api.StatusError
-			extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
-			if errors.As(err, &serr) {
-				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
-			} else {
-				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
-			}
+		}
+		if parserErr != nil {
+			enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), http.StatusInternalServerError,
+				errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 		}
 	}()
 
@@ -1148,6 +1203,13 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 	case err != nil:
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -1330,6 +1392,13 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 	} else if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -1633,6 +1702,14 @@ func (s *Server) ShowHandler(c *gin.Context) {
 		logShowHandlerOutcome("", c.Request.UserAgent(), http.StatusBadRequest, errors.New("model is required"))
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		logShowHandlerOutcome(req.Model, c.Request.UserAgent(), http.StatusBadRequest, err)
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -2395,7 +2472,12 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
+	r.GET("/api/aliases", s.AliasesHandler)
+	r.POST("/api/aliases", s.AliasesHandler)
 	r.POST("/api/score", s.ScoreHandler)
+	r.POST("/api/router/decide", s.RouterDecideHandler)
+	r.GET("/api/router/corpus", s.RouterCorpusHandler)
+	r.POST("/api/router/corpus", s.RouterCorpusHandler)
 
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
@@ -2905,6 +2987,18 @@ func (s *Server) webExperimentalProxyHandler(c *gin.Context, proxyPath, disabled
 		return
 	}
 
+	var probe struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(body, &probe) == nil {
+		if u := strings.TrimSpace(probe.URL); u != "" {
+			if err := ssrf.ValidateExternalURL(u); err != nil {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+
 	proxyCloudRequestWithPath(c, body, proxyPath, disabledOperation)
 }
 
@@ -3069,6 +3163,21 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if req.TopLogprobs < 0 || req.TopLogprobs > 20 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "top_logprobs must be between 0 and 20"})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
+	}
+
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, lastUserMessageText(req.Messages)); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	} else if dec != nil {
+		req.Model = routed
+		stampRouterHeaders(c, dec)
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -3506,6 +3615,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 			// sets up new context given parent context per request
 			ctx, cancel := context.WithCancel(c.Request.Context())
+			var parserErr error
 			// Soft mid-stream preempt (M15f): interactive may cancel this ctx.
 			if s.sched != nil {
 				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
@@ -3587,8 +3697,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 					content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
 					if err != nil {
-						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
-							errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+						parserErr = err
+						cancel()
 						return
 					}
 
@@ -3677,6 +3787,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 				ch <- res
 			})
+			if parserErr != nil {
+				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), http.StatusInternalServerError,
+					errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+				return
+			}
 			if err != nil {
 				if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
 					// only ignores error if it's a context cancellation due to setting structured outputs
@@ -3829,6 +3944,17 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	// same device. Caller should unload the runtime model or use runtime routing.
 	case errors.Is(err, ErrDarwinMetalContention):
 		writeBusyUnavailable(c, err.Error(), preemptedReasonFromErr(err))
+	case errors.Is(err, ErrLoadCooldown):
+		sec := 1
+		var ce *LoadCooldownError
+		if errors.As(err, &ce) {
+			sec = retryAfterSeconds(ce.RetryAfter())
+		}
+		c.Header("Retry-After", strconv.Itoa(sec))
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":       err.Error(),
+			"retry_after": sec,
+		})
 	case errors.Is(err, ErrEdgeGgmlRunnerDisabled), errors.Is(err, llm.ErrGgmlRunnerUnlinked):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:

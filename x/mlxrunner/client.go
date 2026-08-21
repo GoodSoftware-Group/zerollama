@@ -427,6 +427,7 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	// from seeing concurrent stdout/stderr fragments.
 	cmd.Stdout = status
 	cmd.Stderr = status
+	llm.ApplyParentDeath(cmd)
 
 	slog.Info("starting mlx runner subprocess", "model", c.modelName, "port", c.port)
 	if err := cmd.Start(); err != nil {

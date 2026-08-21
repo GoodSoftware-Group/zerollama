@@ -344,8 +344,8 @@ func TestFromChatRequest_TopLevelThink(t *testing.T) {
 func TestDecodeVideoURL_RejectsLoopback(t *testing.T) {
 	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
 	_, err := decodeVideoURL(context.Background(), "http://127.0.0.1:8080/v.mp4")
-	if err == nil || !strings.Contains(err.Error(), "non-public") {
-		t.Fatalf("expected non-public error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "internal") {
+		t.Fatalf("expected internal error, got %v", err)
 	}
 }
 
@@ -382,7 +382,7 @@ func TestCheckRemoteMediaURL_RedirectTargetPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkRemoteMediaURL(u); err == nil || !strings.Contains(err.Error(), "non-public") {
+	if err := checkRemoteMediaURL(u); err == nil || !strings.Contains(err.Error(), "internal") {
 		t.Fatalf("redirect to loopback must fail: %v", err)
 	}
 }
@@ -391,7 +391,7 @@ func TestFetchVideoURL_AllowlistAndSize(t *testing.T) {
 	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
 	t.Setenv("OLLAMA_MEDIA_ALLOWED_HOSTS", "127.0.0.1") // still blocked by SSRF before allowlist helps
 	_, err := decodeVideoURL(context.Background(), "http://127.0.0.1:9/v.mp4")
-	if err == nil || !strings.Contains(err.Error(), "non-public") {
+	if err == nil || !strings.Contains(err.Error(), "internal") {
 		t.Fatalf("SSRF must win even when host is allowlisted: %v", err)
 	}
 

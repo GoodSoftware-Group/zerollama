@@ -29,6 +29,11 @@ func TestMain(m *testing.M) {
 	if os.Getenv("OLLAMA_LMSTUDIO_IMPORT") == "" {
 		_ = os.Setenv("OLLAMA_LMSTUDIO_IMPORT", "false")
 	}
+	// Why default off: LA18 cooldown would turn a second GetRunner after a mocked load
+	// failure into 503 instead of the original error the test asserts.
+	if os.Getenv("ZEROLLAMA_LOAD_COOLDOWN") == "" {
+		_ = os.Setenv("ZEROLLAMA_LOAD_COOLDOWN", "0")
+	}
 	// Why unset runtime env: operator shells often export ZEROLLAMA_RUNTIME_URL for smokes;
 	// sched tests use synthetic GGUFs and expect ggml load unless they opt into runtime.
 	for _, k := range []string{

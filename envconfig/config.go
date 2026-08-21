@@ -371,6 +371,92 @@ func RunnerBusyTimeout() time.Duration {
 	return d
 }
 
+// LoadCooldownInitial is the first failed-load cooldown (LocalAI LA18).
+// Default 10s. Zero disables (`ZEROLLAMA_LOAD_COOLDOWN=0`).
+func LoadCooldownInitial() time.Duration {
+	s := Var("ZEROLLAMA_LOAD_COOLDOWN")
+	if s == "" {
+		return 10 * time.Second
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			if n <= 0 {
+				return 0
+			}
+			return time.Duration(n) * time.Second
+		}
+		slog.Warn("invalid ZEROLLAMA_LOAD_COOLDOWN, using 10s", "value", s)
+		return 10 * time.Second
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// LoadCooldownMax caps geometric backoff (default 5m).
+func LoadCooldownMax() time.Duration {
+	s := Var("ZEROLLAMA_LOAD_COOLDOWN_MAX")
+	if s == "" {
+		return 5 * time.Minute
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		return 5 * time.Minute
+	}
+	if d <= 0 {
+		return 5 * time.Minute
+	}
+	return d
+}
+
+// BackendParentWatch is Linux Pdeathsig on runner subprocesses (LA20). Default on.
+func BackendParentWatch() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_BACKEND_PARENT_WATCH")))
+	if s == "0" || s == "false" || s == "off" {
+		return false
+	}
+	return true
+}
+
+// RouterConfigPath is the YAML policy file for LA11. Empty path disables routing.
+// Default: $OLLAMA_MODELS/../router.yaml (typically ~/.ollama/router.yaml).
+func RouterConfigPath() string {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_ROUTER_CONFIG")); s != "" {
+		if s == "0" || strings.EqualFold(s, "off") {
+			return ""
+		}
+		return s
+	}
+	return filepath.Join(filepath.Dir(Models()), "router.yaml")
+}
+
+// RouterRewrite is in-band model rewrite for chat/generate when the name is a router.
+// Default on. ZEROLLAMA_ROUTER_REWRITE=0 keeps decide-only.
+func RouterRewrite() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_ROUTER_REWRITE")))
+	if s == "0" || s == "false" || s == "off" {
+		return false
+	}
+	return true
+}
+
+// AliasesConfigPath is the YAML map for LA17 live model aliases.
+// Default: $OLLAMA_MODELS/../aliases.yaml. Empty disables (`0`/`off`).
+func AliasesConfigPath() string {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_ALIASES_CONFIG")); s != "" {
+		if s == "0" || strings.EqualFold(s, "off") {
+			return ""
+		}
+		return s
+	}
+	return filepath.Join(filepath.Dir(Models()), "aliases.yaml")
+}
+
 // SchedWatchdogInterval is how often the scheduler memory/busy watchdog runs.
 func SchedWatchdogInterval() time.Duration {
 	s := Var("ZEROLLAMA_SCHED_WATCHDOG_INTERVAL")
@@ -533,8 +619,15 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_EDGE":                           {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
 		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":         {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
 		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":       {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
+		"ZEROLLAMA_VRAM_BUDGET":                    {"ZEROLLAMA_VRAM_BUDGET", VRAMBudgetFromEnv().String(), "Cap allocatable VRAM (80% or 12GiB); unset=detected"},
 		"ZEROLLAMA_HOST_MEM_GUARD":                 {"ZEROLLAMA_HOST_MEM_GUARD", HostMemGuardEnabled(), "503 inference when cgroup RAM/swap is exhausted (0=off)"},
 		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":            {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
+		"ZEROLLAMA_LOAD_COOLDOWN":                  {"ZEROLLAMA_LOAD_COOLDOWN", LoadCooldownInitial(), "Failed-load cooldown initial delay (default 10s; 0=off)"},
+		"ZEROLLAMA_LOAD_COOLDOWN_MAX":              {"ZEROLLAMA_LOAD_COOLDOWN_MAX", LoadCooldownMax(), "Failed-load cooldown cap (default 5m)"},
+		"ZEROLLAMA_BACKEND_PARENT_WATCH":           {"ZEROLLAMA_BACKEND_PARENT_WATCH", BackendParentWatch(), "Linux: SIGKILL runner subprocesses if the parent dies (default on)"},
+		"ZEROLLAMA_ROUTER_CONFIG":                  {"ZEROLLAMA_ROUTER_CONFIG", RouterConfigPath(), "LA11 router YAML (default ~/.ollama/router.yaml; 0=off)"},
+		"ZEROLLAMA_ROUTER_REWRITE":                 {"ZEROLLAMA_ROUTER_REWRITE", RouterRewrite(), "Rewrite chat/generate model when the name is a router (default on)"},
+		"ZEROLLAMA_ALIASES_CONFIG":                 {"ZEROLLAMA_ALIASES_CONFIG", AliasesConfigPath(), "LA17 aliases YAML (default ~/.ollama/aliases.yaml; 0=off)"},
 		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":        {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
 		"ZEROLLAMA_ELIZA_NGRAM":                    {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
 		"ZEROLLAMA_SPEC_DM_ADAPTIVE":               {"ZEROLLAMA_SPEC_DM_ADAPTIVE", SpecDmAdaptive(), "Bee B1 adaptive DFlash draft-max: profit/1/on (default off)"},

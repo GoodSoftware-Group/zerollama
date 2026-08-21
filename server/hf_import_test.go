@@ -45,6 +45,19 @@ func TestParseHFSourceHTTPSResolve(t *testing.T) {
 	}
 }
 
+func TestParseHFSourceHTTPUpgrade(t *testing.T) {
+	ref, err := ParseHFSource("http://huggingface.co/TheBloke/phi-2-GGUF/phi-2.Q8_0.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Repo != "TheBloke/phi-2-GGUF" || ref.File != "phi-2.Q8_0.gguf" {
+		t.Fatalf("ref=%+v", ref)
+	}
+	if !strings.HasPrefix(ref.resolveURL(ref.File), "https://huggingface.co/") {
+		t.Fatalf("download must stay https: %s", ref.resolveURL(ref.File))
+	}
+}
+
 func TestHFLocalName(t *testing.T) {
 	name := hfLocalName(HFRef{
 		Repo: "TheBloke/phi-2-GGUF",
@@ -88,7 +101,7 @@ func TestPullFromHuggingFaceCreatesManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &typesmodel.ConfigV2{OS: "linux", Architecture: "amd64", RootFS: typesmodel.RootFS{Type: "layers"}}
+	cfg := &typesmodel.ConfigV2{OS: "linux", Architecture: "amd64"}
 	if err := createModel(api.CreateRequest{}, local, baseLayers, cfg, func(api.ProgressResponse) {}); err != nil {
 		t.Fatal(err)
 	}

@@ -302,6 +302,16 @@ def nvidia_free_vram_bytes(device_index: int = 0, *, fresh: bool = False) -> int
                 if now - at < _SMI_CACHE_TTL_S:
                     return val
     val, _ = _query_free_vram_bytes(device_index)
+    if val is not None:
+        try:
+            from runtime.gpu.vram_budget import apply_vram_budget
+            from runtime.nvidia_probe import detect_gpu_total_vram_bytes
+
+            total = detect_gpu_total_vram_bytes(device_index)
+            if total:
+                _, val = apply_vram_budget(int(total), int(val))
+        except Exception:
+            pass
     with _smi_lock:
         _smi_cache[device_index] = (time.monotonic(), val)
     return val

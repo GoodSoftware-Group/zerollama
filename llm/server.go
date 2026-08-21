@@ -363,6 +363,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 		}()
 	}
 	cmd.SysProcAttr = LlamaServerSysProcAttr
+	ApplyParentDeath(cmd)
 
 	// Always filter down the set of GPUs in case there are any unsupported devices that might crash
 	pathEnvVal := strings.Join(libraryPaths, string(filepath.ListSeparator))

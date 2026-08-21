@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### LocalAI LA15 outbound SSRF — Aug 2026
+
+**Why:** Gallery-style URL validation so user-supplied fetches cannot hit loopback, RFC1918, or cloud metadata.
+
+**Shipped:** `internal/ssrf.ValidateExternalURL` (LocalAI `IsPublicIP`); video_url, HF pull/redirects, registry blob `Location`, experimental `web_fetch` `url`. `http://huggingface.co` upgrades to HTTPS.
+
 ### SGLang multimodal ports (#32914 / #34892 / #31957 / #33898) — Aug 2026
 
 **Why:** Weekly SGLang scan (`4e5a05148a..896acc8860`) flagged portable agent-facing MM guards; CUDA-IPC / HiCache / Radix skipped.
@@ -15,6 +21,30 @@ All notable changes to this project are documented in this file. The format is b
 - Qwen3-VL tool-result media uses `renderContent`; OpenAI multipart tool messages keep `tool_call_id` — #33898
 
 Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md).
+
+### LocalAI LA17 model aliases — Aug 2026
+
+**Why:** Clients send `gpt-4` without a copied manifest; `cp` is too heavy for a name redirect.
+
+**Shipped:** `~/.ollama/aliases.yaml` one-hop map; `GET`/`POST /api/aliases`; rewrite on chat/generate/embed/score/show. Chains rejected.
+
+### LocalAI LA11b KNN router — Aug 2026
+
+**Why:** Score-LM routing needs a small classifier GGUF; many operators already have an embed model and labelled examples.
+
+**Shipped:** `classifier: knn` + `embedder` + YAML corpus; cosine KNN (k=3, sim 0.80, vote 0.5); undecidable → fallback; `GET`/`POST /api/router/corpus` (counts / session overlay).
+
+### LocalAI LA11 score router — Aug 2026
+
+**Why:** One client-facing model name should pick a specialist from the prompt without a generate round-trip.
+
+**Shipped:** `~/.ollama/router.yaml` policies; `POST /api/router/decide`; softmax over LA9 scores; in-band `/api/chat` and `/api/generate` rewrite. KNN corpus is **LA11b** (not in this slice).
+
+### LocalAI LA18–LA20 scheduler lifecycle — Aug 2026
+
+**Why:** Polling agents respawn crash-loop loads; hard-killed `zerollama` can orphan `llama-server`; operators need a hard VRAM ceiling below physical.
+
+**Shipped:** Failed-load geometric cooldown (`ZEROLLAMA_LOAD_COOLDOWN`, `503` + `Retry-After`). Linux `Pdeathsig` SIGKILL on ggml / llama-server / MLX runner subprocesses (`ZEROLLAMA_BACKEND_PARENT_WATCH`). `ZEROLLAMA_VRAM_BUDGET` (`80%` / `12GiB`) caps Go GPU discovery and Python free-VRAM probes (`min(detected, budget)`).
 
 ### vLLM skip covered MM payload (#52041) — Aug 2026
 

@@ -88,6 +88,9 @@ type Scheduler struct {
 	getSystemInfoFn func() ml.SystemInfo
 	waitForRecovery time.Duration
 
+	loadCooldownMu sync.Mutex
+	loadCooldown   map[string]*loadCooldownEntry
+
 	// When true, GetRunner blocks until ResumeLoads (used when training needs VRAM).
 	loadsPaused atomic.Bool
 
@@ -121,6 +124,7 @@ func InitScheduler(ctx context.Context) *Scheduler {
 		getGpuFn:        discover.GPUDevices,
 		getSystemInfoFn: discover.GetSystemInfo,
 		waitForRecovery: 5 * time.Second,
+		loadCooldown:    make(map[string]*loadCooldownEntry),
 	}
 	sched.loadFn = sched.load
 	sched.mlxGate = *newMLXAgentGate()
@@ -189,6 +193,10 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		attrs = append(attrs, schedRunnerAttrs(runner)...)
 		schedLogInfo("GetRunner fast path (already loaded)", req, attrs...)
 		req.useLoadedRunner(runner, s.finishedReqCh)
+		return req.successCh, req.errCh, 0
+	}
+	if err := s.cooldownErr(key); err != nil {
+		req.errCh <- err
 		return req.successCh, req.errCh, 0
 	}
 	req.fifoSeq = AllocCrossQueueSeq()
@@ -809,6 +817,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			f, loadErr := llm.LoadModel(req.model.ModelPath, 1024)
 			if loadErr != nil {
 				slog.Info("failed to load model metadata", "model", req.model.ModelPath, "error", loadErr)
+				s.noteLoadFailure(schedulerModelKey(req.model), loadErr)
 				req.errCh <- loadErr
 				s.loadedMu.Unlock()
 				return false
@@ -838,6 +847,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		}
 		if err != nil {
 			slog.Info("failed to create server", "model", req.model.ShortName, "error", err)
+			s.noteLoadFailure(schedulerModelKey(req.model), err)
 			req.errCh <- err
 			s.loadedMu.Unlock()
 			return false
@@ -886,6 +896,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 				// No other models loaded, yet we still don't fit, so report an error
 				schedLogWarn("model too large for system memory", req, "require_full", requireFull)
 				s.clearActiveLoading(llama)
+				s.noteLoadFailure(schedulerModelKey(req.model), err)
 				req.errCh <- err
 			} else {
 				// Fit probe alongside an loaded model: partial GPU is fine after eviction.
@@ -900,6 +911,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 
 		schedLogWarn("Load failed", req, "error", err, "total_elapsed", time.Since(loadStart))
 		s.clearActiveLoading(llama)
+		s.noteLoadFailure(schedulerModelKey(req.model), err)
 		req.errCh <- err
 		return false
 	}
@@ -979,6 +991,7 @@ iGPUScan:
 			runner.refMu.Lock()
 			runner.loading = false
 			runner.refMu.Unlock()
+			s.noteLoadFailure(schedulerModelKey(req.model), err)
 			req.errCh <- err
 			s.scheduleExpiredRunner(runner)
 			return
@@ -1001,6 +1014,7 @@ iGPUScan:
 			"wait_elapsed", time.Since(waitStart),
 			"total_elapsed", time.Since(loadStart),
 		)
+		s.clearLoadCooldown(schedulerModelKey(req.model))
 		slog.Info(
 			"model ready",
 			"name", readyName,

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/ssrf"
 	typesmodel "github.com/ollama/ollama/types/model"
 )
 
@@ -57,6 +58,9 @@ func ParseHFSource(s string) (HFRef, error) {
 		u, err := url.Parse(s)
 		if err != nil {
 			return HFRef{}, err
+		}
+		if strings.EqualFold(u.Scheme, "http") {
+			u.Scheme = "https"
 		}
 		p := strings.TrimPrefix(u.Path, "/")
 		if strings.Contains(p, "/resolve/") {
@@ -174,7 +178,10 @@ func cmpOr(a, b string) string {
 }
 
 func hfHTTPClient() *http.Client {
-	return &http.Client{Timeout: 0}
+	return &http.Client{
+		Timeout:       0,
+		CheckRedirect: ssrf.CheckRedirect,
+	}
 }
 
 func hfAuthHeader(req *http.Request) {
@@ -188,7 +195,11 @@ func hfAuthHeader(req *http.Request) {
 }
 
 func hfListGGUFFiles(ctx context.Context, ref HFRef) ([]hfTreeEntry, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref.treeURL(), nil)
+	tree := ref.treeURL()
+	if err := ssrf.ValidateExternalURL(tree); err != nil {
+		return nil, fmt.Errorf("huggingface api url: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tree, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +283,9 @@ func hfDownloadFile(ctx context.Context, ref HFRef, dest string, fn func(api.Pro
 	}
 
 	downloadURL := ref.resolveURL(ref.File)
+	if err := ssrf.ValidateExternalURL(downloadURL); err != nil {
+		return fmt.Errorf("huggingface download url: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
@@ -365,9 +379,6 @@ func pullFromHuggingFace(ctx context.Context, local typesmodel.Name, ref HFRef, 
 	config := &typesmodel.ConfigV2{
 		OS:           "linux",
 		Architecture: "amd64",
-		RootFS: typesmodel.RootFS{
-			Type: "layers",
-		},
 	}
 	r := api.CreateRequest{}
 	relFiles := map[string]string{filepath.Base(ref.File): digest}

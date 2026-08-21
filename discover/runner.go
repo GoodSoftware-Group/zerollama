@@ -389,7 +389,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 		applyMetalUnifiedFreeMemory(devices, updated)
 	}
 
-	return append([]ml.DeviceInfo{}, devices...)
+	return applyVRAMBudget(append([]ml.DeviceInfo{}, devices...))
 }
 
 func filterOverlapByLibrary(supported map[string]map[string]map[string]int, needsDelete []bool) {

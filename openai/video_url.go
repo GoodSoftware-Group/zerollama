@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/ssrf"
 )
 
 const videoFetchMaxRedirects = 5
@@ -189,7 +189,7 @@ func checkRemoteMediaURL(u *url.URL) error {
 	if err := checkMediaHostAllowed(host); err != nil {
 		return err
 	}
-	return verifyURLHostSafe(host)
+	return ssrf.ValidateURL(u)
 }
 
 func checkMediaHostAllowed(host string) error {
@@ -204,35 +204,4 @@ func checkMediaHostAllowed(host string) error {
 		}
 	}
 	return fmt.Errorf("video URL host %q not in OLLAMA_MEDIA_ALLOWED_HOSTS", host)
-}
-
-// verifyURLHostSafe rejects loopback and private addresses after DNS resolution.
-// The subsequent TCP dial is not pinned to these IPs (DNS rebinding is not fully mitigated here).
-func verifyURLHostSafe(host string) error {
-	if host == "" {
-		return errors.New("empty host")
-	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		if isBlockedIP(ip) {
-			return errors.New("video URL resolves to a non-public address")
-		}
-		return nil
-	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("video URL host lookup: %w", err)
-	}
-	if len(ips) == 0 {
-		return errors.New("video URL host has no addresses")
-	}
-	for _, ip := range ips {
-		if isBlockedIP(ip) {
-			return errors.New("video URL resolves to a non-public address")
-		}
-	}
-	return nil
-}
-
-func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }

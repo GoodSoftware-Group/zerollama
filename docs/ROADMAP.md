@@ -428,11 +428,17 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 | **LA7** | **Manifest repair command** | Go | **Done** — `zerollama repair` rewrites params/config/template without re-download; [manifest hygiene](./localai-borrowings.md#manifest-hygiene-existing-tags) |
 | **LA8** | **HF importer v0** | Go | **Done** — `huggingface://` / `hf://` pull → local manifest; optional `source` + local name |
 | **LA9** | **Logprob score API** | Go + runtime | **Done** — `POST /api/score`; llamarunner, ollamarunner, llama-server backends |
-| **LA10** | **Model bench cache** | Go | **Done** — `zerollama bench` + **PERF** in `ls` (tok/s or seconds); `~/.ollama/bench.json` keyed by digest; image/video_gen kinds; [bench-cache.md](./bench-cache.md) |
+| **LA10** | **Model bench cache** | Go | **Done** — `zerollama bench` + **PERF** in `ls`; [bench-cache.md](./bench-cache.md) |
+| **LA11** | **Intelligent router** | Go | **Done** — YAML + `/api/router/decide` (score + **LA11b** KNN); in-band rewrite |
+| **LA15** | **Outbound SSRF harden** | Go | **Done** — `internal/ssrf` on video, HF, registry blob redirect, experimental web_fetch |
+| **LA17** | **Model aliases** | Go | **Done** — `~/.ollama/aliases.yaml` one-hop redirect; `GET`/`POST /api/aliases`; chat/generate/embed/score/show |
+| **LA18** | **Failed-load cooldown** | Go | **Done** — geometric backoff + `503`/`Retry-After`; `ZEROLLAMA_LOAD_COOLDOWN` |
+| **LA19** | **VRAM budget** | Go + Python | **Done** — `ZEROLLAMA_VRAM_BUDGET` (`80%` / `12GiB`) caps discovery + runtime free-VRAM probes |
+| **LA20** | **Parent-death watch** | Go | **Done** — Linux `Pdeathsig` SIGKILL on ggml/llama-server/MLX runners; `ZEROLLAMA_BACKEND_PARENT_WATCH=0` off |
 
 **Not goals:** `backend.proto` plugin zoo, NATS cluster, full gallery parity, replacing Phase 15/17 engines.
 
-**Next candidates (upstream watch):** [localai-borrowings.md — LA11+](./localai-borrowings.md#candidates-la11--suggested-priority) — intelligent score router (LA11), fleet radix routing (LA13), resumable peer transfers (LA14).
+**Next candidates (upstream watch):** [localai-borrowings.md — LA11+](./localai-borrowings.md#candidates-la11--suggested-priority) — LA21 prewarm, LA14 resumable GGUF. Checked against LocalAI **v4.9.0** (2026-08-21).
 
 **Relationship to Fleet F-track:** LA6 extends [F3 management node](./fleet-management.md) routing; LA5 feeds future capacity-aware scores; **LA13** ships as **L3-R8** (status mirror + soft residency) + **L3-R9** (content-hash longest-prefix assign).
 
@@ -533,8 +539,8 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 **Shipped (v1):**
 
 - OpenAI async Videos API on Go `:8080` — `POST /v1/videos`, `GET /v1/videos/:id`, `GET /v1/videos/:id/content`.
-- Local **Wan** only (`wan2.1-t2v:1.3b`, `wan2.2-ti2v-5b`, 16g manifests); weights via `install_wan_video.sh`, not Ollama blobs.
-- Jobs run as training **`run_script`** (wrapper `scripts/video/wan_video_generate.py` → upstream `generate.py`).
+- Local **Wan** Python (`wan2.1-t2v:1.3b`, `wan2.2-ti2v-5b`) plus Darwin **Wan C** tag `wan2.1-t2v-c:lab` (`video-cli --family wan`); weights via `install_wan_video.sh` / `install_wan_c.sh`, not Ollama blobs.
+- Jobs run as training **`run_script`** (wrapper `wan_video_generate.py` → `generate.py`, or `wan_c_generate.py` → `video-cli`).
 - **VRAM / queue:** training handoff, optional `defer-*` when inference busy; artifacts under `$OLLAMA_MODELS/generated/<job_id>.mp4`.
 
 **Operator guide:** [wan-t2v.md](./wan-t2v.md) (architecture, status mapping, env, troubleshooting).
