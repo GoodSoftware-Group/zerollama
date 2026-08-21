@@ -27,6 +27,21 @@ class OllamaGenerateResponse(BaseModel):
     # metadata; clients only saw prompt_eval_count pinned at num_ctx.
     prompt_truncated: Optional[bool] = None
     original_prompt_tokens: Optional[int] = None
+    # Metrics (embedded like api.GenerateResponse; vLLM #48668 zero-output).
+    prompt_eval_count: Optional[int] = None
+    prompt_eval_duration: Optional[int] = None
+    prompt_eval_cached_count: Optional[int] = None
+    cached_prompt_tokens: Optional[int] = None
+    eval_count: Optional[int] = None
+    eval_duration: Optional[int] = None
+    cached_tokens_host: Optional[int] = None
+    prompt_eval_cached_host: Optional[int] = None
+    cached_tokens_storage: Optional[int] = None
+    prompt_eval_cached_storage: Optional[int] = None
+    cached_tokens_storage_backend: Optional[str] = None
+    cache_creation_tokens: Optional[int] = None
+    prompt_eval_cache_creation_count: Optional[int] = None
+    created_cache_tokens: Optional[int] = None
 
 
 class OllamaChatRequest(BaseModel):

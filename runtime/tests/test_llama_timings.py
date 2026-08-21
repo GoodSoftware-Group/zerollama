@@ -59,6 +59,26 @@ def test_merge_cache_tier_details_omits_zeros():
     assert out == {"cached_tokens_host": 12, "prompt_eval_cached_host": 12}
 
 
+def test_metrics_from_llama_chunk_zero_output_preserves_cache():
+    """vLLM #48668: prefix-cache stats survive eval_count=0."""
+    out = metrics_from_llama_chunk(
+        {
+            "timings": {
+                "cache_n": 256,
+                "prompt_n": 12,
+                "prompt_ms": 8.0,
+                "predicted_n": 0,
+                "predicted_ms": 0.0,
+            },
+            "cache_creation_tokens": 64,
+        }
+    )
+    assert out["cached_prompt_tokens"] == 256
+    assert out["prompt_eval_count"] == 268
+    assert "eval_count" not in out
+    assert out["cache_creation_tokens"] == 64
+
+
 def test_metrics_from_llama_chunk_no_timings():
     assert metrics_from_llama_chunk({}) == {}
 

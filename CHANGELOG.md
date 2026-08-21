@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### vLLM L3 pattern ports (#50321 / #48668) — Aug 2026
+
+**Why:** Aug 20 vLLM rescan (`118bcde44` → `f8e0602713`) flagged partial LMCache tier hits and zero-output steps dropping prefix-cache metrics.
+
+**Shipped:**
+- Partial secondary-tier load: resume from longest LMCache prefix when tail blocks are absent remotely (not all-or-nothing `prefix_block_hash_mismatch`)
+- Zero-output prefix-cache metrics: stream tail + non-stream `/api/generate` keep `cached_prompt_tokens` / `cache_creation_tokens` when `eval_count=0`
+
+Doc: [vllm-borrowings.md](docs/vllm-borrowings.md), [upstream-siblings.md](docs/upstream-siblings.md).
+
 ### MiniMax H3 video-c — 24→50 DiT layer audio fix (Aug 2026)
 
 **Why:** H3 T2VA output was a ~93%-clipped audio waveform (`a_rms=45.34`,

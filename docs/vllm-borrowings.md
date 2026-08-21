@@ -6,7 +6,7 @@
 
 **Local tree:** `../vllm` (Mac: `~/Sites/inference/vllm`). Sibling map + weekly pull ritual: [upstream-siblings.md](./upstream-siblings.md).
 
-**Last checked:** 2026-07-28 — tip `118bcde44` on `main`. Next weekly: `git pull` in `../vllm`, then triage bring/watch/skip into this doc (and the table in [upstream-siblings.md](./upstream-siblings.md)).
+**Last checked:** 2026-08-20 — tip `f8e0602713` on `main`. Prior scan: 2026-07-28 (`118bcde44`). Next weekly: `git pull` in `../vllm`, then triage bring/watch/skip into this doc (and the table in [upstream-siblings.md](./upstream-siblings.md)).
 
 ---
 
@@ -33,6 +33,8 @@
 | **Finish-time / defer blob finalize** | `register_prefix(finalize_blob=…)` + `finalize_slot_blob` / reuse flush | vLLM #48596/#49671: metadata first; publish when slot `.bin` exists; flush before slot reuse |
 | **Cache creation vs read tokens** | `cache_creation_tokens` / OpenAI `created_cache_tokens` / Anthropic `cache_creation_input_tokens` | vLLM #48535: `creation = newly_cached − hit_at_admit` |
 | **SWA reachable-tail store filter** | `kv/swa_store_filter.py` → `register_prefix(store_block_mask=…)` | vLLM #48911: do not federate blocks outside SWA reachable tail |
+| **Partial secondary-tier load** | `_apply_prefix_block_pool` + `PrefixBlockMatch.partial_tier_load` | vLLM #50321: resume from longest LMCache hit when tail blocks absent remotely |
+| **Zero-output prefix-cache metrics** | `_stream_done_metrics` + non-stream `OllamaGenerateResponse` metrics | vLLM #48668: keep cache read/creation on done chunks when `eval_count=0` |
 
 ---
 
@@ -46,7 +48,7 @@
 | `CUDAGraphDispatcher` + capture handles | ggml internal capture; stub `DecodeGraphCache.lookup` until upstream API — invalidation after Radix seed is wired |
 | Scheduler KV preemption loop | LocalAI watchdog + slot allocator; not vLLM-style block preempt yet |
 | KV-cache **admission watermark** (`free_blocks ≥ needed + watermark`) | Skip — zerollama pre-reserves full prompt+`max_tokens`/`num_ctx` and caps concurrency with fixed `n_parallel` slots; Phase 11 `VRAM_MIN_FREE` is the headroom policy. Revisit if PA allocates mid-decode. |
-| Partial hybrid prefix hits (`hash_block_size` < physical block) | Needs physical pages + COW; our Radix still full-sequence `seq_cp` |
+| Partial hybrid prefix hits (`hash_block_size` < physical block) | Needs physical pages + COW; our Radix still full-sequence `seq_cp` — watch #50507 |
 | Full OffloadingConnector / NIXL workers | Pattern ports only (#48123/#48596/#48535/#48911); not the CUDA offload scheduler |
 
 ---
