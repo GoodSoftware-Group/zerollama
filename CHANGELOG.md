@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### OpenAPI LocalAI control plane — Aug 2026
+
+**Why:** `/docs` lagged the shipped LA7/LA9/LA11/LA15/LA17 routes so agents could not discover aliases, score, or routers.
+
+**Shipped:** `server/openapi/openapi.yaml` documents `/api/aliases`, `/api/score`, `/api/router/decide`, `/api/router/corpus`, `/api/repair`, experimental `web_search`/`web_fetch` (SSRF 400), plus `X-Zerollama-*` rewrite headers and LA18 cooldown on generate/chat 503.
+
 ### LocalAI LA15 outbound SSRF — Aug 2026
 
 **Why:** Gallery-style URL validation so user-supplied fetches cannot hit loopback, RFC1918, or cloud metadata.

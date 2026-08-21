@@ -1382,6 +1382,7 @@ components:
         Error body on generate/chat (JSON or NDJSON). Busy 503s include retry_after;
         stream/runner failures may include cause=host_unstable and partial timings;
         pin/VRAM conflicts use cause=runtime_pin_gguf or runtime_pin_ggml.
+        LA18 failed-load cooldown also returns 503 + Retry-After (error mentions cooldown).
         M15e: QoS wait-abort / busy may include preempted_reason; per-call timeout
         uses HTTP 504 with timeout_seconds (not this schema alone).
       required: [error]
@@ -2202,7 +2203,10 @@ paths:
   /api/generate:
     post:
       summary: Generate a response
-      description: Generates a response for the provided prompt
+      description: >
+        Generates a response for the provided prompt. Client `model` may be a
+        one-hop alias (LA17) and/or a router name rewritten in-band (LA11) when
+        `ZEROLLAMA_ROUTER_REWRITE` is on.
       operationId: generate
       x-mint:
         href: /api/generate
@@ -2321,6 +2325,17 @@ paths:
       responses:
         "200":
           description: Generation responses
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+            X-Zerollama-Router:
+              $ref: "#/components/headers/ZerollamaRouter"
+            X-Zerollama-Router-Chosen:
+              $ref: "#/components/headers/ZerollamaRouterChosen"
+            X-Zerollama-Router-Fallback:
+              $ref: "#/components/headers/ZerollamaRouterFallback"
           content:
             application/json:
               schema:
@@ -2342,9 +2357,10 @@ paths:
                 $ref: "#/components/schemas/GenerateStreamEvent"
         "503":
           description: >
-            Server busy (max queue exceeded), Darwin Metal contention, or Phase B
-            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml).
-            Includes Retry-After header and retry_after body field.
+            Server busy (max queue exceeded), Darwin Metal contention, Phase B
+            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml), or
+            LA18 failed-load cooldown. Includes Retry-After header and retry_after
+            body field.
           headers:
             Retry-After:
               schema:
@@ -2375,7 +2391,10 @@ paths:
   /api/chat:
     post:
       summary: Generate a chat message
-      description: Generate the next chat message in a conversation between a user and an assistant.
+      description: >
+        Generate the next chat message in a conversation between a user and an
+        assistant. Client `model` may be a one-hop alias (LA17) and/or a router
+        name rewritten in-band (LA11).
       operationId: chat
       x-mint:
         href: /api/chat
@@ -2525,6 +2544,17 @@ paths:
       responses:
         "200":
           description: Chat response
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+            X-Zerollama-Router:
+              $ref: "#/components/headers/ZerollamaRouter"
+            X-Zerollama-Router-Chosen:
+              $ref: "#/components/headers/ZerollamaRouterChosen"
+            X-Zerollama-Router-Fallback:
+              $ref: "#/components/headers/ZerollamaRouterFallback"
           content:
             application/json:
               schema:
@@ -2548,9 +2578,10 @@ paths:
                 $ref: "#/components/schemas/ChatStreamEvent"
         "503":
           description: >
-            Server busy (max queue exceeded), Darwin Metal contention, or Phase B
-            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml).
-            Includes Retry-After header and retry_after body field.
+            Server busy (max queue exceeded), Darwin Metal contention, Phase B
+            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml), or
+            LA18 failed-load cooldown. Includes Retry-After header and retry_after
+            body field.
           headers:
             Retry-After:
               schema:
@@ -2631,6 +2662,11 @@ paths:
       responses:
         "200":
           description: Vector embeddings for the input text
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
           content:
             application/json:
               schema:
@@ -2653,6 +2689,225 @@ paths:
                 total_duration: 14143917
                 load_duration: 1019500
                 prompt_eval_count: 8
+  /api/aliases:
+    get:
+      summary: List live model aliases
+      description: >
+        One-hop map from `~/.ollama/aliases.yaml` plus session overlay (LA17).
+        `ZEROLLAMA_ALIASES_CONFIG=0` disables aliases. Chains are rejected.
+      operationId: listAliases
+      x-codeSamples:
+        - lang: bash
+          label: List aliases
+          source: |
+            curl http://localhost:11434/api/aliases
+      responses:
+        "200":
+          description: Alias list (empty array when none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AliasInfo"
+    post:
+      summary: Add a session alias overlay
+      description: >
+        Adds a one-hop alias for this process only (not written to YAML).
+        Target must not itself be an alias.
+      operationId: createAlias
+      x-codeSamples:
+        - lang: bash
+          label: Session alias
+          source: |
+            curl http://localhost:11434/api/aliases -d '{"name":"gpt-4","target":"llama3.2:3b"}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AliasCreateRequest"
+      responses:
+        "200":
+          description: Alias recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AliasInfo"
+        "400":
+          description: Invalid name/target or alias chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/score:
+    post:
+      summary: Score candidate continuations
+      description: >
+        Logprob score of fixed strings as continuations of a shared prompt (LA9).
+        Used by the score router. `model` may be an alias.
+      operationId: score
+      x-codeSamples:
+        - lang: bash
+          label: Score
+          source: |
+            curl http://localhost:11434/api/score -d '{
+              "model": "llama3.2:3b",
+              "prompt": "Classify: I love this product.\\nLabel:",
+              "candidates": [" positive", " negative"]
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScoreRequest"
+      responses:
+        "200":
+          description: Per-candidate logprobs
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScoreResponse"
+        "400":
+          description: Missing model or candidates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: Runner does not support score
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: Queue busy or LA18 load cooldown
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/router/decide:
+    post:
+      summary: Decide a specialist model
+      description: >
+        Run a named router policy (score LM or KNN corpus). Does not generate.
+        In-band rewrite on `/api/chat` and `/api/generate` uses the same logic
+        when `ZEROLLAMA_ROUTER_REWRITE` is on (default).
+      operationId: routerDecide
+      x-codeSamples:
+        - lang: bash
+          label: Decide
+          source: |
+            curl http://localhost:11434/api/router/decide -d '{
+              "router": "agent",
+              "prompt": "write a rust function to parse json"
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouterDecideRequest"
+      responses:
+        "200":
+          description: Chosen candidate (or fallback)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterDecision"
+        "400":
+          description: Missing router or prompt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Router policy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: Classifier/embedder unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/router/corpus:
+    get:
+      summary: KNN corpus counts
+      description: Label counts for a KNN router (YAML + session overlay). Counts only, no texts.
+      operationId: routerCorpusGet
+      parameters:
+        - name: router
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Corpus stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterCorpusStats"
+        "400":
+          description: Missing router query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Router not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+    post:
+      summary: Add KNN corpus overlay
+      description: Session overlay entries; not written to router.yaml.
+      operationId: routerCorpusPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouterCorpusAddRequest"
+      responses:
+        "200":
+          description: Updated counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterCorpusStats"
+        "400":
+          description: Not a KNN router or invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Router not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /api/tags:
     get:
       summary: List models
@@ -2998,6 +3253,109 @@ paths:
       responses:
         "200":
           description: Model successfully deleted
+  /api/repair:
+    post:
+      summary: Repair local manifests from GGUF headers
+      description: >
+        Rewrite params/config/template layers without re-downloading weights (LA7).
+        Default dry-run; set `write: true` to apply. Weight blob digests never change.
+      operationId: repair
+      x-codeSamples:
+        - lang: bash
+          label: Dry-run
+          source: |
+            curl http://localhost:11434/api/repair -d '{"model":"llama3.2:latest"}'
+        - lang: bash
+          label: Apply
+          source: |
+            curl http://localhost:11434/api/repair -d '{"model":"llama3.2:latest","write":true}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepairRequest"
+      responses:
+        "200":
+          description: Per-tag diffs (and written flags)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepairResponse"
+        "400":
+          description: Missing model/models/all or invalid tag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/experimental/web_search:
+    post:
+      summary: Experimental web search (cloud)
+      description: Proxies to Eliza/Ollama cloud `/api/web_search`. Disabled when cloud is off.
+      operationId: experimentalWebSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebSearchRequest"
+      responses:
+        "200":
+          description: Search results from cloud
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebSearchResponse"
+        "400":
+          description: Missing body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "403":
+          description: Cloud disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/experimental/web_fetch:
+    post:
+      summary: Experimental web fetch (cloud)
+      description: >
+        Proxies to cloud `/api/web_fetch`. The `url` is validated locally first
+        (LA15 SSRF): loopback, RFC1918, link-local, and metadata hosts are rejected
+        with 400 before the proxy.
+      operationId: experimentalWebFetch
+      x-codeSamples:
+        - lang: bash
+          label: Fetch
+          source: |
+            curl http://localhost:11434/api/experimental/web_fetch -d '{"url":"https://ollama.com"}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebFetchRequest"
+      responses:
+        "200":
+          description: Page content from cloud
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebFetchResponse"
+        "400":
+          description: Missing body or SSRF-blocked URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "403":
+          description: Cloud disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /api/status:
     get:
       summary: Fleet inference status and runtime config

@@ -13,6 +13,8 @@ info:
     includes Hermes/M15e extensions (`timeout`, `/api/cache/pin`,
     `/v1/chat/completions/batch`, can-load topology, `preempted_reason`).
     This `docs/openapi.yaml` is the upstream-shaped reference and may lag.
+    LocalAI routes (`/api/aliases`, `/api/score`, `/api/router/*`, `/api/repair`,
+    experimental web_*) live only in the served spec.
 servers:
   - url: http://localhost:11434
     description: Ollama

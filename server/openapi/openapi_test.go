@@ -32,6 +32,8 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"/v1/audio/speech", "/v1/audio/voices", "/v1/audio/generations", "/openapi.json", "/docs",
 		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin",
 		"/api/cache/pin", "/api/cache/warm", "/api/metrics", "/api/version",
+		"/api/aliases", "/api/score", "/api/router/decide", "/api/router/corpus",
+		"/api/repair", "/api/experimental/web_search", "/api/experimental/web_fetch",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
 	} {
 		if _, ok := paths[p]; !ok {
@@ -47,6 +49,8 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"ChatCompletionsBatchRequest", "ChatCompletionsBatchRequestItem",
 		"ChatCompletionsBatchResponse", "ChatCompletionBatchItem",
 		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",
+		"AliasInfo", "ScoreRequest", "ScoreResponse", "RouterDecision",
+		"RouterCorpusEntry", "RepairRequest", "RepairResponse",
 	} {
 		if _, ok := schemas[s]; !ok {
 			t.Fatalf("missing schema %s", s)
