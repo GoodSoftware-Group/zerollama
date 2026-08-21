@@ -9,13 +9,13 @@ import (
 
 // Padded consume modes for native VLM families (mirror ollama-engine / llm package).
 const (
-	PaddedLayoutConsumeGemma3ImgRunner        = "gemma3_img_runner_inject"
-	PaddedLayoutConsumeMllamaImgRunner        = "mllama_img_runner_inject"
-	PaddedLayoutConsumeLlama4ImgRunner        = "llama4_img_runner_inject"
-	PaddedLayoutConsumeLfm2ImgRunner          = "lfm2_img_runner_inject"
-	PaddedLayoutConsumeGlmocrImgRunner        = "glmocr_img_runner_inject"
-	PaddedLayoutConsumeMistral3ImgRunner      = "mistral3_img_runner_inject"
-	PaddedLayoutConsumeDeepseekOcrImgRunner   = "deepseekocr_img_runner_inject"
+	PaddedLayoutConsumeGemma3ImgRunner      = "gemma3_img_runner_inject"
+	PaddedLayoutConsumeMllamaImgRunner      = "mllama_img_runner_inject"
+	PaddedLayoutConsumeLlama4ImgRunner      = "llama4_img_runner_inject"
+	PaddedLayoutConsumeLfm2ImgRunner        = "lfm2_img_runner_inject"
+	PaddedLayoutConsumeGlmocrImgRunner      = "glmocr_img_runner_inject"
+	PaddedLayoutConsumeMistral3ImgRunner    = "mistral3_img_runner_inject"
+	PaddedLayoutConsumeDeepseekOcrImgRunner = "deepseekocr_img_runner_inject"
 )
 
 const (
@@ -309,14 +309,15 @@ func (s *Server) inputsFromPaddedLayoutConsume(
 	sessionKey string,
 	sessionOverlay bool,
 	gemma4Media Gemma4PaddedMediaSchedule,
-) ([]input, error) {
+	deferEncode bool,
+) ([]input, []deferredVisionImage, error) {
 	if s.image == nil {
-		return nil, errors.New("padded prompt tokens require a vision model")
+		return nil, nil, errors.New("padded prompt tokens require a vision model")
 	}
 	s.image.growCacheForDistinctFrames(len(images))
-	imageChunks, _, err := s.encodeImageChunks(images, sessionKey, sessionOverlay)
+	imageChunks, deferred, err := s.imageChunksMaybeDeferred(images, sessionKey, sessionOverlay, deferEncode)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var inputs []input
@@ -326,7 +327,7 @@ func (s *Server) inputsFromPaddedLayoutConsume(
 	case PaddedLayoutConsumeGemma4ImgRunner:
 		slots, err := s.gemma4SoftTokens()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		schedule := Gemma4PaddedMediaSchedule{
 			StillImageCount:  gemma4Media.StillImageCount,
@@ -351,27 +352,27 @@ func (s *Server) inputsFromPaddedLayoutConsume(
 	case PaddedLayoutConsumeLfm2ImgRunner, PaddedLayoutConsumeGlmocrImgRunner:
 		slots, err := s.lfm2VisionTokens()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		inputs = inputsFromLfm2PaddedTokens(promptTokens, imageChunks, slots)
 	case PaddedLayoutConsumeMistral3ImgRunner:
 		slots, err := s.mistral3VisionTokens()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		inputs = inputsFromMistral3PaddedTokens(promptTokens, imageChunks, slots)
 	case PaddedLayoutConsumeDeepseekOcrImgRunner:
 		imageToken, err := s.deepseekOcrVisionToken()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		inputs = inputsFromDeepseekOcrPaddedTokens(promptTokens, imageChunks, imageToken)
 	default:
-		return nil, fmt.Errorf("unsupported padded layout consume mode: %s", consume)
+		return nil, nil, fmt.Errorf("unsupported padded layout consume mode: %s", consume)
 	}
 
 	if len(inputs) == 0 {
-		return nil, errors.New("no input provided")
+		return nil, nil, errors.New("no input provided")
 	}
-	return inputs, nil
+	return inputs, deferred, nil
 }

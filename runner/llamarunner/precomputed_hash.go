@@ -24,6 +24,7 @@ func cloneVisionChunks(vc []visionChunk) []visionChunk {
 		if len(c.embed) != 0 {
 			out[i].embed = append([]float32(nil), c.embed...)
 		}
+		out[i].hash = c.hash
 		if len(c.tokens) != 0 {
 			out[i].tokens = append([]int(nil), c.tokens...)
 		}

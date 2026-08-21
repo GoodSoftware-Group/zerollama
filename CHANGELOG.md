@@ -8,7 +8,7 @@ All notable changes to this project are documented in this file. The format is b
 
 **Why:** vLLM drops multimodal tensor bytes for items whose placeholder span is fully inside a prefix-cache-covered region — workers never consume them.
 
-**Shipped:** ollama-engine `deferVisionEncode` builds GridTHW stubs for input-cache lookup, then hydrates ViT only on the uncached tail; llama-server subprocess strips covered `multimodal_data` on agent turn N+1 via session prefix tracker + Qwen3-VL vision spans.
+**Shipped:** ollama-engine and ggml llamarunner `deferVisionEncode` stub GridTHW vision spans for input-cache lookup, then hydrate ViT/mtmd only on the uncached tail; llama-server subprocess strips covered `multimodal_data` on agent turn N+1 via session prefix tracker + Qwen3-VL vision spans.
 
 ### vLLM retention default (#52216) — Aug 2026
 

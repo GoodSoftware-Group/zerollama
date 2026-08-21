@@ -48,7 +48,7 @@ func (s *Server) score(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize, includeTokens bool) (llm.CandidateScore, error) {
-	promptInputs, err := s.inputs(prompt, nil, "", false)
+	promptInputs, _, err := s.inputs(prompt, nil, "", false, false)
 	if err != nil {
 		return llm.CandidateScore{}, err
 	}
@@ -61,7 +61,7 @@ func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize,
 	}
 
 	for _, inp := range promptInputs {
-		if inp.embed != nil {
+		if inp.isEmbed() {
 			return llm.CandidateScore{}, fmt.Errorf("score does not support vision inputs")
 		}
 	}
@@ -122,7 +122,7 @@ func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize,
 
 func (s *Server) decodeInputsLocked(slot *InputCacheSlot, inputs []input) error {
 	for i, inp := range inputs {
-		if inp.embed != nil {
+		if inp.isEmbed() {
 			return fmt.Errorf("score does not support vision inputs")
 		}
 		wantLogits := i == len(inputs)-1

@@ -20,11 +20,22 @@ const (
 type visionChunk struct {
 	tokens []int
 	embed  []float32
+	hash   uint64
+}
+
+func stampVisionChunkHash(vc []visionChunk, hash uint64) []visionChunk {
+	for i := range vc {
+		vc[i].hash = hash
+	}
+	return vc
 }
 
 func appendVisionChunk(inputs []input, c visionChunk) []input {
+	if c.hash != 0 && len(c.embed) == 0 && len(c.tokens) == 0 {
+		return append(inputs, input{embedHash: c.hash})
+	}
 	if len(c.embed) != 0 {
-		return append(inputs, input{embed: c.embed})
+		return append(inputs, input{embed: c.embed, embedHash: c.hash})
 	}
 	for _, t := range c.tokens {
 		inputs = append(inputs, input{token: t})

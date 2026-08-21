@@ -181,6 +181,13 @@ func (c *InputCache) findBestCacheSlot(prompt []input) (*InputCacheSlot, int, er
 	return oldestSlot, longest, nil
 }
 
+func inputsMatch(a, b input) bool {
+	if a.embedHash != 0 && b.embedHash != 0 {
+		return a.embedHash == b.embedHash && a.token == b.token
+	}
+	return reflect.DeepEqual(a, b)
+}
+
 func countCommonPrefix(a []input, b []input) int {
 	var count int
 
@@ -189,7 +196,7 @@ func countCommonPrefix(a []input, b []input) int {
 			break
 		}
 
-		if !reflect.DeepEqual(a[i], b[i]) {
+		if !inputsMatch(a[i], b[i]) {
 			break
 		}
 
