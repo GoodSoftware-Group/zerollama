@@ -12,6 +12,11 @@ info:
     `/v1/*` routes (chat, embeddings, images, audio speech/transcriptions,
     voice catalog, and video generation).
 
+    LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA17): `/api/repair`,
+    `/api/score`, `/api/router/*`, `/api/aliases`, experimental web_search/fetch.
+    In-band alias and router rewrite may set `X-Zerollama-*` response headers.
+    Failed-load cooldown (LA18) returns 503 with `Retry-After`.
+
     Interactive docs: `GET /docs` · raw: `GET /openapi.yaml` · `GET /openapi.json`
 servers:
   - url: http://localhost:11434
@@ -29,6 +34,27 @@ components:
       in: path
       required: true
       description: SHA256 digest identifier, prefixed with `sha256:`
+      schema:
+        type: string
+  headers:
+    ZerollamaAlias:
+      description: Original client model name when a one-hop alias was applied (LA17).
+      schema:
+        type: string
+    ZerollamaAliasTarget:
+      description: Resolved local tag after alias rewrite.
+      schema:
+        type: string
+    ZerollamaRouter:
+      description: Router policy name when in-band rewrite ran (LA11).
+      schema:
+        type: string
+    ZerollamaRouterChosen:
+      description: Specialist model chosen by the router.
+      schema:
+        type: string
+    ZerollamaRouterFallback:
+      description: '`true` when the router used its fallback candidate.'
       schema:
         type: string
   schemas:
@@ -1100,6 +1126,225 @@ components:
             type: string
             format: uri
           description: Links found on the page
+    AliasInfo:
+      type: object
+      required: [name, target]
+      description: One-hop live model alias (LA17). Chains (alias→alias) are rejected.
+      properties:
+        name:
+          type: string
+          description: Client-facing name
+        target:
+          type: string
+          description: Local tag to serve
+    AliasCreateRequest:
+      type: object
+      required: [name, target]
+      properties:
+        name:
+          type: string
+        target:
+          type: string
+    ScoreRequest:
+      type: object
+      required: [model, candidates]
+      description: Score fixed candidate continuations against a shared prompt (LA9).
+      properties:
+        model:
+          type: string
+        prompt:
+          type: string
+          description: Shared prefix; candidates are scored as continuations
+        candidates:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        length_normalize:
+          type: boolean
+          description: Divide joint log-prob by candidate token count
+        include_token_logprobs:
+          type: boolean
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+          description: Model keep-alive duration (for example `5m` or `0` to unload immediately)
+        options:
+          type: object
+          additionalProperties: true
+    CandidateScore:
+      type: object
+      properties:
+        candidate:
+          type: string
+        log_prob:
+          type: number
+        length_normalized_log_prob:
+          type: number
+        num_tokens:
+          type: integer
+        tokens:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenLogprob"
+    ScoreResponse:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Resolved model (alias target when rewrite applied)
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandidateScore"
+    RouterDecideRequest:
+      type: object
+      required: [router]
+      description: Pick a specialist from a named router policy (LA11 score or LA11b KNN).
+      properties:
+        router:
+          type: string
+          description: Policy name from ~/.ollama/router.yaml
+        prompt:
+          type: string
+        input:
+          type: string
+          description: Alias for prompt
+    RouterLabelScore:
+      type: object
+      properties:
+        label:
+          type: string
+        log_prob:
+          type: number
+        softmax:
+          type: number
+        num_tokens:
+          type: integer
+        active:
+          type: boolean
+    RouterNeighbor:
+      type: object
+      properties:
+        id:
+          type: string
+        similarity:
+          type: number
+        labels:
+          type: array
+          items:
+            type: string
+    RouterDecision:
+      type: object
+      properties:
+        router:
+          type: string
+        classifier:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        candidate:
+          type: string
+        fallback:
+          type: boolean
+        scores:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterLabelScore"
+        neighbors:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterNeighbor"
+        nearest_similarity:
+          type: number
+        latency_ms:
+          type: integer
+    RouterCorpusEntry:
+      type: object
+      required: [text, labels]
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+    RouterCorpusAddRequest:
+      type: object
+      required: [router, entries]
+      description: Session overlay only; not written to router.yaml.
+      properties:
+        router:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterCorpusEntry"
+    RouterCorpusStats:
+      type: object
+      properties:
+        router:
+          type: string
+        total:
+          type: integer
+        added:
+          type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: integer
+    RepairRequest:
+      type: object
+      description: >
+        Rewrite on-disk manifest params/config/template from GGUF headers (LA7).
+        Default is dry-run. `write: true` applies JSON only (never weight blobs).
+      properties:
+        model:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        all:
+          type: boolean
+        write:
+          type: boolean
+    RepairChange:
+      type: object
+      properties:
+        field:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+    RepairResult:
+      type: object
+      properties:
+        name:
+          type: string
+        skipped:
+          type: boolean
+        reason:
+          type: string
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairChange"
+        written:
+          type: boolean
+    RepairResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairResult"
     VersionResponse:
       type: object
       description: >
