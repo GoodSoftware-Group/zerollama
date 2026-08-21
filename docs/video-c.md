@@ -207,6 +207,14 @@ vDSP softmax (no gather; sgemm walks packed Q/K/V via `lda=heads·hd`):
 (test-pinned). **Now the default** — the gate was re-baselined to the BLAS
 signature (`latent_rms=1.18314 a_rms=0.504881`, 5th-digit move from
 accumulation order); `H3_SDPA_BLAS=0` restores the bit-exact scalar path.
+`h3_video_vae_sdpa_f32` delegates to the same kernel. VAE decode profile
+(224² tile, `WAN_PROFILE=1`): `h3_vae_video` ≈ 25 s ≈ DiT blocks (20 s) —
+but the ViT is **GEMM-bound**, not attention-bound (36 layers × ~185 GFLOP at
+DIM=2048/FFN=8192/seq=1377 ≈ 285 GFLOP/s effective): further VAE wins need
+bf16/int8 GEMM, not kernel tweaks. At 768² the ~9-tile decode dominates
+end-to-end (~3–4 min). Cold dequant (`h3_dit_wload`+`h3_vvae_wload`) is
+~30–40 s per fresh process — the disk-sidecar opportunity. Profile totals
+swing ±35% run-to-run under memory pressure; compare medians, not singles.
 `--family h3 --generate --prompt TEXT` maps tokens through Qwen3-VL-4B (or
 hash TE) + ClipProj into DiT text rows and keeps presentation **AdaLN tags**
 (vision pads = video). Omit `--prompt` for dummy sine cond. H3TE dumps may
