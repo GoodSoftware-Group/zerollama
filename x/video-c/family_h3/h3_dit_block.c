@@ -70,6 +70,88 @@ static int dit_debug_level(void) {
   return n > 0 ? n : 1;
 }
 
+/* Scratch arena shared by all blocks of one forward pass. Sized once from
+ * max_seq; the block path otherwise mallocs ~800 MB per block-step and Darwin
+ * page-faults every fresh large allocation. */
+struct h3_dit_ws {
+  int max_seq;
+  float *h;      /* max_seq * H */
+  float *branch; /* max_seq * H */
+  float *qkv;    /* max_seq * 3 * inner */
+  float *q, *k, *v, *attn; /* max_seq * inner */
+  float *fused;  /* max_seq * 2 * ffn */
+  float *hid;    /* max_seq * ffn */
+  float *cos, *sin; /* max_seq * H3_DIT_ROPE_DIM */
+  int *idx, *tslots; /* max_seq ints */
+};
+
+h3_dit_ws *h3_dit_ws_create(int max_seq) {
+  if (max_seq < 1)
+    return NULL;
+  h3_dit_ws *ws = (h3_dit_ws *)calloc(1, sizeof(*ws));
+  if (!ws)
+    return NULL;
+  ws->max_seq = max_seq;
+  const size_t S = (size_t)max_seq;
+  const size_t H = H3_DIT_HIDDEN_SIZE, inner = H3_DIT_INNER_DIM,
+               ffn = H3_DIT_FFN_HIDDEN, RD = H3_DIT_ROPE_DIM;
+  ws->h = (float *)malloc(S * H * sizeof(float));
+  ws->branch = (float *)malloc(S * H * sizeof(float));
+  ws->qkv = (float *)malloc(S * 3 * inner * sizeof(float));
+  ws->q = (float *)malloc(S * inner * sizeof(float));
+  ws->k = (float *)malloc(S * inner * sizeof(float));
+  ws->v = (float *)malloc(S * inner * sizeof(float));
+  ws->attn = (float *)malloc(S * inner * sizeof(float));
+  ws->fused = (float *)malloc(S * 2 * ffn * sizeof(float));
+  ws->hid = (float *)malloc(S * ffn * sizeof(float));
+  ws->cos = (float *)malloc(S * RD * sizeof(float));
+  ws->sin = (float *)malloc(S * RD * sizeof(float));
+  ws->idx = (int *)malloc(S * sizeof(int));
+  ws->tslots = (int *)malloc(S * sizeof(int));
+  if (!ws->h || !ws->branch || !ws->qkv || !ws->q || !ws->k || !ws->v ||
+      !ws->attn || !ws->fused || !ws->hid || !ws->cos || !ws->sin ||
+      !ws->idx || !ws->tslots) {
+    h3_dit_ws_free(ws);
+    return NULL;
+  }
+  return ws;
+}
+
+void h3_dit_ws_free(h3_dit_ws *ws) {
+  if (!ws)
+    return;
+  free(ws->h);
+  free(ws->branch);
+  free(ws->qkv);
+  free(ws->q);
+  free(ws->k);
+  free(ws->v);
+  free(ws->attn);
+  free(ws->fused);
+  free(ws->hid);
+  free(ws->cos);
+  free(ws->sin);
+  free(ws->idx);
+  free(ws->tslots);
+  free(ws);
+}
+
+float *h3_dit_ws_cos(h3_dit_ws *ws) { return ws ? ws->cos : NULL; }
+float *h3_dit_ws_sin(h3_dit_ws *ws) { return ws ? ws->sin : NULL; }
+
+int h3_dit_rope_tables(const h3_st_store *store, const float *position_ids,
+                       int seq, float *cos, float *sin, char *error,
+                       size_t error_size) {
+  if (!position_ids || !cos || !sin || seq < 1)
+    return -1;
+  float inv[H3_DIT_ROPE_INV_FREQ_LEN];
+  int rc = rope_inv_from_store(store, inv, error, error_size);
+  if (rc == 0)
+    rc = h3_dit_rope_from_positions(position_ids, seq, inv,
+                                    H3_DIT_ROPE_INV_FREQ_LEN, cos, sin);
+  return rc;
+}
+
 typedef struct {
   double self_w;
   double mass_vid;
@@ -430,8 +512,8 @@ int h3_dit_linear_named(const h3_st_store *store, const char *weight_name,
 static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
                              const float *x, int seq, const float *position_ids,
                              const float *gate_msa, const float *gate_mlp,
-                             const int *idx, float *out, char *error,
-                             size_t error_size) {
+                             const int *idx, float *out, h3_dit_ws *ws,
+                             char *error, size_t error_size) {
   const int H = H3_DIT_HIDDEN_SIZE;
   const int heads = H3_DIT_NUM_HEADS;
   const int hd = H3_DIT_HEAD_DIM;
@@ -440,9 +522,9 @@ static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
   char name[96];
   int rc = 0;
   float *norm_w = (float *)malloc((size_t)H * sizeof(float));
-  float *h = (float *)malloc((size_t)seq * (size_t)H * sizeof(float));
-  float *branch = (float *)malloc((size_t)seq * (size_t)H * sizeof(float));
-  if (!norm_w || !h || !branch)
+  float *h = ws->h;
+  float *branch = ws->branch;
+  if (!norm_w)
     rc = -1;
   snprintf(name, sizeof(name), "%snorm1.weight", prefix);
   if (rc == 0)
@@ -450,20 +532,17 @@ static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
   if (rc == 0)
     rc = h3_dit_rmsnorm(x, seq, H, H3_DIT_NORM_EPS, norm_w, h);
 
-  float *qkv = (float *)malloc((size_t)seq * 3 * (size_t)inner * sizeof(float));
-  float *q = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  float *k = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  float *v = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  float *attn = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  if (!qkv || !q || !k || !v || !attn)
-    rc = -1;
+  float *qkv = ws->qkv;
+  float *q = ws->q;
+  float *k = ws->k;
+  float *v = ws->v;
+  float *attn = ws->attn;
   snprintf(name, sizeof(name), "%sattn.qkv_proj.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, h, seq, H, 3 * inner, NULL, qkv, error,
                      error_size);
   if (rc == 0)
     rc = h3_dit_qkv_split(qkv, seq, heads, hd, q, k, v);
-  free(qkv);
 
   float *qn = (float *)malloc((size_t)hd * sizeof(float));
   float *kn = (float *)malloc((size_t)hd * sizeof(float));
@@ -484,35 +563,27 @@ static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
 
   if (position_ids) {
     float inv[H3_DIT_ROPE_INV_FREQ_LEN];
-    float *cos = (float *)malloc((size_t)seq * H3_DIT_ROPE_DIM * sizeof(float));
-    float *sin = (float *)malloc((size_t)seq * H3_DIT_ROPE_DIM * sizeof(float));
-    if (!cos || !sin)
-      rc = -1;
+    float *cos = ws->cos;
+    float *sin = ws->sin;
     if (rc == 0)
       rc = rope_inv_from_store(store, inv, error, error_size);
     if (rc == 0)
       rc = h3_dit_rope_from_positions(position_ids, seq, inv,
                                       H3_DIT_ROPE_INV_FREQ_LEN, cos, sin);
     if (rc == 0)
-      rc = h3_dit_apply_rotary_heads(q, seq, heads, hd, cos, sin,
-                                     H3_DIT_ROPE_DIM, q);
+      rc = h3_dit_apply_rotary_heads_inplace(q, seq, heads, hd, cos, sin,
+                                             H3_DIT_ROPE_DIM);
     if (rc == 0)
-      rc = h3_dit_apply_rotary_heads(k, seq, heads, hd, cos, sin,
-                                     H3_DIT_ROPE_DIM, k);
-    free(cos);
-    free(sin);
+      rc = h3_dit_apply_rotary_heads_inplace(k, seq, heads, hd, cos, sin,
+                                             H3_DIT_ROPE_DIM);
   }
   float scale = 1.0f / sqrtf((float)hd);
   if (rc == 0)
     rc = h3_dit_sdpa_f32(attn, q, k, v, seq, heads, hd, scale);
-  free(q);
-  free(k);
-  free(v);
   snprintf(name, sizeof(name), "%sattn.out_proj.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, attn, seq, inner, H, NULL, branch, error,
                      error_size);
-  free(attn);
   if (rc == 0) {
     if (gate_msa && idx)
       rc = h3_dit_gated_residual_indexed(x, branch, gate_msa, idx, seq, H, out);
@@ -528,10 +599,8 @@ static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
   if (rc == 0)
     rc = h3_dit_rmsnorm(out, seq, H, H3_DIT_NORM_EPS, norm_w, h);
 
-  float *fused = (float *)malloc((size_t)seq * 2 * (size_t)ffn * sizeof(float));
-  float *hid = (float *)malloc((size_t)seq * (size_t)ffn * sizeof(float));
-  if (!fused || !hid)
-    rc = -1;
+  float *fused = ws->fused;
+  float *hid = ws->hid;
   snprintf(name, sizeof(name), "%smlp.fc1.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, h, seq, H, ffn * 2, NULL, fused, error,
@@ -543,12 +612,10 @@ static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
                       (size_t)ffn);
     }
   }
-  free(fused);
   snprintf(name, sizeof(name), "%smlp.fc2.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, hid, seq, ffn, H, NULL, branch, error,
                      error_size);
-  free(hid);
   if (rc == 0) {
     if (gate_mlp && idx)
       rc = h3_dit_gated_residual_indexed(out, branch, gate_mlp, idx, seq, H,
@@ -559,30 +626,45 @@ static int residual_attn_mlp(const h3_st_store *store, const char *prefix,
     }
   }
   free(norm_w);
-  free(h);
-  free(branch);
   return rc;
 }
 
 int h3_dit_plain_block_forward(const h3_st_store *store, const char *prefix,
-                               const float *x, int seq, float *out, char *error,
-                               size_t error_size) {
+                               const float *x, int seq, float *out,
+                               h3_dit_ws *ws, char *error, size_t error_size) {
   if (!store || !prefix || !x || !out || seq < 1)
     return -1;
-  return residual_attn_mlp(store, prefix, x, seq, NULL, NULL, NULL, NULL, out,
-                           error, error_size);
+  h3_dit_ws *owned = NULL;
+  if (!ws) {
+    owned = h3_dit_ws_create(seq);
+    if (!owned)
+      return -1;
+    ws = owned;
+  }
+  int rc = residual_attn_mlp(store, prefix, x, seq, NULL, NULL, NULL, NULL, out,
+                             ws, error, error_size);
+  h3_dit_ws_free(owned);
+  return rc;
 }
 
 int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
                          int seq, const int *tags, float timestep,
                          const float *row_t, const float *position_ids,
+                         const float *rope_cos, const float *rope_sin,
                          const float *table, int grid, int rank, float *out,
-                         char *error, size_t error_size) {
+                         h3_dit_ws *ws, char *error, size_t error_size) {
   if (error && error_size)
     error[0] = 0;
   if (!store || !x || !tags || !position_ids || !out || seq < 1 || block < 0 ||
       block >= H3_DIT_NUM_LAYERS)
     return -1;
+  h3_dit_ws *owned = NULL;
+  if (!ws) {
+    owned = h3_dit_ws_create(seq);
+    if (!owned)
+      return -1;
+    ws = owned;
+  }
 
   const int H = H3_DIT_HIDDEN_SIZE;
   const int heads = H3_DIT_NUM_HEADS;
@@ -600,29 +682,29 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
     grid = H3_ADALN_TABLE_GRID;
     rank = H3_ADALN_TABLE_RANK;
     owned_table = (float *)malloc((size_t)grid * (size_t)rank * sizeof(float));
-    if (!owned_table)
+    if (!owned_table) {
+      h3_dit_ws_free(owned);
       return -1;
+    }
     if (load_n(store, "adaln_t_table", owned_table, (size_t)grid * (size_t)rank,
                error, error_size) != 0) {
       free(owned_table);
+      h3_dit_ws_free(owned);
       return -1;
     }
     table = owned_table;
   }
   if (grid < 2 || rank < 1) {
     free(owned_table);
+    h3_dit_ws_free(owned);
     return -1;
   }
 
   float uniq[8];
-  int *tslots = (int *)malloc((size_t)seq * sizeof(int));
-  if (!tslots) {
-    free(owned_table);
-    return -1;
-  }
+  int *tslots = ws->tslots;
   int nuniq = h3_adaln_collect_timesteps(row_t, timestep, seq, uniq, 8, tslots);
   if (nuniq < 1) {
-    free(tslots);
+    h3_dit_ws_free(owned);
     free(owned_table);
     return -1;
   }
@@ -630,7 +712,7 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   float *emb = (float *)malloc((size_t)nuniq * (size_t)rank * sizeof(float));
   if (!emb || rank > 128) {
     free(emb);
-    free(tslots);
+    h3_dit_ws_free(owned);
     free(owned_table);
     return -1;
   }
@@ -642,7 +724,18 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   char name[96];
   snprintf(name, sizeof(name), "%sadaln_proj.linear.weight", prefix);
   size_t adaln_n = (size_t)H3_ADALN_OUT_FEATURES * (size_t)rank;
-  float *adaln_w = (float *)malloc(adaln_n * sizeof(float));
+  /* Cached-pointer read (no per-call 49.5 MB memcpy like load_n). Falls back
+   * to a fresh decode when the weight cache is disabled or full. */
+  float *adaln_owned = NULL;
+  const float *adaln_w =
+      rc == 0 ? h3_st_store_get_f32(store, name, NULL, error, error_size)
+              : NULL;
+  if (rc == 0 && !adaln_w) {
+    adaln_owned = (float *)malloc(adaln_n * sizeof(float));
+    if (adaln_owned &&
+        load_n(store, name, adaln_owned, adaln_n, error, error_size) == 0)
+      adaln_w = adaln_owned;
+  }
   float *adaln_b = (float *)malloc((size_t)H3_ADALN_OUT_FEATURES * sizeof(float));
   float *proj =
       (float *)malloc((size_t)nuniq * (size_t)H3_ADALN_OUT_FEATURES * sizeof(float));
@@ -650,8 +743,6 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
                                sizeof(float));
   if (!adaln_w || !adaln_b || !proj || !six)
     rc = -1;
-  if (rc == 0)
-    rc = load_n(store, name, adaln_w, adaln_n, error, error_size);
   snprintf(name, sizeof(name), "%sadaln_proj.linear.bias", prefix);
   if (rc == 0)
     rc = load_n(store, name, adaln_b, (size_t)H3_ADALN_OUT_FEATURES, error,
@@ -666,7 +757,7 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   if (rc == 0)
     rc = h3_dit_linear(emb, nuniq, rank, H3_ADALN_OUT_FEATURES, adaln_w, adaln_b,
                        proj);
-  free(adaln_w);
+  free(adaln_owned);
   free(adaln_b);
   free(emb);
   if (rc == 0)
@@ -702,18 +793,17 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
     }
   }
 
-  int *idx = (int *)malloc((size_t)seq * sizeof(int));
+  int *idx = ws->idx;
   float *norm_w = (float *)malloc((size_t)H * sizeof(float));
-  float *h = (float *)malloc((size_t)seq * (size_t)H * sizeof(float));
-  float *branch = (float *)malloc((size_t)seq * (size_t)H * sizeof(float));
-  if (!idx || !norm_w || !h || !branch)
+  float *h = ws->h;
+  float *branch = ws->branch;
+  if (!norm_w)
     rc = -1;
   for (int s = 0; s < seq && rc == 0; s++) {
     idx[s] = h3_adaln_modality_row(tslots[s], tags[s]);
     if (idx[s] < 0)
       rc = -1;
   }
-  free(tslots);
 
   if (rc == 0 && dit_debug_level() >= 1 &&
       (dit_debug_level() >= 2 || strstr(prefix, "blocks.0."))) {
@@ -768,13 +858,11 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   if (rc == 0)
     h_mod_cos = vid_token_cos(h, H, hvrow, nhv);
 
-  float *qkv = (float *)malloc((size_t)seq * 3 * (size_t)inner * sizeof(float));
-  float *q = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  float *k = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  float *v = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  float *attn = (float *)malloc((size_t)seq * (size_t)inner * sizeof(float));
-  if (!qkv || !q || !k || !v || !attn)
-    rc = -1;
+  float *qkv = ws->qkv;
+  float *q = ws->q;
+  float *k = ws->k;
+  float *v = ws->v;
+  float *attn = ws->attn;
   snprintf(name, sizeof(name), "%sattn.qkv_proj.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, h, seq, H, 3 * inner, NULL, qkv, error,
@@ -858,9 +946,6 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
       }
     }
   }
-  free(qkv);
-  qkv = NULL;
-
   float *qn = (float *)malloc((size_t)hd * sizeof(float));
   float *kn = (float *)malloc((size_t)hd * sizeof(float));
   if (!qn || !kn)
@@ -878,24 +963,25 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   free(qn);
   free(kn);
 
-  float inv[H3_DIT_ROPE_INV_FREQ_LEN];
-  float *cos = (float *)malloc((size_t)seq * H3_DIT_ROPE_DIM * sizeof(float));
-  float *sin = (float *)malloc((size_t)seq * H3_DIT_ROPE_DIM * sizeof(float));
-  if (!cos || !sin)
-    rc = -1;
-  if (rc == 0)
+  /* RoPE tables are identical for every block and step — shared via the
+   * caller (h3_dit_rope_tables once per forward) or built here as fallback. */
+  float *cos = ws->cos;
+  float *sin = ws->sin;
+  if (rc == 0 && (!rope_cos || !rope_sin)) {
+    float inv[H3_DIT_ROPE_INV_FREQ_LEN];
     rc = rope_inv_from_store(store, inv, error, error_size);
+    if (rc == 0)
+      rc = h3_dit_rope_from_positions(position_ids, seq, inv,
+                                      H3_DIT_ROPE_INV_FREQ_LEN, cos, sin);
+    rope_cos = cos;
+    rope_sin = sin;
+  }
   if (rc == 0)
-    rc = h3_dit_rope_from_positions(position_ids, seq, inv,
-                                    H3_DIT_ROPE_INV_FREQ_LEN, cos, sin);
+    rc = h3_dit_apply_rotary_heads_inplace(q, seq, heads, hd, rope_cos,
+                                           rope_sin, H3_DIT_ROPE_DIM);
   if (rc == 0)
-    rc = h3_dit_apply_rotary_heads(q, seq, heads, hd, cos, sin, H3_DIT_ROPE_DIM,
-                                   q);
-  if (rc == 0)
-    rc = h3_dit_apply_rotary_heads(k, seq, heads, hd, cos, sin, H3_DIT_ROPE_DIM,
-                                   k);
-  free(cos);
-  free(sin);
+    rc = h3_dit_apply_rotary_heads_inplace(k, seq, heads, hd, rope_cos,
+                                           rope_sin, H3_DIT_ROPE_DIM);
   float scale = 1.0f / sqrtf((float)hd);
   if (rc == 0)
     rc = h3_dit_sdpa_f32(attn, q, k, v, seq, heads, hd, scale);
@@ -903,20 +989,14 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   if (rc == 0)
     rc = gemm_weight(store, name, attn, seq, inner, H, NULL, branch, error,
                      error_size);
-  free(attn);
-  attn = NULL;
   h3_attn_probe ap;
   memset(&ap, 0, sizeof(ap));
-  if (rc == 0)
+  if (rc == 0 && dit_debug_level() >= 1)
     attn_probe_video(&ap, q, k, v, seq, heads, hd, scale, tags, idx, gate_msa,
                      branch, H);
   if (rc == 0)
     dit_debug_mix(prefix, q, k, seq, heads, hd, scale, tags, idx, gate_msa, x,
                   branch, H);
-  free(q);
-  free(k);
-  free(v);
-  q = k = v = NULL;
   if (rc == 0)
     rc = h3_dit_gated_residual_indexed(x, branch, gate_msa, idx, seq, H, out);
   if (rc == 0 && want_bf16_act())
@@ -973,10 +1053,8 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
     mlp_in_rms = sqrt(mlp_in_rms / (double)hn);
   }
 
-  float *fused = (float *)malloc((size_t)seq * 2 * (size_t)ffn * sizeof(float));
-  float *hid = (float *)malloc((size_t)seq * (size_t)ffn * sizeof(float));
-  if (!fused || !hid)
-    rc = -1;
+  float *fused = ws->fused;
+  float *hid = ws->hid;
   snprintf(name, sizeof(name), "%smlp.fc1.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, h, seq, H, ffn * 2, NULL, fused, error,
@@ -1117,12 +1195,10 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
             prefix, sqrt(hr / (double)hn), sqrt(fr / (double)fn),
             sqrt(hidr / (double)hdn));
   }
-  free(fused);
   snprintf(name, sizeof(name), "%smlp.fc2.weight", prefix);
   if (rc == 0)
     rc = gemm_weight(store, name, hid, seq, ffn, H, NULL, branch, error,
                      error_size);
-  free(hid);
   if (rc == 0 && dit_debug_level() >= 1 &&
       (dit_debug_level() >= 2 || strstr(prefix, "blocks.0."))) {
     double br = 0;
@@ -1136,7 +1212,7 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   if (rc == 0 && want_bf16_act())
     cast_bf16_n(out, (size_t)seq * (size_t)H);
 
-  if (rc == 0) {
+  if (rc == 0 && dit_debug_level() >= 1) {
     size_t n = (size_t)seq * (size_t)H;
     double xin = 0, xout = 0, br = 0, gacc = 0;
     int nv = 0;
@@ -1226,9 +1302,7 @@ block_done:
   free(owned_table);
   free(h_rms);
   free(six);
-  free(idx);
   free(norm_w);
-  free(h);
-  free(branch);
+  h3_dit_ws_free(owned);
   return rc;
 }

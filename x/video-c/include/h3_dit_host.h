@@ -147,6 +147,11 @@ int h3_dit_apply_rotary_heads(const float *x, int seq, int heads, int head_dim,
                               const float *cos, const float *sin,
                               int rotary_dim, float *out);
 
+/* In-place variant (x written in place) without temp gather/scatter. */
+int h3_dit_apply_rotary_heads_inplace(float *x, int seq, int heads,
+                                      int head_dim, const float *cos,
+                                      const float *sin, int rotary_dim);
+
 /* Full (non-causal) SDPA. q/k/v/out [seq, heads, head_dim]. */
 int h3_dit_sdpa_f32(float *out, const float *q, const float *k, const float *v,
                     int seq, int heads, int head_dim, float scale);

@@ -63,8 +63,8 @@ static int test_pack_block0(void) {
     x[i] = sinf((float)(i + 3) * 0.001f) * 0.1f;
   int tags[2] = {H3_ADALN_TAG_VIDEO, H3_ADALN_TAG_TEXT};
   float pos[6] = {0, 0, 0, 0, 0, 1};
-  if (h3_dit_block_forward(st, 0, x, seq, tags, 0.5f, NULL, pos, NULL, 0, 0, y,
-                           err, sizeof(err)) != 0) {
+  if (h3_dit_block_forward(st, 0, x, seq, tags, 0.5f, NULL, pos, NULL, NULL,
+                           NULL, 0, 0, y, NULL, err, sizeof(err)) != 0) {
     fprintf(stderr, "FAIL block0: %s\n", err);
     return 1;
   }

@@ -43,6 +43,10 @@ static void pack_cast_bf16(float *x, size_t n) {
 
 static void log_vid_div(const char *tag, const float *packed, const int *vidx,
                         int nv, int dim) {
+  /* Lab diagnostic: cosine spread of the first video rows. Off unless
+   * H3_DIT_DEBUG — it costs O(pairs·dim) plus a stderr line per call. */
+  if (!env_on("H3_DIT_DEBUG"))
+    return;
   if (!packed || !vidx || nv < 2 || dim < 1)
     return;
   int n = nv < 8 ? nv : 8;
@@ -161,13 +165,24 @@ int h3_dit_forward(const h3_st_store *store, const float *video, int nv,
   }
 
   double t_ref = h3_prof_now_ms ? h3_prof_now_ms() : 0;
+  /* One scratch arena for the whole pass: refiner + all blocks reuse it
+   * instead of re-page-faulting ~800 MB of fresh allocations per block. */
+  h3_dit_ws *ws = h3_dit_ws_create(seq);
+  if (!ws) {
+    free(packed);
+    free(tmp);
+    free(text_h);
+    free(vid_h);
+    free(aud_h);
+    return -1;
+  }
   int rc = h3_dit_linear_named(store, "condition_proj.weight",
                                "condition_proj.bias", text, nt, Td, H, text_h,
                                error, error_size);
   for (int r = 0; r < H3_DIT_TOKEN_REFINER_LAYERS && rc == 0; r++) {
     char pfx[64];
     snprintf(pfx, sizeof(pfx), "token_refiner.blocks.%d.", r);
-    rc = h3_dit_plain_block_forward(store, pfx, text_h, nt, tmp, error,
+    rc = h3_dit_plain_block_forward(store, pfx, text_h, nt, tmp, ws, error,
                                     error_size);
     if (rc == 0)
       memcpy(text_h, tmp, (size_t)nt * (size_t)H * sizeof(float));
@@ -265,6 +280,18 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
   if (t_ref > 0 && h3_prof_add_ms)
     h3_prof_add_ms("h3_dit_fwd_refiner", h3_prof_now_ms() - t_ref);
   double t_blk = h3_prof_now_ms ? h3_prof_now_ms() : 0;
+  /* RoPE tables depend only on position_ids — identical for all 50 blocks and
+   * every step. Build once here instead of 50× per step inside the block. */
+  const float *rope_cos = NULL;
+  const float *rope_sin = NULL;
+  if (rc == 0) {
+    rc = h3_dit_rope_tables(store, position_ids, seq, h3_dit_ws_cos(ws),
+                            h3_dit_ws_sin(ws), error, error_size);
+    if (rc == 0) {
+      rope_cos = h3_dit_ws_cos(ws);
+      rope_sin = h3_dit_ws_sin(ws);
+    }
+  }
   for (int b = 0; b < n_layers && rc == 0; b++) {
     double t_l = h3_prof_now_ms ? h3_prof_now_ms() : 0;
     if (n_layers > 1 && dit_progress()) {
@@ -272,8 +299,8 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
       fflush(stderr);
     }
     rc = h3_dit_block_forward(store, b, packed, seq, tags, timestep, row_t,
-                              position_ids, table, grid, rank, tmp, error,
-                              error_size);
+                              position_ids, rope_cos, rope_sin, table, grid,
+                              rank, tmp, ws, error, error_size);
     if (t_l > 0 && getenv("H3_BLK_MS")) {
       fprintf(stderr, "video-c: layer %d took %.1f ms\n", b,
               h3_prof_now_ms() - t_l);
@@ -515,6 +542,7 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
   free(ahead);
   free(packed);
   free(tmp);
+  h3_dit_ws_free(ws);
   if (t_fin > 0 && h3_prof_add_ms)
     h3_prof_add_ms("h3_dit_fwd_final", h3_prof_now_ms() - t_fin);
   return rc;

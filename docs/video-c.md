@@ -17,7 +17,7 @@ Clients call `POST /v1/videos` with a **model tag** only. They do **not** choose
 |-----|---------|
 | **Client** | Model name + prompt / size / … |
 | **Manifest** | `modality_backends.video_generation` + `video_generation.*` |
-| **Operator** | Optional `ZEROLLAMA_VIDEO_CLI` (or `ZEROLLAMA_WAN_CLI` / `backend_paths.video_cli`) — if set, Wan jobs use video-c; else Python Wan. |
+| **Operator** | Wan **Python** tags (`wan2.1-t2v:1.3b`) vs Wan **C** tag (`wan2.1-t2v-c:lab` with `backend_paths.video_cli`). Env `ZEROLLAMA_VIDEO_CLI` still forces C on any Wan tag. |
 
 ## Families
 
@@ -194,6 +194,18 @@ Oracle fox used this sampler, not host Euler. Tiny pack smoke: `H3_CONVROT_PACK=
 `test_h3_dit_forward`; CLI `--family h3 --dit-denoise` (4-token T2VA layout:
 text + stereo audio_t=1 + 1 video patch, Comfy RoPE grids — not all-zero
 positions). AdaLN `unique_t` is **sorted** like Comfy.
+Host perf (2026-08): one **workspace arena per forward pass**
+(`h3_dit_ws_create`) feeds all blocks — the block path moves ~800 MB of
+activations per block-step and Darwin page-faults fresh mallocs of that size;
+RoPE cos/sin are built **once per forward** (`h3_dit_rope_tables`) and applied
+in place; the per-layer probe/stats prints are gated behind `H3_DIT_DEBUG`;
+big weights (`adaln_proj`, ~49.5 MB/block) are read by pointer from the weight
+cache instead of a per-call memcpy. All bit-exact — gate string unchanged.
+Opt-in `H3_SDPA_BLAS=1` runs attention as per-head `cblas_sgemm` QK^T/P·V +
+vDSP softmax (no gather; sgemm walks packed Q/K/V via `lda=heads·hd`):
+768² 1-step **1119 → 744 ms/layer (1.50×)**, `vel_rms` identical to 4 digits,
+tiny-gate signature drifts only in the 5th digit (accumulation order). Not
+default while the gate is bit-exactness-tracked.
 `--family h3 --generate --prompt TEXT` maps tokens through Qwen3-VL-4B (or
 hash TE) + ClipProj into DiT text rows and keeps presentation **AdaLN tags**
 (vision pads = video). Omit `--prompt` for dummy sine cond. H3TE dumps may
@@ -352,7 +364,7 @@ UMA_WAN_LOCAL=1 ./x/video-c/video-cli --family wan --ckpt-dir … --prompt "…"
 
 ## Zerollama API
 
-Optional: set `ZEROLLAMA_VIDEO_CLI` to `video-cli` (or `backend_paths.video_cli`). Serve then runs `scripts/video/wan_c_generate.py` instead of the Python Wan venv. Unset → Python fallback. Same `/v1/videos` contract either way.
+Wan C product tag: `wan2.1-t2v-c:lab` (`./scripts/video/register_wan_models.sh`). Manifest points at repo `x/video-c/video-cli` + `~/.zerollama/third_party/wan/Wan2.1-T2V-1.3B`. Jobs run `wan_c_generate.py` → `video-cli --family wan`. On Darwin, serve sets `UMA_WAN_LOCAL=1` unless `UMA_SOCK` / `UMA_WAN_LOCAL` is already set (do not bounce the user’s `uma_daemon`). Python Wan tags stay the default when `video_cli` is unset. Override the binary with `ZEROLLAMA_VIDEO_CLI`.
 
 H3 tags: `minimax-h3-tiny:lab` (5×32², **50 DiT layers**, 2-step Euler gate) and `minimax-h3-768:lab` (5×768², **50L**, 8-step `res_multistep`). Profiles `h3-tiny-t2va` / `h3-768-t2va`. Register with `./scripts/video/register_h3_models.sh`. Jobs run `wan_c_generate.py` → `video-cli --family h3 --generate`. Manifest `backend_paths.video_cli` is repo-relative (`x/video-c/video-cli`); `h3_ckpt_dir` defaults to `~/.zerollama/models/MiniMax-H3`. Override the binary with `ZEROLLAMA_VIDEO_CLI`. The 768 tag defaults to a 4h job timeout (tiled VAE decode) and sets `H3_SAMPLER=res_multistep` when steps ≥ 8. Truncating layers (old 24L default) explodes velocity; do not ship it. Request `options.layers` to override (cap 50).
 

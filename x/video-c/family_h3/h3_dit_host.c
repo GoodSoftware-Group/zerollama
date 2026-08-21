@@ -493,10 +493,86 @@ int h3_dit_apply_rotary_heads(const float *x, int seq, int heads, int head_dim,
   return rc;
 }
 
+/* Same math as h3_dit_apply_rotary_heads(x,…,x) without the per-head
+ * gather/scatter through temp buffers (~4·seq·inner bytes of memcpy traffic
+ * per call). In-place is safe: within each pair, i and half+i never alias. */
+int h3_dit_apply_rotary_heads_inplace(float *x, int seq, int heads,
+                                      int head_dim, const float *cos,
+                                      const float *sin, int rotary_dim) {
+  if (!x || !cos || !sin || seq < 1 || heads < 1 || head_dim < 1 ||
+      rotary_dim < 1 || rotary_dim > head_dim || (rotary_dim % 2) != 0)
+    return -1;
+  int half = rotary_dim / 2;
+  for (int s = 0; s < seq; s++) {
+    const float *c = cos + (size_t)s * (size_t)rotary_dim;
+    const float *sn = sin + (size_t)s * (size_t)rotary_dim;
+    for (int h = 0; h < heads; h++) {
+      float *xr = x + ((size_t)s * (size_t)heads + (size_t)h) * (size_t)head_dim;
+      for (int i = 0; i < half; i++) {
+        float x1 = xr[i];
+        float x2 = xr[half + i];
+        xr[i] = x1 * c[i] - x2 * sn[i];
+        xr[half + i] = x2 * c[half + i] + x1 * sn[half + i];
+      }
+    }
+  }
+  return 0;
+}
+
+/* Opt-in H3_SDPA_BLAS=1 attention: per-head QK^T and P·V through
+ * cblas_sgemm (AMX) and the softmax through vDSP. Q/K/V stay in their packed
+ * layout — sgemm walks them via lda=heads*head_dim, so no gather/copy pass.
+ * NOT bit-identical to the scalar path (different accumulation order); the
+ * default path is unchanged. */
+static int h3_sdpa_blas(float *out, const float *q, const float *k,
+                        const float *v, int seq, int heads, int head_dim,
+                        float scale) {
+  if (!out || !q || !k || !v || seq < 1 || heads < 1 || head_dim < 1)
+    return -1;
+  const size_t ld = (size_t)heads * (size_t)head_dim;
+  float *S = (float *)malloc((size_t)seq * (size_t)seq * sizeof(float));
+  if (!S)
+    return -1;
+  for (int h = 0; h < heads; h++) {
+    const float *qh = q + (size_t)h * (size_t)head_dim;
+    const float *kh = k + (size_t)h * (size_t)head_dim;
+    const float *vh = v + (size_t)h * (size_t)head_dim;
+    /* S[r,c] = scale * q[r,h,:] · k[c,h,:] */
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, seq, seq, head_dim,
+                scale, qh, (int)ld, kh, (int)ld, 0.0f, S, seq);
+    for (int r = 0; r < seq; r++) {
+      float *row = S + (size_t)r * (size_t)seq;
+      float mx = 0.f;
+      vDSP_maxv(row, 1, &mx, seq);
+      float sub = -mx;
+      vDSP_vsadd(row, 1, &sub, row, 1, seq);
+      vvexpf(row, row, &seq);
+      float sum = 0.f;
+      vDSP_sve(row, 1, &sum, seq);
+      if (!(sum > 0.f))
+        continue;
+      float inv = 1.0f / sum;
+      vDSP_vsmul(row, 1, &inv, row, 1, seq);
+    }
+    /* out[r,h,:] = Σ_c S[r,c] · v[c,h,:] */
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, seq, head_dim, seq,
+                1.0f, S, seq, vh, (int)ld, 0.0f,
+                out + (size_t)h * (size_t)head_dim, (int)ld);
+  }
+  free(S);
+  return 0;
+}
+
 int h3_dit_sdpa_f32(float *out, const float *q, const float *k, const float *v,
                     int seq, int heads, int head_dim, float scale) {
   if (!out || !q || !k || !v || seq < 1 || heads < 1 || head_dim < 1)
     return -1;
+  {
+    const char *e = getenv("H3_SDPA_BLAS");
+    if (e && e[0] && e[0] != '0' && seq >= 16 &&
+        h3_sdpa_blas(out, q, k, v, seq, heads, head_dim, scale) == 0)
+      return 0;
+  }
   long ncore = sysconf(_SC_NPROCESSORS_ONLN);
   if (ncore < 2 || seq < 64 || heads < 4) {
     float *scores = (float *)malloc((size_t)seq * sizeof(float));

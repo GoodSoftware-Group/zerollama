@@ -21,9 +21,35 @@ whenever the denoise/audio-latent path changes.)
 
 **Layers gate:** `--generate` must default to the full `H3_DIT_NUM_LAYERS`
 (50). Running fewer blocks cuts the residual stack; the final AdaLN/RMSNorm sees
-a wrong hidden state and the audio velocity explodes ~70× → ~93%-clipped
-waveform. Do not reintroduce a layer cap (the old 24-layer default with its
+a wrong hidden state and the audio velocity explodes ~70× → ~93%-clipped waveform. Do not reintroduce a layer cap (the old 24-layer default with its
 `L47–L48 v_rms cliff` reasoning was the audio bug).
+
+## Performance invariants (why the hot path looks the way it does)
+
+- **Workspace, not malloc-per-block** (`h3_dit_ws_create`, `h3_dit_block.c`):
+  one scratch arena per forward pass feeds all 50 blocks. The block path moves
+  ~800 MB of qkv/fused/hid/q/k/v/attn per block-step; Darwin mmaps those sizes,
+  so fresh mallocs page-fault every time. Buffers are fully overwritten each
+  use (sgemm beta=0), so reuse is bit-exact — the gate string above is
+  unchanged.
+- **RoPE tables are built once per forward** (`h3_dit_rope_tables`) and shared
+  by every block/step: position_ids never change, and per-block `sinf/cosf`
+  over seq×192 was pure waste. Rotary applies in place
+  (`h3_dit_apply_rotary_heads_inplace`) — no temp gather/scatter.
+- **Diagnostics are gated by `H3_DIT_DEBUG`.** `attn_probe_video`, the
+  per-layer stats line, and `log_vid_div` used to run unconditionally (~14G
+  double ops + 400 stderr lines per generate). Do not ungated them.
+- **`H3_SDPA_BLAS=1` (opt-in)** switches attention to per-head
+  `cblas_sgemm` QK^T / P·V + vDSP softmax (`h3_sdpa_blas`). Q/K/V stay packed —
+  sgemm walks them via `lda=heads·hd`, no gather pass. Measured at 768²
+  1-step: **1119 → 744 ms/layer (1.50×)**, `vel_rms` identical to 4 digits;
+  tiny-gate signature drifts only in the 5th digit (accumulation order). Not
+  default because the gate string is bit-exactness-tracked; flip the default
+  only with a re-baselined gate.
+- **Big weights are read by pointer** (`h3_st_store_get_f32`) — e.g. the
+  49.5 MB `adaln_proj.linear.weight` used to be memcpy'd out of the weight
+  cache every block-step (~19.8 GB/generate). Keep small loads on `load_n`;
+  anything ≥ tens of MB must use the pointer path.
 
 ## Build / test / serve
 
