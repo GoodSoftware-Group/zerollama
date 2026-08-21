@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### vLLM retention default (#52216) — Aug 2026
+
+**Why:** vLLM promoted `prefix_cache_retention_interval` and changed unset default from dense to `0` (block-aligned SWA checkpoints only).
+
+**Shipped:** `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` unset + no YAML `l3.retention_interval` → `0`. Explicit `N>0` or YAML override unchanged.
+
 ### vLLM L3 pattern ports (#50321 / #48668) — Aug 2026
 
 **Why:** Aug 20 vLLM rescan (`118bcde44` → `f8e0602713`) flagged partial LMCache tier hits and zero-output steps dropping prefix-cache metrics.

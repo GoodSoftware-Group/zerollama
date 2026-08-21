@@ -34,7 +34,8 @@ def prefix_cache_block_size() -> int:
 def prefix_cache_retention_interval() -> int | None:
     """SWA sparse retention (``VLLM_PREFIX_CACHE_RETENTION_INTERVAL`` analog).
 
-    ``None`` — dense (default). ``0`` — no mid-sequence resume checkpoints.
+    Unset env + no YAML → ``0`` (block-aligned checkpoints only; vLLM #52216).
+    ``0`` — same (no mid-sequence resume except block boundaries).
     ``>0`` — allow resume only when ``seq_pos`` aligns to this token interval.
     """
     from runtime.env import prefix_cache_retention_interval as _interval

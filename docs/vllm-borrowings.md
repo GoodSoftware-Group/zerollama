@@ -35,6 +35,17 @@
 | **SWA reachable-tail store filter** | `kv/swa_store_filter.py` → `register_prefix(store_block_mask=…)` | vLLM #48911: do not federate blocks outside SWA reachable tail |
 | **Partial secondary-tier load** | `_apply_prefix_block_pool` + `PrefixBlockMatch.partial_tier_load` | vLLM #50321: resume from longest LMCache hit when tail blocks absent remotely |
 | **Zero-output prefix-cache metrics** | `_stream_done_metrics` + non-stream `OllamaGenerateResponse` metrics | vLLM #48668: keep cache read/creation on done chunks when `eval_count=0` |
+| **Retention default → block-aligned** | `prefix_cache_retention_interval()` unset → `0` | vLLM #52216: SWA checkpoints at block boundaries only unless YAML/env sets `N>0` |
+
+---
+
+## Watch (Aug 2026 rescan)
+
+| vLLM PR | Topic | Zerollama stance |
+|---------|-------|------------------|
+| **#50507** | Partial-tail prefix reuse with `hash_block_size` < physical block | **Defer** — needs physical KV pages + COW / OffloadingConnector scheduler; block pool stays 512-token aligned |
+| **#52041** | Skip MM tensor broadcast for prefix-cache-covered spans | **Watch (SGLang/mm track)** — vLLM distributed worker IPC; zerollama analog is ViT/session overlay skip on L3 hit ([sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) §28) |
+| **#50493** | Kimi-K3 DCP partial prefix hit | **Skip** — model-specific distributed checkpoint path |
 
 ---
 
@@ -48,7 +59,7 @@
 | `CUDAGraphDispatcher` + capture handles | ggml internal capture; stub `DecodeGraphCache.lookup` until upstream API — invalidation after Radix seed is wired |
 | Scheduler KV preemption loop | LocalAI watchdog + slot allocator; not vLLM-style block preempt yet |
 | KV-cache **admission watermark** (`free_blocks ≥ needed + watermark`) | Skip — zerollama pre-reserves full prompt+`max_tokens`/`num_ctx` and caps concurrency with fixed `n_parallel` slots; Phase 11 `VRAM_MIN_FREE` is the headroom policy. Revisit if PA allocates mid-decode. |
-| Partial hybrid prefix hits (`hash_block_size` < physical block) | Needs physical pages + COW; our Radix still full-sequence `seq_cp` — watch #50507 |
+| Partial hybrid prefix hits (`hash_block_size` < physical block) | Needs physical pages + COW; our Radix still full-sequence `seq_cp` — **#50507 watch** |
 | Full OffloadingConnector / NIXL workers | Pattern ports only (#48123/#48596/#48535/#48911); not the CUDA offload scheduler |
 
 ---
@@ -62,7 +73,7 @@
 | `ZEROLLAMA_LLAMA_CACHE` | `1` | Master L3 enable |
 | `ZEROLLAMA_CACHE_SALT` | — | Operator default tenant salt |
 | `ZEROLLAMA_PREFIX_CACHE_BLOCK_SIZE` | `512` | EAGLE drop-last-block granularity |
-| `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` | — | SWA sparse retention (`0`, `N`, unset=dense) |
+| `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` | `0` | SWA sparse retention (`0` = block-aligned only; `N>0` = every N tokens; unset matches `0`, vLLM #52216) |
 | `ZEROLLAMA_LMCACHE_URI` | — | `file://…` or `redis://host:6379/db` — metadata tier (L3-R4) |
 | `ZEROLLAMA_LMCACHE_TTL_SEC` | — | Redis key TTL (optional) |
 | `ZEROLLAMA_LMCACHE_TIER` | *(deprecated)* | Alias for URI-only enable; prefer `ZEROLLAMA_LMCACHE_URI` |
