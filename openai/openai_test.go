@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -353,6 +354,86 @@ func TestDecodeVideoURL_HTTPRequiresOptIn(t *testing.T) {
 	_, err := decodeVideoURL(context.Background(), "http://example.com/clip.mp4")
 	if err == nil || !strings.Contains(err.Error(), "https") {
 		t.Fatalf("expected https/opt-in error, got %v", err)
+	}
+}
+
+func TestCheckMediaHostAllowed(t *testing.T) {
+	t.Setenv("OLLAMA_MEDIA_ALLOWED_HOSTS", "")
+	if err := checkMediaHostAllowed("cdn.example.com"); err != nil {
+		t.Fatalf("empty allowlist should permit: %v", err)
+	}
+
+	t.Setenv("OLLAMA_MEDIA_ALLOWED_HOSTS", "cdn.example.com, media.corp")
+	if err := checkMediaHostAllowed("cdn.example.com"); err != nil {
+		t.Fatalf("exact host: %v", err)
+	}
+	if err := checkMediaHostAllowed("edge.cdn.example.com"); err != nil {
+		t.Fatalf("subdomain of allowlisted apex: %v", err)
+	}
+	if err := checkMediaHostAllowed("evil.com"); err == nil {
+		t.Fatal("expected allowlist reject")
+	}
+}
+
+func TestCheckRemoteMediaURL_RedirectTargetPrivate(t *testing.T) {
+	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
+	t.Setenv("OLLAMA_MEDIA_ALLOWED_HOSTS", "")
+	u, err := url.Parse("http://127.0.0.1/clip.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRemoteMediaURL(u); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("redirect to loopback must fail: %v", err)
+	}
+}
+
+func TestFetchVideoURL_AllowlistAndSize(t *testing.T) {
+	t.Setenv("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", "1")
+	t.Setenv("OLLAMA_MEDIA_ALLOWED_HOSTS", "127.0.0.1") // still blocked by SSRF before allowlist helps
+	_, err := decodeVideoURL(context.Background(), "http://127.0.0.1:9/v.mp4")
+	if err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("SSRF must win even when host is allowlisted: %v", err)
+	}
+
+	t.Setenv("OLLAMA_MEDIA_ALLOWED_HOSTS", "allowed.example")
+	u, err := url.Parse("https://other.example/v.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkMediaHostAllowed(u.Hostname()); err == nil {
+		t.Fatal("want allowlist miss")
+	}
+}
+
+func TestFromChatRequest_ToolMultipartKeepsMetadata(t *testing.T) {
+	// SGLang #33898: tool role with image parts must keep tool_call_id without ToolCalls.
+	req := ChatCompletionRequest{
+		Model: "qwen3-vl",
+		Messages: []Message{{
+			Role:       "tool",
+			ToolCallID: "call_1",
+			Name:       "see",
+			Content: []any{
+				map[string]any{"type": "text", "text": "shot"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{
+					"url": prefix + image,
+				}},
+			},
+		}},
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 1 {
+		t.Fatalf("messages=%d", len(out.Messages))
+	}
+	m := out.Messages[0]
+	if m.ToolCallID != "call_1" || m.ToolName != "see" {
+		t.Fatalf("tool meta ToolCallID=%q ToolName=%q", m.ToolCallID, m.ToolName)
+	}
+	if len(m.Images) != 1 {
+		t.Fatalf("images=%d", len(m.Images))
 	}
 }
 

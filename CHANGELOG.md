@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### SGLang multimodal ports (#32914 / #34892 / #31957 / #33898) — Aug 2026
+
+**Why:** Weekly SGLang scan (`4e5a05148a..896acc8860`) flagged portable agent-facing MM guards; CUDA-IPC / HiCache / Radix skipped.
+
+**Shipped:**
+- Reject still images / padded multimodal on text-only models with **400** (chat + generate) — #32914
+- Opt-in `OLLAMA_MEDIA_ALLOWED_HOSTS` + redirect host re-check + `Content-Length` early reject for `video_url` — #34892
+- Reject zero/`frame_count` mismatches on pre-expanded `video_spans` (no silent grid remount) — #31957
+- Qwen3-VL tool-result media uses `renderContent`; OpenAI multipart tool messages keep `tool_call_id` — #33898
+
+Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md).
+
 ### vLLM skip covered MM payload (#52041) — Aug 2026
 
 **Why:** vLLM drops multimodal tensor bytes for items whose placeholder span is fully inside a prefix-cache-covered region — workers never consume them.

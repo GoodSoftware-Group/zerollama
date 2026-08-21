@@ -53,7 +53,8 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 |----------|-----------------|------|-------|
 | vLLM `main` | `f8e0602713` | 2026-08-20 | **Brought:** #50321 partial LMCache tier load, #48668 zero-output cache metrics, #52216 retention default `0`, #52041 defer ViT on input-cache hit; **watch:** #50507 — [vllm-borrowings.md](./vllm-borrowings.md) |
 | vLLM `main` (prior) | `118bcde44` | 2026-07-28 | **Brought:** #48123 tier filter, #48596/#49671 defer blob finalize, #48535 cache creation tokens, #48911 SWA store filter |
-| SGLang `main` | `4e5a05148a` | 2026-07-28 | **Brought:** #31417 / #31438 / #31832 / #29436 (`session_id`) — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
+| SGLang `main` | `896acc8860` | 2026-08-21 | **Brought:** #32914 / #34892 / #31957 / #33898 — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
+| SGLang `main` (prior) | `4e5a05148a` | 2026-07-28 | **Brought:** #31417 / #31438 / #31832 / #29436 (`session_id`) |
 | LocalAI | v4.5.6 tree | 2026-07-03 | LA11+ candidates in [localai-borrowings.md](./localai-borrowings.md) |
 | Wan2GP `main` | `7e45fe7e2110` | 2026-08-11 | **Brought:** `mmgp==3.7.12` attach for 16g TI2V — [wangp-borrowings.md](./wangp-borrowings.md) |
 

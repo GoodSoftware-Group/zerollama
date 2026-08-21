@@ -167,10 +167,12 @@ func (r *Qwen3VLRenderer) Render(messages []api.Message, tools []api.Tool, think
 				sb.WriteString("<|im_end|>\n")
 			}
 		} else if message.Role == "tool" {
+			// SGLang #33898: use renderContent so tool-result images emit vision
+			// placeholders (bare message.Content advanced imageOffset without tags).
 			if i == 0 || messages[i-1].Role != "tool" {
 				sb.WriteString("<|im_start|>user")
 			}
-			sb.WriteString("\n<tool_response>\n" + message.Content + "\n</tool_response>")
+			sb.WriteString("\n<tool_response>\n" + content + "\n</tool_response>")
 			if i == len(messages)-1 || messages[i+1].Role != "tool" {
 				sb.WriteString("<|im_end|>\n")
 			}

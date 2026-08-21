@@ -643,6 +643,14 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		caps = append(caps, model.CapabilityThinking)
 	}
 
+	// SGLang #32914: reject images on text-only generate before scheduleRunner.
+	if len(req.Images) > 0 {
+		if err := m.CheckCapabilities(model.CapabilityVision); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	// DebugRenderOnly for the legacy template path: render without loading a runner.
 	// Must come before scheduleRunner so debug generate never blocks on GPU scheduling.
 	// Native chat-template / Context / Suffix paths still need a runner (Detokenize /
@@ -3128,16 +3136,26 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	// ResolveVideoPolicy here (not inside modality) so one policy value crosses preflight + expand.
 	// ChatRequestHasVideoPayload includes pre-expanded video_spans — not only raw videos[] — so
 	// SGLang-style clients cannot skip capability checks or video preflight before load/ffmpeg.
+	// SGLang #32914: still images alone must also CheckCapabilities(vision) — previously only
+	// video/audio gated; text-only models returned 200 with nonsense for image_url.
 	hasVideo := modality.ChatRequestHasVideoPayload(&req)
+	hasImages := false
 	hasAudio := false
 	for _, msg := range req.Messages {
+		if len(msg.Images) > 0 || len(msg.PaddedInputIDs) > 0 {
+			hasImages = true
+		}
 		if len(msg.AudioClips) > 0 {
 			hasAudio = true
-			break
 		}
 	}
 	if hasVideo {
 		if err := m.CheckCapabilities(model.CapabilityVision, model.CapabilityVideo); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	} else if hasImages {
+		if err := m.CheckCapabilities(model.CapabilityVision); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}

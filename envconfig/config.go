@@ -567,6 +567,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE":      {"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE", VideoMaxImagesPerMessage(), "Max images after video expansion per message (default 64)"},
 		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":              {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
 		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":         {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
+		"OLLAMA_MEDIA_ALLOWED_HOSTS":               {"OLLAMA_MEDIA_ALLOWED_HOSTS", strings.Join(MediaAllowedHosts(), ","), "Optional comma-separated hostname allowlist for remote video_url (empty=any public host)"},
 		"OLLAMA_VIDEO_FETCH_TIMEOUT":               {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
 		"OLLAMA_MM_IO_WORKERS":                     {"OLLAMA_MM_IO_WORKERS", MMIOWorkers(), "Parallel ffmpeg workers for multi-clip video expand (SGLang mm_io_worker_num; default 4)"},
 		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":         {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
@@ -1370,6 +1371,25 @@ func VideoFFmpegTimeout() time.Duration {
 func VideoAllowInsecureHTTP() bool {
 	s := strings.ToLower(strings.TrimSpace(Var("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP")))
 	return s == "1" || s == "true" || s == "yes"
+}
+
+// MediaAllowedHosts is an optional comma-separated hostname allowlist for remote
+// video_url fetches (SGLang #34892). Empty = any public host (still SSRF-checked).
+// Matching is case-insensitive; "example.com" also allows "cdn.example.com".
+func MediaAllowedHosts() []string {
+	raw := strings.TrimSpace(Var("OLLAMA_MEDIA_ALLOWED_HOSTS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		h := strings.ToLower(strings.TrimSpace(p))
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // VideoFetchTimeout bounds the entire remote GET for video_url (connect + response headers + body read, default 10m).

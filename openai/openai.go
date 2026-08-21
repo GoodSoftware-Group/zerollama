@@ -776,12 +776,16 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 				AudioClips: audioClips,
 				Videos:     videos,
 			})
-			if len(msg.ToolCalls) > 0 {
-				toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
-				if err != nil {
-					return nil, err
+			// SGLang #33898: always keep tool metadata on multipart tool messages
+			// (image tool results often have no ToolCalls array).
+			if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
+				if len(msg.ToolCalls) > 0 {
+					toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
+					if err != nil {
+						return nil, err
+					}
+					messages[len(messages)-1].ToolCalls = toolCalls
 				}
-				messages[len(messages)-1].ToolCalls = toolCalls
 				messages[len(messages)-1].ToolName = toolName
 				messages[len(messages)-1].ToolCallID = msg.ToolCallID
 				messages[len(messages)-1].Thinking = msg.Reasoning
