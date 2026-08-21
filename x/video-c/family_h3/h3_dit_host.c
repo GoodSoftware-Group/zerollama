@@ -533,6 +533,13 @@ static int h3_sdpa_blas(float *out, const float *q, const float *k,
   float *S = (float *)malloc((size_t)seq * (size_t)seq * sizeof(float));
   if (!S)
     return -1;
+  /* Softmax rows are independent and each row keeps the exact serial op
+   * sequence, so chunking rows across threads is bit-identical. */
+  long ncore = sysconf(_SC_NPROCESSORS_ONLN);
+  int chunks = ncore > 1 ? (int)ncore : 1;
+  if (chunks > seq)
+    chunks = seq;
+  int per = (seq + chunks - 1) / chunks;
   for (int h = 0; h < heads; h++) {
     const float *qh = q + (size_t)h * (size_t)head_dim;
     const float *kh = k + (size_t)h * (size_t)head_dim;
@@ -540,20 +547,30 @@ static int h3_sdpa_blas(float *out, const float *q, const float *k,
     /* S[r,c] = scale * q[r,h,:] · k[c,h,:] */
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, seq, seq, head_dim,
                 scale, qh, (int)ld, kh, (int)ld, 0.0f, S, seq);
-    for (int r = 0; r < seq; r++) {
-      float *row = S + (size_t)r * (size_t)seq;
-      float mx = 0.f;
-      vDSP_maxv(row, 1, &mx, seq);
-      float sub = -mx;
-      vDSP_vsadd(row, 1, &sub, row, 1, seq);
-      vvexpf(row, row, &seq);
-      float sum = 0.f;
-      vDSP_sve(row, 1, &sum, seq);
-      if (!(sum > 0.f))
-        continue;
-      float inv = 1.0f / sum;
-      vDSP_vsmul(row, 1, &inv, row, 1, seq);
-    }
+    dispatch_apply((size_t)chunks,
+                   dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0),
+                   ^(size_t ci) {
+                     int r0 = (int)ci * per;
+                     if (r0 >= seq)
+                       return;
+                     int r1 = r0 + per;
+                     if (r1 > seq)
+                       r1 = seq;
+                     for (int r = r0; r < r1; r++) {
+                       float *row = S + (size_t)r * (size_t)seq;
+                       float mx = 0.f;
+                       vDSP_maxv(row, 1, &mx, seq);
+                       float sub = -mx;
+                       vDSP_vsadd(row, 1, &sub, row, 1, seq);
+                       vvexpf(row, row, &seq);
+                       float sum = 0.f;
+                       vDSP_sve(row, 1, &sum, seq);
+                       if (!(sum > 0.f))
+                         continue;
+                       float inv = 1.0f / sum;
+                       vDSP_vsmul(row, 1, &inv, row, 1, seq);
+                     }
+                   });
     /* out[r,h,:] = Σ_c S[r,c] · v[c,h,:] */
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, seq, head_dim, seq,
                 1.0f, S, seq, vh, (int)ld, 0.0f,

@@ -45,7 +45,22 @@ a wrong hidden state and the audio velocity explodes ~70× → ~93%-clipped wave
   ms/layer (1.50×)**; vs scalar it agrees to ~1e-8 (test) / gate moved only in
   the 5th digit (accumulation order), which is why the gate string above is
   the BLAS one. `H3_SDPA_BLAS=0` restores the bit-exact scalar path (tests pin
-  it for the bit-identity check).
+  it for the bit-identity check). The softmax rows are chunked across threads
+  (`dispatch_apply`, ncore chunks): each row keeps its exact serial op
+  sequence, so it is bit-identical — micro-bench at the 768² shape:
+  serial 70 ms → 36 ms per SDPA call. `VECLIB_MAXIMUM_THREADS` tuning was
+  tried and is a wash (default threading already optimal).
+- **Block outputs ping-pong** between `packed`/`tmp` in `h3_dit_forward` —
+  no per-block memcpy back; one conditional copy after the loop lands the
+  final hidden in `packed`. Bit-exact.
+- **AdaLN scratch lives in the workspace** (`proj`/`six`/`adaln_b`, sized to
+  the nuniq≤8 maxima) — no per-block mallocs left in the block path.
+- **Weight-cache lookups are hashed** (`h3_wc_htab_*` FNV-1a open addressing
+  in `h3_st_store.c`) — replaces the O(n) strcmp scan over ~600 tensors.
+- **Measured out (do not revisit lightly):** making QK-norm/RoPE read strided
+  off the fused qkv buffer to skip `qkv_split`'s three memcpys saves ~100 MB
+  of traffic per block-step ≈ 0.2% of a 744 ms layer — not worth the
+  invasiveness.
 - **Big weights are read by pointer** (`h3_st_store_get_f32`) — e.g. the
   49.5 MB `adaln_proj.linear.weight` used to be memcpy'd out of the weight
   cache every block-step (~19.8 GB/generate). Keep small loads on `load_n`;

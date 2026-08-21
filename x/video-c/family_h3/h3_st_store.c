@@ -7,7 +7,9 @@ double (*h3_prof_now_ms)(void) = NULL;
 void (*h3_prof_add_ms)(const char *bucket, double ms) = NULL;
 
 #include <dirent.h>
+#include <limits.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +22,10 @@ typedef struct {
   size_t n;
 } h3_wc_ent;
 
+/* Open-addressing name hash over the weight cache (FNV-1a). Slots hold
+ * wc-index+1; 0 = empty, UINT_MAX = tombstone. Rebuilt when the entry array
+ * grows. Replaces the old O(n) strcmp scan (~600 tensors × thousands of
+ * lookups per generate). */
 struct h3_st_store {
   st_file **shards;
   size_t n_shards;
@@ -30,6 +36,8 @@ struct h3_st_store {
   size_t wc_cap;
   size_t wc_bytes;
   size_t wc_limit;
+  unsigned *htab;
+  size_t htab_cap; /* power of two, >= 2 * wc_cap */
   unsigned long wc_hits;
   unsigned long wc_misses;
   int wc_full_logged;
@@ -37,6 +45,73 @@ struct h3_st_store {
   char *key;
   int refcount;
 };
+
+static unsigned h3_wc_hash(const char *s) {
+  unsigned h = 2166136261u;
+  while (*s) {
+    h ^= (unsigned)(unsigned char)*s++;
+    h *= 16777619u;
+  }
+  return h;
+}
+
+static int h3_wc_htab_init(h3_st_store *store, size_t min_cap) {
+  size_t cap = 64;
+  while (cap < min_cap * 2)
+    cap <<= 1;
+  unsigned *ht = (unsigned *)calloc(cap, sizeof(unsigned));
+  if (!ht)
+    return -1;
+  free(store->htab);
+  store->htab = ht;
+  store->htab_cap = cap;
+  return 0;
+}
+
+static void h3_wc_htab_rebuild(h3_st_store *store) {
+  if (h3_wc_htab_init(store, store->wc_cap) != 0)
+    return;
+  for (size_t i = 0; i < store->wc_n; i++) {
+    unsigned h = h3_wc_hash(store->wc[i].name) & (unsigned)(store->htab_cap - 1);
+    while (store->htab[h] && store->htab[h] != UINT_MAX)
+      h = (h + 1) & (unsigned)(store->htab_cap - 1);
+    store->htab[h] = (unsigned)(i + 1);
+  }
+}
+
+/* Returns wc index+1 for `name` with nelems elements, or 0. */
+static unsigned h3_wc_htab_find(const h3_st_store *store, const char *name,
+                                size_t nelems) {
+  if (!store->htab || !store->htab_cap)
+    return 0;
+  unsigned h = h3_wc_hash(name) & (unsigned)(store->htab_cap - 1);
+  for (;;) {
+    unsigned slot = store->htab[h];
+    if (!slot)
+      return 0;
+    if (slot != UINT_MAX) {
+      const h3_wc_ent *e = &store->wc[slot - 1];
+      if (e->n == nelems && e->name && strcmp(e->name, name) == 0)
+        return slot;
+    }
+    h = (h + 1) & (unsigned)(store->htab_cap - 1);
+  }
+}
+
+static void h3_wc_htab_insert(h3_st_store *store, const char *name,
+                              unsigned idx1) {
+  if (!store->htab && h3_wc_htab_init(store, store->wc_cap ? store->wc_cap : 64) != 0)
+    return;
+  /* Grow (rehash) when half full relative to entries. */
+  if (store->wc_n * 2 >= store->htab_cap)
+    h3_wc_htab_rebuild(store);
+  if (!store->htab)
+    return;
+  unsigned h = h3_wc_hash(name) & (unsigned)(store->htab_cap - 1);
+  while (store->htab[h] && store->htab[h] != UINT_MAX)
+    h = (h + 1) & (unsigned)(store->htab_cap - 1);
+  store->htab[h] = idx1;
+}
 
 /* Shared-store registry: h3_st_store_open of the same directory returns the
  * same store (refcounted) so a resident daemon can keep weight caches warm
@@ -127,12 +202,8 @@ static size_t h3_weight_cache_limit(void) {
 static const float *wc_find(h3_st_store *store, const char *name, size_t n) {
   if (!store || !store->wc_limit)
     return NULL;
-  for (size_t i = 0; i < store->wc_n; i++) {
-    if (store->wc[i].n == n && store->wc[i].name &&
-        strcmp(store->wc[i].name, name) == 0)
-      return store->wc[i].data;
-  }
-  return NULL;
+  unsigned slot = h3_wc_htab_find(store, name, n);
+  return slot ? store->wc[slot - 1].data : NULL;
 }
 
 static void wc_insert(h3_st_store *store, const char *name, const float *src,
@@ -172,6 +243,7 @@ static void wc_insert(h3_st_store *store, const char *name, const float *src,
   store->wc[store->wc_n].n = n;
   store->wc_n++;
   store->wc_bytes += add;
+  h3_wc_htab_insert(store, nm, (unsigned)store->wc_n);
 }
 
 /* Pin resident weight-cache pages (opt-in H3_MLOCK=1) so memory pressure
@@ -240,6 +312,7 @@ static int wc_insert_take(h3_st_store *store, const char *name, float *data,
   store->wc[store->wc_n].n = n;
   store->wc_n++;
   store->wc_bytes += add;
+  h3_wc_htab_insert(store, nm, (unsigned)store->wc_n);
   return 1;
 }
 
@@ -430,6 +503,7 @@ void h3_st_store_free(h3_st_store *store) {
     free(store->wc[i].data);
   }
   free(store->wc);
+  free(store->htab);
   for (size_t i = 0; i < store->n_shards; i++)
     st_close(store->shards[i]);
   free(store->shards);

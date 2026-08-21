@@ -292,22 +292,26 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
       rope_sin = h3_dit_ws_sin(ws);
     }
   }
+  /* Ping-pong the two seq×H buffers instead of memcpying each block's output
+   * back (50 copies of 25 MB per step at 768²). Bit-exact: same values, the
+   * final one lands back in `packed` below. */
+  float *blk_in = packed;
+  float *blk_out = tmp;
   for (int b = 0; b < n_layers && rc == 0; b++) {
     double t_l = h3_prof_now_ms ? h3_prof_now_ms() : 0;
     if (n_layers > 1 && dit_progress()) {
       fprintf(stderr, "video-c: dit layer %d/%d seq=%d\n", b + 1, n_layers, seq);
       fflush(stderr);
     }
-    rc = h3_dit_block_forward(store, b, packed, seq, tags, timestep, row_t,
+    rc = h3_dit_block_forward(store, b, blk_in, seq, tags, timestep, row_t,
                               position_ids, rope_cos, rope_sin, table, grid,
-                              rank, tmp, ws, error, error_size);
+                              rank, blk_out, ws, error, error_size);
     if (t_l > 0 && getenv("H3_BLK_MS")) {
       fprintf(stderr, "video-c: layer %d took %.1f ms\n", b,
               h3_prof_now_ms() - t_l);
       fflush(stderr);
     }
     if (rc == 0) {
-      memcpy(packed, tmp, (size_t)seq * (size_t)H * sizeof(float));
       {
         const char *ctr = getenv("H3_RES_CENTER");
         if (ctr && ctr[0] && ctr[0] != '0') {
@@ -320,23 +324,23 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
               double m = 0;
               for (int i = 0; i < nuse; i++) {
                 int s = ix ? ix[i] : i;
-                m += packed[(size_t)s * (size_t)H + (size_t)d];
+                m += blk_out[(size_t)s * (size_t)H + (size_t)d];
               }
               float mf = (float)(m / (double)nuse);
               if (ix) {
                 for (int i = 0; i < nuse; i++)
-                  packed[(size_t)ix[i] * (size_t)H + (size_t)d] -= mf;
+                  blk_out[(size_t)ix[i] * (size_t)H + (size_t)d] -= mf;
               } else {
                 for (int s = 0; s < seq; s++)
-                  packed[(size_t)s * (size_t)H + (size_t)d] -= mf;
+                  blk_out[(size_t)s * (size_t)H + (size_t)d] -= mf;
               }
             }
           }
         }
       }
       if (b == 0 || b + 1 == n_layers)
-        log_vid_div(b == 0 ? "after_L0" : "after_Llast", packed, video_index, nv,
-                    H);
+        log_vid_div(b == 0 ? "after_L0" : "after_Llast", blk_out, video_index,
+                    nv, H);
       if (rc == 0 && b + 1 == n_layers) {
         const char *dump = getenv("H3_DUMP_LAST");
         if (dump && dump[0] && dump[0] != '0') {
@@ -361,7 +365,7 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
             f = fopen(path, "wb");
             if (f) {
               for (int i = 0; i < nv; i++)
-                fwrite(packed + (size_t)video_index[i] * (size_t)H,
+                fwrite(blk_out + (size_t)video_index[i] * (size_t)H,
                        sizeof(float), (size_t)H, f);
               fclose(f);
             }
@@ -375,12 +379,19 @@ float *nw = (float *)malloc((size_t)H * sizeof(float));
         double acc = 0;
         size_t n = (size_t)seq * (size_t)H;
         for (size_t i = 0; i < n; i++)
-          acc += (double)packed[i] * (double)packed[i];
+          acc += (double)blk_out[i] * (double)blk_out[i];
         fprintf(stderr, "video-c: dit-debug after layer %d x_rms=%.4g\n", b,
                 sqrt(acc / (double)n));
       }
+      float *tswap = blk_in;
+      blk_in = blk_out;
+      blk_out = tswap;
     }
   }
+  /* The last block's output lives in blk_in; land it back in `packed` for the
+   * final AdaLN/head path (one conditional copy instead of one per block). */
+  if (rc == 0 && blk_in != packed)
+    memcpy(packed, blk_in, (size_t)seq * (size_t)H * sizeof(float));
 
   if (t_blk > 0 && h3_prof_add_ms)
     h3_prof_add_ms("h3_dit_fwd_blocks", h3_prof_now_ms() - t_blk);

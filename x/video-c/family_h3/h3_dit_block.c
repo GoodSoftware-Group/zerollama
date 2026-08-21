@@ -83,6 +83,9 @@ struct h3_dit_ws {
   float *hid;    /* max_seq * ffn */
   float *cos, *sin; /* max_seq * H3_DIT_ROPE_DIM */
   int *idx, *tslots; /* max_seq ints */
+  float *proj;   /* 8 * H3_ADALN_OUT_FEATURES (nuniq <= 8) */
+  float *six;    /* 6 * 8 * 3 * H */
+  float *adaln_b; /* H3_ADALN_OUT_FEATURES */
 };
 
 h3_dit_ws *h3_dit_ws_create(int max_seq) {
@@ -108,9 +111,14 @@ h3_dit_ws *h3_dit_ws_create(int max_seq) {
   ws->sin = (float *)malloc(S * RD * sizeof(float));
   ws->idx = (int *)malloc(S * sizeof(int));
   ws->tslots = (int *)malloc(S * sizeof(int));
+  ws->proj = (float *)malloc((size_t)8 * H3_ADALN_OUT_FEATURES * sizeof(float));
+  ws->six = (float *)malloc((size_t)6 * 8 * H3_ADALN_MODALITY_NUM *
+                            (size_t)H * sizeof(float));
+  ws->adaln_b =
+      (float *)malloc((size_t)H3_ADALN_OUT_FEATURES * sizeof(float));
   if (!ws->h || !ws->branch || !ws->qkv || !ws->q || !ws->k || !ws->v ||
       !ws->attn || !ws->fused || !ws->hid || !ws->cos || !ws->sin ||
-      !ws->idx || !ws->tslots) {
+      !ws->idx || !ws->tslots || !ws->proj || !ws->six || !ws->adaln_b) {
     h3_dit_ws_free(ws);
     return NULL;
   }
@@ -133,6 +141,9 @@ void h3_dit_ws_free(h3_dit_ws *ws) {
   free(ws->sin);
   free(ws->idx);
   free(ws->tslots);
+  free(ws->proj);
+  free(ws->six);
+  free(ws->adaln_b);
   free(ws);
 }
 
@@ -672,7 +683,6 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
   const int inner = H3_DIT_INNER_DIM;
   const int ffn = H3_DIT_FFN_HIDDEN;
   const int M = H3_ADALN_MODALITY_NUM;
-  const int K = H3_ADALN_TENSORS_PER_BLOCK;
   char prefix[64];
   snprintf(prefix, sizeof(prefix), "blocks.%d.", block);
 
@@ -736,11 +746,9 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
         load_n(store, name, adaln_owned, adaln_n, error, error_size) == 0)
       adaln_w = adaln_owned;
   }
-  float *adaln_b = (float *)malloc((size_t)H3_ADALN_OUT_FEATURES * sizeof(float));
-  float *proj =
-      (float *)malloc((size_t)nuniq * (size_t)H3_ADALN_OUT_FEATURES * sizeof(float));
-  float *six = (float *)malloc((size_t)K * (size_t)nuniq * (size_t)M * (size_t)H *
-                               sizeof(float));
+  float *adaln_b = ws->adaln_b;
+  float *proj = ws->proj;
+  float *six = ws->six;
   if (!adaln_w || !adaln_b || !proj || !six)
     rc = -1;
   snprintf(name, sizeof(name), "%sadaln_proj.linear.bias", prefix);
@@ -758,11 +766,9 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
     rc = h3_dit_linear(emb, nuniq, rank, H3_ADALN_OUT_FEATURES, adaln_w, adaln_b,
                        proj);
   free(adaln_owned);
-  free(adaln_b);
   free(emb);
   if (rc == 0)
     rc = h3_adaln_split_block(proj, nuniq, H, six);
-  free(proj);
   size_t per = (size_t)nuniq * (size_t)M * (size_t)H;
   float *shift_msa = NULL, *scale_msa = NULL, *gate_msa = NULL;
   float *shift_mlp = NULL, *scale_mlp = NULL, *gate_mlp = NULL;
@@ -1301,7 +1307,6 @@ int h3_dit_block_forward(const h3_st_store *store, int block, const float *x,
 block_done:
   free(owned_table);
   free(h_rms);
-  free(six);
   free(norm_w);
   h3_dit_ws_free(owned);
   return rc;

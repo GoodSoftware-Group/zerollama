@@ -200,7 +200,10 @@ activations per block-step and Darwin page-faults fresh mallocs of that size;
 RoPE cos/sin are built **once per forward** (`h3_dit_rope_tables`) and applied
 in place; the per-layer probe/stats prints are gated behind `H3_DIT_DEBUG`;
 big weights (`adaln_proj`, ~49.5 MB/block) are read by pointer from the weight
-cache instead of a per-call memcpy. All bit-exact — gate string unchanged.
+cache instead of a per-call memcpy. Block outputs **ping-pong** between two
+seq×H buffers (no per-block memcpy back), AdaLN scratch lives in the
+workspace, and weight-cache lookups are FNV-1a hashed. All bit-exact — gate
+string unchanged.
 Opt-in `H3_SDPA_BLAS=1` runs attention as per-head `cblas_sgemm` QK^T/P·V +
 vDSP softmax (no gather; sgemm walks packed Q/K/V via `lda=heads·hd`):
 768² 1-step **1119 → 744 ms/layer (1.50×)**, agreement ~1e-8 vs scalar
