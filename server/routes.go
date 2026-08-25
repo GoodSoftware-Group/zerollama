@@ -1866,6 +1866,8 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		License:      strings.Join(m.License, "\n"),
 		System:       m.System,
 		Template:     m.Template.String(),
+		Renderer:     m.Config.Renderer,
+		Parser:       m.Config.Parser,
 		Details:      modelDetails,
 		Messages:     msgs,
 		Capabilities: m.Capabilities(),
@@ -3631,7 +3633,6 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			if s.sched != nil {
 				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
 			}
-			var parserErr error
 			err := r.Completion(ctx, llm.CompletionRequest{
 				Prompt:              prompt,
 				PromptTokens:        completionPromptTokens,

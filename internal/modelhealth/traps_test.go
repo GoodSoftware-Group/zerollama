@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ollama/ollama/manifest"
@@ -73,8 +74,8 @@ func TestTrap56NoChatTemplate(t *testing.T) {
 
 func TestTrap55ContextMismatch(t *testing.T) {
 	r := trap55ContextMismatch("m", 131072, 4096, 131072)
-	if r.Status != StatusRepairable {
-		t.Fatalf("advertised vs served: status=%s detail=%s", r.Status, r.Detail)
+	if r.Status != StatusOK || !strings.Contains(r.Detail, "VRAM clamp") {
+		t.Fatalf("served clamp: status=%s detail=%s", r.Status, r.Detail)
 	}
 
 	r = trap55ContextMismatch("m", 8192, 8192, 8192)
@@ -85,6 +86,23 @@ func TestTrap55ContextMismatch(t *testing.T) {
 	r = trap55ContextMismatch("m", 0, 32768, 8192)
 	if r.Status != StatusRepairable {
 		t.Fatalf("served > trained: status=%s", r.Status)
+	}
+
+	r = trap55ContextMismatch("m", 32768, 8192, 131072)
+	if r.Status != StatusRepairable {
+		t.Fatalf("advertised vs trained: status=%s detail=%s", r.Status, r.Detail)
+	}
+}
+
+func TestIsNonChatArtifact(t *testing.T) {
+	if !isNonChatArtifact(model.ConfigV2{Capabilities: []string{"embedding"}}) {
+		t.Fatal("embedding cap")
+	}
+	if !isNonChatArtifact(model.ConfigV2{ModalityBackends: map[string]string{"speech": "piper"}}) {
+		t.Fatal("speech backend")
+	}
+	if isNonChatArtifact(model.ConfigV2{ModelFamily: "qwen3"}) {
+		t.Fatal("chat family should stay in trap-21/56")
 	}
 }
 
@@ -194,8 +212,8 @@ func TestCheckConfigTrapsInWithFixture(t *testing.T) {
 	}
 
 	q55 := byTrap["model traptest:q8_0 trap-55/61 (context)"]
-	if q55.Status != StatusRepairable {
-		t.Fatalf("trap-55: advertised 131072 vs served 4096, got %s (%s)", q55.Status, q55.Detail)
+	if q55.Status != StatusOK {
+		t.Fatalf("trap-55: advertised 131072 vs served 4096 is a clamp, got %s (%s)", q55.Status, q55.Detail)
 	}
 }
 

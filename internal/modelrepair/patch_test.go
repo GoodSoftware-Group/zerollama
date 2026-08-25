@@ -190,6 +190,31 @@ func TestDiagnoseRefusesInvasiveNonQwen(t *testing.T) {
 	}
 }
 
+func TestDiagnoseRendererSkipsResponsePlaceholder(t *testing.T) {
+	api := &fakeAPI{
+		show: &ShowInfo{
+			Name:       "qwen3.8:27b",
+			Template:   "{% for message in messages %}{{ message.content }}{% endfor %}",
+			Parser:     "qwen3.5",
+			Renderer:   "qwen3.8",
+			Modelfile:  "RENDERER qwen3.8\nPARSER qwen3.5\n",
+			Parameters: "temperature                    0.7\n",
+		},
+	}
+	rep, err := Diagnose(t.Context(), api, "qwen3.8:27b", Options{SkipLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.ManualReview) != 0 {
+		t.Fatalf("renderer models must not flag {{ .Response }}: %v", rep.ManualReview)
+	}
+	for _, f := range rep.Findings {
+		if f.Recipe == RecipeMissingResponsePlaceholder {
+			t.Fatalf("unexpected finding: %+v", f)
+		}
+	}
+}
+
 func TestBuildPatchStopsOnly(t *testing.T) {
 	show := ShowInfo{
 		Template:   "<|im_start|>user\n{{ .Content }}<|im_end|>\n{{ .Response }}",

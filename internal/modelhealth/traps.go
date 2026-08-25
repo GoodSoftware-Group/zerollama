@@ -125,6 +125,21 @@ func checkConfigTrapsIn(modelsDir, display string, mf *manifest.Manifest) []Repo
 	params, _ := readParams(paramsPath)
 
 	var out []Report
+	if isNonChatArtifact(cfg) {
+		out = append(out, Report{
+			Name:   fmt.Sprintf("model %s trap-21 (generation defaults)", display),
+			Status: StatusOK,
+			Detail: "non-chat artifact (speech/transcribe/embedding) — sampling/template traps skipped",
+		})
+		out = append(out, trap10QuantLabel(display, nTagQuant(display), cfg.FileType, ggufFileType))
+		out = append(out, Report{
+			Name:   fmt.Sprintf("model %s trap-56 (chat template)", display),
+			Status: StatusOK,
+			Detail: "non-chat artifact — no chat template required",
+		})
+		out = append(out, trap55ContextMismatch(display, cfg.ContextLen, paramsNumCtx(params), ggufCtxLen))
+		return out
+	}
 	out = append(out, trap21NoGenerationConfig(display, paramsPath, params))
 	out = append(out, trap10QuantLabel(display, nTagQuant(display), cfg.FileType, ggufFileType))
 	out = append(out, trap56NoChatTemplate(display, hasGoTemplate, ggufChatTemplate, cfg.Renderer))
@@ -224,25 +239,52 @@ func trap55ContextMismatch(display string, advertised, served, trained int) Repo
 		return Report{Name: name, Status: StatusOK, Detail: "insufficient context fields to compare"}
 	}
 	detail := strings.Join(parts, " ")
-	warn := false
-	if advertised > 0 && trained > 0 && divergeContext(advertised, trained) {
-		warn = true
-	}
 	if served > 0 && trained > 0 && served > trained {
-		warn = true
-	}
-	if advertised > 0 && served > 0 && divergeContext(advertised, served) {
-		warn = true
-	}
-	if warn {
 		return Report{
 			Name:    name,
 			Status:  StatusRepairable,
-			Detail:  detail + " — advertised/trained/served context differ (minefield trap 55/61 arithmetic; behavioural silent-fail is trap 61 hand-run)",
-			FixHint: "treat advertised, trained (GGUF context_length), and served (params num_ctx / loaded runner) as three numbers; keep manifest num_ctx modest; cold-ladder long prompts before trusting the high number",
+			Detail:  detail + " — served num_ctx exceeds trained GGUF context_length (minefield trap 61)",
+			FixHint: "lower PARAMETER num_ctx to the trained window",
+		}
+	}
+	if advertised > 0 && trained > 0 && divergeContext(advertised, trained) {
+		return Report{
+			Name:    name,
+			Status:  StatusRepairable,
+			Detail:  detail + " — advertised context_length disagrees with GGUF trained window (minefield trap 55)",
+			FixHint: "trust GGUF context_length; repair the manifest if the advertised number is a lie",
+		}
+	}
+	if advertised > 0 && served > 0 && advertised > served*2 && (trained <= 0 || trained >= served) {
+		return Report{
+			Name:   name,
+			Status: StatusOK,
+			Detail: detail + " — served num_ctx is a VRAM clamp below advertised/trained max (not a template bug)",
 		}
 	}
 	return Report{Name: name, Status: StatusOK, Detail: detail}
+}
+
+func isNonChatArtifact(cfg model.ConfigV2) bool {
+	for k := range cfg.ModalityBackends {
+		switch strings.ToLower(k) {
+		case "speech", "transcribe":
+			return true
+		}
+	}
+	for _, c := range cfg.Capabilities {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "embedding", "embed", "speech", "tts", "transcription", "stt":
+			return true
+		}
+	}
+	fam := strings.ToLower(cfg.ModelFamily)
+	if strings.Contains(fam, "embed") || strings.Contains(fam, "whisper") ||
+		strings.Contains(fam, "piper") || strings.Contains(fam, "kokoro") ||
+		strings.Contains(fam, "orpheus") || strings.Contains(fam, "chatterbox") {
+		return true
+	}
+	return false
 }
 
 func divergeContext(a, b int) bool {

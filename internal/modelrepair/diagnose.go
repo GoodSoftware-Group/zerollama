@@ -54,6 +54,7 @@ func Diagnose(ctx context.Context, api API, name string, opts Options) (Report, 
 	show.Name = name
 
 	qwenOK := isQwen3Family(*show)
+	usesRenderer := usesBuiltinRenderer(*show)
 	var findings []Finding
 	var manual []string
 
@@ -65,7 +66,9 @@ func Diagnose(ctx context.Context, api API, name string, opts Options) (Report, 
 	// --- Static template hygiene (Unsloth-inspired: stops, empty TEMPLATE, Response) ---
 
 	if tmplEmpty {
-		if qwenOK {
+		if usesRenderer {
+			// Built-in renderer; empty Go TEMPLATE is expected.
+		} else if qwenOK {
 			findings = append(findings, Finding{
 				Recipe:  RecipeEmptyTemplate,
 				Detail:  "TEMPLATE is empty — chat/tools/think will not assemble correctly",
@@ -86,7 +89,7 @@ func Diagnose(ctx context.Context, api API, name string, opts Options) (Report, 
 		})
 	}
 
-	if !tmplEmpty && templateMissingResponse(show.Template) {
+	if !tmplEmpty && !usesRenderer && templateMissingResponse(show.Template) {
 		if looksChatML(show.Template) {
 			findings = append(findings, Finding{
 				Recipe:  RecipeMissingResponsePlaceholder,
@@ -294,6 +297,30 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func usesBuiltinRenderer(show ShowInfo) bool {
+	if strings.TrimSpace(show.Renderer) != "" {
+		return true
+	}
+	p := strings.ToLower(strings.TrimSpace(show.Parser))
+	if strings.HasPrefix(p, "qwen3.5") || strings.HasPrefix(p, "qwen3.8") || p == "qwen35" {
+		return true
+	}
+	return rendererFromModelfile(show.Modelfile) != ""
+}
+
+func rendererFromModelfile(mf string) string {
+	for _, line := range strings.Split(mf, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if strings.EqualFold(fields[0], "RENDERER") {
+			return fields[1]
+		}
+	}
+	return ""
 }
 
 // ListTargets returns model names to scan: explicit args, all local tags, or loaded runners.

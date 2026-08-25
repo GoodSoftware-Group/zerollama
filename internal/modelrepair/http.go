@@ -34,6 +34,7 @@ func (h *HTTPAPI) Show(ctx context.Context, name string) (*ShowInfo, error) {
 	var resp struct {
 		Template     string         `json:"template"`
 		Parser       string         `json:"parser"`
+		Renderer     string         `json:"renderer"`
 		Parameters   string         `json:"parameters"`
 		Modelfile    string         `json:"modelfile"`
 		Capabilities []string       `json:"capabilities"`
@@ -51,6 +52,10 @@ func (h *HTTPAPI) Show(ctx context.Context, name string) (*ShowInfo, error) {
 	if arch == "" {
 		arch = architectureFromModelfile(resp.Modelfile)
 	}
+	renderer := strings.TrimSpace(resp.Renderer)
+	if renderer == "" {
+		renderer = rendererFromModelfile(resp.Modelfile)
+	}
 	return &ShowInfo{
 		Name:         name,
 		Template:     resp.Template,
@@ -59,6 +64,7 @@ func (h *HTTPAPI) Show(ctx context.Context, name string) (*ShowInfo, error) {
 		Modelfile:    resp.Modelfile,
 		Capabilities: resp.Capabilities,
 		Architecture: arch,
+		Renderer:     renderer,
 	}, nil
 }
 

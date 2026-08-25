@@ -24,6 +24,10 @@ import (
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
+// doctorLiveHTTPTimeout covers first-token wait on large warm GGUFs (27B+) when
+// several minefield probes share one runner. 30s was racing prefill.
+const doctorLiveHTTPTimeout = 180 * time.Second
+
 type doctorCheck struct {
 	Name    string `json:"name"`
 	Status  string `json:"status"` // ok, warn, fail
@@ -379,8 +383,8 @@ func runDoctorChecks(repo string) []doctorCheck {
 	} else {
 		out = append(out, doctorCheck{
 			Name:   "darwin runtime smoke",
-			Status: "warn",
-			Detail: "full sidecar checks run on darwin only",
+			Status: "ok",
+			Detail: "skipped on linux — Metal sidecar / in-process libllama checks are Darwin-only",
 		})
 	}
 	out = append(out, doctorCheckServeIdentity())
@@ -575,15 +579,37 @@ func doctorLibLlamaCandidates(repo string) []string {
 }
 
 func doctorCheckLibLlama(repo string) doctorCheck {
-	if p := doctorFindLibLlama(repo); p != "" {
+	libPath := doctorFindLibLlama(repo)
+	serverPath, serverErr := llm.FindLlamaServer()
+	ggmlLinked := envconfig.GgmlRunnerLinked()
+	return doctorLibLlamaResult(libPath, serverPath, serverErr, ggmlLinked)
+}
+
+// doctorLibLlamaResult: in-process Metal/CUDA libllama is required for ggml
+// runners. Edge / llama-server Linux serves GGUF via llama-server, so a missing
+// dylib/so is not a fail.
+func doctorLibLlamaResult(libPath, llamaServerPath string, llamaServerErr error, ggmlLinked bool) doctorCheck {
+	const name = "libllama"
+	if libPath != "" {
+		return doctorCheck{Name: name, Status: "ok", Detail: libPath}
+	}
+	if llamaServerErr == nil && strings.TrimSpace(llamaServerPath) != "" && !ggmlLinked {
 		return doctorCheck{
-			Name:   "libllama",
+			Name:   name,
 			Status: "ok",
-			Detail: p,
+			Detail: "not required (edge/llama-server GGUF path): " + llamaServerPath,
+		}
+	}
+	if llamaServerErr == nil && strings.TrimSpace(llamaServerPath) != "" {
+		return doctorCheck{
+			Name:    name,
+			Status:  "warn",
+			Detail:  "in-process libllama missing; llama-server present at " + llamaServerPath,
+			FixHint: "needed for ggml/Metal in-process; GGUF via llama-server still works",
 		}
 	}
 	return doctorCheck{
-		Name:    "libllama",
+		Name:    name,
 		Status:  "fail",
 		Detail:  "Metal/CUDA libllama not found",
 		FixHint: "zerollama doctor --fix (clones ../llama.cpp then builds) or ./scripts/vendor/ensure_llama_cpp_sibling.sh",

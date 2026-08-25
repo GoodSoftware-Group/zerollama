@@ -94,6 +94,9 @@ type ShowInfo struct {
 	Modelfile    string
 	// Architecture is GGUF general.architecture when present (e.g. "qwen3moe").
 	Architecture string
+	// Renderer is a built-in chat renderer (qwen3.8, gemma4, …). Those paths
+	// assemble prompts in Go; a missing {{ .Response }} in TEMPLATE is not a bug.
+	Renderer string
 }
 
 // GenerateResult is a trimmed /api/generate response.
