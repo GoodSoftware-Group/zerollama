@@ -45,9 +45,6 @@
 #define N_R0_MXFP4 2
 #define N_SG_MXFP4 2
 
-#define N_R0_NVFP4 2
-#define N_SG_NVFP4 2
-
 #define N_R0_Q2_K 4
 #define N_SG_Q2_K 2
 
@@ -62,9 +59,6 @@
 
 #define N_R0_Q6_K 2
 #define N_SG_Q6_K 2
-
-#define N_R0_TQ2_0 4
-#define N_SG_TQ2_0 2
 
 #define N_R0_IQ1_S 4
 #define N_SG_IQ1_S 2
@@ -110,11 +104,9 @@
 #define FC_SUM_ROWS                    1400
 #define FC_UPSCALE                     1500
 #define FC_GATED_DELTA_NET             1600
-#define FC_PAD_REFLECT_1D              1700
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
-#define OP_FLASH_ATTN_EXT_NQPSG_16 16
 #define OP_FLASH_ATTN_EXT_NCPSG 64
 
 #define OP_FLASH_ATTN_EXT_VEC_NQPSG 1
@@ -334,6 +326,7 @@ typedef struct {
     uint64_t nb3;
     int32_t  n_past;
     int32_t  n_dims;
+    int32_t  n_offs;
     int32_t  n_ctx_orig;
     float    freq_base;
     float    freq_scale;
@@ -346,23 +339,20 @@ typedef struct {
     int32_t  sect_2;
     int32_t  sect_3;
     bool     src2;
+    bool     inplace;
 } ggml_metal_kargs_rope;
 
 typedef struct {
-    int32_t  ne10;
-    int32_t  ne11;
-    int32_t  ne12;
-    int32_t  ne13;
-    uint64_t nb10;
-    uint64_t nb11;
-    uint64_t nb12;
-    uint64_t nb13;
-    uint64_t nb20;
-    uint64_t nb21;
-    uint64_t nb22;
-    uint64_t nb23;
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  ne3;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
     int32_t  nblocks;
-} ggml_metal_kargs_flash_attn_ext_q8_0_to_f16;
+} ggml_metal_kargs_flash_attn_ext_kv_f16;
 
 typedef struct {
     int32_t  ne11;
@@ -742,36 +732,6 @@ typedef struct {
 } ggml_metal_kargs_im2col;
 
 typedef struct {
-    int32_t  s0;
-    int32_t  s1;
-    int32_t  s2;
-    int32_t  p0;
-    int32_t  p1;
-    int32_t  p2;
-    int32_t  d0;
-    int32_t  d1;
-    int32_t  d2;
-    int32_t  IC;
-    int32_t  ID;
-    int32_t  IH;
-    int32_t  IW;
-    int32_t  KD;
-    int32_t  KH;
-    int32_t  KW;
-    int32_t  OD;
-    int32_t  OH;
-    int32_t  OW;
-    uint64_t nb13;
-    uint64_t nb12;
-    uint64_t nb11;
-    uint64_t nb10;
-    uint64_t KH_KW;
-    uint64_t KD_KH_KW;
-    uint64_t IC_KD_KH_KW;
-    uint64_t N;
-} ggml_metal_kargs_im2col_3d;
-
-typedef struct {
     int32_t  IW;
     int32_t  IH;
     int32_t  ID;
@@ -987,7 +947,6 @@ typedef struct {
     int32_t  ns02;
     int32_t  ns12;
     int32_t  ns22;
-    int32_t  state_out_stride; // stride between snapshot slots in the state_out buffer
     int32_t  ne0;
     int32_t  ne1;
     int32_t  ne2;
@@ -997,33 +956,6 @@ typedef struct {
     uint64_t nb2;
     uint64_t nb3;
 } ggml_metal_kargs_gated_delta_net;
-
-typedef struct {
-    int32_t ne00;
-    int32_t ne01;
-    int32_t ne02;
-    int32_t ne03;
-    uint64_t nb00;
-    uint64_t nb01;
-    uint64_t nb02;
-    uint64_t nb03;
-    int32_t ne10;
-    int32_t ne11;
-    int32_t ne12;
-    int32_t ne13;
-    uint64_t nb10;
-    uint64_t nb11;
-    uint64_t nb12;
-    uint64_t nb13;
-    int32_t ne0;
-    int32_t ne1;
-    int32_t ne2;
-    int32_t ne3;
-    uint64_t nb0;
-    uint64_t nb1;
-    uint64_t nb2;
-    uint64_t nb3;
-} ggml_metal_kargs_out_prod;
 
 typedef struct {
     int32_t  ne00;
@@ -1117,26 +1049,6 @@ typedef struct {
     uint64_t nb2;
     uint64_t nb3;
 } ggml_metal_kargs_diag;
-
-typedef struct {
-    int32_t  ne00;
-    int32_t  ne01;
-    int32_t  ne02;
-    int32_t  ne03;
-    uint64_t nb00;
-    uint64_t nb01;
-    uint64_t nb02;
-    uint64_t nb03;
-    int32_t  ne0;
-    int32_t  ne1;
-    int32_t  ne2;
-    int32_t  ne3;
-    uint64_t nb0;
-    uint64_t nb1;
-    uint64_t nb2;
-    uint64_t nb3;
-    int32_t  n_past;
-} ggml_metal_kargs_diag_mask_inf;
 
 typedef struct {
     int64_t  ne00;

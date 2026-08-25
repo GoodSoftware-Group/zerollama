@@ -200,6 +200,12 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	if model != nil && model.DraftPath == "" && !model.EmbeddedMTP && !draftNumPredictSet {
 		opts.DraftNumPredict = 0
 	}
+	if model != nil && llm.DisableDraftMTPForArchitecture(model.PrimaryFamily()) {
+		opts.DraftNumPredict = 0
+		if strings.EqualFold(opts.SpecType, "draft-mtp") || strings.EqualFold(opts.SpecType, "mtp") {
+			opts.SpecType = ""
+		}
+	}
 
 	return opts, nil
 }
@@ -233,6 +239,9 @@ func llamaServerConfigForModel(m *Model, contextShift bool, opts api.Options) ll
 		case modelUsesElizaNgramDefault(m):
 			cfg.SpecType = "ngram-simple"
 		}
+	}
+	if llm.DisableDraftMTPForArchitecture(m.PrimaryFamily()) && (cfg.SpecType == "draft-mtp" || cfg.SpecType == "mtp") {
+		cfg.SpecType = ""
 	}
 	return cfg
 }
@@ -1005,7 +1014,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		if cancelPreempt != nil {
 			defer cancelPreempt()
 		}
-		if err := r.Completion(inferCtx, llm.CompletionRequest{
+		ctx, cancel := context.WithCancel(inferCtx)
+		defer cancel()
+		if err := r.Completion(ctx, llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
 			Images:            images,
@@ -1855,6 +1866,8 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		License:      strings.Join(m.License, "\n"),
 		System:       m.System,
 		Template:     m.Template.String(),
+		Renderer:     m.Config.Renderer,
+		Parser:       m.Config.Parser,
 		Details:      modelDetails,
 		Messages:     msgs,
 		Capabilities: m.Capabilities(),

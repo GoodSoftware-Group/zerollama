@@ -122,16 +122,16 @@ func doctorCheckToolChoiceNone(base string, m doctorLoadedModel) doctorCheck {
 			Detail: fmt.Sprintf("%s does not advertise tools — skipped", m.Name),
 		}
 	}
-	client := &http.Client{Timeout: 45 * time.Second}
+	client := &http.Client{Timeout: doctorLiveHTTPTimeout}
 	payload := map[string]any{
 		"model": m.Name,
 		"messages": []map[string]string{
 			{"role": "user", "content": "Call get_time for timezone UTC."},
 		},
-		"stream":       false,
-		"tool_choice":  "none",
-		"max_tokens":   64,
-		"temperature":  0,
+		"stream":      false,
+		"tool_choice": "none",
+		"max_tokens":  64,
+		"temperature": 0,
 		"tools": []map[string]any{
 			{
 				"type": "function",
@@ -145,6 +145,9 @@ func doctorCheckToolChoiceNone(base string, m doctorLoadedModel) doctorCheck {
 				},
 			},
 		},
+	}
+	if m.SupportsThinking {
+		payload["think"] = false
 	}
 	status, body, err := doctorPostJSON(client, base+"/v1/chat/completions", payload)
 	if err != nil {

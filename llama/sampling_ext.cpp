@@ -5,7 +5,10 @@
 #include "llama.h"
 #include "llama-impl.h"
 #include "llama-grammar.h"
-#include "nlohmann/json.hpp"
+
+#include <cstring>
+#include <exception>
+#include <string>
 
 struct common_sampler *common_sampler_cinit(const struct llama_model *model, struct common_sampler_cparams *params) {
     try {
@@ -51,7 +54,7 @@ int schema_to_grammar(const char *json_schema, char *grammar, size_t max_len)
 {
     try
     {
-        nlohmann::ordered_json schema = nlohmann::ordered_json::parse(json_schema);
+        common_json schema = common_json::parse(json_schema);
         std::string grammar_str = json_schema_to_grammar(schema);
         size_t len = grammar_str.length();
         if (len >= max_len)

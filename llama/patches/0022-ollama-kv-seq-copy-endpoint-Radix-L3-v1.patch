@@ -12,10 +12,10 @@ Subject: [PATCH] ollama: kv seq-copy endpoint (Radix L3 v1)
  5 files changed, 117 insertions(+)
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 1f85efa6c..c81c11a06 100644
+index fb6dcfb..1fcbc10 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2609,6 +2609,53 @@ private:
+@@ -2587,6 +2587,53 @@ private:
                      res->n_erased = n_erased;
                      queue_results.send(std::move(res));
                  } break;
@@ -69,7 +69,7 @@ index 1f85efa6c..c81c11a06 100644
              case SERVER_TASK_TYPE_GET_LORA:
                  {
                      // TODO @ngxson : make lora_adapters a dedicated member of server_context
-@@ -4584,6 +4631,10 @@ void server_routes::init_routes() {
+@@ -4693,6 +4740,10 @@ void server_routes::init_routes() {
          return res;
      };
  
@@ -79,8 +79,8 @@ index 1f85efa6c..c81c11a06 100644
 +
      this->get_props = [this](const server_http_req &) {
          auto res = create_response(true);
- 
-@@ -5260,6 +5311,45 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
+         // note: do NOT use ctx_server here, this endpoint must be accessible during sleep
+@@ -5279,6 +5330,45 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
      return res;
  }
  
@@ -127,10 +127,10 @@ index 1f85efa6c..c81c11a06 100644
      auto res = create_response();
      if (!params.embedding) {
 diff --git a/tools/server/server-context.h b/tools/server/server-context.h
-index f9ab1132b..76763e27b 100644
+index 5d464b8..76620b7 100644
 --- a/tools/server/server-context.h
 +++ b/tools/server/server-context.h
-@@ -131,6 +131,7 @@ struct server_routes {
+@@ -132,6 +132,7 @@ struct server_routes {
      server_http_context::handler_t get_metrics;
      server_http_context::handler_t get_slots;
      server_http_context::handler_t post_slots;
@@ -138,7 +138,7 @@ index f9ab1132b..76763e27b 100644
      server_http_context::handler_t get_props;
      server_http_context::handler_t post_props;
      server_http_context::handler_t post_infill;
-@@ -167,6 +168,7 @@ private:
+@@ -168,6 +169,7 @@ private:
      std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req & req, int id_slot);
      std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
      std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
@@ -147,10 +147,10 @@ index f9ab1132b..76763e27b 100644
      std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);
  
 diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
-index 64afbc5ed..72514492a 100644
+index 0d3beb3..d016df7 100644
 --- a/tools/server/server-task.cpp
 +++ b/tools/server/server-task.cpp
-@@ -1650,6 +1650,19 @@ json server_task_result_slot_erase::to_json() {
+@@ -1653,6 +1653,19 @@ json server_task_result_slot_erase::to_json() {
      };
  }
  
@@ -171,7 +171,7 @@ index 64afbc5ed..72514492a 100644
  // server_task_result_get_lora
  //
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
-index b6da4d4bd..c342e0b75 100644
+index 9c99143..1606016 100644
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
 @@ -25,6 +25,7 @@ enum server_task_type {
@@ -191,7 +191,7 @@ index b6da4d4bd..c342e0b75 100644
          std::string filename;
          std::string filepath;
      };
-@@ -543,6 +546,14 @@ struct server_task_result_control : server_task_result {
+@@ -548,6 +551,14 @@ struct server_task_result_control : server_task_result {
      }
  };
  
@@ -207,10 +207,10 @@ index b6da4d4bd..c342e0b75 100644
      struct lora {
          common_adapter_lora_info info;
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 77722b9a6..be17f6b87 100644
+index 5fe2729..97ae6bd 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
-@@ -271,6 +271,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+@@ -272,6 +272,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
      // Save & load slots
      ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
      ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));

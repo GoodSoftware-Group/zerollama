@@ -23,9 +23,9 @@ func TestDoctorCheckContextCeilings(t *testing.T) {
 	if ok.Status != "ok" {
 		t.Fatalf("aligned: %+v", ok)
 	}
-	warn := doctorCheckContextCeilings(doctorLoadedModel{Name: "m", NumCtx: 131072, TrainCtx: 32768})
-	if warn.Status != "warn" || !strings.Contains(warn.Detail, "61") {
-		t.Fatalf("diverge: %+v", warn)
+	clamp := doctorCheckContextCeilings(doctorLoadedModel{Name: "m", NumCtx: 8192, TrainCtx: 262144})
+	if clamp.Status != "ok" || !strings.Contains(clamp.Detail, "VRAM clamp") {
+		t.Fatalf("served below trained is a clamp, not a fail: %+v", clamp)
 	}
 	over := doctorCheckContextCeilings(doctorLoadedModel{Name: "m", NumCtx: 65536, TrainCtx: 32768})
 	if over.Status != "warn" {

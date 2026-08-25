@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // doctorCheckKwargDeadness covers minefield trap 07 for this stack's contract:
@@ -13,15 +12,16 @@ import (
 // the kwargs, not the model/endpoint.
 func doctorCheckKwargDeadness(base string, m doctorLoadedModel) doctorCheck {
 	const name = "serving trap-07 (kwarg deadness)"
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: doctorLiveHTTPTimeout}
 
 	control := map[string]any{
 		"model": m.Name,
 		"messages": []map[string]string{
 			{"role": "user", "content": "Say OK."},
 		},
-		"stream":  false,
-		"options": map[string]any{"temperature": 0, "num_predict": 8},
+		"stream":     false,
+		"options":    map[string]any{"temperature": 0, "num_predict": 8},
+		"keep_alive": "10m",
 	}
 	if m.SupportsThinking {
 		control["think"] = false
@@ -46,10 +46,11 @@ func doctorCheckKwargDeadness(base string, m doctorLoadedModel) doctorCheck {
 		},
 		"stream": false,
 		"chat_template_kwargs": map[string]any{
-			"bogus_kwarg_zzq":   true,
+			"bogus_kwarg_zzq":  true,
 			"reasoning_effort": "high",
 		},
-		"options": map[string]any{"temperature": 0, "num_predict": 8},
+		"options":    map[string]any{"temperature": 0, "num_predict": 8},
+		"keep_alive": "10m",
 	}
 	st, body, err := doctorPostJSON(client, base+"/api/chat", probe)
 	if err != nil {

@@ -167,25 +167,19 @@ func doctorCheckContextCeilings(m doctorLoadedModel) doctorCheck {
 		parts = append(parts, fmt.Sprintf("trained=%d", m.TrainCtx))
 	}
 	detail := strings.Join(parts, " ")
-	warn := false
-	if m.NumCtx > 0 && m.TrainCtx > 0 {
-		if m.NumCtx > m.TrainCtx {
-			warn = true
-		}
-		lo, hi := m.NumCtx, m.TrainCtx
-		if lo > hi {
-			lo, hi = hi, lo
-		}
-		if hi > lo*2 {
-			warn = true
-		}
-	}
-	if warn {
+	if m.NumCtx > 0 && m.TrainCtx > 0 && m.NumCtx > m.TrainCtx {
 		return doctorCheck{
 			Name:    name,
 			Status:  "warn",
-			Detail:  detail + " — ceilings disagree; HTTP 200 at long prompts is not proof the head was read (minefield trap 61)",
-			FixHint: "treat trained length as the supported window; measure a cold needle ladder before trusting advertised/served numbers",
+			Detail:  detail + " — served num_ctx exceeds trained context_length (minefield trap 61)",
+			FixHint: "lower num_ctx to the GGUF trained window; HTTP 200 at long prompts is not proof the head was read",
+		}
+	}
+	if m.NumCtx > 0 && m.TrainCtx > 0 && m.TrainCtx > m.NumCtx*2 {
+		return doctorCheck{
+			Name:   name,
+			Status: "ok",
+			Detail: detail + " — served is a VRAM clamp below trained max; long-context still needs a cold ladder (trap 61 hand-run)",
 		}
 	}
 	return doctorCheck{

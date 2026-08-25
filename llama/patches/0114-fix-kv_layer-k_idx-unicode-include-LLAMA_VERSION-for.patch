@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 21 Aug 2026 00:41:36 -0700
+Subject: [PATCH] fix: kv_layer k_idx, unicode include, LLAMA_VERSION for CGO
+ on b10488
+
+---
+ src/llama-kv-cache.cpp | 10 +++++++++-
+ src/llama-kv-cache.h   |  2 ++
+ src/llama-vocab.cpp    |  2 +-
+ src/llama.cpp          |  4 ++++
+ 4 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index e43160e..6f287cc 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -447,7 +447,15 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
+                 ggml_backend_tensor_copy(pf.src_v, pf.dst_v);
+             }
+         }
+-        layers[pf.li] = { pf.il, pf.dst_k, pf.dst_v, std::move(pf.k_stream), std::move(pf.v_stream) };
++        layers[pf.li] = {
++            pf.il,
++            pf.dst_k,
++            pf.dst_v,
++            old_layer.k_idx,
++            std::move(pf.k_stream),
++            std::move(pf.v_stream),
++            old_layer.k_idx_stream,
++        };
+     }
+     for (auto & nb : new_bufs) {
+         ctxs_bufs.emplace_back(std::move(nb));
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index 7721981..87ff267 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -246,9 +246,11 @@ private:
+ 
+         ggml_tensor * k;
+         ggml_tensor * v;
++        ggml_tensor * k_idx = nullptr; // MSA indexer (optional; null on vanilla layers)
+ 
+         std::vector<ggml_tensor *> k_stream;
+         std::vector<ggml_tensor *> v_stream;
++        std::vector<ggml_tensor *> k_idx_stream;
+     };
+ 
+     bool v_trans = true;  // the value tensor is transposed
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 82e4d5d..dfdf959 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -5,7 +5,7 @@
+ #include "llama-impl.h"
+ #include "llama-model-loader.h"
+ 
+-#include "unicode.h"
++#include "../common/unicode.h"
+ 
+ #include <algorithm>
+ #include <cassert>
+diff --git a/src/llama.cpp b/src/llama.cpp
+index fbd2bdb..79ad65e 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -119,6 +119,10 @@ bool llama_supports_rpc(void) {
+     return ggml_backend_reg_by_name("RPC") != nullptr;
+ }
+ 
++#ifndef LLAMA_VERSION
++#define LLAMA_VERSION "b10488"
++#endif
++
+ const char * llama_version(void) {
+     return LLAMA_VERSION;
+ }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -211,5 +212,20 @@ func TestDoctorCheckFlashMoE(t *testing.T) {
 	}
 	if c.Status != "ok" && c.Status != "warn" {
 		t.Fatalf("unexpected status %q detail=%q", c.Status, c.Detail)
+	}
+}
+
+func TestDoctorLibLlamaResult(t *testing.T) {
+	okPath := doctorLibLlamaResult("/opt/libllama.so", "", fmt.Errorf("missing"), true)
+	if okPath.Status != "ok" {
+		t.Fatalf("found lib: %+v", okPath)
+	}
+	edge := doctorLibLlamaResult("", "/usr/local/lib/ollama/llama-server", nil, false)
+	if edge.Status != "ok" || !strings.Contains(edge.Detail, "llama-server") {
+		t.Fatalf("edge+server: %+v", edge)
+	}
+	fail := doctorLibLlamaResult("", "", fmt.Errorf("missing"), true)
+	if fail.Status != "fail" {
+		t.Fatalf("missing both: %+v", fail)
 	}
 }

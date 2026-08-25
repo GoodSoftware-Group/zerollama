@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 18:45:15 -0700
+Subject: [PATCH] fix: complete Q5_K get_rows args before FP8 cases (0075 port)
+
+---
+ ggml/src/ggml-cuda/getrows.cu | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
+index 310f253..922e1f9 100644
+--- a/ggml/src/ggml-cuda/getrows.cu
++++ b/ggml/src/ggml-cuda/getrows.cu
+@@ -358,6 +358,8 @@ static void ggml_cuda_get_rows_switch_src0_type(
+             break;
+         case GGML_TYPE_Q5_K:
+             get_rows_cuda_kq<64, dst_t, dequantize_q5_K<dst_t>>(src0_d, src1_d, dst_d,
++                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
++            break;
+         case GGML_TYPE_FP8_E4M3:
+             get_rows_cuda_q<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>(src0_d, src1_d, dst_d,
+                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);

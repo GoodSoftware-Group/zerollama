@@ -1,0 +1,28 @@
+# Zerollama Go API. Not an alias for ollama.service.
+#
+#   sudo cp scripts/systemd/zerollama.service /etc/systemd/system/zerollama.service
+#   sudo mkdir -p /etc/systemd/system/zerollama.service.d
+#   sudo cp scripts/systemd/dual_4090-zerollama.conf /etc/systemd/system/zerollama.service.d/dual_4090.conf
+#   sudo cp scripts/systemd/speech-backends.conf /etc/systemd/system/zerollama.service.d/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now zerollama
+#
+#   systemctl start|stop|restart|status zerollama
+#   journalctl -u zerollama -f
+
+[Unit]
+Description=Zerollama API
+After=network-online.target
+Documentation=file:///opt/zerollama/docs/cuda-lanes.md
+
+[Service]
+ExecStart=/usr/local/bin/zerollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+SyslogIdentifier=zerollama
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=multi-user.target

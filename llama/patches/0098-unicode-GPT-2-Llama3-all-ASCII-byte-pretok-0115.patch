@@ -1,0 +1,336 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 04:00:00 -0700
+Subject: [PATCH] unicode: GPT-2 + Llama3 all-ASCII byte pretok (0115)
+
+Extend 0114 skip-decode path to GPT-2 and Llama3 custom regexes.
+~1.2-1.3x on mega_1mib_ascii vs NO_ASCII_PRETOK; identity held.
+See docs/faster-bpe-tokenize.md (M15d / 0115).
+---
+ src/unicode.cpp | 289 ++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 265 insertions(+), 24 deletions(-)
+
+diff --git a/src/unicode.cpp b/src/unicode.cpp
+index 3169cbf..80922ef 100644
+--- a/src/unicode.cpp
++++ b/src/unicode.cpp
+@@ -483,6 +483,63 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
+            "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+ }
+ 
++static inline bool unicode_is_gpt2_regex_expr(const std::string & regex_expr) {
++    return regex_expr ==
++           "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)";
++}
++
++static inline bool unicode_is_llama3_regex_expr(const std::string & regex_expr) {
++    return regex_expr ==
++               "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+" ||
++           regex_expr ==
++               "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
++}
++
++static inline void unicode_ascii_consume_letters_bytes(
++        const unsigned char * text, size_t & pos, size_t end, const uint8_t * cls) {
++    while (pos + 8 <= end) {
++        if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
++              (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
++              (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
++            break;
++        }
++        pos += 8;
++    }
++    while (pos < end && (cls[text[pos]] & 2)) {
++        ++pos;
++    }
++}
++
++static inline void unicode_ascii_consume_digits_bytes(
++        const unsigned char * text, size_t & pos, size_t end, const uint8_t * cls) {
++    while (pos + 8 <= end) {
++        if (!((cls[text[pos]] & 4) && (cls[text[pos + 1]] & 4) && (cls[text[pos + 2]] & 4) &&
++              (cls[text[pos + 3]] & 4) && (cls[text[pos + 4]] & 4) && (cls[text[pos + 5]] & 4) &&
++              (cls[text[pos + 6]] & 4) && (cls[text[pos + 7]] & 4))) {
++            break;
++        }
++        pos += 8;
++    }
++    while (pos < end && (cls[text[pos]] & 4)) {
++        ++pos;
++    }
++}
++
++static std::vector<std::string> unicode_words_from_byte_offsets(
++        const std::string & text, const std::vector<size_t> & bpe_offsets, bool byte_encode) {
++    std::vector<std::string> bpe_words;
++    bpe_words.reserve(bpe_offsets.size());
++    size_t start = 0;
++    for (size_t len : bpe_offsets) {
++        bpe_words.emplace_back(text.data() + start, len);
++        start += len;
++    }
++    if (byte_encode) {
++        return unicode_byte_encoding_process(bpe_words);
++    }
++    return bpe_words;
++}
++
+ // Same algorithm as unicode_regex_split_qwen2_ascii_seg but on raw ASCII bytes.
+ static void unicode_regex_split_qwen2_ascii_bytes_seg(
+         const unsigned char * text, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
+@@ -522,17 +579,7 @@ static void unicode_regex_split_qwen2_ascii_bytes_seg(
+             if ((c & 2) || next_letter) {
+                 ++pos;
+                 // 8-wide letter consume (T02-ish) — bytes are proven ASCII
+-                while (pos + 8 <= end) {
+-                    if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
+-                          (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
+-                          (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
+-                        break;
+-                    }
+-                    pos += 8;
+-                }
+-                while (pos < end && (cls[text[pos]] & 2)) {
+-                    ++pos;
+-                }
++                unicode_ascii_consume_letters_bytes(text, pos, end, cls);
+                 add_token(pos);
+                 continue;
+             }
+@@ -596,18 +643,204 @@ static std::vector<std::string> unicode_regex_split_qwen2_ascii_bytes(const std:
+     bpe_offsets.reserve(std::max<size_t>(1, text.size() / 3));
+     unicode_regex_split_qwen2_ascii_bytes_seg(
+             (const unsigned char *) text.data(), 0, text.size(), bpe_offsets);
++    return unicode_words_from_byte_offsets(text, bpe_offsets, byte_encode);
++}
+ 
+-    std::vector<std::string> bpe_words;
+-    bpe_words.reserve(bpe_offsets.size());
+-    size_t start = 0;
+-    for (size_t len : bpe_offsets) {
+-        bpe_words.emplace_back(text.data() + start, len);
+-        start += len;
++// WHY (0115): GPT-2 / Llama3 get the same all-ASCII skip-decode path as Qwen2 (0114).
++static void unicode_regex_split_gpt2_ascii_bytes_seg(
++        const unsigned char * text, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
++    const uint8_t * cls = unicode_ascii_cls_lut();
++    size_t prev = ini;
++    auto add_token = [&](size_t e) {
++        if (e > prev) {
++            bpe_offsets.push_back(e - prev);
++            prev = e;
++        }
++    };
++
++    size_t pos = ini;
++    while (pos < end) {
++        const unsigned char cpt = text[pos];
++        const uint8_t c = cls[cpt];
++
++        // 's|'t|'re|'ve|'m|'ll|'d — case-sensitive (stock GPT-2)
++        if (cpt == '\'' && pos + 1 < end) {
++            const unsigned char n1 = text[pos + 1];
++            if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd') {
++                add_token(pos + 2);
++                pos = prev;
++                continue;
++            }
++            if (pos + 2 < end) {
++                const unsigned char n2 = text[pos + 2];
++                if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l')) {
++                    add_token(pos + 3);
++                    pos = prev;
++                    continue;
++                }
++            }
++        }
++
++        const uint8_t c2 = (cpt == ' ' && pos + 1 < end) ? cls[text[pos + 1]] : (cpt == ' ' ? 0 : c);
++        // <space>?\p{L}+
++        if (c2 & 2) {
++            pos += (cpt == ' ');
++            unicode_ascii_consume_letters_bytes(text, pos, end, cls);
++            add_token(pos);
++            continue;
++        }
++        // <space>?\p{N}+
++        if (c2 & 4) {
++            pos += (cpt == ' ');
++            unicode_ascii_consume_digits_bytes(text, pos, end, cls);
++            add_token(pos);
++            continue;
++        }
++        // <space>?[^\s\p{L}\p{N}]+
++        if ((c2 & 8)) {
++            pos += (cpt == ' ');
++            while (pos < end && (cls[text[pos]] & 8)) {
++                ++pos;
++            }
++            add_token(pos);
++            continue;
++        }
++
++        size_t num_ws = 0;
++        while (pos + num_ws < end && (cls[text[pos + num_ws]] & 1)) {
++            ++num_ws;
++        }
++        if (num_ws > 1 && pos + num_ws < end) {
++            pos += num_ws - 1;
++            add_token(pos);
++            continue;
++        }
++        if (num_ws > 0) {
++            pos += num_ws;
++            add_token(pos);
++            continue;
++        }
++        add_token(++pos);
+     }
+-    if (byte_encode) {
+-        return unicode_byte_encoding_process(bpe_words);
++}
++
++static std::vector<std::string> unicode_regex_split_gpt2_ascii_bytes(const std::string & text, bool byte_encode) {
++    std::vector<size_t> bpe_offsets;
++    bpe_offsets.reserve(std::max<size_t>(1, text.size() / 3));
++    unicode_regex_split_gpt2_ascii_bytes_seg(
++            (const unsigned char *) text.data(), 0, text.size(), bpe_offsets);
++    return unicode_words_from_byte_offsets(text, bpe_offsets, byte_encode);
++}
++
++static void unicode_regex_split_llama3_ascii_bytes_seg(
++        const unsigned char * text, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
++    const uint8_t * cls = unicode_ascii_cls_lut();
++    size_t prev = ini;
++    auto add_token = [&](size_t e) {
++        if (e > prev) {
++            bpe_offsets.push_back(e - prev);
++            prev = e;
++        }
++    };
++
++    size_t pos = ini;
++    while (pos < end) {
++        const unsigned char cpt = text[pos];
++        const uint8_t c = cls[cpt];
++
++        if (cpt == '\'' && pos + 1 < end) {
++            const uint32_t n1 = unicode_ascii_tolower(text[pos + 1]);
++            if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd') {
++                add_token(pos + 2);
++                pos = prev;
++                continue;
++            }
++            if (pos + 2 < end) {
++                const uint32_t n2 = unicode_ascii_tolower(text[pos + 2]);
++                if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l')) {
++                    add_token(pos + 3);
++                    pos = prev;
++                    continue;
++                }
++            }
++        }
++
++        // [^\r\n\p{L}\p{N}]?\p{L}+
++        if (!(cpt == '\r' || cpt == '\n' || (c & 4))) {
++            const bool next_letter = (pos + 1 < end) && (cls[text[pos + 1]] & 2);
++            if ((c & 2) || next_letter) {
++                ++pos;
++                unicode_ascii_consume_letters_bytes(text, pos, end, cls);
++                add_token(pos);
++                continue;
++            }
++        }
++
++        // \p{N}{1,3}
++        if (c & 4) {
++            size_t ini_n = pos;
++            while (pos < end && (cls[text[pos]] & 4)) {
++                if (++pos - ini_n >= 3) {
++                    add_token(pos);
++                    ini_n = pos;
++                }
++            }
++            add_token(pos);
++            continue;
++        }
++
++        // Match stock llama3: leading-space branch uses flags2 for category, but
++        // `flags.as_uint()` (current codepoint) for the gate — not flags2.as_uint().
++        // ASCII LUT: any cls bit ⇒ as_uint() was nonzero when the LUT was built.
++        const uint8_t c_lead = c;
++        const uint8_t c2 = (cpt == ' ' && pos + 1 < end) ? cls[text[pos + 1]] : (cpt == ' ' ? 0 : c);
++        if (!(c2 & (1 | 2 | 4)) && c_lead != 0) {
++            pos += (cpt == ' ');
++            while (pos < end && (cls[text[pos]] & 8)) {
++                ++pos;
++            }
++            while (pos < end && (text[pos] == '\r' || text[pos] == '\n')) {
++                ++pos;
++            }
++            add_token(pos);
++            continue;
++        }
++
++        size_t num_ws = 0;
++        size_t last_rn = 0;
++        while (pos + num_ws < end && (cls[text[pos + num_ws]] & 1)) {
++            const unsigned char w = text[pos + num_ws];
++            if (w == '\r' || w == '\n') {
++                last_rn = pos + num_ws + 1;
++            }
++            ++num_ws;
++        }
++
++        if (last_rn > 0) {
++            pos = last_rn;
++            add_token(pos);
++            continue;
++        }
++        if (num_ws > 1 && pos + num_ws < end) {
++            pos += num_ws - 1;
++            add_token(pos);
++            continue;
++        }
++        if (num_ws > 0) {
++            pos += num_ws;
++            add_token(pos);
++            continue;
++        }
++        add_token(++pos);
+     }
+-    return bpe_words;
++}
++
++static std::vector<std::string> unicode_regex_split_llama3_ascii_bytes(const std::string & text, bool byte_encode) {
++    std::vector<size_t> bpe_offsets;
++    bpe_offsets.reserve(std::max<size_t>(1, text.size() / 3));
++    unicode_regex_split_llama3_ascii_bytes_seg(
++            (const unsigned char *) text.data(), 0, text.size(), bpe_offsets);
++    return unicode_words_from_byte_offsets(text, bpe_offsets, byte_encode);
+ }
+ 
+ // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+@@ -1610,10 +1843,18 @@ bool unicode_cpt_is_han(uint32_t cpt) {
+ }
+ 
+ std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode) {
+-    // WHY (0114): Qwen2 all-ASCII — skip uint32 decode + cpt_byte_off entirely.
+-    if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_is_qwen2_regex_expr(regex_exprs[0]) &&
+-        unicode_bytes_are_ascii(text)) {
+-        return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
++    // WHY (0114/0115): all-ASCII custom pretok — skip uint32 decode + cpt_byte_off.
++    if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_bytes_are_ascii(text)) {
++        const std::string & expr = regex_exprs[0];
++        if (unicode_is_qwen2_regex_expr(expr)) {
++            return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
++        }
++        if (unicode_is_gpt2_regex_expr(expr)) {
++            return unicode_regex_split_gpt2_ascii_bytes(text, byte_encode);
++        }
++        if (unicode_is_llama3_regex_expr(expr)) {
++            return unicode_regex_split_llama3_ascii_bytes(text, byte_encode);
++        }
+     }
+ 
+     // unicode categories

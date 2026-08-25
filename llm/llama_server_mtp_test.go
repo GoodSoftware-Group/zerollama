@@ -8,6 +8,22 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 )
 
+func TestDisableDraftMTPForArchitecture(t *testing.T) {
+	if !DisableDraftMTPForArchitecture("qwen35") || !DisableDraftMTPForArchitecture("qwen35moe") {
+		t.Fatal("expected qwen35 family to disable draft-mtp")
+	}
+	if DisableDraftMTPForArchitecture("llama") {
+		t.Fatal("llama should keep draft-mtp eligible")
+	}
+}
+
+func TestAppendSpeculativeArgsNone(t *testing.T) {
+	got := appendSpeculativeArgs([]string{"base"}, "", LlamaServerConfig{SpecType: "none", EnableMTP: true}, api.Options{Runner: api.Runner{DraftNumPredict: 4}})
+	if !slices.Equal(got, []string{"base"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestAppendSpeculativeArgsNgram(t *testing.T) {
 	got := appendSpeculativeArgs([]string{"base"}, "", LlamaServerConfig{SpecType: "ngram-simple"}, api.Options{})
 	want := []string{

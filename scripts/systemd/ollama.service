@@ -1,0 +1,23 @@
+# Upstream Ollama (not zerollama). Serves the standard client port.
+# Binary: /opt/ollama/bin/ollama  (isolated prefix; do not mix with /usr/local/lib/ollama)
+#
+#   systemctl start|stop|restart|status ollama
+#   journalctl -u ollama -f
+#   OLLAMA_HOST=127.0.0.1:11434 ollama list
+
+[Unit]
+Description=Ollama Service
+After=network-online.target
+Documentation=https://github.com/ollama/ollama
+
+[Service]
+ExecStart=/opt/ollama/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+SyslogIdentifier=ollama
+Environment="PATH=/opt/ollama/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=multi-user.target

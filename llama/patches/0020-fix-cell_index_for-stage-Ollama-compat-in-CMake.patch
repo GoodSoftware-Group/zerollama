@@ -8,10 +8,10 @@ Subject: [PATCH] fix: cell_index_for + stage Ollama compat in CMake
  1 file changed, 4 deletions(-)
 
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 8ea01dd73..2c50c4d8c 100644
+index 1f0c76e..a995545 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -679,10 +679,6 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
+@@ -681,10 +681,6 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
  }
  
  int32_t llama_kv_cache::cell_index_for(llama_seq_id seq_id, llama_pos pos, uint32_t * out_stream) const {

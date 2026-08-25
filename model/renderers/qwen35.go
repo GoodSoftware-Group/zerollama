@@ -83,7 +83,6 @@ func (r *Qwen35Renderer) renderContent(content api.Message, imageOffset int) (st
 		subSb.WriteString("<|vision_start|><|image_pad|><|vision_end|>")
 	}
 	// TODO: support videos
-
 	subSb.WriteString(content.Content)
 	return subSb.String(), imageOffset
 }

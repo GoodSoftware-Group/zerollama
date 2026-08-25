@@ -10,7 +10,7 @@ Subject: [PATCH] fix string arr kv loading
  3 files changed, 8 insertions(+), 7 deletions(-)
 
 diff --git a/ggml/include/gguf.h b/ggml/include/gguf.h
-index b3a1e1230..ddd1f8c77 100644
+index b3a1e12..ddd1f8c 100644
 --- a/ggml/include/gguf.h
 +++ b/ggml/include/gguf.h
 @@ -121,6 +121,7 @@ extern "C" {
@@ -22,7 +22,7 @@ index b3a1e1230..ddd1f8c77 100644
      // get ith C string from array with given key_id
      GGML_API const char * gguf_get_arr_str (const struct gguf_context * ctx, int64_t key_id, size_t i);
 diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
-index 6c7b58178..0a6c5a304 100644
+index 6c7b581..0a6c5a3 100644
 --- a/ggml/src/gguf.cpp
 +++ b/ggml/src/gguf.cpp
 @@ -1064,10 +1064,14 @@ enum gguf_type gguf_get_arr_type(const struct gguf_context * ctx, int64_t key_id
@@ -50,7 +50,7 @@ index 6c7b58178..0a6c5a304 100644
  }
  
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index ff926ceec..b42e3b2fb 100644
+index ff926ce..b42e3b2 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -2036,11 +2036,8 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {

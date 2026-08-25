@@ -211,10 +211,10 @@ configure_systemd() {
     status "Adding current user to ollama group..."
     $SUDO usermod -a -G ollama $(whoami)
 
-    status "Creating ollama systemd service..."
-    cat <<EOF | $SUDO tee /etc/systemd/system/ollama.service >/dev/null
+    status "Creating zerollama systemd service..."
+    cat <<EOF | $SUDO tee /etc/systemd/system/zerollama.service >/dev/null
 [Unit]
-Description=Ollama Service
+Description=Zerollama API
 After=network-online.target
 
 [Service]
@@ -223,19 +223,20 @@ User=ollama
 Group=ollama
 Restart=always
 RestartSec=3
+SyslogIdentifier=zerollama
 Environment="PATH=$PATH"
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 EOF
     SYSTEMCTL_RUNNING="$(systemctl is-system-running || true)"
     case $SYSTEMCTL_RUNNING in
         running|degraded)
-            status "Enabling and starting ollama service..."
+            status "Enabling and starting zerollama service..."
             $SUDO systemctl daemon-reload
-            $SUDO systemctl enable ollama
+            $SUDO systemctl enable zerollama
 
-            start_service() { $SUDO systemctl restart ollama; }
+            start_service() { $SUDO systemctl restart zerollama; }
             trap start_service EXIT
             ;;
         *)

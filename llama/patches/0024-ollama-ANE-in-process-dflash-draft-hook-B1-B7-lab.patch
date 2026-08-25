@@ -23,7 +23,7 @@ Subject: [PATCH] ollama: ANE in-process dflash draft hook (B1-B7 lab)
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
 new file mode 100644
-index 000000000..b57ab1ece
+index 0000000..b57ab1e
 --- /dev/null
 +++ b/common/ane_draft_hook.cpp
 @@ -0,0 +1,7056 @@
@@ -7085,7 +7085,7 @@ index 000000000..b57ab1ece
 +}
 diff --git a/common/ane_draft_hook.h b/common/ane_draft_hook.h
 new file mode 100644
-index 000000000..ea7576d54
+index 0000000..ea7576d
 --- /dev/null
 +++ b/common/ane_draft_hook.h
 @@ -0,0 +1,64 @@
@@ -7155,7 +7155,7 @@ index 000000000..ea7576d54
 +bool ane_dflash_fill_session_qkv_host_fp32(int oc_q, int oc_kv);
 diff --git a/common/ane_draft_session.h b/common/ane_draft_session.h
 new file mode 100644
-index 000000000..9746a0581
+index 0000000..9746a05
 --- /dev/null
 +++ b/common/ane_draft_session.h
 @@ -0,0 +1,148 @@
@@ -7309,7 +7309,7 @@ index 000000000..9746a0581
 +#endif
 diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
 new file mode 100644
-index 000000000..3cf6f5038
+index 0000000..3cf6f50
 --- /dev/null
 +++ b/common/ane_draft_session.mm
 @@ -0,0 +1,4144 @@
@@ -11459,7 +11459,7 @@ index 000000000..3cf6f5038
 +}
 diff --git a/common/ane_draft_session_stub.cpp b/common/ane_draft_session_stub.cpp
 new file mode 100644
-index 000000000..52c6f9902
+index 0000000..52c6f99
 --- /dev/null
 +++ b/common/ane_draft_session_stub.cpp
 @@ -0,0 +1,212 @@
@@ -11677,7 +11677,7 @@ index 000000000..52c6f9902
 +}
 diff --git a/common/ane_iosurface_map.h b/common/ane_iosurface_map.h
 new file mode 100644
-index 000000000..8c0735b77
+index 0000000..8c0735b
 --- /dev/null
 +++ b/common/ane_iosurface_map.h
 @@ -0,0 +1,49 @@
@@ -11731,7 +11731,7 @@ index 000000000..8c0735b77
 +    return IOSurfaceLookup(surfaceID);
 +}
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 52f8d5367..ccdd52d0d 100644
+index 0402044..207a8d6 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -16,6 +16,7 @@
@@ -11784,7 +11784,7 @@ index 52f8d5367..ccdd52d0d 100644
  void llama_context::set_causal_attn(bool value) {
      LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
  
-@@ -3812,6 +3848,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+@@ -3808,6 +3844,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
      return ctx->get_embeddings_layer_inp(lid);
  }
  
@@ -11814,7 +11814,7 @@ index 52f8d5367..ccdd52d0d 100644
      return ctx->set_sampler(seq_id, smpl);
  }
 diff --git a/src/llama-context.h b/src/llama-context.h
-index bf91daa8b..19dce3a11 100644
+index bf91daa..19dce3a 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
 @@ -116,6 +116,12 @@ struct llama_context {
@@ -11831,7 +11831,7 @@ index bf91daa8b..19dce3a11 100644
      void set_warmup(bool value);
  
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 35d6e58ad..e82c59104 100644
+index 35d6e58..e82c591 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
 @@ -120,6 +120,27 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);

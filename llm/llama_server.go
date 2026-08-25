@@ -1350,9 +1350,20 @@ func appendContextShiftArgs(params []string, opts api.Options, enabled bool) []s
 	return params
 }
 
+func isDraftMTPSpec(specType string) bool {
+	switch strings.ToLower(strings.TrimSpace(specType)) {
+	case "draft-mtp", "mtp":
+		return true
+	default:
+		return false
+	}
+}
+
 func appendSpeculativeArgs(params []string, serverBin string, config LlamaServerConfig, opts api.Options) []string {
 	specType := strings.ToLower(strings.TrimSpace(config.SpecType))
 	switch specType {
+	case "none", "off", "disabled":
+		return params
 	case "ngram", "ngram-simple":
 		sizeN := config.NgramSizeN
 		if sizeN <= 0 {
@@ -1463,6 +1474,19 @@ func hasLegacyQwenMTPDraft(arch string, tensors []*ggml.Tensor) bool {
 	}
 }
 
+// DisableDraftMTPForArchitecture is true for Qwen3.5/3.6/3.8 hybrid Gated-Delta-Net +
+// SWA GGUFs. llama.cpp draft-mtp desyncs after SWA/hybrid cache invalidation and
+// emits multilingual token salad (qwen3.6 2026-07-30; qwen3.8:27b 2026-08-24).
+// See llama_server_flags.go CAUTION. ngram/eagle3 are unaffected.
+func DisableDraftMTPForArchitecture(arch string) bool {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "qwen35", "qwen35moe":
+		return true
+	default:
+		return false
+	}
+}
+
 // NewLlamaServerRunner creates a new llama-server runner that wraps the upstream llama-server binary.
 func NewLlamaServerRunner(
 	gpus []ml.DeviceInfo,
@@ -1513,6 +1537,18 @@ func NewLlamaServerRunner(
 	}
 	if config.DraftModelPath == "" && hasMTPDraft(f) {
 		config.EnableMTP = true
+	}
+	if DisableDraftMTPForArchitecture(f.KV().Architecture()) {
+		if config.EnableMTP || isDraftMTPSpec(config.SpecType) {
+			slog.Warn("disabling draft-mtp for hybrid SWA/GDN architecture (cache desync / token salad)",
+				"arch", f.KV().Architecture(),
+				"spec_type", config.SpecType,
+			)
+		}
+		config.EnableMTP = false
+		if isDraftMTPSpec(config.SpecType) {
+			config.SpecType = ""
+		}
 	}
 
 	gpuLibs := ml.LibraryPaths(gpus)

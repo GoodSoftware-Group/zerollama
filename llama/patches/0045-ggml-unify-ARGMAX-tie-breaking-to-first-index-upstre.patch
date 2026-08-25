@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Sun, 12 Jul 2026 14:34:39 -0700
+Subject: [PATCH] ggml: unify ARGMAX tie-breaking to first index (upstream
+ #25032)
+
+Metal simd reduction and CPU vec_argmax now keep the smallest index on
+ties to match torch/numpy and other backends.
+---
+ ggml/src/ggml-cpu/vec.h | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-cpu/vec.h b/ggml/src/ggml-cpu/vec.h
+index 5de9cb5..adb96d7 100644
+--- a/ggml/src/ggml-cpu/vec.h
++++ b/ggml/src/ggml-cpu/vec.h
+@@ -1559,8 +1559,11 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
+     float max = -INFINITY;
+     int idx = 0;
+     for (int i = 0; i < n; ++i) {
+-        max = MAX(max, x[i]);
+-        if (max == x[i]) { idx = i; }
++        // first index wins on ties (torch.argmax / np.argmax convention)
++        if (x[i] > max) {
++            max = x[i];
++            idx = i;
++        }
+     }
+     *s = idx;
+ }

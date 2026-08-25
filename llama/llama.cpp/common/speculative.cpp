@@ -2376,6 +2376,9 @@ common_params common_base_params_to_speculative(const common_params & params) {
     const auto & params_spec = params.speculative.draft;
     common_params result = params;
 
+    result.embedding    = false;
+    result.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED;
+
     if (has_draft) {
         result.devices               = params_spec.devices;
         result.model                 = params_spec.mparams;
@@ -2438,6 +2441,9 @@ common_speculative_init_result::common_speculative_init_result(
     if (spec_mtp) {
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     }
+
+    // the draft context holds as many tokens per sequence as the target context
+    cparams.n_ctx = llama_n_ctx(ctx_tgt);
 
     // note: for small models maybe we can set this to the maximum possible draft from all speculative types
     //       the extra memory for small models is likely negligible?
@@ -2715,6 +2721,10 @@ void common_speculative_draft(common_speculative * spec) {
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) dparams.size(); ++seq_id) {
             auto & dp = dparams[seq_id];
+
+            if (!dp.drafting) {
+                continue;
+            }
 
             auto & result = *dp.result;
 

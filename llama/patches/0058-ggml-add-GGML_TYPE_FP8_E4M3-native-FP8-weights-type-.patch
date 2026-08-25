@@ -1,0 +1,940 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Tue, 14 Jul 2026 19:33:29 -0700
+Subject: [PATCH] ggml: add GGML_TYPE_FP8_E4M3 native FP8 weights (type 51)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Block layout mirrors Q8_0 (F16 scale + 32× IEEE float8_e4m3fn). CPU
+quant/dequant + vec_dot, CUDA convert/get_rows (dequant GEMM path),
+gguf-py roundtrip, and convert_hf_to_gguf --fp8-native for ModelOpt
+per-tensor/per-row scales without full F16 expansion.
+---
+ conversion/base.py                | 100 +++++++++++++++++++++++----
+ convert_hf_to_gguf.py             |   6 ++
+ ggml/include/ggml.h               |   4 +-
+ ggml/src/ggml-common.h            |  10 +++
+ ggml/src/ggml-cpu/arch-fallback.h |   7 ++
+ ggml/src/ggml-cpu/ggml-cpu.c      |   6 ++
+ ggml/src/ggml-cpu/quants.c        |  31 +++++++++
+ ggml/src/ggml-cpu/quants.h        |   3 +
+ ggml/src/ggml-cuda/convert.cu     |  12 ++++
+ ggml/src/ggml-cuda/dequantize.cuh |  39 +++++++++++
+ ggml/src/ggml-cuda/getrows.cu     |   2 +
+ ggml/src/ggml-cuda/ggml-cuda.cu   |   2 +
+ ggml/src/ggml-impl.h              |  63 +++++++++++++++++
+ ggml/src/ggml-quants.c            |  40 +++++++++++
+ ggml/src/ggml-quants.h            |   3 +
+ ggml/src/ggml.c                   |  10 +++
+ gguf-py/gguf/constants.py         |   3 +
+ gguf-py/gguf/quants.py            | 109 ++++++++++++++++++++++++++++++
+ include/llama.h                   |   1 +
+ src/llama-model-loader.cpp        |   2 +
+ 20 files changed, 439 insertions(+), 14 deletions(-)
+
+diff --git a/conversion/base.py b/conversion/base.py
+index 56547ac..0e6deed 100644
+--- a/conversion/base.py
++++ b/conversion/base.py
+@@ -130,7 +130,8 @@ class ModelBase:
+                  sentence_transformers_dense_modules: bool = False,
+                  target_model_dir: Path | None = None,
+                  fuse_gate_up_exps: bool = False,
+-                 fp8_as_q8: bool = False):
++                 fp8_as_q8: bool = False,
++                 fp8_native: bool = False):
+         if type(self) is ModelBase or \
+                 type(self) is TextModel or \
+                 type(self) is MmprojModel:
+@@ -161,7 +162,13 @@ class ModelBase:
+         self._is_nvfp4 = False
+         self._is_mxfp4 = False
+         self._fp8_as_q8 = fp8_as_q8
++        self._fp8_native = fp8_native
+         self._fp8_dequantized: set[str] = set()
++        self._fp8_native_tensors: set[str] = set()
++        self._fp8_native_scales: dict[str, Callable[[], Tensor]] = dict()
++        if self._fp8_native and self._fp8_as_q8:
++            logger.warning("--fp8-native overrides --fp8-as-q8")
++            self._fp8_as_q8 = False
+ 
+         # Apply heuristics to figure out typical tensor encoding based on first tensor's dtype
+         # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
+@@ -441,10 +448,27 @@ class ModelBase:
+                         weight_name = name.removesuffix("_scale_inv")
+                         w = self.model_tensors[weight_name]
+                         s = self.model_tensors[name]
+-                        self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
+-                        tensors_to_remove.append(name)
+-                        if self._fp8_as_q8:
+-                            self._fp8_dequantized.add(weight_name)
++                        is_fp8_e4m3 = False
++                        try:
++                            is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
++                        except Exception:
++                            is_fp8_e4m3 = False
++                        # Native path only for scalar / 1D scales (no 128×128 block map yet).
++                        if self._fp8_native and is_fp8_e4m3 and block_size is None:
++                            self._fp8_native_tensors.add(weight_name)
++                            # scale_inv multiplies dequant; store as-is
++                            self._fp8_native_scales[weight_name] = s
++                            tensors_to_remove.append(name)
++                        else:
++                            if self._fp8_native and is_fp8_e4m3 and block_size is not None:
++                                logger.warning(
++                                    f"{weight_name}: FP8 weight_block_size={block_size} not supported "
++                                    "by --fp8-native yet; falling back to dequant"
++                                )
++                            self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
++                            tensors_to_remove.append(name)
++                            if self._fp8_as_q8:
++                                self._fp8_dequantized.add(weight_name)
+                     if name.endswith(".activation_scale"):  # unused
+                         tensors_to_remove.append(name)
+                     if name.endswith("_activation_scale"):  # Mistral-Small-4-119B-2602, unused
+@@ -545,7 +569,7 @@ class ModelBase:
+             elif quant_method == "modelopt":
+                 # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
+                 # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
+-                # are dequantized here. k/v scale tensors are unused.
++                # are dequantized here (or packed native with --fp8-native).
+                 for name in self.model_tensors.keys():
+                     if name.endswith(".weight_scale"):
+                         weight_name = name.removesuffix("_scale")
+@@ -554,13 +578,24 @@ class ModelBase:
+                             continue
+                         w = self.model_tensors[weight_name]
+                         s = self.model_tensors[name]
+-                        is_fp8_weight = False
+-                        if self._fp8_as_q8:
+-                            is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+-                        self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
+-                        tensors_to_remove.append(name)
+-                        if is_fp8_weight:
+-                            self._fp8_dequantized.add(weight_name)
++                        is_fp8_e4m3 = False
++                        try:
++                            is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
++                        except Exception:
++                            is_fp8_e4m3 = False
++                        if self._fp8_native and is_fp8_e4m3:
++                            # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
++                            self._fp8_native_tensors.add(weight_name)
++                            self._fp8_native_scales[weight_name] = s
++                            tensors_to_remove.append(name)
++                        else:
++                            is_fp8_weight = False
++                            if self._fp8_as_q8:
++                                is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
++                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
++                            tensors_to_remove.append(name)
++                            if is_fp8_weight:
++                                self._fp8_dequantized.add(weight_name)
+                     if name.endswith((".input_scale", ".k_scale", ".v_scale")):
+                         tensors_to_remove.append(name)
+             elif quant_method is not None:
+@@ -654,6 +689,23 @@ class ModelBase:
+             return gguf.GGMLQuantizationType.Q8_0
+         return False
+ 
++    def _pack_fp8_native_tensor(self, name: str, data_torch: Tensor) -> np.ndarray:
++        """Pack float8_e4m3fn weights + stored scale into GGML FP8_E4M3 blocks (no full dequant)."""
++        scale_t = LazyTorchTensor.to_eager(self._fp8_native_scales[name]())
++        scale = scale_t.detach().float().cpu().numpy()
++        qs = data_torch.view(torch.uint8).cpu().numpy()
++        # Per-row scale: (out_features,) or (out_features, 1); else scalar / broadcast.
++        if scale.ndim >= 1 and scale.size == qs.shape[0]:
++            scale_arg = scale.reshape(qs.shape[0])
++        elif scale.size == 1:
++            scale_arg = float(scale.reshape(-1)[0])
++        else:
++            raise ValueError(
++                f"{name}: unsupported FP8 scale shape {scale.shape} for --fp8-native "
++                f"(want scalar or per-row matching {qs.shape[0]})"
++            )
++        return gguf.quants.FP8_E4M3.pack_e4m3_with_scale(qs, scale_arg)
++
+     # some models need extra generated tensors (like rope_freqs)
+     def generate_extra_tensors(self) -> Iterable[tuple[str, Tensor]]:
+         return ()
+@@ -912,6 +964,28 @@ class ModelBase:
+ 
+             old_dtype = data_torch.dtype
+ 
++            # Native FP8: pack E4M3 bytes + scale into GGML_TYPE_FP8_E4M3 without expanding to F16/F32.
++            if name in self._fp8_native_tensors:
++                if data_torch.dtype != torch.float8_e4m3fn:
++                    raise ValueError(f"{name}: --fp8-native expected float8_e4m3fn, got {data_torch.dtype}")
++                bid = None
++                for part in name.split("."):
++                    if part.isdecimal():
++                        bid = int(part)
++                        break
++                for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
++                    if data_torch.ndim <= 1 or new_name.endswith("_norm.weight"):
++                        # norms / 1D stay F32 via normal path
++                        data_torch = data_torch.to(torch.float32)
++                        data = data_torch.numpy()
++                        self.gguf_writer.add_tensor(new_name, data, raw_dtype=gguf.GGMLQuantizationType.F32)
++                        logger.info(f"{new_name}, {old_dtype} --> F32 (1d/norm), shape = {data.shape}")
++                        continue
++                    packed = self._pack_fp8_native_tensor(name, data_torch)
++                    logger.info(f"{new_name}, {old_dtype} --> FP8_E4M3 (native), shape = {list(data_torch.shape)}")
++                    self.gguf_writer.add_tensor(new_name, packed, raw_dtype=gguf.GGMLQuantizationType.FP8_E4M3)
++                continue
++
+             # convert any unsupported data types to float32
+             if data_torch.dtype not in (torch.float16, torch.float32):
+                 data_torch = data_torch.to(torch.float32)
+diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
+index 78ad26c..2ce4d28 100755
+--- a/convert_hf_to_gguf.py
++++ b/convert_hf_to_gguf.py
+@@ -156,6 +156,11 @@ def parse_args() -> argparse.Namespace:
+         "--fp8-as-q8", action="store_true",
+         help="Store tensors dequantized from FP8 as Q8_0 instead of BF16/F16.",
+     )
++    parser.add_argument(
++        "--fp8-native", action="store_true",
++        help="Write ModelOpt/FP8 E4M3 weights as GGML FP8_E4M3 (block scale + E4M3 bytes) without full F16 dequant. "
++             "Requires per-tensor or per-row scales; 128x128 block scales still dequant.",
++    )
+ 
+     parser.add_argument(
+         "--target-model-dir", type=str, default=None,
+@@ -290,6 +295,7 @@ def main() -> None:
+                                      target_model_dir=Path(args.target_model_dir) if args.target_model_dir else None,
+                                      fuse_gate_up_exps=args.fuse_gate_up_exps,
+                                      fp8_as_q8=args.fp8_as_q8,
++                                     fp8_native=args.fp8_native,
+                                      )
+ 
+         if args.vocab_only:
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index a299089..8944fb1 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -438,7 +438,8 @@ extern "C" {
+         GGML_TYPE_TBQ3_TCQ  = 48, // TurboQuant TCQ-3: 128-element block, fp16 norm + 6-bit init state + 128*3-bit Viterbi-encoded symbol stream (52 B = 3.25 bpw)
+         GGML_TYPE_TBQ3_K    = 49, // Upstream-style TurboQuant 3-bit, QK_K block layout
+         GGML_TYPE_TBQ4_K    = 50, // Upstream-style TurboQuant 4-bit, QK_K block layout
+-        GGML_TYPE_COUNT     = 51,
++        GGML_TYPE_FP8_E4M3  = 51, // IEEE float8_e4m3fn + F16 block scale (QK=32)
++        GGML_TYPE_COUNT     = 52,
+     };
+ 
+     // precision
+@@ -483,6 +484,7 @@ extern "C" {
+         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
+         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
++        GGML_FTYPE_MOSTLY_FP8_E4M3 = 30, // except 1d tensors
+         GGML_FTYPE_MOSTLY_Q4_POLAR = 102, // except 1d tensors
+     };
+ 
+diff --git a/ggml/src/ggml-common.h b/ggml/src/ggml-common.h
+index c1578ac..5d67701 100644
+--- a/ggml/src/ggml-common.h
++++ b/ggml/src/ggml-common.h
+@@ -112,6 +112,9 @@ typedef sycl::half2 ggml_half2;
+ #define QI_NVFP4 (QK_NVFP4 / (4 * QR_NVFP4))
+ #define QR_NVFP4 2
+ 
++#define QI_FP8_E4M3 (QK_FP8_E4M3 / (4 * QR_FP8_E4M3))
++#define QR_FP8_E4M3 1
++
+ #define QI5_0 (QK5_0 / (4 * QR5_0))
+ #define QR5_0 2
+ 
+@@ -226,6 +229,13 @@ typedef struct {
+ } block_nvfp4;
+ static_assert(sizeof(block_nvfp4) == sizeof(uint8_t)*(QK_NVFP4/QK_NVFP4_SUB) + QK_NVFP4/2, "wrong nvfp4 block size/padding");
+ 
++#define QK_FP8_E4M3 32
++typedef struct {
++    ggml_half d;                     // block scale (F16)
++    uint8_t   qs[QK_FP8_E4M3];       // IEEE float8_e4m3fn bit patterns
++} block_fp8_e4m3;
++static_assert(sizeof(block_fp8_e4m3) == sizeof(ggml_half) + QK_FP8_E4M3, "wrong fp8_e4m3 block size/padding");
++
+ #define QK5_0 32
+ typedef struct {
+     ggml_half d;           // delta
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
+index 152e0ba..1adeb67 100644
+--- a/ggml/src/ggml-cpu/arch-fallback.h
++++ b/ggml/src/ggml-cpu/arch-fallback.h
+@@ -17,6 +17,7 @@
+ #define ggml_vec_dot_mxfp4_q8_0_generic ggml_vec_dot_mxfp4_q8_0
+ #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
+ #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
+ #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
+@@ -73,6 +74,7 @@
+ #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64)
+ // repack.cpp
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
+ #define ggml_quantize_mat_q8_K_4x8_generic ggml_quantize_mat_q8_K_4x8
+ #define ggml_gemv_iq4_nl_8x8_q8_0_generic ggml_gemv_iq4_nl_8x8_q8_0
+@@ -84,6 +86,7 @@
+ #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
+ // quants.c
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ // repack.cpp
+ #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+ #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
+@@ -115,6 +118,7 @@
+ #define quantize_row_q8_K_generic quantize_row_q8_K
+ #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
+ #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
+ #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
+@@ -165,6 +169,7 @@
+ #define ggml_vec_dot_mxfp4_q8_0_generic ggml_vec_dot_mxfp4_q8_0
+ #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
+ #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ // repack.cpp
+ #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+@@ -248,6 +253,7 @@
+ #define quantize_row_q8_K_generic quantize_row_q8_K
+ #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
+ #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
+ #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
+@@ -312,6 +318,7 @@
+ #define ggml_vec_dot_mxfp4_q8_0_generic ggml_vec_dot_mxfp4_q8_0
+ #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
+ #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ // repack.cpp
+ #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index f2dfee2..efedd0c 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -295,6 +295,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
+         .vec_dot_type             = GGML_TYPE_Q8_0,
+         .nrows                    = 1,
+     },
++    [GGML_TYPE_FP8_E4M3] = {
++        .from_float               = quantize_row_fp8_e4m3,
++        .vec_dot                  = ggml_vec_dot_fp8_e4m3_q8_0,
++        .vec_dot_type             = GGML_TYPE_Q8_0,
++        .nrows                    = 1,
++    },
+     [GGML_TYPE_Q2_K] = {
+         .from_float               = quantize_row_q2_K,
+         .vec_dot                  = ggml_vec_dot_q2_K_q8_K,
+diff --git a/ggml/src/ggml-cpu/quants.c b/ggml/src/ggml-cpu/quants.c
+index 39d9130..ece43f8 100644
+--- a/ggml/src/ggml-cpu/quants.c
++++ b/ggml/src/ggml-cpu/quants.c
+@@ -62,6 +62,10 @@ void quantize_row_nvfp4(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, i
+     quantize_row_nvfp4_ref(x, y, k);
+ }
+ 
++void quantize_row_fp8_e4m3(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
++    quantize_row_fp8_e4m3_ref(x, y, k);
++}
++
+ //
+ // 2-6 bit quantization in super-blocks
+ //
+@@ -392,6 +396,33 @@ void ggml_vec_dot_nvfp4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+     *s = sumf;
+ }
+ 
++void ggml_vec_dot_fp8_e4m3_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
++    assert(nrc == 1);
++    UNUSED(nrc);
++    UNUSED(bx);
++    UNUSED(by);
++    UNUSED(bs);
++    assert(n % QK_FP8_E4M3 == 0);
++    static_assert(QK_FP8_E4M3 == QK8_0, "QK_FP8_E4M3 and QK8_0 must be the same");
++
++    const block_fp8_e4m3 * GGML_RESTRICT x = vx;
++    const block_q8_0 * GGML_RESTRICT y = vy;
++
++    const int nb = n / QK_FP8_E4M3;
++    float sumf = 0;
++
++    for (int ib = 0; ib < nb; ++ib) {
++        const float d = GGML_CPU_FP16_TO_FP32(x[ib].d) * GGML_CPU_FP16_TO_FP32(y[ib].d);
++        float sum = 0.0f;
++        for (int j = 0; j < QK_FP8_E4M3; ++j) {
++            sum += ggml_fp8_e4m3_to_fp32(x[ib].qs[j]) * (float) y[ib].qs[j];
++        }
++        sumf += d * sum;
++    }
++    *s = sumf;
++}
++
++
+ void ggml_vec_dot_q5_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+     const int qk = QK8_0;
+     const int nb = n / qk;
+diff --git a/ggml/src/ggml-cpu/quants.h b/ggml/src/ggml-cpu/quants.h
+index 22c3f9a..7a4cdf4 100644
+--- a/ggml/src/ggml-cpu/quants.h
++++ b/ggml/src/ggml-cpu/quants.h
+@@ -23,6 +23,7 @@ void quantize_row_q8_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
+ 
+ void quantize_row_mxfp4(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+ void quantize_row_nvfp4(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
++void quantize_row_fp8_e4m3(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+ 
+ void quantize_row_q2_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+ void quantize_row_q3_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+@@ -78,6 +79,7 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
+ 
+ void ggml_vec_dot_mxfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
++void ggml_vec_dot_fp8_e4m3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ 
+ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+@@ -117,6 +119,7 @@ void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
+ 
+ void ggml_vec_dot_mxfp4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_nvfp4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
++void ggml_vec_dot_fp8_e4m3_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ 
+ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+diff --git a/ggml/src/ggml-cuda/convert.cu b/ggml/src/ggml-cuda/convert.cu
+index 360c614..cc88fc2 100644
+--- a/ggml/src/ggml-cuda/convert.cu
++++ b/ggml/src/ggml-cuda/convert.cu
+@@ -471,6 +471,8 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
+             return dequantize_block_cont_cuda<QK5_1, QR5_1, dequantize_q5_1>;
+         case GGML_TYPE_Q8_0:
+             return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
++        case GGML_TYPE_FP8_E4M3:
++            return dequantize_block_cont_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
+         case GGML_TYPE_Q2_K:
+             return dequantize_row_q2_K_cuda;
+         case GGML_TYPE_Q3_K:
+@@ -531,6 +533,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
+                 return dequantize_block_q8_0_f16_cuda;
+             }
+             return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
++        case GGML_TYPE_FP8_E4M3:
++            return dequantize_block_cont_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
+         case GGML_TYPE_Q2_K:
+             return dequantize_row_q2_K_cuda;
+         case GGML_TYPE_Q3_K:
+@@ -588,6 +592,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
+             return dequantize_block_cont_cuda<QK5_1, QR5_1, dequantize_q5_1>;
+         case GGML_TYPE_Q8_0:
+             return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
++        case GGML_TYPE_FP8_E4M3:
++            return dequantize_block_cont_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
+         case GGML_TYPE_Q2_K:
+             return dequantize_row_q2_K_cuda;
+         case GGML_TYPE_Q3_K:
+@@ -647,6 +653,8 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
+             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
+         case GGML_TYPE_Q8_0:
+             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
++        case GGML_TYPE_FP8_E4M3:
++            return dequantize_block_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
+         case GGML_TYPE_BF16:
+             return convert_unary_cuda<nv_bfloat16>;
+         default:
+@@ -672,6 +680,8 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
+             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
+         case GGML_TYPE_Q8_0:
+             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
++        case GGML_TYPE_FP8_E4M3:
++            return dequantize_block_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
+         case GGML_TYPE_F16:
+             return convert_unary_cuda<half, nv_bfloat16>;
+         default:
+@@ -697,6 +707,8 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
+             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
+         case GGML_TYPE_Q8_0:
+             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
++        case GGML_TYPE_FP8_E4M3:
++            return dequantize_block_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
+         case GGML_TYPE_BF16:
+             return convert_unary_cuda<nv_bfloat16, float>;
+         default:
+diff --git a/ggml/src/ggml-cuda/dequantize.cuh b/ggml/src/ggml-cuda/dequantize.cuh
+index 651524b..b5ca25a 100644
+--- a/ggml/src/ggml-cuda/dequantize.cuh
++++ b/ggml/src/ggml-cuda/dequantize.cuh
+@@ -119,6 +119,45 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
+     v.y *= d;
+ }
+ 
++static __device__ __forceinline__ float ggml_cuda_fp8_e4m3_to_fp32(uint8_t x) {
++#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP)
++    const uint32_t bits = (uint32_t) x;
++    // E4M3FN NaN is only 0x7F / 0xFF; map to 0 for weight dequant.
++    if ((bits & 0x7Fu) == 0x7Fu) {
++        return 0.0f;
++    }
++    const __nv_fp8_e4m3 xf = *reinterpret_cast<const __nv_fp8_e4m3 *>(&bits);
++    return static_cast<float>(xf);
++#else
++    const int sign = (x >> 7) & 1;
++    const int exp  = (x >> 3) & 0xF;
++    const int man  = x & 0x7;
++    if (exp == 0xF && man == 0x7) {
++        return 0.0f;
++    }
++    float raw;
++    if (exp == 0) {
++        if (man == 0) {
++            return 0.0f;
++        }
++        raw = ldexpf((float) man, -9);
++    } else {
++        raw = ldexpf(1.0f + (float) man / 8.0f, exp - 7);
++    }
++    return sign ? -raw : raw;
++#endif
++}
++
++static __device__ __forceinline__ void dequantize_fp8_e4m3(const void * vx, const int64_t ib, const int iqs, float2 & v){
++    const block_fp8_e4m3 * x = (const block_fp8_e4m3 *) vx;
++
++    const float d = x[ib].d;
++
++    v.x = ggml_cuda_fp8_e4m3_to_fp32(x[ib].qs[iqs + 0]);
++    v.y = ggml_cuda_fp8_e4m3_to_fp32(x[ib].qs[iqs + 1]);
++
++    v.x *= d;
++    v.y *= d;
+ //================================== k-quants
+ 
+ // Each call dequantizes one super-block of QK_K values into y using the
+diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
+index 6b36b8f..52029ee 100644
+--- a/ggml/src/ggml-cuda/getrows.cu
++++ b/ggml/src/ggml-cuda/getrows.cu
+@@ -358,6 +358,8 @@ static void ggml_cuda_get_rows_switch_src0_type(
+             break;
+         case GGML_TYPE_Q5_K:
+             get_rows_cuda_kq<64, dst_t, dequantize_q5_K<dst_t>>(src0_d, src1_d, dst_d,
++        case GGML_TYPE_FP8_E4M3:
++            get_rows_cuda_q<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>(src0_d, src1_d, dst_d,
+                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+             break;
+         case GGML_TYPE_Q6_K:
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 6488a37..7271ac3 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -5067,6 +5067,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+                     case GGML_TYPE_Q8_0:
+                     case GGML_TYPE_MXFP4:
+                     case GGML_TYPE_NVFP4:
++                    case GGML_TYPE_FP8_E4M3:
+                     case GGML_TYPE_Q2_K:
+                     case GGML_TYPE_Q3_K:
+                     case GGML_TYPE_Q4_K:
+@@ -5108,6 +5109,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+                     case GGML_TYPE_Q3_K:
+                     case GGML_TYPE_Q4_K:
+                     case GGML_TYPE_Q5_K:
++                    case GGML_TYPE_FP8_E4M3:
+                     case GGML_TYPE_Q6_K:
+                     case GGML_TYPE_IQ2_XXS:
+                     case GGML_TYPE_IQ2_XS:
+diff --git a/ggml/src/ggml-impl.h b/ggml/src/ggml-impl.h
+index 44dcd48..940e54a 100644
+--- a/ggml/src/ggml-impl.h
++++ b/ggml/src/ggml-impl.h
+@@ -552,6 +552,69 @@ static inline uint8_t ggml_fp32_to_ue4m3(float x) {
+     return (uint8_t) ((ue4m3_exp << 3) | ue4m3_man);
+ }
+ 
++// IEEE float8_e4m3fn (OCP / PyTorch): signed, 4 exp bits (bias=7), 3 mantissa; no Inf; NaN when exp==15
++static inline float ggml_fp8_e4m3_to_fp32(uint8_t x) {
++    const int sign = (x >> 7) & 1;
++    const int exp  = (x >> 3) & 0xF;
++    const int man  = x & 0x7;
++    // E4M3FN: only S.1111.111 is NaN; S.1111.xxx (mant<7) encodes finite values up to 448.
++    if (exp == 0xF && man == 0x7) {
++        return 0.0f; // treat NaN as 0 for weight dequant stability
++    }
++    float raw;
++    if (exp == 0) {
++        if (man == 0) {
++            return sign ? -0.0f : 0.0f;
++        }
++        raw = ldexpf((float) man, -9);
++    } else {
++        raw = ldexpf(1.0f + (float) man / 8.0f, exp - 7);
++    }
++    return sign ? -raw : raw;
++}
++
++static inline uint8_t ggml_fp32_to_fp8_e4m3(float x) {
++    uint32_t bits;
++    memcpy(&bits, &x, sizeof(bits));
++    const uint32_t sign = (bits >> 31) & 1u;
++    if (!isfinite(x)) {
++        return (uint8_t) ((sign << 7) | 0x7F);
++    }
++    float ax = fabsf(x);
++    if (!(ax > 0.0f)) {
++        return (uint8_t) (sign << 7);
++    }
++    if (ax > 448.0f) {
++        ax = 448.0f;
++    }
++    memcpy(&bits, &ax, sizeof(bits));
++    const int fp32_exp = ((int) ((bits >> 23) & 0xFFu)) - 127;
++    const int fp32_man = (int) ((bits >> 20) & 0x7u);
++    const int round_bit = (int) ((bits >> 19) & 1u);
++    int e4 = fp32_exp + 7;
++    if (e4 <= 0) {
++        int man = (int) (ax * 512.0f + 0.5f);
++        if (man > 7) {
++            man = 7;
++        }
++        if (man < 1) {
++            return (uint8_t) (sign << 7);
++        }
++        return (uint8_t) ((sign << 7) | man);
++    }
++    int man = fp32_man + round_bit;
++    if (man > 7) {
++        man = 0;
++        e4++;
++    }
++    // E4M3FN: exp==15 with mant 0..6 is finite (up to 448); mant 7 is NaN — saturate to 0x7E.
++    if (e4 > 15 || (e4 == 15 && man >= 7)) {
++        return (uint8_t) ((sign << 7) | 0x7E);
++    }
++    return (uint8_t) ((sign << 7) | (e4 << 3) | man);
++}
++
++
+ /**
+  * Converts brain16 to float32.
+  *
+diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
+index d47156b..3c8a678 100644
+--- a/ggml/src/ggml-quants.c
++++ b/ggml/src/ggml-quants.c
+@@ -416,6 +416,25 @@ void quantize_row_nvfp4_ref(const float * GGML_RESTRICT x, block_nvfp4 * GGML_RE
+     }
+ }
+ 
++void quantize_row_fp8_e4m3_ref(const float * GGML_RESTRICT x, block_fp8_e4m3 * GGML_RESTRICT y, int64_t k) {
++    assert(k % QK_FP8_E4M3 == 0);
++    const int nb = k / QK_FP8_E4M3;
++
++    for (int i = 0; i < nb; i++) {
++        float amax = 0.0f;
++        for (int j = 0; j < QK_FP8_E4M3; j++) {
++            amax = MAX(amax, fabsf(x[i * QK_FP8_E4M3 + j]));
++        }
++        const float d = amax / 448.0f;
++        const float id = d ? 1.0f / d : 0.0f;
++        y[i].d = GGML_FP32_TO_FP16(d);
++        for (int j = 0; j < QK_FP8_E4M3; ++j) {
++            y[i].qs[j] = ggml_fp32_to_fp8_e4m3(x[i * QK_FP8_E4M3 + j] * id);
++        }
++    }
++}
++
++
+ void dequantize_row_q1_0(const block_q1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+     static const int qk = QK1_0;
+ 
+@@ -611,6 +630,20 @@ void dequantize_row_nvfp4(const block_nvfp4 * GGML_RESTRICT x, float * GGML_REST
+     }
+ }
+ 
++void dequantize_row_fp8_e4m3(const block_fp8_e4m3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
++    static const int qk = QK_FP8_E4M3;
++    assert(k % qk == 0);
++    const int nb = k / qk;
++
++    for (int i = 0; i < nb; i++) {
++        const float d = GGML_FP16_TO_FP32(x[i].d);
++        for (int j = 0; j < qk; ++j) {
++            y[i * qk + j] = ggml_fp8_e4m3_to_fp32(x[i].qs[j]) * d;
++        }
++    }
++}
++
++
+ //
+ // 2-6 bit quantization in super-blocks
+ //
+@@ -2311,6 +2344,13 @@ size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+     return nrow * ggml_row_size(GGML_TYPE_NVFP4, n_per_row);
+ }
+ 
++size_t quantize_fp8_e4m3(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
++    GGML_UNUSED(quant_weights);
++    quantize_row_fp8_e4m3_ref(src, dst, (int64_t)nrow*n_per_row);
++    return nrow * ggml_row_size(GGML_TYPE_FP8_E4M3, n_per_row);
++}
++
++
+ // ====================== Ternary (de)-quantization (BitNet b1.58 and TriLMs)
+ 
+ void quantize_row_tq1_0_ref(const float * GGML_RESTRICT x, block_tq1_0 * GGML_RESTRICT y, int64_t k) {
+diff --git a/ggml/src/ggml-quants.h b/ggml/src/ggml-quants.h
+index ac6b83d..275a96a 100644
+--- a/ggml/src/ggml-quants.h
++++ b/ggml/src/ggml-quants.h
+@@ -25,6 +25,7 @@ GGML_API void quantize_row_q8_1_ref(const float * GGML_RESTRICT x, block_q8_1 *
+ 
+ GGML_API void quantize_row_mxfp4_ref(const float * GGML_RESTRICT x, block_mxfp4 * GGML_RESTRICT y, int64_t k);
+ GGML_API void quantize_row_nvfp4_ref(const float * GGML_RESTRICT x, block_nvfp4 * GGML_RESTRICT y, int64_t k);
++GGML_API void quantize_row_fp8_e4m3_ref(const float * GGML_RESTRICT x, block_fp8_e4m3 * GGML_RESTRICT y, int64_t k);
+ 
+ GGML_API void quantize_row_q2_K_ref(const float * GGML_RESTRICT x, block_q2_K * GGML_RESTRICT y, int64_t k);
+ GGML_API void quantize_row_q3_K_ref(const float * GGML_RESTRICT x, block_q3_K * GGML_RESTRICT y, int64_t k);
+@@ -63,6 +64,7 @@ GGML_API void dequantize_row_q8_0(const block_q8_0 * GGML_RESTRICT x, float * GG
+ 
+ GGML_API void dequantize_row_mxfp4(const block_mxfp4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+ GGML_API void dequantize_row_nvfp4(const block_nvfp4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
++GGML_API void dequantize_row_fp8_e4m3(const block_fp8_e4m3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+ 
+ GGML_API void dequantize_row_q2_K(const block_q2_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+ GGML_API void dequantize_row_q3_K(const block_q3_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+@@ -135,6 +137,7 @@ GGML_API size_t quantize_q8_0(const float * GGML_RESTRICT src, void * GGML_RESTR
+ 
+ GGML_API size_t quantize_mxfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+ GGML_API size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
++GGML_API size_t quantize_fp8_e4m3(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+ 
+ GGML_API void iq2xs_init_impl(enum ggml_type type);
+ GGML_API void iq2xs_free_impl(enum ggml_type type);
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index b143474..4e870f3 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -769,6 +769,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+         .to_float                 = (ggml_to_float_t) dequantize_row_nvfp4,
+         .from_float_ref           = (ggml_from_float_t)quantize_row_nvfp4_ref,
+     },
++    [GGML_TYPE_FP8_E4M3] = {
++        .type_name                = "fp8_e4m3",
++        .blck_size                = QK_FP8_E4M3,
++        .type_size                = sizeof(block_fp8_e4m3),
++        .is_quantized             = true,
++        .to_float                 = (ggml_to_float_t) dequantize_row_fp8_e4m3,
++        .from_float_ref           = (ggml_from_float_t) quantize_row_fp8_e4m3_ref,
++    },
+     [GGML_TYPE_Q2_K] = {
+         .type_name                = "q2_K",
+         .blck_size                = QK_K,
+@@ -1509,6 +1517,7 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
+         case GGML_FTYPE_MOSTLY_Q8_0:          wtype = GGML_TYPE_Q8_0;  break;
+         case GGML_FTYPE_MOSTLY_MXFP4:         wtype = GGML_TYPE_MXFP4; break;
+         case GGML_FTYPE_MOSTLY_NVFP4:         wtype = GGML_TYPE_NVFP4; break;
++        case GGML_FTYPE_MOSTLY_FP8_E4M3:      wtype = GGML_TYPE_FP8_E4M3; break;
+         case GGML_FTYPE_MOSTLY_Q2_K:          wtype = GGML_TYPE_Q2_K;  break;
+         case GGML_FTYPE_MOSTLY_Q3_K:          wtype = GGML_TYPE_Q3_K;  break;
+         case GGML_FTYPE_MOSTLY_Q4_K:          wtype = GGML_TYPE_Q4_K;  break;
+@@ -8238,6 +8247,7 @@ size_t ggml_quantize_chunk(
+         case GGML_TYPE_Q8_0:    result = quantize_q8_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+         case GGML_TYPE_MXFP4:   result = quantize_mxfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+         case GGML_TYPE_NVFP4:   result = quantize_nvfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
++        case GGML_TYPE_FP8_E4M3: result = quantize_fp8_e4m3(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+         case GGML_TYPE_Q2_K:    result = quantize_q2_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+         case GGML_TYPE_Q3_K:    result = quantize_q3_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+         case GGML_TYPE_Q4_K:    result = quantize_q4_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index f236a5d..cb70fcc 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -5384,6 +5384,7 @@ class GGMLQuantizationType(IntEnum):
+     NVFP4   = 40
+     Q1_0    = 41
+     Q2_0    = 42
++    FP8_E4M3 = 51
+ 
+ 
+ class ExpertGatingFuncType(IntEnum):
+@@ -5438,6 +5439,7 @@ class LlamaFileType(IntEnum):
+     MOSTLY_TQ2_0         = 37  # except 1d tensors
+     MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
+     MOSTLY_NVFP4         = 39  # except 1d tensors
++    MOSTLY_FP8_E4M3      = 42  # except 1d tensors
+     MOSTLY_Q1_0          = 40  # except 1d tensors
+     MOSTLY_Q2_0          = 41  # except 1d tensors
+ 
+@@ -5574,6 +5576,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
+     GGMLQuantizationType.TQ2_0:   (256, 2 + 64),
+     GGMLQuantizationType.MXFP4:   (32, 1 + 16),
+     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
++    GGMLQuantizationType.FP8_E4M3: (32, 2 + 32),
+     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
+     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
+ }
+diff --git a/gguf-py/gguf/quants.py b/gguf-py/gguf/quants.py
+index 80966b6..a5d85ac 100644
+--- a/gguf-py/gguf/quants.py
++++ b/gguf-py/gguf/quants.py
+@@ -764,6 +764,115 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
+         return (d * vals.astype(np.float32)).reshape(n_super, 64)
+ 
+ 
++
++class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
++    """Block FP8 E4M3FN: F16 scale + 32× IEEE float8_e4m3fn (34 B / 32 elems)."""
++
++    @staticmethod
++    def e4m3_to_fp32(x: np.ndarray) -> np.ndarray:
++        x = x.astype(np.uint8)
++        sign = (x >> 7) & 1
++        exp = (x >> 3) & 0xF
++        man = (x & 0x7).astype(np.float32)
++        nan = (exp == 0xF) & ((x & 0x7) == 0x7)  # E4M3FN NaN only
++        sub = exp == 0
++        raw = np.where(
++            sub,
++            man * (2.0 ** -9),
++            (1.0 + man / 8.0) * (2.0 ** (exp.astype(np.float32) - 7.0)),
++        )
++        raw = np.where(nan | ((exp == 0) & (man == 0)), 0.0, raw)
++        return np.where(sign.astype(bool), -raw, raw)
++
++    @staticmethod
++    def fp32_to_e4m3(x: np.ndarray) -> np.ndarray:
++        x = np.asarray(x, dtype=np.float32)
++        sign = (np.signbit(x).astype(np.uint8)) << 7
++        ax = np.abs(x)
++        ax = np.minimum(ax, 448.0)
++        bits = ax.view(np.uint32)
++        fp32_exp = ((bits >> 23) & 0xFF).astype(np.int32) - 127
++        fp32_man = ((bits >> 20) & 0x7).astype(np.int32)
++        round_bit = ((bits >> 19) & 1).astype(np.int32)
++        e4 = fp32_exp + 7
++
++        sub_man = np.clip((ax * 512.0 + 0.5).astype(np.int32), 0, 7)
++        sub_res = np.where(sub_man >= 1, sub_man, 0).astype(np.uint8)
++
++        man = fp32_man + round_bit
++        exp = e4.copy()
++        overflow = man > 7
++        man = np.where(overflow, 0, man)
++        exp = np.where(overflow, exp + 1, exp)
++        # E4M3FN: exp==15 mant 0..6 is finite; only mant 7 is NaN — saturate those to 0x7E.
++        saturate = (exp > 15) | ((exp == 15) & (man >= 7))
++        normal = np.where(saturate, np.uint8(0x7E), ((exp << 3) | man).astype(np.uint8))
++
++        out = np.where(
++            ax <= 0.0,
++            np.uint8(0),
++            np.where(e4 <= 0, sub_res, normal),
++        )
++        # NaN/Inf → 0x7F
++        bad = ~np.isfinite(x)
++        out = np.where(bad, np.uint8(0x7F), out)
++        return (sign | out).astype(np.uint8)
++
++    @classmethod
++    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
++        n_blocks = blocks.shape[0]
++        amax = np.max(np.abs(blocks), axis=-1, keepdims=True)
++        d = (amax / 448.0).astype(np.float32)
++        with np.errstate(divide="ignore"):
++            id_ = np.where(d > 0, 1.0 / d, 0.0)
++        qs = cls.fp32_to_e4m3(blocks * id_)
++        d_f16 = d.astype(np.float16).view(np.uint8).reshape(n_blocks, 2)
++        return np.concatenate([d_f16, qs], axis=-1)
++
++    @classmethod
++    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
++        n_blocks = blocks.shape[0]
++        d_f16, qs = np.hsplit(blocks, [2])
++        d = d_f16.view(np.float16).astype(np.float32).reshape(n_blocks, 1)
++        vals = cls.e4m3_to_fp32(qs)
++        return d * vals
++
++    @classmethod
++    def pack_e4m3_with_scale(cls, qs: np.ndarray, scale: float | np.ndarray) -> np.ndarray:
++        """Pack raw float8_e4m3fn bytes with per-tensor or per-row F32 scale into blocks.
++
++        qs: uint8 array shaped (rows, cols) with cols % 32 == 0.
++        scale: scalar or per-row array.
++        Returns uint8 array shaped (rows, (cols/32)*34) for GGUFWriter.
++        """
++        qs = np.asarray(qs, dtype=np.uint8)
++        if qs.ndim == 1:
++            qs = qs.reshape(1, -1)
++        flat_rows = qs.reshape(-1, qs.shape[-1])
++        rows, cols = flat_rows.shape
++        if cols % 32 != 0:
++            raise ValueError(f"FP8_E4M3 pack requires cols % 32 == 0, got {cols}")
++        n_blocks_per_row = cols // 32
++        scale_arr = np.asarray(scale, dtype=np.float32)
++        if scale_arr.ndim == 0:
++            scale_arr = np.full((rows,), float(scale_arr), dtype=np.float32)
++        else:
++            scale_arr = scale_arr.reshape(-1)
++            if scale_arr.size == 1:
++                scale_arr = np.full((rows,), float(scale_arr[0]), dtype=np.float32)
++            if scale_arr.size != rows:
++                raise ValueError(f"scale size {scale_arr.size} != rows {rows}")
++
++        out = np.empty((rows, n_blocks_per_row, 34), dtype=np.uint8)
++        for r in range(rows):
++            d_f16 = np.frombuffer(np.float16(scale_arr[r]).tobytes(), dtype=np.uint8)
++            for b in range(n_blocks_per_row):
++                out[r, b, 0:2] = d_f16
++                out[r, b, 2:] = flat_rows[r, b * 32:(b + 1) * 32]
++        return out.reshape(rows, n_blocks_per_row * 34)
++
++
++
+ class IQ2_XXS(__Quant, qtype=GGMLQuantizationType.IQ2_XXS):
+     ksigns: bytes = (
+         b"\x00\x81\x82\x03\x84\x05\x06\x87\x88\x09\x0a\x8b\x0c\x8d\x8e\x0f"
+diff --git a/include/llama.h b/include/llama.h
+index a8a2080..118732e 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -156,6 +156,7 @@ extern "C" {
+         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
+         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
+         LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
++        LLAMA_FTYPE_MOSTLY_FP8_E4M3      = 42, // except 1d tensors
+ 
+         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
+     };
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index cab7f1e..1e41dfb 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -47,6 +47,7 @@ const char * llama_ftype_name(llama_ftype ftype) {
+         case LLAMA_FTYPE_MOSTLY_Q8_0:      name = LLAMA_FTYPE_PREFIX "Q8_0"; break;
+         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: name = LLAMA_FTYPE_PREFIX "MXFP4 MoE"; break;
+         case LLAMA_FTYPE_MOSTLY_NVFP4:     name = LLAMA_FTYPE_PREFIX "NVFP4"; break;
++        case LLAMA_FTYPE_MOSTLY_FP8_E4M3:  name = LLAMA_FTYPE_PREFIX "FP8_E4M3"; break;
+         case LLAMA_FTYPE_MOSTLY_Q2_K:      name = LLAMA_FTYPE_PREFIX "Q2_K - Medium"; break;
+         case LLAMA_FTYPE_MOSTLY_Q2_K_S:    name = LLAMA_FTYPE_PREFIX "Q2_K - Small"; break;
+         case LLAMA_FTYPE_MOSTLY_Q3_K_S:    name = LLAMA_FTYPE_PREFIX "Q3_K - Small"; break;
+@@ -776,6 +777,7 @@ llama_model_loader::llama_model_loader(
+             case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
+             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
+             case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;
++            case GGML_TYPE_FP8_E4M3: ftype = LLAMA_FTYPE_MOSTLY_FP8_E4M3; break;
+             case GGML_TYPE_Q1_0:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0;    break;
+             case GGML_TYPE_Q2_0:    ftype = LLAMA_FTYPE_MOSTLY_Q2_0;    break;
+             default:

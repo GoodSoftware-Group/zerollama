@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 25 Jul 2026 21:07:04 -0700
+Subject: [PATCH] llama-bench: accept Eliza L2 fork KV type names for -ctk/-ctv
+
+llama-bench hardcodes ggml_type_from_name separately from common/arg.cpp;
+without TBQ/QJL/Polar aliases, L2 bench legs reject fork profiles.
+---
+ tools/llama-bench/llama-bench.cpp | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/tools/llama-bench/llama-bench.cpp b/tools/llama-bench/llama-bench.cpp
+index a2da93b..893cf4b 100644
+--- a/tools/llama-bench/llama-bench.cpp
++++ b/tools/llama-bench/llama-bench.cpp
+@@ -500,6 +500,32 @@ static ggml_type ggml_type_from_name(const std::string & s) {
+     if (s == "iq4_nl") {
+         return GGML_TYPE_IQ4_NL;
+     }
++    // Eliza L2 fork KV types (TBQ / QJL / Polar) — llama-bench hardcodes names
++    // separately from common/arg.cpp; without these -ctk rejects fork profiles.
++    if (s == "tbq3_0") {
++        return GGML_TYPE_TBQ3_0;
++    }
++    if (s == "tbq4_0") {
++        return GGML_TYPE_TBQ4_0;
++    }
++    if (s == "tbq3_k") {
++        return GGML_TYPE_TBQ3_K;
++    }
++    if (s == "tbq4_k") {
++        return GGML_TYPE_TBQ4_K;
++    }
++    if (s == "qjl1_256") {
++        return GGML_TYPE_QJL1_256;
++    }
++    if (s == "q4_polar") {
++        return GGML_TYPE_Q4_POLAR;
++    }
++    if (s == "tbq3_tcq") {
++        return GGML_TYPE_TBQ3_TCQ;
++    }
++    if (s == "e8_2") {
++        return GGML_TYPE_E8_2;
++    }
+ 
+     return GGML_TYPE_COUNT;
+ }
