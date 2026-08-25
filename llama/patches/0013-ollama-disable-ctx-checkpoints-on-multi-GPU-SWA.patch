@@ -12,10 +12,10 @@ n_swa > 0 and more than one GPU is present.
  1 file changed, 20 insertions(+)
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 842e4203c..1f85efa6c 100644
+index a9edbd7..fb6dcfb 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -1192,6 +1192,26 @@ private:
+@@ -1150,6 +1150,26 @@ private:
  
          n_swa = params_base.swa_full ? 0 : llama_model_n_swa(model_tgt);
  

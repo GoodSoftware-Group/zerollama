@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 14 Jul 2026 15:25:42 -0700
+Subject: [PATCH] ggml-cuda: enable TBQ SET_ROWS/GET_ROWS and fattn vec routing
+
+Without SET_ROWS support, TBQ KV aborts; fattn must route TBQ K/V to
+VEC-only kernels (tile path lacks TBQ instances).
+---
+ ggml/src/ggml-cuda/fattn.cu     | 26 +++++++++++++++++++++++++-
+ ggml/src/ggml-cuda/ggml-cuda.cu | 12 +++++++++++-
+ ggml/src/ggml-cuda/set-rows.cu  | 21 +++++++++++++++++++++
+ 3 files changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index ab7a3b2..6d92e1b 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -317,11 +317,20 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_BF16)
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_BF16)
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
++
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ3_0)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0)
+ #else
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ3_0)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0)
++    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0)
+ #endif // GGML_CUDA_FA_ALL_QUANTS
+ 
+     GGML_ABORT("fatal error");
+@@ -349,6 +358,8 @@ static bool ggml_cuda_fattn_kv_type_supported(ggml_type type) {
+         case GGML_TYPE_Q4_0:
+         case GGML_TYPE_Q8_0:
+         case GGML_TYPE_BF16:
++        case GGML_TYPE_TBQ3_0:
++        case GGML_TYPE_TBQ4_0:
+             return true;
+         default:
+             return false;
+@@ -373,6 +384,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+     float max_bias = 0.0f;
+     memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
+ 
++    const bool K_tbq = K->type == GGML_TYPE_TBQ3_0 || K->type == GGML_TYPE_TBQ4_0;
++    const bool V_tbq = V->type == GGML_TYPE_TBQ3_0 || V->type == GGML_TYPE_TBQ4_0;
++    const bool KV_tbq = K_tbq && V_tbq;
++
+     // The effective batch size for the kernel can be increased by gqa_ratio.
+     // The kernel versions without this optimization are also used for ALiBi, if there is no mask, or if the KV cache is not padded,
+     bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+@@ -440,11 +455,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+     }
+ 
+ #ifndef GGML_CUDA_FA_ALL_QUANTS
+-    if (K->type != V->type) {
++    if (K->type != V->type && !KV_tbq) {
+         return BEST_FATTN_KERNEL_NONE;
+     }
+ #endif // GGML_CUDA_FA_ALL_QUANTS
+ 
++    if (K_tbq != V_tbq) {
++        return BEST_FATTN_KERNEL_NONE;
++    }
++
+     if (!ggml_cuda_fattn_kv_type_supported(K->type) || !ggml_cuda_fattn_kv_type_supported(V->type)) {
+         return BEST_FATTN_KERNEL_NONE;
+     }
+@@ -457,6 +476,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
+     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+ 
++    // TBQ only has fattn-vec instances (no MMA/WMMA path).
++    if (KV_tbq) {
++        return can_use_vector_kernel ? BEST_FATTN_KERNEL_VEC : BEST_FATTN_KERNEL_NONE;
++    }
++
+     // If Turing tensor cores are available, use them:
+     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+         if (can_use_vector_kernel) {
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index dcf7ddc..3879fc8 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -5117,6 +5117,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+                     case GGML_TYPE_IQ1_S:
+                     case GGML_TYPE_IQ1_M:
+                     case GGML_TYPE_IQ4_XS:
++                    case GGML_TYPE_TBQ3_0:
++                    case GGML_TYPE_TBQ4_0:
+                         return true;
+                     case GGML_TYPE_IQ4_NL:
+                     case GGML_TYPE_MXFP4:
+@@ -5137,7 +5139,15 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+                            (
+                                (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16 ||
+                                op->type == GGML_TYPE_Q4_0 || op->type == GGML_TYPE_Q4_1 || op->type == GGML_TYPE_Q5_0 ||
+-                               op->type == GGML_TYPE_Q5_1 || op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_IQ4_NL) &&
++                               op->type == GGML_TYPE_Q5_1 || op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_IQ4_NL ||
++                               op->type == GGML_TYPE_TBQ3_0 || op->type == GGML_TYPE_TBQ4_0
++#if defined(GGML_CUDA_QJL)
++                               || op->type == GGML_TYPE_QJL1_256
++#endif
++#if defined(GGML_CUDA_POLARQUANT)
++                               || op->type == GGML_TYPE_Q4_POLAR
++#endif
++                               ) &&
+                                op->src[0]->type == GGML_TYPE_F32
+                            ) || (
+                                op->type == GGML_TYPE_F16 && op->src[0]->type == GGML_TYPE_F16
+diff --git a/ggml/src/ggml-cuda/set-rows.cu b/ggml/src/ggml-cuda/set-rows.cu
+index ba708a2..ff0f8d8 100644
+--- a/ggml/src/ggml-cuda/set-rows.cu
++++ b/ggml/src/ggml-cuda/set-rows.cu
+@@ -1,5 +1,6 @@
+ #include "set-rows.cuh"
+ #include "cpy-utils.cuh"
++#include "turboquant.cuh"
+ 
+ #if defined(GGML_CUDA_QJL)
+ #include "qjl.cuh"
+@@ -316,6 +317,26 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
+             nb1, nb2, nb3,
+             stream
+         );
++    } else if (dst->type == GGML_TYPE_TBQ3_0) {
++        set_rows_cuda_quant<idx_t, block_tbq3_0, QK_TBQ, quantize_f32_tbq3_0_block>(
++            src0_d, src1_d, (block_tbq3_0*)dst->data,
++            ne00, ne01, ne02, ne03,
++            ne10, ne11, ne12, ne13,
++            nb01, nb02, nb03,
++            nb10, nb11, nb12,
++            nb1, nb2, nb3,
++            stream
++        );
++    } else if (dst->type == GGML_TYPE_TBQ4_0) {
++        set_rows_cuda_quant<idx_t, block_tbq4_0, QK_TBQ, quantize_f32_tbq4_0_block>(
++            src0_d, src1_d, (block_tbq4_0*)dst->data,
++            ne00, ne01, ne02, ne03,
++            ne10, ne11, ne12, ne13,
++            nb01, nb02, nb03,
++            nb10, nb11, nb12,
++            nb1, nb2, nb3,
++            stream
++        );
+     } else if (dst->type == GGML_TYPE_IQ4_NL) {
+         set_rows_cuda_quant<idx_t, block_iq4_nl, QK4_NL, quantize_f32_iq4_nl_block>(
+             src0_d, src1_d, (block_iq4_nl*)dst->data,

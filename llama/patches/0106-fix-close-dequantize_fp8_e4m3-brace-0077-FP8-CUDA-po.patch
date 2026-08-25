@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 18:33:11 -0700
+Subject: [PATCH] fix: close dequantize_fp8_e4m3 brace (0077 FP8 CUDA port)
+
+---
+ ggml/src/ggml-cuda/dequantize.cuh | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/ggml/src/ggml-cuda/dequantize.cuh b/ggml/src/ggml-cuda/dequantize.cuh
+index a13ce97..3ca35b0 100644
+--- a/ggml/src/ggml-cuda/dequantize.cuh
++++ b/ggml/src/ggml-cuda/dequantize.cuh
+@@ -129,6 +129,8 @@ static __device__ __forceinline__ void dequantize_fp8_e4m3(const void * vx, cons
+ 
+     v.x *= d;
+     v.y *= d;
++}
++
+ //================================== k-quants
+ 
+ // Each call dequantizes one super-block of QK_K values into y using the

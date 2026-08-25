@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 17 Jul 2026 10:54:49 -0700
+Subject: [PATCH] ggml-cpu: drop duplicate TBQ3/TBQ4 vec_dot defs (0071+0073)
+
+Patches 0071 and 0073 each added ggml_vec_dot_tbq{3,4}_0_f32; keep one copy so Metal/CPU builds link.
+---
+ ggml/src/ggml-cpu/quants.c | 48 --------------------------------------
+ 1 file changed, 48 deletions(-)
+
+diff --git a/ggml/src/ggml-cpu/quants.c b/ggml/src/ggml-cpu/quants.c
+index 6cdc1c3..a4e5a99 100644
+--- a/ggml/src/ggml-cpu/quants.c
++++ b/ggml/src/ggml-cpu/quants.c
+@@ -700,54 +700,6 @@ void ggml_vec_dot_tbq4_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const vo
+     *s = sumf;
+ }
+ 
+-void ggml_vec_dot_tbq3_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+-    assert(n % QK_TBQ == 0);
+-    assert(nrc == 1);
+-    UNUSED(nrc);
+-    UNUSED(bs);
+-    UNUSED(bx);
+-    UNUSED(by);
+-
+-    const block_tbq3_0 * GGML_RESTRICT x = (const block_tbq3_0 *) vx;
+-    const float        * GGML_RESTRICT y = (const float *) vy;
+-
+-    float tmp[QK_TBQ];
+-    float sumf = 0.0f;
+-
+-    for (int i = 0; i < n / QK_TBQ; ++i) {
+-        dequantize_row_tbq3_0(&x[i], tmp, QK_TBQ);
+-        for (int j = 0; j < QK_TBQ; ++j) {
+-            sumf += tmp[j] * y[i*QK_TBQ + j];
+-        }
+-    }
+-
+-    *s = sumf;
+-}
+-
+-void ggml_vec_dot_tbq4_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+-    assert(n % QK_TBQ == 0);
+-    assert(nrc == 1);
+-    UNUSED(nrc);
+-    UNUSED(bs);
+-    UNUSED(bx);
+-    UNUSED(by);
+-
+-    const block_tbq4_0 * GGML_RESTRICT x = (const block_tbq4_0 *) vx;
+-    const float        * GGML_RESTRICT y = (const float *) vy;
+-
+-    float tmp[QK_TBQ];
+-    float sumf = 0.0f;
+-
+-    for (int i = 0; i < n / QK_TBQ; ++i) {
+-        dequantize_row_tbq4_0(&x[i], tmp, QK_TBQ);
+-        for (int j = 0; j < QK_TBQ; ++j) {
+-            sumf += tmp[j] * y[i*QK_TBQ + j];
+-        }
+-    }
+-
+-    *s = sumf;
+-}
+-
+ void ggml_vec_dot_tbq3_k_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+     assert(n % QK_K == 0);
+     assert(nrc == 1);

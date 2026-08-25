@@ -23,7 +23,7 @@ Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
 new file mode 100644
-index 000000000..32705a314
+index 0000000..32705a3
 --- /dev/null
 +++ b/include/llama-kv-ext.h
 @@ -0,0 +1,245 @@
@@ -273,10 +273,10 @@ index 000000000..32705a314
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 39ba3061f..6159ddd16 100644
+index c6df19f..0f6afe1 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -31,6 +31,7 @@ add_library(llama
+@@ -32,6 +32,7 @@ add_library(llama
              llama-memory-hybrid.cpp
              llama-memory-hybrid-iswa.cpp
              llama-memory-recurrent.cpp
@@ -284,7 +284,7 @@ index 39ba3061f..6159ddd16 100644
              llama-mmap.cpp
              llama-model-loader.cpp
              llama-model-saver.cpp
-@@ -40,6 +41,8 @@ add_library(llama
+@@ -41,6 +42,8 @@ add_library(llama
              llama-vocab.cpp
              unicode-data.cpp
              unicode.cpp
@@ -293,7 +293,7 @@ index 39ba3061f..6159ddd16 100644
              unicode.h
              ${LLAMA_MODELS_SOURCES}
              )
-@@ -56,6 +59,7 @@ target_compile_definitions(llama PRIVATE
+@@ -57,6 +60,7 @@ target_compile_definitions(llama PRIVATE
  )
  
  target_include_directories(llama PRIVATE .)
@@ -301,7 +301,7 @@ index 39ba3061f..6159ddd16 100644
  target_include_directories(llama PUBLIC ../include)
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
  
-@@ -64,5 +68,8 @@ target_link_libraries(llama PUBLIC ggml)
+@@ -65,5 +69,8 @@ target_link_libraries(llama PUBLIC ggml)
  if (BUILD_SHARED_LIBS)
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
@@ -311,7 +311,7 @@ index 39ba3061f..6159ddd16 100644
 +# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
 +target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 6cb6dbd2f..17ab9e30f 100644
+index 6cb6dbd..17ab9e3 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -93,12 +93,8 @@ public:
@@ -407,7 +407,7 @@ index 6cb6dbd2f..17ab9e30f 100644
  
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
 new file mode 100644
-index 000000000..d4bef15b4
+index 0000000..d4bef15
 --- /dev/null
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -0,0 +1,553 @@
@@ -966,7 +966,7 @@ index 000000000..d4bef15b4
 +}
 diff --git a/src/ollama-compat/llama-ollama-compat-util.cpp b/src/ollama-compat/llama-ollama-compat-util.cpp
 new file mode 120000
-index 000000000..916a18ff8
+index 0000000..916a18f
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat-util.cpp
 @@ -0,0 +1 @@
@@ -974,7 +974,7 @@ index 000000000..916a18ff8
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat-util.h b/src/ollama-compat/llama-ollama-compat-util.h
 new file mode 120000
-index 000000000..74c23f92d
+index 0000000..74c23f9
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat-util.h
 @@ -0,0 +1 @@
@@ -982,7 +982,7 @@ index 000000000..74c23f92d
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat.cpp b/src/ollama-compat/llama-ollama-compat.cpp
 new file mode 120000
-index 000000000..9af5aa24f
+index 0000000..9af5aa2
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat.cpp
 @@ -0,0 +1 @@
@@ -990,17 +990,17 @@ index 000000000..9af5aa24f
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat.h b/src/ollama-compat/llama-ollama-compat.h
 new file mode 120000
-index 000000000..05760aa00
+index 0000000..05760aa
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat.h
 @@ -0,0 +1 @@
 +/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
 \ No newline at end of file
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index aa97c768a..817e15d85 100644
+index e60c9c8..521f2e2 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
-@@ -80,6 +80,10 @@ set_target_properties(mtmd PROPERTIES
+@@ -82,6 +82,10 @@ set_target_properties(mtmd PROPERTIES
  target_link_libraries     (mtmd PUBLIC ggml llama)
  target_link_libraries     (mtmd PRIVATE Threads::Threads vendor::hash vendor::miniaudio vendor::stb vendor::sheredom)
  target_include_directories(mtmd PUBLIC  .)

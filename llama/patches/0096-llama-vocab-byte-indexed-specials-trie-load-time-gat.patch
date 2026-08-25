@@ -1,0 +1,200 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 30 Jul 2026 03:50:00 -0700
+Subject: [PATCH] llama-vocab: byte-indexed specials trie + load-time gates
+ (0113)
+
+Replace std::map naive_trie for specials with child[256] indices and
+precompute interesting first-byte masks at load. Dense-chat timing is
+approx noise vs 0112 (BPE dominates); identity vs FORCE_LEGACY_SPECIALS
+held. See docs/faster-bpe-tokenize.md (M15d / 0113).
+---
+ src/llama-vocab.cpp | 128 +++++++++++++++++++++++++++++++-------------
+ 1 file changed, 92 insertions(+), 36 deletions(-)
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 3649666..66907b2 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -71,6 +71,47 @@ struct naive_trie {
+     llama_token value;
+ };
+ 
++// WHY (0113): specials LTR (0111/0112) walked naive_trie (std::map per byte). Chat markers
++// are short but frequent — replace with flat child[256] indices for O(1) steps.
++struct llm_specials_byte_trie {
++    static constexpr uint32_t npos = 0; // 0 = no child; root lives at index 0
++
++    struct node {
++        uint32_t    child[256];
++        llama_token value;
++        bool        has_value;
++
++        node() : value(LLAMA_TOKEN_NULL), has_value(false) {
++            memset(child, 0, sizeof(child));
++        }
++    };
++
++    std::vector<node> nodes;
++
++    void clear() {
++        nodes.clear();
++        nodes.emplace_back();
++    }
++
++    void insert(const char * key, size_t len, llama_token id) {
++        if (nodes.empty()) {
++            clear();
++        }
++        uint32_t cur = 0;
++        for (size_t i = 0; i < len; ++i) {
++            const unsigned char c = (unsigned char) key[i];
++            uint32_t & slot = nodes[cur].child[c];
++            if (slot == npos) {
++                slot = (uint32_t) nodes.size();
++                nodes.emplace_back();
++            }
++            cur = slot;
++        }
++        nodes[cur].has_value = true;
++        nodes[cur].value = id;
++    }
++};
++
+ //
+ // tokenizers
+ //
+@@ -2333,9 +2374,14 @@ struct llama_vocab::impl {
+     std::vector<token_data>                      id_to_token;
+ 
+     std::vector<llama_token> cache_special_tokens;
+-    // WHY (0112): LTR partition (0111) still memcmp'd every special sharing first byte
+-    // (Qwen ~200 starting with '<') at each candidate. Load-time trie → O(match len).
+-    struct naive_trie cache_specials_trie;
++    // WHY (0112/0113): LTR partition — byte-indexed specials trie + load-time first-byte gates.
++    llm_specials_byte_trie cache_specials_trie;
++    bool specials_interesting[256]    = {};
++    bool specials_interesting_ud[256] = {}; // excludes CONTROL|UNKNOWN (parse_special=false)
++    int  specials_n_interesting       = 0;
++    int  specials_n_interesting_ud    = 0;
++    unsigned char specials_only_byte    = 0;
++    unsigned char specials_only_byte_ud = 0;
+     std::vector<std::string> cache_token_to_piece; // llama_token_to_piece(special = true);
+     struct pair_hash {
+         size_t operator()(const std::pair<std::string, std::string> & p) const {
+@@ -3511,15 +3557,39 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+             }
+         );
+ 
+-        cache_specials_trie = naive_trie();
++        cache_specials_trie.clear();
++        memset(specials_interesting, 0, sizeof(specials_interesting));
++        memset(specials_interesting_ud, 0, sizeof(specials_interesting_ud));
++        specials_n_interesting = 0;
++        specials_n_interesting_ud = 0;
++        specials_only_byte = 0;
++        specials_only_byte_ud = 0;
+         for (const llama_token special_id : cache_special_tokens) {
+             const auto & text = id_to_token[special_id].text;
+-            if (!text.empty()) {
+-                cache_specials_trie.insert(text.data(), text.size(), special_id);
++            if (text.empty()) {
++                continue;
++            }
++            cache_specials_trie.insert(text.data(), text.size(), special_id);
++            const unsigned char b0 = (unsigned char) text[0];
++            if (!specials_interesting[b0]) {
++                specials_interesting[b0] = true;
++                specials_only_byte = b0;
++                ++specials_n_interesting;
++            }
++            const auto attr = id_to_token[special_id].attr;
++            if (!(attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
++                if (!specials_interesting_ud[b0]) {
++                    specials_interesting_ud[b0] = true;
++                    specials_only_byte_ud = b0;
++                    ++specials_n_interesting_ud;
++                }
+             }
+         }
+ 
+         LLAMA_LOG_INFO("%s: special tokens cache size = %u\n", __func__, (uint32_t) cache_special_tokens.size());
++        LLAMA_LOG_INFO("%s: specials trie nodes = %zu (%.2f KB)\n", __func__,
++                cache_specials_trie.nodes.size(),
++                cache_specials_trie.nodes.size() * sizeof(llm_specials_byte_trie::node) / 1024.0);
+     }
+ 
+     // build token to piece cache
+@@ -3722,34 +3792,18 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
+ // #define PRETOKENIZERDEBUG
+ 
+ void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const {
+-    // WHY (0111/0112): legacy is O(|specials| × |fragments| × find). Chat megaprompts with
+-    // hundreds of specials (Qwen ~294) and repeated `<|im_start|>` explode into thousands
+-    // of fragments, then re-walk them for every remaining special. LTR first-byte gate +
+-    // trie longest-match (0112) at each candidate matches typical HF leftmost-longest;
+-    // keep legacy behind LLAMA_BPE_FORCE_LEGACY_SPECIALS=1 for identity A/B.
++    // WHY (0111–0113): legacy is O(|specials| × |fragments| × find). LTR first-byte gate +
++    // byte-indexed trie longest-match; FORCE_LEGACY_SPECIALS keeps nested find for identity A/B.
+     if (getenv("LLAMA_BPE_FORCE_LEGACY_SPECIALS") != nullptr) {
+         tokenizer_st_partition_legacy(buffer, parse_special);
+         return;
+     }
+ 
+-    // First-byte gate from eligible specials (same filter as match walk).
+-    bool interesting[256] = {};
+-    int n_interesting = 0;
+-    unsigned char only_interesting = 0;
+-    for (const llama_token special_id : cache_special_tokens) {
+-        const auto & data = vocab.get_token_data(special_id);
+-        if (!parse_special && (data.attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
+-            continue;
+-        }
+-        if (data.text.empty()) {
+-            continue;
+-        }
+-        const unsigned char b0 = (unsigned char) data.text[0];
+-        if (!interesting[b0]) {
+-            interesting[b0] = true;
+-            only_interesting = b0;
+-            ++n_interesting;
+-        }
++    const bool * interesting = parse_special ? specials_interesting : specials_interesting_ud;
++    const int n_interesting = parse_special ? specials_n_interesting : specials_n_interesting_ud;
++    const unsigned char only_interesting = parse_special ? specials_only_byte : specials_only_byte_ud;
++    if (n_interesting == 0) {
++        return; // no eligible specials — leave buffer unchanged
+     }
+ 
+     std::forward_list<fragment_buffer_variant> out;
+@@ -3791,21 +3845,23 @@ void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer
+                 continue;
+             }
+ 
+-            // Walk specials trie; keep longest eligible match (leftmost-longest at pos).
+-            const naive_trie * node = &cache_specials_trie;
++            // Walk byte-indexed specials trie; keep longest eligible match at pos.
++            uint32_t cur = 0;
+             llama_token best_id = LLAMA_TOKEN_NULL;
+             size_t best_len = 0;
+             for (uint64_t i = pos; i < frag_end; ++i) {
+-                node = node->traverse(raw_text[i]);
+-                if (!node) {
++                const uint32_t next = cache_specials_trie.nodes[cur].child[(unsigned char) raw_text[i]];
++                if (next == llm_specials_byte_trie::npos) {
+                     break;
+                 }
+-                if (node->has_value) {
+-                    const auto & data = vocab.get_token_data(node->value);
++                cur = next;
++                const auto & node = cache_specials_trie.nodes[cur];
++                if (node.has_value) {
++                    const auto & data = vocab.get_token_data(node.value);
+                     if (!parse_special && (data.attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN))) {
+                         continue;
+                     }
+-                    best_id = node->value;
++                    best_id = node.value;
+                     best_len = (size_t) (i + 1 - pos);
+                 }
+             }

@@ -8,10 +8,10 @@ Subject: [PATCH] ollama: llama-kv-ext Phase 15 tensor page bind (b9611)
  1 file changed, 53 insertions(+)
 
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 5382cd726..8ea01dd73 100644
+index ec0f5a7..1f0c76e 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -678,6 +678,59 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
+@@ -680,6 +680,59 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
      return cells.seq_pos_max(seq_id);
  }
  

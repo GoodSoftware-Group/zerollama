@@ -1,0 +1,949 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 17 Jul 2026 09:49:18 -0700
+Subject: [PATCH] ollama: extend ANE dflash draft hook and export APIs
+
+---
+ common/ane_draft_hook.cpp   | 369 ++++++++++++++++++++++++++++++++++--
+ common/ane_draft_hook.h     |  14 ++
+ common/ane_draft_session.mm |  74 ++++++--
+ common/speculative.cpp      |  53 +++++-
+ src/llama-context.cpp       |  20 ++
+ src/llama-ext.h             |  83 ++++++++
+ 6 files changed, 578 insertions(+), 35 deletions(-)
+
+diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
+index 849963b..07a24ba 100644
+--- a/common/ane_draft_hook.cpp
++++ b/common/ane_draft_hook.cpp
+@@ -11,11 +11,46 @@
+ 
+ #if defined(__APPLE__)
+ #include "ggml-metal.h"
++
++static bool ane_iosurface_lifecycle_log_enabled(void);
++
++// P70 (lab): scope guard pausing the ggml-metal residency-set keep-alive heartbeat for the
++// duration of a long host-side (CPU) compute window where we make no GPU submissions on
++// `dev`. See ggml_backend_metal_dev_rsets_pause/resume (ggml-metal.h) for why: without this,
++// the background heartbeat's periodic requestResidency calls can race a subsequent Metal
++// command-encoder/resource-list mutation once the host window is wide enough (observed as an
++// intermittent SIGSEGV in AGX resource-list code / IOGPUMetalCommandBufferStorageReset).
++// Opt out via ZEROLLAMA_ANE_RSETS_PAUSE=0 for A/B (default: paused).
++struct ane_metal_rsets_pause_guard {
++    ggml_backend_dev_t dev = nullptr;
++    explicit ane_metal_rsets_pause_guard(ggml_backend_dev_t d) {
++        const char * v = std::getenv("ZEROLLAMA_ANE_RSETS_PAUSE");
++        const bool enabled = !(v && v[0] == '0' && v[1] == '\0');
++        static std::atomic<bool> logged { false };
++        if (!logged.exchange(true) && ane_iosurface_lifecycle_log_enabled()) {
++            LOG_INF("%s: P70 rsets pause guard enabled=%d dev=%p\n", __func__, (int) enabled, (void *) d);
++        }
++        if (enabled && d) {
++            dev = d;
++            ggml_backend_metal_dev_rsets_pause(dev);
++        }
++    }
++    ~ane_metal_rsets_pause_guard() {
++        if (dev) {
++            ggml_backend_metal_dev_rsets_resume(dev);
++        }
++    }
++    ane_metal_rsets_pause_guard(const ane_metal_rsets_pause_guard &) = delete;
++    ane_metal_rsets_pause_guard & operator=(const ane_metal_rsets_pause_guard &) = delete;
++};
+ #endif
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <map>
+ #include <mutex>
++#include <chrono>
++#include <thread>
+ #include <tuple>
+ #include <unordered_map>
+ #include <array>
+@@ -102,6 +137,9 @@ static void matmul_golden_reference(const float * input, int ic, int oc,
+ static void matmul_golden_reference_t(const float * input, int ic, int oc,
+                                       const std::vector<float> & W, bool w_transposed,
+                                       std::vector<float> & ref);
++#if defined(__APPLE__)
++static ggml_backend_dev_t ane_metal_device_for_iosurface(void);
++#endif
+ static float ane_silu_host(float x);
+ static void ane_stash_handoff_hidden(const float * h, int n);
+ static const float * ane_handoff_hidden_for_golden(struct llama_context * ctx_dft, int32_t i_batch, int * out_len);
+@@ -1421,18 +1459,59 @@ static bool load_matmul_golden_weights(const char * path, int ic, int oc, std::v
+     return true;
+ }
+ 
++// P70: was a naive scalar double-accum loop (single-threaded). For the FFN-sized shapes hit by
++// the dflash host_layer_tail/post_eval path (ic/oc up to ~17-25k), that took multiple seconds
++// per matmul — enough idle time on ctx_dft's Metal side to widen a resource-list race with the
++// ggml-metal residency heartbeat thread (see docs/ane-draft-inprocess.md handoff crash notes).
++// Parallelize across output channels (float accum is fine here — accuracy vs the double-accum
++// version is not the bottleneck; wall-clock time closing the race window is). Falls back to the
++// single-threaded path for small shapes where thread setup overhead would dominate.
+ static void matmul_golden_reference(const float * input, int ic, int oc,
+                                       const std::vector<float> & W, std::vector<float> & ref) {
+     ref.assign((size_t) oc, 0.f);
+     if (!input || (int) W.size() < ic * oc) {
+         return;
+     }
+-    for (int o = 0; o < oc; ++o) {
+-        double sum = 0.0;
+-        for (int i = 0; i < ic; ++i) {
+-            sum += (double) input[i] * (double) W[(size_t) i * (size_t) oc + (size_t) o];
++
++    const int64_t work = (int64_t) ic * (int64_t) oc;
++    const unsigned hw_threads = std::thread::hardware_concurrency();
++    const int n_threads = (work > 262144 && hw_threads > 1)
++        ? (int) std::min<unsigned>(hw_threads, 8)
++        : 1;
++
++    const float * in_ptr  = input;
++    const float * w_ptr   = W.data();
++    float       * out_ptr = ref.data();
++
++    auto run_range = [&](int o_begin, int o_end) {
++        for (int o = o_begin; o < o_end; ++o) {
++            float sum = 0.f;
++            const float * w_col = w_ptr + (size_t) o;
++            for (int i = 0; i < ic; ++i) {
++                sum += in_ptr[i] * w_col[(size_t) i * (size_t) oc];
++            }
++            out_ptr[o] = sum;
+         }
+-        ref[(size_t) o] = (float) sum;
++    };
++
++    if (n_threads <= 1) {
++        run_range(0, oc);
++        return;
++    }
++
++    std::vector<std::thread> pool;
++    pool.reserve((size_t) n_threads);
++    const int chunk = (oc + n_threads - 1) / n_threads;
++    for (int t = 0; t < n_threads; ++t) {
++        const int o_begin = t * chunk;
++        const int o_end   = std::min(oc, o_begin + chunk);
++        if (o_begin >= o_end) {
++            break;
++        }
++        pool.emplace_back(run_range, o_begin, o_end);
++    }
++    for (auto & th : pool) {
++        th.join();
+     }
+ }
+ 
+@@ -3765,8 +3844,10 @@ static bool ane_dflash_run_host_fc(const float * input, int ic_in, std::vector<f
+ }
+ 
+ static bool ane_metal_golden_enabled(void) {
+-    return ane_draft_telemetry_enabled() ||
+-           common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF;
++    // Telemetry-only. Do NOT enable on drive/shadow alone: that forced P29
++    // llama_synchronize + Metal export snaps during every handoff and correlated with
++    // intermittent NSLock / ObjC method-cache corruption on the next tgt decode.
++    return ane_draft_telemetry_enabled();
+ }
+ 
+ // P37: chain17 bisect legs default on when B8m telemetry is active (opt-out via env=0).
+@@ -5193,7 +5274,25 @@ static void log_ane_metal_golden_chain_output(int step, llama_context * ctx_dft,
+     }
+ }
+ 
++// Lab bisect: ZEROLLAMA_ANE_POST_EVAL_STAGE=N stops post_eval pipeline after sub-stage N.
++//   0 = host attn only
++//   1 = + attn_wo eval + inpSA residual + ffn_skip stash
++//   2 = + attn_post_norm
++//   3 = + ffn_gate
++//   4 = + ffn_up/swiglu/down + residual + host_layer_tail  <-- suspected crash site
++//   5 = + output_norm (full, default)
++static int ane_post_eval_stage_limit(void) {
++    if (const char * v = std::getenv("ZEROLLAMA_ANE_POST_EVAL_STAGE")) {
++        const int n = (int) strtol(v, nullptr, 10);
++        if (n >= 0 && n <= 5) {
++            return n;
++        }
++    }
++    return 5;
++}
++
+ static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
++    const int stage_lim = ane_post_eval_stage_limit();
+     if (ane_draft_session_dflash_chain13_active() || ane_draft_session_dflash_chain14_active() ||
+         ane_draft_session_dflash_chain15_active() || ane_draft_session_dflash_chain16_active() ||
+         ane_draft_session_dflash_chain17_active()) {
+@@ -5206,6 +5305,10 @@ static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
+             return false;
+         }
+     }
++    if (stage_lim <= 0) {
++        LOG_INF("%s: POST_EVAL_STAGE=0 stop after host_attn\n", __func__);
++        return true;
++    }
+     if (ane_draft_session_dflash_chain14_active() || ane_draft_session_dflash_chain15_active() ||
+         ane_draft_session_dflash_chain16_active() || ane_draft_session_dflash_chain17_active()) {
+         if (!ane_draft_session_eval_dflash_attn_wo()) {
+@@ -5232,25 +5335,45 @@ static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
+             return false;
+         }
+     }
++    if (stage_lim <= 1) {
++        LOG_INF("%s: POST_EVAL_STAGE=1 stop after attn_wo+residual+ffn_skip\n", __func__);
++        return true;
++    }
+     if (ane_draft_session_dflash_chain15_active() || ane_draft_session_dflash_chain16_active() ||
+         ane_draft_session_dflash_chain17_active()) {
+         if (!ane_draft_session_eval_dflash_attn_post_norm()) {
+             return false;
+         }
+     }
++    if (stage_lim <= 2) {
++        LOG_INF("%s: POST_EVAL_STAGE=2 stop after attn_post_norm\n", __func__);
++        return true;
++    }
+     if (ane_draft_session_dflash_chain15_active() || ane_draft_session_dflash_chain16_active() ||
+         ane_draft_session_dflash_chain17_active()) {
+         if (!ane_draft_session_eval_dflash_ffn_gate()) {
+             return false;
+         }
+     }
++    if (stage_lim <= 3) {
++        LOG_INF("%s: POST_EVAL_STAGE=3 stop after ffn_gate\n", __func__);
++        return true;
++    }
+     if (ane_draft_session_dflash_chain16_active() || ane_draft_session_dflash_chain17_active()) {
+         if (!ane_draft_session_eval_dflash_ffn_up_swiglu_down()) {
+             return false;
+         }
++        if (std::getenv("ZEROLLAMA_ANE_POST_EVAL_STAGE_3B")) {
++            LOG_INF("%s: POST_EVAL_STAGE=3b stop after ffn_up_swiglu_down (before residual)\n", __func__);
++            return true;
++        }
+         if (!ane_dflash_apply_ffn_residual()) {
+             return false;
+         }
++        if (stage_lim <= 4) {
++            LOG_INF("%s: POST_EVAL_STAGE=4a stop before host_layer_tail\n", __func__);
++            return true;
++        }
+         if (!ane_dflash_post_eval_host_layer_tail(ctx_dft)) {
+             return false;
+         }
+@@ -5262,6 +5385,10 @@ static bool ane_dflash_post_eval_pipeline(llama_context * ctx_dft) {
+             }
+         }
+     }
++    if (stage_lim <= 4) {
++        LOG_INF("%s: POST_EVAL_STAGE=4 stop after ffn_up/down+residual (+layer_tail if n_layer>1)\n", __func__);
++        return true;
++    }
+     if (ane_draft_session_dflash_chain17_active()) {
+         if (!ane_draft_session_eval_dflash_output_norm()) {
+             return false;
+@@ -6793,7 +6920,38 @@ static ggml_backend_dev_t ane_metal_device_for_iosurface(void) {
+     return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+ }
+ 
+-static bool pack_draft_hidden_into_iosurface(const float * src, int src_len) {
++// Reuse ggml IOSurface map across handoffs — why: alloc/free each step added e2e overhead.
++// P67: this buffer wraps an MTLResidencySet registered with the Metal device (see
++// ggml_metal_buffer_map_iosurface / rset_init). It must be freed before process exit or
++// ggml_metal_rsets_free() asserts `[rsets->data count] == 0` during "cleaning up before exit".
++// Freed on resize below and via common_ane_draft_shutdown_iosurface_cache() at server teardown.
++struct cached_iosurface_buf {
++    uint32_t sid = 0;
++    size_t bytes = 0;
++    ggml_backend_buffer_t buf = nullptr;
++};
++static cached_iosurface_buf g_iosurface_cache;
++
++static bool ane_iosurface_lifecycle_log_enabled(void) {
++    const char * v = std::getenv("ZEROLLAMA_ANE_IOSURFACE_LIFECYCLE_LOG");
++    return v && v[0] == '1';
++}
++
++void common_ane_draft_shutdown_iosurface_cache(void) {
++    if (g_iosurface_cache.buf) {
++        if (ane_iosurface_lifecycle_log_enabled()) {
++            LOG_INF("%s: free cached iosurface buf=%p sid=%u bytes=%zu\n",
++                    __func__, (void *) g_iosurface_cache.buf,
++                    (unsigned) g_iosurface_cache.sid, g_iosurface_cache.bytes);
++        }
++        ggml_backend_buffer_free(g_iosurface_cache.buf);
++        g_iosurface_cache.buf = nullptr;
++        g_iosurface_cache.sid = 0;
++        g_iosurface_cache.bytes = 0;
++    }
++}
++
++static bool pack_draft_hidden_into_iosurface(const float * src, int src_len, llama_context * ctx_dft) {
+     const uint32_t surface_id = ane_draft_session_surface_id();
+     const size_t surface_bytes = ane_draft_session_surface_bytes();
+     const int ch = ane_draft_session_channels();
+@@ -6808,16 +6966,29 @@ static bool pack_draft_hidden_into_iosurface(const float * src, int src_len) {
+         return false;
+     }
+ 
+-    // Reuse ggml IOSurface map across handoffs — why: alloc/free each step added e2e overhead.
+-    struct cached_iosurface_buf {
+-        uint32_t sid = 0;
+-        size_t bytes = 0;
+-        ggml_backend_buffer_t buf = nullptr;
+-    };
+-    static cached_iosurface_buf cache;
+-
++    cached_iosurface_buf & cache = g_iosurface_cache;
+     if (!cache.buf || cache.sid != surface_id || cache.bytes != surface_bytes) {
+         if (cache.buf) {
++            // P70: the buffer we are about to free may still be referenced by a Metal command
++            // buffer that was submitted on ctx_dft's queue but has not yet completed (its
++            // completion runs async on com.Metal.CompletionQueueDispatch). Freeing/releasing
++            // the underlying MTLBuffer + residency set while that command buffer is still
++            // in-flight is a plausible use-after-free in AGX's resource-list teardown code —
++            // matches tonight's crash signature (IOGPUMetalCommandBufferStorageReset on the
++            // completion-queue thread). Drain the queue first so nothing outstanding still
++            // points at the old buffer. Opt out via ZEROLLAMA_ANE_IOSURFACE_RESIZE_SYNC=0.
++            {
++                const char * v = std::getenv("ZEROLLAMA_ANE_IOSURFACE_RESIZE_SYNC");
++                const bool sync_before_free = !(v && v[0] == '0' && v[1] == '\0');
++                if (sync_before_free && ctx_dft) {
++                    llama_synchronize(ctx_dft);
++                }
++            }
++            if (ane_iosurface_lifecycle_log_enabled()) {
++                LOG_INF("%s: resize-free buf=%p old_sid=%u new_sid=%u\n",
++                        __func__, (void *) cache.buf,
++                        (unsigned) cache.sid, (unsigned) surface_id);
++            }
+             ggml_backend_buffer_free(cache.buf);
+             cache.buf = nullptr;
+         }
+@@ -6825,6 +6996,11 @@ static bool pack_draft_hidden_into_iosurface(const float * src, int src_len) {
+                 dev, surface_id, surface_bytes, surface_bytes);
+         cache.sid = surface_id;
+         cache.bytes = surface_bytes;
++        if (ane_iosurface_lifecycle_log_enabled()) {
++            LOG_INF("%s: alloc buf=%p sid=%u bytes=%zu\n",
++                    __func__, (void *) cache.buf,
++                    (unsigned) surface_id, surface_bytes);
++        }
+     }
+     ggml_backend_buffer_t buf = cache.buf;
+     if (!buf) {
+@@ -6870,6 +7046,9 @@ static bool pack_draft_hidden_into_iosurface(const float * src, int src_len) {
+ 
+     return true;
+ }
++#else
++void common_ane_draft_shutdown_iosurface_cache(void) {
++}
+ #endif
+ 
+ #if defined(__APPLE__)
+@@ -6893,6 +7072,22 @@ static void ane_handoff_eval_done(bool ok) {
+ }
+ #endif
+ 
++// Lab bisect: ZEROLLAMA_ANE_HANDOFF_STAGE=N stops after stage N (default 4 = full).
++//   0 = pack target feat / stash only
++//   1 = + IOSurface pack
++//   2 = + host dflash_fc
++//   3 = + ANE session eval
++//   4 = + post_eval pipeline (full handoff)
++static int ane_handoff_stage_limit(void) {
++    if (const char * v = std::getenv("ZEROLLAMA_ANE_HANDOFF_STAGE")) {
++        const int n = (int) strtol(v, nullptr, 10);
++        if (n >= 0 && n <= 4) {
++            return n;
++        }
++    }
++    return 4;
++}
++
+ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32_t i_batch) {
+     if (!common_ane_draft_enabled() || !ane_draft_session_ready() || !ctx_dft) {
+         return;
+@@ -6907,7 +7102,8 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+         g_ane_output_ready.store(false);
+         return;
+     }
+-    const bool log_info = step <= 3 || ane_draft_telemetry_enabled();
++    const int stage_lim = ane_handoff_stage_limit();
++    const bool log_info = step <= 3 || ane_draft_telemetry_enabled() || stage_lim < 4;
+ 
+     llama_context * src_ctx = ctx_dft;
+     if (ane_draft_session_dflash_fc_active() && g_ctx_tgt) {
+@@ -6961,6 +7157,11 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+         pack_len = llama_model_n_embd(llama_get_model(src_ctx));
+     }
+ 
++    if (stage_lim <= 0) {
++        LOG_INF("%s: step=%d HANDOFF_STAGE=0 stop after feat pack n_embd=%d\n", __func__, step, pack_len);
++        return;
++    }
++
+ #if defined(__APPLE__)
+     const bool use_async_eval = ane_draft_session_eval_async_enabled() &&
+                                 common_ane_draft_get_drive_mode() == COMMON_ANE_DRAFT_DRIVE_OFF;
+@@ -6968,7 +7169,7 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+         ane_draft_session_eval_sync();
+     }
+ 
+-    if (!pack_draft_hidden_into_iosurface(pack_ptr, pack_len)) {
++    if (!pack_draft_hidden_into_iosurface(pack_ptr, pack_len, ctx_dft)) {
+         if (log_info) {
+             LOG_WRN("%s: step=%d iosurface pack failed — stub ANE fill\n", __func__, step);
+         }
+@@ -6978,6 +7179,18 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+         return;
+     }
+ 
++    if (stage_lim <= 1) {
++        LOG_INF("%s: step=%d HANDOFF_STAGE=1 stop after iosurface pack n_embd=%d\n", __func__, step, pack_len);
++        return;
++    }
++
++    // P70: pause the ggml-metal residency heartbeat for the rest of this handoff — from here
++    // through the end of the post-eval pipeline is pure host-side (CPU) compute with no GPU
++    // submissions on this device, and can run long enough (seconds) to otherwise race the
++    // heartbeat's periodic requestResidency against the next Metal command encoder built on
++    // ctx_dft. Scope guard covers every return path below, including early-exit on error.
++    ane_metal_rsets_pause_guard rsets_pause_guard(ane_metal_device_for_iosurface());
++
+     std::vector<float> host_fc;
+     const bool use_host_fc = ane_dflash_fc_host_enabled() && ane_draft_session_dflash_fc_active();
+     if (use_host_fc) {
+@@ -6997,6 +7210,11 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+         g_dflash_host_fc.clear();
+     }
+ 
++    if (stage_lim <= 2) {
++        LOG_INF("%s: step=%d HANDOFF_STAGE=2 stop after host_fc n_embd=%d\n", __func__, step, pack_len);
++        return;
++    }
++
+     g_ane_output_ready.store(false);
+     // B7 try_drive_token runs in the same draft() turn immediately after handoff; async eval
+     // often has not finished when eval_sync returns (GCD group timing). Force sync eval when
+@@ -7025,11 +7243,45 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+         return;
+     }
+ 
++    if (stage_lim <= 3) {
++        LOG_INF("%s: step=%d HANDOFF_STAGE=3 stop after ANE eval n_embd=%d\n", __func__, step, pack_len);
++        return;
++    }
++
+     if (!ane_dflash_post_eval_pipeline(ctx_dft)) {
+         LOG_WRN("%s: step=%d dflash post-eval pipeline failed\n", __func__, step);
+         return;
+     }
+ 
++    // P70: drain ctx_dft's Metal queue before returning control to the draft loop's
++    // seq_rm/target-verify path. Post-eval (esp. the ffn_up/swiglu/down matmul chain) adds
++    // enough host-side latency that a subsequent seq_rm/decode on ctx_dft can race an
++    // in-flight Metal command-buffer completion callback tied to our cached IOSurface
++    // buffer's residency set — observed as an intermittent SIGSEGV in
++    // IOGPUMetalCommandBufferStorageReset on com.Metal.CompletionQueueDispatch right after
++    // "draft() returning (post-B7)". Opt out via ZEROLLAMA_ANE_HANDOFF_DRAIN_SYNC=0 for A/B.
++    //
++    // P70b: llama_synchronize()/[cmd_buf waitUntilCompleted] only guarantees the GPU work
++    // itself finished — it does NOT wait for Metal's own internal async command-buffer
++    // teardown (IOGPUMetalCommandBufferStorageReset/Dealloc), which is dispatched separately
++    // via IOGPUNotificationQueueDispatchAvailableCompletionNotifications and is not observable
++    // through any public Metal/ggml API. That teardown can still be racing our residency-set
++    // mutations even right after a "clean" synchronize(). As an empirical workaround (not a
++    // real fix — there is no public API to wait on this), sleep briefly after the sync to give
++    // that teardown a chance to finish before we touch Metal resources again. Tune via
++    // ZEROLLAMA_ANE_HANDOFF_DRAIN_SLEEP_US (default 2000us = 2ms); set 0 to disable.
++    {
++        const char * drain_env = std::getenv("ZEROLLAMA_ANE_HANDOFF_DRAIN_SYNC");
++        const bool drain_sync = !(drain_env && drain_env[0] == '0' && drain_env[1] == '\0');
++        if (drain_sync && ctx_dft) {
++            llama_synchronize(ctx_dft);
++            const int sleep_us = env_int_or("ZEROLLAMA_ANE_HANDOFF_DRAIN_SLEEP_US", 2000);
++            if (sleep_us > 0) {
++                std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
++            }
++        }
++    }
++
+     g_ane_output_ready.store(true);
+ 
+     log_ane_metal_golden_chain_output(step, ctx_dft, i_batch);
+@@ -7054,3 +7306,84 @@ void common_ane_draft_handoff_after_decode(struct llama_context * ctx_dft, int32
+     LOG_WRN("%s: handoff skipped (not Apple platform)\n", __func__);
+ #endif
+ }
++
++
++int32_t common_ane_draft_handoff_i_batch(void) {
++#if defined(__APPLE__)
++    return g_handoff_i_batch;
++#else
++    return -1;
++#endif
++}
++
++bool common_ane_draft_rebind_drive_slot(struct llama_context * ctx_dft, int32_t i_batch) {
++#if defined(__APPLE__)
++    if (!ctx_dft || i_batch < 0 || !common_ane_draft_enabled() || !ane_draft_session_ready()) {
++        return false;
++    }
++    if (!ane_draft_session_dflash_chain17_active() && !ane_draft_session_dflash_chain16_active() &&
++        !ane_draft_session_dflash_chain15_active() && !ane_draft_session_dflash_chain14_active()) {
++        return false;
++    }
++    g_handoff_ctx_dft = ctx_dft;
++    g_handoff_i_batch = i_batch;
++
++    // P66b: host-only rebind — do NOT llama_synchronize / Metal-snap here. P66's snap rebind
++    // matched tokens (hidden_cos=1) then SIGSEGV'd in MTLResourceList on the next decode.
++    // Embeddings were already exported on host during the noise-block llama_decode.
++    const int n_embd = ane_draft_session_matmul_ffn_embd();
++    if (n_embd <= 0) {
++        return false;
++    }
++    std::vector<float> h((size_t) n_embd, 0.f);
++    const llama_model * model = llama_get_model(ctx_dft);
++    const bool dflash_post = ane_dflash_t_embd_is_post_output_norm(model);
++    bool have = false;
++    if (const float * pre = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)) {
++        for (int i = 0; i < n_embd; ++i) {
++            h[(size_t) i] = pre[i];
++        }
++        have = true;
++        if (ane_draft_session_dflash_chain17_active()) {
++            if (!ane_draft_session_write_output_row(h.data(), n_embd)) {
++                return false;
++            }
++            if (!ane_draft_session_eval_dflash_output_norm()) {
++                return false;
++            }
++            g_ane_output_ready.store(true);
++            return true;
++        }
++    } else if (const float * post = llama_get_embeddings_ith(ctx_dft, i_batch)) {
++        for (int i = 0; i < n_embd; ++i) {
++            h[(size_t) i] = post[i];
++        }
++        have = true;
++        // Already post-norm when dflash_post; write through as final drive hidden.
++        if (dflash_post && ane_draft_session_dflash_chain17_active()) {
++            if (!ane_draft_session_write_output_row(h.data(), n_embd)) {
++                return false;
++            }
++            g_ane_output_ready.store(true);
++            return true;
++        }
++    }
++    if (!have) {
++        return false;
++    }
++    if (!ane_draft_session_write_output_row(h.data(), n_embd)) {
++        return false;
++    }
++    if (ane_draft_session_dflash_chain17_active() && !dflash_post) {
++        if (!ane_draft_session_eval_dflash_output_norm()) {
++            return false;
++        }
++    }
++    g_ane_output_ready.store(true);
++    return true;
++#else
++    (void) ctx_dft;
++    (void) i_batch;
++    return false;
++#endif
++}
+diff --git a/common/ane_draft_hook.h b/common/ane_draft_hook.h
+index ea7576d..3652292 100644
+--- a/common/ane_draft_hook.h
++++ b/common/ane_draft_hook.h
+@@ -57,6 +57,20 @@ bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_
+ // B7 shadow: Metal reference token via tied-embed argmax on draft ctx post-forward hidden (matches ANE drive path).
+ bool common_ane_draft_metal_ref_token(struct llama_context * ctx_dft, int32_t i_batch, llama_token * out_id);
+ 
++// Batch row used for the last ANE handoff/eval (-1 if none).
++int32_t common_ane_draft_handoff_i_batch(void);
++
++// P66: rebind drive hidden to a noise-block row without ANE rematmul / Metal synchronize.
++// Host-only: copies already-exported embeddings (+ output_norm) into the session outBuf so B7
++// can score every draft row after a stable handoff@0. Full ANE chain parity remains in golden legs.
++bool common_ane_draft_rebind_drive_slot(struct llama_context * ctx_dft, int32_t i_batch);
++
++// P67: free the cached IOSurface Metal buffer (and its Metal residency set) created by the
++// handoff path. Call from every common_speculative_impl destructor that may have enabled the
++// ANE hook — otherwise ggml_metal_rsets_free() asserts `[rsets->data count] == 0` at process
++// exit ("cleaning up before exit"). No-op if the hook never mapped a buffer.
++void common_ane_draft_shutdown_iosurface_cache(void);
++
+ // P24: host fp32 Q/K/V noise matmuls (P21 path) — skip ANE fp16 attn_q/k/v when true.
+ bool ane_dflash_qkv_host_fp32_enabled(void);
+ 
+diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
+index 3cf6f50..2215d5c 100644
+--- a/common/ane_draft_session.mm
++++ b/common/ane_draft_session.mm
+@@ -2807,12 +2807,23 @@ static bool ane_session_eval_dflash_chain12(int seq) {
+             LOG_WRN("%s: P24 host qkv fill failed oc_q=%d oc_k=%d\n", __func__, oc_q, oc_k);
+             return false;
+         }
+-        if (g_session.outBuf && g_session.lastDflashV) {
+-            for (int o = 0; o < oc_v; ++o) {
+-                const float v = g_session.lastDflashV[o];
+-                for (int s = 0; s < seq; ++s) {
+-                    g_session.outBuf[(size_t) o * (size_t) seq + (size_t) s] = v;
++        // Chain12 stub used to broadcast V into outBuf. On chain16/17 outBuf is the
++        // ffn_down / lm-head workspace (oc10×seq); writing oc_v×seq V rows is wrong and
++        // has correlated with intermittent NSLock / ObjC method-cache corruption mid-handoff.
++        // Host post_eval reads lastDflashQ/K/V directly — do not touch outBuf here.
++        if (!g_session.dflashChain16Active && !g_session.dflashChain17Active &&
++            g_session.outBuf && g_session.lastDflashV) {
++            const size_t need = (size_t) oc_v * (size_t) seq * sizeof(float);
++            if (g_session.outIoBytes >= need) {
++                for (int o = 0; o < oc_v; ++o) {
++                    const float v = g_session.lastDflashV[o];
++                    for (int s = 0; s < seq; ++s) {
++                        g_session.outBuf[(size_t) o * (size_t) seq + (size_t) s] = v;
++                    }
+                 }
++            } else {
++                LOG_WRN("%s: P24 skip V→outBuf (need=%zu have=%zu)\n",
++                        __func__, need, g_session.outIoBytes);
+             }
+         }
+         g_session.stepCount += 4;
+@@ -3680,6 +3691,8 @@ bool ane_draft_session_dflash_chain17_active(void) {
+     return g_session.matmulActive && g_session.dflashChain17Active;
+ }
+ 
++static bool ane_session_ensure_out_buf(size_t new_bytes);
++
+ bool ane_draft_session_eval_dflash_attn_wo(void) {
+     if ((!g_session.dflashChain14Active && !g_session.dflashChain15Active && !g_session.dflashChain16Active && !g_session.dflashChain17Active) || !g_session.kernel5 || !g_session.outBuf) {
+         return false;
+@@ -3706,6 +3719,9 @@ bool ane_draft_session_eval_dflash_attn_wo(void) {
+         return false;
+     }
+     const size_t wo_bytes = (size_t) oc5 * (size_t) seq * sizeof(float);
++    if (!ane_session_ensure_out_buf(wo_bytes)) {
++        return false;
++    }
+     ane_bridge_read_output(g_session.kernel5, 0, g_session.outBuf, wo_bytes);
+     g_session.outIoBytes = wo_bytes;
+     g_session.stepCount++;
+@@ -3739,6 +3755,16 @@ bool ane_draft_session_eval_dflash_ffn_gate(void) {
+         memcpy(g_session.lastDflashWoHidden, hidden.data(), (size_t) ic6 * sizeof(float));
+     }
+     const size_t gate_bytes = (size_t) oc6 * (size_t) seq * sizeof(float);
++    // P71: outBuf was sized for the previous step's row-dim (e.g. attn_wo's oc5=n_embd), which
++    // for dflash chains is almost always smaller than ffn_gate's oc6 (n_embd -> ffn intermediate,
++    // e.g. 5120 -> 17408). This step used to write directly without growing outBuf first — a real
++    // heap buffer overflow (~3.4x the allocation for chain 17's shapes), consistent with the FAR
++    // fault-address pattern seen across the original crash investigation (see
++    // docs/ane-draft-inprocess.md). Now routed through ane_session_ensure_out_buf() like every
++    // other row-dim-changing write in this file.
++    if (!ane_session_ensure_out_buf(gate_bytes)) {
++        return false;
++    }
+     if (g_session.dflashFfnHostFp32 && g_session.matmul6W &&
+         g_session.matmul6WCount >= (size_t) ic6 * (size_t) oc6) {
+         ane_host_matmul_seq(hidden.data(), ic6, oc6, seq, g_session.matmul6W, g_session.outBuf);
+@@ -3812,14 +3838,8 @@ bool ane_draft_session_eval_dflash_ffn_up_swiglu_down(void) {
+     }
+ 
+     const size_t down_bytes = (size_t) oc_down * (size_t) seq * sizeof(float);
+-    if (down_bytes > g_session.outIoBytes) {
+-        if (g_session.outBuf) {
+-            free(g_session.outBuf);
+-        }
+-        g_session.outBuf = (float *) calloc((size_t) oc_down * (size_t) seq, sizeof(float));
+-        if (!g_session.outBuf) {
+-            return false;
+-        }
++    if (!ane_session_ensure_out_buf(down_bytes)) {
++        return false;
+     }
+     ane_host_matmul_seq(swiglu.data(), ic_down, oc_down, seq, g_session.matmul10W, g_session.outBuf);
+     g_session.outIoBytes = down_bytes;
+@@ -3906,6 +3926,27 @@ bool ane_draft_session_eval_dflash_attn_post_norm(void) {
+     return true;
+ }
+ 
++// P71 hardening: g_session.outBuf is reused across every eval step in a dflash chain, resized
++// on demand as the row-dim changes step to step (e.g. n_embd -> ffn intermediate -> n_embd).
++// INVARIANT: any code that is about to write `new_bytes` worth of floats into outBuf MUST call
++// this first — do not `calloc`/`free` outBuf ad hoc or assume it is already big enough because a
++// same-named session field (matmulNOc, etc.) "should" match. A missing check here was the root
++// cause of the P70/P71 chain-17 SIGSEGV investigation (see docs/ane-draft-inprocess.md): the
++// ffn_gate step wrote 17408*seq floats into an outBuf still sized for the prior 5120*seq step, a
++// ~3.4x heap overflow. Returns false (and leaves outBuf untouched) only on allocation failure.
++static bool ane_session_ensure_out_buf(size_t new_bytes) {
++    if (new_bytes <= g_session.outIoBytes && g_session.outBuf) {
++        return true;
++    }
++    float * grown = (float *) calloc(new_bytes > 0 ? new_bytes : 1, 1);
++    if (!grown) {
++        return false;
++    }
++    free(g_session.outBuf);
++    g_session.outBuf = grown;
++    return true;
++}
++
+ bool ane_draft_session_write_dflash_attn_out(const float * src, int n) {
+     if (!src || n <= 0 || !g_session.outBuf) {
+         return false;
+@@ -4012,8 +4053,13 @@ bool ane_draft_session_set_dflash_qkv(const float * q, const float * k, const fl
+     if (oc_q <= 0 || oc_kv <= 0 || !g_session.lastDflashQ || !g_session.lastDflashK || !g_session.lastDflashV) {
+         return false;
+     }
++    if (g_session.lastDflashAttnLen <= 0) {
++        return false;
++    }
+     const int qn = oc_q < g_session.lastDflashAttnLen ? oc_q : g_session.lastDflashAttnLen;
+-    const int kvn = oc_kv;
++    // K/V buffers are allocated to matmul3Oc at chain13 init (see ane_session_init_dflash_chain13).
++    const int kv_cap = g_session.matmul3Oc > 0 ? g_session.matmul3Oc : oc_kv;
++    const int kvn = oc_kv < kv_cap ? oc_kv : kv_cap;
+     if (q) {
+         memcpy(g_session.lastDflashQ, q, (size_t) qn * sizeof(float));
+     }
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 4eef221..ccba84e 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1,5 +1,7 @@
+ #include "speculative.h"
+ 
++#include "ane_draft_hook.h"
++
+ #include "common.h"
+ #include "ggml.h"
+ #include "ggml-cpp.h"
+@@ -247,6 +249,22 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+ 
+             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
+         }
++
++        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
++
++        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
++        if (dflash || common_ane_draft_enabled()) {
++            common_ane_draft_bind_target_ctx(ctx_tgt);
++            llama_set_embeddings_pre_norm(ctx_tgt, true);
++        }
++
++        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
++        if (common_ane_draft_enabled()) {
++            llama_set_embeddings_pre_norm(ctx_dft, true);
++            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {
++                llama_set_embeddings(ctx_dft, true);
++            }
++        }
+     }
+ 
+     ~common_speculative_impl_draft_simple() override {
+@@ -260,6 +278,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+     bool process(const llama_batch & batch) override {
+         auto * ctx_dft = params.ctx_dft;
+ 
++        // B8: stage target pre-norm into cross.v_embd before draft sync-decode (Metal dflash + ANE).
++        common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, batch);
++
+         llama_batch batch_dft = batch;
+         batch_dft.logits = nullptr;
+ 
+@@ -277,6 +298,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+     void draft(common_speculative_draft_params_vec & dparams) override {
+         auto & ctx_dft = params.ctx_dft;
+ 
++        common_ane_draft_reset_handoff();
++
+         common_batch_clear(batch);
+ 
+         // keep track of which sequences are still drafting
+@@ -303,6 +326,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+             return;
+         }
+ 
++        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).
++        common_ane_draft_handoff_after_decode(ctx_dft, 0);
++
+         int i = 0;
+ 
+         while (n_drafting > 0) {
+@@ -328,11 +354,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+                 }
+ 
+-                // add drafted token for each sequence
+-                const llama_token id = cur_p->data[0].id;
++                llama_token id = cur_p->data[0].id;
++                float pick_p = cur_p->data[0].p;
++
++                // B7: optional ANE tied-embed argmax replaces Metal sampler token (lab).
++                const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
++                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
++                    llama_token ane_id = 0;
++                    float ane_p = 0.f;
++                    float hidden_cos = 0.f;
++                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {
++                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
++                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\n",
++                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);
++                        } else {
++                            id = ane_id;
++                            pick_p = ane_p;
++                            LOG_DBG("%s: B7 force seq=%d ane_tok=%d\n", __func__, (int) seq_id, (int) ane_id);
++                        }
++                    }
++                }
+ 
+                 // only collect very high-confidence draft tokens
+-                if (cur_p->data[0].p < params.p_min) {
++                if (pick_p < params.p_min) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+ 
+@@ -367,6 +411,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+                 break;
+             }
+ 
++            // B5: handoff on each speculative draft decode step (stride via env in hook).
++            common_ane_draft_handoff_after_decode(ctx_dft, 0);
++
+             ++i;
+         }
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 20ea162..b4bb725 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3825,6 +3825,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
+     ctx->set_nextn_layer_offset(offset);
+ }
+ 
++
++// dflash-draft "pre-norm embeddings" API: thin alias over the embeddings_nextn
++// machinery in unmasked mode (both extract the hidden state before the final
++// output norm, one row per token, regardless of batch.logits).
++void llama_set_embeddings_pre_norm(llama_context * ctx, bool value) {
++    ctx->set_embeddings_nextn(value, /*masked=*/false);
++}
++
++float * llama_get_embeddings_pre_norm(llama_context * ctx) {
++    ctx->synchronize();
++
++    return ctx->get_embeddings_nextn();
++}
++
++float * llama_get_embeddings_pre_norm_ith(llama_context * ctx, int32_t i) {
++    ctx->synchronize();
++
++    return ctx->get_embeddings_nextn_ith(i);
++}
++
+ llama_memory_t llama_get_memory(const struct llama_context * ctx) {
+     if (!ctx) {
+         return nullptr;
+diff --git a/src/llama-ext.h b/src/llama-ext.h
+index e82c591..5914422 100644
+--- a/src/llama-ext.h
++++ b/src/llama-ext.h
+@@ -146,6 +146,89 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
+ // returns the number of extracted layers from target model
+ LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
+ 
++// Number of staged cross rows (0 when cross.v_embd empty).
++LLAMA_API int32_t llama_context_cross_n_enc(const struct llama_context * ctx);
++
++//
++// pre-norm embeddings (hidden state before the final output norm)
++// implemented as thin aliases over the embeddings_nextn machinery (unmasked mode)
++//
++
++// mirrors:
++// LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
++LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
++
++// mirrors:
++// LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
++LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
++
++// LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
++LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
++
++//
++// dflash-draft model metadata (B8 target_hidden / cross.v_embd wiring)
++//
++
++// Returns dflash.n_target_features for dflash-draft models, else 0.
++LLAMA_API int32_t llama_model_dflash_n_target_features(const struct llama_model * model);
++
++// Returns dflash.mask_token_id for dflash-draft models, else -1.
++LLAMA_API int32_t llama_model_dflash_mask_token_id(const struct llama_model * model);
++
++// Returns dflash.block_size for dflash-draft models, else 0.
++LLAMA_API int32_t llama_model_dflash_block_size(const struct llama_model * model);
++
++// Returns count of dflash.target_layer_ids[], else 0.
++LLAMA_API int32_t llama_model_dflash_n_target_layers(const struct llama_model * model);
++
++// Returns dflash.target_layer_ids[i] or -1 when out of range / not dflash-draft.
++LLAMA_API int32_t llama_model_dflash_target_layer_id(const struct llama_model * model, int32_t i);
++
++// Enable per-layer target hidden export on ctx_tgt using draft-model dflash metadata.
++LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, const struct llama_model * draft_model);
++
++// Row from the last target decode ([n_target_features]); NULL when export inactive.
++LLAMA_API float * llama_get_dflash_target_features_ith(struct llama_context * ctx, int32_t i);
++
++// Row from the last dflash-draft decode (kqv_out before attn_wo); NULL when inactive.
++LLAMA_API float * llama_get_dflash_attn_out_ith(struct llama_context * ctx, int32_t i);
++
++// Row from the last dflash-draft decode (tok_embd before attn_norm); NULL when inactive.
++LLAMA_API float * llama_get_dflash_tok_embd_ith(struct llama_context * ctx, int32_t i);
++
++// Row from the last dflash-draft decode (attn_norm on tok_embd); NULL when inactive.
++LLAMA_API float * llama_get_dflash_attn_norm_ith(struct llama_context * ctx, int32_t i);
++
++// Row from the last dflash-draft decode (Q after wq matmul); NULL when inactive.
++LLAMA_API float * llama_get_dflash_q_mm_ith(struct llama_context * ctx, int32_t i);
++
++// Row from the last dflash-draft decode (Q after attn_q_norm, before RoPE); NULL when inactive.
++LLAMA_API float * llama_get_dflash_q_pre_rope_ith(struct llama_context * ctx, int32_t i);
++
++// Row from the last dflash-draft decode (Q after RoPE); NULL when inactive.
++LLAMA_API float * llama_get_dflash_q_rope_ith(struct llama_context * ctx, int32_t i);
++
++// dflash-draft K/V noise after RoPE and concat ctx+noise K/V cat (requires embeddings_pre_norm).
++LLAMA_API float * llama_get_dflash_k_noise_ith(struct llama_context * ctx, int32_t i);
++LLAMA_API float * llama_get_dflash_v_noise_ith(struct llama_context * ctx, int32_t i);
++LLAMA_API float * llama_get_dflash_k_cat_ith(struct llama_context * ctx, int32_t i, int32_t slot);
++LLAMA_API float * llama_get_dflash_v_cat_ith(struct llama_context * ctx, int32_t i, int32_t slot);
++LLAMA_API int32_t llama_get_dflash_kv_cat_n(struct llama_context * ctx);
++LLAMA_API float * llama_get_dflash_fused_target_ith(struct llama_context * ctx, int32_t i, int32_t slot);
++LLAMA_API int32_t llama_get_dflash_fused_n(struct llama_context * ctx);
++LLAMA_API float * llama_get_dflash_k_ctx_ith(struct llama_context * ctx, int32_t i, int32_t slot);
++LLAMA_API float * llama_get_dflash_k_ctx_pre_ith(struct llama_context * ctx, int32_t i, int32_t slot);
++LLAMA_API int32_t llama_get_dflash_k_ctx_n(struct llama_context * ctx);
++
++// Row from the last dflash-draft decode (hidden after blk.layer); NULL when inactive.
++LLAMA_API float * llama_get_dflash_layer_hidden_ith(struct llama_context * ctx, int32_t layer, int32_t i);
++
++// P51: re-pull dflash export tensors from the last graph into host output buffers.
++LLAMA_API void llama_dflash_pull_graph_exports(struct llama_context * ctx);
++
++// Returns 1 if layer `il` uses sliding-window attention, 0 otherwise (or on invalid input).
++LLAMA_API int32_t llama_model_layer_has_swa(const struct llama_model * model, int32_t il);
++
+ // retrieves the whole token embedding matrix in F32 format (n_embd * n_vocab)
+ // returns total number of elements or 0 on error
+ // if out is nullptr, returns the number of tokens without writing to out

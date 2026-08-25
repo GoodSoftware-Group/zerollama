@@ -6,10 +6,10 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 
 | Field | Value |
 |-------|--------|
-| **Recommended build tree** | `vendor/llama-cpp-b10488/` (patched) — `./scripts/build/build_llama_server.sh` |
+| **Recommended build tree** | `vendor/llama-cpp-b10615/` (patched) — `./scripts/build/build_llama_server.sh` |
 | **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; prefer vendor) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
-| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `9d77fa17254e1dee4b9e92504c91611a60b1359f` (ggml-org tag **b10488**; Ollama v0.32.15 pin) |
+| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `f280b26983ad0fdb705a0d9ebf0503e76f2899b0` (ggml-org tag **b10615**; 2026-08-24) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
 | **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0126** SWAR/NEON pretok + **0125** ASCII islands + **0121** mixed pretok blob + **0120** session pretok cache + **0119** pretok blob + **0118** fuse materialize + **0117** byte-encode LUT + **0116** Qwen3.5 ASCII byte pretok + **0115** GPT-2/Llama3 ASCII byte pretok + **0114** Qwen2 ASCII byte pretok + **0113** byte-indexed specials + **0112** specials trie + **0111** LTR specials partition + **0110** ASCII pretok LUT + **0109** pretok scanner hygiene + **0108** pretok materialize + **0107** pretok id cache + **0106** BPE id-pair tokenize / **M15d**; **0105** CPU FP8 clamp; **0104** Metal embedded metallib; **0103** Kokoro speech mount; **0102** Bee B1 adaptive DM; **0101** Kokoro `/v1/audio/speech`; **0100** Kokoro subtree; **0099** FORCE_CUBLAS getenv; DCA **0094–0098**; Metal Lab D / #11612 **0096–0098** Metal Polar/QJL+fused; Darwin UMA **0094–0095**; **0093** llama-bench Eliza L2 KV names; **0090** media-aware `/kv/seq-copy`; **0089** L3-R6b COW; **0088** TBQ vec_dot; **0087** Bee loop-guard). Note: some numbers are shared across parallel patch series — apply by filename. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE tokenize: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md) · [findings](../docs/faster-bpe-tokenize-findings.md) (**why** sync to `llama/llama.cpp/` for CGO). |
 | **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
@@ -18,13 +18,13 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 
 | Field | Value |
 |-------|--------|
-| **Vendor pin** | **`b10488`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b10488/` |
+| **Vendor pin** | **`b10615`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b10615/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as runtime table above (**139** format-patches on this pin). Skipped as already upstream or pin-incompatible: Qwen3-Next MTP (old 0064), messy DCA squash (old 0103), salvage that would clobber DCA (old 0125). Pretok lives in **`src/unicode.*`** (restored after 0121 salvage renamed it to `tmp/`); `common/unicode.*` is a different streaming helper. MSA `k_idx` COW (old 0129; `k_idx` fields re-added as compile fixups). Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *)` for b10488 mtmd/arg. |
-| **In-tree Metal dig** | E8_2 / TQ2 Metal kernels and concurrency guard in the mid series; Mac build embeds compiled metallib. Native FP8 weight types **51/52** (0076–0079). Metal FA-vec per-device (Q,NE) tables **0086** (ported onto monolithic `ggml-metal.metal`; keeps GQA2). Recoverable nil pipeline + bf16 library gate **0096**. Polar/QJL SET_ROWS + fused QJL+Polar attn **0097–0098**. |
+| **Ollama patches** | Same series as runtime table (**119** format-patches on **b10615**). Rebase from b10488 dropped absorbed Metal ports (monolithic `ggml-metal.metal` is gone; kernels live in `ggml/src/ggml-metal/kernels/*.metal`). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/` and link into `default.metallib`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *)`. |
+| **In-tree Metal dig** | Upstream split Metal kernels (`kernels/*.metal`). Eliza SET_ROWS + fused QJL+Polar attn remain as extra AIR objects. Native FP8 weight types **51/52**. FA-vec per-device tables are upstream. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
-Runtime `llama-server` and in-process ggml share **one ggml-org `b10488` base** + zerollama patches.
+Runtime `llama-server` and in-process ggml share **one ggml-org `b10615` base** + zerollama patches.
 
 Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake fetch time for **llama-server**. In-process **ggml** uses `llama/patches/` on a vendored tree synced via [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
 

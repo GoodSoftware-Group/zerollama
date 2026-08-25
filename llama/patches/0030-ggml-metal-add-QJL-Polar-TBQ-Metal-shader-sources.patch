@@ -21,7 +21,7 @@ Wire CMakeLists.txt to compile each eliza-shipped shader into its own
 core ggml-metal.metal. The embed-library path will need a corresponding
 update (deferred to build/sync time as it depends on the host SDK).
 ---
- ggml/src/ggml-metal/CMakeLists.txt            |   35 +-
+ ggml/src/ggml-metal/CMakeLists.txt            |   27 +-
  ggml/src/ggml-metal/eliza-kernels/istft.metal |  104 +
  ggml/src/ggml-metal/eliza-kernels/polar.metal |  220 +
  ggml/src/ggml-metal/eliza-kernels/qjl.metal   |  194 +
@@ -38,7 +38,7 @@ update (deferred to build/sync time as it depends on the host SDK).
  .../src/ggml-metal/eliza-shipped/turbo3.metal |  181 +
  .../ggml-metal/eliza-shipped/turbo3_tcq.metal |  135 +
  .../src/ggml-metal/eliza-shipped/turbo4.metal |  147 +
- 17 files changed, 6811 insertions(+), 3 deletions(-)
+ 17 files changed, 6805 insertions(+), 1 deletion(-)
  create mode 100644 ggml/src/ggml-metal/eliza-kernels/istft.metal
  create mode 100644 ggml/src/ggml-metal/eliza-kernels/polar.metal
  create mode 100644 ggml/src/ggml-metal/eliza-kernels/qjl.metal
@@ -57,57 +57,53 @@ update (deferred to build/sync time as it depends on the host SDK).
  create mode 100644 ggml/src/ggml-metal/eliza-shipped/turbo4.metal
 
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index 42054d841..d3f9e61ca 100644
+index 140c5d8..f3f9e49 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
-@@ -92,12 +92,41 @@ else()
+@@ -163,6 +163,31 @@ else()
+         )
+     endforeach()
  
++    # Eliza QJL/Polar/TBQ shaders: extra AIR objects linked into the same metallib.
++    set(ELIZA_METAL_SOURCES
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo4.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal
++        ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_polar.metal
++    )
++    foreach(src ${ELIZA_METAL_SOURCES})
++        get_filename_component(name ${src} NAME_WE)
++        set(AIR "${CMAKE_CURRENT_BINARY_DIR}/${name}.air")
++        list(APPEND AIR_FILES ${AIR})
++        add_custom_command(
++            OUTPUT ${AIR}
++            COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${src} -o ${AIR}
++            DEPENDS ${src}
++            COMMENT "Compiling eliza ${name}.metal"
++            VERBATIM
++        )
++    endforeach()
++
      add_custom_command(
          OUTPUT ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
--        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal.metal -o - |
--                xcrun -sdk macosx metallib        - -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal.metal -o ${CMAKE_CURRENT_BINARY_DIR}/ggml-metal.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3.metal -o ${CMAKE_CURRENT_BINARY_DIR}/turbo3.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo4.metal -o ${CMAKE_CURRENT_BINARY_DIR}/turbo4.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal -o ${CMAKE_CURRENT_BINARY_DIR}/turbo3_tcq.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal -o ${CMAKE_CURRENT_BINARY_DIR}/qjl.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal -o ${CMAKE_CURRENT_BINARY_DIR}/qjl_set_rows.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal -o ${CMAKE_CURRENT_BINARY_DIR}/polar.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal -o ${CMAKE_CURRENT_BINARY_DIR}/polar_preht.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal -o ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_tbq.air
-+        COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_polar.metal -o ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_polar.air
-+        COMMAND xcrun -sdk macosx metallib
-+            ${CMAKE_CURRENT_BINARY_DIR}/ggml-metal.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/turbo3.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/turbo4.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/turbo3_tcq.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/qjl.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/qjl_set_rows.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/polar.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/polar_preht.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_tbq.air
-+            ${CMAKE_CURRENT_BINARY_DIR}/fused_attn_qjl_polar.air
-+            -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
-         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-common.h
-         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal.metal
-         DEPENDS ggml-metal.metal ${METALLIB_COMMON}
--        COMMENT "Compiling Metal kernels"
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo4.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal
-+                ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_polar.metal
-+        COMMENT "Compiling Metal kernels (ggml + eliza QJL/Polar/TBQ)"
-         )
+         COMMAND xcrun -sdk macosx metallib ${AIR_FILES} -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
+@@ -170,7 +195,7 @@ else()
+         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal-impl.h
+         COMMAND rm -rf ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/kernels
+         DEPENDS ${AIR_FILES}
+-        COMMENT "Linking Metal kernels into default.metallib"
++        COMMENT "Linking Metal kernels (ggml + eliza QJL/Polar/TBQ) into default.metallib"
+     )
  
-     # FIXME: only add to the ggml-metal target?
+     add_custom_target(
 diff --git a/ggml/src/ggml-metal/eliza-kernels/istft.metal b/ggml/src/ggml-metal/eliza-kernels/istft.metal
 new file mode 100644
-index 000000000..4469b120b
+index 0000000..4469b12
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-kernels/istft.metal
 @@ -0,0 +1,104 @@
@@ -217,7 +213,7 @@ index 000000000..4469b120b
 +}
 diff --git a/ggml/src/ggml-metal/eliza-kernels/polar.metal b/ggml/src/ggml-metal/eliza-kernels/polar.metal
 new file mode 100644
-index 000000000..594bf5570
+index 0000000..594bf55
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-kernels/polar.metal
 @@ -0,0 +1,220 @@
@@ -443,7 +439,7 @@ index 000000000..594bf5570
 +}
 diff --git a/ggml/src/ggml-metal/eliza-kernels/qjl.metal b/ggml/src/ggml-metal/eliza-kernels/qjl.metal
 new file mode 100644
-index 000000000..1950d2ef3
+index 0000000..1950d2e
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-kernels/qjl.metal
 @@ -0,0 +1,194 @@
@@ -643,7 +639,7 @@ index 000000000..1950d2ef3
 +}
 diff --git a/ggml/src/ggml-metal/eliza-kernels/tbq3_0.metal b/ggml/src/ggml-metal/eliza-kernels/tbq3_0.metal
 new file mode 100644
-index 000000000..4dd74860f
+index 0000000..4dd7486
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-kernels/tbq3_0.metal
 @@ -0,0 +1,104 @@
@@ -753,7 +749,7 @@ index 000000000..4dd74860f
 +}
 diff --git a/ggml/src/ggml-metal/eliza-kernels/tbq3_tcq.metal b/ggml/src/ggml-metal/eliza-kernels/tbq3_tcq.metal
 new file mode 100644
-index 000000000..69ae201bc
+index 0000000..69ae201
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-kernels/tbq3_tcq.metal
 @@ -0,0 +1,78 @@
@@ -837,7 +833,7 @@ index 000000000..69ae201bc
 +}
 diff --git a/ggml/src/ggml-metal/eliza-kernels/tbq4_0.metal b/ggml/src/ggml-metal/eliza-kernels/tbq4_0.metal
 new file mode 100644
-index 000000000..7651876a9
+index 0000000..7651876
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-kernels/tbq4_0.metal
 @@ -0,0 +1,76 @@
@@ -919,7 +915,7 @@ index 000000000..7651876a9
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
 new file mode 100644
-index 000000000..e8ce17b45
+index 0000000..e8ce17b
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
 @@ -0,0 +1,241 @@
@@ -1166,7 +1162,7 @@ index 000000000..e8ce17b45
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_tbq.metal b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_tbq.metal
 new file mode 100644
-index 000000000..dcb0d1826
+index 0000000..dcb0d18
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_tbq.metal
 @@ -0,0 +1,248 @@
@@ -1420,7 +1416,7 @@ index 000000000..dcb0d1826
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/istft.metal b/ggml/src/ggml-metal/eliza-shipped/istft.metal
 new file mode 100644
-index 000000000..eb22bf45d
+index 0000000..eb22bf4
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/istft.metal
 @@ -0,0 +1,104 @@
@@ -1530,7 +1526,7 @@ index 000000000..eb22bf45d
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/polar.metal b/ggml/src/ggml-metal/eliza-shipped/polar.metal
 new file mode 100644
-index 000000000..e4f01dd89
+index 0000000..e4f01dd
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/polar.metal
 @@ -0,0 +1,291 @@
@@ -1827,7 +1823,7 @@ index 000000000..e4f01dd89
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/polar_preht.metal b/ggml/src/ggml-metal/eliza-shipped/polar_preht.metal
 new file mode 100644
-index 000000000..477a85167
+index 0000000..477a851
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/polar_preht.metal
 @@ -0,0 +1,160 @@
@@ -1993,7 +1989,7 @@ index 000000000..477a85167
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/qjl.metal b/ggml/src/ggml-metal/eliza-shipped/qjl.metal
 new file mode 100644
-index 000000000..5c30ba5ed
+index 0000000..5c30ba5
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/qjl.metal
 @@ -0,0 +1,288 @@
@@ -2287,7 +2283,7 @@ index 000000000..5c30ba5ed
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal b/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
 new file mode 100644
-index 000000000..3699edabe
+index 0000000..3699eda
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
 @@ -0,0 +1,4208 @@
@@ -6501,7 +6497,7 @@ index 000000000..3699edabe
 +        constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
 diff --git a/ggml/src/ggml-metal/eliza-shipped/turbo3.metal b/ggml/src/ggml-metal/eliza-shipped/turbo3.metal
 new file mode 100644
-index 000000000..6885fb8d9
+index 0000000..6885fb8
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/turbo3.metal
 @@ -0,0 +1,181 @@
@@ -6688,7 +6684,7 @@ index 000000000..6885fb8d9
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/turbo3_tcq.metal b/ggml/src/ggml-metal/eliza-shipped/turbo3_tcq.metal
 new file mode 100644
-index 000000000..7da92a65c
+index 0000000..7da92a6
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/turbo3_tcq.metal
 @@ -0,0 +1,135 @@
@@ -6829,7 +6825,7 @@ index 000000000..7da92a65c
 +}
 diff --git a/ggml/src/ggml-metal/eliza-shipped/turbo4.metal b/ggml/src/ggml-metal/eliza-shipped/turbo4.metal
 new file mode 100644
-index 000000000..c0886d420
+index 0000000..c0886d4
 --- /dev/null
 +++ b/ggml/src/ggml-metal/eliza-shipped/turbo4.metal
 @@ -0,0 +1,147 @@

@@ -11,7 +11,7 @@ Subject: [PATCH] graph memory reporting on failure
  4 files changed, 40 insertions(+), 3 deletions(-)
 
 diff --git a/ggml/include/ggml-alloc.h b/ggml/include/ggml-alloc.h
-index a7926a21a..7df7add64 100644
+index a7926a2..7df7add 100644
 --- a/ggml/include/ggml-alloc.h
 +++ b/ggml/include/ggml-alloc.h
 @@ -72,6 +72,7 @@ GGML_API bool ggml_gallocr_reserve_n(
@@ -23,7 +23,7 @@ index a7926a21a..7df7add64 100644
  // Utils
  // Create a buffer and allocate all the tensors in a ggml_context
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index cc3f8cd36..222877792 100644
+index cc3f8cd..2228777 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
 @@ -332,6 +332,7 @@ extern "C" {
@@ -35,10 +35,10 @@ index cc3f8cd36..222877792 100644
      GGML_API void                 ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
      GGML_API ggml_backend_t       ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node);
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
-index 3bda9abbe..c26ffb094 100644
+index a71838e..a723a31 100644
 --- a/ggml/src/ggml-alloc.c
 +++ b/ggml/src/ggml-alloc.c
-@@ -481,6 +481,7 @@ struct node_alloc {
+@@ -482,6 +482,7 @@ struct node_alloc {
  struct ggml_gallocr {
      ggml_backend_buffer_type_t * bufts; // [n_buffers]
      struct vbuffer ** buffers; // [n_buffers]
@@ -46,7 +46,7 @@ index 3bda9abbe..c26ffb094 100644
      struct ggml_dyn_tallocr ** buf_tallocs; // [n_buffers]
      int n_buffers;
  
-@@ -504,6 +505,9 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
+@@ -505,6 +506,9 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
      galloc->buffers = calloc(n_bufs, sizeof(struct vbuffer *));
      GGML_ASSERT(galloc->buffers != NULL);
  
@@ -56,7 +56,7 @@ index 3bda9abbe..c26ffb094 100644
      galloc->buf_tallocs = calloc(n_bufs, sizeof(struct ggml_dyn_tallocr *));
      GGML_ASSERT(galloc->buf_tallocs != NULL);
  
-@@ -571,6 +575,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
+@@ -572,6 +576,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
      ggml_hash_set_free(&galloc->hash_set);
      free(galloc->hash_values);
      free(galloc->bufts);
@@ -64,7 +64,7 @@ index 3bda9abbe..c26ffb094 100644
      free(galloc->buffers);
      free(galloc->buf_tallocs);
      free(galloc->node_allocs);
-@@ -900,6 +905,8 @@ static bool ggml_gallocr_reserve_n_impl(
+@@ -901,6 +906,8 @@ static bool ggml_gallocr_reserve_n_impl(
          }
      }
  
@@ -73,7 +73,7 @@ index 3bda9abbe..c26ffb094 100644
      // reallocate buffers if needed
      for (int i = 0; i < galloc->n_buffers; i++) {
          // if the buffer type is used multiple times, we reuse the same buffer
-@@ -936,15 +943,20 @@ static bool ggml_gallocr_reserve_n_impl(
+@@ -937,15 +944,20 @@ static bool ggml_gallocr_reserve_n_impl(
                  galloc->buffers[i] = NULL;
              } else {
                  galloc->buffers[i] = ggml_vbuffer_alloc(galloc->bufts[i], galloc->buf_tallocs[i], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
@@ -97,7 +97,7 @@ index 3bda9abbe..c26ffb094 100644
  }
  
  void ggml_gallocr_reserve_n_size(
-@@ -1114,6 +1126,22 @@ size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
+@@ -1115,6 +1127,22 @@ size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
      return ggml_vbuffer_size(galloc->buffers[buffer_id]);
  }
  
@@ -121,10 +121,10 @@ index 3bda9abbe..c26ffb094 100644
  
  static void free_buffers(ggml_backend_buffer_t ** buffers, const size_t * n_buffers) {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index f6fb91798..bf1f03374 100644
+index 3d6310f..26b2cfe 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -2017,6 +2017,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
+@@ -2029,6 +2029,13 @@ size_t ggml_backend_sched_get_buffer_size(ggml_backend_sched_t sched, ggml_backe
      return ggml_gallocr_get_buffer_size(sched->galloc, backend_index);
  }
  

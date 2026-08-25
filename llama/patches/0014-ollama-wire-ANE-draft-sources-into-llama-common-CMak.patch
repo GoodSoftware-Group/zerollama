@@ -8,7 +8,7 @@ Subject: [PATCH] ollama: wire ANE draft sources into llama-common CMake
  1 file changed, 32 insertions(+)
 
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 54691da3f..cec50b97f 100644
+index 36f1e0c..c9d50c7 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
 @@ -56,6 +56,8 @@ set(TARGET llama-common)
@@ -20,7 +20,7 @@ index 54691da3f..cec50b97f 100644
      base64.hpp
      chat-auto-parser-generator.cpp
      chat-auto-parser-helpers.cpp
-@@ -177,3 +179,33 @@ if (LLAMA_LLGUIDANCE)
+@@ -179,3 +181,33 @@ if (LLAMA_LLGUIDANCE)
  endif()
  
  target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)

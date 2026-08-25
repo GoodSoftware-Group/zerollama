@@ -128,6 +128,23 @@ common_ane_draft_drive_mode common_ane_draft_get_drive_mode() {
     return COMMON_ANE_DRAFT_DRIVE_OFF;
 }
 
+#if !defined(__APPLE__)
+void common_ane_draft_reset_handoff(void) {}
+void common_ane_draft_note_handoff_token(llama_token) {}
+void common_ane_draft_note_handoff_pos(llama_pos) {}
+llama_token common_ane_draft_last_handoff_token(void) { return LLAMA_TOKEN_NULL; }
+bool common_ane_draft_try_drive_token(struct llama_context *, int32_t, llama_token *, float *, float *) { return false; }
+bool common_ane_draft_metal_ref_token(struct llama_context *, int32_t, llama_token *) { return false; }
+void common_ane_draft_sync_target_cross(struct llama_context *, struct llama_context *, const llama_batch &) {}
+bool ane_dflash_qkv_host_fp32_enabled(void) { return false; }
+bool ane_dflash_fill_session_qkv_host_fp32(int, int) { return false; }
+void common_ane_draft_log_init(common_speculative_type, int) {}
+void common_ane_draft_shutdown_iosurface_cache(void) {}
+void common_ane_draft_handoff_after_decode(struct llama_context *, int32_t) {}
+int32_t common_ane_draft_handoff_i_batch(void) { return -1; }
+bool common_ane_draft_rebind_drive_slot(struct llama_context *, int32_t) { return false; }
+#else
+
 #if defined(__APPLE__)
 static float fp16_bits_to_float32(uint16_t h);
 static bool load_gamma_scales(const char * path, int channels, std::vector<float> & out);
@@ -7490,3 +7507,4 @@ bool common_ane_draft_rebind_drive_slot(struct llama_context * ctx_dft, int32_t 
     return false;
 #endif
 }
+#endif // !__APPLE__ stubs / Darwin ANE hook body

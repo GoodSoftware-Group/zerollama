@@ -111,7 +111,7 @@ based on GGML_AVX2 / GGML_SYSTEM_ARCH settings.
  create mode 100644 ggml/src/polar_centroids.h
 
 diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
-index 836bae4d0..8388ea295 100644
+index e16ac99..36188f6 100644
 --- a/ggml/src/ggml-cpu/CMakeLists.txt
 +++ b/ggml/src/ggml-cpu/CMakeLists.txt
 @@ -52,8 +52,58 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
@@ -175,7 +175,7 @@ index 836bae4d0..8388ea295 100644
  
 diff --git a/ggml/src/ggml-cpu/attn-score-tbq-polar.c b/ggml/src/ggml-cpu/attn-score-tbq-polar.c
 new file mode 100644
-index 000000000..46262894f
+index 0000000..4626289
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/attn-score-tbq-polar.c
 @@ -0,0 +1,294 @@
@@ -475,7 +475,7 @@ index 000000000..46262894f
 +}
 diff --git a/ggml/src/ggml-cpu/fused-attn-qjl-tbq-avx2.c b/ggml/src/ggml-cpu/fused-attn-qjl-tbq-avx2.c
 new file mode 100644
-index 000000000..7b19d7429
+index 0000000..7b19d74
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-attn-qjl-tbq-avx2.c
 @@ -0,0 +1,170 @@
@@ -651,7 +651,7 @@ index 000000000..7b19d7429
 +typedef int fused_attn_qjl_tbq_avx2_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/fused-attn-qjl-tbq-neon.c b/ggml/src/ggml-cpu/fused-attn-qjl-tbq-neon.c
 new file mode 100644
-index 000000000..3de09f891
+index 0000000..3de09f8
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-attn-qjl-tbq-neon.c
 @@ -0,0 +1,164 @@
@@ -821,7 +821,7 @@ index 000000000..3de09f891
 +typedef int fused_attn_qjl_tbq_neon_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c b/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c
 new file mode 100644
-index 000000000..d250d4fd2
+index 0000000..d250d4f
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c
 @@ -0,0 +1,398 @@
@@ -1225,7 +1225,7 @@ index 000000000..d250d4fd2
 +}
 diff --git a/ggml/src/ggml-cpu/fused-attn-qjl-tbq.h b/ggml/src/ggml-cpu/fused-attn-qjl-tbq.h
 new file mode 100644
-index 000000000..066a170a4
+index 0000000..066a170
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-attn-qjl-tbq.h
 @@ -0,0 +1,31 @@
@@ -1262,7 +1262,7 @@ index 000000000..066a170a4
 +#endif
 diff --git a/ggml/src/ggml-cpu/fused-hadamard-polar-dot.c b/ggml/src/ggml-cpu/fused-hadamard-polar-dot.c
 new file mode 100644
-index 000000000..680476ed4
+index 0000000..680476e
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-hadamard-polar-dot.c
 @@ -0,0 +1,213 @@
@@ -1481,7 +1481,7 @@ index 000000000..680476ed4
 +}
 diff --git a/ggml/src/ggml-cpu/fused-q4-polar-dot-avx2.c b/ggml/src/ggml-cpu/fused-q4-polar-dot-avx2.c
 new file mode 100644
-index 000000000..50b42a0b3
+index 0000000..50b42a0
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-q4-polar-dot-avx2.c
 @@ -0,0 +1,210 @@
@@ -1697,7 +1697,7 @@ index 000000000..50b42a0b3
 +typedef int fused_q4_polar_dot_avx2_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/fused-q4-polar-dot-neon.c b/ggml/src/ggml-cpu/fused-q4-polar-dot-neon.c
 new file mode 100644
-index 000000000..5c59c6509
+index 0000000..5c59c65
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-q4-polar-dot-neon.c
 @@ -0,0 +1,172 @@
@@ -1875,7 +1875,7 @@ index 000000000..5c59c6509
 +typedef int fused_q4_polar_dot_neon_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/fused-q4-polar-dot.c b/ggml/src/ggml-cpu/fused-q4-polar-dot.c
 new file mode 100644
-index 000000000..287ed63bf
+index 0000000..287ed63
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-q4-polar-dot.c
 @@ -0,0 +1,193 @@
@@ -2074,7 +2074,7 @@ index 000000000..287ed63bf
 +}
 diff --git a/ggml/src/ggml-cpu/fused-q4-polar-dot.h b/ggml/src/ggml-cpu/fused-q4-polar-dot.h
 new file mode 100644
-index 000000000..849cfd6ec
+index 0000000..849cfd6
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/fused-q4-polar-dot.h
 @@ -0,0 +1,40 @@
@@ -2120,7 +2120,7 @@ index 000000000..849cfd6ec
 +#endif
 diff --git a/ggml/src/ggml-cpu/polarquant/polar_cpu_features.h b/ggml/src/ggml-cpu/polarquant/polar_cpu_features.h
 new file mode 100644
-index 000000000..24ab8da08
+index 0000000..24ab8da
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/polarquant/polar_cpu_features.h
 @@ -0,0 +1,101 @@
@@ -2227,7 +2227,7 @@ index 000000000..24ab8da08
 +#endif /* POLAR_CPU_FEATURES_H */
 diff --git a/ggml/src/ggml-cpu/polarquant/polar_dot_preht_avx2.c b/ggml/src/ggml-cpu/polarquant/polar_dot_preht_avx2.c
 new file mode 100644
-index 000000000..c3687cc26
+index 0000000..c3687cc
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/polarquant/polar_dot_preht_avx2.c
 @@ -0,0 +1,114 @@
@@ -2347,7 +2347,7 @@ index 000000000..c3687cc26
 +typedef int polar_dot_preht_avx2_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/polarquant/polar_dot_preht_neon.c b/ggml/src/ggml-cpu/polarquant/polar_dot_preht_neon.c
 new file mode 100644
-index 000000000..b1aaad029
+index 0000000..b1aaad0
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/polarquant/polar_dot_preht_neon.c
 @@ -0,0 +1,80 @@
@@ -2433,7 +2433,7 @@ index 000000000..b1aaad029
 +typedef int polar_dot_preht_neon_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/polarquant/polar_dot_preht_ref.c b/ggml/src/ggml-cpu/polarquant/polar_dot_preht_ref.c
 new file mode 100644
-index 000000000..919c76ba6
+index 0000000..919c76b
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/polarquant/polar_dot_preht_ref.c
 @@ -0,0 +1,47 @@
@@ -2486,7 +2486,7 @@ index 000000000..919c76ba6
 +}
 diff --git a/ggml/src/ggml-cpu/polarquant/polarquant_preht.h b/ggml/src/ggml-cpu/polarquant/polarquant_preht.h
 new file mode 100644
-index 000000000..607628db3
+index 0000000..607628d
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/polarquant/polarquant_preht.h
 @@ -0,0 +1,76 @@
@@ -2568,7 +2568,7 @@ index 000000000..607628db3
 +#endif /* ELIZA_POLARQUANT_PREHT_H */
 diff --git a/ggml/src/ggml-cpu/polarquant/polarquant_preht_dispatch.c b/ggml/src/ggml-cpu/polarquant/polarquant_preht_dispatch.c
 new file mode 100644
-index 000000000..d977d12a6
+index 0000000..d977d12
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/polarquant/polarquant_preht_dispatch.c
 @@ -0,0 +1,81 @@
@@ -2655,7 +2655,7 @@ index 000000000..d977d12a6
 +}
 diff --git a/ggml/src/ggml-cpu/qjl/include/qjl/qjl.h b/ggml/src/ggml-cpu/qjl/include/qjl/qjl.h
 new file mode 100644
-index 000000000..c466846b1
+index 0000000..c466846
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/include/qjl/qjl.h
 @@ -0,0 +1,213 @@
@@ -2874,7 +2874,7 @@ index 000000000..c466846b1
 +#endif /* QJL_QJL_H */
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_block.h b/ggml/src/ggml-cpu/qjl/qjl_block.h
 new file mode 100644
-index 000000000..37fcc9d7d
+index 0000000..37fcc9d
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_block.h
 @@ -0,0 +1,18 @@
@@ -2898,7 +2898,7 @@ index 000000000..37fcc9d7d
 +#endif /* QJL_QJL_BLOCK_H */
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_cpu_features.h b/ggml/src/ggml-cpu/qjl/qjl_cpu_features.h
 new file mode 100644
-index 000000000..99e1cb3f1
+index 0000000..99e1cb3
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_cpu_features.h
 @@ -0,0 +1,101 @@
@@ -3005,7 +3005,7 @@ index 000000000..99e1cb3f1
 +#endif /* QJL_CPU_FEATURES_H */
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_dispatch.c b/ggml/src/ggml-cpu/qjl/qjl_dispatch.c
 new file mode 100644
-index 000000000..f869d61ed
+index 0000000..f869d61
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_dispatch.c
 @@ -0,0 +1,126 @@
@@ -3137,7 +3137,7 @@ index 000000000..f869d61ed
 +}
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_projection.c b/ggml/src/ggml-cpu/qjl/qjl_projection.c
 new file mode 100644
-index 000000000..aa76ddb67
+index 0000000..aa76ddb
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_projection.c
 @@ -0,0 +1,77 @@
@@ -3220,7 +3220,7 @@ index 000000000..aa76ddb67
 +}
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_quantize_avx2.c b/ggml/src/ggml-cpu/qjl/qjl_quantize_avx2.c
 new file mode 100644
-index 000000000..88ee49434
+index 0000000..88ee494
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_quantize_avx2.c
 @@ -0,0 +1,113 @@
@@ -3339,7 +3339,7 @@ index 000000000..88ee49434
 +typedef int qjl_quantize_avx2_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_quantize_neon.c b/ggml/src/ggml-cpu/qjl/qjl_quantize_neon.c
 new file mode 100644
-index 000000000..e7d15e43b
+index 0000000..e7d15e4
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_quantize_neon.c
 @@ -0,0 +1,110 @@
@@ -3455,7 +3455,7 @@ index 000000000..e7d15e43b
 +typedef int qjl_quantize_neon_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_quantize_ref.c b/ggml/src/ggml-cpu/qjl/qjl_quantize_ref.c
 new file mode 100644
-index 000000000..a5d540c62
+index 0000000..a5d540c
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_quantize_ref.c
 @@ -0,0 +1,65 @@
@@ -3526,7 +3526,7 @@ index 000000000..a5d540c62
 +}
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_score_avx2.c b/ggml/src/ggml-cpu/qjl/qjl_score_avx2.c
 new file mode 100644
-index 000000000..78c184dd6
+index 0000000..78c184d
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_score_avx2.c
 @@ -0,0 +1,129 @@
@@ -3661,7 +3661,7 @@ index 000000000..78c184dd6
 +typedef int qjl_score_avx2_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_score_avxvnni.c b/ggml/src/ggml-cpu/qjl/qjl_score_avxvnni.c
 new file mode 100644
-index 000000000..b72070348
+index 0000000..b720703
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_score_avxvnni.c
 @@ -0,0 +1,155 @@
@@ -3822,7 +3822,7 @@ index 000000000..b72070348
 +typedef int qjl_score_avxvnni_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_score_dotprod.c b/ggml/src/ggml-cpu/qjl/qjl_score_dotprod.c
 new file mode 100644
-index 000000000..3bbb0cf13
+index 0000000..3bbb0cf
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_score_dotprod.c
 @@ -0,0 +1,83 @@
@@ -3911,7 +3911,7 @@ index 000000000..3bbb0cf13
 +typedef int qjl_score_dotprod_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_score_i8_ref.c b/ggml/src/ggml-cpu/qjl/qjl_score_i8_ref.c
 new file mode 100644
-index 000000000..2c73b0edd
+index 0000000..2c73b0e
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_score_i8_ref.c
 @@ -0,0 +1,63 @@
@@ -3980,7 +3980,7 @@ index 000000000..2c73b0edd
 +}
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_score_neon.c b/ggml/src/ggml-cpu/qjl/qjl_score_neon.c
 new file mode 100644
-index 000000000..d98870990
+index 0000000..d988709
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_score_neon.c
 @@ -0,0 +1,69 @@
@@ -4055,7 +4055,7 @@ index 000000000..d98870990
 +typedef int qjl_score_neon_iso_c_tu_stub;
 diff --git a/ggml/src/ggml-cpu/qjl/qjl_score_ref.c b/ggml/src/ggml-cpu/qjl/qjl_score_ref.c
 new file mode 100644
-index 000000000..cef156521
+index 0000000..cef1565
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/qjl_score_ref.c
 @@ -0,0 +1,42 @@
@@ -4103,7 +4103,7 @@ index 000000000..cef156521
 +}
 diff --git a/ggml/src/ggml-cpu/qjl/quants-qjl.c b/ggml/src/ggml-cpu/qjl/quants-qjl.c
 new file mode 100644
-index 000000000..4cabf50cc
+index 0000000..4cabf50
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/qjl/quants-qjl.c
 @@ -0,0 +1,305 @@
@@ -4414,7 +4414,7 @@ index 000000000..4cabf50cc
 +}
 diff --git a/ggml/src/ggml-cpu/quants-polar.c b/ggml/src/ggml-cpu/quants-polar.c
 new file mode 100644
-index 000000000..051f9f4f0
+index 0000000..051f9f4
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/quants-polar.c
 @@ -0,0 +1,61 @@
@@ -4480,7 +4480,7 @@ index 000000000..051f9f4f0
 +    *s = (float)acc;
 +}
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 1ebc50a76..de23e5dfc 100644
+index 1ebc50a..de23e5d 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
 @@ -2425,6 +2425,960 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
@@ -5445,7 +5445,7 @@ index 1ebc50a76..de23e5dfc 100644
      assert(k % QK_K == 0);
      const int64_t nb = k / QK_K;
 diff --git a/ggml/src/ggml-quants.h b/ggml/src/ggml-quants.h
-index 75188f1af..ac6b83d3f 100644
+index 75188f1..ac6b83d 100644
 --- a/ggml/src/ggml-quants.h
 +++ b/ggml/src/ggml-quants.h
 @@ -36,6 +36,15 @@ GGML_API void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K *
@@ -5502,7 +5502,7 @@ index 75188f1af..ac6b83d3f 100644
  GGML_API size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 diff --git a/ggml/src/ggml-tcq-codebook.h b/ggml/src/ggml-tcq-codebook.h
 new file mode 100644
-index 000000000..a270ea5ea
+index 0000000..a270ea5
 --- /dev/null
 +++ b/ggml/src/ggml-tcq-codebook.h
 @@ -0,0 +1,119 @@
@@ -5626,7 +5626,7 @@ index 000000000..a270ea5ea
 +    1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f,
 +};
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index d898b055a..247749469 100644
+index 8ee0401..0331d68 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -952,42 +952,56 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
@@ -5686,7 +5686,7 @@ index d898b055a..247749469 100644
      },
  };
  
-@@ -8195,6 +8209,13 @@ size_t ggml_quantize_chunk(
+@@ -8227,6 +8241,13 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -5702,7 +5702,7 @@ index d898b055a..247749469 100644
          case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
 diff --git a/ggml/src/polar_centroids.h b/ggml/src/polar_centroids.h
 new file mode 100644
-index 000000000..853b5047d
+index 0000000..853b504
 --- /dev/null
 +++ b/ggml/src/polar_centroids.h
 @@ -0,0 +1,127 @@

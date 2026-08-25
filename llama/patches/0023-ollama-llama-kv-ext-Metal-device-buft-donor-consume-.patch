@@ -10,7 +10,7 @@ Subject: [PATCH] ollama: llama-kv-ext Metal device-buft donor consume (v49)
  3 files changed, 145 insertions(+), 29 deletions(-)
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
-index c95415fcb..b4c879861 100644
+index c95415f..b4c8798 100644
 --- a/include/llama-kv-ext.h
 +++ b/include/llama-kv-ext.h
 @@ -301,5 +301,31 @@ LLAMA_API int32_t llama_kv_ext_donor_buffer_status(
@@ -46,7 +46,7 @@ index c95415fcb..b4c879861 100644
  #endif
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 1474e77a0..e7b47c9b7 100644
+index 24d4eea..1412bbd 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -304,36 +304,63 @@ llama_kv_cache::llama_kv_cache(
@@ -143,7 +143,7 @@ index 1474e77a0..e7b47c9b7 100644
              }
  
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
-index b33858223..1993c9191 100644
+index b338582..1993c91 100644
 --- a/src/llama-memory-kv-ext.cpp
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -671,6 +671,64 @@ ggml_backend_buffer_t llama_kv_ext_donor_try_consume(size_t required_size) {

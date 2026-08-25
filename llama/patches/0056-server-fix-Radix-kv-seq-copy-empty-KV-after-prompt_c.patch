@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Tue, 14 Jul 2026 17:00:04 -0700
+Subject: [PATCH] server: fix Radix /kv/seq-copy empty KV after prompt_clear
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Match copy_state_to (-1,-1 seq_rm/cp), verify pos_min, trim to pos_end, and clear dst prompt tokens without seq_rm — prompt_clear was wiping the KV just copied.
+---
+ tools/server/server-context.cpp | 33 +++++++++++++++++++++++++++------
+ 1 file changed, 27 insertions(+), 6 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 9ce5eb8..e4658b2 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2680,15 +2680,36 @@ private:
+                         break;
+                     }
+ 
+-                    common_context_seq_rm(ctx_tgt, id_dst, 0, -1);
+-                    // Full-sequence copy (partial p1 triggers assert on KV backends).
+-                    common_context_seq_cp(ctx_tgt, id_src, id_dst, 0, -1);
++                    // WHY match copy_state_to: p0/p1 = -1,-1. Using 0,-1 left dst KV empty
++                    // on some backends after slot release → prompt.tokens lie + pos_min==-1 abort
++                    // in pre_decode (ggml-org/llama.cpp#13833).
++                    common_context_seq_rm(ctx_tgt, id_dst, -1, -1);
++                    common_context_seq_cp(ctx_tgt, id_src, id_dst, -1, -1);
+                     if (ctx_dft) {
+-                        common_context_seq_rm(ctx_dft, id_dst, 0, -1);
+-                        common_context_seq_cp(ctx_dft, id_src, id_dst, 0, -1);
++                        common_context_seq_rm(ctx_dft, id_dst, -1, -1);
++                        common_context_seq_cp(ctx_dft, id_src, id_dst, -1, -1);
+                     }
+ 
+-                    slot_dst->prompt_clear(false);
++                    {
++                        auto * mem = llama_get_memory(ctx_tgt);
++                        const llama_pos pos_min = llama_memory_seq_pos_min(mem, id_dst);
++                        if (pos_min < 0) {
++                            send_error(task, "seq-copy produced empty KV (source slot may lack cache)", ERROR_TYPE_INVALID_REQUEST);
++                            break;
++                        }
++                        // Trim to requested prefix when full-seq copy is longer than pos_end.
++                        // Partial seq_cp p1 is unsafe on some KV backends — rm the tail instead.
++                        const llama_pos pos_max = llama_memory_seq_pos_max(mem, id_dst);
++                        if (pos_max >= pos_end) {
++                            common_context_seq_rm(ctx_tgt, id_dst, pos_end, -1);
++                            if (ctx_dft) {
++                                common_context_seq_rm(ctx_dft, id_dst, pos_end, -1);
++                            }
++                        }
++                    }
++
++                    // WHY not prompt_clear: that seq_rm's the dst KV we just copied.
++                    slot_dst->prompt.tokens.clear();
+                     const llama_tokens & src_tokens = slot_src->prompt.tokens.get_tokens();
+                     const size_t n_copy = std::min<size_t>(src_tokens.size(), (size_t) pos_end);
+                     for (size_t i = 0; i < n_copy; ++i) {

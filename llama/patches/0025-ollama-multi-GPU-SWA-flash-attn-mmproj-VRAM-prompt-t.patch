@@ -4,15 +4,15 @@ Date: Fri, 10 Jul 2026 01:06:29 -0700
 Subject: [PATCH] ollama: multi-GPU SWA flash-attn mmproj VRAM prompt tuning
 
 ---
- common/fit.cpp                  | 116 ++++++++++++++++++++++----------
+ common/fit.cpp                  | 121 ++++++++++++++++++++++----------
  src/llama-context.cpp           |   7 ++
- tools/server/server-common.cpp  |  57 ++++++++++++++++
+ tools/server/server-common.cpp  |  57 +++++++++++++++
  tools/server/server-common.h    |   5 ++
- tools/server/server-context.cpp |  69 +++++++++++++++++++
- 5 files changed, 219 insertions(+), 35 deletions(-)
+ tools/server/server-context.cpp |  69 ++++++++++++++++++
+ 5 files changed, 222 insertions(+), 37 deletions(-)
 
 diff --git a/common/fit.cpp b/common/fit.cpp
-index b640235c5..fbb846d19 100644
+index a243a70..90f88bc 100644
 --- a/common/fit.cpp
 +++ b/common/fit.cpp
 @@ -34,6 +34,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
@@ -43,7 +43,7 @@ index b640235c5..fbb846d19 100644
  
      common_device_memory_data_vec ret(impl.size());
      for (size_t i = 0; i < impl.size(); i++) {
-@@ -187,14 +190,15 @@ static void common_params_fit_impl(
+@@ -187,9 +190,10 @@ static void common_params_fit_impl(
      const llama_model_params default_mparams = llama_model_default_params();
  
      std::vector<ggml_backend_dev_t> devs;
@@ -55,42 +55,71 @@ index b640235c5..fbb846d19 100644
 +    uint32_t hp_nex  = 0; // hparams.n_expert
 +    uint32_t hp_nswa = 0; // hparams.n_swa
  
+     // with non-unified kv, we need to take into account n_streams
+     // for example, if memory can hold more than model's trained context size, we must extend the n_ctx to hold enough n_streams
+@@ -211,6 +215,7 @@ static void common_params_fit_impl(
+             uint32_t ngl_extra = 0;
+             uint32_t nct_extra = 0;
+             uint32_t nex_extra = 0;
++            uint32_t nswa_extra = 0;
+ 
+             extra->cparams->n_ctx = cparams->n_ctx;
+ 
+@@ -220,7 +225,7 @@ static void common_params_fit_impl(
+             dmds_t measured;
+             try {
+                 measured = common_get_device_memory_data_impl(
+-                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
++                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, nswa_extra, log_level);
+             } catch (const std::runtime_error & e) {
+                 // the extra model is optional, fit the main model alone rather than giving up
+                 LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
+@@ -260,7 +265,7 @@ static void common_params_fit_impl(
      // step 1: get data for default parameters and check whether any changes are necessary in the first place
  
      LOG_TRC("%s: getting device memory data for initial parameters:\n", __func__);
--    const dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+    const dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
-     const size_t nd = devs.size(); // number of devices
+-    dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
++    dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
  
-     std::vector<int64_t> margins; // this function uses int64_t rather than size_t for memory sizes to more conveniently handle deficits
-@@ -329,7 +333,7 @@ static void common_params_fit_impl(
+     // saturate instead of overflowing, this also preserves the UINT32_MAX sentinel of n_ctx_min:
+     const uint32_t n_ctx_max       = (uint32_t) std::min<uint64_t>(uint64_t(hp_nct)    * n_streams, UINT32_MAX);
+@@ -272,7 +277,7 @@ static void common_params_fit_impl(
+         if (n_streams > 1) {
+             LOG_TRC("%s: context size unset and KV cache not unified -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
+                 __func__, n_ctx_max, n_streams);
+-            dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
++            dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+         }
+     }
+     add_extra_memory(dmds_full);
+@@ -411,7 +416,7 @@ static void common_params_fit_impl(
  
                      int64_t sum_projected_used_min_ctx = 0;
-                     cparams->n_ctx = n_ctx_min;
--                    const dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+                    const dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+                     cparams->n_ctx = n_ctx_min_total;
+-                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
++                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+                     add_extra_memory(dmds_min_ctx);
                      if (nd == 0) {
                          sum_projected_used_min_ctx = dmds_min_ctx.back().mb.total();
-                     } else {
-@@ -508,7 +512,7 @@ static void common_params_fit_impl(
+@@ -593,7 +598,7 @@ static void common_params_fit_impl(
          set_ngl_tensor_split_tbo(ngl_per_device, overflow_bufts, mparams_copy);
  
-         const dmds_t dmd_nl = common_get_device_memory_data_impl(
+         dmds_t dmd_nl = common_get_device_memory_data_impl(
 -            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
 +            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+         add_extra_memory(dmd_nl);
  
          LOG_TRC("%s: memory for test allocation by device:\n", func_name);
-         for (size_t id = 0; id < nd; id++) {
-@@ -536,7 +540,7 @@ static void common_params_fit_impl(
+@@ -622,7 +627,7 @@ static void common_params_fit_impl(
  
          LOG_TRC("%s: getting device memory data with all MoE tensors moved to system memory:\n", __func__);
-         const dmds_t dmds_cpu_moe = common_get_device_memory_data_impl(
+         dmds_t dmds_cpu_moe = common_get_device_memory_data_impl(
 -            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
 +            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+         add_extra_memory(dmds_cpu_moe);
  
          for (size_t id = 0; id < nd; id++) {
-             global_surplus_cpu_moe += dmds_cpu_moe[id].free;
-@@ -639,16 +643,12 @@ static void common_params_fit_impl(
+@@ -726,16 +731,12 @@ static void common_params_fit_impl(
              "%s:   - %s: %2" PRIu32 " layers, %6" PRId64 " MiB used, %6" PRId64 " MiB free\n",
              __func__, dev_names[id].c_str(), ngl_per_device[id].n_layer, mem[id]/MiB, projected_margin/MiB);
      }
@@ -112,7 +141,7 @@ index b640235c5..fbb846d19 100644
  
          std::vector<ngl_t> ngl_equal(nd);
          uint32_t rem = hp_ngl + 1;
-@@ -660,12 +660,14 @@ static void common_params_fit_impl(
+@@ -747,12 +748,14 @@ static void common_params_fit_impl(
  
          llama_model_params mparams_test = *mparams;
          set_ngl_tensor_split_tbo(ngl_equal, overflow_bufts, mparams_test);
@@ -131,7 +160,7 @@ index b640235c5..fbb846d19 100644
  
          bool equal_fits = true;
          for (size_t id = 0; id < nd; ++id) {
-@@ -675,23 +677,66 @@ static void common_params_fit_impl(
+@@ -762,23 +765,66 @@ static void common_params_fit_impl(
              }
          }
  
@@ -208,7 +237,7 @@ index b640235c5..fbb846d19 100644
      }
  
      // step 4: for a MoE model where all dense tensors fit,
-@@ -1011,11 +1056,12 @@ void common_fit_print(
+@@ -1099,11 +1145,12 @@ void common_fit_print(
          llama_model_params * mparams,
          llama_context_params * cparams) {
      std::vector<ggml_backend_dev_t> devs;
@@ -226,7 +255,7 @@ index b640235c5..fbb846d19 100644
  
      for (size_t id = 0; id < devs.size(); id++) {
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index ccdd52d0d..0ece1a9f6 100644
+index 207a8d6..20ea162 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -555,6 +555,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
@@ -244,7 +273,7 @@ index ccdd52d0d..0ece1a9f6 100644
  
      if (cparams.auto_fgdn) {
 diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
-index 585f65e83..1b40ccfb9 100644
+index 4f5b820..37b667b 100644
 --- a/tools/server/server-common.cpp
 +++ b/tools/server/server-common.cpp
 @@ -666,6 +666,63 @@ void server_tokens::keep_first(size_t n) {
@@ -312,10 +341,10 @@ index 585f65e83..1b40ccfb9 100644
      llama_tokens text_tokens;
      text_tokens.reserve(tokens.size());
 diff --git a/tools/server/server-common.h b/tools/server/server-common.h
-index 6488be344..ee7107c84 100644
+index f8ea82e..7e13ebf 100644
 --- a/tools/server/server-common.h
 +++ b/tools/server/server-common.h
-@@ -227,6 +227,11 @@ public:
+@@ -226,6 +226,11 @@ public:
  
      void keep_first(size_t n);
  
@@ -328,7 +357,7 @@ index 6488be344..ee7107c84 100644
  
      size_t get_common_prefix(const server_tokens & b) const;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index c81c11a06..188c09c03 100644
+index 1fcbc10..11399c3 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -26,6 +26,50 @@
@@ -382,7 +411,7 @@ index c81c11a06..188c09c03 100644
  // fix problem with std::min and std::max
  #if defined(_WIN32)
  #define WIN32_LEAN_AND_MEAN
-@@ -1149,6 +1193,17 @@ private:
+@@ -1107,6 +1151,17 @@ private:
                  callback_state(SERVER_STATE_LOADING, {{"stage", "mmproj_model"}});
              }
  
@@ -400,7 +429,7 @@ index c81c11a06..188c09c03 100644
              if (!is_resume) {
                  mtmd_helper_log_set(common_log_default_callback, nullptr);
              }
-@@ -1735,6 +1790,20 @@ private:
+@@ -1702,6 +1757,20 @@ private:
              return false;
          }
  
