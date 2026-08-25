@@ -38,6 +38,7 @@ func TestBuiltInRendererStillWorks(t *testing.T) {
 	}{
 		{name: "qwen3-coder"},
 		{name: "qwen3.5"},
+		{name: "qwen3.8"},
 	}
 
 	messages := []api.Message{

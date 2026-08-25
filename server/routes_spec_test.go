@@ -43,6 +43,18 @@ func TestLlamaServerConfigForModel(t *testing.T) {
 			want: llm.LlamaServerConfig{DraftModelPath: "/models/manifest-draft.gguf", SpecType: "draft-mtp"},
 		},
 		{
+			name: "qwen35 hybrid strips library draft-mtp",
+			m: &Model{
+				Name: "qwen3.8:27b",
+				Config: model.ConfigV2{
+					ModelFamily:   "qwen35",
+					ModelFamilies: []string{"qwen35"},
+				},
+			},
+			opts: api.Options{Runner: api.Runner{SpecType: "draft-mtp"}},
+			want: llm.LlamaServerConfig{},
+		},
+		{
 			name: "qwen35 without eliza prefix does not auto ngram",
 			m: &Model{
 				Name: "qwen3.6:latest",

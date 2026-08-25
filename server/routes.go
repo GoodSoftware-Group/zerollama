@@ -192,6 +192,12 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	if model != nil && model.DraftPath == "" && !model.EmbeddedMTP && !draftNumPredictSet {
 		opts.DraftNumPredict = 0
 	}
+	if model != nil && llm.DisableDraftMTPForArchitecture(model.PrimaryFamily()) {
+		opts.DraftNumPredict = 0
+		if strings.EqualFold(opts.SpecType, "draft-mtp") || strings.EqualFold(opts.SpecType, "mtp") {
+			opts.SpecType = ""
+		}
+	}
 
 	return opts, nil
 }
@@ -225,6 +231,9 @@ func llamaServerConfigForModel(m *Model, contextShift bool, opts api.Options) ll
 		case modelUsesElizaNgramDefault(m):
 			cfg.SpecType = "ngram-simple"
 		}
+	}
+	if llm.DisableDraftMTPForArchitecture(m.PrimaryFamily()) && (cfg.SpecType == "draft-mtp" || cfg.SpecType == "mtp") {
+		cfg.SpecType = ""
 	}
 	return cfg
 }
@@ -934,7 +943,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		if cancelPreempt != nil {
 			defer cancelPreempt()
 		}
-		if err := r.Completion(inferCtx, llm.CompletionRequest{
+		ctx, cancel := context.WithCancel(inferCtx)
+		defer cancel()
+		var parserErr error
+		if err := r.Completion(ctx, llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
 			Images:            images,
@@ -983,8 +995,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			if builtinParser != nil {
 				content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
 				if err != nil {
-					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
-						errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+					parserErr = err
+					cancel()
 					return
 				}
 				res.Response = sanitizeAssistantContent(content)
@@ -1052,19 +1064,25 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				sentDone = true
 			}
 		}); err != nil {
-			if isContextCanceled(err) && s.maybeEnqueueGeneratePreempted(
-				ch, m, req.Options, req.Model, sb.String(), &sentDone,
-				checkpointStart, checkpointLoaded, ggmlCtx,
-			) {
-				return
+			if parserErr == nil {
+				if isContextCanceled(err) && s.maybeEnqueueGeneratePreempted(
+					ch, m, req.Options, req.Model, sb.String(), &sentDone,
+					checkpointStart, checkpointLoaded, ggmlCtx,
+				) {
+					return
+				}
+				var serr api.StatusError
+				extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
+				if errors.As(err, &serr) {
+					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
+				} else {
+					enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
+				}
 			}
-			var serr api.StatusError
-			extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
-			if errors.As(err, &serr) {
-				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
-			} else {
-				enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
-			}
+		}
+		if parserErr != nil {
+			enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), 0,
+				errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 		}
 	}()
 
@@ -3395,6 +3413,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			if s.sched != nil {
 				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
 			}
+			var parserErr error
 			err := r.Completion(ctx, llm.CompletionRequest{
 				Prompt:              prompt,
 				PromptTokens:        completionPromptTokens,
@@ -3472,8 +3491,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 					content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
 					if err != nil {
-						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0,
-							errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+						parserErr = err
+						cancel()
 						return
 					}
 
@@ -3562,6 +3581,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 				ch <- res
 			})
+			if parserErr != nil {
+				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), 0,
+					errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+				return
+			}
 			if err != nil {
 				if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
 					// only ignores error if it's a context cancellation due to setting structured outputs

@@ -147,9 +147,9 @@ On this dual-4090 lane, speech assets live on the models volume (root disk is ti
 ```bash
 ./scripts/install_speech_backends.sh          # Piper multi-voice + Whisper + voice catalogs
 OLLAMA_MODELS=/mnt/ollama_img/models ./scripts/register_speech_models.sh
-sudo cp scripts/systemd/speech-backends.conf /etc/systemd/system/ollama.service.d/
+sudo cp scripts/systemd/speech-backends.conf /etc/systemd/system/zerollama.service.d/
 # Edit drop-in: set OLLAMA_TTS_URL=http://cozmic:8090 when using remote-tts tags
-sudo systemctl daemon-reload && sudo systemctl restart ollama
+sudo systemctl daemon-reload && sudo systemctl restart zerollama
 ```
 
 Registered tags: `piper-lessac:latest`, `whisper-base:latest`, `chatterbox:latest`, `orpheus:latest`, `kokoro:latest`.

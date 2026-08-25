@@ -1,0 +1,10 @@
+# Start or stop both the Go API and the Python runtime together.
+# Individual units remain independently controllable.
+
+[Unit]
+Description=Zerollama stack (API + Python runtime)
+Wants=zerollama-runtime.service zerollama.service
+After=zerollama-runtime.service zerollama.service
+
+[Install]
+WantedBy=multi-user.target

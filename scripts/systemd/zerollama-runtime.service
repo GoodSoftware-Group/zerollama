@@ -1,0 +1,28 @@
+# Python runtime sidecar (llama-server subprocesses) on loopback :8081.
+# Independent of zerollama.service: stop one without the other.
+
+[Unit]
+Description=Zerollama Python runtime (dual RTX 4090 tensor parallel)
+After=network-online.target nvidia-persistenced.service
+Before=zerollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ollama
+Group=ollama
+Environment="LLAMA_SERVER_BIN=/opt/zerollama/llama-server-5f55650a/llama-server"
+Environment="ZEROLLAMA_RUNTIME_CONFIG=/opt/zerollama/runtime/configs/dual_4090.yaml"
+Environment="ZEROLLAMA_AUTO_CONFIG=1"
+Environment="ZEROLLAMA_GPU_PROFILE=1"
+Environment="ZEROLLAMA_RUNTIME_HOST=127.0.0.1"
+Environment="ZEROLLAMA_RUNTIME_PORT=8081"
+Environment="OLLAMA_LIBRARY_PATH=/opt/zerollama/llama-server-5f55650a:/usr/local/lib/ollama:/usr/local/lib/ollama/cuda_v12"
+Environment="LD_LIBRARY_PATH=/opt/zerollama/llama-server-5f55650a:/usr/local/lib/ollama:/usr/local/lib/ollama/cuda_v12"
+Environment="PYTHONPATH=/opt/zerollama/runtime:/opt/zerollama/runtime/.venv/lib/python3.11/site-packages"
+ExecStart=/opt/zerollama/runtime/.venv/bin/python -m runtime serve --host 127.0.0.1 --port 8081 --config /opt/zerollama/runtime/configs/dual_4090.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

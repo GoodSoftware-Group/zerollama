@@ -760,7 +760,11 @@ func pullModelOnce(ctx context.Context, name string, regOpts *registryOptions, f
 		if err != nil {
 			return err
 		}
-		skipVerify[layer.Digest] = cacheHit
+		if existing, ok := skipVerify[layer.Digest]; !ok {
+			skipVerify[layer.Digest] = cacheHit
+		} else {
+			skipVerify[layer.Digest] = existing && cacheHit
+		}
 		delete(deleteMap, layer.Digest)
 	}
 

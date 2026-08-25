@@ -728,6 +728,31 @@ func isQwen35Family(s string) bool {
 	return strings.Contains(s, "qwen3_5") || strings.Contains(s, "qwen3next")
 }
 
+func qwen35RendererName(modelDir string) string {
+	template := readChatTemplate(modelDir)
+	if strings.Contains(template, "resolved_reasoning_effort") &&
+		strings.Contains(template, "preserve_thinking") {
+		return "qwen3.8"
+	}
+	return "qwen3.5"
+}
+
+// readChatTemplate prefers tokenizer_config.json chat_template, then chat_template.jinja.
+func readChatTemplate(modelDir string) string {
+	if data, err := os.ReadFile(filepath.Join(modelDir, "tokenizer_config.json")); err == nil {
+		var cfg struct {
+			ChatTemplate string `json:"chat_template"`
+		}
+		if json.Unmarshal(data, &cfg) == nil && cfg.ChatTemplate != "" {
+			return cfg.ChatTemplate
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(modelDir, "chat_template.jinja")); err == nil {
+		return string(data)
+	}
+	return ""
+}
+
 // getParserName returns the parser name for a model based on its architecture.
 // This reads the config.json from the model directory and determines the appropriate parser.
 func getParserName(modelDir string) string {
@@ -827,7 +852,7 @@ func getRendererName(modelDir string) string {
 			return "deepseek3"
 		}
 		if isQwen35Family(archLower) {
-			return "qwen3.5"
+			return qwen35RendererName(modelDir)
 		}
 		if strings.Contains(archLower, "qwen3") {
 			return "qwen3-coder"
@@ -850,7 +875,7 @@ func getRendererName(modelDir string) string {
 			return "deepseek3"
 		}
 		if isQwen35Family(typeLower) {
-			return "qwen3.5"
+			return qwen35RendererName(modelDir)
 		}
 		if strings.Contains(typeLower, "qwen3") {
 			return "qwen3-coder"

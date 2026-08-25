@@ -94,10 +94,19 @@ These do **not** assume 16 GiB, sm_120, or tensor parallel.
 ### Production (this host)
 
 ```bash
-systemctl status zerollama-runtime ollama
+systemctl status zerollama zerollama-runtime ollama
+systemctl start|stop|restart zerollama          # Go API :2083 (this fork)
+journalctl -u zerollama -f
+systemctl start|stop|restart ollama             # upstream Ollama :11434 (fallback for other users)
+journalctl -u ollama -f
+systemctl start|stop|restart zerollama-runtime  # Python sidecar :8081
+systemctl start|stop zerollama-stack.target     # zerollama API + runtime (not upstream ollama)
 curl -s http://127.0.0.1:8081/health | jq '{status, autoconfig, gpu_profile}'
-curl -s http://127.0.0.1:2083/api/status | jq .inference
+curl -s http://127.0.0.1:2083/api/version       # zerollama
+curl -s http://127.0.0.1:11434/api/version      # ollama
 ```
+
+CLI: `zerollama` talks to `:2083` if `OLLAMA_HOST` is unset in that binary's defaults; `ollama` defaults to `:11434`. To hit zerollama with the ollama CLI: `OLLAMA_HOST=127.0.0.1:2083 ollama list`.
 
 ### dual-4090 gates (beyond CUDA-common)
 

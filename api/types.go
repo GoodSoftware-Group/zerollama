@@ -1857,7 +1857,7 @@ func DefaultOptions() Options {
 		TopP:             0.9,
 		TypicalP:         1.0,
 		RepeatLastN:      64,
-		RepeatPenalty:    1.1,
+		RepeatPenalty:    1.0,
 		PresencePenalty:  0.0,
 		FrequencyPenalty: 0.0,
 		Seed:             -1,
@@ -1890,7 +1890,7 @@ func (t *ThinkValue) IsValid() bool {
 	case bool:
 		return true
 	case string:
-		return v == "high" || v == "medium" || v == "low"
+		return v == "high" || v == "medium" || v == "low" || v == "max"
 	default:
 		return false
 	}
@@ -1924,8 +1924,8 @@ func (t *ThinkValue) Bool() bool {
 	case bool:
 		return v
 	case string:
-		// Any string value ("high", "medium", "low") means thinking is enabled
-		return v == "high" || v == "medium" || v == "low"
+		// Any string value ("high", "medium", "low", "max") means thinking is enabled
+		return v == "high" || v == "medium" || v == "low" || v == "max"
 	default:
 		return false
 	}
@@ -1963,14 +1963,14 @@ func (t *ThinkValue) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		// Validate string values
-		if s != "high" && s != "medium" && s != "low" {
-			return fmt.Errorf("invalid think value: %q (must be \"high\", \"medium\", \"low\", true, or false)", s)
+		if s != "high" && s != "medium" && s != "low" && s != "max" {
+			return fmt.Errorf("invalid think value: %q (must be \"high\", \"medium\", \"low\", \"max\", true, or false)", s)
 		}
 		t.Value = s
 		return nil
 	}
 
-	return fmt.Errorf("think must be a boolean or string (\"high\", \"medium\", \"low\", true, or false)")
+	return fmt.Errorf("think must be a boolean or string (\"high\", \"medium\", \"low\", \"max\", true, or false)")
 }
 
 // MarshalJSON implements json.Marshaler

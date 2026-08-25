@@ -12,6 +12,8 @@ Zerollama forked Ollama and added a **Python runtime**, **GPU training**, **Eliz
 
 This document captures **architecture deltas**, **pin gaps**, and **actionable cherry-picks** so roadmap work stays intentional—not accidental full merges.
 
+Zerollama is **downstream of `ollama/ollama`**. We path-filter cherry-picks of useful commits. We do **not** rebase onto `main`.
+
 ---
 
 ## Local upstream checkout
@@ -81,7 +83,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| Ollama release | **v0.32.1** (`714b6fc2`) | v0.30.11 base + selective cherry-picks through **v0.32.1** | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
+| Ollama release | **v0.32.15** (`b7871fc`) | v0.30.11 base + selective cherry-picks through **v0.32.1**, then path-filtered ports through **v0.32.15** (Qwen 3.8 renderer/parser, repeat_penalty default, skipVerify, parse-error cancel) | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
 | llama.cpp tag | `b9888` (upstream v0.32.1) | **`8f114a9b`** (ggml-org master tip; past b10064) | Vendor sync via `./scripts/vendor/sync_vendor_llama.sh`; patch doctor: `./scripts/vendor/llama_patch_doctor.sh` |
 | Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build/build_llama_server.sh` on sibling tree | Align presets when porting |
@@ -103,7 +105,25 @@ Cherry-pick **by package**, not wholesale rebase.
 | Discovery | `discover/llama_server.go` | GPU probe via llama-server |
 | MLX MTP / cache | Recent `x/mlxrunner` commits | Speculative decode on safetensors path |
 
-**Merge conflict hotspots (avoid blind rebase):** `server/sched.go`, `llm/server.go`, `discover/`, entire `runtime/`, `x/trainingworker/`, `runner/ollamarunner/` (we have it; upstream deleted it).
+## How we cherry-pick
+
+Sibling checkout: `./scripts/gpu/clone_upstream_ollama.sh` → `../ollama-upstream`.
+
+```bash
+git -C ../ollama-upstream fetch --tags origin
+git -C ../ollama-upstream log --oneline v0.32.1..v0.32.15 -- model/renderers model/parsers x/create llm/llama_server.go server/images.go api/types.go
+
+# Path-filtered patch (preferred). Hand-port when server/sched.go or routes.go diverge.
+git -C ../ollama-upstream format-patch -1 <sha> -- model/renderers model/parsers
+git am --3way --exclude='server/sched.go' --exclude='runtime/*' <that.patch>
+```
+
+**Take:** renderer/parser/API bugfixes, llama-server media/compat, small `images.go`/`api` correctness, model-family import selection.  
+**Skip:** desktop `app/`, `agent/` TUI, ollama.com cloud, deleting ggml/Python, llama.cpp pin bumps that fight `llama/patches/`, `sched.go` wholesale.
+
+Hotspots to never blind-apply: `server/sched.go`, `llm/server.go`, `discover/`, `runtime/`, `x/trainingworker/`, `runner/ollamarunner/`.
+
+---
 
 ---
 
@@ -224,7 +244,7 @@ Absent: Python runtime, training API, native KV experiments, Eliza.
 
 ---
 
-## Cherry-pick status (Jul 2026, upstream `714b6fc2` / v0.32.1)
+## Cherry-pick status (Aug 2026, scouted upstream `v0.32.15` / `b7871fc`)
 
 Additive ports that **do not** change zerollama architecture (Mac ggml default, Python sidecar, fleet/training, FIFO scheduler policy):
 
@@ -237,7 +257,12 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | **Draft-cache token-pair trie** | **Done** | `trieKey` + `kvCache.key()`; keep M15a live-session / `promptCacheKey` / `fastPath` |
 | **Recurrent / GDN cache fixes** | **Done** | Single-pass conv boundary states; stop pinning forward buffer; `CausalConv1D` drops bare weight |
 | **Gemma4 chat template** | **Done** | Renderer/parser + Jinja testdata + tool-message thinking Init |
-| **Create Qwen3.5/Next parser+renderer** | **Done** | `isQwen35Family` before generic `qwen3` match |
+| **Qwen 3.8 renderer/parser (#17745, #17749, #17757, #17855)** | **Done (Aug 2026)** | Dedicated `qwen3.8` variant (effort preamble, preserve thinking, developer fold); import picks it from `resolved_reasoning_effort`; ThinkValue `max`; conv1d reshape. GGUF `draft-mtp` stays **off** on qwen35 (ours; SWA desync). |
+| **repeat_penalty default 1.0 (#6a261db)** | **Done (Aug 2026)** | Stop stacking 1.1 on models that omit it (qwen3.5/3.8, gemma4, …). |
+| **skipVerify AND on duplicate digest (#15504)** | **Done (Aug 2026)** | `server/images.go` — always verify if any download of that digest was a cache miss. |
+| **Parser error cancel (#17883)** | **Done (Aug 2026)** | Chat/generate: record parse error, cancel completion, report once (no wedge). |
+| **WebP → PNG for llama-server (#17755)** | **Next** | `llm/llama_server.go` transcode; skip the integration image swap if noisy. |
+| **Model metadata cache (#17752)** | **Next** | Per-request overhead; port if `/api/show` is hot. |
 | **`x/create` rewrite** | **Deferred** | Upstream removes imagegen create path; keep zerollama `imagegen.go` until surgical split |
 | **Agent harness + TUI** | **Skipped** | Product call — not ported |
 | **Launch deprecated-model warn** | **Skipped** | Product call — not ported |
@@ -301,7 +326,8 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 5. ~~Cherry-pick MLX MTP commits~~ — **done** (cache snapshots + prefill offsets in `x/mlxrunner/`).
 6. ~~Phase 17 E2E smoke~~ — **done** — `phase17_llama_server_smoke.sh` PASS (Jun 2026); vision opt-in: `phase17_llama_server_vision_smoke.sh`.
 7. ~~Deprecate **`OLLAMA_NEW_ENGINE`** / **`runner/ollamarunner`** for plain text GGUF~~ — **partial**; explicit `--llama-server-backend` now routes vision/thinking GGUF; Linux auto + Mac default vision still ggml.
-8. ~~**Cline providers.json**~~ — done (#16402).
+8. Path-filter **v0.32.12–v0.32.15**: Qwen 3.8 renderer, repeat_penalty 1.0, skipVerify, parse-error cancel — **done (Aug 2026)**. Next: WebP transcode (#17755), metadata cache (#17752).
+9. Skip llama.cpp pin bumps from those tags until `llama/patches/` rebases; our GGUF pin is independent.
 
 ---
 
