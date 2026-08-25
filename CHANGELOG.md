@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### CUDA plugin discovery from `run/zerollama` — Aug 2026
+
+**Why:** `nvidia-smi` and `OLLAMA_LLM_LIBRARY=cuda_v13` were fine, but serve still started CPU-only (`gpu_found=false` in ~1 ms) when the binary lived in `run/zerollama`. `ml.LibOllamaPath` only checked `../lib/ollama` / `build/lib/ollama` / `dirname(exe)` and never used `OLLAMA_LIBRARY_PATH` or `/usr/lib/ollama`.
+
+**Shipped:** honor `OLLAMA_LIBRARY_PATH` and Linux package dirs (`/usr/lib/ollama`, `/usr/local/lib/ollama`); prefer a root that actually has `cuda_v*` (etc.); glob those roots in GPU bootstrap; INFO when `OLLAMA_LLM_LIBRARY` is set but that plugin dir was not searched. The `~/zerollama/lib/ollama → /usr/lib/ollama` symlink is no longer required.
+
+
 ### OpenAPI LocalAI control plane — Aug 2026
 
 **Why:** `/docs` lagged the shipped LA7/LA9/LA11/LA15/LA17 routes so agents could not discover aliases, score, or routers.

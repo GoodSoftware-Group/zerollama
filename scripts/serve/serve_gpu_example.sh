@@ -162,7 +162,8 @@ export ZEROLLAMA_GGML_CLAMP_NUM_CTX="${ZEROLLAMA_GGML_CLAMP_NUM_CTX:-1}"
 # ggml. Wan run_script subprocesses sanitize LD (prepend venv torch/lib, drop hostlibs).
 # See docs/wan-t2v.md troubleshooting: "cuDNN version incompatibility".
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/root/nvidia-host:/usr/hostlibs:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda-13.3/targets/x86_64-linux/lib}"
-# ggml CUDA backend (chat/completion runners) — without /usr/lib/ollama + cuda_v13, ggml falls back to CPU-only on 5080.
+# ggml CUDA backend (chat/completion runners). Discovery honors this even when
+# the binary is run/zerollama (no ../lib/ollama). Without these dirs, ggml is CPU-only on 5080.
 export OLLAMA_LIBRARY_PATH="${OLLAMA_LIBRARY_PATH:-/usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/lib/ollama/mlx_cuda_v12}"
 export LD_LIBRARY_PATH="/root/nvidia-host:/usr/lib/ollama:/usr/lib/ollama/cuda_v13:/usr/lib/ollama/mlx_cuda_v12:${LD_LIBRARY_PATH}"
 

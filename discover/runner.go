@@ -55,7 +55,6 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 
 	if !bootstrapped {
 		msg = "GPU bootstrap discovery took"
-		libDirs = make(map[string]struct{})
 		var err error
 		exe, err = os.Executable()
 		if err != nil {
@@ -65,22 +64,18 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 		if eval, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = eval
 		}
-		files, err := filepath.Glob(filepath.Join(ml.LibOllamaPath, "*", "*ggml-*"))
-		if err != nil {
-			slog.Debug("unable to lookup runner library directories", "error", err)
-		}
-		for _, file := range files {
-			if !isDiscoverableRunnerLib(file) {
-				continue
-			}
-			libDirs[filepath.Dir(file)] = struct{}{}
-		}
+		searchRoots := ml.LibOllamaSearchRoots()
+		libDirs = collectRunnerLibDirs(searchRoots)
 
 		if len(libDirs) == 0 {
 			libDirs[""] = struct{}{}
 		}
 
-		slog.Info("discovering available GPUs...")
+		slog.Info("discovering available GPUs...",
+			"lib_ollama_path", ml.LibOllamaPath,
+			"search_roots", searchRoots,
+			"plugin_dirs", pluginDirNames(libDirs),
+		)
 		detectIncompatibleLibraries()
 		detectOldAMDDriverWindows()
 
@@ -88,13 +83,29 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 		overrideWarnings()
 
 		requested := envconfig.LLMLibrary()
+		if requested != "" && !strings.HasPrefix(requested, "mlx_") && !llmLibraryInSearch(requested, libDirs, searchRoots) {
+			slog.Info("OLLAMA_LLM_LIBRARY set but that plugin directory was not searched",
+				"requested", requested,
+				"lib_ollama_path", ml.LibOllamaPath,
+				"search_roots", searchRoots,
+				"plugin_dirs", pluginDirNames(libDirs),
+				"hint", "point OLLAMA_LIBRARY_PATH at lib/ollama (e.g. /usr/lib/ollama) or install the plugin next to the binary",
+			)
+		}
 		jetpack := cudaJetpack()
 
 		// If the detected JetPack runner isn't installed, clear the override so
 		// normal discovery can select a standard CUDA build (e.g. cuda_v13,
 		// which supports Orin on JetPack 7).
 		if jetpack != "" {
-			if _, ok := libDirs[filepath.Join(ml.LibOllamaPath, "cuda_"+jetpack)]; !ok {
+			found := false
+			for dir := range libDirs {
+				if filepath.Base(dir) == "cuda_"+jetpack {
+					found = true
+					break
+				}
+			}
+			if !found {
 				jetpack = ""
 			}
 		}
@@ -118,7 +129,6 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				// cached
 				bootstrapTimeout = 90 * time.Second
 			}
-			var dirs []string
 			if dir != "" {
 				if requested != "" && !strings.HasPrefix(requested, "mlx_") && filepath.Base(dir) != requested {
 					slog.Debug("skipping available library at user's request", "requested", requested, "libDir", dir)
@@ -131,10 +141,8 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				} else if !envconfig.EnableVulkan(true) && strings.Contains(filepath.Base(dir), "vulkan") {
 					continue
 				}
-				dirs = []string{ml.LibOllamaPath, dir}
-			} else {
-				dirs = []string{ml.LibOllamaPath}
 			}
+			dirs := bootstrapLibraryDirs(bootstrapLibraryBase(dir), dir)
 
 			ctx1stPass, cancel := context.WithTimeout(ctx, bootstrapTimeout)
 			discovered := bootstrapDevicesWithMetalRetry(ctx1stPass, ctx, bootstrapTimeout, dirs, nil)
@@ -350,35 +358,42 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			}
 		}
 		if !allDone() {
-			slog.Debug("unable to refresh all GPUs with existing runners, performing bootstrap discovery")
+			// Darwin Metal: subprocess /info free bytes are process-local and
+			// go stale; applyMetalUnifiedFreeMemory uses the host pool instead.
+			// Spawning a 3s bootstrap runner on every /api/tags only times out.
+			if skipSubprocessVRAMRefresh(devices) {
+				slog.Debug("skipping bootstrap VRAM refresh on Metal; using unified host pool")
+			} else {
+				slog.Debug("unable to refresh all GPUs with existing runners, performing bootstrap discovery")
 
-			// Bootstrapping may take longer in some cases (AMD windows), but we
-			// would rather use stale free data to get the model running sooner
-			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			defer cancel()
+				// Bootstrapping may take longer in some cases (AMD windows), but we
+				// would rather use stale free data to get the model running sooner
+				ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				defer cancel()
 
-			// Apply any dev filters to avoid re-discovering unsupported devices, and get IDs correct
-			// We avoid CUDA filters here to keep ROCm from failing to discover GPUs in a mixed environment
-			devFilter := ml.GetVisibleDevicesEnv(devices, false)
+				// Apply any dev filters to avoid re-discovering unsupported devices, and get IDs correct
+				// We avoid CUDA filters here to keep ROCm from failing to discover GPUs in a mixed environment
+				devFilter := ml.GetVisibleDevicesEnv(devices, false)
 
-			for dir := range libDirs {
-				updatedDevices := bootstrapDevicesWithMetalRetry(ctx, ctx, 3*time.Second, []string{ml.LibOllamaPath, dir}, devFilter)
-				for _, u := range updatedDevices {
-					for i := range devices {
-						if u.DeviceID == devices[i].DeviceID && u.PCIID == devices[i].PCIID {
-							updated[i] = true
-							devices[i].FreeMemory = u.FreeMemory
-							break
+				for dir := range libDirs {
+					updatedDevices := bootstrapDevicesWithMetalRetry(ctx, ctx, 3*time.Second, bootstrapLibraryDirs(bootstrapLibraryBase(dir), dir), devFilter)
+					for _, u := range updatedDevices {
+						for i := range devices {
+							if u.DeviceID == devices[i].DeviceID && u.PCIID == devices[i].PCIID {
+								updated[i] = true
+								devices[i].FreeMemory = u.FreeMemory
+								break
+							}
 						}
+						// TODO - consider evaluating if new devices have appeared (e.g. hotplug)
 					}
-					// TODO - consider evaluating if new devices have appeared (e.g. hotplug)
+					if allDone() {
+						break
+					}
 				}
-				if allDone() {
-					break
+				if !allDone() {
+					slog.Warn("unable to refresh free memory, using old values")
 				}
-			}
-			if !allDone() {
-				slog.Warn("unable to refresh free memory, using old values")
 			}
 		}
 
@@ -456,6 +471,116 @@ func (r *bootstrapRunner) HasExited() bool {
 		return true
 	}
 	return false
+}
+
+// collectRunnerLibDirs finds ggml plugin directories under each search root.
+// Globs both root/*/libggml-* (typical cuda_v13 layout) and root/libggml-*
+// (when OLLAMA_LIBRARY_PATH already points at the plugin dir).
+func collectRunnerLibDirs(roots []string) map[string]struct{} {
+	libDirs := make(map[string]struct{})
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		patterns := []string{
+			filepath.Join(root, "*", "*ggml-*"),
+			filepath.Join(root, "*ggml-*"),
+		}
+		for _, pattern := range patterns {
+			files, err := filepath.Glob(pattern)
+			if err != nil {
+				slog.Debug("unable to lookup runner library directories", "error", err, "pattern", pattern)
+				continue
+			}
+			for _, file := range files {
+				if !isDiscoverableRunnerLib(file) {
+					continue
+				}
+				libDirs[filepath.Dir(file)] = struct{}{}
+			}
+		}
+	}
+	return libDirs
+}
+
+func pluginDirNames(libDirs map[string]struct{}) []string {
+	names := make([]string, 0, len(libDirs))
+	for dir := range libDirs {
+		if dir == "" {
+			continue
+		}
+		names = append(names, filepath.Base(dir))
+	}
+	sort.Strings(names)
+	return names
+}
+
+// llmLibraryInSearch reports whether OLLAMA_LLM_LIBRARY names a directory we
+// actually scanned (plugin dir itself, or a subdir of a search root).
+func llmLibraryInSearch(requested string, libDirs map[string]struct{}, roots []string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return true
+	}
+	for dir := range libDirs {
+		if dir != "" && filepath.Base(dir) == requested {
+			return true
+		}
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if filepath.Base(root) == requested {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(root, requested)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// bootstrapLibraryBase is the lib/ollama root to put on OLLAMA_LIBRARY_PATH
+// alongside a plugin dir. Prefer the plugin's parent so run/zerollama still
+// loads /usr/lib/ollama/cuda_v13 even when LibOllamaPath is the exe directory.
+func bootstrapLibraryBase(dir string) string {
+	if dir != "" && ml.IsGPUPluginDir(filepath.Base(dir)) {
+		if parent := filepath.Dir(dir); parent != "" && parent != "." && parent != string(filepath.Separator) {
+			return parent
+		}
+	}
+	return ml.LibOllamaPath
+}
+
+// bootstrapLibraryDirs is the OLLAMA_LIBRARY_PATH for a discovery runner.
+// An empty dir (Mac/dev trees with no ggml-* plugin subdirs) must not be
+// appended — slog showed "[/path ]" and DYLD got a trailing empty entry.
+func bootstrapLibraryDirs(base, dir string) []string {
+	dirs := make([]string, 0, 2)
+	if base != "" {
+		dirs = append(dirs, base)
+	}
+	if dir != "" && dir != base {
+		dirs = append(dirs, dir)
+	}
+	return dirs
+}
+
+// skipSubprocessVRAMRefresh is true when a discovery subprocess cannot
+// report meaningful device free memory (Apple Silicon Metal).
+func skipSubprocessVRAMRefresh(devs []ml.DeviceInfo) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	for _, d := range devs {
+		switch strings.ToLower(d.Library) {
+		case "metal", "cpu", "":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func bootstrapDevices(ctx context.Context, ollamaLibDirs []string, extraEnvs map[string]string) []ml.DeviceInfo {

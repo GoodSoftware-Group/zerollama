@@ -3,6 +3,7 @@ package discover
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -219,5 +220,91 @@ func TestIsDiscoverableRunnerLib(t *testing.T) {
 		if got := isDiscoverableRunnerLib(tc.path); got != tc.want {
 			t.Fatalf("isDiscoverableRunnerLib(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestCollectRunnerLibDirs(t *testing.T) {
+	root := t.TempDir()
+	cuda := filepath.Join(root, "cuda_v13")
+	if err := os.MkdirAll(cuda, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cuda, "libggml-cuda.so"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirs := collectRunnerLibDirs([]string{root})
+	if _, ok := dirs[cuda]; !ok {
+		t.Fatalf("expected plugin dir %q in %v", cuda, dirs)
+	}
+
+	pluginRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pluginRoot, "libggml-cuda.so"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirs = collectRunnerLibDirs([]string{pluginRoot})
+	if _, ok := dirs[pluginRoot]; !ok {
+		t.Fatalf("expected env plugin root %q in %v", pluginRoot, dirs)
+	}
+}
+
+func TestLLMLibraryInSearch(t *testing.T) {
+	root := t.TempDir()
+	cuda := filepath.Join(root, "cuda_v13")
+	if err := os.MkdirAll(cuda, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if !llmLibraryInSearch("cuda_v13", map[string]struct{}{cuda: {}}, []string{root}) {
+		t.Fatal("expected cuda_v13 in libDirs to count as searched")
+	}
+	if !llmLibraryInSearch("cuda_v13", map[string]struct{}{}, []string{root}) {
+		t.Fatal("expected cuda_v13 subdir of search root to count as searched")
+	}
+	if llmLibraryInSearch("cuda_v13", map[string]struct{}{"": {}}, []string{t.TempDir()}) {
+		t.Fatal("missing cuda_v13 should not count as searched")
+	}
+}
+
+func TestBootstrapLibraryBase(t *testing.T) {
+	dir := "/usr/lib/ollama/cuda_v13"
+	if got := bootstrapLibraryBase(dir); got != "/usr/lib/ollama" && got != filepath.Dir(dir) {
+		t.Fatalf("plugin parent: got %q", got)
+	}
+	if got := bootstrapLibraryBase(""); got != ml.LibOllamaPath {
+		t.Fatalf("empty dir: got %q want LibOllamaPath", got)
+	}
+}
+
+func TestBootstrapLibraryDirs(t *testing.T) {
+	base := "/Users/me/zerollama"
+	got := bootstrapLibraryDirs(base, "")
+	if len(got) != 1 || got[0] != base {
+		t.Fatalf("empty dir: %v", got)
+	}
+	got = bootstrapLibraryDirs(base, base)
+	if len(got) != 1 || got[0] != base {
+		t.Fatalf("same dir: %v", got)
+	}
+	got = bootstrapLibraryDirs(base, base+"/cuda_v12")
+	if len(got) != 2 || got[1] != base+"/cuda_v12" {
+		t.Fatalf("plugin dir: %v", got)
+	}
+}
+
+func TestSkipSubprocessVRAMRefresh(t *testing.T) {
+	metal := []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "Metal"}}}
+	cuda := []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}}}
+	if runtime.GOOS == "darwin" {
+		if !skipSubprocessVRAMRefresh(metal) {
+			t.Fatal("darwin Metal should skip subprocess VRAM refresh")
+		}
+		if skipSubprocessVRAMRefresh(cuda) {
+			t.Fatal("darwin CUDA should not skip subprocess VRAM refresh")
+		}
+		return
+	}
+	if skipSubprocessVRAMRefresh(metal) || skipSubprocessVRAMRefresh(cuda) {
+		t.Fatal("non-darwin should not skip subprocess VRAM refresh")
 	}
 }

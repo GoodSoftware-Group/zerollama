@@ -58,7 +58,8 @@ func LogStartupHardware(devices []ml.DeviceInfo) {
 		slog.Warn("startup hardware: no GPU found — inference will use CPU",
 			"gpu_found", false,
 			"ollama_llm_library", requested,
-			"hint", "check nvidia-smi, /root/nvidia-host in LD_LIBRARY_PATH, and OLLAMA_LLM_LIBRARY (cuda_v12/cuda_v13)",
+			"lib_ollama_path", ml.LibOllamaPath,
+			"hint", "check nvidia-smi, OLLAMA_LIBRARY_PATH (e.g. /usr/lib/ollama:/usr/lib/ollama/cuda_v13), and OLLAMA_LLM_LIBRARY",
 		)
 		return
 	}
