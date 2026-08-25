@@ -238,4 +238,9 @@ Artifacts:
 
 Extra epochs lowered loss but did **not** recover coherent answers on 3B with only 4k chat SFT. Best own quality so far remains **0.5B proj-only 3ep** (`Hello, I'm John.` / color names). 3B’s win here is packaging (true TQ1_0), not quality.
 
-Artifacts: `out/gguf/qwen25_3b_proj_qat{,_e3}.{F16,TQ1_0}.gguf`, HF `out/qat/qwen25_3b_ternary_proj{,_e3}/`.
+**Disk cleanup (Jul 18):** dropped superseded HF checkpoints (~36 GB 3B + old 0.5B), redundant F16 GGUFs, bad Alpaca datasets, `.go-tmp`, and unused HF hub 1.5B/3B caches. Retained:
+
+- HF: `out/qat/qwen25_0.5b_ternary_proj/` (best own quality)
+- GGUF: `out/gguf/qwen25_0.5b_{base.F16,base_PTQ.TQ1_0,proj_qat.TQ1_0}.gguf`, `qwen25_3b_{base_PTQ,proj_qat_e3}.TQ1_0.gguf`
+- Reference: `out/reference/Ternary-Bonsai-1.7B-Q2_0_g64.gguf`
+- Data: `data/qat/alpaca_chat_4k` only

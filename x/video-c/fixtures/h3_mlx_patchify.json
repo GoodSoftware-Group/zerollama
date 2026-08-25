@@ -1,0 +1,9 @@
+{
+  "note": "MLX packing.patchify_video_latents (1,2,2); C rematch uses arange*0.01 fill",
+  "shape": [1, 24, 4, 8, 8],
+  "patch": [1, 2, 2],
+  "num_rows": 64,
+  "row_dim": 96,
+  "arange_row0_first5": [0.0, 0.01, 0.08, 0.09, 2.56],
+  "arange_row0_sum": 2830.56005859375
+}

@@ -26,10 +26,44 @@ type Error struct {
 	Type    string  `json:"type"`
 	Param   any     `json:"param"`
 	Code    *string `json:"code"`
+	// MediaSession / MissingLabels support agent re-upload loops for /v1/media.
+	MediaSession  string   `json:"media_session,omitempty"`
+	MissingLabels []string `json:"missing_labels,omitempty"`
 }
 
 type ErrorResponse struct {
 	Error Error `json:"error"`
+}
+
+// NewMediaMissingError is returned when POST /v1/videos references expired or evicted media labels.
+// WHY a dedicated code + missing_labels: agents can re-PUT without scraping English text
+// or inventing digests (server hashes on PUT). See docs/media-uploads.md.
+func NewMediaMissingError(session string, missing []string) ErrorResponse {
+	code := "media_missing"
+	msg := "media missing — re-upload PUT /v1/media/{session}/{label}"
+	return ErrorResponse{Error: Error{
+		Type:          "invalid_request_error",
+		Message:       msg,
+		Code:          &code,
+		MediaSession:  session,
+		MissingLabels: missing,
+	}}
+}
+
+// NewMediaTypeMismatchError is returned when media kinds do not match the video backend.
+// WHY: same /v1/media store holds future video clips; Wan keyframes must be images today.
+func NewMediaTypeMismatchError(session string, labels []string, message string) ErrorResponse {
+	code := "media_type_mismatch"
+	if message == "" {
+		message = "media type mismatch for video generation"
+	}
+	return ErrorResponse{Error: Error{
+		Type:          "invalid_request_error",
+		Message:       message,
+		Code:          &code,
+		MediaSession:  session,
+		MissingLabels: labels,
+	}}
 }
 
 type Message struct {
@@ -742,12 +776,16 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 				AudioClips: audioClips,
 				Videos:     videos,
 			})
-			if len(msg.ToolCalls) > 0 {
-				toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
-				if err != nil {
-					return nil, err
+			// SGLang #33898: always keep tool metadata on multipart tool messages
+			// (image tool results often have no ToolCalls array).
+			if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
+				if len(msg.ToolCalls) > 0 {
+					toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
+					if err != nil {
+						return nil, err
+					}
+					messages[len(messages)-1].ToolCalls = toolCalls
 				}
-				messages[len(messages)-1].ToolCalls = toolCalls
 				messages[len(messages)-1].ToolName = toolName
 				messages[len(messages)-1].ToolCallID = msg.ToolCallID
 				messages[len(messages)-1].Thinking = msg.Reasoning
@@ -1173,6 +1211,18 @@ type SpeechCreateRequest struct {
 	// Emotion is a zerollama extension for expressive engines (Chatterbox / Orpheus).
 	// Upstream OpenAI ignores unknown fields; remote-tts forwards it when set.
 	Emotion string `json:"emotion,omitempty"`
+	// Instructions is the Music 3 caption (SGLang-Omni speech field). Ignored by Piper.
+	// Why a TTS field: Omni's /v1/audio/speech uses input=lyrics, instructions=caption;
+	// we match that JSON so clients do not learn MiniMax cloud /v1/music_generation.
+	Instructions string `json:"instructions,omitempty"`
+	// Seed is a Music 3 / Omni extension.
+	Seed *int64 `json:"seed,omitempty"`
+	// MaxNewTokens caps AR frames (~25 fps). Music jobs may also set duration.
+	MaxNewTokens *int `json:"max_new_tokens,omitempty"`
+	// Duration seconds for Music 3 (lab). Ignored by Piper.
+	Duration *float64 `json:"duration,omitempty"`
+	// Steps is DiT Euler steps for Music 3 (default 30).
+	Steps *int `json:"steps,omitempty"`
 }
 
 // TranscriptionResponse is the response format for /v1/audio/transcriptions.
@@ -1357,6 +1407,47 @@ func VideoFromSubmit(jobID, modelName, size string, queued bool, createdAt int64
 		Progress:  0,
 		Size:      size,
 	}
+}
+
+// AudioGeneration is an async Music 3 job (POST /v1/audio/generations).
+type AudioGeneration struct {
+	ID        string      `json:"id"`
+	Object    string      `json:"object"`
+	CreatedAt int64       `json:"created_at"`
+	Status    string      `json:"status"`
+	Model     string      `json:"model,omitempty"`
+	Progress  float64     `json:"progress,omitempty"`
+	Error     *VideoError `json:"error,omitempty"`
+}
+
+// AudioGenerationFromSubmit builds the 202 body for a newly queued music job.
+func AudioGenerationFromSubmit(jobID, modelName string, queued bool, createdAt int64) AudioGeneration {
+	v := VideoFromSubmit(jobID, modelName, "", queued, createdAt)
+	return AudioGeneration{
+		ID:        v.ID,
+		Object:    "audio.generation",
+		CreatedAt: v.CreatedAt,
+		Status:    v.Status,
+		Model:     v.Model,
+		Progress:  v.Progress,
+	}
+}
+
+// AudioGenerationFromTrainingJob maps a training job JSON object to AudioGeneration.
+func AudioGenerationFromTrainingJob(jobJSON json.RawMessage) (AudioGeneration, error) {
+	v, err := VideoFromTrainingJob(jobJSON)
+	if err != nil {
+		return AudioGeneration{}, err
+	}
+	return AudioGeneration{
+		ID:        v.ID,
+		Object:    "audio.generation",
+		CreatedAt: v.CreatedAt,
+		Status:    v.Status,
+		Model:     v.Model,
+		Progress:  v.Progress,
+		Error:     v.Error,
+	}, nil
 }
 
 // VideoFromTrainingJob maps embedded training job JSON to an OpenAI Video.

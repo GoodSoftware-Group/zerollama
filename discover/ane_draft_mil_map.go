@@ -248,7 +248,7 @@ func ProbeANEDraftMILMap(_ context.Context, preferred string) (ANEDraftMILMapRes
 		}
 	} else {
 		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
-		out.NextStep = "download eliza drafter: see scripts/runtime/setup_mtp_models.sh"
+		out.NextStep = "download eliza drafter: see scripts/setup_mtp_models.sh"
 	}
 
 	sidecarArch := ""

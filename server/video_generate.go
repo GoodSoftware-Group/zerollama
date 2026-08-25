@@ -14,7 +14,10 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,15 +27,31 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/media"
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
 const (
-	wanProfile21T2V13B = "wan2.1-t2v-1.3b"
-	wanProfile22TI2V5B = "wan2.2-ti2v-5b"
-	wan22MaxFrames16g  = 81
+	wanProfile21T2V13B   = "wan2.1-t2v-1.3b"
+	wanProfile22TI2V5B   = "wan2.2-ti2v-5b"
+	ltxProfile13BDistill = "ltxv-13b-distilled"
+	h3ProfileTinyT2VA    = "h3-tiny-t2va"
+	h3Profile768T2VA     = "h3-768-t2va"
+	wan22MaxFrames16g    = 81
+	ltx16gDefaultFrames  = 17
+	h3TinyFrames         = 5
+	h3TinyDefaultSteps   = 2
+	h3768DefaultSteps    = 8
+	h3DefaultDitLayers   = 50
+	h3MaxDitLayers       = 50
+	h3TinySize           = "32x32"
+	h3768Size            = "768x768"
+	ltxDefaultTimeoutSec = 2700
+	h3DefaultTimeoutSec  = 900
+	h3768TimeoutSec      = 14400
+	ltxDefaultMinHostGiB = 12 // Wan mmgp+GPU-VAE class; see docs/ltx-t2v.md
 )
 
 type wanVideoJobPayload struct {
@@ -49,7 +68,10 @@ type wanVideoJobPayload struct {
 
 // VideoCreateHandler accepts POST /v1/videos and queues a Wan run_script job.
 // QueueOnBusy is always true so inference-first hosts get defer-* ids instead of 409 storms.
-// PrepareForTraining (inside submitTrainingJob) unloads ggml/runtime before Wan grabs the GPU.
+// PrepareForTraining (inside submit) unloads ggml/runtime before Wan grabs the GPU.
+// acquireVideoExclusiveGPU then holds fulfillment=exclusive + BLOCK_INFERENCE until the
+// job is terminal — WHY: request-scoped chat fulfillment ends when POST returns, but Wan
+// runs for tens of minutes and must not share a 16GB card with llama-server reloads.
 func (s *Server) VideoCreateHandler(c *gin.Context) {
 	if s.training == nil {
 		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires OLLAMA_TRAINING=true (embedded training worker)"))
@@ -95,8 +117,14 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	}
 
 	backend := modality.BackendFor(m.Config, model.ModalityVideoGeneration)
-	if backend != model.BackendWan {
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("video_generation backend must be %q (got %q)", model.BackendWan, backend)))
+	switch backend {
+	case model.BackendWan, model.BackendLTX, model.BackendH3:
+		// ok
+	case model.BackendRIFE:
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "video_generation backend \"rife\" is reserved but not implemented yet"))
+		return
+	default:
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("video_generation backend must be %q, %q, or %q (got %q)", model.BackendWan, model.BackendLTX, model.BackendH3, backend)))
 		return
 	}
 
@@ -104,6 +132,64 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
+	}
+
+	mediaSession, keyframeLabels, err := media.ParseKeyframeRefs(req.Options)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+		return
+	}
+	if err := validateWanKeyframes(cfg.Profile, keyframeLabels); err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+		return
+	}
+	if backend == model.BackendLTX && len(keyframeLabels) > 0 {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "ltx LTXV distilled T2V does not support keyframes yet"))
+		return
+	}
+	if backend == model.BackendH3 && len(keyframeLabels) > 0 {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "h3 T2VA does not support keyframes yet"))
+		return
+	}
+
+	var keyframeDir string
+	if len(keyframeLabels) > 0 {
+		store := getMediaStore()
+		paths, metas, missing, err := store.ResolveMany(mediaSession, keyframeLabels)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if len(missing) > 0 {
+			// WHY structured media_missing: agents re-PUT listed labels without scraping messages.
+			c.JSON(http.StatusBadRequest, openai.NewMediaMissingError(mediaSession, missing))
+			return
+		}
+		_ = paths
+		var bad []string
+		for i, meta := range metas {
+			if meta.Kind != media.KindImage {
+				bad = append(bad, keyframeLabels[i])
+			}
+		}
+		if len(bad) > 0 {
+			// WHY reject video here: Wan TI2V keyframes are stills; kind=video is reserved for morph.
+			c.JSON(http.StatusBadRequest, openai.NewMediaTypeMismatchError(mediaSession, bad, "wan keyframes must be images; upload video clips only for future video-morph backends"))
+			return
+		}
+		stagingID := fmt.Sprintf("kf-%d", time.Now().UnixNano())
+		keyframeDir = filepath.Join(videoArtifactRoot(), "keyframes", stagingID)
+		// WHY materialize: freeze CAS into staging so LRU eviction cannot race a long Wan job.
+		missing, err = store.Materialize(mediaSession, keyframeLabels, keyframeDir)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
+			return
+		}
+		if len(missing) > 0 {
+			_ = os.RemoveAll(keyframeDir)
+			c.JSON(http.StatusBadRequest, openai.NewMediaMissingError(mediaSession, missing))
+			return
+		}
 	}
 
 	opts := req.Options
@@ -116,6 +202,10 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		Stream:   false,
 	}
 	if err := s.waitRequestQoS(c.Request.Context(), nil, opts, videoHints); err != nil {
+		if keyframeDir != "" {
+			// WHY cleanup on QoS fail: materialize already wrote staging; do not orphan kf-* dirs.
+			_ = os.RemoveAll(keyframeDir)
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			c.JSON(http.StatusRequestTimeout, openai.NewError(http.StatusRequestTimeout, err.Error()))
 			return
@@ -132,15 +222,44 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		}
 	}
 
+	// WHY before payload/submit: refuse plans that will thrash host RAM into killing serve.
+	// Exclusive GPU only coordinates VRAM/chat — host admission is the missing half.
+	if backend == model.BackendLTX {
+		if err := admitLtxHostRAM(cfg); err != nil {
+			if keyframeDir != "" {
+				_ = os.RemoveAll(keyframeDir)
+			}
+			c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
+			return
+		}
+	} else if backend == model.BackendH3 {
+		// Host DiT+VAE (tiny or 768 canvas) — do not apply Wan 16g GPU/RAM admit.
+	} else {
+		hostPlan := planWanHost(cfg)
+		if err := admitWanHostRAM(cfg, hostPlan); err != nil {
+			if keyframeDir != "" {
+				_ = os.RemoveAll(keyframeDir)
+			}
+			c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
+			return
+		}
+	}
+
 	createdAt := time.Now().UTC()
-	payload, err := buildWanVideoPayload(m.Config, cfg, req.Model, req.Prompt, seed, createdAt)
+	payload, err := buildVideoJobPayload(backend, m.Config, cfg, req.Model, req.Prompt, seed, createdAt, keyframeDir)
 	if err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
+		}
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
 	}
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
+		}
 		c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
 		return
 	}
@@ -150,6 +269,9 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		QueueOnBusy: &queueOnBusy,
 	})
 	if err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
+		}
 		if TrainingSubmitMisconfigured(err) {
 			c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
 			return
@@ -162,8 +284,43 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		return
 	}
 
+	// WHY after successful submit: exclusive must cover the whole async Wan job, not the
+	// brief POST. Deferred (defer-*) jobs acquire on promote — holding while waiting for
+	// idle would deadlock inference-first drain.
+	if !res.Queued && videoExclusiveRequested(opts) {
+		s.acquireVideoExclusiveGPU(c.Request.Context(), res.JobID)
+	}
+
 	video := openai.VideoFromSubmit(res.JobID, req.Model, cfg.Size, res.Queued, createdAt.Unix())
 	c.JSON(http.StatusAccepted, video)
+}
+
+func validateWanKeyframes(profile string, labels []string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	p := strings.ToLower(strings.TrimSpace(profile))
+	if strings.Contains(p, "ti2v") || strings.HasPrefix(p, "wan2.2") {
+		return nil
+	}
+	// WHY: wan2.1-t2v has no start-image path; keyframes would be silently ignored otherwise.
+	return fmt.Errorf("keyframes require a TI2V profile (e.g. wan2.2-ti2v-5b); %q is text-to-video only", profile)
+}
+
+// buildVideoJobPayload dispatches by video_generation backend.
+func buildVideoJobPayload(backend string, cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
+	switch backend {
+	case model.BackendWan:
+		return buildWanVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt, keyframeDir)
+	case model.BackendLTX:
+		return buildLtxVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt)
+	case model.BackendH3:
+		return buildH3VideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt)
+	case model.BackendRIFE:
+		return wanVideoJobPayload{}, errors.New("rife backend is not implemented yet")
+	default:
+		return wanVideoJobPayload{}, fmt.Errorf("unsupported video_generation backend %q", backend)
+	}
 }
 
 // VideoGetHandler returns GET /v1/videos/:id job status.
@@ -278,16 +435,62 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		if v, ok := req.Options["steps"]; ok {
 			cfg.Steps = intFromAny(v, cfg.Steps)
 		}
+		if v, ok := req.Options["layers"]; ok {
+			cfg.DitLayers = intFromAny(v, cfg.DitLayers)
+		}
 	}
 	cfg.Frames = clampWanFrames(cfg, cfg.Frames, manifestFrames)
+	if isLtxProfile(cfg.Profile) {
+		cfg.Frames = clampLtxFrames(cfg, cfg.Frames, manifestFrames)
+	}
+	if isH3Profile(cfg.Profile) {
+		cfg.Frames = h3TinyFrames
+		if isH3Canvas768(cfg.Profile) {
+			cfg.Size = h3768Size
+		} else {
+			cfg.Size = h3TinySize
+		}
+		if cfg.DitLayers <= 0 {
+			cfg.DitLayers = h3DefaultDitLayers
+		}
+		if cfg.DitLayers > h3MaxDitLayers {
+			cfg.DitLayers = h3MaxDitLayers
+		}
+	}
 	if cfg.Frames <= 0 {
-		cfg.Frames = 49
+		if isLtxProfile(cfg.Profile) {
+			cfg.Frames = ltx16gDefaultFrames
+		} else if isH3Profile(cfg.Profile) {
+			cfg.Frames = h3TinyFrames
+		} else {
+			cfg.Frames = 49
+		}
 	}
 	if cfg.Steps <= 0 {
-		cfg.Steps = 25
+		if isLtxProfile(cfg.Profile) {
+			cfg.Steps = 6
+		} else if isH3Profile(cfg.Profile) {
+			if isH3Canvas768(cfg.Profile) {
+				cfg.Steps = h3768DefaultSteps
+			} else {
+				cfg.Steps = h3TinyDefaultSteps
+			}
+		} else {
+			cfg.Steps = 25
+		}
 	}
 	if cfg.Size == "" {
-		cfg.Size = "832x480"
+		if isLtxProfile(cfg.Profile) {
+			cfg.Size = "768x512"
+		} else if isH3Profile(cfg.Profile) {
+			if isH3Canvas768(cfg.Profile) {
+				cfg.Size = h3768Size
+			} else {
+				cfg.Size = h3TinySize
+			}
+		} else {
+			cfg.Size = "832x480"
+		}
 	}
 	applyWan16gVRAMDefaults(&cfg)
 	return cfg, nil
@@ -326,15 +529,82 @@ func wanUnloadT5(cfg model.VideoGenerationConfig) string {
 	return "0"
 }
 
-// wanVAECPU decodes latents on CPU (extra host RAM). Default on for 16g — GPU VAE needs ~15G contiguous VRAM.
+// wanVAECPU selects VAE device. Prefer GPU under mmgp (see wanVAECPUResolved / planWanHost).
 func wanVAECPU(cfg model.VideoGenerationConfig) string {
-	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_VAE_CPU")); v != "" {
+	return wanVAECPUResolved(cfg, wanMMGP(cfg) == "1")
+}
+
+// wanMMGP enables mmgp layer/budget offload (WanGP). Default on for 16g TI2V — stock
+// offload_model still does a full DiT model.to(cuda) (~10 GiB) and OOMs on 16 GB cards.
+func wanMMGP(cfg model.VideoGenerationConfig) string {
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_MMGP")); v != "" {
 		return v
 	}
-	if cfg.VRAMTier == "16g" {
+	if cfg.VRAMTier == "16g" && isWanTI2VProfile(cfg.Profile) {
 		return "1"
 	}
 	return "0"
+}
+
+// wanMMGPProfile selects mmgp profile 1–5. Default 5 (VerylowRAM_LowVRAM) for ~24 GiB host RAM.
+func wanMMGPProfile(cfg model.VideoGenerationConfig) string {
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_MMGP_PROFILE")); v != "" {
+		return v
+	}
+	if wanMMGP(cfg) == "1" {
+		return "5"
+	}
+	return ""
+}
+
+// wanMMGPQuantize turns on mmgp on-the-fly int8 transformer quant. Default off (bf16 quality).
+func wanMMGPQuantize(cfg model.VideoGenerationConfig) string {
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_MMGP_QUANTIZE")); v != "" {
+		return v
+	}
+	return "0"
+}
+
+func isWanTI2VProfile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == wanProfile22TI2V5B || strings.Contains(p, "ti2v")
+}
+
+func isLtxProfile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == ltxProfile13BDistill || strings.HasPrefix(p, "ltxv") || strings.HasPrefix(p, "ltx")
+}
+
+func isH3Profile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == h3ProfileTinyT2VA || p == h3Profile768T2VA || strings.HasPrefix(p, "h3")
+}
+
+func isH3Canvas768(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == h3Profile768T2VA || strings.Contains(p, "768")
+}
+
+// clampLtxFrames: LTXV wants frames = 17 + 8*k (handler frames_minimum/steps). Cap 16g.
+func clampLtxFrames(cfg model.VideoGenerationConfig, frames, manifestFrames int) int {
+	if frames <= 0 {
+		return frames
+	}
+	max := 41 // ~1.3s @ 30fps class for 16g first slice
+	if cfg.VRAMTier != "16g" {
+		max = 97
+	}
+	if manifestFrames > max {
+		max = manifestFrames
+	}
+	if frames > max {
+		frames = max
+	}
+	// Snap down to LTXV legal length: 17 + 8*k
+	if frames < 17 {
+		return 17
+	}
+	return 17 + ((frames-17)/8)*8
 }
 
 // clampWanFrames caps request options on 16g tiers—Wan OOMs are expensive (30+ min lost).
@@ -419,7 +689,7 @@ func wanVideoJobMeta(payload json.RawMessage) (modelName, size string) {
 // buildWanVideoPayload turns a manifest + request into run_script data.
 // {job_id} in output paths is expanded in Python when the job starts—Go does not know the id yet.
 // PythonBin/WAN_* point at the Wan venv because the embedded training interpreter lacks Wan deps.
-func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
+func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return wanVideoJobPayload{}, errors.New("prompt is required")
 	}
@@ -429,8 +699,27 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
 	}
 
-	scriptPath := filepath.Join(repo, "scripts", "wan_video_generate.py")
-	if _, err := os.Stat(scriptPath); err != nil {
+	scriptPath := filepath.Join(repo, "scripts", "video", "wan_video_generate.py")
+	wanCLI := strings.TrimSpace(envconfig.Var("ZEROLLAMA_VIDEO_CLI"))
+	if wanCLI == "" {
+		wanCLI = strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_CLI"))
+	}
+	if wanCLI == "" {
+		wanCLI = expandUserPath(modality.PathFor(cfg, "video_cli"))
+	}
+	if wanCLI == "" {
+		wanCLI = expandUserPath(modality.PathFor(cfg, "wan_cli"))
+	}
+	useWanC := wanCLI != ""
+	if useWanC {
+		if st, err := os.Stat(wanCLI); err != nil || st.IsDir() {
+			return wanVideoJobPayload{}, fmt.Errorf("ZEROLLAMA_VIDEO_CLI / ZEROLLAMA_WAN_CLI / backend_paths.video_cli|wan_cli not found: %s", wanCLI)
+		}
+		scriptPath = filepath.Join(repo, "scripts", "video", "wan_c_generate.py")
+		if _, err := os.Stat(scriptPath); err != nil {
+			return wanVideoJobPayload{}, fmt.Errorf("video-c wrapper script not found at %s", scriptPath)
+		}
+	} else if _, err := os.Stat(scriptPath); err != nil {
 		return wanVideoJobPayload{}, fmt.Errorf("wan wrapper script not found at %s", scriptPath)
 	}
 
@@ -439,12 +728,30 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	if wanRepo == "" || wanCkpt == "" {
 		return wanVideoJobPayload{}, errors.New("backend_paths.wan_repo and backend_paths.wan_ckpt_dir are required")
 	}
+	if st, err := os.Stat(wanCkpt); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan checkpoint dir missing at %s — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", wanCkpt, wanInstallProfile(vcfg.Profile))
+	}
+	if !wanCkptLooksPopulated(wanCkpt) {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan checkpoint dir at %s has no weight files (.pth/.safetensors) — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", wanCkpt, wanInstallProfile(vcfg.Profile))
+	}
 	wanVenv := expandUserPath(modality.PathFor(cfg, "wan_venv"))
 	if wanVenv == "" {
 		// install_wan_video.sh uses $WAN_ROOT/venv with repos under $WAN_ROOT/Wan2.1
 		wanVenv = filepath.Join(filepath.Dir(wanRepo), "venv")
 	}
 	pythonBin := filepath.Join(wanVenv, "bin", "python3")
+	if !useWanC {
+		if _, err := os.Stat(pythonBin); err != nil {
+			return wanVideoJobPayload{}, fmt.Errorf("Wan venv python missing at %s — reinstall with: ./scripts/video/install_wan_video.sh --profile %s", pythonBin, wanInstallProfile(vcfg.Profile))
+		}
+	} else {
+		// wan_c_generate.sh is bash; training run_script still needs a python_bin field — use system python3.
+		if p, err := exec.LookPath("python3"); err == nil {
+			pythonBin = p
+		} else {
+			pythonBin = "/usr/bin/python3"
+		}
+	}
 
 	outputPath := videoArtifactPath("{job_id}")
 
@@ -456,6 +763,7 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		timeout = defaultWanTimeout(vcfg.Profile)
 	}
 
+	hostPlan := planWanHost(vcfg)
 	env := map[string]string{
 		"WAN_PROFILE":            vcfg.Profile,
 		"WAN_REPO":               wanRepo,
@@ -468,20 +776,55 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		"WAN_T5_CPU":             strconv.FormatBool(vcfg.T5CPU),
 		"WAN_FORCE_SDPA":         wanForceSDPA(vcfg),
 		"WAN_UNLOAD_T5":          wanUnloadT5(vcfg),
-		"WAN_VAE_CPU":            wanVAECPU(vcfg),
+		"WAN_MMGP":               wanMMGP(vcfg),
 		"WAN_OUTPUT_PATH":        outputPath,
 		"WAN_VENV":               wanVenv,
 		"WAN_PYTHON":             pythonBin,
 		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
+		// Generic VIDEO_* aliases so future runners (RIFE) share the same contract.
+		"VIDEO_OUTPUT_PATH": outputPath,
+		"VIDEO_FRAMES":      strconv.Itoa(vcfg.Frames),
+		"VIDEO_SIZE":        vcfg.Size,
+	}
+	applyWanHostPlanEnv(env, hostPlan)
+	if useWanC {
+		applyWanCJobEnv(env, cfg, wanCLI)
 	}
 	if seed != nil {
 		env["WAN_SEED"] = strconv.FormatInt(*seed, 10)
+		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
+	}
+	if profile := wanMMGPProfile(vcfg); profile != "" {
+		env["WAN_MMGP_PROFILE"] = profile
+	}
+	if q := wanMMGPQuantize(vcfg); q != "" {
+		env["WAN_MMGP_QUANTIZE"] = q
 	}
 	if gguf := expandUserPath(modality.PathFor(cfg, "wan_gguf_path")); gguf != "" {
 		env["WAN_GGUF_PATH"] = gguf
 	}
 	if strings.HasPrefix(strings.ToLower(vcfg.Profile), "wan2.2") {
 		env["WAN_CONVERT_MODEL_DTYPE"] = "true"
+	}
+	if keyframeDir != "" {
+		env["VIDEO_KEYFRAME_DIR"] = keyframeDir
+		env["WAN_KEYFRAME_DIR"] = keyframeDir
+		// Wrapper removes the staging dir after success or failure.
+		env["VIDEO_CLEANUP_KEYFRAME_DIR"] = "1"
+		if entries, err := os.ReadDir(keyframeDir); err == nil {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				if !e.IsDir() {
+					names = append(names, e.Name())
+				}
+			}
+			sort.Strings(names)
+			if len(names) > 0 {
+				first := filepath.Join(keyframeDir, names[0])
+				env["WAN_IMAGE"] = first
+				env["VIDEO_IMAGE"] = first
+			}
+		}
 	}
 
 	payload := wanVideoJobPayload{
@@ -498,6 +841,282 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	return payload, nil
 }
 
+// applyWanCJobEnv points the training run_script at video-cli --family wan.
+// Darwin defaults to host UMA kernels so /v1/videos works without uma_daemon.
+func applyWanCJobEnv(env map[string]string, cfg model.ConfigV2, wanCLI string) {
+	env["WAN_CLI"] = wanCLI
+	env["VIDEO_CLI"] = wanCLI
+	env["VIDEO_FAMILY"] = "wan"
+	if v := expandUserPath(modality.PathFor(cfg, "wan_c_vocab")); v != "" {
+		env["WAN_C_VOCAB"] = v
+	} else if v := strings.TrimSpace(envconfig.Var("WAN_C_VOCAB")); v != "" {
+		env["WAN_C_VOCAB"] = expandUserPath(v)
+	}
+	if v := strings.TrimSpace(envconfig.Var("UMA_SOCK")); v != "" {
+		env["UMA_SOCK"] = v
+	}
+	if v := strings.TrimSpace(envconfig.Var("UMA_WAN_LOCAL")); v != "" {
+		env["UMA_WAN_LOCAL"] = v
+		return
+	}
+	if runtime.GOOS == "darwin" && strings.TrimSpace(env["UMA_SOCK"]) == "" {
+		env["UMA_WAN_LOCAL"] = "1"
+	}
+}
+
+// buildLtxVideoPayload turns a manifest + request into run_script data for Wan2GP LTXV.
+func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return wanVideoJobPayload{}, errors.New("prompt is required")
+	}
+
+	repoRoot, err := trainingworker.RepoRoot()
+	if err != nil || repoRoot == "" {
+		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
+	}
+
+	scriptPath := filepath.Join(repoRoot, "scripts", "video", "ltx_video_generate.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("ltx wrapper script not found at %s", scriptPath)
+	}
+
+	wan2gpRepo := expandUserPath(modality.PathFor(cfg, "wan2gp_repo"))
+	wan2gpCkpt := expandUserPath(modality.PathFor(cfg, "wan2gp_ckpt_dir"))
+	if wan2gpRepo == "" {
+		return wanVideoJobPayload{}, errors.New("backend_paths.wan2gp_repo is required")
+	}
+	if wan2gpCkpt == "" {
+		wan2gpCkpt = filepath.Join(wan2gpRepo, "ckpts")
+	}
+	if st, err := os.Stat(wan2gpRepo); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP repo missing at %s — clone sibling or run ./scripts/video/install_ltx_wan2gp.sh", wan2gpRepo)
+	}
+	if st, err := os.Stat(wan2gpCkpt); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP checkpoint dir missing at %s — run ./scripts/video/install_ltx_wan2gp.sh --weights-only", wan2gpCkpt)
+	}
+	if !ltxCkptLooksPopulated(wan2gpCkpt) {
+		return wanVideoJobPayload{}, fmt.Errorf("LTXV weights missing under %s — run ./scripts/video/install_ltx_wan2gp.sh --weights-only", wan2gpCkpt)
+	}
+
+	wan2gpVenv := expandUserPath(modality.PathFor(cfg, "wan2gp_venv"))
+	if wan2gpVenv == "" {
+		wan2gpVenv = filepath.Join(filepath.Dir(wan2gpCkpt), "venv")
+		if filepath.Base(wan2gpCkpt) != "ckpts" {
+			wan2gpVenv = filepath.Join(expandUserPath("~/.zerollama/third_party/wan2gp"), "venv")
+		}
+	}
+	pythonBin := filepath.Join(wan2gpVenv, "bin", "python3")
+	if _, err := os.Stat(pythonBin); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP venv python missing at %s — run ./scripts/video/install_ltx_wan2gp.sh --venv-only", pythonBin)
+	}
+
+	outputPath := videoArtifactPath("{job_id}")
+	timeout := vcfg.TimeoutSec
+	if t := envconfig.WanVideoTimeoutSec(); t > 0 {
+		timeout = t
+	}
+	if timeout <= 0 {
+		timeout = ltxDefaultTimeoutSec
+	}
+
+	modelType := "ltxv_distilled"
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MODEL_TYPE")); v != "" {
+		modelType = v
+	}
+
+	env := map[string]string{
+		"LTX_PROFILE":            vcfg.Profile,
+		"LTX_MODEL_TYPE":         modelType,
+		"LTX_PROMPT":             prompt,
+		"LTX_SIZE":               vcfg.Size,
+		"LTX_FRAMES":             strconv.Itoa(vcfg.Frames),
+		"LTX_STEPS":              strconv.Itoa(vcfg.Steps),
+		"LTX_OUTPUT_PATH":        outputPath,
+		"LTX_MMGP_PROFILE":       ltxMMGPProfile(vcfg),
+		"LTX_ATTENTION":          "sdpa",
+		"WAN2GP_REPO":            wan2gpRepo,
+		"WAN2GP_CKPT_DIR":        wan2gpCkpt,
+		"WAN2GP_VENV":            wan2gpVenv,
+		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
+		"VIDEO_OUTPUT_PATH":      outputPath,
+		"VIDEO_FRAMES":           strconv.Itoa(vcfg.Frames),
+		"VIDEO_SIZE":             vcfg.Size,
+	}
+	if dry := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_DRY_RUN")); dry != "" {
+		env["LTX_DRY_RUN"] = dry
+	}
+	if seed != nil {
+		env["LTX_SEED"] = strconv.FormatInt(*seed, 10)
+		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
+	}
+
+	return wanVideoJobPayload{
+		ScriptPath:  scriptPath,
+		PythonBin:   pythonBin,
+		WorkingDir:  repoRoot,
+		Env:         env,
+		Timeout:     timeout,
+		OutputPath:  outputPath,
+		SubmittedAt: submittedAt.UTC().Format(time.RFC3339),
+		VideoModel:  modelName,
+		VideoSize:   vcfg.Size,
+	}, nil
+}
+
+func buildH3VideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return wanVideoJobPayload{}, errors.New("prompt is required")
+	}
+	repoRoot, err := trainingworker.RepoRoot()
+	if err != nil || repoRoot == "" {
+		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
+	}
+	scriptPath := filepath.Join(repoRoot, "scripts", "video", "wan_c_generate.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("video-c wrapper script not found at %s", scriptPath)
+	}
+	cli := strings.TrimSpace(envconfig.Var("ZEROLLAMA_VIDEO_CLI"))
+	if cli == "" {
+		cli = strings.TrimSpace(envconfig.Var("ZEROLLAMA_WAN_CLI"))
+	}
+	if cli == "" {
+		cli = expandUserPath(modality.PathFor(cfg, "video_cli"))
+	}
+	if cli == "" {
+		cli = expandUserPath(modality.PathFor(cfg, "wan_cli"))
+	}
+	cli = resolveRepoPath(repoRoot, cli)
+	if cli == "" {
+		return wanVideoJobPayload{}, errors.New("ZEROLLAMA_VIDEO_CLI / backend_paths.video_cli is required for h3")
+	}
+	if st, err := os.Stat(cli); err != nil || st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("video-cli not found: %s", cli)
+	}
+	ckpt := expandUserPath(modality.PathFor(cfg, "h3_ckpt_dir"))
+	if ckpt == "" {
+		ckpt = expandUserPath(modality.PathFor(cfg, "wan_ckpt_dir"))
+	}
+	if ckpt == "" {
+		return wanVideoJobPayload{}, errors.New("backend_paths.h3_ckpt_dir is required")
+	}
+	if st, err := os.Stat(ckpt); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("H3 checkpoint dir missing at %s", ckpt)
+	}
+	if !h3CkptLooksPopulated(ckpt) {
+		return wanVideoJobPayload{}, fmt.Errorf("H3 VAE missing under %s (need FL2VA/video_vae)", ckpt)
+	}
+	pythonBin := "/usr/bin/python3"
+	if p, err := exec.LookPath("python3"); err == nil {
+		pythonBin = p
+	}
+	outputPath := videoArtifactPath("{job_id}")
+	timeout := vcfg.TimeoutSec
+	if t := envconfig.WanVideoTimeoutSec(); t > 0 {
+		timeout = t
+	}
+	if timeout <= 0 {
+		if isH3Canvas768(vcfg.Profile) {
+			timeout = h3768TimeoutSec
+		} else {
+			timeout = h3DefaultTimeoutSec
+		}
+	}
+	steps := vcfg.Steps
+	if steps <= 0 {
+		steps = h3TinyDefaultSteps
+	}
+	size := strings.TrimSpace(vcfg.Size)
+	if size == "" {
+		if isH3Canvas768(vcfg.Profile) {
+			size = h3768Size
+		} else {
+			size = h3TinySize
+		}
+	}
+	frames := vcfg.Frames
+	if frames <= 0 {
+		frames = h3TinyFrames
+	}
+	layers := strings.TrimSpace(envconfig.Var("H3_DIT_LAYERS"))
+	if layers == "" && vcfg.DitLayers > 0 {
+		layers = strconv.Itoa(vcfg.DitLayers)
+	}
+	if layers == "" {
+		layers = strconv.Itoa(h3DefaultDitLayers)
+	}
+	env := map[string]string{
+		"VIDEO_FAMILY":           "h3",
+		"VIDEO_CLI":              cli,
+		"WAN_CLI":                cli,
+		"WAN_CKPT_DIR":           ckpt,
+		"WAN_PROMPT":             prompt,
+		"WAN_SIZE":               size,
+		"WAN_FRAMES":             strconv.Itoa(frames),
+		"WAN_STEPS":              strconv.Itoa(steps),
+		"WAN_OUTPUT_PATH":        outputPath,
+		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
+		"VIDEO_OUTPUT_PATH":      outputPath,
+		"VIDEO_FRAMES":           strconv.Itoa(frames),
+		"VIDEO_SIZE":             size,
+		"VIDEO_H3_LAYERS":        layers,
+		"H3_DIT_LAYERS":          layers,
+	}
+	if steps >= h3768DefaultSteps {
+		env["H3_SAMPLER"] = "res_multistep"
+	}
+	if seed != nil {
+		env["WAN_SEED"] = strconv.FormatInt(*seed, 10)
+		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
+	}
+	return wanVideoJobPayload{
+		ScriptPath:  scriptPath,
+		PythonBin:   pythonBin,
+		WorkingDir:  repoRoot,
+		Env:         env,
+		Timeout:     timeout,
+		OutputPath:  outputPath,
+		SubmittedAt: submittedAt.UTC().Format(time.RFC3339),
+		VideoModel:  modelName,
+		VideoSize:   size,
+	}, nil
+}
+
+func h3CkptLooksPopulated(dir string) bool {
+	candidates := []string{
+		filepath.Join(dir, "FL2VA", "video_vae", "source"),
+		filepath.Join(dir, "FL2VA", "video_vae"),
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func ltxMMGPProfile(cfg model.VideoGenerationConfig) string {
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MMGP_PROFILE")); v != "" {
+		return v
+	}
+	if cfg.VRAMTier == "16g" {
+		return "5"
+	}
+	return "4"
+}
+
+func ltxCkptLooksPopulated(dir string) bool {
+	need := []string{
+		"ltxv_0.9.8_13B_distilled_quanto_bf16_int8.safetensors",
+		"ltxv_0.9.7_VAE.safetensors",
+	}
+	for _, n := range need {
+		if st, err := os.Stat(filepath.Join(dir, n)); err != nil || st.IsDir() || st.Size() < 1024 {
+			return false
+		}
+	}
+	return true
+}
+
 func defaultWanTimeout(profile string) int {
 	switch profile {
 	case wanProfile22TI2V5B:
@@ -507,6 +1126,37 @@ func defaultWanTimeout(profile string) int {
 	default:
 		return 2700
 	}
+}
+
+// wanInstallProfile maps video_generation.profile to install_wan_video.sh --profile.
+func wanInstallProfile(profile string) string {
+	switch profile {
+	case wanProfile22TI2V5B:
+		return "2.2"
+	case wanProfile21T2V13B:
+		return "1.3b"
+	default:
+		return "all"
+	}
+}
+
+// wanCkptLooksPopulated is true when the checkpoint dir has at least one weight file.
+// Empty dirs (clone-only / deleted weights) otherwise pass os.Stat and fail deep in generate.py.
+func wanCkptLooksPopulated(dir string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		n := strings.ToLower(e.Name())
+		if strings.HasSuffix(n, ".pth") || strings.HasSuffix(n, ".safetensors") || strings.HasSuffix(n, ".pt") {
+			return true
+		}
+	}
+	return false
 }
 
 func videoArtifactRoot() string {
@@ -531,6 +1181,18 @@ func expandUserPath(p string) string {
 		return filepath.Join(home, p[2:])
 	}
 	return p
+}
+
+// resolveRepoPath expands ~ and joins repo-relative paths (e.g. x/video-c/video-cli).
+func resolveRepoPath(repoRoot, p string) string {
+	p = expandUserPath(p)
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	if repoRoot == "" {
+		return p
+	}
+	return filepath.Join(repoRoot, p)
 }
 
 // safeVideoArtifactPath rejects paths outside generated/ so a malicious resultJson cannot

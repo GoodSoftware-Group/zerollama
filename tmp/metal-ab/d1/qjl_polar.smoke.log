@@ -1,0 +1,52 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 17.206 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M4 Max)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB
+| model                          |       size |     params | backend    | threads | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | -----: | -----: | --: | --------------: | -------------------: |
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-86d86ed4/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c:297: GGML_ASSERT(pv->type == GGML_TYPE_TBQ3_0) failed
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+WARNING: GGML_BACKTRACE_LLDB may cause native MacOS Terminal.app to crash.
+See: https://github.com/ggml-org/llama.cpp/pull/17869
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-86d86ed4/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c:297: GGML_ASSERT(pv->type == GGML_TYPE_TBQ3_0) failed
+0   libggml-base.0.17.0.dylib           0x0000000100f49420 ggml_print_backtrace + 276
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+WARNING: GGML_BACKTRACE_LLDB may cause native MacOS Terminal.app to crash.
+1   libggml-base.0.17.0.dylib           0x0000000100f4960c ggml_abort + 156
+See: https://github.com/ggml-org/llama.cpp/pull/17869
+0   libggml-base.0.17.0.dylib           0x0000000100f49420 ggml_print_backtrace + 276
+1   libggml-base.0.17.0.dylib           0x0000000100f4960c ggml_abort + 156
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-86d86ed4/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c:297: GGML_ASSERT(pv->type == GGML_TYPE_TBQ3_0) failed
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-86d86ed4/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c:297: GGML_ASSERT(pv->type == GGML_TYPE_TBQ3_0) failed
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+2   libggml-cpu.0.17.0.dylib            0x0000000100db5158 ggml_compute_forward_fused_attn_qjl_tbq + 2196
+2   libggml-cpu.0.17.0.dylib            0x0000000100db5158 ggml_compute_forward_fused_attn_qjl_tbq + 2196
+3   libggml-cpu.0.17.0.dylib            0x0000000100d221f8 ggml_graph_compute_thread + 1760
+3   libggml-cpu.0.17.0.dylib            0x0000000100d221f8 ggml_graph_compute_thread + 1760
+4   libggml-cpu.0.17.0.dylib            0x0000000100d22ecc ggml_graph_compute_secondary_thread + 448
+WARNING: GGML_BACKTRACE_LLDB may cause native MacOS Terminal.app to crash.
+See: https://github.com/ggml-org/llama.cpp/pull/17869
+4   libggml-cpu.0.17.0.dylib            0x0000000100d22ecc ggml_graph_compute_secondary_thread + 448
+0   libggml-base.0.17.0.dylib           0x0000000100f49420 ggml_print_backtrace + 276
+5   libsystem_pthread.dylib             0x00000001873edc58 _pthread_start + 136
+5   libsystem_pthread.dylib             0x00000001873edc58 _pthread_start + 136
+/Users/user1/Sites/inference/zerollama/vendor/llama-cpp-86d86ed4/ggml/src/ggml-cpu/fused-attn-qjl-tbq.c:297: GGML_ASSERT(pv->type == GGML_TYPE_TBQ3_0) failed
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+6   libsystem_pthread.dylib             0x00000001873e8c1c thread_start + 8
+WARNING: GGML_BACKTRACE_LLDB may cause native MacOS Terminal.app to crash.
+See: https://github.com/ggml-org/llama.cpp/pull/17869
+6   libsystem_pthread.dylib             0x00000001873e8c1c thread_start + 8
+1   libggml-base.0.17.0.dylib           0x0000000100f4960c ggml_abort + 156

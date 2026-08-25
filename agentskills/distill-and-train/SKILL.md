@@ -137,7 +137,23 @@ Same as above, minus step 1 — supply your own `training_data` directly
 |---|---|---|
 | `model_name` | `Qwen/Qwen2.5-0.5B-Instruct` | HF model id or local path (base to fine-tune) |
 | `output_dir` | `/tmp/training_output` | Where checkpoints + `lora_adapter/` land |
-| `training_data` | `[]` | List of `{"prompt": ..., "response": ...}` — formatted internally as `### Instruction:\n{prompt}\n\n### Response:\n{response}` |
+| `training_data` | `[]` | List of `{"prompt", "response"}` or `messages[]` — formatted via `format` (default auto → HF chat template / ChatML; use `alpaca` for legacy `### Instruction`) |
+| `format` | `auto` | `auto` \| `chatml` \| `llama3` \| `hf` \| `alpaca` \| `modelfile` — `modelfile` uses `zerollama template render --train` (`template` / `template_file` / `template_name`) |
+| `max_length` | `2048` | Truncation length |
+| `padding_free` | `true` | Flatten mini-batch (no pad tokens); set `false` for longest-pad collator |
+| `padding_free_flash_attn` | auto if flash-attn installed | FA2 + `cu_seq_lens_*`; set `false` to force SDPA flattening |
+| `packing` | `false` | `true` — concat short samples into `max_length` blocks before collate |
+| `completion_only_loss` | `true` | Train on assistant tokens only (`-100` on prompt); skipped when packing |
+| `gradient_checkpointing` | on (CUDA) | Set `false` to disable |
+| `use_rslora` | `true` | Rank-stabilized LoRA |
+| `gradient_accumulation_steps` | `4` | |
+| `lora_target_modules` | q/k/v/o/gate/up/down | List or comma string |
+| `register_model` | off | `true` or `"tag:latest"` — write Modelfile + create (CLI or HTTP) |
+| `register_via` | `auto` | `auto` \| `cli` \| `http` — HTTP uploads blobs + `POST /api/create` |
+| `export_gguf` | `false` | Merge LoRA → GGUF (`export_quant`, needs `LLAMA_CPP_DIR`) |
+| `export_unload` | on with gguf | Unload training weights after merge, before convert |
+| `export_from` | `model_name` | `FROM` line for ADAPTER Modelfile |
+| `export_quant` | `q4_k_m` | `f16` \| `q8_0` \| `q4_k_m` |
 | `num_epochs` | `3` | |
 | `batch_size` | `4` | Per-device |
 | `learning_rate` | `2e-4` | |

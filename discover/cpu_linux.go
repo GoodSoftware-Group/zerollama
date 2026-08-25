@@ -66,17 +66,27 @@ func getCPUMem() (memInfo, error) {
 	return mem, nil
 }
 
-func getCPUMemByCgroups(mem memInfo) memInfo {
-	limit, hasLimit := readCgroupMemoryMax()
-	return applyCgroupMemoryLimit(mem, limit, hasLimit)
-}
-
-// applyCgroupMemoryLimit adjusts memInfo for cgroup v2 memory.max.
-// MemAvailable from /proc/meminfo is the admission signal; memory.current
-// must not be subtracted from limit (reclaimable file cache inflates current).
-func applyCgroupMemoryLimit(mem memInfo, limit uint64, hasLimit bool) memInfo {
-	if hasLimit {
-		mem.TotalMemory = limit
+func applyCgroupMemoryLimit(mem memInfo, limit uint64, hasLimit bool, cg CgroupMem) memInfo {
+	if !hasLimit {
+		return mem
+	}
+	mem.TotalMemory = limit
+	used := cg.Current
+	if cg.Anon > used {
+		used = cg.Anon
+	}
+	if used > limit {
+		mem.FreeMemory = 0
+	} else if remain := limit - used; remain < mem.FreeMemory {
+		// Jail remaining, not host MemAvailable (a 24GiB CT on a 128GiB host).
+		mem.FreeMemory = remain
+	}
+	if cg.HasSwapMax {
+		if cg.SwapCurrent >= cg.SwapMax {
+			mem.FreeSwap = 0
+		} else {
+			mem.FreeSwap = cg.SwapMax - cg.SwapCurrent
+		}
 	}
 	return mem
 }

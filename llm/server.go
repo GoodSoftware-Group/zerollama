@@ -89,7 +89,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	if err := SpecModelRequiresLlamaServerError(config); err != nil {
 		return nil, err
 	}
-	if useLlamaServerBackendForModel(projectors, config) {
+	if useLlamaServerBackendForModel(projectors, config) && !llamaServerBlockedByOllamaRawMXFP4(f) {
 		trainCtx := f.KV().ContextLength()
 		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {
 			slog.Warn("requested context size too large for model", "num_ctx", opts.NumCtx, "n_ctx_train", trainCtx)
@@ -98,6 +98,9 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		kvct := opts.KvCacheTypeEffective()
 		slog.Info("using llama-server subprocess for model", "model", modelPath, "spec_type", config.SpecType)
 		return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, config)
+	}
+	if useLlamaServerBackendForModel(projectors, config) && llamaServerBlockedByOllamaRawMXFP4(f) {
+		slog.Info("skipping llama-server for ollama raw MXFP4 (type 4 → engine remap)", "model", modelPath, "architecture", f.KV().Architecture())
 	}
 
 	var llamaModel *llama.Model
@@ -360,6 +363,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 		}()
 	}
 	cmd.SysProcAttr = LlamaServerSysProcAttr
+	ApplyParentDeath(cmd)
 
 	// Always filter down the set of GPUs in case there are any unsupported devices that might crash
 	pathEnvVal := strings.Join(libraryPaths, string(filepath.ListSeparator))

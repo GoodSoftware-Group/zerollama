@@ -6,7 +6,18 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 **Related:** [video-understanding.md](./video-understanding.md) (native pipeline), [video-parity.md](./video-parity.md) (matrix), [gpu-profiles-l3.md](./gpu-profiles-l3.md) (KV prefix cache), [ROADMAP.md](./ROADMAP.md) Option 2.
 
-**Last scanned:** 2026-07-28 — sibling `../sglang` tip **`4e5a05148a`** (was `4a76699dfc`, ~1157 commits). HiCache/Radix in this range are infrastructure-only (no `sglext.cached_tokens_details` API change).
+**Last scanned:** 2026-08-21 — sibling `../sglang` tip **`896acc8860`** (was `4e5a05148a`, ~1223 commits). HiCache/Radix in this range remain infrastructure-only.
+
+### Upstream delta triage (`4e5a05148a..896acc8860`)
+
+| Priority | SGLang | Action |
+|----------|--------|--------|
+| **Brought** | [#32914](https://github.com/sgl-project/sglang/pull/32914) — reject media on text-only models | `CheckCapabilities(vision)` for still images / padded multimodal in `ChatHandler` + `GenerateHandler` (`server/routes.go`) |
+| **Brought** | [#34892](https://github.com/sgl-project/sglang/pull/34892) — hostname allowlist + redirect re-check | `OLLAMA_MEDIA_ALLOWED_HOSTS`, `checkRemoteMediaURL` + `CheckRedirect` in `openai/video_url.go` |
+| **Brought** | [#31957](https://github.com/sgl-project/sglang/pull/31957) — reject vision metadata mismatches | Zero/`frame_count` span validate; `GridTHWPerRaster` returns nil on overclaim (`server/modality/`) |
+| **Brought** | [#33898](https://github.com/sgl-project/sglang/pull/33898) — tool-result media | Qwen3-VL tool branch uses `renderContent`; OpenAI multipart tool keeps `tool_call_id` |
+| **Watch** | [#24013](https://github.com/sgl-project/sglang/pull/24013) batch cross-request ViT encode | Needs continuous-batch encode queue; we already have ViT radix *reuse*, not cross-req batch |
+| **Skip** | HiCache / Radix / CUDA-IPC / breakable CG | Infrastructure / CUDA — not Go/ffmpeg |
 
 ### Upstream delta triage (`4a76699dfc..4e5a05148a`)
 
@@ -476,7 +487,7 @@ VIDEO_AGENT_INFER_VIT_RADIX=1 ...  # cross-session ViT content pool
 
 | Concern | Primary files |
 |---------|----------------|
-| URL fetch + SSRF | `openai/video_url.go` |
+| URL fetch + SSRF | `openai/video_url.go` (`checkRemoteMediaURL`, `OLLAMA_MEDIA_ALLOWED_HOSTS`) |
 | URL body LRU | `openai/video_fetch_cache.go` |
 | ffmpeg expansion | `server/modality/video_frames.go` |
 | Global expand LRU | `server/modality/video_cache.go` |

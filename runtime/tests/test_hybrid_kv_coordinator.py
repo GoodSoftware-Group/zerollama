@@ -38,9 +38,12 @@ def test_coordinator_hybrid_uses_min_swa_window():
     assert coord.swa_effective_window == 2048
     assert coord.full_layer_count == 2
     assert coord.swa_layer_count == 2
+    assert coord.retention_interval == 0  # vLLM #52216 default
     assert coord.allows_cache_prompt(seq_pos=2048, prompt_tokens=1) is False
-    assert coord.allows_cache_prompt(seq_pos=1500, prompt_tokens=400) is True
-    assert coord.coordinated_resume_pos(1500) == 1500
+    assert coord.allows_cache_prompt(seq_pos=1500, prompt_tokens=400) is False
+    assert coord.allows_cache_prompt(seq_pos=1024, prompt_tokens=400) is True
+    assert coord.coordinated_resume_pos(1024) == 1024
+    assert coord.coordinated_resume_pos(1500) is None
     assert coord.coordinated_resume_pos(3000) is None
 
 

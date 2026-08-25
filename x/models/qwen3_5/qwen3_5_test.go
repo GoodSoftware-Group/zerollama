@@ -59,6 +59,33 @@ func TestParseConfigNestedDefaults(t *testing.T) {
 	}
 }
 
+func TestParseConfigQuantizationFromTextConfig(t *testing.T) {
+	data := []byte(`{
+		"model_type": "Qwen3_5ForConditionalGeneration",
+		"text_config": {
+			"hidden_size": 5120,
+			"num_hidden_layers": 4,
+			"num_attention_heads": 40,
+			"num_key_value_heads": 8,
+			"head_dim": 128,
+			"linear_num_value_heads": 64,
+			"linear_num_key_heads": 16,
+			"linear_key_head_dim": 128,
+			"linear_value_head_dim": 128,
+			"linear_conv_kernel_dim": 4,
+			"quantization": {"group_size": 128, "bits": 2}
+		}
+	}`)
+	cfg, err := parseConfig(data)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.QuantBits != 2 || cfg.QuantGroupSize != 128 || cfg.QuantMode != "affine" {
+		t.Fatalf("quant got bits=%d gs=%d mode=%q, want 2/128/affine",
+			cfg.QuantBits, cfg.QuantGroupSize, cfg.QuantMode)
+	}
+}
+
 func TestLayerSelectionHelpers(t *testing.T) {
 	cfg := &Config{
 		NumHiddenLayers:       6,
@@ -89,13 +116,15 @@ func TestSupportsGatherQMM(t *testing.T) {
 		bits int
 		want bool
 	}{
+		{mode: "affine", bits: 3, want: true},
 		{mode: "affine", bits: 4, want: true},
+		{mode: "affine", bits: 6, want: true},
 		{mode: "affine", bits: 8, want: true},
 		{mode: "mxfp8", bits: 8, want: true},
 		{mode: "nvfp4", bits: 4, want: true},
 		{mode: "mxfp4", bits: 4, want: true},
 		{mode: "mxfp8", bits: 4, want: false},
-		{mode: "affine", bits: 3, want: false},
+		{mode: "affine", bits: 5, want: false},
 	}
 
 	for _, tt := range tests {

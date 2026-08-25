@@ -30,6 +30,10 @@ set -euo pipefail
 export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${HOME}/zerollama}"
 export SERVE_LOG="${SERVE_LOG:-/tmp/zerollama-serve.log}"
 
+# Never bind inference on the PVE hypervisor (CT 1564 only).
+# shellcheck disable=SC1091
+source "${ZEROLLAMA_REPO}/scripts/serve/refuse_pve_host.sh"
+
 if [[ ! -f "${ZEROLLAMA_REPO}/scripts/serve/serve_gpu_example.sh" ]]; then
   echo "~/bin/serve.sh: missing ${ZEROLLAMA_REPO}/scripts/serve/serve_gpu_example.sh" >&2
   echo "WHY: set ZEROLLAMA_REPO to your zerollama checkout (symlink ~/zerollama is fine)." >&2

@@ -10,6 +10,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
@@ -120,6 +122,9 @@ func applyGGUFGuessToModel(m *Model, f *ggml.GGML) {
 	}
 	GuessConfigFromGGUF(&m.Config, f.KV())
 	m.EmbeddedMTP = llm.HasMTPDraft(f)
+	// Prefer metadata already loaded for list/GetModel — avoids a second gguf.Open
+	// just to probe tokenizer.chat_template (dominant /api/tags cost with many GGUFs).
+	m.HasChatTemplate = f.KV().ChatTemplate() != ""
 	if m.Options == nil {
 		m.Options = make(map[string]any)
 	}
@@ -156,11 +161,38 @@ func guessFromBaseLayers(config *model.ConfigV2, params map[string]any, layers [
 	}
 }
 
+type ggufMetadataCacheEntry struct {
+	ggml *ggml.GGML
+	size int64
+	mod  time.Time
+}
+
+var ggufMetadataCache sync.Map // path → ggufMetadataCacheEntry
+
 func loadGGUFMetadataAt(path string) (*ggml.GGML, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Warn("gguf metadata load panicked", "path", path, "panic", r)
 		}
 	}()
-	return llm.LoadModelMetadata(path)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if v, ok := ggufMetadataCache.Load(path); ok {
+		ent := v.(ggufMetadataCacheEntry)
+		if ent.ggml != nil && ent.size == fi.Size() && ent.mod.Equal(fi.ModTime()) {
+			return ent.ggml, nil
+		}
+	}
+	data, err := llm.LoadModelMetadata(path)
+	if err != nil {
+		return nil, err
+	}
+	ggufMetadataCache.Store(path, ggufMetadataCacheEntry{
+		ggml: data,
+		size: fi.Size(),
+		mod:  fi.ModTime(),
+	})
+	return data, nil
 }

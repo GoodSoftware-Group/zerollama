@@ -25,11 +25,33 @@ var GELUApprox = Compile1(
 	Shapeless(),
 )
 
+func gelu(x *Array) *Array {
+	dt := x.DType()
+	half := FromValue[float32](0.5).AsType(dt)
+	one := FromValue[float32](1).AsType(dt)
+	invSqrt2 := FromValue(float32(1 / math.Sqrt2)).AsType(dt)
+	return half.Multiply(x).Multiply(one.Add(erf(x.Multiply(invSqrt2))))
+}
+
+// GELU returns the exact erf formulation used by torch.nn.functional.gelu.
+var GELU = Compile1("GELU", gelu, Shapeless())
+
 // SiLU returns a * sigmoid(a) as a fused kernel.
 var SiLU = Compile1(
 	"SiLU",
 	func(a *Array) *Array {
 		return a.Multiply(a.Sigmoid())
+	},
+	Shapeless(),
+)
+
+// ReLUSquared returns relu(x)^2 as a fused kernel.
+var ReLUSquared = Compile1(
+	"ReLUSquared",
+	func(x *Array) *Array {
+		zero := FromValue[float32](0).AsType(x.DType())
+		x = Maximum(x, zero)
+		return x.Multiply(x)
 	},
 	Shapeless(),
 )
@@ -43,26 +65,6 @@ var SoftplusF32 = Compile1(
 		dt := x.DType()
 		zero := FromValue[float32](0)
 		return Logaddexp(x.AsType(DTypeFloat32), zero).AsType(dt)
-	},
-	Shapeless(),
-)
-
-// SwiGLUOAI returns the GPT-OSS / OpenAI SwiGLU variant:
-// clip(gate,0,limit) * sigmoid(1.702*gate) * (clip(up,-limit,limit)+1).
-var SwiGLUOAI = Compile2(
-	"SwiGLUOAI",
-	func(gate, up *Array) *Array {
-		dt := gate.DType()
-		zero := FromValue[float32](0).AsType(dt)
-		limit := FromValue[float32](7.0).AsType(dt)
-		negLimit := FromValue[float32](-7.0).AsType(dt)
-		one := FromValue[float32](1.0).AsType(dt)
-		alpha := FromValue[float32](1.702).AsType(dt)
-
-		gateClipped := Clip(gate, zero, limit)
-		upClipped := Clip(up, negLimit, limit)
-		outGlu := gateClipped.Multiply(gateClipped.Multiply(alpha).Sigmoid())
-		return outGlu.Multiply(upClipped.Add(one))
 	},
 	Shapeless(),
 )

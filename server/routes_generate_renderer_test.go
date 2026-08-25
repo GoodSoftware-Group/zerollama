@@ -206,6 +206,7 @@ func TestGenerateWithBuiltinRenderer(t *testing.T) {
 // TestGenerateWithDebugRenderOnly tests that debug_render_only works with built-in renderers
 func TestGenerateWithDebugRenderOnly(t *testing.T) {
 	t.Setenv("OLLAMA_CONTEXT_LENGTH", "4096")
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
 	gin.SetMode(gin.TestMode)
 
 	mock := mockRunner{

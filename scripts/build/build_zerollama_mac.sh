@@ -58,6 +58,14 @@ _mlx_dev_lib() {
   echo "${ROOT}/build/metal-v3/lib/ollama/mlx_metal_v3/libmlxc.dylib"
 }
 
+_mlx_dev_lib_v4() {
+  echo "${ROOT}/build/metal-v4/lib/ollama/mlx_metal_v4/libmlxc.dylib"
+}
+
+_macos_major() {
+  sw_vers -productVersion 2>/dev/null | cut -d. -f1
+}
+
 _should_build_mlx() {
   case "${BUILD_MLX}" in
     0) return 1 ;;
@@ -70,6 +78,13 @@ _should_build_mlx() {
         return 1
       fi
       if [[ -f "$(_mlx_dev_lib)" ]] && [[ "${MLX_FORCE:-0}" != "1" ]]; then
+        local major
+        major="$(_macos_major)"
+        # WHY: v3-only skip left Tahoe hosts on Metal 3 metallib; loader prefers v4 when present.
+        if [[ "${major:-0}" -ge 26 ]] && [[ ! -f "$(_mlx_dev_lib_v4)" ]]; then
+          echo ">>> BUILD_MLX=auto: Metal v3 present, building v4 for macOS ${major}" >&2
+          return 0
+        fi
         echo ">>> BUILD_MLX=auto: MLX dylibs present (MLX_FORCE=1 or BUILD_MLX=1 to rebuild)" >&2
         return 1
       fi
@@ -421,10 +436,14 @@ if [[ "$(uname -s)" == Darwin && -f "${ROOT}/scripts/vendor/restore_ane_hook_int
 fi
 
 # CGO llama.cpp/common needs nlohmann/miniaudio/stb under llama/llama.cpp/vendor.
+# b10488 mtmd also needs vendor/hash (sha256.c) via llama/cgo_vendor_hash.cpp.
 # Repo .gitignore matches any vendor/, so pin syncs leave these missing unless staged.
 _ensure_llama_cgo_vendor_headers() {
   local dest="${ROOT}/llama/llama.cpp/vendor"
-  if [[ -f "${dest}/nlohmann/json.hpp" && -f "${dest}/miniaudio/miniaudio.h" && -f "${dest}/stb/stb_image.h" ]]; then
+  local need=0
+  [[ -f "${dest}/nlohmann/json.hpp" && -f "${dest}/miniaudio/miniaudio.h" && -f "${dest}/stb/stb_image.h" ]] || need=1
+  [[ -f "${dest}/hash/sha256/sha256.c" ]] || need=1
+  if [[ "${need}" -eq 0 ]]; then
     return 0
   fi
   local src="" d
@@ -432,22 +451,23 @@ _ensure_llama_cgo_vendor_headers() {
   pin="$(tr -d '[:space:]' <"${ROOT}/LLAMA_CPP_COMMIT" 2>/dev/null || true)"
   for d in \
     "${ROOT}/vendor/llama-cpp-${pin}/vendor" \
+    "${ROOT}/vendor/llama-cpp-b10488/vendor" \
     "${ROOT}/vendor/llama-cpp-${pin:0:8}/vendor" \
     "${ROOT}"/vendor/llama-cpp-*/vendor \
     "${ROOT}/../llama.cpp/vendor"
   do
-    if [[ -f "${d}/nlohmann/json.hpp" ]]; then
+    if [[ -f "${d}/nlohmann/json.hpp" || -f "${d}/hash/sha256/sha256.c" ]]; then
       src="${d}"
-      break
+      [[ -f "${d}/nlohmann/json.hpp" ]] && break
     fi
   done
   if [[ -z "${src}" ]]; then
-    echo ">>> warn: missing nlohmann under ${dest}; CGO build may fail (sync vendor pin)" >&2
+    echo ">>> warn: missing llama.cpp vendor extras under ${dest}; CGO build may fail (sync vendor pin)" >&2
     return 0
   fi
   echo ">>> restoring CGO llama vendor headers from ${src}" >&2
   mkdir -p "${dest}"
-  for name in nlohmann miniaudio stb; do
+  for name in nlohmann miniaudio stb hash; do
     if [[ -d "${src}/${name}" ]]; then
       rm -rf "${dest:?}/${name}"
       cp -R "${src}/${name}" "${dest}/${name}"

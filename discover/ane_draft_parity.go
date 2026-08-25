@@ -103,7 +103,7 @@ func ProbeANEDraftParity(ctx context.Context, preferred string, opts ANEDraftPar
 	e2eBudget := 12 * time.Minute
 	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 17 {
-			e2eBudget = 90 * time.Minute
+			e2eBudget = 120 * time.Minute
 		} else if err == nil && n >= 13 {
 			e2eBudget = 35 * time.Minute
 		}

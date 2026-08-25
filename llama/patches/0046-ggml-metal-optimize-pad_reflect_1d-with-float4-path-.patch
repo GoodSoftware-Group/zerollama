@@ -13,10 +13,10 @@ Use function-constant float4 loads/stores when p0 and row strides are
  3 files changed, 39 insertions(+), 10 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index 811b96340..c47e211b6 100644
+index a95998adb..123475eb6 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -2091,12 +2091,22 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad_reflect_1d(g
+@@ -2136,12 +2136,22 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad_reflect_1d(g
      char base[256];
      char name[256];
  
@@ -42,10 +42,10 @@ index 811b96340..c47e211b6 100644
  
      return res;
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 5138efd82..089775059 100644
+index 2fa00e0f2..8337d4586 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -104,6 +104,8 @@
+@@ -107,6 +107,8 @@
  #define FC_SUM_ROWS                    1400
  #define FC_UPSCALE                     1500
  #define FC_GATED_DELTA_NET             1600
@@ -55,10 +55,10 @@ index 5138efd82..089775059 100644
  #define OP_FLASH_ATTN_EXT_NQPSG 8
  #define OP_FLASH_ATTN_EXT_NQPSG_16 16
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 73ab6ca2e..dc6fcd508 100644
+index 559f18a24..b761c0a17 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -5969,7 +5969,9 @@ typedef decltype(kernel_pad_impl<float>) kernel_pad_t;
+@@ -6040,7 +6040,9 @@ typedef decltype(kernel_pad_impl<float>) kernel_pad_t;
  template [[host_name("kernel_pad_f32")]]   kernel kernel_pad_t kernel_pad_impl<float>;
  template [[host_name("kernel_pad_f32_4")]] kernel kernel_pad_t kernel_pad_impl<float4>;
  
@@ -69,7 +69,7 @@ index 73ab6ca2e..dc6fcd508 100644
  kernel void kernel_pad_reflect_1d_f32(
      constant   ggml_metal_kargs_pad_reflect_1d & args,
      device  const char * src0,
-@@ -5991,15 +5993,30 @@ kernel void kernel_pad_reflect_1d_f32(
+@@ -6062,15 +6064,30 @@ kernel void kernel_pad_reflect_1d_f32(
      device       float * dst_ptr  = (device       float *) (dst  +  i3*args.nb3  +  i2*args.nb2  +  i1*args.nb1);
  
      if (i1 < args.ne01 && i2 < args.ne02 && i3 < args.ne03) {

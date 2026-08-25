@@ -2,6 +2,17 @@ package nn
 
 import "github.com/ollama/ollama/x/mlxrunner/mlx"
 
+// QuantizedForwardHook may replace QuantizedLinear.Forward (F0685 owned broker GEMV).
+// Return ok=false to fall through to MLX QuantizedMatmul.
+type QuantizedForwardHook func(ql *QuantizedLinear, x *mlx.Array) (y *mlx.Array, ok bool)
+
+var quantizedForwardHook QuantizedForwardHook
+
+// SetQuantizedForwardHook installs or clears the owned-forward hook (nil clears).
+func SetQuantizedForwardHook(h QuantizedForwardHook) {
+	quantizedForwardHook = h
+}
+
 // Layer is the interface for neural network layers with a Forward method.
 type Layer interface {
 	Forward(x *mlx.Array) *mlx.Array
@@ -113,6 +124,11 @@ func NewQuantizedLinear(weight *mlx.Array, bias *mlx.Array, groupSize, bits int,
 }
 
 func (ql *QuantizedLinear) Forward(x *mlx.Array) *mlx.Array {
+	if quantizedForwardHook != nil {
+		if y, ok := quantizedForwardHook(ql, x); ok {
+			return y
+		}
+	}
 	out := mlx.QuantizedMatmul(x, ql.Weight, ql.Scales, ql.QBiases, true, ql.GroupSize, ql.Bits, ql.Mode)
 	if ql.GlobalScale != nil {
 		// Double-scale nvfp4 (e.g., NVIDIA ModelOpt): standard quantized_matmul
@@ -190,7 +206,7 @@ func (qe *QuantizedEmbedding) Forward(indices *mlx.Array) *mlx.Array {
 	if qe.QBiases != nil && qe.QBiases.Valid() {
 		qbiases = qe.QBiases.TakeAxis(indices, 0)
 	}
-	out := mlx.Dequantize(weight, scales, qbiases, qe.GroupSize, qe.Bits, qe.Mode)
+	out := mlx.Dequantize(weight, scales, qbiases, qe.GroupSize, qe.Bits, qe.Mode, nil)
 	if qe.GlobalScale != nil {
 		outDType := out.DType()
 		out = mlx.Mul(out, qe.GlobalScale).AsType(outDType)

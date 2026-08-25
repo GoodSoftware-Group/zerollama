@@ -151,10 +151,14 @@ func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string
 	defer cancel()
 
 	var metrics *api.Metrics
+	var sawDone bool
+	var responseBytes int
 	err := client.Generate(ctx, req, func(resp api.GenerateResponse) error {
+		responseBytes += len(resp.Response)
 		// WHY Done-only: streaming chunks can carry full EvalCount with near-zero EvalDuration,
 		// producing nonsense tok/s (e.g. 333k) if we accept intermediate updates.
 		if resp.Done {
+			sawDone = true
 			m := resp.Metrics
 			metrics = &m
 		}
@@ -164,9 +168,24 @@ func benchGenerateOnce(ctx context.Context, client *api.Client, modelName string
 		return nil, err
 	}
 	if metrics == nil || metrics.EvalCount <= 0 {
-		return nil, fmt.Errorf("no metrics received")
+		return nil, benchNoMetricsError(sawDone, responseBytes, numCtx)
 	}
 	return metrics, nil
+}
+
+func benchNoMetricsError(sawDone bool, responseBytes, numCtx int) error {
+	switch {
+	case !sawDone && responseBytes > 0:
+		hint := "stream aborted after partial output"
+		if numCtx >= 8192 {
+			hint += "; try --num-ctx 2048 on tight VRAM hosts"
+		}
+		return fmt.Errorf("no metrics received (%s)", hint)
+	case sawDone:
+		return fmt.Errorf("no metrics received (done with eval_count=0)")
+	default:
+		return fmt.Errorf("no metrics received (empty stream)")
+	}
 }
 
 func benchUnloadModel(client *api.Client, modelName string, timeout time.Duration) {
@@ -314,6 +333,34 @@ func benchPreflightSkip(name string, skipCheck bool) (string, bool) {
 	return fmt.Sprintf("%s (%s)", report.Detail, report.FixHint), true
 }
 
+// benchClampNumCtx lowers context for huge / MoE models so force-bench
+// with the default 8192 does not OOM-kill the runner (e.g. qwen3-coder-next).
+func benchClampNumCtx(m api.ListModelResponse, numCtx int) int {
+	if numCtx <= 0 {
+		return numCtx
+	}
+	const (
+		softBytes = 40 << 30 // ~40 GiB on-disk → clamp to 4096
+		hardBytes = 70 << 30 // ~70 GiB on-disk → clamp to 2048
+	)
+	maxCtx := numCtx
+	if m.Size >= hardBytes {
+		maxCtx = 2048
+	} else if m.Size >= softBytes {
+		maxCtx = 4096
+	}
+	// Dense-parameter MoE / large active-count models are especially KV-heavy.
+	if m.Details.ExpertCount > 1 || m.Details.ActiveParameterCount > 0 {
+		if m.Size >= softBytes && maxCtx > 2048 {
+			maxCtx = 2048
+		}
+	}
+	if maxCtx < numCtx {
+		return maxCtx
+	}
+	return numCtx
+}
+
 func runBench(cmd *cobra.Command, args []string) error {
 	epochs, _ := cmd.Flags().GetInt("epochs")
 	maxTokens, _ := cmd.Flags().GetInt("tokens")
@@ -396,13 +443,20 @@ func runBench(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "benching %s (%s)...\n", m.Name, kind)
 		var br benchModelResult
 		var err error
+		modelNumCtx := numCtx
+		if kind == benchKindCompletion {
+			modelNumCtx = benchClampNumCtx(m, numCtx)
+			if modelNumCtx != numCtx {
+				fmt.Fprintf(os.Stderr, "  num_ctx clamped %d → %d for large model\n", numCtx, modelNumCtx)
+			}
+		}
 		switch kind {
 		case benchKindImage:
 			br, err = benchImageModel(cmd.Context(), client, m, warmup, epochs, loadTimeout, genTimeout, minEpochs)
 		case benchKindVideoGen:
 			br, err = benchVideoModel(cmd.Context(), m, videoTimeout)
 		default:
-			br, err = benchModel(cmd.Context(), client, m, warmup, epochs, maxTokens, numCtx, loadTimeout, genTimeout, minEpochs)
+			br, err = benchModel(cmd.Context(), client, m, warmup, epochs, maxTokens, modelNumCtx, loadTimeout, genTimeout, minEpochs)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", m.Name, err)

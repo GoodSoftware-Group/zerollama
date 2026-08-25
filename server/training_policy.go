@@ -70,7 +70,16 @@ func (s *Server) syncTrainingVRAMCoordination(ctx context.Context, block bool) {
 
 // trainingOccupiesGPU reports whether training currently blocks inference.
 func (s *Server) trainingOccupiesGPU(ctx context.Context) bool {
-	if s == nil || s.training == nil {
+	if s == nil {
+		return false
+	}
+	// WHY video exclusive first: Wan run_script can briefly look "idle" in health TTL
+	// windows while the child still holds ~10GiB; the job-scoped lease must keep
+	// PauseNewLoads / runtime busy latched until GET status is terminal.
+	if s.videoExclusiveActive() {
+		return true
+	}
+	if s.training == nil {
 		return false
 	}
 	_, busy := s.training.OccupiesGPU(ctx)

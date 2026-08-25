@@ -143,6 +143,16 @@ func validatePreexpandedVideoMessage(msg *api.Message) error {
 	if frames > len(msg.Images) {
 		return ClientMediaf("video_spans claim %d frames but message has %d images", frames, len(msg.Images))
 	}
+	// SGLang #31957: reject empty/zero-frame spans and one-sided mismatches instead of
+	// silently truncating with min(...) downstream (Moss-VL metadata vs tokens).
+	if frames == 0 {
+		return ClientMedia("video_spans present but total frame_count is 0")
+	}
+	for i, sp := range msg.VideoSpans {
+		if sp.FrameCount <= 0 {
+			return ClientMediaf("video_spans[%d] frame_count must be positive, got %d", i, sp.FrameCount)
+		}
+	}
 	return nil
 }
 

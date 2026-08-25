@@ -9,10 +9,10 @@ Subject: [PATCH] llama: MoE down-proj L2 rescale for Metal f16 (upstream
  1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index edcd85721..654b68204 100644
+index 8f1025c21..ef6bf9f0f 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -2106,7 +2106,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -2228,7 +2228,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
              GGML_ABORT("fatal error");
      }
  

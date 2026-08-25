@@ -20,6 +20,12 @@ func TestUseLlamaServerBackendExplicitOn(t *testing.T) {
 	}
 }
 
+func TestLlamaServerBlockedByOllamaRawMXFP4(t *testing.T) {
+	if llamaServerBlockedByOllamaRawMXFP4(nil) {
+		t.Fatal("nil GGML must not be blocked")
+	}
+}
+
 func TestUseLlamaServerBackendExplicitOnWithProjectors(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
 	if !useLlamaServerBackend([]string{"/path/to/mmproj.gguf"}) {
@@ -43,15 +49,8 @@ func TestUseLlamaServerBackendLinuxAutoPlainText(t *testing.T) {
 
 func TestUseLlamaServerBackendLinuxAutoVision(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "auto")
-	if useLlamaServerBackendForModelGOOS("linux", []string{"/path/to/mmproj.gguf"}, true, LlamaServerConfig{}) {
-		t.Fatal("Linux auto must keep vision GGUF on ggml llamarunner (SGLang precomputed skip-ViT)")
-	}
-}
-
-func TestUseLlamaServerBackendExplicitVisionOnLinux(t *testing.T) {
-	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "1")
 	if !useLlamaServerBackendForModelGOOS("linux", []string{"/path/to/mmproj.gguf"}, true, LlamaServerConfig{}) {
-		t.Fatal("explicit llama-server must still route vision GGUF (Phase 17 vision smoke)")
+		t.Fatal("Linux auto must route vision GGUF through llama-server (upstream parity)")
 	}
 }
 
@@ -122,5 +121,50 @@ func TestLlamaServerBackendAutoEnv(t *testing.T) {
 	}
 	if !envconfig.LlamaServerBackendAuto() {
 		t.Fatal("auto should be detected")
+	}
+}
+
+func TestOfficialGPTOSSRawMXFP4Blocked(t *testing.T) {
+	path := "/root/.ollama/models/blobs/sha256-b112e727c6f18875636c56a779790a590d705aec9e1c0eb5a97d51fc2a778583"
+	f, err := LoadModelMetadata(path)
+	if err != nil {
+		t.Skip(err)
+	}
+	if !llamaServerBlockedByOllamaRawMXFP4(f) {
+		t.Fatal("official gpt-oss:20b MXFP4 (type 4) must be blocked from llama-server")
+	}
+}
+
+func TestNativeMXFP4GPTOSSNotBlockedByRawMXFP4(t *testing.T) {
+	// ggml-org/gpt-oss-20b-GGUF MXFP4 (type 39)
+	path := "/root/.ollama/models/blobs/sha256-27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+	f, err := LoadModelMetadata(path)
+	if err != nil {
+		t.Skip(err)
+	}
+	if llamaServerBlockedByOllamaRawMXFP4(f) {
+		t.Fatal("type-39 MXFP4 gpt-oss must remain eligible for llama-server")
+	}
+	if !ggmlUsesNativeMXFP4(f) {
+		t.Fatal("expected native MXFP4 (type 39) tensors")
+	}
+	envs := map[string]string{"GGML_CUDA_FORCE_CUBLAS": "1"}
+	applyLlamaServerMXFP4CUDAEnv(envs, f)
+	if envs["GGML_CUDA_FORCE_CUBLAS"] != "0" {
+		t.Fatalf("MXFP4 must clear FORCE_CUBLAS for MMQ, got %q", envs["GGML_CUDA_FORCE_CUBLAS"])
+	}
+}
+
+func TestApplyLlamaServerMXFP4CUDAEnvRespectsAllow(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MXFP4_ALLOW_FORCE_CUBLAS", "1")
+	path := "/root/.ollama/models/blobs/sha256-27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+	f, err := LoadModelMetadata(path)
+	if err != nil {
+		t.Skip(err)
+	}
+	envs := map[string]string{"GGML_CUDA_FORCE_CUBLAS": "1"}
+	applyLlamaServerMXFP4CUDAEnv(envs, f)
+	if envs["GGML_CUDA_FORCE_CUBLAS"] != "1" {
+		t.Fatalf("allow escape should keep FORCE_CUBLAS=1, got %q", envs["GGML_CUDA_FORCE_CUBLAS"])
 	}
 }

@@ -11731,10 +11731,10 @@ index 000000000..8c0735b77
 +    return IOSurfaceLookup(surfaceID);
 +}
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 3e0af3f31..30ec6cd67 100644
+index 52f8d5367..ccdd52d0d 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -15,6 +15,7 @@
+@@ -16,6 +16,7 @@
  #include <cinttypes>
  #include <cmath>
  #include <cstring>
@@ -11742,7 +11742,7 @@ index 3e0af3f31..30ec6cd67 100644
  #include <limits>
  #include <stdexcept>
  #include <string>
-@@ -1176,6 +1177,41 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
+@@ -1181,6 +1182,41 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
      cparams.nextn_layer_offset = offset;
  }
  
@@ -11784,7 +11784,7 @@ index 3e0af3f31..30ec6cd67 100644
  void llama_context::set_causal_attn(bool value) {
      LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
  
-@@ -3765,6 +3801,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+@@ -3812,6 +3848,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
      return ctx->get_embeddings_layer_inp(lid);
  }
  
@@ -11831,7 +11831,7 @@ index bf91daa8b..19dce3a11 100644
      void set_warmup(bool value);
  
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 348bbae95..562571b6e 100644
+index 35d6e58ad..e82c59104 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
 @@ -120,6 +120,27 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);

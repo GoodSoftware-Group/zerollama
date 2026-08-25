@@ -125,7 +125,7 @@ func doctorANEHandoffDetail() string {
 	line := fmt.Sprintf("iosurface write %.3f + eval %.3f + read %.3f ms; metal fill %.3f + eval %.3f ms",
 		h.WriteMS, h.EvalMS, h.ReadMS, m.MetalFillMS, m.EvalMS)
 	if discover.FindANEPrefillHandoffSmokeBin() != "" {
-		if p, perr := discover.ProbeANEPrefillHandoffSmoke(nil, 256, 256, 128, true); perr == nil {
+		if p, perr := discover.ProbeANEPrefillHandoffSmoke(nil, 256, 256, 128, true, "", false); perr == nil {
 			line += fmt.Sprintf("; prefill handoff fill %.3f + eval %.3f ms", p.MetalFillMS, p.EvalMS)
 		}
 	}

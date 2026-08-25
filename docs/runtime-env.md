@@ -10,7 +10,9 @@
 
 | Goal | Use |
 |------|-----|
-| Multi-slot agent + Radix | `ZEROLLAMA_L3_PROFILE=agent` |
+| CUDA prod throughput (one knob) | `ZEROLLAMA_INFERENCE_PROFILE=auto` |
+| Multi-slot agent + Radix | `ZEROLLAMA_INFERENCE_PROFILE=agent` or `ZEROLLAMA_L3_PROFILE=agent` |
+| Long-ctx VRAM (TBQ @ ≥32k) | `ZEROLLAMA_INFERENCE_PROFILE=vram` |
 | Custom runtime YAML | `ZEROLLAMA_RUNTIME_CONFIG=runtime/configs/….yaml` |
 | L3 + prefix trace debug | `ZEROLLAMA_DEBUG=l3` |
 | Phase 15 infer spans | `ZEROLLAMA_DEBUG=infer` |

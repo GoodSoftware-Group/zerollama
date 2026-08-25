@@ -195,6 +195,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -692,7 +694,10 @@ func EvalErr(outputs ...*Array) error {
 			return fmt.Errorf("mlx eval: %s", msg)
 		}
 		if GPUIsAvailable() {
-			return fmt.Errorf("mlx eval failed (ret=%d): likely GPU out of memory; unload other models and retry", ret)
+			// WHY not always "OOM": any mlx_eval failure on GPU used to be labeled
+			// OOM (including empty-stream / memory-limit aborts on Metal). Keep the
+			// hint but make it conditional on wording operators already search for.
+			return fmt.Errorf("mlx eval failed (ret=%d): GPU allocation or eval error; unload other models, raise ZEROLLAMA_IMAGEGEN_MEMORY_LIMIT on Metal, or retry", ret)
 		}
 		return fmt.Errorf("mlx eval failed (ret=%d)", ret)
 	}
@@ -704,9 +709,18 @@ func EvalErr(outputs ...*Array) error {
 // temporaries for all of them at once — on 16GB CUDA this OOMs right after the text
 // encoder was freed to make room for the transformer. TrimVRAM every other batch
 // returns driver memory between chunks without freeing model-owned arrays.
+//
+// WHY mark all kept first: EvalErr runs cleanup() after each batch. Without a prior
+// keep on later slices, cleanup frees Contiguous() results still waiting in
+// outputs[end:] and the next batch hits empty mlx_vector_array / null handles.
 func EvalErrBatched(batchSize int, outputs []*Array) error {
 	if batchSize <= 0 {
 		batchSize = 16
+	}
+	for _, o := range outputs {
+		if o != nil {
+			o.kept = true
+		}
 	}
 	for i := 0; i < len(outputs); i += batchSize {
 		end := min(i+batchSize, len(outputs))
@@ -864,9 +878,15 @@ func AsyncEval(outputs ...*Array) {
 }
 
 // syncStreams waits for both GPU and CPU MLX streams.
+// Skip empty handles — mlx_synchronize on a null stream throws
+// "expected a non-empty mlx_stream" and overwrites a real mlx_eval error.
 func syncStreams() {
-	C.mlx_synchronize(C.default_stream())
-	C.mlx_synchronize(C.cpu_stream())
+	if s := C.default_stream(); s.ctx != nil {
+		C.mlx_synchronize(s)
+	}
+	if s := C.cpu_stream(); s.ctx != nil {
+		C.mlx_synchronize(s)
+	}
 }
 
 // Sync waits for all async operations to complete (no cleanup).
@@ -1916,6 +1936,16 @@ func cpuArrayDataFloat32(a *Array) []float32 {
 			out[i] = float32FromBFloat16(uint16(raw[i]))
 		}
 		return out
+	case DtypeFloat16:
+		// Promote then read — Metal VAE decode often stays f16.
+		f32 := AsType(a, DtypeFloat32)
+		Keep(f32)
+		if C.mlx_array_eval(f32.c) == 0 {
+			waitArray(f32)
+		}
+		out := cpuArrayDataFloat32(f32)
+		f32.Free()
+		return out
 	default:
 		return nil
 	}
@@ -1956,7 +1986,7 @@ func GPUToHostFloat32(a *Array) []float32 {
 }
 
 // HostFloat32Slice returns array elements as float32 on the host.
-// On CUDA, GPU-resident arrays are copied to CPU before reading.
+// On CUDA/Metal, GPU-resident arrays are copied to CPU before reading.
 func HostFloat32Slice(a *Array) []float32 {
 	if a == nil || !a.Valid() {
 		return nil
@@ -1964,7 +1994,20 @@ func HostFloat32Slice(a *Array) []float32 {
 	if data := cpuArrayDataFloat32(a); len(data) > 0 {
 		return data
 	}
-	return GPUToHostFloat32(a)
+	data := GPUToHostFloat32(a)
+	if len(data) > 0 {
+		return data
+	}
+	// Float16 VAE outputs: AsType then copy (Metal decode often ends in f16).
+	if a.Dtype() == DtypeFloat16 {
+		f32 := AsType(a, DtypeFloat32)
+		Keep(f32)
+		EvalMaterialize(f32)
+		data = GPUToHostFloat32(f32)
+		f32.Free()
+		return data
+	}
+	return nil
 }
 
 // RawFloat32Slice reads a materialized GPU array as float32 without layout transforms.
@@ -2280,7 +2323,7 @@ func ScaledDotProductAttention(q, k, v *Array, scale float32, causalMask bool) *
 	}
 	cMaskMode := C.CString(maskMode)
 	defer C.free(unsafe.Pointer(cMaskMode))
-	C.mlx_fast_scaled_dot_product_attention(&res, q.c, k.c, v.c, C.float(scale), cMaskMode, C.mlx_array{}, C.mlx_array{}, C.default_stream())
+	C.mlx_fast_scaled_dot_product_attention(&res, q.c, k.c, v.c, C.float(scale), cMaskMode, C.mlx_array{}, C.mlx_array{}, C.bool(false), C.default_stream())
 	return newArray(res)
 }
 
@@ -2299,7 +2342,7 @@ func ScaledDotProductAttentionWithSinks(q, k, v *Array, scale float32, maskMode 
 	if sinks != nil {
 		sinksH = sinks.c
 	}
-	C.mlx_fast_scaled_dot_product_attention(&res, q.c, k.c, v.c, C.float(scale), cMaskMode, maskH, sinksH, C.default_stream())
+	C.mlx_fast_scaled_dot_product_attention(&res, q.c, k.c, v.c, C.float(scale), cMaskMode, maskH, sinksH, C.bool(false), C.default_stream())
 	return newArray(res)
 }
 
@@ -2967,6 +3010,30 @@ func SetMemoryLimit(limit uint64) uint64 {
 	var prev C.size_t
 	C.mlx_set_memory_limit(&prev, C.size_t(limit))
 	return uint64(prev)
+}
+
+// ApplyImagegenMemoryLimit sets MLX allocator caps for imagegen runners.
+//
+// WHY: On ~16GB CUDA cards we clamp to 12GiB so denoise+VAE don't hard-OOM the
+// driver. The same clamp on Apple Metal UMA (64–128GB) aborts mid-materialize of
+// Qwen3 text-encoder weights and shows up as empty mlx_stream / fake "GPU OOM".
+// Darwin keeps MLX's default Metal working-set limit unless overridden.
+//
+// Override: ZEROLLAMA_IMAGEGEN_MEMORY_LIMIT (bytes). "0" skips any clamp.
+func ApplyImagegenMemoryLimit() {
+	if v := strings.TrimSpace(os.Getenv("ZEROLLAMA_IMAGEGEN_MEMORY_LIMIT")); v != "" {
+		if v == "0" {
+			return
+		}
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err == nil && n > 0 {
+			SetMemoryLimit(n)
+		}
+		return
+	}
+	if runtime.GOOS == "linux" {
+		SetMemoryLimit(12 * 1024 * 1024 * 1024)
+	}
 }
 
 // GetMemoryLimit returns the current memory limit in bytes

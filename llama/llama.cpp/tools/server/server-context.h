@@ -132,6 +132,8 @@ struct server_routes {
     server_http_context::handler_t get_slots;
     server_http_context::handler_t post_slots;
     server_http_context::handler_t post_kv_seq_copy;
+    server_http_context::handler_t post_kv_grow;
+    server_http_context::handler_t post_kv_shrink;
     server_http_context::handler_t post_cuda_graph_invalidate;
     server_http_context::handler_t get_props;
     server_http_context::handler_t post_props;
@@ -170,6 +172,8 @@ private:
     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
     std::unique_ptr<server_res_generator> handle_kv_seq_copy(const server_http_req & req);
+    std::unique_ptr<server_res_generator> handle_kv_grow(const server_http_req & req);
+    std::unique_ptr<server_res_generator> handle_kv_shrink(const server_http_req & req);
     std::unique_ptr<server_res_generator> handle_cuda_graph_invalidate(const server_http_req & req);
     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
     std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);

@@ -202,6 +202,7 @@ static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const 
     GGML_UNUSED(reg);
 }""",
         "metal.cpp proc address",
+        required=False,
     )
     if "ggml_backend_dev_buffer_from_iosurface" in metal_cpp.read_text():
         has_public = "GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_dev_buffer_from_iosurface(" in metal_cpp.read_text()
@@ -279,6 +280,170 @@ GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)""",
     )
 
     fix_metal_device_name_check(root / "ggml/src/ggml-metal/ggml-metal.cpp")
+    apply_rsets_pause_resume(root)
+
+
+def apply_rsets_pause_resume(root: pathlib.Path) -> None:
+    """P70 (lab, Jul 2026): pause/resume the residency-set keep-alive heartbeat.
+
+    Investigated as a candidate fix for an intermittent SIGSEGV in Metal resource-list code
+    during ANE dflash chain-17 lab runs (docs/ane-draft-inprocess.md "Known issues"). Did NOT
+    fix that crash on its own, but is a real, independently useful, ref-counted primitive — kept
+    so it survives a fresh llama.cpp checkout + re-patch.
+    """
+    device_m = root / "ggml/src/ggml-metal/ggml-metal-device.m"
+    patch_once(
+        device_m,
+        "    // background heartbeat thread to keep the residency sets alive\n"
+        "    atomic_bool d_stop;\n"
+        "    atomic_int  d_loop;\n\n"
+        "    dispatch_group_t d_group;\n};",
+        "    // background heartbeat thread to keep the residency sets alive\n"
+        "    atomic_bool d_stop;\n"
+        "    atomic_int  d_loop;\n\n"
+        "    // P70 (lab): let callers temporarily suppress requestResidency calls while they hold\n"
+        "    // a long host-side compute window on a buffer whose residency set is registered\n"
+        "    // here, without fully tearing down the set. Ref-counted so nested pause/resume from\n"
+        "    // multiple call sites (or accidental double-pause) cannot leave the heartbeat stuck off.\n"
+        "    atomic_int  d_paused;\n\n"
+        "    dispatch_group_t d_group;\n};",
+        "device.m rsets d_paused field",
+    )
+    patch_once(
+        device_m,
+        "    atomic_store_explicit(&res->d_stop, false, memory_order_relaxed);\n"
+        "    atomic_store_explicit(&res->d_loop, res->loops_per_s*res->keep_alive_s, memory_order_relaxed);",
+        "    atomic_store_explicit(&res->d_stop, false, memory_order_relaxed);\n"
+        "    atomic_store_explicit(&res->d_loop, res->loops_per_s*res->keep_alive_s, memory_order_relaxed);\n"
+        "    atomic_store_explicit(&res->d_paused, 0, memory_order_relaxed);",
+        "device.m rsets init d_paused",
+    )
+    patch_once(
+        device_m,
+        "              while (!atomic_load_explicit(&res->d_stop, memory_order_relaxed)) {\n"
+        "                  if (atomic_load_explicit(&res->d_loop, memory_order_relaxed) > 0) {\n"
+        "                      [res->lock lock];",
+        "              while (!atomic_load_explicit(&res->d_stop, memory_order_relaxed)) {\n"
+        "                  if (atomic_load_explicit(&res->d_paused, memory_order_relaxed) <= 0 &&\n"
+        "                      atomic_load_explicit(&res->d_loop, memory_order_relaxed) > 0) {\n"
+        "                      [res->lock lock];",
+        "device.m rsets heartbeat pause check",
+    )
+    patch_once(
+        device_m,
+        "void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev) {\n"
+        "    if (dev->rsets == NULL) {\n"
+        "        return;\n"
+        "    }\n\n"
+        "    atomic_store_explicit(&dev->rsets->d_loop, dev->rsets->loops_per_s*dev->rsets->keep_alive_s, memory_order_relaxed);\n"
+        "}",
+        "void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev) {\n"
+        "    if (dev->rsets == NULL) {\n"
+        "        return;\n"
+        "    }\n\n"
+        "    atomic_store_explicit(&dev->rsets->d_loop, dev->rsets->loops_per_s*dev->rsets->keep_alive_s, memory_order_relaxed);\n"
+        "}\n\n"
+        "// P70 (lab): pause/resume the background requestResidency heartbeat. Ref-counted: the\n"
+        "// heartbeat stays paused while the count is > 0. Callers must pair every pause with a\n"
+        "// resume (e.g. via a scope guard) even on early-return/error paths. This does not touch\n"
+        "// [lock]/[data] membership — it only skips the periodic requestResidency calls, so\n"
+        "// add/rm from other threads are unaffected and still fully synchronized by\n"
+        "// dev->rsets->lock as before.\n"
+        "void ggml_metal_device_rsets_pause(ggml_metal_device_t dev) {\n"
+        "    if (dev->rsets == NULL) {\n"
+        "        return;\n"
+        "    }\n\n"
+        "    atomic_fetch_add_explicit(&dev->rsets->d_paused, 1, memory_order_relaxed);\n"
+        "}\n\n"
+        "void ggml_metal_device_rsets_resume(ggml_metal_device_t dev) {\n"
+        "    if (dev->rsets == NULL) {\n"
+        "        return;\n"
+        "    }\n\n"
+        "    const int prev = atomic_fetch_sub_explicit(&dev->rsets->d_paused, 1, memory_order_relaxed);\n"
+        "    if (prev <= 0) {\n"
+        "        // guard against unbalanced resume (should not happen if callers pair pause/resume)\n"
+        "        atomic_store_explicit(&dev->rsets->d_paused, 0, memory_order_relaxed);\n"
+        "    }\n"
+        "}",
+        "device.m rsets_pause/resume impl",
+    )
+
+    device_h = root / "ggml/src/ggml-metal/ggml-metal-device.h"
+    patch_once(
+        device_h,
+        "void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev);",
+        "void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev);\n\n"
+        "// P70 (lab): temporarily suppress the background requestResidency heartbeat. Ref-counted;\n"
+        "// every ggml_metal_device_rsets_pause() must be paired with exactly one\n"
+        "// ggml_metal_device_rsets_resume(), including on error/early-return paths.\n"
+        "void ggml_metal_device_rsets_pause (ggml_metal_device_t dev);\n"
+        "void ggml_metal_device_rsets_resume(ggml_metal_device_t dev);",
+        "device.h rsets_pause/resume declare",
+    )
+
+    metal_h = root / "ggml/include/ggml-metal.h"
+    metal_h_text = metal_h.read_text()
+    rsets_decl_marker = "ggml_backend_metal_dev_rsets_pause"
+    if rsets_decl_marker in metal_h_text:
+        print("  skip metal.h rsets_pause/resume declare (already applied)")
+    elif "#ifdef __cplusplus\n}\n#endif" not in metal_h_text:
+        raise SystemExit(f"anchor missing for metal.h rsets_pause/resume declare in {metal_h}")
+    else:
+        # Append a standalone extern "C" block after the existing one, rather than editing
+        # inside it — keeps the original IOSurface patch's own idempotency check intact.
+        addition = (
+            "\n#ifdef __cplusplus\n"
+            "extern \"C\" {\n"
+            "#endif\n\n"
+            "// P70 (lab): pause/resume the background residency-set keep-alive heartbeat for this\n"
+            "// Metal device. Callers holding a long host-side compute window (no GPU submissions on\n"
+            "// this device) can pause the heartbeat to avoid racing its requestResidency calls\n"
+            "// against the next command encoder/resource-list mutation, then must resume it\n"
+            "// afterwards (including on early-return / error paths) via a scope guard. Ref-counted;\n"
+            "// safe to call from any thread. No-op if device is not Metal or has no residency-set\n"
+            "// support.\n"
+            "GGML_BACKEND_API void ggml_backend_metal_dev_rsets_pause (ggml_backend_dev_t device);\n"
+            "GGML_BACKEND_API void ggml_backend_metal_dev_rsets_resume(ggml_backend_dev_t device);\n\n"
+            "#ifdef __cplusplus\n"
+            "}\n"
+            "#endif\n"
+        )
+        metal_h.write_text(metal_h_text + addition)
+        print("  patched metal.h rsets_pause/resume declare")
+
+    metal_cpp = root / "ggml/src/ggml-metal/ggml-metal.cpp"
+    patch_once(
+        metal_cpp,
+        "    return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);\n"
+        "}\n\nGGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)",
+        "    return ggml_backend_metal_device_buffer_from_iosurface(device, surface_id, size, max_tensor_size);\n"
+        "}\n\n"
+        "GGML_BACKEND_API void ggml_backend_metal_dev_rsets_pause(ggml_backend_dev_t device) {\n"
+        "    if (!device || !device->iface.get_name) {\n"
+        "        return;\n"
+        "    }\n"
+        "    const char * name = device->iface.get_name(device);\n"
+        "    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {\n"
+        "        return;\n"
+        "    }\n"
+        "    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) device->context;\n"
+        "    ggml_metal_device_rsets_pause(ctx_dev);\n"
+        "}\n\n"
+        "GGML_BACKEND_API void ggml_backend_metal_dev_rsets_resume(ggml_backend_dev_t device) {\n"
+        "    if (!device || !device->iface.get_name) {\n"
+        "        return;\n"
+        "    }\n"
+        "    const char * name = device->iface.get_name(device);\n"
+        "    if (!name || strncmp(name, GGML_METAL_NAME, strlen(GGML_METAL_NAME)) != 0) {\n"
+        "        return;\n"
+        "    }\n"
+        "    ggml_metal_device_t ctx_dev = (ggml_metal_device_t) device->context;\n"
+        "    ggml_metal_device_rsets_resume(ctx_dev);\n"
+        "}\n\n"
+        "GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)",
+        "metal.cpp rsets_pause/resume impl",
+        required=False,
+    )
 
 
 if __name__ == "__main__":

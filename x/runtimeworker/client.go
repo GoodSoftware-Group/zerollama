@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -63,6 +64,11 @@ func healthEmbedBoot(body []byte) string {
 
 // Start launches embedded Python runtime HTTP on 127.0.0.1:port.
 // Shares CPython with training when training already called Py_Initialize.
+//
+// WHY not block Serve for up to 120s: restart blackouts on CT 1564 / Darwin were
+// ~2 minutes while uvicorn warmed (or failed) before :8080 accepted. Phase 17
+// Go→llama-server does not need embed for text GGUF. We sync-wait a short ready
+// window, then finish the health poll in the background and publish BaseURL when up.
 func Start(ctx context.Context, repoRoot string) (*Client, error) {
 	_ = ctx
 	if !envconfig.RuntimeEmbedEnabled() {
@@ -90,7 +96,74 @@ func Start(ctx context.Context, repoRoot string) (*Client, error) {
 	}
 
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
-	deadline := time.Now().Add(120 * time.Second)
+	syncWait := embedReadySyncWait()
+	if waitEmbedHealthy(ctx, url, boot, syncWait) {
+		mu.Lock()
+		baseURL = url
+		mu.Unlock()
+		return &Client{}, nil
+	}
+
+	remain := embedReadyTotalWait() - syncWait
+	if remain < time.Second {
+		remain = time.Second
+	}
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), remain)
+		defer cancel()
+		if waitEmbedHealthy(bg, url, boot, remain) {
+			mu.Lock()
+			baseURL = url
+			mu.Unlock()
+			slog.Info("embedded runtime healthy (background)", "url", url)
+			return
+		}
+		slog.Warn("embedded runtime not healthy within deadline",
+			"url", url,
+			"port", port,
+			"hint", "port conflict or stale listener on embed port? stop other zerollama/runtime processes",
+		)
+	}()
+	slog.Info("embedded runtime starting in background",
+		"url", url,
+		"sync_wait", syncWait.String(),
+		"total_deadline", embedReadyTotalWait().String(),
+	)
+	return &Client{}, nil
+}
+
+func embedReadySyncWait() time.Duration {
+	// Brief block so BaseURL is often ready before the first runtime proxy hop.
+	const def = 3 * time.Second
+	raw := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_EMBED_SYNC_WAIT"))
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return def
+	}
+	return d
+}
+
+func embedReadyTotalWait() time.Duration {
+	const def = 120 * time.Second
+	raw := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_EMBED_READY_WAIT"))
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < time.Second {
+		return def
+	}
+	return d
+}
+
+func waitEmbedHealthy(ctx context.Context, url, boot string, budget time.Duration) bool {
+	if budget <= 0 {
+		return false
+	}
+	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/health", nil)
 		if err == nil {
@@ -99,25 +172,17 @@ func Start(ctx context.Context, repoRoot string) (*Client, error) {
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				if resp.StatusCode == 200 && healthEmbedBoot(body) == boot {
-					mu.Lock()
-					baseURL = url
-					mu.Unlock()
-					return &Client{}, nil
+					return true
 				}
-				_ = body
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return false
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	return nil, fmt.Errorf(
-		"embedded runtime not healthy at %s within 120s (port conflict or stale listener on :%d? stop other zerollama/runtime processes)",
-		url,
-		port,
-	)
+	return false
 }
 
 // BaseURL returns the loopback URL for the in-process runtime, or "" if not embedded.

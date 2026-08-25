@@ -119,17 +119,30 @@ func (s *Server) ProposeLoadHandler(c *gin.Context) {
 		notes = "one or more models need eviction or cannot load"
 	}
 
+	plan := api.ProposeLoadPlan{
+		FitsWithoutEviction: fits,
+		CoResident:          coResident,
+		SerializeRequired:   serialize,
+		LoadOrder:           loadOrder,
+		EvictCandidates:     evict,
+		Confidence:          conf,
+		Notes:               notes,
+	}
+	for _, r := range results {
+		if r.DeviceCount > plan.DeviceCount {
+			plan.DeviceCount = r.DeviceCount
+		}
+		if r.TensorParallel > plan.TensorParallel {
+			plan.TensorParallel = r.TensorParallel
+			plan.SplitMode = r.SplitMode
+			plan.TensorSplit = r.TensorSplit
+			plan.MainGPU = r.MainGPU
+		}
+	}
+
 	c.JSON(http.StatusOK, api.ProposeLoadResponse{
 		Models: results,
 		Warm:   warm,
-		Plan: api.ProposeLoadPlan{
-			FitsWithoutEviction: fits,
-			CoResident:          coResident,
-			SerializeRequired:   serialize,
-			LoadOrder:           loadOrder,
-			EvictCandidates:     evict,
-			Confidence:          conf,
-			Notes:               notes,
-		},
+		Plan:   plan,
 	})
 }

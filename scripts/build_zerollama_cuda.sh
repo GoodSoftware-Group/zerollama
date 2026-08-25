@@ -273,8 +273,14 @@ _should_build_llama_server() {
 }
 
 _build_llama_server() {
-	echo ">>> building llama-server (scripts/build_llama_server.sh)" >&2
-	"${ROOT}/scripts/build_llama_server.sh"
+	# Prefer scripts/build/ (current layout); fall back to legacy repo-root path.
+	local script="${ROOT}/scripts/build/build_llama_server.sh"
+	if [[ ! -x "${script}" ]]; then
+		script="${ROOT}/scripts/build_llama_server.sh"
+	fi
+	[[ -x "${script}" ]] || _die "missing build_llama_server.sh under scripts/build/ or scripts/"
+	echo ">>> building llama-server (${script})" >&2
+	"${script}"
 }
 
 _build_go() {

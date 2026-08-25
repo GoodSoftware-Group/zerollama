@@ -43,6 +43,9 @@ func NewDoctorCommand() *cobra.Command {
 	var fix bool
 	var modelsOnly bool
 	var auditStorage bool
+	var repairModels bool
+	var applyRepair bool
+	var allLocalRepair bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local zerollama / Apple Silicon runtime readiness",
@@ -50,11 +53,29 @@ func NewDoctorCommand() *cobra.Command {
 
 Also runs model-serving-minefield style checks:
   - model config traps (quant label, generation defaults, chat template, context)
-  - serve identity (trap 53) and thinking gate (trap 29)
+  - serve identity (trap 53), readiness vs liveness (trap 112), spec×slots on UMA (trap 98), thinking gate (trap 29)
   - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
 
+Model template repair (milkey/moophlo-class + ChatML hygiene):
+  Why: empty response / slash loops / missing stops are often Modelfile+parser faults, not bad weights.
+  zerollama doctor --repair-models [MODEL...]                 # dry-run (warm /api/ps if no MODEL)
+  zerollama doctor --repair-models --all-local                # scan every /api/tags model
+  zerollama doctor --repair-models --apply [MODEL...]         # recreate tag FROM itself
+  (Invasive TEMPLATE rewrites: Qwen3 family only; ChatML stop hygiene: any family.
+   See docs/doctor-model-repair.md)
+
 See docs/model-serving-minefield.md.`,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Args: cobra.ArbitraryArgs,
+		RunE: func(_ *cobra.Command, args []string) error {
+			if repairModels {
+				return runDoctorRepairModels(args, applyRepair, jsonOut, allLocalRepair)
+			}
+			if applyRepair {
+				return fmt.Errorf("--apply requires --repair-models")
+			}
+			if allLocalRepair {
+				return fmt.Errorf("--all-local requires --repair-models")
+			}
 			if auditStorage {
 				report, err := blobaudit.Audit()
 				if err != nil {
@@ -106,6 +127,9 @@ See docs/model-serving-minefield.md.`,
 	cmd.Flags().BoolVar(&fix, "fix", false, "Run safe auto-fixes (uv venv; on Darwin build Metal llama.cpp when missing)")
 	cmd.Flags().BoolVar(&modelsOnly, "models", false, "Check local model blob integrity (missing/orphaned registrations)")
 	cmd.Flags().BoolVar(&auditStorage, "audit", false, "Blob storage rollup (use with --models or alone; see also zerollama blobs audit)")
+	cmd.Flags().BoolVar(&repairModels, "repair-models", false, "Diagnose template hygiene + thinking-empty / slash-collapse (dry-run; pass MODEL, --all-local, or warm /api/ps)")
+	cmd.Flags().BoolVar(&applyRepair, "apply", false, "With --repair-models, recreate matching tags in place via /api/create (never alone)")
+	cmd.Flags().BoolVar(&allLocalRepair, "all-local", false, "With --repair-models, scan every model from /api/tags (may cold-load; prefer named tags)")
 	return cmd
 }
 
@@ -360,6 +384,8 @@ func runDoctorChecks(repo string) []doctorCheck {
 		})
 	}
 	out = append(out, doctorCheckServeIdentity())
+	out = append(out, doctorCheckModelReadiness())
+	out = append(out, doctorCheckSpeculativeUMA())
 	out = append(out, doctorCheckServingTraps()...)
 	return out
 }
@@ -436,7 +462,7 @@ func doctorCheckZerollamaBinary(repo string) doctorCheck {
 }
 
 func doctorCheckMacCGO(repo string) doctorCheck {
-	script := filepath.Join(repo, "scripts", "mac_cgo_env.sh")
+	script := filepath.Join(repo, "scripts", "runtime", "mac_cgo_env.sh")
 	if _, err := os.Stat(script); err != nil {
 		return doctorCheck{
 			Name:    "mac cgo build",
@@ -528,6 +554,13 @@ func doctorLibLlamaCandidates(repo string) []string {
 	candidates := []string{}
 	if p := strings.TrimSpace(os.Getenv("LLAMA_CPP_LIB")); p != "" {
 		candidates = append(candidates, p)
+	}
+	if unified := llm.UnifiedLlamaCppRoot(); unified != "" {
+		if runtime.GOOS == "darwin" {
+			candidates = append(candidates, filepath.Join(unified, "build", "bin", "libllama.dylib"))
+		} else {
+			candidates = append(candidates, filepath.Join(unified, "build", "bin", "libllama.so"))
+		}
 	}
 	root := strings.TrimSpace(os.Getenv("LLAMA_CPP_ROOT"))
 	if root == "" {
@@ -908,7 +941,7 @@ func doctorSidecarLogHint() string {
 func doctorCheckDarwinSidecarBootstrap() doctorCheck {
 	if u := strings.TrimSpace(os.Getenv("ZEROLLAMA_RUNTIME_URL")); u != "" {
 		base := strings.TrimSuffix(u, "/")
-		if doctorHTTPReachable(base+"/health") {
+		if doctorHTTPReachable(base + "/health") {
 			return doctorCheck{
 				Name:   "darwin sidecar bootstrap",
 				Status: "ok",

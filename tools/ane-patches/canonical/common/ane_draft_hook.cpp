@@ -1562,7 +1562,8 @@ static void ane_tile_target_hidden(const float * emb, int n_embd_src, int pack_i
     }
 }
 
-// Lab stub until llama exports per-layer target hiddens at dflash.target_layer_ids[].
+// Fallback when embeddings_layer_inp is unavailable: repeat pre-norm across layer slots.
+// Prefer ane_concat_layer_inp() — process() already extracts real per-layer features.
 static void ane_concat_layer_stub(const float * emb, int n_embd_src, int n_layers, int pack_ic, std::vector<float> & out) {
     out.assign((size_t) pack_ic, 0.f);
     if (!emb || pack_ic <= 0 || n_embd_src <= 0) {
@@ -1582,6 +1583,66 @@ static void ane_concat_layer_stub(const float * emb, int n_embd_src, int n_layer
             out[(size_t) L * (size_t) per + (size_t) i] = emb[i % n_embd_src];
         }
     }
+}
+
+// B8: same per-layer gather as speculative.cpp process() — fills cross.v_embd with real
+// target-layer inputs (not a repeated pre-norm stub). Draft noise decode reads cross.v_embd
+// into target_hidden → dflash_fc; stub features collapse acceptance on multi-layer drafts
+// (e.g. 27b: 5×5120). Returns false if any required layer input is missing.
+static bool ane_concat_layer_inp(
+        llama_context * ctx_tgt,
+        const llama_model * model_dft,
+        int32_t token_idx,
+        int pack_ic,
+        std::vector<float> & out) {
+    if (!ctx_tgt || !model_dft || pack_ic <= 0 || token_idx < 0) {
+        return false;
+    }
+
+    const int n_embd_tgt = llama_model_n_embd(llama_get_model(ctx_tgt));
+    if (n_embd_tgt <= 0) {
+        return false;
+    }
+
+    const int32_t * layer_ids = llama_model_target_layer_ids(model_dft);
+    uint32_t        n_layers  = llama_model_target_layer_ids_n(model_dft);
+    if (!layer_ids || n_layers == 0) {
+        const int n_hp = llama_model_dflash_n_target_layers(model_dft);
+        if (n_hp <= 0) {
+            return false;
+        }
+        n_layers = (uint32_t) n_hp;
+        layer_ids = nullptr;
+    }
+
+    const int expected = (int) n_layers * n_embd_tgt;
+    if (expected > pack_ic) {
+        n_layers = (uint32_t) (pack_ic / n_embd_tgt);
+        if (n_layers == 0) {
+            return false;
+        }
+    }
+
+    out.assign((size_t) pack_ic, 0.f);
+    for (uint32_t k = 0; k < n_layers; ++k) {
+        int32_t lid = -1;
+        if (layer_ids) {
+            lid = layer_ids[k];
+        } else {
+            lid = llama_model_dflash_target_layer_id(model_dft, (int32_t) k);
+        }
+        if (lid < 0) {
+            return false;
+        }
+        const float * layer = llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) lid);
+        if (!layer) {
+            return false;
+        }
+        const float * src = layer + (size_t) token_idx * (size_t) n_embd_tgt;
+        float * dst = out.data() + (size_t) k * (size_t) n_embd_tgt;
+        std::memcpy(dst, src, (size_t) n_embd_tgt * sizeof(float));
+    }
+    return true;
 }
 
 static bool model_arch_is(const llama_model * model, const char * arch) {
@@ -1706,6 +1767,12 @@ static bool ane_copy_dflash_export_row(
     if (!src_ctx || pack_ic <= 0) {
         return false;
     }
+    // Buffer may be pre-allocated when dflash_export is enabled even if the target
+    // arch graph never assigns t_dflash_target_features — that leaves zeros. Only
+    // trust export rows when the graph actually produced the concat tensor.
+    if (!llama_get_dflash_target_features(src_ctx)) {
+        return false;
+    }
     float * row = llama_get_dflash_target_features_ith(src_ctx, src_i);
     if (!row) {
         return false;
@@ -1826,23 +1893,50 @@ void common_ane_draft_sync_target_cross(
     const int cross_ic = pack_ic;
     const int n_embd_src = llama_model_n_embd(llama_get_model(ctx_tgt));
     const int tile = env_int_or("ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", 0);
+    const int force_stub = tile; // TARGET_FEAT_TILE>0 forces stub for A/B
     const int n_layers = ane_dflash_target_layer_count(model_dft);
     std::vector<float> feat;
+    static std::atomic<int> sync_path_logged { 0 };
+    int n_synced = 0;
+    int32_t pos_min = INT32_MAX;
+    int32_t pos_max = -1;
+    const char * path_note = "none";
 
+    // DFlash draft attention rebuilds K/V_ctx from the full cross.v_embd window every
+    // noise decode. embeddings_layer_inp is extracted for every ubatch token — not only
+    // logits rows. Skipping !logits (prefill usually logits-only on the last token) left
+    // rows 0..N-2 as zeros while n_enc grew to N, collapsing Metal draft acceptance.
     for (int32_t t = 0; t < batch.n_tokens; ++t) {
-        if (batch.logits && !batch.logits[t]) {
-            continue;
-        }
-        const float * emb = ane_ctx_hidden_row(ctx_tgt, t);
-        if (!emb) {
-            continue;
-        }
         const int32_t cross_pos = batch.pos ? (int32_t) batch.pos[t] : t;
         if (cross_pos < 0) {
             continue;
         }
         if (ane_copy_dflash_export_row(ctx_tgt, t, cross_ic, feat)) {
             llama_context_cross_upsert_row(ctx_dft, cross_pos, feat.data(), cross_ic);
+            path_note = "export";
+            ++n_synced;
+            pos_min = std::min(pos_min, cross_pos);
+            pos_max = std::max(pos_max, cross_pos);
+            continue;
+        }
+        // Prefer real per-layer inputs (same as process() KV inject). TARGET_FEAT_TILE>0
+        // forces the old stub for A/B. Without this, multi-layer drafts see identical
+        // tiled pre-norm in every layer slot and draft acceptance collapses.
+        if (force_stub <= 0 &&
+            ane_concat_layer_inp(ctx_tgt, model_dft, t, cross_ic, feat)) {
+            llama_context_cross_upsert_row(ctx_dft, cross_pos, feat.data(), cross_ic);
+            path_note = "layer_inp";
+            ++n_synced;
+            pos_min = std::min(pos_min, cross_pos);
+            pos_max = std::max(pos_max, cross_pos);
+            continue;
+        }
+        // Stub/pre-norm rows are output-indexed; only safe when this batch row has logits.
+        if (batch.logits && !batch.logits[t]) {
+            continue;
+        }
+        const float * emb = ane_ctx_hidden_row(ctx_tgt, t);
+        if (!emb) {
             continue;
         }
         if (n_layers > 1) {
@@ -1851,6 +1945,15 @@ void common_ane_draft_sync_target_cross(
             ane_tile_target_hidden(emb, n_embd_src, cross_ic, tile, feat);
         }
         llama_context_cross_upsert_row(ctx_dft, cross_pos, feat.data(), cross_ic);
+        path_note = "stub";
+        ++n_synced;
+        pos_min = std::min(pos_min, cross_pos);
+        pos_max = std::max(pos_max, cross_pos);
+    }
+    if (n_synced > 0 && sync_path_logged.fetch_add(1) < 3) {
+        LOG_INF("%s: B8 sync path=%s cross_ic=%d n_layers=%d n_synced=%d/%d pos=[%d,%d] n_enc=%d\n",
+                __func__, path_note, cross_ic, n_layers, n_synced, (int) batch.n_tokens,
+                (int) pos_min, (int) pos_max, (int) llama_context_cross_n_enc(ctx_dft));
     }
 }
 

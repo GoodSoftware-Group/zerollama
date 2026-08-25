@@ -124,7 +124,7 @@ index de23e5dfc..d47156b15 100644
  
  void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 149aeb08f..b56734997 100644
+index 247749469..d85841038 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -1165,7 +1165,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {

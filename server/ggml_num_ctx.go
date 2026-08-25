@@ -48,6 +48,10 @@ type ggmlLoadProfile struct {
 }
 
 func ggmlLoadProfileFor(model *Model, opts api.Options) ggmlLoadProfile {
+	return ggmlLoadProfileForGPUs(model, opts, nil)
+}
+
+func ggmlLoadProfileForGPUs(model *Model, opts api.Options, gpus []ml.DeviceInfo) ggmlLoadProfile {
 	batch := opts.NumBatch
 	if batch <= 0 {
 		batch = api.DefaultOptions().NumBatch
@@ -62,6 +66,22 @@ func ggmlLoadProfileFor(model *Model, opts api.Options) ggmlLoadProfile {
 	}
 
 	kv := opts.KvCacheTypeEffective()
+
+	// Align VRAM estimates with L1 launch knobs (q8_0 KV, calibrated batch/np).
+	if kvProf, batchProf, npProf, ok := llm.GpuProfileKVAndBatch(gpus, opts); ok {
+		if kvProf != "" {
+			kv = kvProf
+		}
+		if batchProf > 0 {
+			batch = batchProf
+			if opts.NumCtx > 0 {
+				batch = min(batch, opts.NumCtx)
+			}
+		}
+		if npProf > 0 && numParallel > npProf && !ggmlArchitectureForcesParallelOne(model) {
+			numParallel = npProf
+		}
+	}
 
 	return ggmlLoadProfile{
 		batchSize:   batch,
@@ -83,6 +103,18 @@ func effectiveGgmlFreeVRAM(gpus []ml.DeviceInfo) uint64 {
 			free = 0
 		}
 		total += free
+	}
+	if len(gpus) == 0 {
+		// Discover returned no devices while CUDA is live (bootstrap / edge).
+		// Do NOT fall back when gpus is non-empty but FreeMemory is 0 — that can
+		// mean loaded-runner accounting already drained the budget.
+		if smi := llm.NvidiaSMIFreeVRAMBytes(); smi > 0 {
+			overhead := envconfig.GpuOverhead()
+			if smi > overhead {
+				return smi - overhead
+			}
+			return smi
+		}
 	}
 	return total
 }
@@ -131,8 +163,12 @@ func estimateGgmlLoadVRAM(modelPath string, f *ggml.GGML, numCtx int, profile gg
 }
 
 // ggmlForceParallelOne families are not safe with llama-server -np > 1.
+// Why qwen35/qwen35moe are absent: llama.cpp #20232 (Mar 2026) fixed the hybrid
+// "Chunk not found" crash under parallel slots (#20222). Our pin (LLAMA_CPP_VERSION
+// f95de977) includes that fix; keeping them here forced np=1 forever (stale vs
+// ollama#17144). VL / lfm2 / nemotron_h* stay blocked pending their own verification.
 var ggmlForceParallelOne = []string{
-	"mllama", "qwen3vl", "qwen3vlmoe", "qwen35", "qwen35moe",
+	"mllama", "qwen3vl", "qwen3vlmoe",
 	"qwen3next", "lfm2", "lfm2moe", "nemotron_h", "nemotron_h_moe",
 }
 
@@ -211,7 +247,7 @@ func resolveGgmlNumParallel(m *Model, opts api.Options, gpus []ml.DeviceInfo, f 
 		numCtx = api.DefaultOptions().NumCtx
 	}
 	free := effectiveGgmlFreeVRAM(gpus)
-	profile := ggmlLoadProfileFor(m, opts)
+	profile := ggmlLoadProfileForGPUs(m, opts, gpus)
 	fitted := suggestMaxGgmlNumParallel(f, m.ModelPath, numCtx, free, profile, maxCap)
 	if fitted < 1 {
 		fitted = 1

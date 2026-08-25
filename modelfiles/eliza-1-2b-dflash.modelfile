@@ -1,4 +1,5 @@
 FROM eliza-1-2b:latest
-DRAFT /Users/user1/.cache/zerollama/eliza-1/bundles/2b/dflash/drafter-2b.gguf
+# HF path (Aug 2026): bundles/e2b/dflash/drafter-e2b.gguf (was bundles/2b/.../drafter-2b.gguf)
+DRAFT /root/.cache/zerollama/eliza-1/bundles/e2b/dflash/drafter-e2b.gguf
 PARAMETER spec_type dflash
 PARAMETER draft_num_predict 4

@@ -5,8 +5,8 @@
 
 // CGO has no CMake configure step; Makefile.sync / sync_vendor_llama.sh substitute
 // placeholders from Makefile.sync FETCH_HEAD (e.g. b9672 → BUILD_NUMBER 9672).
-int LLAMA_BUILD_NUMBER = 10199;
-char const * LLAMA_COMMIT = "5f55650a";
+int LLAMA_BUILD_NUMBER = 10488;
+char const * LLAMA_COMMIT = "b10488";
 char const * LLAMA_COMPILER = "";
 char const * LLAMA_BUILD_TARGET = "";
 
@@ -31,7 +31,7 @@ const char * llama_build_info(void) {
     return s.c_str();
 }
 
-void llama_print_build_info(void) {
-    fprintf(stderr, "%s: build = %d (%s)\n",      __func__, llama_build_number(), llama_commit());
-    fprintf(stderr, "%s: built with %s for %s\n", __func__, llama_compiler(), llama_build_target());
+void llama_print_build_info(const char * llama_version) {
+    fprintf(stderr, "version: %s (build %d, commit %s)\n", llama_version, llama_build_number(), llama_commit());
+    fprintf(stderr, "built with %s for %s\n", llama_compiler(), llama_build_target());
 }

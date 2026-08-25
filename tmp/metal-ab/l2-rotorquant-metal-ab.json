@@ -1,0 +1,48 @@
+{
+  "host": "Apple M4 Max",
+  "model": "Llama-3.2-3B Q4_K_M",
+  "method": "llama-bench Metal FA",
+  "trust": "v2-quiet-2026-07-25T22:04",
+  "legs": {
+    "stock_f16": {
+      "pp512": 2114.88,
+      "pp2048": 1996.83,
+      "tg128": 151.05
+    },
+    "stock_q8": {
+      "pp512": 1849.62,
+      "pp2048": 1848.93,
+      "tg128": 137.39
+    },
+    "tbq": {
+      "pp512": 1521.01,
+      "pp2048": 1354.77,
+      "tg128": 31.82
+    },
+    "turbo3": {
+      "pp512": 1189.4,
+      "pp2048": 942.01,
+      "tg128": 42.86
+    },
+    "planar3_f16": {
+      "pp512": 1087.07,
+      "pp2048": 865.42,
+      "tg128": 63.85
+    },
+    "planar3": {
+      "pp512": 379.63,
+      "pp2048": 124.82,
+      "tg128": 43.28
+    },
+    "iso3": {
+      "pp512": 353.25,
+      "pp2048": 100.21,
+      "tg128": 29.33
+    },
+    "qjl": {
+      "status": "abort",
+      "reason": "Metal SET_ROWS unsupported on cache_v"
+    }
+  },
+  "verdict": "no-merge planar/iso on Metal; stock f16 (q8 close); TBQ/turbo3 VRAM-only; QJL Metal-broken"
+}

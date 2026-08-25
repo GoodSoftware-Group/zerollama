@@ -248,13 +248,14 @@ func DraftANEMatmulChain14AttnWoDimsForChain(entry ANEDraftEntry, fcOut, matmulC
 
 // ANEDraftAttnHeadMeta is RoPE/head layout from draft sidecar GGUF (host cross-attn).
 type ANEDraftAttnHeadMeta struct {
-	NHead     int     `json:"n_head"`
-	NHeadKV   int     `json:"n_head_kv"`
-	HeadDim   int     `json:"head_dim"`
-	RopeNDims int     `json:"rope_n_dims"`
-	FreqBase  float64 `json:"freq_base"`
-	FreqScale float64 `json:"freq_scale"`
-	NeoX      bool    `json:"neox"`
+	NHead      int     `json:"n_head"`
+	NHeadKV    int     `json:"n_head_kv"`
+	HeadDim    int     `json:"head_dim"`
+	RopeNDims  int     `json:"rope_n_dims"`
+	FreqBase   float64 `json:"freq_base"`
+	FreqScale  float64 `json:"freq_scale"`
+	NormRmsEps float64 `json:"norm_rms_eps"`
+	NeoX       bool    `json:"neox"`
 }
 
 // DraftANEDraftAttnHeadKVForOC returns KV head count for a proxied attn oc slice (e.g. 512 = 4×128).
@@ -319,16 +320,24 @@ func DraftANEDraftAttnHeadMeta(entry ANEDraftEntry) (ANEDraftAttnHeadMeta, error
 	if nRot <= 0 {
 		nRot = headDim
 	}
+	normRmsEps := float64(kv.Float("attention.layer_norm_rms_epsilon"))
+	if normRmsEps <= 0 {
+		normRmsEps = float64(kv.Float(arch + ".attention.layer_norm_rms_epsilon"))
+	}
+	if normRmsEps <= 0 {
+		normRmsEps = 1e-6
+	}
 	neox := kv.Uint("rope.scaling.type") != 0 // fallback; qwen/dflash use NeoX ordering
 	_ = neox
 	return ANEDraftAttnHeadMeta{
-		NHead:     nHead,
-		NHeadKV:   nHeadKV,
-		HeadDim:   headDim,
-		RopeNDims: nRot,
-		FreqBase:  freqBase,
-		FreqScale: freqScale,
-		NeoX:      true,
+		NHead:      nHead,
+		NHeadKV:    nHeadKV,
+		HeadDim:    headDim,
+		RopeNDims:  nRot,
+		FreqBase:   freqBase,
+		FreqScale:  freqScale,
+		NormRmsEps: normRmsEps,
+		NeoX:       true,
 	}, nil
 }
 
@@ -394,6 +403,28 @@ func ResolveChain14AttnWoTensor(entry ANEDraftEntry) string {
 	return "blk.0.attn_output.weight"
 }
 
+// DraftANEDraftFFNUseFullDims enables full n_ff projections for chain >= 16 on native dflash sidecars.
+func DraftANEDraftFFNUseFullDims(matmulChain int, entry ANEDraftEntry) bool {
+	return matmulChain >= 16 && IsNativeDflashDraftSidecar(entry)
+}
+
+// DraftANEDraftQKVHostFP32 runs Q/K/V noise matmuls on host fp32 for chain >= 13 native dflash (P24).
+func DraftANEDraftQKVHostFP32(matmulChain int, entry ANEDraftEntry) bool {
+	return matmulChain >= 13 && IsNativeDflashDraftSidecar(entry)
+}
+
+// DraftANEDraftFFNOutDim is blk.0 ffn_gate output width (n_ff) from sidecar GGUF.
+func DraftANEDraftFFNOutDim(entry ANEDraftEntry) int {
+	if oc, ok := DraftANEDraftMatmulTensorOutDim(entry, ResolveChain15FFNGateTensor(entry)); ok && oc > 0 {
+		return oc
+	}
+	if entry.ProxyChannels > 0 {
+		return entry.ProxyChannels
+	}
+	oc, _ := DraftANEProxyDims(entry.EmbeddingLength)
+	return oc
+}
+
 // DraftANEMatmulChain15FFNGateDims returns ic×oc for wo out @ blk.0 ffn_gate (P14 dflash subgraph).
 func DraftANEMatmulChain15FFNGateDims(entry ANEDraftEntry, fcOut int) (ic, oc int) {
 	_, ocWo := DraftANEMatmulChain14AttnWoDims(entry, fcOut)
@@ -405,15 +436,18 @@ func DraftANEMatmulChain15FFNGateDims(entry ANEDraftEntry, fcOut int) (ic, oc in
 	return ic, oc
 }
 
-// DraftANEMatmulChain15FFNGateDimsForChain returns ffn_gate ic×oc; chain >= 13 uses full wo width.
+// DraftANEMatmulChain15FFNGateDimsForChain returns ffn_gate ic×oc; chain >= 16 uses full n_ff on native dflash.
 func DraftANEMatmulChain15FFNGateDimsForChain(entry ANEDraftEntry, fcOut, matmulChain int) (ic, oc int) {
-	_, ocWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
-	ic = ocWo
-	oc = entry.ProxyChannels
-	if oc <= 0 {
-		oc, _ = DraftANEProxyDims(entry.EmbeddingLength)
+	_, icWo := DraftANEMatmulChain14AttnWoDimsForChain(entry, fcOut, matmulChain)
+	ic = icWo
+	if ic <= 0 {
+		ic = fcOut
 	}
-	return ic, oc
+	if DraftANEDraftFFNUseFullDims(matmulChain, entry) {
+		oc = DraftANEDraftFFNOutDim(entry)
+		return ic, oc
+	}
+	return DraftANEMatmulChain15FFNGateDims(entry, fcOut)
 }
 
 // ResolveChain15FFNGateTensor picks blk.0 ffn_gate for P14 matmul on qwen35 sidecars.
@@ -432,7 +466,7 @@ func DraftANEMatmulChain16FFNUpDims(entry ANEDraftEntry, fcOut int) (ic, oc int)
 	return DraftANEMatmulChain15FFNGateDims(entry, fcOut)
 }
 
-// DraftANEMatmulChain16FFNUpDimsForChain returns ffn_up ic×oc; chain >= 13 uses full wo width.
+// DraftANEMatmulChain16FFNUpDimsForChain returns ffn_up ic×oc; chain >= 16 uses full n_ff on native dflash.
 func DraftANEMatmulChain16FFNUpDimsForChain(entry ANEDraftEntry, fcOut, matmulChain int) (ic, oc int) {
 	return DraftANEMatmulChain15FFNGateDimsForChain(entry, fcOut, matmulChain)
 }
@@ -447,7 +481,7 @@ func DraftANEMatmulChain16FFNDownDims(entry ANEDraftEntry, fcOut int) (ic, oc in
 	return icFF, oc
 }
 
-// DraftANEMatmulChain16FFNDownDimsForChain returns ffn_down ic×oc; chain >= 13 uses full wo width.
+// DraftANEMatmulChain16FFNDownDimsForChain returns ffn_down ic×oc; chain >= 16 uses full n_ff on native dflash.
 func DraftANEMatmulChain16FFNDownDimsForChain(entry ANEDraftEntry, fcOut, matmulChain int) (ic, oc int) {
 	_, icFF := DraftANEMatmulChain15FFNGateDimsForChain(entry, fcOut, matmulChain)
 	oc = fcOut

@@ -13,12 +13,12 @@ VENDOR="${ROOT}/vendor/llama-cpp-${FETCH_HEAD}"
 OUT="${ROOT}/llama/patches/0018-ollama-ane-draft-hook.patch"
 
 if [[ ! -d "${VENDOR}/.git" ]]; then
-  echo "regenerate_0018: missing ${VENDOR}; run ./scripts/vendor/rebase_vendor_unified.sh first" >&2
+  echo "regenerate_0018: missing ${VENDOR}; run ./scripts/rebase_vendor_unified.sh first" >&2
   exit 1
 fi
 
 echo "== regenerate_0018: stage ANE hook on ${VENDOR} =="
-"${ROOT}/scripts/vendor/stage_ane_hook_to_tree.sh" "${VENDOR}"
+"${ROOT}/scripts/stage_ane_hook_to_tree.sh" "${VENDOR}"
 
 if git -C "${VENDOR}" diff --quiet && git -C "${VENDOR}" diff --cached --quiet; then
   echo "regenerate_0018: no changes — patch already applied on vendor?" >&2
@@ -52,4 +52,4 @@ git -C "${VENDOR}" format-patch -1 HEAD --stdout > "${OUT}.new"
 mv -f "${OUT}.new" "${OUT}"
 
 echo "== regenerate_0018: wrote ${OUT} =="
-echo "Next: make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh"
+echo "Next: make -f Makefile.sync clean apply-patches && ./scripts/sync_vendor_llama.sh"

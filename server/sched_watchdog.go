@@ -32,6 +32,7 @@ func (s *Scheduler) processSchedWatchdog(ctx context.Context) {
 
 func (s *Scheduler) watchdogTick(ctx context.Context) {
 	s.watchdogReclaimMemory(ctx)
+	s.watchdogReclaimHostMemory(ctx)
 	s.watchdogBusyRunners()
 }
 
@@ -54,6 +55,29 @@ func (s *Scheduler) watchdogReclaimMemory(ctx context.Context) {
 		used := 1.0 - float64(gpu.FreeMemory)/float64(gpu.TotalMemory)
 		if used < threshold {
 			continue
+		}
+		if n := s.tryShrinkIdleKV(ctx, ""); n > 0 {
+			gpusAfter := s.getGpuFn(ctx, s.LoadedRunnersForDiscovery())
+			stillHot := false
+			for _, g := range gpusAfter {
+				if g.TotalMemory == 0 {
+					continue
+				}
+				u := 1.0 - float64(g.FreeMemory)/float64(g.TotalMemory)
+				if u >= threshold {
+					stillHot = true
+					break
+				}
+			}
+			if !stillHot {
+				slog.Info("watchdog reclaimed vram via idle kv shrink",
+					"shrunk", n,
+					"gpu", gpu.ID,
+					"vram_used_ratio_before", used,
+					"threshold", threshold,
+				)
+				return
+			}
 		}
 		victim := s.findLRUIdleRunner()
 		if victim == nil {
@@ -131,4 +155,30 @@ func (s *Scheduler) findLRUIdleRunner() *runnerRef {
 		}
 	}
 	return victim
+}
+
+func (s *Scheduler) watchdogReclaimHostMemory(ctx context.Context) {
+	if !envconfig.HostMemGuardEnabled() {
+		return
+	}
+	p := currentHostMemPressure()
+	if !p.Pressure {
+		return
+	}
+	if n := s.tryShrinkIdleKV(ctx, ""); n > 0 {
+		slog.Info("watchdog shrunk idle KV under host RAM/swap pressure", "shrunk", n)
+		if q := currentHostMemPressure(); !q.Pressure {
+			return
+		}
+	}
+	victim := s.findLRUIdleRunner()
+	if victim == nil {
+		slog.Warn("watchdog host RAM/swap pressure but no idle runner to unload", "reason", p.Reason)
+		return
+	}
+	slog.Warn("watchdog evicting idle runner for host RAM/swap",
+		"model", victim.modelPath,
+		"reason", p.Reason,
+	)
+	s.scheduleExpiredRunner(victim)
 }

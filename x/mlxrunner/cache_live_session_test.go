@@ -33,7 +33,7 @@ func TestTryExtendLiveSessionRewindsGenTokens(t *testing.T) {
 	}
 	feedAll(kvc.caches, turn1)
 	feedAll(kvc.caches, gen)
-	kvc.activePath = []*trieNode{kvc.root, {tokens: turn1, endOffset: len(turn1)}}
+	kvc.activePath = []*trieNode{kvc.root, {tokens: kvc.key(turn1), endOffset: len(turn1)}}
 	if got := kvc.minCacheOffset(); got != len(turn1)+len(gen) {
 		t.Fatalf("setup offset=%d want %d", got, len(turn1)+len(gen))
 	}
@@ -68,7 +68,7 @@ func TestTryExtendLiveSessionRejectsStubRewrite(t *testing.T) {
 	}
 	kvc.lastSessionInputs = append([]int32(nil), turn1...)
 	feedAll(kvc.caches, turn1)
-	kvc.activePath = []*trieNode{kvc.root, {tokens: turn1, endOffset: len(turn1)}}
+	kvc.activePath = []*trieNode{kvc.root, {tokens: kvc.key(turn1), endOffset: len(turn1)}}
 
 	turn2 := make([]int32, 600)
 	for i := range turn2 {

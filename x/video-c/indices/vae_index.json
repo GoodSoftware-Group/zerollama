@@ -1,0 +1,1346 @@
+{
+  "vae.conv1.weight": {
+    "dtype": "float32",
+    "shape": [
+      32,
+      32,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253752704,
+    "nbytes": 4096,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 30528
+  },
+  "vae.conv1.bias": {
+    "dtype": "float32",
+    "shape": [
+      32
+    ],
+    "zip_offset": 253722368,
+    "nbytes": 128,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 192
+  },
+  "vae.conv2.weight": {
+    "dtype": "float32",
+    "shape": [
+      16,
+      16,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253730176,
+    "nbytes": 1024,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 8000
+  },
+  "vae.conv2.bias": {
+    "dtype": "float32",
+    "shape": [
+      16
+    ],
+    "zip_offset": 253722176,
+    "nbytes": 64,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 0
+  },
+  "vae.decoder.conv1.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      16,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 253756800,
+    "nbytes": 663552,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 34624
+  },
+  "vae.decoder.conv1.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 126860736,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 21504
+  },
+  "vae.decoder.middle.0.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126862272,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 23040
+  },
+  "vae.decoder.middle.0.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 190021056,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 63181824
+  },
+  "vae.decoder.middle.0.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 253740416,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 18240
+  },
+  "vae.decoder.middle.0.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253741952,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 19776
+  },
+  "vae.decoder.middle.0.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 317126016,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 63403840
+  },
+  "vae.decoder.middle.0.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 55360,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 16896
+  },
+  "vae.decoder.middle.1.norm.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1
+    ],
+    "zip_offset": 56896,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 18432
+  },
+  "vae.decoder.middle.1.to_qkv.weight": {
+    "dtype": "float32",
+    "shape": [
+      1152,
+      384,
+      1,
+      1
+    ],
+    "zip_offset": 2091328,
+    "nbytes": 1769472,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 2052864
+  },
+  "vae.decoder.middle.1.to_qkv.bias": {
+    "dtype": "float32",
+    "shape": [
+      1152
+    ],
+    "zip_offset": 380865932,
+    "nbytes": 4608,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 38796
+  },
+  "vae.decoder.middle.1.proj.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      1,
+      1
+    ],
+    "zip_offset": 381497228,
+    "nbytes": 589824,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 670092
+  },
+  "vae.decoder.middle.1.proj.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 380845964,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 18828
+  },
+  "vae.decoder.middle.2.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380847500,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 20364
+  },
+  "vae.decoder.middle.2.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 459833228,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 79006092
+  },
+  "vae.decoder.middle.2.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 58432,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 19968
+  },
+  "vae.decoder.middle.2.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 59968,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 21504
+  },
+  "vae.decoder.middle.2.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 63138112,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 63099648
+  },
+  "vae.decoder.middle.2.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 126863808,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 24576
+  },
+  "vae.decoder.upsamples.0.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126865344,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 26112
+  },
+  "vae.decoder.upsamples.0.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 205946304,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 79107072
+  },
+  "vae.decoder.upsamples.0.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 253743488,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 21312
+  },
+  "vae.decoder.upsamples.0.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253745024,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 22848
+  },
+  "vae.decoder.upsamples.0.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 333051264,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 79329088
+  },
+  "vae.decoder.upsamples.0.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 380849036,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 21900
+  },
+  "vae.decoder.upsamples.1.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380850572,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 23436
+  },
+  "vae.decoder.upsamples.1.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 475758476,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 94931340
+  },
+  "vae.decoder.upsamples.1.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 61504,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 23040
+  },
+  "vae.decoder.upsamples.1.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 63040,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 24576
+  },
+  "vae.decoder.upsamples.1.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 79063360,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 79024896
+  },
+  "vae.decoder.upsamples.1.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 126866880,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 27648
+  },
+  "vae.decoder.upsamples.2.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126868416,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 29184
+  },
+  "vae.decoder.upsamples.2.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 221871552,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 95032320
+  },
+  "vae.decoder.upsamples.2.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 253746560,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 24384
+  },
+  "vae.decoder.upsamples.2.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253748096,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 25920
+  },
+  "vae.decoder.upsamples.2.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 348976512,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 95254336
+  },
+  "vae.decoder.upsamples.2.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 380852108,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 24972
+  },
+  "vae.decoder.upsamples.3.resample.1.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      384,
+      3,
+      3
+    ],
+    "zip_offset": 386842508,
+    "nbytes": 2654208,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 6015372
+  },
+  "vae.decoder.upsamples.3.resample.1.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 42304,
+    "nbytes": 768,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 3840
+  },
+  "vae.decoder.upsamples.3.time_conv.weight": {
+    "dtype": "float32",
+    "shape": [
+      768,
+      384,
+      3,
+      1,
+      1
+    ],
+    "zip_offset": 3860800,
+    "nbytes": 3538944,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 3822336
+  },
+  "vae.decoder.upsamples.3.time_conv.bias": {
+    "dtype": "float32",
+    "shape": [
+      768
+    ],
+    "zip_offset": 380859788,
+    "nbytes": 3072,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 32652
+  },
+  "vae.decoder.upsamples.4.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380830604,
+    "nbytes": 768,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 3468
+  },
+  "vae.decoder.upsamples.4.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 404094860,
+    "nbytes": 7962624,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 23267724
+  },
+  "vae.decoder.upsamples.4.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 64576,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 26112
+  },
+  "vae.decoder.upsamples.4.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 66112,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 27648
+  },
+  "vae.decoder.upsamples.4.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 94988608,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 94950144
+  },
+  "vae.decoder.upsamples.4.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 380853644,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 26508
+  },
+  "vae.decoder.upsamples.4.shortcut.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380870540,
+    "nbytes": 294912,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 43404
+  },
+  "vae.decoder.upsamples.4.shortcut.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 380855180,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 28044
+  },
+  "vae.decoder.upsamples.5.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380856716,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 29580
+  },
+  "vae.decoder.upsamples.5.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 491683724,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 110856588
+  },
+  "vae.decoder.upsamples.5.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 126869952,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 30720
+  },
+  "vae.decoder.upsamples.5.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126871488,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 32256
+  },
+  "vae.decoder.upsamples.5.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 237796800,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 110957568
+  },
+  "vae.decoder.upsamples.5.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 253749632,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 27456
+  },
+  "vae.decoder.upsamples.6.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253751168,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 28992
+  },
+  "vae.decoder.upsamples.6.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 364901760,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 111179584
+  },
+  "vae.decoder.upsamples.6.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 67648,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 29184
+  },
+  "vae.decoder.upsamples.6.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 69184,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 30720
+  },
+  "vae.decoder.upsamples.6.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      384,
+      384,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 110913856,
+    "nbytes": 15925248,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 110875392
+  },
+  "vae.decoder.upsamples.6.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      384
+    ],
+    "zip_offset": 380858252,
+    "nbytes": 1536,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 31116
+  },
+  "vae.decoder.upsamples.7.resample.1.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      384,
+      3,
+      3
+    ],
+    "zip_offset": 389496716,
+    "nbytes": 2654208,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 8669580
+  },
+  "vae.decoder.upsamples.7.resample.1.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 126845376,
+    "nbytes": 768,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 6144
+  },
+  "vae.decoder.upsamples.7.time_conv.weight": {
+    "dtype": "float32",
+    "shape": [
+      768,
+      384,
+      3,
+      1,
+      1
+    ],
+    "zip_offset": 137379264,
+    "nbytes": 3538944,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 10540032
+  },
+  "vae.decoder.upsamples.7.time_conv.bias": {
+    "dtype": "float32",
+    "shape": [
+      768
+    ],
+    "zip_offset": 380862860,
+    "nbytes": 3072,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 35724
+  },
+  "vae.decoder.upsamples.8.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380831372,
+    "nbytes": 768,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 4236
+  },
+  "vae.decoder.upsamples.8.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 396132236,
+    "nbytes": 3981312,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 15305100
+  },
+  "vae.decoder.upsamples.8.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 253727104,
+    "nbytes": 768,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 4928
+  },
+  "vae.decoder.upsamples.8.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253727872,
+    "nbytes": 768,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 5696
+  },
+  "vae.decoder.upsamples.8.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 261387648,
+    "nbytes": 3981312,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 7665472
+  },
+  "vae.decoder.upsamples.8.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 126846144,
+    "nbytes": 768,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 6912
+  },
+  "vae.decoder.upsamples.9.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126846912,
+    "nbytes": 768,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 7680
+  },
+  "vae.decoder.upsamples.9.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 140918208,
+    "nbytes": 3981312,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 14078976
+  },
+  "vae.decoder.upsamples.9.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 380832140,
+    "nbytes": 768,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 5004
+  },
+  "vae.decoder.upsamples.9.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380832908,
+    "nbytes": 768,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 5772
+  },
+  "vae.decoder.upsamples.9.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 400113548,
+    "nbytes": 3981312,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 19286412
+  },
+  "vae.decoder.upsamples.9.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 253728640,
+    "nbytes": 768,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 6464
+  },
+  "vae.decoder.upsamples.10.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253729408,
+    "nbytes": 768,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 7232
+  },
+  "vae.decoder.upsamples.10.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 265368960,
+    "nbytes": 3981312,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 11646784
+  },
+  "vae.decoder.upsamples.10.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 43072,
+    "nbytes": 768,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 4608
+  },
+  "vae.decoder.upsamples.10.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 43840,
+    "nbytes": 768,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 5376
+  },
+  "vae.decoder.upsamples.10.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      192,
+      192,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 11381056,
+    "nbytes": 3981312,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 11342592
+  },
+  "vae.decoder.upsamples.10.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      192
+    ],
+    "zip_offset": 126847680,
+    "nbytes": 768,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 8448
+  },
+  "vae.decoder.upsamples.11.resample.1.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      192,
+      3,
+      3
+    ],
+    "zip_offset": 127315392,
+    "nbytes": 663552,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 476160
+  },
+  "vae.decoder.upsamples.11.resample.1.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 380827532,
+    "nbytes": 384,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 396
+  },
+  "vae.decoder.upsamples.12.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380827916,
+    "nbytes": 384,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 780
+  },
+  "vae.decoder.upsamples.12.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 383082380,
+    "nbytes": 995328,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 2255244
+  },
+  "vae.decoder.upsamples.12.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 126840768,
+    "nbytes": 384,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 1536
+  },
+  "vae.decoder.upsamples.12.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126841152,
+    "nbytes": 384,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 1920
+  },
+  "vae.decoder.upsamples.12.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 128974272,
+    "nbytes": 995328,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 2135040
+  },
+  "vae.decoder.upsamples.12.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 253724032,
+    "nbytes": 384,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 1856
+  },
+  "vae.decoder.upsamples.13.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253724416,
+    "nbytes": 384,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 2240
+  },
+  "vae.decoder.upsamples.13.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 255415680,
+    "nbytes": 995328,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 1693504
+  },
+  "vae.decoder.upsamples.13.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 380828300,
+    "nbytes": 384,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 1164
+  },
+  "vae.decoder.upsamples.13.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 380828684,
+    "nbytes": 384,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 1548
+  },
+  "vae.decoder.upsamples.13.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 384077708,
+    "nbytes": 995328,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 3250572
+  },
+  "vae.decoder.upsamples.13.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 126841536,
+    "nbytes": 384,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 2304
+  },
+  "vae.decoder.upsamples.14.residual.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 126841920,
+    "nbytes": 384,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 2688
+  },
+  "vae.decoder.upsamples.14.residual.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 129969600,
+    "nbytes": 995328,
+    "member": "wanx_vae/data/1",
+    "storage_byte_off": 3130368
+  },
+  "vae.decoder.upsamples.14.residual.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 253724800,
+    "nbytes": 384,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 2624
+  },
+  "vae.decoder.upsamples.14.residual.3.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 253725184,
+    "nbytes": 384,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 3008
+  },
+  "vae.decoder.upsamples.14.residual.6.weight": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 256411008,
+    "nbytes": 995328,
+    "member": "wanx_vae/data/2",
+    "storage_byte_off": 2688832
+  },
+  "vae.decoder.upsamples.14.residual.6.bias": {
+    "dtype": "float32",
+    "shape": [
+      96
+    ],
+    "zip_offset": 39232,
+    "nbytes": 384,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 768
+  },
+  "vae.decoder.head.0.gamma": {
+    "dtype": "float32",
+    "shape": [
+      96,
+      1,
+      1,
+      1
+    ],
+    "zip_offset": 39616,
+    "nbytes": 384,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 1152
+  },
+  "vae.decoder.head.2.weight": {
+    "dtype": "float32",
+    "shape": [
+      3,
+      96,
+      3,
+      3,
+      3
+    ],
+    "zip_offset": 106432,
+    "nbytes": 31104,
+    "member": "wanx_vae/data/0",
+    "storage_byte_off": 67968
+  },
+  "vae.decoder.head.2.bias": {
+    "dtype": "float32",
+    "shape": [
+      3
+    ],
+    "zip_offset": 380827136,
+    "nbytes": 12,
+    "member": "wanx_vae/data/3",
+    "storage_byte_off": 0
+  }
+}

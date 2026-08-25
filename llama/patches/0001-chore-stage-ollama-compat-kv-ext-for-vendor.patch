@@ -12,8 +12,8 @@ Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
  src/ollama-compat/llama-ollama-compat-util.h  |   1 +
  src/ollama-compat/llama-ollama-compat.cpp     |   1 +
  src/ollama-compat/llama-ollama-compat.h       |   1 +
- tools/mtmd/CMakeLists.txt                     |   2 +
- 9 files changed, 843 insertions(+), 14 deletions(-)
+ tools/mtmd/CMakeLists.txt                     |   4 +
+ 9 files changed, 845 insertions(+), 14 deletions(-)
  create mode 100644 include/llama-kv-ext.h
  create mode 100644 src/llama-memory-kv-ext.cpp
  create mode 120000 src/ollama-compat/llama-ollama-compat-util.cpp
@@ -273,10 +273,10 @@ index 000000000..32705a314
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 320784c3a..ebb3a1cd3 100644
+index 39ba3061f..6159ddd16 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -30,6 +30,7 @@ add_library(llama
+@@ -31,6 +31,7 @@ add_library(llama
              llama-memory-hybrid.cpp
              llama-memory-hybrid-iswa.cpp
              llama-memory-recurrent.cpp
@@ -284,7 +284,7 @@ index 320784c3a..ebb3a1cd3 100644
              llama-mmap.cpp
              llama-model-loader.cpp
              llama-model-saver.cpp
-@@ -39,6 +40,8 @@ add_library(llama
+@@ -40,6 +41,8 @@ add_library(llama
              llama-vocab.cpp
              unicode-data.cpp
              unicode.cpp
@@ -293,7 +293,7 @@ index 320784c3a..ebb3a1cd3 100644
              unicode.h
              ${LLAMA_MODELS_SOURCES}
              )
-@@ -50,6 +53,7 @@ set_target_properties(llama PROPERTIES
+@@ -56,6 +59,7 @@ target_compile_definitions(llama PRIVATE
  )
  
  target_include_directories(llama PRIVATE .)
@@ -301,7 +301,7 @@ index 320784c3a..ebb3a1cd3 100644
  target_include_directories(llama PUBLIC ../include)
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
  
-@@ -58,5 +62,8 @@ target_link_libraries(llama PUBLIC ggml)
+@@ -64,5 +68,8 @@ target_link_libraries(llama PUBLIC ggml)
  if (BUILD_SHARED_LIBS)
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
@@ -311,7 +311,7 @@ index 320784c3a..ebb3a1cd3 100644
 +# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
 +target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index d5a92f440..48d160481 100644
+index 6cb6dbd2f..17ab9e30f 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -93,12 +93,8 @@ public:
@@ -364,9 +364,9 @@ index d5a92f440..48d160481 100644
 +    void copy_from(const llama_kv_cache & other);
 +    bool check_and_clear_resized();
  
-     //
-     // graph_build API
-@@ -276,12 +281,7 @@ private:
+     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
+ 
+@@ -271,12 +276,7 @@ private:
      // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
      std::vector<uint32_t> v_heads;
  
@@ -380,7 +380,7 @@ index d5a92f440..48d160481 100644
  
      // maps from a sequence id to a stream id
      std::vector<uint32_t> seq_to_stream;
-@@ -291,6 +291,24 @@ private:
+@@ -286,6 +286,24 @@ private:
  
      std::vector<kv_layer> layers;
  
@@ -997,13 +997,15 @@ index 000000000..05760aa00
 +/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
 \ No newline at end of file
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index 15040e4af..4d4bd53a1 100644
+index aa97c768a..817e15d85 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
-@@ -74,6 +74,8 @@ target_link_libraries     (mtmd PRIVATE Threads::Threads)
+@@ -80,6 +80,10 @@ set_target_properties(mtmd PROPERTIES
+ target_link_libraries     (mtmd PUBLIC ggml llama)
+ target_link_libraries     (mtmd PRIVATE Threads::Threads vendor::hash vendor::miniaudio vendor::stb vendor::sheredom)
  target_include_directories(mtmd PUBLIC  .)
- target_include_directories(mtmd PRIVATE ../..)
- target_include_directories(mtmd PRIVATE ../../vendor)
++target_include_directories(mtmd PRIVATE ../..)
++target_include_directories(mtmd PRIVATE ../../vendor)
 +target_include_directories(mtmd PRIVATE ../../src/ollama-compat)
 +target_compile_definitions(mtmd PRIVATE OLLAMA_COMPAT_MTMD_BUILD)
  target_compile_features   (mtmd PRIVATE cxx_std_17)

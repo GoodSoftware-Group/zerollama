@@ -311,6 +311,45 @@ func MemoryReclaimThreshold() float64 {
 	return f
 }
 
+// HostMemGuardEnabled is on unless ZEROLLAMA_HOST_MEM_GUARD=0.
+// Why: a 24GiB LXC will OOM-kill the whole CT if we keep accepting work into swap.
+func HostMemGuardEnabled() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_HOST_MEM_GUARD")))
+	if s == "0" || s == "false" || s == "off" {
+		return false
+	}
+	return true
+}
+
+// HostMemPressureRatio is the cgroup anon/limit ratio that, with swap in use, 503s inference.
+func HostMemPressureRatio() float64 {
+	s := Var("ZEROLLAMA_HOST_MEM_PRESSURE")
+	if s == "" {
+		return 0.88
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 || f > 1 {
+		return 0.88
+	}
+	return f
+}
+
+func HostSwapPressureRatio() float64 {
+	s := Var("ZEROLLAMA_HOST_SWAP_PRESSURE")
+	if s == "" {
+		return 0.35
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 || f > 1 {
+		return 0.35
+	}
+	return f
+}
+
+func HostSwapPressureFloor() uint64 {
+	return 1 << 30 // 1 GiB
+}
+
 // RunnerBusyTimeout returns how long a runner may stay busy before the watchdog
 // forces an unload. Zero disables (default).
 func RunnerBusyTimeout() time.Duration {
@@ -330,6 +369,92 @@ func RunnerBusyTimeout() time.Duration {
 		return 0
 	}
 	return d
+}
+
+// LoadCooldownInitial is the first failed-load cooldown (LocalAI LA18).
+// Default 10s. Zero disables (`ZEROLLAMA_LOAD_COOLDOWN=0`).
+func LoadCooldownInitial() time.Duration {
+	s := Var("ZEROLLAMA_LOAD_COOLDOWN")
+	if s == "" {
+		return 10 * time.Second
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			if n <= 0 {
+				return 0
+			}
+			return time.Duration(n) * time.Second
+		}
+		slog.Warn("invalid ZEROLLAMA_LOAD_COOLDOWN, using 10s", "value", s)
+		return 10 * time.Second
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// LoadCooldownMax caps geometric backoff (default 5m).
+func LoadCooldownMax() time.Duration {
+	s := Var("ZEROLLAMA_LOAD_COOLDOWN_MAX")
+	if s == "" {
+		return 5 * time.Minute
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		return 5 * time.Minute
+	}
+	if d <= 0 {
+		return 5 * time.Minute
+	}
+	return d
+}
+
+// BackendParentWatch is Linux Pdeathsig on runner subprocesses (LA20). Default on.
+func BackendParentWatch() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_BACKEND_PARENT_WATCH")))
+	if s == "0" || s == "false" || s == "off" {
+		return false
+	}
+	return true
+}
+
+// RouterConfigPath is the YAML policy file for LA11. Empty path disables routing.
+// Default: $OLLAMA_MODELS/../router.yaml (typically ~/.ollama/router.yaml).
+func RouterConfigPath() string {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_ROUTER_CONFIG")); s != "" {
+		if s == "0" || strings.EqualFold(s, "off") {
+			return ""
+		}
+		return s
+	}
+	return filepath.Join(filepath.Dir(Models()), "router.yaml")
+}
+
+// RouterRewrite is in-band model rewrite for chat/generate when the name is a router.
+// Default on. ZEROLLAMA_ROUTER_REWRITE=0 keeps decide-only.
+func RouterRewrite() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_ROUTER_REWRITE")))
+	if s == "0" || s == "false" || s == "off" {
+		return false
+	}
+	return true
+}
+
+// AliasesConfigPath is the YAML map for LA17 live model aliases.
+// Default: $OLLAMA_MODELS/../aliases.yaml. Empty disables (`0`/`off`).
+func AliasesConfigPath() string {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_ALIASES_CONFIG")); s != "" {
+		if s == "0" || strings.EqualFold(s, "off") {
+			return ""
+		}
+		return s
+	}
+	return filepath.Join(filepath.Dir(Models()), "aliases.yaml")
 }
 
 // SchedWatchdogInterval is how often the scheduler memory/busy watchdog runs.
@@ -494,12 +619,24 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_EDGE":                           {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
 		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":         {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
 		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":       {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
+		"ZEROLLAMA_VRAM_BUDGET":                    {"ZEROLLAMA_VRAM_BUDGET", VRAMBudgetFromEnv().String(), "Cap allocatable VRAM (80% or 12GiB); unset=detected"},
+		"ZEROLLAMA_HOST_MEM_GUARD":                 {"ZEROLLAMA_HOST_MEM_GUARD", HostMemGuardEnabled(), "503 inference when cgroup RAM/swap is exhausted (0=off)"},
 		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":            {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
+		"ZEROLLAMA_LOAD_COOLDOWN":                  {"ZEROLLAMA_LOAD_COOLDOWN", LoadCooldownInitial(), "Failed-load cooldown initial delay (default 10s; 0=off)"},
+		"ZEROLLAMA_LOAD_COOLDOWN_MAX":              {"ZEROLLAMA_LOAD_COOLDOWN_MAX", LoadCooldownMax(), "Failed-load cooldown cap (default 5m)"},
+		"ZEROLLAMA_BACKEND_PARENT_WATCH":           {"ZEROLLAMA_BACKEND_PARENT_WATCH", BackendParentWatch(), "Linux: SIGKILL runner subprocesses if the parent dies (default on)"},
+		"ZEROLLAMA_ROUTER_CONFIG":                  {"ZEROLLAMA_ROUTER_CONFIG", RouterConfigPath(), "LA11 router YAML (default ~/.ollama/router.yaml; 0=off)"},
+		"ZEROLLAMA_ROUTER_REWRITE":                 {"ZEROLLAMA_ROUTER_REWRITE", RouterRewrite(), "Rewrite chat/generate model when the name is a router (default on)"},
+		"ZEROLLAMA_ALIASES_CONFIG":                 {"ZEROLLAMA_ALIASES_CONFIG", AliasesConfigPath(), "LA17 aliases YAML (default ~/.ollama/aliases.yaml; 0=off)"},
 		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":        {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
 		"ZEROLLAMA_ELIZA_NGRAM":                    {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
 		"ZEROLLAMA_SPEC_DM_ADAPTIVE":               {"ZEROLLAMA_SPEC_DM_ADAPTIVE", SpecDmAdaptive(), "Bee B1 adaptive DFlash draft-max: profit/1/on (default off)"},
 		"ZEROLLAMA_FLEET_PEERS":                    {"ZEROLLAMA_FLEET_PEERS", FleetPeers(), "Comma-separated zerollama base URLs for fleet management polling"},
 		"ZEROLLAMA_FLEET_LISTEN":                   {"ZEROLLAMA_FLEET_LISTEN", FleetListen(), "Fleet management HTTP listen address (default 0.0.0.0:11450)"},
+		"ZEROLLAMA_STORAGE_SERVERS":                {"ZEROLLAMA_STORAGE_SERVERS", StorageServers(), "Comma-separated remote model storage base URLs"},
+		"ZEROLLAMA_STORAGE_SECRET":                 {"ZEROLLAMA_STORAGE_SECRET", "(set/unset)", "HMAC shared secret for remote model storage"},
+		"ZEROLLAMA_STORAGE_LISTEN":                 {"ZEROLLAMA_STORAGE_LISTEN", StorageListen(), "zerollama storage serve listen address (default 0.0.0.0:18090)"},
+		"ZEROLLAMA_REMOTE_CACHE_MAX_BYTES":         {"ZEROLLAMA_REMOTE_CACHE_MAX_BYTES", RemoteCacheMaxBytes(), "Max bytes for local remote-blob cache (0=unlimited)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":            {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
 		"ZEROLLAMA_FLEET_ASSIGN_SECRET":            {"ZEROLLAMA_FLEET_ASSIGN_SECRET", "(set/unset)", "F5 HMAC secret for assignment tokens (empty disables)"},
 		"ZEROLLAMA_FLEET_ASSIGN_TTL":               {"ZEROLLAMA_FLEET_ASSIGN_TTL", Var("ZEROLLAMA_FLEET_ASSIGN_TTL"), "F5 assign token TTL (default 8s, clamp 2–30s)"},
@@ -523,6 +660,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE":      {"OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE", VideoMaxImagesPerMessage(), "Max images after video expansion per message (default 64)"},
 		"OLLAMA_VIDEO_FFMPEG_TIMEOUT":              {"OLLAMA_VIDEO_FFMPEG_TIMEOUT", VideoFFmpegTimeout(), "Max duration for ffmpeg sampling (default 5m)"},
 		"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP":         {"OLLAMA_VIDEO_ALLOW_INSECURE_HTTP", VideoAllowInsecureHTTP(), "Allow http:// for remote video_url fetches (default: require https)"},
+		"OLLAMA_MEDIA_ALLOWED_HOSTS":               {"OLLAMA_MEDIA_ALLOWED_HOSTS", strings.Join(MediaAllowedHosts(), ","), "Optional comma-separated hostname allowlist for remote video_url (empty=any public host)"},
 		"OLLAMA_VIDEO_FETCH_TIMEOUT":               {"OLLAMA_VIDEO_FETCH_TIMEOUT", VideoFetchTimeout(), "Max duration for remote video_url HTTP GET (default 10m)"},
 		"OLLAMA_MM_IO_WORKERS":                     {"OLLAMA_MM_IO_WORKERS", MMIOWorkers(), "Parallel ffmpeg workers for multi-clip video expand (SGLang mm_io_worker_num; default 4)"},
 		"OLLAMA_LIMIT_MM_DATA_PER_REQUEST":         {"OLLAMA_LIMIT_MM_DATA_PER_REQUEST", "", "JSON caps per latest user turn, e.g. {\"image\":4,\"video\":1,\"audio\":1} (SGLang limit_mm_data_per_request)"},
@@ -1086,6 +1224,50 @@ func FleetListen() string {
 	return "0.0.0.0:11450"
 }
 
+// StorageServers is a comma-separated list of remote storage base URLs.
+// Why multiple: fallback if one storage peer is down; same secret for all.
+func StorageServers() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_STORAGE_SERVERS"))
+}
+
+// StorageSecret is the shared HMAC secret for remote storage auth.
+// Why env or _FILE: secrets in env are convenient; file keeps them out of process listings.
+func StorageSecret() string {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_SECRET")); s != "" {
+		return s
+	}
+	if p := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_SECRET_FILE")); p != "" {
+		b, err := os.ReadFile(p)
+		if err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+// StorageListen is the storage serve listen address.
+// Why default :18090: lab port — never production inference :11434/:8081.
+func StorageListen() string {
+	if v := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_LISTEN")); v != "" {
+		return v
+	}
+	return "0.0.0.0:18090"
+}
+
+// RemoteCacheMaxBytes is the local remote-blob cache cap (0 = unlimited).
+// Why a cap: protect the inference boot disk when many models are pulled on miss.
+func RemoteCacheMaxBytes() int64 {
+	v := strings.TrimSpace(Var("ZEROLLAMA_REMOTE_CACHE_MAX_BYTES"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
 // FleetPollInterval is how often the fleet manager polls peer /api/status.
 func FleetPollInterval() time.Duration {
 	v := strings.TrimSpace(Var("ZEROLLAMA_FLEET_POLL_INTERVAL"))
@@ -1282,6 +1464,25 @@ func VideoFFmpegTimeout() time.Duration {
 func VideoAllowInsecureHTTP() bool {
 	s := strings.ToLower(strings.TrimSpace(Var("OLLAMA_VIDEO_ALLOW_INSECURE_HTTP")))
 	return s == "1" || s == "true" || s == "yes"
+}
+
+// MediaAllowedHosts is an optional comma-separated hostname allowlist for remote
+// video_url fetches (SGLang #34892). Empty = any public host (still SSRF-checked).
+// Matching is case-insensitive; "example.com" also allows "cdn.example.com".
+func MediaAllowedHosts() []string {
+	raw := strings.TrimSpace(Var("OLLAMA_MEDIA_ALLOWED_HOSTS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		h := strings.ToLower(strings.TrimSpace(p))
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // VideoFetchTimeout bounds the entire remote GET for video_url (connect + response headers + body read, default 10m).

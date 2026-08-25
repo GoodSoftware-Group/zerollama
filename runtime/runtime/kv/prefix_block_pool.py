@@ -60,12 +60,15 @@ class PrefixBlockMatch:
     verified: bool
     lmcache_hits: int = 0
     donor_slot: int | None = None
+    # True when secondary tier returned a prefix shorter than requested (vLLM #50321).
+    partial_tier_load: bool = False
 
 
 @dataclass(frozen=True)
 class _PrefixChainBlock:
     token_end: int
     holders: frozenset[int]
+    tier_lmcache: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,7 +175,13 @@ class PrefixBlockPool:
                 holders = _holder_slots(entry)
                 if not holders:
                     break
-                chain.append(_PrefixChainBlock(token_end=end, holders=holders))
+                chain.append(
+                    _PrefixChainBlock(
+                        token_end=end,
+                        holders=holders,
+                        tier_lmcache=(entry.tier == "lmcache"),
+                    )
+                )
         return chain, lmcache_hits
 
     def lookup_longest_prefix(
@@ -220,12 +229,19 @@ class PrefixBlockPool:
         verified = matched >= limit or (limit % bs == 0 and matched == limit)
         if limit > matched and limit - matched < bs:
             verified = matched > 0 and matched == (limit // bs) * bs
+        partial_tier = (
+            matched > 0
+            and matched < limit
+            and blocks < (limit // bs)
+            and (lmcache_hits > 0 or any(b.tier_lmcache for b in chain))
+        )
         return PrefixBlockMatch(
             matched_tokens=matched,
             matched_blocks=blocks,
             tail_hash=tail,
             verified=verified or matched == 0,
             lmcache_hits=lmcache_hits,
+            partial_tier_load=partial_tier,
         )
 
     def verify_target_slot_prefix(

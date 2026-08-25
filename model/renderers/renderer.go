@@ -8,9 +8,6 @@ import (
 
 type Renderer interface {
 	Render(messages []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error)
-	// LeadingBOS returns the textual BOS token Go renderers already embed in the
-	// prompt. llama-server with DisableJinja uses this to avoid prepending BOS
-	// twice (see CompletionRequest.LeadingBOS in server/routes.go).
 	LeadingBOS() string
 }
 
@@ -46,8 +43,6 @@ func RenderWithRenderer(name string, msgs []api.Message, tools []api.Tool, think
 	return renderer.Render(msgs, tools, think)
 }
 
-// LeadingBOSForRenderer returns the BOS text llama-server must not re-emit when
-// DisableJinja is set for renderer-backed models.
 func LeadingBOSForRenderer(name string) string {
 	renderer := rendererForName(name)
 	if renderer == nil {
@@ -100,6 +95,8 @@ func rendererForName(name string) Renderer {
 		return renderer
 	case "nemotron-3-nano":
 		return &Nemotron3NanoRenderer{}
+	case "nemotron-3.5-nano":
+		return &Nemotron3NanoRenderer{v35: true}
 	case "gemma4", "gemma4-small":
 		return &Gemma4Renderer{useImgTags: RenderImgTags}
 	case "gemma4-large":
@@ -114,8 +111,14 @@ func rendererForName(name string) Renderer {
 		return &LFM2Renderer{IsThinking: false, useImgTags: RenderImgTags}
 	case "lfm2-thinking":
 		return &LFM2Renderer{IsThinking: true, useImgTags: RenderImgTags}
+	case "laguna":
+		return &LagunaRenderer{}
+	case "poolside-v1":
+		return &LagunaV8Renderer{}
 	case "cohere":
 		return &CohereRenderer{}
+	case "glimmer":
+		return &GlimmerRenderer{useImgTags: RenderImgTags}
 	case "harmony":
 		return &HarmonyRenderer{}
 	default:

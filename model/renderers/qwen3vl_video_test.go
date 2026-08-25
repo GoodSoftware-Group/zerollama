@@ -90,3 +90,20 @@ func TestQwen3VLRenderer_skipsVisionWhenPaddedInputIDs(t *testing.T) {
 		t.Fatalf("image offset=%d want 0", next)
 	}
 }
+
+func TestQwen3VLRenderer_toolResultImages(t *testing.T) {
+	// SGLang #33898: tool messages must emit vision placeholders from renderContent.
+	r := &Qwen3VLRenderer{isThinking: false, useImgTags: true}
+	msgs := []api.Message{
+		{Role: "user", Content: "look"},
+		{Role: "assistant", Content: "", ToolCalls: []api.ToolCall{{Function: api.ToolCallFunction{Name: "see"}}}},
+		{Role: "tool", Content: "shot", Images: []api.ImageData{[]byte{1, 2, 3}}},
+	}
+	got, err := r.Render(msgs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "<tool_response>\n[img-0]shot\n</tool_response>") {
+		t.Fatalf("tool response missing vision placeholder: %q", got)
+	}
+}

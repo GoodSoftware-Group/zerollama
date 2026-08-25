@@ -155,6 +155,16 @@ def _apply_prefix_block_pool(
     bs = max(1, prefix_cache_block_size())
     expected_blocks = verify_pos // bs
     if expected_blocks > 0 and match.matched_blocks < expected_blocks:
+        # vLLM #50321: accept longest partial hit from LMCache secondary tier
+        # instead of all-or-nothing mismatch when tail blocks are absent remotely.
+        if match.matched_tokens > 0 and (
+            match.lmcache_hits > 0
+            or match.partial_tier_load
+        ):
+            partial_resume = match.matched_tokens
+            if resume is not None:
+                partial_resume = min(int(resume), partial_resume)
+            return allow, partial_resume, None
         return False, None, "prefix_block_hash_mismatch"
     return allow, resume, None
 
@@ -199,6 +209,7 @@ def prefix_block_pool_snapshot(
         "matched_blocks": match.matched_blocks,
         "expected_blocks": expected_blocks,
         "lmcache_hits": match.lmcache_hits,
+        "partial_tier_load": match.partial_tier_load,
         "verified": expected_blocks == 0 or match.matched_blocks >= expected_blocks,
     }
 

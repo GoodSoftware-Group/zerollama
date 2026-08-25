@@ -11,10 +11,10 @@ Subject: [PATCH] ggml-metal: add 64x8 mul_mm tile for q4_0 small batches
  3 files changed, 230 insertions(+), 6 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index 16e98eb51..ec02a2553 100644
+index 953c75755..831ad0fec 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -715,9 +715,15 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
+@@ -750,9 +750,15 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
  
      const bool has_tensor = ggml_metal_device_get_props(ggml_metal_library_get_device(lib))->has_tensor;
  
@@ -31,7 +31,7 @@ index 16e98eb51..ec02a2553 100644
  
      GGML_ASSERT(op->src[1]->ne[2] <= INT16_MAX && op->src[1]->ne[3] <= INT16_MAX);
      const int16_t ne12 = (int16_t) op->src[1]->ne[2];
-@@ -725,7 +731,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
+@@ -760,7 +766,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
      const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
      const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
  
@@ -40,7 +40,7 @@ index 16e98eb51..ec02a2553 100644
      snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d",
               base, bc_inp, bc_out, ne12, ne13, r2, r3);
  
-@@ -753,7 +759,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
+@@ -788,7 +794,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
          res.smem = smem_a;
      } else {
          res.nr0 = 64;
@@ -50,10 +50,10 @@ index 16e98eb51..ec02a2553 100644
          res.smem = bc_out ? 8192 : (4096 + 2048);
      }
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index e7e4568e2..7456e1048 100644
+index 1c6f48f62..1b30c05a0 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -2117,10 +2117,12 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2333,10 +2333,12 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
  
      // find the break-even point where the matrix-matrix kernel becomes more efficient compared
      // to the matrix-vector kernel
@@ -68,7 +68,7 @@ index e7e4568e2..7456e1048 100644
      if (op->src[1]->type == GGML_TYPE_F32 && (ne00%128 == 0) &&
          (
           (
-@@ -2130,7 +2132,6 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2346,7 +2348,6 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
             op->src[0]->type == GGML_TYPE_BF16 ||
             op->src[0]->type == GGML_TYPE_Q1_0 ||
             op->src[0]->type == GGML_TYPE_Q2_0 ||
@@ -76,7 +76,7 @@ index e7e4568e2..7456e1048 100644
             op->src[0]->type == GGML_TYPE_Q4_1 ||
             op->src[0]->type == GGML_TYPE_Q5_0 ||
             op->src[0]->type == GGML_TYPE_Q5_1 ||
-@@ -2139,6 +2140,11 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2355,6 +2356,11 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
             op->src[0]->type == GGML_TYPE_IQ4_NL ||
             false) && (ne11 >= 2 && ne11 <= 16)
           ) ||
@@ -89,10 +89,10 @@ index e7e4568e2..7456e1048 100644
            (
             op->src[0]->type == GGML_TYPE_Q4_K ||
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index f14ee0792..08301acf0 100644
+index 243c997fc..9bcb967e8 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -10364,6 +10364,212 @@ kernel void kernel_mul_mm(
+@@ -10592,6 +10592,212 @@ kernel void kernel_mul_mm(
      }
  }
  
@@ -305,7 +305,7 @@ index f14ee0792..08301acf0 100644
  #endif // GGML_METAL_HAS_TENSOR
  
  template<short ne20> // n_expert_used
-@@ -10751,6 +10957,12 @@ template [[host_name("kernel_mul_mm_bf16_f32")]]    kernel mul_mm_t kernel_mul_m
+@@ -10979,6 +11185,12 @@ template [[host_name("kernel_mul_mm_bf16_f32")]]    kernel mul_mm_t kernel_mul_m
  template [[host_name("kernel_mul_mm_q1_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q1_0,    8,     dequantize_q1_0,    float,  float4x4,  float, float2x4>;
  template [[host_name("kernel_mul_mm_q2_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q2_0,    4,     dequantize_q2_0,    float,  float4x4,  float, float2x4>;
  template [[host_name("kernel_mul_mm_q4_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_0,    2,     dequantize_q4_0,    float,  float4x4,  float, float2x4>;

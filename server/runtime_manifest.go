@@ -81,10 +81,13 @@ func v1NumPredictFromBody(body map[string]any) (int, bool) {
 // runtimeV1ProxyOptions builds options for Python /v1/chat/completions (manifest GGUF + client opts).
 // Why: Phase 13 resolve_num_ctx_for_request on the runtime reads options.gguf / options.num_ctx;
 // OpenAI bodies omit Ollama options unless the Go proxy injects them (same as /api/chat).
+// Flat SDK harness keys (qos_class, project_name, …) fold into options.zerollama via
+// proxyOptsFromV1Body so Python admission/scheduling sees the same QoS as the native path.
 func runtimeV1ProxyOptions(modelName string, body map[string]any) map[string]any {
 	clientOpts := map[string]any{}
-	if raw, ok := body["options"].(map[string]any); ok {
-		for k, v := range raw {
+	if folded := proxyOptsFromV1Body(body); len(folded) > 0 {
+		clientOpts = make(map[string]any, len(folded))
+		for k, v := range folded {
 			clientOpts[k] = v
 		}
 	}

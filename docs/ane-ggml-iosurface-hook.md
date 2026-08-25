@@ -99,8 +99,8 @@ Implementation: `ggml_metal_buffer_map_iosurface()` in `ggml-metal-device.m` —
 ## Build / sync
 
 ```bash
-./scripts/vendor/sync_ane_hook_to_llama_cpp.sh   # unified ../llama.cpp @ c84b3020
-./scripts/build/build_llama_server.sh           # copies libane_bridge.dylib
+./scripts/sync_ane_hook_to_llama_cpp.sh   # unified ../llama.cpp @ c84b3020
+./scripts/build_llama_server.sh           # copies libane_bridge.dylib
 # Why manual step sometimes needed after build:
 install_name_tool -change libane_bridge.dylib @loader_path/libane_bridge.dylib \
   ../llama.cpp/build/bin/libllama-common.0.0.1.dylib

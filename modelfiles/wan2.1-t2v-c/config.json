@@ -1,0 +1,24 @@
+{
+  "capabilities": ["video_gen"],
+  "modality_backends": { "video_generation": "wan" },
+  "video_generation": {
+    "runner": "video-cli",
+    "profile": "wan2.1-t2v-1.3b",
+    "vram_tier": "uma",
+    "size": "832x480",
+    "frames": 49,
+    "steps": 25,
+    "precision": "fp32",
+    "quant": "none",
+    "timeout_sec": 7200
+  },
+  "backend_paths": {
+    "video_cli": "x/video-c/video-cli",
+    "wan_repo": "~/.zerollama/third_party/wan/Wan2.1",
+    "wan_ckpt_dir": "~/.zerollama/third_party/wan/Wan2.1-T2V-1.3B",
+    "wan_c_vocab": "~/.zerollama/third_party/video-c/umt5.vocab"
+  },
+  "architecture": "arm64",
+  "os": "darwin",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

@@ -96,6 +96,27 @@ func TestEffectiveGgmlFreeVRAM(t *testing.T) {
 	}
 }
 
+func TestEffectiveGgmlFreeVRAM_EmptyUsesNvidiaSMI(t *testing.T) {
+	t.Setenv("OLLAMA_GPU_OVERHEAD", "0")
+	got := effectiveGgmlFreeVRAM(nil)
+	if got == 0 {
+		t.Skip("nvidia-smi free VRAM unavailable on this host")
+	}
+	// Sanity: should be at least a few hundred MiB on a working 5080/lab box.
+	if got < 100*format.MebiByte {
+		t.Fatalf("nvidia-smi fallback free=%d looks too small", got)
+	}
+}
+
+func TestEffectiveGgmlFreeVRAM_NonEmptyZeroDoesNotSMIOverride(t *testing.T) {
+	t.Setenv("OLLAMA_GPU_OVERHEAD", "0")
+	gpus := []ml.DeviceInfo{{FreeMemory: 0, TotalMemory: 16 << 30}}
+	got := effectiveGgmlFreeVRAM(gpus)
+	if got != 0 {
+		t.Fatalf("non-empty zero FreeMemory must not be replaced by nvidia-smi, got %d", got)
+	}
+}
+
 func TestApplyGgmlNumCtxResponseOnlyWhenClamped(t *testing.T) {
 	res := &api.GenerateResponse{}
 	applyGgmlNumCtxResponse(res, &api.GgmlNumCtx{SuggestedMaxNumCtx: 8192})
@@ -220,5 +241,48 @@ func TestResolveGgmlNumParallelAutoOff(t *testing.T) {
 	got := resolveGgmlNumParallel(m, api.Options{Runner: api.Runner{NumCtx: 4096}}, nil, &ggml.GGML{})
 	if got != 3 {
 		t.Fatalf("auto off want 3, got %d", got)
+	}
+}
+
+func TestGgmlArchitectureForcesParallelOne(t *testing.T) {
+	// Why: qwen35 was unblocked after llama.cpp #20232; VL/hybrid leftovers stay forced.
+	cases := []struct {
+		family string
+		want   bool
+	}{
+		{"qwen35", false},
+		{"qwen35moe", false},
+		{"llama", false},
+		{"mllama", true},
+		{"qwen3vl", true},
+		{"qwen3vlmoe", true},
+		{"qwen3next", true},
+		{"lfm2", true},
+		{"nemotron_h", true},
+	}
+	for _, tc := range cases {
+		m := &Model{Config: model.ConfigV2{ModelFamily: tc.family, ModelFamilies: []string{tc.family}}}
+		if got := ggmlArchitectureForcesParallelOne(m); got != tc.want {
+			t.Fatalf("family %q: ForcesParallelOne=%v, want %v", tc.family, got, tc.want)
+		}
+	}
+}
+
+func TestResolveGgmlNumParallelQwen35Unblocked(t *testing.T) {
+	t.Setenv("ZEROLLAMA_GGML_AUTO_PARALLEL", "0")
+	t.Setenv("OLLAMA_NUM_PARALLEL", "2")
+	m := &Model{
+		ShortName: "eliza-1",
+		ModelPath: "m.gguf",
+		Config: model.ConfigV2{
+			ModelFamily:   "qwen35",
+			ModelFamilies: []string{"qwen35"},
+			ModelFormat:   "gguf",
+			Capabilities:  []string{"completion"},
+		},
+	}
+	got := resolveGgmlNumParallel(m, api.Options{Runner: api.Runner{NumCtx: 4096}}, nil, &ggml.GGML{})
+	if got != 2 {
+		t.Fatalf("qwen35 should honor OLLAMA_NUM_PARALLEL=2 after #20232, got %d", got)
 	}
 }

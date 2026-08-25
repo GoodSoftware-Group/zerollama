@@ -44,6 +44,13 @@ type input struct {
 
 	// embed is an image embedding
 	embed []float32
+	// embedHash content-addresses the vision raster (GridTHW + bytes / precomputed).
+	// Prefix matching uses this so deferred ViT stubs can hit a prior turn's embeds.
+	embedHash uint64
+}
+
+func (in input) isEmbed() bool {
+	return len(in.embed) != 0 || in.embedHash != 0
 }
 
 type Sequence struct {
@@ -108,23 +115,26 @@ type Sequence struct {
 
 	promptTruncated      bool
 	originalPromptTokens int
+
+	deferredImages []deferredVisionImage
 }
 
 type NewSequenceParams struct {
-	numPredict     int
-	stop           []string
-	numKeep        int
-	samplingParams *llama.SamplingParams
-	embedding      bool
-	shift          bool
-	truncate       bool
-	logprobs       bool
-	topLogprobs    int
+	numPredict          int
+	stop                []string
+	numKeep             int
+	samplingParams      *llama.SamplingParams
+	embedding           bool
+	shift               bool
+	truncate            bool
+	logprobs            bool
+	topLogprobs         int
 	promptTokens        []int
 	paddedLayoutConsume string
 	promptCacheKey      string
 	sessionViTOverlay   bool
 	gemma4PaddedMedia   Gemma4PaddedMediaSchedule
+	deferVisionEncode   bool
 }
 
 var errorInputTooLong = errors.New("the input length exceeds the context length")
@@ -133,16 +143,18 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 	s.ready.Wait()
 
 	var inputs []input
+	var deferredImages []deferredVisionImage
 	var err error
 	switch {
 	case len(params.promptTokens) > 0 && supportsPaddedLayoutConsume(params.paddedLayoutConsume):
-		inputs, err = s.inputsFromPaddedLayoutConsume(
+		inputs, deferredImages, err = s.inputsFromPaddedLayoutConsume(
 			params.promptTokens,
 			images,
 			params.paddedLayoutConsume,
 			params.promptCacheKey,
 			params.sessionViTOverlay,
 			params.gemma4PaddedMedia,
+			params.deferVisionEncode,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process padded prompt tokens: %w", err)
@@ -154,7 +166,7 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 			"consume", params.paddedLayoutConsume,
 		)
 	default:
-		inputs, err = s.inputs(prompt, images, params.promptCacheKey, params.sessionViTOverlay)
+		inputs, deferredImages, err = s.inputs(prompt, images, params.promptCacheKey, params.sessionViTOverlay, params.deferVisionEncode)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process inputs: %w", err)
 		}
@@ -198,7 +210,7 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 			return nil, err
 		}
 		for _, input := range inputs {
-			if input.embed == nil {
+			if !input.isEmbed() {
 				sc.Accept(input.token, false)
 			}
 		}
@@ -206,21 +218,22 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 
 	return &Sequence{
 		inputs:               inputs,
+		deferredImages:       deferredImages,
 		numPromptInputs:      len(inputs),
 		numPredict:           params.numPredict,
 		pendingResponses:     make([]string, 0),
 		responses:            make(chan response, 100),
 		quit:                 make(chan bool, 1),
 		embedding:            make(chan []float32, 1),
-		samplingCtx:            sc,
-		embeddingOnly:          params.embedding,
-		stop:                   params.stop,
-		numKeep:                params.numKeep,
-		shift:                  params.shift,
-		logprobs:               params.logprobs,
-		topLogprobs:            params.topLogprobs,
-		promptTruncated:        promptTruncated,
-		originalPromptTokens:   originalPromptTokens,
+		samplingCtx:          sc,
+		embeddingOnly:        params.embedding,
+		stop:                 params.stop,
+		numKeep:              params.numKeep,
+		shift:                params.shift,
+		logprobs:             params.logprobs,
+		topLogprobs:          params.topLogprobs,
+		promptTruncated:      promptTruncated,
+		originalPromptTokens: originalPromptTokens,
 	}, nil
 }
 
@@ -256,37 +269,55 @@ func (s *Server) gemma4SlotToken(placeholder string) (int, error) {
 	return toks[len(toks)-1], nil
 }
 
+func (s *Server) encodeOneImage(img llm.ImageData, sessionKey string, sessionOverlay bool) ([]visionChunk, error) {
+	hash := s.imageContentHash(img)
+	if img.HasPrecomputedEmbedding() {
+		vc, err := s.image.GetPrecomputedChunks(img.PrecomputedFeature, sessionKey, sessionOverlay)
+		if err != nil {
+			return nil, fmt.Errorf("precomputed embedding for image %d: %w", img.ID, err)
+		}
+		if len(vc) == 0 {
+			return nil, fmt.Errorf("precomputed embedding for image %d has no rows", img.ID)
+		}
+		return stampVisionChunkHash(vc, hash), nil
+	}
+	if img.HasProcessorOutput() {
+		return nil, fmt.Errorf("processor_output is not supported on ggml llamarunner (mtmd requires PNG bytes); use ollama-engine for Qwen3-VL")
+	}
+	chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW, sessionOverlay)
+	if err != nil {
+		return nil, err
+	}
+	var vc []visionChunk
+	for _, c := range chunks {
+		if len(c.Embed) != 0 {
+			vc = append(vc, visionChunk{embed: c.Embed, hash: hash})
+		} else if len(c.Tokens) != 0 {
+			vc = append(vc, visionChunk{tokens: c.Tokens, hash: hash})
+		}
+	}
+	return vc, nil
+}
+
+func (s *Server) imageContentHash(img llm.ImageData) uint64 {
+	if img.HasPrecomputedEmbedding() {
+		return hashPrecomputedRows(img.PrecomputedFeature)
+	}
+	if s.image != nil {
+		return s.image.hashImage(img.Data, img.GridTHW)
+	}
+	return 0
+}
+
 // encodeImageChunks runs mtmd per raster and logs grid_thw hint vs embed-count stats.
 // WHY separate from inputs(): padded inject and [img-N] paths share encode + hint compare.
 func (s *Server) encodeImageChunks(images []llm.ImageData, sessionKey string, sessionOverlay bool) ([][]visionChunk, visionGridHintStats, error) {
 	var imageChunks [][]visionChunk
 	var stats visionGridHintStats
 	for _, img := range images {
-		if img.HasPrecomputedEmbedding() {
-			vc, err := s.image.GetPrecomputedChunks(img.PrecomputedFeature, sessionKey, sessionOverlay)
-			if err != nil {
-				return nil, stats, fmt.Errorf("precomputed embedding for image %d: %w", img.ID, err)
-			}
-			if len(vc) == 0 {
-				return nil, stats, fmt.Errorf("precomputed embedding for image %d has no rows", img.ID)
-			}
-			imageChunks = append(imageChunks, vc)
-			continue
-		}
-		if img.HasProcessorOutput() {
-			return nil, stats, fmt.Errorf("processor_output is not supported on ggml llamarunner (mtmd requires PNG bytes); use ollama-engine for Qwen3-VL")
-		}
-		chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW, sessionOverlay)
+		vc, err := s.encodeOneImage(img, sessionKey, sessionOverlay)
 		if err != nil {
 			return nil, stats, err
-		}
-		var vc []visionChunk
-		for _, c := range chunks {
-			if len(c.Embed) != 0 {
-				vc = append(vc, visionChunk{embed: c.Embed})
-			} else if len(c.Tokens) != 0 {
-				vc = append(vc, visionChunk{tokens: c.Tokens})
-			}
 		}
 		st := logVisionGridHint(img.ID, img.GridTHW, vc)
 		stats.Hinted += st.Hinted
@@ -301,8 +332,9 @@ func (s *Server) encodeImageChunks(images []llm.ImageData, sessionKey string, se
 // inputs processes the prompt and images into a list of inputs
 // by splitting the prompt on [img-<n>] tags, tokenizing text and
 // generating image embeddings for each image
-func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string, sessionOverlay bool) ([]input, error) {
+func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string, sessionOverlay bool, deferEncode bool) ([]input, []deferredVisionImage, error) {
 	var inputs []input
+	var deferred []deferredVisionImage
 	var parts []string
 	var matches [][]string
 
@@ -319,7 +351,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 		// text - tokenize
 		tokens, err := s.lc.Model().Tokenize(part, i == 0, true)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		for _, t := range tokens {
@@ -339,46 +371,32 @@ func (s *Server) inputs(prompt string, images []llm.ImageData, sessionKey string
 			}
 
 			if imageIndex < 0 {
-				return nil, fmt.Errorf("invalid image index: %d", n)
+				return nil, nil, fmt.Errorf("invalid image index: %d", n)
 			}
 
 			img := images[imageIndex]
-			switch {
-			case img.HasPrecomputedEmbedding():
-				vc, err := s.image.GetPrecomputedChunks(img.PrecomputedFeature, sessionKey, sessionOverlay)
-				if err != nil {
-					return nil, err
+			hash := s.imageContentHash(img)
+			if deferEncode {
+				if span := estimateVisionTokenSpan(img); span > 0 {
+					deferred = append(deferred, deferredVisionImage{hash: hash, img: img})
+					inputs = append(inputs, stubVisionInputs(span, hash)...)
+					continue
 				}
-				for _, c := range vc {
-					if len(c.embed) != 0 {
-						inputs = append(inputs, input{embed: c.embed})
-					} else {
-						for _, t := range c.tokens {
-							inputs = append(inputs, input{token: t})
-						}
-					}
-				}
-			case img.HasProcessorOutput():
-				return nil, fmt.Errorf("processor_output is not supported on ggml llamarunner (mtmd requires PNG bytes); use ollama-engine for Qwen3-VL")
-			default:
-				chunks, err := s.image.MultimodalTokenize(s.lc, img.Data, sessionKey, img.GridTHW, sessionOverlay)
-				if err != nil {
-					return nil, err
-				}
-				for _, c := range chunks {
-					if len(c.Embed) != 0 {
-						inputs = append(inputs, input{embed: c.Embed})
-					} else {
-						for _, t := range c.Tokens {
-							inputs = append(inputs, input{token: t})
-						}
-					}
-				}
+			}
+
+			vc, err := s.encodeOneImage(img, sessionKey, sessionOverlay)
+			if err != nil {
+				return nil, nil, err
+			}
+			st := logVisionGridHint(img.ID, img.GridTHW, vc)
+			logVisionGridHintSummary(st)
+			for _, c := range vc {
+				inputs = appendVisionChunk(inputs, c)
 			}
 		}
 	}
 
-	return inputs, nil
+	return inputs, deferred, nil
 }
 
 type Server struct {
@@ -580,7 +598,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 				}
 			}
 
-			embedding := input.embed != nil
+			embedding := input.isEmbed()
 
 			// If we don't currently have a batch, use one of the correct type and
 			// fill it up as much as possible across all sequences. If we encounter an
@@ -823,6 +841,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		paddedLayoutConsume: req.PaddedLayoutConsume,
 		promptCacheKey:      req.PromptCacheKey,
 		sessionViTOverlay:   req.SessionViTOverlay,
+		deferVisionEncode:   len(req.Images) > 0 && s.cache != nil && !req.CacheReset,
 		gemma4PaddedMedia: Gemma4PaddedMediaSchedule{
 			StillImageCount:  req.Gemma4PaddedMedia.StillImageCount,
 			VideoFrameCounts: req.Gemma4PaddedMedia.VideoFrameCounts,
@@ -858,6 +877,15 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				s.seqsSem.Release(1)
 				http.Error(w, fmt.Sprintf("Failed to load cache: %v", err), http.StatusInternalServerError)
 				return
+			}
+			if len(seq.deferredImages) > 0 {
+				seq.inputs, err = s.hydrateDeferredVision(seq, seq.inputs, len(seq.cache.Inputs), req.PromptCacheKey, req.SessionViTOverlay)
+				if err != nil {
+					s.mu.Unlock()
+					s.seqsSem.Release(1)
+					http.Error(w, fmt.Sprintf("Failed to hydrate deferred vision: %v", err), http.StatusInternalServerError)
+					return
+				}
 			}
 
 			s.seqs[i] = seq

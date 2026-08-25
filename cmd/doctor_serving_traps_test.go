@@ -53,6 +53,7 @@ func TestDoctorCheckServingTrapsNoAPI(t *testing.T) {
 
 func TestDoctorFetchLoadedModelsAndProbes(t *testing.T) {
 	var chatCalls int
+	var genCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/ps":
@@ -89,6 +90,13 @@ func TestDoctorFetchLoadedModelsAndProbes(t *testing.T) {
 				"message": msg,
 				"done":    true,
 			})
+		case "/api/generate":
+			genCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":    "thinker:latest",
+				"response": "ping",
+				"done":     true,
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -117,6 +125,9 @@ func TestDoctorFetchLoadedModelsAndProbes(t *testing.T) {
 	}
 	if chatCalls < 3 {
 		t.Fatalf("expected >=3 chat calls, got %d", chatCalls)
+	}
+	if genCalls < 2 {
+		t.Fatalf("expected >=2 generate calls (unload + probe), got %d", genCalls)
 	}
 }
 

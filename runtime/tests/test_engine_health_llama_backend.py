@@ -102,3 +102,29 @@ def test_health_embed_boot_when_env_set(
     cfg.llama_server_bin.chmod(0o755)
     body = InferenceEngine(cfg).health()
     assert body.get("embed_boot") == "test-boot-token"
+
+
+def test_health_embed_boot_from_c_environ_when_os_environ_stale(
+    cfg_root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Training Py_Initialize can freeze os.environ; Go setenv is only visible via libc."""
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_EMBED_BOOT", raising=False)
+    monkeypatch.delenv("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", raising=False)
+    monkeypatch.setattr(
+        "runtime.engine._c_environ_get",
+        lambda name: "c-boot-token" if name == "ZEROLLAMA_RUNTIME_EMBED_BOOT" else "",
+    )
+    cfg = RuntimeConfig(
+        host="127.0.0.1",
+        port=8081,
+        llama_cpp_root=cfg_root,
+        llama_server_bin=tmp_path / "llama-server",
+        llama_model=None,
+        num_blocks=8,
+        block_size=16,
+        device_count=1,
+    )
+    cfg.llama_server_bin.write_text("#!/bin/sh\ntrue\n")
+    cfg.llama_server_bin.chmod(0o755)
+    body = InferenceEngine(cfg).health()
+    assert body.get("embed_boot") == "c-boot-token"

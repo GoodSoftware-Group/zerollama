@@ -16,12 +16,15 @@ type trieKey int64
 // snapshot data per cache layer.
 type trieNode struct {
 	tokens    []trieKey // compressed edge — multiple tokens per node
-	endOffset int     // cumulative tokens from root to end of this node
+	endOffset int       // cumulative tokens from root to end of this node
 	parent    *trieNode
 	children  []*trieNode
 	lastUsed  time.Time        // for LRU eviction
 	snapshots []cache.Snapshot // per-layer paged-out snapshot data (nil if not paged out)
 	user      bool             // true = explicit restore point (resist auto-merge)
+	// promptCacheKey tags the leaf when a keyed session ended here — used with
+	// CacheKeyPinned so /api/cache/pin leases skip eviction of that branch.
+	promptCacheKey string
 }
 
 // startOffset returns the cumulative token offset at the start of this node's edge.

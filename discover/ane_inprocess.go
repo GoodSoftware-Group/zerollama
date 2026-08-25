@@ -48,7 +48,7 @@ func ProbeANEInprocessSmoke(ctx context.Context, preferred string, steps int, qu
 	}
 	bin := FindANEInprocessSmokeBin()
 	if bin == "" {
-		return ANEInprocessSmokeResult{}, fmt.Errorf("ane-inprocess-smoke not found — run ./scripts/ane/ane_probe_build.sh")
+		return ANEInprocessSmokeResult{}, fmt.Errorf("ane-inprocess-smoke not found — run ./scripts/ane_probe_build.sh")
 	}
 
 	ch, sp := 64, 16

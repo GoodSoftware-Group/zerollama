@@ -32,6 +32,13 @@ func (s *Server) ScoreHandler(c *gin.Context) {
 		return
 	}
 
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusNotFound, fmt.Sprintf("model '%s' not found", req.Model))

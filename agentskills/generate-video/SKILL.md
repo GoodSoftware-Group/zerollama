@@ -58,15 +58,23 @@ rather than assuming the request shape is wrong.
 
 | Endpoint | Method | Notes |
 |---|---|---|
-| `/v1/videos` | `POST` | Body: `{model, prompt, size?, seconds?, seed?, options?}`. Returns a job id immediately (may be `defer-*` if the fleet is busy with inference). |
+| `/v1/media/{session}/{label}` | `PUT` | Upload a keyframe (or future clip). Server content-indexes (SHA-256) for dedupe. |
+| `/v1/media/{session}` | `GET` | List labels in the session before create. |
+| `/v1/media/{session}/{label}` | `HEAD` | Cheap existence check. |
+| `/v1/videos` | `POST` | Body: `{model, prompt, size?, seed?, options?}`. Returns a job id immediately (may be `defer-*` if busy). |
 | `/v1/videos/:id` | `GET` | Poll job status/progress. |
-| `/v1/videos/:id/content` | `GET` | Download the finished `video/mp4`; **404/425 until `status` is `completed`.** |
+| `/v1/videos/:id/content` | `GET` | Download the finished `video/mp4` when `status` is `completed`. |
 
-`options` is backend-specific (e.g. `frames`, `steps` for Wan). `seconds` is
-accepted for OpenAI compatibility but actual frame count is driven by
-`options`.
+`options` for Wan: `frames`, `steps`, and for TI2V keyframes `media_session` + `keyframes` (label list).
+`seconds` is accepted for OpenAI compatibility but frame count is driven by `options.frames`.
+
+On missing/evicted media, POST returns **400** with `error.code=media_missing` and `error.missing_labels` — re-PUT those labels and retry.
+
+**Why `/v1/media`:** keep create JSON small; server CAS-dedupes; no client digests; soft TTL state is not model `blobs/`. Full WHYs: [`docs/media-uploads.md`](../../docs/media-uploads.md).
 
 ## How to Run
+
+### Text-only T2V
 
 ```bash
 # 1. Submit a job
@@ -87,10 +95,42 @@ watch -n 15 "curl -s http://localhost:11434/v1/videos/$ID"
 curl -s http://localhost:11434/v1/videos/$ID/content -o out.mp4
 ```
 
+### Keyframe inbetweens (TI2V)
+
+```bash
+SID=anim-$(uuidgen)
+curl -X PUT "http://localhost:11434/v1/media/${SID}/kf0" -H 'Content-Type: image/png' --data-binary @f0.png
+curl -X PUT "http://localhost:11434/v1/media/${SID}/kf1" -H 'Content-Type: image/png' --data-binary @f1.png
+curl -X PUT "http://localhost:11434/v1/media/${SID}/final" -H 'Content-Type: image/png' --data-binary @final.png
+curl -s "http://localhost:11434/v1/media/${SID}" | jq .
+
+JOB=$(curl -s -X POST http://localhost:11434/v1/videos \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"model\": \"wan2.2-ti2v-5b\",
+    \"prompt\": \"smooth natural motion\",
+    \"options\": {
+      \"media_session\": \"${SID}\",
+      \"keyframes\": [\"kf0\", \"kf1\", \"final\"],
+      \"frames\": 49
+    }
+  }")
+```
+
+Wan runs start-conditioned segments between consecutive starts, then **appends a short still of the final keyframe** so the output ends on that image. True end-frame diffusion control lands with a later FLF backend.
+
+**Why the still:** TI2V conditions on start frames only today; without the still the final label would be unused.
 ## Install (one-time, before first use)
 
 ```bash
 ./scripts/video/install_wan_video.sh --profile all   # or 1.3b | 2.2
+./scripts/video/register_wan_models.sh
+```
+
+For keyframes you need the **2.2** profile (`wan2.2-ti2v-5b`):
+
+```bash
+./scripts/video/install_wan_video.sh --profile 2.2
 ./scripts/video/register_wan_models.sh
 ```
 

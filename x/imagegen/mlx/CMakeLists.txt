@@ -91,6 +91,7 @@ FetchContent_Declare(
     mlx-c
     GIT_REPOSITORY "https://github.com/ml-explore/mlx-c.git"
     GIT_TAG ${MLX_C_GIT_TAG}
+    PATCH_COMMAND ${CMAKE_COMMAND} -E env GIT_TERMINAL_PROMPT=0 git apply --whitespace=nowarn ${CMAKE_SOURCE_DIR}/mlx/compat/0001-mlx-c-regen-0.32.1.patch
 )
 FetchContent_MakeAvailable(mlx-c)
 

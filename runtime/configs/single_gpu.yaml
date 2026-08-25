@@ -26,8 +26,10 @@ llama_parallel_slots: 1
 # Go daemon defaults (envconfig/hardware_lane.go) — only applied when OLLAMA_* unset.
 # serve.num_parallel is a CAP for ZEROLLAMA_GGML_AUTO_PARALLEL (default on): load picks
 # llama-server -np from free VRAM up to this ceiling. Go completion semaphore matches -np.
+# max_loaded_models: 2 — 16GB fits two mid-size GGUFs (e.g. eliza-1 9B+2B at 8k–16k).
+# A third LLM or 9B@64k+2B still evicts. Env OLLAMA_MAX_LOADED_MODELS overrides.
 serve:
-  max_loaded_models: 1
+  max_loaded_models: 2
   keep_alive: 5m
   num_parallel: 8
   # WHY stock: matches dual_4090 measured decode default; override with ZEROLLAMA_LLAMA_FORK=1.

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -67,5 +68,16 @@ func TestBenchPromptForEpoch(t *testing.T) {
 	}
 	if a == "" {
 		t.Fatal("expected non-empty prompt")
+	}
+}
+
+func TestBenchNoMetricsError(t *testing.T) {
+	err := benchNoMetricsError(false, 12, 8192)
+	if err == nil || !strings.Contains(err.Error(), "partial output") || !strings.Contains(err.Error(), "--num-ctx 2048") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err = benchNoMetricsError(true, 0, 8192)
+	if err == nil || !strings.Contains(err.Error(), "eval_count=0") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

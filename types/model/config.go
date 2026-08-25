@@ -24,19 +24,30 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`    // wan-cli; later diffusers | comfy-headless
-	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b
+	Runner       string `json:"runner,omitempty"`    // video-cli | wan-cli | ltx-wan2gp; later rife | diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled | h3-tiny-t2va | h3-768-t2va
 	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
 	Size         string `json:"size,omitempty"`      // 832x480
 	Frames       int    `json:"frames,omitempty"`
 	Steps        int    `json:"steps,omitempty"`
 	Precision    string `json:"precision,omitempty"` // bf16 | fp16 | fp8
-	Quant        string `json:"quant,omitempty"`     // none | gguf | fp8
+	Quant        string `json:"quant,omitempty"`     // none | gguf | fp8 | quanto
 	BatchSize    int    `json:"batch_size,omitempty"`
 	OffloadModel bool   `json:"offload_model,omitempty"`
 	T5CPU        bool   `json:"t5_cpu,omitempty"`
 	VAETiling    bool   `json:"vae_tiling,omitempty"`
 	TimeoutSec   int    `json:"timeout_sec,omitempty"`
+	// DitLayers is H3 DiT depth (1–50). Host f32 collapses after ~24; default 24.
+	DitLayers int `json:"dit_layers,omitempty"`
+}
+
+// MusicGenerationConfig holds MiniMax Music 3 lab defaults (mlx-audio / later music-cli).
+// Why on the manifest: duration/steps/timeout vary per tag (10s lab vs later 30s) without
+// forcing every host to set env; songs must not inherit Piper's sync TTS assumptions.
+type MusicGenerationConfig struct {
+	DurationSec float64 `json:"duration_sec,omitempty"`
+	Steps       int     `json:"steps,omitempty"`
+	TimeoutSec  int     `json:"timeout_sec,omitempty"`
 }
 
 // ImageGenerationConfig holds per-model defaults for subprocess image backends
@@ -83,26 +94,31 @@ type ConfigV2 struct {
 	// required by spec
 	Architecture string `json:"architecture"`
 	OS           string `json:"os"`
-	RootFS       RootFS `json:"rootfs"`
 
 	// ModalityBackends selects which subprocess or built-in driver handles each modality.
 	// Keys (see model.Modality* constants): "image", "speech" (TTS), "transcribe" (STT),
 	// "video_understanding" (VLM: "native" default, or "sglang" with OLLAMA_SGLANG_URL),
-	// "video_generation" (T2V: "wan" with scripts/video/wan_video_generate.py).
+	// "video_generation" (T2V: "wan" Python or video-cli; "h3" Darwin video-c; "ltx" Wan2GP).
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
 	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
 	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
 	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
 	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
+	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/video-c.md),
+	// "h3_ckpt_dir" (MiniMax-H3 tree for backend h3),
+	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX via Wan2GP — docs/ltx-t2v.md),
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
 	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
 	// "comfy_workflow_dir" (Comfy template directory; relative paths need OLLAMA_COMFYUI_WORKFLOWS_ROOT
 	// or an absolute/~/ path — see docs/comfyui-image-backend.md), "comfy_default_workflow" (name, not a path).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
 
-	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md).
+	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md, docs/ltx-t2v.md).
 	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
+
+	// MusicGeneration presets for modality_backends.speech=music3 (see docs/music-c.md).
+	MusicGeneration *MusicGenerationConfig `json:"music_generation,omitempty"`
 
 	// ImageGeneration presets for models with capability image and modality_backends.image=external-image
 	// or openvino-image (see docs/sd-vulkan-a380.md, docs/sd-openvino-a380.md).
@@ -124,10 +140,4 @@ type Draft struct {
 	Architecture string `json:"architecture,omitempty"`
 	TensorPrefix string `json:"tensor_prefix,omitempty"`
 	Config       string `json:"config,omitempty"`
-}
-
-// RootFS represents the root filesystem configuration for a model.
-type RootFS struct {
-	Type    string   `json:"type"`
-	DiffIDs []string `json:"diff_ids"`
 }

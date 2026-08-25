@@ -1,6 +1,6 @@
 package mlx
 
-//go:generate go run -tags mlxcodegen generator/main.go -output=. ./include/mlx/c/*.h
+//go:generate go run generator/main.go -output=. ./include/mlx/c/*.h
 
 // #cgo CXXFLAGS: -std=c++17
 // #cgo CPPFLAGS: -I${SRCDIR}/include
@@ -36,9 +36,8 @@ package mlx
 import "C"
 
 import (
+	"fmt"
 	"runtime"
-
-	"github.com/ollama/ollama/x/uma"
 )
 
 func init() {
@@ -55,11 +54,9 @@ func Version() string {
 	return C.GoString(C.mlx_string_data(str))
 }
 
-// mlxCheck locks the goroutine to its OS thread, clears the captured error
-// state, calls fn, and panics with the captured message if fn returns non-zero.
-// The thread lock ensures the thread-local error state is read from the same
-// thread that executed the call.
-func mlxCheck(fallback string, fn func() C.int) {
+// mlxCall locks the goroutine to its OS thread so the thread-local error state
+// is read from the same thread that executed fn.
+func mlxCall(fallback string, fn func() C.int) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -69,7 +66,16 @@ func mlxCheck(fallback string, fn func() C.int) {
 		if msg == "" {
 			msg = fallback
 		}
-		panic("mlx: " + msg)
+		return fmt.Errorf("mlx: %s", msg)
+	}
+	return nil
+}
+
+// mlxCheck panics with the captured MLX error. Most array operations cannot
+// recover from a failed graph construction or evaluation.
+func mlxCheck(fallback string, fn func() C.int) {
+	if err := mlxCall(fallback, fn); err != nil {
+		panic(err.Error())
 	}
 }
 
@@ -78,27 +84,21 @@ func doEval(outputs []*Array, async bool) {
 		return
 	}
 
-	// Gate mlx.Eval through machine-wide uma_daemon when -tags uma (default auto).
-	if err := uma.RunGPU(func() {
-		vector := C.mlx_vector_array_new()
-		defer C.mlx_vector_array_free(vector)
+	vector := C.mlx_vector_array_new()
+	defer C.mlx_vector_array_free(vector)
 
-		for _, output := range outputs {
-			if output != nil && output.Valid() {
-				C.mlx_vector_array_append_value(vector, output.ctx)
-			}
+	for _, output := range outputs {
+		if output != nil && output.Valid() {
+			C.mlx_vector_array_append_value(vector, output.ctx)
 		}
-
-		mlxCheck("eval failed", func() C.int {
-			if async {
-				return C.mlx_async_eval(vector)
-			}
-			return C.mlx_eval(vector)
-		})
-	}); err != nil {
-		// Match mlxCheck: Eval has no error return; surface admission failures.
-		panic(err.Error())
 	}
+
+	mlxCheck("eval failed", func() C.int {
+		if async {
+			return C.mlx_async_eval(vector)
+		}
+		return C.mlx_eval(vector)
+	})
 }
 
 func AsyncEval(outputs ...*Array) {
@@ -109,22 +109,23 @@ func Eval(outputs ...*Array) {
 	doEval(outputs, false)
 }
 
-// Synchronize waits for the default MLX stream to finish. When UMA admission
-// is active this runs under HOLD_GPU (nested in a coarse lease or one-shot)
-// so Metal drain does not race RELEASE.
+// Synchronize waits for the default stream to finish.
 func Synchronize() {
-	if err := uma.RunGPU(func() {
-		mlxCheck("synchronize failed", func() C.int {
-			return C.mlx_synchronize(DefaultStream().ctx)
-		})
-	}); err != nil {
-		panic(err.Error())
-	}
+	mlxCheck("synchronize failed", func() C.int {
+		return C.mlx_synchronize(DefaultStream().ctx)
+	})
 }
 
 // MetalIsAvailable returns true if a Metal GPU is available.
 func MetalIsAvailable() bool {
 	var available C._Bool
 	C.mlx_metal_is_available(&available)
+	return bool(available)
+}
+
+// CUDAIsAvailable returns true if a CUDA GPU is available.
+func CUDAIsAvailable() bool {
+	var available C._Bool
+	C.mlx_cuda_is_available(&available)
 	return bool(available)
 }

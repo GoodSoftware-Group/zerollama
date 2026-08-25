@@ -508,7 +508,11 @@ def prefix_cache_retention_interval() -> int | None:
             return max(0, int(raw))
         except ValueError:
             pass
-    return l3_settings().retention_interval
+    yaml_val = l3_settings().retention_interval
+    if yaml_val is not None:
+        return yaml_val
+    # vLLM #52216: unset → 0 (block-aligned SWA checkpoints only, not dense).
+    return 0
 
 
 def prefix_cache_trace_enabled() -> bool:

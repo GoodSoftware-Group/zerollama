@@ -22,7 +22,11 @@ llama/patches.pre-*/
 /lib/
 .venv-training/
 venv-training/
+.venv-music/
 integration/testdata/models/
+
+# T8 loss-curve fixture dump (regenerate via scripts/training/loss_curve_fixture.sh)
+tests/fixtures/.sft_loss_curves.json
 
 # Python bytecode
 __pycache__/
@@ -32,3 +36,35 @@ __pycache__/
 .build/
 runtime/runtime/kv/_kv_native*.so
 runtime/build/
+
+# h3-cuda research weights / generated fixtures (regenerate via scripts)
+research/h3-cuda/misc/fixtures/*.safetensors
+research/h3-cuda/bin/
+
+# Local tool caches / build trees (never commit)
+.gomodcache/
+.gotmp/
+.tmp-build/
+build-cuda13/
+/llama-server
+
+# Ad-hoc lab outputs at repo root
+/*.mp4
+/*.png
+.gpu_test_report.txt
+.panic_*.txt
+/run/
+
+# ANE lab compiled smoke/bench/daemon binaries (build via make -C tools/ane-*)
+tools/ane-draft/ane-draft-bench
+tools/ane-draft/libane_bridge.dylib
+tools/ane-ggml-map/*-smoke
+tools/ane-inprocess/*-smoke
+tools/ane-iosurface/*-smoke
+tools/ane-metal/*-smoke
+tools/ane-metal/ane-draft-daemon
+tools/ane-prefill/*-smoke
+tools/ane-prefill/*-bench
+tools/ane-prefill/libane_*.dylib
+tools/ane-probe/ane-probe
+tools/ane-probe/ane-matmul-bench

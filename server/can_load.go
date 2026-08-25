@@ -89,6 +89,12 @@ func (s *Server) evaluateCanLoad(ctx context.Context, req api.CanLoadRequest) ap
 	} else if runtimeHealthProbeRequired() && runtimeHealth.ok && uint(runtimeWaiting) >= runtimeMaxQ && runtimeMaxQ > 0 {
 		resp.Busy = true
 		resp.BusyReason = "runtime_max_queue"
+	} else if envconfig.HostMemGuardEnabled() {
+		if p := currentHostMemPressure(); p.Pressure {
+			resp.Busy = true
+			resp.BusyReason = "host_mem_pressure"
+			resp.Notes = p.ClientMessage()
+		}
 	}
 
 	m, modelErr := resolveCanLoadModel(req.Model)

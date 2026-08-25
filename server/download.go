@@ -24,6 +24,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/format"
+	"github.com/ollama/ollama/internal/ssrf"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
 )
@@ -101,6 +102,8 @@ const (
 	minDownloadPartSize int64 = 100 * format.MegaByte
 	maxDownloadPartSize int64 = 1000 * format.MegaByte
 )
+
+var downloadStallTimeout = 30 * time.Second
 
 func (p *blobDownloadPart) Name() string {
 	return strings.Join([]string{
@@ -271,6 +274,9 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 	if err != nil {
 		return err
 	}
+	if err := ssrf.ValidateURL(directURL); err != nil {
+		return fmt.Errorf("blob redirect: %w", err)
+	}
 
 	g, inner := errgroup.WithContext(ctx)
 	g.SetLimit(numDownloadParts)
@@ -330,7 +336,11 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 
 func (b *blobDownload) downloadChunk(ctx context.Context, requestURL *url.URL, w io.Writer, part *blobDownloadPart) error {
 	g, ctx := errgroup.WithContext(ctx)
+	attemptStarted := time.Now()
+	transferDone := make(chan struct{})
 	g.Go(func() error {
+		defer close(transferDone)
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
 		if err != nil {
 			return err
@@ -359,19 +369,21 @@ func (b *blobDownload) downloadChunk(ctx context.Context, requestURL *url.URL, w
 	})
 
 	g.Go(func() error {
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(min(time.Second, downloadStallTimeout/2))
+		defer ticker.Stop()
 		for {
 			select {
+			case <-transferDone:
+				return nil
 			case <-ticker.C:
-				if part.Completed.Load() >= part.Size {
-					return nil
-				}
-
 				part.lastUpdatedMu.Lock()
 				lastUpdated := part.lastUpdated
 				part.lastUpdatedMu.Unlock()
+				if lastUpdated.Before(attemptStarted) {
+					lastUpdated = attemptStarted
+				}
 
-				if !lastUpdated.IsZero() && time.Since(lastUpdated) > 30*time.Second {
+				if time.Since(lastUpdated) > downloadStallTimeout {
 					const msg = "%s part %d stalled; retrying. If this persists, press ctrl-c to exit, then 'ollama pull' to find a faster connection."
 					slog.Info(fmt.Sprintf(msg, b.Digest[7:19], part.N))
 					// reset last updated

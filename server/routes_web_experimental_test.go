@@ -232,6 +232,37 @@ func TestExperimentalWebEndpointsCloudDisabled(t *testing.T) {
 	}
 }
 
+func TestExperimentalWebFetchSSRF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setTestHome(t, t.TempDir())
+
+	s := &Server{}
+	router, err := s.GenerateRoutes(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(router)
+	defer local.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+"/api/experimental/web_fetch", bytes.NewBufferString(`{"url":"http://127.0.0.1/secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := local.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%s)", resp.StatusCode, string(body))
+	}
+	if !bytes.Contains(body, []byte("internal")) {
+		t.Fatalf("expected SSRF error, got %s", string(body))
+	}
+}
+
 func TestExperimentalWebEndpointSigningFailureReturnsUnauthorized(t *testing.T) {
 	enableCloudForTest(t)
 	gin.SetMode(gin.TestMode)

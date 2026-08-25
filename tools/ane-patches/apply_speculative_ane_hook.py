@@ -102,35 +102,30 @@ def patch_draft_simple_draft(spec: pathlib.Path) -> None:
         required=False,
     )
 
-    # In-tree may already wrap handoff with note_handoff_token; treat any B2 marker as applied.
-    b2_text = spec.read_text()
-    if "// B2/B5: IOSurface handoff after first draft decode" in b2_text and "common_ane_draft_handoff_after_decode" in b2_text:
-        print("  skip speculative.cpp draft() handoff (B2) (already applied)")
-    else:
-        patch_once(
-            spec,
-            (
-                "        int ret = llama_decode(ctx_dft, batch);\n"
-                "        if (ret != 0) {\n"
-                '            SPC_ERR("llama_decode returned %d\\n", ret);\n'
-                "            return;\n"
-                "        }\n\n"
-                "        int i = 0;\n\n"
-                "        while (n_drafting > 0) {"
-            ),
-            (
-                "        int ret = llama_decode(ctx_dft, batch);\n"
-                "        if (ret != 0) {\n"
-                '            SPC_ERR("llama_decode returned %d\\n", ret);\n'
-                "            return;\n"
-                "        }\n\n"
-                "        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).\n"
-                "        common_ane_draft_handoff_after_decode(ctx_dft, 0);\n\n"
-                "        int i = 0;\n\n"
-                "        while (n_drafting > 0) {"
-            ),
-            "speculative.cpp draft() handoff (B2)",
-        )
+    patch_once(
+        spec,
+        (
+            "        int ret = llama_decode(ctx_dft, batch);\n"
+            "        if (ret != 0) {\n"
+            '            SPC_ERR("llama_decode returned %d\\n", ret);\n'
+            "            return;\n"
+            "        }\n\n"
+            "        int i = 0;\n\n"
+            "        while (n_drafting > 0) {"
+        ),
+        (
+            "        int ret = llama_decode(ctx_dft, batch);\n"
+            "        if (ret != 0) {\n"
+            '            SPC_ERR("llama_decode returned %d\\n", ret);\n'
+            "            return;\n"
+            "        }\n\n"
+            "        // B2/B5: IOSurface handoff after first draft decode (lab; tokens still Metal).\n"
+            "        common_ane_draft_handoff_after_decode(ctx_dft, 0);\n\n"
+            "        int i = 0;\n\n"
+            "        while (n_drafting > 0) {"
+        ),
+        "speculative.cpp draft() handoff (B2)",
+    )
 
     b7_needle = (
         "                // add drafted token for each sequence\n"

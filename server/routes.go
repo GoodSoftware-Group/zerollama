@@ -42,6 +42,7 @@ import (
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
+	"github.com/ollama/ollama/internal/ssrf"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/manifest"
@@ -127,6 +128,13 @@ type Server struct {
 
 	trainingVRAMMu      sync.Mutex
 	trainingVRAMBlocked bool
+
+	// videoExclusive* — job-scoped exclusive GPU lease for Wan /v1/videos (fulfillment +
+	// training VRAM block). WHY not request-scoped chat fulfillment: video is async
+	// run_script and must outlive the HTTP POST.
+	videoExclusiveMu      sync.Mutex
+	videoExclusiveJobs    map[string]struct{}
+	videoExclusiveRelease func()
 
 	runtimeFifoMu     sync.RWMutex
 	runtimeFifoOldest uint64
@@ -526,6 +534,21 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
+	}
+
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, req.Prompt); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	} else if dec != nil {
+		req.Model = routed
+		stampRouterHeaders(c, dec)
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusNotFound, fmt.Sprintf("model '%s' not found", req.Model))
@@ -601,6 +624,27 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
+	// Default think=false for thinking models before parser Init / template render.
+	// Why order matters: Init previously ran with Think=nil. For PARSER
+	// qwen3-thinking, nil → defaultThinking=true → CollectingThinking, so
+	// /api/generate answers landed in Thinking with empty Response (harness
+	// trap 12/64 / milkey-class). Chat already defaulted before Init; generate
+	// must match. See docs/doctor-model-repair.md.
+	modelCaps := m.Capabilities()
+	if slices.Contains(modelCaps, model.CapabilityThinking) {
+		if req.Think == nil {
+			req.Think = &api.ThinkValue{Value: false}
+		}
+	} else if req.Think != nil && req.Think.Bool() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
+		return
+	}
+
+	if err := applyThinkingGate(&req.Think); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var builtinParser parsers.Parser
 	if shouldUseHarmony(m) && m.Config.Parser == "" {
 		m.Config.Parser = "harmony"
@@ -620,22 +664,16 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		caps = append(caps, model.CapabilityInsert)
 	}
 
-	modelCaps := m.Capabilities()
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		caps = append(caps, model.CapabilityThinking)
-		if req.Think == nil {
-			req.Think = &api.ThinkValue{Value: false}
-		}
-	} else {
-		if req.Think != nil && req.Think.Bool() {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
-			return
-		}
 	}
 
-	if err := applyThinkingGate(&req.Think); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	// SGLang #32914: reject images on text-only generate before scheduleRunner.
+	if len(req.Images) > 0 {
+		if err := m.CheckCapabilities(model.CapabilityVision); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	// DebugRenderOnly for the legacy template path: render without loading a runner.
@@ -650,6 +688,36 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				DebugInfo: &api.DebugInfo{
 					RenderedTemplate: req.Prompt,
 					ImageCount:       len(req.Images),
+				},
+			})
+			return
+		}
+		if resolveRendererName(m) != "" && req.Template == "" {
+			var msgs []api.Message
+			if req.System != "" {
+				msgs = append(msgs, api.Message{Role: "system", Content: req.System})
+			} else if m.System != "" {
+				msgs = append(msgs, api.Message{Role: "system", Content: m.System})
+			}
+			if req.Context == nil {
+				msgs = append(msgs, m.Messages...)
+			}
+			userMsg := api.Message{Role: "user", Content: req.Prompt}
+			for _, i := range req.Images {
+				userMsg.Images = append(userMsg.Images, i)
+			}
+			msgs = append(msgs, userMsg)
+			prompt, images, _, _, _, err := chatPrompt(c.Request.Context(), m, nil, nil, msgs, []api.Tool{}, req.Think, false, 0, nil)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				DebugInfo: &api.DebugInfo{
+					RenderedTemplate: prompt,
+					ImageCount:       len(images),
 				},
 			})
 			return
@@ -939,13 +1007,15 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}()
 		firstToken := true
 		var firstTokenAt time.Time
+		var parserErr error
 		inferCtx, cancelPreempt := s.bindInferPreemptCancel(c.Request.Context(), m, req.Options)
+		inferCtx, cancelParse := context.WithCancel(inferCtx)
+		defer cancelParse()
 		if cancelPreempt != nil {
 			defer cancelPreempt()
 		}
 		ctx, cancel := context.WithCancel(inferCtx)
 		defer cancel()
-		var parserErr error
 		if err := r.Completion(ctx, llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
@@ -996,7 +1066,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
 				if err != nil {
 					parserErr = err
-					cancel()
+					cancelParse()
 					return
 				}
 				res.Response = sanitizeAssistantContent(content)
@@ -1081,7 +1151,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 		}
 		if parserErr != nil {
-			enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), 0,
+			enqueueGenerateStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), http.StatusInternalServerError,
 				errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 		}
 	}()
@@ -1144,6 +1214,13 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 	case err != nil:
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -1326,6 +1403,13 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 	} else if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -1629,6 +1713,14 @@ func (s *Server) ShowHandler(c *gin.Context) {
 		logShowHandlerOutcome("", c.Request.UserAgent(), http.StatusBadRequest, errors.New("model is required"))
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		logShowHandlerOutcome(req.Model, c.Request.UserAgent(), http.StatusBadRequest, err)
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -1960,7 +2052,14 @@ func (s *Server) ListHandler(c *gin.Context) {
 		return
 	}
 
-	models := []api.ListModelResponse{}
+	type listLocal struct {
+		name     model.Name
+		cf       model.ConfigV2
+		size     int64
+		digest   string
+		modified time.Time
+	}
+	locals := make([]listLocal, 0, len(ms))
 	for n, m := range ms {
 		var cf model.ConfigV2
 
@@ -1970,10 +2069,10 @@ func (s *Server) ListHandler(c *gin.Context) {
 				slog.Warn("bad manifest filepath", "name", n, "error", err)
 				continue
 			}
-			defer f.Close()
-
-			if err := json.NewDecoder(f).Decode(&cf); err != nil {
-				slog.Warn("bad manifest config", "name", n, "error", err)
+			decodeErr := json.NewDecoder(f).Decode(&cf)
+			f.Close()
+			if decodeErr != nil {
+				slog.Warn("bad manifest config", "name", n, "error", decodeErr)
 				continue
 			}
 		}
@@ -1982,37 +2081,58 @@ func (s *Server) ListHandler(c *gin.Context) {
 			continue
 		}
 
-		details := api.ModelDetails{
-			Format:            cf.ModelFormat,
-			Family:            cf.ModelFamily,
-			Families:          cf.ModelFamilies,
-			ParameterSize:     cf.ModelType,
-			QuantizationLevel: cf.FileType,
-		}
-		var capabilities []model.Capability
-		if mdl, err := GetModel(n.String()); err == nil {
-			enrichModelDetailsFromPath(&details, mdl.ModelPath)
-			capabilities = mdl.Capabilities()
-		}
-		if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
-			enrichModelDetailsFromSafetensors(&details, n)
-		}
-
-		// Capabilities + enriched Details feed cmd/launch modelInventory (one /api/tags
-		// load per zerollama launch run). WHY list not show: launch configures N models
-		// without loading each into a runner first.
-		models = append(models, api.ListModelResponse{
-			Model:        n.DisplayShortest(),
-			Name:         n.DisplayShortest(),
-			RemoteModel:  cf.RemoteModel,
-			RemoteHost:   cf.RemoteHost,
-			Size:         m.Size(),
-			Digest:       m.Digest(),
-			ModifiedAt:   m.FileInfo().ModTime(),
-			Details:      details,
-			Capabilities: capabilities,
+		locals = append(locals, listLocal{
+			name:     n,
+			cf:       cf,
+			size:     m.Size(),
+			digest:   m.Digest(),
+			modified: m.FileInfo().ModTime(),
 		})
 	}
+
+	// Parallel GGUF metadata / capabilities — sequential was ~80ms×N on this host.
+	models := make([]api.ListModelResponse, len(locals))
+	var g errgroup.Group
+	g.SetLimit(listTagsParallelism())
+	for i := range locals {
+		i := i
+		loc := locals[i]
+		g.Go(func() error {
+			cf := loc.cf
+			details := api.ModelDetails{
+				Format:            cf.ModelFormat,
+				Family:            cf.ModelFamily,
+				Families:          cf.ModelFamilies,
+				ParameterSize:     cf.ModelType,
+				QuantizationLevel: cf.FileType,
+			}
+			var capabilities []model.Capability
+			if mdl, err := GetModel(loc.name.String()); err == nil {
+				enrichModelDetailsFromPath(&details, mdl.ModelPath)
+				capabilities = mdl.Capabilities()
+			}
+			if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
+				enrichModelDetailsFromSafetensors(&details, loc.name)
+			}
+
+			// Capabilities + enriched Details feed cmd/launch modelInventory (one /api/tags
+			// load per zerollama launch run). WHY list not show: launch configures N models
+			// without loading each into a runner first.
+			models[i] = api.ListModelResponse{
+				Model:        loc.name.DisplayShortest(),
+				Name:         loc.name.DisplayShortest(),
+				RemoteModel:  cf.RemoteModel,
+				RemoteHost:   cf.RemoteHost,
+				Size:         loc.size,
+				Digest:       loc.digest,
+				ModifiedAt:   loc.modified,
+				Details:      details,
+				Capabilities: capabilities,
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
 
 	slices.SortStableFunc(models, func(i, j api.ListModelResponse) int {
 		// most recently modified first
@@ -2038,6 +2158,17 @@ func (s *Server) ListHandler(c *gin.Context) {
 	s.enrichListHostContexts(c.Request.Context(), models)
 
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
+}
+
+func listTagsParallelism() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 4 {
+		n = 4
+	}
+	if n > 16 {
+		n = 16
+	}
+	return n
 }
 
 func (s *Server) CopyHandler(c *gin.Context) {
@@ -2309,6 +2440,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.DELETE("/api/pin/:id", s.UnpinHandler)
 	r.POST("/api/cache/pin", s.CachePinHandler)
 	r.DELETE("/api/cache/pin/:id", s.CacheUnpinHandler)
+	r.POST("/api/cache/warm", s.CacheWarmHandler)
 	r.GET("/api/metrics", s.MetricsHandler)
 	r.GET("/api/kv/blob/:digest", s.KvBlobHandler)
 	r.POST("/api/fleet/assign-hold", s.AssignHoldHandler)
@@ -2347,18 +2479,23 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// Inference
 	r.GET("/api/ps", s.PsHandler)
 	r.GET("/api/image/workflows", s.ImageWorkflowsHandler)
-	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.assignmentTokenMiddleware(), s.runtimeGenerateProxy(), s.GenerateHandler)...)
-	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.assignmentTokenMiddleware(), s.runtimeChatProxy(), s.ChatHandler)...)
+	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.runtimeGenerateProxy(), s.GenerateHandler)...)
+	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
+	r.GET("/api/aliases", s.AliasesHandler)
+	r.POST("/api/aliases", s.AliasesHandler)
 	r.POST("/api/score", s.ScoreHandler)
+	r.POST("/api/router/decide", s.RouterDecideHandler)
+	r.GET("/api/router/corpus", s.RouterCorpusHandler)
+	r.POST("/api/router/corpus", s.RouterCorpusHandler)
 
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
-	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
 	r.POST("/v1/chat/completions/batch", s.withInferenceRequestLogging("/v1/chat/completions/batch", s.runtimeV1ChatCompletionsBatchProxy())...)
-	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
+	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
 	r.GET("/v1/models/:model", s.maybeProxyElizaV1ModelGet(), middleware.RetrieveMiddleware(), s.ShowHandler)
@@ -2370,10 +2507,20 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/audio/transcriptions", middleware.TranscriptionMiddleware(), s.TranscriptionHandler)
 	r.POST("/v1/audio/speech", middleware.SpeechMiddleware(), s.SpeechHandler)
 	r.GET("/v1/audio/voices", s.VoicesHandler)
+	r.POST("/v1/audio/generations", middleware.SpeechMiddleware(), s.MusicCreateHandler)
+	r.GET("/v1/audio/generations/:id", s.MusicGetHandler)
+	r.GET("/v1/audio/generations/:id/content", s.MusicContentHandler)
 	// OpenAI-compatible async text-to-video (local Wan via training run_script queue)
 	r.POST("/v1/videos", middleware.VideoCreateMiddleware(), s.VideoCreateHandler)
 	r.GET("/v1/videos/:id", s.VideoGetHandler)
 	r.GET("/v1/videos/:id/content", s.VideoContentHandler)
+
+	// Agent media index: session/label uploads with internal CAS dedupe (keyframes / future clips).
+	r.PUT("/v1/media/:session/:label", s.MediaPutHandler)
+	r.HEAD("/v1/media/:session/:label", s.MediaHeadHandler)
+	r.GET("/v1/media/:session/:label", s.MediaGetLabelHandler)
+	r.DELETE("/v1/media/:session/:label", s.MediaDeleteHandler)
+	r.GET("/v1/media/:session", s.MediaListHandler)
 
 	// Inference (Anthropic compatibility)
 	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
@@ -2395,7 +2542,16 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	return r, nil
 }
 
-func Serve(ln net.Listener) error {
+// Serve starts the HTTP API on one or more listeners. listeners[0] is primary
+// (usually the OLLAMA_HOST bind). Extra listeners are typically loopback guards
+// (127.0.0.1 / ::1) held so a later more-specific bind cannot steal accepts.
+func Serve(listeners ...net.Listener) error {
+	if len(listeners) == 0 || listeners[0] == nil {
+		return fmt.Errorf("serve: no listener")
+	}
+	ln := listeners[0]
+	extras := listeners[1:]
+
 	slog.SetDefault(logutil.NewLogger(os.Stderr, envconfig.LogLevel()))
 	discover.LogStartupBanner()
 	slog.Info("server config", "env", envconfig.Values())
@@ -2689,16 +2845,40 @@ func Serve(ln net.Listener) error {
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
 
+	guardAddrs := make([]string, 0, len(extras))
+	for _, extra := range extras {
+		if extra == nil {
+			continue
+		}
+		guardAddrs = append(guardAddrs, extra.Addr().String())
+	}
+
 	slog.Info("server listening",
 		"bind", net.JoinHostPort(bindHost, bindPort),
 		"listener", ln.Addr().String(),
+		"loopback_guards", guardAddrs,
 		"url", envconfig.ConnectableHost().String(),
 		"version", version.Version,
 		"started_at", time.Now().Format(time.RFC3339),
 	)
 
+	// Belt-and-suspenders: still probe connectable host in case a steal
+	// happens on an address we did not claim (should be rare once guards hold).
+	go watchLoopbackServeIdentity(ctx)
+
 	// Register mDNS after startup work so the HTTP listener is about to accept connections.
 	startNodeMDNS(ctx, ln)
+
+	for _, extra := range extras {
+		if extra == nil {
+			continue
+		}
+		go func(l net.Listener) {
+			if err := srvr.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("loopback guard listener failed", "addr", l.Addr().String(), "error", err)
+			}
+		}(extra)
+	}
 
 	err = srvr.Serve(ln)
 	// If server is closed from the signal handler, wait for the ctx to be done
@@ -2816,6 +2996,18 @@ func (s *Server) webExperimentalProxyHandler(c *gin.Context, proxyPath, disabled
 	if len(bytes.TrimSpace(body)) == 0 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
 		return
+	}
+
+	var probe struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(body, &probe) == nil {
+		if u := strings.TrimSpace(probe.URL); u != "" {
+			if err := ssrf.ValidateExternalURL(u); err != nil {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
 	}
 
 	proxyCloudRequestWithPath(c, body, proxyPath, disabledOperation)
@@ -2984,6 +3176,21 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
+	}
+
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, lastUserMessageText(req.Messages)); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	} else if dec != nil {
+		req.Model = routed
+		stampRouterHeaders(c, dec)
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusBadRequest, "model is required")
@@ -3049,16 +3256,26 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	// ResolveVideoPolicy here (not inside modality) so one policy value crosses preflight + expand.
 	// ChatRequestHasVideoPayload includes pre-expanded video_spans — not only raw videos[] — so
 	// SGLang-style clients cannot skip capability checks or video preflight before load/ffmpeg.
+	// SGLang #32914: still images alone must also CheckCapabilities(vision) — previously only
+	// video/audio gated; text-only models returned 200 with nonsense for image_url.
 	hasVideo := modality.ChatRequestHasVideoPayload(&req)
+	hasImages := false
 	hasAudio := false
 	for _, msg := range req.Messages {
+		if len(msg.Images) > 0 || len(msg.PaddedInputIDs) > 0 {
+			hasImages = true
+		}
 		if len(msg.AudioClips) > 0 {
 			hasAudio = true
-			break
 		}
 	}
 	if hasVideo {
 		if err := m.CheckCapabilities(model.CapabilityVision, model.CapabilityVideo); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	} else if hasImages {
+		if err := m.CheckCapabilities(model.CapabilityVision); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -3409,6 +3626,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 			// sets up new context given parent context per request
 			ctx, cancel := context.WithCancel(c.Request.Context())
+			var parserErr error
 			// Soft mid-stream preempt (M15f): interactive may cancel this ctx.
 			if s.sched != nil {
 				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
@@ -3582,7 +3800,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				ch <- res
 			})
 			if parserErr != nil {
-				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), 0,
+				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), http.StatusInternalServerError,
 					errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
 				return
 			}
@@ -3738,6 +3956,17 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	// same device. Caller should unload the runtime model or use runtime routing.
 	case errors.Is(err, ErrDarwinMetalContention):
 		writeBusyUnavailable(c, err.Error(), preemptedReasonFromErr(err))
+	case errors.Is(err, ErrLoadCooldown):
+		sec := 1
+		var ce *LoadCooldownError
+		if errors.As(err, &ce) {
+			sec = retryAfterSeconds(ce.RetryAfter())
+		}
+		c.Header("Retry-After", strconv.Itoa(sec))
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":       err.Error(),
+			"retry_after": sec,
+		})
 	case errors.Is(err, ErrEdgeGgmlRunnerDisabled), errors.Is(err, llm.ErrGgmlRunnerUnlinked):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:

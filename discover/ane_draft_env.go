@@ -65,10 +65,28 @@ func aneDraftEnvValue(env []string, key string) (string, bool) {
 	return "", false
 }
 
-// stripANEDraftEnv removes all ZEROLLAMA_ANE_DRAFT_* entries so lab wiring from Go wins
+// stripANEDraftEnv removes ZEROLLAMA_ANE_DRAFT_* entries so lab wiring from Go wins
 // over stale shell exports (duplicate keys make getenv pick the wrong value).
+// Keeps diagnostic toggles so agent/lab debug flags survive.
 func stripANEDraftEnv(env []string) []string {
 	return filterANEDraftEnv(env, func(k string) bool {
+		switch k {
+		case "ZEROLLAMA_ANE_DRAFT_BISECT_DEBUG",
+			"ZEROLLAMA_ANE_DRAFT_METAL_ATTN_OUT",
+			"ZEROLLAMA_ANE_DRAFT_METAL_CTX_KV",
+			"ZEROLLAMA_ANE_DRAFT_METAL_NOISE_KV",
+			"ZEROLLAMA_ANE_DRAFT_METAL_CAT_NOISE",
+			"ZEROLLAMA_ANE_DRAFT_NOISE_OFF",
+			"ZEROLLAMA_ANE_DRAFT_NOISE_V_ZERO",
+			"ZEROLLAMA_ANE_DRAFT_WO_HOST_FP32",
+			"ZEROLLAMA_ANE_HANDOFF_SKIP",
+			"ZEROLLAMA_ANE_HANDOFF_STAGE",
+			"ZEROLLAMA_ANE_B7_SKIP",
+			"ZEROLLAMA_ANE_IOSURFACE_LIFECYCLE_LOG",
+			"ZEROLLAMA_ANE_KEEP_AB_LOG",
+			"ZEROLLAMA_ANE_LAB_PORT":
+			return false
+		}
 		return strings.HasPrefix(k, "ZEROLLAMA_ANE_DRAFT")
 	})
 }

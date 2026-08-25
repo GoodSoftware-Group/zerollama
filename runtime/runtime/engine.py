@@ -63,6 +63,22 @@ def _vram_calibration_for_health() -> dict[str, Any] | None:
     return vram_calibration_health()
 
 
+def _c_environ_get(name: str) -> str:
+    """Read a process env var from libc getenv (bypasses Python os.environ cache)."""
+    try:
+        import ctypes
+
+        getenv = ctypes.CDLL(None).getenv
+        getenv.argtypes = [ctypes.c_char_p]
+        getenv.restype = ctypes.c_char_p
+        raw = getenv(name.encode("utf-8"))
+        if not raw:
+            return ""
+        return raw.decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
 def _vram_autotune_for_health() -> dict[str, Any]:
     from runtime.gpu_vram import vram_estimate_autotune_status
 
@@ -1081,6 +1097,7 @@ class InferenceEngine:
         )
         if ctx_grew:
             from runtime.infer_trace import infer_trace
+            from runtime.kv.kv_grow import try_grow_worker
 
             infer_trace(
                 "engine.reload",
@@ -1101,6 +1118,14 @@ class InferenceEngine:
                 priority=priority_from_options(options),
                 **vram_kw,
             )
+            if try_grow_worker(self._server, int(needed_ctx)):
+                self._loaded_vram_num_ctx = int(needed_ctx)
+                infer_trace(
+                    "engine.kv_grow",
+                    needed_ctx=needed_ctx,
+                    loaded_ctx=loaded_ctx,
+                )
+                return self._server
             self._stop_server()
             self.config.llama_model = resolved
             self._server = self._create_llama_worker(resolved)
@@ -1375,7 +1400,14 @@ class InferenceEngine:
         from runtime.autoconfig import autoconfig_health
 
         llama_cpp_health = self._health_llama_cpp()
+        # WHY ctypes getenv: training may Py_Initialize first, freezing Python's
+        # os.environ. Go then setenv(ZEROLLAMA_RUNTIME_EMBED_BOOT) for stale-listener
+        # detection; os.environ.get misses it and Go never publishes BaseURL.
         embed_boot = os.environ.get("ZEROLLAMA_RUNTIME_EMBED_BOOT", "").strip()
+        if not embed_boot:
+            embed_boot = _c_environ_get("ZEROLLAMA_RUNTIME_EMBED_BOOT")
+            if embed_boot:
+                os.environ["ZEROLLAMA_RUNTIME_EMBED_BOOT"] = embed_boot
         body: dict[str, Any] = {
             "status": "ok",
             "autoconfig": autoconfig_health(main_gpu=self.config.main_gpu),
@@ -1720,6 +1752,34 @@ class InferenceEngine:
             result["cache_creation_tokens"] = created
             result["prompt_eval_cache_creation_count"] = created
             result["created_cache_tokens"] = created
+
+    def _stream_done_metrics(
+        self,
+        active: Any,
+        chunk: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Merge llama timings + request tier stats for done chunks (vLLM #48668).
+
+        WHY: ``n_predict=0`` or empty decode may omit a stop chunk with timings;
+        synthetic tail chunks must still expose prefix-cache read/creation counts.
+        """
+        out = metrics_from_llama_chunk(chunk or {})
+        out.update(
+            merge_cache_tier_details(
+                {},
+                host=int(getattr(active, "cached_tokens_host", 0) or 0),
+                storage=int(getattr(active, "cached_tokens_storage", 0) or 0),
+                storage_backend=str(
+                    getattr(active, "cached_tokens_storage_backend", "") or ""
+                ),
+                creation=int(getattr(active, "cache_creation_tokens", 0) or 0),
+            )
+        )
+        admit_cached = int(getattr(active, "cached_tokens_at_admit", 0) or 0)
+        if admit_cached > 0 and int(out.get("cached_prompt_tokens") or 0) == 0:
+            out["prompt_eval_cached_count"] = admit_cached
+            out["cached_prompt_tokens"] = admit_cached
+        return out
 
     def _register_prefix_block_pool(self, req: Request, result: dict[str, Any]) -> None:
         from pathlib import Path
@@ -3001,16 +3061,7 @@ class InferenceEngine:
                             kv_steps = self._kv_decode_steps_after(decode_before)
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
-                        out.update(metrics_from_llama_chunk(chunk))
-                        out.update(merge_cache_tier_details(
-                            {},
-                            host=int(getattr(active, "cached_tokens_host", 0) or 0),
-                            storage=int(getattr(active, "cached_tokens_storage", 0) or 0),
-                            storage_backend=str(
-                                getattr(active, "cached_tokens_storage_backend", "") or ""
-                            ),
-                            creation=int(getattr(active, "cache_creation_tokens", 0) or 0),
-                        ))
+                        out.update(self._stream_done_metrics(active, chunk))
                         # Why: runtime proxy skips Go chatPrompt; llama-server
                         # context-shifts silently. Admit-time prompt_tokens is
                         # the pre-shift size clients need on the done chunk.
@@ -3034,6 +3085,10 @@ class InferenceEngine:
                     kv_steps = self._kv_decode_steps_after(decode_before)
                     if kv_steps is not None:
                         tail["kv_decode_steps"] = kv_steps
+                    tail.update(self._stream_done_metrics(active))
+                    tail.update(detect_context_overflow(
+                        tail, active.num_ctx, len(active.prompt_tokens),
+                    ))
                     yield tail
                 return
 
@@ -3086,16 +3141,7 @@ class InferenceEngine:
                         kv_steps = self._kv_decode_steps_after(decode_before)
                         if kv_steps is not None:
                             out["kv_decode_steps"] = kv_steps
-                        out.update(metrics_from_llama_chunk(chunk))
-                        out.update(merge_cache_tier_details(
-                            {},
-                            host=int(getattr(active, "cached_tokens_host", 0) or 0),
-                            storage=int(getattr(active, "cached_tokens_storage", 0) or 0),
-                            storage_backend=str(
-                                getattr(active, "cached_tokens_storage_backend", "") or ""
-                            ),
-                            creation=int(getattr(active, "cache_creation_tokens", 0) or 0),
-                        ))
+                        out.update(self._stream_done_metrics(active, chunk))
                         # Why: same as stream auto-batch path — explicit overflow
                         # for proxies that never ran Go-side truncate.
                         out.update(detect_context_overflow(
@@ -3119,6 +3165,10 @@ class InferenceEngine:
                     kv_steps = self._kv_decode_steps_after(decode_before)
                     if kv_steps is not None:
                         tail["kv_decode_steps"] = kv_steps
+                    tail.update(self._stream_done_metrics(active))
+                    tail.update(detect_context_overflow(
+                        tail, active.num_ctx, len(active.prompt_tokens),
+                    ))
                     yield tail
         except PrefillAbortedError:
             yield {
@@ -3181,6 +3231,14 @@ class InferenceEngine:
                     "prompt_eval_duration",
                     "eval_count",
                     "eval_duration",
+                    "cached_tokens_host",
+                    "prompt_eval_cached_host",
+                    "cached_tokens_storage",
+                    "prompt_eval_cached_storage",
+                    "cached_tokens_storage_backend",
+                    "cache_creation_tokens",
+                    "prompt_eval_cache_creation_count",
+                    "created_cache_tokens",
                     # Why forward: stream_generate sets these; chat clients must
                     # see the same overflow signal as /api/generate.
                     "prompt_truncated",

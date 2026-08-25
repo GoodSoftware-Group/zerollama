@@ -12,6 +12,11 @@ info:
     `/v1/*` routes (chat, embeddings, images, audio speech/transcriptions,
     voice catalog, and video generation).
 
+    LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA17): `/api/repair`,
+    `/api/score`, `/api/router/*`, `/api/aliases`, experimental web_search/fetch.
+    In-band alias and router rewrite may set `X-Zerollama-*` response headers.
+    Failed-load cooldown (LA18) returns 503 with `Retry-After`.
+
     Interactive docs: `GET /docs` · raw: `GET /openapi.yaml` · `GET /openapi.json`
 servers:
   - url: http://localhost:11434
@@ -29,6 +34,27 @@ components:
       in: path
       required: true
       description: SHA256 digest identifier, prefixed with `sha256:`
+      schema:
+        type: string
+  headers:
+    ZerollamaAlias:
+      description: Original client model name when a one-hop alias was applied (LA17).
+      schema:
+        type: string
+    ZerollamaAliasTarget:
+      description: Resolved local tag after alias rewrite.
+      schema:
+        type: string
+    ZerollamaRouter:
+      description: Router policy name when in-band rewrite ran (LA11).
+      schema:
+        type: string
+    ZerollamaRouterChosen:
+      description: Specialist model chosen by the router.
+      schema:
+        type: string
+    ZerollamaRouterFallback:
+      description: '`true` when the router used its fallback candidate.'
       schema:
         type: string
   schemas:
@@ -1100,6 +1126,225 @@ components:
             type: string
             format: uri
           description: Links found on the page
+    AliasInfo:
+      type: object
+      required: [name, target]
+      description: One-hop live model alias (LA17). Chains (alias→alias) are rejected.
+      properties:
+        name:
+          type: string
+          description: Client-facing name
+        target:
+          type: string
+          description: Local tag to serve
+    AliasCreateRequest:
+      type: object
+      required: [name, target]
+      properties:
+        name:
+          type: string
+        target:
+          type: string
+    ScoreRequest:
+      type: object
+      required: [model, candidates]
+      description: Score fixed candidate continuations against a shared prompt (LA9).
+      properties:
+        model:
+          type: string
+        prompt:
+          type: string
+          description: Shared prefix; candidates are scored as continuations
+        candidates:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        length_normalize:
+          type: boolean
+          description: Divide joint log-prob by candidate token count
+        include_token_logprobs:
+          type: boolean
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+          description: Model keep-alive duration (for example `5m` or `0` to unload immediately)
+        options:
+          type: object
+          additionalProperties: true
+    CandidateScore:
+      type: object
+      properties:
+        candidate:
+          type: string
+        log_prob:
+          type: number
+        length_normalized_log_prob:
+          type: number
+        num_tokens:
+          type: integer
+        tokens:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenLogprob"
+    ScoreResponse:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Resolved model (alias target when rewrite applied)
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandidateScore"
+    RouterDecideRequest:
+      type: object
+      required: [router]
+      description: Pick a specialist from a named router policy (LA11 score or LA11b KNN).
+      properties:
+        router:
+          type: string
+          description: Policy name from ~/.ollama/router.yaml
+        prompt:
+          type: string
+        input:
+          type: string
+          description: Alias for prompt
+    RouterLabelScore:
+      type: object
+      properties:
+        label:
+          type: string
+        log_prob:
+          type: number
+        softmax:
+          type: number
+        num_tokens:
+          type: integer
+        active:
+          type: boolean
+    RouterNeighbor:
+      type: object
+      properties:
+        id:
+          type: string
+        similarity:
+          type: number
+        labels:
+          type: array
+          items:
+            type: string
+    RouterDecision:
+      type: object
+      properties:
+        router:
+          type: string
+        classifier:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        candidate:
+          type: string
+        fallback:
+          type: boolean
+        scores:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterLabelScore"
+        neighbors:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterNeighbor"
+        nearest_similarity:
+          type: number
+        latency_ms:
+          type: integer
+    RouterCorpusEntry:
+      type: object
+      required: [text, labels]
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+    RouterCorpusAddRequest:
+      type: object
+      required: [router, entries]
+      description: Session overlay only; not written to router.yaml.
+      properties:
+        router:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterCorpusEntry"
+    RouterCorpusStats:
+      type: object
+      properties:
+        router:
+          type: string
+        total:
+          type: integer
+        added:
+          type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: integer
+    RepairRequest:
+      type: object
+      description: >
+        Rewrite on-disk manifest params/config/template from GGUF headers (LA7).
+        Default is dry-run. `write: true` applies JSON only (never weight blobs).
+      properties:
+        model:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        all:
+          type: boolean
+        write:
+          type: boolean
+    RepairChange:
+      type: object
+      properties:
+        field:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+    RepairResult:
+      type: object
+      properties:
+        name:
+          type: string
+        skipped:
+          type: boolean
+        reason:
+          type: string
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairChange"
+        written:
+          type: boolean
+    RepairResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairResult"
     VersionResponse:
       type: object
       description: >
@@ -1137,6 +1382,7 @@ components:
         Error body on generate/chat (JSON or NDJSON). Busy 503s include retry_after;
         stream/runner failures may include cause=host_unstable and partial timings;
         pin/VRAM conflicts use cause=runtime_pin_gguf or runtime_pin_ggml.
+        LA18 failed-load cooldown also returns 503 + Retry-After (error mentions cooldown).
         M15e: QoS wait-abort / busy may include preempted_reason; per-call timeout
         uses HTTP 504 with timeout_seconds (not this schema alone).
       required: [error]
@@ -1211,6 +1457,20 @@ components:
         num_parallel_means_slots:
           type: boolean
           description: Always true — NUM_PARALLEL is slots inside one runner
+        inference_profile:
+          type: string
+          description: Raw ZEROLLAMA_INFERENCE_PROFILE (or "(default)")
+        inference_profile_resolved:
+          type: string
+          description: Resolved lane — throughput | agent | vram | off
+        inference_profile_applied:
+          type: array
+          items:
+            type: string
+          description: Soft-default env keys applied by the lane (key=value)
+        gpu_profile_id:
+          type: string
+          description: Last L1 GPU JSON id applied on Go→llama-server launch (e.g. rtx-5080)
     FleetStatusResponse:
       type: object
       description: >
@@ -1466,6 +1726,55 @@ components:
           description: Documents MLX/L3 scope and the idle-slot limitation
         can_pin:
           type: boolean
+    CacheWarmRequest:
+      type: object
+      required: [model, prompt, prompt_cache_key]
+      description: >
+        Boot-time / preload prefill for prompt_cache_key. Runs the prefix
+        decode with no useful sampling; does not return generated text.
+        Safetensors (MLX) models warm via the native runner trie; GGUF models
+        warm via the Python runtime L3 slot path.
+      properties:
+        model:
+          type: string
+          description: Required. Resolves MLX safetensors or GGUF on-disk path
+        prompt:
+          type: string
+          description: System prompt / agent template text to prefill into the KV cache
+        prompt_cache_key:
+          type: string
+          description: Stable thread/session key (same as request prompt_cache_key)
+        num_ctx:
+          type: integer
+          description: Optional context size override for admission/sizing
+        pin:
+          type: boolean
+          description: Also create an /api/cache/pin lease for this key in the same call
+        ttl_seconds:
+          type: integer
+          description: Lease TTL when pin=true; defaults to PinDefaultTTL when omitted
+        options:
+          type: object
+          description: Extra runtime options merged in verbatim (e.g. cache_salt)
+          additionalProperties: true
+    CacheWarmResponse:
+      type: object
+      properties:
+        warmed:
+          type: boolean
+        prompt_cache_key:
+          type: string
+        kv_decode_steps:
+          type: integer
+          description: In-process decode step count for the prefill (null when not tracked)
+        pin_id:
+          type: string
+          description: Present only when pin=true was requested
+        expires_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
     ChatCompletionsBatchRequestItem:
       type: object
       description: >
@@ -1651,8 +1960,7 @@ components:
           description: Speech model tag (e.g. piper-lessac, chatterbox, orpheus, kokoro)
         input:
           type: string
-          description: Text to synthesize (max 4096 Unicode characters)
-          maxLength: 4096
+          description: Text to synthesize (4096 runes; 20000 when Music 3 instructions/duration/max_new_tokens are set)
         voice:
           type: string
           description: Voice id from GET /v1/audio/voices (piper_voice_* or remote catalog)
@@ -1671,6 +1979,37 @@ components:
         emotion:
           type: string
           description: zerollama extension — forwarded by remote-tts (Chatterbox/Orpheus); ignored by Piper
+        instructions:
+          type: string
+          description: Music 3 caption (SGLang-Omni). Ignored by Piper. Raises lyrics cap to 20000 runes.
+        seed:
+          type: integer
+          format: int64
+          description: Music 3 seed
+        max_new_tokens:
+          type: integer
+          description: Music 3 AR frame cap (~25 fps)
+        duration:
+          type: number
+          description: Music 3 clip length in seconds (lab default 10)
+        steps:
+          type: integer
+          description: Music 3 DiT Euler steps (default 30)
+    AudioGeneration:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created_at:
+          type: integer
+        status:
+          type: string
+        model:
+          type: string
+        progress:
+          type: number
     SpeechVoice:
       type: object
       properties:
@@ -1749,7 +2088,48 @@ components:
         options:
           type: object
           additionalProperties: true
-          description: Backend options (e.g. frames, steps for Wan)
+          description: >
+            Backend options. Wan: frames, steps, media_session, keyframes (label list
+            after PUT /v1/media/{session}/{label}). H3 T2VA: layers (DiT depth, default 24,
+            cap 50; host 50 is rank-1 gray). WHY labels not inline bytes: keep
+            create JSON small; CAS + media_missing recovery — docs/media-uploads.md.
+    MediaPutResponse:
+      type: object
+      properties:
+        session:
+          type: string
+        label:
+          type: string
+        digest:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          enum: [image, video, other]
+    MediaSessionList:
+      type: object
+      properties:
+        session:
+          type: string
+        labels:
+          type: array
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              digest:
+                type: string
+              bytes:
+                type: integer
+                format: int64
+              content_type:
+                type: string
+              kind:
+                type: string
+                enum: [image, video, other]
     ChatCompletionRequest:
       type: object
       required: [model, messages]
@@ -1823,7 +2203,10 @@ paths:
   /api/generate:
     post:
       summary: Generate a response
-      description: Generates a response for the provided prompt
+      description: >
+        Generates a response for the provided prompt. Client `model` may be a
+        one-hop alias (LA17) and/or a router name rewritten in-band (LA11) when
+        `ZEROLLAMA_ROUTER_REWRITE` is on.
       operationId: generate
       x-mint:
         href: /api/generate
@@ -1942,6 +2325,17 @@ paths:
       responses:
         "200":
           description: Generation responses
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+            X-Zerollama-Router:
+              $ref: "#/components/headers/ZerollamaRouter"
+            X-Zerollama-Router-Chosen:
+              $ref: "#/components/headers/ZerollamaRouterChosen"
+            X-Zerollama-Router-Fallback:
+              $ref: "#/components/headers/ZerollamaRouterFallback"
           content:
             application/json:
               schema:
@@ -1963,9 +2357,10 @@ paths:
                 $ref: "#/components/schemas/GenerateStreamEvent"
         "503":
           description: >
-            Server busy (max queue exceeded), Darwin Metal contention, or Phase B
-            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml).
-            Includes Retry-After header and retry_after body field.
+            Server busy (max queue exceeded), Darwin Metal contention, Phase B
+            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml), or
+            LA18 failed-load cooldown. Includes Retry-After header and retry_after
+            body field.
           headers:
             Retry-After:
               schema:
@@ -1996,7 +2391,10 @@ paths:
   /api/chat:
     post:
       summary: Generate a chat message
-      description: Generate the next chat message in a conversation between a user and an assistant.
+      description: >
+        Generate the next chat message in a conversation between a user and an
+        assistant. Client `model` may be a one-hop alias (LA17) and/or a router
+        name rewritten in-band (LA11).
       operationId: chat
       x-mint:
         href: /api/chat
@@ -2146,6 +2544,17 @@ paths:
       responses:
         "200":
           description: Chat response
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+            X-Zerollama-Router:
+              $ref: "#/components/headers/ZerollamaRouter"
+            X-Zerollama-Router-Chosen:
+              $ref: "#/components/headers/ZerollamaRouterChosen"
+            X-Zerollama-Router-Fallback:
+              $ref: "#/components/headers/ZerollamaRouterFallback"
           content:
             application/json:
               schema:
@@ -2169,9 +2578,10 @@ paths:
                 $ref: "#/components/schemas/ChatStreamEvent"
         "503":
           description: >
-            Server busy (max queue exceeded), Darwin Metal contention, or Phase B
-            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml).
-            Includes Retry-After header and retry_after body field.
+            Server busy (max queue exceeded), Darwin Metal contention, Phase B
+            pin/VRAM conflict (cause=runtime_pin_gguf | runtime_pin_ggml), or
+            LA18 failed-load cooldown. Includes Retry-After header and retry_after
+            body field.
           headers:
             Retry-After:
               schema:
@@ -2252,6 +2662,11 @@ paths:
       responses:
         "200":
           description: Vector embeddings for the input text
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
           content:
             application/json:
               schema:
@@ -2274,6 +2689,225 @@ paths:
                 total_duration: 14143917
                 load_duration: 1019500
                 prompt_eval_count: 8
+  /api/aliases:
+    get:
+      summary: List live model aliases
+      description: >
+        One-hop map from `~/.ollama/aliases.yaml` plus session overlay (LA17).
+        `ZEROLLAMA_ALIASES_CONFIG=0` disables aliases. Chains are rejected.
+      operationId: listAliases
+      x-codeSamples:
+        - lang: bash
+          label: List aliases
+          source: |
+            curl http://localhost:11434/api/aliases
+      responses:
+        "200":
+          description: Alias list (empty array when none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AliasInfo"
+    post:
+      summary: Add a session alias overlay
+      description: >
+        Adds a one-hop alias for this process only (not written to YAML).
+        Target must not itself be an alias.
+      operationId: createAlias
+      x-codeSamples:
+        - lang: bash
+          label: Session alias
+          source: |
+            curl http://localhost:11434/api/aliases -d '{"name":"gpt-4","target":"llama3.2:3b"}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AliasCreateRequest"
+      responses:
+        "200":
+          description: Alias recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AliasInfo"
+        "400":
+          description: Invalid name/target or alias chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/score:
+    post:
+      summary: Score candidate continuations
+      description: >
+        Logprob score of fixed strings as continuations of a shared prompt (LA9).
+        Used by the score router. `model` may be an alias.
+      operationId: score
+      x-codeSamples:
+        - lang: bash
+          label: Score
+          source: |
+            curl http://localhost:11434/api/score -d '{
+              "model": "llama3.2:3b",
+              "prompt": "Classify: I love this product.\\nLabel:",
+              "candidates": [" positive", " negative"]
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScoreRequest"
+      responses:
+        "200":
+          description: Per-candidate logprobs
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScoreResponse"
+        "400":
+          description: Missing model or candidates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: Runner does not support score
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: Queue busy or LA18 load cooldown
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/router/decide:
+    post:
+      summary: Decide a specialist model
+      description: >
+        Run a named router policy (score LM or KNN corpus). Does not generate.
+        In-band rewrite on `/api/chat` and `/api/generate` uses the same logic
+        when `ZEROLLAMA_ROUTER_REWRITE` is on (default).
+      operationId: routerDecide
+      x-codeSamples:
+        - lang: bash
+          label: Decide
+          source: |
+            curl http://localhost:11434/api/router/decide -d '{
+              "router": "agent",
+              "prompt": "write a rust function to parse json"
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouterDecideRequest"
+      responses:
+        "200":
+          description: Chosen candidate (or fallback)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterDecision"
+        "400":
+          description: Missing router or prompt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Router policy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: Classifier/embedder unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/router/corpus:
+    get:
+      summary: KNN corpus counts
+      description: Label counts for a KNN router (YAML + session overlay). Counts only, no texts.
+      operationId: routerCorpusGet
+      parameters:
+        - name: router
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Corpus stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterCorpusStats"
+        "400":
+          description: Missing router query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Router not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+    post:
+      summary: Add KNN corpus overlay
+      description: Session overlay entries; not written to router.yaml.
+      operationId: routerCorpusPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouterCorpusAddRequest"
+      responses:
+        "200":
+          description: Updated counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterCorpusStats"
+        "400":
+          description: Not a KNN router or invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Router not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /api/tags:
     get:
       summary: List models
@@ -2619,6 +3253,109 @@ paths:
       responses:
         "200":
           description: Model successfully deleted
+  /api/repair:
+    post:
+      summary: Repair local manifests from GGUF headers
+      description: >
+        Rewrite params/config/template layers without re-downloading weights (LA7).
+        Default dry-run; set `write: true` to apply. Weight blob digests never change.
+      operationId: repair
+      x-codeSamples:
+        - lang: bash
+          label: Dry-run
+          source: |
+            curl http://localhost:11434/api/repair -d '{"model":"llama3.2:latest"}'
+        - lang: bash
+          label: Apply
+          source: |
+            curl http://localhost:11434/api/repair -d '{"model":"llama3.2:latest","write":true}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepairRequest"
+      responses:
+        "200":
+          description: Per-tag diffs (and written flags)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepairResponse"
+        "400":
+          description: Missing model/models/all or invalid tag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/experimental/web_search:
+    post:
+      summary: Experimental web search (cloud)
+      description: Proxies to Eliza/Ollama cloud `/api/web_search`. Disabled when cloud is off.
+      operationId: experimentalWebSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebSearchRequest"
+      responses:
+        "200":
+          description: Search results from cloud
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebSearchResponse"
+        "400":
+          description: Missing body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "403":
+          description: Cloud disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/experimental/web_fetch:
+    post:
+      summary: Experimental web fetch (cloud)
+      description: >
+        Proxies to cloud `/api/web_fetch`. The `url` is validated locally first
+        (LA15 SSRF): loopback, RFC1918, link-local, and metadata hosts are rejected
+        with 400 before the proxy.
+      operationId: experimentalWebFetch
+      x-codeSamples:
+        - lang: bash
+          label: Fetch
+          source: |
+            curl http://localhost:11434/api/experimental/web_fetch -d '{"url":"https://ollama.com"}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebFetchRequest"
+      responses:
+        "200":
+          description: Page content from cloud
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebFetchResponse"
+        "400":
+          description: Missing body or SSRF-blocked URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "403":
+          description: Cloud disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /api/status:
     get:
       summary: Fleet inference status and runtime config
@@ -2816,6 +3553,57 @@ paths:
           description: Released
         "404":
           description: Cache pin not found or expired
+  /api/cache/warm:
+    post:
+      summary: Prefill and (optionally) pin an L3 slot without generating text
+      description: >
+        Runs a real prefix decode for prompt_cache_key and returns as soon as
+        the prefill completes — it does not return generated tokens. Safetensors
+        (MLX) models warm via scheduleRunner + Completion(num_predict=1) into the
+        MLX trie; GGUF models warm via the Python runtime L3 slot path. Why not
+        just POST /api/generate with a throwaway num_predict: warm is a narrow
+        boot-time contract (agent template preload, fleet warm-up) so callers
+        don't need to discover a num_predict=1 convention, pay for
+        sampling/logging as if it were a real completion, or guess whether the
+        prefix actually landed in a pinned slot/trie. Set pin=true to also
+        create an /api/cache/pin lease in the same call.
+      operationId: cacheWarm
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/cache/warm -d '{
+              "model": "llama3.2:3b",
+              "prompt": "<system prompt / agent template>",
+              "prompt_cache_key": "hermes:thread:42",
+              "pin": true,
+              "ttl_seconds": 3600
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CacheWarmRequest"
+      responses:
+        "200":
+          description: Prefix decoded (and pinned, if requested)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheWarmResponse"
+        "400":
+          description: Missing prompt / prompt_cache_key or invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "502":
+          description: Runtime sidecar unreachable or rejected the warm request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /api/metrics:
     get:
       summary: Prometheus metrics
@@ -3117,8 +3905,14 @@ paths:
       tags: [Audio]
       summary: Text to speech
       description: |
-        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro). Returns audio bytes
+        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro): returns audio bytes
         (typically audio/wav). Optional `emotion` is a zerollama extension.
+
+        MiniMax Music 3 (`modality_backends.speech=music3`) does **not** return WAV
+        on this POST. It queues the same async job as POST /v1/audio/generations
+        (HTTP 202 JSON). Poll GET /v1/audio/generations/{id} then fetch WAV from
+        GET /v1/audio/generations/{id}/content. Prefer the generations routes for
+        new clients. `duration` wins over `max_new_tokens` when both are set.
       operationId: createSpeech
       x-codeSamples:
         - lang: bash
@@ -3142,8 +3936,14 @@ paths:
             schema:
               $ref: "#/components/schemas/SpeechCreateRequest"
       responses:
+        "202":
+          description: Music 3 job queued (JSON); not audio bytes. Use /v1/audio/generations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioGeneration"
         "200":
-          description: Synthesized audio
+          description: Synthesized audio (Piper / remote-tts only)
           content:
             audio/wav:
               schema:
@@ -3175,6 +3975,65 @@ paths:
             text/plain:
               schema:
                 type: string
+  /v1/audio/generations:
+    post:
+      tags: [Audio]
+      summary: Queue MiniMax Music 3 (async)
+      description: |
+        Lab Music 3 via mlx-audio (`modality_backends.speech=music3`). Returns 202;
+        poll GET /v1/audio/generations/{id} then fetch WAV from .../content.
+        Same JSON body as /v1/audio/speech (`input` lyrics, `instructions` caption).
+      operationId: createAudioGeneration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechCreateRequest"
+      responses:
+        "202":
+          description: Queued job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioGeneration"
+  /v1/audio/generations/{id}:
+    get:
+      tags: [Audio]
+      summary: Music 3 job status
+      operationId: getAudioGeneration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioGeneration"
+  /v1/audio/generations/{id}/content:
+    get:
+      tags: [Audio]
+      summary: Music 3 WAV bytes
+      operationId: getAudioGenerationContent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: audio/wav
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
   /v1/audio/voices:
     get:
       tags: [Audio]
@@ -3218,6 +4077,133 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        "400":
+          description: Invalid request or media_missing / media_type_mismatch
+  /v1/media/{session}:
+    get:
+      tags: [Video]
+      summary: List media labels in a session
+      operationId: listMediaSession
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session label inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaSessionList"
+  /v1/media/{session}/{label}:
+    put:
+      tags: [Video]
+      summary: Upload media for a session label (CAS-deduped)
+      description: |
+        Stream raw bytes. Server SHA-256 CAS under $OLLAMA_MODELS/media/.
+        WHY not base64 in POST /v1/videos: keep create JSON small; soft TTL state ≠ model blobs.
+        See docs/media-uploads.md.
+      operationId: putMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+          image/png:
+            schema:
+              type: string
+              format: binary
+          image/jpeg:
+            schema:
+              type: string
+              format: binary
+          video/mp4:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaPutResponse"
+    head:
+      tags: [Video]
+      summary: Check whether a media label exists
+      operationId: headMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Exists
+        "404":
+          description: Missing
+    get:
+      tags: [Video]
+      summary: Download media bytes for a label
+      operationId: getMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Media bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+    delete:
+      tags: [Video]
+      summary: Delete a media label pointer
+      operationId: deleteMedia
+      parameters:
+        - name: session
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
   /v1/videos/{id}:
     get:
       tags: [Video]

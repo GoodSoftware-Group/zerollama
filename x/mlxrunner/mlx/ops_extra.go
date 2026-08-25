@@ -45,7 +45,7 @@ func ToFP8(x *Array) *Array {
 	return out
 }
 
-func Dequantize(w, scales, biases *Array, groupSize, bits int, mode string) *Array {
+func Dequantize(w, scales, biases *Array, groupSize, bits int, mode string, globalScale *Array) *Array {
 	cMode := C.CString(mode)
 	defer C.free(unsafe.Pointer(cMode))
 	optGroupSize := C.mlx_optional_int{value: C.int(groupSize), has_value: true}
@@ -58,8 +58,18 @@ func Dequantize(w, scales, biases *Array, groupSize, bits int, mode string) *Arr
 	}
 
 	out := New("DEQUANTIZE")
-	var globalScale C.mlx_array
-	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, b, optGroupSize, optBits, cMode, globalScale, optDtype, DefaultStream().ctx)
+	var noGlobalScale C.mlx_array
+	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, b, optGroupSize, optBits, cMode, noGlobalScale, optDtype, DefaultStream().ctx)
+	if globalScale != nil {
+		// The C-level global_scale argument is rejected on Metal; apply it on top.
+		gs := globalScale
+		if gs.Size() > 1 {
+			// A vector scale is per-row; bind it to the weight's leading axis.
+			gs = Reshape(gs, int32(gs.Size()), 1)
+		}
+		outType := out.DType()
+		out = Mul(out, gs).AsType(outType)
+	}
 	return out
 }
 
@@ -326,7 +336,7 @@ func TakeAlongAxis(a, indices *Array, axis int) *Array {
 	return a.TakeAlongAxis(indices, axis)
 }
 
-// Function-style wrappers matching imagegen API
+// Function-style wrappers for model code.
 
 func Add(a, b *Array) *Array {
 	return a.Add(b)
@@ -362,6 +372,13 @@ func Transpose(a *Array, axes ...int) *Array {
 
 func ExpandDims(a *Array, axis int) *Array {
 	return a.ExpandDims(axis)
+}
+
+// BroadcastTo broadcasts an array to the given shape.
+func BroadcastTo(a *Array, shape ...int32) *Array {
+	out := New("BROADCAST_TO")
+	C.mlx_broadcast_to(&out.ctx, a.ctx, (*C.int)(unsafe.Pointer(&shape[0])), C.size_t(len(shape)), DefaultStream().ctx)
+	return out
 }
 
 func Squeeze(a *Array, axis int) *Array {
@@ -451,6 +468,12 @@ func Sigmoid(a *Array) *Array {
 	return a.Sigmoid()
 }
 
+func Erf(a *Array) *Array {
+	out := New("ERF")
+	C.mlx_erf(&out.ctx, a.ctx, DefaultStream().ctx)
+	return out
+}
+
 func Exp(a *Array) *Array {
 	out := New("EXP")
 	C.mlx_exp(&out.ctx, a.ctx, DefaultStream().ctx)
@@ -472,6 +495,12 @@ func Sin(a *Array) *Array {
 func Cos(a *Array) *Array {
 	out := New("COS")
 	C.mlx_cos(&out.ctx, a.ctx, DefaultStream().ctx)
+	return out
+}
+
+func erf(a *Array) *Array {
+	out := New("ERF")
+	C.mlx_erf(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
@@ -659,20 +688,6 @@ func collect(v reflect.Value, arrays *[]*Array, seen map[uintptr]bool) {
 
 func EnableCompile() {
 	C.mlx_enable_compile()
-}
-
-// BroadcastTo expands a to the given shape using MLX broadcast rules.
-func BroadcastTo(a *Array, shape ...int32) *Array {
-	if len(shape) == 0 {
-		return a
-	}
-	cShape := make([]C.int, len(shape))
-	for i, d := range shape {
-		cShape[i] = C.int(d)
-	}
-	out := New("BROADCAST_TO")
-	C.mlx_broadcast_to(&out.ctx, a.ctx, &cShape[0], C.size_t(len(shape)), DefaultStream().ctx)
-	return out
 }
 
 func DisableCompile() {

@@ -1,6 +1,6 @@
 # GGUF llama-server Metal gated through UMA broker (M22)
 
-**Status:** PoC (Jul 2026). **Admission only** — same `uma_daemon` as [mlx-uma-sched.md](./mlx-uma-sched.md) / [ggml-uma-sched.md](./ggml-uma-sched.md).
+**Status:** Shipped (Jul 2026). Operator ladder: [`mac_uma_signoff.sh`](../scripts/phase/mac_uma_signoff.sh). **Admission only** — same `uma_daemon` as [mlx-uma-sched.md](./mlx-uma-sched.md) / [ggml-uma-sched.md](./ggml-uma-sched.md).
 
 ```text
 llama-server (Darwin Metal)

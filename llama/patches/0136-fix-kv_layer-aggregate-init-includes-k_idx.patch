@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 21 Aug 2026 00:42:33 -0700
+Subject: [PATCH] fix: kv_layer aggregate init includes k_idx
+
+---
+ src/llama-kv-cache.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 1490a7839..72563eb4f 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -692,7 +692,7 @@ llama_kv_cache::llama_kv_cache(
+ 
+         map_layer_ids[il] = layers.size();
+ 
+-        layers.push_back({ il, k, v, k_stream, v_stream, });
++        layers.push_back({ il, k, v, nullptr, k_stream, v_stream, {} });
+     }
+ 
+     if (reuse) {

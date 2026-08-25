@@ -335,6 +335,13 @@ func (f *File) TensorInfos() iter.Seq2[int, TensorInfo] {
 	return f.tensors.All()
 }
 
+// TensorDataOffset returns the absolute file offset of the tensor data blob.
+func (f *File) TensorDataOffset() int64 {
+	_ = f.keyValues.rest()
+	_ = f.tensors.rest()
+	return f.offset
+}
+
 func (f *File) TensorReader(name string) (TensorInfo, io.Reader, error) {
 	t := f.TensorInfo(name)
 	if t.NumBytes() == 0 {

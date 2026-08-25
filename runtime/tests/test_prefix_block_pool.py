@@ -139,6 +139,47 @@ def test_lmcache_tier_persists_and_hydrates(tmp_path, monkeypatch: pytest.Monkey
     assert match.lmcache_hits == 1
 
 
+def test_partial_lmcache_tier_load_resumes(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """vLLM #50321: resume from longest partial LMCache hit, not all-or-nothing."""
+    monkeypatch.setenv("ZEROLLAMA_LMCACHE_URI", f"file://{tmp_path}")
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE", "1")
+    reset_lmcache_tier_for_tests()
+
+    policy = resolve_prefix_cache_policy(spec_method="none")
+    scope = build_model_scope(model_hash="mh")
+    pool = get_prefix_block_pool(model_scope=scope)
+    tokens = _tokens(1024)
+    pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=512,
+        session_key="k",
+        slot_id=0,
+    )
+    reset_prefix_block_pools_for_tests()
+
+    match = get_prefix_block_pool(model_scope=scope).lookup_longest_prefix(
+        tokens, scope=scope, seq_pos=1024
+    )
+    assert match.matched_tokens == 512
+    assert match.matched_blocks == 1
+    assert match.lmcache_hits == 1
+    assert match.partial_tier_load is True
+
+    allow, resume, reason = prefix_cache_decision(
+        "k",
+        policy,
+        seq_pos=1024,
+        prompt_tokens=1024,
+        prompt_token_ids=tokens,
+        model_hash="mh",
+    )
+    assert allow is True
+    assert resume == 512
+    assert reason is None
+
+
 def test_prefix_block_pool_disabled_by_default():
     assert prefix_block_pool_enabled() is False
 

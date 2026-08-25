@@ -82,7 +82,9 @@ defaults you can still override surgically.
 
 | Goal | Prefer this | Not this |
 |---|---|---|
-| Multi-slot agent + prefix cache reuse | `ZEROLLAMA_L3_PROFILE=agent` | 5+ individual `ZEROLLAMA_LLAMA_CACHE*`/`ZEROLLAMA_RADIX_*` exports |
+| CUDA prod throughput (L1 + safe defaults) | `ZEROLLAMA_INFERENCE_PROFILE=auto` | Stacking `GPU_PROFILE` + `LLAMA_CACHE` + `FORK=0` + `GGML_CUDA_USE_GRAPHS=0` |
+| Multi-slot agent + prefix cache reuse | `ZEROLLAMA_INFERENCE_PROFILE=agent` (or `ZEROLLAMA_L3_PROFILE=agent`) | 5+ individual `ZEROLLAMA_LLAMA_CACHE*`/`ZEROLLAMA_RADIX_*` exports |
+| Long-ctx VRAM (TBQ when ctx ≥ 32k) | `ZEROLLAMA_INFERENCE_PROFILE=vram` | Flipping `ZEROLLAMA_LLAMA_FORK=1` for tok/s |
 | Custom runtime tuning | `ZEROLLAMA_RUNTIME_CONFIG=runtime/configs/<name>.yaml` | Dozens of `ZEROLLAMA_RUNTIME_*` exports |
 | L3/prefix trace debugging | `ZEROLLAMA_DEBUG=l3` | Guessing which subsystem's debug flag to flip |
 | Single discrete GPU (16GB class) | let autoconfig pick `single_gpu.yaml` | Manually setting every VRAM knob |

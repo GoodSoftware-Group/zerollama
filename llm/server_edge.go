@@ -32,6 +32,9 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	if !useLlamaServerBackendForModel(projectors, config) {
 		return nil, fmt.Errorf("%w; set ZEROLLAMA_LLAMA_SERVER=1/auto or use --edge", ErrGgmlRunnerUnlinked)
 	}
+	if llamaServerBlockedByOllamaRawMXFP4(f) {
+		return nil, fmt.Errorf("model uses ollama raw MXFP4 (GGUF type 4); edge llama-server cannot remap — use a non-edge build (ollama-engine) or a type-39 MXFP4 GGUF")
+	}
 
 	trainCtx := f.KV().ContextLength()
 	if opts.NumCtx > int(trainCtx) && trainCtx > 0 {

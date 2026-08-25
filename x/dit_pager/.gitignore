@@ -1,0 +1,3 @@
+# dit_pager build artifacts
+*.o
+tests/test_lru

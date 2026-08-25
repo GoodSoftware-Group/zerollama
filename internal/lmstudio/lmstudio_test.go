@@ -197,21 +197,131 @@ func TestListRealLMStudioCache(t *testing.T) {
 	t.Setenv("OLLAMA_LMSTUDIO_MODELS", cache)
 
 	entries := List()
-	if len(entries) < 12 {
-		t.Fatalf("expected at least 12 models, got %d", len(entries))
+	if len(entries) == 0 {
+		t.Fatal("expected at least one discoverable LM Studio model")
 	}
+
+	// Every publisher/model dir or symlink-to-dir with weights must appear.
+	wantDirs := map[string]bool{}
+	publishers, err := os.ReadDir(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pub := range publishers {
+		if !pub.IsDir() {
+			continue
+		}
+		pubPath := filepath.Join(cache, pub.Name())
+		models, err := os.ReadDir(pubPath)
+		if err != nil {
+			continue
+		}
+		for _, m := range models {
+			modelPath := filepath.Join(pubPath, m.Name())
+			info, err := m.Info()
+			if err != nil {
+				continue
+			}
+			isDir := m.IsDir()
+			if !isDir && info.Mode()&os.ModeSymlink != 0 {
+				if st, err := os.Stat(modelPath); err == nil && st.IsDir() {
+					isDir = true
+				}
+			}
+			if !isDir {
+				continue
+			}
+			scan := modelPath
+			if resolved, err := filepath.EvalSymlinks(modelPath); err == nil && resolved != "" {
+				scan = resolved
+			}
+			if _, ok := dirModelFormat(scan); !ok {
+				continue
+			}
+			wantDirs[modelPath] = true
+		}
+	}
+	if len(wantDirs) == 0 {
+		t.Skip("no weighted model dirs in real LM Studio cache")
+	}
+
+	gotDirs := map[string]bool{}
 	formats := map[string]int{}
 	for _, e := range entries {
 		formats[e.Format]++
 		if e.Name == "" || e.Dir == "" {
 			t.Fatalf("incomplete entry: %+v", e)
 		}
+		gotDirs[e.Dir] = true
 	}
-	if formats["gguf"] == 0 {
-		t.Fatal("expected at least one gguf model")
+	for dir := range wantDirs {
+		if !gotDirs[dir] {
+			t.Fatalf("missing discovery for weighted model dir %q (got %d entries)", dir, len(entries))
+		}
 	}
-	if formats["safetensors"] == 0 {
-		t.Fatal("expected at least one safetensors model")
+	if formats["gguf"] == 0 && formats["safetensors"] == 0 {
+		t.Fatal("expected gguf or safetensors entries")
+	}
+}
+
+func TestList_symlinkSafetensors(t *testing.T) {
+	root := t.TempDir()
+	realDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realDir, "config.json"), []byte(`{"model_type":"lfm2"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Non-model* name exercises the broad *.safetensors glob.
+	if err := os.WriteFile(filepath.Join(realDir, "weights.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	linkDir := filepath.Join(root, "mlx-community")
+	if err := os.MkdirAll(linkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(linkDir, "LFM2-350M-4bit")
+	if err := os.Symlink(realDir, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_LMSTUDIO_MODELS", root)
+
+	entries := List()
+	if len(entries) != 1 {
+		t.Fatalf("len=%d want 1 (symlink MLX tree)", len(entries))
+	}
+	if entries[0].Format != "safetensors" {
+		t.Fatalf("format=%q want safetensors", entries[0].Format)
+	}
+	if entries[0].Dir != linkPath {
+		t.Fatalf("Dir=%q want LM Studio symlink path %q", entries[0].Dir, linkPath)
+	}
+	wantName := "mlx-community/lfm2-350m:4bit"
+	if entries[0].Name != wantName {
+		t.Fatalf("Name=%q want %q", entries[0].Name, wantName)
+	}
+
+	n := model.ParseName(wantName)
+	dir, _, ok := MatchSelection(n)
+	if !ok || dir != linkPath {
+		t.Fatalf("MatchSelection ok=%v dir=%q want %q", ok, dir, linkPath)
+	}
+}
+
+func TestSafetensorsWeightFiles_genericName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "weights.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors.index.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	weights, ok := safetensorsWeightFiles(dir)
+	if !ok || len(weights) != 1 {
+		t.Fatalf("ok=%v len=%d want 1", ok, len(weights))
+	}
+	if filepath.Base(weights[0]) != "weights.safetensors" {
+		t.Fatalf("got %q", weights[0])
 	}
 }
 

@@ -30,10 +30,23 @@ func TestSuggestHostCtxFromSize(t *testing.T) {
 	}
 }
 
+func TestTagsGraphSizeEnabled(t *testing.T) {
+	t.Setenv("ZEROLLAMA_TAGS_GRAPHSIZE", "")
+	if tagsGraphSizeEnabled() {
+		t.Fatal("default off")
+	}
+	t.Setenv("ZEROLLAMA_TAGS_GRAPHSIZE", "1")
+	if !tagsGraphSizeEnabled() {
+		t.Fatal("want on")
+	}
+}
+
 func TestListContextSummaryHelpers(t *testing.T) {
-	// Exercised via cmd tests; keep server package focused on size heuristic.
 	t.Parallel()
-	if suggestHostCtxFromSize(1<<30, 1<<30+512, 8192) == 0 {
+	// budget must clear 1.10× weight margin before leftover counts
+	w := uint64(1 << 30)
+	budget := uint64(float64(w)*1.10) + 512
+	if suggestHostCtxFromSize(w, budget, 8192) == 0 {
 		t.Fatal("tiny leftover should still yield min ctx")
 	}
 }

@@ -21,6 +21,7 @@ If the user has other long-running servers they started (e.g. `llama-server` on 
 ## Never do this
 
 - Start `zerollama serve`, `ollama serve`, or bind HTTP on **11434** or **8081**
+- Start inference on the **Proxmox hypervisor** (see `.cursor/rules/pve-hypervisor-no-serve.mdc`) — production is **CT 1564** at **192.168.255.164:8080**
 - Set `OLLAMA_HOST` to `:11434` / `127.0.0.1:11434` when **starting** a server from the agent
 - Set `ZEROLLAMA_RUNTIME_URL` to `:8081` when **starting** a sidecar from the agent (unless user asked for a dedicated lab sidecar on another port)
 - **Kill or stop** any process listening on **11434** or **8081** (including Cursor, Ollama, zerollama, llama-server, Python runtime)

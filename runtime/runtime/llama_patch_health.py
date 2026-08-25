@@ -27,11 +27,15 @@ _REQUIRED_PATCH_SUBSTRINGS = (
     "ollama-llama-kv-ext",  # Phase 15; numbered 0014 historically, 0019 on 8f114a9b
     "ollama-kv-seq-copy-endpoint",  # numbered 0017/0018 historically; 0022 on 8f114a9b
     "cuda_graph_invalidate",  # 0075 — L3 decode-graph break for subprocess
+    "kv-grow-shrink-in-place",  # 0133 — llama_n_ctx_grow/shrink + POST /kv/grow|/kv/shrink
 )
 
 _IN_TREE_MARKERS = (
     ("llama/llama.cpp/tools/server/server.cpp", '"/kv/seq-copy"'),
     ("llama/llama.cpp/tools/server/server.cpp#cuda-graph", '"/cuda-graph/invalidate"'),
+    ("llama/llama.cpp/tools/server/server.cpp#kv-grow", '"/kv/grow"'),
+    ("llama/llama.cpp/tools/server/server.cpp#kv-shrink", '"/kv/shrink"'),
+    ("llama/llama.cpp/include/llama.h", "llama_n_ctx_grow"),
     ("llama/llama.cpp/include/llama-kv-ext.h", "llama_memory_kv_ext_classify"),
     ("llama/llama.cpp/src/llama-memory-kv-ext.cpp", "llama_memory_kv_cell_for_pos"),
 )

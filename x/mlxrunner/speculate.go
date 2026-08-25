@@ -127,7 +127,8 @@ func (s *speculation) open(request Request, caches []cache.Cache) *speculationSe
 		return nil
 	}
 	s.bind(caches)
-	d := s.drafter.open()
+	promptTokens := len(request.Tokens)
+	d := s.drafter.open(promptTokens)
 
 	// Logprobs are not yet supported, so a logprobs request keeps a speculationSession
 	// only to maintain a draft cache in lockstep (permanently parked).

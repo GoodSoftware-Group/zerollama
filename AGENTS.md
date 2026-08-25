@@ -13,6 +13,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | vLLM patterns | `../vllm` → [docs/vllm-borrowings.md](./docs/vllm-borrowings.md) |
 | LocalAI control plane | `../LocalAI` → [docs/localai-borrowings.md](./docs/localai-borrowings.md) |
 | SGLang multimodal | `../sglang` → [docs/sglang-multimodal-borrowings.md](./docs/sglang-multimodal-borrowings.md) |
+| MiniMax Music 3 rematch (optional clone) | `../sglang-omni` — **not** in sibling `sglang`; Mac hear path is mlx-audio ([docs/music-c.md](./docs/music-c.md), [findings](./docs/music-c-findings.md)). Do **not** vendor ComfyUI. |
 | llama.cpp pin / fork watch | `../llama.cpp`, `../eliza-llama.cpp` → [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) |
 | Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (patches **0106–0126** in `llama/patches/`; must reach **`llama/llama.cpp/`** via sync) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
@@ -20,6 +21,8 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 ## Do not touch
 
 - Production listeners on **11434** / **8081** — lab ports only (`11435`, `18081`, …).
+- **PVE hypervisor (ryzen7950x0):** never start or bind `zerollama` / `llama-server`. Serve only inside **CT 1564** (`pct exec 1564`, clients `192.168.255.164:8080`).
+- Remote model storage serve defaults to **`:18090`** (lab). Never point `storage serve` at inference ports. Operator guide + WHYs: [docs/remote-model-storage.md](./docs/remote-model-storage.md).
 
 ## Mac setup (fresh clone)
 
@@ -50,7 +53,7 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 | Sibling llama.cpp | `scripts/vendor/ensure_llama_cpp_sibling.sh` |
 | Metal sign-off | `scripts/gpu/metal_signoff.sh` (CI `:8080`, not production `:11434`) |
 
-**Pin:** ggml-org **`5f55650a`** (past tag **b10199**) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md). Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`.
+**Pin:** ggml-org **`b10488`** (`9d77fa17254e1dee4b9e92504c91611a60b1359f`) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md). Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`.
 
 **Optional (skip cleanly):** `../mlx` (safetensors), `../bmtl/.../uma_toolkit` (UMA), training venv (`MAC_SETUP_TRAINING=1`).
 
@@ -60,5 +63,8 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 
 - [docs/ROADMAP.md](./docs/ROADMAP.md)
 - [docs/README.md](./docs/README.md) — index of in-repo guides
+- Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning)
+- Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
+- MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS

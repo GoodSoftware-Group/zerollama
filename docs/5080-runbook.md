@@ -4,7 +4,7 @@
 
 **Status (CT 1564):** **Full re-sign-off PASS** (Jun 2026) — tiers 0–4 + Radix live + `RUN_E2E_UPSTREAM_GGUF=1` bundle. **L2 fork merge** remains informational (stock wins @ 8k — expected).
 
-**Continue here (Jul 2026):** pin **`86d86ed4`** (+ patches through **0098** on Mac Lab D; 5080 stack validated through **0088**+Tier F). Tier F RotorQuant **no-merge**; Phase 11 contention **PASS** (keep defaults); Phase 13 production calibrate **PASS** (`eliza-1-9b` factor **0.739** persist). **Next on this host:** Phase 15 / L3 polish, or optional clamp-on smoke — not more estimate knobs.
+**Continue here (Aug 2026):** L1 + Phase 17 `auto` + embed attach shipped on CT 1564. **Spec A/B (eliza-1-2b @ 8k, L1 q8_0/−b 1024/−np 2):** baseline **~188–189 tok/s**; `ngram-simple` wires / **0 accepts**; DFlash/MTP need matching target (Qwen3.5-2B) or newer pin. **Radix agent lane (lab `:18081`):** `ZEROLLAMA_INFERENCE_PROFILE=agent` → `l3_agent_subprocess.yaml` (not Phase 17 Go alone — Radix is Python runtime L3). Live PASS beside prod: OuteTTS 1B @ 4k, donor **5.36s** → target **0.52s**, `radix_seed` **64**, `kv_unified` metadata (`/tmp/l3-radix-prefix-smoke-live.json`). Do **not** flip daily prod to `agent` (multi-slot / kv_unified tradeoffs); keep `auto`→throughput + `single_gpu.yaml`. Lab LD must include `/root/nvidia-host` (fixed in `linux_runtime_export_llama_ld_path`) or ctypes/`llama-server` abort `munmap_chunk`. Next: Phase 15 polish / RotorQuant no-merge.
 
 **This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`. Fork labs: [llama-fork-watchlist.md](./llama-fork-watchlist.md).
 
@@ -227,6 +227,8 @@ source ./scripts/gpu/5080_env.sh
 ---
 
 ## Production serve (`~/bin/serve.sh`)
+
+**Never start serve on the Proxmox hypervisor** (ryzen7950x0). Host `/root/zerollama` is a symlink into this CT; `~/bin/serve.sh` on PVE binds host IPs, not `192.168.255.164`. Always `pct exec 1564 -- ~/bin/serve.sh`. The wrapper exits if `systemd-detect-virt` is not `lxc`.
 
 **Why a separate path from `5080_start_serve`:** sign-off uses loopback `:8080` and may set `ZEROLLAMA_GPU_PROFILE=0` for 1B smoke. Production binds **`0.0.0.0:8080`** for remote clients (Ruby `ZEROLLAMA_API_ENDPOINT`, Open WebUI, etc.) and keeps the **L1 `rtx-5080` profile** on (`n_parallel=2`, vendor fork KV). Embedded runtime stays **`127.0.0.1:8081`** — remote clients must not point at `:8081`.
 
@@ -663,6 +665,17 @@ Doc: [llama-fork-watchlist.md](./llama-fork-watchlist.md) · harness: `scripts/p
 ```bash
 CUDA_LLAMA_MODEL="$CUDA_LLAMA_MODEL" ./scripts/phase/l3_production_gate.sh
 ```
+
+### Agent lane vs Phase 17 (ops)
+
+| Lane | Knob | YAML | Where Radix lives |
+|------|------|------|-------------------|
+| Daily throughput (prod default) | `ZEROLLAMA_INFERENCE_PROFILE=auto` | `single_gpu.yaml` (1 slot) | Off — L1 np=2 is Go/llama-server only |
+| Agent / shared-prefix | `ZEROLLAMA_INFERENCE_PROFILE=agent` | `l3_agent_subprocess.yaml` (slots + `radix_share`) | Python runtime (`:8081` embed or sidecar) |
+
+**WHY not `RADIX=1` alone:** with `single_gpu.yaml`, `llama_parallel_slots=1` so cross-slot seq-copy never fires. Explicit `ZEROLLAMA_RUNTIME_CONFIG` still wins over the agent default.
+
+**Lab beside prod:** `ZEROLLAMA_RUNTIME_URL=http://127.0.0.1:18081 L3_RADIX_LIVE=1 …` — never restart/kill `:8081`/`:11434`. Prefer a small GGUF when prod already holds VRAM; eliza-1 9B @ 4 slots aborted beside ~6 GiB prod load (use OuteTTS 1B or free GPU).
 
 ### Radix cross-slot live (vendor only)
 

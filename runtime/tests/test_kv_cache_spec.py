@@ -121,6 +121,29 @@ def test_swa_retention_interval_blocks_mid_sequence(monkeypatch: pytest.MonkeyPa
     assert spec.cache_prompt_allowed(req2) is True
 
 
+def test_swa_retention_default_zero_block_aligned(monkeypatch: pytest.MonkeyPatch):
+    """vLLM #52216: unset retention → 0 (block-aligned only)."""
+    from runtime.env import prefix_cache_retention_interval, reset_runtime_env_for_tests
+
+    monkeypatch.delenv("ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL", raising=False)
+    reset_runtime_env_for_tests()
+    assert prefix_cache_retention_interval() == 0
+
+    spec = KVCacheSpec(
+        kind="sliding_window",
+        effective_window=8192,
+        allow_cache_prompt_base=True,
+        allow_disk_persist=True,
+        disk_ttl_ms=300000,
+        speculative_draft=False,
+        retention_interval=0,
+    )
+    req = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=900, prompt_tokens=50)
+    assert spec.cache_prompt_allowed(req) is False
+    req2 = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=512, prompt_tokens=50)
+    assert spec.cache_prompt_allowed(req2) is True
+
+
 def test_resolve_kv_cache_spec_swa_from_gguf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
     gguf = tmp_path / "swa.gguf"

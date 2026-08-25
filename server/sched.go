@@ -22,6 +22,7 @@ import (
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
+	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/x/imagegen"
@@ -87,6 +88,9 @@ type Scheduler struct {
 	getSystemInfoFn func() ml.SystemInfo
 	waitForRecovery time.Duration
 
+	loadCooldownMu sync.Mutex
+	loadCooldown   map[string]*loadCooldownEntry
+
 	// When true, GetRunner blocks until ResumeLoads (used when training needs VRAM).
 	loadsPaused atomic.Bool
 
@@ -102,6 +106,10 @@ type Scheduler struct {
 // on a large GPU can cause stalling
 var defaultModelsPerGPU = 3
 
+// Floor for idle in-place KV shrink under VRAM pressure. Below this, leftover KV
+// is small versus weights; live cells that do not fit fail the shrink call.
+const kvReclaimFloor = 2048
+
 var ErrMaxQueue = errors.New("server busy, please try again.  maximum pending requests exceeded")
 
 func InitScheduler(ctx context.Context) *Scheduler {
@@ -116,6 +124,7 @@ func InitScheduler(ctx context.Context) *Scheduler {
 		getGpuFn:        discover.GPUDevices,
 		getSystemInfoFn: discover.GetSystemInfo,
 		waitForRecovery: 5 * time.Second,
+		loadCooldown:    make(map[string]*loadCooldownEntry),
 	}
 	sched.loadFn = sched.load
 	sched.mlxGate = *newMLXAgentGate()
@@ -184,6 +193,10 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 		attrs = append(attrs, schedRunnerAttrs(runner)...)
 		schedLogInfo("GetRunner fast path (already loaded)", req, attrs...)
 		req.useLoadedRunner(runner, s.finishedReqCh)
+		return req.successCh, req.errCh, 0
+	}
+	if err := s.cooldownErr(key); err != nil {
+		req.errCh <- err
 		return req.successCh, req.errCh, 0
 	}
 	req.fifoSeq = AllocCrossQueueSeq()
@@ -311,10 +324,12 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 		runner.refMu.Unlock()
 		s.loadedMu.Unlock()
 		slog.Debug("orphaned runner shutting down", "orphan", runner, "loaded", runnerToUnload)
+		digests := append([]string(nil), runner.blobDigests...)
 		runner.refMu.Lock()
 		llama := runner.detachServer()
 		runner.refMu.Unlock()
 		closeLlamaServer(llama)
+		releaseRemoteBlobs(digests)
 		return
 	}
 	if runner.refCount > 0 {
@@ -334,6 +349,7 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 		runnersSnapshot = append(runnersSnapshot, r)
 	}
 	delete(s.loaded, modelKey)
+	digests := append([]string(nil), runner.blobDigests...)
 	runner.refMu.Unlock()
 	s.loadedMu.Unlock()
 
@@ -343,6 +359,7 @@ func (s *Scheduler) processExpiredRunner(runner *runnerRef) {
 	llama := runner.detachServer()
 	runner.refMu.Unlock()
 	closeLlamaServer(llama)
+	releaseRemoteBlobs(digests)
 	go func() {
 		<-finished
 		schedLogDebug("runner unloaded, signaling scheduler", nil, schedRunnerAttrs(runner)...)
@@ -520,6 +537,14 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			// new one fits
 			schedLogDebug("probing load alongside existing models", pending, "loaded_count", loadedCount)
 			needEvict := s.loadFn(pending, systemInfo, gpus, true)
+			if needEvict {
+				// Idle dense KV at 16k–32k is gigabytes; shrink that before unloading weights.
+				if n := s.tryShrinkIdleKV(ctx, pendingKey); n > 0 {
+					s.updateFreeSpace(gpus)
+					needEvict = s.loadFn(pending, systemInfo, gpus, true)
+					schedLogInfo("retried load after idle kv shrink", pending, "shrunk", n, "still_need_evict", needEvict)
+				}
+			}
 			if !needEvict {
 				schedLogInfo("new model fits without eviction", pending)
 				break
@@ -792,6 +817,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			f, loadErr := llm.LoadModel(req.model.ModelPath, 1024)
 			if loadErr != nil {
 				slog.Info("failed to load model metadata", "model", req.model.ModelPath, "error", loadErr)
+				s.noteLoadFailure(schedulerModelKey(req.model), loadErr)
 				req.errCh <- loadErr
 				s.loadedMu.Unlock()
 				return false
@@ -821,6 +847,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		}
 		if err != nil {
 			slog.Info("failed to create server", "model", req.model.ShortName, "error", err)
+			s.noteLoadFailure(schedulerModelKey(req.model), err)
 			req.errCh <- err
 			s.loadedMu.Unlock()
 			return false
@@ -869,6 +896,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 				// No other models loaded, yet we still don't fit, so report an error
 				schedLogWarn("model too large for system memory", req, "require_full", requireFull)
 				s.clearActiveLoading(llama)
+				s.noteLoadFailure(schedulerModelKey(req.model), err)
 				req.errCh <- err
 			} else {
 				// Fit probe alongside an loaded model: partial GPU is fine after eviction.
@@ -883,6 +911,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 
 		schedLogWarn("Load failed", req, "error", err, "total_elapsed", time.Since(loadStart))
 		s.clearActiveLoading(llama)
+		s.noteLoadFailure(schedulerModelKey(req.model), err)
 		req.errCh <- err
 		return false
 	}
@@ -906,6 +935,7 @@ iGPUScan:
 		model:           req.model,
 		modelPath:       req.model.ModelPath,
 		modelKey:        schedulerModelKey(req.model),
+		blobDigests:     append([]string(nil), req.model.BlobDigests...),
 		llama:           llama,
 		Options:         &req.opts,
 		sessionDuration: sessionDuration,
@@ -921,6 +951,7 @@ iGPUScan:
 		contextShift:    runnerContextShift(req),
 	}
 	runner.numParallel = numParallel
+	pinRemoteBlobs(runner.blobDigests)
 
 	s.loadedMu.Lock()
 	var oldRunner *runnerRef
@@ -935,10 +966,12 @@ iGPUScan:
 	slog.Info("loaded runners", "count", len(s.loaded))
 	s.loadedMu.Unlock()
 	if oldRunner != nil {
+		oldDigests := oldRunner.blobDigests
 		oldRunner.refMu.Lock()
 		leaked := oldRunner.detachServer()
 		oldRunner.refMu.Unlock()
 		closeLlamaServer(leaked)
+		releaseRemoteBlobs(oldDigests)
 	}
 	schedLogDebug("runner registered, waiting for subprocess ready", req,
 		"pid", runner.pid, "vram_size", runner.vramSize, "llama_load_elapsed", time.Since(llamaLoadStart))
@@ -946,12 +979,33 @@ iGPUScan:
 	go func() {
 		defer close(runner.loadDone)
 		waitStart := time.Now()
+		// Capture identity before WaitUntilRunning: eviction can detachServer()
+		// (nil runner.model) while we wait — see gemma4 load vs eliza thrash panic.
+		readyName := ""
+		if req.model != nil {
+			readyName = req.model.ShortName
+		}
+		readyPath := runner.modelPath
 		if err = llama.WaitUntilRunning(req.ctx); err != nil {
 			schedLogWarn("WaitUntilRunning failed", req, "error", err, "wait_elapsed", time.Since(waitStart), "total_elapsed", time.Since(loadStart))
 			runner.refMu.Lock()
 			runner.loading = false
 			runner.refMu.Unlock()
+			s.noteLoadFailure(schedulerModelKey(req.model), err)
 			req.errCh <- err
+			s.scheduleExpiredRunner(runner)
+			return
+		}
+		runner.refMu.Lock()
+		// Evicted during wait: llama/model cleared by detachServer — do not succeed.
+		if runner.llama == nil || runner.model == nil {
+			runner.loading = false
+			runner.refMu.Unlock()
+			schedLogWarn("runner unloaded during WaitUntilRunning", req,
+				"wait_elapsed", time.Since(waitStart),
+				"total_elapsed", time.Since(loadStart),
+			)
+			req.errCh <- fmt.Errorf("runner unloaded during load")
 			s.scheduleExpiredRunner(runner)
 			return
 		}
@@ -960,13 +1014,13 @@ iGPUScan:
 			"wait_elapsed", time.Since(waitStart),
 			"total_elapsed", time.Since(loadStart),
 		)
+		s.clearLoadCooldown(schedulerModelKey(req.model))
 		slog.Info(
 			"model ready",
-			"name", runner.model.ShortName,
-			"path", runner.modelPath,
+			"name", readyName,
+			"path", readyPath,
 			"pid", runner.pid,
 		)
-		runner.refMu.Lock()
 		if runner.pid < 0 {
 			runner.pid = llama.Pid()
 		}
@@ -1091,6 +1145,7 @@ type runnerRef struct {
 	model        *Model
 	modelPath    string
 	modelKey     string
+	blobDigests  []string // remotestore pin set; kept after model is nil'd on unload
 	numParallel  int
 	contextShift bool
 	loadedMeta   api.LoadedModelMetadata
@@ -1141,8 +1196,12 @@ func syncRunnerLoadOptions(runner *runnerRef) {
 		return
 	}
 	if runner.Options.NumCtx != effective {
+		modelName := runner.modelPath
+		if runner.model != nil && runner.model.ShortName != "" {
+			modelName = runner.model.ShortName
+		}
 		slog.Debug("sync runner num_ctx to effective load size",
-			"model", runner.model.ShortName,
+			"model", modelName,
 			"requested", runner.Options.NumCtx,
 			"effective", effective,
 		)
@@ -1228,10 +1287,34 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	if runner.llama != nil {
 		if effective := runner.llama.ContextLength(); effective > 0 {
 			if optsNew.NumCtx > effective {
-				return reloadReason("num_ctx_exceeds_loaded_kv",
-					"loaded_ctx", effective,
-					"want_ctx", optsNew.NumCtx,
-				)
+				if g, ok := runner.llama.(interface {
+					GrowNumCtx(context.Context, int) error
+				}); ok {
+					if err := g.GrowNumCtx(ctx, optsNew.NumCtx); err == nil {
+						if cl := runner.llama.ContextLength(); cl > 0 {
+							runner.Options.NumCtx = cl
+							optsExisting.NumCtx = cl
+							optsNew.NumCtx = cl
+						}
+						slog.Info("runner kv grew in place",
+							"model", schedulerModelKey(req.model),
+							"loaded_ctx", effective,
+							"want_ctx", req.opts.NumCtx,
+							"now_ctx", runner.Options.NumCtx,
+						)
+					} else {
+						return reloadReason("num_ctx_exceeds_loaded_kv",
+							"loaded_ctx", effective,
+							"want_ctx", optsNew.NumCtx,
+							"grow_err", err,
+						)
+					}
+				} else {
+					return reloadReason("num_ctx_exceeds_loaded_kv",
+						"loaded_ctx", effective,
+						"want_ctx", optsNew.NumCtx,
+					)
+				}
 			}
 			if optsNew.NumCtx < effective {
 				optsNew.NumCtx = optsExisting.NumCtx // treat "fits in loaded ctx" as same
@@ -1247,7 +1330,10 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	if !reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) {
 		return reloadReason("projector_paths_changed")
 	}
-	if !runner.model.IsMLX() && !reflect.DeepEqual(optsExisting, optsNew) {
+	// Image DiT runners do not size KV from Runner opts the way ggml/llama-server
+	// do — DeepEqual on DefaultOptions vs request often false-fires and wedges
+	// eviction when modelKey was never set on the fixture.
+	if !runner.model.IsMLX() && !runner.isImagegen && !reflect.DeepEqual(optsExisting, optsNew) {
 		return reloadReason("runner_options_changed",
 			"loaded_num_ctx", optsExisting.NumCtx,
 			"want_num_ctx", optsNew.NumCtx,
@@ -1528,6 +1614,74 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 	return nil
 }
 
+type kvShrinker interface {
+	ShrinkNumCtx(context.Context, int) error
+}
+
+func runnerEffectiveNumCtx(runner *runnerRef) int {
+	if runner.llama != nil {
+		if n := runner.llama.ContextLength(); n > 0 {
+			return n
+		}
+	}
+	if runner.Options != nil && runner.Options.NumCtx > 0 {
+		return runner.Options.NumCtx
+	}
+	return 0
+}
+
+// tryShrinkIdleKV packs idle llama-server KV down to kvReclaimFloor. exceptKey is
+// skipped (the model we are trying to load). Returns how many runners shrunk.
+func (s *Scheduler) tryShrinkIdleKV(ctx context.Context, exceptKey string) int {
+	s.loadedMu.Lock()
+	runners := make([]*runnerRef, 0, len(s.loaded))
+	for _, r := range s.loaded {
+		runners = append(runners, r)
+	}
+	s.loadedMu.Unlock()
+
+	n := 0
+	for _, runner := range runners {
+		if exceptKey != "" && runner.modelKey == exceptKey {
+			continue
+		}
+		runner.refMu.Lock()
+		idle := runner.refCount == 0 && !runner.loading && runner.llama != nil
+		runner.refMu.Unlock()
+		if !idle {
+			continue
+		}
+		sh, ok := runner.llama.(kvShrinker)
+		if !ok {
+			continue
+		}
+		have := runnerEffectiveNumCtx(runner)
+		if have <= kvReclaimFloor {
+			continue
+		}
+		if err := sh.ShrinkNumCtx(ctx, kvReclaimFloor); err != nil {
+			slog.Debug("idle kv shrink failed", "model", runner.modelPath, "from_ctx", have, "error", err)
+			continue
+		}
+		now := kvReclaimFloor
+		if runner.llama != nil {
+			if cl := runner.llama.ContextLength(); cl > 0 {
+				now = cl
+			}
+		}
+		if runner.Options != nil {
+			runner.Options.NumCtx = now
+		}
+		n++
+		slog.Info("idle kv shrink for vram reclaim",
+			"model", runner.modelPath,
+			"from_ctx", have,
+			"to_ctx", now,
+		)
+	}
+	return n
+}
+
 func (s *Scheduler) unloadRunnersExcept(keepModelKey string) {
 	s.unloadRunnersExceptOpts(keepModelKey, false)
 }
@@ -1666,7 +1820,9 @@ func (s *Scheduler) ResumeLoads() {
 		return
 	}
 	slog.Info("scheduler: resumed new loads")
-	s.pending.notify()
+	if s.pending != nil {
+		s.pending.notify()
+	}
 }
 
 // UnloadAllRunners evicts loaded models but keeps pin/fulfillment-protected keys.
@@ -1960,6 +2116,28 @@ func (s *Scheduler) findLoadedRunner(model *Model) *runnerRef {
 		}
 	}
 	return nil
+}
+
+// pinRemoteBlobs / releaseRemoteBlobs keep remotestore LRU from deleting blobs
+// that a loaded runner still needs (and clean ephemeral scratch on unload).
+// Why here (scheduler), not GetModel: pins must track runner lifetime, not
+// metadata reads; GetModel is also used for show/tags without loading weights.
+func pinRemoteBlobs(digests []string) {
+	if len(digests) == 0 {
+		return
+	}
+	if r := remotestore.Default(); r != nil && r.Enabled() {
+		r.Pin(digests...)
+	}
+}
+
+func releaseRemoteBlobs(digests []string) {
+	if len(digests) == 0 {
+		return
+	}
+	if r := remotestore.Default(); r != nil && r.Enabled() {
+		r.ReleaseModelBlobs(digests...)
+	}
 }
 
 // expireRunner unloads a loaded model immediately (stop CLI, keep_alive:0, post-create

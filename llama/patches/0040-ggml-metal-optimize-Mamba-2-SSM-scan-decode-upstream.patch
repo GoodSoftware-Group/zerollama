@@ -12,10 +12,10 @@ Subject: [PATCH] ggml-metal: optimize Mamba-2 SSM scan decode (upstream
  4 files changed, 107 insertions(+), 8 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index 659b92d39..5c2f09ab3 100644
+index 3b4e04088..9da4f393b 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -544,7 +544,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan(ggml_me
+@@ -579,7 +579,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan(ggml_me
  
      const int nsg = (ne00 + 31)/32;
  
@@ -28,7 +28,7 @@ index 659b92d39..5c2f09ab3 100644
      snprintf(name, 256, "%s_nsg=%d", base, nsg);
  
      ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
-@@ -552,12 +556,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan(ggml_me
+@@ -587,12 +591,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan(ggml_me
          res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
      }
  
@@ -50,10 +50,10 @@ index 659b92d39..5c2f09ab3 100644
      return res;
  }
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 961d8273b..fb29a85d7 100644
+index 8d516894c..0720919ce 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -1553,7 +1553,15 @@ int ggml_metal_op_ssm_scan(ggml_metal_op_t ctx, int idx) {
+@@ -1769,7 +1769,15 @@ int ggml_metal_op_ssm_scan(ggml_metal_op_t ctx, int idx) {
  
      ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
  
@@ -71,10 +71,10 @@ index 961d8273b..fb29a85d7 100644
      return 1;
  }
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 8faaf53e2..56c0d6506 100644
+index 32da6bf72..8693cd512 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -2446,6 +2446,89 @@ kernel void kernel_ssm_scan_f32(
+@@ -2517,6 +2517,89 @@ kernel void kernel_ssm_scan_f32(
      s_buff[i] = s;
  }
  
@@ -165,10 +165,10 @@ index 8faaf53e2..56c0d6506 100644
      device const float * k,
      device const float * v,
 diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
-index 162bfc98c..1f6a9789f 100644
+index 3349a64b1..e0e99667e 100644
 --- a/tests/test-backend-ops.cpp
 +++ b/tests/test-backend-ops.cpp
-@@ -8791,6 +8791,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+@@ -9058,6 +9058,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
      test_cases.emplace_back(new test_ssm_scan(GGML_TYPE_F32, 16, 1, 1024, 1, 32, 4)); // Mamba-1
      test_cases.emplace_back(new test_ssm_scan(GGML_TYPE_F32, 128, 64, 16, 2, 32, 4)); // Mamba-2
      test_cases.emplace_back(new test_ssm_scan(GGML_TYPE_F32, 256, 64,  8, 2, 32, 4)); // Falcon-H1

@@ -12,10 +12,10 @@ common_get_device_memory_data(_impl) signature after SWA projection work.
  3 files changed, 8 insertions(+), 6 deletions(-)
 
 diff --git a/common/fit.cpp b/common/fit.cpp
-index e44b208bc..8bb9e9b7b 100644
+index fbb846d19..3ee9fa585 100644
 --- a/common/fit.cpp
 +++ b/common/fit.cpp
-@@ -663,12 +663,12 @@ static void common_params_fit_impl(
+@@ -666,12 +666,12 @@ static void common_params_fit_impl(
              mparams_test.tensor_buft_overrides = tensor_buft_overrides;
          }
  
@@ -30,7 +30,7 @@ index e44b208bc..8bb9e9b7b 100644
                  equal_fits = false;
                  break;
              }
-@@ -684,7 +684,7 @@ static void common_params_fit_impl(
+@@ -687,7 +687,7 @@ static void common_params_fit_impl(
  
          LOG_INF("%s: %s\n", __func__, reason);
          for (size_t id = 0; id < nd; ++id) {
@@ -50,10 +50,10 @@ index 208fc3069..6598a8433 100644
 +                           uint32_t & hp_n_swa,
                       ggml_log_level   log_level);
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 099720a70..95d992f9a 100644
+index 188c09c03..4e939c72e 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -1181,10 +1181,11 @@ private:
+@@ -1090,10 +1090,11 @@ private:
                  uint32_t hp_ngl = 0;
                  uint32_t hp_nct = 0;
                  uint32_t hp_nex = 0;
@@ -66,7 +66,7 @@ index 099720a70..95d992f9a 100644
  
                      GGML_ASSERT(!params_base.fit_params_target.empty());
                      size_t total = 0;
-@@ -2787,8 +2788,8 @@ private:
+@@ -2706,8 +2707,8 @@ private:
                      // Full-sequence copy (partial p1 triggers assert on KV backends).
                      common_context_seq_cp(ctx_tgt, id_src, id_dst, 0, -1);
                      if (ctx_dft) {

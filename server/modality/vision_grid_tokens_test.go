@@ -226,3 +226,28 @@ func TestValidatePreexpandedVideoMessage_gridTHW(t *testing.T) {
 		t.Fatal("expected grid/frame mismatch")
 	}
 }
+
+func TestValidatePreexpandedVideoMessage_zeroFrames(t *testing.T) {
+	// SGLang #31957: empty/zero frame_count must 400, not silent truncate.
+	msg := api.Message{
+		Images:     make([]api.ImageData, 1),
+		VideoSpans: []api.VideoSpan{{FrameCount: 0}},
+	}
+	err := validatePreexpandedVideoMessage(&msg)
+	if err == nil {
+		t.Fatal("expected zero frame_count reject")
+	}
+	if !IsClientMedia(err) {
+		t.Fatalf("want ClientMedia, got %T %v", err, err)
+	}
+}
+
+func TestGridTHWPerRaster_rejectsOverclaim(t *testing.T) {
+	msg := api.Message{
+		Images:     make([]api.ImageData, 2),
+		VideoSpans: []api.VideoSpan{{FrameCount: 5, GridTHW: []int{5, 8, 8}}},
+	}
+	if got := GridTHWPerRaster(msg); got != nil {
+		t.Fatalf("overclaim should return nil grids, got %v", got)
+	}
+}

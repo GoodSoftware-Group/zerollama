@@ -154,18 +154,27 @@ linux_runtime_resume_if_needed() {
   fi
 }
 
-# Prepend llama-server bindir + optional Ollama cuda_v12 to LD_LIBRARY_PATH.
+# Prepend llama-server bindir + CT GPU driver stubs + Ollama CUDA runtimes.
+# WHY /root/nvidia-host first on Proxmox CT 1564: host libcuda via that path;
+# without it, ctypes `llama_backend_init` and a second llama-server abort with
+# `munmap_chunk(): invalid pointer` while the production process (started via
+# serve_gpu_example.sh) keeps working. Match scripts/serve/serve_gpu_example.sh.
 linux_runtime_export_llama_ld_path() {
   local bin="${LLAMA_SERVER_BIN:-}"
   local bin_dir=""
   local extras=()
+  # Driver / CT stubs before CUDA runtimes (order matches production serve).
+  [[ -d /root/nvidia-host ]] && extras+=("/root/nvidia-host")
+  [[ -d /usr/hostlibs ]] && extras+=("/usr/hostlibs")
   if [[ -x "${bin}" ]]; then
     bin_dir="$(cd "$(dirname "${bin}")" && pwd)"
     extras+=("${bin_dir}")
   elif [[ -n "${LLAMA_CPP_ROOT:-}" && -d "${LLAMA_CPP_ROOT}/build/bin" ]]; then
     extras+=("${LLAMA_CPP_ROOT}/build/bin")
   fi
-  # Prefer packaged CUDA 12 runtime when present (matches many vendor builds).
+  # Prefer packaged CUDA matching the vendor build (5080 / cuda_v13 on this host).
+  [[ -d /usr/lib/ollama/cuda_v13 ]] && extras+=("/usr/lib/ollama" "/usr/lib/ollama/cuda_v13")
+  [[ -d /usr/local/lib/ollama/cuda_v13 ]] && extras+=("/usr/local/lib/ollama" "/usr/local/lib/ollama/cuda_v13")
   [[ -d /usr/local/lib/ollama/cuda_v12 ]] && extras+=("/usr/local/lib/ollama/cuda_v12")
   [[ -d /usr/local/lib/ollama ]] && extras+=("/usr/local/lib/ollama")
   if [[ ${#extras[@]} -gt 0 ]]; then

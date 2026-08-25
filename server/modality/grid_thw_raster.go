@@ -18,8 +18,10 @@ func GridTHWPerRaster(msg api.Message) [][]int {
 		videoFrames += sp.FrameCount
 	}
 	still := len(msg.Images) - videoFrames
+	// SGLang #31957: do not silently remount grids when spans claim more frames
+	// than images (validatePreexpandedVideoMessage rejects this on the chat path).
 	if still < 0 {
-		still = 0
+		return nil
 	}
 
 	frameIdx := still

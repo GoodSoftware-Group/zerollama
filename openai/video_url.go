@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,7 +14,10 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/ssrf"
 )
+
+const videoFetchMaxRedirects = 5
 
 // videoFetchTransport is shared across remote video_url GETs; per-request deadlines use context.
 // Why pooled: agent threads repeat the same HTTPS clip; cloning DefaultTransport preserves
@@ -105,17 +107,7 @@ func fetchVideoURL(ctx context.Context, rawURL string) (api.VideoData, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, errors.New("unsupported video URL scheme")
-	}
-	if u.Scheme == "http" && !envconfig.VideoAllowInsecureHTTP() {
-		return nil, errors.New("video_url: use https for remote URLs, or set OLLAMA_VIDEO_ALLOW_INSECURE_HTTP=1")
-	}
-	host := u.Hostname()
-	if host == "" {
-		return nil, errors.New("invalid video URL host")
-	}
-	if err := verifyURLHostSafe(host); err != nil {
+	if err := checkRemoteMediaURL(u); err != nil {
 		return nil, err
 	}
 
@@ -136,7 +128,22 @@ func fetchVideoURL(ctx context.Context, rawURL string) (api.VideoData, error) {
 	}
 	req.Header.Set("Accept", "video/*,*/*")
 
-	resp, err := (&http.Client{Transport: videoFetchTransport}).Do(req)
+	client := &http.Client{
+		Transport: videoFetchTransport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// SGLang #34892: re-validate scheme/host/allowlist/SSRF on every hop so a
+			// public CDN cannot bounce into loopback or off-allowlist hosts.
+			if len(via) >= videoFetchMaxRedirects {
+				return errors.New("video_url: too many redirects")
+			}
+			if req.URL == nil {
+				return errors.New("video_url: redirect missing URL")
+			}
+			return checkRemoteMediaURL(req.URL)
+		},
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -146,45 +153,55 @@ func fetchVideoURL(ctx context.Context, rawURL string) (api.VideoData, error) {
 		return nil, fmt.Errorf("fetch video: status %d", resp.StatusCode)
 	}
 
-	limited := io.LimitReader(resp.Body, envconfig.VideoMaxBytes()+1)
+	maxBytes := envconfig.VideoMaxBytes()
+	if cl := resp.ContentLength; cl > 0 && cl > maxBytes {
+		return nil, fmt.Errorf("video exceeds max size (%d bytes)", maxBytes)
+	}
+
+	limited := io.LimitReader(resp.Body, maxBytes+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > envconfig.VideoMaxBytes() {
-		return nil, fmt.Errorf("video exceeds max size (%d bytes)", envconfig.VideoMaxBytes())
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("video exceeds max size (%d bytes)", maxBytes)
 	}
 	rememberVideoURLFetchCache(rawURL, body)
 	return body, nil
 }
 
-// verifyURLHostSafe rejects loopback and private addresses after DNS resolution.
-// The subsequent TCP dial is not pinned to these IPs (DNS rebinding is not fully mitigated here).
-func verifyURLHostSafe(host string) error {
+// checkRemoteMediaURL enforces scheme, optional allowlist, and SSRF host checks
+// for the initial URL and every redirect target (SGLang #34892).
+func checkRemoteMediaURL(u *url.URL) error {
+	if u == nil {
+		return errors.New("invalid video URL")
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return errors.New("unsupported video URL scheme")
+	}
+	if u.Scheme == "http" && !envconfig.VideoAllowInsecureHTTP() {
+		return errors.New("video_url: use https for remote URLs, or set OLLAMA_VIDEO_ALLOW_INSECURE_HTTP=1")
+	}
+	host := u.Hostname()
 	if host == "" {
-		return errors.New("empty host")
+		return errors.New("invalid video URL host")
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		if isBlockedIP(ip) {
-			return errors.New("video URL resolves to a non-public address")
-		}
-		return nil
+	if err := checkMediaHostAllowed(host); err != nil {
+		return err
 	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("video URL host lookup: %w", err)
-	}
-	if len(ips) == 0 {
-		return errors.New("video URL host has no addresses")
-	}
-	for _, ip := range ips {
-		if isBlockedIP(ip) {
-			return errors.New("video URL resolves to a non-public address")
-		}
-	}
-	return nil
+	return ssrf.ValidateURL(u)
 }
 
-func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+func checkMediaHostAllowed(host string) error {
+	allowed := envconfig.MediaAllowedHosts()
+	if len(allowed) == 0 {
+		return nil
+	}
+	h := strings.ToLower(strings.Trim(host, "[]"))
+	for _, a := range allowed {
+		if h == a || strings.HasSuffix(h, "."+a) {
+			return nil
+		}
+	}
+	return fmt.Errorf("video URL host %q not in OLLAMA_MEDIA_ALLOWED_HOSTS", host)
 }

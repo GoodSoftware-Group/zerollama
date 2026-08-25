@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 17 Jul 2026 10:00:41 -0700
+Subject: [PATCH] ggml-metal: fix null-pipeline crash for F16 src1 mul_mat
+ (upstream #25648)
+
+---
+ ggml/src/ggml-metal/ggml-metal-device.m | 46 ++++++++++++++++++++++++-
+ ggml/src/ggml-metal/ggml-metal-ops.cpp  | 15 ++++++++
+ 2 files changed, 60 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index dc362a4e3..8a7a0bacc 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1501,9 +1501,53 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+         case GGML_OP_GATED_DELTA_NET:
+             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
+         case GGML_OP_SOLVE_TRI:
++            return has_simdgroup_reduction && op->src[0]->type != GGML_TYPE_NVFP4;
+         case GGML_OP_MUL_MAT:
++            {
++                if (!has_simdgroup_reduction || op->src[0]->type == GGML_TYPE_NVFP4) {
++                    return false;
++                }
++
++                // the mat-vec kernels only have an f16 x f16 variant when src0 is F16;
++                // for BF16 there is no f16-src1 kernel at all (mat-mat included), and for
++                // F32/quantized src0 there is no kernel_mul_mv_<type>_f16 (only _f32), so
++                // those shapes must take the mat-mat path instead, which does have full
++                // f16 coverage (see ggml_metal_op_mul_mat for the matching dispatch logic)
++                if (op->src[1]->type == GGML_TYPE_F16 && op->src[0]->type != GGML_TYPE_F16) {
++                    if (op->src[0]->type == GGML_TYPE_BF16) {
++                        return false;
++                    }
++
++                    return !ggml_is_transposed(op->src[0]) &&
++                           !ggml_is_transposed(op->src[1]) &&
++                           has_simdgroup_mm &&
++                           op->src[0]->ne[0] >= 64 &&
++                           op->src[1]->ne[1] > 8;
++                }
++
++                return true;
++            }
+         case GGML_OP_MUL_MAT_ID:
+-            return has_simdgroup_reduction;
++            {
++                if (!has_simdgroup_reduction || op->src[0]->type == GGML_TYPE_NVFP4) {
++                    return false;
++                }
++
++                // the mat-vec-id kernels have no f16-src1 variant for any src0 type (only
++                // f32); f16 src1 is only supported via the mat-mat-id path, and even that
++                // path has no f16-src1 kernel for BF16 src0
++                if (op->src[1]->type == GGML_TYPE_F16) {
++                    if (op->src[0]->type == GGML_TYPE_BF16) {
++                        return false;
++                    }
++
++                    return has_simdgroup_mm &&
++                           op->src[0]->ne[0] >= 64 &&
++                           op->src[2]->ne[1] >= 32;
++                }
++
++                return true;
++            }
+         case GGML_OP_SET:
+         case GGML_OP_CPY:
+         case GGML_OP_DUP:
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 82033bb4a..17486b8a2 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2402,6 +2402,16 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+ 
++// defense in depth: a missing Metal kernel should be a clear, actionable abort instead of
++// a null-pipeline dereference deep in the encoder (ggml_metal_library_compile_pipeline
++// already logs the underlying MTLLibraryErrorDomain error before returning a nil pipeline)
++static void ggml_metal_op_mul_mat_check_pipeline(const ggml_metal_pipeline_with_params & pipeline, const ggml_tensor * op) {
++    if (!pipeline.pipeline) {
++        GGML_ABORT("%s: no Metal kernel for op = %s, src0 type = %s, src1 type = %s",
++                __func__, ggml_op_name(op->op), ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
++    }
++}
++
+ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
+@@ -2534,6 +2544,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+         };
+ 
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         ggml_metal_kargs_mul_mv_ext args = {
+             /*.ne00  =*/ ne00,
+@@ -2581,6 +2592,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+         //}
+ 
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         ggml_metal_kargs_mul_mm args = {
+             /*.ne00 =*/ ne00,
+@@ -2616,6 +2628,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
+     } else {
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         const int nr0 = pipeline.nr0;
+         const int nr1 = pipeline.nr1;
+@@ -2776,6 +2789,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+ 
+         {
+             auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
++            ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+             ggml_metal_kargs_mul_mm_id args = {
+                 /*.ne00  =*/ ne00,
+@@ -2812,6 +2826,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+         }
+     } else {
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         const int nr0 = pipeline.nr0;
+         const int nr1 = pipeline.nr1;

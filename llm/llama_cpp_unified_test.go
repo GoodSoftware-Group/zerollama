@@ -6,12 +6,82 @@ import (
 	"testing"
 )
 
+func writeFakeLlamaServer(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Mach-O magic + pad to satisfy isUsableLlamaServerBin size gate.
+	buf := make([]byte, 1<<20)
+	copy(buf, []byte{0xCF, 0xFA, 0xED, 0xFE})
+	if err := os.WriteFile(path, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIsLegacyLlamaCppCheckout(t *testing.T) {
 	if !IsLegacyLlamaCppCheckout("/Users/x/Sites/inference/eliza-llama.cpp") {
 		t.Fatal("expected eliza-llama.cpp to be legacy")
 	}
 	if IsLegacyLlamaCppCheckout("/Users/x/Sites/inference/llama.cpp") {
 		t.Fatal("expected llama.cpp to not be legacy")
+	}
+}
+
+func TestIsUsableLlamaServerBinRejectsStub(t *testing.T) {
+	dir := t.TempDir()
+	tiny := filepath.Join(dir, "llama-server")
+	if err := os.WriteFile(tiny, []byte{0xCF, 0xFA, 0xED, 0xFE, 'x'}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isUsableLlamaServerBin(tiny) {
+		t.Fatal("tiny mach-o stub should be rejected")
+	}
+	realish := filepath.Join(dir, "llama-server-big")
+	writeFakeLlamaServer(t, realish)
+	if !isUsableLlamaServerBin(realish) {
+		t.Fatal("1MiB mach-o fixture should be accepted")
+	}
+}
+
+func TestIsUsableLlamaServerBinAcceptsSplitBuild(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "llama-server")
+	// ~18 KiB thin PIE + companion impl (vendor/sibling cmake layout).
+	buf := make([]byte, 18<<10)
+	copy(buf, []byte{0x7f, 'E', 'L', 'F'})
+	if err := os.WriteFile(bin, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isUsableLlamaServerBin(bin) {
+		t.Fatal("thin binary without impl .so should be rejected")
+	}
+	impl := filepath.Join(dir, "libllama-server-impl.so")
+	if err := os.WriteFile(impl, []byte("fake-impl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !isUsableLlamaServerBin(bin) {
+		t.Fatal("split build with libllama-server-impl.so should be accepted")
+	}
+}
+
+func TestIsUsableLlamaServerBinAcceptsDarwinSplitBuild(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "llama-server")
+	buf := make([]byte, 18<<10)
+	copy(buf, []byte{0xCF, 0xFA, 0xED, 0xFE})
+	if err := os.WriteFile(bin, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isUsableLlamaServerBin(bin) {
+		t.Fatal("thin Darwin binary without impl dylib should be rejected")
+	}
+	impl := filepath.Join(dir, "libllama-server-impl.dylib")
+	if err := os.WriteFile(impl, []byte("fake-impl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !isUsableLlamaServerBin(bin) {
+		t.Fatal("split build with libllama-server-impl.dylib should be accepted")
 	}
 }
 
@@ -50,20 +120,10 @@ func TestLlamaCppPathUsesLegacyCheckout(t *testing.T) {
 func TestApplyUnifiedLlamaCppEnvRedirectsLegacyServerBin(t *testing.T) {
 	unified := t.TempDir()
 	legacyDir := filepath.Join(filepath.Dir(unified), "eliza-llama.cpp")
-	if err := os.MkdirAll(filepath.Join(legacyDir, "build", "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	legacyBin := filepath.Join(legacyDir, "build", "bin", "llama-server")
-	if err := os.WriteFile(legacyBin, []byte("stub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(unified, "build", "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeLlamaServer(t, legacyBin)
 	unifiedBin := filepath.Join(unified, "build", "bin", "llama-server")
-	if err := os.WriteFile(unifiedBin, []byte("ok"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeLlamaServer(t, unifiedBin)
 
 	t.Setenv("LLAMA_CPP_ROOT", unified)
 	t.Setenv("LLAMA_SERVER_BIN", legacyBin)
@@ -86,12 +146,12 @@ func TestApplyUnifiedLlamaCppEnvRedirectsSiblingToVendor(t *testing.T) {
 	if sibling == "" {
 		t.Skip("no sibling path")
 	}
-	if err := os.MkdirAll(filepath.Join(vendor, "build", "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	vendorBin := filepath.Join(vendor, "build", "bin", "llama-server")
-	if err := os.WriteFile(vendorBin, []byte("ok"), 0o755); err != nil {
-		t.Fatal(err)
+	// Do not clobber a real multi-MB build; only install a fixture if absent/unusable.
+	hadReal := isUsableLlamaServerBin(vendorBin)
+	if !hadReal {
+		writeFakeLlamaServer(t, vendorBin)
+		t.Cleanup(func() { _ = os.Remove(vendorBin) })
 	}
 
 	t.Setenv("LLAMA_CPP_ROOT", sibling)
@@ -137,5 +197,15 @@ func TestVendorLlamaCppRootPrefersPatchedVendor(t *testing.T) {
 		if got != vendor {
 			t.Fatalf("UnifiedLlamaCppRoot = %q, want vendor %q", got, vendor)
 		}
+	}
+}
+
+func TestFindVendorLlamaServerFallback(t *testing.T) {
+	path, ok := findVendorLlamaServerFallback()
+	if !ok {
+		t.Skip("no built vendor llama-server on this machine")
+	}
+	if !isUsableLlamaServerBin(path) {
+		t.Fatalf("fallback %q is not usable", path)
 	}
 }

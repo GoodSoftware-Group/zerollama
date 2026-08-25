@@ -27,3 +27,12 @@ func TestPrefillProxyFromEmbedCapFull(t *testing.T) {
 		t.Fatalf("PrefillProxyFromEmbedCap capped = (%d,%d)", ic, oc)
 	}
 }
+
+func TestPrefillExpertOC(t *testing.T) {
+	if got := PrefillExpertOC(2048); got != 512 {
+		t.Fatalf("PrefillExpertOC(2048)=%d want 512", got)
+	}
+	if got := PrefillExpertOC(128); got != 64 {
+		t.Fatalf("PrefillExpertOC(128)=%d want 64", got)
+	}
+}

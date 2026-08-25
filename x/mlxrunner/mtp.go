@@ -2,6 +2,7 @@ package mlxrunner
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
@@ -30,14 +31,44 @@ func newMTPDrafter(s *speculation) *mtpDrafter {
 }
 
 // open returns the drafting session for one request, its pairing frontier
-// synced to the draft caches' restored offset.
-func (d *mtpDrafter) open() *mtpDraftSession {
+// synced to the draft caches' restored offset. promptTokens drives history
+// policy resolve (F0751 / mtplx auto @ 16k → last_window).
+func (d *mtpDrafter) open(promptTokens int) *mtpDraftSession {
 	s := &mtpDraftSession{drafter: d}
 	if kv := d.spec.draftKV; len(kv) > 0 {
 		// A restored prefix arrives with the draft caches already written;
 		// pairing resumes from their absolute offset.
 		s.committedDraftOffset = kv[0].Offset()
 		s.frontier = s.committedDraftOffset
+	}
+	// Product default committed; set ZEROLLAMA_MLX_MTP_HISTORY=auto for 16k flip.
+	requested := mtpHistoryEnvPolicy()
+	if requested == "" {
+		requested = mtpHistoryCommitted
+	}
+	plan, err := resolveMTPHistoryPolicy(requested, promptTokens)
+	if err != nil {
+		slog.Warn("mtp history policy", "error", err)
+		plan = mtpHistoryPlan{Policy: mtpHistoryCommitted}
+	}
+	s.history = plan
+	// Next absolute look-ahead index eligible for a draft-KV pair write.
+	s.writeLookAheadAbs = s.committedDraftOffset + 1
+	if plan.Policy == mtpHistoryLastWindow && plan.HistoryStart > s.writeLookAheadAbs {
+		s.writeLookAheadAbs = plan.HistoryStart
+	}
+	if plan.Policy == mtpHistoryLastWindow {
+		slog.Info("mtp history policy",
+			"policy", plan.Policy,
+			"window_tokens", plan.WindowTokens,
+			"history_start", plan.HistoryStart,
+			"prompt_tokens", promptTokens,
+			"draft_kv", len(d.spec.draftKV) > 0)
+	} else {
+		slog.Debug("mtp history policy",
+			"policy", plan.Policy,
+			"prompt_tokens", promptTokens,
+			"draft_kv", len(d.spec.draftKV) > 0)
 	}
 	return s
 }
@@ -48,6 +79,12 @@ func (d *mtpDrafter) open() *mtpDraftSession {
 // completes only when the next token arrives.
 type mtpDraftSession struct {
 	drafter *mtpDrafter
+	history mtpHistoryPlan
+
+	// writeLookAheadAbs is the absolute look-ahead token index of the next
+	// pair that may enter draft KV (mtplx last_window may jump this past the
+	// trimmed prefix without advancing committedDraftOffset).
+	writeLookAheadAbs int
 
 	// frontier is the slot after the last reported token; frontierHidden is
 	// the pinned target hidden at frontier-1, fused into the next pair.
@@ -78,11 +115,11 @@ func (d *mtpDraftSession) committed(tokens, hiddens *mlx.Array, position int) {
 		// token takes the carried frontier hidden, each later token the row
 		// before it. Leading tokens whose slot is already buffered or written
 		// through (a proposal consumed the run's first token, or a restored
-		// prefix sits at the run start) are skipped; a slot below the frontier
-		// is a gap bug.
-		start := d.committedDraftOffset + d.pendingCount - position + 1
+		// prefix sits at the run start) are skipped; a slot below the write
+		// cursor is a gap bug (unless last_window jumped the cursor).
+		start := d.writeLookAheadAbs - position
 		if start < 0 {
-			panic(fmt.Sprintf("mtp: committed run at %d leaves a pair gap at %d", position, d.committedDraftOffset+d.pendingCount))
+			panic(fmt.Sprintf("mtp: committed run at %d leaves a pair gap at look-ahead %d", position, d.writeLookAheadAbs))
 		}
 		if start < n {
 			ids := tokens.Slice(mlx.Slice(), mlx.Slice(start, n))
@@ -93,6 +130,7 @@ func (d *mtpDraftSession) committed(tokens, hiddens *mlx.Array, position int) {
 				h = hiddens.Slice(mlx.Slice(), mlx.Slice(start-1, n-1), mlx.Slice())
 			}
 			d.queueCacheWrites(ids, h)
+			d.writeLookAheadAbs = position + n
 		}
 	}
 
@@ -107,8 +145,9 @@ func (d *mtpDraftSession) settle(next *mlx.Array) {
 	if len(d.drafter.spec.draftKV) == 0 {
 		return
 	}
-	if d.frontierHidden != nil && d.frontier-1 == d.committedDraftOffset+d.pendingCount {
+	if d.frontierHidden != nil && d.writeLookAheadAbs == d.frontier {
 		d.queueCacheWrites(next.ExpandDims(-1), d.frontierHidden)
+		d.writeLookAheadAbs++
 	}
 	d.flush()
 }

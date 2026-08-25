@@ -6,7 +6,15 @@ info:
     name: MIT
     url: https://opensource.org/licenses/MIT
   description: |
-    OpenAPI specification for the Ollama HTTP API
+    OpenAPI specification for the Ollama HTTP API.
+
+    Note (zerollama): the **served** OpenAPI document is
+    `server/openapi/openapi.yaml` (`GET /openapi.json` / `/docs`). That file
+    includes Hermes/M15e extensions (`timeout`, `/api/cache/pin`,
+    `/v1/chat/completions/batch`, can-load topology, `preempted_reason`).
+    This `docs/openapi.yaml` is the upstream-shaped reference and may lag.
+    LocalAI routes (`/api/aliases`, `/api/score`, `/api/router/*`, `/api/repair`,
+    experimental web_*) live only in the served spec.
 servers:
   - url: http://localhost:11434
     description: Ollama

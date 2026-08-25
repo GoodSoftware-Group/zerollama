@@ -1,0 +1,97 @@
+{
+  "note": "minimax-h3-mlx packing.py geometry; rematch vs h3_host",
+  "canvases": [
+    {
+      "aw": 16,
+      "ah": 9,
+      "height": 768,
+      "width": 1344
+    },
+    {
+      "aw": 9,
+      "ah": 16,
+      "height": 1344,
+      "width": 768
+    },
+    {
+      "aw": 1,
+      "ah": 1,
+      "height": 768,
+      "width": 768
+    },
+    {
+      "aw": 4,
+      "ah": 1,
+      "height": 512,
+      "width": 2016
+    },
+    {
+      "aw": 1,
+      "ah": 4,
+      "height": 2016,
+      "width": 512
+    },
+    {
+      "aw": 21,
+      "ah": 9,
+      "height": 672,
+      "width": 1536
+    },
+    {
+      "aw": 3,
+      "ah": 2,
+      "height": 768,
+      "width": 1152
+    }
+  ],
+  "frames": [
+    {
+      "request": 1,
+      "aligned": 5,
+      "video_t": 2,
+      "audio_t": 8
+    },
+    {
+      "request": 5,
+      "aligned": 5,
+      "video_t": 2,
+      "audio_t": 8
+    },
+    {
+      "request": 6,
+      "aligned": 22,
+      "video_t": 7,
+      "audio_t": 37
+    },
+    {
+      "request": 22,
+      "aligned": 22,
+      "video_t": 7,
+      "audio_t": 37
+    },
+    {
+      "request": 23,
+      "aligned": 39,
+      "video_t": 12,
+      "audio_t": 65
+    },
+    {
+      "request": 100,
+      "aligned": 107,
+      "video_t": 32,
+      "audio_t": 178
+    },
+    {
+      "request": 360,
+      "aligned": 362,
+      "video_t": 107,
+      "audio_t": 603
+    },
+    {
+      "request": 361,
+      "aligned": 362,
+      "video_t": 107,
+      "audio_t": 603
+    }
+  ]
+}

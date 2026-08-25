@@ -1,0 +1,15 @@
+{
+  "capabilities": ["speech"],
+  "modality_backends": { "speech": "music3" },
+  "music_generation": {
+    "duration_sec": 10,
+    "steps": 30,
+    "timeout_sec": 3600
+  },
+  "backend_paths": {
+    "music3_mlx_model": "~/.zerollama/models/MiniMax-Music3-8bit"
+  },
+  "architecture": "arm64",
+  "os": "darwin",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

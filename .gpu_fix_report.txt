@@ -1,0 +1,57 @@
+=== Thu Jul 16 01:18:22 PM PDT 2026 ===
+VERSION:
+{"distribution":"zerollama","edge_build":false,"version":"0.30.11","zerollama":{"capabilities":{"mlx_live_kv":true,"mlx_qos":true,"prompt_cache_key":true,"runner_paths":["mlx","gguf_ggml"],"session_qos_gate":true},"qos":{"classes":["interactive","auxiliary","background"],"defaults":{"image_generation":"background","video_generation":"background","video_understanding":"auxiliary (stream) / background (non-stream)","vision":"auxiliary (stream) / background (non-stream)"},"modalities":["text","vision","video_understanding","image_generation","video_generation"],"openai":{"extra_body":["zerollama","options","prompt_cache_key"]},"options":{"fields":{"cache_scope":"auto | thread | shared","project_id":"client harness id (alias: client_id, project)","project_name":"human label for zerollama ps (alias: client_name)","qos_class":"interactive | auxiliary | background (aliases: primary, aux, bg)","qos_priority":"0-100; class inferred when qos_class omitted (\u003e=70 interactive)","session_group":"harness id for shared cache branch (alias: harness)","session_parent":"parent thread prompt_cache_key"},"legacy":["mlx_session_class","mlx_session_parent"],"path":"options.zerollama"},"routes":{"image_generation":"/api/generate (image models), /v1/images/generations, /v1/images/edits","text":"/api/generate, /api/chat, /v1/chat/completions","video_generation":"POST /v1/videos","video_understanding":"/api/chat, /v1/chat/completions (videos in messages)","vision":"/api/chat, /v1/chat/completions (images in messages)"}}}}
+PROCS:
+root     1198554  0.0  0.0   7372  1796 ?        S    19:54   0:00 bash -lc cd /root/bin && setsid bash -c "./serve.sh" </dev/null >>/tmp/zerollama-serve.restart.log 2>&1 &
+root     1198555  0.0  0.0   2892  1536 ?        Ss   19:54   0:00 /bin/sh ./serve.sh
+root     1198614  7.6  0.2 22050152 62428 ?      Sl   19:55   1:39 zerollama serve
+root     1198615  0.0  0.0   5780  2048 ?        S    19:55   0:00 tee -a /tmp/zerollama-serve.log
+root     1199239  863 29.4 10909176 7404684 ?    Sl   19:57 167:13 /usr/bin/zerollama runner --model /root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b --port 41775
+PORTS:
+LISTEN 0      2048       127.0.0.1:8081       0.0.0.0:*    users:(("zerollama",pid=1198614,fd=39))    
+LISTEN 0      4096               *:8080             *:*    users:(("zerollama",pid=1198614,fd=5))     
+LD_CHECK:
+no_env
+CUDA_LOG:
+time=2026-07-16T09:04:57.749Z level=DEBUG source=runner.go:166 msg="verifying if device is supported" library=/usr/lib/ollama/cuda_v12 description="NVIDIA GeForce RTX 5080" compute=13.1 id=CUDA0 pci_id=""
+time=2026-07-16T09:04:57.829Z level=DEBUG source=runner.go:173 msg="filtering device which didn't fully initialize" id=CUDA0 libdir=/usr/lib/ollama/cuda_v12 pci_id="" library=CUDA
+time=2026-07-16T09:04:57.830Z level=INFO source=types.go:63 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="24.0 GiB" available="23.5 GiB"
+time=2026-07-16T09:04:57.830Z level=INFO source=routes.go:2519 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
+time=2026-07-16T09:12:30.148Z level=DEBUG source=runner.go:166 msg="verifying if device is supported" library=/usr/lib/ollama/cuda_v12 description="NVIDIA GeForce RTX 5080" compute=13.1 id=CUDA0 pci_id=""
+time=2026-07-16T09:12:30.222Z level=DEBUG source=runner.go:173 msg="filtering device which didn't fully initialize" id=CUDA0 libdir=/usr/lib/ollama/cuda_v12 pci_id="" library=CUDA
+time=2026-07-16T09:12:30.222Z level=INFO source=types.go:63 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="24.0 GiB" available="23.3 GiB"
+time=2026-07-16T09:12:30.222Z level=INFO source=routes.go:2519 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
+time=2026-07-16T16:53:48.724Z level=DEBUG source=runner.go:166 msg="verifying if device is supported" library=/usr/lib/ollama/cuda_v12 description="NVIDIA GeForce RTX 5080" compute=13.1 id=CUDA0 pci_id=""
+time=2026-07-16T16:53:48.800Z level=DEBUG source=runner.go:173 msg="filtering device which didn't fully initialize" id=CUDA0 libdir=/usr/lib/ollama/cuda_v12 pci_id="" library=CUDA
+time=2026-07-16T16:53:48.801Z level=INFO source=types.go:63 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="24.0 GiB" available="23.3 GiB"
+time=2026-07-16T16:53:48.801Z level=INFO source=routes.go:2520 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
+time=2026-07-16T18:35:08.779Z level=DEBUG source=runner.go:166 msg="verifying if device is supported" library=/usr/lib/ollama/cuda_v13 description="NVIDIA GeForce RTX 5080" compute=13.1 id=CUDA0 pci_id=""
+time=2026-07-16T18:35:08.858Z level=DEBUG source=runner.go:173 msg="filtering device which didn't fully initialize" id=CUDA0 libdir=/usr/lib/ollama/cuda_v13 pci_id="" library=CUDA
+time=2026-07-16T18:35:08.859Z level=INFO source=types.go:63 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="24.0 GiB" available="23.1 GiB"
+time=2026-07-16T18:35:08.859Z level=INFO source=routes.go:2520 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
+time=2026-07-16T19:57:09.093Z level=DEBUG source=runner.go:166 msg="verifying if device is supported" library=/usr/lib/ollama/cuda_v13 description="NVIDIA GeForce RTX 5080" compute=13.3 id=CUDA0 pci_id=""
+time=2026-07-16T19:57:09.170Z level=DEBUG source=runner.go:173 msg="filtering device which didn't fully initialize" id=CUDA0 libdir=/usr/lib/ollama/cuda_v13 pci_id="" library=CUDA
+time=2026-07-16T19:57:09.171Z level=INFO source=types.go:63 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="24.0 GiB" available="23.2 GiB"
+time=2026-07-16T19:57:09.171Z level=INFO source=routes.go:2520 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
+RESTART:
+time=2026-07-16T20:18:28.445Z level=DEBUG source=sched.go:1155 mtime=2026-07-16T20:18:28.445Z level=DEBUG source=sched.go:1155 msg="evaluating already loaded" model=/root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b
+time=2026-07-16T20:18:28.446Z level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=HammerAI/openhermes-2.5-mistral:latest model_key=/root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b fifo_seq=0 sched_attempt=0 num_ctx=32767 num_gpu=-1 num_predict=8000 pending_queue=0 loaded_models=HammerAI/openhermes-2.5-mistral:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=HammerAI/openhermes-2.5-mistral:latest runner_key=/root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b ref_count=35 loading=false pid=1199239 vram=0 session_duration=5m0s
+time=2026-07-16T20:18:28.446Z level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=HammerAI/openhermes-2.5-mistral:latest phase_elapsed=54ms request_elapsed=55ms
+time=2026-07-16T20:18:28.458Z level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=HammerAI/openhermes-2.5-mistral:latest phase_elapsed=12ms request_elapsed=66ms
+time=2026-07-16T20:18:28.458Z level=DEBUG source=server.go:1402 msg="completion request" images=0 prompt=21569 format=""
+time=2026-07-16T20:18:35.389Z level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/chat stream=false model=HammerAI/openhermes-2.5-mistral:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false
+time=2026-07-16T20:18:35.414Z level=DEBUG source=ggml.go:334 msg="key with type not found" key=tokenizer.chat_template default=""
+time=2026-07-16T20:18:35.414Z level=DEBUG source=ggml.go:334 msg="key with type not found" key=llama.nextn_predict_layers default=0
+time=2026-07-16T20:18:35.414Z level=DEBUG source=ggml.go:334 msg="key with type not found" key=llama.nextn_predict_layers default=0
+time=2026-07-16T20:18:35.422Z level=DEBUG source=ggml.go:334 msg="key with type not found" key=tokenizer.chat_template default=""
+time=2026-07-16T20:18:35.422Z level=DEBUG source=ggml.go:334 msg="key with type not found" key=llama.nextn_predict_layers default=0
+time=2026-07-16T20:18:35.422Z level=DEBUG source=ggml.go:334 msg="key with type not found" key=llama.nextn_predict_layers default=0
+time=2026-07-16T20:18:35.429Z level=DEBUG source=runner.go:280 msg="refreshing free memory"
+time=2026-07-16T20:18:35.429Z level=DEBUG source=runner.go:53 msg="overall device VRAM discovery took" duration=76.11µs
+time=2026-07-16T20:18:35.429Z level=DEBUG source=routes.go:400 msg="scheduleRunner: waiting for runner" model=registry.ollama.ai/HammerAI/openhermes-2.5-mistral:latest num_ctx=32767 keep_alive=default
+time=2026-07-16T20:18:35.431Z level=DEBUG source=sched.go:1155 msg="evaluating already loaded" model=/root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b
+time=2026-07-16T20:18:35.432Z level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=HammerAI/openhermes-2.5-mistral:latest model_key=/root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b fifo_seq=0 sched_attempt=0 num_ctx=32767 num_gpu=-1 num_predict=8000 pending_queue=0 loaded_models=HammerAI/openhermes-2.5-mistral:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=HammerAI/openhermes-2.5-mistral:latest runner_key=/root/.ollama/models/blobs/sha256-cd58120326971c71c0590f6b7084a0744e287ce9c67275d8b4bf34a5947d950b ref_count=36 loading=false pid=1199239 vram=0 session_duration=5m0s
+time=2026-07-16T20:18:35.432Z level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=HammerAI/openhermes-2.5-mistral:latest phase_elapsed=42ms request_elapsed=43ms
+time=2026-07-16T20:18:35.461Z level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=HammerAI/openhermes-2.5-mistral:latest phase_elapsed=29ms request_elapsed=71ms
+time=2026-07-16T20:18:35.461Z level=DEBUG source=server.go:1402 msg="completion request" images=0 prompt=22885 format=""
+FINAL_MARKER

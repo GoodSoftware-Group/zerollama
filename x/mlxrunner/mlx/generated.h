@@ -9,7 +9,6 @@
 #define mlx_array_tostring mlx_array_tostring_mlx_gen_orig_
 #define mlx_array_new mlx_array_new_mlx_gen_orig_
 #define mlx_array_free mlx_array_free_mlx_gen_orig_
-#define mlx_array_detach mlx_array_detach_mlx_gen_orig_
 #define mlx_array_new_bool mlx_array_new_bool_mlx_gen_orig_
 #define mlx_array_new_int mlx_array_new_int_mlx_gen_orig_
 #define mlx_array_new_float32 mlx_array_new_float32_mlx_gen_orig_
@@ -633,7 +632,6 @@
 #undef mlx_array_tostring
 #undef mlx_array_new
 #undef mlx_array_free
-#undef mlx_array_detach
 #undef mlx_array_new_bool
 #undef mlx_array_new_int
 #undef mlx_array_new_float32
@@ -1255,7 +1253,6 @@ extern size_t (*mlx_dtype_size_)(mlx_dtype dtype);
 extern int (*mlx_array_tostring_)(mlx_string* str, const mlx_array arr);
 extern mlx_array (*mlx_array_new_)(void);
 extern int (*mlx_array_free_)(mlx_array arr);
-extern int (*mlx_array_detach_)(mlx_array arr);
 extern mlx_array (*mlx_array_new_bool_)(bool val);
 extern mlx_array (*mlx_array_new_int_)(int val);
 extern mlx_array (*mlx_array_new_float32_)(float val);
@@ -1764,6 +1761,7 @@ extern int (*mlx_fast_scaled_dot_product_attention_)(
     const char* mask_mode,
     const mlx_array mask_arr /* may be null */,
     const mlx_array sinks /* may be null */,
+    bool force_fused,
     const mlx_stream s);
 extern int (*mlx_fft_fft_)(
     mlx_array* res,
@@ -3647,12 +3645,6 @@ static inline mlx_array mlx_array_new(void) {
 static inline int mlx_array_free(mlx_array arr) {
     return mlx_array_free_(arr);
 }
-static inline int mlx_array_detach(mlx_array arr) {
-    if (mlx_array_detach_ == NULL) {
-        return 0;
-    }
-    return mlx_array_detach_(arr);
-}
 static inline mlx_array mlx_array_new_bool(bool val) {
     return mlx_array_new_bool_(val);
 }
@@ -3794,9 +3786,15 @@ static inline int mlx_array_item_complex64(mlx_complex64_t* res, const mlx_array
     return mlx_array_item_complex64_(res, arr);
 }
 static inline int mlx_array_item_float16(float16_t* res, const mlx_array arr) {
+    if (mlx_array_item_float16_ == NULL) {
+        return 0;
+    }
     return mlx_array_item_float16_(res, arr);
 }
 static inline int mlx_array_item_bfloat16(bfloat16_t* res, const mlx_array arr) {
+    if (mlx_array_item_bfloat16_ == NULL) {
+        return 0;
+    }
     return mlx_array_item_bfloat16_(res, arr);
 }
 static inline const bool * mlx_array_data_bool(const mlx_array arr) {
@@ -3836,9 +3834,15 @@ static inline const mlx_complex64_t * mlx_array_data_complex64(const mlx_array a
     return mlx_array_data_complex64_(arr);
 }
 static inline const float16_t * mlx_array_data_float16(const mlx_array arr) {
+    if (mlx_array_data_float16_ == NULL) {
+        return 0;
+    }
     return mlx_array_data_float16_(arr);
 }
 static inline const bfloat16_t * mlx_array_data_bfloat16(const mlx_array arr) {
+    if (mlx_array_data_bfloat16_ == NULL) {
+        return 0;
+    }
     return mlx_array_data_bfloat16_(arr);
 }
 static inline int _mlx_array_is_available(bool* res, const mlx_array arr) {
@@ -4527,8 +4531,9 @@ static inline int mlx_fast_scaled_dot_product_attention(
     const char* mask_mode,
     const mlx_array mask_arr /* may be null */,
     const mlx_array sinks /* may be null */,
+    bool force_fused,
     const mlx_stream s) {
-    return mlx_fast_scaled_dot_product_attention_(res, queries, keys, values, scale, mask_mode, mask_arr, sinks, s);
+    return mlx_fast_scaled_dot_product_attention_(res, queries, keys, values, scale, mask_mode, mask_arr, sinks, force_fused, s);
 }
 static inline int mlx_fft_fft(
     mlx_array* res,

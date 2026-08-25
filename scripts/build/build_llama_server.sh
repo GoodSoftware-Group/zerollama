@@ -333,7 +333,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -DLLAMA_BUILD_UI="${LLAMA_BUILD_UI:-${LLAMA_BUILD_WEBUI:-OFF}}" \
     -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
     -DLLAMA_BUILD_OMNIVOICE=OFF \
-    "${_UMA_CMAKE[@]}"
+    ${_UMA_CMAKE[@]+"${_UMA_CMAKE[@]}"}
   cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
     echo "error: llama-server build failed; cleaning ${BUILD}" >&2
     rm -rf "${BUILD}"

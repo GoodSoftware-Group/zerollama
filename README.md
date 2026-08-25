@@ -92,7 +92,7 @@ Upstream is excellent at “pull a model and chat.” Agents don’t chat small 
 |---------------|-----------|
 | Megaprompt tokenize burns **hundreds of ms** before any forward | **Accelerated BPE** inspired by [Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp) — **~3–7×** on Qwen/GPT-2/Gemma4 (1 MiB); [benches](docs/readme-marketing-benches.md) |
 | Same megaprompt / system prefix every turn feels like a cold start | **Prompt cache (L3)** — inspired by [SGLang](https://github.com/sgl-project/sglang) / [vLLM](https://github.com/vllm-project/vllm): give the thread a stable key and **turn 2+ reuses the prefix** so the next megaprompt is way faster (optional `/api/cache/pin` to keep it warm) |
-| Agents need to **show**, not only tell | **Image + video gen** on the same daemon — Wan `/v1/videos`, MLX/Comfy/sd.cpp `/v1/images`; VLM video understanding |
+| Agents need to **show**, not only tell | **Image + video + music** on the same daemon — Wan `/v1/videos`, MLX/Comfy `/v1/images`, Music 3 `/v1/audio/generations` (mlx first, not Comfy) |
 | Background jobs fight live agent threads | **Harness control plane** — QoS, timeouts, preempt reasons, capacity APIs |
 | “Who owns the GPU?” is guesswork | **`zerollama ps`** shows **PROJECT** / **SESSION**; **`ls`** shows **PARAMS** + **CTX** (host-safe) + **PERF** |
 | “Model bugs” that are really server traps | **`zerollama doctor`** + minefield probes |
@@ -152,12 +152,17 @@ Agents need to **show** the answer — diagrams, frames, short clips — on the 
 | Capability | Surface |
 |------------|---------|
 | Video understanding | `video_url` / `videos[]` → ffmpeg → VLM (+ SGLang-style caches / padded inject) |
-| Wan T2V | Async OpenAI-shaped `POST /v1/videos` |
+| Wan T2V / TI2V | Async OpenAI-shaped `POST /v1/videos`; keyframes via `PUT /v1/media/{session}/{label}` then `options.keyframes` |
 | Image gen | `/v1/images/*`, `zerollama run` — **MLX**, **ComfyUI**, **sd.cpp** / OpenVINO |
-| Speech | `/v1/audio/*` — Whisper + Piper |
+| Speech (TTS) | `/v1/audio/speech` — Whisper STT + Piper / remote-tts (**sync bytes**) |
+| Music 3 (TTM) | mlx-audio lab first; async `POST /v1/audio/generations` (not Comfy; not cloud MiniMax) |
 | QoS | Image/video gen default **`background`** behind interactive agents |
 
-→ [video-understanding.md](docs/video-understanding.md) · [wan-t2v.md](docs/wan-t2v.md) · [comfyui-image-backend.md](docs/comfyui-image-backend.md) · [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md)
+**Why `/v1/media` instead of giant JSON:** stream stills into a session CAS, keep create bodies small, re-PUT on `media_missing` — [media-uploads.md](docs/media-uploads.md).
+
+**Why music is not Piper:** songs are minutes of DiT on Metal; Comfy’s port is GPL; Omni CUDA cannot be the Mac first listen — [music-c.md](docs/music-c.md).
+
+→ [video-understanding.md](docs/video-understanding.md) · [wan-t2v.md](docs/wan-t2v.md) · [media-uploads.md](docs/media-uploads.md) · [comfyui-image-backend.md](docs/comfyui-image-backend.md) · [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md) · [music-c.md](docs/music-c.md)
 
 ### 4.3 Harness / agentic API
 
@@ -184,16 +189,19 @@ Progressive ladder: vanilla Ollama → Tier 1 fields only; zerollama → + `opti
 
 ### 4.4 Doctor + minefield
 
-Harnesses blame the model; often the **server** is wrong — unread kwargs, think echo, tools inside think, wrong binary identity, context ceilings that return HTTP 200 with a truncated head.
+Harnesses blame the model; often the **server** (or Modelfile) is wrong — unread kwargs, think echo, tools inside think, wrong binary identity, context ceilings that return HTTP 200 with a truncated head, or a ChatML template that never injects `/no_think`.
+
+**Why `--repair-models`:** Some pulled GGUFs score 0/N on benches with empty `response` or `/` loops while inference still works under `think:false` / user-only chat—or ChatML is missing stop tokens / `{{ .Response }}`. Doctor can propose (and with `--apply`, write) a Modelfile overlay instead of deleting the tag. Dry-run by default; invasive TEMPLATE rewrites are Qwen3-family only; ChatML stop/`Response` hygiene applies to any family.
 
 ```bash
 ./zerollama doctor                 # identity + live probes when a model is warm
 ./zerollama doctor --models
 ./zerollama doctor --fix          # uv venv + Apple Silicon build + sibling libllama
+./zerollama doctor --repair-models [--apply] [--all-local] [MODEL...]  # template hygiene + thinking-empty / slash-collapse
 ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor
 ```
 
-→ [model-serving-minefield.md](docs/model-serving-minefield.md)
+→ [model-serving-minefield.md](docs/model-serving-minefield.md) · [doctor-model-repair.md](docs/doctor-model-repair.md)
 
 ### 4.5 Training, fleet, LM Studio, bench
 
@@ -218,7 +226,7 @@ ornith-35b-optiq:latest      f4df829f8a75    22 GB     34.0B MoE 256x8        80
 granite4.1:3b-mlx            2c1c7f47b0d2    1.8 GB    425.54M                128k        112.7    10 hours ago
 ```
 
-Filters: `zerollama ls image` / `zerollama ls video_gen` — local + cloud image/video routes without dumping the full remote catalog.
+Filters: `zerollama ls image` (alias `image_gen`) / `zerollama ls video_gen` — local + cloud image/video routes without dumping the full remote catalog.
 
 **`zerollama ps`** — when agents send `project_id` / session keys, columns expand so you see **who owns the GPU**:
 
@@ -344,7 +352,7 @@ Ordered by how often operators need them. Full index: [docs/README.md](docs/READ
 - [L3 prompt cache](docs/gpu-profiles-l3.md) · [Radix prefix share](docs/radix-prefix-share.md)
 
 ### Multimodal & media
-- [Video understanding](docs/video-understanding.md) · [Wan T2V](docs/wan-t2v.md)
+- [Video understanding](docs/video-understanding.md) · [Wan T2V](docs/wan-t2v.md) · [Media uploads](docs/media-uploads.md)
 - [MLX imagegen](docs/imagegen-zimage-turbo.md) · [ComfyUI](docs/comfyui-image-backend.md)
 - [SGLang borrowings](docs/sglang-multimodal-borrowings.md) · [LocalAI borrowings](docs/localai-borrowings.md) · [vLLM borrowings](docs/vllm-borrowings.md)
 
@@ -355,11 +363,13 @@ Ordered by how often operators need them. Full index: [docs/README.md](docs/READ
 - [MLX agent prompts](docs/mlx-agent-prompts.md) · [MLX routing](docs/mlx-routing-policy.md)
 - [Runtime embed](docs/runtime-embed.md) · [GPU training](docs/gpu-training.md)
 - [Fleet](docs/fleet-management.md) · [Eliza Cloud](docs/eliza-cloud.md)
+- [Remote model storage](docs/remote-model-storage.md) — central blobs + HMAC + fetch-on-miss
 - [LM Studio import](docs/lmstudio-import.md) · [Bench cache](docs/bench-cache.md)
 
 ### Optional deployment shapes
 | Track | Why it exists | Doc |
 |-------|---------------|-----|
+| **Remote model storage** | Disk fills with hundreds of GB of models before VRAM does; central content-addressed store + on-demand cache | [remote-model-storage.md](docs/remote-model-storage.md) |
 | **Phase 17** — Go→llama-server | Mergeability with upstream; Apple Silicon still defaults ggml (~+7% in lab) | [phase17-llama-server.md](docs/phase17-llama-server.md) |
 | **Phase 16** — `--edge` | Upstream-shaped edge node; keep train/Eliza/fleet | [phase16-thin-edge.md](docs/phase16-thin-edge.md) |
 | **Flash-MoE / ANE** | Experimental Apple Silicon tracks (MoE > unified RAM, Neural Engine labs) | [flash-moe.md](docs/flash-moe.md) · [ane-probe.md](docs/ane-probe.md) · [ane-draft-inprocess.md](docs/ane-draft-inprocess.md) |

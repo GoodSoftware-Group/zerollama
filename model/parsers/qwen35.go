@@ -45,6 +45,15 @@ func (p *Qwen35Parser) HasThinkingSupport() bool {
 	return true
 }
 
+func (p *Qwen35Parser) PreservedTokens() []string {
+	return []string{
+		qwen35ThinkingOpenTag,
+		qwen35ThinkingCloseTag,
+		toolOpenTag,
+		toolCloseTag,
+	}
+}
+
 func (p *Qwen35Parser) Init(tools []api.Tool, lastMessage *api.Message, thinkValue *api.ThinkValue) []api.Tool {
 	p.buffer.Reset()
 	p.toolParser = Qwen3CoderParser{}
@@ -88,9 +97,6 @@ func (qwen35EventThinkingContent) isQwen35Event() {}
 func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 	events := p.parseEvents()
-	if done {
-		events = p.flushDoneEvents(events)
-	}
 
 	var contentSb strings.Builder
 	var thinkingSb strings.Builder
@@ -110,29 +116,6 @@ func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string
 	}
 
 	return contentSb.String(), thinkingSb.String(), calls, nil
-}
-
-// flushDoneEvents emits trailing thinking/content when the stream ends mid-state.
-// Why: models sometimes stop without </think> or leave whitespace after
-// the close tag; without this flush, reasoning text is dropped on the final chunk.
-func (p *Qwen35Parser) flushDoneEvents(events []qwen35Event) []qwen35Event {
-	if p.state == qwen35ParserStateThinkingDoneEatingWhitespace {
-		extra, _ := p.eatLeadingWhitespaceAndTransitionTo(qwen35ParserStateCollectingContent)
-		events = append(events, extra...)
-	}
-	switch p.state {
-	case qwen35ParserStateCollectingThinking:
-		if p.buffer.Len() > 0 {
-			events = append(events, qwen35EventThinkingContent{content: p.buffer.String()})
-			p.buffer.Reset()
-		}
-	case qwen35ParserStateCollectingContent:
-		if p.buffer.Len() > 0 {
-			events = append(events, qwen35EventContent{content: p.buffer.String()})
-			p.buffer.Reset()
-		}
-	}
-	return events
 }
 
 func (p *Qwen35Parser) parseEvents() []qwen35Event {

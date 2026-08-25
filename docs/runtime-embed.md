@@ -15,6 +15,8 @@ zerollama (Go)
 
 No separate `zerollama-runtime` process is required when embed mode is on.
 
+**Startup (Aug 2026):** `:8080` no longer waits up to 120s for embed `/health`. After `EmbedStart`, Go sync-waits `ZEROLLAMA_RUNTIME_EMBED_SYNC_WAIT` (default **3s**), then continues listening while a background poll finishes (total `ZEROLLAMA_RUNTIME_EMBED_READY_WAIT`, default 120s) and publishes the loopback `BaseURL`. Phase 17 text GGUF does not need embed to accept traffic.
+
 **Why embed instead of always sidecar:** one OS process for operators (single restart, shared logs), and optional sharing of one CPython with training. **VRAM:** automatic Go broker (Phase 8) coordinates runtime vs legacy runners; see [testing-smoke.md](./testing-smoke.md). **Product shape:** inference and training are separate **queues** sharing GPU time—see [ROADMAP.md](./ROADMAP.md#product-model-queues-stakeholders-and-gpu-time).
 
 ## Enable

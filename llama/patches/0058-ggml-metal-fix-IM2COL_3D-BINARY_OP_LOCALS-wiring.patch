@@ -9,10 +9,10 @@ GGML_TENSOR_BINARY_OP_LOCALS expects src0/src1/dst locals.
  1 file changed, 16 insertions(+), 14 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 066b8de03..b2aa98ba0 100644
+index b14c84437..82033bb4a 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -4065,7 +4065,9 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
+@@ -4308,7 +4308,9 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
  }
  
  int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
@@ -23,7 +23,7 @@ index 066b8de03..b2aa98ba0 100644
  
      ggml_metal_library_t lib = ctx->lib;
      ggml_metal_encoder_t enc = ctx->enc;
-@@ -4073,16 +4075,16 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+@@ -4316,16 +4318,16 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
      GGML_TENSOR_BINARY_OP_LOCALS;
  
      ggml_metal_kargs_im2col_3d args = {
@@ -50,7 +50,7 @@ index 066b8de03..b2aa98ba0 100644
          /*.ID =*/ (int32_t) ne12,
          /*.IH =*/ (int32_t) ne11,
          /*.IW =*/ (int32_t) ne10,
-@@ -4108,7 +4110,7 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+@@ -4351,7 +4353,7 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
      args.KD_KH_KW    = (uint64_t) args.KD * args.KH_KW;
      args.IC_KD_KH_KW = (uint64_t) args.IC * args.KD_KH_KW;
  
@@ -59,7 +59,7 @@ index 066b8de03..b2aa98ba0 100644
  
      const uint64_t total = args.N * (uint64_t) args.OD * (uint64_t) args.OH * (uint64_t) args.OW;
      const int nth = 64;
-@@ -4116,8 +4118,8 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
+@@ -4359,8 +4361,8 @@ int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
  
      ggml_metal_encoder_set_pipeline(enc, pipeline);
      ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);

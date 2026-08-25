@@ -332,7 +332,11 @@ func paddedInjectMediaPayloads(media []MediaData, mediaCount int) ([]string, err
 	}
 	out := make([]string, mediaCount)
 	for i := 0; i < mediaCount; i++ {
-		out[i] = base64.StdEncoding.EncodeToString(media[i].Data)
+		data, err := llamaServerMediaBytes(media[i].Data)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = base64.StdEncoding.EncodeToString(data)
 	}
 	return out, nil
 }

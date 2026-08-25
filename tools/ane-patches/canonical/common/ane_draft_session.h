@@ -118,7 +118,8 @@ bool ane_draft_session_snapshot_output_row(float * row, int n);
 bool ane_draft_session_add_output_row(const float * delta, int n);
 bool ane_draft_session_write_output_row(const float * row, int n);
 
-// Read/write host/ANE Q/K/V row vectors; oc_q and oc_kv may differ under GQA.
+// Read stashed q/k/v noise projections after chain 12/13 eval.
+// Read host/ANE Q/K/V row vectors; oc_q and oc_kv may differ under GQA.
 bool ane_draft_session_read_dflash_qkv(float * q, int oc_q, float * k, float * v, int oc_kv);
 
 // P24: stash host-computed Q/K/V before cross-attn (oc_q / oc_kv row vectors).

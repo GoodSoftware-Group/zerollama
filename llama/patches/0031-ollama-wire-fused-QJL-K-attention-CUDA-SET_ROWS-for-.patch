@@ -11,7 +11,7 @@ Subject: [PATCH] ollama: wire fused QJL-K attention + CUDA SET_ROWS for
  3 files changed, 85 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 3ffbf3b54..2e5374b6a 100644
+index eaa30fc44..be36087e0 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -25,6 +25,7 @@
@@ -22,7 +22,7 @@ index 3ffbf3b54..2e5374b6a 100644
  #include "ggml-cuda/fwht.cuh"
  #include "ggml-cuda/getrows.cuh"
  #include "ggml-cuda/im2col.cuh"
-@@ -2408,6 +2409,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
+@@ -2439,6 +2440,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
          case GGML_OP_LIGHTNING_INDEXER:
              ggml_cuda_lightning_indexer(ctx, dst);
              break;
@@ -37,7 +37,7 @@ index 3ffbf3b54..2e5374b6a 100644
          default:
              return false;
      }
-@@ -5270,6 +5279,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -5397,6 +5406,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
              return true;
          case GGML_OP_LIGHTNING_INDEXER:
              return ggml_cuda_lightning_indexer_supported(dev_ctx->device, op);
@@ -101,10 +101,10 @@ index 465997065..ba708a212 100644
          GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
      }
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 6d1c8f4e4..edcd85721 100644
+index 1896758c5..8f1025c21 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -2423,6 +2423,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -2545,6 +2545,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
              v = ggml_transpose(ctx0, v);
          }
  
@@ -148,7 +148,7 @@ index 6d1c8f4e4..edcd85721 100644
          // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
          if (k->type == GGML_TYPE_F32) {
              k = ggml_cast(ctx0, k, GGML_TYPE_F16);
-@@ -2457,6 +2494,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -2579,6 +2616,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          }
  
          cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);

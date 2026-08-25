@@ -8,7 +8,7 @@ Subject: [PATCH] ggml-metal: null-check buffer alloc on OOM (upstream #25371)
  1 file changed, 5 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index a9d2d8923..4f33919d5 100644
+index ce7954173..40e78b3c0 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
 @@ -203,6 +203,11 @@ static ggml_backend_buffer_t ggml_backend_metal_buffer_type_alloc_buffer(ggml_ba

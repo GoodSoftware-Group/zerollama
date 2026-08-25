@@ -14,11 +14,21 @@ Phase 13 answers **“will this GGUF fit at this `num_ctx`?”** L1 answers **�
 
 **Why port eliza-v3 JSON instead of hand-tuning YAML:** eliza’s `native/configs/gpu/` already encodes measured `-b`, `-ub`, `-np`, and draft ranges per card class. Zerollama keeps **stock llama.cpp** today — fork-only KV types (QJL, Polar, TurboQuant) and argv flags (`--ctx-checkpoints`) are **stored for L2** but never emitted until the fork lands.
 
-**Why merge at config load, not in Go ggml:** the Python runtime (inprocess or subprocess `llama-server`) owns Phase 12–15 admission and multiseq. Go ggml Metal uses a separate scheduler path; L1 targets **runtime-routed** inference first — where operators already hit Phase 13 snapshots and sign-off scripts.
+**Prefer one lane over flag soup:** set `ZEROLLAMA_INFERENCE_PROFILE=auto|throughput|agent|vram|off` (production GPU serve defaults to `auto` → throughput). That soft-sets L1 / FORK=0 / L3 cache / CUDA graphs off; `agent` adds Radix via `L3_PROFILE=agent`; `vram` adds `FORK_AUTO_VRAM` for long ctx only. Explicit env always wins. See `/api/status` → `inference.config.inference_profile*`.
+
+**Why merge at config load (Python) and at Go launch (Phase 17):** the Python runtime (inprocess or subprocess `llama-server`) owns Phase 12–15 admission and multiseq and applies L1 in `gpu_profiles.py`. Linux production also defaults to **Go → llama-server** (`ZEROLLAMA_LLAMA_SERVER=auto`); that path loads the same `runtime/configs/gpu/*.json` via `llm/gpu_profile.go` so calibrated `-b`/`-ub`/`q8_0`/`FA`/`np` cap are not Python-only. Mac Metal ggml remains a separate scheduler track.
 
 ---
 
 ## How it works
+
+```text
+Python: RuntimeConfig.from_file → maybe_apply_gpu_profile → llama_server_args()
+Go Phase 17: NewLlamaServerRunner → SelectGpuProfile → ApplyGpuProfileToLaunch
+        │
+        ▼
+same runtime/configs/gpu/*.json (e.g. rtx-5080.json)
+```
 
 ```text
 RuntimeConfig.from_file(yaml)

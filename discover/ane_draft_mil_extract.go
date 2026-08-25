@@ -116,7 +116,7 @@ func ProbeANEDraftMILExtract(_ context.Context, preferred, tensorName, outputPat
 	out.DraftSidecarPresent = present
 	if !present || draftPath == "" {
 		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
-		out.NextStep = "download drafter (scripts/runtime/setup_mtp_models.sh) then re-run extract"
+		out.NextStep = "download drafter (scripts/setup_mtp_models.sh) then re-run extract"
 		return out, fmt.Errorf("draft sidecar GGUF missing")
 	}
 

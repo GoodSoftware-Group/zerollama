@@ -10,10 +10,10 @@ match upstream #16669 with concrete kernels.
  1 file changed, 60 insertions(+), 7 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index d3418bfcb..b96928ee5 100644
+index 625a8b25c..70a8ac543 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -5268,11 +5268,10 @@ kernel void kernel_im2col_ext(
+@@ -5339,11 +5339,10 @@ kernel void kernel_im2col_ext(
  template [[host_name("kernel_im2col_ext_f32")]] kernel im2col_ext_t kernel_im2col_ext<float>;
  template [[host_name("kernel_im2col_ext_f16")]] kernel im2col_ext_t kernel_im2col_ext<half>;
  
@@ -27,7 +27,7 @@ index d3418bfcb..b96928ee5 100644
          uint tpig[[thread_position_in_grid]]) {
      const uint64_t total = args.N * (uint64_t) args.OD * (uint64_t) args.OH * (uint64_t) args.OW;
      if (tpig >= total) {
-@@ -5320,16 +5319,70 @@ kernel void kernel_op_im2col_3d(
+@@ -5391,16 +5390,70 @@ kernel void kernel_op_im2col_3d(
                          val = *(device const float *) (src1 + src_offset);
                      }
  

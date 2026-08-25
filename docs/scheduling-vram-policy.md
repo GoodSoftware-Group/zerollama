@@ -169,6 +169,7 @@ Code: `server/ggml_num_ctx.go`, `envconfig/ggml_num_ctx.go`, `server/sched.go` (
 | Mechanism | Env / manifest | Why |
 |-----------|----------------|-----|
 | Idle LRU + VRAM reclaim | `ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD` (e.g. `0.95`) | Evict least-recently-used idle runner when GPU usage crosses threshold |
+| Operator VRAM ceiling | `ZEROLLAMA_VRAM_BUDGET` (`80%` or `12GiB`) | Scheduler and runtime probes see `min(detected, budget)` so loads cannot use reserved headroom |
 | Busy timeout | `ZEROLLAMA_RUNNER_BUSY_TIMEOUT` (e.g. `30m`) | Unload runners stuck in-flight (agent disconnect, bad client) |
 | Tick | `ZEROLLAMA_SCHED_WATCHDOG_INTERVAL` (default `30s`) | Periodic reclaim/busy checks |
 | Concurrency groups | `PARAMETER concurrency_groups ["vram-heavy"]` | Evict conflicting residents **before** loading a model in the same group |

@@ -181,6 +181,18 @@ class LlamaServerProcess:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    def grow_n_ctx(self, n_ctx: int) -> bool:
+        from runtime.kv.kv_grow import post_kv_grow
+
+        out = post_kv_grow(self.base_url, int(n_ctx))
+        return bool(out.get("ok", False)) or "n_ctx_seq" in out
+
+    def shrink_n_ctx(self, n_ctx: int) -> bool:
+        from runtime.kv.kv_grow import post_kv_shrink
+
+        out = post_kv_shrink(self.base_url, int(n_ctx))
+        return bool(out.get("ok", False)) or "n_ctx_seq" in out
+
     def start(self, extra_args: list[str] | None = None) -> None:
         if self._proc is not None and self._proc.poll() is None:
             logger.info(

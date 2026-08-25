@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Fri, 21 Aug 2026 00:54:07 -0700
+Subject: [PATCH] Restore src/unicode.{h,cpp} after 0121 salvage renamed them
+ to tmp/.
+
+b10488 still uses src/unicode for tokenizer pretok; common/unicode is a
+different streaming helper. llama-vocab.cpp include unicode.h again.
+---
+ src/llama-vocab.cpp                  | 2 +-
+ {tmp/bpe0121-new => src}/unicode.cpp | 0
+ {tmp/bpe0121-new => src}/unicode.h   | 0
+ 3 files changed, 1 insertion(+), 1 deletion(-)
+ rename {tmp/bpe0121-new => src}/unicode.cpp (100%)
+ rename {tmp/bpe0121-new => src}/unicode.h (100%)
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index dfdf95936..82e4d5dae 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -5,7 +5,7 @@
+ #include "llama-impl.h"
+ #include "llama-model-loader.h"
+ 
+-#include "../common/unicode.h"
++#include "unicode.h"
+ 
+ #include <algorithm>
+ #include <cassert>
+diff --git a/tmp/bpe0121-new/unicode.cpp b/src/unicode.cpp
+similarity index 100%
+rename from tmp/bpe0121-new/unicode.cpp
+rename to src/unicode.cpp
+diff --git a/tmp/bpe0121-new/unicode.h b/src/unicode.h
+similarity index 100%
+rename from tmp/bpe0121-new/unicode.h
+rename to src/unicode.h

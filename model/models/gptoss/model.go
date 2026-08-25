@@ -270,20 +270,29 @@ func (m *Transformer) PostLoad() error {
 }
 
 func blockHasAttention(b TransformerBlock) bool {
-	if b.Attention == nil || b.Attention.Query == nil || b.Attention.Output == nil {
+	if b.Attention == nil || b.Attention.Output == nil || b.Attention.Output.Weight == nil {
 		return false
 	}
-	return b.Attention.Query.Weight != nil && b.Attention.Output.Weight != nil
+	// Official Ollama MXFP4 uses fused attn_qkv; some re-exports split q/k/v.
+	if b.Attention.QKV != nil && b.Attention.QKV.Weight != nil {
+		return true
+	}
+	return b.Attention.Query != nil && b.Attention.Query.Weight != nil &&
+		b.Attention.Key != nil && b.Attention.Key.Weight != nil &&
+		b.Attention.Value != nil && b.Attention.Value.Weight != nil
 }
 
 func blockHasMoE(b TransformerBlock) bool {
-	if b.MLP == nil || b.MLP.Router == nil || b.MLP.Gate == nil || b.MLP.Up == nil || b.MLP.Down == nil {
+	if b.MLP == nil || b.MLP.Router == nil || b.MLP.Router.Weight == nil ||
+		b.MLP.Down == nil || b.MLP.Down.Weight == nil {
 		return false
 	}
-	return b.MLP.Router.Weight != nil &&
-		b.MLP.Gate.Weight != nil &&
-		b.MLP.Up.Weight != nil &&
-		b.MLP.Down.Weight != nil
+	// Official Ollama MXFP4 uses fused ffn_gate_up_exps; some re-exports split gate/up.
+	if b.MLP.GateUp != nil && b.MLP.GateUp.Weight != nil {
+		return true
+	}
+	return b.MLP.Gate != nil && b.MLP.Gate.Weight != nil &&
+		b.MLP.Up != nil && b.MLP.Up.Weight != nil
 }
 
 func init() {

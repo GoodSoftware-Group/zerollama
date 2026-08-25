@@ -15,10 +15,10 @@ kernel Q loops for Q divisible by 8.
  5 files changed, 96 insertions(+), 83 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index ec02a2553..659b92d39 100644
+index 831ad0fec..3b4e04088 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -1421,6 +1421,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
+@@ -1466,6 +1466,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
          bool    has_bias,
          bool    has_scap,
          bool    has_kvpad,
@@ -26,7 +26,7 @@ index ec02a2553..659b92d39 100644
          int32_t nsg) {
      assert(op->op == GGML_OP_FLASH_ATTN_EXT);
  
-@@ -1434,13 +1435,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
+@@ -1479,13 +1480,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
      const int32_t ns20 = op->src[2]->nb[1]/op->src[2]->nb[0];
  
      // do bounds checks for the mask?
@@ -45,10 +45,10 @@ index ec02a2553..659b92d39 100644
      snprintf(name, 256, "%s_mask=%d_sinks=%d_bias=%d_scap=%d_kvpad=%d_bcm=%d_ns10=%d_ns20=%d_nsg=%d",
              base,
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 91b841b67..2d4a1c983 100644
+index 7e1deeaa2..be09a19f6 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
-@@ -187,6 +187,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att
+@@ -190,6 +190,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att
          bool    has_bias,
          bool    has_scap,
          bool    has_kvpad,
@@ -57,10 +57,10 @@ index 91b841b67..2d4a1c983 100644
  
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_vec(
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 9f350aad5..2d3bd3792 100644
+index 1f6e8c48b..08e7b3911 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -107,6 +107,7 @@
+@@ -110,6 +110,7 @@
  
  // op-specific constants
  #define OP_FLASH_ATTN_EXT_NQPSG 8
@@ -69,10 +69,10 @@ index 9f350aad5..2d3bd3792 100644
  
  #define OP_FLASH_ATTN_EXT_VEC_NQPSG 1
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 7456e1048..961d8273b 100644
+index 1b30c05a0..8d516894c 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -2794,7 +2794,10 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+@@ -3010,7 +3010,10 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
  
      if (!ggml_metal_op_flash_attn_ext_use_vec(op)) {
          // half8x8 kernel
@@ -84,7 +84,7 @@ index 7456e1048..961d8273b 100644
          const int ncpsg = OP_FLASH_ATTN_EXT_NCPSG; // cache values per simdgroup
  
          GGML_ASSERT(nqptg <= 32);
-@@ -2903,7 +2906,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+@@ -3119,7 +3122,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
  
          // simdgroups per threadgroup (a.k.a. warps)
          //nsg = ne01 <= nqptg ? MAX(4, MIN(nsgmax, MIN(ne11/ncpsg, (int64_t) pipeline.maxTotalThreadsPerThreadgroup/32))) : 4;
@@ -93,7 +93,7 @@ index 7456e1048..961d8273b 100644
  
          const size_t smem = FATTN_SMEM(nsg);
  
-@@ -2942,7 +2945,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+@@ -3158,7 +3161,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
              /*.logit_softcap =*/ logit_softcap,
          };
  
@@ -103,10 +103,10 @@ index 7456e1048..961d8273b 100644
          ggml_metal_encoder_set_pipeline(enc, pipeline);
          ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
 diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
-index 08301acf0..8faaf53e2 100644
+index 9bcb967e8..32da6bf72 100644
 --- a/ggml/src/ggml-metal/ggml-metal.metal
 +++ b/ggml/src/ggml-metal/ggml-metal.metal
-@@ -6455,6 +6455,8 @@ void kernel_flash_attn_ext_impl(
+@@ -6526,6 +6526,8 @@ void kernel_flash_attn_ext_impl(
    //constexpr short PV16 = PV/16;
  
      constexpr short NW  = N_SIMDWIDTH;
@@ -115,7 +115,7 @@ index 08301acf0..8faaf53e2 100644
      constexpr short NQ  = Q/NSG;
      constexpr short SH  = 2*C; // shared memory per simdgroup (s_t == float)
  
-@@ -6657,59 +6659,59 @@ void kernel_flash_attn_ext_impl(
+@@ -6728,59 +6730,59 @@ void kernel_flash_attn_ext_impl(
              if (is_same<kd4x4_t, k4x4_t>::value) {
                  // we can read directly from global memory
                  device      const k_t * pk = (device const k_t *) (k + ic*args.nb11);
@@ -206,7 +206,7 @@ index 08301acf0..8faaf53e2 100644
                  }
              } else {
                  // TODO: this is the quantized K cache branch - not optimized yet
-@@ -6831,75 +6833,77 @@ void kernel_flash_attn_ext_impl(
+@@ -6902,75 +6904,77 @@ void kernel_flash_attn_ext_impl(
  
                      constexpr short NO = PV8/NSG;
  
@@ -330,7 +330,7 @@ index 08301acf0..8faaf53e2 100644
                          }
                      }
                  } else {
-@@ -7141,6 +7145,8 @@ template [[host_name("kernel_flash_attn_ext_f16_dk320_dv256")]]  kernel flash_at
+@@ -7212,6 +7216,8 @@ template [[host_name("kernel_flash_attn_ext_f16_dk320_dv256")]]  kernel flash_at
  template [[host_name("kernel_flash_attn_ext_f16_dk512_dv512")]]  kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES,    half4x4,    1, dequantize_f16,  half4x4,    1, dequantize_f16,  512, 512>;
  template [[host_name("kernel_flash_attn_ext_f16_dk576_dv512")]]  kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES,    half4x4,    1, dequantize_f16,  half4x4,    1, dequantize_f16,  576, 512>;
  

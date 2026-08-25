@@ -7,13 +7,31 @@ import (
 	"time"
 )
 
+func umaBrokerTransact(sock, req string) (string, error) {
+	c, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(time.Second))
+	if _, err := c.Write([]byte(req)); err != nil {
+		return "", err
+	}
+	buf := make([]byte, 2048)
+	n, err := c.Read(buf)
+	if err != nil {
+		return "", err
+	}
+	return string(buf[:n]), nil
+}
+
 func doctorCheckUMABroker() doctorCheck {
 	const name = "uma broker"
 	if runtime.GOOS != "darwin" {
 		return doctorCheck{Name: name, Status: "ok", Detail: "darwin-only"}
 	}
 	sock := "/tmp/uma_daemon.sock"
-	c, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
+	info, err := umaBrokerTransact(sock, "INFO\n")
 	if err != nil {
 		return doctorCheck{
 			Name:    name,
@@ -22,17 +40,12 @@ func doctorCheckUMABroker() doctorCheck {
 			FixHint: "make -C ../bmtl/hardware_lab/lanes/m4/uma_toolkit uma-daemon-install (or open UMAStatus.app); default ZEROLLAMA_UMA_SCHED=auto gates when broker is up; set off to disable",
 		}
 	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(time.Second))
-	if _, err := c.Write([]byte("HELP\n")); err != nil {
-		return doctorCheck{Name: name, Status: "warn", Detail: "write failed: " + err.Error()}
+	reply := info
+	if !strings.Contains(reply, "HOLD_GPU") {
+		if help, herr := umaBrokerTransact(sock, "HELP\n"); herr == nil {
+			reply = help
+		}
 	}
-	buf := make([]byte, 1024)
-	n, err := c.Read(buf)
-	if err != nil {
-		return doctorCheck{Name: name, Status: "warn", Detail: "read failed: " + err.Error()}
-	}
-	reply := string(buf[:n])
 	if !strings.Contains(reply, "HOLD_GPU") {
 		return doctorCheck{
 			Name:    name,
@@ -41,9 +54,17 @@ func doctorCheckUMABroker() doctorCheck {
 			FixHint: "rebuild UMAStatus.app from bmtl uma_toolkit",
 		}
 	}
+	if !strings.Contains(reply, "HOLD_ANE") {
+		return doctorCheck{
+			Name:    name,
+			Status:  "warn",
+			Detail:  sock + " HOLD_GPU only — upgrade for HOLD_ANE/HOLD_AMX (M23)",
+			FixHint: "rebuild UMAStatus.app from bmtl uma_toolkit (F0390)",
+		}
+	}
 	return doctorCheck{
 		Name:   name,
 		Status: "ok",
-		Detail: sock + " HOLD_GPU ready",
+		Detail: sock + " HOLD_GPU+ANE+AMX ready (M23)",
 	}
 }

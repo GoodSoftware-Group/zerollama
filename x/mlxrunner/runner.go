@@ -3,9 +3,11 @@ package mlxrunner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -110,12 +112,28 @@ func (r *Runner) Load(modelName string) error {
 		}
 		mlx.Sweep()
 		mlx.Eval(collected...)
+		configureWiredMemory()
 
 		r.Model = m
 		r.Tokenizer = m.Tokenizer()
 		r.contextLength = m.MaxContextLength()
 		r.Sampler = sample.New(r.contextLength)
 		r.spec = newSpeculation(r, draftModel)
+		if MTPRequire() && r.spec == nil {
+			return fmt.Errorf("ZEROLLAMA_MLX_MTP=require: checkpoint has no MTP/draft head (refuse silent AR demotion)")
+		}
+		r.installOptiqOwnedHook()
+		if uma.OptiqTokenTailEnabled() {
+			if err := uma.EnsureOptiqTokenTailSession(); err != nil {
+				slog.Warn("uma: optiq token-tail session not ready", "error", err)
+				if uma.OptiqTokenTailRequire() {
+					return fmt.Errorf("uma optiq token-tail: %w", err)
+				}
+			} else {
+				slog.Info("uma: optiq GRAPH token-tail session ready",
+					"mode", os.Getenv("ZEROLLAMA_UMA_OPTIQ_TOKEN_TAIL"))
+			}
+		}
 
 		mlx.EnableCompile()
 		return nil
@@ -124,6 +142,41 @@ func (r *Runner) Load(modelName string) error {
 	}
 
 	return nil
+}
+
+func configureWiredMemory() {
+	if !mlx.GPUIsAvailable() {
+		return
+	}
+
+	active := mlx.ActiveMemory()
+	maxRecommended, err := mlx.MaxRecommendedWorkingSetSize()
+	if err != nil {
+		slog.Warn("Unable to query MLX recommended working set; using pageable memory", "error", err)
+		return
+	}
+
+	limit := min(active, maxRecommended)
+	previous, err := mlx.SetWiredLimit(limit)
+	if err != nil {
+		slog.Warn("Unable to configure MLX wired memory; using pageable memory",
+			"active", mlx.PrettyBytes(active),
+			"limit", mlx.PrettyBytes(limit),
+			"error", err)
+		return
+	}
+
+	if active > maxRecommended {
+		slog.Warn("MLX model exceeds the recommended working set; performance may be degraded",
+			"active", mlx.PrettyBytes(active),
+			"recommended", mlx.PrettyBytes(maxRecommended))
+	}
+	// Limiting residency to the loaded model's active allocations avoids
+	// reserving the remaining capacity for growing KV caches.
+	slog.Debug("Configured MLX wired memory",
+		"active", mlx.PrettyBytes(active),
+		"limit", mlx.PrettyBytes(limit),
+		"previous", mlx.PrettyBytes(previous))
 }
 
 // loadTensorsFromManifest loads all tensor blobs from the manifest into a

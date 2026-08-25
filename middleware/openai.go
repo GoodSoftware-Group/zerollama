@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/media"
 )
 
 // maxDecompressedBodySize limits the size of a decompressed request body
@@ -889,8 +891,12 @@ func SpeechMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "input is required"))
 			return
 		}
-		if utf8RuneCount(req.Input) > 4096 {
-			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "input exceeds 4096 characters"))
+		maxRunes := 4096
+		if strings.TrimSpace(req.Instructions) != "" || req.MaxNewTokens != nil || req.Duration != nil {
+			maxRunes = 20000
+		}
+		if utf8RuneCount(req.Input) > maxRunes {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("input exceeds %d characters", maxRunes)))
 			return
 		}
 		if req.Speed != nil && (*req.Speed < 0.25 || *req.Speed > 4.0) {
@@ -903,10 +909,19 @@ func SpeechMiddleware() gin.HandlerFunc {
 }
 
 // VideoCreateMiddleware validates OpenAI POST /v1/videos JSON and stores the request on context.
+// Body is capped so agents use /v1/media/{session}/{label} for large keyframes instead of inline JSON.
+// WHY 8 MiB (media.MaxVideoCreateBody): create should carry label refs only; frames stream via PUT
+// (docs/media-uploads.md). A larger cap would invite base64-in-JSON and defeat the media API.
 func VideoCreateMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, media.MaxVideoCreateBody)
 		var req openai.VideoCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
+			msg := err.Error()
+			if strings.Contains(msg, "request body too large") || errors.As(err, new(*http.MaxBytesError)) {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, openai.NewError(http.StatusRequestEntityTooLarge, "request body too large; upload keyframes via PUT /v1/media/{session}/{label}"))
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
 		}

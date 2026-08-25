@@ -11,32 +11,32 @@ import (
 // ANELabBinStatus reports which lab binaries are installed.
 type ANELabBinStatus struct {
 	ANEProbe               bool   `json:"ane_probe"`
-	ANEMatmulBench           bool   `json:"ane_matmul_bench"`
-	ANEDraftBench            bool   `json:"ane_draft_bench"`
-	ANEIOSurfaceSmoke        bool   `json:"ane_iosurface_smoke"`
-	ANEMetalHandoff          bool   `json:"ane_metal_handoff_smoke"`
-	ANEDraftDaemon           bool   `json:"ane_draft_daemon"`
-	ANEGGMLMapSmoke          bool   `json:"ane_ggml_map_smoke"`
-	ANEPrefillBench          bool   `json:"ane_prefill_bench"`
-	MetalPrefillBench        bool   `json:"metal_prefill_bench"`
-	MetalMPSPrefillBench     bool   `json:"metal_mps_prefill_bench"`
-	ANEPrefillHandoffSmoke   bool   `json:"ane_prefill_handoff_smoke"`
-	ANEInprocessSmoke        bool   `json:"ane_inprocess_smoke"`
-	BinDir                   string `json:"bin_dir,omitempty"`
+	ANEMatmulBench         bool   `json:"ane_matmul_bench"`
+	ANEDraftBench          bool   `json:"ane_draft_bench"`
+	ANEIOSurfaceSmoke      bool   `json:"ane_iosurface_smoke"`
+	ANEMetalHandoff        bool   `json:"ane_metal_handoff_smoke"`
+	ANEDraftDaemon         bool   `json:"ane_draft_daemon"`
+	ANEGGMLMapSmoke        bool   `json:"ane_ggml_map_smoke"`
+	ANEPrefillBench        bool   `json:"ane_prefill_bench"`
+	MetalPrefillBench      bool   `json:"metal_prefill_bench"`
+	MetalMPSPrefillBench   bool   `json:"metal_mps_prefill_bench"`
+	ANEPrefillHandoffSmoke bool   `json:"ane_prefill_handoff_smoke"`
+	ANEInprocessSmoke      bool   `json:"ane_inprocess_smoke"`
+	BinDir                 string `json:"bin_dir,omitempty"`
 }
 
 // ANELabStatus is a consolidated ANE lab readiness snapshot.
 type ANELabStatus struct {
-	Platform     string                    `json:"platform"`
-	ANERepo      string                    `json:"ane_repo"`
-	ANEDraftEnv  bool                      `json:"ane_draft_env"`
-	Bins         ANELabBinStatus           `json:"bins"`
-	Models       ANEModelInventorySummary  `json:"models,omitempty"`
-	PrefillSweep *ANEPrefillSweepResult    `json:"prefill_sweep,omitempty"`
-	ModelTag     string                    `json:"model_tag,omitempty"`
-	ModelIC      int                       `json:"model_ic,omitempty"`
-	ModelOC      int                       `json:"model_oc,omitempty"`
-	Note         string                    `json:"note,omitempty"`
+	Platform     string                   `json:"platform"`
+	ANERepo      string                   `json:"ane_repo"`
+	ANEDraftEnv  bool                     `json:"ane_draft_env"`
+	Bins         ANELabBinStatus          `json:"bins"`
+	Models       ANEModelInventorySummary `json:"models,omitempty"`
+	PrefillSweep *ANEPrefillSweepResult   `json:"prefill_sweep,omitempty"`
+	ModelTag     string                   `json:"model_tag,omitempty"`
+	ModelIC      int                      `json:"model_ic,omitempty"`
+	ModelOC      int                      `json:"model_oc,omitempty"`
+	Note         string                   `json:"note,omitempty"`
 }
 
 // ANELabStatusOpts configures optional lab status probes.
@@ -51,18 +51,18 @@ type ANELabStatusOpts struct {
 func ProbeANELabBins() ANELabBinStatus {
 	return ANELabBinStatus{
 		ANEProbe:               FindANEProbeBin() != "",
-		ANEMatmulBench:           FindANEMatmulBenchBin() != "",
-		ANEDraftBench:            FindANEDraftBenchBin() != "",
-		ANEIOSurfaceSmoke:        FindANEIOSurfaceSmokeBin() != "",
-		ANEMetalHandoff:          FindANEMetalHandoffSmokeBin() != "",
-		ANEDraftDaemon:           FindANEDraftDaemonBin() != "",
-		ANEGGMLMapSmoke:          FindANEGGMLMapSmokeBin() != "",
-		ANEPrefillBench:          FindANEPrefillBenchBin() != "",
-		MetalPrefillBench:        FindMetalPrefillBenchBin() != "",
-		MetalMPSPrefillBench:     FindMetalMPSPrefillBenchBin() != "",
-		ANEPrefillHandoffSmoke:   FindANEPrefillHandoffSmokeBin() != "",
-		ANEInprocessSmoke:        FindANEInprocessSmokeBin() != "",
-		BinDir:                   HandoffBinDir(),
+		ANEMatmulBench:         FindANEMatmulBenchBin() != "",
+		ANEDraftBench:          FindANEDraftBenchBin() != "",
+		ANEIOSurfaceSmoke:      FindANEIOSurfaceSmokeBin() != "",
+		ANEMetalHandoff:        FindANEMetalHandoffSmokeBin() != "",
+		ANEDraftDaemon:         FindANEDraftDaemonBin() != "",
+		ANEGGMLMapSmoke:        FindANEGGMLMapSmokeBin() != "",
+		ANEPrefillBench:        FindANEPrefillBenchBin() != "",
+		MetalPrefillBench:      FindMetalPrefillBenchBin() != "",
+		MetalMPSPrefillBench:   FindMetalMPSPrefillBenchBin() != "",
+		ANEPrefillHandoffSmoke: FindANEPrefillHandoffSmokeBin() != "",
+		ANEInprocessSmoke:      FindANEInprocessSmokeBin() != "",
+		BinDir:                 HandoffBinDir(),
 	}
 }
 
@@ -100,7 +100,7 @@ func ProbeANELabStatus(ctx context.Context, opts ANELabStatusOpts) (ANELabStatus
 		out.ModelOC = oc
 	}
 
-	sweep, err := ProbeANEPrefillSweep(ctx, ic, oc, DefaultPrefillSweepSeqs(true), true, opts.AneOnly)
+	sweep, err := ProbeANEPrefillSweep(ctx, ic, oc, DefaultPrefillSweepSeqs(true), true, opts.AneOnly, "")
 	if err != nil {
 		return out, err
 	}
@@ -131,7 +131,7 @@ func DoctorPrefillDetail(ctx context.Context) string {
 	if !PrefillLabReady() {
 		return "prefill bench not built"
 	}
-	c, err := ProbeANEPrefillCompareFull(ctx, 256, 256, 128, true, FindMetalMPSPrefillBenchBin() != "")
+	c, err := ProbeANEPrefillCompareFull(ctx, 256, 256, 128, true, FindMetalMPSPrefillBenchBin() != "", "")
 	if err != nil {
 		return "prefill compare: " + err.Error()
 	}

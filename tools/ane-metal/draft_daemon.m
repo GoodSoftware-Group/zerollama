@@ -573,7 +573,7 @@ int main(int argc, const char *argv[]) {
         DraftDaemonState st;
         double compileMs = 0;
         if (!initDaemon(&st, ch, sp, weightPath, &compileMs)) {
-            emitErr(weightPath ? @"daemon init failed — check --weight-file size matches channels" : @"daemon init failed — run scripts/ane/ane_bridge_patch.sh");
+            emitErr(weightPath ? @"daemon init failed — check --weight-file size matches channels" : @"daemon init failed — run scripts/ane_bridge_patch.sh");
             return 1;
         }
 

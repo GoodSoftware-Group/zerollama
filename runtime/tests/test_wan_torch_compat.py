@@ -38,6 +38,26 @@ def test_sanitize_prepends_torch_lib(tmp_path):
     assert "/keep/me" in parts
 
 
+def test_sanitize_dyld_drops_foreign_torch(tmp_path):
+    venv = tmp_path / "venv"
+    torch_lib = venv / "lib" / "python3.11" / "site-packages" / "torch" / "lib"
+    torch_lib.mkdir(parents=True)
+    foreign = tmp_path / "other" / "lib" / "python3.11" / "site-packages" / "torch" / "lib"
+    foreign.mkdir(parents=True)
+    py = venv / "bin" / "python3"
+    py.parent.mkdir(parents=True)
+    py.touch()
+
+    env = {
+        "DYLD_LIBRARY_PATH": f"{foreign}:/opt/homebrew/lib",
+        "DYLD_FALLBACK_LIBRARY_PATH": str(foreign),
+    }
+    sanitize_ld_library_path_for_pytorch(env, python=str(py))
+    assert env["DYLD_LIBRARY_PATH"].split(":")[0] == str(torch_lib)
+    assert str(foreign) not in env["DYLD_LIBRARY_PATH"]
+    assert "/opt/homebrew/lib" in env["DYLD_LIBRARY_PATH"]
+    assert env["DYLD_FALLBACK_LIBRARY_PATH"] == str(torch_lib)
+
 def test_torch_bundled_lib_dir_from_fake_venv(tmp_path):
     venv = tmp_path / "venv"
     torch_lib = venv / "lib" / "python3.11" / "site-packages" / "torch" / "lib"

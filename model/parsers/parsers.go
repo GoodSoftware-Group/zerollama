@@ -16,11 +16,11 @@ type Parser interface {
 	// Add processes streamed content and returns parsed content, thinking, and tool calls
 	// The done flag indicates if this is the last chunk (used for draining accumulators)
 	Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error)
+	// PreservedTokens returns parser grammar tokens that must remain visible in
+	// llama-server detokenized output for this parser to recognize boundaries.
+	PreservedTokens() []string
 	HasToolSupport() bool
 	HasThinkingSupport() bool
-	// PreservedTokens returns parser grammar tokens that must remain visible in
-	// llama-server completions (passed via CompletionRequest.PreservedTokens).
-	PreservedTokens() []string
 }
 
 type ParserConstructor func() Parser
@@ -76,7 +76,7 @@ func ParserForName(name string) Parser {
 		return &Olmo3Parser{}
 	case "olmo3-think":
 		return &Olmo3ThinkParser{}
-	case "nemotron-3-nano":
+	case "nemotron-3-nano", "nemotron-3.5-nano":
 		return &Nemotron3NanoParser{}
 	case "functiongemma":
 		return &FunctionGemmaParser{}
@@ -92,8 +92,14 @@ func ParserForName(name string) Parser {
 		return &LFM2Parser{hasThinkingSupport: false}
 	case "lfm2-thinking":
 		return &LFM2Parser{hasThinkingSupport: true}
+	case "laguna":
+		return &LagunaParser{}
+	case "poolside-v1":
+		return &LagunaV8Parser{}
 	case "cohere":
 		return &CohereParser{}
+	case "glimmer":
+		return &GlimmerParser{}
 	default:
 		return nil
 	}
@@ -110,16 +116,16 @@ func (p *PassthroughParser) Add(s string, done bool) (content string, thinking s
 	return s, "", nil, nil
 }
 
+func (p *PassthroughParser) PreservedTokens() []string {
+	return nil
+}
+
 func (p *PassthroughParser) HasToolSupport() bool {
 	return false
 }
 
 func (p *PassthroughParser) HasThinkingSupport() bool {
 	return false
-}
-
-func (p *PassthroughParser) PreservedTokens() []string {
-	return nil
 }
 
 func splitAtTag(sb *strings.Builder, tag string, trimAfter bool) (string, string) {

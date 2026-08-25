@@ -4,6 +4,219 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### OpenAPI LocalAI control plane — Aug 2026
+
+**Why:** `/docs` lagged the shipped LA7/LA9/LA11/LA15/LA17 routes so agents could not discover aliases, score, or routers.
+
+**Shipped:** `server/openapi/openapi.yaml` documents `/api/aliases`, `/api/score`, `/api/router/decide`, `/api/router/corpus`, `/api/repair`, experimental `web_search`/`web_fetch` (SSRF 400), plus `X-Zerollama-*` rewrite headers and LA18 cooldown on generate/chat 503.
+
+### LocalAI LA15 outbound SSRF — Aug 2026
+
+**Why:** Gallery-style URL validation so user-supplied fetches cannot hit loopback, RFC1918, or cloud metadata.
+
+**Shipped:** `internal/ssrf.ValidateExternalURL` (LocalAI `IsPublicIP`); video_url, HF pull/redirects, registry blob `Location`, experimental `web_fetch` `url`. `http://huggingface.co` upgrades to HTTPS.
+
+### SGLang multimodal ports (#32914 / #34892 / #31957 / #33898) — Aug 2026
+
+**Why:** Weekly SGLang scan (`4e5a05148a..896acc8860`) flagged portable agent-facing MM guards; CUDA-IPC / HiCache / Radix skipped.
+
+**Shipped:**
+- Reject still images / padded multimodal on text-only models with **400** (chat + generate) — #32914
+- Opt-in `OLLAMA_MEDIA_ALLOWED_HOSTS` + redirect host re-check + `Content-Length` early reject for `video_url` — #34892
+- Reject zero/`frame_count` mismatches on pre-expanded `video_spans` (no silent grid remount) — #31957
+- Qwen3-VL tool-result media uses `renderContent`; OpenAI multipart tool messages keep `tool_call_id` — #33898
+
+Doc: [sglang-multimodal-borrowings.md](docs/sglang-multimodal-borrowings.md).
+
+### LocalAI LA17 model aliases — Aug 2026
+
+**Why:** Clients send `gpt-4` without a copied manifest; `cp` is too heavy for a name redirect.
+
+**Shipped:** `~/.ollama/aliases.yaml` one-hop map; `GET`/`POST /api/aliases`; rewrite on chat/generate/embed/score/show. Chains rejected.
+
+### LocalAI LA11b KNN router — Aug 2026
+
+**Why:** Score-LM routing needs a small classifier GGUF; many operators already have an embed model and labelled examples.
+
+**Shipped:** `classifier: knn` + `embedder` + YAML corpus; cosine KNN (k=3, sim 0.80, vote 0.5); undecidable → fallback; `GET`/`POST /api/router/corpus` (counts / session overlay).
+
+### LocalAI LA11 score router — Aug 2026
+
+**Why:** One client-facing model name should pick a specialist from the prompt without a generate round-trip.
+
+**Shipped:** `~/.ollama/router.yaml` policies; `POST /api/router/decide`; softmax over LA9 scores; in-band `/api/chat` and `/api/generate` rewrite. KNN corpus is **LA11b** (not in this slice).
+
+### LocalAI LA18–LA20 scheduler lifecycle — Aug 2026
+
+**Why:** Polling agents respawn crash-loop loads; hard-killed `zerollama` can orphan `llama-server`; operators need a hard VRAM ceiling below physical.
+
+**Shipped:** Failed-load geometric cooldown (`ZEROLLAMA_LOAD_COOLDOWN`, `503` + `Retry-After`). Linux `Pdeathsig` SIGKILL on ggml / llama-server / MLX runner subprocesses (`ZEROLLAMA_BACKEND_PARENT_WATCH`). `ZEROLLAMA_VRAM_BUDGET` (`80%` / `12GiB`) caps Go GPU discovery and Python free-VRAM probes (`min(detected, budget)`).
+
+### vLLM skip covered MM payload (#52041) — Aug 2026
+
+**Why:** vLLM drops multimodal tensor bytes for items whose placeholder span is fully inside a prefix-cache-covered region — workers never consume them.
+
+**Shipped:** ollama-engine and ggml llamarunner `deferVisionEncode` stub GridTHW vision spans for input-cache lookup, then hydrate ViT/mtmd only on the uncached tail; llama-server subprocess strips covered `multimodal_data` on agent turn N+1 via session prefix tracker for Qwen3-VL plus Gemma3/4, mllama, Llama4, LFM2/GLM-OCR, Mistral3, and DeepSeek-OCR padded layouts.
+
+### vLLM retention default (#52216) — Aug 2026
+
+**Why:** vLLM promoted `prefix_cache_retention_interval` and changed unset default from dense to `0` (block-aligned SWA checkpoints only).
+
+**Shipped:** `ZEROLLAMA_PREFIX_CACHE_RETENTION_INTERVAL` unset + no YAML `l3.retention_interval` → `0`. Explicit `N>0` or YAML override unchanged.
+
+### vLLM L3 pattern ports (#50321 / #48668) — Aug 2026
+
+**Why:** Aug 20 vLLM rescan (`118bcde44` → `f8e0602713`) flagged partial LMCache tier hits and zero-output steps dropping prefix-cache metrics.
+
+**Shipped:**
+- Partial secondary-tier load: resume from longest LMCache prefix when tail blocks are absent remotely (not all-or-nothing `prefix_block_hash_mismatch`)
+- Zero-output prefix-cache metrics: stream tail + non-stream `/api/generate` keep `cached_prompt_tokens` / `cache_creation_tokens` when `eval_count=0`
+
+Doc: [vllm-borrowings.md](docs/vllm-borrowings.md), [upstream-siblings.md](docs/upstream-siblings.md).
+
+### MiniMax H3 video-c — 24→50 DiT layer audio fix (Aug 2026)
+
+**Why:** H3 T2VA output was a ~93%-clipped audio waveform (`a_rms=45.34`,
+11895/12800 samples clipped). The `--generate` path silently ran only the first
+**24 of the 50** DiT blocks (`H3_DIT_DEFAULT_GENERATE_LAYERS = 24`), truncating
+the residual stack so the final AdaLN/RMSNorm saw a wrong hidden state — the
+audio velocity was ~20–70× too large and Euler integrated it off the VAE's
+~1.3 latent manifold. The "50L rank-1 cliff" reasoning that justified the cap
+was a misdiagnosis of correct-model behavior at small canvases; ComfyUI's own
+`_forward` on this exact pruned int8 export produces the photoreal fox at
+1344×768×**50L**.
+
+**What:**
+- Default `H3_DIT_DEFAULT_GENERATE_LAYERS` **24 → 50** (full model) in `x/video-c/include/h3_dit_host.h`, with a WHY comment; `main.c --layers` help updated (generate default 50, `--dit-denoise` stays 1-layer smoke test)
+- Verified stage-by-stage against ComfyUI `_forward` (MPS bf16, dequantized int8 export): host raw hidden `h_audio_rms`~6–8e3, final RMSNorm ~0.37, curve-table `scale_rms=0.852`/`shift_rms=0.010` (bit-identical to Comfy), audio velocity rms ~0.35–0.7 vs host 50L `vel_audio≈1.0`; 24L was ~68
+- New regression gate: `latent_rms=1.18298 a_rms=0.504888`, `clipped=0/12800` (seed=1, "A red fox walking through snow"), replaces `latent_rms=17.2124 a_rms=45.3436`
+- Env-gated `H3_DUMP_STAGES=1` stage diagnostic in `family_h3/h3_dit_forward.c` (raw h / norm / scale / shift / ha / velocity per step; zero overhead when unset)
+- Docs corrected: [video-c.md](./docs/video-c.md) (removed the wrong "50L rank-1/gray / 24-layer" theory and old "science — closed" conclusion; 24L artifacts recontextualized as truncation), [ROADMAP.md](./docs/ROADMAP.md) v1.4b, `x/video-c/README.md`, `x/video-c/AGENTS.md`
+
+### MiniMax Music 3 — hear on Mac, then C (Aug 2026)
+
+**Why:** Local song generation is not Piper TTS and not MiniMax cloud `/v1/music_generation`. ComfyUI’s Music 3 port is GPL (never a runtime). Omni CUDA `sgl-omni serve` cannot be the first listen on Apple Silicon. H3 AudioVAE is the wrong VAE.
+
+**What:**
+- Lab hear: `scripts/audio/music3_mlx_generate.py` (mlx-audio pin `784b29e`) + `mlx-community/MiniMax-Music3-8bit`; venv `.venv-music`
+- C11 `x/music-c` — Omni prompt/chunk/DAV geometry; `--tokenize` is prompt pack; `--decode-audio` synthetic until `dav.pth`
+- HTTP: `POST /v1/audio/generations` (202) + poll/content; `speech=music3` aliases the same **async** job (not OpenAI WAV bytes)
+- `training.py` expands `{job_id}` in **all** run_script env strings (not only `WAN_OUTPUT_PATH`); default python `.venv-music`
+- Explicit `duration` wins over `max_new_tokens`; exclusive GPU hold like Wan
+- Docs: [music-c.md](./docs/music-c.md), [music-c-findings.md](./docs/music-c-findings.md)
+
+### Training T9 (Partial) — stock Trainer efficiency (unified backend)
+
+- **No** second backend / Unsloth Core fork — polish existing `training.py` + PEFT + Transformers `Trainer`
+- [`training_optim.py`](./training_optim.py): gradient checkpointing (CUDA default on); `adamw_torch_fused` / `adamw_bnb_8bit` (QLoRA); pin_memory; `use_rslora` default on; optional LoftQ; richer knobs (`gradient_accumulation_steps`, `seed`, `max_steps`, `torch_compile`)
+- [`training_labels.py`](./training_labels.py): **completion-only loss** (default on; skipped when `packing=true`)
+- Auto `padding_free_flash_attn` when flash-attn is installed
+- Tests: `python3 -m unittest tests.test_training_optim`
+
+### Training T7 (Done) — train → serve export
+
+- [`training_export.py`](./training_export.py): `register_model` writes `FROM`+`ADAPTER` Modelfile; create via CLI or **HTTP** blob upload + `POST /api/create` (`register_via=auto|cli|http`)
+- `export_gguf`: merge LoRA → `convert_hf_to_gguf` → `llama-quantize` (`export_quant`); **memory-cap** unload/empty-cache after merge before convert (`export_unload`)
+- Wired from `training.py` after `lora_adapter/` save; result includes `export`
+- Smoke: `./scripts/training/t7_train_export_smoke.sh` (`RUN_E2E_T7=1` on lab `:11435`)
+- Tests: `python3 -m unittest tests.test_training_export`
+
+### Training T8 (Done) — padding-free + packing + chat templates + Modelfile render
+
+- [`training_collate.py`](./training_collate.py): **`padding_free` default on** → `DataCollatorWithFlattening`; `padding_free=false` → longest-pad; opt-in `padding_free_flash_attn` → FA2 + `cu_seq_lens_*` (`collate=flattening_flash`)
+- [`training_format.py`](./training_format.py): `format=auto|chatml|llama3|hf|alpaca|modelfile`; `messages[]`; `max_length` default 2048
+- [`training_modelfile.py`](./training_modelfile.py) + [`zerollama template render --train`](./cmd/template_render.go): serve-parity Go TEMPLATE for SFT (strips trailing generation priming)
+- [`training_pack.py`](./training_pack.py): opt-in `packing: true`
+- Loss-curve fixture: [`training_loss_fixture.py`](./training_loss_fixture.py); FA/cu_seqlens smoke: [`scripts/training/t8_flash_attn_5080_smoke.sh`](./scripts/training/t8_flash_attn_5080_smoke.sh) (5080; `flash-attn` optional package)
+- Job result includes `format`, `max_length`, `packing`, `padding_free`, `padding_free_flash_attn`, `attn_implementation`, `collate`
+- Tests: `python3 -m unittest tests.test_training_format tests.test_training_pack tests.test_training_collate tests.test_training_loss_fixture tests.test_training_modelfile`
+
+
+### Doctor template hygiene (`--repair-models`)
+
+- New recipes: `chatml_missing_stops` (any ChatML family — stop tokens only), `missing_response_placeholder` (append `{{ .Response }}`), `empty_template`, `think_parser_mismatch` (Qwen3 invasive TEMPLATE rewrites remain family-gated)
+- `--all-local` scans `/api/tags` (explicit cold-load opt-in; default still warm `/api/ps` only)
+- Docs: [doctor-model-repair.md](./docs/doctor-model-repair.md), minefield §3.1
+
+
+### Embed start no longer blocks :8080 for 120s (Aug 2026)
+
+**Why:** Restarts looked down for ~2 minutes while `runtimeworker.Start` waited for uvicorn `/health` (or hit the full 120s timeout) before Gin accepted traffic. Phase 17 Go→llama-server does not need embed for text GGUF.
+
+**What:** sync-wait `ZEROLLAMA_RUNTIME_EMBED_SYNC_WAIT` (default **3s**), then finish health poll in the background (total `ZEROLLAMA_RUNTIME_EMBED_READY_WAIT`, default 120s) and publish `BaseURL` when ready.
+
+**Follow-up (CT 1564):** training `Py_Initialize` before Go `setenv(ZEROLLAMA_RUNTIME_EMBED_BOOT)` left Python `os.environ` stale — `/health` omitted `embed_boot` and Go never published `BaseURL`. Fixed via libc `getenv` in `runtime/engine.py` + embed bootstrap. Go `/health` client timeout **2s → 15s** (cold CUDA). **Split llama-server** (~18 KiB + `libllama-server-impl.so`) is discoverable again (1 MiB size gate had forced ggml / `llama_server=off`).
+
+### Inference profile auto + L1 on Phase 17 Go path (Aug 2026)
+
+**Why:** Linux prod defaults to Go → llama-server, which ignored calibrated `runtime/configs/gpu/*.json` (live 5080 loads used f16 KV / `-b 512`). Operators also stacked L1/L3/FORK/graphs env vars instead of one workload lane.
+
+**What:**
+- `llm/gpu_profile.go` — Phase 17 launches apply L1 JSON (`rtx-5080`: q8_0, `-b 1024`/`-ub 256`, FA on, np cap); VRAM fit uses the same KV/batch; **nvidia-smi fallback** when DeviceInfo is empty; avoid slog key `source` (reserved)
+- `effectiveGgmlFreeVRAM` — nvidia-smi free-VRAM fallback when discover returns **no** devices (fixes `free_vram=0 B` → forced `-np 1`); does not override non-empty zero FreeMemory from loaded-runner accounting
+- `ZEROLLAMA_INFERENCE_PROFILE=auto|throughput|agent|vram|off` — soft-defaults when unset; `serve_gpu_example.sh` defaults `auto`
+- `/api/status` → `inference.config.inference_profile*` + `gpu_profile_id`; OpenAPI + `runtime_env_doctor.sh` updated
+- MTP/spec draft_max from L1 only when MTP/spec is actually enabled
+- **Verified on CT 1564:** tinyllama load → `--cache-type-k q8_0 -b 1024 -ub 256 --flash-attn on`, `gpu_profile_id=rtx-5080`
+### Media uploads + Wan TI2V keyframe inbetweens (Aug 2026)
+
+**Why:** Agents need N keyframes → short clips without stuffing megabytes of base64 into `POST /v1/videos`. Soft animation state must not share lifecycle with permanent model `blobs/`, and missing frames after TTL/LRU must be recoverable by re-upload (no client digests, no refcount pin/unpin across the training queue).
+
+**What:**
+- `PUT/HEAD/GET/DELETE /v1/media/{session}/{label}` + `GET /v1/media/{session}` — server SHA-256 CAS under `$OLLAMA_MODELS/media/`, session pointers, kind sniff (`image`/`video`/`other`), TTL + CAS byte-cap LRU (no refcounts)
+- `POST /v1/videos` accepts `options.media_session` + `options.keyframes` (or `session/label` refs); materializes staging under `generated/keyframes/`; **400** `media_missing` / `media_type_mismatch`
+- Wan wrapper: N−1 start-conditioned TI2V segments + **final keyframe still**; ffmpeg concat `-c copy` then libx264 fallback; staging cleanup
+- Limits: image PUT 25 MiB, video PUT 256 MiB, video-create JSON 8 MiB; `rife` backend reserved
+- Docs: [media-uploads.md](docs/media-uploads.md), [wan-t2v.md](docs/wan-t2v.md); skill `generate-video`; OpenAPI media routes
+
+### GPT-OSS mxfp4-q8 MoE router quant (Aug 2026)
+
+**Why:** `zerollama bench gpt-oss-120b:mxfp4-q8` panicked in `SparseMoE.route` (`index out of range [0] with length 0`) — empty router logits.
+
+**What:** Per-tensor quantization overrides that omit `mode` no longer inherit global `mxfp4` when bits are not 4 (mlx-lm mixed exports: routers `bits: 8` → affine/int8). Clearer MoE route shape errors; `ls image_gen` alias for `CapabilityImage`.
+
+### `zerollama ls image_gen` alias (Aug 2026)
+
+**Why:** Capability wire value stays `image` (vision took the short name for understanding), but operators expect a `_gen` pair with `video_gen`.
+
+**What:** `zerollama ls image_gen` / `image-gen` filter the same as `ls image` (`CapabilityImage`). Wire capability unchanged.
+
+### Remote storage RDMA throughput (mlx4 bounce path) (Aug 2026)
+
+**Why:** First remote RDMA READ was only ~30% above 10 GbE TCP (~182 vs ~137 MiB/s) despite 40 Gb/s QDR — serial READ depth 1, per-window `ibv_reg_mr`, and bounce copies left the link idle.
+
+**What:**
+- Pipeline outstanding RDMA READs (`max_rd_atomic`/`max_dest_rd_atomic` 16); session advertises `max_rd_atomic` so older peers stay at depth 1 (avoids WC status 9)
+- Pin-prefetch next window while reading current; reuse local + server bounce MRs; skip multi-hundred-MiB `memset`
+- mmap+mlock MR attempted then bounce fallback (mlx4 `ibv_reg_mr` on file mmap → EFAULT)
+- Docs: honest mlx4 bounce throughput expectations
+
+### Doctor model repair (`--repair-models`) + generate think Init order (Aug 2026)
+
+**Why:** Community GGUFs (e.g. milkey Kalomaze Qwen3 MoE, moophlo Qwen3-Coder) scored 0 on harness traps while weights were fine — default `/api/generate` parked answers in `thinking`, or ChatML system role triggered `/` loops. Operators blamed the model; the fix is Modelfile + serve Init order. `doctor --fix` is host bootstrap and must not silently rewrite tags.
+
+**What:**
+
+- `zerollama doctor --repair-models [MODEL...]` — dry-run diagnose (warm `/api/ps` if no args); `--apply` recreates the same tag `FROM` itself with patched `TEMPLATE`/`PARSER`/`stop`
+- Recipes (Qwen3 family only): `think_generate_empty`, `slash_system_collapse`; non-qwen3 symptoms → `manual_review` (no auto-patch)
+- Live trap-12/64 probes **default `/api/generate`** and points FixHint at `--repair-models`; unload before that arm to avoid prefix-cache poison
+- GenerateHandler: default `think=false` **before** thinking-parser `Init` (was `nil` → `defaultThinking` → empty `response`)
+- Package [`internal/modelrepair`](internal/modelrepair); guide [docs/doctor-model-repair.md](docs/doctor-model-repair.md)
+
+### Remote model storage daemon (v1) (Aug 2026)
+
+**Why:** Inference disks fill with hundreds of GB of models long before VRAM is the bottleneck. Operators need one canonical `$OLLAMA_MODELS` tree on a bigger box and on-demand fetch into a capped local cache — without NFS-only semantics, without a separate sync tool for every `run`/`chat`, and with room for InfiniBand and later tensor-addressed streaming.
+
+**What:**
+- CLI: `zerollama storage serve` (lab `:18090`) and `zerollama storage push [--reclaim]`
+- HMAC-SHA256 shared-secret auth; **RDMA READ** data plane (`-tags rdma`, `POST /v1/rdma/session` + MR lease + `IBV_WR_RDMA_READ`) with TCP HTTP Range-GET fallback
+- `GetModel` / `ensureBlob` fetch-on-miss; persist LRU + ephemeral scratch
+- Scheduler **refcount** pin on load / `ReleaseModelBlobs` on unload (shared layers + auto ephemeral delete)
+- Safe reclaim (delete only after all referencing manifests pushed); verify-before-rename; singleflight downloads; hex-only digest paths
+- GGUF catalog + `GET /v1/tensor/…`; `tensorproto` spec for future stream/runtime paging
+
+See [docs/remote-model-storage.md](docs/remote-model-storage.md).
+
 ### `zerollama ls` CTX column (host-aware) (Aug 2026)
 
 **Why:** Operators hit OOM with dual MLX loads + 80k ctx; `ls` showed PARAMS/PERF but not what context this host can hold *now*.

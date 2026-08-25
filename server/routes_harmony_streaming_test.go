@@ -89,6 +89,7 @@ func createHarmonyTestModel(t *testing.T) (string, string) {
 // TestChatHarmonyParserStreamingRealtime verifies that chunks are emitted as soon as they're available
 func TestChatHarmonyParserStreamingRealtime(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	type step struct {
 		input         llm.CompletionResponse
@@ -386,6 +387,7 @@ func TestChatHarmonyParserStreamingRealtime(t *testing.T) {
 // TestChatHarmonyParserStreamingSimple is a simpler test that just verifies basic streaming
 func TestChatHarmonyParserStreamingSimple(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	mockResponses := []llm.CompletionResponse{
 		{Content: "<|message|>First ", Done: false},
@@ -498,6 +500,7 @@ func TestChatHarmonyParserStreamingSimple(t *testing.T) {
 
 func TestChatHarmonyParserStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	type expectedChunk struct {
 		afterResponse int    // Which mock response this chunk should appear after

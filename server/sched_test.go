@@ -29,6 +29,11 @@ func TestMain(m *testing.M) {
 	if os.Getenv("OLLAMA_LMSTUDIO_IMPORT") == "" {
 		_ = os.Setenv("OLLAMA_LMSTUDIO_IMPORT", "false")
 	}
+	// Why default off: LA18 cooldown would turn a second GetRunner after a mocked load
+	// failure into 503 instead of the original error the test asserts.
+	if os.Getenv("ZEROLLAMA_LOAD_COOLDOWN") == "" {
+		_ = os.Setenv("ZEROLLAMA_LOAD_COOLDOWN", "0")
+	}
 	// Why unset runtime env: operator shells often export ZEROLLAMA_RUNTIME_URL for smokes;
 	// sched tests use synthetic GGUFs and expect ggml load unless they opt into runtime.
 	for _, k := range []string{
@@ -157,6 +162,72 @@ func TestSchedLoad(t *testing.T) {
 	require.Equal(t, uint(0), runner.refCount)
 	time.Sleep(1 * time.Millisecond)
 	require.Len(t, s.expiredCh, 1)
+}
+
+// Eviction can detachServer() (nil model) while WaitUntilRunning is in flight.
+// Ready-path must not panic on runner.model.ShortName and must fail the request.
+func TestSchedLoadEvictedDuringWait(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 2*time.Second)
+	defer done()
+	s := InitScheduler(ctx)
+	s.waitForRecovery = 10 * time.Millisecond
+
+	modelPath, _ := createBinFile(t, ggml.KV{
+		"general.architecture":          "llama",
+		"llama.context_length":          uint32(32),
+		"llama.embedding_length":        uint32(4096),
+		"llama.block_count":             uint32(1),
+		"llama.attention.head_count":    uint32(32),
+		"llama.attention.head_count_kv": uint32(32),
+		"tokenizer.ggml.tokens":         []string{" "},
+		"tokenizer.ggml.scores":         []float32{0},
+		"tokenizer.ggml.token_type":     []int32{0},
+	}, []*ggml.Tensor{
+		{Name: "blk.0.attn.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
+		{Name: "output.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
+	})
+
+	gate := make(chan struct{})
+	server := &mockLlm{vramSize: 10, vramByGPU: map[ml.DeviceID]uint64{}, waitGate: gate}
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int, config llm.LlamaServerConfig) (llm.LlamaServer, error) {
+		server.modelPath = model
+		return server, nil
+	}
+
+	req := &LlmRequest{
+		ctx:             ctx,
+		model:           &Model{ModelPath: modelPath, ShortName: "race-model"},
+		opts:            api.DefaultOptions(),
+		successCh:       make(chan *runnerRef, 1),
+		errCh:           make(chan error, 1),
+		sessionDuration: &api.Duration{Duration: 2 * time.Second},
+	}
+	s.load(req, ml.SystemInfo{}, nil, false)
+
+	// Wait until runner is registered and blocked in WaitUntilRunning.
+	var runner *runnerRef
+	require.Eventually(t, func() bool {
+		s.loadedMu.Lock()
+		defer s.loadedMu.Unlock()
+		runner = s.loaded[schedulerModelKey(req.model)]
+		return runner != nil && runner.loading
+	}, time.Second, 5*time.Millisecond)
+
+	runner.refMu.Lock()
+	leaked := runner.detachServer()
+	runner.refMu.Unlock()
+	closeLlamaServer(leaked)
+
+	close(gate)
+
+	select {
+	case err := <-req.errCh:
+		require.ErrorContains(t, err, "unloaded during load")
+	case resp := <-req.successCh:
+		t.Fatalf("unexpected success after eviction: %v", resp)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for load failure")
+	}
 }
 
 type reqBundle struct {
@@ -915,6 +986,99 @@ func TestSchedNeedsReloadEffectiveNumCtx(t *testing.T) {
 	require.False(t, runner.needsReload(ctx, req), "must not reload when request ctx < effective ctx")
 }
 
+type growMockLlm struct {
+	mockLlm
+}
+
+func (g *growMockLlm) GrowNumCtx(ctx context.Context, n int) error {
+	g.contextLength = n
+	return nil
+}
+
+type shrinkMockLlm struct {
+	mockLlm
+	shrinkTo int
+	calls    int
+}
+
+func (g *shrinkMockLlm) ShrinkNumCtx(ctx context.Context, n int) error {
+	g.calls++
+	g.shrinkTo = n
+	g.contextLength = n
+	return nil
+}
+
+func TestTryShrinkIdleKVSkipsBusyAndExcept(t *testing.T) {
+	s := InitScheduler(t.Context())
+	idle := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	busy := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	keep := &shrinkMockLlm{mockLlm: mockLlm{contextLength: 32768}}
+	ggml := &mockLlm{contextLength: 32768}
+
+	s.loaded["idle"] = &runnerRef{
+		modelKey:  "idle",
+		modelPath: "idle.gguf",
+		refCount:  0,
+		llama:     idle,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	s.loaded["busy"] = &runnerRef{
+		modelKey:  "busy",
+		modelPath: "busy.gguf",
+		refCount:  1,
+		llama:     busy,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	s.loaded["keep"] = &runnerRef{
+		modelKey:  "keep",
+		modelPath: "keep.gguf",
+		refCount:  0,
+		llama:     keep,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+	s.loaded["ggml"] = &runnerRef{
+		modelKey:  "ggml",
+		modelPath: "ggml.gguf",
+		refCount:  0,
+		llama:     ggml,
+		Options:   &api.Options{Runner: api.Runner{NumCtx: 32768}},
+	}
+
+	n := s.tryShrinkIdleKV(t.Context(), "keep")
+	require.Equal(t, 1, n)
+	require.Equal(t, 1, idle.calls)
+	require.Equal(t, kvReclaimFloor, idle.contextLength)
+	require.Equal(t, kvReclaimFloor, s.loaded["idle"].Options.NumCtx)
+	require.Zero(t, busy.calls)
+	require.Zero(t, keep.calls)
+	require.Equal(t, 32768, ggml.contextLength)
+}
+
+func TestSchedGrowNumCtxAvoidsReload(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+
+	llm := &growMockLlm{mockLlm: mockLlm{
+		vramByGPU:     map[ml.DeviceID]uint64{},
+		contextLength: 4096,
+	}}
+	do := api.DefaultOptions()
+	do.NumCtx = 4096
+	runner := &runnerRef{
+		model:   &Model{},
+		Options: &do,
+		llama:   llm,
+	}
+	req := &LlmRequest{
+		model: &Model{},
+		opts:  api.DefaultOptions(),
+	}
+	req.opts.NumCtx = 8192
+	require.False(t, runner.needsReload(ctx, req), "GrowNumCtx should avoid reload")
+	require.Equal(t, 8192, llm.contextLength)
+	require.Equal(t, 8192, runner.Options.NumCtx)
+}
+
 func TestSyncRunnerLoadOptions(t *testing.T) {
 	do := api.DefaultOptions()
 	do.NumCtx = 131072
@@ -1127,6 +1291,7 @@ type mockLlm struct {
 	closeResp         error
 	closeCalled       bool
 	closeBlock        chan struct{} // if set, Close waits until closed (hang regression tests)
+	waitGate          chan struct{} // if set, WaitUntilRunning blocks until closed
 	vramSize          uint64
 	totalSize         uint64
 	vramByGPU         map[ml.DeviceID]uint64
@@ -1158,7 +1323,16 @@ func (s *mockLlm) Load(ctx context.Context, sytemInfo ml.SystemInfo, gpus []ml.D
 	return gpuIDs, nil
 }
 func (s *mockLlm) Ping(ctx context.Context) error             { return s.pingResp }
-func (s *mockLlm) WaitUntilRunning(ctx context.Context) error { return s.waitResp }
+func (s *mockLlm) WaitUntilRunning(ctx context.Context) error {
+	if s.waitGate != nil {
+		select {
+		case <-s.waitGate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.waitResp
+}
 func (s *mockLlm) Completion(ctx context.Context, req llm.CompletionRequest, fn func(llm.CompletionResponse)) error {
 	return s.completionResp
 }

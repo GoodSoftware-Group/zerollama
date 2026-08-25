@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/cache"
@@ -566,6 +567,34 @@ func precomputeGemmaScaledWeights(m *Model) {
 	}
 }
 
+// expandGemma4OptiqExpertQuant maps config keys like
+// language_model.model.layers.N.experts.switch_glu.gate_proj onto per-expert
+// blob names language_model.model.layers.N.moe.experts.E.gate_proj.weight.
+func expandGemma4OptiqExpertQuant(tq map[string]*model.TensorQuantInfo, numExperts int) {
+	if tq == nil || numExperts <= 0 {
+		return
+	}
+	const marker = ".experts.switch_glu."
+	for key, info := range tq {
+		idx := strings.Index(key, marker)
+		if idx < 0 || info == nil {
+			continue
+		}
+		layerPrefix := key[:idx]
+		proj := strings.TrimSuffix(key[idx+len(marker):], ".weight")
+		if proj == "" {
+			continue
+		}
+		for e := 0; e < numExperts; e++ {
+			dst := fmt.Sprintf("%s.moe.experts.%d.%s.weight", layerPrefix, e, proj)
+			if _, ok := tq[dst]; ok {
+				continue
+			}
+			tq[dst] = &model.TensorQuantInfo{QuantType: info.QuantType, GroupSize: info.GroupSize}
+		}
+	}
+}
+
 func newModel(root *model.Root) (base.Model, error) {
 	configData, err := root.Manifest.ReadConfig("config.json")
 	if err != nil {
@@ -577,7 +606,26 @@ func newModel(root *model.Root) (base.Model, error) {
 		return nil, err
 	}
 
-	if qt := root.QuantType(); qt != "" {
+	// Prefer config.json quantization over blob-inferred QuantType (OptIQ).
+	var quantCfg struct {
+		Quantization *struct {
+			GroupSize int    `json:"group_size"`
+			Bits      int    `json:"bits"`
+			Mode      string `json:"mode"`
+		} `json:"quantization"`
+	}
+	_ = json.Unmarshal(configData, &quantCfg)
+	if quantCfg.Quantization != nil && quantCfg.Quantization.Bits > 0 {
+		cfg.QuantBits = quantCfg.Quantization.Bits
+		cfg.QuantGroupSize = quantCfg.Quantization.GroupSize
+		cfg.QuantMode = quantCfg.Quantization.Mode
+		if cfg.QuantGroupSize <= 0 {
+			cfg.QuantGroupSize = 64
+		}
+		if cfg.QuantMode == "" {
+			cfg.QuantMode = "affine"
+		}
+	} else if qt := root.QuantType(); qt != "" {
 		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams(qt)
 		if gs := root.GroupSize(); gs > 0 {
 			cfg.QuantGroupSize = gs
@@ -585,7 +633,19 @@ func newModel(root *model.Root) (base.Model, error) {
 	} else {
 		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams("")
 	}
+	if cfg.QuantBits > 0 && cfg.QuantMode == "" {
+		cfg.QuantMode = "affine"
+	}
 	cfg.TensorQuant = root.AllTensorQuant()
+	qfields := model.QuantConfigFields{
+		QuantGroupSize: &cfg.QuantGroupSize,
+		QuantBits:      &cfg.QuantBits,
+		QuantMode:      &cfg.QuantMode,
+		TensorQuant:    cfg.TensorQuant,
+	}
+	model.ApplyQuantizationFromConfig(configData, &qfields)
+	expandGemma4OptiqExpertQuant(qfields.TensorQuant, int(cfg.NumExperts))
+	cfg.TensorQuant = qfields.TensorQuant
 
 	tokData, err := root.Manifest.ReadConfig("tokenizer.json")
 	if err != nil {

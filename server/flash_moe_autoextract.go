@@ -123,7 +123,7 @@ func writeFlashMoESidecarParam(name model.Name, sidecar string) error {
 	if err != nil {
 		return err
 	}
-	configLayer, err := createConfigLayer(layers, cfg)
+	configLayer, err := createConfigLayer(cfg)
 	if err != nil {
 		return err
 	}

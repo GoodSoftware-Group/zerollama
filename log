@@ -1,8 +1,167 @@
+<<<<<<< Updated upstream
 Reason: execute_code script execution. The script can spawn subprocesses or mutate files without passing through terminal command approval; approval is one-shot for this run. 
 ⚠️ Command Approval Required
 execute_code <<'PY'
 with open('/root/blockchain_design_proposal.md', 'r') as f:
     content = f.read()
+=======
+user1@User1s-MacBook-Pro zerollama % ./zerollama ls                      
+NAME                                            ID              SIZE      PARAMS                  CTX          PERF     MODIFIED     
+wan2.1-t2v:1.3b                                 4dd7b81e0f3f    634 B                             --           --       15 hours ago    
+wan2.2-ti2v-5b:latest                           58f3f57e88ca    650 B                             --           --       15 hours ago    
+x/flux2-klein:latest                            50a0c0ab15ac    5.7 GB                            8k           --       17 hours ago    
+x/z-image-turbo:latest                          77b78ce4e883    12 GB                             8k           --       17 hours ago    
+qwen3-coder-next:6bit                           ffc5c8db17e8    64 GB     15.0B MoE 512x10        8k           --       2 days ago      
+gpt-oss-120b:mxfp4-q8                           9378e12d0a90    63 GB     14.9B/979.87M active    128k         --       2 days ago      
+ane-ffn-lab-shexp:latest                        9b1d8353032f    23 GB     36.0B/4.0B active       128k–256k    --       2 days ago      
+jackrong-opus-27b:4bit                          1aec02708c01    15 GB     24.0B                   8k           20.6     2 days ago      
+granite4.1:30b-mlx                              53b8304e15e7    15 GB     3.6B                    8k           23.0     2 days ago      
+granite4.1:3b-mlx                               2c1c7f47b0d2    1.8 GB    425.54M                 8k           112.7    2 days ago      
+ane-ffn-lab-eliza:latest                        62aa9f6a699a    1.3 GB    1.9B                    128k–256k    92.0     2 days ago      
+ornith-35b-optiq:latest                         f4df829f8a75    22 GB     34.0B MoE 256x8         8k           54.2     2 days ago      
+qwen3.6:35b-a3b-mlx                             6270b44764f8    20 GB     29.7B MoE 256x8         8k           67.5     3 days ago      
+qwen3.6:27b-mlx                                 42214191d30a    16 GB     24.4B                   8k           21.0     3 days ago      
+llama3.2:3b-mlx                                 37d98df79256    1.8 GB    401.75M                 8k           148.9    3 days ago      
+qwen2.5:1.5b-mlx                                4c11be493571    878 MB    193.03M                 32k          262.5    3 days ago      
+qwen3:0.6b-mlx                                  b8ba6ad891c6    349 MB    74.56M                  40k          222.5    3 days ago      
+llama3.2:1b-mlx                                 e0f39fbb8fa3    712 MB    154.54M                 8k           221.4    3 days ago      
+lfm2-350m-mlx:4bit                              54562c18c465    204 MB    44.37M                  8k           586.4    6 days ago      
+qwen2.5-0.5b-mlx:4bit                           07bfc14280b2    287 MB    61.79M                  32k          125.5    6 days ago      
+ornith-9b-optiq:latest                          60d75260c48e    6.9 GB    11.7B                   8k           69.3     4 weeks ago     
+eliza-1-27b-256k-dflash:latest                  2801a798ae9b    18 GB     26.9B                   128k–256k    3.1      4 weeks ago     
+eliza-1-2b-ngram:latest                         ed3eca5908fb    1.3 GB    1.9B                    128k–256k    112.9    4 weeks ago     
+eliza-1-27b-256k-ngram:latest                   a6053026d9a8    16 GB     26.9B                   128k–256k    10.3     4 weeks ago     
+qwen3.6-mtp:latest                              3a67a3650115    23 GB     36.0B/4.0B active       128k–256k    35.3     4 weeks ago     
+mlx-community/gemma-3-27b-it-qat-4bit:latest    c0f982b497af    16 GB     4.0B                    128k         13.4     5 weeks ago     
+gemma4:26b-optiq                                95509dc94f5c    18 GB     26.5B/5.1B active       128k         37.3     5 weeks ago     
+driaforall/tiny-agent-a-0.5b:latest             c0ba004f926a    539 MB    494.01M                 32k          166.5    6 weeks ago     
+eliza-1-27b-256k:latest                         e5640de8044e    16 GB     26.9B                   128k–256k    10.0     6 weeks ago     
+eliza-1-2b:latest                               d1f018c6d84c    1.3 GB    1.9B                    128k–256k    120.0    6 weeks ago     
+lab-smoke-check:latest                          5682484f0d6d    3.3 MB    815K                    8k           437.7    8 weeks ago     
+lab-smoke:latest                                14b60e9b3483    3.3 MB    815K                    8k           367.8    8 weeks ago     
+nomic-embed-text:latest                         0a109f422b47    274 MB    136.73M                 2k           --       3 months ago    
+google/gemini-3.1-flash-lite-image:cloud        26593fd5f8bd    0 B                               --           --       1 second ago    
+google/gemini-3.1-flash-image:cloud             4c90d93b8ae1    0 B                               --           --       1 second ago    
+google/gemini-3-pro-image:cloud                 cfb483062eb1    0 B                               --           --       1 second ago    
+openai/gpt-5.4-image-2:cloud                    c0bb46a1cde6    0 B                               --           --       1 second ago    
+google/lyria-3-pro-preview:cloud                55d7549551e7    0 B                               --           --       1 second ago    
+google/lyria-3-clip-preview:cloud               e8e9d52fe68d    0 B                               --           --       1 second ago    
+google/gemini-3.1-flash-image-preview:cloud     cc33aa333ade    0 B                               --           --       1 second ago    
+google/gemini-3-pro-image-preview:cloud         b1a84e37467c    0 B                               --           --       1 second ago    
+openai/gpt-5-image-mini:cloud                   097d99aa676b    0 B                               --           --       1 second ago    
+openai/gpt-5-image:cloud                        7b05d25daa5e    0 B                               --           --       1 second ago    
+google/gemini-2.5-flash-image:cloud             cf11b997ebe2    0 B                               --           --       1 second ago    
+user1@User1s-MacBook-Pro zerollama % ./zerollama bench
+bench num_ctx=8192 (use --num-ctx to override)
+benching wan2.1-t2v:1.3b (video_gen)...
+warning: wan2.1-t2v:1.3b: Script exited with code 1
+benching wan2.2-ti2v-5b:latest (video_gen)...
+warning: wan2.2-ti2v-5b:latest: Script exited with code 1
+benching x/flux2-klein:latest (image)...
+warning: image warmup 1/1 for x/flux2-klein:latest failed: 500 Internal Server Error: mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)
+warning: x/flux2-klein:latest: image epoch 1/2: 500 Internal Server Error: mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)
+warning: x/flux2-klein:latest: image epoch 2/2: 500 Internal Server Error: Post "http://127.0.0.1:62352/completion": dial tcp 127.0.0.1:62352: connect: connection refused
+warning: x/flux2-klein:latest: only 0/2 image epochs succeeded (need 1)
+benching x/z-image-turbo:latest (image)...
+warning: image warmup 1/1 for x/z-image-turbo:latest failed: 500 Internal Server Error: reload text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry
+warning: x/z-image-turbo:latest: image epoch 1/2: 500 Internal Server Error: reload text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry
+warning: x/z-image-turbo:latest: image epoch 2/2: 500 Internal Server Error: reload text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry
+warning: x/z-image-turbo:latest: only 0/2 image epochs succeeded (need 1)
+benching qwen3-coder-next:6bit (completion)...
+  num_ctx clamped 8192 → 2048 for large model
+qwen3-coder-next:6bit  71.0
+benching gpt-oss-120b:mxfp4-q8 (completion)...
+  num_ctx clamped 8192 → 2048 for large model
+warning: warmup 1/1 for gpt-oss-120b:mxfp4-q8 failed: mlx runner failed: panic: runtime error: index out of range [0] with length 0
+warning: gpt-oss-120b:mxfp4-q8: epoch 1/3: mlx runner failed: panic: runtime error: index out of range [0] with length 0
+warning: gpt-oss-120b:mxfp4-q8: epoch 2/3: mlx runner failed: panic: runtime error: index out of range [0] with length 0
+warning: gpt-oss-120b:mxfp4-q8: epoch 3/3: mlx runner failed: panic: runtime error: index out of range [0] with length 0
+warning: gpt-oss-120b:mxfp4-q8: only 0/3 epochs produced metrics (need 1)
+benching ane-ffn-lab-shexp:latest (completion)...
+ane-ffn-lab-shexp:latest  78.8 (2/3 epochs)
+skip jackrong-opus-27b:4bit (cached 20.6, use --force to re-bench)
+skip granite4.1:30b-mlx (cached 23.0, use --force to re-bench)
+skip granite4.1:3b-mlx (cached 112.7, use --force to re-bench)
+skip ane-ffn-lab-eliza:latest (cached 92.0, use --force to re-bench)
+skip ornith-35b-optiq:latest (cached 54.2, use --force to re-bench)
+skip qwen3.6:35b-a3b-mlx (cached 67.5, use --force to re-bench)
+skip qwen3.6:27b-mlx (cached 21.0, use --force to re-bench)
+skip llama3.2:3b-mlx (cached 148.9, use --force to re-bench)
+skip qwen2.5:1.5b-mlx (cached 262.5, use --force to re-bench)
+skip qwen3:0.6b-mlx (cached 222.5, use --force to re-bench)
+skip llama3.2:1b-mlx (cached 221.4, use --force to re-bench)
+skip lfm2-350m-mlx:4bit (cached 586.4, use --force to re-bench)
+skip qwen2.5-0.5b-mlx:4bit (cached 125.5, use --force to re-bench)
+skip ornith-9b-optiq:latest (cached 69.3, use --force to re-bench)
+skip eliza-1-27b-256k-dflash:latest (cached 3.1, use --force to re-bench)
+skip eliza-1-27b-256k-ngram:latest (cached 10.3, use --force to re-bench)
+skip eliza-1-2b-ngram:latest (cached 112.9, use --force to re-bench)
+skip qwen3.6-mtp:latest (cached 35.3, use --force to re-bench)
+skip mlx-community/gemma-3-27b-it-qat-4bit:latest (cached 13.4, use --force to re-bench)
+skip gemma4:26b-optiq (cached 37.3, use --force to re-bench)
+skip driaforall/tiny-agent-a-0.5b:latest (cached 166.5, use --force to re-bench)
+skip eliza-1-2b:latest (cached 120.0, use --force to re-bench)
+skip eliza-1-27b-256k:latest (cached 10.0, use --force to re-bench)
+skip lab-smoke-check:latest (cached 437.7, use --force to re-bench)
+skip lab-smoke:latest (cached 367.8, use --force to re-bench)
+NAME                                            PERF  
+wan2.1-t2v:1.3b                                 error    
+wan2.2-ti2v-5b:latest                           error    
+x/flux2-klein:latest                            error    
+x/z-image-turbo:latest                          error    
+qwen3-coder-next:6bit                           71.0     
+gpt-oss-120b:mxfp4-q8                           error    
+ane-ffn-lab-shexp:latest                        78.8*    
+jackrong-opus-27b:4bit                          20.6     
+granite4.1:30b-mlx                              23.0     
+granite4.1:3b-mlx                               112.7    
+ane-ffn-lab-eliza:latest                        92.0     
+ornith-35b-optiq:latest                         54.2     
+qwen3.6:35b-a3b-mlx                             67.5     
+qwen3.6:27b-mlx                                 21.0     
+llama3.2:3b-mlx                                 148.9    
+qwen2.5:1.5b-mlx                                262.5    
+qwen3:0.6b-mlx                                  222.5    
+llama3.2:1b-mlx                                 221.4    
+lfm2-350m-mlx:4bit                              586.4    
+qwen2.5-0.5b-mlx:4bit                           125.5    
+ornith-9b-optiq:latest                          69.3     
+eliza-1-27b-256k-dflash:latest                  3.1      
+eliza-1-27b-256k-ngram:latest                   10.3     
+eliza-1-2b-ngram:latest                         112.9    
+qwen3.6-mtp:latest                              35.3     
+mlx-community/gemma-3-27b-it-qat-4bit:latest    13.4     
+gemma4:26b-optiq                                37.3     
+driaforall/tiny-agent-a-0.5b:latest             166.5    
+eliza-1-2b:latest                               120.0    
+eliza-1-27b-256k:latest                         10.0     
+lab-smoke-check:latest                          437.7    
+lab-smoke:latest                                367.8    
+user1@User1s-MacBook-Pro zerollama % ./zerollama bench
+
+===
+
+user1@User1s-MacBook-Pro zerollama % ./zerollama serve
+time=2026-08-01T14:35:48.551-07:00 level=INFO source=types.go:36 msg="zerollama starting" version=0.21.0-189-gd9c04cb-dirty started_at=2026-08-01T14:35:48-07:00 goos=darwin goarch=arm64
+time=2026-08-01T14:35:48.551-07:00 level=INFO source=routes.go:2393 msg="server config" env="map[ANE_REPO:/Users/user1/Sites/inference/ane ELIZACLOUD_API_KEY: FLASH_MOE_REPO:/Users/user1/Sites/inference/anemll-flash-llama.cpp HTTPS_PROXY: HTTP_PROXY: NO_PROXY: OLLAMA_CONTEXT_LENGTH:0 OLLAMA_DEBUG:INFO OLLAMA_DEBUG_LOG_REQUESTS:false OLLAMA_EDITOR: OLLAMA_FFMPEG:ffmpeg OLLAMA_FLASH_ATTENTION:false OLLAMA_GPU_OVERHEAD:0 OLLAMA_HOST:http://0.0.0.0:11434 OLLAMA_IMAGE_EMBED_CACHE_BYTES:0 OLLAMA_IMAGE_EMBED_CACHE_MAX:64 OLLAMA_IMAGE_EMBED_CACHE_SIZE:4 OLLAMA_KEEP_ALIVE:5m0s OLLAMA_KV_CACHE_TYPE: OLLAMA_KV_MM_PAD_RADIX:true OLLAMA_LIMIT_MM_DATA_PER_REQUEST: OLLAMA_LLM_LIBRARY: OLLAMA_LMSTUDIO_IMPORT:true OLLAMA_LMSTUDIO_LIST_ALL:false OLLAMA_LMSTUDIO_MODELS: OLLAMA_LOAD_TIMEOUT:5m0s OLLAMA_MAX_LOADED_MODELS:0 OLLAMA_MAX_QUEUE:512 OLLAMA_MM_IO_WORKERS:4 OLLAMA_MODELS:/Users/user1/.ollama/models OLLAMA_MULTIUSER_CACHE:false OLLAMA_NEW_ENGINE:false OLLAMA_NOHISTORY:false OLLAMA_NOPRUNE:false OLLAMA_NO_CLOUD:false OLLAMA_NUM_PARALLEL:1 OLLAMA_ORIGINS:[http://localhost https://localhost http://localhost:* https://localhost:* http://127.0.0.1 https://127.0.0.1 http://127.0.0.1:* https://127.0.0.1:* http://0.0.0.0 https://0.0.0.0 http://0.0.0.0:* https://0.0.0.0:* app://* file://* tauri://* vscode-webview://* vscode-file://*] OLLAMA_REMOTES:[ollama.com] OLLAMA_RUNTIME_ALL:false OLLAMA_SCHED_SPREAD:false OLLAMA_SGLANG_URL: OLLAMA_TRAINING:true OLLAMA_TRAINING_PYTHONPATH: OLLAMA_TRAINING_TCP: OLLAMA_VIDEO_ALLOW_INSECURE_HTTP:false OLLAMA_VIDEO_FETCH_TIMEOUT:10m0s OLLAMA_VIDEO_FFMPEG_TIMEOUT:5m0s OLLAMA_VIDEO_MAX_BYTES:268435456 OLLAMA_VIDEO_MAX_FRAMES:32 OLLAMA_VIDEO_MAX_IMAGES_PER_MESSAGE:64 OLLAMA_VIDEO_MAX_PER_MESSAGE:1 OLLAMA_VIDEO_SAMPLE_FPS:1 OLLAMA_VIDEO_SAMPLE_MODE:fps OLLAMA_VIDEO_STRIDE:30 OLLAMA_VIT_RADIX:true ZEROLLAMA_ANE_DRAFT:false ZEROLLAMA_EDGE:false ZEROLLAMA_ELIZA_NGRAM:false ZEROLLAMA_FLASH_MOE:false ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN: ZEROLLAMA_FLASH_MOE_MODE:slot-bank ZEROLLAMA_FLASH_MOE_PREFETCH:false ZEROLLAMA_FLASH_MOE_SIDECAR: ZEROLLAMA_FLASH_MOE_SLOT_BANK: ZEROLLAMA_FLASH_MOE_TOPK: ZEROLLAMA_FLEET_ASSIGN_SECRET:(set/unset) ZEROLLAMA_FLEET_ASSIGN_TTL: ZEROLLAMA_FLEET_LISTEN:0.0.0.0:11450 ZEROLLAMA_FLEET_MDNS:0 ZEROLLAMA_FLEET_MDNS_ADVERTISE:0 ZEROLLAMA_FLEET_PEERS: ZEROLLAMA_FLEET_POLL_INTERVAL: ZEROLLAMA_GGML_AUTO_PARALLEL:auto (on) ZEROLLAMA_GGML_CLAMP_NUM_CTX:0 ZEROLLAMA_GGML_PARALLEL_MAX: ZEROLLAMA_GGML_PAUSE_RUNTIME_MIN_BACKLOG: ZEROLLAMA_GGML_PAUSE_WHEN_RUNTIME_BUSY:auto (on) ZEROLLAMA_GGML_SUGGEST_CTX_MAX: ZEROLLAMA_GGML_VRAM_MARGIN: ZEROLLAMA_LEGACY_RUNNER:false ZEROLLAMA_LLAMA_CPP_BACKEND:false ZEROLLAMA_LLAMA_SERVER:false ZEROLLAMA_MDNS:0 ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD:0 ZEROLLAMA_REPO: ZEROLLAMA_RUNNER_BUSY_TIMEOUT:0s ZEROLLAMA_RUNTIME: ZEROLLAMA_RUNTIME_DARWIN_SIDECAR:persist ZEROLLAMA_RUNTIME_EMBED:off ZEROLLAMA_RUNTIME_EMBED_PORT: ZEROLLAMA_RUNTIME_URL: ZEROLLAMA_SCHED_WATCHDOG_INTERVAL:30s ZEROLLAMA_SPEC_DM_ADAPTIVE: ZEROLLAMA_THINKING_GATE: http_proxy: https_proxy: no_proxy:]"
+time=2026-08-01T14:35:48.551-07:00 level=INFO source=routes.go:2395 msg="Ollama cloud disabled: false"
+time=2026-08-01T14:35:48.863-07:00 level=INFO source=images.go:579 msg="total blobs: 25645"
+time=2026-08-01T14:35:48.892-07:00 level=INFO source=images.go:586 msg="total unused blobs removed: 0"
+time=2026-08-01T14:35:48.894-07:00 level=INFO source=routes.go:2449 msg="gemma agent stats log enabled" path=/Users/user1/.ollama/logs/gemma-agent.jsonl version=0.21.0-189-gd9c04cb-dirty
+time=2026-08-01T14:35:48.894-07:00 level=INFO source=darwin_sidecar.go:163 msg="darwin runtime sidecar bootstrap starting"
+time=2026-08-01T14:35:48.894-07:00 level=INFO source=darwin_sidecar.go:169 msg="darwin sidecar: repo root" path=/Users/user1/Sites/inference/zerollama
+time=2026-08-01T14:35:48.894-07:00 level=INFO source=darwin_sidecar.go:175 msg="darwin sidecar: ensuring runtime/.venv (uv; first run can take several minutes)"
+time=2026-08-01T14:35:49.011-07:00 level=INFO source=darwin_sidecar.go:341 msg="darwin sidecar: runtime/.venv already ready" python=/Users/user1/Sites/inference/zerollama/runtime/.venv/bin/python
+time=2026-08-01T14:35:49.011-07:00 level=INFO source=darwin_sidecar.go:179 msg="darwin sidecar: runtime/.venv ready"
+time=2026-08-01T14:35:49.011-07:00 level=INFO source=darwin_sidecar.go:185 msg="darwin sidecar: checking runtime health" url=http://127.0.0.1:8081
+time=2026-08-01T14:35:52.013-07:00 level=INFO source=darwin_sidecar.go:223 msg="darwin sidecar: starting python runtime" log=/var/folders/60/99_3897j4jj8_hdn43yz_k4w0000gn/T/zerollama-runtime-sidecar.log port=8081
+time=2026-08-01T14:35:52.722-07:00 level=INFO source=darwin_sidecar.go:238 msg="darwin runtime sidecar started" url=http://127.0.0.1:8081 log=/var/folders/60/99_3897j4jj8_hdn43yz_k4w0000gn/T/zerollama-runtime-sidecar.log
+time=2026-08-01T14:35:54.543-07:00 level=INFO source=darwin_sidecar.go:391 msg="darwin training: .venv-training already ready" python=/Users/user1/Sites/inference/zerollama/.venv-training/bin/python
+ollama: embedded Python: prepended /Users/user1/Sites/inference/zerollama/.venv-training/lib/python3.11/site-packages/torch/lib to DYLD_LIBRARY_PATH (hostlibs/cudnn shadows removed)
+WORKER: Job processor thread started
+time=2026-08-01T14:35:56.035-07:00 level=INFO source=client.go:117 msg="training worker started" training_py_root=/Users/user1/Sites/inference/zerollama
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+>>>>>>> Stashed changes
 
 # Show all headings (markdown headers) to verify structure
 import re
@@ -11,6 +170,7 @@ for i, pos in enumerate(headings):
     line_num = content[:pos[0]].count('\n') + 1
     print(f"Line {line_num}: {pos[1].strip()}")
 
+<<<<<<< Updated upstream
 PY
 Reason
 execute_code script execution. The script can spawn subprocesses or mutate files without passing through terminal command approval; approval is one-shot for this run.
@@ -357,3 +517,1078 @@ OK —又觉得 ived intensった martyr tests不会  maybe说完
 [10:04 PM] 
 APP
  ChainBuilder: ✓ Goal cleared.
+=======
+[GIN-debug] HEAD   /                         --> github.com/ollama/ollama/server.(*Server).GenerateRoutes.func1 (5 handlers)
+[GIN-debug] GET    /                         --> github.com/ollama/ollama/server.(*Server).GenerateRoutes.func2 (5 handlers)
+[GIN-debug] GET    /openapi.yaml             --> github.com/ollama/ollama/server/openapi.YAMLHandler (5 handlers)
+[GIN-debug] GET    /openapi.json             --> github.com/ollama/ollama/server/openapi.JSONHandler (5 handlers)
+[GIN-debug] GET    /docs                     --> github.com/ollama/ollama/server/openapi.DocsHandler (5 handlers)
+[GIN-debug] GET    /docs/                    --> github.com/ollama/ollama/server/openapi.DocsHandler (5 handlers)
+[GIN-debug] HEAD   /api/version              --> github.com/ollama/ollama/server.VersionHandler (5 handlers)
+[GIN-debug] GET    /api/version              --> github.com/ollama/ollama/server.VersionHandler (5 handlers)
+[GIN-debug] GET    /api/status               --> github.com/ollama/ollama/server.(*Server).StatusHandler-fm (5 handlers)
+[GIN-debug] POST   /api/can-load             --> github.com/ollama/ollama/server.(*Server).CanLoadHandler-fm (5 handlers)
+[GIN-debug] POST   /api/propose-load         --> github.com/ollama/ollama/server.(*Server).ProposeLoadHandler-fm (5 handlers)
+[GIN-debug] POST   /api/pin                  --> github.com/ollama/ollama/server.(*Server).PinHandler-fm (5 handlers)
+[GIN-debug] DELETE /api/pin/:id              --> github.com/ollama/ollama/server.(*Server).UnpinHandler-fm (5 handlers)
+[GIN-debug] POST   /api/cache/pin            --> github.com/ollama/ollama/server.(*Server).CachePinHandler-fm (5 handlers)
+[GIN-debug] DELETE /api/cache/pin/:id        --> github.com/ollama/ollama/server.(*Server).CacheUnpinHandler-fm (5 handlers)
+[GIN-debug] POST   /api/cache/warm           --> github.com/ollama/ollama/server.(*Server).CacheWarmHandler-fm (5 handlers)
+[GIN-debug] GET    /api/metrics              --> github.com/ollama/ollama/server.(*Server).MetricsHandler-fm (5 handlers)
+[GIN-debug] GET    /api/kv/blob/:digest      --> github.com/ollama/ollama/server.(*Server).KvBlobHandler-fm (5 handlers)
+[GIN-debug] POST   /api/fleet/assign-hold    --> github.com/ollama/ollama/server.(*Server).AssignHoldHandler-fm (5 handlers)
+[GIN-debug] POST   /internal/cross-queue-seq --> github.com/ollama/ollama/server.(*Server).CrossQueueSeqHandler-fm (6 handlers)
+[GIN-debug] POST   /internal/render-chat     --> github.com/ollama/ollama/server.(*Server).RenderChatHandler-fm (6 handlers)
+[GIN-debug] POST   /internal/parse-tool-output --> github.com/ollama/ollama/server.(*Server).ParseToolOutputHandler-fm (6 handlers)
+[GIN-debug] POST   /internal/parse-tool-output/session --> github.com/ollama/ollama/server.(*Server).OpenToolParseSessionHandler-fm (6 handlers)
+[GIN-debug] POST   /internal/parse-tool-output/chunk --> github.com/ollama/ollama/server.(*Server).ToolParseSessionChunkHandler-fm (6 handlers)
+[GIN-debug] POST   /internal/parse-tool-output/close --> github.com/ollama/ollama/server.(*Server).CloseToolParseSessionHandler-fm (6 handlers)
+[GIN-debug] GET    /internal/kv-snapshot     --> github.com/ollama/ollama/server.(*Server).RuntimeKVSnapshotHandler-fm (6 handlers)
+time=2026-08-01T14:35:56.036-07:00 level=INFO source=client.go:484 msg="training public TCP listening" addr=[::]:9500
+[GIN-debug] POST   /api/pull                 --> github.com/ollama/ollama/server.(*Server).PullHandler-fm (5 handlers)
+[GIN-debug] POST   /api/push                 --> github.com/ollama/ollama/server.(*Server).PushHandler-fm (5 handlers)
+[GIN-debug] HEAD   /api/tags                 --> github.com/ollama/ollama/server.(*Server).ListHandler-fm (5 handlers)
+[GIN-debug] GET    /api/tags                 --> github.com/ollama/ollama/server.(*Server).ListHandler-fm (5 handlers)
+[GIN-debug] POST   /api/show                 --> github.com/ollama/ollama/server.(*Server).ShowHandler-fm (5 handlers)
+[GIN-debug] DELETE /api/delete               --> github.com/ollama/ollama/server.(*Server).DeleteHandler-fm (5 handlers)
+[GIN-debug] POST   /api/me                   --> github.com/ollama/ollama/server.(*Server).WhoamiHandler-fm (5 handlers)
+[GIN-debug] POST   /api/signout              --> github.com/ollama/ollama/server.(*Server).SignoutHandler-fm (5 handlers)
+[GIN-debug] DELETE /api/user/keys/:encodedKey --> github.com/ollama/ollama/server.(*Server).SignoutHandler-fm (5 handlers)
+[GIN-debug] POST   /api/create               --> github.com/ollama/ollama/server.(*Server).CreateHandler-fm (5 handlers)
+[GIN-debug] POST   /api/blobs/:digest        --> github.com/ollama/ollama/server.(*Server).CreateBlobHandler-fm (5 handlers)
+[GIN-debug] HEAD   /api/blobs/:digest        --> github.com/ollama/ollama/server.(*Server).HeadBlobHandler-fm (5 handlers)
+[GIN-debug] POST   /api/copy                 --> github.com/ollama/ollama/server.(*Server).CopyHandler-fm (5 handlers)
+[GIN-debug] POST   /api/repair               --> github.com/ollama/ollama/server.(*Server).RepairHandler-fm (5 handlers)
+[GIN-debug] POST   /api/experimental/web_search --> github.com/ollama/ollama/server.(*Server).WebSearchExperimentalHandler-fm (5 handlers)
+[GIN-debug] POST   /api/experimental/web_fetch --> github.com/ollama/ollama/server.(*Server).WebFetchExperimentalHandler-fm (5 handlers)
+[GIN-debug] GET    /api/ps                   --> github.com/ollama/ollama/server.(*Server).PsHandler-fm (5 handlers)
+[GIN-debug] GET    /api/image/workflows      --> github.com/ollama/ollama/server.(*Server).ImageWorkflowsHandler-fm (5 handlers)
+[GIN-debug] POST   /api/generate             --> github.com/ollama/ollama/server.(*Server).GenerateHandler-fm (8 handlers)
+[GIN-debug] POST   /api/chat                 --> github.com/ollama/ollama/server.(*Server).ChatHandler-fm (8 handlers)
+[GIN-debug] POST   /api/embed                --> github.com/ollama/ollama/server.(*Server).EmbedHandler-fm (5 handlers)
+[GIN-debug] POST   /api/embeddings           --> github.com/ollama/ollama/server.(*Server).EmbeddingsHandler-fm (5 handlers)
+[GIN-debug] POST   /api/score                --> github.com/ollama/ollama/server.(*Server).ScoreHandler-fm (5 handlers)
+[GIN-debug] POST   /v1/chat/completions      --> github.com/ollama/ollama/server.(*Server).ChatHandler-fm (11 handlers)
+[GIN-debug] POST   /v1/chat/completions/batch --> github.com/ollama/ollama/server.(*Server).GenerateRoutes.(*Server).runtimeV1ChatCompletionsBatchProxy.func14 (6 handlers)
+[GIN-debug] POST   /v1/completions           --> github.com/ollama/ollama/server.(*Server).GenerateHandler-fm (9 handlers)
+[GIN-debug] POST   /v1/embeddings            --> github.com/ollama/ollama/server.(*Server).EmbedHandler-fm (8 handlers)
+[GIN-debug] GET    /v1/models                --> github.com/ollama/ollama/server.(*Server).ListHandler-fm (6 handlers)
+[GIN-debug] GET    /v1/models/:model         --> github.com/ollama/ollama/server.(*Server).ShowHandler-fm (7 handlers)
+[GIN-debug] POST   /v1/responses             --> github.com/ollama/ollama/server.(*Server).ChatHandler-fm (9 handlers)
+[GIN-debug] POST   /v1/images/generations    --> github.com/ollama/ollama/server.(*Server).GenerateHandler-fm (8 handlers)
+[GIN-debug] POST   /v1/images/edits          --> github.com/ollama/ollama/server.(*Server).GenerateHandler-fm (8 handlers)
+[GIN-debug] POST   /v1/audio/transcriptions  --> github.com/ollama/ollama/server.(*Server).TranscriptionHandler-fm (6 handlers)
+[GIN-debug] POST   /v1/audio/speech          --> github.com/ollama/ollama/server.(*Server).SpeechHandler-fm (6 handlers)
+[GIN-debug] GET    /v1/audio/voices          --> github.com/ollama/ollama/server.(*Server).VoicesHandler-fm (5 handlers)
+[GIN-debug] POST   /v1/videos                --> github.com/ollama/ollama/server.(*Server).VideoCreateHandler-fm (6 handlers)
+[GIN-debug] GET    /v1/videos/:id            --> github.com/ollama/ollama/server.(*Server).VideoGetHandler-fm (5 handlers)
+[GIN-debug] GET    /v1/videos/:id/content    --> github.com/ollama/ollama/server.(*Server).VideoContentHandler-fm (5 handlers)
+[GIN-debug] POST   /v1/messages              --> github.com/ollama/ollama/server.(*Server).ChatHandler-fm (9 handlers)
+[GIN-debug] POST   /api/train/jobs           --> github.com/ollama/ollama/server.(*Server).trainHTTPSubmitJob-fm (5 handlers)
+[GIN-debug] GET    /api/train/jobs           --> github.com/ollama/ollama/server.(*Server).trainHTTPListJobs-fm (5 handlers)
+[GIN-debug] GET    /api/train/jobs/:id       --> github.com/ollama/ollama/server.(*Server).trainHTTPJobStatus-fm (5 handlers)
+[GIN-debug] DELETE /api/train/jobs/:id       --> github.com/ollama/ollama/server.(*Server).trainHTTPCancelJob-fm (5 handlers)
+[GIN-debug] POST   /api/train/unload         --> github.com/ollama/ollama/server.(*Server).trainHTTPUnload-fm (5 handlers)
+[GIN-debug] GET    /api/train/status         --> github.com/ollama/ollama/server.(*Server).trainHTTPHealth-fm (5 handlers)
+time=2026-08-01T14:35:56.036-07:00 level=INFO source=routes.go:2577 msg="listener prepared" bind=0.0.0.0:11434 listener=[::]:11434 version=0.21.0-189-gd9c04cb-dirty
+time=2026-08-01T14:35:56.038-07:00 level=INFO source=runner.go:83 msg="discovering available GPUs..."
+time=2026-08-01T14:35:56.038-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62199"
+time=2026-08-01T14:35:56.104-07:00 level=INFO source=types.go:114 msg="inference compute" id=MTL0 filter_id="" library=MTL compute=0.0 name=MTL0 description="Apple M4 Max" libdirs="" driver=0.0 pci_id="" type=discrete total="107.5 GiB" available="107.5 GiB"
+time=2026-08-01T14:35:56.104-07:00 level=INFO source=types.go:80 msg="startup hardware: GPU ready" gpu_found=true gpu_count=1 device="Apple M4 Max" library=MTL compute=0.0 driver=0.0 vram_total="107.5 GiB" vram_available="107.5 GiB" ollama_llm_library="" libdirs=/Users/user1/Sites/inference/zerollama pci_id=""
+time=2026-08-01T14:35:56.104-07:00 level=INFO source=routes.go:2682 msg="vram-based default context" total_vram="107.5 GiB" default_num_ctx=262144
+time=2026-08-01T14:35:56.104-07:00 level=INFO source=routes.go:2692 msg="server listening" bind=0.0.0.0:11434 listener=[::]:11434 loopback_guards="[127.0.0.1:11434 [::1]:11434]" url=http://127.0.0.1:11434 version=0.21.0-189-gd9c04cb-dirty started_at=2026-08-01T14:35:56-07:00
+[GIN] 2026/08/01 - 14:35:56 | 200 |      22.042µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:35:58 | 200 |      73.792µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:35:58.220-07:00 level=WARN source=cloud_proxy.go:390 msg="ELIZACLOUD_API_KEY is not set; outbound Eliza requests may fail with 401 until configured"
+time=2026-08-01T14:35:58.945-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62218"
+[GIN] 2026/08/01 - 14:36:00 | 200 |  3.981232834s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:36:08 | 200 |       11.75µs |       127.0.0.1 | HEAD     "/"
+time=2026-08-01T14:36:10.427-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62282"
+[GIN] 2026/08/01 - 14:36:11 | 200 |  3.361081916s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:36:11.681-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+WORKER: Job 1503b24d queued (run_script), queue size: 1
+[GIN] 2026/08/01 - 14:36:11 | 202 |   29.932625ms |       127.0.0.1 | POST     "/v1/videos"
+WORKER: Processing job 1503b24d (run_script)
+WORKER: Executing script: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_video_generate.py
+WORKER: Working directory: /Users/user1/Sites/inference/zerollama
+[GIN] 2026/08/01 - 14:36:11 | 200 |      73.709µs |       127.0.0.1 | GET      "/v1/videos/1503b24d"
+SCRIPT: PROGRESS:0.0:starting Wan generation
+SCRIPT: using python: /Users/user1/.zerollama/third_party/wan/venv/bin/python3
+SCRIPT: WAN_FORCE_SDPA=1
+SCRIPT: WAN_VAE_CPU=1
+SCRIPT: running: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py --task t2v-1.3B --size 832*480 --ckpt_dir /Users/user1/.zerollama/third_party/wan/Wan2.1-T2V-1.3B --prompt a red apple on a white table, product photo --frame_num 49 --sample_steps 25 --save_file /Users/user1/.ollama/models/generated/1503b24d.mp4 --offload_model True --t5_cpu
+SCRIPT: PROGRESS:5.0:launching generate.py
+SCRIPT: PROGRESS:6.0:checking GPU compatibility
+SCRIPT ERROR: Traceback (most recent call last):
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py", line 60, in <module>
+SCRIPT:     raise SystemExit(main())
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py", line 33, in main
+SCRIPT:     status = apply_torch_workarounds()
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_torch_compat.py", line 218, in apply_torch_workarounds
+SCRIPT:     import torch
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.9/site-packages/torch/__init__.py", line 416, in <module>
+SCRIPT:     from torch._C import *  # noqa: F403
+SCRIPT ERROR: ImportError: dlopen(/Users/user1/.zerollama/third_party/wan/venv/lib/python3.9/site-packages/torch/_C.cpython-39-darwin.so, 0x0002): symbol not found in flat namespace '_PyCode_GetVarnames'
+SCRIPT: generate.py exited with code 1
+WORKER: Job 1503b24d failed: Script exited with code 1
+time=2026-08-01T14:36:11.823-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+[GIN] 2026/08/01 - 14:36:13 | 200 |     542.583µs |       127.0.0.1 | GET      "/v1/videos/1503b24d"
+time=2026-08-01T14:36:13.741-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+WORKER: Job 825a5c31 queued (run_script), queue size: 1
+[GIN] 2026/08/01 - 14:36:13 | 202 |   55.578459ms |       127.0.0.1 | POST     "/v1/videos"
+WORKER: Processing job 825a5c31 (run_script)
+WORKER: Executing script: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_video_generate.py
+WORKER: Working directory: /Users/user1/Sites/inference/zerollama
+[GIN] 2026/08/01 - 14:36:13 | 200 |    3.678958ms |       127.0.0.1 | GET      "/v1/videos/825a5c31"
+SCRIPT: checkpoint dir not found: /Users/user1/.zerollama/third_party/wan/Wan2.2-TI2V-5B
+WORKER: Job 825a5c31 failed: Script exited with code 1
+time=2026-08-01T14:36:13.995-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+[GIN] 2026/08/01 - 14:36:15 | 200 |     184.041µs |       127.0.0.1 | GET      "/v1/videos/825a5c31"
+[GIN] 2026/08/01 - 14:36:15 | 200 |     182.292µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:17.943-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62320"
+[GIN] 2026/08/01 - 14:36:19 | 200 |  3.322671667s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:36:19.087-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:36:19.221-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=1 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:36:19.222-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62332"
+time=2026-08-01T14:36:19.284-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=1 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s
+time=2026-08-01T14:36:19.284-07:00 level=INFO source=sched.go:748 msg="loading model" name=x/flux2-klein:latest path=""
+time=2026-08-01T14:36:19.285-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="94.2 GiB" free_swap="0 B"
+time=2026-08-01T14:36:19.285-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:36:19.287-07:00 level=INFO source=server.go:144 msg="starting mlx runner subprocess" model=x/flux2-klein:latest port=62338
+time=2026-08-01T14:36:19.293-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:36:19.328-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:19.328-07:00 level=INFO msg=\"starting mlx runner\" model=x/flux2-klein:latest port=62338 mode=imagegen"
+time=2026-08-01T14:36:19.328-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:19.328-07:00 level=INFO msg=\"MLX library initialized\""
+time=2026-08-01T14:36:19.333-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:19.333-07:00 level=INFO msg=\"detected image model type\" type=Flux2KleinPipeline"
+time=2026-08-01T14:36:19.333-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="Loading FLUX.2 Klein model from manifest: x/flux2-klein:latest..."
+time=2026-08-01T14:36:19.496-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading tokenizer... ✓"
+time=2026-08-01T14:36:19.758-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading text encoder... [cleanup] freed 1788 arrays from /Users/user1/Sites/inference/zerollama/x/imagegen/mlx/mlx.go:685"
+time=2026-08-01T14:36:19.760-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry"
+time=2026-08-01T14:36:19.763-07:00 level=WARN source=sched_debug.go:118 msg="scheduler: WaitUntilRunning failed" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=1 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s error="mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)" wait_elapsed=469.771791ms total_elapsed=478.679375ms
+time=2026-08-01T14:36:19.763-07:00 level=INFO source=server.go:392 msg="stopping mlx runner subprocess" pid=33205
+time=2026-08-01T14:36:19.763-07:00 level=WARN source=routes.go:439 msg="scheduleRunner: failed" model=registry.ollama.ai/x/flux2-klein:latest elapsed=541.562709ms error="mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)"
+time=2026-08-01T14:36:19.763-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=675ms model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:36:19 | 500 |   675.39525ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:36:19.763-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:36:19.901-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=2 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:36:19.901-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62346"
+time=2026-08-01T14:36:19.963-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=2 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s
+time=2026-08-01T14:36:19.963-07:00 level=INFO source=sched.go:748 msg="loading model" name=x/flux2-klein:latest path=""
+time=2026-08-01T14:36:19.964-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="94.3 GiB" free_swap="0 B"
+time=2026-08-01T14:36:19.964-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:36:19.966-07:00 level=INFO source=server.go:144 msg="starting mlx runner subprocess" model=x/flux2-klein:latest port=62352
+time=2026-08-01T14:36:19.971-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:36:20.006-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:20.006-07:00 level=INFO msg=\"starting mlx runner\" model=x/flux2-klein:latest port=62352 mode=imagegen"
+time=2026-08-01T14:36:20.006-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:20.006-07:00 level=INFO msg=\"MLX library initialized\""
+time=2026-08-01T14:36:20.010-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="Loading FLUX.2 Klein model from manifest: x/flux2-klein:latest..."
+time=2026-08-01T14:36:20.010-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:20.010-07:00 level=INFO msg=\"detected image model type\" type=Flux2KleinPipeline"
+time=2026-08-01T14:36:20.169-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading tokenizer... ✓"
+time=2026-08-01T14:36:20.337-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading text encoder... [cleanup] freed 1788 arrays from /Users/user1/Sites/inference/zerollama/x/imagegen/mlx/mlx.go:685"
+time=2026-08-01T14:36:20.338-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry"
+time=2026-08-01T14:36:20.340-07:00 level=WARN source=sched_debug.go:118 msg="scheduler: WaitUntilRunning failed" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=2 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s error="mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)" wait_elapsed=368.915709ms total_elapsed=376.640375ms
+time=2026-08-01T14:36:20.340-07:00 level=WARN source=routes.go:439 msg="scheduleRunner: failed" model=registry.ollama.ai/x/flux2-klein:latest elapsed=438.9715ms error="mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)"
+time=2026-08-01T14:36:20.340-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=577ms model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0
+[GIN] 2026/08/01 - 14:36:20 | 500 |  576.689084ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:36:20.340-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:36:20.484-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=0 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=0 loaded_models=x/flux2-klein:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=x/flux2-klein:latest runner_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 ref_count=0 loading=false pid=33264 vram=5712575487 session_duration=30m0s
+time=2026-08-01T14:36:20.484-07:00 level=INFO source=routes.go:431 msg="scheduleRunner: runner acquired" model=registry.ollama.ai/x/flux2-klein:latest elapsed=40.666µs pid=33264 loading=false
+time=2026-08-01T14:36:20.484-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=143ms model=x/flux2-klein:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0
+[GIN] 2026/08/01 - 14:36:20 | 500 |  143.323042ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:36:20 | 200 |      20.833µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:20.484-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:36:20.572-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=200 duration=88ms model=x/flux2-klein:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:36:20 | 200 |   88.198458ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:36:20 | 200 |      13.291µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:36:22 | 200 |     150.167µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:36:24 | 200 |      51.334µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:24.764-07:00 level=INFO source=server.go:392 msg="stopping mlx runner subprocess" pid=33264
+[GIN] 2026/08/01 - 14:36:26 | 200 |      51.416µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:36:28 | 200 |          53µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:36:28.712-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62390"
+[GIN] 2026/08/01 - 14:36:29 | 200 |   3.26170175s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:36:29 | 200 |       8.875µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:31.981-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62403"
+[GIN] 2026/08/01 - 14:36:33 | 200 |  3.349711166s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:36:33.219-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/z-image-turbo:latest ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:36:33.398-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=x/z-image-turbo:latest model_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 fifo_seq=3 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:36:33.399-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62415"
+time=2026-08-01T14:36:33.465-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=x/z-image-turbo:latest model_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 fifo_seq=3 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s
+time=2026-08-01T14:36:33.466-07:00 level=INFO source=sched.go:748 msg="loading model" name=x/z-image-turbo:latest path=""
+time=2026-08-01T14:36:33.467-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="94.3 GiB" free_swap="0 B"
+time=2026-08-01T14:36:33.467-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:36:33.470-07:00 level=INFO source=server.go:144 msg="starting mlx runner subprocess" model=x/z-image-turbo:latest port=62422
+time=2026-08-01T14:36:33.475-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:36:33.513-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:33.513-07:00 level=INFO msg=\"starting mlx runner\" model=x/z-image-turbo:latest port=62422 mode=imagegen"
+time=2026-08-01T14:36:33.513-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:33.513-07:00 level=INFO msg=\"MLX library initialized\""
+time=2026-08-01T14:36:33.518-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:33.518-07:00 level=INFO msg=\"detected image model type\" type=ZImagePipeline"
+time=2026-08-01T14:36:33.518-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="Loading Z-Image model from manifest: x/z-image-turbo:latest..."
+time=2026-08-01T14:36:33.686-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading tokenizer... ✓"
+time=2026-08-01T14:36:33.686-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Text encoder... deferred until first generate"
+time=2026-08-01T14:36:33.686-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Transformer... deferred until after text encoding"
+time=2026-08-01T14:36:33.686-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  VAE decoder... deferred until decode"
+time=2026-08-01T14:36:33.686-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loaded in 0.17s (0.0 GB VRAM)"
+time=2026-08-01T14:36:33.686-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:33.686-07:00 level=INFO msg=\"mlx runner listening\" addr=127.0.0.1:62422"
+time=2026-08-01T14:36:33.776-07:00 level=INFO source=server.go:252 msg="mlx runner is ready" port=62422
+time=2026-08-01T14:36:33.776-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=x/z-image-turbo:latest model_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 fifo_seq=3 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pid=34243 wait_elapsed=301.466042ms total_elapsed=310.735709ms
+time=2026-08-01T14:36:33.776-07:00 level=INFO source=sched.go:963 msg="model ready" name=x/z-image-turbo:latest path="" pid=34243
+time=2026-08-01T14:36:33.776-07:00 level=INFO source=routes.go:431 msg="scheduleRunner: runner acquired" model=registry.ollama.ai/x/z-image-turbo:latest elapsed=377.850791ms pid=34243 loading=false
+time=2026-08-01T14:36:33.777-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:33.777-07:00 level=INFO msg=\"image dimensions\" width=384 height=384 requested_w=0 requested_h=0 aspect=\"\""
+time=2026-08-01T14:36:34.012-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading text encoder... [cleanup] freed 1788 arrays from /Users/user1/Sites/inference/zerollama/x/imagegen/mlx/mlx.go:685"
+time=2026-08-01T14:36:34.013-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=794ms model=x/z-image-turbo:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=stop
+[GIN] 2026/08/01 - 14:36:34 | 500 |  794.389334ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:36:34.014-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/z-image-turbo:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:36:34.192-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=x/z-image-turbo:latest model_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 fifo_seq=0 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=0 loaded_models=x/z-image-turbo:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=x/z-image-turbo:latest runner_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 ref_count=0 loading=false pid=34243 vram=12759288491 session_duration=30m0s
+time=2026-08-01T14:36:34.192-07:00 level=INFO source=routes.go:431 msg="scheduleRunner: runner acquired" model=registry.ollama.ai/x/z-image-turbo:latest elapsed=43.583µs pid=34243 loading=false
+time=2026-08-01T14:36:34.192-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:34.192-07:00 level=INFO msg=\"image dimensions\" width=384 height=384 requested_w=0 requested_h=0 aspect=\"\""
+time=2026-08-01T14:36:34.376-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading text encoder... [cleanup] freed 1788 arrays from /Users/user1/Sites/inference/zerollama/x/imagegen/mlx/mlx.go:685"
+time=2026-08-01T14:36:34.376-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=362ms model=x/z-image-turbo:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=stop
+[GIN] 2026/08/01 - 14:36:34 | 500 |  362.497709ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:36:34.377-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/z-image-turbo:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:36:34.548-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=x/z-image-turbo:latest model_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 fifo_seq=0 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=0 loaded_models=x/z-image-turbo:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=x/z-image-turbo:latest runner_key=digest:77b78ce4e88354eaca908f96069046975e1039be6718fbcf0626b36c70abf138 ref_count=0 loading=false pid=34243 vram=12759288491 session_duration=30m0s
+time=2026-08-01T14:36:34.548-07:00 level=INFO source=routes.go:431 msg="scheduleRunner: runner acquired" model=registry.ollama.ai/x/z-image-turbo:latest elapsed=39.792µs pid=34243 loading=false
+time=2026-08-01T14:36:34.548-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:36:34.548-07:00 level=INFO msg=\"image dimensions\" width=384 height=384 requested_w=0 requested_h=0 aspect=\"\""
+time=2026-08-01T14:36:34.712-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading text encoder... [cleanup] freed 1788 arrays from /Users/user1/Sites/inference/zerollama/x/imagegen/mlx/mlx.go:685"
+time=2026-08-01T14:36:34.713-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=336ms model=x/z-image-turbo:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=stop
+[GIN] 2026/08/01 - 14:36:34 | 500 |  336.209167ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:36:34 | 200 |      24.125µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:34.714-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/z-image-turbo:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:36:34.820-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=200 duration=106ms model=x/z-image-turbo:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:36:34 | 200 |    106.1995ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:36:34.820-07:00 level=INFO source=server.go:392 msg="stopping mlx runner subprocess" pid=34243
+[GIN] 2026/08/01 - 14:36:34 | 200 |       6.958µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:36.948-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62442"
+[GIN] 2026/08/01 - 14:36:38 | 200 |  3.315142875s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:36:38 | 200 |       7.125µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:36:40.238-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62456"
+[GIN] 2026/08/01 - 14:36:41 | 200 |  3.235400916s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:36:41.383-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:36:41.542-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=qwen3-coder-next:6bit model_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 fifo_seq=4 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:36:41.543-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 62464"
+time=2026-08-01T14:36:41.605-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=qwen3-coder-next:6bit model_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 fifo_seq=4 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s
+time=2026-08-01T14:36:41.605-07:00 level=INFO source=sched.go:748 msg="loading model" name=qwen3-coder-next:6bit path=""
+time=2026-08-01T14:36:41.607-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="94.7 GiB" free_swap="0 B"
+time=2026-08-01T14:36:41.607-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:36:41.607-07:00 level=INFO source=client.go:431 msg="starting mlx runner subprocess" model=qwen3-coder-next:6bit port=62470
+time=2026-08-01T14:36:41.612-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:36:41.646-07:00 level=INFO source=server.go:45 msg="MLX engine initialized" "MLX version"=4367c73 device=gpu
+time=2026-08-01T14:36:41.657-07:00 level=INFO source=base.go:104 msg="Model architecture" arch=Qwen3NextForCausalLM
+time=2026-08-01T14:36:41.829-07:00 level=INFO source=runner.go:241 msg="Loaded tensors from manifest" count=1891
+[GIN] 2026/08/01 - 14:36:58 | 200 |      179.75µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:37:07.266-07:00 level=INFO source=runner.go:276 msg="Starting HTTP server" host=127.0.0.1 port=62470
+time=2026-08-01T14:37:07.314-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=117.5µs status="200 OK"
+time=2026-08-01T14:37:07.314-07:00 level=INFO source=client.go:94 msg="mlx runner is ready" port=62470
+time=2026-08-01T14:37:07.314-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=qwen3-coder-next:6bit model_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 fifo_seq=4 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pid=34821 wait_elapsed=25.701765583s total_elapsed=25.709492792s
+time=2026-08-01T14:37:07.314-07:00 level=INFO source=sched.go:963 msg="model ready" name=qwen3-coder-next:6bit path="" pid=34821
+time=2026-08-01T14:37:07.314-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=qwen3-coder-next:6bit phase_elapsed=25.875s request_elapsed=25.931s
+time=2026-08-01T14:37:07.314-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=qwen3-coder-next:6bit phase_elapsed=0s request_elapsed=25.931s
+time=2026-08-01T14:37:07.315-07:00 level=INFO source=cache.go:203 msg="cache miss" total=33 matched=0 cached=0 left=33 utilization_pct=0
+time=2026-08-01T14:37:08.925-07:00 level=INFO source=pipeline.go:265 msg="Prompt processing progress" processed=32 total=33
+time=2026-08-01T14:37:08.925-07:00 level=INFO source=pipeline.go:326 msg="prefill complete" prompt_tokens=33 cached_tokens=0 prefill_tokens=32 elapsed=1.609896083s chunk_size=8192 tok_per_sec=19.87705935675601
+time=2026-08-01T14:37:09.054-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=qwen3-coder-next:6bit phase_elapsed=1.74s request_elapsed=27.671s
+time=2026-08-01T14:37:10.788-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=29.405s model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_eval_count=33 eval_count=128
+[GIN] 2026/08/01 - 14:37:10 | 200 | 29.405270708s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:10.788-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/completions took=3.473722833s status="200 OK"
+time=2026-08-01T14:37:10.789-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:10.789-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="60.46 GiB"
+time=2026-08-01T14:37:11.108-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=qwen3-coder-next:6bit model_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 fifo_seq=0 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=0 loaded_models=qwen3-coder-next:6bit active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=qwen3-coder-next:6bit runner_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 ref_count=0 loading=false pid=34821 vram=64749929656 session_duration=30m0s
+time=2026-08-01T14:37:11.108-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=qwen3-coder-next:6bit phase_elapsed=119ms request_elapsed=320ms
+time=2026-08-01T14:37:11.109-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=qwen3-coder-next:6bit phase_elapsed=0s request_elapsed=320ms
+time=2026-08-01T14:37:11.110-07:00 level=INFO source=cache.go:203 msg="cache miss" total=33 matched=0 cached=0 left=33 utilization_pct=0
+time=2026-08-01T14:37:11.202-07:00 level=INFO source=pipeline.go:265 msg="Prompt processing progress" processed=32 total=33
+time=2026-08-01T14:37:11.202-07:00 level=INFO source=pipeline.go:326 msg="prefill complete" prompt_tokens=33 cached_tokens=0 prefill_tokens=32 elapsed=92.053125ms chunk_size=8192 tok_per_sec=347.62535220830364
+time=2026-08-01T14:37:11.230-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=qwen3-coder-next:6bit phase_elapsed=122ms request_elapsed=442ms
+time=2026-08-01T14:37:13.000-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=2.212s model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_eval_count=33 eval_count=128
+[GIN] 2026/08/01 - 14:37:13 | 200 |  2.211942042s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:13.000-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/completions took=1.891530875s status="200 OK"
+time=2026-08-01T14:37:13.001-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:13.001-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="60.61 GiB"
+time=2026-08-01T14:37:13.192-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=qwen3-coder-next:6bit model_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 fifo_seq=0 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=0 loaded_models=qwen3-coder-next:6bit active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=qwen3-coder-next:6bit runner_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 ref_count=0 loading=false pid=34821 vram=64749929656 session_duration=30m0s
+time=2026-08-01T14:37:13.192-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=qwen3-coder-next:6bit phase_elapsed=124ms request_elapsed=192ms
+time=2026-08-01T14:37:13.192-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=qwen3-coder-next:6bit phase_elapsed=0s request_elapsed=192ms
+time=2026-08-01T14:37:13.194-07:00 level=INFO source=cache.go:203 msg="cache miss" total=33 matched=0 cached=0 left=33 utilization_pct=0
+time=2026-08-01T14:37:13.286-07:00 level=INFO source=pipeline.go:265 msg="Prompt processing progress" processed=32 total=33
+time=2026-08-01T14:37:13.286-07:00 level=INFO source=pipeline.go:326 msg="prefill complete" prompt_tokens=33 cached_tokens=0 prefill_tokens=32 elapsed=91.499458ms chunk_size=8192 tok_per_sec=349.7288475741572
+time=2026-08-01T14:37:13.314-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=qwen3-coder-next:6bit phase_elapsed=122ms request_elapsed=314ms
+time=2026-08-01T14:37:15.104-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/completions took=1.911035209s status="200 OK"
+time=2026-08-01T14:37:15.104-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=2.103s model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_eval_count=33 eval_count=128
+[GIN] 2026/08/01 - 14:37:15 | 200 |  2.103176125s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:15.104-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:15.104-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="60.76 GiB"
+time=2026-08-01T14:37:15.289-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=qwen3-coder-next:6bit model_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 fifo_seq=0 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=0 loaded_models=qwen3-coder-next:6bit active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=qwen3-coder-next:6bit runner_key=digest:ffc5c8db17e8c9bfe999d4d6d0e812002d1a906c5597e266b8679c46c5a33b37 ref_count=0 loading=false pid=34821 vram=64749929656 session_duration=30m0s
+time=2026-08-01T14:37:15.289-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=qwen3-coder-next:6bit phase_elapsed=121ms request_elapsed=185ms
+time=2026-08-01T14:37:15.289-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=qwen3-coder-next:6bit phase_elapsed=0s request_elapsed=185ms
+time=2026-08-01T14:37:15.290-07:00 level=INFO source=cache.go:203 msg="cache miss" total=33 matched=0 cached=0 left=33 utilization_pct=0
+time=2026-08-01T14:37:15.381-07:00 level=INFO source=pipeline.go:265 msg="Prompt processing progress" processed=32 total=33
+time=2026-08-01T14:37:15.381-07:00 level=INFO source=pipeline.go:326 msg="prefill complete" prompt_tokens=33 cached_tokens=0 prefill_tokens=32 elapsed=90.844ms chunk_size=8192 tok_per_sec=352.2522125842103
+time=2026-08-01T14:37:15.410-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=qwen3-coder-next:6bit phase_elapsed=121ms request_elapsed=306ms
+time=2026-08-01T14:37:17.219-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/completions took=1.929845292s status="200 OK"
+time=2026-08-01T14:37:17.219-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=2.115s model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_eval_count=33 eval_count=128
+[GIN] 2026/08/01 - 14:37:17 | 200 |     2.114942s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:17.219-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="60.91 GiB"
+time=2026-08-01T14:37:17.225-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=31.708µs status="200 OK"
+[GIN] 2026/08/01 - 14:37:17 | 200 |     254.708µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:37:17.226-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:17.350-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=200 duration=124ms model=qwen3-coder-next:6bit ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:37:17 | 200 |  124.409375ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:17.350-07:00 level=INFO source=client.go:139 msg="stopping mlx runner subprocess" pid=34821
+[GIN] 2026/08/01 - 14:37:17 | 200 |       8.584µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:37:17.830-07:00 level=ERROR source=client.go:445 msg="mlx runner subprocess exited" error="signal: interrupt" exit=unknown pid=34821 model=qwen3-coder-next:6bit port=62470
+time=2026-08-01T14:37:22.700-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63047"
+[GIN] 2026/08/01 - 14:37:24 | 200 |  6.691942333s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:37:24.052-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:37:24.222-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=5 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:37:24.222-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63057"
+time=2026-08-01T14:37:24.298-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=5 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s
+time=2026-08-01T14:37:24.298-07:00 level=INFO source=sched.go:748 msg="loading model" name=gpt-oss-120b:mxfp4-q8 path=""
+time=2026-08-01T14:37:24.300-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="103.5 GiB" free_swap="0 B"
+time=2026-08-01T14:37:24.300-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:37:24.301-07:00 level=INFO source=client.go:431 msg="starting mlx runner subprocess" model=gpt-oss-120b:mxfp4-q8 port=63065
+time=2026-08-01T14:37:24.305-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:37:24.343-07:00 level=INFO source=server.go:45 msg="MLX engine initialized" "MLX version"=4367c73 device=gpu
+time=2026-08-01T14:37:24.358-07:00 level=INFO source=base.go:104 msg="Model architecture" arch=GptOssForCausalLM
+time=2026-08-01T14:37:24.820-07:00 level=INFO source=runner.go:241 msg="Loaded tensors from manifest" count=1159
+[GIN] 2026/08/01 - 14:37:28 | 200 |      78.708µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:37:34.842-07:00 level=INFO source=runner.go:276 msg="Starting HTTP server" host=127.0.0.1 port=63065
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=46.708µs status="200 OK"
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=client.go:94 msg="mlx runner is ready" port=63065
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=5 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pid=37559 wait_elapsed=10.601496375s total_elapsed=10.609307292s
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=sched.go:963 msg="model ready" name=gpt-oss-120b:mxfp4-q8 path="" pid=37559
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=10.796s request_elapsed=10.855s
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=0s request_elapsed=10.855s
+time=2026-08-01T14:37:34.907-07:00 level=INFO source=cache.go:203 msg="cache miss" total=32 matched=0 cached=0 left=32 utilization_pct=0
+time=2026-08-01T14:37:34.909-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="59.03 GiB"
+panic: runtime error: index out of range [0] with length 0
+	
+	mlx worker stack:
+	goroutine 50 [running, locked to thread]:
+	runtime/debug.Stack()
+		/Users/user1/.local/go/src/runtime/debug/stack.go:26 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run.func1()
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:184 +0x34
+	panic({0x10517c2e0?, 0x3ba408398690?})
+		/Users/user1/.local/go/src/runtime/panic.go:860 +0x12c
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).route(0x3ba406da6420, 0x3ba406f580e0, 0x3ba40721c000)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:231 +0x168
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).Forward(0x3ba406da6420, 0x3ba406f580e0, 0x3ba40721c000)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:242 +0x58
+	github.com/ollama/ollama/x/models/gptoss.(*Layer).Forward(0x3ba40713ac00, 0x3ba4083a94c0, 0x3ba406b44b90, {0x105266460, 0x3ba406a2ef00}, 0x3ba4083a92a0, 0x1, 0x1f, 0x3ba40721c000)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:342 +0xe4
+	github.com/ollama/ollama/x/models/gptoss.(*Model).Forward(0x3ba406fc4050, 0x3ba406b44b90, {0x3ba406fbf688, 0x24, 0x3ba406a291f0?})
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:356 +0xd8
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill.func2({0x3ba407907980?, 0x3ba406ec9ea0?, 0x4a?}, 0x3ba406ec9ea0?, 0x1f, 0x3ba406da4000, 0x3ba406a29370, {0x3ba406fbf688, 0x24, 0x24}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:231 +0x1a4
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill(_, {_, _}, {{{0x3ba4083772c0, 0xb1}, {0x0, 0x0, 0x0}, {0x3ba406ec9ea0, 0x4a}, ...}, ...}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:250 +0x774
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).TextGenerationPipeline(_, {_, _}, {{{0x3ba4083772c0, 0xb1}, {0x0, 0x0, 0x0}, {0x3ba406ec9ea0, 0x4a}, ...}, ...})
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:124 +0x18c
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest.func1()
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:289 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run(0x0?)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:188 +0x58
+	github.com/ollama/ollama/x/internal/mlxthread.(*Thread).loop(0x3ba406cec750, 0x10523f4b0, 0x3ba406af1ce0)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:148 +0xa0
+	created by github.com/ollama/ollama/x/internal/mlxthread.Start in goroutine 1
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:55 +0x10c
+	
+
+goroutine 24 [running]:
+github.com/ollama/ollama/x/internal/mlxthread.(*Thread).Do(0x68?, {0x10525b4d0?, 0x3ba406b44b40?}, 0x1029a1964?)
+	/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:79 +0x64
+github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest(_, {{{0x3ba4083772c0, 0xb1}, {0x0, 0x0, 0x0}, {0x3ba406ec9ea0, 0x4a}, 0x0, {{0x800, ...}, ...}, ...}, ...})
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:288 +0xec
+github.com/ollama/ollama/x/mlxrunner.(*Runner).Run.func1()
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:254 +0x130
+golang.org/x/sync/errgroup.(*Group).Go.func1()
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:93 +0x4c
+created by golang.org/x/sync/errgroup.(*Group).Go in goroutine 1
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:78 +0x90
+time=2026-08-01T14:37:35.699-07:00 level=ERROR source=client.go:445 msg="mlx runner subprocess exited" error="exit status 2" exit=2 pid=37559 model=gpt-oss-120b:mxfp4-q8 port=63065 status="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:35.700-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=11.648s model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0
+[GIN] 2026/08/01 - 14:37:35 | 200 | 11.648458083s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:35.701-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched.go:1167 msg="runner needs reload" model=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 reload_reason=mlx_runner_exited pid=37559 exit_err="exit status 2" exit=2 status_err="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=6 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=1 loaded_models=gpt-oss-120b:mxfp4-q8 active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=true
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched.go:1167 msg="runner needs reload" model=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 reload_reason=mlx_runner_exited pid=37559 exit_err="exit status 2" exit=2 status_err="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loaded runner needs reload, will evict" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=6 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s runner_model=gpt-oss-120b:mxfp4-q8 runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=37559 vram=63386964856 session_duration=30m0s
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: evicting runner for VRAM" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=6 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s runner_model=gpt-oss-120b:mxfp4-q8 runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=37559 vram=63386964856 session_duration=30m0s
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=client.go:139 msg="stopping mlx runner subprocess" pid=37559
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: eviction unload completed" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=6 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s evict_wait=9.708µs runner_model="" runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=37559 vram=63386964856 session_duration=0s
+time=2026-08-01T14:37:35.935-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+time=2026-08-01T14:37:35.936-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63216"
+time=2026-08-01T14:37:36.042-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=6 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s
+time=2026-08-01T14:37:36.042-07:00 level=INFO source=sched.go:748 msg="loading model" name=gpt-oss-120b:mxfp4-q8 path=""
+time=2026-08-01T14:37:36.044-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="99.6 GiB" free_swap="0 B"
+time=2026-08-01T14:37:36.044-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:37:36.044-07:00 level=INFO source=client.go:431 msg="starting mlx runner subprocess" model=gpt-oss-120b:mxfp4-q8 port=63225
+time=2026-08-01T14:37:36.049-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:37:36.087-07:00 level=INFO source=server.go:45 msg="MLX engine initialized" "MLX version"=4367c73 device=gpu
+time=2026-08-01T14:37:36.098-07:00 level=INFO source=base.go:104 msg="Model architecture" arch=GptOssForCausalLM
+time=2026-08-01T14:37:36.547-07:00 level=INFO source=runner.go:241 msg="Loaded tensors from manifest" count=1159
+time=2026-08-01T14:37:43.828-07:00 level=INFO source=runner.go:276 msg="Starting HTTP server" host=127.0.0.1 port=63225
+time=2026-08-01T14:37:43.850-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=36.625µs status="200 OK"
+time=2026-08-01T14:37:43.850-07:00 level=INFO source=client.go:94 msg="mlx runner is ready" port=63225
+time=2026-08-01T14:37:43.850-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=6 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pid=38308 wait_elapsed=7.801497708s total_elapsed=7.808523917s
+time=2026-08-01T14:37:43.850-07:00 level=INFO source=sched.go:963 msg="model ready" name=gpt-oss-120b:mxfp4-q8 path="" pid=38308
+time=2026-08-01T14:37:43.850-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=8.019s request_elapsed=8.149s
+time=2026-08-01T14:37:43.850-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=0s request_elapsed=8.149s
+time=2026-08-01T14:37:43.851-07:00 level=INFO source=cache.go:203 msg="cache miss" total=32 matched=0 cached=0 left=32 utilization_pct=0
+time=2026-08-01T14:37:43.851-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="59.03 GiB"
+panic: runtime error: index out of range [0] with length 0
+	
+	mlx worker stack:
+	goroutine 50 [running, locked to thread]:
+	runtime/debug.Stack()
+		/Users/user1/.local/go/src/runtime/debug/stack.go:26 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run.func1()
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:184 +0x34
+	panic({0x1029a82e0?, 0x136f4003b3e0?})
+		/Users/user1/.local/go/src/runtime/panic.go:860 +0x12c
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).route(0x136f3cdaf728, 0x136f3d3564a0, 0x136f3ccc8fc0)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:231 +0x168
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).Forward(0x136f3cdaf728, 0x136f3d3564a0, 0x136f3ccc8fc0)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:242 +0x58
+	github.com/ollama/ollama/x/models/gptoss.(*Layer).Forward(0x136f3d22b470, 0x136f3d356100, 0x136f3d30e0f0, {0x102a92460, 0x136f3ccf4080}, 0x136f3d356080, 0x1, 0x1f, 0x136f3ccc8fc0)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:342 +0xe4
+	github.com/ollama/ollama/x/models/gptoss.(*Model).Forward(0x136f3d0960a0, 0x136f3d30e0f0, {0x136f3d32e508, 0x24, 0x136f3ccef1f0?})
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:356 +0xd8
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill.func2({0x136f3ffa4080?, 0x136f3d330000?, 0x4a?}, 0x136f3d330000?, 0x1f, 0x136f3ce1fc30, 0x136f3ccef370, {0x136f3d32e508, 0x24, 0x24}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:231 +0x1a4
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill(_, {_, _}, {{{0x136f3e4056b0, 0xaf}, {0x0, 0x0, 0x0}, {0x136f3d330000, 0x4a}, ...}, ...}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:250 +0x774
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).TextGenerationPipeline(_, {_, _}, {{{0x136f3e4056b0, 0xaf}, {0x0, 0x0, 0x0}, {0x136f3d330000, 0x4a}, ...}, ...})
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:124 +0x18c
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest.func1()
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:289 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run(0x0?)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:188 +0x58
+	github.com/ollama/ollama/x/internal/mlxthread.(*Thread).loop(0x136f3d28a780, 0x102a6b4b0, 0x136f3d2be070)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:148 +0xa0
+	created by github.com/ollama/ollama/x/internal/mlxthread.Start in goroutine 1
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:55 +0x10c
+	
+
+goroutine 26 [running]:
+github.com/ollama/ollama/x/internal/mlxthread.(*Thread).Do(0x68?, {0x102a874d0?, 0x136f3d30e0a0?}, 0x1001cd964?)
+	/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:79 +0x64
+github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest(_, {{{0x136f3e4056b0, 0xaf}, {0x0, 0x0, 0x0}, {0x136f3d330000, 0x4a}, 0x0, {{0x800, ...}, ...}, ...}, ...})
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:288 +0xec
+github.com/ollama/ollama/x/mlxrunner.(*Runner).Run.func1()
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:254 +0x130
+golang.org/x/sync/errgroup.(*Group).Go.func1()
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:93 +0x4c
+created by golang.org/x/sync/errgroup.(*Group).Go in goroutine 1
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:78 +0x90
+time=2026-08-01T14:37:44.717-07:00 level=ERROR source=client.go:445 msg="mlx runner subprocess exited" error="exit status 2" exit=2 pid=38308 model=gpt-oss-120b:mxfp4-q8 port=63225 status="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:44.717-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=9.016s model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0
+[GIN] 2026/08/01 - 14:37:44 | 200 |    9.0164955s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:44.718-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched.go:1167 msg="runner needs reload" model=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 reload_reason=mlx_runner_exited pid=38308 exit_err="exit status 2" exit=2 status_err="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=7 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=1 loaded_models=gpt-oss-120b:mxfp4-q8 active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=true
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched.go:1167 msg="runner needs reload" model=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 reload_reason=mlx_runner_exited pid=38308 exit_err="exit status 2" exit=2 status_err="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loaded runner needs reload, will evict" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=7 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s runner_model=gpt-oss-120b:mxfp4-q8 runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=38308 vram=63386964856 session_duration=30m0s
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: evicting runner for VRAM" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=7 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s runner_model=gpt-oss-120b:mxfp4-q8 runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=38308 vram=63386964856 session_duration=30m0s
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=client.go:139 msg="stopping mlx runner subprocess" pid=38308
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: eviction unload completed" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=7 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s evict_wait=11.25µs runner_model="" runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=38308 vram=63386964856 session_duration=0s
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+time=2026-08-01T14:37:44.948-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63342"
+time=2026-08-01T14:37:45.057-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=7 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s
+time=2026-08-01T14:37:45.057-07:00 level=INFO source=sched.go:748 msg="loading model" name=gpt-oss-120b:mxfp4-q8 path=""
+time=2026-08-01T14:37:45.063-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="99.3 GiB" free_swap="0 B"
+time=2026-08-01T14:37:45.063-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:37:45.063-07:00 level=INFO source=client.go:431 msg="starting mlx runner subprocess" model=gpt-oss-120b:mxfp4-q8 port=63351
+time=2026-08-01T14:37:45.067-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:37:45.106-07:00 level=INFO source=server.go:45 msg="MLX engine initialized" "MLX version"=4367c73 device=gpu
+time=2026-08-01T14:37:45.117-07:00 level=INFO source=base.go:104 msg="Model architecture" arch=GptOssForCausalLM
+time=2026-08-01T14:37:45.576-07:00 level=INFO source=runner.go:241 msg="Loaded tensors from manifest" count=1159
+time=2026-08-01T14:37:53.392-07:00 level=INFO source=runner.go:276 msg="Starting HTTP server" host=127.0.0.1 port=63351
+time=2026-08-01T14:37:53.468-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=57.042µs status="200 OK"
+time=2026-08-01T14:37:53.469-07:00 level=INFO source=client.go:94 msg="mlx runner is ready" port=63351
+time=2026-08-01T14:37:53.469-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=7 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pid=38885 wait_elapsed=8.401193167s total_elapsed=8.411183041s
+time=2026-08-01T14:37:53.469-07:00 level=INFO source=sched.go:963 msg="model ready" name=gpt-oss-120b:mxfp4-q8 path="" pid=38885
+time=2026-08-01T14:37:53.469-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=8.628s request_elapsed=8.751s
+time=2026-08-01T14:37:53.469-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=0s request_elapsed=8.751s
+time=2026-08-01T14:37:53.469-07:00 level=INFO source=cache.go:203 msg="cache miss" total=32 matched=0 cached=0 left=32 utilization_pct=0
+time=2026-08-01T14:37:53.470-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="59.03 GiB"
+panic: runtime error: index out of range [0] with length 0
+	
+	mlx worker stack:
+	goroutine 41 [running, locked to thread]:
+	runtime/debug.Stack()
+		/Users/user1/.local/go/src/runtime/debug/stack.go:26 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run.func1()
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:184 +0x34
+	panic({0x106c582e0?, 0x10224bdd46a8?})
+		/Users/user1/.local/go/src/runtime/panic.go:860 +0x12c
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).route(0x10224a258bd0, 0x10224be787a0, 0x10224a7b5050)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:231 +0x168
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).Forward(0x10224a258bd0, 0x10224be787a0, 0x10224a7b5050)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:242 +0x58
+	github.com/ollama/ollama/x/models/gptoss.(*Layer).Forward(0x10224a4bbe00, 0x10224a7bdc40, 0x10224a33f9f0, {0x106d42460, 0x10224a2a6380}, 0x10224a7bdbc0, 0x1, 0x1f, 0x10224a7b5050)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:342 +0xe4
+	github.com/ollama/ollama/x/models/gptoss.(*Model).Forward(0x10224a6b6050, 0x10224a33f9f0, {0x10224a6f1908, 0x24, 0x10224a2a11f0?})
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:356 +0xd8
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill.func2({0x10224b151980?, 0x10224a515ea0?, 0x4a?}, 0x10224a515ea0?, 0x1f, 0x10224a3dbc30, 0x10224a2a1370, {0x10224a6f1908, 0x24, 0x24}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:231 +0x1a4
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill(_, {_, _}, {{{0x10224bdb72c0, 0xbf}, {0x0, 0x0, 0x0}, {0x10224a515ea0, 0x4a}, ...}, ...}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:250 +0x774
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).TextGenerationPipeline(_, {_, _}, {{{0x10224bdb72c0, 0xbf}, {0x0, 0x0, 0x0}, {0x10224a515ea0, 0x4a}, ...}, ...})
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:124 +0x18c
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest.func1()
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:289 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run(0x0?)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:188 +0x58
+	github.com/ollama/ollama/x/internal/mlxthread.(*Thread).loop(0x10224a33c930, 0x106d1b4b0, 0x10224a7336c0)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:148 +0xa0
+	created by github.com/ollama/ollama/x/internal/mlxthread.Start in goroutine 1
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:55 +0x10c
+	
+
+goroutine 50 [running]:
+github.com/ollama/ollama/x/internal/mlxthread.(*Thread).Do(0x68?, {0x106d374d0?, 0x10224a33f9a0?}, 0x10447d964?)
+	/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:79 +0x64
+github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest(_, {{{0x10224bdb72c0, 0xbf}, {0x0, 0x0, 0x0}, {0x10224a515ea0, 0x4a}, 0x0, {{0x800, ...}, ...}, ...}, ...})
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:288 +0xec
+github.com/ollama/ollama/x/mlxrunner.(*Runner).Run.func1()
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:254 +0x130
+golang.org/x/sync/errgroup.(*Group).Go.func1()
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:93 +0x4c
+created by golang.org/x/sync/errgroup.(*Group).Go in goroutine 1
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:78 +0x90
+time=2026-08-01T14:37:54.435-07:00 level=ERROR source=client.go:445 msg="mlx runner subprocess exited" error="exit status 2" exit=2 pid=38885 model=gpt-oss-120b:mxfp4-q8 port=63351 status="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:54.435-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=9.717s model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0
+[GIN] 2026/08/01 - 14:37:54 | 200 |  9.717124542s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:37:54.435-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched.go:1167 msg="runner needs reload" model=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 reload_reason=mlx_runner_exited pid=38885 exit_err="exit status 2" exit=2 status_err="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=8 sched_attempt=0 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pending_queue=1 loaded_models=gpt-oss-120b:mxfp4-q8 active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=true
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched.go:1167 msg="runner needs reload" model=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 reload_reason=mlx_runner_exited pid=38885 exit_err="exit status 2" exit=2 status_err="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loaded runner needs reload, will evict" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=8 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s runner_model=gpt-oss-120b:mxfp4-q8 runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=38885 vram=63386964856 session_duration=30m0s
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: evicting runner for VRAM" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=8 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s runner_model=gpt-oss-120b:mxfp4-q8 runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=38885 vram=63386964856 session_duration=30m0s
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=client.go:139 msg="stopping mlx runner subprocess" pid=38885
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: eviction unload completed" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=8 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s evict_wait=16.416µs runner_model="" runner_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 ref_count=0 loading=false pid=38885 vram=63386964856 session_duration=0s
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+time=2026-08-01T14:37:54.658-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63516"
+time=2026-08-01T14:37:54.767-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=8 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s
+time=2026-08-01T14:37:54.767-07:00 level=INFO source=sched.go:748 msg="loading model" name=gpt-oss-120b:mxfp4-q8 path=""
+time=2026-08-01T14:37:54.769-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="98.8 GiB" free_swap="0 B"
+time=2026-08-01T14:37:54.769-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:37:54.770-07:00 level=INFO source=client.go:431 msg="starting mlx runner subprocess" model=gpt-oss-120b:mxfp4-q8 port=63524
+time=2026-08-01T14:37:54.774-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:37:54.810-07:00 level=INFO source=server.go:45 msg="MLX engine initialized" "MLX version"=4367c73 device=gpu
+time=2026-08-01T14:37:54.821-07:00 level=INFO source=base.go:104 msg="Model architecture" arch=GptOssForCausalLM
+time=2026-08-01T14:37:55.267-07:00 level=INFO source=runner.go:241 msg="Loaded tensors from manifest" count=1159
+[GIN] 2026/08/01 - 14:37:58 | 200 |      75.333µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:38:02.673-07:00 level=INFO source=runner.go:276 msg="Starting HTTP server" host=127.0.0.1 port=63524
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=44µs status="200 OK"
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=client.go:94 msg="mlx runner is ready" port=63524
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=gpt-oss-120b:mxfp4-q8 model_key=digest:9378e12d0a903c6a438aca884767846752af30b6f1722aa63a324121462af8c2 fifo_seq=8 sched_attempt=1 num_ctx=2048 num_gpu=-1 num_predict=128 keep_alive=30m0s pid=39465 wait_elapsed=7.900530416s total_elapsed=7.907941667s
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=sched.go:963 msg="model ready" name=gpt-oss-120b:mxfp4-q8 path="" pid=39465
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=8.125s request_elapsed=8.239s
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=gpt-oss-120b:mxfp4-q8 phase_elapsed=0s request_elapsed=8.239s
+time=2026-08-01T14:38:02.675-07:00 level=INFO source=cache.go:203 msg="cache miss" total=33 matched=0 cached=0 left=33 utilization_pct=0
+time=2026-08-01T14:38:02.676-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="59.03 GiB"
+panic: runtime error: index out of range [0] with length 0
+	
+	mlx worker stack:
+	goroutine 50 [running, locked to thread]:
+	runtime/debug.Stack()
+		/Users/user1/.local/go/src/runtime/debug/stack.go:26 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run.func1()
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:184 +0x34
+	panic({0x106a7c2e0?, 0x6d4b60ffdd40?})
+		/Users/user1/.local/go/src/runtime/panic.go:860 +0x12c
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).route(0x6d4b5ea39770, 0x6d4b5eef2060, 0x6d4b5ef97170)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:231 +0x168
+	github.com/ollama/ollama/x/models/gptoss.(*SparseMoE).Forward(0x6d4b5ea39770, 0x6d4b5eef2060, 0x6d4b5ef97170)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss_moe.go:242 +0x58
+	github.com/ollama/ollama/x/models/gptoss.(*Layer).Forward(0x6d4b5ed0cfc0, 0x6d4b6028ada0, 0x6d4b5ee9a6e0, {0x106b66460, 0x6d4b5eca8200}, 0x6d4b6028aba0, 0x1, 0x20, 0x6d4b5ef97170)
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:342 +0xe4
+	github.com/ollama/ollama/x/models/gptoss.(*Model).Forward(0x6d4b5eabeb40, 0x6d4b5ee9a6e0, {0x6d4b5eec0508, 0x24, 0x6d4b5e9731f0?})
+		/Users/user1/Sites/inference/zerollama/x/models/gptoss/gptoss.go:356 +0xd8
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill.func2({0x6d4b63296300?, 0x6d4b5eed0000?, 0x4a?}, 0x6d4b5eed0000?, 0x20, 0x6d4b5eaa3d90, 0x6d4b5e973370, {0x6d4b5eec0508, 0x24, 0x24}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:231 +0x1a4
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).prefill(_, {_, _}, {{{0x6d4b5eeca000, 0xcc}, {0x0, 0x0, 0x0}, {0x6d4b5eed0000, 0x4a}, ...}, ...}, ...)
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:250 +0x774
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).TextGenerationPipeline(_, {_, _}, {{{0x6d4b5eeca000, 0xcc}, {0x0, 0x0, 0x0}, {0x6d4b5eed0000, 0x4a}, ...}, ...})
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/pipeline.go:124 +0x18c
+	github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest.func1()
+		/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:289 +0x64
+	github.com/ollama/ollama/x/internal/mlxthread.run(0x0?)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:188 +0x58
+	github.com/ollama/ollama/x/internal/mlxthread.(*Thread).loop(0x6d4b5ed0c750, 0x106b3f4b0, 0x6d4b5ec6dc70)
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:148 +0xa0
+	created by github.com/ollama/ollama/x/internal/mlxthread.Start in goroutine 1
+		/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:55 +0x10c
+	
+
+goroutine 23 [running]:
+github.com/ollama/ollama/x/internal/mlxthread.(*Thread).Do(0x68?, {0x106b5b4d0?, 0x6d4b5ee9a690?}, 0x1042a1964?)
+	/Users/user1/Sites/inference/zerollama/x/internal/mlxthread/thread.go:79 +0x64
+github.com/ollama/ollama/x/mlxrunner.(*Runner).runRequest(_, {{{0x6d4b5eeca000, 0xcc}, {0x0, 0x0, 0x0}, {0x6d4b5eed0000, 0x4a}, 0x0, {{0x800, ...}, ...}, ...}, ...})
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:288 +0xec
+github.com/ollama/ollama/x/mlxrunner.(*Runner).Run.func1()
+	/Users/user1/Sites/inference/zerollama/x/mlxrunner/runner.go:254 +0x130
+golang.org/x/sync/errgroup.(*Group).Go.func1()
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:93 +0x4c
+created by golang.org/x/sync/errgroup.(*Group).Go in goroutine 1
+	/Users/user1/go/pkg/mod/golang.org/x/sync@v0.17.0/errgroup/errgroup.go:78 +0x90
+time=2026-08-01T14:38:03.601-07:00 level=ERROR source=client.go:445 msg="mlx runner subprocess exited" error="exit status 2" exit=2 pid=39465 model=gpt-oss-120b:mxfp4-q8 port=63524 status="panic: runtime error: index out of range [0] with length 0"
+time=2026-08-01T14:38:03.601-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=9.165s model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0
+[GIN] 2026/08/01 - 14:38:03 | 200 |  9.165357917s |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:38:03 | 200 |     108.875µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:03.601-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:38:03.772-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=200 duration=171ms model=gpt-oss-120b:mxfp4-q8 ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:38:03 | 200 |  170.828667ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:38:03.772-07:00 level=INFO source=client.go:139 msg="stopping mlx runner subprocess" pid=39465
+[GIN] 2026/08/01 - 14:38:03 | 200 |       8.791µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:08.552-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63664"
+[GIN] 2026/08/01 - 14:38:09 | 200 |  6.062313375s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:09 | 200 |      11.334µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:12.182-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63685"
+[GIN] 2026/08/01 - 14:38:13 | 200 |  3.627215125s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:38:13.465-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:38:13.712-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=ane-ffn-lab-shexp:latest model_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d fifo_seq=9 sched_attempt=0 num_ctx=8192 num_gpu=-1 num_predict=128 pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:38:13.712-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63698"
+time=2026-08-01T14:38:13.779-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=ane-ffn-lab-shexp:latest model_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d fifo_seq=9 sched_attempt=1 num_ctx=8192 num_gpu=-1 num_predict=128
+time=2026-08-01T14:38:13.806-07:00 level=INFO source=sched.go:748 msg="loading model" name=ane-ffn-lab-shexp:latest path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d
+time=2026-08-01T14:38:13.871-07:00 level=WARN source=server.go:162 msg="flash attention enabled but not supported by gpu"
+time=2026-08-01T14:38:13.871-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --model /Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d --port 63704"
+time=2026-08-01T14:38:13.876-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="99.0 GiB" free_swap="0 B"
+time=2026-08-01T14:38:13.876-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:38:13.876-07:00 level=INFO source=server.go:678 msg="loading model" "model layers"=41 requested=-1
+time=2026-08-01T14:38:13.914-07:00 level=INFO source=runner.go:1657 msg="starting ollama engine"
+time=2026-08-01T14:38:13.915-07:00 level=INFO source=runner.go:1702 msg="Server listening on 127.0.0.1:63704"
+time=2026-08-01T14:38:13.920-07:00 level=INFO source=server.go:694 msg="llm_load: ollama-engine layout phase" model_path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d operation=fit gpu_layers=41
+time=2026-08-01T14:38:13.920-07:00 level=INFO source=runner.go:1549 msg=load request="{Operation:fit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:Disabled KvSize:8192 KvCacheType: NumThreads:12 GPULayers:41[ID:MTL0 Layers:41(0..40)] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-08-01T14:38:13.945-07:00 level=INFO source=ggml.go:212 msg="" architecture=qwen35moe file_type=Q4_K_M name="" description="" num_tensors=1194 num_key_values=57
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loading embedded metallib (14308591 bytes)
+ggml_metal_library_init: loaded in 0.008 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M4 Max)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB
+time=2026-08-01T14:38:13.946-07:00 level=INFO source=ggml.go:106 msg=system MTL.0.EMBED_LIBRARY=1 CPU.0.NEON=1 CPU.0.ARM_FMA=1 CPU.0.FP16_VA=1 CPU.0.DOTPROD=1 CPU.0.LLAMAFILE=1 CPU.0.ACCELERATE=1 compiler=cgo(clang)
+ggml_metal_init: allocating
+ggml_metal_init: picking default device: Apple M4 Max
+ggml_metal_init: use fusion         = true
+ggml_metal_init: use concurrency    = true
+ggml_metal_init: use graph optimize = true
+time=2026-08-01T14:38:13.969-07:00 level=INFO source=vision_embed_cache.go:91 msg="vision embed radix pool enabled" byte_budget=104857600 slots=4 engine=ollama
+time=2026-08-01T14:38:14.102-07:00 level=INFO source=server.go:694 msg="llm_load: ollama-engine layout phase" model_path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d operation=alloc gpu_layers=41
+time=2026-08-01T14:38:14.102-07:00 level=INFO source=runner.go:1549 msg=load request="{Operation:alloc LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:Disabled KvSize:8192 KvCacheType: NumThreads:12 GPULayers:41[ID:MTL0 Layers:41(0..40)] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-08-01T14:38:14.515-07:00 level=INFO source=vision_embed_cache.go:91 msg="vision embed radix pool enabled" byte_budget=104857600 slots=4 engine=ollama
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=runner.go:1549 msg=load request="{Operation:commit LoraPath:[] Parallel:1 BatchSize:512 FlashAttention:Disabled KvSize:8192 KvCacheType: NumThreads:12 GPULayers:41[ID:MTL0 Layers:41(0..40)] MultiUserCache:false ProjectorPath: MainGPU:0 UseMmap:false}"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=ggml.go:563 msg="offloading 40 repeating layers to GPU"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=ggml.go:570 msg="offloading output layer to GPU"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=ggml.go:575 msg="offloaded 41/41 layers to GPU"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=device.go:240 msg="model weights" device=MTL0 size="22.0 GiB"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=device.go:245 msg="model weights" device=CPU size="277.3 MiB"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=device.go:251 msg="kv cache" device=MTL0 size="1.5 GiB"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=device.go:262 msg="compute graph" device=MTL0 size="1.5 GiB"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=device.go:267 msg="compute graph" device=CPU size="15.8 MiB"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=device.go:272 msg="total memory" size="25.2 GiB"
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:38:14.757-07:00 level=INFO source=server.go:1262 msg="llm_load: waiting for runner to become ready" model_path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d port=63704 pid=40733 stall_timeout=5m0s
+time=2026-08-01T14:38:14.758-07:00 level=INFO source=server.go:1323 msg="llm_load: runner status changed" model_path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d status="llm server loading model" progress=0 poll=1 elapsed=149.042µs
+time=2026-08-01T14:38:20.020-07:00 level=INFO source=server.go:1341 msg="llm_load: runner ready" model_path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d port=63704 since_spawn=6.144475s wait_elapsed=5.262806417s polls=22
+time=2026-08-01T14:38:20.020-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=ane-ffn-lab-shexp:latest model_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d fifo_seq=9 sched_attempt=1 num_ctx=8192 num_gpu=-1 num_predict=128 pid=40733 wait_elapsed=5.262833625s total_elapsed=6.240904417s
+time=2026-08-01T14:38:20.020-07:00 level=INFO source=sched.go:963 msg="model ready" name=ane-ffn-lab-shexp:latest path=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d pid=40733
+time=2026-08-01T14:38:20.036-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=ane-ffn-lab-shexp:latest phase_elapsed=6.521s request_elapsed=6.57s
+time=2026-08-01T14:38:20.036-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=ane-ffn-lab-shexp:latest phase_elapsed=0s request_elapsed=6.571s
+time=2026-08-01T14:38:20.206-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=ane-ffn-lab-shexp:latest phase_elapsed=170ms request_elapsed=6.74s
+time=2026-08-01T14:38:22.725-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=9.26s model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_eval_count=33 eval_count=128
+[GIN] 2026/08/01 - 14:38:22 | 200 |  9.260267875s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:38:22.726-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:38:22.984-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=ane-ffn-lab-shexp:latest model_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d fifo_seq=0 sched_attempt=0 num_ctx=8192 num_gpu=-1 num_predict=128 pending_queue=0 loaded_models=ane-ffn-lab-shexp:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=ane-ffn-lab-shexp:latest runner_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d ref_count=0 loading=false pid=40733 vram=27093487040 session_duration=5m0s
+time=2026-08-01T14:38:22.984-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=ane-ffn-lab-shexp:latest phase_elapsed=208ms request_elapsed=259ms
+time=2026-08-01T14:38:22.984-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=ane-ffn-lab-shexp:latest phase_elapsed=0s request_elapsed=259ms
+time=2026-08-01T14:38:23.100-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=ane-ffn-lab-shexp:latest phase_elapsed=115ms request_elapsed=374ms
+time=2026-08-01T14:38:25.624-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=2.899s model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_eval_count=33 eval_count=128
+[GIN] 2026/08/01 - 14:38:25 | 200 |  2.898583583s |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:38:25.625-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:38:25.873-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=ane-ffn-lab-shexp:latest model_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d fifo_seq=0 sched_attempt=0 num_ctx=8192 num_gpu=-1 num_predict=128 pending_queue=0 loaded_models=ane-ffn-lab-shexp:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=ane-ffn-lab-shexp:latest runner_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d ref_count=0 loading=false pid=40733 vram=27093487040 session_duration=5m0s
+time=2026-08-01T14:38:25.873-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=ane-ffn-lab-shexp:latest phase_elapsed=201ms request_elapsed=249ms
+time=2026-08-01T14:38:25.873-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=ane-ffn-lab-shexp:latest phase_elapsed=0s request_elapsed=249ms
+time=2026-08-01T14:38:25.985-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=ane-ffn-lab-shexp:latest phase_elapsed=111ms request_elapsed=360ms
+time=2026-08-01T14:38:25.985-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=360ms model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=stop prompt_eval_count=33 eval_count=1
+[GIN] 2026/08/01 - 14:38:25 | 200 |  360.159792ms |       127.0.0.1 | POST     "/api/generate"
+time=2026-08-01T14:38:25.985-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=true model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:38:26.231-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: GetRunner fast path (already loaded)" model=ane-ffn-lab-shexp:latest model_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d fifo_seq=0 sched_attempt=0 num_ctx=8192 num_gpu=-1 num_predict=128 pending_queue=0 loaded_models=ane-ffn-lab-shexp:latest active_loading="" loads_paused=false loading_fifo_seq=0 runner_model=ane-ffn-lab-shexp:latest runner_key=/Users/user1/.ollama/models/blobs/sha256-f5ee307a2982106a6eb82b62b2c00b575c9072145a759ae4660378acda8dcf2d ref_count=0 loading=false pid=40733 vram=27093487040 session_duration=5m0s
+time=2026-08-01T14:38:26.231-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=ane-ffn-lab-shexp:latest phase_elapsed=200ms request_elapsed=246ms
+time=2026-08-01T14:38:26.231-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=ane-ffn-lab-shexp:latest phase_elapsed=0s request_elapsed=246ms
+time=2026-08-01T14:38:26.338-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=ane-ffn-lab-shexp:latest phase_elapsed=107ms request_elapsed=353ms
+time=2026-08-01T14:38:26.357-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=true status=200 duration=372ms model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=stop prompt_eval_count=33 eval_count=2
+[GIN] 2026/08/01 - 14:38:26 | 200 |  372.343208ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:38:26 | 200 |      26.292µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:26.367-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+time=2026-08-01T14:38:26.459-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=200 duration=93ms model=ane-ffn-lab-shexp:latest ggml_pending=0 ggml_active=0 ggml_loaded=1 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:38:26 | 200 |   92.585125ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:38:26 | 200 |       9.458µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:26.461-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63766"
+time=2026-08-01T14:38:26.781-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63772"
+time=2026-08-01T14:38:27.030-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63779"
+time=2026-08-01T14:38:27.281-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63785"
+time=2026-08-01T14:38:27.531-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63791"
+time=2026-08-01T14:38:27.780-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63796"
+time=2026-08-01T14:38:28.031-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63802"
+[GIN] 2026/08/01 - 14:38:28 | 200 |      76.917µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:38:28.281-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63808"
+time=2026-08-01T14:38:28.530-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63813"
+time=2026-08-01T14:38:28.781-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63819"
+time=2026-08-01T14:38:28.854-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63825"
+time=2026-08-01T14:38:29.030-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63831"
+time=2026-08-01T14:38:29.281-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63836"
+time=2026-08-01T14:38:29.531-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63842"
+time=2026-08-01T14:38:29.780-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63847"
+time=2026-08-01T14:38:30.031-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63853"
+[GIN] 2026/08/01 - 14:38:30 | 200 |  3.630196917s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:30 | 200 |          12µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:30.281-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63859"
+time=2026-08-01T14:38:30.531-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63865"
+time=2026-08-01T14:38:30.781-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63871"
+time=2026-08-01T14:38:31.030-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63877"
+time=2026-08-01T14:38:31.281-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63882"
+time=2026-08-01T14:38:32.436-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63893"
+[GIN] 2026/08/01 - 14:38:33 | 200 |  3.594117416s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:33 | 200 |      12.583µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:36.050-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63911"
+[GIN] 2026/08/01 - 14:38:37 | 200 |  3.616313417s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:37 | 200 |      14.416µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:39.667-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63926"
+[GIN] 2026/08/01 - 14:38:40 | 200 |  3.587283292s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:40 | 200 |      10.583µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:43.262-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63943"
+[GIN] 2026/08/01 - 14:38:44 | 200 |  3.556899709s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:44 | 200 |      10.833µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:46.733-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63958"
+[GIN] 2026/08/01 - 14:38:48 | 200 |  3.533027834s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:48 | 200 |      16.375µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:50.376-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63979"
+[GIN] 2026/08/01 - 14:38:51 | 200 |  3.597051709s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:51 | 200 |      12.667µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:53.969-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 63996"
+[GIN] 2026/08/01 - 14:38:55 | 200 |  3.638272833s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:55 | 200 |      15.292µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:38:57.637-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64019"
+[GIN] 2026/08/01 - 14:38:58 | 200 |      61.584µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:38:58 | 200 |  3.605014209s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:38:58 | 200 |         9.5µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:01.238-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64038"
+[GIN] 2026/08/01 - 14:39:02 | 200 |  3.575080834s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:02 | 200 |      10.666µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:04.741-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64062"
+[GIN] 2026/08/01 - 14:39:05 | 200 |  3.489688417s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:05 | 200 |      10.416µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:08.269-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64088"
+[GIN] 2026/08/01 - 14:39:09 | 200 |  3.551281417s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:09 | 200 |          12µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:11.812-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64102"
+[GIN] 2026/08/01 - 14:39:13 | 200 |  3.538225875s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:13 | 200 |       9.416µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:15.371-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64129"
+[GIN] 2026/08/01 - 14:39:16 | 200 |  3.530864625s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:16 | 200 |      10.875µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:18.939-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64156"
+[GIN] 2026/08/01 - 14:39:20 | 200 |   3.65158475s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:20 | 200 |      14.041µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:22.632-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64173"
+[GIN] 2026/08/01 - 14:39:23 | 200 |  3.622743167s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:23 | 200 |      13.917µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:26.236-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64191"
+[GIN] 2026/08/01 - 14:39:27 | 200 |   3.61754225s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:27 | 200 |       7.834µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:39:28 | 200 |      72.833µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:39:29.844-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64213"
+[GIN] 2026/08/01 - 14:39:31 | 200 |  3.649053375s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:31 | 200 |       9.709µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:33.586-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64236"
+[GIN] 2026/08/01 - 14:39:34 | 200 |  3.698870833s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:34 | 200 |      12.167µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:37.160-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64262"
+[GIN] 2026/08/01 - 14:39:38 | 200 |  3.570579084s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:38 | 200 |      15.333µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:40.765-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64279"
+[GIN] 2026/08/01 - 14:39:41 | 200 |  3.409860542s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:41 | 200 |       8.542µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:44.222-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64293"
+[GIN] 2026/08/01 - 14:39:45 | 200 |  3.463662958s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:45 | 200 |       8.542µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:47.670-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64311"
+[GIN] 2026/08/01 - 14:39:48 | 200 |     3.457008s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:48 | 200 |      10.667µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:51.129-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64326"
+[GIN] 2026/08/01 - 14:39:52 | 200 |    3.4321045s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:52 | 200 |       7.833µs |       127.0.0.1 | GET      "/api/ps"
+time=2026-08-01T14:39:54.608-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 64340"
+[GIN] 2026/08/01 - 14:39:55 | 200 |  3.468766375s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:39:55 | 200 |       8.625µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:39:58 | 200 |     194.709µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:40:28 | 200 |      79.209µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:40:58 | 200 |      66.667µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:41:28 | 200 |     187.583µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:41:56 | 200 |       11.25µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:41:58 | 200 |      53.042µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:41:58.814-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 65189"
+[GIN] 2026/08/01 - 14:42:00 | 200 |  3.638021334s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:42:00 | 200 |      11.834µs |       127.0.0.1 | HEAD     "/"
+time=2026-08-01T14:42:02.489-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 65269"
+[GIN] 2026/08/01 - 14:42:03 | 200 |  3.601541792s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:42:06.024-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 65320"
+time=2026-08-01T14:42:06.028-07:00 level=INFO source=runner.go:502 msg="failure during GPU discovery" OLLAMA_LIBRARY_PATH="[/Users/user1/Sites/inference/zerollama ]" extra_envs=map[] error="failed to finish discovery before timeout"
+time=2026-08-01T14:42:06.028-07:00 level=WARN source=runner.go:381 msg="unable to refresh free memory, using old values"
+[GIN] 2026/08/01 - 14:42:07 | 200 |  3.420850917s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:42:28 | 200 |      58.083µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:42:56 | 200 |      19.167µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:42:58 | 200 |      53.792µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:42:58.911-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 65521"
+[GIN] 2026/08/01 - 14:43:00 | 200 |  3.576715917s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:43:00 | 200 |      12.709µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:43:00 | 200 |       8.875µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:43:00 | 200 |      15.375µs |       127.0.0.1 | HEAD     "/"
+time=2026-08-01T14:43:02.753-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 49159"
+[GIN] 2026/08/01 - 14:43:04 | 200 |   3.73234725s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:43:04 | 200 |      15.375µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:43:04 | 200 |      11.209µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:43:17 | 200 |      42.958µs |       127.0.0.1 | HEAD     "/"
+time=2026-08-01T14:43:20.238-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 49248"
+[GIN] 2026/08/01 - 14:43:21 | 200 |  3.660972916s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:43:21 | 200 |      13.958µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:43:21 | 200 |      10.042µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:43:21 | 200 |      26.291µs |       127.0.0.1 | HEAD     "/"
+time=2026-08-01T14:43:24.237-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 49270"
+[GIN] 2026/08/01 - 14:43:25 | 200 |  3.526192708s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:43:28 | 200 |      61.209µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:43:58 | 200 |     405.666µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:44:28 | 200 |     116.583µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:44:58 | 200 |     143.416µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:45:28 | 200 |     379.625µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:45:58 | 200 |       61.75µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:46:28 | 200 |     206.667µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:46:58 | 200 |      74.708µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:47:28 | 200 |     320.792µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:47:58 | 200 |      68.625µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:48:23 | 200 |      13.125µs |       127.0.0.1 | HEAD     "/"
+time=2026-08-01T14:48:25.900-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 50564"
+[GIN] 2026/08/01 - 14:48:27 | 200 |  3.611616084s |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:48:28 | 200 |     132.375µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:48:58 | 200 |      77.125µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:49:17 | 200 |      16.625µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:49:22 | 200 |      13.458µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:49:22 | 200 |     35.9685ms |       127.0.0.1 | POST     "/api/show"
+[GIN] 2026/08/01 - 14:49:22 | 200 |      12.958µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:49:23 | 200 |   59.355667ms |       127.0.0.1 | POST     "/api/show"
+[GIN] 2026/08/01 - 14:49:28 | 200 |     118.958µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:49:29.177-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+WORKER: Job 57b8fe6b queued (run_script), queue size: 1
+[GIN] 2026/08/01 - 14:49:29 | 202 |   55.600333ms |       127.0.0.1 | POST     "/v1/videos"
+WORKER: Processing job 57b8fe6b (run_script)
+WORKER: Executing script: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_video_generate.py
+WORKER: Working directory: /Users/user1/Sites/inference/zerollama
+SCRIPT: PROGRESS:0.0:starting Wan generation
+SCRIPT: using python: /Users/user1/.zerollama/third_party/wan/venv/bin/python3
+SCRIPT: WAN_FORCE_SDPA=1
+SCRIPT: WAN_VAE_CPU=1
+SCRIPT: running: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py --task t2v-1.3B --size 832*480 --ckpt_dir /Users/user1/.zerollama/third_party/wan/Wan2.1-T2V-1.3B --prompt a red apple on a white table --frame_num 49 --sample_steps 25 --save_file /Users/user1/.ollama/models/generated/57b8fe6b.mp4 --offload_model True --t5_cpu
+SCRIPT: PROGRESS:5.0:launching generate.py
+SCRIPT: PROGRESS:6.0:checking GPU compatibility
+SCRIPT ERROR: Traceback (most recent call last):
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py", line 60, in <module>
+SCRIPT:     raise SystemExit(main())
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py", line 33, in main
+SCRIPT:     status = apply_torch_workarounds()
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_torch_compat.py", line 218, in apply_torch_workarounds
+SCRIPT:     import torch
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.9/site-packages/torch/__init__.py", line 416, in <module>
+SCRIPT:     from torch._C import *  # noqa: F403
+SCRIPT ERROR: ImportError: dlopen(/Users/user1/.zerollama/third_party/wan/venv/lib/python3.9/site-packages/torch/_C.cpython-39-darwin.so, 0x0002): symbol not found in flat namespace '_PyCode_GetVarnames'
+SCRIPT: generate.py exited with code 1
+WORKER: Job 57b8fe6b failed: Script exited with code 1
+time=2026-08-01T14:49:29.604-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+[GIN] 2026/08/01 - 14:49:32 | 200 |     595.292µs |       127.0.0.1 | GET      "/v1/videos/57b8fe6b"
+[GIN] 2026/08/01 - 14:49:58 | 200 |     264.458µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:50:01.874-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=x/flux2-klein ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:50:02.035-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=10 sched_attempt=0 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:50:02.035-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 50933"
+time=2026-08-01T14:50:02.098-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=10 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s
+time=2026-08-01T14:50:02.098-07:00 level=INFO source=sched.go:748 msg="loading model" name=x/flux2-klein:latest path=""
+time=2026-08-01T14:50:02.099-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="117.9 GiB" free_swap="0 B"
+time=2026-08-01T14:50:02.099-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:50:02.101-07:00 level=INFO source=server.go:144 msg="starting mlx runner subprocess" model=x/flux2-klein:latest port=50939
+time=2026-08-01T14:50:02.106-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:50:02.145-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:50:02.145-07:00 level=INFO msg=\"starting mlx runner\" model=x/flux2-klein:latest port=50939 mode=imagegen"
+time=2026-08-01T14:50:02.145-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:50:02.145-07:00 level=INFO msg=\"MLX library initialized\""
+time=2026-08-01T14:50:02.149-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="time=2026-08-01T14:50:02.149-07:00 level=INFO msg=\"detected image model type\" type=Flux2KleinPipeline"
+time=2026-08-01T14:50:02.149-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="Loading FLUX.2 Klein model from manifest: x/flux2-klein:latest..."
+time=2026-08-01T14:50:02.320-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading tokenizer... ✓"
+time=2026-08-01T14:50:02.611-07:00 level=INFO source=server.go:130 msg=mlx-runner msg="  Loading text encoder... [cleanup] freed 1788 arrays from /Users/user1/Sites/inference/zerollama/x/imagegen/mlx/mlx.go:685"
+time=2026-08-01T14:50:02.612-07:00 level=WARN source=server.go:137 msg=mlx-runner msg="Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry"
+time=2026-08-01T14:50:02.615-07:00 level=WARN source=sched_debug.go:118 msg="scheduler: WaitUntilRunning failed" model=x/flux2-klein:latest model_key=digest:50a0c0ab15ac55078483105dc0aa5d0e3ba6a5103309f511adb85f3e3ab186e3 fifo_seq=10 sched_attempt=1 num_ctx=262144 num_gpu=-1 num_predict=-1 keep_alive=30m0s error="mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)" wait_elapsed=508.968041ms total_elapsed=516.3415ms
+time=2026-08-01T14:50:02.615-07:00 level=INFO source=server.go:392 msg="stopping mlx runner subprocess" pid=93394
+time=2026-08-01T14:50:02.615-07:00 level=WARN source=routes.go:439 msg="scheduleRunner: failed" model=registry.ollama.ai/x/flux2-klein:latest elapsed=579.7125ms error="mlx runner failed: Error: failed to load flux2 model: text encoder: load weights: materialize weights: batch 16-32 of 902: mlx eval failed (ret=1): likely GPU out of memory; unload other models and retry (exit: exit status 1)"
+time=2026-08-01T14:50:02.615-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=500 duration=741ms model=x/flux2-klein ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+[GIN] 2026/08/01 - 14:50:02 | 500 |  740.865209ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:50:02 | 200 |      26.292µs |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2026/08/01 - 14:50:08 | 200 |      20.792µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:50:08 | 200 |   68.390042ms |       127.0.0.1 | POST     "/api/show"
+[GIN] 2026/08/01 - 14:50:08 | 200 |      12.042µs |       127.0.0.1 | HEAD     "/"
+[GIN] 2026/08/01 - 14:50:08 | 200 |   64.077333ms |       127.0.0.1 | POST     "/api/show"
+[GIN] 2026/08/01 - 14:50:28 | 200 |      67.291µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:50:50.939-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 51163"
+[GIN] 2026/08/01 - 14:50:52 | 200 |  3.683750375s |       127.0.0.1 | GET      "/api/tags"
+time=2026-08-01T14:50:53.841-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 51180"
+[GIN] 2026/08/01 - 14:50:55 | 200 |  3.623941959s |             ::1 | GET      "/api/tags"
+time=2026-08-01T14:50:56.905-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 51200"
+[GIN] 2026/08/01 - 14:50:58 | 200 |     121.625µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:50:58 | 200 |  3.675664541s |             ::1 | GET      "/api/tags"
+[GIN] 2026/08/01 - 14:51:28 | 200 |      68.917µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:51:58 | 200 |     119.375µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T14:52:21.248-07:00 level=INFO source=inference_access_log.go:99 msg="inference request in" route=/api/generate stream=false model=qwen3:0.6b-mlx ggml_pending=0 ggml_active=0 ggml_loaded=0 ggml_loads_paused=false
+time=2026-08-01T14:52:21.394-07:00 level=INFO source=mlx_model_config.go:116 msg="num_ctx capped to mlx model maximum" model=qwen3:0.6b-mlx from=262144 to=40960
+time=2026-08-01T14:52:21.394-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: queued for load" model=qwen3:0.6b-mlx model_key=digest:b8ba6ad891c68c59445f1daeaea2c534faa0f1112ce714941d010d8ee9135c93 fifo_seq=11 sched_attempt=0 num_ctx=40960 num_gpu=-1 num_predict=5 keep_alive=30m0s pending_queue=1 loaded_models="" active_loading="" loads_paused=false loading_fifo_seq=0 needs_reload=false
+time=2026-08-01T14:52:21.395-07:00 level=INFO source=server.go:403 msg="starting runner" cmd="/Users/user1/Sites/inference/zerollama/zerollama runner --ollama-engine --port 51942"
+time=2026-08-01T14:52:21.469-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: loading first model (VRAM empty)" model=qwen3:0.6b-mlx model_key=digest:b8ba6ad891c68c59445f1daeaea2c534faa0f1112ce714941d010d8ee9135c93 fifo_seq=11 sched_attempt=1 num_ctx=40960 num_gpu=-1 num_predict=5 keep_alive=30m0s
+time=2026-08-01T14:52:21.469-07:00 level=INFO source=sched.go:748 msg="loading model" name=qwen3:0.6b-mlx path=""
+time=2026-08-01T14:52:21.607-07:00 level=INFO source=sched.go:848 msg="system memory" total="128.0 GiB" free="118.1 GiB" free_swap="0 B"
+time=2026-08-01T14:52:21.607-07:00 level=INFO source=sched.go:855 msg="gpu memory" id=MTL0 library=MTL available="107.1 GiB" free="107.5 GiB" minimum="457.0 MiB" overhead="0 B"
+time=2026-08-01T14:52:21.607-07:00 level=INFO source=client.go:431 msg="starting mlx runner subprocess" model=qwen3:0.6b-mlx port=51949
+time=2026-08-01T14:52:21.612-07:00 level=INFO source=sched.go:935 msg="loaded runners" count=1
+time=2026-08-01T14:52:21.652-07:00 level=INFO source=server.go:45 msg="MLX engine initialized" "MLX version"=4367c73 device=gpu
+time=2026-08-01T14:52:21.658-07:00 level=INFO source=base.go:104 msg="Model architecture" arch=Qwen3ForCausalLM
+time=2026-08-01T14:52:21.842-07:00 level=INFO source=runner.go:241 msg="Loaded tensors from manifest" count=704
+time=2026-08-01T14:52:21.919-07:00 level=INFO source=runner.go:276 msg="Starting HTTP server" host=127.0.0.1 port=51949
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=GET path=/v1/status took=88.167µs status="200 OK"
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=client.go:94 msg="mlx runner is ready" port=51949
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=sched_debug.go:112 msg="scheduler: model ready" model=qwen3:0.6b-mlx model_key=digest:b8ba6ad891c68c59445f1daeaea2c534faa0f1112ce714941d010d8ee9135c93 fifo_seq=11 sched_attempt=1 num_ctx=40960 num_gpu=-1 num_predict=5 keep_alive=30m0s pid=4400 wait_elapsed=402.599917ms total_elapsed=545.557125ms
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=sched.go:963 msg="model ready" name=qwen3:0.6b-mlx path="" pid=4400
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=routes.go:431 msg="scheduleRunner: runner acquired" model=registry.ollama.ai/library/qwen3:0.6b-mlx elapsed=619.986084ms pid=4400 loading=false
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=runner_ready model=qwen3:0.6b-mlx phase_elapsed=691ms request_elapsed=766ms
+time=2026-08-01T14:52:22.014-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/tokenize took=32.459µs status="200 OK"
+time=2026-08-01T14:52:22.015-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=prompt_ready model=qwen3:0.6b-mlx phase_elapsed=0s request_elapsed=766ms
+time=2026-08-01T14:52:22.015-07:00 level=INFO source=cache.go:203 msg="cache miss" total=9 matched=0 cached=0 left=9 utilization_pct=0
+time=2026-08-01T14:52:22.043-07:00 level=INFO source=pipeline.go:265 msg="Prompt processing progress" processed=8 total=9
+time=2026-08-01T14:52:22.043-07:00 level=INFO source=pipeline.go:326 msg="prefill complete" prompt_tokens=9 cached_tokens=0 prefill_tokens=8 elapsed=28.308ms chunk_size=8192 tok_per_sec=282.60562385191463
+time=2026-08-01T14:52:22.058-07:00 level=INFO source=inference_access_log.go:180 msg="inference phase" phase=first_token model=qwen3:0.6b-mlx phase_elapsed=43ms request_elapsed=809ms
+time=2026-08-01T14:52:22.072-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/tokenize took=65.125µs status="200 OK"
+time=2026-08-01T14:52:22.072-07:00 level=INFO source=pipeline.go:110 msg="peak memory" size="356.11 MiB"
+time=2026-08-01T14:52:22.072-07:00 level=INFO source=server.go:238 msg=ServeHTTP method=POST path=/v1/completions took=57.387417ms status="200 OK"
+time=2026-08-01T14:52:22.072-07:00 level=INFO source=inference_access_log.go:367 msg="inference response out" route=/api/generate stream=false status=200 duration=824ms model=qwen3:0.6b-mlx ggml_pending=0 ggml_active=1 ggml_loaded=1 ggml_loads_paused=false ggml_pending_in=0 ggml_active_in=0 done_reason=length prompt_tokens=9 prompt_eval_count=9 eval_count=5
+[GIN] 2026/08/01 - 14:52:22 | 200 |  823.877417ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2026/08/01 - 14:52:28 | 200 |      78.792µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:52:58 | 200 |      145.75µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:53:28 | 200 |      81.959µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:53:58 | 200 |      67.459µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:54:28 | 200 |     308.667µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:54:58 | 200 |      55.583µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:55:28 | 200 |     243.042µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:55:58 | 200 |        67.5µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:56:28 | 200 |     263.958µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:56:58 | 200 |          56µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:57:28 | 200 |      329.25µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:57:58 | 200 |      57.958µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:58:28 | 200 |         273µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:58:58 | 200 |      61.458µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:59:28 | 200 |     167.666µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 14:59:58 | 200 |      67.333µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:00:28 | 200 |     312.958µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:00:58 | 200 |      61.542µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:01:28 | 200 |     123.958µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:01:58 | 200 |     542.167µs |       127.0.0.1 | GET      "/api/version"
+time=2026-08-01T15:02:00.673-07:00 level=INFO source=sched.go:1663 msg="scheduler: paused new loads" reason=training_or_runtime_backlog
+time=2026-08-01T15:02:00.673-07:00 level=INFO source=client.go:139 msg="stopping mlx runner subprocess" pid=4400
+time=2026-08-01T15:02:00.680-07:00 level=ERROR source=client.go:445 msg="mlx runner subprocess exited" error="signal: interrupt" exit=unknown pid=4400 model=qwen3:0.6b-mlx port=51949
+WORKER: Job e171126a queued (run_script), queue size: 1
+WORKER: Processing job e171126a (run_script)
+[GIN] 2026/08/01 - 15:02:00 | 202 |   58.488541ms |       127.0.0.1 | POST     "/v1/videos"
+WORKER: Executing script: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_video_generate.py
+WORKER: Working directory: /Users/user1/Sites/inference/zerollama
+SCRIPT: PROGRESS:0.0:starting Wan generation
+SCRIPT: using python: /Users/user1/.zerollama/third_party/wan/venv/bin/python3
+SCRIPT: WAN_FORCE_SDPA=1
+SCRIPT: WAN_VAE_CPU=1
+SCRIPT: running: /Users/user1/.zerollama/third_party/wan/venv/bin/python3 /Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py --task t2v-1.3B --size 832*480 --ckpt_dir /Users/user1/.zerollama/third_party/wan/Wan2.1-T2V-1.3B --prompt a red apple --frame_num 17 --sample_steps 5 --save_file /Users/user1/.ollama/models/generated/e171126a.mp4 --offload_model True --t5_cpu
+SCRIPT: PROGRESS:5.0:launching generate.py
+SCRIPT: PROGRESS:6.0:checking GPU compatibility
+SCRIPT ERROR: Traceback (most recent call last):
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py", line 60, in <module>
+SCRIPT:     raise SystemExit(main())
+SCRIPT:                      ^^^^^^
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_generate_entry.py", line 33, in main
+SCRIPT:     status = apply_torch_workarounds()
+SCRIPT:              ^^^^^^^^^^^^^^^^^^^^^^^^^
+SCRIPT:   File "/Users/user1/Sites/inference/zerollama/scripts/video/wan_torch_compat.py", line 218, in apply_torch_workarounds
+SCRIPT:     import torch
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/__init__.py", line 2254, in <module>
+SCRIPT:     from torch import _VF as _VF, functional as functional  # usort: skip
+SCRIPT:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/functional.py", line 8, in <module>
+SCRIPT:     import torch.nn.functional as F
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/nn/__init__.py", line 8, in <module>
+SCRIPT:     from torch.nn.modules import *  # usort: skip # noqa: F403
+SCRIPT:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/nn/modules/__init__.py", line 2, in <module>
+SCRIPT:     from .linear import Bilinear, Identity, LazyLinear, Linear  # usort: skip
+SCRIPT:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/nn/modules/linear.py", line 7, in <module>
+SCRIPT:     from torch.nn import functional as F, init
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/nn/functional.py", line 17, in <module>
+SCRIPT:     from torch._jit_internal import (
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/_jit_internal.py", line 46, in <module>
+SCRIPT:     import torch.distributed.rpc
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/distributed/rpc/__init__.py", line 85, in <module>
+SCRIPT:     from .server_process_global_profiler import _server_process_global_profile
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/distributed/rpc/server_process_global_profiler.py", line 9, in <module>
+SCRIPT:     from torch.autograd.profiler_legacy import profile
+SCRIPT:   File "/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/autograd/__init__.py", line 657, in <module>
+SCRIPT:     from torch._C._autograd import (
+SCRIPT ERROR: ImportError: cannot import name '_is_kineto_stopped' from 'torch._C._autograd' (/Users/user1/.zerollama/third_party/wan/venv/lib/python3.11/site-packages/torch/_C.cpython-311-darwin.so)
+SCRIPT: generate.py exited with code 1
+WORKER: Job e171126a failed: Script exited with code 1
+time=2026-08-01T15:02:01.379-07:00 level=INFO source=sched.go:1671 msg="scheduler: resumed new loads"
+[GIN] 2026/08/01 - 15:02:05 | 200 |     208.334µs |       127.0.0.1 | GET      "/v1/videos/e171126a"
+[GIN] 2026/08/01 - 15:02:28 | 200 |          68µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:02:58 | 200 |     174.625µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:03:28 | 200 |          68µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:03:58 | 200 |     105.375µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:04:28 | 200 |      66.625µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:04:58 | 200 |       66.25µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:05:28 | 200 |     175.041µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:05:58 | 200 |     118.542µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:06:28 | 200 |       67.25µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:06:58 | 200 |      80.791µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:07:28 | 200 |      66.917µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:07:58 | 200 |      69.708µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:08:28 | 200 |        76.5µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:08:58 | 200 |     150.875µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:09:28 | 200 |      57.958µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:09:58 | 200 |      103.75µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:10:28 | 200 |      63.083µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:10:58 | 200 |      98.833µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:11:28 | 200 |     201.667µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:11:58 | 200 |      66.833µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:12:28 | 200 |     106.792µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:12:58 | 200 |     113.292µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:13:28 | 200 |     124.375µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:13:58 | 200 |     182.166µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:14:28 | 200 |     184.166µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:14:58 | 200 |      99.834µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:15:28 | 200 |     101.709µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:15:58 | 200 |     131.333µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:16:28 | 200 |      42.458µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:16:58 | 200 |       128.5µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:17:28 | 200 |          64µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:17:58 | 200 |     137.833µs |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/08/01 - 15:18:28 | 200 |     136.625µs |       127.0.0.1 | GET      "/api/version"
+
+>>>>>>> Stashed changes

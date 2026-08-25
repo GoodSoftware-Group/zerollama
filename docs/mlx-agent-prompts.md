@@ -256,6 +256,14 @@ MTP disabled for long prompt; using standard decode
 peak memory  size=114.80 GiB
 ```
 
+**Fail-closed MTP expect (F0750):** `ZEROLLAMA_MLX_MTP=require` refuses runner load when the checkpoint has no draft/SelfDraft head (no silent AR demotion). Default unset remains soft AR.
+
+**MTP history policy (F0751):** `ZEROLLAMA_MLX_MTP_HISTORY=committed|last_window|auto` (defaults committed; auto→last_window @ 16k). Window/threshold: `ZEROLLAMA_MLX_MTP_HISTORY_LAST_WINDOW` (8192), `_THRESHOLD` (16384). last_window trims draft-KV pair writes; Gemma4 cacheless draft is unaffected beyond logging.
+
+**Draft LM requant (F0757):** do **not** enable draft-only 3/4-bit Unembed shrink as a default — catalog 9B Speed A3/A4 sat ~0.99× C0 (&lt;1.03× ship bar). Target head stays untouched either way.
+
+**mtplx inventory (F0748→F0759) + flips F0765–F0770:** research pull closed. NAX: 4-bit opt-in WIN (mtplx only); 9B 6-bit KILL; mlxrunner wire DEFER. GDN headquarter e2e KILL. SessionBank SSD kill / near-prefix defer. GRAPH+MTP serve-default DEFER (lab green). No further inventory MUSTs.
+
 **Why:** `tok_per_sec` regressions across rebuilds are visible without MLX-internal profilers. Per-chunk `forward_ms` / `materialize_ms` breakdown is at **debug** (`OLLAMA_DEBUG=1`). Gemma4 OptiQ uses **2048-token** prefill chunks automatically (2× sliding window).
 
 ### Runner reload reason
@@ -445,7 +453,15 @@ Legacy flat fields still honored: `mlx_session_class`, `mlx_session_parent`.
 }
 ```
 
-OpenAI SDK: nest under `extra_body.zerollama` (merged into `options` by `BindChatCompletionRequest`).
+OpenAI `/v1/chat/completions` accepts all of these (mapped to `options.zerollama` by `BindChatCompletionRequest`):
+
+1. **`options.zerollama`** — same nested shape as native `/api/chat`
+2. **`extra_body.zerollama`** — or top-level `"zerollama"` after the OpenAI Python SDK promotes `extra_body` onto the HTTP root
+3. **Flat keys** — top-level or under `extra_body`: `qos_class`, `project_id`, `project_name`, `session_group`, … (SDK-flattened aux `extra_body` without a nested object)
+
+**Precedence (strongest → weakest):** nested `options.zerollama` → top-level / `extra_body.zerollama` object → flat aliases. The runtime v1 proxy folds the same way into the options map forwarded to Python.
+
+Preferred client shape remains nested `options.zerollama` / `extra_body.options.zerollama`. Flat aliases exist so mis-nested harness paths do not 400.
 
 Server-inferred fallbacks (no harness deploy): `hermes:agent:*` → interactive; timestamped `hermes:YYYYMMDD_*` → auxiliary; unkeyed `/api/generate` → background.
 

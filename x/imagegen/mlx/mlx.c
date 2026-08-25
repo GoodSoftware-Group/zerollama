@@ -20,7 +20,6 @@ size_t (*mlx_dtype_size_ptr)(mlx_dtype dtype) = NULL;
 int (*mlx_array_tostring_ptr)(mlx_string* str, const mlx_array arr) = NULL;
 mlx_array (*mlx_array_new_ptr)(void) = NULL;
 int (*mlx_array_free_ptr)(mlx_array arr) = NULL;
-int (*mlx_array_detach_ptr)(mlx_array arr) = NULL;
 mlx_array (*mlx_array_new_bool_ptr)(bool val) = NULL;
 mlx_array (*mlx_array_new_int_ptr)(int val) = NULL;
 mlx_array (*mlx_array_new_float32_ptr)(float val) = NULL;
@@ -212,7 +211,7 @@ int (*mlx_fast_metal_kernel_apply_ptr)(mlx_vector_array* outputs, mlx_fast_metal
 int (*mlx_fast_rms_norm_ptr)(mlx_array* res, const mlx_array x, const mlx_array weight , float eps, const mlx_stream s) = NULL;
 int (*mlx_fast_rope_ptr)(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, int offset, const mlx_array freqs , const mlx_stream s) = NULL;
 int (*mlx_fast_rope_dynamic_ptr)(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, const mlx_array offset, const mlx_array freqs , const mlx_stream s) = NULL;
-int (*mlx_fast_scaled_dot_product_attention_ptr)(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr , const mlx_array sinks , const mlx_stream s) = NULL;
+int (*mlx_fast_scaled_dot_product_attention_ptr)(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr , const mlx_array sinks , bool force_fused, const mlx_stream s) = NULL;
 int (*mlx_fft_fft_ptr)(mlx_array* res, const mlx_array a, int n, int axis, mlx_fft_norm norm, const mlx_stream s) = NULL;
 int (*mlx_fft_fft2_ptr)(mlx_array* res, const mlx_array a, const int* n, size_t n_num, const int* axes, size_t axes_num, mlx_fft_norm norm, const mlx_stream s) = NULL;
 int (*mlx_fft_fftfreq_ptr)(mlx_array* res, int n, double d, const mlx_stream s) = NULL;
@@ -671,10 +670,6 @@ int mlx_load_functions(void* handle) {
     if (mlx_array_free_ptr == NULL) {
         fprintf(stderr, "MLX: Failed to load symbol: mlx_array_free\n");
         return -1;
-    }
-    mlx_array_detach_ptr = GET_SYM(handle, "mlx_array_detach");
-    if (mlx_array_detach_ptr == NULL) {
-        fprintf(stderr, "MLX: optional symbol mlx_array_detach missing from libmlxc (no-op)\n");
     }
     mlx_array_new_bool_ptr = GET_SYM(handle, "mlx_array_new_bool");
     if (mlx_array_new_bool_ptr == NULL) {
@@ -3779,13 +3774,6 @@ int mlx_array_free(mlx_array arr) {
     return mlx_array_free_ptr(arr);
 }
 
-int mlx_array_detach(mlx_array arr) {
-    if (mlx_array_detach_ptr == NULL) {
-        return 0;
-    }
-    return mlx_array_detach_ptr(arr);
-}
-
 mlx_array mlx_array_new_bool(bool val) {
     return mlx_array_new_bool_ptr(val);
 }
@@ -4526,8 +4514,8 @@ int mlx_fast_rope_dynamic(mlx_array* res, const mlx_array x, int dims, bool trad
     return mlx_fast_rope_dynamic_ptr(res, x, dims, traditional, base, scale, offset, freqs, s);
 }
 
-int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr , const mlx_array sinks , const mlx_stream s) {
-    return mlx_fast_scaled_dot_product_attention_ptr(res, queries, keys, values, scale, mask_mode, mask_arr, sinks, s);
+int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr , const mlx_array sinks , bool force_fused, const mlx_stream s) {
+    return mlx_fast_scaled_dot_product_attention_ptr(res, queries, keys, values, scale, mask_mode, mask_arr, sinks, force_fused, s);
 }
 
 int mlx_fft_fft(mlx_array* res, const mlx_array a, int n, int axis, mlx_fft_norm norm, const mlx_stream s) {

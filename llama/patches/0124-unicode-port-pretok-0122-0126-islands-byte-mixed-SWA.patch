@@ -1,0 +1,2078 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama-vendor <zerollama@local>
+Date: Thu, 30 Jul 2026 18:22:27 -0700
+Subject: [PATCH] unicode: port pretok 0122-0126 (islands, byte-mixed, SWAR)
+ onto HEAD
+
+---
+ tmp/bpe0121-new/unicode.cpp | 1856 +++++++++++++++++++++++++++--------
+ 1 file changed, 1424 insertions(+), 432 deletions(-)
+
+diff --git a/tmp/bpe0121-new/unicode.cpp b/tmp/bpe0121-new/unicode.cpp
+index 17ec0c11f..79ee044d1 100644
+--- a/tmp/bpe0121-new/unicode.cpp
++++ b/tmp/bpe0121-new/unicode.cpp
+@@ -232,10 +232,38 @@ static inline bool unicode_word_is_printable_ascii(const unsigned char * p, size
+     return true;
+ }
+ 
++// WHY (0125): GPT-2/Qwen pretok is usually ` ?\p{L}+` — a leading space + printable rest.
++// Space (0x20) is NOT identity under bytes↔unicode (→ U+0120, 2-byte UTF-8), so the
++// 0117 printable skip misses these words and remaps every letter byte-by-byte. Remap
++// space once, memcpy the rest (identity).
++static inline bool unicode_word_is_space_plus_printable(const unsigned char * p, size_t n) {
++    return n >= 1 && p[0] == ' ' && unicode_word_is_printable_ascii(p + 1, n - 1);
++}
++
++static inline void unicode_byte_enc_append_word(
++        std::string & storage, const unicode_byte_enc * table,
++        const unsigned char * p, size_t n) {
++    if (unicode_word_is_printable_ascii(p, n)) {
++        storage.append((const char *) p, n);
++        return;
++    }
++    if (unicode_word_is_space_plus_printable(p, n)) {
++        const unicode_byte_enc & sp = table[(unsigned char) ' '];
++        storage.append(sp.d, sp.n);
++        storage.append((const char *) (p + 1), n - 1);
++        return;
++    }
++    for (size_t i = 0; i < n; ++i) {
++        const unicode_byte_enc & e = table[p[i]];
++        storage.append(e.d, e.n);
++    }
++}
++
+ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<std::string> & bpe_words) {
+     // WHY (0117): stock did unordered_map lookup + temporary std::string per byte, then
+     // `+=` into the output. Printable ASCII 0x21..0x7E maps to itself (1-byte UTF-8) —
+     // those words are identity. Flattened LUT + append(len) for the rest.
++    // WHY (0125): leading-space + printable also skips per-letter remap.
+     // LLAMA_BPE_NO_BYTE_ENC_FAST=1 keeps the old map+= path for identity A/B.
+     if (getenv("LLAMA_BPE_NO_BYTE_ENC_FAST") != nullptr) {
+         std::vector<std::string> bpe_encoded_words;
+@@ -255,16 +283,15 @@ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<
+     std::vector<std::string> bpe_encoded_words;
+     bpe_encoded_words.reserve(bpe_words.size());
+     for (const auto & word : bpe_words) {
+-        if (unicode_word_is_printable_ascii((const unsigned char *) word.data(), word.size())) {
++        const unsigned char * p = (const unsigned char *) word.data();
++        const size_t n = word.size();
++        if (unicode_word_is_printable_ascii(p, n)) {
+             bpe_encoded_words.push_back(word);
+             continue;
+         }
+         std::string encoded_token;
+-        encoded_token.reserve(word.size() * 2);
+-        for (unsigned char c : word) {
+-            const unicode_byte_enc & e = table[c];
+-            encoded_token.append(e.d, e.n);
+-        }
++        encoded_token.reserve(n + 2);
++        unicode_byte_enc_append_word(encoded_token, table, p, n);
+         bpe_encoded_words.emplace_back(std::move(encoded_token));
+     }
+     return bpe_encoded_words;
+@@ -356,6 +383,12 @@ static const uint8_t * unicode_ascii_cls_lut() {
+                 v |= 8;
+             }
+             cls[i] = v;
++            // WHY (0126): SIMD consume uses arithmetic A–Z/a–z and 0–9 — must match LUT.
++            const bool arith_L = ((i | 0x20u) - (uint32_t) 'a') < 26u;
++            const bool arith_N = (i - (uint32_t) '0') < 10u;
++            assert(arith_L == (bool) (v & 2) && arith_N == (bool) (v & 4));
++            (void) arith_L;
++            (void) arith_N;
+         }
+         init = true;
+     }
+@@ -560,32 +593,136 @@ static inline bool unicode_is_llama3_regex_expr(const std::string & regex_expr)
+                "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+ }
+ 
++static inline bool unicode_want_simd_pretok() {
++    // WHY (0126): SWAR/NEON ASCII letter+digit consume. Opt-out keeps the 0114 8-wide LUT loop.
++    return getenv("LLAMA_BPE_NO_SIMD_PRETOK") == nullptr;
++}
++
++static inline bool unicode_ascii_is_letter_byte(unsigned char b) {
++    return ((b | 0x20u) - (unsigned char) 'a') < 26u;
++}
++
++static inline bool unicode_ascii_is_digit_byte(unsigned char b) {
++    return (b - (unsigned char) '0') < 10u;
++}
++
++// Borrow-safe SWAR (bithacks hasless/hasgreater): high bit set ⇒ lane is NOT a letter.
++static inline uint64_t unicode_swar64_hasless(uint64_t x, uint8_t n) {
++    return (x - UINT64_C(0x0101010101010101) * n) & ~x & UINT64_C(0x8080808080808080);
++}
++
++static inline uint64_t unicode_swar64_hasgreater(uint64_t x, uint8_t n) {
++    return ((x + UINT64_C(0x0101010101010101) * (uint64_t) (127u - n)) | x) &
++           UINT64_C(0x8080808080808080);
++}
++
++static inline uint64_t unicode_swar64_letter_nonmask(uint64_t w) {
++    const uint64_t lowered = w | UINT64_C(0x2020202020202020);
++    return unicode_swar64_hasless(lowered, (uint8_t) 'a') |
++           unicode_swar64_hasgreater(lowered, (uint8_t) 'z');
++}
++
++static inline uint64_t unicode_swar64_digit_nonmask(uint64_t w) {
++    return unicode_swar64_hasless(w, (uint8_t) '0') | unicode_swar64_hasgreater(w, (uint8_t) '9');
++}
++
++#if defined(__aarch64__)
++#include <arm_neon.h>
++
++// Returns true if all 16 bytes are ASCII letters (vmax of inverted mask — not vmin).
++static inline bool unicode_neon16_all_letters(uint8x16_t v) {
++    const uint8x16_t lo = vorrq_u8(v, vdupq_n_u8(0x20));
++    const uint8x16_t is_let =
++            vandq_u8(vcgeq_u8(lo, vdupq_n_u8('a')), vcleq_u8(lo, vdupq_n_u8('z')));
++    return vmaxvq_u8(vmvnq_u8(is_let)) == 0;
++}
++
++static inline bool unicode_neon16_all_digits(uint8x16_t v) {
++    const uint8x16_t is_dig =
++            vandq_u8(vcgeq_u8(v, vdupq_n_u8('0')), vcleq_u8(v, vdupq_n_u8('9')));
++    return vmaxvq_u8(vmvnq_u8(is_dig)) == 0;
++}
++#endif
++
+ static inline void unicode_ascii_consume_letters_bytes(
+         const unsigned char * text, size_t & pos, size_t end, const uint8_t * cls) {
++    if (!unicode_want_simd_pretok()) {
++        while (pos + 8 <= end) {
++            if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
++                  (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
++                  (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
++                break;
++            }
++            pos += 8;
++        }
++        while (pos < end && (cls[text[pos]] & 2)) {
++            ++pos;
++        }
++        return;
++    }
++
++    // WHY (0126): SWAR-first (short English words). NEON only after a full 8-letter hit.
+     while (pos + 8 <= end) {
+-        if (!((cls[text[pos]] & 2) && (cls[text[pos + 1]] & 2) && (cls[text[pos + 2]] & 2) &&
+-              (cls[text[pos + 3]] & 2) && (cls[text[pos + 4]] & 2) && (cls[text[pos + 5]] & 2) &&
+-              (cls[text[pos + 6]] & 2) && (cls[text[pos + 7]] & 2))) {
+-            break;
++        uint64_t w;
++        memcpy(&w, text + pos, 8);
++        const uint64_t non = unicode_swar64_letter_nonmask(w);
++        if (non) {
++            pos += (size_t) (__builtin_ctzll(non) >> 3);
++            return;
+         }
+         pos += 8;
++#if defined(__aarch64__)
++        while (pos + 16 <= end) {
++            const uint8x16_t v = vld1q_u8(text + pos);
++            if (!unicode_neon16_all_letters(v)) {
++                break;
++            }
++            pos += 16;
++        }
++#endif
+     }
+-    while (pos < end && (cls[text[pos]] & 2)) {
++    while (pos < end && unicode_ascii_is_letter_byte(text[pos])) {
+         ++pos;
+     }
+ }
+ 
+ static inline void unicode_ascii_consume_digits_bytes(
+         const unsigned char * text, size_t & pos, size_t end, const uint8_t * cls) {
++    if (!unicode_want_simd_pretok()) {
++        while (pos + 8 <= end) {
++            if (!((cls[text[pos]] & 4) && (cls[text[pos + 1]] & 4) && (cls[text[pos + 2]] & 4) &&
++                  (cls[text[pos + 3]] & 4) && (cls[text[pos + 4]] & 4) && (cls[text[pos + 5]] & 4) &&
++                  (cls[text[pos + 6]] & 4) && (cls[text[pos + 7]] & 4))) {
++                break;
++            }
++            pos += 8;
++        }
++        while (pos < end && (cls[text[pos]] & 4)) {
++            ++pos;
++        }
++        return;
++    }
++
+     while (pos + 8 <= end) {
+-        if (!((cls[text[pos]] & 4) && (cls[text[pos + 1]] & 4) && (cls[text[pos + 2]] & 4) &&
+-              (cls[text[pos + 3]] & 4) && (cls[text[pos + 4]] & 4) && (cls[text[pos + 5]] & 4) &&
+-              (cls[text[pos + 6]] & 4) && (cls[text[pos + 7]] & 4))) {
+-            break;
++        uint64_t w;
++        memcpy(&w, text + pos, 8);
++        const uint64_t non = unicode_swar64_digit_nonmask(w);
++        if (non) {
++            pos += (size_t) (__builtin_ctzll(non) >> 3);
++            return;
+         }
+         pos += 8;
++#if defined(__aarch64__)
++        while (pos + 16 <= end) {
++            const uint8x16_t v = vld1q_u8(text + pos);
++            if (!unicode_neon16_all_digits(v)) {
++                break;
++            }
++            pos += 16;
++        }
++#endif
+     }
+-    while (pos < end && (cls[text[pos]] & 4)) {
++    while (pos < end && unicode_ascii_is_digit_byte(text[pos])) {
+         ++pos;
+     }
+ }
+@@ -654,17 +791,9 @@ static void unicode_fill_blob_from_byte_offsets(
+     start = 0;
+     for (size_t len : bpe_offsets) {
+         const unsigned char * p = base + start;
+-        if (unicode_word_is_printable_ascii(p, len)) {
+-            out.storage.append((const char *) p, len);
+-            out.lens.push_back(len);
+-        } else {
+-            const size_t before = out.storage.size();
+-            for (size_t i = 0; i < len; ++i) {
+-                const unicode_byte_enc & e = table[p[i]];
+-                out.storage.append(e.d, e.n);
+-            }
+-            out.lens.push_back(out.storage.size() - before);
+-        }
++        const size_t before = out.storage.size();
++        unicode_byte_enc_append_word(out.storage, table, p, len);
++        out.lens.push_back(out.storage.size() - before);
+         start += len;
+     }
+ }
+@@ -722,17 +851,9 @@ static void unicode_fill_blob_from_cpt_offsets(
+         } else if (fast_enc) {
+             const unsigned char * p = (const unsigned char *) raw.data();
+             const size_t blen = raw.size();
+-            if (unicode_word_is_printable_ascii(p, blen)) {
+-                out.storage.append(raw);
+-                out.lens.push_back(blen);
+-            } else {
+-                const size_t before = out.storage.size();
+-                for (size_t i = 0; i < blen; ++i) {
+-                    const unicode_byte_enc & e = table[p[i]];
+-                    out.storage.append(e.d, e.n);
+-                }
+-                out.lens.push_back(out.storage.size() - before);
+-            }
++            const size_t before = out.storage.size();
++            unicode_byte_enc_append_word(out.storage, table, p, blen);
++            out.lens.push_back(out.storage.size() - before);
+         } else {
+             // Legacy A/B: one-word encode via the stock helper.
+             std::vector<std::string> one{ std::move(raw) };
+@@ -1066,121 +1187,257 @@ static std::vector<std::string> unicode_regex_split_llama3_ascii_bytes(const std
+ }
+ 
+ // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+-static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
+-    std::vector<size_t> bpe_offsets; // store the offset of each word
+-    bpe_offsets.reserve(offsets.size()); // Reserve memory for the approximate size
+-
+-    size_t start = 0;
+-    for (auto offset : offsets) {
+-        const size_t offset_ini = start;
+-        const size_t offset_end = start + offset;
+-        assert(offset_end <= cpts.size());
+-        start = offset_end;
+ 
+-        static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
+-        auto _get_cpt = [&] (const size_t pos) -> uint32_t {
+-            return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
+-        };
++// WHY (0123): cpt-slice GPT-2 ASCII scanner (mirrors ascii_bytes_seg) for mixed islands.
++static void unicode_regex_split_gpt2_ascii_seg(
++        const uint32_t * cpts, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
++    const uint8_t * cls = unicode_ascii_cls_lut();
++    size_t prev = ini;
++    auto add_token = [&](size_t e) {
++        if (e > prev) {
++            bpe_offsets.push_back(e - prev);
++            prev = e;
++        }
++    };
+ 
+-        auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
+-            return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
+-        };
++    size_t pos = ini;
++    while (pos < end) {
++        const uint32_t cpt = cpts[pos];
++        const uint8_t c = cls[cpt];
+ 
+-        size_t _prev_end = offset_ini;
+-        auto _add_token = [&] (const size_t end) -> size_t {
+-            assert(_prev_end <= end && end <= offset_end);
+-            size_t len = end - _prev_end;
+-            if (len > 0) {
+-                bpe_offsets.push_back(len);
++        // 's|'t|'re|'ve|'m|'ll|'d — case-sensitive (stock GPT-2)
++        if (cpt == '\'' && pos + 1 < end) {
++            const uint32_t n1 = cpts[pos + 1];
++            if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd') {
++                add_token(pos + 2);
++                pos = prev;
++                continue;
+             }
+-            _prev_end = end;
+-            //if (len > 0) {
+-            //    std::string s = "";
+-            //    for(size_t p = end-len; p < end; p++)
+-            //        s += unicode_cpt_to_utf8(cpts[p]);
+-            //    printf(">>> '%s'\n", s.c_str());
+-            //}
+-            return len;
+-        };
+-
+-        for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
+-            const uint32_t cpt = _get_cpt(pos);
+-            const auto flags = _get_flags(pos);
+-
+-            // regex: 's|'t|'re|'ve|'m|'ll|'d
+-            if (cpt == '\'' && pos+1 < offset_end) {
+-                uint32_t cpt_next = _get_cpt(pos+1);
+-                if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
+-                    pos += _add_token(pos+2);
++            if (pos + 2 < end) {
++                const uint32_t n2 = cpts[pos + 2];
++                if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l')) {
++                    add_token(pos + 3);
++                    pos = prev;
+                     continue;
+                 }
+-                if (pos+2 < offset_end) {
+-                    uint32_t cpt_next_next = _get_cpt(pos+2);
+-                    if ((cpt_next == 'r' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'v' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'l' && cpt_next_next == 'l')) {
+-                        pos += _add_token(pos+3);
+-                        continue;
+-                    }
+-                }
+             }
++        }
+ 
+-            auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
+-            // regex: <space>?\p{L}+
+-            if (flags2.is_letter) {
+-                pos += (cpt == ' ');
+-                pos = unicode_consume_letters(cpts, pos, offset_end);
+-                _add_token(pos);
+-                continue;
++        const uint8_t c2 = (cpt == ' ' && pos + 1 < end) ? cls[cpts[pos + 1]] : (cpt == ' ' ? 0 : c);
++        // <space>?\p{L}+
++        if (c2 & 2) {
++            pos += (cpt == ' ');
++            while (pos < end && (cls[cpts[pos]] & 2)) {
++                ++pos;
+             }
+-            // regex: <space>?\p{N}+
+-            if (flags2.is_number) {
+-                pos += (cpt == ' ');
+-                pos = unicode_consume_digits(cpts, pos, offset_end);
+-                _add_token(pos);
+-                continue;
++            add_token(pos);
++            continue;
++        }
++        // <space>?\p{N}+
++        if (c2 & 4) {
++            pos += (cpt == ' ');
++            while (pos < end && (cls[cpts[pos]] & 4)) {
++                ++pos;
+             }
+-            // regex: <space>?[^\s\p{L}\p{N}]+
+-            if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
+-                pos += (cpt == ' ');
+-                while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
+-                    flags2 = _get_flags(++pos);
+-                }
+-                _add_token(pos);
+-                continue;
++            add_token(pos);
++            continue;
++        }
++        // <space>?[^\s\p{L}\p{N}]+
++        if (c2 & 8) {
++            pos += (cpt == ' ');
++            while (pos < end && (cls[cpts[pos]] & 8)) {
++                ++pos;
+             }
++            add_token(pos);
++            continue;
++        }
+ 
+-            size_t num_whitespaces = 0;
+-            while (_get_flags(pos+num_whitespaces).is_whitespace) {
+-                num_whitespaces++;
+-            }
++        size_t num_ws = 0;
++        while (pos + num_ws < end && (cls[cpts[pos + num_ws]] & 1)) {
++            ++num_ws;
++        }
++        if (num_ws > 1 && pos + num_ws < end) {
++            pos += num_ws - 1;
++            add_token(pos);
++            continue;
++        }
++        if (num_ws > 0) {
++            pos += num_ws;
++            add_token(pos);
++            continue;
++        }
++        add_token(++pos);
++    }
++}
+ 
+-            // regex: \s+(?!\S)
+-            if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
+-                pos += num_whitespaces - 1;
+-                _add_token(pos);
++
++static void unicode_regex_split_gpt2_unicode_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
++    auto _get_cpt = [&] (const size_t pos) -> uint32_t {
++        return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
++    };
++    auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
++        return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
++    };
++    size_t _prev_end = offset_ini;
++    auto _add_token = [&] (const size_t end) -> size_t {
++        assert(_prev_end <= end && end <= offset_end);
++        size_t len = end - _prev_end;
++        if (len > 0) {
++            bpe_offsets.push_back(len);
++        }
++        _prev_end = end;
++        return len;
++    };
++
++    for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
++        const uint32_t cpt = _get_cpt(pos);
++        const auto flags = _get_flags(pos);
++
++        // regex: 's|'t|'re|'ve|'m|'ll|'d
++        if (cpt == '\'' && pos+1 < offset_end) {
++            uint32_t cpt_next = _get_cpt(pos+1);
++            if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
++                pos += _add_token(pos+2);
+                 continue;
+             }
++            if (pos+2 < offset_end) {
++                uint32_t cpt_next_next = _get_cpt(pos+2);
++                if ((cpt_next == 'r' && cpt_next_next == 'e') ||
++                    (cpt_next == 'v' && cpt_next_next == 'e') ||
++                    (cpt_next == 'l' && cpt_next_next == 'l')) {
++                    pos += _add_token(pos+3);
++                    continue;
++                }
++            }
++        }
+ 
+-            // regex: \s+
+-            if (num_whitespaces > 0) {
+-                pos += num_whitespaces;
+-                _add_token(pos);
+-                continue;
++        auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
++        // regex: <space>?\p{L}+
++        if (flags2.is_letter) {
++            pos += (cpt == ' ');
++            pos = unicode_consume_letters(cpts, pos, offset_end);
++            _add_token(pos);
++            continue;
++        }
++        // regex: <space>?\p{N}+
++        if (flags2.is_number) {
++            pos += (cpt == ' ');
++            pos = unicode_consume_digits(cpts, pos, offset_end);
++            _add_token(pos);
++            continue;
++        }
++        // regex: <space>?[^\s\p{L}\p{N}]+
++        if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
++            pos += (cpt == ' ');
++            while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
++                flags2 = _get_flags(++pos);
+             }
++            _add_token(pos);
++            continue;
++        }
+ 
+-            // no matches
+-            _add_token(++pos);
++        size_t num_whitespaces = 0;
++        while (_get_flags(pos+num_whitespaces).is_whitespace) {
++            num_whitespaces++;
++        }
++
++        // regex: \s+(?!\S)
++        if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
++            pos += num_whitespaces - 1;
++            _add_token(pos);
++            continue;
++        }
++
++        // regex: \s+
++        if (num_whitespaces > 0) {
++            pos += num_whitespaces;
++            _add_token(pos);
++            continue;
+         }
++
++        // no matches
++        _add_token(++pos);
+     }
++}
+ 
+-    return bpe_offsets;
++// WHY (0123): GPT-2 mixed islands — ASCII gaps via ascii_seg; letter/number/punct islands
++// keep optional leading space (` ?\p{L}+`, ` ?\p{N}+`, ` ?[^\s\p{L}\p{N}]+`).
++static void unicode_regex_split_gpt2_mixed_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    auto is_letter = [](uint32_t c) -> bool {
++        if (c < 128u) return unicode_cpt_is_ascii_letter(c);
++        return unicode_cpt_flags_from_cpt(c).is_letter;
++    };
++    auto is_number = [](uint32_t c) -> bool {
++        if (c < 128u) return unicode_cpt_is_ascii_digit(c);
++        return unicode_cpt_flags_from_cpt(c).is_number;
++    };
++    size_t i = offset_ini;
++    while (i < offset_end) {
++        size_t j = i;
++        while (j < offset_end && cpts[j] < 128u) {
++            ++j;
++        }
++        if (j == offset_end) {
++            unicode_regex_split_gpt2_ascii_seg(cpts.data(), i, offset_end, bpe_offsets);
++            return;
++        }
++
++        size_t L = j;
++        size_t R = j + 1;
++        if (is_letter(cpts[j])) {
++            while (L > i && is_letter(cpts[L - 1])) {
++                --L;
++            }
++            while (R < offset_end && is_letter(cpts[R])) {
++                ++R;
++            }
++            if (L > i && cpts[L - 1] == ' ') {
++                --L;
++            }
++        } else if (is_number(cpts[j])) {
++            while (L > i && is_number(cpts[L - 1])) {
++                --L;
++            }
++            while (R < offset_end && is_number(cpts[R])) {
++                ++R;
++            }
++            if (L > i && cpts[L - 1] == ' ') {
++                --L;
++            }
++        } else {
++            if (L > i && cpts[L - 1] == ' ') {
++                --L;
++            }
++            R = j;
++            while (R < offset_end) {
++                const auto f = unicode_flags_for_cpt_hot(cpts[R]);
++                if (f.is_whitespace || f.is_letter || f.is_number || !f.as_uint()) {
++                    break;
++                }
++                ++R;
++            }
++            if (R <= j) {
++                R = j + 1;
++            }
++        }
++
++        if (L > i) {
++            unicode_regex_split_gpt2_ascii_seg(cpts.data(), i, L, bpe_offsets);
++        }
++        unicode_regex_split_gpt2_unicode_seg(cpts, L, R, bpe_offsets);
++        i = R;
++    }
+ }
+ 
+-// LLAMA3 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+-static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
+-    std::vector<size_t> bpe_offsets; // store the offset of each word
+-    bpe_offsets.reserve(offsets.size()); // Reserve memory for the approximate size
++static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
++    std::vector<size_t> bpe_offsets;
++    bpe_offsets.reserve(std::max(offsets.size(), cpts.size() / 3));
++    const bool use_ascii = unicode_want_ascii_pretok();
+ 
+     size_t start = 0;
+     for (auto offset : offsets) {
+@@ -1189,139 +1446,531 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
+         assert(offset_end <= cpts.size());
+         start = offset_end;
+ 
+-        static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
+-        auto _get_cpt = [&] (const size_t pos) -> uint32_t {
+-            return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
+-        };
++        if (use_ascii) {
++            if (unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
++                unicode_regex_split_gpt2_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++            } else {
++                unicode_regex_split_gpt2_mixed_seg(cpts, offset_ini, offset_end, bpe_offsets);
++            }
++            continue;
++        }
++        unicode_regex_split_gpt2_unicode_seg(cpts, offset_ini, offset_end, bpe_offsets);
++    }
+ 
+-        auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
+-            return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
+-        };
++    return bpe_offsets;
++}
+ 
+-        size_t _prev_end = offset_ini;
+-        auto _add_token = [&] (const size_t end) -> size_t {
+-            assert(_prev_end <= end && end <= offset_end);
+-            size_t len = end - _prev_end;
+-            if (len > 0) {
+-                bpe_offsets.push_back(len);
+-            }
+-            _prev_end = end;
+-            //if (len > 0) {
+-            //    std::string s = "";
+-            //    for(size_t p = end-len; p < end; p++)
+-            //        s += unicode_cpt_to_utf8(cpts[p]);
+-            //    printf(">>> '%s'\n", s.c_str());
+-            //}
+-            return len;
+-        };
++// LLAMA3 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+ 
+-        for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
+-            const uint32_t cpt = _get_cpt(pos);
+-            const auto flags = _get_flags(pos);
++// WHY (0123): cpt-slice Llama3 ASCII scanner for mixed islands.
++static void unicode_regex_split_llama3_ascii_seg(
++        const uint32_t * cpts, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
++    const uint8_t * cls = unicode_ascii_cls_lut();
++    size_t prev = ini;
++    auto add_token = [&](size_t e) {
++        if (e > prev) {
++            bpe_offsets.push_back(e - prev);
++            prev = e;
++        }
++    };
+ 
+-            // regex: (?i:'s|'t|'re|'ve|'m|'ll|'d) // case insensitive
+-            if (cpt == '\'' && pos+1 < offset_end) {
+-                uint32_t cpt_next = unicode_tolower(_get_cpt(pos+1));
+-                if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
+-                    pos += _add_token(pos+2);
++    size_t pos = ini;
++    while (pos < end) {
++        const uint32_t cpt = cpts[pos];
++        const uint8_t c = cls[cpt];
++
++        if (cpt == '\'' && pos + 1 < end) {
++            const uint32_t n1 = unicode_ascii_tolower(cpts[pos + 1]);
++            if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd') {
++                add_token(pos + 2);
++                pos = prev;
++                continue;
++            }
++            if (pos + 2 < end) {
++                const uint32_t n2 = unicode_ascii_tolower(cpts[pos + 2]);
++                if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l')) {
++                    add_token(pos + 3);
++                    pos = prev;
+                     continue;
+                 }
+-                if (pos+2 < offset_end) {
+-                    uint32_t cpt_next_next = unicode_tolower(_get_cpt(pos+2));
+-                    if ((cpt_next == 'r' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'v' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'l' && cpt_next_next == 'l')) {
+-                        pos += _add_token(pos+3);
+-                        continue;
+-                    }
+-                }
+             }
++        }
+ 
+-            // regex: [^\r\n\p{L}\p{N}]?\p{L}+
+-            if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
+-                if (flags.is_letter || _get_flags(pos+1).is_letter) {  // one or more letters
+-                    pos++;
+-                    pos = unicode_consume_letters(cpts, pos, offset_end);
+-                    _add_token(pos);
+-                    continue;
++        // [^\r\n\p{L}\p{N}]?\p{L}+
++        if (!(cpt == '\r' || cpt == '\n' || (c & 4))) {
++            const bool next_letter = (pos + 1 < end) && (cls[cpts[pos + 1]] & 2);
++            if ((c & 2) || next_letter) {
++                ++pos;
++                while (pos < end && (cls[cpts[pos]] & 2)) {
++                    ++pos;
+                 }
++                add_token(pos);
++                continue;
+             }
++        }
+ 
+-            // regex: \p{N}{1,3}
+-            if (flags.is_number) {
+-                size_t ini = pos;
+-                while (pos < offset_end) {
+-                    const uint32_t cn = cpts[pos];
+-                    const bool is_num = (cn < 128u) ? unicode_cpt_is_ascii_digit(cn)
+-                                                    : unicode_cpt_flags_from_cpt(cn).is_number;
+-                    if (!is_num) {
+-                        break;
+-                    }
+-                    if (++pos - ini >= 3 ) {
+-                        _add_token(pos);
+-                        ini = pos;
+-                    }
++        // \p{N}{1,3}
++        if (c & 4) {
++            size_t ini_n = pos;
++            while (pos < end && (cls[cpts[pos]] & 4)) {
++                if (++pos - ini_n >= 3) {
++                    add_token(pos);
++                    ini_n = pos;
+                 }
+-                _add_token(pos);
+-                continue;
+             }
++            add_token(pos);
++            continue;
++        }
+ 
+-            // regex: <space>?[^\s\p{L}\p{N}]+[\r\n]*
+-            auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
+-            if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags.as_uint()) {
++        // <space>?[^\s\p{L}\p{N}]+[\r\n]*
++        {
++            const uint8_t c2 = (cpt == ' ' && pos + 1 < end) ? cls[cpts[pos + 1]] : (cpt == ' ' ? 0 : c);
++            if (c2 & 8) {
+                 pos += (cpt == ' ');
+-                while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
+-                    flags2 = _get_flags(++pos);
++                while (pos < end && (cls[cpts[pos]] & 8)) {
++                    ++pos;
+                 }
+-                uint32_t cpt2 = _get_cpt(pos);
+-                while (cpt2 == '\r' || cpt2 == '\n') {
+-                    cpt2 = _get_cpt(++pos);
++                while (pos < end && (cpts[pos] == '\r' || cpts[pos] == '\n')) {
++                    ++pos;
+                 }
+-                _add_token(pos);
++                add_token(pos);
+                 continue;
+             }
++        }
+ 
+-            size_t num_whitespaces = 0;
+-            size_t last_end_r_or_n = 0;
+-            while (_get_flags(pos+num_whitespaces).is_whitespace) {
+-                uint32_t cpt2 = _get_cpt(pos+num_whitespaces);
+-                if (cpt2 == '\r' || cpt2 == '\n') {
+-                    last_end_r_or_n = pos + num_whitespaces + 1;
++        size_t num_ws = 0;
++        size_t last_rn = 0;
++        while (pos + num_ws < end && (cls[cpts[pos + num_ws]] & 1)) {
++            const uint32_t w = cpts[pos + num_ws];
++            if (w == '\r' || w == '\n') {
++                last_rn = pos + num_ws + 1;
++            }
++            ++num_ws;
++        }
++        if (last_rn > 0) {
++            pos = last_rn;
++            add_token(pos);
++            continue;
++        }
++        if (num_ws > 1 && pos + num_ws < end) {
++            pos += num_ws - 1;
++            add_token(pos);
++            continue;
++        }
++        if (num_ws > 0) {
++            pos += num_ws;
++            add_token(pos);
++            continue;
++        }
++        add_token(++pos);
++    }
++}
++
++
++static void unicode_regex_split_llama3_unicode_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
++    auto _get_cpt = [&] (const size_t pos) -> uint32_t {
++        return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
++    };
++    auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
++        return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
++    };
++    size_t _prev_end = offset_ini;
++    auto _add_token = [&] (const size_t end) -> size_t {
++        assert(_prev_end <= end && end <= offset_end);
++        size_t len = end - _prev_end;
++        if (len > 0) {
++            bpe_offsets.push_back(len);
++        }
++        _prev_end = end;
++        return len;
++    };
++
++    for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
++        const uint32_t cpt = _get_cpt(pos);
++        const auto flags = _get_flags(pos);
++
++        if (cpt == '\'' && pos+1 < offset_end) {
++            uint32_t cpt_next = unicode_tolower(_get_cpt(pos+1));
++            if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
++                pos += _add_token(pos+2);
++                continue;
++            }
++            if (pos+2 < offset_end) {
++                uint32_t cpt_next_next = unicode_tolower(_get_cpt(pos+2));
++                if ((cpt_next == 'r' && cpt_next_next == 'e') ||
++                    (cpt_next == 'v' && cpt_next_next == 'e') ||
++                    (cpt_next == 'l' && cpt_next_next == 'l')) {
++                    pos += _add_token(pos+3);
++                    continue;
+                 }
+-                num_whitespaces++;
+             }
++        }
+ 
+-            // regex: \s*[\r\n]+
+-            if (last_end_r_or_n > 0) {
+-                pos = last_end_r_or_n;
++        if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
++            if (flags.is_letter || _get_flags(pos+1).is_letter) {
++                pos++;
++                pos = unicode_consume_letters(cpts, pos, offset_end);
+                 _add_token(pos);
+                 continue;
+             }
++        }
+ 
+-            // regex: \s+(?!\S)
+-            if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
+-                pos += num_whitespaces - 1;
+-                _add_token(pos);
++        if (flags.is_number) {
++            size_t ini = pos;
++            while (pos < offset_end) {
++                const uint32_t cn = cpts[pos];
++                const bool is_num = (cn < 128u) ? unicode_cpt_is_ascii_digit(cn)
++                                                : unicode_cpt_flags_from_cpt(cn).is_number;
++                if (!is_num) {
++                    break;
++                }
++                if (++pos - ini >= 3 ) {
++                    _add_token(pos);
++                    ini = pos;
++                }
++            }
++            _add_token(pos);
++            continue;
++        }
++
++        auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
++        if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags.as_uint()) {
++            pos += (cpt == ' ');
++            while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
++                flags2 = _get_flags(++pos);
++            }
++            uint32_t cpt2 = _get_cpt(pos);
++            while (cpt2 == '\r' || cpt2 == '\n') {
++                cpt2 = _get_cpt(++pos);
++            }
++            _add_token(pos);
++            continue;
++        }
++
++        size_t num_whitespaces = 0;
++        size_t last_end_r_or_n = 0;
++        while (_get_flags(pos+num_whitespaces).is_whitespace) {
++            uint32_t cpt2 = _get_cpt(pos+num_whitespaces);
++            if (cpt2 == '\r' || cpt2 == '\n') {
++                last_end_r_or_n = pos + num_whitespaces + 1;
++            }
++            num_whitespaces++;
++        }
++
++        if (last_end_r_or_n > 0) {
++            pos = last_end_r_or_n;
++            _add_token(pos);
++            continue;
++        }
++
++        if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
++            pos += num_whitespaces - 1;
++            _add_token(pos);
++            continue;
++        }
++
++        if (num_whitespaces > 0) {
++            pos += num_whitespaces;
++            _add_token(pos);
++            continue;
++        }
++
++        _add_token(++pos);
++    }
++}
++
++// WHY (0123): Llama3 mixed islands — same letter/punct shape as Qwen2 (0122); numbers are \p{N}{1,3}.
++static void unicode_regex_split_llama3_mixed_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    auto is_letter = [](uint32_t c) -> bool {
++        if (c < 128u) return unicode_cpt_is_ascii_letter(c);
++        return unicode_cpt_flags_from_cpt(c).is_letter;
++    };
++    size_t i = offset_ini;
++    while (i < offset_end) {
++        size_t j = i;
++        while (j < offset_end && cpts[j] < 128u) {
++            ++j;
++        }
++        if (j == offset_end) {
++            unicode_regex_split_llama3_ascii_seg(cpts.data(), i, offset_end, bpe_offsets);
++            return;
++        }
++
++        size_t L = j;
++        size_t R = j + 1;
++        const bool letter_island = is_letter(cpts[j]);
++        if (letter_island) {
++            while (L > i && is_letter(cpts[L - 1])) {
++                --L;
++            }
++            while (R < offset_end && is_letter(cpts[R])) {
++                ++R;
++            }
++            if (L > i && L < offset_end && is_letter(cpts[L])) {
++                const uint32_t prev = cpts[L - 1];
++                if (prev != '\r' && prev != '\n') {
++                    const auto pf = unicode_flags_for_cpt_hot(prev);
++                    if (!pf.is_letter && !pf.is_number) {
++                        --L;
++                    }
++                }
++            }
++        } else {
++            if (L > i && cpts[L - 1] == ' ') {
++                --L;
++            }
++            R = j;
++            while (R < offset_end) {
++                const auto f = unicode_flags_for_cpt_hot(cpts[R]);
++                if (f.is_whitespace || f.is_letter || f.is_number || !f.as_uint()) {
++                    break;
++                }
++                ++R;
++            }
++            while (R < offset_end && (cpts[R] == '\r' || cpts[R] == '\n')) {
++                ++R;
++            }
++            if (R <= j) {
++                R = j + 1;
++            }
++        }
++
++        if (L > i) {
++            unicode_regex_split_llama3_ascii_seg(cpts.data(), i, L, bpe_offsets);
++        }
++        unicode_regex_split_llama3_unicode_seg(cpts, L, R, bpe_offsets);
++        i = R;
++    }
++}
++
++static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
++    std::vector<size_t> bpe_offsets;
++    bpe_offsets.reserve(std::max(offsets.size(), cpts.size() / 3));
++    const bool use_ascii = unicode_want_ascii_pretok();
++
++    size_t start = 0;
++    for (auto offset : offsets) {
++        const size_t offset_ini = start;
++        const size_t offset_end = start + offset;
++        assert(offset_end <= cpts.size());
++        start = offset_end;
++
++        if (use_ascii) {
++            if (unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
++                unicode_regex_split_llama3_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++            } else {
++                unicode_regex_split_llama3_mixed_seg(cpts, offset_ini, offset_end, bpe_offsets);
++            }
++            continue;
++        }
++        unicode_regex_split_llama3_unicode_seg(cpts, offset_ini, offset_end, bpe_offsets);
++    }
++
++    return bpe_offsets;
++}
++
++// Qwen2 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
++// Match unicode_consume_letters letter predicate (ASCII + \p{L}).
++static inline bool unicode_cpt_is_letter_run(uint32_t c) {
++    if (c < 128u) {
++        return unicode_cpt_is_ascii_letter(c);
++    }
++    return unicode_cpt_flags_from_cpt(c).is_letter;
++}
++
++// Full Unicode Qwen2 scanner on [offset_ini, offset_end).
++static void unicode_regex_split_qwen2_unicode_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
++    auto _get_cpt = [&] (const size_t pos) -> uint32_t {
++        return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
++    };
++
++    auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
++        return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
++    };
++
++    size_t _prev_end = offset_ini;
++    auto _add_token = [&] (const size_t end) -> size_t {
++        assert(_prev_end <= end && end <= offset_end);
++        size_t len = end - _prev_end;
++        if (len > 0) {
++            bpe_offsets.push_back(len);
++        }
++        _prev_end = end;
++        return len;
++    };
++
++    for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
++        const uint32_t cpt = _get_cpt(pos);
++        const auto flags = _get_flags(pos);
++
++        // regex: (?i:'s|'t|'re|'ve|'m|'ll|'d) // case insensitive
++        if (cpt == '\'' && pos+1 < offset_end) {
++            uint32_t cpt_next = unicode_tolower(_get_cpt(pos+1));
++            if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
++                pos += _add_token(pos+2);
+                 continue;
+             }
++            if (pos+2 < offset_end) {
++                uint32_t cpt_next_next = unicode_tolower(_get_cpt(pos+2));
++                if ((cpt_next == 'r' && cpt_next_next == 'e') ||
++                    (cpt_next == 'v' && cpt_next_next == 'e') ||
++                    (cpt_next == 'l' && cpt_next_next == 'l')) {
++                    pos += _add_token(pos+3);
++                    continue;
++                }
++            }
++        }
+ 
+-            // regex: \s+
+-            if (num_whitespaces > 0) {
+-                pos += num_whitespaces;
++        // regex: [^\r\n\p{L}\p{N}]?\p{L}+
++        if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
++            if (flags.is_letter || _get_flags(pos+1).is_letter) {  // one or more letters
++                pos++;
++                pos = unicode_consume_letters(cpts, pos, offset_end);
+                 _add_token(pos);
+                 continue;
+             }
++        }
+ 
+-            // no matches
+-            _add_token(++pos);
++        // regex: \p{N}
++        if (flags.is_number) {
++            pos++;
++            _add_token(pos);
++            continue;
+         }
+-    }
+ 
+-    return bpe_offsets;
++        // regex: <space>?[^\s\p{L}\p{N}]+[\r\n]*
++        auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
++        if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags.as_uint()) {
++            pos += (cpt == ' ');
++            while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
++                flags2 = _get_flags(++pos);
++            }
++            uint32_t cpt2 = _get_cpt(pos);
++            while (cpt2 == '\r' || cpt2 == '\n') {
++                cpt2 = _get_cpt(++pos);
++            }
++            _add_token(pos);
++            continue;
++        }
++
++        size_t num_whitespaces = 0;
++        size_t last_end_r_or_n = 0;
++        while (_get_flags(pos+num_whitespaces).is_whitespace) {
++            uint32_t cpt2 = _get_cpt(pos+num_whitespaces);
++            if (cpt2 == '\r' || cpt2 == '\n') {
++                last_end_r_or_n = pos + num_whitespaces + 1;
++            }
++            num_whitespaces++;
++        }
++
++        // regex: \s*[\r\n]+
++        if (last_end_r_or_n > 0) {
++            pos = last_end_r_or_n;
++            _add_token(pos);
++            continue;
++        }
++
++        // regex: \s+(?!\S)
++        if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
++            pos += num_whitespaces - 1;
++            _add_token(pos);
++            continue;
++        }
++
++        // regex: \s+
++        if (num_whitespaces > 0) {
++            pos += num_whitespaces;
++            _add_token(pos);
++            continue;
++        }
++
++        // no matches
++        _add_token(++pos);
++    }
+ }
+ 
++// WHY (0122): ASCII-majority mixed prompts fail unicode_seg_is_ascii on a few CJK/latin1
++// bytes, then paid the full Unicode scanner on the whole MiB. Split into ASCII islands
++// (ascii_seg) and non-ASCII islands (unicode_seg). Letter runs expand through \p{L}
++// (café / hello世界). Punctuation/emoji islands keep optional leading space and the
++// `?[^\s\p{L}\p{N}]+[\r\n]*` span (` ·`, ` 🚀\n`) — splitting those breaks identity.
++// Opt-out: LLAMA_BPE_NO_ASCII_PRETOK.
++static void unicode_regex_split_qwen2_mixed_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    size_t i = offset_ini;
++    while (i < offset_end) {
++        size_t j = i;
++        while (j < offset_end && cpts[j] < 128u) {
++            ++j;
++        }
++        if (j == offset_end) {
++            unicode_regex_split_qwen2_ascii_seg(cpts.data(), i, offset_end, bpe_offsets);
++            return;
++        }
++
++        size_t L = j;
++        size_t R = j + 1;
++        // Letter island only when the non-ASCII cpt itself is \p{L} (or ASCII letter
++        // glued left). Do NOT start a letter island on punctuation just because the
++        // next cpt is a letter — stock prefers ` ?[^\s\p{L}\p{N}]+` for ` ·` / ` 🚀`
++        // before a following letter run (`hello ·世界`).
++        const bool letter_island = unicode_cpt_is_letter_run(cpts[j]);
++
++        if (letter_island) {
++            // [^\r\n\p{L}\p{N}]?\p{L}+ — expand through contiguous letters.
++            while (L > i && unicode_cpt_is_letter_run(cpts[L - 1])) {
++                --L;
++            }
++            while (R < offset_end && unicode_cpt_is_letter_run(cpts[R])) {
++                ++R;
++            }
++            if (L > i && L < offset_end && unicode_cpt_is_letter_run(cpts[L])) {
++                const uint32_t prev = cpts[L - 1];
++                if (prev != '\r' && prev != '\n') {
++                    const auto pf = unicode_flags_for_cpt_hot(prev);
++                    if (!pf.is_letter && !pf.is_number) {
++                        --L;
++                    }
++                }
++            }
++        } else {
++            // <space>?[^\s\p{L}\p{N}]+[\r\n]* — keep optional space with the specials run.
++            if (L > i && cpts[L - 1] == ' ') {
++                --L;
++            }
++            R = j;
++            while (R < offset_end) {
++                const auto f = unicode_flags_for_cpt_hot(cpts[R]);
++                if (f.is_whitespace || f.is_letter || f.is_number || !f.as_uint()) {
++                    break;
++                }
++                ++R;
++            }
++            while (R < offset_end && (cpts[R] == '\r' || cpts[R] == '\n')) {
++                ++R;
++            }
++            if (R <= j) {
++                R = j + 1;
++            }
++        }
++
++        if (L > i) {
++            unicode_regex_split_qwen2_ascii_seg(cpts.data(), i, L, bpe_offsets);
++        }
++        unicode_regex_split_qwen2_unicode_seg(cpts, L, R, bpe_offsets);
++        i = R;
++    }
++}
+ 
+-// Qwen2 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
+     std::vector<size_t> bpe_offsets; // store the offset of each word
+     // WHY (0110): offsets.size() is usually 1 (whole prompt); word count is ~nbytes/3–6.
+@@ -1336,134 +1985,197 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
+         start = offset_end;
+ 
+         // WHY (0110): pure-ASCII megaprompts (typical English agent seeds) — LUT path.
+-        if (use_ascii && unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
+-            unicode_regex_split_qwen2_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++        // WHY (0122): mixed → ASCII islands + Unicode islands (same opt-out).
++        if (use_ascii) {
++            if (unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
++                unicode_regex_split_qwen2_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++            } else {
++                unicode_regex_split_qwen2_mixed_seg(cpts, offset_ini, offset_end, bpe_offsets);
++            }
+             continue;
+         }
+ 
+-        static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
+-        auto _get_cpt = [&] (const size_t pos) -> uint32_t {
+-            return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
+-        };
++        unicode_regex_split_qwen2_unicode_seg(cpts, offset_ini, offset_end, bpe_offsets);
++    }
+ 
+-        auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
+-            return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
+-        };
++    return bpe_offsets;
++}
+ 
+-        size_t _prev_end = offset_ini;
+-        auto _add_token = [&] (const size_t end) -> size_t {
+-            assert(_prev_end <= end && end <= offset_end);
+-            size_t len = end - _prev_end;
+-            if (len > 0) {
+-                bpe_offsets.push_back(len);
+-            }
+-            _prev_end = end;
+-            //if (len > 0) {
+-            //    std::string s = "";
+-            //    for(size_t p = end-len; p < end; p++)
+-            //        s += unicode_cpt_to_utf8(cpts[p]);
+-            //    printf(">>> '%s'\n", s.c_str());
+-            //}
+-            return len;
+-        };
++// Qwen3.5 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
++// Compared to Qwen2, letter-runs also consume Unicode combining marks (\p{M}): [\p{L}\p{M}]+ instead of \p{L}+
++static void unicode_regex_split_qwen35_unicode_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
++    auto _get_cpt = [&] (const size_t pos) -> uint32_t {
++        return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
++    };
++    auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
++        return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
++    };
++    size_t _prev_end = offset_ini;
++    auto _add_token = [&] (const size_t end) -> size_t {
++        assert(_prev_end <= end && end <= offset_end);
++        size_t len = end - _prev_end;
++        if (len > 0) {
++            bpe_offsets.push_back(len);
++        }
++        _prev_end = end;
++        return len;
++    };
+ 
+-        for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
+-            const uint32_t cpt = _get_cpt(pos);
+-            const auto flags = _get_flags(pos);
++    for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
++        const uint32_t cpt = _get_cpt(pos);
++        const auto flags = _get_flags(pos);
+ 
+-            // regex: (?i:'s|'t|'re|'ve|'m|'ll|'d) // case insensitive
+-            if (cpt == '\'' && pos+1 < offset_end) {
+-                uint32_t cpt_next = unicode_tolower(_get_cpt(pos+1));
+-                if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
+-                    pos += _add_token(pos+2);
+-                    continue;
+-                }
+-                if (pos+2 < offset_end) {
+-                    uint32_t cpt_next_next = unicode_tolower(_get_cpt(pos+2));
+-                    if ((cpt_next == 'r' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'v' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'l' && cpt_next_next == 'l')) {
+-                        pos += _add_token(pos+3);
+-                        continue;
+-                    }
+-                }
++        if (cpt == '\'' && pos+1 < offset_end) {
++            uint32_t cpt_next = unicode_tolower(_get_cpt(pos+1));
++            if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
++                pos += _add_token(pos+2);
++                continue;
+             }
+-
+-            // regex: [^\r\n\p{L}\p{N}]?\p{L}+
+-            if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
+-                if (flags.is_letter || _get_flags(pos+1).is_letter) {  // one or more letters
+-                    pos++;
+-                    pos = unicode_consume_letters(cpts, pos, offset_end);
+-                    _add_token(pos);
++            if (pos+2 < offset_end) {
++                uint32_t cpt_next_next = unicode_tolower(_get_cpt(pos+2));
++                if ((cpt_next == 'r' && cpt_next_next == 'e') ||
++                    (cpt_next == 'v' && cpt_next_next == 'e') ||
++                    (cpt_next == 'l' && cpt_next_next == 'l')) {
++                    pos += _add_token(pos+3);
+                     continue;
+                 }
+             }
++        }
+ 
+-            // regex: \p{N}
+-            if (flags.is_number) {
++        if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
++            if (flags.is_letter || flags.is_accent_mark || _get_flags(pos + 1).is_accent_mark || _get_flags(pos+1).is_letter) {
+                 pos++;
++                pos = unicode_consume_letters_or_marks(cpts, pos, offset_end);
+                 _add_token(pos);
+                 continue;
+             }
++        }
+ 
+-            // regex: <space>?[^\s\p{L}\p{N}]+[\r\n]*
+-            auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
+-            if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags.as_uint()) {
+-                pos += (cpt == ' ');
+-                while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_number) && flags2.as_uint()) {
+-                    flags2 = _get_flags(++pos);
+-                }
+-                uint32_t cpt2 = _get_cpt(pos);
+-                while (cpt2 == '\r' || cpt2 == '\n') {
+-                    cpt2 = _get_cpt(++pos);
+-                }
+-                _add_token(pos);
+-                continue;
++        if (flags.is_number) {
++            pos++;
++            _add_token(pos);
++            continue;
++        }
++
++        auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
++        if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_accent_mark | flags2.is_number) && flags.as_uint()) {
++            pos += (cpt == ' ');
++            while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_accent_mark | flags2.is_number) && flags2.as_uint()) {
++                flags2 = _get_flags(++pos);
+             }
++            uint32_t cpt2 = _get_cpt(pos);
++            while (cpt2 == '\r' || cpt2 == '\n') {
++                cpt2 = _get_cpt(++pos);
++            }
++            _add_token(pos);
++            continue;
++        }
+ 
+-            size_t num_whitespaces = 0;
+-            size_t last_end_r_or_n = 0;
+-            while (_get_flags(pos+num_whitespaces).is_whitespace) {
+-                uint32_t cpt2 = _get_cpt(pos+num_whitespaces);
+-                if (cpt2 == '\r' || cpt2 == '\n') {
+-                    last_end_r_or_n = pos + num_whitespaces + 1;
++        size_t num_whitespaces = 0;
++        size_t last_end_r_or_n = 0;
++        while (_get_flags(pos+num_whitespaces).is_whitespace) {
++            uint32_t cpt2 = _get_cpt(pos+num_whitespaces);
++            if (cpt2 == '\r' || cpt2 == '\n') {
++                last_end_r_or_n = pos + num_whitespaces + 1;
++            }
++            num_whitespaces++;
++        }
++
++        if (last_end_r_or_n > 0) {
++            pos = last_end_r_or_n;
++            _add_token(pos);
++            continue;
++        }
++
++        if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
++            pos += num_whitespaces - 1;
++            _add_token(pos);
++            continue;
++        }
++
++        if (num_whitespaces > 0) {
++            pos += num_whitespaces;
++            _add_token(pos);
++            continue;
++        }
++
++        _add_token(++pos);
++    }
++}
++
++// WHY (0123): Qwen3.5 mixed islands — ASCII gaps reuse Qwen2 ascii_seg (no ASCII is \p{M});
++// letter islands expand through \p{L}/\p{M}; punct excludes marks.
++static void unicode_regex_split_qwen35_mixed_seg(
++        const std::vector<uint32_t> & cpts, size_t offset_ini, size_t offset_end,
++        std::vector<size_t> & bpe_offsets) {
++    auto is_letter_or_mark = [](uint32_t c) -> bool {
++        if (c < 128u) return unicode_cpt_is_ascii_letter(c);
++        const auto f = unicode_cpt_flags_from_cpt(c);
++        return f.is_letter || f.is_accent_mark;
++    };
++    size_t i = offset_ini;
++    while (i < offset_end) {
++        size_t j = i;
++        while (j < offset_end && cpts[j] < 128u) {
++            ++j;
++        }
++        if (j == offset_end) {
++            unicode_regex_split_qwen2_ascii_seg(cpts.data(), i, offset_end, bpe_offsets);
++            return;
++        }
++
++        size_t L = j;
++        size_t R = j + 1;
++        const bool letter_island = is_letter_or_mark(cpts[j]);
++        if (letter_island) {
++            while (L > i && is_letter_or_mark(cpts[L - 1])) {
++                --L;
++            }
++            while (R < offset_end && is_letter_or_mark(cpts[R])) {
++                ++R;
++            }
++            if (L > i && L < offset_end && is_letter_or_mark(cpts[L])) {
++                const uint32_t prev = cpts[L - 1];
++                if (prev != '\r' && prev != '\n') {
++                    const auto pf = unicode_flags_for_cpt_hot(prev);
++                    if (!pf.is_letter && !pf.is_accent_mark && !pf.is_number) {
++                        --L;
++                    }
+                 }
+-                num_whitespaces++;
+             }
+-
+-            // regex: \s*[\r\n]+
+-            if (last_end_r_or_n > 0) {
+-                pos = last_end_r_or_n;
+-                _add_token(pos);
+-                continue;
++        } else {
++            if (L > i && cpts[L - 1] == ' ') {
++                --L;
+             }
+-
+-            // regex: \s+(?!\S)
+-            if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
+-                pos += num_whitespaces - 1;
+-                _add_token(pos);
+-                continue;
++            R = j;
++            while (R < offset_end) {
++                const auto f = unicode_flags_for_cpt_hot(cpts[R]);
++                if (f.is_whitespace || f.is_letter || f.is_accent_mark || f.is_number || !f.as_uint()) {
++                    break;
++                }
++                ++R;
+             }
+-
+-            // regex: \s+
+-            if (num_whitespaces > 0) {
+-                pos += num_whitespaces;
+-                _add_token(pos);
+-                continue;
++            while (R < offset_end && (cpts[R] == '\r' || cpts[R] == '\n')) {
++                ++R;
+             }
++            if (R <= j) {
++                R = j + 1;
++            }
++        }
+ 
+-            // no matches
+-            _add_token(++pos);
++        if (L > i) {
++            unicode_regex_split_qwen2_ascii_seg(cpts.data(), i, L, bpe_offsets);
+         }
++        unicode_regex_split_qwen35_unicode_seg(cpts, L, R, bpe_offsets);
++        i = R;
+     }
+-
+-    return bpe_offsets;
+ }
+ 
+-// Qwen3.5 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+-// Compared to Qwen2, letter-runs also consume Unicode combining marks (\p{M}): [\p{L}\p{M}]+ instead of \p{L}+
+ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
+-    std::vector<size_t> bpe_offsets; // store the offset of each word
++    std::vector<size_t> bpe_offsets;
+     // WHY (0116): same reserve heuristic as Qwen2; ASCII segments reuse Qwen2 ascii_seg
+     // because no U+0000..007F codepoint is \p{M}.
+     bpe_offsets.reserve(std::max(offsets.size(), cpts.size() / 3));
+@@ -1476,124 +2188,22 @@ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<u
+         assert(offset_end <= cpts.size());
+         start = offset_end;
+ 
+-        if (use_ascii && unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
+-            unicode_regex_split_qwen2_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++        if (use_ascii) {
++            if (unicode_seg_is_ascii(cpts.data(), offset_ini, offset_end)) {
++                unicode_regex_split_qwen2_ascii_seg(cpts.data(), offset_ini, offset_end, bpe_offsets);
++            } else {
++                unicode_regex_split_qwen35_mixed_seg(cpts, offset_ini, offset_end, bpe_offsets);
++            }
+             continue;
+         }
+ 
+-        static const uint32_t OUT_OF_RANGE = 0xFFFFFFFF;
+-        auto _get_cpt = [&] (const size_t pos) -> uint32_t {
+-            return (offset_ini <= pos && pos < offset_end) ? cpts[pos] : OUT_OF_RANGE;
+-        };
+-
+-        auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
+-            return (offset_ini <= pos && pos < offset_end) ? unicode_flags_for_cpt_hot(cpts[pos]) : unicode_cpt_flags{};
+-        };
+-
+-        size_t _prev_end = offset_ini;
+-        auto _add_token = [&] (const size_t end) -> size_t {
+-            assert(_prev_end <= end && end <= offset_end);
+-            size_t len = end - _prev_end;
+-            if (len > 0) {
+-                bpe_offsets.push_back(len);
+-            }
+-            _prev_end = end;
+-            return len;
+-        };
+-
+-        for (size_t pos = offset_ini; pos < offset_end; /*pos++*/ ) {
+-            const uint32_t cpt = _get_cpt(pos);
+-            const auto flags = _get_flags(pos);
+-
+-            // regex: (?i:'s|'t|'re|'ve|'m|'ll|'d) // case insensitive
+-            if (cpt == '\'' && pos+1 < offset_end) {
+-                uint32_t cpt_next = unicode_tolower(_get_cpt(pos+1));
+-                if (cpt_next == 's' || cpt_next == 't' || cpt_next == 'm' || cpt_next == 'd') {
+-                    pos += _add_token(pos+2);
+-                    continue;
+-                }
+-                if (pos+2 < offset_end) {
+-                    uint32_t cpt_next_next = unicode_tolower(_get_cpt(pos+2));
+-                    if ((cpt_next == 'r' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'v' && cpt_next_next == 'e') ||
+-                        (cpt_next == 'l' && cpt_next_next == 'l')) {
+-                        pos += _add_token(pos+3);
+-                        continue;
+-                    }
+-                }
+-            }
+-
+-            // regex: [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+
+-            if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
+-                if (flags.is_letter || flags.is_accent_mark || _get_flags(pos + 1).is_accent_mark || _get_flags(pos+1).is_letter) {
+-                    pos++;
+-                    pos = unicode_consume_letters_or_marks(cpts, pos, offset_end);
+-                    _add_token(pos);
+-                    continue;
+-                }
+-            }
+-
+-            // regex: \p{N}
+-            if (flags.is_number) {
+-                pos++;
+-                _add_token(pos);
+-                continue;
+-            }
+-
+-            // regex: <space>?[^\s\p{L}\p{M}\p{N}]+[\r\n]*
+-            auto flags2 = (cpt == ' ' ? _get_flags(pos+1) : flags);
+-            if (!(flags2.is_whitespace | flags2.is_letter | flags2.is_accent_mark | flags2.is_number) && flags.as_uint()) {
+-                pos += (cpt == ' ');
+-                while (!(flags2.is_whitespace | flags2.is_letter | flags2.is_accent_mark | flags2.is_number) && flags2.as_uint()) {
+-                    flags2 = _get_flags(++pos);
+-                }
+-                uint32_t cpt2 = _get_cpt(pos);
+-                while (cpt2 == '\r' || cpt2 == '\n') {
+-                    cpt2 = _get_cpt(++pos);
+-                }
+-                _add_token(pos);
+-                continue;
+-            }
+-
+-            size_t num_whitespaces = 0;
+-            size_t last_end_r_or_n = 0;
+-            while (_get_flags(pos+num_whitespaces).is_whitespace) {
+-                uint32_t cpt2 = _get_cpt(pos+num_whitespaces);
+-                if (cpt2 == '\r' || cpt2 == '\n') {
+-                    last_end_r_or_n = pos + num_whitespaces + 1;
+-                }
+-                num_whitespaces++;
+-            }
+-
+-            // regex: \s*[\r\n]+
+-            if (last_end_r_or_n > 0) {
+-                pos = last_end_r_or_n;
+-                _add_token(pos);
+-                continue;
+-            }
+-
+-            // regex: \s+(?!\S)
+-            if (num_whitespaces > 1 && _get_cpt(pos+num_whitespaces) != OUT_OF_RANGE) {
+-                pos += num_whitespaces - 1;
+-                _add_token(pos);
+-                continue;
+-            }
+-
+-            // regex: \s+
+-            if (num_whitespaces > 0) {
+-                pos += num_whitespaces;
+-                _add_token(pos);
+-                continue;
+-            }
+-
+-            // no matches
+-            _add_token(++pos);
+-        }
++        unicode_regex_split_qwen35_unicode_seg(cpts, offset_ini, offset_end, bpe_offsets);
+     }
+ 
+     return bpe_offsets;
+ }
+ 
++
+ template <typename CharT>
+ static std::vector<size_t> unicode_regex_split_stl(const std::basic_string<CharT> & text, const std::basic_string<CharT> & regex, const std::vector<size_t> & offsets) {
+     using BidirIt = typename std::basic_string<CharT>::const_iterator;
+@@ -2079,6 +2689,356 @@ static std::vector<std::string> unicode_regex_split_impl(
+         bool byte_encode,
+         unicode_pretok_blob * blob_out);
+ 
++
++// WHY (0124): mixed megaprompts still decode the whole string to uint32 before 0122/0123
++// cpt islands. Byte-level islands run ascii_bytes_seg on ASCII gaps and only decode
++// non-ASCII islands — same boundaries as cpt mixed_seg. Opt-out: LLAMA_BPE_NO_BYTE_MIXED=1
++// (falls through to full cpt path). Also disabled when LLAMA_BPE_NO_ASCII_PRETOK=1.
++static inline bool unicode_want_byte_mixed() {
++    return getenv("LLAMA_BPE_NO_BYTE_MIXED") == nullptr;
++}
++
++static size_t unicode_find_non_ascii_byte(const unsigned char * p, size_t i, size_t n) {
++    while (i + 8 <= n) {
++        uint64_t v;
++        memcpy(&v, p + i, 8);
++        if (v & 0x8080808080808080ULL) {
++            while (i < n && p[i] < 0x80) {
++                ++i;
++            }
++            return i;
++        }
++        i += 8;
++    }
++    while (i < n && p[i] < 0x80) {
++        ++i;
++    }
++    return i;
++}
++
++static size_t unicode_utf8_lead_at(const unsigned char * p, size_t i, size_t floor) {
++    while (i > floor && (p[i] & 0xC0) == 0x80) {
++        --i;
++    }
++    return i;
++}
++
++static bool unicode_decode_one_bounded(
++        const std::string & text, size_t & offset, size_t end, uint32_t & cpt) {
++    if (offset >= end) {
++        return false;
++    }
++    const unsigned char b = (unsigned char) text[offset];
++    if (b < 0x80) {
++        cpt = b;
++        ++offset;
++        return true;
++    }
++    size_t o = offset;
++    try {
++        cpt = unicode_cpt_from_utf8(text, o);
++    } catch (const std::invalid_argument &) {
++        return false;
++    }
++    if (o > end) {
++        return false;
++    }
++    offset = o;
++    return true;
++}
++
++static bool unicode_decode_range_to_cpts(
++        const std::string & text, size_t b0, size_t b1,
++        std::vector<uint32_t> & cpts, std::vector<size_t> & cpt_byte_off) {
++    cpts.clear();
++    cpt_byte_off.clear();
++    cpt_byte_off.push_back(0); // relative to island start
++    size_t offset = b0;
++    while (offset < b1) {
++        const size_t remain = b1 - offset;
++        const unsigned char * p = (const unsigned char *) text.data() + offset;
++        size_t n = 0;
++        while (n + 8 <= remain) {
++            uint64_t v;
++            memcpy(&v, p + n, 8);
++            if (v & 0x8080808080808080ULL) {
++                break;
++            }
++            n += 8;
++        }
++        while (n < remain && p[n] < 0x80) {
++            ++n;
++        }
++        if (n > 0) {
++            const size_t base = cpts.size();
++            cpts.resize(base + n);
++            for (size_t i = 0; i < n; ++i) {
++                cpts[base + i] = p[i];
++                cpt_byte_off.push_back(offset - b0 + i + 1);
++            }
++            offset += n;
++            continue;
++        }
++        size_t o = offset;
++        uint32_t cpt;
++        try {
++            cpt = unicode_cpt_from_utf8(text, o);
++        } catch (const std::invalid_argument &) {
++            return false;
++        }
++        if (o > b1) {
++            return false;
++        }
++        cpts.push_back(cpt);
++        cpt_byte_off.push_back(o - b0);
++        offset = o;
++    }
++    return offset == b1;
++}
++
++static void unicode_append_cpt_lens_as_bytes(
++        const std::vector<size_t> & cpt_byte_off,
++        const std::vector<size_t> & cpt_lens,
++        std::vector<size_t> & byte_offsets) {
++    size_t start = 0;
++    for (size_t clen : cpt_lens) {
++        const size_t b0 = cpt_byte_off[start];
++        const size_t b1 = cpt_byte_off[start + clen];
++        if (b1 > b0) {
++            byte_offsets.push_back(b1 - b0);
++        }
++        start += clen;
++    }
++}
++
++enum class unicode_byte_mixed_family {
++    Qwen2,
++    Qwen35,
++    Gpt2,
++    Llama3,
++};
++
++static inline bool unicode_cpt_is_letter_or_mark_run(uint32_t c) {
++    if (c < 128u) {
++        return unicode_cpt_is_ascii_letter(c);
++    }
++    const auto f = unicode_cpt_flags_from_cpt(c);
++    return f.is_letter || f.is_accent_mark;
++}
++
++// Returns false → caller falls through to full cpt decode path.
++static bool unicode_regex_split_try_byte_mixed(
++        const std::string & text,
++        unicode_byte_mixed_family family,
++        bool byte_encode,
++        unicode_pretok_blob * blob_out,
++        std::vector<std::string> * words_out) {
++    if (!unicode_want_byte_mixed()) {
++        return false;
++    }
++    const unsigned char * bytes = (const unsigned char *) text.data();
++    const size_t n = text.size();
++    std::vector<size_t> byte_offsets;
++    byte_offsets.reserve(std::max<size_t>(1, n / 3));
++
++    auto is_letter = [&](uint32_t c) -> bool {
++        if (family == unicode_byte_mixed_family::Qwen35) {
++            return unicode_cpt_is_letter_or_mark_run(c);
++        }
++        if (c < 128u) {
++            return unicode_cpt_is_ascii_letter(c);
++        }
++        return unicode_cpt_flags_from_cpt(c).is_letter;
++    };
++    auto is_number = [](uint32_t c) -> bool {
++        if (c < 128u) {
++            return unicode_cpt_is_ascii_digit(c);
++        }
++        return unicode_cpt_flags_from_cpt(c).is_number;
++    };
++
++    size_t i = 0;
++    std::vector<uint32_t> island_cpts;
++    std::vector<size_t> island_off;
++    std::vector<size_t> island_lens;
++
++    while (i < n) {
++        size_t j = unicode_find_non_ascii_byte(bytes, i, n);
++        if (j == n) {
++            if (family == unicode_byte_mixed_family::Gpt2) {
++                unicode_regex_split_gpt2_ascii_bytes_seg(bytes, i, n, byte_offsets);
++            } else if (family == unicode_byte_mixed_family::Llama3) {
++                unicode_regex_split_llama3_ascii_bytes_seg(bytes, i, n, byte_offsets);
++            } else {
++                unicode_regex_split_qwen2_ascii_bytes_seg(bytes, i, n, byte_offsets);
++            }
++            break;
++        }
++        j = unicode_utf8_lead_at(bytes, j, i);
++
++        size_t j_end = j;
++        uint32_t c0;
++        if (!unicode_decode_one_bounded(text, j_end, n, c0)) {
++            return false;
++        }
++
++        size_t L = j;
++        size_t R = j_end;
++        const bool gpt2 = (family == unicode_byte_mixed_family::Gpt2);
++
++        if (is_letter(c0)) {
++            // Expand left through letters.
++            while (L > i) {
++                const size_t prev = unicode_utf8_lead_at(bytes, L - 1, i);
++                size_t t = prev;
++                uint32_t pc;
++                if (!unicode_decode_one_bounded(text, t, L, pc) || t != L) {
++                    return false;
++                }
++                if (!is_letter(pc)) {
++                    break;
++                }
++                L = prev;
++            }
++            // Optional prefix
++            if (L > i) {
++                if (gpt2) {
++                    if (bytes[L - 1] == ' ') {
++                        --L;
++                    }
++                } else {
++                    const size_t prev = unicode_utf8_lead_at(bytes, L - 1, i);
++                    size_t t = prev;
++                    uint32_t pc;
++                    if (!unicode_decode_one_bounded(text, t, L, pc) || t != L) {
++                        return false;
++                    }
++                    if (pc != '\r' && pc != '\n' && !is_letter(pc) && !is_number(pc)) {
++                        if (family == unicode_byte_mixed_family::Qwen35) {
++                            const auto pf = unicode_flags_for_cpt_hot(pc);
++                            if (!pf.is_accent_mark) {
++                                L = prev;
++                            }
++                        } else {
++                            L = prev;
++                        }
++                    }
++                }
++            }
++            // Expand right
++            while (R < n) {
++                size_t t = R;
++                uint32_t pc;
++                if (!unicode_decode_one_bounded(text, t, n, pc)) {
++                    return false;
++                }
++                if (!is_letter(pc)) {
++                    break;
++                }
++                R = t;
++            }
++        } else if (gpt2 && is_number(c0)) {
++            while (L > i) {
++                const size_t prev = unicode_utf8_lead_at(bytes, L - 1, i);
++                size_t t = prev;
++                uint32_t pc;
++                if (!unicode_decode_one_bounded(text, t, L, pc) || t != L) {
++                    return false;
++                }
++                if (!is_number(pc)) {
++                    break;
++                }
++                L = prev;
++            }
++            if (L > i && bytes[L - 1] == ' ') {
++                --L;
++            }
++            while (R < n) {
++                size_t t = R;
++                uint32_t pc;
++                if (!unicode_decode_one_bounded(text, t, n, pc)) {
++                    return false;
++                }
++                if (!is_number(pc)) {
++                    break;
++                }
++                R = t;
++            }
++        } else {
++            // Punctuation / emoji island
++            if (L > i && bytes[L - 1] == ' ') {
++                --L;
++            }
++            R = j;
++            while (R < n) {
++                size_t t = R;
++                uint32_t pc;
++                if (!unicode_decode_one_bounded(text, t, n, pc)) {
++                    return false;
++                }
++                const auto f = unicode_flags_for_cpt_hot(pc);
++                if (family == unicode_byte_mixed_family::Qwen35) {
++                    if (f.is_whitespace || f.is_letter || f.is_accent_mark || f.is_number || !f.as_uint()) {
++                        break;
++                    }
++                } else {
++                    if (f.is_whitespace || f.is_letter || f.is_number || !f.as_uint()) {
++                        break;
++                    }
++                }
++                R = t;
++            }
++            if (!gpt2) {
++                while (R < n && (bytes[R] == '\r' || bytes[R] == '\n')) {
++                    ++R;
++                }
++            }
++            if (R <= j) {
++                R = j_end;
++            }
++        }
++
++        if (L > i) {
++            if (family == unicode_byte_mixed_family::Gpt2) {
++                unicode_regex_split_gpt2_ascii_bytes_seg(bytes, i, L, byte_offsets);
++            } else if (family == unicode_byte_mixed_family::Llama3) {
++                unicode_regex_split_llama3_ascii_bytes_seg(bytes, i, L, byte_offsets);
++            } else {
++                unicode_regex_split_qwen2_ascii_bytes_seg(bytes, i, L, byte_offsets);
++            }
++        }
++
++        if (!unicode_decode_range_to_cpts(text, L, R, island_cpts, island_off)) {
++            return false;
++        }
++        island_lens.clear();
++        if (family == unicode_byte_mixed_family::Gpt2) {
++            unicode_regex_split_gpt2_unicode_seg(island_cpts, 0, island_cpts.size(), island_lens);
++        } else if (family == unicode_byte_mixed_family::Llama3) {
++            unicode_regex_split_llama3_unicode_seg(island_cpts, 0, island_cpts.size(), island_lens);
++        } else if (family == unicode_byte_mixed_family::Qwen35) {
++            unicode_regex_split_qwen35_unicode_seg(island_cpts, 0, island_cpts.size(), island_lens);
++        } else {
++            unicode_regex_split_qwen2_unicode_seg(island_cpts, 0, island_cpts.size(), island_lens);
++        }
++        unicode_append_cpt_lens_as_bytes(island_off, island_lens, byte_offsets);
++        i = R;
++    }
++
++    if (blob_out) {
++        unicode_fill_blob_from_byte_offsets(text, byte_offsets, byte_encode, *blob_out);
++        if (words_out) {
++            words_out->clear();
++        }
++        return true;
++    }
++    if (words_out) {
++        *words_out = unicode_words_from_byte_offsets(text, byte_offsets, byte_encode);
++        return true;
++    }
++    return false;
++}
++
+ bool unicode_regex_split_try_blob(
+         const std::string & text,
+         const std::vector<std::string> & regex_exprs,
+@@ -2130,6 +3090,38 @@ static std::vector<std::string> unicode_regex_split_impl(
+         }
+     }
+ 
++    // WHY (0124): ASCII-majority mixed — byte islands before full uint32 decode.
++    if (unicode_want_ascii_pretok() && regex_exprs.size() == 1) {
++        const std::string & expr = regex_exprs[0];
++        unicode_byte_mixed_family fam;
++        bool try_mixed = false;
++        if (unicode_is_qwen2_regex_expr(expr)) {
++            fam = unicode_byte_mixed_family::Qwen2;
++            try_mixed = true;
++        } else if (unicode_is_qwen35_regex_expr(expr)) {
++            fam = unicode_byte_mixed_family::Qwen35;
++            try_mixed = true;
++        } else if (unicode_is_gpt2_regex_expr(expr)) {
++            fam = unicode_byte_mixed_family::Gpt2;
++            try_mixed = true;
++        } else if (unicode_is_llama3_regex_expr(expr)) {
++            fam = unicode_byte_mixed_family::Llama3;
++            try_mixed = true;
++        }
++        if (try_mixed) {
++            if (blob_out) {
++                if (unicode_regex_split_try_byte_mixed(text, fam, byte_encode, blob_out, nullptr)) {
++                    return {};
++                }
++            } else {
++                std::vector<std::string> words;
++                if (unicode_regex_split_try_byte_mixed(text, fam, byte_encode, nullptr, &words)) {
++                    return words;
++                }
++            }
++        }
++    }
++
+     // unicode categories
+     static const std::map<std::string, int> k_ucat_enum = {
+         { "\\p{N}", unicode_cpt_flags::NUMBER },
