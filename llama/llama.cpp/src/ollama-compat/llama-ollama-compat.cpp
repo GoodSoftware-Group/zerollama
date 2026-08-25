@@ -1,1 +1,1 @@
-/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.cpp
+../../../../llama/compat/llama-ollama-compat.cpp

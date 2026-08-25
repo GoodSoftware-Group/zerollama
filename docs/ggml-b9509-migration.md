@@ -2,7 +2,7 @@
 
 > **Current pin:** **`b10615`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `f280b26983ad0fdb705a0d9ebf0503e76f2899b0` (tag **b10615**; supersedes **`b10488`**).
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June–August 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b10488`** → **`b10615`** with **119** formal patch commits on this pin (Metal kernel-split absorbed many old `.metal` ports).
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus a **small set of Ollama-specific deltas**. The June–August 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b10488`** → **`b10615`** with **121** formal patch commits on this pin (Metal kernel-split absorbed many old `.metal` ports).
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 

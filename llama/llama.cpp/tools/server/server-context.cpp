@@ -5723,9 +5723,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
         res->error(format_error_response("src_slot, dst_slot, pos_end required", ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
-    const int id_src = body.at("src_slot");
-    const int id_dst = body.at("dst_slot");
-    const llama_pos pos_end = body.at("pos_end");
+    const int id_src = body.at("src_slot").get<int>();
+    const int id_dst = body.at("dst_slot").get<int>();
+    const llama_pos pos_end = body.at("pos_end").get<llama_pos>();
     // Default true: media-aware Radix seed (clone mtmd chunks). Set false for text-only clamp.
     const bool allow_media = body.value("allow_media", true);
     auto & rd = res->rd;
@@ -5765,7 +5765,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_grow(const server
         res->error(format_error_response("n_ctx required", ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
-    const uint32_t n_ctx = body.at("n_ctx");
+    const uint32_t n_ctx = body.at("n_ctx").get<uint32_t>();
     if (n_ctx == 0) {
         res->error(format_error_response("n_ctx must be > 0", ERROR_TYPE_INVALID_REQUEST));
         return res;
@@ -5804,7 +5804,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_shrink(const serv
         res->error(format_error_response("n_ctx required", ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
-    const uint32_t n_ctx = body.at("n_ctx");
+    const uint32_t n_ctx = body.at("n_ctx").get<uint32_t>();
     if (n_ctx == 0) {
         res->error(format_error_response("n_ctx must be > 0", ERROR_TYPE_INVALID_REQUEST));
         return res;
