@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### MLX Qwen 3.6 27B MTP companion — Aug 2026
+
+**Why:** Library `qwen3.6:27b-mlx` is dense int4 with no `mtp*` tensors. mlxrunner only registered Gemma draft arches, so a Modelfile `DRAFT` of `qwen3_5_mtp` failed closed. Affine packs use `.scales`/`.biases`; unexported MTP fields were dropped by `Sweep`.
+
+**Shipped:** `RegisterDraft("qwen3_5_mtp")`, remap mlx-lm affine names, export MTP weights for pin/sweep. Local tag `qwen3.6:27b-mlx-mtp`. Counting decode 48/48 accept; prose is lower. Do not load `qwen3.6-mtp` GGUF on `:11434`.
+
 ### CUDA plugin discovery from `run/zerollama` — Aug 2026
 
 **Why:** `nvidia-smi` and `OLLAMA_LLM_LIBRARY=cuda_v13` were fine, but serve still started CPU-only (`gpu_found=false` in ~1 ms) when the binary lived in `run/zerollama`. `ml.LibOllamaPath` only checked `../lib/ollama` / `build/lib/ollama` / `dirname(exe)` and never used `OLLAMA_LIBRARY_PATH` or `/usr/lib/ollama`.
