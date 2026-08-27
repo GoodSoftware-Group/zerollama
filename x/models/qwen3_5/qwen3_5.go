@@ -33,6 +33,7 @@ func init() {
 	base.Register("Qwen3_5ForConditionalGeneration", NewModel)
 	base.Register("Qwen3NextForCausalLM", NewModel)
 	base.Register("Qwen3NextForConditionalGeneration", NewModel)
+	base.RegisterDraft("qwen3_5_mtp", newQwen35MTPDraft)
 }
 
 // RopeParameters carries optional rope metadata embedded under rope_parameters.
@@ -110,6 +111,7 @@ type Model struct {
 	*Config
 
 	weightPrefix string
+	mtp          *mtpHead
 }
 
 // Layer is a transformer decoder layer.
@@ -175,16 +177,23 @@ type SparseMoE struct {
 type SwitchMLP struct {
 	GateUpWeight *mlx.Array
 	DownWeight   *mlx.Array
+	// Split gate/up when the checkpoint ships them separately. Fusing those
+	// stacks on 6-bit Qwen3Next (~60 GiB tensors) duplicates experts and
+	// jetsams 128 GiB UMA during LoadWeights.
+	GateWeight *mlx.Array
+	UpWeight   *mlx.Array
 
 	GateUpWeightQ, GateUpScales, GateUpBias *mlx.Array
+	GateWeightQ, GateScales, GateBias       *mlx.Array
+	UpWeightQ, UpScales, UpBias             *mlx.Array
 	DownWeightQ, DownScales, DownBiases     *mlx.Array
 
-	GateUpBits      int
-	DownBits        int
-	GateUpGroupSize int
-	DownGroupSize   int
-	GateUpMode      string
-	DownMode        string
+	GateUpBits, GateBits, UpBits                int
+	DownBits                                    int
+	GateUpGroupSize, GateGroupSize, UpGroupSize int
+	DownGroupSize                               int
+	GateUpMode, GateMode, UpMode                string
+	DownMode                                    string
 }
 
 type stackedExpertWeights struct {
@@ -523,9 +532,71 @@ func freeTensorKeys(tensors map[string]*mlx.Array, keys ...string) {
 	}
 }
 
+// fuseEvalChunkExperts is how many stacked experts one Metal Eval may
+// touch during fuse/stack/transpose. A single concat+Eval of a full
+// gate/up stack (coder-next class) hits kIOGPUCommandBufferCallbackErrorTimeout
+// when other MLX models already occupy the GPU — RAM can still look fine.
+var fuseEvalChunkExperts = 8
+
+func sliceAxis0(a *mlx.Array, start, end int) *mlx.Array {
+	nd := a.NumDims()
+	beg := make([]int32, nd)
+	stop := make([]int32, nd)
+	for i := range nd {
+		stop[i] = int32(a.Dim(i))
+	}
+	beg[0] = int32(start)
+	stop[0] = int32(end)
+	return mlx.SliceStartStop(a, beg, stop)
+}
+
+func concatEval(parts []*mlx.Array, axis int) *mlx.Array {
+	if len(parts) == 0 {
+		return nil
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	const merge = 4
+	if len(parts) > merge {
+		next := make([]*mlx.Array, 0, (len(parts)+merge-1)/merge)
+		for i := 0; i < len(parts); i += merge {
+			end := i + merge
+			if end > len(parts) {
+				end = len(parts)
+			}
+			c := mlx.Concatenate(parts[i:end], axis).Clone()
+			mlx.Eval(c)
+			next = append(next, c)
+		}
+		return concatEval(next, axis)
+	}
+	out := mlx.Concatenate(parts, axis).Clone()
+	mlx.Eval(out)
+	return out
+}
+
 func stackAndClone(parts []*mlx.Array) *mlx.Array {
 	if len(parts) == 0 {
 		return nil
+	}
+	chunk := fuseEvalChunkExperts
+	if chunk < 1 {
+		chunk = 1
+	}
+	if len(parts) > chunk {
+		groups := make([]*mlx.Array, 0, (len(parts)+chunk-1)/chunk)
+		for i := 0; i < len(parts); i += chunk {
+			end := i + chunk
+			if end > len(parts) {
+				end = len(parts)
+			}
+			st := mlx.Stack(parts[i:end], 0)
+			cl := st.Clone()
+			mlx.Eval(cl)
+			groups = append(groups, cl)
+		}
+		return concatEval(groups, 0)
 	}
 	stacked := mlx.Stack(parts, 0)
 	cloned := stacked.Clone()
@@ -537,6 +608,25 @@ func transposeExpertWeightForGatherMM(w *mlx.Array) *mlx.Array {
 	if w == nil || !w.Valid() || w.NumDims() != 3 {
 		return w
 	}
+	n := w.Dim(0)
+	chunk := fuseEvalChunkExperts
+	if chunk < 1 {
+		chunk = 1
+	}
+	if n > chunk {
+		parts := make([]*mlx.Array, 0, (n+chunk-1)/chunk)
+		for start := 0; start < n; start += chunk {
+			end := start + chunk
+			if end > n {
+				end = n
+			}
+			t := mlx.Transpose(sliceAxis0(w, start, end), 0, 2, 1)
+			cloned := t.Clone()
+			mlx.Eval(cloned)
+			parts = append(parts, cloned)
+		}
+		return concatEval(parts, 0)
+	}
 	t := mlx.Transpose(w, 0, 2, 1)
 	cloned := t.Clone()
 	mlx.Eval(cloned)
@@ -546,6 +636,27 @@ func transposeExpertWeightForGatherMM(w *mlx.Array) *mlx.Array {
 func fuseExpertStacks(a, b *mlx.Array, axis int) *mlx.Array {
 	if a == nil || !a.Valid() || b == nil || !b.Valid() {
 		return nil
+	}
+	n := a.Dim(0)
+	chunk := fuseEvalChunkExperts
+	if chunk < 1 {
+		chunk = 1
+	}
+	if axis != 0 && n > chunk && a.NumDims() > 0 && b.Dim(0) == n {
+		parts := make([]*mlx.Array, 0, (n+chunk-1)/chunk)
+		for start := 0; start < n; start += chunk {
+			end := start + chunk
+			if end > n {
+				end = n
+			}
+			fused := mlx.Concatenate([]*mlx.Array{
+				sliceAxis0(a, start, end),
+				sliceAxis0(b, start, end),
+			}, axis).Clone()
+			mlx.Eval(fused)
+			parts = append(parts, fused)
+		}
+		return concatEval(parts, 0)
 	}
 	out := mlx.Concatenate([]*mlx.Array{a, b}, axis).Clone()
 	mlx.Eval(out)
@@ -790,12 +901,13 @@ func loadSwitchMLP(tensors map[string]*mlx.Array, cfg *Config, useQuantized bool
 		layerPrefix+".mlp.switch_mlp.down_proj",
 		layerPrefix+".mlp.experts.down_proj",
 	)
+	var gateW, upW *stackedExpertWeights
 	if gateUpW == nil {
-		gateW := loadStackedProjection(tensors, cfg, useQuantized,
+		gateW = loadStackedProjection(tensors, cfg, useQuantized,
 			layerPrefix+".mlp.switch_mlp.gate_proj",
 			layerPrefix+".mlp.experts.gate_proj",
 		)
-		upW := loadStackedProjection(tensors, cfg, useQuantized,
+		upW = loadStackedProjection(tensors, cfg, useQuantized,
 			layerPrefix+".mlp.switch_mlp.up_proj",
 			layerPrefix+".mlp.experts.up_proj",
 		)
@@ -805,25 +917,38 @@ func loadSwitchMLP(tensors map[string]*mlx.Array, cfg *Config, useQuantized bool
 		if upW == nil {
 			upW = collectPerExpertProjection(tensors, cfg, useQuantized, layerPrefix, "up_proj", cfg.NumExperts)
 		}
-		gateUpW = fuseGateUpProjections(gateW, upW)
 	}
 	if downW == nil {
 		downW = collectPerExpertProjection(tensors, cfg, useQuantized, layerPrefix, "down_proj", cfg.NumExperts)
 	}
-	if gateUpW == nil || downW == nil {
+	if gateUpW == nil && (gateW == nil || upW == nil) {
+		return nil, fmt.Errorf("missing switch expert weights")
+	}
+	if downW == nil {
 		return nil, fmt.Errorf("missing switch expert weights")
 	}
 
 	switchMLP := &SwitchMLP{}
-	if gateUpW.Scales != nil {
-		switchMLP.GateUpWeightQ = gateUpW.Weight
-		switchMLP.GateUpScales = gateUpW.Scales
-		switchMLP.GateUpBias = gateUpW.Biases
-		switchMLP.GateUpBits = gateUpW.Bits
-		switchMLP.GateUpGroupSize = gateUpW.GroupSize
-		switchMLP.GateUpMode = gateUpW.Mode
+	if gateUpW != nil {
+		if gateUpW.Scales != nil {
+			switchMLP.GateUpWeightQ = gateUpW.Weight
+			switchMLP.GateUpScales = gateUpW.Scales
+			switchMLP.GateUpBias = gateUpW.Biases
+			switchMLP.GateUpBits = gateUpW.Bits
+			switchMLP.GateUpGroupSize = gateUpW.GroupSize
+			switchMLP.GateUpMode = gateUpW.Mode
+		} else {
+			switchMLP.GateUpWeight = transposeExpertWeightForGatherMM(gateUpW.Weight)
+		}
 	} else {
-		switchMLP.GateUpWeight = transposeExpertWeightForGatherMM(gateUpW.Weight)
+		bindSplitExpertProj := func(src *stackedExpertWeights) (w, wq, scales, bias *mlx.Array, bits, gs int, mode string) {
+			if src.Scales != nil {
+				return nil, src.Weight, src.Scales, src.Biases, src.Bits, src.GroupSize, src.Mode
+			}
+			return transposeExpertWeightForGatherMM(src.Weight), nil, nil, nil, src.Bits, src.GroupSize, src.Mode
+		}
+		switchMLP.GateWeight, switchMLP.GateWeightQ, switchMLP.GateScales, switchMLP.GateBias, switchMLP.GateBits, switchMLP.GateGroupSize, switchMLP.GateMode = bindSplitExpertProj(gateW)
+		switchMLP.UpWeight, switchMLP.UpWeightQ, switchMLP.UpScales, switchMLP.UpBias, switchMLP.UpBits, switchMLP.UpGroupSize, switchMLP.UpMode = bindSplitExpertProj(upW)
 	}
 	if downW.Scales != nil {
 		switchMLP.DownWeightQ = downW.Weight
@@ -886,19 +1011,14 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 	linears := model.NewLinearFactory(tensors, cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode, cfg.TensorQuant)
 
 	shouldShiftNormWeights := false
-	mtpKeys := make([]string, 0)
 	for name, t := range tensors {
 		if strings.Contains(name, "mtp.") {
 			shouldShiftNormWeights = true
-			mtpKeys = append(mtpKeys, name)
 			continue
 		}
 		if !shouldShiftNormWeights && strings.Contains(name, ".linear_attn.conv1d.weight") && t != nil && t.NumDims() == 3 && t.Dim(2) != 1 {
 			shouldShiftNormWeights = true
 		}
-	}
-	if len(mtpKeys) > 0 {
-		freeTensorKeys(tensors, mtpKeys...)
 	}
 
 	embedTokens := model.MakeEmbeddingLayer(tensors, modelPrefix+"embed_tokens", cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode, cfg.TensorQuant)
@@ -1060,6 +1180,13 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 		}
 
 		m.Layers[i] = layer
+		if i == 0 || (i+1)%8 == 0 {
+			slog.Info("qwen3.5 load layer", "layer", i+1, "of", cfg.NumHiddenLayers, "peak", mlx.PrettyBytes(mlx.PeakMemory()))
+		}
+	}
+
+	if err := m.loadMTPHead(tensors, linears, shouldShiftNormWeights, useQuantizedExperts); err != nil {
+		slog.Warn("qwen3.5 MTP head not loaded; PLD/AR", "error", err)
 	}
 
 	return nil
@@ -1229,15 +1356,29 @@ func (s *SwitchMLP) Forward(x *mlx.Array, indices *mlx.Array, cfg *Config) *mlx.
 		idxFlat = mlx.Reshape(mlx.Take(idxAll, order, 0), n, 1)
 	}
 
-	var gateUp, down *mlx.Array
-	if s.GateUpWeightQ != nil {
-		gateUp = mlx.GatherQMM(xFlat, s.GateUpWeightQ, s.GateUpScales, s.GateUpBias,
-			nil, idxFlat, true, s.GateUpGroupSize, s.GateUpBits, s.GateUpMode, doSort)
+	var hidden, down *mlx.Array
+	if s.GateWeightQ != nil && s.UpWeightQ != nil {
+		gate := mlx.GatherQMM(xFlat, s.GateWeightQ, s.GateScales, s.GateBias,
+			nil, idxFlat, true, s.GateGroupSize, s.GateBits, s.GateMode, doSort)
+		up := mlx.GatherQMM(xFlat, s.UpWeightQ, s.UpScales, s.UpBias,
+			nil, idxFlat, true, s.UpGroupSize, s.UpBits, s.UpMode, doSort)
+		hidden = mlx.SwiGLU(gate, up)
+	} else if s.GateWeight != nil && s.UpWeight != nil {
+		hidden = mlx.SwiGLU(
+			mlx.GatherMM(xFlat, s.GateWeight, nil, idxFlat, doSort),
+			mlx.GatherMM(xFlat, s.UpWeight, nil, idxFlat, doSort),
+		)
 	} else {
-		gateUp = mlx.GatherMM(xFlat, s.GateUpWeight, nil, idxFlat, doSort)
+		var gateUp *mlx.Array
+		if s.GateUpWeightQ != nil {
+			gateUp = mlx.GatherQMM(xFlat, s.GateUpWeightQ, s.GateUpScales, s.GateUpBias,
+				nil, idxFlat, true, s.GateUpGroupSize, s.GateUpBits, s.GateUpMode, doSort)
+		} else {
+			gateUp = mlx.GatherMM(xFlat, s.GateUpWeight, nil, idxFlat, doSort)
+		}
+		gate, up := splitLastAxisHalves(gateUp)
+		hidden = mlx.SwiGLU(gate, up)
 	}
-	gate, up := splitLastAxisHalves(gateUp)
-	hidden := mlx.SwiGLU(gate, up)
 	if s.DownWeightQ != nil {
 		down = mlx.GatherQMM(hidden, s.DownWeightQ, s.DownScales, s.DownBiases,
 			nil, idxFlat, true, s.DownGroupSize, s.DownBits, s.DownMode, doSort)
@@ -1333,7 +1474,11 @@ func (m *Model) Tokenizer() *tokenizer.Tokenizer {
 }
 
 func (m *Model) NewCaches() []cache.Cache {
-	caches := make([]cache.Cache, len(m.Layers))
+	n := len(m.Layers)
+	if m.mtp != nil {
+		n += len(m.mtp.Layers)
+	}
+	caches := make([]cache.Cache, n)
 	convTail := m.LinearConvKernelDim - 1
 	convDim := 2*m.LinearNumKeyHeads*m.LinearKeyHeadDim + m.LinearNumValueHeads*m.LinearValueHeadDim
 	for i, layer := range m.Layers {
@@ -1343,5 +1488,17 @@ func (m *Model) NewCaches() []cache.Cache {
 			caches[i] = cache.NewKVCache()
 		}
 	}
+	if m.mtp != nil {
+		for i := range m.mtp.Layers {
+			caches[len(m.Layers)+i] = cache.NewKVCache()
+		}
+	}
 	return caches
+}
+
+func (m *Model) SelfDraft() base.DraftModel {
+	if m == nil || m.mtp == nil {
+		return nil
+	}
+	return m.mtp
 }

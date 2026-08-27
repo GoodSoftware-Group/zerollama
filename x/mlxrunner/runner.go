@@ -18,8 +18,8 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/model"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	"github.com/ollama/ollama/x/mlxrunner/sample"
-	"github.com/ollama/ollama/x/uma"
 	"github.com/ollama/ollama/x/tokenizer"
+	"github.com/ollama/ollama/x/uma"
 )
 
 // Request is a short-lived struct that carries a completion request through
@@ -44,12 +44,13 @@ type Runner struct {
 	cache         kvCache
 	contextLength int
 	mlxThread     *mlxthread.Thread
-	// spec is the speculative-decoding subsystem. Nil when the model ships no
-	// draft head.
-	spec *speculation
+	// spec is the speculative-decoding subsystem (MTP and/or PLD).
+	spec      *speculation
+	modelName string
 }
 
 func (r *Runner) Load(modelName string) error {
+	r.modelName = modelName
 	root, err := model.Open(modelName)
 	if err != nil {
 		return err
@@ -83,19 +84,11 @@ func (r *Runner) Load(modelName string) error {
 			return err
 		}
 
-		draft, err := base.NewDraft(root, m)
+		draft, err := loadDraftCompanion(root, m, tensors)
 		if err != nil {
 			return err
 		}
-		if draft != nil {
-			if err := draft.LoadWeights(tensors); err != nil {
-				return err
-			}
-			draftModel = draft
-		} else if sd, ok := m.(base.SelfDraft); ok {
-			// Inline draft head: already loaded with the target; nil if none shipped.
-			draftModel = sd.SelfDraft()
-		}
+		draftModel = draft
 
 		collected := mlx.Collect(m)
 		if draft != nil {
@@ -111,15 +104,41 @@ func (r *Runner) Load(modelName string) error {
 			mlx.Pin(arr)
 		}
 		mlx.Sweep()
-		mlx.Eval(collected...)
+		// One giant Eval of a 60GiB MoE is a Metal command-buffer / jetsam
+		// on 128GiB UMA; materialize in slices.
+		const evalChunk = 32
+		for i := 0; i < len(collected); i += evalChunk {
+			end := i + evalChunk
+			if end > len(collected) {
+				end = len(collected)
+			}
+			mlx.Eval(collected[i:end]...)
+			if i == 0 || end == len(collected) || i%256 == 0 {
+				slog.Info("mlx load eval", "done", end, "total", len(collected), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
+			}
+		}
 		configureWiredMemory()
 
 		r.Model = m
 		r.Tokenizer = m.Tokenizer()
 		r.contextLength = m.MaxContextLength()
 		r.Sampler = sample.New(r.contextLength)
+		if suppressReservedEnabled() {
+			if ids := reservedSampleBanIDs(r.Tokenizer); len(ids) > 0 {
+				r.Sampler.SetBannedIDs(ids)
+				slog.Info("mlx suppress reserved sample ids", "n", len(ids))
+			}
+		}
 		r.spec = newSpeculation(r, draftModel)
-		if MTPRequire() && r.spec == nil {
+		if r.spec != nil {
+			if data, err := root.Manifest.ReadConfig("config.json"); err == nil {
+				r.spec.sparseMoE = configSparseMoE(data)
+			}
+			if r.spec.sparseMoE && r.spec.draft != nil {
+				slog.Info("mlx MTP default off (MoE); set enable_mtp=true to use the draft head")
+			}
+		}
+		if MTPRequire() && (r.spec == nil || r.spec.draft == nil) {
 			return fmt.Errorf("ZEROLLAMA_MLX_MTP=require: checkpoint has no MTP/draft head (refuse silent AR demotion)")
 		}
 		r.installOptiqOwnedHook()
@@ -201,10 +220,24 @@ func loadTensorsFromManifest(root *model.Root) (map[string]*mlx.Array, error) {
 		}
 	}
 
-	// Phase 2: Identify all base names that have .scale tensors and remap them
+	allTensors := remapLoadedTensors(rawTensors)
+	slog.Info("Loaded tensors from manifest", "count", len(allTensors))
+	return allTensors, nil
+}
+
+// remapLoadedTensors maps mlx-lm affine suffixes onto the names MakeLinearLayer
+// expects (.weight_scale / .weight_qbias). Companion MTP packs use .scales/.biases
+// next to .weight rather than .weight.scale.
+func remapLoadedTensors(rawTensors map[string]*mlx.Array) map[string]*mlx.Array {
 	scaleBaseNames := make(map[string]bool)
 	allTensors := make(map[string]*mlx.Array, len(rawTensors))
 	for name, arr := range rawTensors {
+		if strings.HasSuffix(name, ".scales") {
+			baseName := strings.TrimSuffix(name, ".scales")
+			allTensors[baseName+".weight_scale"] = arr
+			scaleBaseNames[baseName+".weight"] = true
+			continue
+		}
 		if strings.HasSuffix(name, ".scale") {
 			baseName := strings.TrimSuffix(name, ".scale")
 			allTensors[baseName+"_scale"] = arr
@@ -212,13 +245,10 @@ func loadTensorsFromManifest(root *model.Root) (map[string]*mlx.Array, error) {
 		}
 	}
 
-	// Phase 3: Process remaining tensors with complete scale knowledge
 	for name, arr := range rawTensors {
-		if strings.HasSuffix(name, ".scale") {
-			continue // already handled
+		if strings.HasSuffix(name, ".scale") || strings.HasSuffix(name, ".scales") {
+			continue
 		}
-		// mlx-lm sometimes exports affine zero-points as "<linear>.biases"
-		// (sibling of .weight) instead of packed "<linear>.weight.bias".
 		if strings.HasSuffix(name, ".biases") {
 			baseName := strings.TrimSuffix(name, ".biases")
 			if scaleBaseNames[baseName+".weight"] {
@@ -237,9 +267,41 @@ func loadTensorsFromManifest(root *model.Root) (map[string]*mlx.Array, error) {
 			allTensors[name] = arr
 		}
 	}
+	return allTensors
+}
 
-	slog.Info("Loaded tensors from manifest", "count", len(allTensors))
-	return allTensors, nil
+// loadDraftCompanion attaches an in-manifest or inline draft head. A broken
+// companion logs and falls back to PLD/AR unless ZEROLLAMA_MLX_MTP=require
+// (mlx-serve: say so instead of a silent slower path).
+func loadDraftCompanion(root *model.Root, m base.Model, tensors map[string]*mlx.Array) (base.DraftModel, error) {
+	draft, err := base.NewDraft(root, m)
+	if err != nil {
+		if MTPRequire() {
+			return nil, err
+		}
+		slog.Warn("mlx draft companion not loaded; PLD/AR", "error", err)
+		draft = nil
+	}
+	if draft != nil {
+		if err := draft.LoadWeights(tensors); err != nil {
+			if MTPRequire() {
+				return nil, err
+			}
+			slog.Warn("mlx draft weights failed; PLD/AR", "error", err)
+			draft = nil
+		}
+	}
+	if draft == nil {
+		if sd, ok := m.(base.SelfDraft); ok {
+			draft = sd.SelfDraft()
+		}
+	}
+	if draft != nil {
+		if n := quantizeDraftCompanion(draft); n > 0 {
+			slog.Info("mlx draft weights quantized to 4-bit", "layers", n)
+		}
+	}
+	return draft, nil
 }
 
 func (r *Runner) Run(host, port string, mux http.Handler) error {

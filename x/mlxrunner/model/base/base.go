@@ -69,6 +69,15 @@ func Register(arch string, fn func(root *model.Root) (Model, error)) {
 	registry[arch] = fn
 }
 
+// Registered reports whether a text-model architecture is linked into this
+// binary (blank-import in x/mlxrunner/imports.go).
+func Registered(arch string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	_, ok := registry[arch]
+	return ok
+}
+
 // RegisterDraft registers a draft model constructor by architecture name.
 func RegisterDraft(arch string, fn func(root *model.Root, target Model) (DraftModel, error)) {
 	mu.Lock()
@@ -78,6 +87,14 @@ func RegisterDraft(arch string, fn func(root *model.Root, target Model) (DraftMo
 		panic(fmt.Sprintf("draft model architecture %q already registered", arch))
 	}
 	draftRegistry[arch] = fn
+}
+
+// DraftRegistered reports whether a draft architecture is linked into this binary.
+func DraftRegistered(arch string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	_, ok := draftRegistry[arch]
+	return ok
 }
 
 // New reads config.json from the manifest, detects the architecture, looks up

@@ -49,12 +49,14 @@ func (s *specStats) depthOverTime() string {
 }
 
 func (s *speculationSession) logStats() {
-	if !s.enabled || !slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
-		return
-	}
 	acceptance := 0.0
 	if s.stats.drafted > 0 {
 		acceptance = float64(s.stats.accepted) / float64(s.stats.drafted)
+	}
+	s.logTuneHint(acceptance)
+	s.saveLastRun(acceptance)
+	if !slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
+		return
 	}
 	avgDraft := 0.0
 	avgAccepted := 0.0
@@ -64,9 +66,9 @@ func (s *speculationSession) logStats() {
 	}
 	slog.Debug("speculative decode stats", "iterations", s.stats.iterations, "drafted", s.stats.drafted, "accepted", s.stats.accepted, "acceptance", fmt.Sprintf("%.2f", acceptance), "avg_draft", fmt.Sprintf("%.2f", avgDraft), "max_draft", s.stats.maxDraft, "avg_accepted", fmt.Sprintf("%.2f", avgAccepted), "depth_over_time", s.stats.depthOverTime())
 
-	// Log learned acceptance over the trusted positions [1, frontier] and
-	// expected throughput over the searched window [0, frontier+1]; deeper
-	// depths have no data of their own.
+	if s.spec == nil || s.spec.depth == nil {
+		return
+	}
 	d := s.spec.depth
 	frontier := d.frontier()
 	rates := make([]string, 0, frontier)
@@ -81,4 +83,31 @@ func (s *speculationSession) logStats() {
 		}
 	}
 	slog.Debug("speculation depth controller", "cost", d.cost.sampleString(), "acceptance", strings.Join(rates, " "), "expected_tps", strings.Join(tps, " "), "probe_interval", d.probeInterval)
+}
+
+func (s *speculationSession) logTuneHint(acceptance float64) {
+	hint := s.tuneHint(acceptance)
+	if hint == "" {
+		return
+	}
+	slog.Info("mlx tune", "hint", hint, "acceptance", fmt.Sprintf("%.2f", acceptance), "max_draft", s.stats.maxDraft, "iterations", s.stats.iterations)
+}
+
+func (s *speculationSession) tuneHint(acceptance float64) string {
+	if s == nil || s.stats.iterations < pldRuntimeMinRounds {
+		return ""
+	}
+	if !s.enabled {
+		if s.pld {
+			return "spec parked (runtime gate). Novel text is expected AR. ZEROLLAMA_MLX_PLD=off only for a bench; leave on for agents"
+		}
+		return "MTP parked (accept <0.70). Try ZEROLLAMA_MLX_MTP_HISTORY=auto on long prompts, or check the draft companion loaded"
+	}
+	if s.pld && acceptance < pldRuntimeMinAccept {
+		return "PLD accept is low this request; runtime gate will freeze PLD. Echo/code prompts should be higher; prose stays AR"
+	}
+	if s.spec != nil && s.spec.depth != nil && s.spec.depth.scheduled == 0 && s.stats.maxDraft == 0 {
+		return "draft width 0. After a few echo requests, mlx-round-cost should show scheduled>0 (`zerollama doctor`)"
+	}
+	return ""
 }

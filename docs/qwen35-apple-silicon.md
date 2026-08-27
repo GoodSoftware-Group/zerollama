@@ -14,7 +14,7 @@ Qwen 3.5/3.6 GGUFs hit **three separate Mac-only failure modes** in mid-2026 zer
 |---------|--------|-----------------|
 | ~~SIGABRT in `ggml_backend_sched_reserve`~~ **Fixed Jun 2026** | Go **ollama engine** (Metal ggml backend) | `newTensor` eagerly allocated graph intermediates while `sched_reserve` also assigned buffers → `GGML_ASSERT(tensor->buffer == NULL)` on qwen35moe worst-case reserve. **Fix:** defer graph tensor alloc; `.Persistent()` for KV/recurrent contexts only. |
 | `rope.dimension_sections has wrong array length; expected 4, got 3` | **llama.cpp loader** + missing compat | Published Ollama GGUFs store M-RoPE sections as **3** ints; llama.cpp expects **4** (padded). The fix lived in `llama/compat/` but was only wired into **llama-server** CMake builds—not the **in-process llamarunner** CGO path. |
-| `kernel_unary_f32_f32 was not found` → SIGSEGV on first token | **Embedded Metal shaders** | macOS compiles shaders from `ggml-metal-embed.metal` at runtime. That file is **generated** from `ggml-metal.metal`; when ggml bumps without `go generate`, sigmoid/unary kernels (needed by qwen35 SSM/gated paths) are missing from the embed. |
+| `kernel_unary_f32_f32 was not found` → SIGSEGV on first token | **Embedded Metal shaders** | macOS JIT-compiles per-kind UTF-8 embeds (`ggml-metal-embed-<kind>.metal`, from `kernels/*.metal`). When ggml bumps without regen, sigmoid/unary kernels (qwen35 SSM/gated) are missing. |
 
 Fixing one layer often exposed the next. This doc is the operator map.
 
@@ -26,6 +26,15 @@ Fixing one layer often exposed the next. This doc is the operator map.
 2. **Restart serve** so runners pick up the new binary (old subprocesses keep the old `.dylib`/shader embed until replaced).
 3. **Use a practical context** — these models advertise 262K train context; start with **`num_ctx` 2048–8192** unless you have headroom. The log line `n_ctx_seq (2048) < n_ctx_train (262144)` is **informational**, not an error.
 4. **Expect thinking/VL variants** — monolithic qwen35 VL blobs include vision tensors; the compat layer strips/hides them for the text loader and uses mtmd for vision when configured. **Thinking models** (e.g. `qwen3.6:latest`) may return short replies in the **`thinking`** field with an empty **`response`** — that is normal, not a failed generate.
+
+**MLX dense 27B + MTP:** `qwen3.6:27b-mlx` has no `mtp*` tensors. Local tag **`qwen3.6:27b-mlx-mtp`** is that trunk plus [mlx-community/Qwen3.6-27B-MTP-4bit](https://huggingface.co/mlx-community/Qwen3.6-27B-MTP-4bit) (`qwen3_5_mtp`, already 4-bit). Recreate:
+
+```
+FROM qwen3.6:27b-mlx
+DRAFT /Users/user1/Sites/inference/hf/Qwen3.6-27B-MTP-4bit
+```
+
+Skip `--draft-quantize`. Binary must include `RegisterDraft("qwen3_5_mtp")`. Accept stats: `~/.ollama/mlx-round-cost/qwen3.6_27b-mlx-mtp.last.json`. Do **not** load the 22 GiB `qwen3.6-mtp` GGUF on `:11434`.
 
 ```bash
 ./scripts/build/build_zerollama_mac.sh
@@ -39,22 +48,16 @@ curl http://127.0.0.1:11434/api/generate -d \
 
 ## Build
 
-**Why `go generate` is part of the Mac build:** The Metal backend does not ship a precompiled `.metallib` in the Go binary—it embeds **Metal source** and JIT-specializes kernels (e.g. `kernel_unary_f32_f32_op=102` = sigmoid for gated SSM). If `ggml-metal-embed.metal` is stale, load succeeds but **first decode** crashes.
+**Why embed regen is part of the Mac build:** The Metal backend embeds **UTF-8 shader source** per kernel kind (`_ggml_metallib_<kind>_{start,end}`) and JIT-compiles at load (e.g. `kernel_unary_f32_f32_op=102` = sigmoid for gated SSM). A compiled MTLB blob no longer matches the loader. If embeds are stale or missing, link fails (`undefined _ggml_metallib_fa_start`) or first decode crashes.
 
 ```bash
 ./scripts/build/build_zerollama_mac.sh
 ```
 
-That script (since Jun 2026) runs:
+That script runs `scripts/build/gen_ggml_metal_embed.sh` (also `go generate ./ml/backend/ggml/ggml/src/ggml-metal/`). After any edit to `kernels/*.metal`, `eliza-shipped/*.metal`, or ggml vendor sync, regenerate if you bypass the script:
 
 ```bash
-GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src/ggml-metal/
-```
-
-before `go build`. After any edit to `ggml-metal.metal` or ggml vendor sync, regenerate manually if you bypass the script:
-
-```bash
-GOFLAGS=-mod=mod go generate ./ml/backend/ggml/ggml/src/ggml-metal/
+./scripts/build/gen_ggml_metal_embed.sh
 go build -a -o zerollama .   # -a when embed changed, to force CGO relink
 ```
 
@@ -109,7 +112,7 @@ Published blobs differ from llama.cpp-native GGUF in several ways. `llama/compat
 |----------------|-------------------|---------------|
 | `rope.dimension_sections` length **3** | length **4** | Pad with trailing `0` |
 | `attention.head_count_kv` array per layer | scalar `UINT32` | Collapse to max non-zero |
-| Embedded `v.*` / `mtp.*` / `mm.*` tensors | separate mmproj / dropped MTP | Skip or translate tensors |
+| Embedded `v.*` / `mtp.*` / `mm.*` tensors | separate mmproj / llama.cpp `blk.N.nextn.*` | llama-server: compat rename + **draft-mtp off** (SWA desync). ggml Metal: bind `mtp.*` on ollama-engine (`DraftForward`; spec loop not wired) |
 | `blk.N.ssm_dt` | `blk.N.ssm_dt.bias` | Rename |
 | MTP expert shards | merged expert weights | Merge + disable mmap when needed |
 
@@ -141,7 +144,7 @@ Disable compat (debug): `OLLAMA_LLAMA_CPP_COMPAT=0`.
 | `control-looking token … was not control-type` | Published GGUF `token_type` wrong for FIM markers; llama.cpp overrides. **Harmless** — [Token warnings](#token-warnings-jun-2026). |
 | `embeddings required but some input tokens were not marked as outputs` | Embedding context + chat batch mismatch; llama.cpp overrides. **Harmless** — [Token warnings](#token-warnings-jun-2026). |
 | `offloaded 0/N layers to GPU` with slow inference | Bootstrap GPU discovery returned empty (fixed Jun 2026). Rebuild; expect `library=Metal` at startup — [apple-silicon-metal.md](./apple-silicon-metal.md#gpu-bootstrap-discovery-jun-2026). |
-| `kernel_unary_f32_f32 was not found` | Stale `ggml-metal-embed.metal` — rebuild with `go generate` (see [Build](#build)). |
+| `kernel_unary_f32_f32 was not found` | Stale per-kind Metal embeds — `./scripts/build/gen_ggml_metal_embed.sh` then rebuild (see [Build](#build)). |
 
 ---
 

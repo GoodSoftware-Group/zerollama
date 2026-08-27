@@ -12,6 +12,11 @@ import (
 // notices a deeper draft becoming worthwhile.
 const depthProbeInterval = 4
 
+// depthSearchPastFrontier is how far past a trusted acceptance frontier the EV
+// search may pick. mlx-serve drafts one extra position after faster split-SDPA
+// verify (was 1).
+const depthSearchPastFrontier = 2
+
 // depthProbeIntervalMax caps the probe backoff. Probes that keep changing nothing
 // double the interval up to this cap, trading slower re-engagement — worst case
 // plain decode speed, never below — for fewer probes.
@@ -41,6 +46,11 @@ type depthController struct {
 	probeInterval int // rounds between probes; backs off while probes change nothing
 	probeSince    int // rounds since the cadence was last calibrated
 	lastSelected  int // the selection the cadence was calibrated against
+
+	// mlx-serve keys cost by context size. Live fields are the active bucket;
+	// byCtx holds the others so a 2k chat does not overwrite an 8k table.
+	ctxBucket int
+	byCtx     map[int]roundCostFile
 }
 
 func newDepthController() *depthController {
@@ -48,6 +58,8 @@ func newDepthController() *depthController {
 }
 
 func (c *depthController) frontier() int { return c.acc.frontier() }
+
+func (c *depthController) searchLimit() int { return c.frontier() + depthSearchPastFrontier }
 
 // next returns the draft depth for the upcoming step: the EV-optimal depth (capped
 // at frontier+1), except periodically it probes one past the selection to refresh
@@ -70,7 +82,7 @@ func (c *depthController) next() (depth int) {
 	c.probeSince++
 	if c.probeSince >= c.probeInterval {
 		c.probeSince = 0
-		if probe := min(sel+1, c.frontier()+1); probe != sel {
+		if probe := min(sel+1, c.searchLimit()); probe != sel {
 			c.probed = true
 			return probe
 		}
@@ -91,7 +103,7 @@ func (c *depthController) next() (depth int) {
 // cost sample, or -1 if all are sampled; bounding to frontier+1 keeps cost-seeding
 // from outrunning the acceptance frontier.
 func (c *depthController) costSeedDepth() int {
-	limit := c.frontier() + 1
+	limit := c.searchLimit()
 	for n := 0; n <= limit; n++ {
 		if !c.cost.sampled(n) {
 			return n
@@ -108,7 +120,7 @@ func (c *depthController) selected() int {
 	if !c.cost.ready() {
 		return 0
 	}
-	limit := c.frontier() + 1
+	limit := c.searchLimit()
 	best, bestEV := 0, c.acc.expectedCommitted(0)/c.cost.cost(0)
 	for n := 1; n <= limit; n++ {
 		if ev := c.acc.expectedCommitted(n) / c.cost.cost(n); ev > bestEV {

@@ -161,7 +161,7 @@ Env always wins over YAML for host/port/KV blocks; profile flags merge at config
 
 | Stack | Build script | Native libs | Weight format |
 |-------|--------------|-------------|---------------|
-| **ggml Metal** (default GGUF) | `./scripts/build/build_zerollama_mac.sh` | In-process CGO + `ggml-metal-embed.metal` | GGUF |
+| **ggml Metal** (default GGUF) | `./scripts/build/build_zerollama_mac.sh` | In-process CGO + per-kind UTF-8 `ggml-metal-embed-*.metal` | GGUF |
 | **MLX** (safetensors) | Same script with `BUILD_MLX=auto` (default when `../mlx` exists), or `./scripts/build/build_mlx_dylibs_mac.sh` | `libmlx.dylib`, `libmlxc.dylib`, `mlx.metallib` under `build/metal-v*/` | safetensors |
 
 **Why not always compile MLX:** MLX pins (`MLX_VERSION`, `MLX_C_VERSION`) track **mlx/mlx-c**, not `llama.cpp`. CMake + `go generate` for MLX is a 10–15 minute compile unrelated to ggml CGO. **`BUILD_MLX=auto`** skips when dylibs already exist; **`BUILD_MLX=0`** skips entirely for fast GGUF-only iteration.
@@ -324,6 +324,19 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M5** Phase 15 KV + multi-seq on Metal | **Shipped** — `./scripts/gpu/metal_signoff.sh` |
 | **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
 | **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; [phase17-llama-server.md](./phase17-llama-server.md) |
+| **M24** GGUF MTP on ggml Metal | **Partial** — ollama-engine binds `mtp.*` + `DraftForward`. Spec loop not wired. llama-server `draft-mtp` stays **off** for qwen35 (SWA/GDN). MLX safetensors already speculate. Do **not** load `qwen3.6-mtp` on `:11434`. |
+
+## GGUF MTP on Metal (M24)
+
+**Three stacks, three answers:**
+
+| Path | MTP today |
+|------|-----------|
+| **MLX** (`qwen3.6:27b-mlx-mtp`) | Dense int4 trunk + [mlx-community/Qwen3.6-27B-MTP-4bit](https://huggingface.co/mlx-community/Qwen3.6-27B-MTP-4bit) (`qwen3_5_mtp`) via `DRAFT`. mlxrunner `RegisterDraft`; affine `.scales`/`.biases` remapped; MTP fields exported so `Sweep` does not drop the head. Lab: counting prompt 48/48 accept; prose is lower. Do **not** load the 22 GiB `qwen3.6-mtp` GGUF on `:11434`. |
+| **llama-server** + GGUF `draft-mtp` | **Off** for `qwen35` / `qwen35moe` — hybrid SWA/GDN cache invalidation desyncs the draft slot (token salad). `--no-spec-draft-backend-sampling` is not enough. |
+| **ggml ollama-engine** (default Mac GGUF) | Trunk AR only until now. `qwen3next` now **loads** Ollama `mtp.*` (`fc`, `pre_fc_norm_*`, one full-attn layer) and can `DraftForward`. The runner does **not** yet draft/verify. `eliza-1-2b` has **no** `mtp.*` (eagle3 sidecar). `qwen3.6-mtp` has 20 MTP tensors on a **22 GiB** MoE blob — do not load it next to production Metal serve. |
+
+Next slice: speculative accept in `runner/ollamarunner` on a **lab** port, with a dense GGUF that actually contains `mtp.*` (not the 22 GiB tag).
 
 ## GPU bootstrap discovery (Jun 2026)
 
@@ -339,7 +352,7 @@ After routes are registered, `discover.GPUDevices` spawns a short-lived **ollama
 
 If discovery returns **no GPUs**, the server logs CPU-only compute, `total_vram="0 B"`, and schedules **0 layers to GPU** — even though a separate inference runner subprocess may still initialize Metal later.
 
-**Jul 2026 follow-up:** if the discovery runner aborts with `newLibraryWithSource: source must not be nil` while logs say `using embedded metal library`, the binary embeds a compiled metallib (`MTLB` magic from `build_zerollama_mac.sh`) but the loader still treats it as UTF-8 source. Fixed in `ggml-metal-device.m` via `newLibraryWithData` for metallib embeds.
+**Aug 2026:** b10615 split shaders into `kernels/<kind>.metal`. The embed loader JIT-compiles UTF-8 bytes at `_ggml_metallib_<kind>_{start,end}` (`initWithBytes`). Do **not** copy a compiled MTLB into the embed — that is what produced `newLibraryWithSource: source must not be nil` / `total_vram=0` when the loader expected text. Regen: `./scripts/build/gen_ggml_metal_embed.sh`. Eliza TBQ/QJL/polar kernels are **separate** embed kinds (`eliza-shipped/*.metal`); concatenating them onto `misc` redefines `block_qjl1_256` and fails JIT.
 
 ### Root cause (fixed Jun 2026)
 

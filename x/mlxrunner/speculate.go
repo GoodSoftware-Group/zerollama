@@ -2,7 +2,9 @@ package mlxrunner
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ollama/ollama/x/mlxrunner/batch"
@@ -38,11 +40,10 @@ type drafter interface {
 // model, the target-cache partition, and the depth state learned across
 // requests so each request starts at the proven-out depth. Each request opens a
 // short-lived speculationSession cursor over it; nothing here is rebuilt per request. A
-// nil *speculation means the checkpoint ships no draft head, so every request
-// decodes plainly.
+// nil *speculation means neither an MTP/draft head nor PLD is available.
 type speculation struct {
 	r     *Runner
-	draft base.DraftModel
+	draft base.DraftModel // nil when this engine is PLD-only
 
 	// caches is the whole persistent slice, passed to every forward; draftKV
 	// are the draft head's own caches and targets are the rest — the caches the
@@ -60,17 +61,28 @@ type speculation struct {
 	// depth selects each request's draft length and owns the cost/acceptance
 	// models and probe cadence it learns across requests.
 	depth *depthController
+
+	// sparseMoE parks MTP unless the request sets enable_mtp (mlx-serve).
+	sparseMoE bool
 }
 
-// newSpeculation builds the speculative-decoding subsystem for a loaded model,
-// or nil when the checkpoint ships no draft head.
+// newSpeculation builds the speculative-decoding subsystem. A draft head
+// and PLD can coexist: each request stacks them (PLD first on echo-y
+// prompts). Nil only when both are unavailable.
 func newSpeculation(r *Runner, draft base.DraftModel) *speculation {
-	if draft == nil {
+	if draft == nil && !pldEnabled() {
 		return nil
 	}
 	s := &speculation{r: r, draft: draft, depth: newDepthController()}
-	s.bind(r.cache.caches)
-	s.drafter = newMTPDrafter(s)
+	if draft != nil {
+		s.bind(r.cache.caches)
+		s.drafter = newMTPDrafter(s)
+	} else {
+		s.depth.scheduled = pldDraftLen
+	}
+	if r != nil {
+		s.depth.restoreRoundCost(r.modelName)
+	}
 	return s
 }
 
@@ -81,6 +93,11 @@ func (s *speculation) bind(caches []cache.Cache) {
 		if !slices.Equal(s.caches, caches) {
 			panic("speculation: cache slice changed between requests")
 		}
+		return
+	}
+	if s.draft == nil {
+		s.caches = caches
+		s.targets = caches
 		return
 	}
 	draftKV := s.draft.DraftCaches(caches)
@@ -109,8 +126,15 @@ type speculationSession struct {
 	spec    *speculation
 	drafter drafter
 	enabled bool // whether this request drafts; false parks (maintain-only)
+	pld     bool // n-gram drafter (vs MTP head)
 	limit   int  // current draft length
 	stats   specStats
+	// Runtime acceptance gate (mlx-serve): sticky disable after enough
+	// low-yield rounds. Separate from the depth controller so a bad stretch
+	// of novel tokens does not keep paying fused-verify cost.
+	gateRounds   int
+	gateDrafted  int
+	gateAccepted int
 
 	// Cost sampling: each round's wall time (start to next start, spanning the
 	// next emit's sync) is attributed to its draft depth only when the depth
@@ -118,6 +142,7 @@ type speculationSession struct {
 	lastRoundStart time.Time
 	prevDrafts     int
 	roundDrafts    int
+	promptTokens   int
 }
 
 // open returns the speculation cursor for this request or nil when the model ships
@@ -128,19 +153,73 @@ func (s *speculation) open(request Request, caches []cache.Cache) *speculationSe
 	}
 	s.bind(caches)
 	promptTokens := len(request.Tokens)
-	d := s.drafter.open(promptTokens)
+	enabled := specOpenEnabled(request)
 
-	// Logprobs are not yet supported, so a logprobs request keeps a speculationSession
-	// only to maintain a draft cache in lockstep (permanently parked).
-	opts := request.SamplerOpts
-	enabled := !opts.Logprobs && opts.TopLogprobs == 0
+	var pldPart, mtpPart drafter
+	if enabled && pldRequested(request.EnablePLD) {
+		p := newPLDSession(request.Tokens)
+		score := ngramRepeatScore(request.Tokens, pldSpecGateNgram)
+		if score < pldSpecGateThresh {
+			p.skip = true
+			slog.Debug("mlx pld gated off", "reason", "prompt_ngram", "score", score, "threshold", pldSpecGateThresh, "prompt_tokens", promptTokens)
+		}
+		pldPart = p
+	}
+	if s.drafter != nil && mtpRequested(request.EnableMTP, s.sparseMoE) {
+		mtpPart = s.drafter.open(promptTokens)
+	}
+	if pldPart == nil && mtpPart == nil {
+		return nil
+	}
+	d := drafter(mtpPart)
+	pldOnly := pldPart != nil && mtpPart == nil
+	switch {
+	case pldPart != nil && mtpPart != nil:
+		d = &stackedDrafter{pld: pldPart, mtp: mtpPart}
+	case pldPart != nil:
+		d = pldPart
+	}
 
-	spec := &speculationSession{spec: s, drafter: d, enabled: enabled, prevDrafts: -1, roundDrafts: -1}
+	spec := &speculationSession{spec: s, drafter: d, enabled: enabled, pld: pldOnly, prevDrafts: -1, roundDrafts: -1, promptTokens: promptTokens}
 	if enabled {
+		s.depth.applyCtxBucket(promptTokens)
 		spec.limit = s.depth.scheduled
+		if pldPart != nil {
+			if p, ok := pldPart.(*pldDraftSession); !ok || !p.skip {
+				spec.limit = max(spec.limit, pldDraftLen)
+			}
+		}
 		spec.stats.maxDraft = spec.limit
 	}
 	return spec
+}
+
+// specOpenEnabled is mlx-serve's spec dispatch: logprobs and grammar/json_schema
+// park speculation; tools do not.
+func specOpenEnabled(request Request) bool {
+	if request.SamplerOpts.Logprobs || request.SamplerOpts.TopLogprobs > 0 {
+		return false
+	}
+	if len(request.Format) > 0 {
+		return false
+	}
+	if strings.TrimSpace(request.Grammar) != "" {
+		return false
+	}
+	return true
+}
+
+// willDraft reports whether this round should leave a parked inner decoder
+// and attempt a fused verify. A prompt-gated PLD session stays parked until
+// the generated tail echoes the prompt (maybeReenable).
+func (s *speculationSession) willDraft() bool {
+	if s == nil || s.limit <= 0 {
+		return false
+	}
+	if p, ok := s.drafter.(*pldDraftSession); ok && p.inactive() {
+		return false
+	}
+	return true
 }
 
 // beginRound records the previous round's cost sample (its wall time runs to
@@ -170,9 +249,63 @@ func (s *speculationSession) endRound(drafted, accepted, observed int) {
 		if observed > 0 {
 			s.spec.depth.acc.observe(observed, accepted)
 		}
-		s.limit = s.spec.depth.next()
-		s.stats.maxDraft = max(s.stats.maxDraft, s.limit)
+		s.applyRuntimeGate(drafted, accepted)
+		if s.enabled {
+			s.limit = s.spec.depth.next()
+			s.stats.maxDraft = max(s.stats.maxDraft, s.limit)
+		} else {
+			s.limit = 0
+		}
 	}
+}
+
+func (s *speculationSession) applyRuntimeGate(drafted, accepted int) {
+	if drafted <= 0 {
+		return
+	}
+	if st, ok := s.drafter.(*stackedDrafter); ok && st.usedPLD {
+		st.pldRounds++
+		st.pldDrafted += drafted
+		st.pldAccepted += accepted
+		if st.pldRounds >= pldRuntimeMinRounds && st.pldDrafted > 0 {
+			rate := float64(st.pldAccepted) / float64(st.pldDrafted)
+			if rate < pldRuntimeMinAccept {
+				st.skipPLD = true
+				if p, ok := st.pld.(*pldDraftSession); ok {
+					p.frozen = true
+				}
+				slog.Info("mlx pld runtime gate", "rounds", st.pldRounds, "acceptance", rate, "threshold", pldRuntimeMinAccept,
+					"tune", "expected on novel prose; ZEROLLAMA_MLX_PLD=off only for AR benches")
+			}
+		}
+		return
+	}
+	s.gateRounds++
+	s.gateDrafted += drafted
+	s.gateAccepted += accepted
+	minRounds, minAccept := pldRuntimeMinRounds, pldRuntimeMinAccept
+	kind := "pld"
+	if !s.pld {
+		minRounds, minAccept = mtpRuntimeMinRounds, mtpRuntimeMinAccept
+		kind = "mtp"
+	}
+	if s.gateRounds < minRounds || s.gateDrafted == 0 {
+		return
+	}
+	rate := float64(s.gateAccepted) / float64(s.gateDrafted)
+	if rate >= minAccept {
+		return
+	}
+	s.enabled = false
+	slog.Info("mlx spec runtime gate", "kind", kind, "rounds", s.gateRounds, "acceptance", rate, "threshold", minAccept,
+		"tune", specGateTune(kind))
+}
+
+func specGateTune(kind string) string {
+	if kind == "mtp" {
+		return "ZEROLLAMA_MLX_MTP_HISTORY=auto on long prompts; require fails load if the draft companion is missing"
+	}
+	return "expected on novel prose; ZEROLLAMA_MLX_PLD=off only for AR benches"
 }
 
 func (s *speculationSession) committed(tokens, hiddens *mlx.Array, position int) {
@@ -180,15 +313,39 @@ func (s *speculationSession) committed(tokens, hiddens *mlx.Array, position int)
 		return
 	}
 	s.drafter.committed(tokens, hiddens, position)
+	s.liftPLDLimit()
 }
 
-// settle completes the drafter's open frontier pair with next and writes
-// buffered reports through to the draft caches.
 func (s *speculationSession) settle(next *mlx.Array) {
 	if s == nil {
 		return
 	}
 	s.drafter.settle(next)
+	s.liftPLDLimit()
+}
+
+func (s *speculationSession) liftPLDLimit() {
+	if !s.enabled {
+		return
+	}
+	p, ok := s.pldSession()
+	if !ok || p.inactive() {
+		return
+	}
+	s.limit = max(s.limit, pldDraftLen)
+	s.stats.maxDraft = max(s.stats.maxDraft, s.limit)
+}
+
+func (s *speculationSession) pldSession() (*pldDraftSession, bool) {
+	switch d := s.drafter.(type) {
+	case *pldDraftSession:
+		return d, true
+	case *stackedDrafter:
+		p, ok := d.pld.(*pldDraftSession)
+		return p, ok && !d.skipPLD
+	default:
+		return nil, false
+	}
 }
 
 func (s *speculationSession) close() {
@@ -225,7 +382,8 @@ func (st *speculativeDecoder) next(remaining int) ([]sampler.Result, error) {
 	// Route: end a parked stretch by emitting the inner sample, draft on a
 	// positive length and a primed drafter, else decode parked.
 	var results []sampler.Result
-	if s := st.s; st.inner != nil && s.limit > 0 {
+	s := st.s
+	if st.inner != nil && s.willDraft() {
 		results = st.resume()
 	} else {
 		s.beginRound()

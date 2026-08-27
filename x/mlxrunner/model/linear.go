@@ -1,6 +1,8 @@
 package model
 
 import (
+	"strings"
+
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/models/nn"
 )
@@ -60,6 +62,9 @@ func MakeLinearLayer(
 	}
 
 	scales := tensors[path+".weight_scale"]
+	if scales == nil {
+		scales = tensors[path+".scales"]
+	}
 	if scales != nil {
 		qbiases := tensors[path+".weight_qbias"]
 		if qbiases == nil {
@@ -99,5 +104,28 @@ func MakeLinearLayer(
 	}
 
 	bias := tensors[path+".bias"]
-	return nn.NewLinear(w, bias)
+	dense := nn.NewLinear(w, bias)
+	if isAttentionProjection(path) {
+		return nn.WrapDecodeQuant(dense)
+	}
+	return dense
+}
+
+func isAttentionProjection(path string) bool {
+	p := strings.ToLower(strings.ReplaceAll(path, "/", "."))
+	base := p
+	if i := strings.LastIndex(p, "."); i >= 0 {
+		base = p[i:]
+	} else {
+		base = "." + p
+	}
+	switch base {
+	case ".q_proj", ".k_proj", ".v_proj", ".o_proj", ".out_proj",
+		".qkv_proj", ".wqkv", ".wq", ".wk", ".wv", ".wo",
+		".query_proj", ".key_proj", ".value_proj",
+		".q_a_proj", ".q_b_proj", ".kv_a_proj", ".kv_b_proj":
+		return true
+	default:
+		return false
+	}
 }

@@ -148,8 +148,8 @@ func TestDepthControllerClimbsOutwardWithinFrontier(t *testing.T) {
 	draw := deterministicDraw(always)
 	for step := range 400 {
 		d := c.next()
-		if d > c.frontier()+1 {
-			t.Fatalf("step %d drafted depth %d, want <= frontier+1 = %d", step, d, c.frontier()+1)
+		if d > c.searchLimit() {
+			t.Fatalf("step %d drafted depth %d, want <= searchLimit = %d", step, d, c.searchLimit())
 		}
 		cost.observe(d, time.Duration(bandwidthBoundCost(d+1)*float64(time.Millisecond)))
 		accepted := 0
